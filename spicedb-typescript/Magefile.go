@@ -5,6 +5,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/magefile/mage/sh"
@@ -43,25 +44,28 @@ func Gen() error {
 	)
 
 	fmt.Println("==> Invoking Claude to update idiomatic client...")
-	if err := sh.Run("claude", "-p", prompt); err != nil {
+	if err := runClaude(prompt); err != nil {
 		return fmt.Errorf("claude invocation failed: %w", err)
 	}
 
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		fmt.Printf("==> Running build + tests (attempt %d/%d)...\n", attempt, maxRetries)
 
-		if err := sh.Run("pnpm", "build"); err != nil {
+		fmt.Println("==> Building...")
+		if err := sh.RunV("pnpm", "build"); err != nil {
 			if attempt == maxRetries {
 				_ = sh.Run("git", "checkout", "--", ".")
 				return fmt.Errorf("build failed after %d retries", maxRetries)
 			}
-			out, _ := sh.Output("pnpm", "build")
-			_ = sh.Run("claude", "-p", fmt.Sprintf("Build failed:\n\n%s\n\nFix the issues.", out))
+			fmt.Println("==> Build failed, asking Claude to fix...")
+			if err := runClaude("Build failed. Read the build output above and fix the issues."); err != nil {
+				return fmt.Errorf("claude fix invocation failed: %w", err)
+			}
 			continue
 		}
 
-		out, err := sh.Output("pnpm", "test")
-		if err == nil {
+		fmt.Println("==> Running tests...")
+		if err := sh.RunV("pnpm", "test"); err == nil {
 			fmt.Println("==> Tests passed!")
 			head, _ := sh.Output("git", "rev-parse", "HEAD")
 			_ = os.WriteFile(lastGenFile, []byte(strings.TrimSpace(head)), 0644)
@@ -69,11 +73,15 @@ func Gen() error {
 		}
 
 		if attempt == maxRetries {
+			fmt.Printf("==> Tests failed after %d attempts. Rolling back.\n", maxRetries)
 			_ = sh.Run("git", "checkout", "--", ".")
-			return fmt.Errorf("tests failed after %d retries:\n%s", maxRetries, out)
+			return fmt.Errorf("tests failed after %d retries", maxRetries)
 		}
 
-		_ = sh.Run("claude", "-p", fmt.Sprintf("Tests failed:\n\n%s\n\nFix the issues.", out))
+		fmt.Println("==> Tests failed, asking Claude to fix...")
+		if err := runClaude("Tests failed. Read the test output above and fix the issues."); err != nil {
+			return fmt.Errorf("claude fix invocation failed: %w", err)
+		}
 	}
 
 	return nil
@@ -81,8 +89,17 @@ func Gen() error {
 
 // Test builds and runs TypeScript tests.
 func Test() error {
-	if err := sh.Run("pnpm", "build"); err != nil {
+	if err := sh.RunV("pnpm", "build"); err != nil {
 		return err
 	}
-	return sh.Run("pnpm", "test")
+	return sh.RunV("pnpm", "test")
+}
+
+// runClaude pipes the prompt to claude via stdin so output streams in real time.
+func runClaude(prompt string) error {
+	cmd := exec.Command("claude")
+	cmd.Stdin = strings.NewReader(prompt)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }

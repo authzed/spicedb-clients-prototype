@@ -5,6 +5,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/magefile/mage/sh"
@@ -42,14 +43,13 @@ func Gen() error {
 	)
 
 	fmt.Println("==> Invoking Claude to update idiomatic client...")
-	if err := sh.Run("claude", "-p", prompt); err != nil {
+	if err := runClaude(prompt); err != nil {
 		return fmt.Errorf("claude invocation failed: %w", err)
 	}
 
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		fmt.Printf("==> Running tests (attempt %d/%d)...\n", attempt, maxRetries)
-		out, err := sh.Output("uv", "run", "pytest", "-v")
-		if err == nil {
+		if err := sh.RunV("uv", "run", "pytest", "-v"); err == nil {
 			fmt.Println("==> Tests passed!")
 			head, _ := sh.Output("git", "rev-parse", "HEAD")
 			_ = os.WriteFile(lastGenFile, []byte(strings.TrimSpace(head)), 0644)
@@ -58,10 +58,13 @@ func Gen() error {
 
 		if attempt == maxRetries {
 			_ = sh.Run("git", "checkout", "--", ".")
-			return fmt.Errorf("tests failed after %d retries:\n%s", maxRetries, out)
+			return fmt.Errorf("tests failed after %d retries", maxRetries)
 		}
 
-		_ = sh.Run("claude", "-p", fmt.Sprintf("Tests failed:\n\n%s\n\nFix the issues.", out))
+		fmt.Println("==> Tests failed, asking Claude to fix...")
+		if err := runClaude("Tests failed. Read the test output above and fix the issues."); err != nil {
+			return fmt.Errorf("claude fix invocation failed: %w", err)
+		}
 	}
 
 	return nil
@@ -69,5 +72,14 @@ func Gen() error {
 
 // Test runs the Python idiomatic client tests.
 func Test() error {
-	return sh.Run("uv", "run", "pytest", "-v")
+	return sh.RunV("uv", "run", "pytest", "-v")
+}
+
+// runClaude pipes the prompt to claude via stdin so output streams in real time.
+func runClaude(prompt string) error {
+	cmd := exec.Command("claude")
+	cmd.Stdin = strings.NewReader(prompt)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }

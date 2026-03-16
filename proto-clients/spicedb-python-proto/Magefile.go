@@ -61,7 +61,7 @@ func Test() error {
 }
 
 func runClaude(prompt string) error {
-	cmd := exec.Command("claude", "-p", prompt)
+	cmd := exec.Command("claude", "-p", prompt, "--verbose", "--output-format", "text")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin

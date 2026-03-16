@@ -4,6 +4,9 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
+	"strings"
 
 	"github.com/magefile/mage/sh"
 )
@@ -55,7 +58,11 @@ func Test() error {
 	return sh.RunV("go", "test", "-v", "./...")
 }
 
+// runClaude pipes the prompt to claude via stdin so output streams in real time.
 func runClaude(prompt string) error {
-	// Use sh.RunV which Mage already knows how to stream properly
-	return sh.RunV("claude", "-p", prompt, "--output-format", "text")
+	cmd := exec.Command("claude")
+	cmd.Stdin = strings.NewReader(prompt)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }

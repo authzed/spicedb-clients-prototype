@@ -1,0 +1,19 @@
+[project]
+name = "spicedb-python-proto"
+version = "0.1.0"
+description = "SpiceDB proto client for Python (internal)"
+requires-python = ">=3.11"
+dependencies = [
+    "grpcio>=1.71.0",
+    "protobuf>=5.29.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "grpcio-tools>=1.71.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

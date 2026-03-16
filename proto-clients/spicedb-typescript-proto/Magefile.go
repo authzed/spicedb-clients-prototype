@@ -4,8 +4,6 @@ package main
 
 import (
 	"fmt"
-	"os"
-	"os/exec"
 
 	"github.com/magefile/mage/sh"
 )
@@ -79,9 +77,5 @@ func Test() error {
 }
 
 func runClaude(prompt string) error {
-	cmd := exec.Command("claude", "-p", prompt, "--verbose", "--output-format", "text")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Stdin = os.Stdin
-	return cmd.Run()
+	return sh.RunV("claude", "-p", prompt, "--output-format", "text")
 }

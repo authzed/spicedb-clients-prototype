@@ -28,6 +28,19 @@ Language-appropriate deprecation mechanisms:
 
 Deprecated methods must remain functional until removed from the proto definitions.
 
+## API Coverage
+
+Idiomatic clients MUST expose all non-deprecated APIs from the proto layer in
+some idiomatic form. No proto API should be silently omitted — if it exists in
+the proto client, users must be able to access it through the idiomatic client.
+
+APIs from the `ExperimentalService` (or any service/method marked experimental
+in the proto definitions) must be clearly marked as experimental in the
+idiomatic client using language-appropriate mechanisms (Go: `// Experimental:`
+comment, Python: docstring note, TypeScript: `@experimental` JSDoc tag). This
+signals to users that the API may change without following the backwards
+compatibility mandate.
+
 ## Common Idioms (All Languages)
 
 All idiomatic clients should provide:

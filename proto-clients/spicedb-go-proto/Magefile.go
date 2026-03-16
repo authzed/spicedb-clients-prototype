@@ -4,6 +4,8 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
 
 	"github.com/magefile/mage/sh"
 )
@@ -19,9 +21,9 @@ func Gen() error {
 	}
 
 	fmt.Println("==> Invoking Claude to add boilerplate...")
-	if err := sh.Run("claude", "-p",
-		"Read DESIGN.md. Review the generated code under gen/. "+
-			"Add the additional code specified in the manifest (client.go, types.go, client_test.go). "+
+	if err := runClaude(
+		"Read DESIGN.md. Review the generated code under gen/. " +
+			"Add the additional code specified in the manifest (client.go, types.go, client_test.go). " +
 			"Run `go test ./...` to verify. Fix any failures.",
 	); err != nil {
 		return fmt.Errorf("claude invocation failed: %w", err)
@@ -30,8 +32,7 @@ func Gen() error {
 	// Test with retry loop
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		fmt.Printf("==> Running tests (attempt %d/%d)...\n", attempt, maxRetries)
-		out, err := sh.Output("go", "test", "./...")
-		if err == nil {
+		if err := sh.RunV("go", "test", "-v", "./..."); err == nil {
 			fmt.Println("==> Tests passed!")
 			return nil
 		}
@@ -39,13 +40,11 @@ func Gen() error {
 		if attempt == maxRetries {
 			fmt.Printf("==> Tests failed after %d attempts. Rolling back.\n", maxRetries)
 			_ = sh.Run("git", "checkout", "--", ".")
-			return fmt.Errorf("tests failed after %d retries:\n%s", maxRetries, out)
+			return fmt.Errorf("tests failed after %d retries", maxRetries)
 		}
 
 		fmt.Println("==> Tests failed, asking Claude to fix...")
-		if err := sh.Run("claude", "-p",
-			fmt.Sprintf("Tests failed with the following output. Fix the issues:\n\n%s", out),
-		); err != nil {
+		if err := runClaude("Tests failed. Read the test output above and fix the issues."); err != nil {
 			return fmt.Errorf("claude fix invocation failed: %w", err)
 		}
 	}
@@ -55,5 +54,13 @@ func Gen() error {
 
 // Test runs the proto client tests.
 func Test() error {
-	return sh.Run("go", "test", "./...")
+	return sh.RunV("go", "test", "-v", "./...")
+}
+
+func runClaude(prompt string) error {
+	cmd := exec.Command("claude", "-p", prompt)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+	return cmd.Run()
 }

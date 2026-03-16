@@ -4,6 +4,8 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
 
 	"github.com/magefile/mage/sh"
 )
@@ -18,14 +20,14 @@ func Gen() error {
 	}
 
 	fmt.Println("==> Installing deps...")
-	if err := sh.Run("pnpm", "install"); err != nil {
+	if err := sh.RunV("pnpm", "install"); err != nil {
 		return fmt.Errorf("pnpm install failed: %w", err)
 	}
 
 	fmt.Println("==> Invoking Claude to add boilerplate...")
-	if err := sh.Run("claude", "-p",
-		"Read DESIGN.md. Review the generated code under src/gen/. "+
-			"Add the additional code specified in the manifest (src/client.ts, src/index.ts, src/__tests__/client.test.ts). "+
+	if err := runClaude(
+		"Read DESIGN.md. Review the generated code under src/gen/. " +
+			"Add the additional code specified in the manifest (src/client.ts, src/index.ts, src/__tests__/client.test.ts). " +
 			"Run `pnpm build && pnpm test` to verify. Fix any failures.",
 	); err != nil {
 		return fmt.Errorf("claude invocation failed: %w", err)
@@ -34,19 +36,21 @@ func Gen() error {
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		fmt.Printf("==> Running build + tests (attempt %d/%d)...\n", attempt, maxRetries)
 
-		if err := sh.Run("pnpm", "build"); err != nil {
+		fmt.Println("==> Building...")
+		if err := sh.RunV("pnpm", "build"); err != nil {
 			if attempt == maxRetries {
 				_ = sh.Run("git", "checkout", "--", ".")
 				return fmt.Errorf("build failed after %d retries", maxRetries)
 			}
 			fmt.Println("==> Build failed, asking Claude to fix...")
-			out, _ := sh.Output("pnpm", "build")
-			_ = sh.Run("claude", "-p", fmt.Sprintf("Build failed:\n\n%s\n\nFix the issues.", out))
+			if err := runClaude("Build failed. Read the build output above and fix the issues."); err != nil {
+				return fmt.Errorf("claude fix invocation failed: %w", err)
+			}
 			continue
 		}
 
-		out, err := sh.Output("pnpm", "test")
-		if err == nil {
+		fmt.Println("==> Running tests...")
+		if err := sh.RunV("pnpm", "test"); err == nil {
 			fmt.Println("==> Tests passed!")
 			return nil
 		}
@@ -54,11 +58,13 @@ func Gen() error {
 		if attempt == maxRetries {
 			fmt.Printf("==> Tests failed after %d attempts. Rolling back.\n", maxRetries)
 			_ = sh.Run("git", "checkout", "--", ".")
-			return fmt.Errorf("tests failed after %d retries:\n%s", maxRetries, out)
+			return fmt.Errorf("tests failed after %d retries", maxRetries)
 		}
 
 		fmt.Println("==> Tests failed, asking Claude to fix...")
-		_ = sh.Run("claude", "-p", fmt.Sprintf("Tests failed:\n\n%s\n\nFix the issues.", out))
+		if err := runClaude("Tests failed. Read the test output above and fix the issues."); err != nil {
+			return fmt.Errorf("claude fix invocation failed: %w", err)
+		}
 	}
 
 	return nil
@@ -66,8 +72,16 @@ func Gen() error {
 
 // Test runs the TypeScript proto client tests.
 func Test() error {
-	if err := sh.Run("pnpm", "build"); err != nil {
+	if err := sh.RunV("pnpm", "build"); err != nil {
 		return err
 	}
-	return sh.Run("pnpm", "test")
+	return sh.RunV("pnpm", "test")
+}
+
+func runClaude(prompt string) error {
+	cmd := exec.Command("claude", "-p", prompt)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+	return cmd.Run()
 }

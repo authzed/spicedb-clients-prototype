@@ -17,19 +17,33 @@ type Gen mg.Namespace
 
 // All runs proto generation for all languages, then idiomatic client updates.
 func (Gen) All() error {
-	if err := (Gen{}).Proto(""); err != nil {
+	if err := (Gen{}).Proto(); err != nil {
 		return err
 	}
-	return (Gen{}).Client("")
+	return (Gen{}).Client()
 }
 
-// Proto regenerates proto clients. Pass a language name to run one, or empty for all.
-func (Gen) Proto(lang string) error {
-	langs := languages
-	if lang != "" {
-		langs = []string{lang}
-	}
+// Proto regenerates all proto clients.
+func (Gen) Proto() error {
+	return genProtoLangs(languages)
+}
 
+// ProtoLang regenerates a single proto client by language name (go, python, typescript).
+func (Gen) ProtoLang(lang string) error {
+	return genProtoLangs([]string{lang})
+}
+
+// Client updates all idiomatic clients.
+func (Gen) Client() error {
+	return genClientLangs(languages)
+}
+
+// ClientLang updates a single idiomatic client by language name (go, python, typescript).
+func (Gen) ClientLang(lang string) error {
+	return genClientLangs([]string{lang})
+}
+
+func genProtoLangs(langs []string) error {
 	var failures []string
 	for _, l := range langs {
 		dir := filepath.Join("proto-clients", fmt.Sprintf("spicedb-%s-proto", l))
@@ -53,13 +67,7 @@ func (Gen) Proto(lang string) error {
 	return nil
 }
 
-// Client updates idiomatic clients. Pass a language name to run one, or empty for all.
-func (Gen) Client(lang string) error {
-	langs := languages
-	if lang != "" {
-		langs = []string{lang}
-	}
-
+func genClientLangs(langs []string) error {
 	var failures []string
 	for _, l := range langs {
 		dir := fmt.Sprintf("spicedb-%s", l)

@@ -35,6 +35,8 @@ Create `src/index.ts` with:
 
 ### Tests
 
+Use `vitest` for all tests.
+
 Create `src/__tests__/client.test.ts` with:
 
 1. **Factory test** — verify `createClient` returns a client with all service

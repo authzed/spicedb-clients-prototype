@@ -37,6 +37,8 @@ Create a `client.go` file in the package root with:
 
 ### Tests
 
+Use `github.com/stretchr/testify/require` for all assertions.
+
 Create a `client_test.go` with:
 
 1. **Constructor test** — verify `NewClient` creates a client with all service

@@ -110,6 +110,10 @@ txn.mustNotMatch(filter);
 const revision = await client.write(txn);
 ```
 
+### Testing
+
+Use `vitest` for all tests. Examples should also be runnable as vitest tests.
+
 ### Error Handling
 
 Typed error classes:

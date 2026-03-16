@@ -103,6 +103,11 @@ txn.MustNotMatch(filter) // precondition
 revision, err := client.Write(ctx, txn)
 ```
 
+### Testing
+
+Use `github.com/stretchr/testify/require` for all assertions in tests and
+examples.
+
 ### Error Handling
 
 - Standard Go `(result, error)` returns

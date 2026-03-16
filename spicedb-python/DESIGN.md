@@ -106,6 +106,11 @@ txn.must_not_match(filter)  # precondition
 revision = await client.write(txn)
 ```
 
+### Testing
+
+Use `pytest` with `pytest-asyncio` for all tests. Examples should also be
+runnable as pytest tests.
+
 ### Error Handling
 
 Exception hierarchy:

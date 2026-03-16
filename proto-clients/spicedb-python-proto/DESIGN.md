@@ -31,6 +31,8 @@ Create a `client.py` in the package root with:
 
 ### Tests
 
+Use `pytest` with `pytest-asyncio` for async tests.
+
 Create `tests/test_client.py` with:
 
 1. **Constructor test** — verify Client creates all service stubs

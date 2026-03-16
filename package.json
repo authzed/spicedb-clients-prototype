@@ -1,7 +1,3 @@
 {
-  "private": true,
-  "workspaces": [
-    "proto-clients/spicedb-typescript-proto",
-    "spicedb-typescript"
-  ]
+  "private": true
 }

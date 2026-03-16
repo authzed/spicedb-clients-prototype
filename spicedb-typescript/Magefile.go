@@ -50,17 +50,17 @@ func Gen() error {
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		fmt.Printf("==> Running build + tests (attempt %d/%d)...\n", attempt, maxRetries)
 
-		if err := sh.Run("yarn", "build"); err != nil {
+		if err := sh.Run("pnpm", "build"); err != nil {
 			if attempt == maxRetries {
 				_ = sh.Run("git", "checkout", "--", ".")
 				return fmt.Errorf("build failed after %d retries", maxRetries)
 			}
-			out, _ := sh.Output("yarn", "build")
+			out, _ := sh.Output("pnpm", "build")
 			_ = sh.Run("claude", "-p", fmt.Sprintf("Build failed:\n\n%s\n\nFix the issues.", out))
 			continue
 		}
 
-		out, err := sh.Output("yarn", "test")
+		out, err := sh.Output("pnpm", "test")
 		if err == nil {
 			fmt.Println("==> Tests passed!")
 			head, _ := sh.Output("git", "rev-parse", "HEAD")
@@ -81,8 +81,8 @@ func Gen() error {
 
 // Test builds and runs TypeScript tests.
 func Test() error {
-	if err := sh.Run("yarn", "build"); err != nil {
+	if err := sh.Run("pnpm", "build"); err != nil {
 		return err
 	}
-	return sh.Run("yarn", "test")
+	return sh.Run("pnpm", "test")
 }

@@ -12,5 +12,5 @@ This is the idiomatic TypeScript client for SpiceDB.
 6. Update `examples/` to cover new functionality
 7. Never delete an example — mark deprecated ones with a note instead
 8. Append to the Changelog section of DESIGN.md after making changes
-9. Run `yarn build && yarn test` after making changes
+9. Run `pnpm build && pnpm test` after making changes
 10. No `any` types in public API — use `unknown` if truly needed

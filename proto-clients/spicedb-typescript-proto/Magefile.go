@@ -18,15 +18,15 @@ func Gen() error {
 	}
 
 	fmt.Println("==> Installing deps...")
-	if err := sh.Run("yarn", "install"); err != nil {
-		return fmt.Errorf("yarn install failed: %w", err)
+	if err := sh.Run("pnpm", "install"); err != nil {
+		return fmt.Errorf("pnpm install failed: %w", err)
 	}
 
 	fmt.Println("==> Invoking Claude to add boilerplate...")
 	if err := sh.Run("claude", "-p",
 		"Read DESIGN.md. Review the generated code under src/gen/. "+
 			"Add the additional code specified in the manifest (src/client.ts, src/index.ts, src/__tests__/client.test.ts). "+
-			"Run `yarn build && yarn test` to verify. Fix any failures.",
+			"Run `pnpm build && pnpm test` to verify. Fix any failures.",
 	); err != nil {
 		return fmt.Errorf("claude invocation failed: %w", err)
 	}
@@ -34,18 +34,18 @@ func Gen() error {
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		fmt.Printf("==> Running build + tests (attempt %d/%d)...\n", attempt, maxRetries)
 
-		if err := sh.Run("yarn", "build"); err != nil {
+		if err := sh.Run("pnpm", "build"); err != nil {
 			if attempt == maxRetries {
 				_ = sh.Run("git", "checkout", "--", ".")
 				return fmt.Errorf("build failed after %d retries", maxRetries)
 			}
 			fmt.Println("==> Build failed, asking Claude to fix...")
-			out, _ := sh.Output("yarn", "build")
+			out, _ := sh.Output("pnpm", "build")
 			_ = sh.Run("claude", "-p", fmt.Sprintf("Build failed:\n\n%s\n\nFix the issues.", out))
 			continue
 		}
 
-		out, err := sh.Output("yarn", "test")
+		out, err := sh.Output("pnpm", "test")
 		if err == nil {
 			fmt.Println("==> Tests passed!")
 			return nil
@@ -66,8 +66,8 @@ func Gen() error {
 
 // Test runs the TypeScript proto client tests.
 func Test() error {
-	if err := sh.Run("yarn", "build"); err != nil {
+	if err := sh.Run("pnpm", "build"); err != nil {
 		return err
 	}
-	return sh.Run("yarn", "test")
+	return sh.Run("pnpm", "test")
 }

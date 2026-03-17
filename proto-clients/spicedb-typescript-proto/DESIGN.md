@@ -30,6 +30,7 @@ Create `src/client.ts` with:
    headers, etc.)
 
 Create `src/index.ts` with:
+
 - Re-export of `SpiceDBProtoClient`, `createClient`, `ClientOptions`
 - Re-export of key proto types from `src/gen/`
 
@@ -46,7 +47,9 @@ Create `src/__tests__/client.test.ts` with:
 ### Deprecation Handling
 
 Any methods marked deprecated in proto definitions must carry `@deprecated`
-JSDoc tags.
+JSDoc tags. Note that some services may contain SOME deprecated methods; do
+not mark the entire service as deprecated unless ALL exported methods are
+marked as such.
 
 ### Invariants
 

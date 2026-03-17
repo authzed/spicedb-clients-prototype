@@ -1,8 +1,10 @@
 version: v2
 plugins:
   - remote: buf.build/protocolbuffers/python
+    include_imports: true
     out: gen
   - remote: buf.build/grpc/python
     out: gen
 inputs:
   - module: buf.build/authzed/api
+  - module: buf.build/bufbuild/protovalidate

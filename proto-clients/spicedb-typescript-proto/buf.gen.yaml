@@ -4,9 +4,11 @@ plugins:
     out: src/gen
     opt:
       - target=ts
+    include_imports: true
   - remote: buf.build/bufbuild/es
     out: src/gen
     opt:
       - target=ts
+    include_imports: true
 inputs:
   - module: buf.build/authzed/api

@@ -4,18 +4,24 @@ version = "0.1.0"
 description = "SpiceDB proto client for Python (internal)"
 requires-python = ">=3.11"
 dependencies = [
+    "googleapis-common-protos>=1.56.1",
     "grpcio>=1.71.0",
-    "protobuf>=5.29.0",
+    "protobuf>=7.34.0",
+    "protovalidate>=1.1.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0.0",
-    "grpcio-tools>=1.71.0",
+    "pytest-asyncio>=0.24.0",
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["gen"]
+packages = ["gen/authzed", "gen/buf", "gen/validate", "gen/protoc_gen_openapiv2"]
+sources = ["gen"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
 
 [build-system]
 requires = ["hatchling"]

@@ -4,6 +4,8 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -166,11 +168,37 @@ func Update() error {
 	if err := sh.RunV("git", "add", "-A"); err != nil {
 		return err
 	}
-	if err := sh.RunV("git", "commit", "-m", "chore: update generated clients"); err != nil {
+
+	// Ask Claude to generate a commit message from the staged diff
+	diff, err := sh.Output("git", "diff", "--cached", "--stat")
+	if err != nil {
+		return err
+	}
+	fmt.Println("==> Generating commit message with Claude...")
+	prompt := fmt.Sprintf(
+		"Generate a concise git commit message (subject line + optional body) for these staged changes. "+
+			"Output ONLY the commit message text, nothing else.\n\n%s", diff,
+	)
+	msg, err := runClaudeOutput(prompt)
+	if err != nil || strings.TrimSpace(msg) == "" {
+		// Fall back to a generic message if Claude fails
+		msg = "chore: update generated clients"
+	}
+
+	if err := sh.RunV("git", "commit", "-m", strings.TrimSpace(msg)); err != nil {
 		return err
 	}
 	fmt.Println("\n==> Update complete. Changes committed (not pushed).")
 	return nil
+}
+
+// runClaudeOutput pipes a prompt to claude and returns stdout as a string.
+func runClaudeOutput(prompt string) (string, error) {
+	cmd := exec.Command("claude", "--print")
+	cmd.Stdin = strings.NewReader(prompt)
+	cmd.Stderr = os.Stderr
+	out, err := cmd.Output()
+	return string(out), err
 }
 
 func runMageIn(dir string, target string) error {

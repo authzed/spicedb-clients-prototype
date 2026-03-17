@@ -149,7 +149,7 @@ func waitForReady(addr string, timeout time.Duration) error {
 		conn, err := net.DialTimeout("tcp", addr, time.Second)
 		if err == nil {
 			conn.Close()
-			time.Sleep(500 * time.Millisecond)
+			time.Sleep(3 * time.Second)
 			return nil
 		}
 		time.Sleep(time.Second)

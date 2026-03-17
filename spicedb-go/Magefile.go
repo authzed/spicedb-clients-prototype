@@ -156,8 +156,8 @@ func waitForReady(addr string, timeout time.Duration) error {
 		conn, err := net.DialTimeout("tcp", addr, time.Second)
 		if err == nil {
 			conn.Close()
-			// Small extra delay for gRPC server to finish initialization
-			time.Sleep(500 * time.Millisecond)
+			// Extra delay for gRPC server to finish initialization after port is open
+			time.Sleep(3 * time.Second)
 			return nil
 		}
 		time.Sleep(time.Second)

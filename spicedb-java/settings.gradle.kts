@@ -1,6 +1,7 @@
 rootProject.name = "spicedb-java"
 
 include("lib")
+include("examples")
 
 // Include the proto client as a composite build so it resolves as a project dependency.
 includeBuild("../proto-clients/spicedb-java-proto") {

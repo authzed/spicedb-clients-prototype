@@ -4,9 +4,11 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/magefile/mage/sh"
 )
@@ -73,6 +75,45 @@ func Gen() error {
 // Test runs the Python idiomatic client tests.
 func Test() error {
 	return sh.RunV("uv", "run", "pytest", "-v")
+}
+
+// IntegrationTest starts SpiceDB via Docker and runs example integration tests.
+func IntegrationTest() error {
+	fmt.Println("==> Starting SpiceDB...")
+	if err := sh.RunV("docker", "compose", "-f", "docker-compose.test.yml", "up", "-d"); err != nil {
+		return fmt.Errorf("docker compose up failed: %w", err)
+	}
+	defer func() {
+		fmt.Println("==> Stopping SpiceDB...")
+		_ = sh.RunV("docker", "compose", "-f", "docker-compose.test.yml", "down")
+	}()
+
+	fmt.Println("==> Waiting for SpiceDB to be ready...")
+	if err := waitForReady("localhost:50051", 30*time.Second); err != nil {
+		return err
+	}
+
+	fmt.Println("==> Running integration tests...")
+	if err := sh.RunV("uv", "run", "pytest", "examples/", "-v", "-k", "not watch"); err != nil {
+		return fmt.Errorf("integration tests failed: %w", err)
+	}
+
+	fmt.Println("==> All integration tests passed!")
+	return nil
+}
+
+func waitForReady(addr string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp", addr, time.Second)
+		if err == nil {
+			conn.Close()
+			time.Sleep(500 * time.Millisecond)
+			return nil
+		}
+		time.Sleep(time.Second)
+	}
+	return fmt.Errorf("SpiceDB not ready at %s after %s", addr, timeout)
 }
 
 // runClaude pipes the prompt to claude via stdin so output streams in real time.

@@ -1,0 +1,6 @@
+services:
+  spicedb:
+    image: authzed/spicedb:latest
+    command: serve --grpc-preshared-key testtoken --grpc-no-tls
+    ports:
+      - "50051:50051"

@@ -127,6 +127,14 @@ class InvalidArgumentError extends SpiceDBError {}
 
 Automatic retry with exponential backoff for transient errors.
 
+### Experimental API Naming Convention
+
+Methods wrapping experimental proto APIs MUST be prefixed with `experimental`
+(e.g., `experimentalCountRelationships`). This reserves the unprefixed name
+(e.g., `countRelationships`) for when the API is promoted to stable. On
+promotion, add the unprefixed method and mark the prefixed one as
+`@deprecated`.
+
 ## Public API Surface
 
 See package sections above.
@@ -147,3 +155,15 @@ See package sections above.
 ## Changelog
 
 <!-- Claude appends here when making changes, with date + what changed -->
+- **2026-03-16**: Initial implementation of the idiomatic TypeScript client.
+  Created `src/client.ts`, `src/types.ts`, `src/consistency.ts`, `src/errors.ts`,
+  `src/index.ts`. Full API coverage for all non-deprecated proto APIs:
+  PermissionsService (checkPermission, checkPermissions, checkAny, checkAll,
+  readRelationships, write, deleteRelationships, lookupResources,
+  lookupSubjects, expandPermissionTree, importBulkRelationships,
+  exportBulkRelationships), SchemaService (readSchema, writeSchema,
+  reflectSchema, computablePermissions, dependentRelations, diffSchema),
+  WatchService (watch), and ExperimentalService relationship counters
+  (experimentalRegisterRelationshipCounter, experimentalCountRelationships,
+  experimentalUnregisterRelationshipCounter). Added 8 examples covering all
+  major use cases. Added experimental naming convention to DESIGN.md.

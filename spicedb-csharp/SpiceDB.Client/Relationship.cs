@@ -1,0 +1,222 @@
+// Relationship is a flat, immutable representation of a SpiceDB relationship.
+// It avoids nested proto types in favor of plain C# record fields.
+
+using Authzed.Api.V1;
+using Google.Protobuf.WellKnownTypes;
+
+namespace SpiceDB.Client;
+
+/// <summary>
+/// A flat, immutable representation of a SpiceDB relationship.
+/// Use the static factory methods to create instances.
+/// </summary>
+public sealed record Relationship
+{
+    public string ResourceType { get; init; } = "";
+    public string ResourceID { get; init; } = "";
+    public string ResourceRelation { get; init; } = "";
+    public string SubjectType { get; init; } = "";
+    public string SubjectID { get; init; } = "";
+    public string SubjectRelation { get; init; } = "";
+    public string? CaveatName { get; init; }
+    public IReadOnlyDictionary<string, object>? CaveatContext { get; init; }
+    public DateTimeOffset? Expiration { get; init; }
+
+    /// <summary>
+    /// Creates a Relationship from explicit resource and subject fields.
+    /// </summary>
+    /// <exception cref="ArgumentException">Thrown when any required field is empty.</exception>
+    public static Relationship FromTriple(
+        string resourceType, string resourceID, string resourceRelation,
+        string subjectType, string subjectID, string subjectRelation = "")
+    {
+        if (string.IsNullOrEmpty(resourceType) || string.IsNullOrEmpty(resourceID) || string.IsNullOrEmpty(resourceRelation))
+            throw new ArgumentException("Resource type, ID, and relation are required.");
+        if (string.IsNullOrEmpty(subjectType) || string.IsNullOrEmpty(subjectID))
+            throw new ArgumentException("Subject type and ID are required.");
+
+        return new Relationship
+        {
+            ResourceType = resourceType,
+            ResourceID = resourceID,
+            ResourceRelation = resourceRelation,
+            SubjectType = subjectType,
+            SubjectID = subjectID,
+            SubjectRelation = subjectRelation,
+        };
+    }
+
+    /// <summary>
+    /// Parses a relationship from a tuple string in the format:
+    /// resourceType:resourceID#relation@subjectType:subjectID[#subjectRelation]
+    /// </summary>
+    /// <exception cref="FormatException">Thrown when the tuple string is malformed.</exception>
+    public static Relationship FromTuple(string tuple)
+    {
+        if (string.IsNullOrEmpty(tuple))
+            throw new FormatException("Tuple string must not be null or empty.");
+
+        var atParts = tuple.Split('@', 2);
+        if (atParts.Length != 2)
+            throw new FormatException("Invalid tuple format: missing '@' separator.");
+
+        var resourcePart = atParts[0];
+        var subjectPart = atParts[1];
+
+        // Parse resource: type:id#relation
+        var resourceHash = resourcePart.Split('#', 2);
+        if (resourceHash.Length != 2)
+            throw new FormatException("Invalid tuple format: missing '#' in resource.");
+
+        var resourceTypeId = resourceHash[0].Split(':', 2);
+        if (resourceTypeId.Length != 2)
+            throw new FormatException("Invalid tuple format: missing ':' in resource type:id.");
+
+        // Parse subject: type:id[#relation]
+        var subjectHash = subjectPart.Split('#', 2);
+        var subjectTypeId = subjectHash[0].Split(':', 2);
+        if (subjectTypeId.Length != 2)
+            throw new FormatException("Invalid tuple format: missing ':' in subject type:id.");
+
+        var subjectRelation = subjectHash.Length == 2 ? subjectHash[1] : "";
+
+        return FromTriple(
+            resourceTypeId[0], resourceTypeId[1], resourceHash[1],
+            subjectTypeId[0], subjectTypeId[1], subjectRelation);
+    }
+
+    /// <summary>
+    /// Returns a copy of the relationship with the given caveat.
+    /// </summary>
+    public Relationship WithCaveat(string name, IReadOnlyDictionary<string, object>? context = null) =>
+        this with { CaveatName = name, CaveatContext = context };
+
+    /// <summary>
+    /// Returns a copy of the relationship with the given expiration.
+    /// </summary>
+    public Relationship WithExpiration(DateTimeOffset expiration) =>
+        this with { Expiration = expiration };
+
+    /// <summary>
+    /// Converts this relationship to its proto representation.
+    /// </summary>
+    public Authzed.Api.V1.Relationship ToProto()
+    {
+        var rel = new Authzed.Api.V1.Relationship
+        {
+            Resource = new ObjectReference
+            {
+                ObjectType = ResourceType,
+                ObjectId = ResourceID,
+            },
+            Relation = ResourceRelation,
+            Subject = new SubjectReference
+            {
+                Object = new ObjectReference
+                {
+                    ObjectType = SubjectType,
+                    ObjectId = SubjectID,
+                },
+                OptionalRelation = SubjectRelation,
+            },
+        };
+
+        if (!string.IsNullOrEmpty(CaveatName))
+        {
+            rel.OptionalCaveat = new ContextualizedCaveat
+            {
+                CaveatName = CaveatName,
+            };
+            if (CaveatContext != null)
+            {
+                var structValue = new Struct();
+                foreach (var (key, value) in CaveatContext)
+                {
+                    structValue.Fields[key] = Value.ForString(value?.ToString() ?? "");
+                }
+                rel.OptionalCaveat.Context = structValue;
+            }
+        }
+
+        if (Expiration.HasValue)
+        {
+            rel.OptionalExpiresAt = Timestamp.FromDateTimeOffset(Expiration.Value);
+        }
+
+        return rel;
+    }
+
+    /// <summary>
+    /// Converts a proto Relationship to an idiomatic Relationship.
+    /// </summary>
+    public static Relationship FromProto(Authzed.Api.V1.Relationship proto)
+    {
+        var rel = new Relationship
+        {
+            ResourceType = proto.Resource?.ObjectType ?? "",
+            ResourceID = proto.Resource?.ObjectId ?? "",
+            ResourceRelation = proto.Relation ?? "",
+            SubjectType = proto.Subject?.Object?.ObjectType ?? "",
+            SubjectID = proto.Subject?.Object?.ObjectId ?? "",
+            SubjectRelation = proto.Subject?.OptionalRelation ?? "",
+        };
+
+        if (proto.OptionalCaveat != null)
+        {
+            var context = proto.OptionalCaveat.Context?.Fields
+                .ToDictionary(f => f.Key, f => (object)f.Value.StringValue);
+
+            rel = rel with
+            {
+                CaveatName = proto.OptionalCaveat.CaveatName,
+                CaveatContext = context,
+            };
+        }
+
+        if (proto.OptionalExpiresAt != null)
+        {
+            rel = rel with { Expiration = proto.OptionalExpiresAt.ToDateTimeOffset() };
+        }
+
+        return rel;
+    }
+
+    /// <summary>
+    /// Returns a Filter that matches the exact resource/subject of this relationship.
+    /// </summary>
+    public Filter ToFilter() => new Filter(ResourceType)
+        .WithResourceID(ResourceID)
+        .WithRelation(ResourceRelation)
+        .WithSubjectType(SubjectType)
+        .WithSubjectID(SubjectID);
+
+    /// <summary>
+    /// Returns the tuple string representation.
+    /// </summary>
+    public override string ToString()
+    {
+        var s = $"{ResourceType}:{ResourceID}#{ResourceRelation}@{SubjectType}:{SubjectID}";
+        if (!string.IsNullOrEmpty(SubjectRelation))
+            s += "#" + SubjectRelation;
+        return s;
+    }
+}
+
+/// <summary>
+/// Represents a relationship mutation (create, touch, or delete).
+/// </summary>
+public sealed record RelationshipUpdate
+{
+    public UpdateOperation Operation { get; init; }
+    public Relationship Relationship { get; init; } = null!;
+}
+
+/// <summary>
+/// The type of mutation in a RelationshipUpdate.
+/// </summary>
+public enum UpdateOperation
+{
+    Create = 1,
+    Touch = 2,
+    Delete = 3,
+}

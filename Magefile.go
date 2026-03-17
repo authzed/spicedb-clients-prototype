@@ -137,6 +137,42 @@ func Test() error {
 	return nil
 }
 
+// Update runs the full update pipeline: gen, test, lint, then commits all changes.
+func Update() error {
+	fmt.Println("=== Step 1/4: Generate ===")
+	if err := (Gen{}).All(); err != nil {
+		return fmt.Errorf("generation failed: %w", err)
+	}
+
+	fmt.Println("\n=== Step 2/4: Test ===")
+	if err := Test(); err != nil {
+		return fmt.Errorf("tests failed: %w", err)
+	}
+
+	fmt.Println("\n=== Step 3/4: Lint ===")
+	if err := (Lint{}).All(); err != nil {
+		return fmt.Errorf("linting failed: %w", err)
+	}
+
+	fmt.Println("\n=== Step 4/4: Commit ===")
+	status, err := sh.Output("git", "status", "--porcelain")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(status) == "" {
+		fmt.Println("==> No changes to commit.")
+		return nil
+	}
+	if err := sh.RunV("git", "add", "-A"); err != nil {
+		return err
+	}
+	if err := sh.RunV("git", "commit", "-m", "chore: update generated clients"); err != nil {
+		return err
+	}
+	fmt.Println("\n==> Update complete. Changes committed (not pushed).")
+	return nil
+}
+
 func runMageIn(dir string, target string) error {
 	return sh.RunV("mage", "-d", dir, target)
 }

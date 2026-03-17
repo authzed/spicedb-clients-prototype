@@ -1,0 +1,38 @@
+// Client
+export { SpiceDBClient, createSpiceDBClient, type SpiceDBClientOptions } from "./client.js";
+
+// Consistency
+export { full, minLatency, atLeast, atLeastOrFull, atLeastOrMinLatency, snapshot } from "./consistency.js";
+
+// Types
+export {
+  type Relationship,
+  type RelationshipFilterOptions,
+  type LookupResourcesParams,
+  type LookupSubjectsParams,
+  type CheckRequest,
+  type WatchChange,
+  type WatchEvent,
+  type WatchOptions,
+  type ExpandPermissionTreeParams,
+  type ReflectSchemaOptions,
+  type ComputablePermissionsParams,
+  type DependentRelationsParams,
+  type RelationReference,
+  type RelationshipCountResult,
+  Transaction,
+  relationship,
+  relationshipFromTuple,
+} from "./types.js";
+
+// Errors
+export {
+  SpiceDBError,
+  PermissionDeniedError,
+  NotFoundError,
+  AlreadyExistsError,
+  InvalidArgumentError,
+  CancelledError,
+  FailedPreconditionError,
+  UnavailableError,
+} from "./errors.js";

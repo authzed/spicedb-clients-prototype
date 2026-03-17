@@ -13,7 +13,7 @@ import (
 	"github.com/magefile/mage/sh"
 )
 
-var languages = []string{"go", "python", "typescript"}
+var languages = []string{"go", "python", "typescript", "csharp", "java", "ruby", "rust"}
 
 type Gen mg.Namespace
 
@@ -30,7 +30,7 @@ func (Gen) Proto() error {
 	return genProtoLangs(languages)
 }
 
-// ProtoLang regenerates a single proto client by language name (go, python, typescript).
+// ProtoLang regenerates a single proto client by language name (go, python, typescript, csharp, java, ruby, rust).
 func (Gen) ProtoLang(lang string) error {
 	return genProtoLangs([]string{lang})
 }
@@ -40,7 +40,7 @@ func (Gen) Client() error {
 	return genClientLangs(languages)
 }
 
-// ClientLang updates a single idiomatic client by language name (go, python, typescript).
+// ClientLang updates a single idiomatic client by language name (go, python, typescript, csharp, java, ruby, rust).
 func (Gen) ClientLang(lang string) error {
 	return genClientLangs([]string{lang})
 }

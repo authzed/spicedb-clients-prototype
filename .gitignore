@@ -3,3 +3,18 @@ dist/
 .venv/
 __pycache__/
 .claude/
+
+# C#
+bin/
+obj/
+
+# Java
+build/
+.gradle/
+
+# Ruby
+.bundle/
+vendor/bundle/
+
+# Rust
+target/

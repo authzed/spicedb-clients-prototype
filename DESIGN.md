@@ -26,6 +26,10 @@ Language-appropriate deprecation mechanisms:
 - **Go**: `// Deprecated: use XYZ instead.` comment on the function/method
 - **Python**: `@deprecated` decorator (Python 3.13+) or `warnings.warn(..., DeprecationWarning)`
 - **TypeScript**: `@deprecated` JSDoc tag
+- **C#**: `[Obsolete("Use XYZ instead")]` attribute
+- **Java**: `@Deprecated` annotation + `@deprecated` Javadoc tag
+- **Ruby**: `warn "[DEPRECATION] ..."` in method body
+- **Rust**: `#[deprecated(note = "Use XYZ instead")]` attribute
 
 Deprecated methods must remain functional until removed from the proto definitions.
 

@@ -1,0 +1,8 @@
+version: v2
+plugins:
+  - remote: buf.build/protocolbuffers/java
+    out: gen
+  - remote: buf.build/grpc/java
+    out: gen
+inputs:
+  - module: buf.build/authzed/api

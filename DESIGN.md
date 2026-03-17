@@ -22,6 +22,7 @@ When a method is deprecated in the proto/gRPC definitions, it MUST be marked as
 deprecated in both the proto client and the idiomatic client.
 
 Language-appropriate deprecation mechanisms:
+
 - **Go**: `// Deprecated: use XYZ instead.` comment on the function/method
 - **Python**: `@deprecated` decorator (Python 3.13+) or `warnings.warn(..., DeprecationWarning)`
 - **TypeScript**: `@deprecated` JSDoc tag
@@ -59,6 +60,10 @@ All idiomatic clients should provide:
    (strings, not proto types) and required as explicit parameters, never
    silently defaulted
 6. **Automatic retry** with exponential backoff for transient gRPC errors
+7. **Consistency helper** should be provided to take in a ZedToken and, if
+   present use at least as fresh and, if not present (i.e. its empty), return
+   full consistency instead. Another should be provided to return minimize
+   latency instead. Both should have descriptive names.
 
 ## What NOT To Do
 

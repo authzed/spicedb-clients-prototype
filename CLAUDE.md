@@ -16,7 +16,7 @@ This is a monorepo of SpiceDB client libraries for Go, Python, and TypeScript.
 
 ## Rules
 
-- NEVER break backwards compatibility in public APIs
+- NEVER break backwards compatibility in public APIs (unless this is the first implementation)
 - Deprecated proto methods must be marked deprecated in both client tiers
 - Read the per-directory DESIGN.md and CLAUDE.md before making changes in any
   subdirectory

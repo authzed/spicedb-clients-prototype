@@ -20,3 +20,13 @@ spicedb-python-proto = { path = "../proto-clients/spicedb-python-proto" }
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["spicedb"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests", "examples"]
+markers = [
+    "integration: requires a running SpiceDB instance",
+]

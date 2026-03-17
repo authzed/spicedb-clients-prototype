@@ -4,9 +4,12 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/magefile/mage/sh"
 )
@@ -93,6 +96,65 @@ func Test() error {
 		return err
 	}
 	return sh.RunV("pnpm", "test")
+}
+
+// IntegrationTest starts SpiceDB via Docker and runs examples against it.
+func IntegrationTest() error {
+	fmt.Println("==> Starting SpiceDB...")
+	if err := sh.RunV("docker", "compose", "-f", "docker-compose.test.yml", "up", "-d"); err != nil {
+		return fmt.Errorf("docker compose up failed: %w", err)
+	}
+	defer func() {
+		fmt.Println("==> Stopping SpiceDB...")
+		_ = sh.RunV("docker", "compose", "-f", "docker-compose.test.yml", "down")
+	}()
+
+	fmt.Println("==> Waiting for SpiceDB to be ready...")
+	if err := waitForReady("localhost:50051", 30*time.Second); err != nil {
+		return err
+	}
+
+	examples, err := filepath.Glob("examples/*/index.ts")
+	if err != nil {
+		return fmt.Errorf("glob examples failed: %w", err)
+	}
+
+	var failures []string
+	for _, ex := range examples {
+		dir := filepath.Dir(ex)
+		name := filepath.Base(dir)
+		if name == "watch_changes" {
+			fmt.Printf("==> Skipping %s (infinite stream)\n", name)
+			continue
+		}
+		fmt.Printf("==> Running example: %s\n", name)
+		if err := sh.RunV("npx", "tsx", ex); err != nil {
+			failures = append(failures, name)
+			fmt.Printf("==> FAIL: %s\n", name)
+		} else {
+			fmt.Printf("==> PASS: %s\n", name)
+		}
+	}
+
+	if len(failures) > 0 {
+		return fmt.Errorf("integration tests failed: %s", strings.Join(failures, ", "))
+	}
+	fmt.Println("==> All integration tests passed!")
+	return nil
+}
+
+func waitForReady(addr string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp", addr, time.Second)
+		if err == nil {
+			conn.Close()
+			time.Sleep(500 * time.Millisecond)
+			return nil
+		}
+		time.Sleep(time.Second)
+	}
+	return fmt.Errorf("SpiceDB not ready at %s after %s", addr, timeout)
 }
 
 // runClaude pipes the prompt to claude via stdin so output streams in real time.

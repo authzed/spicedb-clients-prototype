@@ -1,0 +1,27 @@
+[package]
+name = "spicedb"
+version = "0.1.0"
+edition = "2021"
+description = "Idiomatic Rust client for SpiceDB"
+license = "Apache-2.0"
+repository = "https://github.com/authzed/spicedb-clients"
+
+[dependencies]
+# Proto-generated types (path dependency — not yet generated)
+spicedb-proto = { path = "../proto-clients/spicedb-rust-proto" }
+
+# gRPC / async
+tonic = "0.12"
+prost = "0.13"
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+futures = "0.3"
+
+# Error handling
+thiserror = "2"
+
+# Serialization (caveat context)
+serde_json = "1"
+
+# Timestamps (expiration)
+chrono = { version = "0.4", features = ["serde"] }

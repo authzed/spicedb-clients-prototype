@@ -98,6 +98,14 @@ func Test() error {
 	return sh.RunV("pnpm", "test")
 }
 
+// Lint type-checks all TypeScript code including examples.
+func Lint() error {
+	if err := sh.RunV("pnpm", "build"); err != nil {
+		return err
+	}
+	return sh.RunV("npx", "tsc", "--noEmit", "-p", "tsconfig.examples.json")
+}
+
 // IntegrationTest starts SpiceDB via Docker and runs examples against it.
 func IntegrationTest() error {
 	fmt.Println("==> Starting SpiceDB...")

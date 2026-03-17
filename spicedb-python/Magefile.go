@@ -77,6 +77,11 @@ func Test() error {
 	return sh.RunV("uv", "run", "pytest", "-v")
 }
 
+// Lint runs ruff check on all Python code.
+func Lint() error {
+	return sh.RunV("ruff", "check", ".")
+}
+
 // IntegrationTest starts SpiceDB via Docker and runs example integration tests.
 func IntegrationTest() error {
 	fmt.Println("==> Starting SpiceDB...")

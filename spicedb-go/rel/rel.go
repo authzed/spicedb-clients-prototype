@@ -319,18 +319,6 @@ const (
 	UpdateOperationDelete
 )
 
-func (op UpdateOperation) toProto() v1.RelationshipUpdate_Operation {
-	switch op {
-	case UpdateOperationCreate:
-		return v1.RelationshipUpdate_OPERATION_CREATE
-	case UpdateOperationTouch:
-		return v1.RelationshipUpdate_OPERATION_TOUCH
-	case UpdateOperationDelete:
-		return v1.RelationshipUpdate_OPERATION_DELETE
-	default:
-		return v1.RelationshipUpdate_OPERATION_UNSPECIFIED
-	}
-}
 
 // UpdateFromProto converts a proto RelationshipUpdate to an idiomatic Update.
 func UpdateFromProto(pu *v1.RelationshipUpdate) Update {

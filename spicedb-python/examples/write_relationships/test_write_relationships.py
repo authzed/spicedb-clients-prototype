@@ -5,7 +5,7 @@ Demonstrates create, touch, delete, and preconditions.
 
 import pytest
 
-from spicedb import Filter, Relationship, SpiceDBClient, full
+from spicedb import Filter, Relationship, SpiceDBClient
 from spicedb.types import Transaction
 
 

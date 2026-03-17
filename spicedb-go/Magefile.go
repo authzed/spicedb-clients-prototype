@@ -102,6 +102,11 @@ func Test() error {
 	return sh.RunV("go", "test", "-v", "./...")
 }
 
+// Lint runs golangci-lint on all Go code.
+func Lint() error {
+	return sh.RunV("golangci-lint", "run", "./...")
+}
+
 // IntegrationTest starts SpiceDB via Docker and runs examples against it.
 func IntegrationTest() error {
 	// Start SpiceDB

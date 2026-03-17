@@ -76,8 +76,4 @@ func NewWithOpts(endpoint, presharedKey string, opts ...Option) (*Client, error)
 	}, nil
 }
 
-// newFromProto creates a Client from a proto client. Used for testing.
-func newFromProto(psc v1.PermissionsServiceClient, ssc v1.SchemaServiceClient, wsc v1.WatchServiceClient) *Client {
-	return &Client{psc: psc, ssc: ssc, wsc: wsc}
-}
 

@@ -91,6 +91,25 @@ func genClientLangs(langs []string) error {
 	return nil
 }
 
+type Lint mg.Namespace
+
+// All runs linters across all idiomatic clients.
+func (Lint) All() error {
+	var failures []string
+	for _, l := range languages {
+		dir := fmt.Sprintf("spicedb-%s", l)
+		fmt.Printf("\n==> Linting: %s\n", dir)
+		if err := runMageIn(dir, "lint"); err != nil {
+			failures = append(failures, dir)
+		}
+	}
+	if len(failures) > 0 {
+		return fmt.Errorf("linting failed in: %s", strings.Join(failures, ", "))
+	}
+	fmt.Println("\n==> All linters passed!")
+	return nil
+}
+
 // Test runs all tests across all clients.
 func Test() error {
 	var failures []string

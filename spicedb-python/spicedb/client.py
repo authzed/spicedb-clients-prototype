@@ -89,7 +89,7 @@ class SpiceDBClient:
 
     # ── Retry helper ────────────────────────────────────────────────
 
-    async def _with_retry[T](self, fn: Any) -> T:
+    async def _with_retry(self, fn: Any) -> Any:
         """Call an async function with exponential backoff on transient errors."""
         last_err: Exception | None = None
         for attempt in range(self._max_retries + 1):

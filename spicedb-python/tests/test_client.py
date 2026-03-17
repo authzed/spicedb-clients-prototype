@@ -1,7 +1,5 @@
 """Unit tests for SpiceDBClient construction — no SpiceDB instance needed."""
 
-import pytest
-
 from spicedb import SpiceDBClient
 
 

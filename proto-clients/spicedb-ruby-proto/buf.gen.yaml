@@ -1,0 +1,8 @@
+version: v2
+plugins:
+  - remote: buf.build/protocolbuffers/ruby
+    out: lib/gen
+  - remote: buf.build/grpc/ruby
+    out: lib/gen
+inputs:
+  - module: buf.build/authzed/api

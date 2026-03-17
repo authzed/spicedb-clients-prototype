@@ -1,0 +1,69 @@
+//go:build mage
+
+package main
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"strings"
+
+	"github.com/magefile/mage/sh"
+)
+
+const maxRetries = 3
+
+// Gen exports protos via buf, invokes Claude to wire up the client, then tests.
+func Gen() error {
+	fmt.Println("==> Exporting protos via buf...")
+	if err := sh.Run("buf", "export", "buf.build/authzed/api", "-o", "proto"); err != nil {
+		return fmt.Errorf("buf export failed: %w", err)
+	}
+
+	fmt.Println("==> Invoking Claude to wire up generated code...")
+	if err := runClaude(
+		"Read DESIGN.md. The proto/ directory has been populated by buf export. " +
+			"Uncomment the tonic::include_proto! declarations in src/lib.rs, " +
+			"wire up the generated service clients in src/client.rs, " +
+			"and update the tests in tests/client_test.rs. " +
+			"Run `cargo test` to verify. Fix any failures.",
+	); err != nil {
+		return fmt.Errorf("claude invocation failed: %w", err)
+	}
+
+	// Test with retry loop
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		fmt.Printf("==> Running tests (attempt %d/%d)...\n", attempt, maxRetries)
+		if err := sh.RunV("cargo", "test"); err == nil {
+			fmt.Println("==> Tests passed!")
+			return nil
+		}
+
+		if attempt == maxRetries {
+			fmt.Printf("==> Tests failed after %d attempts. Rolling back.\n", maxRetries)
+			_ = sh.Run("git", "checkout", "--", ".")
+			return fmt.Errorf("tests failed after %d retries", maxRetries)
+		}
+
+		fmt.Println("==> Tests failed, asking Claude to fix...")
+		if err := runClaude("Tests failed. Read the test output above and fix the issues."); err != nil {
+			return fmt.Errorf("claude fix invocation failed: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// Test runs the Rust proto client tests.
+func Test() error {
+	return sh.RunV("cargo", "test")
+}
+
+// runClaude pipes the prompt to claude via stdin so output streams in real time.
+func runClaude(prompt string) error {
+	cmd := exec.Command("claude")
+	cmd.Stdin = strings.NewReader(prompt)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}

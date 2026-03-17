@@ -119,7 +119,7 @@ func Test() error {
 }
 
 func runMageIn(dir string, target string) error {
-	return sh.Run("mage", "-d", dir, target)
+	return sh.RunV("mage", "-d", dir, target)
 }
 
 func commitIfChanged(dir string, msg string) error {

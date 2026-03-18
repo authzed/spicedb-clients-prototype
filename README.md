@@ -1,6 +1,6 @@
 # SpiceDB Client Libraries
 
-Monorepo of idiomatic SpiceDB client libraries for Go, Python, TypeScript, C#, Java, Ruby, and Rust.
+Monorepo of idiomatic SpiceDB client libraries for Go, Python, TypeScript, C#, Java, Ruby, and Rust — plus `spicedb-gen`, a type-safe code generator.
 
 ## Structure
 
@@ -20,11 +20,14 @@ spicedb-csharp/              # Idiomatic C# client
 spicedb-java/                # Idiomatic Java client
 spicedb-ruby/                # Idiomatic Ruby client
 spicedb-rust/                # Idiomatic Rust client
+spicedb-gen/                 # Type-safe client code generator
 ```
 
 **Proto clients** are generated from SpiceDB's protobuf definitions using `buf generate`. They are internal dependencies — not for direct end-user consumption.
 
 **Idiomatic clients** wrap the proto clients with language-native APIs: native error types, iterators/async patterns for streaming, builder patterns for complex requests, and opaque ZedToken-based consistency strategies. See [DESIGN.md](DESIGN.md) for the full design vision.
+
+**spicedb-gen** parses a SpiceDB schema (`.zed` file) and generates type-safe client wrappers that provide compile-time validation of resource types, permissions, relations, and subject types.
 
 ## Quick Start
 
@@ -117,6 +120,56 @@ let rel = Relationship::new("document", "readme", "view", "user", "alice", "")?;
 let result = client.check_permission(consistency::full(), "view", &rel).await?;
 ```
 
+## Type-Safe Clients with spicedb-gen
+
+`spicedb-gen` generates type-safe client wrappers from your SpiceDB schema. Invalid permission checks, wrong subject types, and typos in resource names become **compile-time errors**.
+
+### Generate
+
+```bash
+spicedb-gen --schema schema.zed --lang typescript --out src/permissions.ts
+```
+
+### Use (TypeScript)
+
+Given this schema:
+```
+definition user {}
+definition document {
+    relation viewer: user
+    relation editor: user
+    permission view = viewer + editor
+    permission edit = editor
+}
+```
+
+The generated code provides factory functions with full autocomplete:
+
+```typescript
+import { full } from "@spicedb/client";
+import { TypedClient, Document, User } from "./permissions";
+
+const tc = TypedClient.create("localhost:50051", "token", { insecure: true });
+
+// Checks — autocomplete shows .view, .edit on Document
+await tc.check(full(), Document("readme").view, User("alice"));
+
+// Writes — relation methods enforce valid subject types
+await tc.touch(
+    Document("readme").viewer(User("alice")),
+    Document("readme").editor(User("bob")),
+);
+
+// Type errors caught at compile time:
+// Document("readme").editor(Team("eng"));  // ERROR: editor only allows user
+
+// Lookups
+for await (const id of await tc.lookupResources(full(), Document.view, User("alice"))) { ... }
+for await (const id of await tc.lookupSubjects(full(), Document("readme").view, User)) { ... }
+```
+
+Currently supports TypeScript. Other languages coming soon.
+
 ## Development
 
 Requires: [Mage](https://magefile.org), [Go 1.24+](https://go.dev), [Python 3.11+](https://python.org) with [uv](https://docs.astral.sh/uv/), [Node.js](https://nodejs.org) with [pnpm](https://pnpm.io), [.NET 8+](https://dotnet.microsoft.com), [Java 17+](https://openjdk.org) with [Gradle](https://gradle.org), [Ruby 3.2+](https://ruby-lang.org) with [Bundler](https://bundler.io), [Rust](https://rustup.rs), [Docker](https://docker.com)
@@ -136,6 +189,10 @@ mage lint:all             # Run all linters
 cd spicedb-go && mage test
 cd spicedb-go && mage lint
 cd spicedb-go && mage integrationTest   # Requires Docker
+
+# spicedb-gen
+cd spicedb-gen && mage test             # Go unit tests
+cd spicedb-gen && mage integrationTest  # Generate + typecheck + vitest vs SpiceDB
 ```
 
 ### Integration Tests
@@ -153,6 +210,7 @@ cd spicedb-csharp && mage integrationTest
 cd spicedb-java && mage integrationTest
 cd spicedb-ruby && mage integrationTest
 cd spicedb-rust && mage integrationTest
+cd spicedb-gen && mage integrationTest
 ```
 
 Integration tests must not be run in parallel across clients (all bind to port 50051).

@@ -1,0 +1,109 @@
+//go:build mage
+
+package main
+
+import (
+	"fmt"
+	"net"
+	"os"
+	"os/exec"
+	"time"
+
+	"github.com/magefile/mage/sh"
+)
+
+const (
+	maxRetries = 3
+)
+
+// Build compiles the spicedb-gen CLI.
+func Build() error {
+	return sh.RunV("go", "build", "./cmd/spicedb-gen")
+}
+
+// Test runs all Go unit tests.
+func Test() error {
+	return sh.RunV("go", "test", "-v", "./...")
+}
+
+// IntegrationTest builds the CLI, generates TypeScript code from the sample
+// schema, type-checks it, starts SpiceDB, runs vitest, then stops SpiceDB.
+func IntegrationTest() error {
+	// 1. Build CLI
+	fmt.Println("==> Building spicedb-gen...")
+	if err := Build(); err != nil {
+		return fmt.Errorf("build failed: %w", err)
+	}
+
+	// 2. Generate permissions.ts from sample.zed
+	fmt.Println("==> Generating permissions.ts from sample.zed...")
+	if err := sh.RunV(
+		"./spicedb-gen",
+		"--schema", "testdata/sample.zed",
+		"--lang", "typescript",
+		"--out", "testdata/typescript/permissions.ts",
+	); err != nil {
+		return fmt.Errorf("code generation failed: %w", err)
+	}
+	defer os.Remove("testdata/typescript/permissions.ts")
+
+	// 3. pnpm install in testdata/typescript/
+	fmt.Println("==> Installing dependencies...")
+	if err := runInDir("testdata/typescript", "pnpm", "install", "--frozen-lockfile=false"); err != nil {
+		return fmt.Errorf("pnpm install failed: %w", err)
+	}
+
+	// 4. tsc --noEmit (type-checking including type_errors.ts)
+	fmt.Println("==> Type-checking...")
+	if err := runInDir("testdata/typescript", "pnpm", "run", "typecheck"); err != nil {
+		return fmt.Errorf("type-check failed: %w", err)
+	}
+
+	// 5. Start SpiceDB via docker-compose
+	fmt.Println("==> Starting SpiceDB...")
+	if err := sh.RunV("docker", "compose", "-f", "docker-compose.test.yml", "up", "-d"); err != nil {
+		return fmt.Errorf("docker compose up failed: %w", err)
+	}
+	defer func() {
+		fmt.Println("==> Stopping SpiceDB...")
+		_ = sh.RunV("docker", "compose", "-f", "docker-compose.test.yml", "down")
+	}()
+
+	// Wait for SpiceDB to be ready
+	fmt.Println("==> Waiting for SpiceDB to be ready...")
+	if err := waitForReady("localhost:50051", 30*time.Second); err != nil {
+		return err
+	}
+
+	// 6. pnpm run test (vitest)
+	fmt.Println("==> Running vitest...")
+	if err := runInDir("testdata/typescript", "pnpm", "run", "test"); err != nil {
+		return fmt.Errorf("vitest failed: %w", err)
+	}
+
+	fmt.Println("==> All integration tests passed!")
+	return nil
+}
+
+func waitForReady(addr string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp", addr, time.Second)
+		if err == nil {
+			conn.Close()
+			// Extra delay for gRPC server to finish initialization after port is open
+			time.Sleep(3 * time.Second)
+			return nil
+		}
+		time.Sleep(time.Second)
+	}
+	return fmt.Errorf("SpiceDB not ready at %s after %s", addr, timeout)
+}
+
+func runInDir(dir, name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}

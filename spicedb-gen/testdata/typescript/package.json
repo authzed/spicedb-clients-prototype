@@ -1,0 +1,16 @@
+{
+    "name": "spicedb-gen-typescript-test",
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "typecheck": "tsc --noEmit",
+        "test": "vitest run"
+    },
+    "dependencies": {
+        "@spicedb/client": "workspace:*"
+    },
+    "devDependencies": {
+        "typescript": "^5.7.0",
+        "vitest": "^3.0.0"
+    }
+}

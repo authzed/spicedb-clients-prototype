@@ -1,3 +1,4 @@
 packages:
   - "proto-clients/spicedb-typescript-proto"
   - "spicedb-typescript"
+  - "spicedb-gen/testdata/typescript"

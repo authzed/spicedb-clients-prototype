@@ -152,6 +152,49 @@ See package sections above.
 | `schema_management/` | Schema read/write |
 | `bulk_operations/` | Bulk checks and imports |
 
+## Typed Client Generation
+
+`spicedb-gen` generates a type-safe wrapper for `@spicedb/client` from a
+SpiceDB schema (`.zed` file). The generated code provides compile-time
+validation of resource types, permissions, relations, and subject types.
+
+### TypedClient
+
+`TypedClient` wraps `SpiceDBClient`. It delegates all calls to the untyped
+client after mapping typed arguments to the untyped API.
+
+- `new TypedClient(client)` — wraps an existing `SpiceDBClient`
+- `TypedClient.create(endpoint, token, options?)` — convenience constructor
+  that creates a `SpiceDBClient` internally
+- `tc.client` — escape hatch for untyped operations (schema management,
+  deleteRelationships, experimental APIs, preconditions, watch, etc.)
+
+### Factory Functions
+
+Each schema definition generates a factory function:
+- `Document(id)` — returns instance with `.view`, `.edit` (permissions) and
+  `.viewer(subject)`, `.editor(subject)` (relations)
+- `Document.view` — static property for `lookupResources` (no ID)
+- Relation methods enforce subject type constraints at compile time
+
+### Subject Type Constraints
+
+- **Relations** accept only the directly declared subject types
+- **Permissions** accept reachable subject types (computed from the transitive
+  relation tree)
+- Invalid subject types produce TypeScript compilation errors
+
+### Intentionally Untyped
+
+These operations are accessed via `tc.client`:
+- Schema management (`writeSchema`, `readSchema`, `reflectSchema`, etc.)
+- `deleteRelationships` (bulk filter-based)
+- `expandPermissionTree`
+- `importRelationships` / `exportRelationships`
+- `watch` / `updates`
+- Experimental APIs
+- Preconditions (`mustNotMatch`, `mustMatch`)
+
 ## Changelog
 
 See [CHANGELOG.md](CHANGELOG.md) for release notes.

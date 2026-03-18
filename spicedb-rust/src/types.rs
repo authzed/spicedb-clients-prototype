@@ -431,7 +431,7 @@ pub struct RelationReference {
 }
 
 /// A single difference between two schemas.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SchemaDiff {
     /// A human-readable description of the diff type (e.g. "definition_added",
     /// "relation_removed", "permission_expr_changed").

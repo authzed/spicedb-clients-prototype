@@ -1,8 +1,8 @@
 // SpiceDBClient is the idiomatic C# client for SpiceDB.
 
 using System.Runtime.CompilerServices;
+using Authzed.Api.SpiceDB.Proto;
 using Authzed.Api.V1;
-using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Grpc.Net.Client;
 
@@ -24,24 +24,19 @@ public sealed class SpiceDBClient : IAsyncDisposable
     private const int MaxRetryAttempts = 5;
     private static readonly TimeSpan InitialBackoff = TimeSpan.FromMilliseconds(100);
 
-    private readonly GrpcChannel _channel;
-    private readonly Metadata _metadata;
+    private readonly SpiceDBProtoClient _protoClient;
     private readonly PermissionsService.PermissionsServiceClient _permissions;
     private readonly SchemaService.SchemaServiceClient _schema;
     private readonly WatchService.WatchServiceClient _watch;
     private readonly ExperimentalService.ExperimentalServiceClient _experimental;
 
-    private SpiceDBClient(GrpcChannel channel, string presharedKey)
+    private SpiceDBClient(SpiceDBProtoClient protoClient)
     {
-        _channel = channel;
-        _metadata = new Metadata
-        {
-            { "authorization", $"Bearer {presharedKey}" },
-        };
-        _permissions = new PermissionsService.PermissionsServiceClient(channel);
-        _schema = new SchemaService.SchemaServiceClient(channel);
-        _watch = new WatchService.WatchServiceClient(channel);
-        _experimental = new ExperimentalService.ExperimentalServiceClient(channel);
+        _protoClient = protoClient;
+        _permissions = protoClient.Permissions;
+        _schema = protoClient.Schema;
+        _watch = protoClient.Watch;
+        _experimental = protoClient.Experimental;
     }
 
     /// <summary>
@@ -52,11 +47,8 @@ public sealed class SpiceDBClient : IAsyncDisposable
     public static SpiceDBClient CreatePlaintext(string endpoint, string presharedKey)
     {
         ValidateArgs(endpoint, presharedKey);
-        var channel = GrpcChannel.ForAddress($"http://{endpoint}", new GrpcChannelOptions
-        {
-            Credentials = ChannelCredentials.Insecure,
-        });
-        return new SpiceDBClient(channel, presharedKey);
+        var protoClient = new SpiceDBProtoClient(endpoint, presharedKey, insecure: true);
+        return new SpiceDBClient(protoClient);
     }
 
     /// <summary>
@@ -67,8 +59,8 @@ public sealed class SpiceDBClient : IAsyncDisposable
     public static SpiceDBClient CreateSystemTls(string endpoint, string presharedKey)
     {
         ValidateArgs(endpoint, presharedKey);
-        var channel = GrpcChannel.ForAddress($"https://{endpoint}");
-        return new SpiceDBClient(channel, presharedKey);
+        var protoClient = new SpiceDBProtoClient(endpoint, presharedKey, insecure: false);
+        return new SpiceDBClient(protoClient);
     }
 
     /// <summary>
@@ -80,7 +72,10 @@ public sealed class SpiceDBClient : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(channel);
         if (string.IsNullOrEmpty(presharedKey))
             throw new ArgumentException("Preshared key must not be empty.", nameof(presharedKey));
-        return new SpiceDBClient(channel, presharedKey);
+        // Create a proto client wrapping the provided channel by using
+        // a dummy endpoint — the channel is already configured.
+        var protoClient = new SpiceDBProtoClient(channel, presharedKey);
+        return new SpiceDBClient(protoClient);
     }
 
     private static void ValidateArgs(string endpoint, string presharedKey)
@@ -93,7 +88,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
 
     public ValueTask DisposeAsync()
     {
-        _channel.Dispose();
+        _protoClient.Dispose();
         return ValueTask.CompletedTask;
     }
 
@@ -127,7 +122,6 @@ public sealed class SpiceDBClient : IAsyncDisposable
                     Consistency = consistency.V1Consistency,
                     Items = { items },
                 },
-                headers: _metadata,
                 cancellationToken: cancellationToken),
             cancellationToken);
 
@@ -203,7 +197,6 @@ public sealed class SpiceDBClient : IAsyncDisposable
         var resp = await RetryAsync(async () =>
             await _permissions.WriteRelationshipsAsync(
                 req,
-                headers: _metadata,
                 cancellationToken: cancellationToken),
             cancellationToken);
 
@@ -235,7 +228,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
             if (cursor != null)
                 req.OptionalCursor = cursor;
 
-            using var stream = _permissions.ReadRelationships(req, headers: _metadata, cancellationToken: cancellationToken);
+            using var stream = _permissions.ReadRelationships(req, cancellationToken: cancellationToken);
 
             uint count = 0;
             while (await stream.ResponseStream.MoveNext(cancellationToken))
@@ -273,7 +266,6 @@ public sealed class SpiceDBClient : IAsyncDisposable
                         OptionalLimit = DefaultDeletePageSize,
                         OptionalAllowPartialDeletions = true,
                     },
-                    headers: _metadata,
                     cancellationToken: cancellationToken),
                 cancellationToken);
 
@@ -324,7 +316,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
             if (cursor != null)
                 req.OptionalCursor = cursor;
 
-            using var stream = _permissions.LookupResources(req, headers: _metadata, cancellationToken: cancellationToken);
+            using var stream = _permissions.LookupResources(req, cancellationToken: cancellationToken);
 
             int count = 0;
             while (await stream.ResponseStream.MoveNext(cancellationToken))
@@ -368,7 +360,6 @@ public sealed class SpiceDBClient : IAsyncDisposable
                 Permission = permission,
                 SubjectObjectType = subjectType,
             },
-            headers: _metadata,
             cancellationToken: cancellationToken);
 
         while (await stream.ResponseStream.MoveNext(cancellationToken))
@@ -394,7 +385,6 @@ public sealed class SpiceDBClient : IAsyncDisposable
         var resp = await RetryAsync(async () =>
             await _schema.ReadSchemaAsync(
                 new ReadSchemaRequest(),
-                headers: _metadata,
                 cancellationToken: cancellationToken),
             cancellationToken);
 
@@ -414,7 +404,6 @@ public sealed class SpiceDBClient : IAsyncDisposable
         var resp = await RetryAsync(async () =>
             await _schema.WriteSchemaAsync(
                 new WriteSchemaRequest { Schema = schema },
-                headers: _metadata,
                 cancellationToken: cancellationToken),
             cancellationToken);
 
@@ -433,7 +422,6 @@ public sealed class SpiceDBClient : IAsyncDisposable
         var resp = await RetryAsync(async () =>
             await _schema.ReflectSchemaAsync(
                 new ReflectSchemaRequest { Consistency = consistency.V1Consistency },
-                headers: _metadata,
                 cancellationToken: cancellationToken),
             cancellationToken);
 
@@ -503,7 +491,6 @@ public sealed class SpiceDBClient : IAsyncDisposable
                     DefinitionName = definitionName,
                     RelationName = relationName,
                 },
-                headers: _metadata,
                 cancellationToken: cancellationToken),
             cancellationToken);
 
@@ -536,7 +523,6 @@ public sealed class SpiceDBClient : IAsyncDisposable
                     DefinitionName = definitionName,
                     PermissionName = permissionName,
                 },
-                headers: _metadata,
                 cancellationToken: cancellationToken),
             cancellationToken);
 
@@ -568,7 +554,6 @@ public sealed class SpiceDBClient : IAsyncDisposable
                     Consistency = consistency.V1Consistency,
                     ComparisonSchema = comparisonSchema,
                 },
-                headers: _metadata,
                 cancellationToken: cancellationToken),
             cancellationToken);
 
@@ -605,7 +590,6 @@ public sealed class SpiceDBClient : IAsyncDisposable
                     },
                     Permission = permission,
                 },
-                headers: _metadata,
                 cancellationToken: cancellationToken),
             cancellationToken);
 
@@ -631,7 +615,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(relationships);
 
-        using var stream = _permissions.ImportBulkRelationships(headers: _metadata, cancellationToken: cancellationToken);
+        using var stream = _permissions.ImportBulkRelationships(cancellationToken: cancellationToken);
 
         var batch = new List<Authzed.Api.V1.Relationship>(DefaultImportBatchSize);
 
@@ -684,7 +668,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
             if (filter != null)
                 req.OptionalRelationshipFilter = filter.ToProto();
 
-            using var stream = _permissions.ExportBulkRelationships(req, headers: _metadata, cancellationToken: cancellationToken);
+            using var stream = _permissions.ExportBulkRelationships(req, cancellationToken: cancellationToken);
 
             int pageCount = 0;
             while (await stream.ResponseStream.MoveNext(cancellationToken))
@@ -722,7 +706,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
         if (!string.IsNullOrEmpty(startRevision))
             req.OptionalStartCursor = new ZedToken { Token = startRevision };
 
-        using var stream = _watch.Watch(req, headers: _metadata, cancellationToken: cancellationToken);
+        using var stream = _watch.Watch(req, cancellationToken: cancellationToken);
 
         while (await stream.ResponseStream.MoveNext(cancellationToken))
         {
@@ -762,7 +746,6 @@ public sealed class SpiceDBClient : IAsyncDisposable
                     Name = name,
                     RelationshipFilter = filter.ToProto(),
                 },
-                headers: _metadata,
                 cancellationToken: cancellationToken),
             cancellationToken);
     }
@@ -786,7 +769,6 @@ public sealed class SpiceDBClient : IAsyncDisposable
         var resp = await RetryAsync(async () =>
             await _experimental.ExperimentalCountRelationshipsAsync(
                 new ExperimentalCountRelationshipsRequest { Name = name },
-                headers: _metadata,
                 cancellationToken: cancellationToken),
             cancellationToken);
 
@@ -818,7 +800,6 @@ public sealed class SpiceDBClient : IAsyncDisposable
         await RetryAsync(async () =>
             await _experimental.ExperimentalUnregisterRelationshipCounterAsync(
                 new ExperimentalUnregisterRelationshipCounterRequest { Name = name },
-                headers: _metadata,
                 cancellationToken: cancellationToken),
             cancellationToken);
     }

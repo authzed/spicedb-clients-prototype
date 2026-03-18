@@ -1,3 +1,4 @@
+using Xunit;
 // Example WatchChanges demonstrates watching for relationship changes.
 
 using SpiceDB.Client;

@@ -1,3 +1,4 @@
+using Xunit;
 // Example ReadRelationships demonstrates reading relationships with an
 // async enumerable.
 

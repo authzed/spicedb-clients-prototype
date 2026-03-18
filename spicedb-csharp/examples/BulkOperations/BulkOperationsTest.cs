@@ -1,3 +1,4 @@
+using Xunit;
 // Example BulkOperations demonstrates bulk checks and batch writes.
 
 using SpiceDB.Client;

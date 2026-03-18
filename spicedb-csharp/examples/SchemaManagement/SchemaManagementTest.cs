@@ -1,3 +1,4 @@
+using Xunit;
 // Example SchemaManagement demonstrates reading and writing schema.
 
 using SpiceDB.Client;

@@ -1,3 +1,4 @@
+using Xunit;
 // Example RelationshipCounters demonstrates registering, reading, and
 // unregistering relationship counters.
 

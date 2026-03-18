@@ -1,3 +1,4 @@
+using Xunit;
 // Example LookupSubjects demonstrates finding subjects with access to a resource.
 
 using SpiceDB.Client;

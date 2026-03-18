@@ -1,3 +1,4 @@
+using Xunit;
 // Example CheckPermission demonstrates checking a single permission.
 
 using SpiceDB.Client;

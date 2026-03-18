@@ -1,3 +1,4 @@
+using Xunit;
 // Example SchemaReflection demonstrates using schema reflection APIs to
 // inspect definitions, compute permissions, find dependent relations, and
 // diff schemas.

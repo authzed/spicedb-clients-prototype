@@ -215,7 +215,8 @@ These may change without following the backwards compatibility mandate.
 
 ## Changelog
 
-<!-- Claude appends here when making changes, with date + what changed -->
+See [CHANGELOG.md](CHANGELOG.md) for release notes.
+
 
 - **2026-03-17**: Initial implementation of the idiomatic Java client.
   - `Consistency` class: `full()`, `minLatency()`, `atLeast()`, `snapshot()`, `atLeastOrFull()`, `atLeastOrMinLatency()` static factory methods

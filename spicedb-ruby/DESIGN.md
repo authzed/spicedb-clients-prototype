@@ -195,7 +195,8 @@ See module sections above for the complete API manifest.
 
 ## Changelog
 
-<!-- Claude appends here when making changes, with date + what changed -->
+See [CHANGELOG.md](CHANGELOG.md) for release notes.
+
 
 - **2026-03-17**: Initial implementation of the idiomatic Ruby client.
   - `SpiceDB::Consistency` module: `full`, `min_latency`, `at_least`, `snapshot`, `at_least_or_full`, `at_least_or_min_latency`

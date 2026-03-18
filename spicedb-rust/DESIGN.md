@@ -259,9 +259,4 @@ RESOURCE_EXHAUSTED).
 
 ## Changelog
 
-- **2026-03-17**: Initial implementation of the idiomatic Rust client.
-  - `error` module: `SpiceDBError` enum with thiserror, `from_grpc_status`, `is_transient`
-  - `consistency` module: `Strategy` enum, `full`/`min_latency`/`at_least`/`snapshot`/`at_least_or_full`/`at_least_or_min_latency` constructors
-  - `types` module: `Relationship` struct with constructors/modifiers/validation, `Filter` builder, `Transaction` builder with `create`/`touch`/`delete`/`must_not_match`/`must_match`, `CheckResult` (`#[must_use]`), schema reflection types, `Update`/`UpdateOperation`, `CountResult`, `ExpandResult`
-  - `client` module: `SpiceDBClient` with `new_plaintext`/`new_system_tls`/`builder` constructors, all method stubs with correct signatures (todo! pending spicedb-proto)
-  - Unit tests for types, consistency, errors (all pass without proto dependency)
+See [CHANGELOG.md](CHANGELOG.md) for release notes.

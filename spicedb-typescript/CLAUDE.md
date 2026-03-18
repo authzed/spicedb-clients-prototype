@@ -11,6 +11,6 @@ This is the idiomatic TypeScript client for SpiceDB.
 5. Propagate deprecation using `@deprecated` JSDoc tags
 6. Update `examples/` to cover new functionality
 7. Never delete an example — mark deprecated ones with a note instead
-8. Append to the Changelog section of DESIGN.md after making changes
+8. Update CHANGELOG.md after making changes
 9. Run `pnpm build && pnpm test` after making changes
 10. No `any` types in public API — use `unknown` if truly needed

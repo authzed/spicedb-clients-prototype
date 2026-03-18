@@ -147,4 +147,5 @@ See package sections above.
 
 ## Changelog
 
-<!-- Claude appends here when making changes, with date + what changed -->
+See [CHANGELOG.md](CHANGELOG.md) for release notes.
+

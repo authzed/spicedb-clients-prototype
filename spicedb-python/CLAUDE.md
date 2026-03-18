@@ -11,5 +11,5 @@ This is the idiomatic Python client for SpiceDB.
 5. Propagate deprecation using `warnings.warn(..., DeprecationWarning)`
 6. Update `examples/` to cover new functionality
 7. Never delete an example — mark deprecated ones with a note instead
-8. Append to the Changelog section of DESIGN.md after making changes
+8. Update CHANGELOG.md after making changes
 9. Run `uv run pytest` after making changes

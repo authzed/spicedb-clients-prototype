@@ -175,7 +175,8 @@ See package sections above for the complete API manifest.
 
 ## Changelog
 
-<!-- Claude appends here when making changes, with date + what changed -->
+See [CHANGELOG.md](CHANGELOG.md) for release notes.
+
 
 - **2026-03-16**: Initial implementation of the idiomatic Go client.
   - `consistency` package: `Full()`, `MinLatency()`, `AtLeast()`, `Snapshot()` strategy constructors

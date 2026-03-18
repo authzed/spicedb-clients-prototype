@@ -251,7 +251,8 @@ public enum UpdateOperation { Create = 1, Touch = 2, Delete = 3 }
 
 ## Changelog
 
-<!-- Claude appends here when making changes, with date + what changed -->
+See [CHANGELOG.md](CHANGELOG.md) for release notes.
+
 
 - **2026-03-17**: Initial implementation of the idiomatic C# client.
   - `Consistency` static class: `Full()`, `MinLatency()`, `AtLeast()`, `Snapshot()`, `AtLeastOrFull()`, `AtLeastOrMinLatency()` factory methods

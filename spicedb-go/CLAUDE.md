@@ -12,5 +12,5 @@ This is the idiomatic Go client for SpiceDB.
 5. Propagate deprecation markers using `// Deprecated: use XYZ instead.`
 6. Update `examples/` to cover new functionality
 7. Never delete an example — mark deprecated ones with a note instead
-8. Append to the Changelog section of DESIGN.md after making changes
+8. Update CHANGELOG.md after making changes
 9. Run `go test ./...` and verify all examples compile with `go build ./examples/...`

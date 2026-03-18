@@ -154,7 +154,8 @@ See package sections above.
 
 ## Changelog
 
-<!-- Claude appends here when making changes, with date + what changed -->
+See [CHANGELOG.md](CHANGELOG.md) for release notes.
+
 - **2026-03-16**: Initial implementation of the idiomatic TypeScript client.
   Created `src/client.ts`, `src/types.ts`, `src/consistency.ts`, `src/errors.ts`,
   `src/index.ts`. Full API coverage for all non-deprecated proto APIs:

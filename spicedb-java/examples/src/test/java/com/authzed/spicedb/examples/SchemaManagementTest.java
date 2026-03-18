@@ -29,12 +29,12 @@ class SchemaManagementTest {
     @Test
     void write_schema_returns_revision() {
         String revision = client.writeSchema("""
-            definition user {}
+            definition sm_user {}
 
-            definition document {
-                relation viewer: user
-                relation editor: user
-                relation owner: user
+            definition sm_document {
+                relation viewer: sm_user
+                relation editor: sm_user
+                relation owner: sm_user
                 permission view = viewer + editor + owner
                 permission edit = editor + owner
                 permission delete = owner
@@ -46,12 +46,12 @@ class SchemaManagementTest {
     @Test
     void read_schema_returns_written_definitions() {
         client.writeSchema("""
-            definition user {}
+            definition sm_user {}
 
-            definition document {
-                relation viewer: user
-                relation editor: user
-                relation owner: user
+            definition sm_document {
+                relation viewer: sm_user
+                relation editor: sm_user
+                relation owner: sm_user
                 permission view = viewer + editor + owner
                 permission edit = editor + owner
                 permission delete = owner
@@ -60,28 +60,28 @@ class SchemaManagementTest {
         SpiceDBClient.SchemaResult result = client.readSchema();
 
         assertThat(result.revision()).isNotEmpty();
-        assertThat(result.schema()).contains("definition user");
-        assertThat(result.schema()).contains("definition document");
+        assertThat(result.schema()).contains("definition sm_user");
+        assertThat(result.schema()).contains("definition sm_document");
         assertThat(result.schema()).contains("permission view");
     }
 
     @Test
     void write_updated_schema_with_new_relation() {
         client.writeSchema("""
-            definition user {}
+            definition sm_user {}
 
-            definition document {
-                relation viewer: user
+            definition sm_document {
+                relation viewer: sm_user
                 permission view = viewer
             }""");
 
         // Update the schema with an additional relation
         String revision = client.writeSchema("""
-            definition user {}
+            definition sm_user {}
 
-            definition document {
-                relation viewer: user
-                relation editor: user
+            definition sm_document {
+                relation viewer: sm_user
+                relation editor: sm_user
                 permission view = viewer + editor
                 permission edit = editor
             }""");
@@ -89,7 +89,7 @@ class SchemaManagementTest {
         assertThat(revision).isNotEmpty();
 
         SpiceDBClient.SchemaResult result = client.readSchema();
-        assertThat(result.schema()).contains("relation editor");
+        assertThat(result.schema()).contains("relation editor: sm_user");
         assertThat(result.schema()).contains("permission edit");
     }
 }

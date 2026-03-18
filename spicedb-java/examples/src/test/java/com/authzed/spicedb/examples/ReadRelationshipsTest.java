@@ -27,21 +27,21 @@ class ReadRelationshipsTest {
         client = SpiceDBClient.createPlaintext("localhost:50051", "somerandomkeyhere");
 
         client.writeSchema("""
-            definition user {}
+            definition rr_user {}
 
-            definition document {
-                relation viewer: user
-                relation editor: user
-                relation owner: user
+            definition rr_document {
+                relation viewer: rr_user
+                relation editor: rr_user
+                relation owner: rr_user
                 permission view = viewer + editor + owner
                 permission edit = editor + owner
                 permission delete = owner
             }""");
 
         var txn = new Transaction();
-        txn.touch(Relationship.of("document", "firstdoc", "viewer", "user", "alice"));
-        txn.touch(Relationship.of("document", "firstdoc", "viewer", "user", "bob"));
-        txn.touch(Relationship.of("document", "firstdoc", "editor", "user", "charlie"));
+        txn.touch(Relationship.of("rr_document", "firstdoc", "viewer", "rr_user", "alice"));
+        txn.touch(Relationship.of("rr_document", "firstdoc", "viewer", "rr_user", "bob"));
+        txn.touch(Relationship.of("rr_document", "firstdoc", "editor", "rr_user", "charlie"));
         client.write(txn);
     }
 
@@ -52,7 +52,7 @@ class ReadRelationshipsTest {
 
     @Test
     void reads_viewers_of_document() {
-        Filter filter = Filter.of("document")
+        Filter filter = Filter.of("rr_document")
             .withResourceID("firstdoc")
             .withRelation("viewer");
 
@@ -69,7 +69,7 @@ class ReadRelationshipsTest {
 
     @Test
     void reads_all_relations_on_document() {
-        Filter filter = Filter.of("document")
+        Filter filter = Filter.of("rr_document")
             .withResourceID("firstdoc");
 
         List<Relationship> relationships;
@@ -85,7 +85,7 @@ class ReadRelationshipsTest {
 
     @Test
     void empty_result_for_nonexistent_resource() {
-        Filter filter = Filter.of("document")
+        Filter filter = Filter.of("rr_document")
             .withResourceID("nonexistent");
 
         try (var stream = client.readRelationships(full(), filter)) {

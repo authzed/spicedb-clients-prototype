@@ -26,21 +26,21 @@ class LookupResourcesTest {
         client = SpiceDBClient.createPlaintext("localhost:50051", "somerandomkeyhere");
 
         client.writeSchema("""
-            definition user {}
+            definition lr_user {}
 
-            definition document {
-                relation viewer: user
-                relation editor: user
-                relation owner: user
+            definition lr_document {
+                relation viewer: lr_user
+                relation editor: lr_user
+                relation owner: lr_user
                 permission view = viewer + editor + owner
                 permission edit = editor + owner
                 permission delete = owner
             }""");
 
         var txn = new Transaction();
-        txn.touch(Relationship.of("document", "firstdoc", "viewer", "user", "alice"));
-        txn.touch(Relationship.of("document", "seconddoc", "editor", "user", "alice"));
-        txn.touch(Relationship.of("document", "thirddoc", "owner", "user", "bob"));
+        txn.touch(Relationship.of("lr_document", "firstdoc", "viewer", "lr_user", "alice"));
+        txn.touch(Relationship.of("lr_document", "seconddoc", "editor", "lr_user", "alice"));
+        txn.touch(Relationship.of("lr_document", "thirddoc", "owner", "lr_user", "bob"));
         client.write(txn);
     }
 
@@ -52,7 +52,7 @@ class LookupResourcesTest {
     @Test
     void alice_can_view_two_documents() {
         List<String> resourceIDs;
-        try (var stream = client.lookupResources(full(), "document", "view", "user", "alice")) {
+        try (var stream = client.lookupResources(full(), "lr_document", "view", "lr_user", "alice")) {
             resourceIDs = stream.toList();
         }
 
@@ -62,7 +62,7 @@ class LookupResourcesTest {
     @Test
     void alice_can_edit_only_seconddoc() {
         List<String> resourceIDs;
-        try (var stream = client.lookupResources(full(), "document", "edit", "user", "alice")) {
+        try (var stream = client.lookupResources(full(), "lr_document", "edit", "lr_user", "alice")) {
             resourceIDs = stream.toList();
         }
 
@@ -72,7 +72,7 @@ class LookupResourcesTest {
     @Test
     void bob_can_delete_thirddoc() {
         List<String> resourceIDs;
-        try (var stream = client.lookupResources(full(), "document", "delete", "user", "bob")) {
+        try (var stream = client.lookupResources(full(), "lr_document", "delete", "lr_user", "bob")) {
             resourceIDs = stream.toList();
         }
 

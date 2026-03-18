@@ -25,12 +25,12 @@ class WriteRelationshipsTest {
         client = SpiceDBClient.createPlaintext("localhost:50051", "somerandomkeyhere");
 
         client.writeSchema("""
-            definition user {}
+            definition wr_user {}
 
-            definition document {
-                relation viewer: user
-                relation editor: user
-                relation owner: user
+            definition wr_document {
+                relation viewer: wr_user
+                relation editor: wr_user
+                relation owner: wr_user
                 permission view = viewer + editor + owner
                 permission edit = editor + owner
                 permission delete = owner
@@ -45,8 +45,8 @@ class WriteRelationshipsTest {
     @Test
     void touch_creates_relationships_and_returns_revision() {
         var txn = new Transaction();
-        txn.touch(Relationship.of("document", "firstdoc", "viewer", "user", "alice"));
-        txn.touch(Relationship.of("document", "firstdoc", "editor", "user", "bob"));
+        txn.touch(Relationship.of("wr_document", "firstdoc", "viewer", "wr_user", "alice"));
+        txn.touch(Relationship.of("wr_document", "firstdoc", "editor", "wr_user", "bob"));
 
         String revision = client.write(txn);
 
@@ -56,11 +56,11 @@ class WriteRelationshipsTest {
     @Test
     void precondition_mustNotMatch_succeeds_when_no_match() {
         var txn = new Transaction();
-        txn.touch(Relationship.of("document", "firstdoc", "viewer", "user", "alice"));
-        txn.mustNotMatch(Filter.of("document")
+        txn.touch(Relationship.of("wr_document", "firstdoc", "viewer", "wr_user", "alice"));
+        txn.mustNotMatch(Filter.of("wr_document")
             .withResourceID("firstdoc")
             .withRelation("owner")
-            .withSubjectType("user")
+            .withSubjectType("wr_user")
             .withSubjectID("mallory"));
 
         String revision = client.write(txn);
@@ -72,19 +72,19 @@ class WriteRelationshipsTest {
     void delete_removes_relationship() {
         // First create
         var create = new Transaction();
-        create.touch(Relationship.of("document", "deldoc", "viewer", "user", "charlie"));
+        create.touch(Relationship.of("wr_document", "deldoc", "viewer", "wr_user", "charlie"));
         client.write(create);
 
         // Then delete
         var del = new Transaction();
-        del.delete(Relationship.of("document", "deldoc", "viewer", "user", "charlie"));
+        del.delete(Relationship.of("wr_document", "deldoc", "viewer", "wr_user", "charlie"));
         String revision = client.write(del);
 
         assertThat(revision).isNotEmpty();
 
         // Verify it's gone
         long count = client.readRelationships(full(),
-            Filter.of("document").withResourceID("deldoc").withRelation("viewer")).count();
+            Filter.of("wr_document").withResourceID("deldoc").withRelation("viewer")).count();
         assertThat(count).isZero();
     }
 }

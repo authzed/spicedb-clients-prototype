@@ -23,20 +23,20 @@ class CheckPermissionTest {
         client = SpiceDBClient.createPlaintext("localhost:50051", "somerandomkeyhere");
 
         client.writeSchema("""
-            definition user {}
+            definition cp_user {}
 
-            definition document {
-                relation viewer: user
-                relation editor: user
-                relation owner: user
+            definition cp_document {
+                relation viewer: cp_user
+                relation editor: cp_user
+                relation owner: cp_user
                 permission view = viewer + editor + owner
                 permission edit = editor + owner
                 permission delete = owner
             }""");
 
         var txn = new Transaction();
-        txn.touch(Relationship.of("document", "firstdoc", "viewer", "user", "alice"));
-        txn.touch(Relationship.of("document", "firstdoc", "editor", "user", "bob"));
+        txn.touch(Relationship.of("cp_document", "firstdoc", "viewer", "cp_user", "alice"));
+        txn.touch(Relationship.of("cp_document", "firstdoc", "editor", "cp_user", "bob"));
         client.write(txn);
     }
 
@@ -49,7 +49,7 @@ class CheckPermissionTest {
     void alice_can_view_document() {
         boolean allowed = client.checkPermission(
             full(), "view",
-            Relationship.of("document", "firstdoc", "view", "user", "alice"));
+            Relationship.of("cp_document", "firstdoc", "view", "cp_user", "alice"));
 
         assertThat(allowed).isTrue();
     }
@@ -58,7 +58,7 @@ class CheckPermissionTest {
     void alice_cannot_edit_document() {
         boolean allowed = client.checkPermission(
             full(), "edit",
-            Relationship.of("document", "firstdoc", "edit", "user", "alice"));
+            Relationship.of("cp_document", "firstdoc", "edit", "cp_user", "alice"));
 
         assertThat(allowed).isFalse();
     }
@@ -67,10 +67,10 @@ class CheckPermissionTest {
     void bob_can_edit_and_view_document() {
         boolean canEdit = client.checkPermission(
             full(), "edit",
-            Relationship.of("document", "firstdoc", "edit", "user", "bob"));
+            Relationship.of("cp_document", "firstdoc", "edit", "cp_user", "bob"));
         boolean canView = client.checkPermission(
             full(), "view",
-            Relationship.of("document", "firstdoc", "view", "user", "bob"));
+            Relationship.of("cp_document", "firstdoc", "view", "cp_user", "bob"));
 
         assertThat(canEdit).isTrue();
         assertThat(canView).isTrue();

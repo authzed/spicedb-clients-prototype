@@ -32,12 +32,12 @@ class WatchChangesTest {
         client = SpiceDBClient.createPlaintext("localhost:50051", "somerandomkeyhere");
 
         client.writeSchema("""
-            definition user {}
+            definition wc_user {}
 
-            definition document {
-                relation viewer: user
-                relation editor: user
-                relation owner: user
+            definition wc_document {
+                relation viewer: wc_user
+                relation editor: wc_user
+                relation owner: wc_user
                 permission view = viewer + editor + owner
                 permission edit = editor + owner
                 permission delete = owner
@@ -53,17 +53,17 @@ class WatchChangesTest {
     void watches_for_relationship_changes() throws Exception {
         // Get a starting revision by writing initial data
         var setup = new Transaction();
-        setup.touch(Relationship.of("document", "watchdoc", "viewer", "user", "setup"));
+        setup.touch(Relationship.of("wc_document", "watchdoc", "viewer", "wc_user", "setup"));
         String startRevision = client.write(setup);
 
         // Write a new relationship after the start revision
         var txn = new Transaction();
-        txn.touch(Relationship.of("document", "watchdoc", "viewer", "user", "alice"));
+        txn.touch(Relationship.of("wc_document", "watchdoc", "viewer", "wc_user", "alice"));
         client.write(txn);
 
         // Watch from the start revision and collect the first update
         CompletableFuture<List<SpiceDBClient.Update>> future = CompletableFuture.supplyAsync(() -> {
-            try (var stream = client.updates(List.of("document"), startRevision)) {
+            try (var stream = client.updates(List.of("wc_document"), startRevision)) {
                 return stream.limit(1).toList();
             }
         });
@@ -75,6 +75,6 @@ class WatchChangesTest {
         assertThat(update.operation()).isIn(
             SpiceDBClient.UpdateOperation.CREATE,
             SpiceDBClient.UpdateOperation.TOUCH);
-        assertThat(update.relationship().resourceType()).isEqualTo("document");
+        assertThat(update.relationship().resourceType()).isEqualTo("wc_document");
     }
 }

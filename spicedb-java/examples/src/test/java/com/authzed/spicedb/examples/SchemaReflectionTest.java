@@ -27,12 +27,12 @@ class SchemaReflectionTest {
         client = SpiceDBClient.createPlaintext("localhost:50051", "somerandomkeyhere");
 
         client.writeSchema("""
-            definition user {}
+            definition sr_user {}
 
-            definition document {
-                relation viewer: user
-                relation editor: user
-                relation owner: user
+            definition sr_document {
+                relation viewer: sr_user
+                relation editor: sr_user
+                relation owner: sr_user
                 permission view = viewer + editor + owner
                 permission edit = editor + owner
                 permission delete = owner
@@ -52,7 +52,7 @@ class SchemaReflectionTest {
         assertThat(result.definitions()).hasSizeGreaterThanOrEqualTo(2);
 
         SchemaDefinition docDef = result.definitions().stream()
-            .filter(d -> d.name().equals("document"))
+            .filter(d -> d.name().equals("sr_document"))
             .findFirst()
             .orElseThrow();
 
@@ -65,7 +65,7 @@ class SchemaReflectionTest {
     @Test
     void computable_permissions_for_viewer_relation() {
         ComputablePermissionsResult result =
-            client.computablePermissions(full(), "document", "viewer");
+            client.computablePermissions(full(), "sr_document", "viewer");
 
         assertThat(result.revision()).isNotEmpty();
         assertThat(result.permissions()).isNotEmpty();
@@ -77,7 +77,7 @@ class SchemaReflectionTest {
     @Test
     void dependent_relations_for_view_permission() {
         DependentRelationsResult result =
-            client.dependentRelations(full(), "document", "view");
+            client.dependentRelations(full(), "sr_document", "view");
 
         assertThat(result.revision()).isNotEmpty();
         assertThat(result.relations()).isNotEmpty();
@@ -89,13 +89,13 @@ class SchemaReflectionTest {
     @Test
     void diff_schema_detects_added_relation_and_permission() {
         String newSchema = """
-            definition user {}
+            definition sr_user {}
 
-            definition document {
-                relation viewer: user
-                relation editor: user
-                relation owner: user
-                relation admin: user
+            definition sr_document {
+                relation viewer: sr_user
+                relation editor: sr_user
+                relation owner: sr_user
+                relation admin: sr_user
                 permission view = viewer + editor + owner + admin
                 permission edit = editor + owner + admin
                 permission delete = owner + admin

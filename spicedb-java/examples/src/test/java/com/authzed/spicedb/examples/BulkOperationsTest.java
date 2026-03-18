@@ -27,12 +27,12 @@ class BulkOperationsTest {
         client = SpiceDBClient.createPlaintext("localhost:50051", "somerandomkeyhere");
 
         client.writeSchema("""
-            definition user {}
+            definition bo_user {}
 
-            definition document {
-                relation viewer: user
-                relation editor: user
-                relation owner: user
+            definition bo_document {
+                relation viewer: bo_user
+                relation editor: bo_user
+                relation owner: bo_user
                 permission view = viewer + editor + owner
                 permission edit = editor + owner
                 permission delete = owner
@@ -41,9 +41,9 @@ class BulkOperationsTest {
         // Bulk write relationships
         var txn = new Transaction();
         for (String user : List.of("alice", "bob", "charlie")) {
-            txn.touch(Relationship.of("document", "report", "viewer", "user", user));
+            txn.touch(Relationship.of("bo_document", "report", "viewer", "bo_user", user));
         }
-        txn.touch(Relationship.of("document", "report", "editor", "user", "alice"));
+        txn.touch(Relationship.of("bo_document", "report", "editor", "bo_user", "alice"));
         writeRevision = client.write(txn);
     }
 
@@ -56,9 +56,9 @@ class BulkOperationsTest {
     void bulk_check_returns_result_per_relationship() {
         List<Boolean> results = client.checkPermissions(
             atLeast(writeRevision), "view",
-            Relationship.of("document", "report", "view", "user", "alice"),
-            Relationship.of("document", "report", "view", "user", "bob"),
-            Relationship.of("document", "report", "view", "user", "charlie"));
+            Relationship.of("bo_document", "report", "view", "bo_user", "alice"),
+            Relationship.of("bo_document", "report", "view", "bo_user", "bob"),
+            Relationship.of("bo_document", "report", "view", "bo_user", "charlie"));
 
         assertThat(results).hasSize(3);
         assertThat(results).containsExactly(true, true, true);
@@ -68,9 +68,9 @@ class BulkOperationsTest {
     void checkAll_returns_true_when_all_have_permission() {
         boolean allCanView = client.checkAll(
             atLeast(writeRevision), "view",
-            Relationship.of("document", "report", "view", "user", "alice"),
-            Relationship.of("document", "report", "view", "user", "bob"),
-            Relationship.of("document", "report", "view", "user", "charlie"));
+            Relationship.of("bo_document", "report", "view", "bo_user", "alice"),
+            Relationship.of("bo_document", "report", "view", "bo_user", "bob"),
+            Relationship.of("bo_document", "report", "view", "bo_user", "charlie"));
 
         assertThat(allCanView).isTrue();
     }
@@ -79,8 +79,8 @@ class BulkOperationsTest {
     void checkAll_returns_false_when_not_all_have_permission() {
         boolean allCanEdit = client.checkAll(
             atLeast(writeRevision), "edit",
-            Relationship.of("document", "report", "edit", "user", "alice"),
-            Relationship.of("document", "report", "edit", "user", "bob"));
+            Relationship.of("bo_document", "report", "edit", "bo_user", "alice"),
+            Relationship.of("bo_document", "report", "edit", "bo_user", "bob"));
 
         // bob is only a viewer, not an editor
         assertThat(allCanEdit).isFalse();
@@ -90,8 +90,8 @@ class BulkOperationsTest {
     void checkAny_returns_true_when_at_least_one_has_permission() {
         boolean anyCanEdit = client.checkAny(
             atLeast(writeRevision), "edit",
-            Relationship.of("document", "report", "edit", "user", "alice"),
-            Relationship.of("document", "report", "edit", "user", "bob"));
+            Relationship.of("bo_document", "report", "edit", "bo_user", "alice"),
+            Relationship.of("bo_document", "report", "edit", "bo_user", "bob"));
 
         // alice is an editor
         assertThat(anyCanEdit).isTrue();

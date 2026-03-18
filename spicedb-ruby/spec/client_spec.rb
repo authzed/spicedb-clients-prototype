@@ -40,7 +40,7 @@ RSpec.describe SpiceDB::Client do
       expect(described_class::DEFAULT_READ_PAGE_SIZE).to eq(512)
       expect(described_class::DEFAULT_LOOKUP_PAGE_SIZE).to eq(512)
       expect(described_class::DEFAULT_EXPORT_PAGE_SIZE).to eq(512)
-      expect(described_class::DEFAULT_DELETE_PAGE_SIZE).to eq(10_000)
+      expect(described_class::DEFAULT_DELETE_PAGE_SIZE).to eq(1_000)
       expect(described_class::DEFAULT_IMPORT_BATCH_SIZE).to eq(1_000)
       expect(described_class::DEFAULT_CHECK_BATCH_SIZE).to eq(1_000)
     end

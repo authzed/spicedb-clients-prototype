@@ -11,7 +11,7 @@
 //! use spicedb::consistency;
 //! use spicedb::types::{Relationship, Transaction, Filter};
 //!
-//! # async fn example() -> Result<(), spicedb::error::SpiceDBError> {
+//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! // Create a client (plaintext for testing)
 //! let client = SpiceDBClient::new_plaintext("localhost:50051", "testtoken").await?;
 //!

@@ -1,5 +1,5 @@
 plugins {
-    java
+    `java-library`
 }
 
 group = "com.authzed.spicedb"
@@ -11,26 +11,33 @@ java {
 }
 
 repositories {
+    maven {
+        name = "buf"
+        url = uri("https://buf.build/gen/maven")
+        content {
+            includeGroup("build.buf.gen")
+        }
+    }
     mavenCentral()
 }
 
 sourceSets {
     main {
         java {
-            srcDirs("src/main/java", "gen")
+            srcDirs("src/main/java")
         }
     }
 }
 
-val grpcVersion = "1.68.2"
-val protobufVersion = "4.29.3"
-
 dependencies {
-    implementation("io.grpc:grpc-netty-shaded:$grpcVersion")
-    implementation("io.grpc:grpc-protobuf:$grpcVersion")
-    implementation("io.grpc:grpc-stub:$grpcVersion")
-    implementation("com.google.protobuf:protobuf-java:$protobufVersion")
-    implementation("javax.annotation:javax.annotation-api:1.3.2")
+    // BSR Generated SDKs — pre-built proto stubs with all transitive deps resolved
+    api("build.buf.gen:authzed_api_protocolbuffers_java:34.0.0.1.20260217075218.5b2fc906e1a2")
+    api("build.buf.gen:authzed_api_grpc_java:1.79.0.2.20260217075218.5b2fc906e1a2")
+
+    api("io.grpc:grpc-netty-shaded:1.72.0")
+    api("io.grpc:grpc-protobuf:1.72.0")
+    api("io.grpc:grpc-stub:1.72.0")
+    api("javax.annotation:javax.annotation-api:1.3.2")
 
     testImplementation(platform("org.junit:junit-bom:5.11.4"))
     testImplementation("org.junit.jupiter:junit-jupiter")

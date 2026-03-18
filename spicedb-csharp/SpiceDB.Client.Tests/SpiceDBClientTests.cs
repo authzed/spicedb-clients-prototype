@@ -88,7 +88,7 @@ public class SpiceDBClientTests
     [Fact]
     public async Task CheckPermissionAsync_ThrowsOnNullConsistency()
     {
-        using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "testtoken");
+        await using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "testtoken");
         var rel = Relationship.FromTriple("document", "doc1", "viewer", "user", "alice");
 
         var act = async () => await client.CheckPermissionAsync(null!, "view", rel);
@@ -98,7 +98,7 @@ public class SpiceDBClientTests
     [Fact]
     public async Task CheckPermissionsAsync_ThrowsOnEmptyPermission()
     {
-        using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "testtoken");
+        await using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "testtoken");
 
         var act = async () => await client.CheckPermissionsAsync(
             Consistency.Full(), "", default,
@@ -109,7 +109,7 @@ public class SpiceDBClientTests
     [Fact]
     public async Task CheckPermissionsAsync_EmptyRelationships_ReturnsEmpty()
     {
-        using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "testtoken");
+        await using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "testtoken");
 
         var results = await client.CheckPermissionsAsync(Consistency.Full(), "view", default);
         results.Should().BeEmpty();
@@ -118,7 +118,7 @@ public class SpiceDBClientTests
     [Fact]
     public async Task WriteAsync_ThrowsOnNullTransaction()
     {
-        using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "testtoken");
+        await using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "testtoken");
 
         var act = async () => await client.WriteAsync(null!);
         await act.Should().ThrowAsync<ArgumentNullException>();
@@ -127,7 +127,7 @@ public class SpiceDBClientTests
     [Fact]
     public async Task WriteSchemaAsync_ThrowsOnEmptySchema()
     {
-        using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "testtoken");
+        await using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "testtoken");
 
         var act = async () => await client.WriteSchemaAsync("");
         await act.Should().ThrowAsync<ArgumentException>();
@@ -136,7 +136,7 @@ public class SpiceDBClientTests
     [Fact]
     public async Task ExperimentalRegisterRelationshipCounterAsync_ThrowsOnEmptyName()
     {
-        using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "testtoken");
+        await using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "testtoken");
 
         var act = async () => await client.ExperimentalRegisterRelationshipCounterAsync("", new Filter("doc"));
         await act.Should().ThrowAsync<ArgumentException>();
@@ -145,7 +145,7 @@ public class SpiceDBClientTests
     [Fact]
     public async Task ExperimentalCountRelationshipsAsync_ThrowsOnEmptyName()
     {
-        using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "testtoken");
+        await using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "testtoken");
 
         var act = async () => await client.ExperimentalCountRelationshipsAsync("");
         await act.Should().ThrowAsync<ArgumentException>();
@@ -154,7 +154,7 @@ public class SpiceDBClientTests
     [Fact]
     public async Task ExperimentalUnregisterRelationshipCounterAsync_ThrowsOnEmptyName()
     {
-        using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "testtoken");
+        await using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "testtoken");
 
         var act = async () => await client.ExperimentalUnregisterRelationshipCounterAsync("");
         await act.Should().ThrowAsync<ArgumentException>();

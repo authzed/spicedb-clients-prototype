@@ -1,7 +1,6 @@
 package com.authzed.spicedb;
 
-import com.authzed.api.v1.Consistency.ConsistencyCase;
-import com.authzed.api.v1.ZedToken;
+import build.buf.gen.authzed.api.v1.ZedToken;
 
 /**
  * Consistency strategies for SpiceDB read operations.
@@ -13,9 +12,9 @@ import com.authzed.api.v1.ZedToken;
  */
 public final class Consistency {
 
-    private final com.authzed.api.v1.Consistency proto;
+    private final build.buf.gen.authzed.api.v1.Consistency proto;
 
-    private Consistency(com.authzed.api.v1.Consistency proto) {
+    private Consistency(build.buf.gen.authzed.api.v1.Consistency proto) {
         this.proto = proto;
     }
 
@@ -23,7 +22,7 @@ public final class Consistency {
      * Returns the underlying proto Consistency for use by the client.
      * This is exposed for advanced use cases only.
      */
-    public com.authzed.api.v1.Consistency toProto() {
+    public build.buf.gen.authzed.api.v1.Consistency toProto() {
         return proto;
     }
 
@@ -33,7 +32,7 @@ public final class Consistency {
      */
     public static Consistency full() {
         return new Consistency(
-            com.authzed.api.v1.Consistency.newBuilder()
+            build.buf.gen.authzed.api.v1.Consistency.newBuilder()
                 .setFullyConsistent(true)
                 .build()
         );
@@ -45,7 +44,7 @@ public final class Consistency {
      */
     public static Consistency minLatency() {
         return new Consistency(
-            com.authzed.api.v1.Consistency.newBuilder()
+            build.buf.gen.authzed.api.v1.Consistency.newBuilder()
                 .setMinimizeLatency(true)
                 .build()
         );
@@ -63,7 +62,7 @@ public final class Consistency {
             throw new IllegalArgumentException("revision must not be null or empty");
         }
         return new Consistency(
-            com.authzed.api.v1.Consistency.newBuilder()
+            build.buf.gen.authzed.api.v1.Consistency.newBuilder()
                 .setAtLeastAsFresh(ZedToken.newBuilder().setToken(revision).build())
                 .build()
         );
@@ -80,7 +79,7 @@ public final class Consistency {
             throw new IllegalArgumentException("revision must not be null or empty");
         }
         return new Consistency(
-            com.authzed.api.v1.Consistency.newBuilder()
+            build.buf.gen.authzed.api.v1.Consistency.newBuilder()
                 .setAtExactSnapshot(ZedToken.newBuilder().setToken(revision).build())
                 .build()
         );

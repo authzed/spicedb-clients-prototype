@@ -7,6 +7,13 @@ allprojects {
     version = "0.1.0-SNAPSHOT"
 
     repositories {
+        maven {
+            name = "buf"
+            url = uri("https://buf.build/gen/maven")
+            content {
+                includeGroup("build.buf.gen")
+            }
+        }
         mavenCentral()
     }
 }

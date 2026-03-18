@@ -90,6 +90,6 @@ class RelationshipCountersTest {
         // Unregistering should not throw
         assertThatCode(() ->
             client.experimentalUnregisterRelationshipCounter(COUNTER_NAME)
-        ).doesNotThrowException();
+        ).doesNotThrowAnyException();
     }
 }

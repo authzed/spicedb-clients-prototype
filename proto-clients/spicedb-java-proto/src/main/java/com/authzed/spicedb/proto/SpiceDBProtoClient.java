@@ -8,10 +8,10 @@ import io.grpc.Metadata;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 
-import com.authzed.api.v1.ExperimentalServiceGrpc;
-import com.authzed.api.v1.PermissionsServiceGrpc;
-import com.authzed.api.v1.SchemaServiceGrpc;
-import com.authzed.api.v1.WatchServiceGrpc;
+import build.buf.gen.authzed.api.v1.ExperimentalServiceGrpc;
+import build.buf.gen.authzed.api.v1.PermissionsServiceGrpc;
+import build.buf.gen.authzed.api.v1.SchemaServiceGrpc;
+import build.buf.gen.authzed.api.v1.WatchServiceGrpc;
 
 /**
  * Wraps all generated gRPC service stubs for SpiceDB.

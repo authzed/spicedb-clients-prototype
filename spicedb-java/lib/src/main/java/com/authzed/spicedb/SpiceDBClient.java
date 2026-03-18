@@ -1,6 +1,6 @@
 package com.authzed.spicedb;
 
-import com.authzed.api.v1.*;
+import build.buf.gen.authzed.api.v1.*;
 import com.authzed.spicedb.errors.ErrorMapper;
 import com.authzed.spicedb.errors.SpiceDBException;
 
@@ -602,7 +602,7 @@ public final class SpiceDBClient implements AutoCloseable {
         StreamObserver<ImportBulkRelationshipsRequest> requestObserver =
             permissionsAsyncStub.importBulkRelationships(responseObserver);
 
-        var batch = new ArrayList<com.authzed.api.v1.Relationship>(DEFAULT_IMPORT_BATCH_SIZE);
+        var batch = new ArrayList<build.buf.gen.authzed.api.v1.Relationship>(DEFAULT_IMPORT_BATCH_SIZE);
         for (Relationship r : relationships) {
             batch.add(toProtoRelationship(r));
             if (batch.size() >= DEFAULT_IMPORT_BATCH_SIZE) {
@@ -983,8 +983,8 @@ public final class SpiceDBClient implements AutoCloseable {
             .build();
     }
 
-    static com.authzed.api.v1.Relationship toProtoRelationship(Relationship r) {
-        var builder = com.authzed.api.v1.Relationship.newBuilder()
+    static build.buf.gen.authzed.api.v1.Relationship toProtoRelationship(Relationship r) {
+        var builder = build.buf.gen.authzed.api.v1.Relationship.newBuilder()
             .setResource(ObjectReference.newBuilder()
                 .setObjectType(r.resourceType())
                 .setObjectId(r.resourceID())
@@ -1023,7 +1023,7 @@ public final class SpiceDBClient implements AutoCloseable {
         return builder.build();
     }
 
-    static Relationship fromProtoRelationship(com.authzed.api.v1.Relationship pr) {
+    static Relationship fromProtoRelationship(build.buf.gen.authzed.api.v1.Relationship pr) {
         String caveatName = null;
         Map<String, Object> caveatContext = null;
         if (pr.hasOptionalCaveat()) {

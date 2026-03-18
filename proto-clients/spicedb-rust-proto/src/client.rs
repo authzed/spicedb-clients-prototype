@@ -2,10 +2,12 @@ use tonic::transport::{Channel, ClientTlsConfig, Endpoint};
 use tonic::metadata::MetadataValue;
 use tonic::service::Interceptor;
 
+use crate::authzed::api::v1;
+
 /// Bearer token interceptor that injects an `authorization` header into every
 /// gRPC request.
 #[derive(Clone)]
-struct BearerTokenInterceptor {
+pub struct BearerTokenInterceptor {
     token: MetadataValue<tonic::metadata::Ascii>,
 }
 
@@ -20,6 +22,10 @@ impl Interceptor for BearerTokenInterceptor {
         Ok(request)
     }
 }
+
+/// The intercepted service type used by all service clients.
+pub type InterceptedService =
+    tonic::service::interceptor::InterceptedService<Channel, BearerTokenInterceptor>;
 
 /// A thin wrapper over tonic-generated gRPC service clients for SpiceDB.
 ///
@@ -41,23 +47,10 @@ impl Interceptor for BearerTokenInterceptor {
 /// }
 /// ```
 pub struct SpiceDBProtoClient {
-    // Once proto/ is populated and tonic-build generates the service clients,
-    // these fields will hold the generated client types:
-    //
-    // pub permissions: authzed::api::v1::permissions_service_client::PermissionsServiceClient<
-    //     tonic::service::interceptor::InterceptedService<Channel, BearerTokenInterceptor>,
-    // >,
-    // pub schema: authzed::api::v1::schema_service_client::SchemaServiceClient<
-    //     tonic::service::interceptor::InterceptedService<Channel, BearerTokenInterceptor>,
-    // >,
-    // pub watch: authzed::api::v1::watch_service_client::WatchServiceClient<
-    //     tonic::service::interceptor::InterceptedService<Channel, BearerTokenInterceptor>,
-    // >,
-    // pub experimental: authzed::api::v1::experimental_service_client::ExperimentalServiceClient<
-    //     tonic::service::interceptor::InterceptedService<Channel, BearerTokenInterceptor>,
-    // >,
-    _channel: Channel,
-    _interceptor: BearerTokenInterceptor,
+    pub permissions: v1::permissions_service_client::PermissionsServiceClient<InterceptedService>,
+    pub schema: v1::schema_service_client::SchemaServiceClient<InterceptedService>,
+    pub watch: v1::watch_service_client::WatchServiceClient<InterceptedService>,
+    pub experimental: v1::experimental_service_client::ExperimentalServiceClient<InterceptedService>,
 }
 
 impl SpiceDBProtoClient {
@@ -94,19 +87,22 @@ impl SpiceDBProtoClient {
 
         let interceptor = BearerTokenInterceptor { token: bearer };
 
-        // Once the generated service clients are available, construct them:
-        //
-        // let svc = tonic::service::interceptor::InterceptedService::new(
-        //     channel.clone(), interceptor.clone(),
-        // );
-        // let permissions = authzed::api::v1::permissions_service_client::PermissionsServiceClient::new(svc.clone());
-        // let schema = authzed::api::v1::schema_service_client::SchemaServiceClient::new(svc.clone());
-        // let watch = authzed::api::v1::watch_service_client::WatchServiceClient::new(svc.clone());
-        // let experimental = authzed::api::v1::experimental_service_client::ExperimentalServiceClient::new(svc);
+        let svc = tonic::service::interceptor::InterceptedService::new(
+            channel.clone(),
+            interceptor.clone(),
+        );
+        let permissions =
+            v1::permissions_service_client::PermissionsServiceClient::new(svc.clone());
+        let schema = v1::schema_service_client::SchemaServiceClient::new(svc.clone());
+        let watch = v1::watch_service_client::WatchServiceClient::new(svc.clone());
+        let experimental =
+            v1::experimental_service_client::ExperimentalServiceClient::new(svc);
 
         Ok(Self {
-            _channel: channel,
-            _interceptor: interceptor,
+            permissions,
+            schema,
+            watch,
+            experimental,
         })
     }
 }

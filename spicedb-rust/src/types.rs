@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::fmt;
 
 use chrono::{DateTime, Utc};
+use spicedb_proto::authzed::api::v1 as proto;
 
 /// A flat representation of a SpiceDB relationship.
 ///
@@ -148,10 +149,81 @@ impl Relationship {
         Ok(())
     }
 
-    // TODO: When spicedb-proto types are available, add:
-    //
-    // pub(crate) fn to_proto(&self) -> proto::Relationship { ... }
-    // pub(crate) fn from_proto(pr: &proto::Relationship) -> Self { ... }
+    pub(crate) fn to_proto(&self) -> proto::Relationship {
+        let optional_caveat = if self.caveat_name.is_empty() {
+            None
+        } else {
+            let context = self.caveat_context.as_ref().map(|ctx| {
+                let fields = ctx
+                    .iter()
+                    .map(|(k, v)| {
+                        (k.clone(), json_value_to_prost(v))
+                    })
+                    .collect();
+                prost_types::Struct { fields }
+            });
+            Some(proto::ContextualizedCaveat {
+                caveat_name: self.caveat_name.clone(),
+                context,
+            })
+        };
+
+        let optional_expires_at = self.expiration.map(|exp| prost_types::Timestamp {
+            seconds: exp.timestamp(),
+            nanos: exp.timestamp_subsec_nanos() as i32,
+        });
+
+        proto::Relationship {
+            resource: Some(proto::ObjectReference {
+                object_type: self.resource_type.clone(),
+                object_id: self.resource_id.clone(),
+            }),
+            relation: self.resource_relation.clone(),
+            subject: Some(proto::SubjectReference {
+                object: Some(proto::ObjectReference {
+                    object_type: self.subject_type.clone(),
+                    object_id: self.subject_id.clone(),
+                }),
+                optional_relation: self.subject_relation.clone(),
+            }),
+            optional_caveat,
+            optional_expires_at,
+        }
+    }
+
+    pub(crate) fn from_proto(pr: &proto::Relationship) -> Self {
+        let resource = pr.resource.as_ref();
+        let subject_ref = pr.subject.as_ref();
+        let subject_obj = subject_ref.and_then(|s| s.object.as_ref());
+
+        let (caveat_name, caveat_context) = if let Some(cav) = &pr.optional_caveat {
+            let context = cav.context.as_ref().map(|s| {
+                s.fields
+                    .iter()
+                    .map(|(k, v)| (k.clone(), prost_value_to_json(v)))
+                    .collect()
+            });
+            (cav.caveat_name.clone(), context)
+        } else {
+            (String::new(), None)
+        };
+
+        let expiration = pr.optional_expires_at.as_ref().and_then(|ts| {
+            DateTime::from_timestamp(ts.seconds, ts.nanos as u32)
+        });
+
+        Self {
+            resource_type: resource.map(|r| r.object_type.clone()).unwrap_or_default(),
+            resource_id: resource.map(|r| r.object_id.clone()).unwrap_or_default(),
+            resource_relation: pr.relation.clone(),
+            subject_type: subject_obj.map(|o| o.object_type.clone()).unwrap_or_default(),
+            subject_id: subject_obj.map(|o| o.object_id.clone()).unwrap_or_default(),
+            subject_relation: subject_ref.map(|s| s.optional_relation.clone()).unwrap_or_default(),
+            caveat_name,
+            caveat_context,
+            expiration,
+        }
+    }
 }
 
 impl fmt::Display for Relationship {
@@ -253,9 +325,32 @@ impl Filter {
         self
     }
 
-    // TODO: When spicedb-proto types are available, add:
-    //
-    // pub(crate) fn to_proto(&self) -> proto::RelationshipFilter { ... }
+    pub(crate) fn to_proto(&self) -> proto::RelationshipFilter {
+        let optional_subject_filter = if self.subject_type.is_some()
+            || self.subject_id.is_some()
+            || self.subject_relation.is_some()
+        {
+            Some(proto::SubjectFilter {
+                subject_type: self.subject_type.clone().unwrap_or_default(),
+                optional_subject_id: self.subject_id.clone().unwrap_or_default(),
+                optional_relation: self.subject_relation.as_ref().map(|r| {
+                    proto::subject_filter::RelationFilter {
+                        relation: r.clone(),
+                    }
+                }),
+            })
+        } else {
+            None
+        };
+
+        proto::RelationshipFilter {
+            resource_type: self.resource_type.clone(),
+            optional_resource_id: self.resource_id.clone().unwrap_or_default(),
+            optional_resource_id_prefix: self.resource_id_prefix.clone().unwrap_or_default(),
+            optional_relation: self.relation.clone().unwrap_or_default(),
+            optional_subject_filter,
+        }
+    }
 }
 
 /// The type of mutation in a relationship update.
@@ -470,6 +565,54 @@ pub struct CountResult {
 pub struct CheckResult {
     /// Whether the permission is granted.
     pub has_permission: bool,
+}
+
+/// Convert a `serde_json::Value` to a `prost_types::Value`.
+fn json_value_to_prost(v: &serde_json::Value) -> prost_types::Value {
+    use prost_types::value::Kind;
+    let kind = match v {
+        serde_json::Value::Null => Some(Kind::NullValue(0)),
+        serde_json::Value::Bool(b) => Some(Kind::BoolValue(*b)),
+        serde_json::Value::Number(n) => Some(Kind::NumberValue(n.as_f64().unwrap_or(0.0))),
+        serde_json::Value::String(s) => Some(Kind::StringValue(s.clone())),
+        serde_json::Value::Array(arr) => Some(Kind::ListValue(prost_types::ListValue {
+            values: arr.iter().map(json_value_to_prost).collect(),
+        })),
+        serde_json::Value::Object(obj) => Some(Kind::StructValue(prost_types::Struct {
+            fields: obj
+                .iter()
+                .map(|(k, v)| (k.clone(), json_value_to_prost(v)))
+                .collect(),
+        })),
+    };
+    prost_types::Value { kind }
+}
+
+/// Convert a `prost_types::Value` to a `serde_json::Value`.
+fn prost_value_to_json(v: &prost_types::Value) -> serde_json::Value {
+    use prost_types::value::Kind;
+    match &v.kind {
+        Some(Kind::NullValue(_)) => serde_json::Value::Null,
+        Some(Kind::BoolValue(b)) => serde_json::Value::Bool(*b),
+        Some(Kind::NumberValue(n)) => {
+            serde_json::Number::from_f64(*n)
+                .map(serde_json::Value::Number)
+                .unwrap_or(serde_json::Value::Null)
+        }
+        Some(Kind::StringValue(s)) => serde_json::Value::String(s.clone()),
+        Some(Kind::ListValue(list)) => {
+            serde_json::Value::Array(list.values.iter().map(prost_value_to_json).collect())
+        }
+        Some(Kind::StructValue(s)) => {
+            let map: serde_json::Map<String, serde_json::Value> = s
+                .fields
+                .iter()
+                .map(|(k, v)| (k.clone(), prost_value_to_json(v)))
+                .collect();
+            serde_json::Value::Object(map)
+        }
+        None => serde_json::Value::Null,
+    }
 }
 
 #[cfg(test)]

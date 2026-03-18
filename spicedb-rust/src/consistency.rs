@@ -92,12 +92,33 @@ pub fn at_least_or_min_latency(revision: Option<impl Into<String>>) -> Strategy 
     }
 }
 
-// TODO: When spicedb-proto types are available, add a method to convert
-// Strategy to the proto Consistency type:
-//
-// impl Strategy {
-//     pub(crate) fn to_proto(&self) -> proto::Consistency { ... }
-// }
+use spicedb_proto::authzed::api::v1 as proto;
+
+impl Strategy {
+    pub(crate) fn to_proto(&self) -> proto::Consistency {
+        let requirement = match self {
+            Strategy::Full => {
+                proto::consistency::Requirement::FullyConsistent(true)
+            }
+            Strategy::MinLatency => {
+                proto::consistency::Requirement::MinimizeLatency(true)
+            }
+            Strategy::AtLeast(token) => {
+                proto::consistency::Requirement::AtLeastAsFresh(proto::ZedToken {
+                    token: token.clone(),
+                })
+            }
+            Strategy::Snapshot(token) => {
+                proto::consistency::Requirement::AtExactSnapshot(proto::ZedToken {
+                    token: token.clone(),
+                })
+            }
+        };
+        proto::Consistency {
+            requirement: Some(requirement),
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {

@@ -1075,6 +1075,7 @@ dependencies = [
  "chrono",
  "futures",
  "prost",
+ "prost-types",
  "serde_json",
  "spicedb-proto",
  "thiserror",

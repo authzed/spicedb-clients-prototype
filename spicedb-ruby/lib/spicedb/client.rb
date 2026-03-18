@@ -27,7 +27,7 @@ module SpiceDB
     DEFAULT_READ_PAGE_SIZE   = 512
     DEFAULT_LOOKUP_PAGE_SIZE = 512
     DEFAULT_EXPORT_PAGE_SIZE = 512
-    DEFAULT_DELETE_PAGE_SIZE = 10_000
+    DEFAULT_DELETE_PAGE_SIZE = 1_000
     DEFAULT_IMPORT_BATCH_SIZE = 1_000
     DEFAULT_CHECK_BATCH_SIZE = 1_000
 
@@ -533,10 +533,10 @@ module SpiceDB
 
       SpiceDB::Relationship.new(
         resource_type: proto_rel.resource.object_type,
-        resource_id: proto_rel.resource.object_id,
+        resource_id: proto_rel.resource["object_id"],
         resource_relation: proto_rel.relation,
         subject_type: proto_rel.subject.object.object_type,
-        subject_id: proto_rel.subject.object.object_id,
+        subject_id: proto_rel.subject.object["object_id"],
         subject_relation: proto_rel.subject.optional_relation,
         caveat_name: caveat_name,
         caveat_context: caveat_context,
@@ -553,8 +553,8 @@ module SpiceDB
 
     # Maps precondition operation symbols to proto enum values.
     PRECONDITION_MAP = {
-      must_match: :PRECONDITION_MUST_MATCH,
-      must_not_match: :PRECONDITION_MUST_NOT_MATCH
+      must_match: :OPERATION_MUST_MATCH,
+      must_not_match: :OPERATION_MUST_NOT_MATCH
     }.freeze
 
     # --- Proto client call implementations ---
@@ -584,13 +584,12 @@ module SpiceDB
         )
       )
 
-      has_perm = Authzed::Api::V1::CheckPermissionResponse::Permissionship::PERMISSIONSHIP_HAS_PERMISSION
-
       resp.pairs.map do |pair|
         if pair.respond_to?(:error) && pair.error && pair.error.respond_to?(:message) && !pair.error.message.empty?
           raise SpiceDB::Error, pair.error.message
         end
-        { has_permission: pair.item.permissionship == has_perm }
+        # Ruby protobuf returns enum values as symbols, not integers
+        { has_permission: pair.item.permissionship == :PERMISSIONSHIP_HAS_PERMISSION }
       end
     end
 

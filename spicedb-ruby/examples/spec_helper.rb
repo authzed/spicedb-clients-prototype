@@ -21,10 +21,14 @@ SCHEMA
 RSpec.configure do |config|
   config.formatter = :documentation
 
-  # Create a fresh plaintext client for each test.
+  # Create a fresh plaintext client for each test, with clean state.
   config.around(:each) do |example|
     SpiceDB::Client.new_plaintext(SPICEDB_ENDPOINT, SPICEDB_TOKEN) do |client|
       @client = client
+      # Write the standard schema (idempotent)
+      client.write_schema(TEST_SCHEMA)
+      # Delete all existing relationships for test isolation
+      client.delete_relationships(SpiceDB::Filter.new(resource_type: "document"))
       example.run
     end
   end

@@ -2,6 +2,7 @@ version: v2
 plugins:
   - remote: buf.build/protocolbuffers/ruby
     out: lib/gen
+    include_imports: true
   - remote: buf.build/grpc/ruby
     out: lib/gen
 inputs:

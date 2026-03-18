@@ -10,53 +10,59 @@ import { full } from "@spicedb/client";
 type Consistency = ReturnType<typeof full>;
 
 // --- Types ---
-{{- range $def := .Definitions}}
-type {{$def.PascalName}}Ref = { _type: "{{$def.Name}}"; _id: string };
-{{- range $sr := $def.SubRefTypes}}
-type {{$sr.RefTypeName}} = { _type: "{{$def.Name}}"; _id: string; _relation: "{{$sr.Relation}}" };
-{{- end}}
-{{- end}}
+type UserRef = { _type: "user"; _id: string };
+type TeamRef = { _type: "team"; _id: string };
+type TeamMemberRef = { _type: "team"; _id: string; _relation: "member" };
+type DocumentRef = { _type: "document"; _id: string };
 
 // --- Factories ---
-{{range $def := .Definitions}}
-{{- if not (hasRelationsOrPermissions $def)}}
-export function {{$def.PascalName}}(id: string): {{$def.PascalName}}Ref {
-    return { _type: "{{$def.Name}}", _id: id };
+
+export function User(id: string): UserRef {
+    return { _type: "user", _id: id };
 }
-{{- else}}
-export function {{$def.PascalName}}(id: string) {
+
+export function Team(id: string) {
     return {
-        _type: "{{$def.Name}}" as const,
+        _type: "team" as const,
         _id: id,
-{{- if hasPermissions $def}}
-        // Permissions
-{{- range $def.Permissions}}
-        {{.Name}}: { _type: "{{$def.Name}}" as const, _id: id, _permission: "{{.Name}}" as const },
-{{- end}}
-{{- end}}
-{{- if hasRelations $def}}
         // Relations
-{{- range $def.Relations}}
-        {{.Name}}: (subject: {{.SubjectUnion}}) => ({
-            _type: "{{$def.Name}}" as const, _id: id,
-            _relation: "{{.Name}}" as const, _subject: subject,
+        member: (subject: UserRef | TeamMemberRef) => ({
+            _type: "team" as const, _id: id,
+            _relation: "member" as const, _subject: subject,
         }),
-{{- end}}
-{{- end}}
     };
 }
-{{- end}}
-{{- range $sr := $def.SubRefTypes}}
-{{$def.PascalName}}.{{$sr.Relation}} = (id: string): {{$sr.RefTypeName}} => ({
-    _type: "{{$def.Name}}", _id: id, _relation: "{{$sr.Relation}}",
+Team.member = (id: string): TeamMemberRef => ({
+    _type: "team", _id: id, _relation: "member",
 });
-{{- end}}
-{{- if hasPermissions $def}}
-{{- range $def.Permissions}}
-{{$def.PascalName}}.{{.Name}} = { _type: "{{$def.Name}}" as const, _permission: "{{.Name}}" as const };
-{{- end}}
-{{- end}}
-{{end}}
+
+export function Document(id: string) {
+    return {
+        _type: "document" as const,
+        _id: id,
+        // Permissions
+        view: { _type: "document" as const, _id: id, _permission: "view" as const },
+        edit: { _type: "document" as const, _id: id, _permission: "edit" as const },
+        delete: { _type: "document" as const, _id: id, _permission: "delete" as const },
+        // Relations
+        viewer: (subject: UserRef | TeamMemberRef) => ({
+            _type: "document" as const, _id: id,
+            _relation: "viewer" as const, _subject: subject,
+        }),
+        editor: (subject: UserRef) => ({
+            _type: "document" as const, _id: id,
+            _relation: "editor" as const, _subject: subject,
+        }),
+        owner: (subject: UserRef) => ({
+            _type: "document" as const, _id: id,
+            _relation: "owner" as const, _subject: subject,
+        }),
+    };
+}
+Document.view = { _type: "document" as const, _permission: "view" as const };
+Document.edit = { _type: "document" as const, _permission: "edit" as const };
+Document.delete = { _type: "document" as const, _permission: "delete" as const };
+
 // --- TypedClient ---
 export class TypedClient {
     readonly client: SpiceDBClient;
@@ -70,11 +76,9 @@ export class TypedClient {
     }
 
     // Check overloads
-{{- range $def := .Definitions}}
-{{- range $def.Permissions}}
-    async check(c: Consistency, p: { _type: "{{$def.Name}}"; _id: string; _permission: "{{.Name}}" }, s: {{.SubjectUnion}}): Promise<boolean>;
-{{- end}}
-{{- end}}
+    async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "view" }, s: UserRef | TeamMemberRef): Promise<boolean>;
+    async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "edit" }, s: UserRef): Promise<boolean>;
+    async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "delete" }, s: UserRef): Promise<boolean>;
     async check(c: Consistency, p: { _type: string; _id: string; _permission: string }, s: { _type: string; _id: string; _relation?: string }): Promise<boolean> {
         return this.client.checkPermission(c, {
             resourceType: p._type, resourceId: p._id, permission: p._permission,
@@ -111,11 +115,9 @@ export class TypedClient {
     }
 
     // LookupResources overloads
-{{- range $def := .Definitions}}
-{{- range $def.Permissions}}
-    async lookupResources(c: Consistency, p: { _type: "{{$def.Name}}"; _permission: "{{.Name}}" }, s: {{.SubjectUnion}}): Promise<AsyncIterableIterator<string>>;
-{{- end}}
-{{- end}}
+    async lookupResources(c: Consistency, p: { _type: "document"; _permission: "view" }, s: UserRef | TeamMemberRef): Promise<AsyncIterableIterator<string>>;
+    async lookupResources(c: Consistency, p: { _type: "document"; _permission: "edit" }, s: UserRef): Promise<AsyncIterableIterator<string>>;
+    async lookupResources(c: Consistency, p: { _type: "document"; _permission: "delete" }, s: UserRef): Promise<AsyncIterableIterator<string>>;
     async lookupResources(c: Consistency, p: { _type: string; _permission: string }, s: { _type: string; _id: string; _relation?: string }): Promise<AsyncIterableIterator<string>> {
         return this.client.lookupResources({
             resourceType: p._type, permission: p._permission,
@@ -124,11 +126,9 @@ export class TypedClient {
     }
 
     // LookupSubjects overloads
-{{- range $def := .Definitions}}
-{{- range $def.Permissions}}
-    async lookupSubjects(c: Consistency, p: { _type: "{{$def.Name}}"; _id: string; _permission: "{{.Name}}" }, subjectType: (id: string) => { _type: string }): Promise<AsyncIterableIterator<string>>;
-{{- end}}
-{{- end}}
+    async lookupSubjects(c: Consistency, p: { _type: "document"; _id: string; _permission: "view" }, subjectType: (id: string) => { _type: string }): Promise<AsyncIterableIterator<string>>;
+    async lookupSubjects(c: Consistency, p: { _type: "document"; _id: string; _permission: "edit" }, subjectType: (id: string) => { _type: string }): Promise<AsyncIterableIterator<string>>;
+    async lookupSubjects(c: Consistency, p: { _type: "document"; _id: string; _permission: "delete" }, subjectType: (id: string) => { _type: string }): Promise<AsyncIterableIterator<string>>;
     async lookupSubjects(c: Consistency, p: { _type: string; _id: string; _permission: string }, subjectType: (id: string) => { _type: string }): Promise<AsyncIterableIterator<string>> {
         return this.client.lookupSubjects({
             subjectType: subjectType("")._type,

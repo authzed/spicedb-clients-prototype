@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from "vitest";
-import { full } from "@spicedb/client";
+import { full, type Relationship } from "@spicedb/client";
 import { TypedClient, Document, User, Team } from "./permissions";
 
 const SCHEMA = `
@@ -44,14 +44,20 @@ describe("TypedClient", () => {
 
     describe("lookupResources", () => {
         it("finds resources a user can view", async () => {
-            const ids = await tc.lookupResources(full(), Document.view, User("alice"));
+            const ids: string[] = [];
+            for await (const id of await tc.lookupResources(full(), Document.view, User("alice"))) {
+                ids.push(id);
+            }
             expect(ids).toContain("readme");
         });
     });
 
     describe("lookupSubjects", () => {
         it("finds users who can view a document", async () => {
-            const ids = await tc.lookupSubjects(full(), Document("readme").view, User);
+            const ids: string[] = [];
+            for await (const id of await tc.lookupSubjects(full(), Document("readme").view, User)) {
+                ids.push(id);
+            }
             expect(ids).toContain("alice");
             expect(ids).toContain("bob");
             expect(ids).toContain("charlie");
@@ -60,7 +66,10 @@ describe("TypedClient", () => {
 
     describe("readRelationships", () => {
         it("reads relationships matching a filter", async () => {
-            const rels = await tc.readRelationships(full(), { _type: "document" });
+            const rels: Relationship[] = [];
+            for await (const rel of tc.readRelationships(full(), { _type: "document" })) {
+                rels.push(rel);
+            }
             expect(rels.length).toBeGreaterThan(0);
         });
     });

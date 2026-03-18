@@ -17,32 +17,18 @@ import static org.assertj.core.api.Assertions.*;
  *
  * <p>Note: these APIs are experimental and may change without notice.
  */
-class RelationshipCountersTest {
+class RelationshipCountersTest extends SpiceDBIntegrationTest {
 
     private static final String COUNTER_NAME = "java_example_document_viewers";
 
-    private SpiceDBClient client;
-
     @BeforeEach
     void setUp() {
-        client = SpiceDBClient.createPlaintext("localhost:50051", "somerandomkeyhere");
-
-        client.writeSchema("""
-            definition rc_user {}
-
-            definition rc_document {
-                relation viewer: rc_user
-                relation editor: rc_user
-                relation owner: rc_user
-                permission view = viewer + editor + owner
-                permission edit = editor + owner
-                permission delete = owner
-            }""");
+        client.deleteRelationships(Filter.of("document"));
 
         var txn = new Transaction();
-        txn.touch(Relationship.of("rc_document", "countdoc1", "viewer", "rc_user", "alice"));
-        txn.touch(Relationship.of("rc_document", "countdoc2", "viewer", "rc_user", "bob"));
-        txn.touch(Relationship.of("rc_document", "countdoc3", "viewer", "rc_user", "charlie"));
+        txn.touch(Relationship.of("document", "countdoc1", "viewer", "user", "alice"));
+        txn.touch(Relationship.of("document", "countdoc2", "viewer", "user", "bob"));
+        txn.touch(Relationship.of("document", "countdoc3", "viewer", "user", "charlie"));
         client.write(txn);
 
         // Clean up any existing counter from a prior run
@@ -60,12 +46,11 @@ class RelationshipCountersTest {
         } catch (Exception ignored) {
             // Counter may not exist
         }
-        client.close();
     }
 
     @Test
     void register_and_read_counter() throws Exception {
-        Filter filter = Filter.of("rc_document").withRelation("viewer");
+        Filter filter = Filter.of("document").withRelation("viewer");
 
         client.experimentalRegisterRelationshipCounter(COUNTER_NAME, filter);
 
@@ -83,7 +68,7 @@ class RelationshipCountersTest {
 
     @Test
     void unregister_counter() {
-        Filter filter = Filter.of("rc_document").withRelation("viewer");
+        Filter filter = Filter.of("document").withRelation("viewer");
 
         client.experimentalRegisterRelationshipCounter(COUNTER_NAME, filter);
 

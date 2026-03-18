@@ -1,10 +1,9 @@
 package com.authzed.spicedb.examples;
 
+import com.authzed.spicedb.Filter;
 import com.authzed.spicedb.Relationship;
-import com.authzed.spicedb.SpiceDBClient;
 import com.authzed.spicedb.Transaction;
 
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -12,44 +11,25 @@ import static com.authzed.spicedb.Consistency.*;
 import static org.assertj.core.api.Assertions.*;
 
 /**
- * Demonstrates checking a single permission using {@link SpiceDBClient#checkPermission}.
+ * Demonstrates checking a single permission using {@link com.authzed.spicedb.SpiceDBClient#checkPermission}.
  */
-class CheckPermissionTest {
-
-    private SpiceDBClient client;
+class CheckPermissionTest extends SpiceDBIntegrationTest {
 
     @BeforeEach
     void setUp() {
-        client = SpiceDBClient.createPlaintext("localhost:50051", "somerandomkeyhere");
-
-        client.writeSchema("""
-            definition cp_user {}
-
-            definition cp_document {
-                relation viewer: cp_user
-                relation editor: cp_user
-                relation owner: cp_user
-                permission view = viewer + editor + owner
-                permission edit = editor + owner
-                permission delete = owner
-            }""");
+        client.deleteRelationships(Filter.of("document"));
 
         var txn = new Transaction();
-        txn.touch(Relationship.of("cp_document", "firstdoc", "viewer", "cp_user", "alice"));
-        txn.touch(Relationship.of("cp_document", "firstdoc", "editor", "cp_user", "bob"));
+        txn.touch(Relationship.of("document", "firstdoc", "viewer", "user", "alice"));
+        txn.touch(Relationship.of("document", "firstdoc", "editor", "user", "bob"));
         client.write(txn);
-    }
-
-    @AfterEach
-    void tearDown() {
-        client.close();
     }
 
     @Test
     void alice_can_view_document() {
         boolean allowed = client.checkPermission(
             full(), "view",
-            Relationship.of("cp_document", "firstdoc", "view", "cp_user", "alice"));
+            Relationship.of("document", "firstdoc", "view", "user", "alice"));
 
         assertThat(allowed).isTrue();
     }
@@ -58,7 +38,7 @@ class CheckPermissionTest {
     void alice_cannot_edit_document() {
         boolean allowed = client.checkPermission(
             full(), "edit",
-            Relationship.of("cp_document", "firstdoc", "edit", "cp_user", "alice"));
+            Relationship.of("document", "firstdoc", "edit", "user", "alice"));
 
         assertThat(allowed).isFalse();
     }
@@ -67,10 +47,10 @@ class CheckPermissionTest {
     void bob_can_edit_and_view_document() {
         boolean canEdit = client.checkPermission(
             full(), "edit",
-            Relationship.of("cp_document", "firstdoc", "edit", "cp_user", "bob"));
+            Relationship.of("document", "firstdoc", "edit", "user", "bob"));
         boolean canView = client.checkPermission(
             full(), "view",
-            Relationship.of("cp_document", "firstdoc", "view", "cp_user", "bob"));
+            Relationship.of("document", "firstdoc", "view", "user", "bob"));
 
         assertThat(canEdit).isTrue();
         assertThat(canView).isTrue();

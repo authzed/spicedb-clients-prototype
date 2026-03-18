@@ -12,4 +12,6 @@ dependencies {
 
 tasks.test {
     useJUnitPlatform()
+    // Run tests sequentially - they share a single SpiceDB instance
+    maxParallelForks = 1
 }

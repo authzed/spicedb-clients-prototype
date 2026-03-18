@@ -2,8 +2,6 @@ package com.authzed.spicedb.examples;
 
 import com.authzed.spicedb.SpiceDBClient;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.*;
@@ -12,84 +10,51 @@ import static org.assertj.core.api.Assertions.*;
  * Demonstrates reading and writing schema using
  * {@link SpiceDBClient#writeSchema} and {@link SpiceDBClient#readSchema}.
  */
-class SchemaManagementTest {
-
-    private SpiceDBClient client;
-
-    @BeforeEach
-    void setUp() {
-        client = SpiceDBClient.createPlaintext("localhost:50051", "somerandomkeyhere");
-    }
-
-    @AfterEach
-    void tearDown() {
-        client.close();
-    }
+class SchemaManagementTest extends SpiceDBIntegrationTest {
 
     @Test
     void write_schema_returns_revision() {
-        String revision = client.writeSchema("""
-            definition sm_user {}
-
-            definition sm_document {
-                relation viewer: sm_user
-                relation editor: sm_user
-                relation owner: sm_user
-                permission view = viewer + editor + owner
-                permission edit = editor + owner
-                permission delete = owner
-            }""");
+        String revision = client.writeSchema(SCHEMA);
 
         assertThat(revision).isNotEmpty();
     }
 
     @Test
     void read_schema_returns_written_definitions() {
-        client.writeSchema("""
-            definition sm_user {}
-
-            definition sm_document {
-                relation viewer: sm_user
-                relation editor: sm_user
-                relation owner: sm_user
-                permission view = viewer + editor + owner
-                permission edit = editor + owner
-                permission delete = owner
-            }""");
-
         SpiceDBClient.SchemaResult result = client.readSchema();
 
         assertThat(result.revision()).isNotEmpty();
-        assertThat(result.schema()).contains("definition sm_user");
-        assertThat(result.schema()).contains("definition sm_document");
+        assertThat(result.schema()).contains("definition user");
+        assertThat(result.schema()).contains("definition document");
         assertThat(result.schema()).contains("permission view");
     }
 
     @Test
     void write_updated_schema_with_new_relation() {
-        client.writeSchema("""
-            definition sm_user {}
+        // Write a schema that adds an admin relation to document
+        String updatedSchema = """
+            definition user {}
 
-            definition sm_document {
-                relation viewer: sm_user
-                permission view = viewer
-            }""");
+            definition document {
+                relation viewer: user
+                relation editor: user
+                relation owner: user
+                relation admin: user
+                permission view = viewer + editor + owner + admin
+                permission edit = editor + owner + admin
+                permission delete = owner + admin
+                permission manage = admin
+            }""";
 
-        // Update the schema with an additional relation
-        String revision = client.writeSchema("""
-            definition sm_user {}
-
-            definition sm_document {
-                relation viewer: sm_user
-                relation editor: sm_user
-                permission view = viewer + editor
-                permission edit = editor
-            }""");
+        String revision = client.writeSchema(updatedSchema);
 
         assertThat(revision).isNotEmpty();
 
         SpiceDBClient.SchemaResult result = client.readSchema();
-        assertThat(result.schema()).contains("relation editor: sm_user");
-        assertThat(result.schema()).contains("permission edit");
+        assertThat(result.schema()).contains("relation admin: user");
+        assertThat(result.schema()).contains("permission manage");
+
+        // Restore the standard schema for subsequent tests
+        client.writeSchema(SCHEMA);
     }
 }

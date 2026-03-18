@@ -91,6 +91,29 @@ public sealed class SpiceDBProtoClient : IDisposable
     }
 
     /// <summary>
+    /// Creates a new SpiceDB proto client from an existing <see cref="GrpcChannel"/>,
+    /// injecting the bearer token via an interceptor.
+    /// This is the escape hatch for advanced channel configuration.
+    /// </summary>
+    /// <param name="channel">A pre-configured gRPC channel.</param>
+    /// <param name="token">Bearer token for authentication.</param>
+    public SpiceDBProtoClient(GrpcChannel channel, string token)
+    {
+        _channel = channel;
+
+        var invoker = channel.CreateCallInvoker().Intercept(metadata =>
+        {
+            metadata.Add("authorization", $"Bearer {token}");
+            return metadata;
+        });
+
+        Permissions = new PermissionsService.PermissionsServiceClient(invoker);
+        Schema = new SchemaService.SchemaServiceClient(invoker);
+        Watch = new WatchService.WatchServiceClient(invoker);
+        Experimental = new ExperimentalService.ExperimentalServiceClient(invoker);
+    }
+
+    /// <summary>
     /// Disposes the underlying gRPC channel.
     /// </summary>
     public void Dispose()

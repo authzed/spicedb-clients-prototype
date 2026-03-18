@@ -37,7 +37,7 @@ public final class SpiceDBClient implements AutoCloseable {
 
     private static final int DEFAULT_READ_PAGE_SIZE = 512;
     private static final int DEFAULT_LOOKUP_PAGE_SIZE = 512;
-    private static final int DEFAULT_DELETE_PAGE_SIZE = 10_000;
+    private static final int DEFAULT_DELETE_PAGE_SIZE = 1_000;
     private static final int DEFAULT_IMPORT_BATCH_SIZE = 1_000;
     private static final int DEFAULT_EXPORT_PAGE_SIZE = 512;
     private static final int DEFAULT_CHECK_BATCH_SIZE = 1_000;

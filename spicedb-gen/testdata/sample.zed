@@ -1,0 +1,14 @@
+definition user {}
+
+definition team {
+    relation member: user | team#member
+}
+
+definition document {
+    relation viewer: user | team#member
+    relation editor: user
+    relation owner: user
+    permission view = viewer + editor + owner
+    permission edit = editor + owner
+    permission delete = owner
+}

@@ -8,13 +8,14 @@ toward correct, performant usage patterns ("pit of success").
 
 ## Backwards Compatibility Mandate
 
-**Public API surfaces are append-only.**
+**Public API surfaces are append-only, unless otherwise specified.**
 
-- Never remove methods or types from the public API
-- Never change method signatures
-- Deprecate with new alternatives — add new methods instead of changing existing ones
-- Examples must always compile and pass
-- This applies even when idiomatic improvements suggest changes
+- Never remove methods or types from the public API, unless removed from the underlying protocol buffer API
+- Never change method signatures, unless forward compatible
+- Deprecate with new alternatives — add new methods instead of changing existing ones, unless existing methods can be changed in a forward-compatible manner
+- This applies even when idiomatic improvements suggest changes, unless explicitly specified to be a `BREAKING CHANGE`. If so, then that specification tests precedence, confirmation must be received from the runner before the changes are made, and the breaking change should be documented in the release notes
+  for each client, with at least one example of how to migrate forward
+- Examples must _ALWAYS_ compile and pass testing, unless the user has _EXPLICITLY_ approved the breaking change
 
 ## Deprecation Propagation
 

@@ -3,6 +3,7 @@ package schema
 import (
 	"fmt"
 	"os"
+	"sort"
 
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
 	"github.com/authzed/spicedb/pkg/schemadsl/compiler"
@@ -38,8 +39,30 @@ func ParseString(schemaText string) (*Schema, error) {
 		defMap[ns.GetName()] = ns
 	}
 
+	// Extract caveat definitions.
+	caveats := make([]CaveatDefinition, 0, len(compiled.CaveatDefinitions))
+	for _, cd := range compiled.CaveatDefinitions {
+		caveat := CaveatDefinition{Name: cd.GetName()}
+		for name, typeRef := range cd.GetParameterTypes() {
+			caveat.Params = append(caveat.Params, CaveatParam{
+				Name: name,
+				Type: celTypeToString(typeRef),
+			})
+		}
+		// Sort params by name for deterministic output.
+		sort.Slice(caveat.Params, func(i, j int) bool {
+			return caveat.Params[i].Name < caveat.Params[j].Name
+		})
+		caveats = append(caveats, caveat)
+	}
+	// Sort caveats by name for deterministic output.
+	sort.Slice(caveats, func(i, j int) bool {
+		return caveats[i].Name < caveats[j].Name
+	})
+
 	schema := &Schema{
 		Definitions: make([]Definition, 0, len(compiled.ObjectDefinitions)),
+		Caveats:     caveats,
 	}
 
 	for _, ns := range compiled.ObjectDefinitions {
@@ -89,6 +112,12 @@ func extractAllowedSubjects(rel *core.Relation) []SubjectType {
 			if rel != "..." {
 				st.Relation = rel
 			}
+		}
+		if reqCaveat := allowed.GetRequiredCaveat(); reqCaveat != nil {
+			st.CaveatName = reqCaveat.GetCaveatName()
+		}
+		if allowed.GetRequiredExpiration() != nil {
+			st.Expiration = true
 		}
 		subjects = append(subjects, st)
 	}
@@ -250,14 +279,16 @@ func subjectsForArrow(
 // dedup removes duplicate SubjectType entries.
 func dedup(subjects []SubjectType) []SubjectType {
 	type key struct {
-		def      string
-		rel      string
-		wildcard bool
+		def        string
+		rel        string
+		wildcard   bool
+		caveatName string
+		expiration bool
 	}
 	seen := make(map[key]struct{}, len(subjects))
 	result := make([]SubjectType, 0, len(subjects))
 	for _, s := range subjects {
-		k := key{s.Definition, s.Relation, s.Wildcard}
+		k := key{s.Definition, s.Relation, s.Wildcard, s.CaveatName, s.Expiration}
 		if _, ok := seen[k]; ok {
 			continue
 		}
@@ -265,4 +296,12 @@ func dedup(subjects []SubjectType) []SubjectType {
 		result = append(result, s)
 	}
 	return result
+}
+
+// celTypeToString converts a CaveatTypeReference to its string type name.
+func celTypeToString(ref *core.CaveatTypeReference) string {
+	if ref == nil {
+		return "any"
+	}
+	return ref.GetTypeName()
 }

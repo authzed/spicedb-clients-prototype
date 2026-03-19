@@ -12,7 +12,7 @@ import (
 
 func typeErrors() {
 	// editor only accepts UserRef (DocumentEditorSubject), not TeamMemberRef
-	_ = Document("x").Editor(TeamMember("eng")) // should not compile
+	_ = Document("x").Editor(Team("eng").Member()) // should not compile
 
 	// editor does not accept caveated user (UserIpRange is not a DocumentEditorSubject)
 	_ = Document("x").Editor(User("x").WithIpRange(IpRangeContext{})) // should not compile

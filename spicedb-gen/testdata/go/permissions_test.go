@@ -57,7 +57,7 @@ func TestTouchAndCheck(t *testing.T) {
 		Document("readme").Viewer(User("alice")),
 		Document("readme").Editor(User("bob")),
 		Document("readme").Owner(User("charlie")),
-		Document("readme").Viewer(TeamMember("eng")),
+		Document("readme").Viewer(Team("eng").Member()),
 	)
 	require.NoError(t, err)
 
@@ -90,7 +90,7 @@ func TestTouchAndCheck(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, allowed, "charlie should be able to delete")
 
-	allowed, err = Check(ctx, tc, cs, Document("readme").View(), TeamMember("eng"))
+	allowed, err = Check(ctx, tc, cs, Document("readme").View(), Team("eng").Member())
 	require.NoError(t, err)
 	assert.True(t, allowed, "team#member eng should be able to view")
 }

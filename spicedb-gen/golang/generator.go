@@ -34,7 +34,6 @@ type TemplateData struct {
 	Definitions          []DefinitionData
 	SealedInterfaces     []SealedInterfaceData
 	PermissionVars       []PermissionVarData
-	SubRefConstructors   []SubRefConstructorData
 }
 
 // CaveatContextData holds data for generating a caveat context struct.
@@ -112,12 +111,6 @@ type SubRefMethodData struct {
 	ReturnType string // e.g. "TeamMemberRef"
 }
 
-// SubRefConstructorData holds data for a standalone sub-ref constructor function,
-// used when the sub-ref method name conflicts with a relation method.
-type SubRefConstructorData struct {
-	FuncName   string // e.g. "TeamMember"
-	ReturnType string // e.g. "TeamMemberRef"
-}
 
 // SealedInterfaceData holds data for generating a sealed interface.
 type SealedInterfaceData struct {
@@ -451,7 +444,6 @@ func buildTemplateData(s *schema.Schema) TemplateData {
 	}
 
 	// Build DefinitionData
-	var subRefConstructors []SubRefConstructorData
 	var definitions []DefinitionData
 	for _, def := range s.Definitions {
 		dd := DefinitionData{
@@ -476,11 +468,12 @@ func buildTemplateData(s *schema.Schema) TemplateData {
 			})
 		}
 
-		// Build sub-ref methods, checking for conflicts with relation names
-		relationNames := map[string]bool{}
-		for _, rel := range def.Relations {
-			relationNames[toPascalCase(rel.Name)] = true
-		}
+		// Build sub-ref methods and detect conflicts with relation names.
+		// When a sub-ref name conflicts with a relation name (e.g., team.member is
+		// both a relation and a sub-ref), the sub-ref method always wins (no args,
+		// returns the ref type), and the relation write method gets a "For" prefix
+		// (e.g., ForMember).
+		subRefNames := map[string]bool{}
 		for _, rel := range def.Relations {
 			sr := subRef{def.Name, rel.Name}
 			if !subRefs[sr] {
@@ -488,17 +481,16 @@ func buildTemplateData(s *schema.Schema) TemplateData {
 			}
 			methodName := toPascalCase(rel.Name)
 			returnType := toPascalCase(def.Name) + toPascalCase(rel.Name) + "Ref"
-			if relationNames[methodName] {
-				// Conflict: relation method has the same name, use standalone constructor
-				subRefConstructors = append(subRefConstructors, SubRefConstructorData{
-					FuncName:   toPascalCase(def.Name) + toPascalCase(rel.Name),
-					ReturnType: returnType,
-				})
-			} else {
-				dd.SubRefMethods = append(dd.SubRefMethods, SubRefMethodData{
-					MethodName: methodName,
-					ReturnType: returnType,
-				})
+			subRefNames[methodName] = true
+			dd.SubRefMethods = append(dd.SubRefMethods, SubRefMethodData{
+				MethodName: methodName,
+				ReturnType: returnType,
+			})
+		}
+		// Rename conflicting relation methods with "For" prefix
+		for i, rel := range dd.Relations {
+			if subRefNames[rel.PascalName] {
+				dd.Relations[i].PascalName = "For" + rel.PascalName
 			}
 		}
 
@@ -525,7 +517,7 @@ func buildTemplateData(s *schema.Schema) TemplateData {
 		Definitions:        definitions,
 		SealedInterfaces:   sealedInterfaces,
 		PermissionVars:     permissionVars,
-		SubRefConstructors: subRefConstructors,
+
 	}
 }
 

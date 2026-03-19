@@ -22,14 +22,14 @@ type Subject interface {
 }
 
 // Permission represents a permission check target (resource + permission).
-type Permission[S Subject] struct {
+type Permission struct {
 	resourceType string
 	resourceID   string
 	permission   string
 }
 
 // PermissionRef represents a permission reference without a specific resource ID (for LookupResources).
-type PermissionRef[S Subject] struct {
+type PermissionRef struct {
 	resourceType string
 	permission   string
 }
@@ -208,12 +208,6 @@ func (r {{$def.PascalName}}Ref) {{$sr.MethodName}}() {{$sr.ReturnType}} {
 {{end}}
 {{- end}}
 {{- end}}
-{{- range $src := .SubRefConstructors}}
-// {{$src.FuncName}} creates a {{$src.ReturnType}} with the given ID.
-func {{$src.FuncName}}(id string) {{$src.ReturnType}} {
-	return {{$src.ReturnType}}{id: id}
-}
-{{end}}
 
 // --- Sealed Subject Interfaces ---
 {{range $si := .SealedInterfaces}}
@@ -230,8 +224,8 @@ func ({{$impl}}) {{$si.MarkerMethod}}() {}
 {{range $def := .Definitions}}
 {{- range $perm := $def.Permissions}}
 // {{$perm.PascalName}} returns a Permission for checking {{$perm.Name}} on this {{$def.Name}}.
-func (d {{$def.PascalName}}Ref) {{$perm.PascalName}}() Permission[{{$perm.InterfaceName}}] {
-	return Permission[{{$perm.InterfaceName}}]{resourceType: "{{$def.Name}}", resourceID: d.id, permission: "{{$perm.Name}}"}
+func (d {{$def.PascalName}}Ref) {{$perm.PascalName}}() Permission {
+	return Permission{resourceType: "{{$def.Name}}", resourceID: d.id, permission: "{{$perm.Name}}"}
 }
 {{end}}
 {{- end}}
@@ -239,7 +233,7 @@ func (d {{$def.PascalName}}Ref) {{$perm.PascalName}}() Permission[{{$perm.Interf
 // --- Static Permission Ref Vars ---
 var (
 {{- range $pv := .PermissionVars}}
-	{{$pv.VarName}} = PermissionRef[{{$pv.InterfaceName}}]{resourceType: "{{$pv.ResourceType}}", permission: "{{$pv.PermissionName}}"}
+	{{$pv.VarName}} = PermissionRef{resourceType: "{{$pv.ResourceType}}", permission: "{{$pv.PermissionName}}"}
 {{- end}}
 )
 
@@ -261,22 +255,26 @@ func (d {{$def.PascalName}}Ref) {{$rel.PascalName}}(subject {{$rel.InterfaceName
 {{end}}
 {{- end}}
 
-// --- Generic Functions ---
+// --- Check and Lookup Functions ---
 
 // Check checks whether the given subject has the specified permission on the resource.
-func Check[S Subject](ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm Permission[S], subject S) (bool, error) {
+func Check(ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm Permission, subject Subject) (bool, error) {
 	sType, sID, sRel := subject.subjectRef()
-	return tc.Client.CheckPermission(ctx, cs, perm.resourceType, perm.resourceID, perm.permission, sType, sID, sRel)
+	r, err := rel.FromTriple(perm.resourceType, perm.resourceID, perm.permission, sType, sID, sRel)
+	if err != nil {
+		return false, err
+	}
+	return tc.Client.CheckOne(ctx, cs, perm.permission, r)
 }
 
 // LookupResources returns an iterator of resource IDs that the subject has the specified permission on.
-func LookupResources[S Subject](ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm PermissionRef[S], subject S) iter.Seq2[string, error] {
-	sType, sID, sRel := subject.subjectRef()
-	return tc.Client.LookupResources(ctx, cs, perm.resourceType, perm.permission, sType, sID, sRel)
+func LookupResources(ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm PermissionRef, subject Subject) iter.Seq2[string, error] {
+	sType, sID, _ := subject.subjectRef()
+	return tc.Client.LookupResources(ctx, cs, perm.resourceType, perm.permission, sType, sID)
 }
 
 // LookupSubjects returns an iterator of subject IDs that have the specified permission on the resource.
-func LookupSubjects[S Subject](ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm Permission[S], subjectType S) iter.Seq2[string, error] {
+func LookupSubjects(ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm Permission, subjectType Subject) iter.Seq2[string, error] {
 	sType, _, _ := subjectType.subjectRef()
 	return tc.Client.LookupSubjects(ctx, cs, perm.resourceType, perm.resourceID, perm.permission, sType)
 }
@@ -285,27 +283,27 @@ func LookupSubjects[S Subject](ctx context.Context, tc *TypedClient, cs consiste
 
 // Touch creates or updates the given relationships.
 func (tc *TypedClient) Touch(ctx context.Context, rels ...TypedRelationship) (string, error) {
-	raw := make([]rel.Relationship, len(rels))
-	for i, r := range rels {
-		raw[i] = r.r
+	var txn rel.Txn
+	for _, r := range rels {
+		txn.Touch(r.r)
 	}
-	return tc.Client.Touch(ctx, raw...)
+	return tc.Client.Write(ctx, txn)
 }
 
 // Create creates the given relationships, failing if they already exist.
 func (tc *TypedClient) Create(ctx context.Context, rels ...TypedRelationship) (string, error) {
-	raw := make([]rel.Relationship, len(rels))
-	for i, r := range rels {
-		raw[i] = r.r
+	var txn rel.Txn
+	for _, r := range rels {
+		txn.Create(r.r)
 	}
-	return tc.Client.Create(ctx, raw...)
+	return tc.Client.Write(ctx, txn)
 }
 
 // Delete deletes the given relationships.
 func (tc *TypedClient) Delete(ctx context.Context, rels ...TypedRelationship) (string, error) {
-	raw := make([]rel.Relationship, len(rels))
-	for i, r := range rels {
-		raw[i] = r.r
+	var txn rel.Txn
+	for _, r := range rels {
+		txn.Delete(r.r)
 	}
-	return tc.Client.Delete(ctx, raw...)
+	return tc.Client.Write(ctx, txn)
 }

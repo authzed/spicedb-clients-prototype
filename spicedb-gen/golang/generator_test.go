@@ -41,8 +41,8 @@ func TestGenerateSampleSchema(t *testing.T) {
 	assert.Contains(t, output, "expirationTime() *time.Time")
 
 	// Permission and PermissionRef types
-	assert.Contains(t, output, "type Permission[S Subject] struct {")
-	assert.Contains(t, output, "type PermissionRef[S Subject] struct {")
+	assert.Contains(t, output, "type Permission struct {")
+	assert.Contains(t, output, "type PermissionRef struct {")
 
 	// TypedClient
 	assert.Contains(t, output, "type TypedClient struct {")
@@ -79,7 +79,8 @@ func TestGenerateSampleSchema(t *testing.T) {
 	assert.Contains(t, output, "func Document(id string) DocumentRef {")
 
 	// SubRef constructors (conflict with relation name "member")
-	assert.Contains(t, output, "func TeamMember(id string) TeamMemberRef {")
+	// SubRef method: Team("eng").Member() returns TeamMemberRef
+	assert.Contains(t, output, "func (r TeamRef) Member() TeamMemberRef {")
 
 	// Type sentinels
 	assert.Contains(t, output, "var UserType = userRefType{}")
@@ -102,25 +103,26 @@ func TestGenerateSampleSchema(t *testing.T) {
 	assert.NotContains(t, output, "func (UserTimeWindow) isDocumentEditorSubject() {}")
 
 	// Permission accessors
-	assert.Contains(t, output, "func (d DocumentRef) View() Permission[DocumentViewSubject] {")
-	assert.Contains(t, output, "func (d DocumentRef) Edit() Permission[DocumentEditSubject] {")
-	assert.Contains(t, output, "func (d DocumentRef) Delete() Permission[DocumentDeleteSubject] {")
+	assert.Contains(t, output, "func (d DocumentRef) View() Permission {")
+	assert.Contains(t, output, "func (d DocumentRef) Edit() Permission {")
+	assert.Contains(t, output, "func (d DocumentRef) Delete() Permission {")
 
 	// Static permission ref vars
-	assert.Contains(t, output, "Document_View = PermissionRef[DocumentViewSubject]")
-	assert.Contains(t, output, "Document_Edit = PermissionRef[DocumentEditSubject]")
-	assert.Contains(t, output, "Document_Delete = PermissionRef[DocumentDeleteSubject]")
+	assert.Contains(t, output, "Document_View = PermissionRef{")
+	assert.Contains(t, output, "Document_Edit = PermissionRef{")
+	assert.Contains(t, output, "Document_Delete = PermissionRef{")
 
 	// Relation methods
 	assert.Contains(t, output, "func (d DocumentRef) Viewer(subject DocumentViewerSubject) TypedRelationship {")
 	assert.Contains(t, output, "func (d DocumentRef) Editor(subject DocumentEditorSubject) TypedRelationship {")
 	assert.Contains(t, output, "func (d DocumentRef) Owner(subject DocumentOwnerSubject) TypedRelationship {")
-	assert.Contains(t, output, "func (d TeamRef) Member(subject TeamMemberSubject) TypedRelationship {")
+	// Relation method renamed to ForMember due to SubRef conflict
+	assert.Contains(t, output, "func (d TeamRef) ForMember(subject TeamMemberSubject) TypedRelationship {")
 
-	// Generic functions
-	assert.Contains(t, output, "func Check[S Subject](ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm Permission[S], subject S) (bool, error) {")
-	assert.Contains(t, output, "func LookupResources[S Subject](ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm PermissionRef[S], subject S) iter.Seq2[string, error] {")
-	assert.Contains(t, output, "func LookupSubjects[S Subject](ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm Permission[S], subjectType S) iter.Seq2[string, error] {")
+	// Check and lookup functions (non-generic, accept Subject interface)
+	assert.Contains(t, output, "func Check(ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm Permission, subject Subject) (bool, error) {")
+	assert.Contains(t, output, "func LookupResources(ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm PermissionRef, subject Subject) iter.Seq2[string, error] {")
+	assert.Contains(t, output, "func LookupSubjects(ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm Permission, subjectType Subject) iter.Seq2[string, error] {")
 
 	// Write methods
 	assert.Contains(t, output, "func (tc *TypedClient) Touch(ctx context.Context, rels ...TypedRelationship) (string, error) {")

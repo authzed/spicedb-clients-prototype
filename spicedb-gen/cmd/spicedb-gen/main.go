@@ -10,6 +10,7 @@ import (
 	"github.com/authzed/spicedb-clients/spicedb-gen/schema"
 
 	// Register language generators.
+	_ "github.com/authzed/spicedb-clients/spicedb-gen/golang"
 	_ "github.com/authzed/spicedb-clients/spicedb-gen/typescript"
 )
 
@@ -50,7 +51,9 @@ func main() {
 	for _, f := range files {
 		dest := *outPath
 		if len(files) > 1 {
-			dest = filepath.Join(filepath.Dir(*outPath), f.Path)
+			dest = filepath.Join(*outPath, f.Path)
+		} else if info, err := os.Stat(*outPath); err == nil && info.IsDir() {
+			dest = filepath.Join(*outPath, f.Path)
 		}
 		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 			fmt.Fprintf(os.Stderr, "error creating output directory: %v\n", err)

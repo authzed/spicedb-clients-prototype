@@ -26,9 +26,9 @@ func Test() error {
 	return sh.RunV("go", "test", "-v", "./...")
 }
 
-// IntegrationTest builds the CLI, generates TypeScript code from the sample
-// schema, type-checks it, starts SpiceDB, runs vitest, then stops SpiceDB.
-func IntegrationTest() error {
+// TypeScriptIntegrationTest builds the CLI, generates TypeScript code from the
+// sample schema, type-checks it, starts SpiceDB, runs vitest, then stops SpiceDB.
+func TypeScriptIntegrationTest() error {
 	// 1. Build CLI
 	fmt.Println("==> Building spicedb-gen...")
 	if err := Build(); err != nil {
@@ -81,8 +81,77 @@ func IntegrationTest() error {
 		return fmt.Errorf("vitest failed: %w", err)
 	}
 
-	fmt.Println("==> All integration tests passed!")
+	fmt.Println("==> TypeScript integration tests passed!")
 	return nil
+}
+
+// GoIntegrationTest builds the CLI, generates Go code from the sample schema,
+// verifies type safety, starts SpiceDB, runs go test, then stops SpiceDB.
+func GoIntegrationTest() error {
+	// 1. Build CLI
+	fmt.Println("==> Building spicedb-gen...")
+	if err := Build(); err != nil {
+		return fmt.Errorf("build failed: %w", err)
+	}
+
+	// 2. Generate permissions.gen.go from sample.zed
+	fmt.Println("==> Generating permissions.gen.go from sample.zed...")
+	if err := sh.RunV(
+		"./spicedb-gen",
+		"--schema", "testdata/sample.zed",
+		"--lang", "go",
+		"--out", "testdata/go/permissions.gen.go",
+	); err != nil {
+		return fmt.Errorf("code generation failed: %w", err)
+	}
+	defer os.Remove("testdata/go/permissions.gen.go")
+
+	// 3. Verify generated code compiles
+	fmt.Println("==> Verifying generated code compiles...")
+	if err := runInDir("testdata/go", "go", "build", "."); err != nil {
+		return fmt.Errorf("generated code does not compile: %w", err)
+	}
+
+	// 4. Verify type_errors_test.go does NOT compile (type safety check)
+	fmt.Println("==> Verifying type errors are caught at compile time...")
+	err := runInDir("testdata/go", "go", "test", "-c", "-o", os.DevNull, "-tags", "typeerror")
+	if err == nil {
+		return fmt.Errorf("type_errors_test.go compiled successfully but should have failed")
+	}
+	fmt.Println("    (expected compile failure confirmed)")
+
+	// 5. Start SpiceDB via docker-compose
+	fmt.Println("==> Starting SpiceDB...")
+	if err := sh.RunV("docker", "compose", "-f", "docker-compose.test.yml", "up", "-d"); err != nil {
+		return fmt.Errorf("docker compose up failed: %w", err)
+	}
+	defer func() {
+		fmt.Println("==> Stopping SpiceDB...")
+		_ = sh.RunV("docker", "compose", "-f", "docker-compose.test.yml", "down")
+	}()
+
+	// Wait for SpiceDB to be ready
+	fmt.Println("==> Waiting for SpiceDB to be ready...")
+	if err := waitForReady("localhost:50051", 30*time.Second); err != nil {
+		return err
+	}
+
+	// 6. Run go test
+	fmt.Println("==> Running Go integration tests...")
+	if err := runInDir("testdata/go", "go", "test", "-v", "."); err != nil {
+		return fmt.Errorf("go test failed: %w", err)
+	}
+
+	fmt.Println("==> Go integration tests passed!")
+	return nil
+}
+
+// IntegrationTest runs both TypeScript and Go integration tests.
+func IntegrationTest() error {
+	if err := TypeScriptIntegrationTest(); err != nil {
+		return err
+	}
+	return GoIntegrationTest()
 }
 
 func waitForReady(addr string, timeout time.Duration) error {

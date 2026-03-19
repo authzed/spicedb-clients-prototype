@@ -30,7 +30,7 @@ describe("TypedClient", () => {
                 Document("readme").viewer(User("alice")),
                 Document("readme").editor(User("bob")),
                 Document("readme").owner(User("charlie")),
-                Document("readme").viewer(Team.member("eng")),
+                Document("readme").viewer(Team("eng").member()),
             );
 
             expect(await tc.check(full(), Document("readme").view, User("alice"))).toBe(true);
@@ -38,7 +38,7 @@ describe("TypedClient", () => {
             expect(await tc.check(full(), Document("readme").view, User("bob"))).toBe(true);
             expect(await tc.check(full(), Document("readme").edit, User("bob"))).toBe(true);
             expect(await tc.check(full(), Document("readme").delete, User("charlie"))).toBe(true);
-            expect(await tc.check(full(), Document("readme").view, Team.member("eng"))).toBe(true);
+            expect(await tc.check(full(), Document("readme").view, Team("eng").member())).toBe(true);
         });
     });
 

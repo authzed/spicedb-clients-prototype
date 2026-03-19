@@ -33,7 +33,7 @@ func TestGenerateSampleSchema(t *testing.T) {
 	assert.Contains(t, output, `type TeamMemberRef = { _type: "team"; _id: string; _relation: "member" };`)
 
 	// Factory functions
-	assert.Contains(t, output, `export function User(id: string): UserRef {`)
+	assert.Contains(t, output, `export function User(id: string) {`)
 	assert.Contains(t, output, `export function Team(id: string) {`)
 	assert.Contains(t, output, `export function Document(id: string) {`)
 
@@ -42,31 +42,32 @@ func TestGenerateSampleSchema(t *testing.T) {
 	assert.Contains(t, output, `edit: { _type: "document" as const, _id: id, _permission: "edit" as const },`)
 	assert.Contains(t, output, `delete: { _type: "document" as const, _id: id, _permission: "delete" as const },`)
 
-	// Subject constraints on relations
-	assert.Contains(t, output, `viewer: (subject: UserRef | TeamMemberRef) => ({`)
+	// Subject constraints on relations (viewer includes caveated variants)
+	assert.Contains(t, output, `viewer: (subject: UserRef | UserIpRangeRef | UserTimeWindowRef | TeamMemberRef) => ({`)
 	assert.Contains(t, output, `editor: (subject: UserRef) => ({`)
 	assert.Contains(t, output, `owner: (subject: UserRef) => ({`)
 
-	// Team member relation
-	assert.Contains(t, output, `member: (subject: UserRef | TeamMemberRef) => ({`)
+	// Team member relation (also a SubRef — accepts optional subject)
+	assert.Contains(t, output, `member: (subject?: UserRef | TeamMemberRef): any => subject === undefined`)
 
 	// Static properties for lookups
 	assert.Contains(t, output, `Document.view = { _type: "document" as const, _permission: "view" as const };`)
 	assert.Contains(t, output, `Document.edit = { _type: "document" as const, _permission: "edit" as const };`)
 	assert.Contains(t, output, `Document.delete = { _type: "document" as const, _permission: "delete" as const };`)
 
-	// Static sub-ref method
-	assert.Contains(t, output, `Team.member = (id: string): TeamMemberRef => ({`)
+	// SubRef via relation method (no-arg call returns TeamMemberRef)
+	assert.Contains(t, output, `member: (subject?:`)
+	assert.NotContains(t, output, `Team.member = (id: string)`)
 
 	// TypedClient class
 	assert.Contains(t, output, `export class TypedClient {`)
 	assert.Contains(t, output, `readonly client: SpiceDBClient;`)
 	assert.Contains(t, output, `static create(endpoint: string, token: string`)
 
-	// Check overloads
-	assert.Contains(t, output, `async check(c: ConsistencyStrategy, p: { _type: "document"; _id: string; _permission: "view" }, s: UserRef | TeamMemberRef): Promise<boolean>;`)
-	assert.Contains(t, output, `async check(c: ConsistencyStrategy, p: { _type: "document"; _id: string; _permission: "edit" }, s: UserRef): Promise<boolean>;`)
-	assert.Contains(t, output, `async check(c: ConsistencyStrategy, p: { _type: "document"; _id: string; _permission: "delete" }, s: UserRef): Promise<boolean>;`)
+	// Check overloads (view includes caveated variants)
+	assert.Contains(t, output, `async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "view" }, s: UserRef | UserIpRangeRef | UserTimeWindowRef | TeamMemberRef): Promise<boolean>;`)
+	assert.Contains(t, output, `async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "edit" }, s: UserRef): Promise<boolean>;`)
+	assert.Contains(t, output, `async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "delete" }, s: UserRef): Promise<boolean>;`)
 
 	// Check implementation
 	assert.Contains(t, output, `return this.client.checkPermission(c, {`)
@@ -77,19 +78,38 @@ func TestGenerateSampleSchema(t *testing.T) {
 	assert.Contains(t, output, `async delete(`)
 
 	// LookupResources overloads
-	assert.Contains(t, output, `async lookupResources(c: ConsistencyStrategy, p: { _type: "document"; _permission: "view" }, s: UserRef | TeamMemberRef): Promise<string[]>;`)
+	assert.Contains(t, output, `async lookupResources(c: Consistency, p: { _type: "document"; _permission: "view" }, s: UserRef | UserIpRangeRef | UserTimeWindowRef | TeamMemberRef): Promise<AsyncIterableIterator<string>>;`)
 
 	// LookupSubjects overloads
-	assert.Contains(t, output, `async lookupSubjects(c: ConsistencyStrategy, p: { _type: "document"; _id: string; _permission: "view" }`)
+	assert.Contains(t, output, `async lookupSubjects(c: Consistency, p: { _type: "document"; _id: string; _permission: "view" }`)
 
 	// ReadRelationships
-	assert.Contains(t, output, `async readRelationships(`)
+	assert.Contains(t, output, `readRelationships(`)
 
 	// Imports
 	assert.Contains(t, output, `import {`)
 	assert.Contains(t, output, `SpiceDBClient,`)
 	assert.Contains(t, output, `createSpiceDBClient,`)
 	assert.Contains(t, output, `Transaction,`)
+
+	// Caveat context interfaces
+	assert.Contains(t, output, `export interface IpRangeContext {`)
+	assert.Contains(t, output, `allowedCidr?: string;`)
+	assert.Contains(t, output, `export interface TimeWindowContext {`)
+	assert.Contains(t, output, `start?: string;`)
+	assert.Contains(t, output, `end?: string;`)
+
+	// Caveated subject variant types
+	assert.Contains(t, output, `type UserIpRangeRef = { _type: "user"; _id: string; _caveat: "ip_range"; _caveatContext: IpRangeContext };`)
+	assert.Contains(t, output, `type UserTimeWindowRef = { _type: "user"; _id: string; _caveat: "time_window"; _caveatContext: TimeWindowContext };`)
+
+	// Caveat methods on User factory
+	assert.Contains(t, output, `withIpRange: (ctx: IpRangeContext): UserIpRangeRef`)
+	assert.Contains(t, output, `withTimeWindow: (ctx: TimeWindowContext): UserTimeWindowRef`)
+
+	// Write operations include caveat fields
+	assert.Contains(t, output, `caveatName: r._subject._caveat`)
+	assert.Contains(t, output, `caveatContext: r._subject._caveatContext`)
 
 	// Generated file header
 	assert.Contains(t, output, `DO NOT EDIT`)
@@ -157,4 +177,43 @@ func TestBuildSubjectUnion(t *testing.T) {
 func TestSubjectRefTypeName(t *testing.T) {
 	assert.Equal(t, "UserRef", subjectRefTypeName(schema.SubjectType{Definition: "user"}))
 	assert.Equal(t, "TeamMemberRef", subjectRefTypeName(schema.SubjectType{Definition: "team", Relation: "member"}))
+	assert.Equal(t, "UserIpRangeRef", subjectRefTypeName(schema.SubjectType{Definition: "user", CaveatName: "ip_range"}))
+	assert.Equal(t, "TeamMemberTimeWindowRef", subjectRefTypeName(schema.SubjectType{Definition: "team", Relation: "member", CaveatName: "time_window"}))
+}
+
+func TestToCamelCase(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"allowed_cidr", "allowedCidr"},
+		{"start", "start"},
+		{"my_long_name", "myLongName"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			assert.Equal(t, tt.expected, toCamelCase(tt.input))
+		})
+	}
+}
+
+func TestCelTypeToTS(t *testing.T) {
+	assert.Equal(t, "string", celTypeToTS("string"))
+	assert.Equal(t, "number", celTypeToTS("int"))
+	assert.Equal(t, "number", celTypeToTS("uint"))
+	assert.Equal(t, "number", celTypeToTS("double"))
+	assert.Equal(t, "boolean", celTypeToTS("bool"))
+	assert.Equal(t, "string", celTypeToTS("duration"))
+	assert.Equal(t, "string", celTypeToTS("timestamp"))
+	assert.Equal(t, "unknown", celTypeToTS("foo"))
+}
+
+func TestBuildSubjectUnionWithCaveats(t *testing.T) {
+	subjects := []schema.SubjectType{
+		{Definition: "user"},
+		{Definition: "user", CaveatName: "ip_range"},
+		{Definition: "team", Relation: "member"},
+	}
+	assert.Equal(t, "UserRef | UserIpRangeRef | TeamMemberRef", buildSubjectUnion(subjects))
 }

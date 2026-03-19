@@ -22,9 +22,9 @@ export interface {{.InterfaceName}} {
 
 // --- Types ---
 {{- range $def := .Definitions}}
-type {{$def.PascalName}}Ref = { _type: "{{$def.Name}}"; _id: string };
+type {{$def.PascalName}}Ref = { _type: "{{$def.Name}}"; _id: string; _caveat?: never };
 {{- range $sr := $def.SubRefTypes}}
-type {{$sr.RefTypeName}} = { _type: "{{$def.Name}}"; _id: string; _relation: "{{$sr.Relation}}" };
+type {{$sr.RefTypeName}} = { _type: "{{$def.Name}}"; _id: string; _relation: "{{$sr.Relation}}"; _caveat?: never };
 {{- end}}
 {{- end}}
 {{- if .CaveatedSubjectTypes}}
@@ -45,10 +45,11 @@ export function {{$def.PascalName}}(id: string) {
     return {
         _type: "{{$def.Name}}" as const,
         _id: id,
+        _caveat: undefined as undefined,
         // Caveat methods
 {{- range $def.CaveatMethods}}
         {{.MethodName}}: (ctx: {{.ContextType}}): {{.ReturnType}} => ({
-            _type: "{{$def.Name}}", _id: id, _caveat: "{{.CaveatName}}", _caveatContext: ctx,
+            _type: "{{$def.Name}}", _id: id, _caveat: "{{.CaveatName}}" as const, _caveatContext: ctx,
         }),
 {{- end}}
     };
@@ -73,9 +74,9 @@ export function {{$def.PascalName}}(id: string) {
         // Relations
 {{- range $def.Relations}}
 {{- if .IsSubRef}}
-        {{.Name}}: (subject?: {{.SubjectUnion}}): any => subject === undefined
+        {{.Name}}: ((subject?: {{.SubjectUnion}}): {{.SubRefTypeName}} | { _type: "{{$def.Name}}"; _id: string; _relation: "{{.Name}}"; _subject: {{.SubjectUnion}} } => subject === undefined
             ? ({ _type: "{{$def.Name}}", _id: id, _relation: "{{.Name}}" }) as {{.SubRefTypeName}}
-            : ({ _type: "{{$def.Name}}" as const, _id: id, _relation: "{{.Name}}" as const, _subject: subject }),
+            : ({ _type: "{{$def.Name}}" as const, _id: id, _relation: "{{.Name}}" as const, _subject: subject })) as { (): {{.SubRefTypeName}}; (subject: {{.SubjectUnion}}): { _type: "{{$def.Name}}"; _id: string; _relation: "{{.Name}}"; _subject: {{.SubjectUnion}} } },
 {{- else}}
         {{.Name}}: (subject: {{.SubjectUnion}}) => ({
             _type: "{{$def.Name}}" as const, _id: id,
@@ -88,7 +89,7 @@ export function {{$def.PascalName}}(id: string) {
         // Caveat methods
 {{- range $def.CaveatMethods}}
         {{.MethodName}}: (ctx: {{.ContextType}}): {{.ReturnType}} => ({
-            _type: "{{$def.Name}}", _id: id, _caveat: "{{.CaveatName}}", _caveatContext: ctx,
+            _type: "{{$def.Name}}", _id: id, _caveat: "{{.CaveatName}}" as const, _caveatContext: ctx,
         }),
 {{- end}}
 {{- end}}
@@ -119,41 +120,40 @@ export class TypedClient {
     async check(c: Consistency, p: { _type: "{{$def.Name}}"; _id: string; _permission: "{{.Name}}" }, s: {{.SubjectUnion}}): Promise<boolean>;
 {{- end}}
 {{- end}}
-    async check(c: Consistency, p: { _type: string; _id: string; _permission: string }, s: { _type: string; _id: string; _relation?: string; _caveat?: string; _caveatContext?: Record<string, unknown> }): Promise<boolean> {
+    async check(c: Consistency, p: { _type: string; _id: string; _permission: string }, s: { _type: string; _id: string; _relation?: string; _caveat?: string; _caveatContext?: Record<string, any> }): Promise<boolean> {
         return this.client.checkPermission(c, {
             resourceType: p._type, resourceId: p._id, permission: p._permission,
             subjectType: s._type, subjectId: s._id, subjectRelation: (s as any)._relation,
-            caveatName: (s as any)._caveat, caveatContext: (s as any)._caveatContext,
         });
     }
 
     // Write operations
-    async touch(...rels: Array<{ _type: string; _relation: string; _id: string; _subject: { _type: string; _id: string; _relation?: string; _caveat?: string; _caveatContext?: Record<string, unknown> } }>): Promise<string> {
+    async touch(...rels: Array<{ _type: string; _relation: string; _id: string; _subject: { _type: string; _id: string; _relation?: string; _caveat?: string; _caveatContext?: Record<string, any> } }>): Promise<string> {
         const txn = new Transaction();
         for (const r of rels) {
             txn.touch({ resourceType: r._type, resourceId: r._id, resourceRelation: r._relation,
                         subjectType: r._subject._type, subjectId: r._subject._id, subjectRelation: r._subject._relation,
-                        caveatName: r._subject._caveat, caveatContext: r._subject._caveatContext });
+                        caveatName: r._subject._caveat, caveatContext: r._subject._caveatContext as any });
         }
         return this.client.write(txn);
     }
 
-    async create(...rels: Array<{ _type: string; _relation: string; _id: string; _subject: { _type: string; _id: string; _relation?: string; _caveat?: string; _caveatContext?: Record<string, unknown> } }>): Promise<string> {
+    async create(...rels: Array<{ _type: string; _relation: string; _id: string; _subject: { _type: string; _id: string; _relation?: string; _caveat?: string; _caveatContext?: Record<string, any> } }>): Promise<string> {
         const txn = new Transaction();
         for (const r of rels) {
             txn.create({ resourceType: r._type, resourceId: r._id, resourceRelation: r._relation,
                          subjectType: r._subject._type, subjectId: r._subject._id, subjectRelation: r._subject._relation,
-                         caveatName: r._subject._caveat, caveatContext: r._subject._caveatContext });
+                         caveatName: r._subject._caveat, caveatContext: r._subject._caveatContext as any });
         }
         return this.client.write(txn);
     }
 
-    async delete(...rels: Array<{ _type: string; _relation: string; _id: string; _subject: { _type: string; _id: string; _relation?: string; _caveat?: string; _caveatContext?: Record<string, unknown> } }>): Promise<string> {
+    async delete(...rels: Array<{ _type: string; _relation: string; _id: string; _subject: { _type: string; _id: string; _relation?: string; _caveat?: string; _caveatContext?: Record<string, any> } }>): Promise<string> {
         const txn = new Transaction();
         for (const r of rels) {
             txn.delete({ resourceType: r._type, resourceId: r._id, resourceRelation: r._relation,
                          subjectType: r._subject._type, subjectId: r._subject._id, subjectRelation: r._subject._relation,
-                         caveatName: r._subject._caveat, caveatContext: r._subject._caveatContext });
+                         caveatName: r._subject._caveat, caveatContext: r._subject._caveatContext as any });
         }
         return this.client.write(txn);
     }

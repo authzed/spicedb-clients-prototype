@@ -26,11 +26,11 @@ func TestGenerateSampleSchema(t *testing.T) {
 
 	output := string(files[0].Content)
 
-	// Ref types
-	assert.Contains(t, output, `type UserRef = { _type: "user"; _id: string };`)
-	assert.Contains(t, output, `type TeamRef = { _type: "team"; _id: string };`)
-	assert.Contains(t, output, `type DocumentRef = { _type: "document"; _id: string };`)
-	assert.Contains(t, output, `type TeamMemberRef = { _type: "team"; _id: string; _relation: "member" };`)
+	// Ref types (include _caveat?: never to prevent structural subtyping with caveated variants)
+	assert.Contains(t, output, `type UserRef = { _type: "user"; _id: string; _caveat?: never };`)
+	assert.Contains(t, output, `type TeamRef = { _type: "team"; _id: string; _caveat?: never };`)
+	assert.Contains(t, output, `type DocumentRef = { _type: "document"; _id: string; _caveat?: never };`)
+	assert.Contains(t, output, `type TeamMemberRef = { _type: "team"; _id: string; _relation: "member"; _caveat?: never };`)
 
 	// Factory functions
 	assert.Contains(t, output, `export function User(id: string) {`)
@@ -47,16 +47,17 @@ func TestGenerateSampleSchema(t *testing.T) {
 	assert.Contains(t, output, `editor: (subject: UserRef) => ({`)
 	assert.Contains(t, output, `owner: (subject: UserRef) => ({`)
 
-	// Team member relation (also a SubRef — accepts optional subject)
-	assert.Contains(t, output, `member: (subject?: UserRef | TeamMemberRef): any => subject === undefined`)
+	// Team member relation (also a SubRef — accepts optional subject with overloaded cast)
+	assert.Contains(t, output, `member: ((subject?: UserRef | TeamMemberRef):`)
 
 	// Static properties for lookups
 	assert.Contains(t, output, `Document.view = { _type: "document" as const, _permission: "view" as const };`)
 	assert.Contains(t, output, `Document.edit = { _type: "document" as const, _permission: "edit" as const };`)
 	assert.Contains(t, output, `Document.delete = { _type: "document" as const, _permission: "delete" as const };`)
 
-	// SubRef via relation method (no-arg call returns TeamMemberRef)
-	assert.Contains(t, output, `member: (subject?:`)
+	// SubRef via relation method (no-arg call returns TeamMemberRef, with-arg returns relation binding)
+	assert.Contains(t, output, `member: ((subject?:`)
+	assert.Contains(t, output, `{ (): TeamMemberRef; (subject: UserRef | TeamMemberRef)`)
 	assert.NotContains(t, output, `Team.member = (id: string)`)
 
 	// TypedClient class
@@ -107,9 +108,9 @@ func TestGenerateSampleSchema(t *testing.T) {
 	assert.Contains(t, output, `withIpRange: (ctx: IpRangeContext): UserIpRangeRef`)
 	assert.Contains(t, output, `withTimeWindow: (ctx: TimeWindowContext): UserTimeWindowRef`)
 
-	// Write operations include caveat fields
+	// Write operations include caveat fields (caveatContext cast as any for JsonObject compatibility)
 	assert.Contains(t, output, `caveatName: r._subject._caveat`)
-	assert.Contains(t, output, `caveatContext: r._subject._caveatContext`)
+	assert.Contains(t, output, `caveatContext: r._subject._caveatContext as any`)
 
 	// Generated file header
 	assert.Contains(t, output, `DO NOT EDIT`)

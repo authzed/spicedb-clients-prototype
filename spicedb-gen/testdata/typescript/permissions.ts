@@ -9,16 +9,38 @@ import {
 import { full } from "@spicedb/client";
 type Consistency = ReturnType<typeof full>;
 
+// --- Caveat Contexts ---
+export interface IpRangeContext {
+    allowedCidr?: string;
+}
+export interface TimeWindowContext {
+    end?: string;
+    start?: string;
+}
+
 // --- Types ---
-type UserRef = { _type: "user"; _id: string };
-type TeamRef = { _type: "team"; _id: string };
-type TeamMemberRef = { _type: "team"; _id: string; _relation: "member" };
-type DocumentRef = { _type: "document"; _id: string };
+type UserRef = { _type: "user"; _id: string; _caveat?: never };
+type TeamRef = { _type: "team"; _id: string; _caveat?: never };
+type TeamMemberRef = { _type: "team"; _id: string; _relation: "member"; _caveat?: never };
+type DocumentRef = { _type: "document"; _id: string; _caveat?: never };
+type UserIpRangeRef = { _type: "user"; _id: string; _caveat: "ip_range"; _caveatContext: IpRangeContext };
+type UserTimeWindowRef = { _type: "user"; _id: string; _caveat: "time_window"; _caveatContext: TimeWindowContext };
 
 // --- Factories ---
 
-export function User(id: string): UserRef {
-    return { _type: "user", _id: id };
+export function User(id: string) {
+    return {
+        _type: "user" as const,
+        _id: id,
+        _caveat: undefined as undefined,
+        // Caveat methods
+        withIpRange: (ctx: IpRangeContext): UserIpRangeRef => ({
+            _type: "user", _id: id, _caveat: "ip_range" as const, _caveatContext: ctx,
+        }),
+        withTimeWindow: (ctx: TimeWindowContext): UserTimeWindowRef => ({
+            _type: "user", _id: id, _caveat: "time_window" as const, _caveatContext: ctx,
+        }),
+    };
 }
 
 export function Team(id: string) {
@@ -26,15 +48,11 @@ export function Team(id: string) {
         _type: "team" as const,
         _id: id,
         // Relations
-        member: (subject: UserRef | TeamMemberRef) => ({
-            _type: "team" as const, _id: id,
-            _relation: "member" as const, _subject: subject,
-        }),
+        member: ((subject?: UserRef | TeamMemberRef): TeamMemberRef | { _type: "team"; _id: string; _relation: "member"; _subject: UserRef | TeamMemberRef } => subject === undefined
+            ? ({ _type: "team", _id: id, _relation: "member" }) as TeamMemberRef
+            : ({ _type: "team" as const, _id: id, _relation: "member" as const, _subject: subject })) as { (): TeamMemberRef; (subject: UserRef | TeamMemberRef): { _type: "team"; _id: string; _relation: "member"; _subject: UserRef | TeamMemberRef } },
     };
 }
-Team.member = (id: string): TeamMemberRef => ({
-    _type: "team", _id: id, _relation: "member",
-});
 
 export function Document(id: string) {
     return {
@@ -45,7 +63,7 @@ export function Document(id: string) {
         edit: { _type: "document" as const, _id: id, _permission: "edit" as const },
         delete: { _type: "document" as const, _id: id, _permission: "delete" as const },
         // Relations
-        viewer: (subject: UserRef | TeamMemberRef) => ({
+        viewer: (subject: UserRef | UserIpRangeRef | UserTimeWindowRef | TeamMemberRef) => ({
             _type: "document" as const, _id: id,
             _relation: "viewer" as const, _subject: subject,
         }),
@@ -76,10 +94,10 @@ export class TypedClient {
     }
 
     // Check overloads
-    async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "view" }, s: UserRef | TeamMemberRef): Promise<boolean>;
+    async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "view" }, s: UserRef | UserIpRangeRef | UserTimeWindowRef | TeamMemberRef): Promise<boolean>;
     async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "edit" }, s: UserRef): Promise<boolean>;
     async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "delete" }, s: UserRef): Promise<boolean>;
-    async check(c: Consistency, p: { _type: string; _id: string; _permission: string }, s: { _type: string; _id: string; _relation?: string }): Promise<boolean> {
+    async check(c: Consistency, p: { _type: string; _id: string; _permission: string }, s: { _type: string; _id: string; _relation?: string; _caveat?: string; _caveatContext?: Record<string, any> }): Promise<boolean> {
         return this.client.checkPermission(c, {
             resourceType: p._type, resourceId: p._id, permission: p._permission,
             subjectType: s._type, subjectId: s._id, subjectRelation: (s as any)._relation,
@@ -87,35 +105,38 @@ export class TypedClient {
     }
 
     // Write operations
-    async touch(...rels: Array<{ _type: string; _relation: string; _id: string; _subject: { _type: string; _id: string; _relation?: string } }>): Promise<string> {
+    async touch(...rels: Array<{ _type: string; _relation: string; _id: string; _subject: { _type: string; _id: string; _relation?: string; _caveat?: string; _caveatContext?: Record<string, any> } }>): Promise<string> {
         const txn = new Transaction();
         for (const r of rels) {
             txn.touch({ resourceType: r._type, resourceId: r._id, resourceRelation: r._relation,
-                        subjectType: r._subject._type, subjectId: r._subject._id, subjectRelation: r._subject._relation });
+                        subjectType: r._subject._type, subjectId: r._subject._id, subjectRelation: r._subject._relation,
+                        caveatName: r._subject._caveat, caveatContext: r._subject._caveatContext as any });
         }
         return this.client.write(txn);
     }
 
-    async create(...rels: Array<{ _type: string; _relation: string; _id: string; _subject: { _type: string; _id: string; _relation?: string } }>): Promise<string> {
+    async create(...rels: Array<{ _type: string; _relation: string; _id: string; _subject: { _type: string; _id: string; _relation?: string; _caveat?: string; _caveatContext?: Record<string, any> } }>): Promise<string> {
         const txn = new Transaction();
         for (const r of rels) {
             txn.create({ resourceType: r._type, resourceId: r._id, resourceRelation: r._relation,
-                         subjectType: r._subject._type, subjectId: r._subject._id, subjectRelation: r._subject._relation });
+                         subjectType: r._subject._type, subjectId: r._subject._id, subjectRelation: r._subject._relation,
+                         caveatName: r._subject._caveat, caveatContext: r._subject._caveatContext as any });
         }
         return this.client.write(txn);
     }
 
-    async delete(...rels: Array<{ _type: string; _relation: string; _id: string; _subject: { _type: string; _id: string; _relation?: string } }>): Promise<string> {
+    async delete(...rels: Array<{ _type: string; _relation: string; _id: string; _subject: { _type: string; _id: string; _relation?: string; _caveat?: string; _caveatContext?: Record<string, any> } }>): Promise<string> {
         const txn = new Transaction();
         for (const r of rels) {
             txn.delete({ resourceType: r._type, resourceId: r._id, resourceRelation: r._relation,
-                         subjectType: r._subject._type, subjectId: r._subject._id, subjectRelation: r._subject._relation });
+                         subjectType: r._subject._type, subjectId: r._subject._id, subjectRelation: r._subject._relation,
+                         caveatName: r._subject._caveat, caveatContext: r._subject._caveatContext as any });
         }
         return this.client.write(txn);
     }
 
     // LookupResources overloads
-    async lookupResources(c: Consistency, p: { _type: "document"; _permission: "view" }, s: UserRef | TeamMemberRef): Promise<AsyncIterableIterator<string>>;
+    async lookupResources(c: Consistency, p: { _type: "document"; _permission: "view" }, s: UserRef | UserIpRangeRef | UserTimeWindowRef | TeamMemberRef): Promise<AsyncIterableIterator<string>>;
     async lookupResources(c: Consistency, p: { _type: "document"; _permission: "edit" }, s: UserRef): Promise<AsyncIterableIterator<string>>;
     async lookupResources(c: Consistency, p: { _type: "document"; _permission: "delete" }, s: UserRef): Promise<AsyncIterableIterator<string>>;
     async lookupResources(c: Consistency, p: { _type: string; _permission: string }, s: { _type: string; _id: string; _relation?: string }): Promise<AsyncIterableIterator<string>> {

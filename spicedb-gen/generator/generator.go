@@ -15,7 +15,8 @@ type LanguageGenerator interface {
 	Language() string
 
 	// Generate produces generated files from the parsed schema.
-	Generate(s *schema.Schema) ([]GeneratedFile, error)
+	// opts contains language-specific options parsed from --<lang>.<key>=<value> CLI flags.
+	Generate(s *schema.Schema, opts map[string]string) ([]GeneratedFile, error)
 }
 
 // Registry holds all registered language generators, keyed by language name.

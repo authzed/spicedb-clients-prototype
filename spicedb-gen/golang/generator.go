@@ -128,7 +128,8 @@ type PermissionVarData struct {
 }
 
 // Generate produces generated Go files from the parsed schema.
-func (g *Generator) Generate(s *schema.Schema) ([]generator.GeneratedFile, error) {
+// opts contains language-specific options (currently unused).
+func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]generator.GeneratedFile, error) {
 	data := buildTemplateData(s)
 
 	funcMap := template.FuncMap{

@@ -19,7 +19,7 @@ func TestGenerateSampleSchema(t *testing.T) {
 	require.NoError(t, err)
 
 	g := &Generator{}
-	files, err := g.Generate(s)
+	files, err := g.Generate(s, nil)
 	require.NoError(t, err)
 	require.Len(t, files, 1)
 	assert.Equal(t, "typed_client.gen.ts", files[0].Path)
@@ -122,7 +122,7 @@ func TestGenerateEmptySchema(t *testing.T) {
 	}
 
 	g := &Generator{}
-	files, err := g.Generate(s)
+	files, err := g.Generate(s, nil)
 	require.NoError(t, err)
 	require.Len(t, files, 1)
 

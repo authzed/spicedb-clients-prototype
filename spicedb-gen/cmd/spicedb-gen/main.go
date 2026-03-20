@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/authzed/spicedb-clients/spicedb-gen/generator"
 	"github.com/authzed/spicedb-clients/spicedb-gen/schema"
@@ -42,7 +43,8 @@ func main() {
 		os.Exit(2)
 	}
 
-	files, err := gen.Generate(s)
+	opts := parseLangOptions(*lang, os.Args[1:])
+	files, err := gen.Generate(s, opts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "generation error: %v\n", err)
 		os.Exit(2)
@@ -65,4 +67,25 @@ func main() {
 		}
 		fmt.Printf("wrote %s\n", dest)
 	}
+}
+
+// parseLangOptions scans args for --<lang>.<key>=<value> or --<lang>.<key> <value>
+// flags and returns a map of key -> value pairs (with the lang prefix stripped).
+func parseLangOptions(lang string, args []string) map[string]string {
+	prefix := "--" + lang + "."
+	opts := map[string]string{}
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if !strings.HasPrefix(arg, prefix) {
+			continue
+		}
+		rest := arg[len(prefix):]
+		if idx := strings.Index(rest, "="); idx >= 0 {
+			opts[rest[:idx]] = rest[idx+1:]
+		} else if i+1 < len(args) {
+			opts[rest] = args[i+1]
+			i++
+		}
+	}
+	return opts
 }

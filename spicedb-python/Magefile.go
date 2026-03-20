@@ -82,6 +82,20 @@ func Lint() error {
 	return sh.RunV("ruff", "check", ".")
 }
 
+// ApiCompat checks for breaking API changes against the given base git ref.
+func ApiCompat(baseRef string) error {
+	if _, err := exec.LookPath("griffe"); err != nil {
+		return fmt.Errorf("griffe not found. Install with: uv tool install griffe")
+	}
+
+	fmt.Printf("==> Checking Python API compatibility against %s...\n", baseRef)
+	if err := sh.RunV("griffe", "check", "spicedb", "-a", baseRef, "-b", "HEAD"); err != nil {
+		return fmt.Errorf("API compatibility check failed: breaking changes detected. Run 'mage updateAllowBreak' to proceed: %w", err)
+	}
+	fmt.Println("==> spicedb-python: API compatible")
+	return nil
+}
+
 // IntegrationTest starts SpiceDB via Docker and runs example integration tests.
 func IntegrationTest() error {
 	fmt.Println("==> Starting SpiceDB...")

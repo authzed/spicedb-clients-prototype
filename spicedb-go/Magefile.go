@@ -114,7 +114,7 @@ func ApiCompat(baseRef string) error {
 	}
 
 	fmt.Printf("==> Checking Go API compatibility against %s...\n", baseRef)
-	if err := sh.RunV("go-apidiff", baseRef); err != nil {
+	if err := sh.RunV("go-apidiff", baseRef, "--repo-path", ".."); err != nil {
 		return fmt.Errorf("API compatibility check failed: breaking changes detected. Run 'mage updateAllowBreak' to proceed: %w", err)
 	}
 	fmt.Println("==> spicedb-go: API compatible")

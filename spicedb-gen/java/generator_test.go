@@ -204,8 +204,10 @@ func TestBuildTemplateData(t *testing.T) {
 	require.NotEmpty(t, subjectIface.Permits, "Subject sealed interface should have permits")
 	assert.Contains(t, subjectIface.Permits, "DocumentViewerSubject")
 	assert.Contains(t, subjectIface.Permits, "DocumentViewSubject")
-	assert.Contains(t, subjectIface.Permits, "UserRef")
-	assert.Contains(t, subjectIface.Permits, "TeamMemberRef")
+	// Concrete types (UserRef, TeamMemberRef) are not direct Subject permits;
+	// they implement sub-interfaces which in turn extend Subject.
+	assert.NotContains(t, subjectIface.Permits, "UserRef")
+	assert.NotContains(t, subjectIface.Permits, "TeamMemberRef")
 
 	// UserRef implements all expected interfaces.
 	var userRef SubjectRefTypeData

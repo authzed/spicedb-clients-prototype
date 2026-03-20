@@ -400,22 +400,49 @@ func buildTemplateData(s *schema.Schema, pkg string) TemplateData {
 		}
 	}
 
-	// Build top-level Subject sealed interface containing all sub-interfaces, concrete types, and sentinels.
+	// Build top-level Subject sealed interface.
+	// In Java, a sealed interface can only list direct implementors in its permits clause.
+	// Concrete types (refs, sentinels) implement the sub-interfaces, not Subject directly.
+	// So Subject only permits the sub-interfaces and any concrete types that don't implement
+	// any sub-interface.
+	subIfaceNames := map[string]bool{}
+	for _, si := range sealedInterfaces {
+		subIfaceNames[si.Name] = true
+	}
+
+	// Collect all types that appear in at least one sub-interface permits list.
+	typesInSubInterfaces := map[string]bool{}
+	for _, si := range sealedInterfaces {
+		for _, p := range si.Permits {
+			typesInSubInterfaces[p] = true
+		}
+	}
+
 	var subjectPermits []string
+	// Always include sub-interfaces.
 	for _, si := range sealedInterfaces {
 		subjectPermits = append(subjectPermits, si.Name)
 	}
+	// Include concrete ref types only if they don't appear in any sub-interface.
 	for _, srt := range subjectRefTypes {
-		subjectPermits = append(subjectPermits, srt.TypeName)
+		if !typesInSubInterfaces[srt.TypeName] {
+			subjectPermits = append(subjectPermits, srt.TypeName)
+		}
 	}
-	// Add sentinel type names (computed here since sentinels are built later)
+	// Include sentinel types only if they don't appear in any sub-interface.
 	for _, def := range s.Definitions {
 		if defIsSubject[def.Name] {
-			subjectPermits = append(subjectPermits, toPascalCase(def.Name)+"Type")
+			name := toPascalCase(def.Name) + "Type"
+			if !typesInSubInterfaces[name] {
+				subjectPermits = append(subjectPermits, name)
+			}
 		}
 		for _, rel := range def.Relations {
 			if subRefs[subRef{def.Name, rel.Name}] {
-				subjectPermits = append(subjectPermits, toPascalCase(def.Name)+toPascalCase(rel.Name)+"Type")
+				name := toPascalCase(def.Name) + toPascalCase(rel.Name) + "Type"
+				if !typesInSubInterfaces[name] {
+					subjectPermits = append(subjectPermits, name)
+				}
 			}
 		}
 	}

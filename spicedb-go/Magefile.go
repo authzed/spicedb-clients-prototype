@@ -107,6 +107,20 @@ func Lint() error {
 	return sh.RunV("golangci-lint", "run", "./...")
 }
 
+// ApiCompat checks for breaking API changes against the given base git ref.
+func ApiCompat(baseRef string) error {
+	if _, err := exec.LookPath("go-apidiff"); err != nil {
+		return fmt.Errorf("go-apidiff not found. Install with: go install github.com/joelanford/go-apidiff@latest")
+	}
+
+	fmt.Printf("==> Checking Go API compatibility against %s...\n", baseRef)
+	if err := sh.RunV("go-apidiff", baseRef); err != nil {
+		return fmt.Errorf("API compatibility check failed: breaking changes detected. Run 'mage updateAllowBreak' to proceed: %w", err)
+	}
+	fmt.Println("==> spicedb-go: API compatible")
+	return nil
+}
+
 // IntegrationTest starts SpiceDB via Docker and runs examples against it.
 func IntegrationTest() error {
 	// Start SpiceDB

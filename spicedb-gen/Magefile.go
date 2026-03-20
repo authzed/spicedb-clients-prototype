@@ -146,12 +146,77 @@ func GoIntegrationTest() error {
 	return nil
 }
 
-// IntegrationTest runs both TypeScript and Go integration tests.
+// JavaIntegrationTest builds the CLI, generates Java code from the sample schema,
+// verifies type safety, starts SpiceDB, runs Gradle tests, then stops SpiceDB.
+func JavaIntegrationTest() error {
+	// 1. Build CLI
+	fmt.Println("==> Building spicedb-gen...")
+	if err := Build(); err != nil {
+		return fmt.Errorf("build failed: %w", err)
+	}
+
+	// 2. Generate Permissions.java from sample.zed
+	fmt.Println("==> Generating Permissions.java from sample.zed...")
+	if err := sh.RunV(
+		"./spicedb-gen",
+		"--schema", "testdata/sample.zed",
+		"--lang", "java",
+		"--java.package=com.authzed.spicedb.gen.test",
+		"--out", "testdata/java/src/main/java/com/authzed/spicedb/gen/test/Permissions.java",
+	); err != nil {
+		return fmt.Errorf("code generation failed: %w", err)
+	}
+	defer os.Remove("testdata/java/src/main/java/com/authzed/spicedb/gen/test/Permissions.java")
+
+	// 3. Verify generated code and tests compile
+	fmt.Println("==> Compiling generated code and tests...")
+	if err := runInDir("testdata/java", "./gradlew", "compileTestJava"); err != nil {
+		return fmt.Errorf("compilation failed: %w", err)
+	}
+
+	// 4. Verify type_errors do NOT compile (type safety check)
+	fmt.Println("==> Verifying type errors are caught at compile time...")
+	err := runInDir("testdata/java", "./gradlew", "compileTypeErrors")
+	if err == nil {
+		return fmt.Errorf("type errors compiled successfully but should have failed")
+	}
+	fmt.Println("    (expected compile failure confirmed)")
+
+	// 5. Start SpiceDB via docker-compose
+	fmt.Println("==> Starting SpiceDB...")
+	if err := sh.RunV("docker", "compose", "-f", "docker-compose.test.yml", "up", "-d"); err != nil {
+		return fmt.Errorf("docker compose up failed: %w", err)
+	}
+	defer func() {
+		fmt.Println("==> Stopping SpiceDB...")
+		_ = sh.RunV("docker", "compose", "-f", "docker-compose.test.yml", "down")
+	}()
+
+	// Wait for SpiceDB to be ready
+	fmt.Println("==> Waiting for SpiceDB to be ready...")
+	if err := waitForReady("localhost:50051", 30*time.Second); err != nil {
+		return err
+	}
+
+	// 6. Run Gradle tests
+	fmt.Println("==> Running Java integration tests...")
+	if err := runInDir("testdata/java", "./gradlew", "test"); err != nil {
+		return fmt.Errorf("gradle test failed: %w", err)
+	}
+
+	fmt.Println("==> Java integration tests passed!")
+	return nil
+}
+
+// IntegrationTest runs TypeScript, Go, and Java integration tests.
 func IntegrationTest() error {
 	if err := TypeScriptIntegrationTest(); err != nil {
 		return err
 	}
-	return GoIntegrationTest()
+	if err := GoIntegrationTest(); err != nil {
+		return err
+	}
+	return JavaIntegrationTest()
 }
 
 func waitForReady(addr string, timeout time.Duration) error {

@@ -114,6 +114,20 @@ func Fmt() error {
 	return sh.RunV("cargo", "fmt", "--check")
 }
 
+// ApiCompat checks for breaking API changes against the given base git ref.
+func ApiCompat(baseRef string) error {
+	if _, err := exec.LookPath("cargo-semver-checks"); err != nil {
+		return fmt.Errorf("cargo-semver-checks not found. Install with: cargo install cargo-semver-checks (or: brew install cargo-semver-checks)")
+	}
+
+	fmt.Printf("==> Checking Rust API compatibility against %s...\n", baseRef)
+	if err := sh.RunV("cargo", "semver-checks", "check-release", "--baseline-rev", baseRef); err != nil {
+		return fmt.Errorf("API compatibility check failed: breaking changes detected. Run 'mage updateAllowBreak' to proceed: %w", err)
+	}
+	fmt.Println("==> spicedb-rust: API compatible")
+	return nil
+}
+
 // IntegrationTest starts SpiceDB via Docker and runs examples against it.
 func IntegrationTest() error {
 	// Start SpiceDB

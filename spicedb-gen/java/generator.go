@@ -400,13 +400,24 @@ func buildTemplateData(s *schema.Schema, pkg string) TemplateData {
 		}
 	}
 
-	// Build top-level Subject sealed interface containing all sub-interfaces and concrete types.
+	// Build top-level Subject sealed interface containing all sub-interfaces, concrete types, and sentinels.
 	var subjectPermits []string
 	for _, si := range sealedInterfaces {
 		subjectPermits = append(subjectPermits, si.Name)
 	}
 	for _, srt := range subjectRefTypes {
 		subjectPermits = append(subjectPermits, srt.TypeName)
+	}
+	// Add sentinel type names (computed here since sentinels are built later)
+	for _, def := range s.Definitions {
+		if defIsSubject[def.Name] {
+			subjectPermits = append(subjectPermits, toPascalCase(def.Name)+"Type")
+		}
+		for _, rel := range def.Relations {
+			if subRefs[subRef{def.Name, rel.Name}] {
+				subjectPermits = append(subjectPermits, toPascalCase(def.Name)+toPascalCase(rel.Name)+"Type")
+			}
+		}
 	}
 	subjectPermits = dedup(sorted(subjectPermits))
 	if len(subjectPermits) > 0 {

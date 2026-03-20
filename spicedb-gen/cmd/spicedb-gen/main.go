@@ -17,6 +17,11 @@ import (
 )
 
 func main() {
+	// Extract lang-specific flags (--<lang>.<key>=<value>) before flag.Parse(),
+	// since the standard flag package rejects unknown flags.
+	filteredArgs, langOpts := extractLangOptions(os.Args[1:])
+	os.Args = append([]string{os.Args[0]}, filteredArgs...)
+
 	schemaPath := flag.String("schema", "", "path to .zed schema file (required)")
 	lang := flag.String("lang", "", "target language, e.g. \"typescript\" (required)")
 	outPath := flag.String("out", "", "output file path (required)")
@@ -44,7 +49,7 @@ func main() {
 		os.Exit(2)
 	}
 
-	opts := parseLangOptions(*lang, os.Args[1:])
+	opts := filterLangOptions(*lang, langOpts)
 	files, err := gen.Generate(s, opts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "generation error: %v\n", err)
@@ -70,21 +75,41 @@ func main() {
 	}
 }
 
-// parseLangOptions scans args for --<lang>.<key>=<value> or --<lang>.<key> <value>
-// flags and returns a map of key -> value pairs (with the lang prefix stripped).
-func parseLangOptions(lang string, args []string) map[string]string {
-	prefix := "--" + lang + "."
-	opts := map[string]string{}
+// extractLangOptions separates lang-specific flags (--<anything>.<key>=<value>)
+// from standard flags. Returns the remaining args and the extracted lang args.
+func extractLangOptions(args []string) (remaining []string, langArgs []string) {
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
+		// Match --word.word pattern (lang-specific flags contain a dot after --)
+		if strings.HasPrefix(arg, "--") && strings.Contains(arg[2:], ".") {
+			langArgs = append(langArgs, arg)
+			// If no = in the arg, the next arg is the value
+			if !strings.Contains(arg, "=") && i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				i++
+				langArgs = append(langArgs, args[i])
+			}
+		} else {
+			remaining = append(remaining, arg)
+		}
+	}
+	return
+}
+
+// filterLangOptions extracts options for the given language from lang args.
+// E.g., for lang="java", --java.package=com.test becomes {"package": "com.test"}.
+func filterLangOptions(lang string, langArgs []string) map[string]string {
+	prefix := "--" + lang + "."
+	opts := map[string]string{}
+	for i := 0; i < len(langArgs); i++ {
+		arg := langArgs[i]
 		if !strings.HasPrefix(arg, prefix) {
 			continue
 		}
 		rest := arg[len(prefix):]
 		if idx := strings.Index(rest, "="); idx >= 0 {
 			opts[rest[:idx]] = rest[idx+1:]
-		} else if i+1 < len(args) {
-			opts[rest] = args[i+1]
+		} else if i+1 < len(langArgs) {
+			opts[rest] = langArgs[i+1]
 			i++
 		}
 	}

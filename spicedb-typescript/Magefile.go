@@ -117,9 +117,9 @@ func ApiCompat(baseRef string) error {
 		return fmt.Errorf("build failed: %w", err)
 	}
 
-	if err := sh.RunV("npx", "api-extractor", "run"); err != nil {
+	if err := sh.RunV("pnpm", "exec", "api-extractor", "run"); err != nil {
 		return fmt.Errorf("API compatibility check failed: API report has changed. "+
-			"If this is intentional, run 'npx api-extractor run --local' to update the report, "+
+			"If this is intentional, run 'pnpm exec api-extractor run --local' to update the report, "+
 			"then commit the updated etc/*.api.md. Run 'mage updateAllowBreak' to skip this check: %w", err)
 	}
 	fmt.Println("==> spicedb-typescript: API compatible")

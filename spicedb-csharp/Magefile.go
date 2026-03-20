@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -103,6 +104,57 @@ func Test() error {
 // Lint runs dotnet format to check code style.
 func Lint() error {
 	return sh.RunV("dotnet", "format", "SpiceDB.Client.sln", "--verify-no-changes")
+}
+
+// ApiCompat checks for breaking API changes against the given base git ref.
+func ApiCompat(baseRef string) error {
+	if _, err := exec.LookPath("apicompat"); err != nil {
+		return fmt.Errorf("apicompat not found. Install with: dotnet tool install --global Microsoft.DotNet.ApiCompat.Tool")
+	}
+
+	fmt.Printf("==> Checking C# API compatibility against %s...\n", baseRef)
+
+	// Build current version
+	if err := sh.RunV("dotnet", "build", "SpiceDB.Client.sln"); err != nil {
+		return fmt.Errorf("current build failed: %w", err)
+	}
+
+	currentDLL, err := filepath.Abs("SpiceDB.Client/bin/Debug/net10.0/SpiceDB.Client.dll")
+	if err != nil {
+		return err
+	}
+
+	// Create a temporary worktree at the baseline ref.
+	// MkdirTemp creates the directory, but git worktree add needs it to not exist,
+	// so we remove it first and let git recreate it.
+	worktreeDir, err := os.MkdirTemp("", "spicedb-csharp-baseline-*")
+	if err != nil {
+		return fmt.Errorf("failed to create temp dir: %w", err)
+	}
+	_ = os.Remove(worktreeDir)
+	defer func() {
+		_ = sh.Run("git", "-C", "..", "worktree", "remove", "--force", worktreeDir)
+		_ = os.RemoveAll(worktreeDir)
+	}()
+
+	if err := sh.RunV("git", "-C", "..", "worktree", "add", worktreeDir, baseRef); err != nil {
+		return fmt.Errorf("git worktree add failed: %w", err)
+	}
+
+	// Build baseline in the worktree
+	baselineDir := filepath.Join(worktreeDir, "spicedb-csharp")
+	if err := sh.RunV("dotnet", "build", filepath.Join(baselineDir, "SpiceDB.Client.sln")); err != nil {
+		return fmt.Errorf("baseline build failed: %w", err)
+	}
+
+	baselineDLL := filepath.Join(baselineDir, "SpiceDB.Client", "bin", "Debug", "net10.0", "SpiceDB.Client.dll")
+
+	// Compare: left = baseline (old contract), right = current (new implementation)
+	if err := sh.RunV("apicompat", "assembly", "--left", baselineDLL, "--right", currentDLL); err != nil {
+		return fmt.Errorf("API compatibility check failed: breaking changes detected. Run 'mage updateAllowBreak' to proceed: %w", err)
+	}
+	fmt.Println("==> spicedb-csharp: API compatible")
+	return nil
 }
 
 // IntegrationTest starts SpiceDB via Docker and runs examples against it.

@@ -19,3 +19,6 @@ vendor/bundle/
 # Rust
 target/
 *.gem
+
+# Worktrees
+.worktrees/

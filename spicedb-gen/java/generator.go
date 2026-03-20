@@ -1,13 +1,19 @@
 package java
 
 import (
+	"bytes"
+	"embed"
 	"fmt"
 	"sort"
 	"strings"
+	"text/template"
 
 	"github.com/authzed/spicedb-clients/spicedb-gen/generator"
 	"github.com/authzed/spicedb-clients/spicedb-gen/schema"
 )
+
+//go:embed templates/*.tmpl
+var templateFS embed.FS
 
 func init() {
 	generator.Register(&Generator{})
@@ -29,12 +35,43 @@ func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]genera
 		return nil, fmt.Errorf("java generator requires --java.package=<package> option")
 	}
 
-	_ = buildTemplateData(s, pkg)
+	data := buildTemplateData(s, pkg)
+
+	funcMap := template.FuncMap{
+		"joinComma": func(ss []string) string {
+			return strings.Join(ss, ", ")
+		},
+		"hasRelations": func(d DefinitionData) bool {
+			return len(d.Relations) > 0
+		},
+		"hasPermissions": func(d DefinitionData) bool {
+			return len(d.Permissions) > 0
+		},
+		"hasSubRefMethods": func(d DefinitionData) bool {
+			return len(d.SubRefMethods) > 0
+		},
+		"hasWithMethods": func(srt SubjectRefTypeData) bool {
+			return len(srt.WithMethods) > 0
+		},
+		"hasRelationsOrPermissions": func(d DefinitionData) bool {
+			return len(d.Relations) > 0 || len(d.Permissions) > 0
+		},
+	}
+
+	tmpl, err := template.New("typed_client.java.tmpl").Funcs(funcMap).ParseFS(templateFS, "templates/*.tmpl")
+	if err != nil {
+		return nil, err
+	}
+
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, data); err != nil {
+		return nil, err
+	}
 
 	return []generator.GeneratedFile{
 		{
 			Path:    "Permissions.java",
-			Content: []byte("// placeholder\npackage " + pkg + ";\n"),
+			Content: buf.Bytes(),
 		},
 	}, nil
 }

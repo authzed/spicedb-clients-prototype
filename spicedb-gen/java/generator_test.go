@@ -1,6 +1,7 @@
 package java
 
 import (
+	"os"
 	"testing"
 
 	"github.com/authzed/spicedb-clients/spicedb-gen/schema"
@@ -26,6 +27,98 @@ func TestGenerateRequiresPackage(t *testing.T) {
 
 	_, err = g.Generate(s, map[string]string{"package": ""})
 	require.Error(t, err)
+}
+
+func TestGenerate(t *testing.T) {
+	s, err := schema.ParseFile("../testdata/sample.zed")
+	require.NoError(t, err)
+
+	gen := &Generator{}
+	files, err := gen.Generate(s, map[string]string{"package": "com.authzed.spicedb.gen.test"})
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+	assert.Equal(t, "Permissions.java", files[0].Path)
+
+	content := string(files[0].Content)
+
+	// Write to /tmp for visual inspection.
+	if writeErr := os.WriteFile("/tmp/Permissions.java", files[0].Content, 0644); writeErr != nil {
+		t.Logf("warning: could not write to /tmp/Permissions.java: %v", writeErr)
+	} else {
+		t.Logf("wrote generated output to /tmp/Permissions.java")
+	}
+
+	// Print the generated output for visual review.
+	t.Logf("Generated output:\n%s", content)
+
+	// Check package declaration.
+	assert.Contains(t, content, "package com.authzed.spicedb.gen.test;")
+
+	// Check sealed Subject interface.
+	assert.Contains(t, content, "public sealed interface Subject permits")
+
+	// Check caveat context classes.
+	assert.Contains(t, content, "public static final class IpRangeContext")
+	assert.Contains(t, content, "public IpRangeContext withAllowedCidr(String v)")
+	assert.Contains(t, content, "public static final class TimeWindowContext")
+
+	// Check constraint sealed interfaces.
+	assert.Contains(t, content, "public sealed interface DocumentViewerSubject extends Subject")
+	assert.Contains(t, content, "public sealed interface DocumentEditorSubject extends Subject")
+	assert.Contains(t, content, "public sealed interface DocumentViewSubject extends Subject")
+
+	// Check base ref record.
+	assert.Contains(t, content, "public record UserRef(String id) implements")
+	assert.Contains(t, content, `return "user"`)
+
+	// Check caveated ref record.
+	assert.Contains(t, content, "public record UserIpRange(String id, IpRangeContext context) implements")
+	assert.Contains(t, content, `return "ip_range"`)
+
+	// Check sub-ref record.
+	assert.Contains(t, content, "public record TeamMemberRef(String id) implements")
+
+	// Check non-subject definition ref.
+	assert.Contains(t, content, "public record DocumentRef(String id)")
+	assert.Contains(t, content, "Permission<DocumentViewSubject> view()")
+
+	// Check TeamRef with sub-ref method.
+	assert.Contains(t, content, "public record TeamRef(String id)")
+	assert.Contains(t, content, "public TeamMemberRef member()")
+
+	// Check generic Permission types.
+	assert.Contains(t, content, "public record Permission<S extends Subject>")
+	assert.Contains(t, content, "public record PermissionRef<S extends Subject>")
+
+	// Check static PermissionRef constants.
+	assert.Contains(t, content, "Document_View")
+	assert.Contains(t, content, "Document_Edit")
+	assert.Contains(t, content, "Document_Delete")
+
+	// Check type sentinels.
+	assert.Contains(t, content, "public static final UserType UserType = new UserType()")
+	assert.Contains(t, content, "public static final class UserType implements")
+	assert.Contains(t, content, "public static final TeamMemberType TeamMemberType = new TeamMemberType()")
+
+	// Check TypedRelationship record.
+	assert.Contains(t, content, "public record TypedRelationship(")
+
+	// Check factory methods.
+	assert.Contains(t, content, "public static UserRef User(String id)")
+	assert.Contains(t, content, "public static DocumentRef Document(String id)")
+	assert.Contains(t, content, "public static TeamRef Team(String id)")
+
+	// Check TypedClient class.
+	assert.Contains(t, content, "public static final class TypedClient")
+	assert.Contains(t, content, "public <S extends Subject> boolean check(")
+	assert.Contains(t, content, "public <S extends Subject> Stream<String> lookupResources(")
+	assert.Contains(t, content, "public <S extends Subject> Stream<String> lookupSubjects(")
+	assert.Contains(t, content, "public String touch(TypedRelationship... rels)")
+	assert.Contains(t, content, "public String create(TypedRelationship... rels)")
+	assert.Contains(t, content, "public String delete(TypedRelationship... rels)")
+
+	// Check relation methods produce TypedRelationship.
+	assert.Contains(t, content, "public TypedRelationship viewer(DocumentViewerSubject subject)")
 }
 
 func TestBuildTemplateData(t *testing.T) {

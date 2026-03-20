@@ -106,6 +106,26 @@ func Lint() error {
 	return sh.RunV("npx", "tsc", "--noEmit", "-p", "tsconfig.examples.json")
 }
 
+// ApiCompat checks for breaking API changes against the committed API report.
+// The baseRef parameter is accepted for interface consistency but ignored —
+// TypeScript uses a snapshot-based approach via @microsoft/api-extractor.
+func ApiCompat(baseRef string) error {
+	fmt.Println("==> Checking TypeScript API compatibility against committed report...")
+
+	// Build first to generate .d.ts files
+	if err := sh.RunV("pnpm", "build"); err != nil {
+		return fmt.Errorf("build failed: %w", err)
+	}
+
+	if err := sh.RunV("npx", "api-extractor", "run"); err != nil {
+		return fmt.Errorf("API compatibility check failed: API report has changed. "+
+			"If this is intentional, run 'npx api-extractor run --local' to update the report, "+
+			"then commit the updated etc/*.api.md. Run 'mage updateAllowBreak' to skip this check: %w", err)
+	}
+	fmt.Println("==> spicedb-typescript: API compatible")
+	return nil
+}
+
 // IntegrationTest starts SpiceDB via Docker and runs examples against it.
 func IntegrationTest() error {
 	fmt.Println("==> Starting SpiceDB...")

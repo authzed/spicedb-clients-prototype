@@ -15,6 +15,8 @@ import (
 
 var languages = []string{"go", "python", "typescript", "csharp", "java", "ruby", "rust"}
 
+var apiCompatLanguages = []string{"go", "python", "typescript", "csharp", "java", "rust"}
+
 type Gen mg.Namespace
 
 // All runs proto generation for all languages, then idiomatic client updates.
@@ -203,6 +205,11 @@ func runClaudeOutput(prompt string) (string, error) {
 
 func runMageIn(dir string, target string) error {
 	return sh.RunV("mage", "-d", dir, target)
+}
+
+func runMageInWithArgs(dir string, target string, args ...string) error {
+	cmdArgs := append([]string{"-d", dir, target}, args...)
+	return sh.RunV("mage", cmdArgs...)
 }
 
 func commitIfChanged(dir string, msg string) error {

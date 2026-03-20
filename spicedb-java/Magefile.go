@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -105,6 +106,63 @@ func Build() error {
 // Lint runs Spotless check for code formatting.
 func Lint() error {
 	return sh.RunV("./gradlew", "spotlessCheck")
+}
+
+// ApiCompat checks for breaking API changes against the given base git ref.
+func ApiCompat(baseRef string) error {
+	// Find japicmp JAR in tools/ dir
+	japicmpJar := filepath.Join("..", "tools", "japicmp.jar")
+	if _, err := os.Stat(japicmpJar); err != nil {
+		return fmt.Errorf("japicmp not found. Download japicmp-*-jar-with-dependencies.jar from " +
+			"https://github.com/siom79/japicmp/releases and place at tools/japicmp.jar")
+	}
+
+	fmt.Printf("==> Checking Java API compatibility against %s...\n", baseRef)
+
+	// Build current version
+	if err := sh.RunV("./gradlew", "build"); err != nil {
+		return fmt.Errorf("current build failed: %w", err)
+	}
+
+	currentJAR, err := filepath.Abs("lib/build/libs/lib.jar")
+	if err != nil {
+		return err
+	}
+
+	// Create a temporary worktree at the baseline ref.
+	// MkdirTemp creates the directory, but git worktree add needs it to not exist,
+	// so we remove it first and let git recreate it.
+	worktreeDir, err := os.MkdirTemp("", "spicedb-java-baseline-*")
+	if err != nil {
+		return fmt.Errorf("failed to create temp dir: %w", err)
+	}
+	_ = os.Remove(worktreeDir)
+	defer func() {
+		_ = sh.Run("git", "-C", "..", "worktree", "remove", "--force", worktreeDir)
+		_ = os.RemoveAll(worktreeDir)
+	}()
+
+	if err := sh.RunV("git", "-C", "..", "worktree", "add", worktreeDir, baseRef); err != nil {
+		return fmt.Errorf("git worktree add failed: %w", err)
+	}
+
+	// Build baseline in the worktree
+	baselineDir := filepath.Join(worktreeDir, "spicedb-java")
+	if err := sh.RunV(filepath.Join(baselineDir, "gradlew"), "-p", baselineDir, "build"); err != nil {
+		return fmt.Errorf("baseline build failed: %w", err)
+	}
+
+	baselineJAR := filepath.Join(baselineDir, "lib", "build", "libs", "lib.jar")
+
+	japicmpJar, _ = filepath.Abs(japicmpJar)
+
+	// Compare: -o = old (baseline), -n = new (current)
+	if err := sh.RunV("java", "-jar", japicmpJar, "-o", baselineJAR, "-n", currentJAR,
+		"--only-incompatible", "--ignore-missing-classes"); err != nil {
+		return fmt.Errorf("API compatibility check failed: breaking changes detected. Run 'mage updateAllowBreak' to proceed: %w", err)
+	}
+	fmt.Println("==> spicedb-java: API compatible")
+	return nil
 }
 
 // IntegrationTest starts SpiceDB via Docker and runs examples against it.

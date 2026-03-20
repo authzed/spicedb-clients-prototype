@@ -22,3 +22,6 @@ target/
 
 # Worktrees
 .worktrees/
+
+# API compat tools
+tools/

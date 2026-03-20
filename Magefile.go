@@ -95,6 +95,24 @@ func genClientLangs(langs []string) error {
 	return nil
 }
 
+func apiCompatAll(baseRef string) error {
+	var failures []string
+	for _, l := range apiCompatLanguages {
+		dir := fmt.Sprintf("spicedb-%s", l)
+		fmt.Printf("\n==> Checking API compatibility: %s\n", dir)
+		if err := runMageInWithArgs(dir, "apicompat", baseRef); err != nil {
+			fmt.Printf("==> FAILED: %s: %v\n", dir, err)
+			failures = append(failures, l)
+		}
+	}
+
+	if len(failures) > 0 {
+		return fmt.Errorf("API compatibility check failed for: %s. Run 'mage updateAllowBreak' to proceed", strings.Join(failures, ", "))
+	}
+	fmt.Println("\n==> All API compatibility checks passed!")
+	return nil
+}
+
 type Lint mg.Namespace
 
 // All runs linters across all idiomatic clients.
@@ -141,24 +159,49 @@ func Test() error {
 	return nil
 }
 
-// Update runs the full update pipeline: gen, test, lint, then commits all changes.
+// Update runs the full update pipeline: gen, API compat check, test, lint, then commits all changes.
 func Update() error {
-	fmt.Println("=== Step 1/4: Generate ===")
+	return update(false)
+}
+
+// UpdateAllowBreak runs the full update pipeline without API compatibility checks.
+func UpdateAllowBreak() error {
+	return update(true)
+}
+
+func update(allowBreak bool) error {
+	// Capture baseline SHA before gen runs
+	baseRef, err := sh.Output("git", "rev-parse", "HEAD")
+	if err != nil {
+		return fmt.Errorf("failed to get baseline SHA: %w", err)
+	}
+	baseRef = strings.TrimSpace(baseRef)
+
+	fmt.Println("=== Step 1/5: Generate ===")
 	if err := (Gen{}).All(); err != nil {
 		return fmt.Errorf("generation failed: %w", err)
 	}
 
-	fmt.Println("\n=== Step 2/4: Test ===")
+	if !allowBreak {
+		fmt.Println("\n=== Step 2/5: API Compatibility Check ===")
+		if err := apiCompatAll(baseRef); err != nil {
+			return err
+		}
+	} else {
+		fmt.Println("\n=== Step 2/5: API Compatibility Check (skipped — breaking changes allowed) ===")
+	}
+
+	fmt.Println("\n=== Step 3/5: Test ===")
 	if err := Test(); err != nil {
 		return fmt.Errorf("tests failed: %w", err)
 	}
 
-	fmt.Println("\n=== Step 3/4: Lint ===")
+	fmt.Println("\n=== Step 4/5: Lint ===")
 	if err := (Lint{}).All(); err != nil {
 		return fmt.Errorf("linting failed: %w", err)
 	}
 
-	fmt.Println("\n=== Step 4/4: Commit ===")
+	fmt.Println("\n=== Step 5/5: Commit ===")
 	status, err := sh.Output("git", "status", "--porcelain")
 	if err != nil {
 		return err

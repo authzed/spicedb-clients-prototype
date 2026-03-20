@@ -168,7 +168,58 @@ for await (const id of await tc.lookupResources(full(), Document.view, User("ali
 for await (const id of await tc.lookupSubjects(full(), Document("readme").view, User)) { ... }
 ```
 
-Currently supports TypeScript. Other languages coming soon.
+### Use (Go)
+
+```go
+import (
+    "github.com/authzed/spicedb-clients/spicedb-go/client"
+    "github.com/authzed/spicedb-clients/spicedb-go/consistency"
+    . "path/to/generated/permissions"
+)
+
+c, err := client.NewPlaintext("localhost:50051", "somerandomkeyhere")
+tc := NewTypedClient(c)
+
+// Checks — autocomplete shows .View(), .Edit(), .Delete() on Document
+allowed, err := Check(ctx, tc, consistency.Full(), Document("readme").View(), User("alice"))
+
+// Writes — relation methods enforce valid subject types
+_, err = tc.Touch(ctx,
+    Document("readme").Viewer(User("alice")),
+    Document("readme").Editor(User("bob")),
+)
+
+// Type errors caught at compile time:
+// Document("readme").Editor(Team("eng")) // ERROR: editor only allows user
+
+// Lookups
+for id, err := range LookupResources(ctx, tc, consistency.Full(), Document_View, User("alice")) { ... }
+for id, err := range LookupSubjects(ctx, tc, consistency.Full(), Document("readme").View(), UserType) { ... }
+```
+
+### Use (Java)
+
+```java
+import com.authzed.spicedb.*;
+import static com.authzed.spicedb.Consistency.*;
+import static com.example.Permissions.*;
+
+var tc = new TypedClient(SpiceDBClient.createPlaintext("localhost:50051", "somerandomkeyhere"));
+
+// Checks — autocomplete shows .view(), .edit(), .delete() on Document
+boolean allowed = tc.check(full(), Document("readme").view(), User("alice"));
+
+// Writes — relation methods enforce valid subject types
+tc.touch(
+    Document("readme").viewer(User("alice")),
+    Document("readme").editor(User("bob"))
+);
+
+// Type errors caught at compile time:
+// Document("readme").editor(Team("eng")); // ERROR: editor only allows user
+```
+
+Currently supports Go, Java, and TypeScript.
 
 ## Development
 

@@ -228,8 +228,9 @@ Requires: [Mage](https://magefile.org), [Go 1.24+](https://go.dev), [Python 3.11
 ### Mage targets
 
 ```bash
-# Full update pipeline: generate, test, lint, commit
+# Full update pipeline: generate, API compat check, test, lint, commit
 mage update
+mage updateAllowBreak      # Like update, but skip API compat checks
 
 # Individual steps
 mage gen:all              # Regenerate proto + idiomatic clients
@@ -265,6 +266,20 @@ cd spicedb-gen && mage integrationTest
 ```
 
 Integration tests must not be run in parallel across clients (all bind to port 50051).
+
+### API Compatibility Tools (optional — needed for `mage update`)
+
+| Language   | Tool                          | Install                                                          |
+|------------|-------------------------------|------------------------------------------------------------------|
+| Go         | go-apidiff                    | `go install github.com/joelanford/go-apidiff@latest`             |
+| Python     | griffe                        | `uv tool install griffe`                                         |
+| TypeScript | @microsoft/api-extractor      | (dev dependency, already in package.json)                        |
+| C#         | Microsoft.DotNet.ApiCompat    | `dotnet tool install --global Microsoft.DotNet.ApiCompat.Tool`   |
+| Java       | japicmp                       | Download JAR from [releases](https://github.com/siom79/japicmp/releases) to `tools/japicmp.jar` |
+| Rust       | cargo-semver-checks           | `cargo install cargo-semver-checks` or `brew install cargo-semver-checks` |
+
+These tools are used by `mage update` to detect breaking API changes before tests run.
+Use `mage updateAllowBreak` to skip compatibility checks when breaking changes are intentional.
 
 ### Linting
 

@@ -141,16 +141,21 @@ func ApiCompat(baseRef string) error {
 		return fmt.Errorf("git worktree add failed: %w", err)
 	}
 
-	// Build baseline in the worktree
+	// Build only the library project in the worktree (not the .sln which includes tests).
+	// Restore packages first since the worktree has no obj/ or NuGet cache.
 	baselineDir := filepath.Join(worktreeDir, "spicedb-csharp")
-	if err := sh.RunV("dotnet", "build", filepath.Join(baselineDir, "SpiceDB.Client.sln")); err != nil {
+	baselineCsproj := filepath.Join(baselineDir, "SpiceDB.Client", "SpiceDB.Client.csproj")
+	if err := sh.RunV("dotnet", "restore", filepath.Join(baselineDir, "SpiceDB.Client.sln")); err != nil {
+		return fmt.Errorf("baseline restore failed: %w", err)
+	}
+	if err := sh.RunV("dotnet", "build", baselineCsproj, "--no-restore"); err != nil {
 		return fmt.Errorf("baseline build failed: %w", err)
 	}
 
 	baselineDLL := filepath.Join(baselineDir, "SpiceDB.Client", "bin", "Debug", "net10.0", "SpiceDB.Client.dll")
 
 	// Compare: left = baseline (old contract), right = current (new implementation)
-	if err := sh.RunV("apicompat", "assembly", "--left", baselineDLL, "--right", currentDLL); err != nil {
+	if err := sh.RunV("apicompat", "--left", baselineDLL, "--right", currentDLL); err != nil {
 		return fmt.Errorf("API compatibility check failed: breaking changes detected. Run 'mage updateAllowBreak' to proceed: %w", err)
 	}
 	fmt.Println("==> spicedb-csharp: API compatible")

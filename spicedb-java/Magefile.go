@@ -58,7 +58,7 @@ func Gen() error {
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		fmt.Printf("==> Running tests (attempt %d/%d)...\n", attempt, maxRetries)
 
-		if err := sh.RunV("./gradlew", "build"); err != nil {
+		if err := sh.RunV("gradle", "build"); err != nil {
 			if attempt == maxRetries {
 				_ = sh.Run("git", "checkout", "--", ".")
 				return fmt.Errorf("build failed after %d retries", maxRetries)
@@ -70,7 +70,7 @@ func Gen() error {
 			continue
 		}
 
-		if err := sh.RunV("./gradlew", "test"); err == nil {
+		if err := sh.RunV("gradle", "test"); err == nil {
 			fmt.Println("==> Tests passed!")
 			// Update baseline
 			head, _ := sh.Output("git", "rev-parse", "HEAD")
@@ -95,17 +95,17 @@ func Gen() error {
 
 // Test runs all tests via Gradle.
 func Test() error {
-	return sh.RunV("./gradlew", "test")
+	return sh.RunV("gradle", "test")
 }
 
 // Build compiles all source via Gradle.
 func Build() error {
-	return sh.RunV("./gradlew", "build")
+	return sh.RunV("gradle", "build")
 }
 
 // Lint runs Spotless check for code formatting.
 func Lint() error {
-	return sh.RunV("./gradlew", "spotlessCheck")
+	return sh.RunV("gradle", "spotlessCheck")
 }
 
 // ApiCompat checks for breaking API changes against the given base git ref.
@@ -119,15 +119,16 @@ func ApiCompat(baseRef string) error {
 
 	fmt.Printf("==> Checking Java API compatibility against %s...\n", baseRef)
 
-	// Build current version
-	if err := sh.RunV("./gradlew", "build"); err != nil {
+	// Build current version (assemble only — skip tests, we just need the JAR)
+	if err := sh.RunV("gradle", "assemble"); err != nil {
 		return fmt.Errorf("current build failed: %w", err)
 	}
 
-	currentJAR, err := filepath.Abs("lib/build/libs/lib.jar")
-	if err != nil {
-		return err
+	currentJARs, err := filepath.Glob("lib/build/libs/lib-*.jar")
+	if err != nil || len(currentJARs) == 0 {
+		return fmt.Errorf("current JAR not found in lib/build/libs/")
 	}
+	currentJAR, _ := filepath.Abs(currentJARs[0])
 
 	// Create a temporary worktree at the baseline ref.
 	// MkdirTemp creates the directory, but git worktree add needs it to not exist,
@@ -148,11 +149,15 @@ func ApiCompat(baseRef string) error {
 
 	// Build baseline in the worktree
 	baselineDir := filepath.Join(worktreeDir, "spicedb-java")
-	if err := sh.RunV(filepath.Join(baselineDir, "gradlew"), "-p", baselineDir, "build"); err != nil {
+	if err := sh.RunV("gradle", "-p", baselineDir, ":lib:assemble"); err != nil {
 		return fmt.Errorf("baseline build failed: %w", err)
 	}
 
-	baselineJAR := filepath.Join(baselineDir, "lib", "build", "libs", "lib.jar")
+	baselineJARs, _ := filepath.Glob(filepath.Join(baselineDir, "lib", "build", "libs", "lib-*.jar"))
+	if len(baselineJARs) == 0 {
+		return fmt.Errorf("baseline JAR not found in worktree")
+	}
+	baselineJAR := baselineJARs[0]
 
 	japicmpJar, _ = filepath.Abs(japicmpJar)
 
@@ -185,7 +190,7 @@ func IntegrationTest() error {
 
 	// Run integration tests via Gradle
 	fmt.Println("==> Running integration tests...")
-	return sh.RunV("./gradlew", "test")
+	return sh.RunV("gradle", "test")
 }
 
 func waitForReady(addr string, timeout time.Duration) error {

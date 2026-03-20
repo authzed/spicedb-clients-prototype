@@ -196,12 +196,3 @@ See module sections above for the complete API manifest.
 ## Changelog
 
 See [CHANGELOG.md](CHANGELOG.md) for release notes.
-
-
-- **2026-03-17**: Initial implementation of the idiomatic Ruby client.
-  - `SpiceDB::Consistency` module: `full`, `min_latency`, `at_least`, `snapshot`, `at_least_or_full`, `at_least_or_min_latency`
-  - `SpiceDB::Relationship` Data.define type with `from_triple`, `from_tuple`, `with_caveat`, `with_expiration`, `to_filter`
-  - `SpiceDB::Filter` Data.define type with builder methods
-  - `SpiceDB::Transaction` builder with `create`, `touch`, `delete`, `must_not_match`, `must_match`
-  - `SpiceDB::Errors` exception hierarchy with gRPC error mapping and transient detection
-  - `SpiceDB::Client` with all methods: checks, relationships, lookups, schema, expand, bulk, watch, experimental

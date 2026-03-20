@@ -216,12 +216,3 @@ These may change without following the backwards compatibility mandate.
 ## Changelog
 
 See [CHANGELOG.md](CHANGELOG.md) for release notes.
-
-
-- **2026-03-17**: Initial implementation of the idiomatic Java client.
-  - `Consistency` class: `full()`, `minLatency()`, `atLeast()`, `snapshot()`, `atLeastOrFull()`, `atLeastOrMinLatency()` static factory methods
-  - `Relationship` record: flat fields, `of()`/`fromTuple()` constructors, `withCaveat()`/`withExpiration()` modifiers, `toFilter()`
-  - `Filter` class: immutable builder with `of()`, `withResourceID()`, `withRelation()`, `withSubjectType()`, `withSubjectID()`, `withSubjectRelation()`, `withResourceIDPrefix()`
-  - `Transaction` class: `create()`/`touch()`/`delete()`/`mustNotMatch()`/`mustMatch()` builder
-  - `SpiceDBClient`: `createPlaintext`/`createSystemTls`/`create` constructors, all check/write/read/lookup/schema/expand/bulk/watch/experimental methods
-  - Error hierarchy: `SpiceDBException`, `PermissionDeniedException`, `NotFoundException`, `AlreadyExistsException`, `InvalidArgumentException`, `ErrorMapper`

@@ -252,17 +252,3 @@ public enum UpdateOperation { Create = 1, Touch = 2, Delete = 3 }
 ## Changelog
 
 See [CHANGELOG.md](CHANGELOG.md) for release notes.
-
-
-- **2026-03-17**: Initial implementation of the idiomatic C# client.
-  - `Consistency` static class: `Full()`, `MinLatency()`, `AtLeast()`, `Snapshot()`, `AtLeastOrFull()`, `AtLeastOrMinLatency()` factory methods
-  - `Relationship` record: `FromTriple`, `FromTuple`, `FromProto`, `WithCaveat`, `WithExpiration`, `ToProto`, `ToFilter`, `ToString`
-  - `Filter` record: `WithResourceID`, `WithResourceIDPrefix`, `WithRelation`, `WithSubjectType`, `WithSubjectID`, `WithSubjectRelation`, `ToProto`
-  - `Transaction` builder: `Create`, `Touch`, `Delete`, `MustNotMatch`, `MustMatch`
-  - `SpiceDBClient`: `CreatePlaintext`/`CreateSystemTls`/`CreateFromChannel` constructors, `CheckPermissionAsync`/`CheckPermissionsAsync`/`CheckAnyAsync`/`CheckAllAsync` (all via BulkCheckPermissions), `WriteAsync`/`ReadRelationshipsAsync`/`DeleteRelationshipsAsync`, `LookupResourcesAsync`/`LookupSubjectsAsync`, `ReadSchemaAsync`/`WriteSchemaAsync`/`ReflectSchemaAsync`/`ComputablePermissionsAsync`/`DependentRelationsAsync`/`DiffSchemaAsync`, `ExpandPermissionTreeAsync`, `ImportRelationshipsAsync`/`ExportRelationshipsAsync`, `UpdatesAsync` (watch), `ExperimentalRegisterRelationshipCounterAsync`/`ExperimentalCountRelationshipsAsync`/`ExperimentalUnregisterRelationshipCounterAsync`
-  - Error hierarchy: `SpiceDBException` base, `PermissionDeniedException`, `NotFoundException`, `AlreadyExistsException`, `InvalidArgumentException`, `FailedPreconditionException`, `UnavailableException`, `CancelledException`, `ResourceExhaustedException`, `DeadlineExceededException`
-  - `ErrorMapper`: `ToSpiceDBException`, `IsTransient`
-  - Auto-retry with exponential backoff for transient gRPC errors
-  - Transparent cursor-based pagination for `ReadRelationships`, `LookupResources`, `ExportRelationships` (512-item pages)
-  - Auto-paging deletions (10,000-item batches)
-  - Batched imports (1,000-item chunks)

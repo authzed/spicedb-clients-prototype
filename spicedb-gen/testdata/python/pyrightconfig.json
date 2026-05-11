@@ -3,6 +3,5 @@
   "exclude": [".venv", "__pycache__", ".pytest_cache"],
   "typeCheckingMode": "standard",
   "reportMissingTypeStubs": false,
-  "reportInvalidTypeForm": "none",
   "pythonVersion": "3.11"
 }

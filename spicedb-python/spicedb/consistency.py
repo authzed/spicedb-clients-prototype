@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
+from typing import TypeAlias
+
 from authzed.api.v1 import permission_service_pb2
 from authzed.api.v1.core_pb2 import ZedToken
 
-Consistency = permission_service_pb2.Consistency
+# TypeAlias annotation makes Consistency usable as a type annotation in
+# downstream code that runs pyright in strict / standard mode. Without it,
+# the bare ``Consistency = permission_service_pb2.Consistency`` assignment
+# is treated as a variable, and pyright rejects ``c: Consistency`` annotations
+# with reportInvalidTypeForm.
+Consistency: TypeAlias = permission_service_pb2.Consistency
 
 
 def full() -> Consistency:

@@ -1,0 +1,7 @@
+{
+  "include": ["type_errors.py"],
+  "exclude": [".venv", "__pycache__"],
+  "typeCheckingMode": "standard",
+  "reportMissingTypeStubs": false,
+  "pythonVersion": "3.11"
+}

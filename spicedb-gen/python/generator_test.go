@@ -104,4 +104,45 @@ func TestGenerateSampleSchema(t *testing.T) {
 	assert.Contains(t, output, "end: str | None = None")
 	assert.Contains(t, output, "start: str | None = None")
 	assert.Contains(t, output, "def _to_dict(self) -> dict[str, Any]:")
+
+	// The dict-key in _to_dict must be the raw schema param name, not the
+	// Python identifier, so SpiceDB's CEL evaluator can bind it correctly.
+	assert.Contains(t, output, `d["allowed_cidr"] = self.allowed_cidr`)
+}
+
+// TestCaveatParamKeywordCollision verifies that when a caveat parameter's name
+// collides with a Python keyword/builtin, the generator:
+//   - Escapes the Python identifier (e.g. "id" -> "id_") for the dataclass field
+//   - Preserves the raw name as the dict key, so CEL evaluation receives "id",
+//     not "id_". A bug in the dict-key mapping would otherwise silently break
+//     caveat evaluation at runtime.
+func TestCaveatParamKeywordCollision(t *testing.T) {
+	s := &schema.Schema{
+		Caveats: []schema.CaveatDefinition{
+			{Name: "needs_id", Params: []schema.CaveatParam{{Name: "id", Type: "string"}}},
+		},
+		Definitions: []schema.Definition{
+			{
+				Name: "thing",
+				Relations: []schema.Relation{
+					{
+						Name: "viewer",
+						AllowedSubjects: []schema.SubjectType{
+							{Definition: "user", CaveatName: "needs_id"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	g := &Generator{}
+	files, err := g.Generate(s, nil)
+	require.NoError(t, err)
+	output := string(files[0].Content)
+
+	assert.Contains(t, output, "id_: str | None = None",
+		"keyword-conflicting param should be escaped on the dataclass field")
+	assert.Contains(t, output, `d["id"] = self.id_`,
+		"_to_dict must use the raw schema name as the dict key, not the escaped identifier")
 }

@@ -37,7 +37,8 @@ type CaveatContextData struct {
 }
 
 type CaveatParamData struct {
-	FieldName string // snake_case, e.g. "allowed_cidr"
+	FieldName string // Python identifier, e.g. "allowed_cidr" (escaped from keyword if needed)
+	RawName   string // raw schema name, e.g. "id" — used as the CEL context dict key
 	PyType    string // e.g. "str"
 }
 
@@ -79,6 +80,7 @@ func buildTemplateData(s *schema.Schema) TemplateData {
 		for _, p := range params {
 			cc.Params = append(cc.Params, CaveatParamData{
 				FieldName: escapeKeyword(p.Name),
+				RawName:   p.Name,
 				PyType:    celTypeToPyType(p.Type),
 			})
 		}

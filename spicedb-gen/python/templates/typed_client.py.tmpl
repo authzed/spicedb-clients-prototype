@@ -67,7 +67,7 @@ class {{$cav.ClassName}}:
         d: dict[str, Any] = {}
 {{- range $p := $cav.Params}}
         if self.{{$p.FieldName}} is not None:
-            d["{{$p.FieldName}}"] = self.{{$p.FieldName}}
+            d["{{$p.RawName}}"] = self.{{$p.FieldName}}
 {{- end}}
         return d
 {{end}}

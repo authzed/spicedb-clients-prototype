@@ -131,6 +131,12 @@ class {{$p.RefClassName}}(PermissionRef): pass
 
 
 {{end -}}
+# --- Sealed subject unions ---
+
+{{range $u := .SealedUnions}}
+{{$u.AliasName}}: TypeAlias = {{range $i, $m := $u.Members}}{{if $i}} | {{end}}{{$m}}{{end}}
+{{end}}
+
 # --- Resource refs ---
 
 {{range $def := .Definitions}}

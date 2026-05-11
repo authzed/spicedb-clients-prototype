@@ -31,6 +31,7 @@ type TemplateData struct {
 	SubjectRefs        []SubjectRefData
 	Definitions        []DefinitionData
 	PerPermissionTypes []PerPermTypeData
+	SealedUnions       []SealedUnionData
 }
 
 type DefinitionData struct {
@@ -50,6 +51,11 @@ type DefPermissionData struct {
 type PerPermTypeData struct {
 	PermClassName string // e.g. "_DocumentViewPermission"
 	RefClassName  string // e.g. "_DocumentViewRef"
+}
+
+type SealedUnionData struct {
+	AliasName string   // e.g. "DocumentViewerSubject"
+	Members   []string // e.g. ["TeamMember", "User", "UserIpRange", "UserTimeWindow"]
 }
 
 type DefRelationData struct {
@@ -270,6 +276,46 @@ func buildTemplateData(s *schema.Schema) (TemplateData, error) {
 		}
 	}
 
+	// Sealed subject TypeAlias unions.
+	collectMembers := func(subjects []schema.SubjectType) []string {
+		seen := map[string]bool{}
+		var out []string
+		for _, st := range subjects {
+			name := pySubjectRefName(st)
+			if !generated[name] || seen[name] {
+				continue
+			}
+			seen[name] = true
+			out = append(out, name)
+		}
+		sort.Strings(out)
+		return out
+	}
+
+	var sealedUnions []SealedUnionData
+	for _, def := range s.Definitions {
+		for _, rel := range def.Relations {
+			members := collectMembers(rel.AllowedSubjects)
+			if len(members) == 0 {
+				continue
+			}
+			sealedUnions = append(sealedUnions, SealedUnionData{
+				AliasName: toPascalCase(def.Name) + toPascalCase(rel.Name) + "Subject",
+				Members:   members,
+			})
+		}
+		for _, perm := range def.Permissions {
+			members := collectMembers(perm.ReachableSubjects)
+			if len(members) == 0 {
+				continue
+			}
+			sealedUnions = append(sealedUnions, SealedUnionData{
+				AliasName: toPascalCase(def.Name) + toPascalCase(perm.Name) + "Subject",
+				Members:   members,
+			})
+		}
+	}
+
 	// Definitions (resource side).
 	var definitions []DefinitionData
 	for _, def := range s.Definitions {
@@ -354,6 +400,7 @@ func buildTemplateData(s *schema.Schema) (TemplateData, error) {
 		SubjectRefs:        subjectRefs,
 		Definitions:        definitions,
 		PerPermissionTypes: perPermTypes,
+		SealedUnions:       sealedUnions,
 	}, nil
 }
 

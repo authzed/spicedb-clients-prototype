@@ -161,6 +161,15 @@ func TestGenerateSampleSchema(t *testing.T) {
 	assert.Contains(t, output, "@dataclass(frozen=True)\nclass _DocumentViewRef(PermissionRef): pass")
 	assert.Contains(t, output, "@dataclass(frozen=True)\nclass _DocumentEditRef(PermissionRef): pass")
 	assert.Contains(t, output, "@dataclass(frozen=True)\nclass _DocumentDeleteRef(PermissionRef): pass")
+
+	// Sealed subject TypeAlias unions
+	assert.Contains(t, output, "DocumentViewerSubject: TypeAlias = TeamMember | User | UserIpRange | UserTimeWindow")
+	assert.Contains(t, output, "DocumentEditorSubject: TypeAlias = User")
+	assert.Contains(t, output, "DocumentOwnerSubject: TypeAlias = User")
+	assert.Contains(t, output, "DocumentViewSubject: TypeAlias = TeamMember | User | UserIpRange | UserTimeWindow")
+	assert.Contains(t, output, "DocumentEditSubject: TypeAlias = User")
+	assert.Contains(t, output, "DocumentDeleteSubject: TypeAlias = User")
+	assert.Contains(t, output, "TeamMemberSubject: TypeAlias = TeamMember | User")
 }
 
 // TestCaveatParamKeywordCollision verifies that when a caveat parameter's name

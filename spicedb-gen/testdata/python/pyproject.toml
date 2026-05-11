@@ -1,0 +1,31 @@
+[project]
+name = "spicedb-gen-python-testdata"
+version = "0.0.0"
+description = "Integration tests for the spicedb-gen Python target"
+requires-python = ">=3.11"
+dependencies = [
+    "spicedb-python",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.25.0",
+    "pyright>=1.1.350",
+]
+
+[tool.uv.sources]
+spicedb-python = { path = "../../../spicedb-python" }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["testdata"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = [
+    "integration: requires a running SpiceDB instance",
+]

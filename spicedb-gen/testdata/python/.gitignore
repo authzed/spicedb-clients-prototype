@@ -1,0 +1,7 @@
+permissions.py
+.venv/
+.uv-cache/
+.pdm-build/
+__pycache__/
+*.pyc
+.pytest_cache/

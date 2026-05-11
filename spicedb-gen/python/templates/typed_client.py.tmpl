@@ -118,6 +118,19 @@ class {{$srt.ClassName}}:
 {{end}}
 {{end}}
 
+
+# --- Per-permission narrowing subclasses ---
+
+{{range $p := .PerPermissionTypes}}
+@dataclass(frozen=True)
+class {{$p.PermClassName}}(Permission): pass
+
+
+@dataclass(frozen=True)
+class {{$p.RefClassName}}(PermissionRef): pass
+
+
+{{end}}
 # --- Resource refs ---
 
 {{range $def := .Definitions}}

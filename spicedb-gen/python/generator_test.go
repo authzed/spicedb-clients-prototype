@@ -152,6 +152,14 @@ func TestGenerateSampleSchema(t *testing.T) {
 
 	// Sub-ref property body
 	assert.Contains(t, output, "return TeamMember(id=self.id)")
+
+	// Per-permission narrowing subclasses (the @property return types referenced in Task 6).
+	assert.Contains(t, output, "class _DocumentViewPermission(Permission): pass")
+	assert.Contains(t, output, "class _DocumentEditPermission(Permission): pass")
+	assert.Contains(t, output, "class _DocumentDeletePermission(Permission): pass")
+	assert.Contains(t, output, "class _DocumentViewRef(PermissionRef): pass")
+	assert.Contains(t, output, "class _DocumentEditRef(PermissionRef): pass")
+	assert.Contains(t, output, "class _DocumentDeleteRef(PermissionRef): pass")
 }
 
 // TestCaveatParamKeywordCollision verifies that when a caveat parameter's name

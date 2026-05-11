@@ -27,9 +27,10 @@ func (g *Generator) Language() string { return "python" }
 
 // TemplateData holds all pre-computed data needed by the Python template.
 type TemplateData struct {
-	CaveatContexts []CaveatContextData
-	SubjectRefs    []SubjectRefData
-	Definitions    []DefinitionData
+	CaveatContexts     []CaveatContextData
+	SubjectRefs        []SubjectRefData
+	Definitions        []DefinitionData
+	PerPermissionTypes []PerPermTypeData
 }
 
 type DefinitionData struct {
@@ -44,6 +45,11 @@ type DefPermissionData struct {
 	PropName       string // snake_case method name, e.g. "view" or "del_" if escaped
 	ReturnType     string // narrowed Permission subclass, e.g. "_DocumentViewPermission"
 	PermissionName string // raw schema name, e.g. "view" — emitted verbatim into the body
+}
+
+type PerPermTypeData struct {
+	PermClassName string // e.g. "_DocumentViewPermission"
+	RefClassName  string // e.g. "_DocumentViewRef"
 }
 
 type DefRelationData struct {
@@ -331,10 +337,23 @@ func buildTemplateData(s *schema.Schema) (TemplateData, error) {
 		definitions = append(definitions, dd)
 	}
 
+	// Per-permission narrowing subclasses.
+	var perPermTypes []PerPermTypeData
+	for _, def := range s.Definitions {
+		for _, perm := range def.Permissions {
+			base := toPascalCase(def.Name) + toPascalCase(perm.Name)
+			perPermTypes = append(perPermTypes, PerPermTypeData{
+				PermClassName: "_" + base + "Permission",
+				RefClassName:  "_" + base + "Ref",
+			})
+		}
+	}
+
 	return TemplateData{
-		CaveatContexts: caveatContexts,
-		SubjectRefs:    subjectRefs,
-		Definitions:    definitions,
+		CaveatContexts:     caveatContexts,
+		SubjectRefs:        subjectRefs,
+		Definitions:        definitions,
+		PerPermissionTypes: perPermTypes,
 	}, nil
 }
 

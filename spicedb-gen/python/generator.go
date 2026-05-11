@@ -3,6 +3,7 @@ package python
 import (
 	"bytes"
 	"embed"
+	"fmt"
 	"sort"
 	"strings"
 	"text/template"
@@ -93,7 +94,10 @@ type WithMethodData struct {
 // Generate produces a permissions.py file from the parsed schema.
 // opts is currently unused.
 func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]generator.GeneratedFile, error) {
-	data := buildTemplateData(s)
+	data, err := buildTemplateData(s)
+	if err != nil {
+		return nil, err
+	}
 
 	tmpl, err := template.New("typed_client.py.tmpl").ParseFS(templateFS, "templates/*.tmpl")
 	if err != nil {
@@ -110,7 +114,7 @@ func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]genera
 	}, nil
 }
 
-func buildTemplateData(s *schema.Schema) TemplateData {
+func buildTemplateData(s *schema.Schema) (TemplateData, error) {
 	usedCaveats := map[string]bool{}
 	defCaveats := map[string][]string{}         // def name -> ordered caveat names usable on it
 	defCaveatsSeen := map[string]map[string]bool{}
@@ -304,11 +308,23 @@ func buildTemplateData(s *schema.Schema) TemplateData {
 			})
 		}
 
-		// Skip emitting a resource-ref dataclass for any definition that already has a
-		// subject-ref dataclass emitted (and has no resource-side accessors to add).
-		// This prevents duplicate class declarations when a definition is used both
-		// as a subject and as a resource (e.g. "user" in the sample schema).
-		if defIsSubject[def.Name] && len(dd.Permissions) == 0 && len(dd.Relations) == 0 && len(dd.SubRefs) == 0 {
+		// If a definition is BOTH used as a subject AND has resource-side accessors
+		// (permissions, relations, or sub-refs), naively emitting both classes would
+		// produce a duplicate `class X:` declaration — Python lets the second one
+		// silently win, destroying the subject-ref's caveat builders and protocol
+		// methods. Detect and reject; merging the two declarations into one is the
+		// proper fix and will land in a follow-up.
+		if defIsSubject[def.Name] && (len(dd.Permissions) > 0 || len(dd.Relations) > 0 || len(dd.SubRefs) > 0) {
+			return TemplateData{}, fmt.Errorf(
+				"definition %q is referenced as both a subject and as a resource with its own "+
+					"permissions/relations/sub-refs; the python generator does not yet support "+
+					"merging these into a single class. Split the schema so this definition is "+
+					"used only as a subject or only as a resource, or open an issue", def.Name)
+		}
+
+		// Skip the empty-resource-side case (def is only a subject, has no resource-side
+		// members to add): the subject-ref class already covers it.
+		if defIsSubject[def.Name] {
 			continue
 		}
 
@@ -319,7 +335,7 @@ func buildTemplateData(s *schema.Schema) TemplateData {
 		CaveatContexts: caveatContexts,
 		SubjectRefs:    subjectRefs,
 		Definitions:    definitions,
-	}
+	}, nil
 }
 
 // pySubjectRefName returns the Python class name for a given subject type.

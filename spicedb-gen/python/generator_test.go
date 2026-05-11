@@ -203,3 +203,34 @@ func TestCaveatParamKeywordCollision(t *testing.T) {
 	assert.Contains(t, output, `d["id"] = self.id_`,
 		"_to_dict must use the raw schema name as the dict key, not the escaped identifier")
 }
+
+// TestDualRoleDefinitionRejected ensures the generator refuses to emit a
+// schema where the same definition is both used as a base subject and carries
+// its own permissions/relations/sub-refs. Without this guard, the generated
+// file would contain two `class X:` declarations and Python would let the
+// second silently win, breaking the subject-ref's caveat builders.
+func TestDualRoleDefinitionRejected(t *testing.T) {
+	s := &schema.Schema{
+		Definitions: []schema.Definition{
+			{
+				Name: "user",
+				Relations: []schema.Relation{
+					// user.friend: user — makes "user" appear as a base subject
+					// AND gives the user definition a relation of its own.
+					{
+						Name: "friend",
+						AllowedSubjects: []schema.SubjectType{
+							{Definition: "user"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	g := &Generator{}
+	_, err := g.Generate(s, nil)
+	require.Error(t, err, "dual-role definition must be rejected")
+	assert.Contains(t, err.Error(), `"user"`)
+	assert.Contains(t, err.Error(), "both")
+}

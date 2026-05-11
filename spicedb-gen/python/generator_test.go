@@ -147,6 +147,12 @@ func TestPySubjectRefName(t *testing.T) {
 	assert.Equal(t, "TeamMember", pySubjectRefName(schema.SubjectType{Definition: "team", Relation: "member"}))
 	assert.Equal(t, "UserIpRange", pySubjectRefName(schema.SubjectType{Definition: "user", CaveatName: "ip_range"}))
 	assert.Equal(t, "UserExpiring", pySubjectRefName(schema.SubjectType{Definition: "user", Expiration: true}))
+
+	// Relation must win when combined with a caveat (sealed-union emitters in
+	// later tasks rely on this branch order).
+	assert.Equal(t, "TeamMember", pySubjectRefName(schema.SubjectType{
+		Definition: "team", Relation: "member", CaveatName: "ip_range",
+	}))
 }
 
 func TestCaveatParamKeywordCollision(t *testing.T) {

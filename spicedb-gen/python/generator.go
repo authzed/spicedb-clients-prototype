@@ -3,6 +3,7 @@ package python
 import (
 	"bytes"
 	"embed"
+	"sort"
 	"strings"
 	"text/template"
 
@@ -25,7 +26,20 @@ func (g *Generator) Language() string { return "python" }
 
 // TemplateData holds all pre-computed data needed by the Python template.
 // Fields are filled in by later tasks.
-type TemplateData struct{}
+type TemplateData struct {
+	CaveatContexts []CaveatContextData
+}
+
+type CaveatContextData struct {
+	ClassName  string         // e.g. "IpRangeContext"
+	CaveatName string         // e.g. "ip_range"
+	Params     []CaveatParamData
+}
+
+type CaveatParamData struct {
+	FieldName string // snake_case, e.g. "allowed_cidr"
+	PyType    string // e.g. "str"
+}
 
 // Generate produces a permissions.py file from the parsed schema.
 // opts is currently unused.
@@ -47,7 +61,46 @@ func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]genera
 	}, nil
 }
 
-func buildTemplateData(_ *schema.Schema) TemplateData { return TemplateData{} }
+func buildTemplateData(s *schema.Schema) TemplateData {
+	usedCaveats := collectUsedCaveats(s)
+
+	var caveatContexts []CaveatContextData
+	for _, c := range s.Caveats {
+		if !usedCaveats[c.Name] {
+			continue
+		}
+		cc := CaveatContextData{
+			ClassName:  toPascalCase(c.Name) + "Context",
+			CaveatName: c.Name,
+		}
+		// Sort params alphabetically for deterministic output (matches Go generator).
+		params := append([]schema.CaveatParam(nil), c.Params...)
+		sort.Slice(params, func(i, j int) bool { return params[i].Name < params[j].Name })
+		for _, p := range params {
+			cc.Params = append(cc.Params, CaveatParamData{
+				FieldName: escapeKeyword(p.Name),
+				PyType:    celTypeToPyType(p.Type),
+			})
+		}
+		caveatContexts = append(caveatContexts, cc)
+	}
+
+	return TemplateData{CaveatContexts: caveatContexts}
+}
+
+func collectUsedCaveats(s *schema.Schema) map[string]bool {
+	used := map[string]bool{}
+	for _, def := range s.Definitions {
+		for _, rel := range def.Relations {
+			for _, st := range rel.AllowedSubjects {
+				if st.CaveatName != "" {
+					used[st.CaveatName] = true
+				}
+			}
+		}
+	}
+	return used
+}
 
 // pyKeywords are Python reserved words plus selected built-in names we should
 // not clobber when generating identifiers. Hits get a trailing underscore.

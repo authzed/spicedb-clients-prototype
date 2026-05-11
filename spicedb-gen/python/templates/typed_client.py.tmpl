@@ -51,3 +51,23 @@ class TypedRelationship:
             caveat_context=self._caveat_ctx,
             expiration=self._expiration,
         )
+
+
+# --- Caveat contexts ---
+
+{{range $cav := .CaveatContexts}}
+
+@dataclass(frozen=True)
+class {{$cav.ClassName}}:
+{{- range $p := $cav.Params}}
+    {{$p.FieldName}}: {{$p.PyType}} | None = None
+{{- end}}
+
+    def _to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {}
+{{- range $p := $cav.Params}}
+        if self.{{$p.FieldName}} is not None:
+            d["{{$p.FieldName}}"] = self.{{$p.FieldName}}
+{{- end}}
+        return d
+{{end}}

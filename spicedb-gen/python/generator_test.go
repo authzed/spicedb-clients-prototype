@@ -96,4 +96,12 @@ func TestGenerateSampleSchema(t *testing.T) {
 	assert.Contains(t, output, "@dataclass(frozen=True)\nclass Permission:")
 	assert.Contains(t, output, "@dataclass(frozen=True)\nclass PermissionRef:")
 	assert.Contains(t, output, "@dataclass(frozen=True)\nclass TypedRelationship:")
+
+	// Caveat context dataclasses
+	assert.Contains(t, output, "class IpRangeContext:")
+	assert.Contains(t, output, "allowed_cidr: str | None = None")
+	assert.Contains(t, output, "class TimeWindowContext:")
+	assert.Contains(t, output, "end: str | None = None")
+	assert.Contains(t, output, "start: str | None = None")
+	assert.Contains(t, output, "def _to_dict(self) -> dict[str, Any]:")
 }

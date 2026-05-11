@@ -28,6 +28,32 @@ func (g *Generator) Language() string { return "python" }
 type TemplateData struct {
 	CaveatContexts []CaveatContextData
 	SubjectRefs    []SubjectRefData
+	Definitions    []DefinitionData
+}
+
+type DefinitionData struct {
+	ClassName   string             // e.g. "Document"
+	Name        string             // e.g. "document"
+	Permissions []DefPermissionData
+	Relations   []DefRelationData
+	SubRefs     []DefSubRefData
+}
+
+type DefPermissionData struct {
+	PropName       string // snake_case method name, e.g. "view" or "del_" if escaped
+	ReturnType     string // narrowed Permission subclass, e.g. "_DocumentViewPermission"
+	PermissionName string // raw schema name, e.g. "view" — emitted verbatim into the body
+}
+
+type DefRelationData struct {
+	MethodName   string // snake_case, possibly prefixed "for_"
+	SubjectUnion string // e.g. "DocumentViewerSubject"
+	RelationName string // raw schema name, used in body string
+}
+
+type DefSubRefData struct {
+	PropName   string // snake_case
+	ReturnType string // e.g. "TeamMember"
 }
 
 type CaveatContextData struct {
@@ -234,9 +260,65 @@ func buildTemplateData(s *schema.Schema) TemplateData {
 		}
 	}
 
+	// Definitions (resource side).
+	var definitions []DefinitionData
+	for _, def := range s.Definitions {
+		dd := DefinitionData{
+			ClassName: toPascalCase(def.Name),
+			Name:      def.Name,
+		}
+
+		// Sub-refs as @property accessors. Track names to detect collisions with relation names.
+		subRefNames := map[string]bool{}
+		for _, rel := range def.Relations {
+			if !subRefs[subRef{def.Name, rel.Name}] {
+				continue
+			}
+			propName := escapeKeyword(toSnakeCase(rel.Name))
+			subRefNames[rel.Name] = true
+			dd.SubRefs = append(dd.SubRefs, DefSubRefData{
+				PropName:   propName,
+				ReturnType: toPascalCase(def.Name) + toPascalCase(rel.Name),
+			})
+		}
+
+		// Permissions as @property accessors returning the narrowed Permission subclass.
+		for _, perm := range def.Permissions {
+			dd.Permissions = append(dd.Permissions, DefPermissionData{
+				PropName:       escapeKeyword(toSnakeCase(perm.Name)),
+				ReturnType:     "_" + toPascalCase(def.Name) + toPascalCase(perm.Name) + "Permission",
+				PermissionName: perm.Name,
+			})
+		}
+
+		// Relation write methods. If the relation name collides with a sub-ref, prefix "for_".
+		for _, rel := range def.Relations {
+			methodName := escapeKeyword(toSnakeCase(rel.Name))
+			if subRefNames[rel.Name] {
+				methodName = "for_" + methodName
+			}
+			dd.Relations = append(dd.Relations, DefRelationData{
+				MethodName:   methodName,
+				SubjectUnion: toPascalCase(def.Name) + toPascalCase(rel.Name) + "Subject",
+				RelationName: rel.Name,
+			})
+		}
+
+		// Skip emitting a resource-ref dataclass for any definition that already has a
+		// subject-ref dataclass emitted (and has no resource-side accessors to add).
+		// This prevents duplicate class declarations when a definition is used both
+		// as a subject and as a resource (e.g. "user" in the sample schema).
+		if defIsSubject[def.Name] && len(dd.Permissions) == 0 && len(dd.Relations) == 0 && len(dd.SubRefs) == 0 {
+			continue
+		}
+
+		definitions = append(definitions, dd)
+	}
+
 	return TemplateData{
 		CaveatContexts: caveatContexts,
 		SubjectRefs:    subjectRefs,
+		Definitions:    definitions,
 	}
 }
 

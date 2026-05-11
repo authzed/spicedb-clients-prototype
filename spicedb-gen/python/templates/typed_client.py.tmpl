@@ -117,3 +117,40 @@ class {{$srt.ClassName}}:
 {{- end}}
 {{end}}
 {{end}}
+
+# --- Resource refs ---
+
+{{range $def := .Definitions}}
+@dataclass(frozen=True)
+class {{$def.ClassName}}:
+    id: str
+    _type: ClassVar[str] = "{{$def.Name}}"
+{{range $p := $def.Permissions}}
+    @property
+    def {{$p.PropName}}(self) -> {{$p.ReturnType}}:
+        return {{$p.ReturnType}}(_resource_type="{{$def.Name}}", _resource_id=self.id, _permission="{{$p.PermissionName}}")
+{{end}}
+{{- range $sr := $def.SubRefs}}
+    @property
+    def {{$sr.PropName}}(self) -> {{$sr.ReturnType}}:
+        return {{$sr.ReturnType}}(id=self.id)
+{{end}}
+{{- range $r := $def.Relations}}
+    def {{$r.MethodName}}(self, subject: {{$r.SubjectUnion}}) -> TypedRelationship:
+        sub_type, sub_id, sub_rel = subject._subject_ref()
+        c_info = subject._caveat_info()
+        caveat_name = c_info[0] if c_info is not None else None
+        caveat_ctx = c_info[1] if c_info is not None else None
+        return TypedRelationship(
+            _resource_type="{{$def.Name}}",
+            _resource_id=self.id,
+            _relation="{{$r.RelationName}}",
+            _subject_type=sub_type,
+            _subject_id=sub_id,
+            _subject_rel=sub_rel,
+            _caveat_name=caveat_name,
+            _caveat_ctx=caveat_ctx,
+            _expiration=subject._expiration(),
+        )
+{{end}}
+{{end}}

@@ -134,6 +134,24 @@ func TestGenerateSampleSchema(t *testing.T) {
 
 	// UserIpRange's _caveat_info returns the right values
 	assert.Contains(t, output, "return \"ip_range\", self.context._to_dict()")
+
+	// Document resource ref
+	assert.Contains(t, output, "class Document:")
+	assert.Contains(t, output, "    @property")
+	assert.Contains(t, output, "    def view(self) -> _DocumentViewPermission:")
+	assert.Contains(t, output, "    def edit(self) -> _DocumentEditPermission:")
+	assert.Contains(t, output, "    def delete(self) -> _DocumentDeletePermission:")
+	assert.Contains(t, output, "    def viewer(self, subject: DocumentViewerSubject) -> TypedRelationship:")
+	assert.Contains(t, output, "    def editor(self, subject: DocumentEditorSubject) -> TypedRelationship:")
+	assert.Contains(t, output, "    def owner(self, subject: DocumentOwnerSubject) -> TypedRelationship:")
+
+	// Team resource ref — sub-ref property + renamed relation write
+	assert.Contains(t, output, "class Team:")
+	assert.Contains(t, output, "    def member(self) -> TeamMember:")            // @property
+	assert.Contains(t, output, "    def for_member(self, subject: TeamMemberSubject) -> TypedRelationship:")
+
+	// Sub-ref property body
+	assert.Contains(t, output, "return TeamMember(id=self.id)")
 }
 
 // TestCaveatParamKeywordCollision verifies that when a caveat parameter's name

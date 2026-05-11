@@ -36,10 +36,16 @@ func TestToSnakeCase(t *testing.T) {
 }
 
 func TestEscapeKeyword(t *testing.T) {
-	// Python keywords get a trailing underscore.
+	// Hard keywords get a trailing underscore.
 	for _, kw := range []string{"class", "def", "del", "from", "if", "for", "return", "type"} {
 		assert.Equal(t, kw+"_", escapeKeyword(kw))
 	}
+	// Soft keywords (3.10+) also get escaped.
+	assert.Equal(t, "match_", escapeKeyword("match"))
+	assert.Equal(t, "case_", escapeKeyword("case"))
+	// Commonly-shadowed builtins also get escaped.
+	assert.Equal(t, "id_", escapeKeyword("id"))
+	assert.Equal(t, "list_", escapeKeyword("list"))
 	// Non-keywords pass through.
 	assert.Equal(t, "viewer", escapeKeyword("viewer"))
 	assert.Equal(t, "edit", escapeKeyword("edit"))

@@ -52,7 +52,7 @@ func buildTemplateData(_ *schema.Schema) TemplateData { return TemplateData{} }
 // pyKeywords are Python reserved words plus selected built-in names we should
 // not clobber when generating identifiers. Hits get a trailing underscore.
 var pyKeywords = map[string]bool{
-	// PEP 8 reserved words
+	// Python language keywords (per the language reference / keyword.kwlist)
 	"False": true, "None": true, "True": true,
 	"and": true, "as": true, "assert": true, "async": true, "await": true,
 	"break": true, "class": true, "continue": true, "def": true, "del": true,

@@ -228,7 +228,8 @@ class TypedClient:
         self.client = client
 
     @classmethod
-    def create(cls, endpoint: str, token: str, *, insecure: bool = False) -> "TypedClient":
+    def connect(cls, endpoint: str, token: str, *, insecure: bool = False) -> "TypedClient":
+        """Convenience factory: build the underlying SpiceDBClient and wrap it."""
         return cls(SpiceDBClient(endpoint, token, insecure=insecure))
 
     async def __aenter__(self) -> "TypedClient":

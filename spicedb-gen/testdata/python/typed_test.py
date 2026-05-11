@@ -45,7 +45,7 @@ definition document {
 
 @pytest.fixture
 async def tc():
-    client = TypedClient.create("localhost:50051", "somerandomkeyhere", insecure=True)
+    client = TypedClient.connect("localhost:50051", "somerandomkeyhere", insecure=True)
     try:
         await client.client.write_schema(SCHEMA)
         yield client

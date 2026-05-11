@@ -180,7 +180,7 @@ func TestGenerateSampleSchema(t *testing.T) {
 	assert.Contains(t, output, "class TypedClient:")
 	assert.Contains(t, output, "client: SpiceDBClient")
 	assert.Contains(t, output, "def __init__(self, client: SpiceDBClient)")
-	assert.Contains(t, output, `def create(cls, endpoint: str, token: str, *, insecure: bool = False) -> "TypedClient":`)
+	assert.Contains(t, output, `def connect(cls, endpoint: str, token: str, *, insecure: bool = False) -> "TypedClient":`)
 	assert.Contains(t, output, "async def __aenter__")
 	assert.Contains(t, output, "async def __aexit__")
 	assert.Contains(t, output, "async def close")

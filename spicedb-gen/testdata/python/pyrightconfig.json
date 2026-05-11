@@ -1,6 +1,6 @@
 {
   "include": ["."],
-  "exclude": [".venv", "__pycache__", ".pytest_cache"],
+  "exclude": [".venv", "__pycache__", ".pytest_cache", "type_errors.py"],
   "typeCheckingMode": "standard",
   "reportMissingTypeStubs": false,
   "pythonVersion": "3.11"

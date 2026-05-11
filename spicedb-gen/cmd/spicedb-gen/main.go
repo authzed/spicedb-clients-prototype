@@ -13,6 +13,7 @@ import (
 	// Register language generators.
 	_ "github.com/authzed/spicedb-clients/spicedb-gen/golang"
 	_ "github.com/authzed/spicedb-clients/spicedb-gen/java"
+	_ "github.com/authzed/spicedb-clients/spicedb-gen/python"
 	_ "github.com/authzed/spicedb-clients/spicedb-gen/typescript"
 )
 

@@ -32,6 +32,7 @@ type TemplateData struct {
 	Definitions        []DefinitionData
 	PerPermissionTypes []PerPermTypeData
 	SealedUnions       []SealedUnionData
+	StaticPermRefs     []StaticPermRefData
 }
 
 type DefinitionData struct {
@@ -56,6 +57,13 @@ type PerPermTypeData struct {
 type SealedUnionData struct {
 	AliasName string   // e.g. "DocumentViewerSubject"
 	Members   []string // e.g. ["TeamMember", "User", "UserIpRange", "UserTimeWindow"]
+}
+
+type StaticPermRefData struct {
+	ConstName    string // e.g. "DocumentView"
+	RefClassName string // e.g. "_DocumentViewRef"
+	ResourceType string // raw, e.g. "document"
+	Permission   string // raw, e.g. "view"
 }
 
 type DefRelationData struct {
@@ -395,12 +403,27 @@ func buildTemplateData(s *schema.Schema) (TemplateData, error) {
 		}
 	}
 
+	// Static permission ref constants.
+	var staticPermRefs []StaticPermRefData
+	for _, def := range s.Definitions {
+		for _, perm := range def.Permissions {
+			base := toPascalCase(def.Name) + toPascalCase(perm.Name)
+			staticPermRefs = append(staticPermRefs, StaticPermRefData{
+				ConstName:    base,
+				RefClassName: "_" + base + "Ref",
+				ResourceType: def.Name,
+				Permission:   perm.Name,
+			})
+		}
+	}
+
 	return TemplateData{
 		CaveatContexts:     caveatContexts,
 		SubjectRefs:        subjectRefs,
 		Definitions:        definitions,
 		PerPermissionTypes: perPermTypes,
 		SealedUnions:       sealedUnions,
+		StaticPermRefs:     staticPermRefs,
 	}, nil
 }
 

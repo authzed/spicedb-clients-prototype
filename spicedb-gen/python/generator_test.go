@@ -170,6 +170,11 @@ func TestGenerateSampleSchema(t *testing.T) {
 	assert.Contains(t, output, "DocumentEditSubject: TypeAlias = User")
 	assert.Contains(t, output, "DocumentDeleteSubject: TypeAlias = User")
 	assert.Contains(t, output, "TeamMemberSubject: TypeAlias = TeamMember | User")
+
+	// Static permission ref constants
+	assert.Contains(t, output, `DocumentView: _DocumentViewRef = _DocumentViewRef(_resource_type="document", _permission="view")`)
+	assert.Contains(t, output, `DocumentEdit: _DocumentEditRef = _DocumentEditRef(_resource_type="document", _permission="edit")`)
+	assert.Contains(t, output, `DocumentDelete: _DocumentDeleteRef = _DocumentDeleteRef(_resource_type="document", _permission="delete")`)
 }
 
 // TestCaveatParamKeywordCollision verifies that when a caveat parameter's name

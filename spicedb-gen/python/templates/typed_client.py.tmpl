@@ -173,3 +173,9 @@ class {{$def.ClassName}}:
         )
 {{end}}
 {{end}}
+
+# --- Static permission ref constants ---
+
+{{range $p := .StaticPermRefs}}
+{{$p.ConstName}}: {{$p.RefClassName}} = {{$p.RefClassName}}(_resource_type="{{$p.ResourceType}}", _permission="{{$p.Permission}}")
+{{end}}

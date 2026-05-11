@@ -142,6 +142,13 @@ func TestGenerateSampleSchema(t *testing.T) {
 //   - Preserves the raw name as the dict key, so CEL evaluation receives "id",
 //     not "id_". A bug in the dict-key mapping would otherwise silently break
 //     caveat evaluation at runtime.
+func TestPySubjectRefName(t *testing.T) {
+	assert.Equal(t, "User", pySubjectRefName(schema.SubjectType{Definition: "user"}))
+	assert.Equal(t, "TeamMember", pySubjectRefName(schema.SubjectType{Definition: "team", Relation: "member"}))
+	assert.Equal(t, "UserIpRange", pySubjectRefName(schema.SubjectType{Definition: "user", CaveatName: "ip_range"}))
+	assert.Equal(t, "UserExpiring", pySubjectRefName(schema.SubjectType{Definition: "user", Expiration: true}))
+}
+
 func TestCaveatParamKeywordCollision(t *testing.T) {
 	s := &schema.Schema{
 		Caveats: []schema.CaveatDefinition{

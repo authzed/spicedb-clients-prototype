@@ -240,6 +240,22 @@ func buildTemplateData(s *schema.Schema) TemplateData {
 	}
 }
 
+// pySubjectRefName returns the Python class name for a given subject type.
+// Used by sealed-union and lookup-sentinel emitters to refer to refs by name.
+// Mirrors goSubjectRefTypeName in spicedb-gen/golang/generator.go.
+func pySubjectRefName(st schema.SubjectType) string {
+	if st.Relation != "" {
+		return toPascalCase(st.Definition) + toPascalCase(st.Relation)
+	}
+	if st.CaveatName != "" {
+		return toPascalCase(st.Definition) + toPascalCase(st.CaveatName)
+	}
+	if st.Expiration {
+		return toPascalCase(st.Definition) + "Expiring"
+	}
+	return toPascalCase(st.Definition)
+}
+
 // pyKeywords are Python reserved words plus selected built-in names we should
 // not clobber when generating identifiers. Hits get a trailing underscore.
 var pyKeywords = map[string]bool{

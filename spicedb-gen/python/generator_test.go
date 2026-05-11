@@ -206,6 +206,19 @@ func TestGenerateSampleSchema(t *testing.T) {
 
 	// read_relationships — untyped passthrough
 	assert.Contains(t, output, "def read_relationships(self, c: Consistency, f: Filter) -> AsyncIterator[Relationship]:")
+
+	// TypedTransaction — mixed-op transaction with preconditions
+	assert.Contains(t, output, "class TypedTransaction:")
+	assert.Contains(t, output, "_txn: Transaction = field(default_factory=Transaction)")
+	assert.Contains(t, output, `def create(self, *rels: TypedRelationship) -> "TypedTransaction":`)
+	assert.Contains(t, output, `def touch(self, *rels: TypedRelationship) -> "TypedTransaction":`)
+	assert.Contains(t, output, `def delete(self, *rels: TypedRelationship) -> "TypedTransaction":`)
+	assert.Contains(t, output, `def must_match(self, f: Filter) -> "TypedTransaction":`)
+	assert.Contains(t, output, `def must_not_match(self, f: Filter) -> "TypedTransaction":`)
+
+	// TypedClient.write(txn) — atomic write of a TypedTransaction
+	assert.Contains(t, output, "async def write(self, txn: TypedTransaction) -> str:")
+	assert.Contains(t, output, "return await self.client.write(txn._txn)")
 }
 
 // TestCaveatParamKeywordCollision verifies that when a caveat parameter's name

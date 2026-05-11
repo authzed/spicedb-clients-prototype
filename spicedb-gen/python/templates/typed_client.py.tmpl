@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, ClassVar, TypeAlias, overload
 
@@ -51,6 +51,42 @@ class TypedRelationship:
             caveat_context=self._caveat_ctx,
             expiration=self._expiration,
         )
+
+
+@dataclass
+class TypedTransaction:
+    """Type-safe transaction batching TypedRelationship operations and preconditions.
+
+    Use this when a single atomic write must mix create/touch/delete operations
+    or attach must_match / must_not_match preconditions. For the common
+    single-operation case, the variadic TypedClient.touch / create / delete
+    shortcuts remain available.
+    """
+
+    _txn: Transaction = field(default_factory=Transaction)
+
+    def create(self, *rels: TypedRelationship) -> "TypedTransaction":
+        for r in rels:
+            self._txn.create(r._to_relationship())
+        return self
+
+    def touch(self, *rels: TypedRelationship) -> "TypedTransaction":
+        for r in rels:
+            self._txn.touch(r._to_relationship())
+        return self
+
+    def delete(self, *rels: TypedRelationship) -> "TypedTransaction":
+        for r in rels:
+            self._txn.delete(r._to_relationship())
+        return self
+
+    def must_match(self, f: Filter) -> "TypedTransaction":
+        self._txn.must_match(f)
+        return self
+
+    def must_not_match(self, f: Filter) -> "TypedTransaction":
+        self._txn.must_not_match(f)
+        return self
 
 
 # --- Caveat contexts ---
@@ -242,6 +278,10 @@ class TypedClient:
         for r in rels:
             txn.delete(r._to_relationship())
         return await self.client.write(txn)
+
+    async def write(self, txn: TypedTransaction) -> str:
+        """Execute a TypedTransaction (mixed ops + preconditions). Returns the revision."""
+        return await self.client.write(txn._txn)
 
     # ── lookup_resources ──────────────────────────────────────────────
 {{range $o := .LookupResOverloads}}

@@ -108,6 +108,32 @@ func TestGenerateSampleSchema(t *testing.T) {
 	// The dict-key in _to_dict must be the raw schema param name, not the
 	// Python identifier, so SpiceDB's CEL evaluator can bind it correctly.
 	assert.Contains(t, output, `d["allowed_cidr"] = self.allowed_cidr`)
+
+	// Subject ref dataclasses — base
+	assert.Contains(t, output, "class User:")
+	assert.Contains(t, output, "_type: ClassVar[str] = \"user\"")
+
+	// Sub-relation ref (referenced as a subject)
+	assert.Contains(t, output, "class TeamMember:")
+	assert.Contains(t, output, "_relation: ClassVar[str] = \"member\"")
+
+	// Caveated variants
+	assert.Contains(t, output, "class UserIpRange:")
+	assert.Contains(t, output, "context: IpRangeContext")
+	assert.Contains(t, output, "_caveat: ClassVar[str] = \"ip_range\"")
+	assert.Contains(t, output, "class UserTimeWindow:")
+
+	// Internal accessors on every ref
+	assert.Contains(t, output, "def _subject_ref(self) -> tuple[str, str, str]:")
+	assert.Contains(t, output, "def _caveat_info(self) -> tuple[str, dict[str, Any]] | None:")
+	assert.Contains(t, output, "def _expiration(self) -> datetime | None:")
+
+	// Caveat builder methods on User
+	assert.Contains(t, output, "def with_ip_range(self, ctx: IpRangeContext) -> UserIpRange:")
+	assert.Contains(t, output, "def with_time_window(self, ctx: TimeWindowContext) -> UserTimeWindow:")
+
+	// UserIpRange's _caveat_info returns the right values
+	assert.Contains(t, output, "return \"ip_range\", self.context._to_dict()")
 }
 
 // TestCaveatParamKeywordCollision verifies that when a caveat parameter's name

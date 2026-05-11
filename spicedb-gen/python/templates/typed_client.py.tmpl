@@ -71,3 +71,49 @@ class {{$cav.ClassName}}:
 {{- end}}
         return d
 {{end}}
+
+# --- Subject ref dataclasses ---
+
+{{range $srt := .SubjectRefs}}
+@dataclass(frozen=True)
+class {{$srt.ClassName}}:
+    id: str
+{{- if $srt.HasCaveat}}
+    context: {{$srt.CaveatContext}}
+{{- end}}
+{{- if and $srt.HasExpiration (not $srt.HasCaveat)}}
+    expiration: datetime
+{{- end}}
+    _type: ClassVar[str] = "{{$srt.DefinitionName}}"
+{{- if ne $srt.SubRelation ""}}
+    _relation: ClassVar[str] = "{{$srt.SubRelation}}"
+{{- end}}
+{{- if $srt.HasCaveat}}
+    _caveat: ClassVar[str] = "{{$srt.CaveatName}}"
+{{- end}}
+
+    def _subject_ref(self) -> tuple[str, str, str]:
+        return "{{$srt.DefinitionName}}", self.id, "{{$srt.SubRelation}}"
+
+    def _caveat_info(self) -> tuple[str, dict[str, Any]] | None:
+{{- if $srt.HasCaveat}}
+        return "{{$srt.CaveatName}}", self.context._to_dict()
+{{- else}}
+        return None
+{{- end}}
+
+    def _expiration(self) -> datetime | None:
+{{- if and $srt.HasExpiration (not $srt.HasCaveat) (eq $srt.SubRelation "")}}
+        return self.expiration
+{{- else}}
+        return None
+{{- end}}
+{{range $wm := $srt.WithMethods}}
+    def {{$wm.MethodName}}(self, {{if $wm.IsExpiration}}expiration: datetime{{else}}ctx: {{$wm.ParamType}}{{end}}) -> {{$wm.ReturnType}}:
+{{- if $wm.IsExpiration}}
+        return {{$wm.ReturnType}}(id=self.id, expiration=expiration)
+{{- else}}
+        return {{$wm.ReturnType}}(id=self.id, context=ctx)
+{{- end}}
+{{end}}
+{{end}}

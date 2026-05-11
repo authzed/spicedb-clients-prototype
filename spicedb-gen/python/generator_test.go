@@ -92,8 +92,8 @@ func TestGenerateSampleSchema(t *testing.T) {
 	assert.Contains(t, output, "from spicedb import SpiceDBClient, Transaction, Relationship, Filter")
 	assert.Contains(t, output, "from spicedb.consistency import Consistency")
 
-	// Base value types
-	assert.Contains(t, output, "class Permission:")
-	assert.Contains(t, output, "class PermissionRef:")
-	assert.Contains(t, output, "class TypedRelationship:")
+	// Base value types — all frozen dataclasses
+	assert.Contains(t, output, "@dataclass(frozen=True)\nclass Permission:")
+	assert.Contains(t, output, "@dataclass(frozen=True)\nclass PermissionRef:")
+	assert.Contains(t, output, "@dataclass(frozen=True)\nclass TypedRelationship:")
 }

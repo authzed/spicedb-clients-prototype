@@ -33,6 +33,24 @@ type TemplateData struct {
 	PerPermissionTypes []PerPermTypeData
 	SealedUnions       []SealedUnionData
 	StaticPermRefs     []StaticPermRefData
+	LookupSubjectTypes []LookupSubjectTypeData
+	CheckOverloads     []CheckOverloadData
+	LookupResOverloads []LookupResOverloadData
+}
+
+type LookupSubjectTypeData struct {
+	PermClassName string   // e.g. "_DocumentViewPermission"
+	Members       []string // e.g. ["TeamMember", "User", "UserIpRange", "UserTimeWindow"]
+}
+
+type CheckOverloadData struct {
+	PermClassName string // e.g. "_DocumentViewPermission"
+	SubjectUnion  string // e.g. "DocumentViewSubject"
+}
+
+type LookupResOverloadData struct {
+	RefClassName string // e.g. "_DocumentViewRef"
+	SubjectUnion string // e.g. "DocumentViewSubject"
 }
 
 type DefinitionData struct {
@@ -417,6 +435,33 @@ func buildTemplateData(s *schema.Schema) (TemplateData, error) {
 		}
 	}
 
+	var checkOverloads []CheckOverloadData
+	var lookupResOverloads []LookupResOverloadData
+	var lookupSubjectTypes []LookupSubjectTypeData
+	for _, def := range s.Definitions {
+		for _, perm := range def.Permissions {
+			base := toPascalCase(def.Name) + toPascalCase(perm.Name)
+			checkOverloads = append(checkOverloads, CheckOverloadData{
+				PermClassName: "_" + base + "Permission",
+				SubjectUnion:  base + "Subject",
+			})
+			lookupResOverloads = append(lookupResOverloads, LookupResOverloadData{
+				RefClassName: "_" + base + "Ref",
+				SubjectUnion: base + "Subject",
+			})
+
+			// Collect the subject-type member set for this permission.
+			members := collectMembers(perm.ReachableSubjects)
+			if len(members) == 0 {
+				continue
+			}
+			lookupSubjectTypes = append(lookupSubjectTypes, LookupSubjectTypeData{
+				PermClassName: "_" + base + "Permission",
+				Members:       members,
+			})
+		}
+	}
+
 	return TemplateData{
 		CaveatContexts:     caveatContexts,
 		SubjectRefs:        subjectRefs,
@@ -424,6 +469,9 @@ func buildTemplateData(s *schema.Schema) (TemplateData, error) {
 		PerPermissionTypes: perPermTypes,
 		SealedUnions:       sealedUnions,
 		StaticPermRefs:     staticPermRefs,
+		LookupSubjectTypes: lookupSubjectTypes,
+		CheckOverloads:     checkOverloads,
+		LookupResOverloads: lookupResOverloads,
 	}, nil
 }
 

@@ -175,6 +175,37 @@ func TestGenerateSampleSchema(t *testing.T) {
 	assert.Contains(t, output, `DocumentView: _DocumentViewRef = _DocumentViewRef(_resource_type="document", _permission="view")`)
 	assert.Contains(t, output, `DocumentEdit: _DocumentEditRef = _DocumentEditRef(_resource_type="document", _permission="edit")`)
 	assert.Contains(t, output, `DocumentDelete: _DocumentDeleteRef = _DocumentDeleteRef(_resource_type="document", _permission="delete")`)
+
+	// TypedClient skeleton
+	assert.Contains(t, output, "class TypedClient:")
+	assert.Contains(t, output, "client: SpiceDBClient")
+	assert.Contains(t, output, "def __init__(self, client: SpiceDBClient)")
+	assert.Contains(t, output, `def create(cls, endpoint: str, token: str, *, insecure: bool = False) -> "TypedClient":`)
+	assert.Contains(t, output, "async def __aenter__")
+	assert.Contains(t, output, "async def __aexit__")
+	assert.Contains(t, output, "async def close")
+
+	// check — per-permission overloads + generic dispatch
+	assert.Contains(t, output, "async def check(self, c: Consistency, p: _DocumentViewPermission, s: DocumentViewSubject) -> bool:")
+	assert.Contains(t, output, "async def check(self, c: Consistency, p: _DocumentEditPermission, s: DocumentEditSubject) -> bool:")
+	assert.Contains(t, output, "async def check(self, c: Consistency, p: _DocumentDeletePermission, s: DocumentDeleteSubject) -> bool:")
+
+	// writes
+	assert.Contains(t, output, "async def touch(self, *rels: TypedRelationship) -> str:")
+	assert.Contains(t, output, "async def create(self, *rels: TypedRelationship) -> str:")
+	assert.Contains(t, output, "async def delete(self, *rels: TypedRelationship) -> str:")
+
+	// lookup_resources — overload keyed on PermissionRef subclass
+	assert.Contains(t, output, "def lookup_resources(self, c: Consistency, p: _DocumentViewRef, s: DocumentViewSubject) -> AsyncIterator[str]:")
+	assert.Contains(t, output, "def lookup_resources(self, c: Consistency, p: _DocumentEditRef, s: DocumentEditSubject) -> AsyncIterator[str]:")
+	assert.Contains(t, output, "def lookup_resources(self, c: Consistency, p: _DocumentDeleteRef, s: DocumentDeleteSubject) -> AsyncIterator[str]:")
+
+	// lookup_subjects — overload keyed on Permission subclass; sentinel = type[…]
+	assert.Contains(t, output, "def lookup_subjects(")
+	assert.Contains(t, output, "type[TeamMember] | type[User] | type[UserIpRange] | type[UserTimeWindow]")
+
+	// read_relationships — untyped passthrough
+	assert.Contains(t, output, "def read_relationships(self, c: Consistency, f: Filter) -> AsyncIterator[Relationship]:")
 }
 
 // TestCaveatParamKeywordCollision verifies that when a caveat parameter's name
@@ -225,6 +256,25 @@ func TestCaveatParamKeywordCollision(t *testing.T) {
 		"keyword-conflicting param should be escaped on the dataclass field")
 	assert.Contains(t, output, `d["id"] = self.id_`,
 		"_to_dict must use the raw schema name as the dict key, not the escaped identifier")
+}
+
+func TestGenerateEmptySchema(t *testing.T) {
+	s := &schema.Schema{}
+	g := &Generator{}
+	files, err := g.Generate(s, nil)
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+
+	output := string(files[0].Content)
+
+	// Base types and TypedClient should still emit.
+	assert.Contains(t, output, "class Permission:")
+	assert.Contains(t, output, "class TypedClient:")
+
+	// No definitions, refs, or overloads.
+	assert.NotContains(t, output, "class User:")
+	assert.NotContains(t, output, "class Document:")
+	assert.NotContains(t, output, "@overload")
 }
 
 // TestDualRoleDefinitionRejected ensures the generator refuses to emit a

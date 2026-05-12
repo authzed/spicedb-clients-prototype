@@ -208,7 +208,74 @@ func JavaIntegrationTest() error {
 	return nil
 }
 
-// IntegrationTest runs TypeScript, Go, and Java integration tests.
+// PythonIntegrationTest builds the CLI, generates Python code from the sample schema,
+// verifies type safety with pyright (positive + expected-failure), starts SpiceDB,
+// runs pytest, then stops SpiceDB.
+func PythonIntegrationTest() error {
+	// 1. Build CLI
+	fmt.Println("==> Building spicedb-gen...")
+	if err := Build(); err != nil {
+		return fmt.Errorf("build failed: %w", err)
+	}
+
+	// 2. Generate permissions.py from sample.zed
+	fmt.Println("==> Generating permissions.py from sample.zed...")
+	if err := sh.RunV(
+		"./spicedb-gen",
+		"--schema", "testdata/sample.zed",
+		"--lang", "python",
+		"--out", "testdata/python/permissions.py",
+	); err != nil {
+		return fmt.Errorf("code generation failed: %w", err)
+	}
+	defer os.Remove("testdata/python/permissions.py")
+
+	// 3. uv sync to install deps
+	fmt.Println("==> Installing python deps via uv...")
+	if err := runInDir("testdata/python", "uv", "sync", "--all-extras"); err != nil {
+		return fmt.Errorf("uv sync failed: %w", err)
+	}
+
+	// 4. pyright over the project (excludes type_errors.py via the default pyrightconfig.json)
+	fmt.Println("==> Type-checking generated code with pyright...")
+	if err := runInDir("testdata/python", "uv", "run", "pyright", "."); err != nil {
+		return fmt.Errorf("pyright failed on project: %w", err)
+	}
+
+	// 5. pyright over type_errors.py — must FAIL (uses a dedicated config that
+	// includes only that file, since the default config excludes it).
+	fmt.Println("==> Verifying type errors are caught at type-check time...")
+	if err := runInDir("testdata/python", "uv", "run", "pyright", "-p", "pyrightconfig.type_errors.json"); err == nil {
+		return fmt.Errorf("type_errors.py type-checked clean but should have failed")
+	}
+	fmt.Println("    (expected pyright failure confirmed)")
+
+	// 6. Start SpiceDB
+	fmt.Println("==> Starting SpiceDB...")
+	if err := sh.RunV("docker", "compose", "-f", "docker-compose.test.yml", "up", "-d"); err != nil {
+		return fmt.Errorf("docker compose up failed: %w", err)
+	}
+	defer func() {
+		fmt.Println("==> Stopping SpiceDB...")
+		_ = sh.RunV("docker", "compose", "-f", "docker-compose.test.yml", "down")
+	}()
+
+	fmt.Println("==> Waiting for SpiceDB to be ready...")
+	if err := waitForReady("localhost:50051", 30*time.Second); err != nil {
+		return err
+	}
+
+	// 7. pytest
+	fmt.Println("==> Running pytest...")
+	if err := runInDir("testdata/python", "uv", "run", "pytest", "-v"); err != nil {
+		return fmt.Errorf("pytest failed: %w", err)
+	}
+
+	fmt.Println("==> Python integration tests passed!")
+	return nil
+}
+
+// IntegrationTest runs TypeScript, Go, Java, and Python integration tests.
 func IntegrationTest() error {
 	if err := TypeScriptIntegrationTest(); err != nil {
 		return err
@@ -216,7 +283,10 @@ func IntegrationTest() error {
 	if err := GoIntegrationTest(); err != nil {
 		return err
 	}
-	return JavaIntegrationTest()
+	if err := JavaIntegrationTest(); err != nil {
+		return err
+	}
+	return PythonIntegrationTest()
 }
 
 func waitForReady(addr string, timeout time.Duration) error {

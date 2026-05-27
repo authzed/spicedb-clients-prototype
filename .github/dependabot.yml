@@ -14,6 +14,7 @@ updates:
     directories:
       - /
       - /spicedb-gen
+      - /spicedb-gen/testdata/go
       - /spicedb-go
       - /spicedb-python
       - /spicedb-typescript
@@ -38,6 +39,7 @@ updates:
   - package-ecosystem: pip
     directories:
       - /proto-clients/spicedb-python-proto
+      - /spicedb-gen/testdata/python
       - /spicedb-python
     schedule:
       interval: weekly

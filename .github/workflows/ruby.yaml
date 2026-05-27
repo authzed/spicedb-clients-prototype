@@ -1,0 +1,92 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+---
+name: Ruby
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: ["*"]
+  merge_group:
+    types: [checks_requested]
+permissions:
+  contents: read
+concurrency:
+  group: "ruby-${{ github.event.pull_request.number || github.sha }}"
+  cancel-in-progress: true
+jobs:
+  paths-filter:
+    runs-on: depot-ubuntu-24.04-arm-small
+    outputs:
+      changed: ${{ steps.filter.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            changed:
+              - '.github/workflows/ruby.yaml'
+              - 'Magefile.go'
+              - 'go.mod'
+              - 'go.sum'
+              - 'proto-clients/spicedb-ruby-proto/**'
+              - 'spicedb-ruby/**'
+
+  lint:
+    needs: paths-filter
+    if: needs.paths-filter.outputs.changed == 'true'
+    runs-on: depot-ubuntu-24.04-arm-4
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'
+          bundler-cache: true
+          working-directory: spicedb-ruby
+      - name: Install mage
+        run: go install github.com/magefile/mage@latest
+      - name: Lint
+        run: mage -d spicedb-ruby lint
+
+  unit:
+    needs: paths-filter
+    if: needs.paths-filter.outputs.changed == 'true'
+    runs-on: depot-ubuntu-24.04-arm-4
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'
+          bundler-cache: true
+          working-directory: spicedb-ruby
+      - name: Install mage
+        run: go install github.com/magefile/mage@latest
+      - name: Proto client tests
+        run: mage -d proto-clients/spicedb-ruby-proto test
+      - name: Idiomatic client tests
+        run: mage -d spicedb-ruby test
+
+  integration:
+    needs: paths-filter
+    if: needs.paths-filter.outputs.changed == 'true'
+    runs-on: depot-ubuntu-24.04-arm-4
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'
+          bundler-cache: true
+          working-directory: spicedb-ruby
+      - name: Install mage
+        run: go install github.com/magefile/mage@latest
+      - name: Integration test
+        run: mage -d spicedb-ruby integrationTest

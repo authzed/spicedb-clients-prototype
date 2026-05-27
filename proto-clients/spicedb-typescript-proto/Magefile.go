@@ -20,6 +20,12 @@ func Gen() error {
 		return fmt.Errorf("buf generate failed: %w", err)
 	}
 
+	diff, _ := sh.Output("git", "diff", "--name-only", ".")
+	if strings.TrimSpace(diff) == "" {
+		fmt.Println("==> No proto changes detected after buf generate, skipping Claude step.")
+		return nil
+	}
+
 	fmt.Println("==> Installing deps...")
 	if err := sh.RunV("pnpm", "install"); err != nil {
 		return fmt.Errorf("pnpm install failed: %w", err)

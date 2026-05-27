@@ -21,6 +21,12 @@ func Gen() error {
 		return fmt.Errorf("buf generate failed: %w", err)
 	}
 
+	diff, _ := sh.Output("git", "diff", "--name-only", ".")
+	if strings.TrimSpace(diff) == "" {
+		fmt.Println("==> No proto changes detected after buf generate, skipping Claude step.")
+		return nil
+	}
+
 	fmt.Println("==> Invoking Claude to add boilerplate...")
 	if err := runClaude(
 		"Read DESIGN.md. Review the generated code under gen/. " +

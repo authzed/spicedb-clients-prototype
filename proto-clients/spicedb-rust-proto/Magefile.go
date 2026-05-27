@@ -20,6 +20,12 @@ func Gen() error {
 		return fmt.Errorf("buf export failed: %w", err)
 	}
 
+	diff, _ := sh.Output("git", "diff", "--name-only", "proto")
+	if strings.TrimSpace(diff) == "" {
+		fmt.Println("==> No proto changes detected after buf export, skipping Claude step.")
+		return nil
+	}
+
 	fmt.Println("==> Invoking Claude to wire up generated code...")
 	if err := runClaude(
 		"Read DESIGN.md. The proto/ directory has been populated by buf export. " +

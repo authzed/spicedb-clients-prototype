@@ -180,9 +180,10 @@ func IntegrationTest() error {
 		return err
 	}
 
-	// Run integration tests
+	// Run integration tests (no --no-build: VSTest cannot load .NET 10 assemblies
+	// without a fresh build step, and the build is fast enough to not matter here)
 	fmt.Println("==> Running integration tests...")
-	return sh.RunV("dotnet", "test", "SpiceDB.Client.sln", "--no-build", "--verbosity", "normal")
+	return sh.RunV("dotnet", "test", "SpiceDB.Client.sln", "--verbosity", "normal")
 }
 
 func waitForReady(addr string, timeout time.Duration) error {

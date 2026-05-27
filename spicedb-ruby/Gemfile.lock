@@ -1,4 +1,11 @@
 PATH
+  remote: ../proto-clients/spicedb-ruby-proto
+  specs:
+    spicedb-proto (0.1.0)
+      google-protobuf (~> 4.29)
+      grpc (~> 1.67)
+
+PATH
   remote: .
   specs:
     spicedb (0.1.0)
@@ -116,9 +123,6 @@ GEM
       parser (>= 3.3.7.2)
       prism (~> 1.7)
     ruby-progressbar (1.13.0)
-    spicedb-proto (0.1.0)
-      google-protobuf (~> 4.29)
-      grpc (~> 1.67)
     unicode-display_width (3.2.0)
       unicode-emoji (~> 4.1)
     unicode-emoji (4.2.0)
@@ -138,6 +142,7 @@ DEPENDENCIES
   rspec (~> 3.13)
   rubocop (~> 1.60)
   spicedb!
+  spicedb-proto!
 
 CHECKSUMS
   addressable (2.8.9) sha256=cc154fcbe689711808a43601dee7b980238ce54368d23e127421753e46895485

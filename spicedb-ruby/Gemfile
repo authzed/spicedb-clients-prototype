@@ -2,6 +2,8 @@
 
 source "https://rubygems.org"
 
+gem "spicedb-proto", path: "../proto-clients/spicedb-ruby-proto"
+
 gemspec
 
 group :development, :test do

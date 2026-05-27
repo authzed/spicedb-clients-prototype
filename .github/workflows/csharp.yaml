@@ -1,0 +1,107 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+---
+name: CSharp
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: ["*"]
+  merge_group:
+    types: [checks_requested]
+permissions:
+  contents: read
+concurrency:
+  group: "csharp-${{ github.event.pull_request.number || github.sha }}"
+  cancel-in-progress: true
+jobs:
+  paths-filter:
+    runs-on: depot-ubuntu-24.04-arm-small
+    outputs:
+      changed: ${{ steps.filter.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            changed:
+              - '.github/workflows/csharp.yaml'
+              - 'Magefile.go'
+              - 'go.mod'
+              - 'go.sum'
+              - 'proto-clients/spicedb-csharp-proto/**'
+              - 'spicedb-csharp/**'
+
+  lint:
+    needs: paths-filter
+    if: needs.paths-filter.outputs.changed == 'true'
+    runs-on: depot-ubuntu-24.04-arm-4
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Install mage
+        run: go install github.com/magefile/mage@latest
+      - name: Lint
+        run: mage -d spicedb-csharp lint
+
+  unit:
+    needs: paths-filter
+    if: needs.paths-filter.outputs.changed == 'true'
+    runs-on: depot-ubuntu-24.04-arm-4
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Install mage
+        run: go install github.com/magefile/mage@latest
+      - name: Proto client tests
+        run: mage -d proto-clients/spicedb-csharp-proto test
+      - name: Idiomatic client tests
+        run: mage -d spicedb-csharp test
+
+  integration:
+    needs: paths-filter
+    if: needs.paths-filter.outputs.changed == 'true'
+    runs-on: depot-ubuntu-24.04-arm-4
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Install mage
+        run: go install github.com/magefile/mage@latest
+      - name: Integration test
+        run: mage -d spicedb-csharp integrationTest
+
+  apicompat:
+    needs: paths-filter
+    if: needs.paths-filter.outputs.changed == 'true' && github.event_name == 'pull_request'
+    runs-on: depot-ubuntu-24.04-arm-small
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Install mage
+        run: go install github.com/magefile/mage@latest
+      - name: Install Microsoft.DotNet.ApiCompat.Tool
+        run: dotnet tool install --global Microsoft.DotNet.ApiCompat.Tool
+      - name: API compatibility check
+        run: mage -d spicedb-csharp apiCompat origin/${{ github.base_ref }}

@@ -4,6 +4,12 @@ version = "0.1.0"
 edition = "2021"
 description = "SpiceDB proto client for Rust — thin wrapper over tonic-generated gRPC stubs"
 
+# Disable doctests: tonic-build generates doc comments containing JSON
+# examples (e.g. `"reason": "ERROR_REASON_SCHEMA_PARSE_ERROR"`) that
+# Rust's doctest runner tries to parse as Rust code and fails.
+[lib]
+doctest = false
+
 [dependencies]
 tonic = { version = "0.12", features = ["channel", "tls"] }
 prost = "0.13"

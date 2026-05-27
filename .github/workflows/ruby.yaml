@@ -44,8 +44,11 @@ jobs:
       - uses: ruby/setup-ruby@afeafc3d1ab54a631816aba4c914a0081c12ff2f # v1
         with:
           ruby-version: '3.2'
-          bundler-cache: true
+          bundler-cache: false
           working-directory: spicedb-ruby
+      - name: Install Ruby deps
+        working-directory: spicedb-ruby
+        run: bundle install
       - name: Install mage
         run: go install github.com/magefile/mage@latest
       - name: Lint
@@ -63,13 +66,19 @@ jobs:
       - uses: ruby/setup-ruby@afeafc3d1ab54a631816aba4c914a0081c12ff2f # v1
         with:
           ruby-version: '3.2'
-          bundler-cache: true
+          bundler-cache: false
           working-directory: spicedb-ruby
+      - name: Install Ruby deps (idiomatic client)
+        working-directory: spicedb-ruby
+        run: bundle install
       - uses: ruby/setup-ruby@afeafc3d1ab54a631816aba4c914a0081c12ff2f # v1
         with:
           ruby-version: '3.2'
-          bundler-cache: true
+          bundler-cache: false
           working-directory: proto-clients/spicedb-ruby-proto
+      - name: Install Ruby deps (proto client)
+        working-directory: proto-clients/spicedb-ruby-proto
+        run: bundle install
       - name: Install mage
         run: go install github.com/magefile/mage@latest
       - name: Proto client tests
@@ -89,13 +98,19 @@ jobs:
       - uses: ruby/setup-ruby@afeafc3d1ab54a631816aba4c914a0081c12ff2f # v1
         with:
           ruby-version: '3.2'
-          bundler-cache: true
+          bundler-cache: false
           working-directory: spicedb-ruby
+      - name: Install Ruby deps (idiomatic client)
+        working-directory: spicedb-ruby
+        run: bundle install
       - uses: ruby/setup-ruby@afeafc3d1ab54a631816aba4c914a0081c12ff2f # v1
         with:
           ruby-version: '3.2'
-          bundler-cache: true
+          bundler-cache: false
           working-directory: proto-clients/spicedb-ruby-proto
+      - name: Install Ruby deps (proto client)
+        working-directory: proto-clients/spicedb-ruby-proto
+        run: bundle install
       - name: Install mage
         run: go install github.com/magefile/mage@latest
       - name: Integration test

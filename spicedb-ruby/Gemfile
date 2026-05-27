@@ -1,12 +1,12 @@
 # frozen_string_literal: true
 
-source "https://rubygems.org"
+source 'https://rubygems.org'
 
-gem "spicedb-proto", path: "../proto-clients/spicedb-ruby-proto"
+gem 'spicedb-proto', path: '../proto-clients/spicedb-ruby-proto'
 
 gemspec
 
 group :development, :test do
-  gem "rspec", "~> 3.13"
-  gem "rubocop", "~> 1.60"
+  gem 'rspec', '~> 3.13'
+  gem 'rubocop', '~> 1.60'
 end

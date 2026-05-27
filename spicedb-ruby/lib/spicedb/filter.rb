@@ -29,15 +29,7 @@ module SpiceDB
       subject_id: nil,
       subject_relation: nil
     )
-      super(
-        resource_type: resource_type,
-        resource_id: resource_id,
-        resource_id_prefix: resource_id_prefix,
-        relation: relation,
-        subject_type: subject_type,
-        subject_id: subject_id,
-        subject_relation: subject_relation
-      )
+      super
     end
 
     # Narrows the filter to a specific resource ID.

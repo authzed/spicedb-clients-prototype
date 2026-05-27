@@ -1,0 +1,121 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+---
+name: Rust
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: ["*"]
+  merge_group:
+    types: [checks_requested]
+permissions:
+  contents: read
+concurrency:
+  group: "rust-${{ github.event.pull_request.number || github.sha }}"
+  cancel-in-progress: true
+jobs:
+  paths-filter:
+    runs-on: depot-ubuntu-24.04-arm-small
+    outputs:
+      changed: ${{ steps.filter.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            changed:
+              - '.github/workflows/rust.yaml'
+              - 'Magefile.go'
+              - 'go.mod'
+              - 'go.sum'
+              - 'proto-clients/spicedb-rust-proto/**'
+              - 'spicedb-rust/**'
+
+  lint:
+    needs: paths-filter
+    if: needs.paths-filter.outputs.changed == 'true'
+    runs-on: depot-ubuntu-24.04-arm-4
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: spicedb-rust
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Install mage
+        run: go install github.com/magefile/mage@latest
+      - name: Lint
+        run: mage -d spicedb-rust lint
+
+  unit:
+    needs: paths-filter
+    if: needs.paths-filter.outputs.changed == 'true'
+    runs-on: depot-ubuntu-24.04-arm-4
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: spicedb-rust
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Install mage
+        run: go install github.com/magefile/mage@latest
+      - name: Proto client tests
+        run: mage -d proto-clients/spicedb-rust-proto test
+      - name: Idiomatic client tests
+        run: mage -d spicedb-rust test
+
+  integration:
+    needs: paths-filter
+    if: needs.paths-filter.outputs.changed == 'true'
+    runs-on: depot-ubuntu-24.04-arm-4
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: spicedb-rust
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Install mage
+        run: go install github.com/magefile/mage@latest
+      - name: Integration test
+        run: mage -d spicedb-rust integrationTest
+
+  apicompat:
+    needs: paths-filter
+    if: needs.paths-filter.outputs.changed == 'true' && github.event_name == 'pull_request'
+    runs-on: depot-ubuntu-24.04-arm-small
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: spicedb-rust
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Install mage
+        run: go install github.com/magefile/mage@latest
+      - name: Install cargo-semver-checks
+        run: cargo install cargo-semver-checks --locked
+      - name: API compatibility check
+        run: mage -d spicedb-rust apiCompat origin/${{ github.base_ref }}

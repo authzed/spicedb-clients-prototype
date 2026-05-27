@@ -1,7 +1,7 @@
 services:
   spicedb:
     image: authzed/spicedb:latest
-    command: serve --grpc-preshared-key testtoken --datastore-engine memory
+    command: serve --grpc-preshared-key somerandomkeyhere --datastore-engine memory
     ports:
       - "50051:50051"
     healthcheck:

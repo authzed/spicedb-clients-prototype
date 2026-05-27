@@ -1,0 +1,110 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+---
+name: Python
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: ["*"]
+  merge_group:
+    types: [checks_requested]
+permissions:
+  contents: read
+concurrency:
+  group: "python-${{ github.event.pull_request.number || github.sha }}"
+  cancel-in-progress: true
+jobs:
+  paths-filter:
+    runs-on: depot-ubuntu-24.04-arm-small
+    outputs:
+      changed: ${{ steps.filter.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            changed:
+              - '.github/workflows/python.yaml'
+              - 'Magefile.go'
+              - 'go.mod'
+              - 'go.sum'
+              - 'proto-clients/spicedb-python-proto/**'
+              - 'spicedb-python/**'
+
+  lint:
+    needs: paths-filter
+    if: needs.paths-filter.outputs.changed == 'true'
+    runs-on: depot-ubuntu-24.04-arm-4
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+      - name: Install mage
+        run: go install github.com/magefile/mage@latest
+      - name: Sync deps
+        working-directory: spicedb-python
+        run: uv sync --extra dev
+      - name: Lint
+        run: mage -d spicedb-python lint
+
+  unit:
+    needs: paths-filter
+    if: needs.paths-filter.outputs.changed == 'true'
+    runs-on: depot-ubuntu-24.04-arm-4
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+      - name: Install mage
+        run: go install github.com/magefile/mage@latest
+      - name: Proto client tests
+        run: mage -d proto-clients/spicedb-python-proto test
+      - name: Idiomatic client tests
+        run: mage -d spicedb-python test
+
+  integration:
+    needs: paths-filter
+    if: needs.paths-filter.outputs.changed == 'true'
+    runs-on: depot-ubuntu-24.04-arm-4
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+      - name: Install mage
+        run: go install github.com/magefile/mage@latest
+      - name: Integration test
+        run: mage -d spicedb-python integrationTest
+
+  apicompat:
+    needs: paths-filter
+    if: needs.paths-filter.outputs.changed == 'true' && github.event_name == 'pull_request'
+    runs-on: depot-ubuntu-24.04-arm-small
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+      - name: Install mage
+        run: go install github.com/magefile/mage@latest
+      - name: Install griffe
+        run: uv tool install griffe
+      - name: API compatibility check
+        run: mage -d spicedb-python apiCompat origin/${{ github.base_ref }}

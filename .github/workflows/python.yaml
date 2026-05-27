@@ -46,6 +46,8 @@ jobs:
           enable-cache: true
       - name: Install mage
         run: go install github.com/magefile/mage@latest
+      - name: Install ruff
+        run: uv tool install ruff
       - name: Sync deps
         working-directory: spicedb-python
         run: uv sync --extra dev
@@ -66,6 +68,9 @@ jobs:
           enable-cache: true
       - name: Install mage
         run: go install github.com/magefile/mage@latest
+      - name: Sync proto client dev deps
+        working-directory: proto-clients/spicedb-python-proto
+        run: uv sync --extra dev
       - name: Proto client tests
         run: mage -d proto-clients/spicedb-python-proto test
       - name: Idiomatic client tests
@@ -85,6 +90,9 @@ jobs:
           enable-cache: true
       - name: Install mage
         run: go install github.com/magefile/mage@latest
+      - name: Sync deps
+        working-directory: spicedb-python
+        run: uv sync --extra dev
       - name: Integration test
         run: mage -d spicedb-python integrationTest
 

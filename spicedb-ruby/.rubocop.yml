@@ -60,3 +60,9 @@ Gemspec/DevelopmentDependencies:
 # rubygems MFA is for published gems; this is a path-only dev dependency.
 Gemspec/RequireMFA:
   Enabled: false
+
+# The top-level `def client; @client; end` in examples/spec_helper.rb cannot
+# use attr_reader because attr_reader is not available on main:Object in
+# Ruby 3.2+ outside a class/module context (raises NoMethodError at load time).
+Style/TrivialAccessors:
+  Enabled: false

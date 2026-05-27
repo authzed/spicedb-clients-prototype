@@ -34,8 +34,11 @@ func Gen() error {
 		return fmt.Errorf("buf generate failed: %w", err)
 	}
 
-	diff, _ := sh.Output("git", "diff", "--name-only", ".")
-	if strings.TrimSpace(diff) == "" {
+	// Use git status --porcelain to detect both tracked modifications AND new
+	// untracked files (buf generate for Java creates new files in gen/ that are
+	// not checked in — git diff would miss them).
+	status, _ := sh.Output("git", "status", "--porcelain", ".")
+	if strings.TrimSpace(status) == "" {
 		fmt.Println("==> No proto changes detected after buf generate, skipping Claude step.")
 		return nil
 	}
@@ -43,6 +46,7 @@ func Gen() error {
 	if !claudeAvailable() {
 		fmt.Println("==> claude not available; rolling back buf generate changes (gen-nodiff mode).")
 		_ = sh.Run("git", "checkout", "--", ".")
+		_ = sh.Run("git", "clean", "-fd", ".")
 		return nil
 	}
 
@@ -66,6 +70,7 @@ func Gen() error {
 		if attempt == maxRetries {
 			fmt.Printf("==> Tests failed after %d attempts. Rolling back.\n", maxRetries)
 			_ = sh.Run("git", "checkout", "--", ".")
+			_ = sh.Run("git", "clean", "-fd", ".")
 			return fmt.Errorf("tests failed after %d retries", maxRetries)
 		}
 

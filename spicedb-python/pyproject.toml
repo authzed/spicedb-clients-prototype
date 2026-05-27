@@ -26,7 +26,7 @@ packages = ["spicedb"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["tests", "examples"]
+testpaths = ["tests"]
 markers = [
     "integration: requires a running SpiceDB instance",
 ]

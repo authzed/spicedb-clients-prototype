@@ -72,9 +72,10 @@ func Gen() error {
 	return nil
 }
 
-// Test runs the Python idiomatic client tests.
+// Test runs the Python idiomatic client unit tests (no SpiceDB required).
+// Integration tests (examples/) are run separately by IntegrationTest.
 func Test() error {
-	return sh.RunV("uv", "run", "pytest", "-v")
+	return sh.RunV("uv", "run", "pytest", "tests/", "-v")
 }
 
 // Lint runs ruff check on all Python code.

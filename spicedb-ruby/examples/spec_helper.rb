@@ -1,9 +1,9 @@
 # frozen_string_literal: true
 
-require "spicedb"
+require 'spicedb'
 
-SPICEDB_ENDPOINT = ENV.fetch("SPICEDB_ENDPOINT", "localhost:50051")
-SPICEDB_TOKEN    = ENV.fetch("SPICEDB_TOKEN", "somerandomkeyhere")
+SPICEDB_ENDPOINT = ENV.fetch('SPICEDB_ENDPOINT', 'localhost:50051')
+SPICEDB_TOKEN    = ENV.fetch('SPICEDB_TOKEN', 'somerandomkeyhere')
 
 TEST_SCHEMA = <<~SCHEMA
   definition user {}
@@ -28,13 +28,11 @@ RSpec.configure do |config|
       # Write the standard schema (idempotent)
       client.write_schema(TEST_SCHEMA)
       # Delete all existing relationships for test isolation
-      client.delete_relationships(SpiceDB::Filter.new(resource_type: "document"))
+      client.delete_relationships(SpiceDB::Filter.new(resource_type: 'document'))
       example.run
     end
   end
 end
 
 # Helper to access the client inside examples.
-def client
-  @client
-end
+attr_reader :client

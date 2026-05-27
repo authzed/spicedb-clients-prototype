@@ -1,0 +1,62 @@
+AllCops:
+  NewCops: enable
+  SuggestExtensions: false
+  TargetRubyVersion: 3.2
+
+# Relax metric thresholds for idiomatic client methods that are necessarily long
+# (e.g. schema_diff_from_proto dispatches on many proto types).
+Metrics/MethodLength:
+  Max: 50
+
+Metrics/BlockLength:
+  Max: 200
+
+Metrics/ModuleLength:
+  Max: 200
+
+Metrics/ClassLength:
+  Max: 700
+
+Metrics/AbcSize:
+  Max: 80
+
+Metrics/CyclomaticComplexity:
+  Max: 25
+
+Metrics/PerceivedComplexity:
+  Max: 25
+
+Metrics/ParameterLists:
+  Max: 10
+
+# The SpiceDB module in errors.rb is intentionally minimal; top-level doc
+# belongs in the main README / DESIGN.md rather than in code.
+Style/Documentation:
+  Enabled: false
+
+# Method parameter 'd' in schema_diff_from_proto is clear from context.
+Naming/MethodParameterName:
+  MinNameLength: 1
+
+# check_any/check_all are named for Boolean plurality semantics, not
+# predicate convention — adding ? would be misleading.
+Naming/PredicateMethod:
+  Enabled: false
+
+# Line length limit — 120 is too tight for gRPC one-liners with optional chain.
+Layout/LineLength:
+  Max: 160
+
+# Private visibility modifiers on constants are a no-op but harmless style
+# choice; disable this warning.
+Lint/UselessConstantScoping:
+  Enabled: false
+
+# Gemspec development dependencies in gemspec vs Gemfile is a project
+# convention — disable the cop that enforces moving them to Gemfile.
+Gemspec/DevelopmentDependencies:
+  Enabled: false
+
+# rubygems MFA is for published gems; this is a path-only dev dependency.
+Gemspec/RequireMFA:
+  Enabled: false

@@ -1,13 +1,13 @@
 # frozen_string_literal: true
 
-require_relative "../spec_helper"
+require_relative '../spec_helper'
 
-RSpec.describe "SchemaReflection" do
+RSpec.describe 'SchemaReflection' do
   before do
     client.write_schema(TEST_SCHEMA)
   end
 
-  it "reflects the current schema definitions" do
+  it 'reflects the current schema definitions' do
     result = client.reflect_schema(SpiceDB::Consistency.full)
 
     expect(result).to be_a(SpiceDB::ReflectSchemaResult)
@@ -15,19 +15,19 @@ RSpec.describe "SchemaReflection" do
     expect(result.revision).not_to be_nil
 
     definition_names = result.definitions.map(&:name)
-    expect(definition_names).to include("document")
-    expect(definition_names).to include("user")
+    expect(definition_names).to include('document')
+    expect(definition_names).to include('user')
 
-    doc_def = result.definitions.find { |d| d.name == "document" }
+    doc_def = result.definitions.find { |d| d.name == 'document' }
     expect(doc_def.relations).not_to be_empty
     expect(doc_def.permissions).not_to be_empty
   end
 
-  it "finds computable permissions for a relation" do
+  it 'finds computable permissions for a relation' do
     permissions, revision = client.computable_permissions(
       SpiceDB::Consistency.full,
-      "document",
-      "viewer"
+      'document',
+      'viewer'
     )
 
     expect(revision).not_to be_nil
@@ -35,14 +35,14 @@ RSpec.describe "SchemaReflection" do
 
     # The "viewer" relation should contribute to the "view" permission
     permission_names = permissions.map(&:relation_name)
-    expect(permission_names).to include("view")
+    expect(permission_names).to include('view')
   end
 
-  it "finds dependent relations for a permission" do
+  it 'finds dependent relations for a permission' do
     relations, revision = client.dependent_relations(
       SpiceDB::Consistency.full,
-      "document",
-      "view"
+      'document',
+      'view'
     )
 
     expect(revision).not_to be_nil
@@ -50,12 +50,12 @@ RSpec.describe "SchemaReflection" do
 
     # The "view" permission depends on viewer, editor, and owner
     relation_names = relations.map(&:relation_name)
-    expect(relation_names).to include("viewer")
-    expect(relation_names).to include("editor")
-    expect(relation_names).to include("owner")
+    expect(relation_names).to include('viewer')
+    expect(relation_names).to include('editor')
+    expect(relation_names).to include('owner')
   end
 
-  it "diffs the current schema against a modified schema" do
+  it 'diffs the current schema against a modified schema' do
     new_schema = <<~SCHEMA
       definition user {}
 

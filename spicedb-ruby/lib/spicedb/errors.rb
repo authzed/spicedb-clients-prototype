@@ -36,22 +36,22 @@ module SpiceDB
   # Uses GRPC::Core::StatusCodes constants when the grpc gem is available,
   # falling back to integer codes.
   GRPC_CODE_TO_ERROR = {
-    1  => CancelledError,          # CANCELLED
-    3  => InvalidArgumentError,    # INVALID_ARGUMENT
-    4  => DeadlineExceededError,   # DEADLINE_EXCEEDED
-    5  => NotFoundError,           # NOT_FOUND
-    6  => AlreadyExistsError,      # ALREADY_EXISTS
-    7  => PermissionDeniedError,   # PERMISSION_DENIED
-    8  => ResourceExhaustedError,  # RESOURCE_EXHAUSTED
-    9  => FailedPreconditionError, # FAILED_PRECONDITION
-    14 => UnavailableError,        # UNAVAILABLE
+    1 => CancelledError,          # CANCELLED
+    3 => InvalidArgumentError,    # INVALID_ARGUMENT
+    4 => DeadlineExceededError,   # DEADLINE_EXCEEDED
+    5 => NotFoundError,           # NOT_FOUND
+    6 => AlreadyExistsError,      # ALREADY_EXISTS
+    7 => PermissionDeniedError,   # PERMISSION_DENIED
+    8 => ResourceExhaustedError,  # RESOURCE_EXHAUSTED
+    9 => FailedPreconditionError, # FAILED_PRECONDITION
+    14 => UnavailableError        # UNAVAILABLE
   }.freeze
 
   # gRPC status codes that are transient and worth retrying.
   TRANSIENT_CODES = [
     8,  # RESOURCE_EXHAUSTED
     10, # ABORTED
-    14, # UNAVAILABLE
+    14 # UNAVAILABLE
   ].freeze
 
   module_function

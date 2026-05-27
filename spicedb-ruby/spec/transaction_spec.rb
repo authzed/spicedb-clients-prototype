@@ -1,24 +1,24 @@
 # frozen_string_literal: true
 
-require_relative "../lib/spicedb"
+require_relative '../lib/spicedb'
 
 RSpec.describe SpiceDB::Transaction do
   let(:rel) do
     SpiceDB::Relationship.from_triple(
-      "document", "doc1", "viewer",
-      "user", "alice"
+      'document', 'doc1', 'viewer',
+      'user', 'alice'
     )
   end
 
   let(:rel2) do
     SpiceDB::Relationship.from_triple(
-      "document", "doc2", "editor",
-      "user", "bob"
+      'document', 'doc2', 'editor',
+      'user', 'bob'
     )
   end
 
-  describe "#create" do
-    it "adds a create operation" do
+  describe '#create' do
+    it 'adds a create operation' do
       txn = described_class.new
       txn.create(rel)
 
@@ -27,15 +27,15 @@ RSpec.describe SpiceDB::Transaction do
       expect(txn.updates[0][:relationship]).to eq(rel)
     end
 
-    it "returns self for chaining" do
+    it 'returns self for chaining' do
       txn = described_class.new
       result = txn.create(rel)
       expect(result).to be(txn)
     end
   end
 
-  describe "#touch" do
-    it "adds a touch operation" do
+  describe '#touch' do
+    it 'adds a touch operation' do
       txn = described_class.new
       txn.touch(rel)
 
@@ -45,8 +45,8 @@ RSpec.describe SpiceDB::Transaction do
     end
   end
 
-  describe "#delete" do
-    it "adds a delete operation" do
+  describe '#delete' do
+    it 'adds a delete operation' do
       txn = described_class.new
       txn.delete(rel)
 
@@ -56,8 +56,8 @@ RSpec.describe SpiceDB::Transaction do
     end
   end
 
-  describe "multiple operations" do
-    it "collects operations in order" do
+  describe 'multiple operations' do
+    it 'collects operations in order' do
       txn = described_class.new
       txn.create(rel)
       txn.touch(rel2)
@@ -68,10 +68,10 @@ RSpec.describe SpiceDB::Transaction do
     end
   end
 
-  describe "#must_not_match" do
-    it "adds a must_not_match precondition" do
+  describe '#must_not_match' do
+    it 'adds a must_not_match precondition' do
       txn = described_class.new
-      filter = SpiceDB::Filter.new(resource_type: "document")
+      filter = SpiceDB::Filter.new(resource_type: 'document')
       txn.must_not_match(filter)
 
       expect(txn.preconditions.length).to eq(1)
@@ -79,18 +79,18 @@ RSpec.describe SpiceDB::Transaction do
       expect(txn.preconditions[0][:filter]).to eq(filter)
     end
 
-    it "returns self for chaining" do
+    it 'returns self for chaining' do
       txn = described_class.new
-      filter = SpiceDB::Filter.new(resource_type: "document")
+      filter = SpiceDB::Filter.new(resource_type: 'document')
       result = txn.must_not_match(filter)
       expect(result).to be(txn)
     end
   end
 
-  describe "#must_match" do
-    it "adds a must_match precondition" do
+  describe '#must_match' do
+    it 'adds a must_match precondition' do
       txn = described_class.new
-      filter = SpiceDB::Filter.new(resource_type: "document")
+      filter = SpiceDB::Filter.new(resource_type: 'document')
       txn.must_match(filter)
 
       expect(txn.preconditions.length).to eq(1)
@@ -99,12 +99,12 @@ RSpec.describe SpiceDB::Transaction do
     end
   end
 
-  describe "#empty?" do
-    it "returns true for a new transaction" do
+  describe '#empty?' do
+    it 'returns true for a new transaction' do
       expect(described_class.new).to be_empty
     end
 
-    it "returns false after adding an operation" do
+    it 'returns false after adding an operation' do
       txn = described_class.new
       txn.create(rel)
       expect(txn).not_to be_empty

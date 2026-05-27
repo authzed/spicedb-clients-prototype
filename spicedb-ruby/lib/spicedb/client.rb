@@ -90,7 +90,7 @@ module SpiceDB
       @insecure = insecure
 
       begin
-        require "spicedb_proto"
+        require 'spicedb_proto'
         @proto_client = SpiceDBProto::Client.new(endpoint, token, insecure: insecure)
       rescue LoadError
         # Proto gem not yet available (e.g. buf hasn't generated stubs).
@@ -227,7 +227,8 @@ module SpiceDB
         cursor = nil
         loop do
           ids, new_cursor, count = with_retry do
-            call_lookup_resources(consistency, resource_type, permission, subject_type, subject_id, cursor, DEFAULT_LOOKUP_PAGE_SIZE)
+            call_lookup_resources(consistency, resource_type, permission, subject_type, subject_id, cursor,
+                                  DEFAULT_LOOKUP_PAGE_SIZE)
           end
 
           ids.each { |id| yielder << id }
@@ -408,7 +409,7 @@ module SpiceDB
     private
 
     # Retries the block with exponential backoff for transient gRPC errors.
-    def with_retry(max_retries: MAX_RETRIES, &block)
+    def with_retry(max_retries: MAX_RETRIES)
       require_proto_client!
       attempts = 0
       begin
@@ -443,7 +444,8 @@ module SpiceDB
     def require_proto_client!
       return if @proto_client
 
-      raise SpiceDB::Error, "proto client not available — ensure the spicedb_proto gem is installed and buf-generated stubs exist"
+      raise SpiceDB::Error,
+            'proto client not available — ensure the spicedb_proto gem is installed and buf-generated stubs exist'
     end
 
     # Builds an Authzed::Api::V1::Consistency proto from a Strategy.
@@ -481,7 +483,7 @@ module SpiceDB
           object_type: rel.subject_type,
           object_id: rel.subject_id
         ),
-        optional_relation: rel.subject_relation || ""
+        optional_relation: rel.subject_relation || ''
       )
 
       args = {
@@ -517,8 +519,7 @@ module SpiceDB
     def relationship_from_proto(proto_rel)
       caveat_name = nil
       caveat_context = nil
-      if proto_rel.respond_to?(:optional_caveat) && proto_rel.optional_caveat &&
-         proto_rel.optional_caveat.caveat_name && !proto_rel.optional_caveat.caveat_name.empty?
+      if proto_rel.respond_to?(:optional_caveat) && proto_rel.optional_caveat&.caveat_name && !proto_rel.optional_caveat.caveat_name.empty?
         caveat_name = proto_rel.optional_caveat.caveat_name
         if proto_rel.optional_caveat.respond_to?(:context) && proto_rel.optional_caveat.context
           caveat_context = proto_rel.optional_caveat.context.fields.transform_values(&:string_value)
@@ -526,17 +527,16 @@ module SpiceDB
       end
 
       expiration = nil
-      if proto_rel.respond_to?(:optional_expiration) && proto_rel.optional_expiration &&
-         proto_rel.optional_expiration.seconds > 0
+      if proto_rel.respond_to?(:optional_expiration) && proto_rel.optional_expiration&.seconds&.positive?
         expiration = Time.at(proto_rel.optional_expiration.seconds, proto_rel.optional_expiration.nanos, :nsec)
       end
 
       SpiceDB::Relationship.new(
         resource_type: proto_rel.resource.object_type,
-        resource_id: proto_rel.resource["object_id"],
+        resource_id: proto_rel.resource['object_id'],
         resource_relation: proto_rel.relation,
         subject_type: proto_rel.subject.object.object_type,
-        subject_id: proto_rel.subject.object["object_id"],
+        subject_id: proto_rel.subject.object['object_id'],
         subject_relation: proto_rel.subject.optional_relation,
         caveat_name: caveat_name,
         caveat_context: caveat_context,
@@ -572,7 +572,7 @@ module SpiceDB
               object_type: item[:subject_type],
               object_id: item[:subject_id]
             ),
-            optional_relation: item[:subject_relation] || ""
+            optional_relation: item[:subject_relation] || ''
           )
         )
       end
@@ -585,9 +585,8 @@ module SpiceDB
       )
 
       resp.pairs.map do |pair|
-        if pair.respond_to?(:error) && pair.error && pair.error.respond_to?(:message) && !pair.error.message.empty?
-          raise SpiceDB::Error, pair.error.message
-        end
+        raise SpiceDB::Error, pair.error.message if pair.respond_to?(:error) && pair.error && pair.error.respond_to?(:message) && !pair.error.message.empty?
+
         # Ruby protobuf returns enum values as symbols, not integers
         { has_permission: pair.item.permissionship == :PERMISSIONSHIP_HAS_PERMISSION }
       end
@@ -687,7 +686,7 @@ module SpiceDB
       [ids, new_cursor, count]
     end
 
-    def call_lookup_subjects(consistency, resource_type, resource_id, permission, subject_type, &block)
+    def call_lookup_subjects(consistency, resource_type, resource_id, permission, subject_type)
       req = Authzed::Api::V1::LookupSubjectsRequest.new(
         consistency: build_consistency(consistency),
         resource: Authzed::Api::V1::ObjectReference.new(
@@ -850,12 +849,12 @@ module SpiceDB
       requests = Enumerator.new do |yielder|
         relationships.each do |rel|
           batch << relationship_to_proto(rel)
-          if batch.size >= DEFAULT_IMPORT_BATCH_SIZE
-            yielder << Authzed::Api::V1::ImportBulkRelationshipsRequest.new(
-              relationships: batch
-            )
-            batch = []
-          end
+          next unless batch.size >= DEFAULT_IMPORT_BATCH_SIZE
+
+          yielder << Authzed::Api::V1::ImportBulkRelationshipsRequest.new(
+            relationships: batch
+          )
+          batch = []
         end
         # Send remaining batch
         unless batch.empty?
@@ -894,12 +893,10 @@ module SpiceDB
       [relationships, new_cursor, count]
     end
 
-    def call_watch(object_types, start_revision, &block)
+    def call_watch(object_types, start_revision)
       require_proto_client!
       req_args = { optional_object_types: object_types }
-      if start_revision && !start_revision.empty?
-        req_args[:optional_start_cursor] = Authzed::Api::V1::ZedToken.new(token: start_revision)
-      end
+      req_args[:optional_start_cursor] = Authzed::Api::V1::ZedToken.new(token: start_revision) if start_revision && !start_revision.empty?
 
       @proto_client.watch.watch(
         Authzed::Api::V1::WatchRequest.new(**req_args)
@@ -938,7 +935,7 @@ module SpiceDB
       if resp.counter_still_calculating
         return CountResult.new(
           relationship_count: 0,
-          revision: "",
+          revision: '',
           still_calculating: true
         )
       end
@@ -965,45 +962,50 @@ module SpiceDB
     def schema_diff_from_proto(d)
       # Try each possible diff type in order
       if (v = d.definition_added)
-        SchemaDiff.new(kind: "definition_added", definition_name: v.name)
+        SchemaDiff.new(kind: 'definition_added', definition_name: v.name)
       elsif (v = d.definition_removed)
-        SchemaDiff.new(kind: "definition_removed", definition_name: v.name)
+        SchemaDiff.new(kind: 'definition_removed', definition_name: v.name)
       elsif (v = d.definition_doc_comment_changed)
-        SchemaDiff.new(kind: "definition_doc_comment_changed", definition_name: v.name)
+        SchemaDiff.new(kind: 'definition_doc_comment_changed', definition_name: v.name)
       elsif (v = d.relation_added)
-        SchemaDiff.new(kind: "relation_added", definition_name: v.parent_definition_name, relation_name: v.name)
+        SchemaDiff.new(kind: 'relation_added', definition_name: v.parent_definition_name, relation_name: v.name)
       elsif (v = d.relation_removed)
-        SchemaDiff.new(kind: "relation_removed", definition_name: v.parent_definition_name, relation_name: v.name)
+        SchemaDiff.new(kind: 'relation_removed', definition_name: v.parent_definition_name, relation_name: v.name)
       elsif (v = d.relation_doc_comment_changed)
-        SchemaDiff.new(kind: "relation_doc_comment_changed", definition_name: v.parent_definition_name, relation_name: v.name)
+        SchemaDiff.new(kind: 'relation_doc_comment_changed', definition_name: v.parent_definition_name,
+                       relation_name: v.name)
       elsif (v = d.relation_subject_type_added)
-        SchemaDiff.new(kind: "relation_subject_type_added", definition_name: v.relation.parent_definition_name, relation_name: v.relation.name)
+        SchemaDiff.new(kind: 'relation_subject_type_added', definition_name: v.relation.parent_definition_name,
+                       relation_name: v.relation.name)
       elsif (v = d.relation_subject_type_removed)
-        SchemaDiff.new(kind: "relation_subject_type_removed", definition_name: v.relation.parent_definition_name, relation_name: v.relation.name)
+        SchemaDiff.new(kind: 'relation_subject_type_removed', definition_name: v.relation.parent_definition_name,
+                       relation_name: v.relation.name)
       elsif (v = d.permission_added)
-        SchemaDiff.new(kind: "permission_added", definition_name: v.parent_definition_name, permission_name: v.name)
+        SchemaDiff.new(kind: 'permission_added', definition_name: v.parent_definition_name, permission_name: v.name)
       elsif (v = d.permission_removed)
-        SchemaDiff.new(kind: "permission_removed", definition_name: v.parent_definition_name, permission_name: v.name)
+        SchemaDiff.new(kind: 'permission_removed', definition_name: v.parent_definition_name, permission_name: v.name)
       elsif (v = d.permission_doc_comment_changed)
-        SchemaDiff.new(kind: "permission_doc_comment_changed", definition_name: v.parent_definition_name, permission_name: v.name)
+        SchemaDiff.new(kind: 'permission_doc_comment_changed', definition_name: v.parent_definition_name,
+                       permission_name: v.name)
       elsif (v = d.permission_expr_changed)
-        SchemaDiff.new(kind: "permission_expr_changed", definition_name: v.parent_definition_name, permission_name: v.name)
+        SchemaDiff.new(kind: 'permission_expr_changed', definition_name: v.parent_definition_name,
+                       permission_name: v.name)
       elsif (v = d.caveat_added)
-        SchemaDiff.new(kind: "caveat_added", caveat_name: v.name)
+        SchemaDiff.new(kind: 'caveat_added', caveat_name: v.name)
       elsif (v = d.caveat_removed)
-        SchemaDiff.new(kind: "caveat_removed", caveat_name: v.name)
+        SchemaDiff.new(kind: 'caveat_removed', caveat_name: v.name)
       elsif (v = d.caveat_doc_comment_changed)
-        SchemaDiff.new(kind: "caveat_doc_comment_changed", caveat_name: v.name)
+        SchemaDiff.new(kind: 'caveat_doc_comment_changed', caveat_name: v.name)
       elsif (v = d.caveat_expr_changed)
-        SchemaDiff.new(kind: "caveat_expr_changed", caveat_name: v.name)
+        SchemaDiff.new(kind: 'caveat_expr_changed', caveat_name: v.name)
       elsif (v = d.caveat_parameter_added)
-        SchemaDiff.new(kind: "caveat_parameter_added", caveat_name: v.parent_caveat_name)
+        SchemaDiff.new(kind: 'caveat_parameter_added', caveat_name: v.parent_caveat_name)
       elsif (v = d.caveat_parameter_removed)
-        SchemaDiff.new(kind: "caveat_parameter_removed", caveat_name: v.parent_caveat_name)
+        SchemaDiff.new(kind: 'caveat_parameter_removed', caveat_name: v.parent_caveat_name)
       elsif (v = d.caveat_parameter_type_changed)
-        SchemaDiff.new(kind: "caveat_parameter_type_changed", caveat_name: v.parameter.parent_caveat_name)
+        SchemaDiff.new(kind: 'caveat_parameter_type_changed', caveat_name: v.parameter.parent_caveat_name)
       else
-        SchemaDiff.new(kind: "unknown")
+        SchemaDiff.new(kind: 'unknown')
       end
     end
   end

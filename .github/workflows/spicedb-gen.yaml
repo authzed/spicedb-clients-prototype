@@ -77,6 +77,10 @@ jobs:
         run: go install github.com/magefile/mage@latest
       - name: Install pnpm deps
         run: pnpm install --frozen-lockfile
+      - name: Build proto package
+        run: pnpm --filter @spicedb/proto build
+      - name: Build client package
+        run: pnpm --filter @spicedb/client build
       - name: TypeScript integration test
         run: mage -d spicedb-gen typeScriptIntegrationTest
 

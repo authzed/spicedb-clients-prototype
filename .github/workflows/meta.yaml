@@ -78,6 +78,8 @@ jobs:
         run: go install github.com/magefile/mage@latest
       - name: Install pnpm deps
         run: pnpm install --frozen-lockfile
+      - name: Build proto package
+        run: pnpm --filter @spicedb/proto build
       - name: Generate all clients
         run: mage gen:all
       - name: Fail if generated files drifted

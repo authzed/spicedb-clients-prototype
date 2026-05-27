@@ -64,7 +64,14 @@ impl Relationship {
         subject_type: impl Into<String>,
         subject_id: impl Into<String>,
     ) -> Result<Self, RelationshipError> {
-        Self::new(resource_type, resource_id, relation, subject_type, subject_id, "")
+        Self::new(
+            resource_type,
+            resource_id,
+            relation,
+            subject_type,
+            subject_id,
+            "",
+        )
     }
 
     /// Parses a relationship from a tuple string in the format:
@@ -79,9 +86,9 @@ impl Relationship {
             .split_once('#')
             .ok_or_else(|| RelationshipError::InvalidFormat("missing '#' in resource".into()))?;
 
-        let (resource_type, resource_id) = resource_type_id
-            .split_once(':')
-            .ok_or_else(|| RelationshipError::InvalidFormat("missing ':' in resource type:id".into()))?;
+        let (resource_type, resource_id) = resource_type_id.split_once(':').ok_or_else(|| {
+            RelationshipError::InvalidFormat("missing ':' in resource type:id".into())
+        })?;
 
         let (subject_type, subject_id, subject_relation) =
             if let Some((subject_type_id, subject_rel)) = subject_part.split_once('#') {
@@ -156,9 +163,7 @@ impl Relationship {
             let context = self.caveat_context.as_ref().map(|ctx| {
                 let fields = ctx
                     .iter()
-                    .map(|(k, v)| {
-                        (k.clone(), json_value_to_prost(v))
-                    })
+                    .map(|(k, v)| (k.clone(), json_value_to_prost(v)))
                     .collect();
                 prost_types::Struct { fields }
             });
@@ -208,17 +213,22 @@ impl Relationship {
             (String::new(), None)
         };
 
-        let expiration = pr.optional_expires_at.as_ref().and_then(|ts| {
-            DateTime::from_timestamp(ts.seconds, ts.nanos as u32)
-        });
+        let expiration = pr
+            .optional_expires_at
+            .as_ref()
+            .and_then(|ts| DateTime::from_timestamp(ts.seconds, ts.nanos as u32));
 
         Self {
             resource_type: resource.map(|r| r.object_type.clone()).unwrap_or_default(),
             resource_id: resource.map(|r| r.object_id.clone()).unwrap_or_default(),
             resource_relation: pr.relation.clone(),
-            subject_type: subject_obj.map(|o| o.object_type.clone()).unwrap_or_default(),
+            subject_type: subject_obj
+                .map(|o| o.object_type.clone())
+                .unwrap_or_default(),
             subject_id: subject_obj.map(|o| o.object_id.clone()).unwrap_or_default(),
-            subject_relation: subject_ref.map(|s| s.optional_relation.clone()).unwrap_or_default(),
+            subject_relation: subject_ref
+                .map(|s| s.optional_relation.clone())
+                .unwrap_or_default(),
             caveat_name,
             caveat_context,
             expiration,
@@ -594,11 +604,9 @@ fn prost_value_to_json(v: &prost_types::Value) -> serde_json::Value {
     match &v.kind {
         Some(Kind::NullValue(_)) => serde_json::Value::Null,
         Some(Kind::BoolValue(b)) => serde_json::Value::Bool(*b),
-        Some(Kind::NumberValue(n)) => {
-            serde_json::Number::from_f64(*n)
-                .map(serde_json::Value::Number)
-                .unwrap_or(serde_json::Value::Null)
-        }
+        Some(Kind::NumberValue(n)) => serde_json::Number::from_f64(*n)
+            .map(serde_json::Value::Number)
+            .unwrap_or(serde_json::Value::Null),
         Some(Kind::StringValue(s)) => serde_json::Value::String(s.clone()),
         Some(Kind::ListValue(list)) => {
             serde_json::Value::Array(list.values.iter().map(prost_value_to_json).collect())

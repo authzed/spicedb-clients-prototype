@@ -30,27 +30,22 @@ async fn main() {
         .expect("write schema failed");
 
     // Write test data: alice can view firstdoc, alice can edit seconddoc
-    let alice_viewer =
-        Relationship::new("document", "firstdoc", "viewer", "user", "alice", "")
-            .expect("invalid relationship");
-    let alice_editor =
-        Relationship::new("document", "seconddoc", "editor", "user", "alice", "")
-            .expect("invalid relationship");
+    let alice_viewer = Relationship::new("document", "firstdoc", "viewer", "user", "alice", "")
+        .expect("invalid relationship");
+    let alice_editor = Relationship::new("document", "seconddoc", "editor", "user", "alice", "")
+        .expect("invalid relationship");
 
     let mut txn = Transaction::new();
     txn.touch(&alice_viewer);
     txn.touch(&alice_editor);
-    client.write(&txn).await.expect("write relationships failed");
+    client
+        .write(&txn)
+        .await
+        .expect("write relationships failed");
 
     // Lookup all documents alice can view
     let resource_ids = client
-        .lookup_resources(
-            &consistency::full(),
-            "document",
-            "view",
-            "user",
-            "alice",
-        )
+        .lookup_resources(&consistency::full(), "document", "view", "user", "alice")
         .await
         .expect("lookup failed");
 

@@ -98,10 +98,7 @@ impl SpiceDBClient {
     }
 
     /// Returns a builder for configuring the client with custom options.
-    pub fn builder(
-        endpoint: impl Into<String>,
-        token: impl Into<String>,
-    ) -> SpiceDBClientBuilder {
+    pub fn builder(endpoint: impl Into<String>, token: impl Into<String>) -> SpiceDBClientBuilder {
         SpiceDBClientBuilder {
             endpoint: endpoint.into(),
             token: token.into(),
@@ -250,15 +247,9 @@ impl SpiceDBClient {
             .iter()
             .map(|(op, rel)| {
                 let operation = match op {
-                    UpdateOperation::Create => {
-                        proto::relationship_update::Operation::Create as i32
-                    }
-                    UpdateOperation::Touch => {
-                        proto::relationship_update::Operation::Touch as i32
-                    }
-                    UpdateOperation::Delete => {
-                        proto::relationship_update::Operation::Delete as i32
-                    }
+                    UpdateOperation::Create => proto::relationship_update::Operation::Create as i32,
+                    UpdateOperation::Touch => proto::relationship_update::Operation::Touch as i32,
+                    UpdateOperation::Delete => proto::relationship_update::Operation::Delete as i32,
                 };
                 proto::RelationshipUpdate {
                     operation,
@@ -368,10 +359,7 @@ impl SpiceDBClient {
     /// until the server reports all matching relationships are deleted.
     ///
     /// Returns the revision of the final deletion.
-    pub async fn delete_relationships(
-        &self,
-        filter: &Filter,
-    ) -> Result<String, SpiceDBError> {
+    pub async fn delete_relationships(&self, filter: &Filter) -> Result<String, SpiceDBError> {
         loop {
             let resp = self
                 .retry(|| async {
@@ -390,10 +378,7 @@ impl SpiceDBClient {
                 .await?;
 
             let inner = resp.into_inner();
-            let revision = inner
-                .deleted_at
-                .map(|z| z.token)
-                .unwrap_or_default();
+            let revision = inner.deleted_at.map(|z| z.token).unwrap_or_default();
 
             // DeletionProgress::Complete = 1
             if inner.deletion_progress
@@ -747,11 +732,7 @@ impl SpiceDBClient {
         let inner = resp.into_inner();
         let revision = inner.read_at.map(|z| z.token).unwrap_or_default();
 
-        let diffs = inner
-            .diffs
-            .iter()
-            .map(schema_diff_from_proto)
-            .collect();
+        let diffs = inner.diffs.iter().map(schema_diff_from_proto).collect();
 
         Ok((diffs, revision))
     }

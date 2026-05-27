@@ -80,10 +80,7 @@ async fn main() {
         .expect("dependent relations failed");
 
     println!("\ndependent relations for document#view (revision: {revision}):");
-    assert!(
-        !deps.is_empty(),
-        "expected at least one dependent relation"
-    );
+    assert!(!deps.is_empty(), "expected at least one dependent relation");
     for d in &deps {
         println!("  {}#{}", d.definition_name, d.relation_name);
     }

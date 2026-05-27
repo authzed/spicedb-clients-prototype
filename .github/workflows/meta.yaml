@@ -19,7 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Install yamllint
-        run: pip install --user yamllint
+        run: pip3 install yamllint
       - name: Lint workflow YAML
         run: "yamllint -d '{extends: relaxed, rules: {line-length: disable}}' .github/workflows/"
 

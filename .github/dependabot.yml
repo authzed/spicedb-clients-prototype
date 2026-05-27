@@ -1,0 +1,102 @@
+version: 2
+updates:
+  # GitHub Actions
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # Go (root + every dir that has its own go.mod for mage)
+  - package-ecosystem: gomod
+    directories:
+      - /
+      - /spicedb-gen
+      - /spicedb-go
+      - /spicedb-python
+      - /spicedb-typescript
+      - /spicedb-csharp
+      - /spicedb-java
+      - /spicedb-ruby
+      - /spicedb-rust
+      - /proto-clients/spicedb-go-proto
+      - /proto-clients/spicedb-python-proto
+      - /proto-clients/spicedb-typescript-proto
+      - /proto-clients/spicedb-csharp-proto
+      - /proto-clients/spicedb-java-proto
+      - /proto-clients/spicedb-ruby-proto
+      - /proto-clients/spicedb-rust-proto
+    schedule:
+      interval: weekly
+    groups:
+      gomod:
+        patterns: ["*"]
+
+  # Python (uv)
+  - package-ecosystem: pip
+    directories:
+      - /proto-clients/spicedb-python-proto
+      - /spicedb-python
+    schedule:
+      interval: weekly
+    groups:
+      pip:
+        patterns: ["*"]
+
+  # TypeScript (pnpm)
+  - package-ecosystem: npm
+    directories:
+      - /
+      - /proto-clients/spicedb-typescript-proto
+      - /spicedb-typescript
+    schedule:
+      interval: weekly
+    groups:
+      npm:
+        patterns: ["*"]
+
+  # C# (NuGet)
+  - package-ecosystem: nuget
+    directories:
+      - /proto-clients/spicedb-csharp-proto
+      - /spicedb-csharp
+    schedule:
+      interval: weekly
+    groups:
+      nuget:
+        patterns: ["*"]
+
+  # Java (Gradle)
+  - package-ecosystem: gradle
+    directories:
+      - /proto-clients/spicedb-java-proto
+      - /spicedb-java
+    schedule:
+      interval: weekly
+    groups:
+      gradle:
+        patterns: ["*"]
+
+  # Ruby (Bundler)
+  - package-ecosystem: bundler
+    directories:
+      - /proto-clients/spicedb-ruby-proto
+      - /spicedb-ruby
+    schedule:
+      interval: weekly
+    groups:
+      bundler:
+        patterns: ["*"]
+
+  # Rust (Cargo)
+  - package-ecosystem: cargo
+    directories:
+      - /proto-clients/spicedb-rust-proto
+      - /spicedb-rust
+    schedule:
+      interval: weekly
+    groups:
+      cargo:
+        patterns: ["*"]

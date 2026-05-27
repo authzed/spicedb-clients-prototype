@@ -65,6 +65,11 @@ jobs:
           ruby-version: '3.2'
           bundler-cache: true
           working-directory: spicedb-ruby
+      - uses: ruby/setup-ruby@afeafc3d1ab54a631816aba4c914a0081c12ff2f # v1
+        with:
+          ruby-version: '3.2'
+          bundler-cache: true
+          working-directory: proto-clients/spicedb-ruby-proto
       - name: Install mage
         run: go install github.com/magefile/mage@latest
       - name: Proto client tests
@@ -86,6 +91,11 @@ jobs:
           ruby-version: '3.2'
           bundler-cache: true
           working-directory: spicedb-ruby
+      - uses: ruby/setup-ruby@afeafc3d1ab54a631816aba4c914a0081c12ff2f # v1
+        with:
+          ruby-version: '3.2'
+          bundler-cache: true
+          working-directory: proto-clients/spicedb-ruby-proto
       - name: Install mage
         run: go install github.com/magefile/mage@latest
       - name: Integration test

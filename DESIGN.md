@@ -78,3 +78,27 @@ All idiomatic clients should provide:
 - No silent defaults for consistency — make users choose explicitly
 - No exposing gRPC internals (channels, stubs, metadata) in the primary API
   (escape hatches for advanced use are acceptable as clearly marked secondary API)
+
+## CI Workflow Conventions
+
+The repo uses one GitHub Actions workflow file per language plus `spicedb-gen.yaml` and `meta.yaml`. Rules for maintaining and extending CI:
+
+1. **Per-language file.** Every language has its own `.github/workflows/<lang>.yaml`. Do not add language-specific jobs to a shared workflow. Cross-cutting checks (e.g., `mage gen:all` nodiff, YAML lint) live in `meta.yaml`.
+
+2. **Standard job set per language workflow.** Each language workflow contains: `paths-filter`, `lint`, `unit`, `integration`, and `apicompat` (if the language appears in `apiCompatLanguages` in the root `Magefile.go`). All four work-jobs gate on `paths-filter.outputs.changed == 'true'`. `apicompat` additionally gates on `github.event_name == 'pull_request'` so it has a base ref to diff against.
+
+3. **paths-filter scope.** Each filter must watch the workflow file itself, the language's `proto-clients/spicedb-<lang>-proto/**`, the language's `spicedb-<lang>/**`, root `Magefile.go`, and root `go.mod` / `go.sum`. Workflow edits without filter coverage produce a silently-skipping CI.
+
+4. **Runner sizing.** Default to `depot-ubuntu-24.04-arm-4`. Use `arm-small` for trivial steps (paths-filter, apicompat, yaml lint). Use `arm-8` only for cross-cutting work that touches every language (e.g. `meta.gen-nodiff`). Justify any size deviation in a comment.
+
+5. **Action pinning.** Third-party actions (anything outside `actions/*` and `authzed/*`) pin to commit SHA with `# vX.Y.Z` comment. Dependabot's `github-actions` ecosystem keeps these current.
+
+6. **Integration tests.** Each `mage <lang> integrationTest` target is self-contained — it starts its own docker-compose, runs tests, tears down. CI runs at most one `integrationTest` per job (they all bind `localhost:50051`). Cross-language parallelism is fine because each runner is isolated.
+
+7. **Adding a new language.** Checklist:
+   - Create `.github/workflows/<lang>.yaml` from an existing one (Go is a good template if compiled, Python if interpreted).
+   - Add the language's directories to `.github/dependabot.yml`.
+   - Add a per-language Quick Start in `README.md` (typed if `spicedb-gen` supports it, idiomatic otherwise).
+   - Add the language to `languages` (and `apiCompatLanguages` if applicable) in the root `Magefile.go`.
+
+8. **Adding a new job type.** If you find yourself wanting a new kind of check (e.g., security scanning, license check), add it to **every** language workflow at once, document it here, and add a paths-filter clause if it should be skippable.

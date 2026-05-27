@@ -1,6 +1,177 @@
 # SpiceDB Client Libraries
 
-Monorepo of idiomatic SpiceDB client libraries for Go, Python, TypeScript, C#, Java, Ruby, and Rust — plus `spicedb-gen`, a type-safe code generator.
+> ⚠️ **PROTOTYPE — Not for production use.**
+> These clients are in early development. APIs, types, and behaviors may change or break at any time, and bugs are expected. Do not rely on anything in this repo for production workloads. If you experiment with a client, pin to a specific commit and budget time for breakage.
+
+Monorepo of idiomatic SpiceDB client libraries for Go, Python, TypeScript, C#, Java, Ruby, and Rust — plus [`spicedb-gen`](spicedb-gen/), a type-safe code generator that produces compile-time-checked wrappers from a `.zed` schema.
+
+## Getting Started
+
+Pick your language. Languages where `spicedb-gen` supports typed wrappers (**Go**, **TypeScript**, **Java**, **Python**) use the **typed client** examples — invalid permission checks, wrong subject types, and typos in resource names become compile-time errors. The remaining languages (**C#**, **Ruby**, **Rust**) use the **idiomatic client** directly.
+
+For typed examples, first generate the wrapper from your schema:
+
+```bash
+spicedb-gen --schema schema.zed --lang <go|typescript|java|python> --out <output-path>
+```
+
+All examples below assume this schema:
+
+```
+definition user {}
+
+definition document {
+    relation viewer: user
+    relation editor: user
+    relation owner: user
+    permission view = viewer + editor + owner
+    permission edit = editor + owner
+    permission delete = owner
+}
+```
+
+### Go (typed)
+
+```go
+import (
+    "github.com/authzed/spicedb-clients/spicedb-go/client"
+    "github.com/authzed/spicedb-clients/spicedb-go/consistency"
+    . "path/to/generated/permissions"
+)
+
+c, err := client.NewPlaintext("localhost:50051", "somerandomkeyhere")
+tc := NewTypedClient(c)
+
+// Writes — relation methods enforce valid subject types
+_, err = tc.Touch(ctx,
+    Document("readme").Viewer(User("alice")),
+    Document("readme").Editor(User("bob")),
+)
+
+// Checks — autocomplete shows .View(), .Edit(), .Delete() on Document
+allowed, err := Check(ctx, tc, consistency.Full(), Document("readme").View(), User("alice"))
+
+// Lookups
+for id, err := range LookupResources(ctx, tc, consistency.Full(), Document_View, User("alice")) { ... }
+for id, err := range LookupSubjects(ctx, tc, consistency.Full(), Document("readme").View(), UserType) { ... }
+
+// Type errors caught at compile time:
+// Document("readme").Editor(Team("eng")) // ERROR: editor only allows user
+```
+
+### TypeScript (typed)
+
+```typescript
+import { full } from "@spicedb/client";
+import { TypedClient, Document, User } from "./permissions";
+
+const tc = TypedClient.create("localhost:50051", "somerandomkeyhere", { insecure: true });
+
+// Writes — relation methods enforce valid subject types
+await tc.touch(
+    Document("readme").viewer(User("alice")),
+    Document("readme").editor(User("bob")),
+);
+
+// Checks — autocomplete shows .view, .edit, .delete on Document
+const allowed = await tc.check(full(), Document("readme").view, User("alice"));
+
+// Lookups
+for await (const id of await tc.lookupResources(full(), Document.view, User("alice"))) { ... }
+for await (const id of await tc.lookupSubjects(full(), Document("readme").view, User)) { ... }
+
+// Type errors caught at compile time:
+// Document("readme").editor(Team("eng"));  // ERROR: editor only allows user
+```
+
+### Java (typed)
+
+```java
+import com.authzed.spicedb.SpiceDBClient;
+import static com.authzed.spicedb.Consistency.*;
+import static com.example.Permissions.*;
+
+var tc = new TypedClient(SpiceDBClient.createPlaintext("localhost:50051", "somerandomkeyhere"));
+
+// Writes — relation methods enforce valid subject types
+tc.touch(
+    Document("readme").viewer(User("alice")),
+    Document("readme").editor(User("bob"))
+);
+
+// Checks — autocomplete shows .view(), .edit(), .delete() on Document
+boolean allowed = tc.check(full(), Document("readme").view(), User("alice"));
+
+// Type errors caught at compile time:
+// Document("readme").editor(Team("eng")); // ERROR: editor only allows user
+```
+
+### Python (typed)
+
+```python
+from spicedb import full
+from permissions import TypedClient, Document, User, DocumentView
+
+tc = TypedClient.connect("localhost:50051", "somerandomkeyhere", insecure=True)
+try:
+    # Writes — relation methods enforce valid subject types
+    await tc.touch(
+        Document("readme").viewer(User("alice")),
+        Document("readme").editor(User("bob")),
+    )
+
+    # Checks — autocomplete shows .view, .edit, .delete on Document
+    allowed = await tc.check(full(), Document("readme").view, User("alice"))
+
+    # Lookups
+    async for rid in tc.lookup_resources(full(), DocumentView, User("alice")): ...
+    async for sid in tc.lookup_subjects(full(), Document("readme").view, User): ...
+
+    # Type errors caught at static-analysis time (pyright/mypy):
+    # Document("readme").editor(Team("eng"))  # ERROR: editor only allows user
+finally:
+    await tc.close()
+```
+
+### C# (idiomatic)
+
+```csharp
+using SpiceDB.Client;
+using static SpiceDB.Client.Consistency;
+
+await using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "somerandomkeyhere");
+
+var rel = Relationship.FromTriple("document", "readme", "viewer", "user", "alice");
+await client.WriteRelationshipsAsync(Transaction.Touch(rel));
+
+bool allowed = await client.CheckPermission(Full(), "view", rel);
+```
+
+### Ruby (idiomatic)
+
+```ruby
+require "spicedb"
+
+SpiceDB::Client.new_plaintext("localhost:50051", "somerandomkeyhere") do |client|
+  rel = SpiceDB::Relationship.from_triple("document", "readme", "viewer", "user", "alice")
+  client.write_relationships(SpiceDB::Transaction.touch(rel))
+
+  allowed = client.check_permission(SpiceDB::Consistency.full, "view", rel)
+end
+```
+
+### Rust (idiomatic)
+
+```rust
+use spicedb::{client::SpiceDBClient, consistency, types::Relationship};
+
+let client = SpiceDBClient::new_plaintext("localhost:50051", "somerandomkeyhere").await?;
+
+let rel = Relationship::new("document", "readme", "viewer", "user", "alice", "")?;
+client.write_relationships(&[rel.clone()]).await?;
+
+let allowed = client.check_permission(consistency::full(), "view", &rel).await?;
+```
 
 ## Structure
 
@@ -27,199 +198,7 @@ spicedb-gen/                 # Type-safe client code generator
 
 **Idiomatic clients** wrap the proto clients with language-native APIs: native error types, iterators/async patterns for streaming, builder patterns for complex requests, and opaque ZedToken-based consistency strategies. See [DESIGN.md](DESIGN.md) for the full design vision.
 
-**spicedb-gen** parses a SpiceDB schema (`.zed` file) and generates type-safe client wrappers that provide compile-time validation of resource types, permissions, relations, and subject types.
-
-## Quick Start
-
-### Go
-
-```go
-import (
-    "github.com/authzed/spicedb-clients/spicedb-go/client"
-    "github.com/authzed/spicedb-clients/spicedb-go/consistency"
-    "github.com/authzed/spicedb-clients/spicedb-go/rel"
-)
-
-c, err := client.NewPlaintext("localhost:50051", "somerandomkeyhere")
-
-allowed, err := c.CheckOne(ctx, consistency.Full(), "view",
-    rel.MustFromTriple("document", "readme", "view", "user", "alice", ""))
-```
-
-### Python
-
-```python
-from spicedb import SpiceDBClient, Relationship, full
-
-async with SpiceDBClient("localhost:50051", token="somerandomkeyhere", insecure=True) as client:
-    allowed = await client.check_permission(
-        full(),
-        Relationship.from_triple("document:readme", "view", "user:alice"),
-    )
-```
-
-### TypeScript
-
-```typescript
-import { createSpiceDBClient, full } from "@spicedb/client";
-
-const client = createSpiceDBClient("localhost:50051", "somerandomkeyhere", { insecure: true });
-
-const allowed = await client.checkPermission(full(), {
-  resourceType: "document",
-  resourceId: "readme",
-  permission: "view",
-  subjectType: "user",
-  subjectId: "alice",
-});
-```
-
-### C#
-
-```csharp
-using SpiceDB.Client;
-using static SpiceDB.Client.Consistency;
-
-await using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "somerandomkeyhere");
-
-var rel = Relationship.FromTriple("document", "readme", "view", "user", "alice");
-bool allowed = await client.CheckPermission(Full(), "view", rel);
-```
-
-### Java
-
-```java
-import com.authzed.spicedb.*;
-import static com.authzed.spicedb.Consistency.*;
-
-try (var client = SpiceDBClient.createPlaintext("localhost:50051", "somerandomkeyhere")) {
-    var rel = Relationship.of("document", "readme", "view", "user", "alice");
-    boolean allowed = client.checkPermission(full(), "view", rel);
-}
-```
-
-### Ruby
-
-```ruby
-require "spicedb"
-
-SpiceDB::Client.new_plaintext("localhost:50051", "somerandomkeyhere") do |client|
-  rel = SpiceDB::Relationship.from_triple("document", "readme", "view", "user", "alice")
-  allowed = client.check_permission(SpiceDB::Consistency.full, "view", rel)
-end
-```
-
-### Rust
-
-```rust
-use spicedb::{client::SpiceDBClient, consistency, types::Relationship};
-
-let client = SpiceDBClient::new_plaintext("localhost:50051", "somerandomkeyhere").await?;
-
-let rel = Relationship::new("document", "readme", "view", "user", "alice", "")?;
-let result = client.check_permission(consistency::full(), "view", &rel).await?;
-```
-
-## Type-Safe Clients with spicedb-gen
-
-`spicedb-gen` generates type-safe client wrappers from your SpiceDB schema. Invalid permission checks, wrong subject types, and typos in resource names become **compile-time errors**.
-
-### Generate
-
-```bash
-spicedb-gen --schema schema.zed --lang typescript --out src/permissions.ts
-```
-
-### Use (TypeScript)
-
-Given this schema:
-```
-definition user {}
-definition document {
-    relation viewer: user
-    relation editor: user
-    permission view = viewer + editor
-    permission edit = editor
-}
-```
-
-The generated code provides factory functions with full autocomplete:
-
-```typescript
-import { full } from "@spicedb/client";
-import { TypedClient, Document, User } from "./permissions";
-
-const tc = TypedClient.create("localhost:50051", "token", { insecure: true });
-
-// Checks — autocomplete shows .view, .edit on Document
-await tc.check(full(), Document("readme").view, User("alice"));
-
-// Writes — relation methods enforce valid subject types
-await tc.touch(
-    Document("readme").viewer(User("alice")),
-    Document("readme").editor(User("bob")),
-);
-
-// Type errors caught at compile time:
-// Document("readme").editor(Team("eng"));  // ERROR: editor only allows user
-
-// Lookups
-for await (const id of await tc.lookupResources(full(), Document.view, User("alice"))) { ... }
-for await (const id of await tc.lookupSubjects(full(), Document("readme").view, User)) { ... }
-```
-
-### Use (Go)
-
-```go
-import (
-    "github.com/authzed/spicedb-clients/spicedb-go/client"
-    "github.com/authzed/spicedb-clients/spicedb-go/consistency"
-    . "path/to/generated/permissions"
-)
-
-c, err := client.NewPlaintext("localhost:50051", "somerandomkeyhere")
-tc := NewTypedClient(c)
-
-// Checks — autocomplete shows .View(), .Edit(), .Delete() on Document
-allowed, err := Check(ctx, tc, consistency.Full(), Document("readme").View(), User("alice"))
-
-// Writes — relation methods enforce valid subject types
-_, err = tc.Touch(ctx,
-    Document("readme").Viewer(User("alice")),
-    Document("readme").Editor(User("bob")),
-)
-
-// Type errors caught at compile time:
-// Document("readme").Editor(Team("eng")) // ERROR: editor only allows user
-
-// Lookups
-for id, err := range LookupResources(ctx, tc, consistency.Full(), Document_View, User("alice")) { ... }
-for id, err := range LookupSubjects(ctx, tc, consistency.Full(), Document("readme").View(), UserType) { ... }
-```
-
-### Use (Java)
-
-```java
-import com.authzed.spicedb.*;
-import static com.authzed.spicedb.Consistency.*;
-import static com.example.Permissions.*;
-
-var tc = new TypedClient(SpiceDBClient.createPlaintext("localhost:50051", "somerandomkeyhere"));
-
-// Checks — autocomplete shows .view(), .edit(), .delete() on Document
-boolean allowed = tc.check(full(), Document("readme").view(), User("alice"));
-
-// Writes — relation methods enforce valid subject types
-tc.touch(
-    Document("readme").viewer(User("alice")),
-    Document("readme").editor(User("bob"))
-);
-
-// Type errors caught at compile time:
-// Document("readme").editor(Team("eng")); // ERROR: editor only allows user
-```
-
-Currently supports Go, Java, and TypeScript.
+**spicedb-gen** parses a SpiceDB schema (`.zed` file) and generates type-safe client wrappers that provide compile-time validation of resource types, permissions, relations, and subject types. Currently supports Go, TypeScript, Java, and Python.
 
 ## Development
 

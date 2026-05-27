@@ -93,9 +93,11 @@ func Gen() error {
 	return nil
 }
 
-// Test runs all tests via Gradle.
+// Test runs the lib unit tests via Gradle. Examples are integration tests
+// that need a live SpiceDB; they run via IntegrationTest, which starts
+// docker-compose first.
 func Test() error {
-	return sh.RunV("gradle", "test")
+	return sh.RunV("gradle", ":lib:test")
 }
 
 // Build compiles all source via Gradle.

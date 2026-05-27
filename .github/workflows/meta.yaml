@@ -1,0 +1,93 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+---
+name: Meta
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: ["*"]
+  merge_group:
+    types: [checks_requested]
+permissions:
+  contents: read
+concurrency:
+  group: "meta-${{ github.event.pull_request.number || github.sha }}"
+  cancel-in-progress: true
+jobs:
+  yaml-lint:
+    runs-on: depot-ubuntu-24.04-arm-small
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install yamllint
+        run: pip install --user yamllint
+      - name: Lint workflow YAML
+        run: "yamllint -d '{extends: relaxed, rules: {line-length: disable}}' .github/workflows/"
+
+  markdown-lint:
+    runs-on: depot-ubuntu-24.04-arm-small
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install markdownlint-cli2
+        run: npm install -g markdownlint-cli2
+      - name: Lint Markdown
+        run: |
+          markdownlint-cli2 \
+            "**/*.md" \
+            "#node_modules" \
+            "#**/target/**" \
+            "#**/.venv/**" \
+            "#**/build/**" \
+            "#docs/superpowers/**" \
+            "#proto-clients/**" \
+            "#spicedb-rust/target/**"
+
+  gen-nodiff:
+    runs-on: depot-ubuntu-24.04-arm-8
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'
+          bundler-cache: true
+          working-directory: spicedb-ruby
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: spicedb-rust
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Install buf
+        uses: bufbuild/buf-setup-action@v1
+      - name: Install mage
+        run: go install github.com/magefile/mage@latest
+      - name: Install pnpm deps
+        run: pnpm install --frozen-lockfile
+      - name: Generate all clients
+        run: mage gen:all
+      - name: Fail if generated files drifted
+        uses: chainguard-dev/actions/nodiff@main
+        with:
+          path: ""
+          fixup-command: mage gen:all

@@ -1,6 +1,6 @@
-use tonic::transport::{Channel, ClientTlsConfig, Endpoint};
 use tonic::metadata::MetadataValue;
 use tonic::service::Interceptor;
+use tonic::transport::{Channel, ClientTlsConfig, Endpoint};
 
 use crate::authzed::api::v1;
 
@@ -50,7 +50,8 @@ pub struct SpiceDBProtoClient {
     pub permissions: v1::permissions_service_client::PermissionsServiceClient<InterceptedService>,
     pub schema: v1::schema_service_client::SchemaServiceClient<InterceptedService>,
     pub watch: v1::watch_service_client::WatchServiceClient<InterceptedService>,
-    pub experimental: v1::experimental_service_client::ExperimentalServiceClient<InterceptedService>,
+    pub experimental:
+        v1::experimental_service_client::ExperimentalServiceClient<InterceptedService>,
 }
 
 impl SpiceDBProtoClient {
@@ -79,7 +80,15 @@ impl SpiceDBProtoClient {
             ep = ep.tls_config(ClientTlsConfig::new())?;
         }
 
-        let channel = ep.connect().await?;
+        // Use connect_lazy for insecure (plaintext) connections so that client
+        // construction succeeds even when no server is running.  For TLS
+        // connections, a real handshake is needed to validate certs, so we
+        // keep the eager connect() path there.
+        let channel = if insecure {
+            ep.connect_lazy()
+        } else {
+            ep.connect().await?
+        };
 
         let bearer = format!("Bearer {}", token)
             .parse::<MetadataValue<tonic::metadata::Ascii>>()
@@ -95,8 +104,7 @@ impl SpiceDBProtoClient {
             v1::permissions_service_client::PermissionsServiceClient::new(svc.clone());
         let schema = v1::schema_service_client::SchemaServiceClient::new(svc.clone());
         let watch = v1::watch_service_client::WatchServiceClient::new(svc.clone());
-        let experimental =
-            v1::experimental_service_client::ExperimentalServiceClient::new(svc);
+        let experimental = v1::experimental_service_client::ExperimentalServiceClient::new(svc);
 
         Ok(Self {
             permissions,

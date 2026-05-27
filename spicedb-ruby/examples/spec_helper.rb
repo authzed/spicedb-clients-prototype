@@ -35,4 +35,8 @@ RSpec.configure do |config|
 end
 
 # Helper to access the client inside examples.
-attr_reader :client
+# attr_reader is not available at the top level in Ruby 3.2+ strict mode,
+# so define an explicit method instead.
+def client
+  @client
+end

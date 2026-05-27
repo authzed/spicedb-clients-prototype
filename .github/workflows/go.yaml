@@ -1,0 +1,95 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+---
+name: Go
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: ["*"]
+  merge_group:
+    types: [checks_requested]
+permissions:
+  contents: read
+concurrency:
+  group: "go-${{ github.event.pull_request.number || github.sha }}"
+  cancel-in-progress: true
+jobs:
+  paths-filter:
+    runs-on: depot-ubuntu-24.04-arm-small
+    outputs:
+      changed: ${{ steps.filter.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            changed:
+              - '.github/workflows/go.yaml'
+              - 'Magefile.go'
+              - 'go.mod'
+              - 'go.sum'
+              - 'proto-clients/spicedb-go-proto/**'
+              - 'spicedb-go/**'
+
+  lint:
+    needs: paths-filter
+    if: needs.paths-filter.outputs.changed == 'true'
+    runs-on: depot-ubuntu-24.04-arm-4
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Install mage
+        run: go install github.com/magefile/mage@latest
+      - name: Lint
+        run: mage -d spicedb-go lint
+
+  unit:
+    needs: paths-filter
+    if: needs.paths-filter.outputs.changed == 'true'
+    runs-on: depot-ubuntu-24.04-arm-4
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Install mage
+        run: go install github.com/magefile/mage@latest
+      - name: Proto client tests
+        run: mage -d proto-clients/spicedb-go-proto test
+      - name: Idiomatic client tests
+        run: mage -d spicedb-go test
+
+  integration:
+    needs: paths-filter
+    if: needs.paths-filter.outputs.changed == 'true'
+    runs-on: depot-ubuntu-24.04-arm-4
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Install mage
+        run: go install github.com/magefile/mage@latest
+      - name: Integration test
+        run: mage -d spicedb-go integrationTest
+
+  apicompat:
+    needs: paths-filter
+    if: needs.paths-filter.outputs.changed == 'true' && github.event_name == 'pull_request'
+    runs-on: depot-ubuntu-24.04-arm-small
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Install mage
+        run: go install github.com/magefile/mage@latest
+      - name: Install go-apidiff
+        run: go install github.com/joelanford/go-apidiff@latest
+      - name: API compatibility check
+        run: mage -d spicedb-go apiCompat origin/${{ github.base_ref }}

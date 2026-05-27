@@ -14,11 +14,18 @@ import (
 const maxRetries = 3
 
 // Gen regenerates the proto client: runs buf generate, then invokes Claude
-// to add boilerplate per DESIGN.md.
+// to add boilerplate per DESIGN.md. If buf generate produces no changes,
+// the Claude step is skipped (so gen-nodiff CI passes without claude).
 func Gen() error {
 	fmt.Println("==> Running buf generate...")
 	if err := sh.Run("buf", "generate"); err != nil {
 		return fmt.Errorf("buf generate failed: %w", err)
+	}
+
+	diff, _ := sh.Output("git", "diff", "--name-only", ".")
+	if strings.TrimSpace(diff) == "" {
+		fmt.Println("==> No proto changes detected after buf generate, skipping Claude step.")
+		return nil
 	}
 
 	fmt.Println("==> Invoking Claude to add boilerplate...")

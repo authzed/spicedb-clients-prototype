@@ -13,8 +13,13 @@ import (
 
 const maxRetries = 3
 
-// claudeAvailable returns true if the claude CLI is installed and authenticated.
+// claudeAvailable returns true if the claude CLI is installed and usable.
+// Returns false when running in CI (CI env var set) because the claude binary
+// may be present but not authenticated.
 func claudeAvailable() bool {
+	if os.Getenv("CI") != "" {
+		return false
+	}
 	_, err := exec.LookPath("claude")
 	return err == nil
 }

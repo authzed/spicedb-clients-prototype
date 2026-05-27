@@ -30,17 +30,18 @@ async fn main() {
         .expect("write schema failed");
 
     // Write test data
-    let alice =
-        Relationship::new("document", "firstdoc", "viewer", "user", "alice", "")
-            .expect("invalid relationship");
-    let bob =
-        Relationship::new("document", "firstdoc", "viewer", "user", "bob", "")
-            .expect("invalid relationship");
+    let alice = Relationship::new("document", "firstdoc", "viewer", "user", "alice", "")
+        .expect("invalid relationship");
+    let bob = Relationship::new("document", "firstdoc", "viewer", "user", "bob", "")
+        .expect("invalid relationship");
 
     let mut txn = Transaction::new();
     txn.touch(&alice);
     txn.touch(&bob);
-    client.write(&txn).await.expect("write relationships failed");
+    client
+        .write(&txn)
+        .await
+        .expect("write relationships failed");
 
     // Read relationships matching a filter
     let filter = Filter::new("document")

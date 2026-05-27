@@ -204,8 +204,14 @@ fn test_transaction_preconditions() {
     txn.must_not_match(f.clone());
     txn.must_match(f);
     assert_eq!(txn.preconditions().len(), 2);
-    assert_eq!(txn.preconditions()[0].operation, PreconditionOperation::MustNotMatch);
-    assert_eq!(txn.preconditions()[1].operation, PreconditionOperation::MustMatch);
+    assert_eq!(
+        txn.preconditions()[0].operation,
+        PreconditionOperation::MustNotMatch
+    );
+    assert_eq!(
+        txn.preconditions()[1].operation,
+        PreconditionOperation::MustMatch
+    );
 }
 
 #[test]
@@ -226,7 +232,9 @@ fn test_transaction_borrows_relationship() {
 
 #[test]
 fn test_check_result_must_use() {
-    let result = CheckResult { has_permission: true };
+    let result = CheckResult {
+        has_permission: true,
+    };
     assert!(result.has_permission);
 }
 

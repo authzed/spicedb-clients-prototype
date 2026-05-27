@@ -28,17 +28,18 @@ async fn main() {
         .await
         .expect("write schema failed");
 
-    let alice =
-        Relationship::new("document", "firstdoc", "viewer", "user", "alice", "")
-            .expect("invalid relationship");
-    let bob =
-        Relationship::new("document", "seconddoc", "viewer", "user", "bob", "")
-            .expect("invalid relationship");
+    let alice = Relationship::new("document", "firstdoc", "viewer", "user", "alice", "")
+        .expect("invalid relationship");
+    let bob = Relationship::new("document", "seconddoc", "viewer", "user", "bob", "")
+        .expect("invalid relationship");
 
     let mut txn = Transaction::new();
     txn.touch(&alice);
     txn.touch(&bob);
-    client.write(&txn).await.expect("write relationships failed");
+    client
+        .write(&txn)
+        .await
+        .expect("write relationships failed");
 
     // Unregister any existing counter from a prior run (ignore errors)
     let _ = client

@@ -35,7 +35,10 @@ async fn main() {
         .expect("invalid relationship");
     let mut txn = Transaction::new();
     txn.touch(&rel);
-    let revision = client.write(&txn).await.expect("write relationships failed");
+    let revision = client
+        .write(&txn)
+        .await
+        .expect("write relationships failed");
 
     // Check permission: alice should be able to view firstdoc
     let check_rel = Relationship::new("document", "firstdoc", "view", "user", "alice", "")
@@ -45,6 +48,12 @@ async fn main() {
         .await
         .expect("check failed");
 
-    println!("alice can view document:firstdoc: {}", result.has_permission);
-    assert!(result.has_permission, "expected alice to have view permission");
+    println!(
+        "alice can view document:firstdoc: {}",
+        result.has_permission
+    );
+    assert!(
+        result.has_permission,
+        "expected alice to have view permission"
+    );
 }

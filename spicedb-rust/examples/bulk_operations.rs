@@ -45,7 +45,10 @@ async fn main() {
     }
     let revision = client.write(&txn).await.expect("bulk write failed");
 
-    println!("wrote {} relationships at revision: {revision}", users.len());
+    println!(
+        "wrote {} relationships at revision: {revision}",
+        users.len()
+    );
     assert!(!revision.is_empty(), "expected non-empty revision");
 
     // Bulk check permissions

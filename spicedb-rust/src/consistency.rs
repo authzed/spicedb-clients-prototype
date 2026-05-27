@@ -97,12 +97,8 @@ use spicedb_proto::authzed::api::v1 as proto;
 impl Strategy {
     pub(crate) fn to_proto(&self) -> proto::Consistency {
         let requirement = match self {
-            Strategy::Full => {
-                proto::consistency::Requirement::FullyConsistent(true)
-            }
-            Strategy::MinLatency => {
-                proto::consistency::Requirement::MinimizeLatency(true)
-            }
+            Strategy::Full => proto::consistency::Requirement::FullyConsistent(true),
+            Strategy::MinLatency => proto::consistency::Requirement::MinimizeLatency(true),
             Strategy::AtLeast(token) => {
                 proto::consistency::Requirement::AtLeastAsFresh(proto::ZedToken {
                     token: token.clone(),

@@ -53,6 +53,8 @@ jobs:
         run: go install github.com/magefile/mage@latest
       - name: Install deps
         run: pnpm install --frozen-lockfile
+      - name: Build proto package
+        run: pnpm --filter @spicedb/proto build
       - name: Lint
         run: mage -d spicedb-typescript lint
 
@@ -74,6 +76,8 @@ jobs:
         run: go install github.com/magefile/mage@latest
       - name: Install deps
         run: pnpm install --frozen-lockfile
+      - name: Build proto package
+        run: pnpm --filter @spicedb/proto build
       - name: Proto client tests
         run: mage -d proto-clients/spicedb-typescript-proto test
       - name: Idiomatic client tests
@@ -97,6 +101,8 @@ jobs:
         run: go install github.com/magefile/mage@latest
       - name: Install deps
         run: pnpm install --frozen-lockfile
+      - name: Build proto package
+        run: pnpm --filter @spicedb/proto build
       - name: Integration test
         run: mage -d spicedb-typescript integrationTest
 
@@ -120,5 +126,7 @@ jobs:
         run: go install github.com/magefile/mage@latest
       - name: Install deps
         run: pnpm install --frozen-lockfile
+      - name: Build proto package
+        run: pnpm --filter @spicedb/proto build
       - name: API compatibility check
         run: mage -d spicedb-typescript apiCompat origin/${{ github.base_ref }}

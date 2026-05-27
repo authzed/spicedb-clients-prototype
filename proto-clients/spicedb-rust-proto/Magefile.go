@@ -13,7 +13,16 @@ import (
 
 const maxRetries = 3
 
+// claudeAvailable returns true if the claude CLI is installed and authenticated.
+func claudeAvailable() bool {
+	_, err := exec.LookPath("claude")
+	return err == nil
+}
+
 // Gen exports protos via buf, invokes Claude to wire up the client, then tests.
+// If claude is not available (e.g. in gen-nodiff CI), any buf export changes
+// are rolled back and Gen returns nil so the working tree stays clean for the
+// nodiff check.
 func Gen() error {
 	fmt.Println("==> Exporting protos via buf...")
 	if err := sh.Run("buf", "export", "buf.build/authzed/api", "-o", "proto"); err != nil {
@@ -23,6 +32,12 @@ func Gen() error {
 	diff, _ := sh.Output("git", "diff", "--name-only", "proto")
 	if strings.TrimSpace(diff) == "" {
 		fmt.Println("==> No proto changes detected after buf export, skipping Claude step.")
+		return nil
+	}
+
+	if !claudeAvailable() {
+		fmt.Println("==> claude not available; rolling back buf export changes (gen-nodiff mode).")
+		_ = sh.Run("git", "checkout", "--", "proto")
 		return nil
 	}
 

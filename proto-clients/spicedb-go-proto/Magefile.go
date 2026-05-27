@@ -13,9 +13,16 @@ import (
 
 const maxRetries = 3
 
+// claudeAvailable returns true if the claude CLI is installed and authenticated.
+func claudeAvailable() bool {
+	_, err := exec.LookPath("claude")
+	return err == nil
+}
+
 // Gen regenerates the proto client: runs buf generate, then invokes Claude
-// to add boilerplate per DESIGN.md. If buf generate produces no changes,
-// the Claude step is skipped (so gen-nodiff CI passes without claude).
+// to add boilerplate per DESIGN.md. If claude is not available (e.g. in
+// gen-nodiff CI), any buf generate changes are rolled back and Gen returns
+// nil so the working tree stays clean for the nodiff check.
 func Gen() error {
 	fmt.Println("==> Running buf generate...")
 	if err := sh.Run("buf", "generate"); err != nil {
@@ -25,6 +32,12 @@ func Gen() error {
 	diff, _ := sh.Output("git", "diff", "--name-only", ".")
 	if strings.TrimSpace(diff) == "" {
 		fmt.Println("==> No proto changes detected after buf generate, skipping Claude step.")
+		return nil
+	}
+
+	if !claudeAvailable() {
+		fmt.Println("==> claude not available; rolling back buf generate changes (gen-nodiff mode).")
+		_ = sh.Run("git", "checkout", "--", ".")
 		return nil
 	}
 

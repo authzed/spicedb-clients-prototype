@@ -42,6 +42,7 @@ func Gen() error {
 	if !claudeAvailable() {
 		fmt.Println("==> claude not available; rolling back buf generate changes (gen-nodiff mode).")
 		_ = sh.Run("git", "checkout", "--", ".")
+		_ = sh.Run("git", "clean", "-fd", ".")
 		return nil
 	}
 
@@ -66,6 +67,7 @@ func Gen() error {
 		if err := sh.RunV("pnpm", "build"); err != nil {
 			if attempt == maxRetries {
 				_ = sh.Run("git", "checkout", "--", ".")
+				_ = sh.Run("git", "clean", "-fd", ".")
 				return fmt.Errorf("build failed after %d retries", maxRetries)
 			}
 			fmt.Println("==> Build failed, asking Claude to fix...")
@@ -84,6 +86,7 @@ func Gen() error {
 		if attempt == maxRetries {
 			fmt.Printf("==> Tests failed after %d attempts. Rolling back.\n", maxRetries)
 			_ = sh.Run("git", "checkout", "--", ".")
+			_ = sh.Run("git", "clean", "-fd", ".")
 			return fmt.Errorf("tests failed after %d retries", maxRetries)
 		}
 

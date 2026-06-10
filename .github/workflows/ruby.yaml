@@ -20,7 +20,7 @@ jobs:
       changed: ${{ steps.filter.outputs.changed }}
     steps:
       - uses: actions/checkout@v6
-      - uses: dorny/paths-filter@d1c1ffe0248fe513906c8e24db8ea791d46f8590 # v3
+      - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
         id: filter
         with:
           filters: |
@@ -38,10 +38,10 @@ jobs:
     runs-on: depot-ubuntu-24.04-arm-4
     steps:
       - uses: actions/checkout@v6
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - uses: ruby/setup-ruby@afeafc3d1ab54a631816aba4c914a0081c12ff2f # v1
+      - uses: ruby/setup-ruby@12fd324f1d0b43274fdc8130f6980590a667c455 # v1
         with:
           ruby-version: '3.2'
           bundler-cache: false
@@ -60,10 +60,10 @@ jobs:
     runs-on: depot-ubuntu-24.04-arm-4
     steps:
       - uses: actions/checkout@v6
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - uses: ruby/setup-ruby@afeafc3d1ab54a631816aba4c914a0081c12ff2f # v1
+      - uses: ruby/setup-ruby@12fd324f1d0b43274fdc8130f6980590a667c455 # v1
         with:
           ruby-version: '3.2'
           bundler-cache: false
@@ -71,7 +71,7 @@ jobs:
       - name: Install Ruby deps (idiomatic client)
         working-directory: spicedb-ruby
         run: bundle install
-      - uses: ruby/setup-ruby@afeafc3d1ab54a631816aba4c914a0081c12ff2f # v1
+      - uses: ruby/setup-ruby@12fd324f1d0b43274fdc8130f6980590a667c455 # v1
         with:
           ruby-version: '3.2'
           bundler-cache: false
@@ -92,10 +92,10 @@ jobs:
     runs-on: depot-ubuntu-24.04-arm-4
     steps:
       - uses: actions/checkout@v6
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - uses: ruby/setup-ruby@afeafc3d1ab54a631816aba4c914a0081c12ff2f # v1
+      - uses: ruby/setup-ruby@12fd324f1d0b43274fdc8130f6980590a667c455 # v1
         with:
           ruby-version: '3.2'
           bundler-cache: false
@@ -103,7 +103,7 @@ jobs:
       - name: Install Ruby deps (idiomatic client)
         working-directory: spicedb-ruby
         run: bundle install
-      - uses: ruby/setup-ruby@afeafc3d1ab54a631816aba4c914a0081c12ff2f # v1
+      - uses: ruby/setup-ruby@12fd324f1d0b43274fdc8130f6980590a667c455 # v1
         with:
           ruby-version: '3.2'
           bundler-cache: false

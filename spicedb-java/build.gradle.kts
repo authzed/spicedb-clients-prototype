@@ -1,6 +1,6 @@
 plugins {
     java
-    id("com.diffplug.spotless") version "6.25.0"
+    id("com.diffplug.spotless") version "8.6.0"
 }
 
 allprojects {

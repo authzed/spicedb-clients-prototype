@@ -8,11 +8,11 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Google.Protobuf" Version="3.28.*" />
-    <PackageReference Include="Google.Api.CommonProtos" Version="2.15.*" />
-    <PackageReference Include="Grpc.Net.Client" Version="2.67.*" />
-    <PackageReference Include="Grpc.Core.Api" Version="2.67.*" />
-    <PackageReference Include="Grpc.Tools" Version="2.69.*">
+    <PackageReference Include="Google.Protobuf" Version="3.35.*" />
+    <PackageReference Include="Google.Api.CommonProtos" Version="2.17.*" />
+    <PackageReference Include="Grpc.Net.Client" Version="2.80.*" />
+    <PackageReference Include="Grpc.Core.Api" Version="2.80.*" />
+    <PackageReference Include="Grpc.Tools" Version="2.81.*">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
     </PackageReference>
@@ -20,9 +20,9 @@
 
 <!-- Test dependencies -->
   <ItemGroup>
-    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.*" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.7.*" />
     <PackageReference Include="xunit" Version="2.9.*" />
-    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.*">
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.*">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>

@@ -10,14 +10,14 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@bufbuild/protobuf": "^2.0.0",
-    "@connectrpc/connect": "^2.0.0",
+    "@bufbuild/protobuf": "^2.12.1",
+    "@connectrpc/connect": "^2.1.2",
     "@spicedb/proto": "workspace:*"
   },
   "devDependencies": {
     "@microsoft/api-extractor": "^7.57.7",
     "@types/node": "^25.5.0",
-    "typescript": "^5.7.0",
-    "vitest": "^3.0.0"
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.9"
   }
 }

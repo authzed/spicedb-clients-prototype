@@ -19,8 +19,8 @@ jobs:
     outputs:
       changed: ${{ steps.filter.outputs.changed }}
     steps:
-      - uses: actions/checkout@v6
-      - uses: dorny/paths-filter@d1c1ffe0248fe513906c8e24db8ea791d46f8590 # v3
+      - uses: actions/checkout@v7
+      - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
         id: filter
         with:
           filters: |
@@ -37,11 +37,11 @@ jobs:
     if: needs.paths-filter.outputs.changed == 'true'
     runs-on: depot-ubuntu-24.04-arm-4
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - uses: golangci/golangci-lint-action@55c2c1448f86e01eaae002a5a3a9624417608d84 # v6
+      - uses: golangci/golangci-lint-action@82606bf257cbaff209d206a39f5134f0cfbfd2ee # v9.2.1
         with:
           working-directory: spicedb-go
       - name: Install mage
@@ -54,8 +54,8 @@ jobs:
     if: needs.paths-filter.outputs.changed == 'true'
     runs-on: depot-ubuntu-24.04-arm-4
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
       - name: Install mage
@@ -70,8 +70,8 @@ jobs:
     if: needs.paths-filter.outputs.changed == 'true'
     runs-on: depot-ubuntu-24.04-arm-4
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
       - name: Install mage
@@ -84,10 +84,10 @@ jobs:
     if: needs.paths-filter.outputs.changed == 'true' && github.event_name == 'pull_request'
     runs-on: depot-ubuntu-24.04-arm-small
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
       - name: Install mage

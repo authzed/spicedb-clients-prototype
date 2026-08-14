@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"iter"
 
+	"google.golang.org/grpc/status"
+
 	v1 "github.com/authzed/spicedb-clients/proto-clients/spicedb-go-proto/gen/authzed/api/v1"
 	"github.com/authzed/spicedb-clients/spicedb-go/consistency"
 	"github.com/authzed/spicedb-clients/spicedb-go/rel"
@@ -36,7 +38,7 @@ func (c *Client) Check(ctx context.Context, cs consistency.Strategy, permission 
 	results := make([]bool, len(resp.GetPairs()))
 	for i, pair := range resp.GetPairs() {
 		if errResp := pair.GetError(); errResp != nil {
-			return nil, fmt.Errorf("spicedb: check item %d: %s", i, errResp.GetMessage())
+			return nil, mapGRPCError(fmt.Sprintf("check item %d", i), status.FromProto(errResp).Err())
 		}
 		item := pair.GetItem()
 		results[i] = item.GetPermissionship() == v1.CheckPermissionResponse_PERMISSIONSHIP_HAS_PERMISSION

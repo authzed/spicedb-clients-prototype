@@ -10,10 +10,9 @@ import (
 
 // ExpandResult holds the result of a permission tree expansion.
 type ExpandResult struct {
-	// TreeRoot is the root of the expanded permission tree. This is the
-	// underlying proto type since the tree structure is complex and deeply
-	// nested.
-	TreeRoot *v1.PermissionRelationshipTree
+	// Tree is the root of the expanded permission tree, as a native
+	// PermissionTree (see expand_tree.go).
+	Tree     PermissionTree
 	Revision string
 }
 
@@ -33,7 +32,7 @@ func (c *Client) ExpandPermissionTree(ctx context.Context, cs consistency.Strate
 	}
 
 	return &ExpandResult{
-		TreeRoot: resp.GetTreeRoot(),
+		Tree:     toPermissionTree(resp.GetTreeRoot()),
 		Revision: resp.GetExpandedAt().GetToken(),
 	}, nil
 }

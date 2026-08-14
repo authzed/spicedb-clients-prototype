@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Breaking Changes
+
+- **2026-08-14**: `ExpandResult.TreeRoot` (a leaked `*v1.PermissionRelationshipTree` proto type) is replaced with `ExpandResult.Tree`, a native `PermissionTree` (see `client/expand_tree.go`: `PermissionTree`, `IntermediateNode`, `LeafNode`, `ObjectRef`, `SubjectRef`, `TreeOperation`). No protobuf types are exposed from `ExpandPermissionTree` anymore.
+
 ### Features
 
 - **2026-08-14**: Added automatic retry with exponential backoff for transient gRPC errors (`UNAVAILABLE`, `RESOURCE_EXHAUSTED`, `ABORTED`), configured via gRPC's built-in service-config `retryPolicy` in `NewClient`'s dial options (proto-client tier). Up to 3 retries (4 total attempts), 100ms initial backoff, 2x multiplier, 5s max backoff. No public API change; callers can still override via `WithDialOptions`.

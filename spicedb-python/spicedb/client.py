@@ -22,10 +22,13 @@ from spicedb.errors import is_transient, to_spicedb_error
 from spicedb.types import (
     Filter,
     PermissionTree,
+    ReflectSchemaResult,
     Relationship,
+    SchemaDiff,
     Transaction,
     Update,
     _permission_tree_from_proto,
+    _schema_diff_from_proto,
 )
 
 _DEFAULT_PAGE_SIZE = 512
@@ -531,38 +534,41 @@ class SpiceDBClient:
         consistency: Consistency,
         *,
         filters: list[str] | None = None,
-    ) -> Any:
-        """Experimental: Reflect the schema. Returns the proto response."""
+    ) -> ReflectSchemaResult:
+        """Experimental: Reflect the schema, returning its definitions and
+        caveats."""
         request = schema_service_pb2.ReflectSchemaRequest(
             consistency=consistency,
             optional_filters=[
-                schema_service_pb2.ExpSchemaFilter(
+                schema_service_pb2.ReflectionSchemaFilter(
                     optional_definition_name_filter=f,
                 )
                 for f in (filters or [])
             ],
         )
 
-        async def _call() -> Any:
+        async def _call() -> schema_service_pb2.ReflectSchemaResponse:
             return await self._schema.ReflectSchema(request)
 
-        return await self._with_retry(_call)
+        resp = await self._with_retry(_call)
+        return ReflectSchemaResult._from_proto(resp)
 
     async def diff_schema(
         self,
         consistency: Consistency,
         comparison_schema: str,
-    ) -> Any:
-        """Experimental: Diff two schemas. Returns the proto response."""
+    ) -> list[SchemaDiff]:
+        """Experimental: Diff two schemas, returning the list of differences."""
         request = schema_service_pb2.DiffSchemaRequest(
             consistency=consistency,
             comparison_schema=comparison_schema,
         )
 
-        async def _call() -> Any:
+        async def _call() -> schema_service_pb2.DiffSchemaResponse:
             return await self._schema.DiffSchema(request)
 
-        return await self._with_retry(_call)
+        resp = await self._with_retry(_call)
+        return [_schema_diff_from_proto(d) for d in resp.diffs]
 
 
 class _BearerTokenInterceptor(

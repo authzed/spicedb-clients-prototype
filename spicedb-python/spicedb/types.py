@@ -7,7 +7,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
-from authzed.api.v1 import core_pb2, permission_service_pb2
+from authzed.api.v1 import core_pb2, permission_service_pb2, schema_service_pb2
 from google.protobuf import struct_pb2, timestamp_pb2
 
 
@@ -364,3 +364,244 @@ def _permission_tree_from_proto(
         intermediate=intermediate,
         leaf=leaf,
     )
+
+
+# ── Schema reflection / diff ──────────────────────────────────────────
+#
+# Mirrors spicedb-go's native schema types and mappers
+# (spicedb-go/client/schema.go): ReflectSchemaResult, SchemaDefinition,
+# SchemaRelation, SchemaPermission, SchemaCaveat, SchemaCaveatParameter,
+# and SchemaDiff. (spicedb-go's RelationReference type, used by
+# ComputablePermissions/DependentRelations, has no Python counterpart yet —
+# those two methods are not implemented in this client.)
+
+
+@dataclass(frozen=True)
+class SchemaRelation:
+    """A relation within a schema definition."""
+
+    name: str
+    comment: str
+    parent_definition_name: str
+
+    @classmethod
+    def _from_proto(cls, proto: schema_service_pb2.ReflectionRelation) -> "SchemaRelation":
+        """Create from a proto ReflectionRelation."""
+        return cls(
+            name=proto.name,
+            comment=proto.comment,
+            parent_definition_name=proto.parent_definition_name,
+        )
+
+
+@dataclass(frozen=True)
+class SchemaPermission:
+    """A permission within a schema definition."""
+
+    name: str
+    comment: str
+    parent_definition_name: str
+
+    @classmethod
+    def _from_proto(cls, proto: schema_service_pb2.ReflectionPermission) -> "SchemaPermission":
+        """Create from a proto ReflectionPermission."""
+        return cls(
+            name=proto.name,
+            comment=proto.comment,
+            parent_definition_name=proto.parent_definition_name,
+        )
+
+
+@dataclass(frozen=True)
+class SchemaCaveatParameter:
+    """A parameter of a caveat."""
+
+    name: str
+    type: str
+    parent_caveat_name: str
+
+    @classmethod
+    def _from_proto(
+        cls, proto: schema_service_pb2.ReflectionCaveatParameter
+    ) -> "SchemaCaveatParameter":
+        """Create from a proto ReflectionCaveatParameter."""
+        return cls(
+            name=proto.name,
+            type=proto.type,
+            parent_caveat_name=proto.parent_caveat_name,
+        )
+
+
+@dataclass(frozen=True)
+class SchemaDefinition:
+    """A definition in a SpiceDB schema, including its relations and
+    permissions."""
+
+    name: str
+    comment: str
+    relations: list[SchemaRelation]
+    permissions: list[SchemaPermission]
+
+    @classmethod
+    def _from_proto(cls, proto: schema_service_pb2.ReflectionDefinition) -> "SchemaDefinition":
+        """Create from a proto ReflectionDefinition."""
+        return cls(
+            name=proto.name,
+            comment=proto.comment,
+            relations=[SchemaRelation._from_proto(r) for r in proto.relations],
+            permissions=[SchemaPermission._from_proto(p) for p in proto.permissions],
+        )
+
+
+@dataclass(frozen=True)
+class SchemaCaveat:
+    """A caveat defined in a SpiceDB schema."""
+
+    name: str
+    comment: str
+    expression: str
+    parameters: list[SchemaCaveatParameter]
+
+    @classmethod
+    def _from_proto(cls, proto: schema_service_pb2.ReflectionCaveat) -> "SchemaCaveat":
+        """Create from a proto ReflectionCaveat."""
+        return cls(
+            name=proto.name,
+            comment=proto.comment,
+            expression=proto.expression,
+            parameters=[SchemaCaveatParameter._from_proto(p) for p in proto.parameters],
+        )
+
+
+@dataclass(frozen=True)
+class ReflectSchemaResult:
+    """The result of a schema reflection call."""
+
+    definitions: list[SchemaDefinition]
+    caveats: list[SchemaCaveat]
+    revision: str
+
+    @classmethod
+    def _from_proto(
+        cls, proto: schema_service_pb2.ReflectSchemaResponse
+    ) -> "ReflectSchemaResult":
+        """Create from a proto ReflectSchemaResponse."""
+        return cls(
+            definitions=[SchemaDefinition._from_proto(d) for d in proto.definitions],
+            caveats=[SchemaCaveat._from_proto(c) for c in proto.caveats],
+            revision=proto.read_at.token,
+        )
+
+
+@dataclass(frozen=True)
+class SchemaDiff:
+    """A single difference between two schemas.
+
+    ``kind`` is a human-readable description of the diff type (e.g.
+    "definition_added", "relation_removed", "permission_expr_changed") and
+    the associated fields contain the details:
+    - ``definition_name`` is set for definition and relation/permission-level
+      diffs.
+    - ``relation_name`` is set for relation-level diffs.
+    - ``permission_name`` is set for permission-level diffs.
+    - ``caveat_name`` is set for caveat-level diffs.
+    """
+
+    kind: str
+    definition_name: str = ""
+    relation_name: str = ""
+    permission_name: str = ""
+    caveat_name: str = ""
+
+
+def _schema_diff_from_proto(proto: schema_service_pb2.ReflectionSchemaDiff) -> SchemaDiff:
+    """Map a single proto ReflectionSchemaDiff to its native representation.
+    Mirrors spicedb-go's `schemaDiffFromProto` (client/schema.go).
+    """
+    kind = proto.WhichOneof("diff")
+    if kind == "definition_added":
+        return SchemaDiff(kind=kind, definition_name=proto.definition_added.name)
+    if kind == "definition_removed":
+        return SchemaDiff(kind=kind, definition_name=proto.definition_removed.name)
+    if kind == "definition_doc_comment_changed":
+        return SchemaDiff(
+            kind=kind, definition_name=proto.definition_doc_comment_changed.name
+        )
+    if kind == "relation_added":
+        return SchemaDiff(
+            kind=kind,
+            definition_name=proto.relation_added.parent_definition_name,
+            relation_name=proto.relation_added.name,
+        )
+    if kind == "relation_removed":
+        return SchemaDiff(
+            kind=kind,
+            definition_name=proto.relation_removed.parent_definition_name,
+            relation_name=proto.relation_removed.name,
+        )
+    if kind == "relation_doc_comment_changed":
+        return SchemaDiff(
+            kind=kind,
+            definition_name=proto.relation_doc_comment_changed.parent_definition_name,
+            relation_name=proto.relation_doc_comment_changed.name,
+        )
+    if kind == "relation_subject_type_added":
+        rel = proto.relation_subject_type_added.relation
+        return SchemaDiff(
+            kind=kind,
+            definition_name=rel.parent_definition_name,
+            relation_name=rel.name,
+        )
+    if kind == "relation_subject_type_removed":
+        rel = proto.relation_subject_type_removed.relation
+        return SchemaDiff(
+            kind=kind,
+            definition_name=rel.parent_definition_name,
+            relation_name=rel.name,
+        )
+    if kind == "permission_added":
+        return SchemaDiff(
+            kind=kind,
+            definition_name=proto.permission_added.parent_definition_name,
+            permission_name=proto.permission_added.name,
+        )
+    if kind == "permission_removed":
+        return SchemaDiff(
+            kind=kind,
+            definition_name=proto.permission_removed.parent_definition_name,
+            permission_name=proto.permission_removed.name,
+        )
+    if kind == "permission_doc_comment_changed":
+        return SchemaDiff(
+            kind=kind,
+            definition_name=proto.permission_doc_comment_changed.parent_definition_name,
+            permission_name=proto.permission_doc_comment_changed.name,
+        )
+    if kind == "permission_expr_changed":
+        return SchemaDiff(
+            kind=kind,
+            definition_name=proto.permission_expr_changed.parent_definition_name,
+            permission_name=proto.permission_expr_changed.name,
+        )
+    if kind == "caveat_added":
+        return SchemaDiff(kind=kind, caveat_name=proto.caveat_added.name)
+    if kind == "caveat_removed":
+        return SchemaDiff(kind=kind, caveat_name=proto.caveat_removed.name)
+    if kind == "caveat_doc_comment_changed":
+        return SchemaDiff(kind=kind, caveat_name=proto.caveat_doc_comment_changed.name)
+    if kind == "caveat_expr_changed":
+        return SchemaDiff(kind=kind, caveat_name=proto.caveat_expr_changed.name)
+    if kind == "caveat_parameter_added":
+        return SchemaDiff(
+            kind=kind, caveat_name=proto.caveat_parameter_added.parent_caveat_name
+        )
+    if kind == "caveat_parameter_removed":
+        return SchemaDiff(
+            kind=kind, caveat_name=proto.caveat_parameter_removed.parent_caveat_name
+        )
+    if kind == "caveat_parameter_type_changed":
+        return SchemaDiff(
+            kind=kind,
+            caveat_name=proto.caveat_parameter_type_changed.parameter.parent_caveat_name,
+        )
+    return SchemaDiff(kind="unknown")

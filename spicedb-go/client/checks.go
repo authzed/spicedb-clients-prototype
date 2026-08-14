@@ -30,7 +30,7 @@ func (c *Client) Check(ctx context.Context, cs consistency.Strategy, permission 
 		Items:       items,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("spicedb: check: %w", err)
+		return nil, mapGRPCError("check", err)
 	}
 
 	results := make([]bool, len(resp.GetPairs()))

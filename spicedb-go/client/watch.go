@@ -2,7 +2,6 @@ package client
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"iter"
 
@@ -24,7 +23,7 @@ func (c *Client) Updates(ctx context.Context, objectTypes []string, startRevisio
 
 		stream, err := c.wsc.Watch(ctx, req)
 		if err != nil {
-			yield(rel.Update{}, fmt.Errorf("spicedb: watch: %w", err))
+			yield(rel.Update{}, mapGRPCError("watch", err))
 			return
 		}
 
@@ -34,7 +33,7 @@ func (c *Client) Updates(ctx context.Context, objectTypes []string, startRevisio
 				return
 			}
 			if err != nil {
-				yield(rel.Update{}, fmt.Errorf("spicedb: watch: %w", err))
+				yield(rel.Update{}, mapGRPCError("watch", err))
 				return
 			}
 

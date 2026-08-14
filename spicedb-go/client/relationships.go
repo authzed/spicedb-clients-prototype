@@ -2,7 +2,6 @@ package client
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"iter"
 
@@ -28,7 +27,7 @@ func (c *Client) Write(ctx context.Context, txn rel.Txn) (revision string, err e
 
 	resp, err := c.psc.WriteRelationships(ctx, req)
 	if err != nil {
-		return "", fmt.Errorf("spicedb: write: %w", err)
+		return "", mapGRPCError("write", err)
 	}
 	return resp.GetWrittenAt().GetToken(), nil
 }
@@ -47,7 +46,7 @@ func (c *Client) ReadRelationships(ctx context.Context, cs consistency.Strategy,
 				OptionalCursor:     cursor,
 			})
 			if err != nil {
-				yield(rel.Relationship{}, fmt.Errorf("spicedb: read relationships: %w", err))
+				yield(rel.Relationship{}, mapGRPCError("read relationships", err))
 				return
 			}
 
@@ -58,7 +57,7 @@ func (c *Client) ReadRelationships(ctx context.Context, cs consistency.Strategy,
 					break
 				}
 				if err != nil {
-					yield(rel.Relationship{}, fmt.Errorf("spicedb: read relationships: %w", err))
+					yield(rel.Relationship{}, mapGRPCError("read relationships", err))
 					return
 				}
 				count++
@@ -87,7 +86,7 @@ func (c *Client) DeleteRelationships(ctx context.Context, f rel.Filter) (revisio
 			OptionalAllowPartialDeletions: true,
 		})
 		if err != nil {
-			return "", fmt.Errorf("spicedb: delete relationships: %w", err)
+			return "", mapGRPCError("delete relationships", err)
 		}
 
 		revision = resp.GetDeletedAt().GetToken()

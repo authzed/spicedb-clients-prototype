@@ -2,7 +2,6 @@ package client
 
 import (
 	"context"
-	"fmt"
 
 	v1 "github.com/authzed/spicedb-clients/proto-clients/spicedb-go-proto/gen/authzed/api/v1"
 	"github.com/authzed/spicedb-clients/spicedb-go/consistency"
@@ -28,7 +27,7 @@ func (c *Client) ExpandPermissionTree(ctx context.Context, cs consistency.Strate
 		Permission: permission,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("spicedb: expand permission tree: %w", err)
+		return nil, mapGRPCError("expand permission tree", err)
 	}
 
 	return &ExpandResult{

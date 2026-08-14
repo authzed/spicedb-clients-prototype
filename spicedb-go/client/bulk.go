@@ -2,7 +2,6 @@ package client
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"iter"
 
@@ -22,7 +21,7 @@ const (
 func (c *Client) ImportRelationships(ctx context.Context, rels iter.Seq[rel.Relationship]) (numLoaded uint64, err error) {
 	stream, err := c.psc.ImportBulkRelationships(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("spicedb: import relationships: %w", err)
+		return 0, mapGRPCError("import relationships", err)
 	}
 
 	batch := make([]*v1.Relationship, 0, defaultImportBatchSize)
@@ -33,7 +32,7 @@ func (c *Client) ImportRelationships(ctx context.Context, rels iter.Seq[rel.Rela
 			if err := stream.Send(&v1.ImportBulkRelationshipsRequest{
 				Relationships: batch,
 			}); err != nil {
-				return 0, fmt.Errorf("spicedb: import relationships: %w", err)
+				return 0, mapGRPCError("import relationships", err)
 			}
 			batch = batch[:0]
 		}
@@ -44,13 +43,13 @@ func (c *Client) ImportRelationships(ctx context.Context, rels iter.Seq[rel.Rela
 		if err := stream.Send(&v1.ImportBulkRelationshipsRequest{
 			Relationships: batch,
 		}); err != nil {
-			return 0, fmt.Errorf("spicedb: import relationships: %w", err)
+			return 0, mapGRPCError("import relationships", err)
 		}
 	}
 
 	resp, err := stream.CloseAndRecv()
 	if err != nil {
-		return 0, fmt.Errorf("spicedb: import relationships: %w", err)
+		return 0, mapGRPCError("import relationships", err)
 	}
 	return resp.GetNumLoaded(), nil
 }
@@ -74,7 +73,7 @@ func (c *Client) ExportRelationships(ctx context.Context, cs consistency.Strateg
 
 			stream, err := c.psc.ExportBulkRelationships(ctx, req)
 			if err != nil {
-				yield(rel.Relationship{}, fmt.Errorf("spicedb: export relationships: %w", err))
+				yield(rel.Relationship{}, mapGRPCError("export relationships", err))
 				return
 			}
 
@@ -85,7 +84,7 @@ func (c *Client) ExportRelationships(ctx context.Context, cs consistency.Strateg
 					break
 				}
 				if err != nil {
-					yield(rel.Relationship{}, fmt.Errorf("spicedb: export relationships: %w", err))
+					yield(rel.Relationship{}, mapGRPCError("export relationships", err))
 					return
 				}
 				cursor = resp.GetAfterResultCursor()

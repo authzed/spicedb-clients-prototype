@@ -2,7 +2,6 @@ package client
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"iter"
 
@@ -33,7 +32,7 @@ func (c *Client) LookupResources(ctx context.Context, cs consistency.Strategy, r
 				OptionalCursor: cursor,
 			})
 			if err != nil {
-				yield("", fmt.Errorf("spicedb: lookup resources: %w", err))
+				yield("", mapGRPCError("lookup resources", err))
 				return
 			}
 
@@ -44,7 +43,7 @@ func (c *Client) LookupResources(ctx context.Context, cs consistency.Strategy, r
 					break
 				}
 				if err != nil {
-					yield("", fmt.Errorf("spicedb: lookup resources: %w", err))
+					yield("", mapGRPCError("lookup resources", err))
 					return
 				}
 				count++
@@ -77,7 +76,7 @@ func (c *Client) LookupSubjects(ctx context.Context, cs consistency.Strategy, re
 			SubjectObjectType: subjectType,
 		})
 		if err != nil {
-			yield("", fmt.Errorf("spicedb: lookup subjects: %w", err))
+			yield("", mapGRPCError("lookup subjects", err))
 			return
 		}
 
@@ -87,7 +86,7 @@ func (c *Client) LookupSubjects(ctx context.Context, cs consistency.Strategy, re
 				return
 			}
 			if err != nil {
-				yield("", fmt.Errorf("spicedb: lookup subjects: %w", err))
+				yield("", mapGRPCError("lookup subjects", err))
 				return
 			}
 			subjectID := resp.GetSubject().GetSubjectObjectId()

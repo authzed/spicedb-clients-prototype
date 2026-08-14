@@ -14,6 +14,7 @@ type CountResult struct {
 	Revision          string
 }
 
+// Experimental: this API wraps SpiceDB's ExperimentalService and may change without notice.
 // RegisterRelationshipCounter registers a named counter that tracks
 // relationships matching the given filter. The counter is computed
 // asynchronously by SpiceDB.
@@ -28,6 +29,7 @@ func (c *Client) RegisterRelationshipCounter(ctx context.Context, name string, f
 	return nil
 }
 
+// Experimental: this API wraps SpiceDB's ExperimentalService and may change without notice.
 // CountRelationships reads the value of a previously registered relationship
 // counter. Returns the count and revision, or a boolean indicating the counter
 // is still being calculated (in which case count and revision are zero values).
@@ -50,6 +52,7 @@ func (c *Client) CountRelationships(ctx context.Context, name string) (result *C
 	}, false, nil
 }
 
+// Experimental: this API wraps SpiceDB's ExperimentalService and may change without notice.
 // UnregisterRelationshipCounter removes a previously registered relationship
 // counter.
 func (c *Client) UnregisterRelationshipCounter(ctx context.Context, name string) error {

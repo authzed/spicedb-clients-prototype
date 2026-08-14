@@ -16,7 +16,19 @@ from spicedb.errors import (
     PermissionDeniedError,
     SpiceDBError,
 )
-from spicedb.types import Filter, Relationship, Transaction
+from spicedb.types import (
+    Filter,
+    IntermediateNode,
+    LeafNode,
+    ObjectRef,
+    PermissionTree,
+    Relationship,
+    SubjectRef,
+    Transaction,
+    TreeOperation,
+    Update,
+    UpdateOperation,
+)
 
 __all__ = [
     "SpiceDBClient",
@@ -31,6 +43,14 @@ __all__ = [
     "Relationship",
     "Filter",
     "Transaction",
+    "Update",
+    "UpdateOperation",
+    "PermissionTree",
+    "IntermediateNode",
+    "LeafNode",
+    "SubjectRef",
+    "ObjectRef",
+    "TreeOperation",
     # Errors
     "SpiceDBError",
     "PermissionDeniedError",

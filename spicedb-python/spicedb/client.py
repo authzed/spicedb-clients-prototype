@@ -19,7 +19,14 @@ from google.protobuf import struct_pb2
 
 from spicedb.consistency import Consistency
 from spicedb.errors import is_transient, to_spicedb_error
-from spicedb.types import Filter, Relationship, Transaction
+from spicedb.types import (
+    Filter,
+    PermissionTree,
+    Relationship,
+    Transaction,
+    Update,
+    _permission_tree_from_proto,
+)
 
 _DEFAULT_PAGE_SIZE = 512
 _IMPORT_BATCH_SIZE = 1000
@@ -375,7 +382,7 @@ class SpiceDBClient:
         *,
         object_types: list[str] | None = None,
         start_revision: str | None = None,
-    ) -> AsyncIterator[tuple[list[core_pb2.RelationshipUpdate], str]]:
+    ) -> AsyncIterator[tuple[list[Update], str]]:
         """Watch for relationship changes. Yields (updates, revision) tuples."""
         cursor = None
         if start_revision is not None:
@@ -387,7 +394,7 @@ class SpiceDBClient:
         )
         try:
             async for resp in self._watch.Watch(request, metadata=self._metadata):
-                yield resp.updates, resp.changes_through.token
+                yield [Update._from_proto(u) for u in resp.updates], resp.changes_through.token
         except grpc.aio.AioRpcError as e:
             raise to_spicedb_error(e) from e
 
@@ -445,8 +452,8 @@ class SpiceDBClient:
         resource: tuple[str, str],
         permission: str,
         consistency: Consistency,
-    ) -> tuple[Any, str]:
-        """Expand a permission tree. Returns (tree_root, revision)."""
+    ) -> tuple[PermissionTree, str]:
+        """Expand a permission tree. Returns (tree, revision)."""
         res_type, res_id = resource
         request = permission_service_pb2.ExpandPermissionTreeRequest(
             consistency=consistency,
@@ -461,7 +468,7 @@ class SpiceDBClient:
             return await self._permissions.ExpandPermissionTree(request)
 
         resp = await self._with_retry(_call)
-        return resp.tree_root, resp.expanded_at.token
+        return _permission_tree_from_proto(resp.tree_root), resp.expanded_at.token
 
     # ── Experimental: Relationship Counters ─────────────────────────
 

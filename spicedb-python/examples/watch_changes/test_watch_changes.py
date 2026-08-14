@@ -7,7 +7,7 @@ import asyncio
 
 import pytest
 
-from spicedb import Relationship, SpiceDBClient
+from spicedb import Relationship, SpiceDBClient, UpdateOperation
 from spicedb.types import Transaction
 
 
@@ -48,4 +48,12 @@ async def test_watch_changes(client: SpiceDBClient):
         pytest.skip("watch timed out — SpiceDB may not support watch")
 
     assert len(received) >= 1
-    print(f"received {len(received)} update(s)")
+    for update in received:
+        # `update` is a native `spicedb.Update` — no proto types leak here.
+        assert update.operation in (
+            UpdateOperation.CREATE,
+            UpdateOperation.TOUCH,
+            UpdateOperation.DELETE,
+        )
+        assert isinstance(update.relationship, Relationship)
+    print(f"received {len(received)} update(s): {[u.operation.value for u in received]}")

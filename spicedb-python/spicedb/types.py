@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import Enum
 from typing import Any
 
 from authzed.api.v1 import core_pb2, permission_service_pb2
@@ -139,6 +140,32 @@ class Relationship:
         )
 
 
+class UpdateOperation(Enum):
+    """The kind of mutation represented by an `Update` from `watch()`."""
+
+    CREATE = "create"
+    TOUCH = "touch"
+    DELETE = "delete"
+
+
+@dataclass(frozen=True)
+class Update:
+    """A single relationship mutation observed via `SpiceDBClient.watch()`."""
+
+    operation: UpdateOperation
+    relationship: Relationship
+
+    @staticmethod
+    def _from_proto(u: core_pb2.RelationshipUpdate) -> "Update":
+        """Create from a proto RelationshipUpdate."""
+        op = {
+            core_pb2.RelationshipUpdate.OPERATION_CREATE: UpdateOperation.CREATE,
+            core_pb2.RelationshipUpdate.OPERATION_TOUCH: UpdateOperation.TOUCH,
+            core_pb2.RelationshipUpdate.OPERATION_DELETE: UpdateOperation.DELETE,
+        }[u.operation]
+        return Update(operation=op, relationship=Relationship._from_proto(u.relationship))
+
+
 @dataclass(frozen=True)
 class Filter:
     """A filter for matching relationships."""
@@ -234,3 +261,106 @@ class Transaction:
             )
         )
         return self
+
+
+class TreeOperation(Enum):
+    """The set operation combining an `IntermediateNode`'s children."""
+
+    UNSPECIFIED = 0
+    UNION = 1
+    INTERSECTION = 2
+    EXCLUSION = 3
+
+
+@dataclass(frozen=True)
+class ObjectRef:
+    """Identifies a resource or subject object."""
+
+    object_type: str
+    object_id: str
+
+
+@dataclass(frozen=True)
+class SubjectRef:
+    """A subject with access at a leaf of a `PermissionTree`."""
+
+    subject_type: str
+    subject_id: str
+    optional_relation: str = ""
+
+
+@dataclass(frozen=True)
+class IntermediateNode:
+    """Combines child subtrees with a set operation."""
+
+    operation: TreeOperation
+    children: list["PermissionTree"]
+
+
+@dataclass(frozen=True)
+class LeafNode:
+    """Holds the concrete subjects at a leaf of a `PermissionTree`."""
+
+    subjects: list[SubjectRef]
+
+
+@dataclass(frozen=True)
+class PermissionTree:
+    """A native node of an expanded permission tree.
+
+    Exactly one of `intermediate` or `leaf` is non-None.
+    """
+
+    expanded_object: ObjectRef
+    expanded_relation: str
+    intermediate: IntermediateNode | None = None
+    leaf: LeafNode | None = None
+
+
+_TREE_OPERATION_MAP = {
+    core_pb2.AlgebraicSubjectSet.OPERATION_UNSPECIFIED: TreeOperation.UNSPECIFIED,
+    core_pb2.AlgebraicSubjectSet.OPERATION_UNION: TreeOperation.UNION,
+    core_pb2.AlgebraicSubjectSet.OPERATION_INTERSECTION: TreeOperation.INTERSECTION,
+    core_pb2.AlgebraicSubjectSet.OPERATION_EXCLUSION: TreeOperation.EXCLUSION,
+}
+
+
+def _permission_tree_from_proto(
+    t: core_pb2.PermissionRelationshipTree,
+) -> PermissionTree:
+    """Recursively map a proto PermissionRelationshipTree to its native
+    representation. Mirrors spicedb-go's `toPermissionTree` (client/expand_tree.go).
+    """
+    intermediate = None
+    if t.HasField("intermediate"):
+        intermediate = IntermediateNode(
+            operation=_TREE_OPERATION_MAP.get(
+                t.intermediate.operation, TreeOperation.UNSPECIFIED
+            ),
+            children=[
+                _permission_tree_from_proto(child) for child in t.intermediate.children
+            ],
+        )
+
+    leaf = None
+    if t.HasField("leaf"):
+        leaf = LeafNode(
+            subjects=[
+                SubjectRef(
+                    subject_type=s.object.object_type,
+                    subject_id=s.object.object_id,
+                    optional_relation=s.optional_relation,
+                )
+                for s in t.leaf.subjects
+            ]
+        )
+
+    return PermissionTree(
+        expanded_object=ObjectRef(
+            object_type=t.expanded_object.object_type,
+            object_id=t.expanded_object.object_id,
+        ),
+        expanded_relation=t.expanded_relation,
+        intermediate=intermediate,
+        leaf=leaf,
+    )

@@ -160,7 +160,7 @@ class SpiceDBClient:
             )
 
         request = permission_service_pb2.CheckBulkPermissionsRequest(
-            consistency=consistency,
+            consistency=consistency._to_proto(),
             items=items,
         )
 
@@ -213,7 +213,7 @@ class SpiceDBClient:
         cursor = None
         while True:
             request = permission_service_pb2.ReadRelationshipsRequest(
-                consistency=consistency,
+                consistency=consistency._to_proto(),
                 relationship_filter=filter._to_proto(),
                 optional_limit=_DEFAULT_PAGE_SIZE,
                 optional_cursor=cursor,
@@ -270,7 +270,7 @@ class SpiceDBClient:
         cursor = None
         while True:
             request = permission_service_pb2.LookupResourcesRequest(
-                consistency=consistency,
+                consistency=consistency._to_proto(),
                 resource_object_type=resource_type,
                 permission=permission,
                 subject=subj_ref,
@@ -310,7 +310,7 @@ class SpiceDBClient:
             ctx_struct.update(context)
 
         request = permission_service_pb2.LookupSubjectsRequest(
-            consistency=consistency,
+            consistency=consistency._to_proto(),
             resource=core_pb2.ObjectReference(
                 object_type=res_type,
                 object_id=res_id,
@@ -431,7 +431,7 @@ class SpiceDBClient:
         rel_filter = filter._to_proto() if filter else None
         while True:
             request = permission_service_pb2.ExportBulkRelationshipsRequest(
-                consistency=consistency,
+                consistency=consistency._to_proto(),
                 optional_limit=_DEFAULT_PAGE_SIZE,
                 optional_cursor=cursor,
                 optional_relationship_filter=rel_filter,
@@ -459,7 +459,7 @@ class SpiceDBClient:
         """Expand a permission tree. Returns (tree, revision)."""
         res_type, res_id = resource
         request = permission_service_pb2.ExpandPermissionTreeRequest(
-            consistency=consistency,
+            consistency=consistency._to_proto(),
             resource=core_pb2.ObjectReference(
                 object_type=res_type,
                 object_id=res_id,
@@ -538,7 +538,7 @@ class SpiceDBClient:
         """Experimental: Reflect the schema, returning its definitions and
         caveats."""
         request = schema_service_pb2.ReflectSchemaRequest(
-            consistency=consistency,
+            consistency=consistency._to_proto(),
             optional_filters=[
                 schema_service_pb2.ReflectionSchemaFilter(
                     optional_definition_name_filter=f,
@@ -560,7 +560,7 @@ class SpiceDBClient:
     ) -> list[SchemaDiff]:
         """Experimental: Diff two schemas, returning the list of differences."""
         request = schema_service_pb2.DiffSchemaRequest(
-            consistency=consistency,
+            consistency=consistency._to_proto(),
             comparison_schema=comparison_schema,
         )
 

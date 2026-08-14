@@ -18,6 +18,15 @@
   (`ExpSchemaFilter`, which does not exist) instead of
   `ReflectionSchemaFilter`, which made every `reflect_schema()` call raise
   `AttributeError`.
+- `Consistency` is now an opaque native frozen dataclass instead of a
+  `permission_service_pb2.Consistency` proto alias. `full()`, `min_latency()`,
+  `at_least()`, `snapshot()`, `at_least_or_full()`, and
+  `at_least_or_min_latency()` all still return `Consistency` and every
+  `consistency=...` call site is unaffected — the proto is now hidden behind
+  a private `_to_proto()` accessor used internally by `SpiceDBClient`. Code
+  that reached into the proto's oneof fields directly (e.g.
+  `full().fully_consistent`) will break; construct via the helper functions
+  and let the client handle the rest.
 - `SpiceDBClient.diff_schema()` now returns `list[SchemaDiff]` instead of the
   raw proto response. Added native `ReflectSchemaResult`, `SchemaDefinition`,
   `SchemaRelation`, `SchemaPermission`, `SchemaCaveat`,

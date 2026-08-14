@@ -22,6 +22,28 @@
   }
   ```
 
+- **`read_relationships`, `lookup_resources`, `lookup_subjects`, and
+  `export_relationships` are now real `Stream`s.** Each changed from an
+  `async fn ... -> Result<Vec<T>, SpiceDBError>` that buffered the entire
+  (auto-paginated) result set into a `Vec` before returning, to a
+  `fn ... -> impl Stream<Item = Result<T, SpiceDBError>>` that yields items
+  incrementally as they arrive. For the three that auto-paginate
+  (`read_relationships`, `lookup_resources`, `export_relationships`), the next
+  page is now fetched lazily — only once the current page has been fully
+  drained by the caller — instead of the whole result set being pulled into
+  memory up front. Consume with `futures::StreamExt::next` (pin it first,
+  e.g. `tokio::pin!`):
+
+  ```rust
+  use futures::StreamExt;
+  let stream = client.read_relationships(&consistency, &filter);
+  tokio::pin!(stream);
+  while let Some(rel) = stream.next().await {
+      let rel = rel?;
+      // ...
+  }
+  ```
+
 ## 0.1.0 (2026-03-18)
 
 Initial release of the idiomatic Rust SpiceDB client.

@@ -9,7 +9,7 @@
 //! ## Extending
 //!
 //! This harness is intended to grow. To add coverage for another service
-//! (e.g. a mock `PermissionsService`, `SchemaService`, or `ExperimentalService`):
+//! (e.g. a mock `SchemaService` or `ExperimentalService`):
 //!
 //! 1. Add a `MockXxxService` struct here and implement the corresponding
 //!    generated `xxx_service_server::XxxService` trait from
@@ -18,12 +18,17 @@
 //!    `.add_service()` for multiple services) and hand it to [`spawn_server`].
 //!
 //! [`spawn_server`] is service-agnostic on purpose so new services reuse the
-//! same bind/spawn/address-readback plumbing.
+//! same bind/spawn/address-readback plumbing. [`MockPermissionsService`] is a
+//! worked example that mocks a subset of a multi-RPC service (only the RPCs
+//! that have behavioral tests implement real logic; the rest `unimplemented!()`).
 
 #![allow(dead_code)]
 
+use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use futures::Stream;
 use tokio::net::TcpListener;
@@ -33,6 +38,9 @@ use tonic::transport::Server;
 use tonic::{Request, Response, Status};
 
 use spicedb_proto::authzed::api::v1 as proto;
+use spicedb_proto::authzed::api::v1::permissions_service_server::{
+    PermissionsService, PermissionsServiceServer,
+};
 use spicedb_proto::authzed::api::v1::watch_service_server::{WatchService, WatchServiceServer};
 
 /// Binds an ephemeral loopback port, serves `router` on a background task, and
@@ -109,6 +117,286 @@ impl WatchService for MockWatchService {
             if keep_open {
                 // Never terminate: emulate a live, open-ended watch stream.
                 futures::future::pending::<()>().await;
+            }
+        };
+        Ok(Response::new(Box::pin(stream)))
+    }
+}
+
+/// Convenience wrapper: serves a single [`MockPermissionsService`] and
+/// returns its address.
+pub async fn spawn_permissions_server(mock: MockPermissionsService) -> SocketAddr {
+    let router = Server::builder().add_service(PermissionsServiceServer::new(mock));
+    spawn_server(router).await
+}
+
+/// Server-streaming response type shared by the mock's paginating RPCs.
+type ProtoResponseStream<T> = Pin<Box<dyn Stream<Item = Result<T, Status>> + Send>>;
+
+/// A configurable mock implementation of SpiceDB's `PermissionsService`.
+///
+/// Only the four RPCs exercised by `tests/read_stream_test.rs`
+/// (`ReadRelationships`, `LookupResources`, `LookupSubjects`,
+/// `ExportBulkRelationships`) have real behavior; the rest of the trait is
+/// `unimplemented!()` since nothing in this harness calls them.
+///
+/// The paginating RPCs (`read_relationships`, `lookup_resources`,
+/// `export_bulk_relationships`) are configured with a *queue of pages*: each
+/// incoming request pops and streams the next page in the queue, and the
+/// server-side call count is tracked so tests can prove the client only
+/// issues a second request after the first page has been fully drained (i.e.
+/// that pagination is real and lazy, not a client-side illusion over a
+/// single buffered fetch).
+pub struct MockPermissionsService {
+    read_relationships_pages: Mutex<VecDeque<Vec<proto::ReadRelationshipsResponse>>>,
+    read_relationships_calls: Arc<AtomicUsize>,
+    read_relationships_cursors: Arc<Mutex<Vec<Option<proto::Cursor>>>>,
+
+    lookup_resources_pages: Mutex<VecDeque<Vec<proto::LookupResourcesResponse>>>,
+    lookup_resources_calls: Arc<AtomicUsize>,
+    lookup_resources_cursors: Arc<Mutex<Vec<Option<proto::Cursor>>>>,
+
+    lookup_subjects_responses: Mutex<Vec<proto::LookupSubjectsResponse>>,
+    lookup_subjects_calls: Arc<AtomicUsize>,
+
+    export_relationships_pages: Mutex<VecDeque<Vec<proto::ExportBulkRelationshipsResponse>>>,
+    export_relationships_calls: Arc<AtomicUsize>,
+    export_relationships_cursors: Arc<Mutex<Vec<Option<proto::Cursor>>>>,
+}
+
+impl MockPermissionsService {
+    /// Creates an empty mock. Configure it with the `push_*`/`with_*` methods
+    /// below before handing it to [`spawn_permissions_server`].
+    pub fn new() -> Self {
+        Self {
+            read_relationships_pages: Mutex::new(VecDeque::new()),
+            read_relationships_calls: Arc::new(AtomicUsize::new(0)),
+            read_relationships_cursors: Arc::new(Mutex::new(Vec::new())),
+
+            lookup_resources_pages: Mutex::new(VecDeque::new()),
+            lookup_resources_calls: Arc::new(AtomicUsize::new(0)),
+            lookup_resources_cursors: Arc::new(Mutex::new(Vec::new())),
+
+            lookup_subjects_responses: Mutex::new(Vec::new()),
+            lookup_subjects_calls: Arc::new(AtomicUsize::new(0)),
+
+            export_relationships_pages: Mutex::new(VecDeque::new()),
+            export_relationships_calls: Arc::new(AtomicUsize::new(0)),
+            export_relationships_cursors: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    /// Queues one page (i.e. one `ReadRelationships` server call's worth) of
+    /// responses. Pages are popped and streamed in the order they were
+    /// pushed.
+    pub fn push_read_relationships_page(&self, page: Vec<proto::ReadRelationshipsResponse>) {
+        self.read_relationships_pages
+            .lock()
+            .unwrap()
+            .push_back(page);
+    }
+
+    /// Returns a live handle to the `ReadRelationships` call counter. Grab
+    /// this *before* moving the mock into [`spawn_permissions_server`].
+    pub fn read_relationships_calls(&self) -> Arc<AtomicUsize> {
+        self.read_relationships_calls.clone()
+    }
+
+    /// Returns a live handle to the cursors received on each
+    /// `ReadRelationships` call, in call order.
+    pub fn read_relationships_cursors(&self) -> Arc<Mutex<Vec<Option<proto::Cursor>>>> {
+        self.read_relationships_cursors.clone()
+    }
+
+    /// Queues one page of `LookupResources` responses.
+    pub fn push_lookup_resources_page(&self, page: Vec<proto::LookupResourcesResponse>) {
+        self.lookup_resources_pages.lock().unwrap().push_back(page);
+    }
+
+    /// Returns a live handle to the `LookupResources` call counter.
+    pub fn lookup_resources_calls(&self) -> Arc<AtomicUsize> {
+        self.lookup_resources_calls.clone()
+    }
+
+    /// Returns a live handle to the cursors received on each
+    /// `LookupResources` call, in call order.
+    pub fn lookup_resources_cursors(&self) -> Arc<Mutex<Vec<Option<proto::Cursor>>>> {
+        self.lookup_resources_cursors.clone()
+    }
+
+    /// Sets the single, fixed set of `LookupSubjects` responses (no
+    /// pagination exists for this RPC).
+    pub fn set_lookup_subjects_responses(&self, responses: Vec<proto::LookupSubjectsResponse>) {
+        *self.lookup_subjects_responses.lock().unwrap() = responses;
+    }
+
+    /// Returns a live handle to the `LookupSubjects` call counter.
+    pub fn lookup_subjects_calls(&self) -> Arc<AtomicUsize> {
+        self.lookup_subjects_calls.clone()
+    }
+
+    /// Queues one page of `ExportBulkRelationships` responses (a page may
+    /// itself be split across multiple streamed messages).
+    pub fn push_export_relationships_page(
+        &self,
+        page: Vec<proto::ExportBulkRelationshipsResponse>,
+    ) {
+        self.export_relationships_pages
+            .lock()
+            .unwrap()
+            .push_back(page);
+    }
+
+    /// Returns a live handle to the `ExportBulkRelationships` call counter.
+    pub fn export_relationships_calls(&self) -> Arc<AtomicUsize> {
+        self.export_relationships_calls.clone()
+    }
+
+    /// Returns a live handle to the cursors received on each
+    /// `ExportBulkRelationships` call, in call order.
+    pub fn export_relationships_cursors(&self) -> Arc<Mutex<Vec<Option<proto::Cursor>>>> {
+        self.export_relationships_cursors.clone()
+    }
+}
+
+impl Default for MockPermissionsService {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[tonic::async_trait]
+impl PermissionsService for MockPermissionsService {
+    type ReadRelationshipsStream = ProtoResponseStream<proto::ReadRelationshipsResponse>;
+
+    async fn read_relationships(
+        &self,
+        request: Request<proto::ReadRelationshipsRequest>,
+    ) -> Result<Response<Self::ReadRelationshipsStream>, Status> {
+        self.read_relationships_calls.fetch_add(1, Ordering::SeqCst);
+        self.read_relationships_cursors
+            .lock()
+            .unwrap()
+            .push(request.into_inner().optional_cursor);
+        let page = self
+            .read_relationships_pages
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or_default();
+        let stream = async_stream::stream! {
+            for resp in page {
+                yield Ok(resp);
+            }
+        };
+        Ok(Response::new(Box::pin(stream)))
+    }
+
+    async fn write_relationships(
+        &self,
+        _request: Request<proto::WriteRelationshipsRequest>,
+    ) -> Result<Response<proto::WriteRelationshipsResponse>, Status> {
+        unimplemented!("not exercised by the read-stream behavioral tests")
+    }
+
+    async fn delete_relationships(
+        &self,
+        _request: Request<proto::DeleteRelationshipsRequest>,
+    ) -> Result<Response<proto::DeleteRelationshipsResponse>, Status> {
+        unimplemented!("not exercised by the read-stream behavioral tests")
+    }
+
+    async fn check_permission(
+        &self,
+        _request: Request<proto::CheckPermissionRequest>,
+    ) -> Result<Response<proto::CheckPermissionResponse>, Status> {
+        unimplemented!("not exercised by the read-stream behavioral tests")
+    }
+
+    async fn check_bulk_permissions(
+        &self,
+        _request: Request<proto::CheckBulkPermissionsRequest>,
+    ) -> Result<Response<proto::CheckBulkPermissionsResponse>, Status> {
+        unimplemented!("not exercised by the read-stream behavioral tests")
+    }
+
+    async fn expand_permission_tree(
+        &self,
+        _request: Request<proto::ExpandPermissionTreeRequest>,
+    ) -> Result<Response<proto::ExpandPermissionTreeResponse>, Status> {
+        unimplemented!("not exercised by the read-stream behavioral tests")
+    }
+
+    type LookupResourcesStream = ProtoResponseStream<proto::LookupResourcesResponse>;
+
+    async fn lookup_resources(
+        &self,
+        request: Request<proto::LookupResourcesRequest>,
+    ) -> Result<Response<Self::LookupResourcesStream>, Status> {
+        self.lookup_resources_calls.fetch_add(1, Ordering::SeqCst);
+        self.lookup_resources_cursors
+            .lock()
+            .unwrap()
+            .push(request.into_inner().optional_cursor);
+        let page = self
+            .lookup_resources_pages
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or_default();
+        let stream = async_stream::stream! {
+            for resp in page {
+                yield Ok(resp);
+            }
+        };
+        Ok(Response::new(Box::pin(stream)))
+    }
+
+    type LookupSubjectsStream = ProtoResponseStream<proto::LookupSubjectsResponse>;
+
+    async fn lookup_subjects(
+        &self,
+        _request: Request<proto::LookupSubjectsRequest>,
+    ) -> Result<Response<Self::LookupSubjectsStream>, Status> {
+        self.lookup_subjects_calls.fetch_add(1, Ordering::SeqCst);
+        let responses = self.lookup_subjects_responses.lock().unwrap().clone();
+        let stream = async_stream::stream! {
+            for resp in responses {
+                yield Ok(resp);
+            }
+        };
+        Ok(Response::new(Box::pin(stream)))
+    }
+
+    async fn import_bulk_relationships(
+        &self,
+        _request: Request<tonic::Streaming<proto::ImportBulkRelationshipsRequest>>,
+    ) -> Result<Response<proto::ImportBulkRelationshipsResponse>, Status> {
+        unimplemented!("not exercised by the read-stream behavioral tests")
+    }
+
+    type ExportBulkRelationshipsStream =
+        ProtoResponseStream<proto::ExportBulkRelationshipsResponse>;
+
+    async fn export_bulk_relationships(
+        &self,
+        request: Request<proto::ExportBulkRelationshipsRequest>,
+    ) -> Result<Response<Self::ExportBulkRelationshipsStream>, Status> {
+        self.export_relationships_calls
+            .fetch_add(1, Ordering::SeqCst);
+        self.export_relationships_cursors
+            .lock()
+            .unwrap()
+            .push(request.into_inner().optional_cursor);
+        let page = self
+            .export_relationships_pages
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or_default();
+        let stream = async_stream::stream! {
+            for resp in page {
+                yield Ok(resp);
             }
         };
         Ok(Response::new(Box::pin(stream)))

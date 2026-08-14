@@ -2,6 +2,7 @@
 //!
 //! Run with: `cargo run --example read_relationships`
 
+use futures::StreamExt;
 use spicedb::client::SpiceDBClient;
 use spicedb::consistency;
 use spicedb::types::{Filter, Relationship, Transaction};
@@ -48,13 +49,14 @@ async fn main() {
         .with_resource_id("firstdoc")
         .with_relation("viewer");
 
-    let relationships = client
-        .read_relationships(&consistency::full(), &filter)
-        .await
-        .expect("read failed");
+    let stream = client.read_relationships(&consistency::full(), &filter);
+    tokio::pin!(stream);
 
-    for rel in &relationships {
+    let mut relationships = Vec::new();
+    while let Some(rel) = stream.next().await {
+        let rel = rel.expect("read failed");
         println!("found relationship: {rel}");
+        relationships.push(rel);
     }
 
     assert!(

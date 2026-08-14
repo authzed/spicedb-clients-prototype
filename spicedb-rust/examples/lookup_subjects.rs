@@ -2,6 +2,7 @@
 //!
 //! Run with: `cargo run --example lookup_subjects`
 
+use futures::StreamExt;
 use spicedb::client::SpiceDBClient;
 use spicedb::consistency;
 use spicedb::types::{Relationship, Transaction};
@@ -44,13 +45,15 @@ async fn main() {
         .expect("write relationships failed");
 
     // Lookup all users who can view firstdoc
-    let subject_ids = client
-        .lookup_subjects(&consistency::full(), "document", "firstdoc", "view", "user")
-        .await
-        .expect("lookup failed");
+    let stream =
+        client.lookup_subjects(&consistency::full(), "document", "firstdoc", "view", "user");
+    tokio::pin!(stream);
 
-    for id in &subject_ids {
+    let mut subject_ids = Vec::new();
+    while let Some(id) = stream.next().await {
+        let id = id.expect("lookup failed");
         println!("user:{id} can view document:firstdoc");
+        subject_ids.push(id);
     }
 
     assert!(

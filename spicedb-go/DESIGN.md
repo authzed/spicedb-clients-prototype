@@ -144,7 +144,6 @@ examples.
 
 ### Performance
 
-- S2 compression by default
 - BulkCheck for all check operations (even single)
 - Transparent cursor-based pagination with sensible default page sizes
 - Batched deletions (10,000-item limit) to avoid server-side timeouts

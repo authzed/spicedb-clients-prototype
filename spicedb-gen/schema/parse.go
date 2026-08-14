@@ -71,7 +71,12 @@ func ParseString(schemaText string) (*Schema, error) {
 		for _, rel := range ns.GetRelation() {
 			if rel.GetUsersetRewrite() != nil {
 				// This is a permission (has a rewrite expression).
-				subjects := collectRewriteSubjects(rel.GetUsersetRewrite(), ns, defMap)
+				// Each top-level permission gets its own fresh visited set: it
+				// tracks the current DFS recursion path (definition+relation) so
+				// that self-referential / mutually-recursive permissions (e.g.
+				// folder-in-folder) terminate instead of recursing forever.
+				visited := make(map[string]bool)
+				subjects := collectRewriteSubjects(rel.GetUsersetRewrite(), ns, defMap, visited)
 				subjects = dedup(subjects)
 				def.Permissions = append(def.Permissions, Permission{
 					Name:              rel.GetName(),
@@ -126,10 +131,16 @@ func extractAllowedSubjects(rel *core.Relation) []SubjectType {
 
 // collectRewriteSubjects walks a UsersetRewrite tree and returns all
 // reachable subject types.
+//
+// visited tracks the (definition, relation) pairs on the current DFS
+// recursion path, so that cyclic references (directly or through arrows)
+// are cut rather than recursed into forever. See subjectsForRelation for
+// where entries are added/removed.
 func collectRewriteSubjects(
 	rewrite *core.UsersetRewrite,
 	currentDef *core.NamespaceDefinition,
 	defMap map[string]*core.NamespaceDefinition,
+	visited map[string]bool,
 ) []SubjectType {
 	if rewrite == nil {
 		return nil
@@ -137,12 +148,12 @@ func collectRewriteSubjects(
 
 	switch {
 	case rewrite.GetUnion() != nil:
-		return collectSetOpSubjects(rewrite.GetUnion(), currentDef, defMap, setOpUnion)
+		return collectSetOpSubjects(rewrite.GetUnion(), currentDef, defMap, setOpUnion, visited)
 	case rewrite.GetIntersection() != nil:
 		// For safety, treat intersection like union for reachability.
-		return collectSetOpSubjects(rewrite.GetIntersection(), currentDef, defMap, setOpUnion)
+		return collectSetOpSubjects(rewrite.GetIntersection(), currentDef, defMap, setOpUnion, visited)
 	case rewrite.GetExclusion() != nil:
-		return collectSetOpSubjects(rewrite.GetExclusion(), currentDef, defMap, setOpExclusion)
+		return collectSetOpSubjects(rewrite.GetExclusion(), currentDef, defMap, setOpExclusion, visited)
 	}
 
 	return nil
@@ -161,11 +172,12 @@ func collectSetOpSubjects(
 	currentDef *core.NamespaceDefinition,
 	defMap map[string]*core.NamespaceDefinition,
 	mode setOpMode,
+	visited map[string]bool,
 ) []SubjectType {
 	var result []SubjectType
 
 	for i, child := range op.GetChild() {
-		childSubjects := collectChildSubjects(child, currentDef, defMap)
+		childSubjects := collectChildSubjects(child, currentDef, defMap, visited)
 		if mode == setOpExclusion && i > 0 {
 			// For exclusion, only the base (first child) contributes reachable subjects.
 			continue
@@ -181,29 +193,30 @@ func collectChildSubjects(
 	child *core.SetOperation_Child,
 	currentDef *core.NamespaceDefinition,
 	defMap map[string]*core.NamespaceDefinition,
+	visited map[string]bool,
 ) []SubjectType {
 	switch {
 	case child.GetComputedUserset() != nil:
 		// References another relation/permission on the same definition.
 		relName := child.GetComputedUserset().GetRelation()
-		return subjectsForRelation(relName, currentDef, defMap)
+		return subjectsForRelation(relName, currentDef, defMap, visited)
 
 	case child.GetTupleToUserset() != nil:
 		// Arrow: tupleset_relation->computed_relation
 		ttu := child.GetTupleToUserset()
 		tuplesetRelName := ttu.GetTupleset().GetRelation()
 		computedRelName := ttu.GetComputedUserset().GetRelation()
-		return subjectsForArrow(tuplesetRelName, computedRelName, currentDef, defMap)
+		return subjectsForArrow(tuplesetRelName, computedRelName, currentDef, defMap, visited)
 
 	case child.GetFunctionedTupleToUserset() != nil:
 		fttu := child.GetFunctionedTupleToUserset()
 		tuplesetRelName := fttu.GetTupleset().GetRelation()
 		computedRelName := fttu.GetComputedUserset().GetRelation()
-		return subjectsForArrow(tuplesetRelName, computedRelName, currentDef, defMap)
+		return subjectsForArrow(tuplesetRelName, computedRelName, currentDef, defMap, visited)
 
 	case child.GetUsersetRewrite() != nil:
 		// Nested rewrite expression.
-		return collectRewriteSubjects(child.GetUsersetRewrite(), currentDef, defMap)
+		return collectRewriteSubjects(child.GetUsersetRewrite(), currentDef, defMap, visited)
 
 	case child.GetXThis() != nil || child.GetXSelf() != nil:
 		// _this / _self references the relation's own allowed direct types.
@@ -216,16 +229,31 @@ func collectChildSubjects(
 
 // subjectsForRelation returns the reachable subjects for a named relation or
 // permission on the given definition.
+//
+// visited is a path-based cycle guard keyed by "defName\x00relName": if this
+// (definition, relation) pair is already on the current recursion path, the
+// traversal is cut and no subjects are contributed from it (a true cycle,
+// e.g. folder.view -> folder.parent->view -> folder.view). The entry is
+// removed via defer once this branch finishes, so a relation reachable via
+// two independent (non-cyclic) branches — a "diamond" — still contributes
+// its subjects on both branches; dedup() collapses the resulting duplicates.
 func subjectsForRelation(
 	relName string,
 	def *core.NamespaceDefinition,
 	defMap map[string]*core.NamespaceDefinition,
+	visited map[string]bool,
 ) []SubjectType {
 	for _, rel := range def.GetRelation() {
 		if rel.GetName() == relName {
 			if rel.GetUsersetRewrite() != nil {
-				// It's a permission — recurse into its rewrite.
-				return collectRewriteSubjects(rel.GetUsersetRewrite(), def, defMap)
+				// It's a permission — recurse into its rewrite, guarding against cycles.
+				key := def.GetName() + "\x00" + relName
+				if visited[key] {
+					return nil // cycle: this relation is already being resolved on the current path
+				}
+				visited[key] = true
+				defer delete(visited, key) // path-based: sibling branches may still traverse it
+				return collectRewriteSubjects(rel.GetUsersetRewrite(), def, defMap, visited)
 			}
 			// It's a relation — return its allowed subjects.
 			return extractAllowedSubjects(rel)
@@ -243,6 +271,7 @@ func subjectsForArrow(
 	computedRelName string,
 	currentDef *core.NamespaceDefinition,
 	defMap map[string]*core.NamespaceDefinition,
+	visited map[string]bool,
 ) []SubjectType {
 	// Find the tupleset relation to get its allowed types.
 	var tuplesetRel *core.Relation
@@ -269,7 +298,7 @@ func subjectsForArrow(
 			continue
 		}
 		// Look up the computed relation on the target definition.
-		subjects := subjectsForRelation(computedRelName, targetDef, defMap)
+		subjects := subjectsForRelation(computedRelName, targetDef, defMap, visited)
 		result = append(result, subjects...)
 	}
 

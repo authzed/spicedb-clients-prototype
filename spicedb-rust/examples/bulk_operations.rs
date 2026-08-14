@@ -97,7 +97,7 @@ async fn main() {
         .map(|i| {
             Relationship::new(
                 "document",
-                &format!("bulk-doc-{i}"),
+                format!("bulk-doc-{i}"),
                 "viewer",
                 "user",
                 "alice",

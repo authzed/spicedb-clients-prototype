@@ -33,7 +33,7 @@ const DEFAULT_CHECK_BATCH_SIZE: usize = 1_000;
 const DEFAULT_IMPORT_BATCH_SIZE: usize = 1_000;
 
 /// Maximum number of retry attempts for transient gRPC errors.
-const MAX_RETRIES: u32 = 5;
+const MAX_RETRIES: u32 = 3;
 
 /// Base delay for exponential backoff (in milliseconds).
 const BASE_RETRY_DELAY_MS: u64 = 100;
@@ -46,7 +46,7 @@ const BASE_RETRY_DELAY_MS: u64 = 100;
 /// Streaming operations return `impl Stream<Item = Result<T, SpiceDBError>>`.
 /// Cursor-based pagination is handled transparently within the client.
 ///
-/// Transient gRPC errors (UNAVAILABLE, DEADLINE_EXCEEDED, RESOURCE_EXHAUSTED)
+/// Transient gRPC errors (UNAVAILABLE, RESOURCE_EXHAUSTED, ABORTED)
 /// are automatically retried with exponential backoff.
 pub struct SpiceDBClient {
     // The proto client holds the gRPC channel and bearer-token interceptor.
@@ -972,13 +972,10 @@ impl SpiceDBClient {
                 token: rev.to_string(),
             });
         }
-        let mut watch = self.proto.watch.clone();
+        let watch = self.proto.watch.clone();
 
         async_stream::try_stream! {
-            let resp_stream = watch
-                .watch(req)
-                .await
-                .map_err(|s| error::from_grpc_status(s.code() as i32, s.message().to_string()))?;
+            let resp_stream = retry_call(|| async { watch.clone().watch(req.clone()).await }).await?;
 
             let mut stream = resp_stream.into_inner();
 
@@ -1126,7 +1123,7 @@ impl SpiceDBClient {
 
     /// Retries a gRPC call with exponential backoff for transient errors.
     ///
-    /// Retries on UNAVAILABLE, DEADLINE_EXCEEDED, and RESOURCE_EXHAUSTED up to
+    /// Retries on UNAVAILABLE, RESOURCE_EXHAUSTED, and ABORTED up to
     /// MAX_RETRIES times with exponentially increasing delays starting at
     /// BASE_RETRY_DELAY_MS.
     async fn retry<F, Fut, T>(&self, f: F) -> Result<tonic::Response<T>, SpiceDBError>
@@ -1144,9 +1141,9 @@ impl SpiceDBClient {
 /// so it can be used from inside `+ 'static` streams (which own a cloned
 /// service client rather than borrowing the `SpiceDBClient`).
 ///
-/// Retries on UNAVAILABLE, DEADLINE_EXCEEDED, and RESOURCE_EXHAUSTED up to
+/// Retries on UNAVAILABLE, RESOURCE_EXHAUSTED, and ABORTED up to
 /// MAX_RETRIES times with exponentially increasing delays starting at
-/// BASE_RETRY_DELAY_MS.
+/// BASE_RETRY_DELAY_MS, capped at 5s per delay.
 pub(crate) async fn retry_call<F, Fut, T>(f: F) -> Result<tonic::Response<T>, SpiceDBError>
 where
     F: Fn() -> Fut,
@@ -1162,7 +1159,7 @@ where
                 if !error::is_transient(&err) || attempt >= MAX_RETRIES {
                     return Err(err);
                 }
-                let delay_ms = BASE_RETRY_DELAY_MS * 2u64.pow(attempt);
+                let delay_ms = (BASE_RETRY_DELAY_MS * 2u64.pow(attempt)).min(5000);
                 tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
                 attempt += 1;
             }
@@ -1323,7 +1320,7 @@ mod tests {
 
     #[test]
     fn test_retry_constants() {
-        assert_eq!(MAX_RETRIES, 5);
+        assert_eq!(MAX_RETRIES, 3);
         assert_eq!(BASE_RETRY_DELAY_MS, 100);
     }
 }

@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Fixes
+
+- **Standardized the retryable gRPC code set to `{UNAVAILABLE, RESOURCE_EXHAUSTED,
+  ABORTED}`**, aligning with the other idiomatic clients. `DEADLINE_EXCEEDED` is no
+  longer treated as transient/retried — a deadline is a caller-set budget, and
+  retrying past it silently extends an operation beyond the time the caller
+  asked for. `ABORTED` (e.g. optimistic-concurrency/transaction conflicts) is
+  now retried, since a retry is usually exactly the right response.
+- **Lowered `MAX_RETRIES` from 5 to 3** (4 total attempts) and **capped the
+  exponential backoff delay at 5s** per retry, so a long run of transient
+  failures no longer produces unbounded per-attempt waits.
+- **`updates()` (watch) now retries transient failures during stream
+  *establishment***, not just during in-stream reads. Previously, if the
+  initial `Watch` call failed with a transient error (e.g. `UNAVAILABLE`),
+  the returned stream immediately yielded that error with no retry. It now
+  retries establishment the same way other RPCs do. (Note:
+  `import_relationships`, a client-streaming RPC, intentionally does not gain
+  retry — retrying after a partial send would risk re-sending data.)
+
 ### Breaking changes
 
 - **`updates()` (watch) is now a real `Stream`.** It changed from

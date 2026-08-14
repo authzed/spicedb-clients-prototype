@@ -143,8 +143,8 @@ relationships are deleted. Returns the final revision.
 
 ### Auto-Retry
 
-Exponential backoff for transient gRPC errors (UNAVAILABLE, DEADLINE_EXCEEDED,
-RESOURCE_EXHAUSTED).
+Exponential backoff for transient gRPC errors (UNAVAILABLE, RESOURCE_EXHAUSTED,
+ABORTED).
 
 ### Performance
 

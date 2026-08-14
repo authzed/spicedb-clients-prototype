@@ -82,9 +82,17 @@ type WatchResponseStream = Pin<Box<dyn Stream<Item = Result<proto::WatchResponse
 /// them — emulating a live, open-ended watch. That is precisely the condition
 /// that proves the client yields updates incrementally instead of buffering
 /// until the stream closes (which, for a live watch, is never).
+///
+/// `fail_establish_times` lets a test simulate transient failures *during
+/// stream establishment* (the initial `Watch` call returning `Err` before any
+/// stream is returned): the first N calls return the given `Status`, and the
+/// (N+1)th call succeeds and streams `responses` as usual.
 pub struct MockWatchService {
     responses: Vec<proto::WatchResponse>,
     keep_open: bool,
+    fail_establish_times: usize,
+    fail_establish_status: Status,
+    establish_calls: Arc<AtomicUsize>,
 }
 
 impl MockWatchService {
@@ -96,7 +104,26 @@ impl MockWatchService {
         Self {
             responses,
             keep_open,
+            fail_establish_times: 0,
+            fail_establish_status: Status::unavailable("unused"),
+            establish_calls: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    /// Makes the first `times` `Watch` calls fail immediately with `status`
+    /// (i.e. establishment fails, no stream is returned); the call after that
+    /// succeeds and streams `responses` as usual.
+    pub fn fail_establish_times(mut self, times: usize, status: Status) -> Self {
+        self.fail_establish_times = times;
+        self.fail_establish_status = status;
+        self
+    }
+
+    /// Returns a live handle to the number of `Watch` establishment attempts
+    /// received so far (including failed ones). Grab this *before* moving the
+    /// mock into [`spawn_watch_server`].
+    pub fn establish_calls(&self) -> Arc<AtomicUsize> {
+        self.establish_calls.clone()
     }
 }
 
@@ -108,6 +135,11 @@ impl WatchService for MockWatchService {
         &self,
         _request: Request<proto::WatchRequest>,
     ) -> Result<Response<Self::WatchStream>, Status> {
+        let call_index = self.establish_calls.fetch_add(1, Ordering::SeqCst);
+        if call_index < self.fail_establish_times {
+            return Err(self.fail_establish_status.clone());
+        }
+
         let responses = self.responses.clone();
         let keep_open = self.keep_open;
         let stream = async_stream::stream! {

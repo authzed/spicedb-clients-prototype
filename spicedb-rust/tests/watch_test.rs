@@ -10,12 +10,14 @@
 
 mod support;
 
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use futures::StreamExt;
 use spicedb::client::SpiceDBClient;
 use spicedb::types::UpdateOperation;
 use spicedb_proto::authzed::api::v1 as proto;
+use tonic::Status;
 
 use support::{spawn_watch_server, MockWatchService};
 
@@ -45,7 +47,10 @@ fn rel_proto(
     }
 }
 
-fn watch_response(op: proto::relationship_update::Operation, rel: proto::Relationship) -> proto::WatchResponse {
+fn watch_response(
+    op: proto::relationship_update::Operation,
+    rel: proto::Relationship,
+) -> proto::WatchResponse {
     proto::WatchResponse {
         updates: vec![proto::RelationshipUpdate {
             operation: op as i32,
@@ -102,4 +107,41 @@ async fn updates_yields_incrementally_while_stream_stays_open() {
         .expect("second item should be Ok(Update)");
     assert_eq!(second.operation, UpdateOperation::Delete);
     assert_eq!(second.relationship.subject_id, "bob");
+}
+
+#[tokio::test]
+async fn updates_retries_transient_establishment_failures() {
+    // The mock fails the first two `Watch` establishment attempts with
+    // UNAVAILABLE (transient), then succeeds on the third and streams one
+    // update. This proves `updates()` retries stream *establishment*, not
+    // just in-stream message reads.
+    let responses = vec![watch_response(
+        proto::relationship_update::Operation::Touch,
+        rel_proto("document", "readme", "viewer", "user", "carol"),
+    )];
+    let mock = MockWatchService::new(responses, /* keep_open */ false)
+        .fail_establish_times(2, Status::unavailable("mock transient failure"));
+    let establish_calls = mock.establish_calls();
+    let addr = spawn_watch_server(mock).await;
+
+    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
+        .await
+        .expect("client should connect to mock server");
+
+    let object_types: Vec<String> = Vec::new();
+    let stream = client.updates(&object_types, None);
+    tokio::pin!(stream);
+
+    // The retry backoff (100ms, 200ms) means this can take a few hundred ms;
+    // a 5s timeout is generous.
+    let first = tokio::time::timeout(Duration::from_secs(5), stream.next())
+        .await
+        .expect("update should eventually arrive after establishment retries")
+        .expect("stream should yield an item")
+        .expect("item should be Ok(Update)");
+    assert_eq!(first.operation, UpdateOperation::Touch);
+    assert_eq!(first.relationship.subject_id, "carol");
+
+    // Three establishment attempts: two failures + one success.
+    assert_eq!(establish_calls.load(Ordering::SeqCst), 3);
 }

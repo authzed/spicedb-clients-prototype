@@ -19,6 +19,8 @@ use crate::types::{
     SchemaDiff, SchemaPermission, SchemaRelation, Transaction, Update, UpdateOperation,
 };
 
+use futures::Stream;
+
 use spicedb_proto::authzed::api::v1 as proto;
 use spicedb_proto::SpiceDBProtoClient;
 
@@ -882,13 +884,35 @@ impl SpiceDBClient {
     /// Returns a stream of relationship changes from SpiceDB's watch API,
     /// starting from the given revision.
     ///
+    /// Watch is an open-ended server stream: updates are yielded incrementally,
+    /// as they occur, and the stream stays open indefinitely (until the caller
+    /// drops it or the connection fails). Consume it with
+    /// [`StreamExt::next`](futures::StreamExt::next):
+    ///
+    /// ```no_run
+    /// # use futures::StreamExt;
+    /// # async fn demo(client: spicedb::client::SpiceDBClient) -> Result<(), spicedb::error::SpiceDBError> {
+    /// let object_types = vec!["document".to_string()];
+    /// let stream = client.updates(&object_types, None);
+    /// tokio::pin!(stream);
+    /// while let Some(update) = stream.next().await {
+    ///     let update = update?;
+    ///     // handle update.operation / update.relationship
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
     /// Each yielded [`Update`] contains the operation (create/touch/delete)
     /// and the affected relationship.
-    pub async fn updates(
+    pub fn updates(
         &self,
         object_types: &[String],
         start_revision: Option<&str>,
-    ) -> Result<Vec<Update>, SpiceDBError> {
+    ) -> impl Stream<Item = Result<Update, SpiceDBError>> + 'static {
+        // Build the request and clone the watch client up front so the returned
+        // stream owns everything it needs and borrows nothing from `self` or the
+        // arguments (it is therefore `'static`).
         let mut req = proto::WatchRequest {
             optional_object_types: object_types.to_vec(),
             optional_relationship_filters: Vec::new(),
@@ -900,46 +924,43 @@ impl SpiceDBClient {
                 token: rev.to_string(),
             });
         }
+        let mut watch = self.proto.watch.clone();
 
-        let resp_stream = self
-            .proto
-            .watch
-            .clone()
-            .watch(req)
-            .await
-            .map_err(|s| error::from_grpc_status(s.code() as i32, s.message().to_string()))?;
+        async_stream::try_stream! {
+            let resp_stream = watch
+                .watch(req)
+                .await
+                .map_err(|s| error::from_grpc_status(s.code() as i32, s.message().to_string()))?;
 
-        let mut stream = resp_stream.into_inner();
-        let mut results = Vec::new();
+            let mut stream = resp_stream.into_inner();
 
-        while let Some(resp) = stream
-            .message()
-            .await
-            .map_err(|s| error::from_grpc_status(s.code() as i32, s.message().to_string()))?
-        {
-            for update in &resp.updates {
-                let operation = match update.operation {
-                    x if x == proto::relationship_update::Operation::Create as i32 => {
-                        UpdateOperation::Create
+            while let Some(resp) = stream
+                .message()
+                .await
+                .map_err(|s| error::from_grpc_status(s.code() as i32, s.message().to_string()))?
+            {
+                for update in &resp.updates {
+                    let operation = match update.operation {
+                        x if x == proto::relationship_update::Operation::Create as i32 => {
+                            UpdateOperation::Create
+                        }
+                        x if x == proto::relationship_update::Operation::Touch as i32 => {
+                            UpdateOperation::Touch
+                        }
+                        x if x == proto::relationship_update::Operation::Delete as i32 => {
+                            UpdateOperation::Delete
+                        }
+                        _ => continue,
+                    };
+                    if let Some(rel) = &update.relationship {
+                        yield Update {
+                            operation,
+                            relationship: Relationship::from_proto(rel),
+                        };
                     }
-                    x if x == proto::relationship_update::Operation::Touch as i32 => {
-                        UpdateOperation::Touch
-                    }
-                    x if x == proto::relationship_update::Operation::Delete as i32 => {
-                        UpdateOperation::Delete
-                    }
-                    _ => continue,
-                };
-                if let Some(rel) = &update.relationship {
-                    results.push(Update {
-                        operation,
-                        relationship: Relationship::from_proto(rel),
-                    });
                 }
             }
         }
-
-        Ok(results)
     }
 
     // -----------------------------------------------------------------------

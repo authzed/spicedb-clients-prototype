@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+### Breaking changes
+
+- **`updates()` (watch) is now a real `Stream`.** It changed from
+  `async fn updates(...) -> Result<Vec<Update>, SpiceDBError>` to
+  `fn updates(...) -> impl Stream<Item = Result<Update, SpiceDBError>>`. The old
+  signature collected the entire server stream into a `Vec` and only returned
+  once the stream ended — but watch is open-ended, so on a live watch it hung
+  forever. Updates are now yielded incrementally as they occur. Consume the
+  stream with `futures::StreamExt::next` (pin it first, e.g. `tokio::pin!`):
+
+  ```rust
+  use futures::StreamExt;
+  let stream = client.updates(&object_types, None);
+  tokio::pin!(stream);
+  while let Some(update) = stream.next().await {
+      let update = update?;
+      // ...
+  }
+  ```
+
 ## 0.1.0 (2026-03-18)
 
 Initial release of the idiomatic Rust SpiceDB client.

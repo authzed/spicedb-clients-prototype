@@ -22,8 +22,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Collect all unique parent directories for include paths
     let include_dirs: Vec<_> = vec![proto_dir.to_path_buf()];
 
+    // Build both client and server stubs. The server stubs are required so
+    // that the idiomatic clients can stand up in-process mock gRPC servers in
+    // their test suites (e.g. a mock WatchService to exercise streaming).
     tonic_build::configure()
-        .build_server(false)
+        .build_server(true)
         .compile_protos(&proto_files, &include_dirs)?;
 
     Ok(())

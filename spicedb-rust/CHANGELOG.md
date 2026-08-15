@@ -131,6 +131,40 @@
   }
   ```
 
+- **`expand_permission_tree` now returns the full native `PermissionTree`,
+  not just a revision.** Previously `ExpandResult` had only a `revision`
+  field — the server's tree of intermediate (union/intersection/exclusion)
+  and leaf (subject) nodes was discarded (a `// TODO: When spicedb-proto
+  types are available` stub from the initial release). `ExpandResult` gained
+  a `tree: PermissionTree` field; `PermissionTree` is a recursive, proto-free
+  native type:
+
+  ```rust
+  // Before:
+  // struct ExpandResult { revision: String }
+
+  // After:
+  // struct ExpandResult { tree: PermissionTree, revision: String }
+
+  let result = client
+      .expand_permission_tree(&consistency, "document", "doc1", "view")
+      .await?;
+
+  fn walk(tree: &spicedb::types::PermissionTree) {
+      if let Some(leaf) = &tree.leaf {
+          for subject in &leaf.subjects {
+              println!("{}:{}", subject.subject_type, subject.subject_id);
+          }
+      }
+      if let Some(intermediate) = &tree.intermediate {
+          for child in &intermediate.children {
+              walk(child);
+          }
+      }
+  }
+  walk(&result.tree);
+  ```
+
 ## 0.1.0 (2026-03-18)
 
 Initial release of the idiomatic Rust SpiceDB client.

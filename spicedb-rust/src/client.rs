@@ -14,11 +14,12 @@
 use crate::consistency::Strategy;
 use crate::error::{self, SpiceDBError};
 use crate::types::{
-    partial_caveat_from_proto, permissionship_from_proto, resolved_subject_from_proto, CheckResult,
-    CountResult, DeleteOptions, ExpandResult, Filter, LookupResource, LookupSubject,
-    Permissionship, Precondition, PreconditionOperation, ReflectSchemaResult, RelationReference,
-    Relationship, ResolvedSubject, SchemaCaveat, SchemaCaveatParameter, SchemaDefinition,
-    SchemaDiff, SchemaPermission, SchemaRelation, Transaction, Update, UpdateOperation,
+    partial_caveat_from_proto, permission_tree_from_proto, permissionship_from_proto,
+    resolved_subject_from_proto, CheckResult, CountResult, DeleteOptions, ExpandResult, Filter,
+    LookupResource, LookupSubject, Permissionship, Precondition, PreconditionOperation,
+    ReflectSchemaResult, RelationReference, Relationship, ResolvedSubject, SchemaCaveat,
+    SchemaCaveatParameter, SchemaDefinition, SchemaDiff, SchemaPermission, SchemaRelation,
+    Transaction, Update, UpdateOperation,
 };
 
 use futures::Stream;
@@ -879,8 +880,9 @@ impl SpiceDBClient {
 
         let inner = resp.into_inner();
         let revision = inner.expanded_at.map(|z| z.token).unwrap_or_default();
+        let tree = permission_tree_from_proto(inner.tree_root.as_ref());
 
-        Ok(ExpandResult { revision })
+        Ok(ExpandResult { tree, revision })
     }
 
     // -----------------------------------------------------------------------

@@ -228,6 +228,9 @@ ABORTED).
 
 **Expand:**
 - `expand_permission_tree(&self, cs, resource_type, resource_id, permission) -> Result<ExpandResult, SpiceDBError>`
+  -- `ExpandResult.tree` is the native `PermissionTree` root (no proto types leaked); walk
+  `PermissionTree.intermediate`/`PermissionTree.leaf` (exactly one is `Some`) to reach the
+  resolved `SubjectRef`s
 
 **Bulk:**
 - `import_relationships(&self, rels) -> Result<u64, SpiceDBError>`
@@ -267,7 +270,11 @@ ABORTED).
 - `SchemaDefinition`, `SchemaRelation`, `SchemaPermission`
 - `SchemaCaveat`, `SchemaCaveatParameter`
 - `ReflectSchemaResult`, `RelationReference`, `SchemaDiff`
-- `ExpandResult`, `CountResult`
+- `ExpandResult` (`tree: PermissionTree`, `revision`), `PermissionTree` (`expanded_object: ObjectRef`,
+  `expanded_relation`, `intermediate: Option<IntermediateNode>`, `leaf: Option<LeafNode>`),
+  `IntermediateNode` (`operation: TreeOperation`, `children: Vec<PermissionTree>`), `LeafNode`
+  (`subjects: Vec<SubjectRef>`), `TreeOperation`, `ObjectRef`, `SubjectRef`
+- `CountResult`
 
 ### `error` module
 
@@ -290,6 +297,7 @@ ABORTED).
 | `schema_management/` | Reading and writing schema |
 | `bulk_operations/` | Bulk checks and imports |
 | `schema_reflection/` | Schema reflection, computable permissions, dependent relations, diff |
+| `expand_permission_tree/` | Expanding a permission tree and walking the native `PermissionTree` |
 | `relationship_counters/` | Registering, reading, and unregistering relationship counters |
 
 ## Changelog

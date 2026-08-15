@@ -642,13 +642,144 @@ pub struct SchemaDiff {
     pub caveat_name: String,
 }
 
+/// Identifies an object (resource or subject) by type and ID.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ObjectRef {
+    pub object_type: String,
+    pub object_id: String,
+}
+
+/// The algebraic set operation combining an [`IntermediateNode`]'s children.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TreeOperation {
+    Unspecified,
+    Union,
+    Intersection,
+    Exclusion,
+}
+
+/// A subject with access at a leaf of the permission tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubjectRef {
+    pub subject_type: String,
+    pub subject_id: String,
+    /// Empty if the subject reference has no sub-relation.
+    pub subject_relation: String,
+}
+
+/// Combines child subtrees with a [`TreeOperation`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IntermediateNode {
+    pub operation: TreeOperation,
+    pub children: Vec<PermissionTree>,
+}
+
+/// Holds the concrete subjects at a leaf of the permission tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeafNode {
+    pub subjects: Vec<SubjectRef>,
+}
+
+/// A native node of an expanded permission tree, as returned by
+/// [`SpiceDBClient::expand_permission_tree`](crate::client::SpiceDBClient::expand_permission_tree).
+///
+/// Exactly one of `intermediate` or `leaf` is `Some`: `intermediate` nodes
+/// represent a set operation (union, intersection, exclusion) over child
+/// subtrees, while `leaf` nodes hold the concrete resolved subjects.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PermissionTree {
+    pub expanded_object: ObjectRef,
+    pub expanded_relation: String,
+    pub intermediate: Option<IntermediateNode>,
+    pub leaf: Option<LeafNode>,
+}
+
+/// Maps the proto `AlgebraicSubjectSet.Operation` enum (represented as `i32`
+/// by prost) to its native equivalent. Unrecognized values map to
+/// `TreeOperation::Unspecified`.
+pub(crate) fn tree_operation_from_proto(v: i32) -> TreeOperation {
+    match v {
+        x if x == proto::algebraic_subject_set::Operation::Union as i32 => TreeOperation::Union,
+        x if x == proto::algebraic_subject_set::Operation::Intersection as i32 => {
+            TreeOperation::Intersection
+        }
+        x if x == proto::algebraic_subject_set::Operation::Exclusion as i32 => {
+            TreeOperation::Exclusion
+        }
+        _ => TreeOperation::Unspecified,
+    }
+}
+
+/// Recursively maps a proto `PermissionRelationshipTree` to its native
+/// representation. `None` maps to a zero-value `PermissionTree`.
+pub(crate) fn permission_tree_from_proto(
+    t: Option<&proto::PermissionRelationshipTree>,
+) -> PermissionTree {
+    let Some(t) = t else {
+        return PermissionTree::default();
+    };
+
+    let expanded_object = t
+        .expanded_object
+        .as_ref()
+        .map(|o| ObjectRef {
+            object_type: o.object_type.clone(),
+            object_id: o.object_id.clone(),
+        })
+        .unwrap_or_default();
+
+    let mut tree = PermissionTree {
+        expanded_object,
+        expanded_relation: t.expanded_relation.clone(),
+        intermediate: None,
+        leaf: None,
+    };
+
+    match &t.tree_type {
+        Some(proto::permission_relationship_tree::TreeType::Intermediate(intermediate)) => {
+            let children = intermediate
+                .children
+                .iter()
+                .map(|child| permission_tree_from_proto(Some(child)))
+                .collect();
+            tree.intermediate = Some(IntermediateNode {
+                operation: tree_operation_from_proto(intermediate.operation),
+                children,
+            });
+        }
+        Some(proto::permission_relationship_tree::TreeType::Leaf(leaf)) => {
+            let subjects = leaf
+                .subjects
+                .iter()
+                .map(|subject| SubjectRef {
+                    subject_type: subject
+                        .object
+                        .as_ref()
+                        .map(|o| o.object_type.clone())
+                        .unwrap_or_default(),
+                    subject_id: subject
+                        .object
+                        .as_ref()
+                        .map(|o| o.object_id.clone())
+                        .unwrap_or_default(),
+                    subject_relation: subject.optional_relation.clone(),
+                })
+                .collect();
+            tree.leaf = Some(LeafNode { subjects });
+        }
+        None => {}
+    }
+
+    tree
+}
+
 /// The result of an expand permission tree call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExpandResult {
+    /// The root of the expanded permission tree.
+    pub tree: PermissionTree,
     /// The revision at which the tree was expanded.
     pub revision: String,
-    // TODO: When spicedb-proto types are available, add:
-    // pub tree_root: proto::PermissionRelationshipTree,
 }
 
 /// The result of a relationship count operation.
@@ -1159,5 +1290,117 @@ mod tests {
         assert_eq!(subject.subject_id, "alice");
         assert_eq!(subject.permissionship, Permissionship::HasPermission);
         assert_eq!(subject.partial_caveat, None);
+    }
+
+    #[test]
+    fn test_tree_operation_from_proto() {
+        assert_eq!(
+            tree_operation_from_proto(proto::algebraic_subject_set::Operation::Unspecified as i32),
+            TreeOperation::Unspecified
+        );
+        assert_eq!(
+            tree_operation_from_proto(proto::algebraic_subject_set::Operation::Union as i32),
+            TreeOperation::Union
+        );
+        assert_eq!(
+            tree_operation_from_proto(proto::algebraic_subject_set::Operation::Intersection as i32),
+            TreeOperation::Intersection
+        );
+        assert_eq!(
+            tree_operation_from_proto(proto::algebraic_subject_set::Operation::Exclusion as i32),
+            TreeOperation::Exclusion
+        );
+        // Unrecognized values fail safe to Unspecified rather than panicking.
+        assert_eq!(tree_operation_from_proto(99), TreeOperation::Unspecified);
+    }
+
+    #[test]
+    fn test_permission_tree_from_proto_none_yields_zero_value() {
+        let tree = permission_tree_from_proto(None);
+        assert_eq!(tree.expanded_object, ObjectRef::default());
+        assert_eq!(tree.expanded_relation, "");
+        assert!(tree.intermediate.is_none());
+        assert!(tree.leaf.is_none());
+    }
+
+    #[test]
+    fn test_permission_tree_from_proto_leaf() {
+        let proto_tree = proto::PermissionRelationshipTree {
+            expanded_object: Some(proto::ObjectReference {
+                object_type: "document".to_string(),
+                object_id: "firstdoc".to_string(),
+            }),
+            expanded_relation: "viewer".to_string(),
+            tree_type: Some(proto::permission_relationship_tree::TreeType::Leaf(
+                proto::DirectSubjectSet {
+                    subjects: vec![proto::SubjectReference {
+                        object: Some(proto::ObjectReference {
+                            object_type: "user".to_string(),
+                            object_id: "alice".to_string(),
+                        }),
+                        optional_relation: String::new(),
+                    }],
+                },
+            )),
+        };
+
+        let tree = permission_tree_from_proto(Some(&proto_tree));
+        assert_eq!(tree.expanded_object.object_type, "document");
+        assert_eq!(tree.expanded_object.object_id, "firstdoc");
+        assert_eq!(tree.expanded_relation, "viewer");
+        assert!(tree.intermediate.is_none());
+        let leaf = tree.leaf.expect("expected a leaf node");
+        assert_eq!(leaf.subjects.len(), 1);
+        assert_eq!(leaf.subjects[0].subject_type, "user");
+        assert_eq!(leaf.subjects[0].subject_id, "alice");
+        assert_eq!(leaf.subjects[0].subject_relation, "");
+    }
+
+    #[test]
+    fn test_permission_tree_from_proto_intermediate_recurses() {
+        let leaf_tree = proto::PermissionRelationshipTree {
+            expanded_object: Some(proto::ObjectReference {
+                object_type: "document".to_string(),
+                object_id: "firstdoc".to_string(),
+            }),
+            expanded_relation: "editor".to_string(),
+            tree_type: Some(proto::permission_relationship_tree::TreeType::Leaf(
+                proto::DirectSubjectSet {
+                    subjects: vec![proto::SubjectReference {
+                        object: Some(proto::ObjectReference {
+                            object_type: "user".to_string(),
+                            object_id: "bob".to_string(),
+                        }),
+                        optional_relation: String::new(),
+                    }],
+                },
+            )),
+        };
+
+        let proto_tree = proto::PermissionRelationshipTree {
+            expanded_object: Some(proto::ObjectReference {
+                object_type: "document".to_string(),
+                object_id: "firstdoc".to_string(),
+            }),
+            expanded_relation: "view".to_string(),
+            tree_type: Some(proto::permission_relationship_tree::TreeType::Intermediate(
+                proto::AlgebraicSubjectSet {
+                    operation: proto::algebraic_subject_set::Operation::Union as i32,
+                    children: vec![leaf_tree],
+                },
+            )),
+        };
+
+        let tree = permission_tree_from_proto(Some(&proto_tree));
+        assert_eq!(tree.expanded_relation, "view");
+        assert!(tree.leaf.is_none());
+        let intermediate = tree.intermediate.expect("expected an intermediate node");
+        assert_eq!(intermediate.operation, TreeOperation::Union);
+        assert_eq!(intermediate.children.len(), 1);
+        let child_leaf = intermediate.children[0]
+            .leaf
+            .as_ref()
+            .expect("expected child to be a leaf");
+        assert_eq!(child_leaf.subjects[0].subject_id, "bob");
     }
 }

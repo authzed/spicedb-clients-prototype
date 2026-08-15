@@ -4,10 +4,6 @@
 
 ```ts
 
-import { Consistency as Consistency_2 } from '@spicedb/proto';
-import { Precondition } from '@spicedb/proto';
-import { RelationshipUpdate } from '@spicedb/proto';
-
 // @public
 export class AlreadyExistsError extends SpiceDBError {
     constructor(message: string, options?: ErrorOptions);
@@ -57,10 +53,6 @@ export interface ComputablePermissionsParams {
 
 // @public
 export class Consistency {
-    // @internal (undocumented)
-    _toProto(): Consistency_2;
-    // @internal (undocumented)
-    static _wrap(proto: Consistency_2): Consistency;
 }
 
 // @public
@@ -422,15 +414,9 @@ export interface SubjectRef {
 export class Transaction {
     create(rel: Relationship): this;
     delete(rel: Relationship): this;
-    // @internal (undocumented)
-    metadata?: Record<string, unknown>;
     mustMatch(filter: RelationshipFilterOptions): this;
     mustNotMatch(filter: RelationshipFilterOptions): this;
-    // @internal (undocumented)
-    readonly preconditions: Precondition[];
     touch(rel: Relationship): this;
-    // @internal (undocumented)
-    readonly updates: RelationshipUpdate[];
     withMetadata(meta: Record<string, unknown>): this;
 }
 

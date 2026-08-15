@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Fixed
+
+- **2026-08-14**: Enabled `stripInternal` in `tsconfig.json` so `@internal`-tagged
+  members are actually removed from the shipped `.d.ts` (previously `@internal`
+  JSDoc had no emit effect on its own). `Consistency._toProto()`/`_wrap()` and
+  `Transaction.updates`/`preconditions`/`metadata` — along with their
+  `@spicedb/proto` type imports — no longer appear in `dist/consistency.d.ts`
+  or `dist/types.d.ts`. No public API change; these members were never
+  intended to be public.
+
 ### Breaking Changes
 
 - **2026-08-14**: Removed `@bufbuild/protobuf`'s `JsonObject` from the public

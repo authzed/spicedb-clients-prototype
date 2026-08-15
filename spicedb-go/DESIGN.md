@@ -225,9 +225,10 @@ See package sections above for the complete API manifest.
 | `lookup_subjects/` | Finding subjects with access to a resource |
 | `watch_changes/` | Watching for relationship changes |
 | `schema_management/` | Reading and writing schema |
-| `bulk_operations/` | Bulk checks and imports |
+| `bulk_operations/` | Bulk checks, batch writes, and bulk import/export |
 | `schema_reflection/` | Schema reflection, computable permissions, dependent relations, diff |
 | `relationship_counters/` | Registering, reading, and unregistering relationship counters |
+| `expand_permission_tree/` | Expanding a permission into its tree of subjects with ExpandPermissionTree |
 
 ## Changelog
 

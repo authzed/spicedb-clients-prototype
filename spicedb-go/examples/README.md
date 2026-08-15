@@ -26,4 +26,5 @@ Or use `mage test` which starts a SpiceDB container automatically.
 | `lookup_subjects/` | Subject lookup |
 | `watch_changes/` | Watching for changes |
 | `schema_management/` | Schema read/write |
-| `bulk_operations/` | Bulk checks and imports |
+| `bulk_operations/` | Bulk checks, batch writes, and bulk import/export |
+| `expand_permission_tree/` | Expanding a permission into its tree of subjects |

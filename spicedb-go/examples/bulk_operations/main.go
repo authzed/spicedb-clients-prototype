@@ -1,10 +1,12 @@
-// Example bulk_operations demonstrates bulk checks and batch writes.
+// Example bulk_operations demonstrates bulk checks, batch writes, and bulk
+// import/export of relationships.
 package main
 
 import (
 	"context"
 	"fmt"
 	"log"
+	"slices"
 
 	"github.com/authzed/spicedb-clients/spicedb-go/client"
 	"github.com/authzed/spicedb-clients/spicedb-go/consistency"
@@ -85,5 +87,36 @@ definition document {
 	fmt.Printf("any user can view: %v\n", anyAllowed)
 	if !anyAllowed {
 		log.Fatalf("expected at least one user to have view permission")
+	}
+
+	// Bulk import relationships. ImportRelationships streams relationships
+	// from an iter.Seq, batching them automatically.
+	imported := []rel.Relationship{
+		rel.MustFromTriple("document", "bulkdoc1", "viewer", "user", "dave", ""),
+		rel.MustFromTriple("document", "bulkdoc2", "viewer", "user", "erin", ""),
+		rel.MustFromTriple("document", "bulkdoc3", "viewer", "user", "frank", ""),
+	}
+	numLoaded, err := c.ImportRelationships(ctx, slices.Values(imported))
+	if err != nil {
+		log.Fatalf("import relationships failed: %v", err)
+	}
+	fmt.Printf("imported %d relationships\n", numLoaded)
+	if numLoaded != uint64(len(imported)) {
+		log.Fatalf("expected %d relationships imported, got %d", len(imported), numLoaded)
+	}
+
+	// Bulk export relationships. ExportRelationships returns an iterator that
+	// transparently pages through all matching relationships.
+	exportFilter := rel.NewFilter("document").WithResourceIDPrefix("bulkdoc")
+	exportCount := 0
+	for r, err := range c.ExportRelationships(ctx, consistency.Full(), &exportFilter) {
+		if err != nil {
+			log.Fatalf("export relationships failed: %v", err)
+		}
+		fmt.Printf("exported relationship: %s\n", r.String())
+		exportCount++
+	}
+	if exportCount != len(imported) {
+		log.Fatalf("expected %d exported relationships, got %d", len(imported), exportCount)
 	}
 }

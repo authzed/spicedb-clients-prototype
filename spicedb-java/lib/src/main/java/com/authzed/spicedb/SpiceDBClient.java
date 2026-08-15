@@ -41,7 +41,7 @@ public final class SpiceDBClient implements AutoCloseable {
   private static final int DEFAULT_IMPORT_BATCH_SIZE = 1_000;
   private static final int DEFAULT_EXPORT_PAGE_SIZE = 512;
 
-  private static final int MAX_RETRIES = 3;
+  private static final int MAX_RETRIES = 4;
   private static final long INITIAL_BACKOFF_MS = 100;
 
   private final ManagedChannel channel;

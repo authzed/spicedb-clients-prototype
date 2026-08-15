@@ -216,15 +216,34 @@ module SpiceDB
     end
 
     # Deletes all relationships matching the given filter. Large result sets
-    # are automatically paged in batches of 10,000.
+    # are automatically paged in batches of 10,000 (override with `limit:`).
+    #
+    # `must_match:`/`must_not_match:` add preconditions that guard the
+    # delete: if a precondition fails, the server rejects that call and
+    # deletes nothing for it. Preconditions are a per-request proto field,
+    # so when a delete spans multiple pages (i.e. more matches than the
+    # limit), they are re-evaluated by the server on every page — there is
+    # no "check-once, apply-to-all-pages" semantics. This means a delete
+    # that starts successfully can still fail partway through if the
+    # guarded state changes between pages, after earlier pages have
+    # already been deleted. For a single-shot, all-or-nothing guarded
+    # delete, pair the precondition with a `limit:` large enough to cover
+    # every matching relationship in one call.
     #
     # @param filter [SpiceDB::Filter]
+    # @param must_match [Array<SpiceDB::Filter>] preconditions that must each match at least one relationship
+    # @param must_not_match [Array<SpiceDB::Filter>] preconditions that must each match no relationships
+    # @param limit [Integer, nil] overrides the default per-request page size (10,000)
     # @return [String] the revision of the final deletion
-    def delete_relationships(filter)
+    def delete_relationships(filter, must_match: [], must_not_match: [], limit: nil)
+      preconditions = must_match.map { |f| { operation: :must_match, filter: f } } +
+                      must_not_match.map { |f| { operation: :must_not_match, filter: f } }
+      page_size = limit || DEFAULT_DELETE_PAGE_SIZE
+
       revision = nil
       loop do
         rev, complete = with_retry do
-          call_delete_relationships(filter, DEFAULT_DELETE_PAGE_SIZE)
+          call_delete_relationships(filter, page_size, preconditions)
         end
         revision = rev
         break if complete
@@ -603,6 +622,20 @@ module SpiceDB
       must_not_match: :OPERATION_MUST_NOT_MATCH
     }.freeze
 
+    # Builds Authzed::Api::V1::Precondition protos from an array of
+    # {operation:, filter:} hashes (the shape used by both
+    # SpiceDB::Transaction#preconditions and delete_relationships'
+    # must_match:/must_not_match: kwargs).
+    def build_preconditions(preconditions)
+      preconditions.map do |pc|
+        op = Authzed::Api::V1::Precondition::Operation.const_get(PRECONDITION_MAP[pc[:operation]])
+        Authzed::Api::V1::Precondition.new(
+          operation: op,
+          filter: filter_to_proto(pc[:filter])
+        )
+      end
+    end
+
     # --- Proto client call implementations ---
 
     def call_bulk_check(consistency, items)
@@ -647,13 +680,7 @@ module SpiceDB
         )
       end
 
-      preconditions = transaction.preconditions.map do |pc|
-        op = Authzed::Api::V1::Precondition::Operation.const_get(PRECONDITION_MAP[pc[:operation]])
-        Authzed::Api::V1::Precondition.new(
-          operation: op,
-          filter: filter_to_proto(pc[:filter])
-        )
-      end
+      preconditions = build_preconditions(transaction.preconditions)
 
       req_args = { updates: updates }
       req_args[:optional_preconditions] = preconditions unless preconditions.empty?
@@ -688,10 +715,11 @@ module SpiceDB
       [relationships, new_cursor, count]
     end
 
-    def call_delete_relationships(filter, page_size)
+    def call_delete_relationships(filter, page_size, preconditions = [])
       resp = @proto_client.permissions.delete_relationships(
         Authzed::Api::V1::DeleteRelationshipsRequest.new(
           relationship_filter: filter_to_proto(filter),
+          optional_preconditions: build_preconditions(preconditions),
           optional_limit: page_size,
           optional_allow_partial_deletions: true
         )

@@ -31,6 +31,7 @@ bundle exec rspec check_permission/check_permission_spec.rb
 |-----------|-------------|
 | `check_permission/` | Basic permission check with `check_permission` |
 | `write_relationships/` | Writing relationships with transaction builder |
+| `delete_relationships/` | Deleting relationships, including guarded deletes with `must_match:`/`must_not_match:` and `limit:` |
 | `read_relationships/` | Reading relationships with enumerator |
 | `lookup_resources/` | Finding resources a subject can access |
 | `lookup_subjects/` | Finding subjects with access to a resource |

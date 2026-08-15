@@ -156,8 +156,22 @@ revision = client.write(txn)
 ### Deletions
 
 `delete_relationships` automatically pages through large result sets using a
-limit of 10,000 per RPC call. It repeats until the server reports all matching
-relationships are deleted. Returns the final revision.
+limit of 10,000 per RPC call (override with `limit:`). It repeats until the
+server reports all matching relationships are deleted. Returns the final
+revision.
+
+Optional `must_match:`/`must_not_match:` keyword args add preconditions that
+guard the delete, mirroring `Transaction#must_match`/`#must_not_match`:
+
+```ruby
+client.delete_relationships(filter, must_match: [guard_filter])
+client.delete_relationships(filter, must_not_match: [guard_filter], limit: 500)
+```
+
+Preconditions are a per-request proto field, so a delete spanning multiple
+auto-paged calls re-evaluates them on every page rather than checking once
+for the whole operation — pair a precondition with a `limit:` large enough
+to cover every match in one call for all-or-nothing semantics.
 
 ### Error Handling
 
@@ -186,7 +200,7 @@ Automatic retry with exponential backoff for transient gRPC errors
 **Relationships:**
 - `write(transaction)` → `String` (revision)
 - `read_relationships(consistency, filter)` → `Enumerator<Relationship>`
-- `delete_relationships(filter)` → `String` (revision)
+- `delete_relationships(filter, must_match: [], must_not_match: [], limit: nil)` → `String` (revision)
 
 **Lookups:**
 - `lookup_resources(consistency, resource_type, permission, subject_type, subject_id)` → `Enumerator<LookupResource>`

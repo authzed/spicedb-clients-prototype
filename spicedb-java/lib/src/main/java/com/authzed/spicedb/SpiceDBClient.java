@@ -3,9 +3,11 @@ package com.authzed.spicedb;
 import build.buf.gen.authzed.api.v1.*;
 import com.authzed.spicedb.errors.ErrorMapper;
 import com.authzed.spicedb.errors.SpiceDBException;
+import io.grpc.Context;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import io.grpc.Metadata;
+import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.stub.MetadataUtils;
 import io.grpc.stub.StreamObserver;
@@ -274,6 +276,7 @@ public final class SpiceDBClient implements AutoCloseable {
       String permission,
       String subjectType,
       String subjectID) {
+    Context.CancellableContext cancelCtx = Context.current().withCancellation();
     Iterator<String> iterator =
         new Iterator<>() {
           private Cursor cursor = null;
@@ -319,7 +322,13 @@ public final class SpiceDBClient implements AutoCloseable {
             }
 
             var responses = new ArrayList<LookupResourcesResponse>();
-            var serverStream = withRetry(() -> permissionsStub.lookupResources(reqBuilder.build()));
+            Iterator<LookupResourcesResponse> serverStream;
+            Context previous = cancelCtx.attach();
+            try {
+              serverStream = withRetry(() -> permissionsStub.lookupResources(reqBuilder.build()));
+            } finally {
+              cancelCtx.detach(previous);
+            }
             mapStreamErrors(
                 () -> {
                   serverStream.forEachRemaining(responses::add);
@@ -337,8 +346,10 @@ public final class SpiceDBClient implements AutoCloseable {
           }
         };
 
-    return StreamSupport.stream(
-        Spliterators.spliteratorUnknownSize(iterator, Spliterator.ORDERED), false);
+    return cancelOnClose(
+        StreamSupport.stream(
+            Spliterators.spliteratorUnknownSize(iterator, Spliterator.ORDERED), false),
+        cancelCtx);
   }
 
   /**
@@ -667,6 +678,7 @@ public final class SpiceDBClient implements AutoCloseable {
    * <p>The returned stream should be closed when done.
    */
   public Stream<Relationship> exportRelationships(Consistency consistency, Filter filter) {
+    Context.CancellableContext cancelCtx = Context.current().withCancellation();
     Iterator<Relationship> iterator =
         new Iterator<>() {
           private Cursor cursor = null;
@@ -704,8 +716,14 @@ public final class SpiceDBClient implements AutoCloseable {
               reqBuilder.setOptionalCursor(cursor);
             }
 
-            var serverStream =
-                withRetry(() -> permissionsStub.exportBulkRelationships(reqBuilder.build()));
+            Iterator<ExportBulkRelationshipsResponse> serverStream;
+            Context previous = cancelCtx.attach();
+            try {
+              serverStream =
+                  withRetry(() -> permissionsStub.exportBulkRelationships(reqBuilder.build()));
+            } finally {
+              cancelCtx.detach(previous);
+            }
 
             int pageCount = 0;
             while (mapStreamErrors(serverStream::hasNext)) {
@@ -723,8 +741,10 @@ public final class SpiceDBClient implements AutoCloseable {
           }
         };
 
-    return StreamSupport.stream(
-        Spliterators.spliteratorUnknownSize(iterator, Spliterator.ORDERED), false);
+    return cancelOnClose(
+        StreamSupport.stream(
+            Spliterators.spliteratorUnknownSize(iterator, Spliterator.ORDERED), false),
+        cancelCtx);
   }
 
   // -----------------------------------------------------------------------
@@ -756,7 +776,14 @@ public final class SpiceDBClient implements AutoCloseable {
       reqBuilder.setOptionalStartCursor(ZedToken.newBuilder().setToken(startRevision).build());
     }
 
-    var serverStream = withRetry(() -> watchStub.watch(reqBuilder.build()));
+    Context.CancellableContext cancelCtx = Context.current().withCancellation();
+    Iterator<WatchResponse> serverStream;
+    Context previous = cancelCtx.attach();
+    try {
+      serverStream = withRetry(() -> watchStub.watch(reqBuilder.build()));
+    } finally {
+      cancelCtx.detach(previous);
+    }
 
     Iterator<Update> iterator =
         new Iterator<>() {
@@ -780,8 +807,10 @@ public final class SpiceDBClient implements AutoCloseable {
           }
         };
 
-    return StreamSupport.stream(
-        Spliterators.spliteratorUnknownSize(iterator, Spliterator.ORDERED), false);
+    return cancelOnClose(
+        StreamSupport.stream(
+            Spliterators.spliteratorUnknownSize(iterator, Spliterator.ORDERED), false),
+        cancelCtx);
   }
 
   // -----------------------------------------------------------------------
@@ -893,6 +922,20 @@ public final class SpiceDBClient implements AutoCloseable {
     }
   }
 
+  /**
+   * Registers an {@code onClose} handler that cancels {@code cancelCtx} (and, transitively, any
+   * gRPC call bound to it) when the returned stream is closed. Used by the lazy streaming methods
+   * to make {@code close()} actually cancel the underlying server-streaming call, rather than
+   * leaving it open server-side.
+   */
+  private static <T> Stream<T> cancelOnClose(
+      Stream<T> stream, Context.CancellableContext cancelCtx) {
+    return stream.onClose(
+        () ->
+            cancelCtx.cancel(
+                Status.CANCELLED.withDescription("stream closed by caller").asRuntimeException()));
+  }
+
   private <T> T withRetry(RetryableCall<T> call) {
     long backoff = INITIAL_BACKOFF_MS;
     for (int attempt = 0; attempt < MAX_RETRIES; attempt++) {
@@ -916,6 +959,7 @@ public final class SpiceDBClient implements AutoCloseable {
 
   private Stream<Relationship> paginatedRelationshipStream(
       Consistency consistency, Filter filter, int pageSize) {
+    Context.CancellableContext cancelCtx = Context.current().withCancellation();
     Iterator<Relationship> iterator =
         new Iterator<>() {
           private Cursor cursor = null;
@@ -951,8 +995,13 @@ public final class SpiceDBClient implements AutoCloseable {
               reqBuilder.setOptionalCursor(cursor);
             }
 
-            var serverStream =
-                withRetry(() -> permissionsStub.readRelationships(reqBuilder.build()));
+            Iterator<ReadRelationshipsResponse> serverStream;
+            Context previous = cancelCtx.attach();
+            try {
+              serverStream = withRetry(() -> permissionsStub.readRelationships(reqBuilder.build()));
+            } finally {
+              cancelCtx.detach(previous);
+            }
 
             while (mapStreamErrors(serverStream::hasNext)) {
               ReadRelationshipsResponse resp = mapStreamErrors(serverStream::next);
@@ -966,8 +1015,10 @@ public final class SpiceDBClient implements AutoCloseable {
           }
         };
 
-    return StreamSupport.stream(
-        Spliterators.spliteratorUnknownSize(iterator, Spliterator.ORDERED), false);
+    return cancelOnClose(
+        StreamSupport.stream(
+            Spliterators.spliteratorUnknownSize(iterator, Spliterator.ORDERED), false),
+        cancelCtx);
   }
 
   private static CheckBulkPermissionsRequestItem checkItemFromRel(

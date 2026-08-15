@@ -135,8 +135,8 @@ func TestReadRelationships_StreamErrorIsMappedToNativeError(t *testing.T) {
 	require.NoError(t, err)
 
 	var (
-		gotErr   error
-		yields   int
+		gotErr error
+		yields int
 	)
 	for _, iterErr := range c.ReadRelationships(context.Background(), consistency.MinLatency(), rel.NewFilter("document")) {
 		yields++

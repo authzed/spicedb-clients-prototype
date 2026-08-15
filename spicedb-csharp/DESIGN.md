@@ -148,7 +148,7 @@ re-fetches pages using the `AfterResultCursor` from each response.
 | `LookupResourcesAsync` | 512 | cursor-based auto-pagination |
 | `LookupSubjectsAsync` | — | no cursor support in SpiceDB yet; single streaming call |
 | `ExportRelationshipsAsync` | 512 | cursor-based auto-pagination |
-| `DeleteRelationshipsAsync` | 10,000 | auto-repeats until all matched rels deleted |
+| `DeleteRelationshipsAsync` | 1,000 | auto-repeats until all matched rels deleted; matches SpiceDB's default `--max-delete-relationships-limit` |
 | `ImportRelationshipsAsync` | 1,000 | batches into client-streaming sends |
 | `UpdatesAsync` | — | server-streaming, no pagination needed |
 
@@ -200,9 +200,11 @@ populate the non-deprecated `subject`/`excluded_subjects` fields.
 
 - `DeleteRelationshipsAsync(filter, mustMatch?, mustNotMatch?, limit?)` → `Task<string>` (revision)
 
-Automatically pages through large result sets using a limit of 10,000 per RPC
-call (override with `limit`). Repeats until the server reports all matching
-relationships are deleted.
+Automatically pages through large result sets using a limit of 1,000 per RPC
+call (override with `limit`; matches SpiceDB's default
+`--max-delete-relationships-limit`, so the default works against a stock
+server). Repeats until the server reports all matching relationships are
+deleted.
 
 Optional parameters reach the proto fields that were previously unreachable —
 `optional_preconditions` and `optional_limit`:
@@ -212,7 +214,7 @@ var revision = await client.DeleteRelationshipsAsync(
     filter,
     mustMatch: [guardFilter],       // MUST_MATCH precondition
     mustNotMatch: [otherFilter],    // MUST_NOT_MATCH precondition
-    limit: 1000);                   // override the 10,000 default page size
+    limit: 500);                    // override the 1,000 default page size
 ```
 
 `mustMatch`/`mustNotMatch` build a `Precondition` from a `Filter` via the
@@ -226,7 +228,7 @@ still fail partway through if the guarded state changes between pages, after
 earlier pages were already deleted. For a single-shot, all-or-nothing guarded
 delete, pair a precondition with `limit` set high enough to cover every
 matching relationship in one call. No optional parameters given means
-unchanged default behavior: no preconditions, 10,000-item page size, partial
+unchanged default behavior: no preconditions, 1,000-item page size, partial
 deletions allowed (so auto-paging keeps working).
 
 ### Schema

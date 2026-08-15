@@ -31,7 +31,7 @@ use spicedb_proto::SpiceDBProtoClient;
 const DEFAULT_READ_PAGE_SIZE: u32 = 512;
 const DEFAULT_LOOKUP_PAGE_SIZE: u32 = 512;
 const DEFAULT_EXPORT_PAGE_SIZE: u32 = 512;
-const DEFAULT_DELETE_PAGE_SIZE: u32 = 10_000;
+const DEFAULT_DELETE_PAGE_SIZE: u32 = 1_000;
 const DEFAULT_CHECK_BATCH_SIZE: usize = 1_000;
 const DEFAULT_IMPORT_BATCH_SIZE: usize = 1_000;
 
@@ -365,7 +365,7 @@ impl SpiceDBClient {
 
     /// Deletes all relationships matching the given filter.
     ///
-    /// Large result sets are automatically paged in batches of 10,000. Repeats
+    /// Large result sets are automatically paged in batches of 1,000. Repeats
     /// until the server reports all matching relationships are deleted.
     ///
     /// Returns the revision of the final deletion.
@@ -383,7 +383,7 @@ impl SpiceDBClient {
     /// Deletes all relationships matching the given filter, guarded by
     /// optional preconditions and/or an overridden page size.
     ///
-    /// Large result sets are automatically paged — in batches of 10,000, or
+    /// Large result sets are automatically paged — in batches of 1,000, or
     /// [`DeleteOptions::limit`] if set. Repeats until the server reports all
     /// matching relationships are deleted. Returns the revision of the final
     /// deletion.
@@ -1403,7 +1403,7 @@ mod tests {
         assert_eq!(DEFAULT_READ_PAGE_SIZE, 512);
         assert_eq!(DEFAULT_LOOKUP_PAGE_SIZE, 512);
         assert_eq!(DEFAULT_EXPORT_PAGE_SIZE, 512);
-        assert_eq!(DEFAULT_DELETE_PAGE_SIZE, 10_000);
+        assert_eq!(DEFAULT_DELETE_PAGE_SIZE, 1_000);
         assert_eq!(DEFAULT_CHECK_BATCH_SIZE, 1_000);
         assert_eq!(DEFAULT_IMPORT_BATCH_SIZE, 1_000);
     }

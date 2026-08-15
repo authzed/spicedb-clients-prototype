@@ -12,7 +12,7 @@ import (
 
 const (
 	defaultReadPageSize   = 512
-	defaultDeletePageSize = 10_000
+	defaultDeletePageSize = 1_000
 )
 
 // Write commits a transaction of relationship mutations to SpiceDB, returning
@@ -111,7 +111,7 @@ func WithDeleteMustNotMatch(filter rel.Filter) DeleteOption {
 	}
 }
 
-// WithDeleteLimit overrides the default per-request page size (10,000) used
+// WithDeleteLimit overrides the default per-request page size (1,000) used
 // by DeleteRelationships' auto-paging loop.
 func WithDeleteLimit(n uint32) DeleteOption {
 	return func(o *deleteOptions) {
@@ -120,7 +120,7 @@ func WithDeleteLimit(n uint32) DeleteOption {
 }
 
 // DeleteRelationships deletes all relationships matching the given filter.
-// Large result sets are automatically paged in batches of 10,000 (override
+// Large result sets are automatically paged in batches of 1,000 (override
 // with WithDeleteLimit). Returns the revision of the final deletion.
 //
 // WithDeleteMustMatch/WithDeleteMustNotMatch add preconditions that guard

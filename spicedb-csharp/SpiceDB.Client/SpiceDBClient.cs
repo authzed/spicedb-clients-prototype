@@ -20,7 +20,7 @@ namespace SpiceDB.Client;
 public sealed class SpiceDBClient : IAsyncDisposable
 {
     private const int DefaultReadPageSize = 512;
-    private const int DefaultDeletePageSize = 10_000;
+    private const int DefaultDeletePageSize = 1_000;
     private const int DefaultLookupPageSize = 512;
     private const int DefaultImportBatchSize = 1_000;
     private const int DefaultExportPageSize = 512;
@@ -334,7 +334,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
 
     /// <summary>
     /// Deletes all relationships matching the given filter. Large result sets
-    /// are automatically paged in batches of 10,000 (override with
+    /// are automatically paged in batches of 1,000 (override with
     /// <paramref name="limit"/>). Returns the revision of the final deletion.
     /// <para>
     /// <paramref name="mustMatch"/>/<paramref name="mustNotMatch"/> add
@@ -355,7 +355,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
     /// <c>WithDeleteMustNotMatch</c>/<c>WithDeleteLimit</c>
     /// (client/relationships.go). Additive — existing
     /// <c>DeleteRelationshipsAsync(filter)</c> calls are unaffected: no
-    /// preconditions, 10,000-item page size, partial deletions allowed, same
+    /// preconditions, 1,000-item page size, partial deletions allowed, same
     /// as before.
     /// </para>
     /// </summary>

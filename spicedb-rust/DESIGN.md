@@ -109,7 +109,7 @@ response. Default page sizes use sensible defaults:
 | `lookup_resources` | 512 | cursor-based auto-pagination |
 | `lookup_subjects` | -- | no cursor support in SpiceDB yet; single streaming call |
 | `export_relationships` | 512 | cursor-based auto-pagination |
-| `delete_relationships` | 10,000 | auto-repeats until all matched rels deleted |
+| `delete_relationships` | 1,000 | auto-repeats until all matched rels deleted; matches SpiceDB's default `--max-delete-relationships-limit` |
 | `import_relationships` | 1,000 | batches into client-streaming sends |
 
 `lookup_resources` and `lookup_subjects` yield native result structs (`LookupResource` /
@@ -135,8 +135,10 @@ let revision = client.write(&txn).await?;
 ### Deletions
 
 `delete_relationships` automatically pages through large result sets using a
-limit of 10,000 per RPC call. It repeats until the server reports all matching
-relationships are deleted. Returns the final revision.
+limit of 1,000 per RPC call (matches SpiceDB's default
+`--max-delete-relationships-limit`, so the default works against a stock
+server). It repeats until the server reports all matching relationships are
+deleted. Returns the final revision.
 
 `delete_relationships_with(filter, &options)` adds optional preconditions and
 a page-size override via a `DeleteOptions` builder:
@@ -145,7 +147,7 @@ a page-size override via a `DeleteOptions` builder:
 let options = DeleteOptions::new()
     .with_must_match(filter_that_must_exist)
     .with_must_not_match(filter_that_must_not_exist)
-    .with_limit(1_000);
+    .with_limit(500);
 let revision = client.delete_relationships_with(&filter, &options).await?;
 ```
 
@@ -177,7 +179,7 @@ ABORTED).
 
 - BulkCheck for all check operations (even single)
 - Transparent cursor-based pagination with sensible default page sizes
-- Batched deletions (10,000-item limit) to avoid server-side timeouts
+- Batched deletions (1,000-item limit, matching SpiceDB's default `--max-delete-relationships-limit`) to avoid server-side timeouts
 - 1,000-item batching for import operations
 
 ### Dependencies

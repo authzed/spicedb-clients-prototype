@@ -58,7 +58,7 @@ class DeleteRelationshipsOptionsTest {
       assertEquals(1, service.captured.size());
       DeleteRelationshipsRequest req = service.captured.get(0);
       assertEquals(0, req.getOptionalPreconditionsCount());
-      assertEquals(10_000, req.getOptionalLimit());
+      assertEquals(1_000, req.getOptionalLimit());
       assertTrue(req.getOptionalAllowPartialDeletions());
       assertEquals("document", req.getRelationshipFilter().getResourceType());
       assertEquals("doc1", req.getRelationshipFilter().getOptionalResourceId());
@@ -75,7 +75,7 @@ class DeleteRelationshipsOptionsTest {
       assertEquals("rev-1", revision);
       DeleteRelationshipsRequest req = service.captured.get(0);
       assertEquals(0, req.getOptionalPreconditionsCount());
-      assertEquals(10_000, req.getOptionalLimit());
+      assertEquals(1_000, req.getOptionalLimit());
       assertTrue(req.getOptionalAllowPartialDeletions());
     }
   }

@@ -46,7 +46,7 @@ RSpec.describe 'DeleteRelationships' do
     end.to raise_error(SpiceDB::FailedPreconditionError)
   end
 
-  it 'overrides the default 10,000-per-call page size with limit:' do
+  it 'overrides the default 1,000-per-call page size with limit:' do
     owner_filter = SpiceDB::Filter.new(resource_type: 'document').with_resource_id('firstdoc').with_relation('owner')
 
     revision = client.delete_relationships(owner_filter, limit: 1)

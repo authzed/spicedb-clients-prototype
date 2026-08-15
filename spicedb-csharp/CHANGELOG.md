@@ -21,12 +21,12 @@
   `mustNotMatch`/`limit` parameters, reaching the proto's
   `optional_preconditions` and `optional_limit` fields that were previously
   unset by the client. Additive — existing `client.DeleteRelationshipsAsync(filter)`
-  calls are unaffected (no preconditions, 10,000-item page size, partial
+  calls are unaffected (no preconditions, 1,000-item page size, partial
   deletions allowed, same as before). `mustMatch`/`mustNotMatch` add
   MUST_MATCH/MUST_NOT_MATCH preconditions (built the same way as
   `Transaction.MustMatch`/`MustNotMatch`, via the shared internal
   `Transaction.BuildPrecondition` helper) that guard the delete, rejecting it
-  if unsatisfied; `limit` overrides the default 10,000-per-call page size.
+  if unsatisfied; `limit` overrides the default 1,000-per-call page size.
   Mirrors `spicedb-go`'s `WithDeleteMustMatch`/`WithDeleteMustNotMatch`/
   `WithDeleteLimit` (`client/relationships.go`) — see `DESIGN.md`
   ("Deletions") for the semantics of combining preconditions with
@@ -98,6 +98,8 @@
   ```
 
 ### Fixed
+
+- **2026-08-15**: `DefaultDeletePageSize` (the default `DeleteRelationshipsAsync` page size) is now 1,000, not 10,000. SpiceDB's default `--max-delete-relationships-limit` is 1,000, so a default (no explicit `limit`) `DeleteRelationshipsAsync` call against a stock server previously failed with `provided limit 10000 is greater than maximum allowed of 1000`. No API shape change — only the default value sent when `limit` isn't supplied.
 
 - **2026-08-14**: Streaming/bulk methods (`ReadRelationshipsAsync`,
   `LookupResourcesAsync`, `LookupSubjectsAsync`, `ExportRelationshipsAsync`,

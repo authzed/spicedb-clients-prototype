@@ -18,7 +18,7 @@ use support::{spawn_permissions_server, MockPermissionsService};
 
 /// Default per-request page size used by `delete_relationships`'s auto-paging
 /// loop (mirrors the client's internal `DEFAULT_DELETE_PAGE_SIZE`).
-const DEFAULT_DELETE_PAGE_SIZE: u32 = 10_000;
+const DEFAULT_DELETE_PAGE_SIZE: u32 = 1_000;
 
 fn complete_response(token: &str) -> proto::DeleteRelationshipsResponse {
     proto::DeleteRelationshipsResponse {

@@ -69,7 +69,7 @@ definition document {
 	}
 	fmt.Printf("guarded delete correctly rejected: %v\n", err)
 
-	// WithDeleteLimit overrides the default 10,000-per-call page size used by
+	// WithDeleteLimit overrides the default 1,000-per-call page size used by
 	// DeleteRelationships' auto-paging loop.
 	revision, err = c.DeleteRelationships(ctx, ownerFilter, client.WithDeleteLimit(1))
 	if err != nil {

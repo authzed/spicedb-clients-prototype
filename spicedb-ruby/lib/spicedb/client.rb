@@ -48,7 +48,7 @@ module SpiceDB
     DEFAULT_READ_PAGE_SIZE   = 512
     DEFAULT_LOOKUP_PAGE_SIZE = 512
     DEFAULT_EXPORT_PAGE_SIZE = 512
-    DEFAULT_DELETE_PAGE_SIZE = 10_000
+    DEFAULT_DELETE_PAGE_SIZE = 1_000
     DEFAULT_IMPORT_BATCH_SIZE = 1_000
     DEFAULT_CHECK_BATCH_SIZE = 1_000
 
@@ -216,7 +216,7 @@ module SpiceDB
     end
 
     # Deletes all relationships matching the given filter. Large result sets
-    # are automatically paged in batches of 10,000 (override with `limit:`).
+    # are automatically paged in batches of 1,000 (override with `limit:`).
     #
     # `must_match:`/`must_not_match:` add preconditions that guard the
     # delete: if a precondition fails, the server rejects that call and
@@ -233,7 +233,7 @@ module SpiceDB
     # @param filter [SpiceDB::Filter]
     # @param must_match [Array<SpiceDB::Filter>] preconditions that must each match at least one relationship
     # @param must_not_match [Array<SpiceDB::Filter>] preconditions that must each match no relationships
-    # @param limit [Integer, nil] overrides the default per-request page size (10,000)
+    # @param limit [Integer, nil] overrides the default per-request page size (1,000)
     # @return [String] the revision of the final deletion
     def delete_relationships(filter, must_match: [], must_not_match: [], limit: nil)
       preconditions = must_match.map { |f| { operation: :must_match, filter: f } } +

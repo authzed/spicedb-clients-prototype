@@ -3,7 +3,7 @@
 // and `optional_limit` fields. Mirrors spicedb-go's `WithDeleteMustMatch`/
 // `WithDeleteMustNotMatch`/`WithDeleteLimit` (client/relationships.go) —
 // preconditions are re-sent on every page of the auto-paging loop, and
-// `limit` overrides the default 10,000-item page size while auto-paging
+// `limit` overrides the default 1,000-item page size while auto-paging
 // keeps working (partial deletions stay allowed, same as the no-options
 // default). Uses the Moq'd gRPC client seam also used by
 // StreamingErrorMappingTests/LookupResultTests.
@@ -75,7 +75,7 @@ public class DeleteRelationshipsTests
         revision.Should().Be("rev1");
         captured.Should().HaveCount(1);
         captured[0].OptionalPreconditions.Should().BeEmpty();
-        captured[0].OptionalLimit.Should().Be(10_000u);
+        captured[0].OptionalLimit.Should().Be(1_000u);
         captured[0].OptionalAllowPartialDeletions.Should().BeTrue();
     }
 

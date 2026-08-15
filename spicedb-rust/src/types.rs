@@ -412,7 +412,7 @@ pub enum PreconditionOperation {
 /// [`SpiceDBClient::delete_relationships_with`](crate::client::SpiceDBClient::delete_relationships_with).
 ///
 /// Use [`DeleteOptions::default`] (or [`DeleteOptions::new`]) for no
-/// preconditions and the default page size (10,000), and the builder methods
+/// preconditions and the default page size (1,000), and the builder methods
 /// to add guards:
 ///
 /// ```
@@ -442,7 +442,7 @@ pub struct DeleteOptions {
     /// Filters that must each match no existing relationship for the delete
     /// to proceed.
     pub must_not_match: Vec<Filter>,
-    /// Overrides the default per-request page size (10,000) used by
+    /// Overrides the default per-request page size (1,000) used by
     /// `delete_relationships`'/`delete_relationships_with`'s auto-paging loop.
     pub limit: Option<u32>,
 }
@@ -467,7 +467,7 @@ impl DeleteOptions {
         self
     }
 
-    /// Overrides the default per-request page size (10,000).
+    /// Overrides the default per-request page size (1,000).
     pub fn with_limit(mut self, limit: u32) -> Self {
         self.limit = Some(limit);
         self

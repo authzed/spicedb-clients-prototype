@@ -37,7 +37,7 @@ public final class SpiceDBClient implements AutoCloseable {
 
   private static final int DEFAULT_READ_PAGE_SIZE = 512;
   private static final int DEFAULT_LOOKUP_PAGE_SIZE = 512;
-  private static final int DEFAULT_DELETE_PAGE_SIZE = 10_000;
+  private static final int DEFAULT_DELETE_PAGE_SIZE = 1_000;
   private static final int DEFAULT_IMPORT_BATCH_SIZE = 1_000;
   private static final int DEFAULT_EXPORT_PAGE_SIZE = 512;
 
@@ -245,7 +245,7 @@ public final class SpiceDBClient implements AutoCloseable {
   }
 
   // -----------------------------------------------------------------------
-  // Delete Relationships — auto-paging 10,000-item batches
+  // Delete Relationships — auto-paging 1,000-item batches
   // -----------------------------------------------------------------------
 
   /**
@@ -283,7 +283,7 @@ public final class SpiceDBClient implements AutoCloseable {
     }
 
     /**
-     * No preconditions, default page size (10,000) — identical behavior to {@link
+     * No preconditions, default page size (1,000) — identical behavior to {@link
      * #deleteRelationships(Filter)}.
      */
     public static DeleteOptions none() {
@@ -312,7 +312,7 @@ public final class SpiceDBClient implements AutoCloseable {
       return new DeleteOptions(mustMatch, updated, limit);
     }
 
-    /** Overrides the per-request page size used by the auto-paging delete loop (default 10,000). */
+    /** Overrides the per-request page size used by the auto-paging delete loop (default 1,000). */
     public DeleteOptions withLimit(int limit) {
       return new DeleteOptions(mustMatch, mustNotMatch, limit);
     }
@@ -359,7 +359,7 @@ public final class SpiceDBClient implements AutoCloseable {
 
   /**
    * Deletes all relationships matching the given filter. Large result sets are automatically paged
-   * in batches of 10,000. Returns the revision of the final deletion.
+   * in batches of 1,000. Returns the revision of the final deletion.
    */
   public String deleteRelationships(Filter filter) {
     return deleteRelationships(filter, DeleteOptions.none());

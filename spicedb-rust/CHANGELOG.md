@@ -8,7 +8,7 @@
   Previously `delete_relationships` took only a filter, so the proto
   `optional_preconditions`/`optional_limit` fields were unreachable — there
   was no way to guard a delete on other relationship state, or to override the
-  10,000-item auto-paging page size. `DeleteOptions` is a `Default`-derived
+  1,000-item auto-paging page size. `DeleteOptions` is a `Default`-derived
   builder:
 
   ```rust
@@ -31,7 +31,7 @@
 
 ### Fixes
 
-- **Delete page size correction**: `DEFAULT_DELETE_PAGE_SIZE` is now 10,000 (matching DESIGN.md spec), not 1,000
+- **Delete page size correction**: `DEFAULT_DELETE_PAGE_SIZE` is now 1,000 (matching SpiceDB's default `--max-delete-relationships-limit`, so the default `delete_relationships` call works against a stock server), not 10,000 — the earlier "10,000" correction in this file was itself wrong
 - **Standardized the retryable gRPC code set to `{UNAVAILABLE, RESOURCE_EXHAUSTED,
   ABORTED}`**, aligning with the other idiomatic clients. `DEADLINE_EXCEEDED` is no
   longer treated as transient/retried — a deadline is a caller-set budget, and

@@ -133,7 +133,7 @@ defaults:
 | `lookup_resources` | 512 | cursor-based auto-pagination |
 | `lookup_subjects` | — | single streaming call |
 | `export_relationships` | 512 | cursor-based auto-pagination |
-| `delete_relationships` | 10,000 | auto-repeats until all deleted |
+| `delete_relationships` | 1,000 | auto-repeats until all deleted; matches SpiceDB's default `--max-delete-relationships-limit` |
 | `import_relationships` | 1,000 | batches into streaming sends |
 | `updates` | — | server-streaming, no pagination |
 
@@ -156,9 +156,10 @@ revision = client.write(txn)
 ### Deletions
 
 `delete_relationships` automatically pages through large result sets using a
-limit of 10,000 per RPC call (override with `limit:`). It repeats until the
-server reports all matching relationships are deleted. Returns the final
-revision.
+limit of 1,000 per RPC call (override with `limit:`; matches SpiceDB's
+default `--max-delete-relationships-limit`, so the default works against a
+stock server). It repeats until the server reports all matching
+relationships are deleted. Returns the final revision.
 
 Optional `must_match:`/`must_not_match:` keyword args add preconditions that
 guard the delete, mirroring `Transaction#must_match`/`#must_not_match`:

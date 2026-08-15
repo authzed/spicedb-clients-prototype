@@ -55,6 +55,7 @@
 
 ### Bug Fixes
 
+- **2026-08-15**: `defaultDeletePageSize` (the default `DeleteRelationships` page size) is now 1,000, not 10,000. SpiceDB's default `--max-delete-relationships-limit` is 1,000, so a default (no-`DeleteOption`) `DeleteRelationships` call against a stock server previously failed with `provided limit 10000 is greater than maximum allowed of 1000`. No API shape change — only the default value sent when `WithDeleteLimit` isn't used.
 - **2026-08-14**: `client.Error.Code` is now a native `client.ErrorCode` enum (`CodeUnknown`, `CodeNotFound`, `CodeAlreadyExists`, `CodeInvalidArgument`, `CodeFailedPrecondition`, `CodePermissionDenied`, `CodeUnauthenticated`, `CodeUnavailable`, `CodeResourceExhausted`, `CodeAborted`, `CodeDeadlineExceeded`, `CodeCanceled`, `CodeInternal`), replacing the raw `google.golang.org/grpc/codes.Code` that was previously exposed on the field. This closes a gap left by the earlier native-error-mapping fix, which mapped errors into `*client.Error` but left the raw gRPC code type on the struct. `errors.Is`/sentinel matching (`ErrNotFound`, etc.) is unchanged for callers; `errors.Unwrap` still exposes the underlying gRPC status error as an escape hatch. Any code that compared `err.(*client.Error).Code` against `codes.X` must switch to comparing against `client.CodeX`.
 
   Before:
@@ -73,7 +74,7 @@
 
 ### Features
 
-- **2026-08-15**: `DeleteRelationships` now accepts variadic `DeleteOption`s, reaching the proto's `optional_preconditions` and `optional_limit` fields that were previously unset by the client. Additive — existing `c.DeleteRelationships(ctx, filter)` calls are unaffected (no preconditions, 10,000-item page size, partial deletions allowed, same as before). New: `client.WithDeleteMustMatch(filter)`/`client.WithDeleteMustNotMatch(filter)` add MUST_MATCH/MUST_NOT_MATCH preconditions (built the same way as `rel.Txn.MustMatch`/`MustNotMatch`) that guard the delete, rejecting it if unsatisfied; `client.WithDeleteLimit(n)` overrides the default 10,000-per-call page size. See `spicedb-go/DESIGN.md` ("Deletions") for the semantics of combining preconditions with auto-paging. New example: `examples/delete_relationships/`.
+- **2026-08-15**: `DeleteRelationships` now accepts variadic `DeleteOption`s, reaching the proto's `optional_preconditions` and `optional_limit` fields that were previously unset by the client. Additive — existing `c.DeleteRelationships(ctx, filter)` calls are unaffected (no preconditions, 1,000-item page size, partial deletions allowed, same as before). New: `client.WithDeleteMustMatch(filter)`/`client.WithDeleteMustNotMatch(filter)` add MUST_MATCH/MUST_NOT_MATCH preconditions (built the same way as `rel.Txn.MustMatch`/`MustNotMatch`) that guard the delete, rejecting it if unsatisfied; `client.WithDeleteLimit(n)` overrides the default 1,000-per-call page size. See `spicedb-go/DESIGN.md` ("Deletions") for the semantics of combining preconditions with auto-paging. New example: `examples/delete_relationships/`.
 
   ```go
   // Before (still works, unchanged):

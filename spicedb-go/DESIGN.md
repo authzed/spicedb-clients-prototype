@@ -96,7 +96,7 @@ use sensible defaults:
 | `LookupResources` | 512 | cursor-based auto-pagination |
 | `LookupSubjects` | — | no cursor support in SpiceDB yet; single streaming call |
 | `ExportRelationships` | 512 | cursor-based auto-pagination |
-| `DeleteRelationships` | 10,000 | auto-repeats until all matched rels deleted; override via `WithDeleteLimit` |
+| `DeleteRelationships` | 1,000 | auto-repeats until all matched rels deleted; override via `WithDeleteLimit`; matches SpiceDB's default `--max-delete-relationships-limit` |
 | `CheckIter` | 1,000 | batches input rels into bulk check calls |
 | `ImportRelationships` | 1,000 | batches into client-streaming sends |
 | `Updates` | — | server-streaming, no pagination needed |
@@ -156,8 +156,10 @@ revision, err := client.Write(ctx, txn)
 ### Deletions
 
 `DeleteRelationships` automatically pages through large result sets using a
-limit of 10,000 per RPC call. It repeats until the server reports all matching
-relationships are deleted. Returns the final revision.
+limit of 1,000 per RPC call (matches SpiceDB's default
+`--max-delete-relationships-limit`, so the default works against a stock
+server). It repeats until the server reports all matching relationships are
+deleted. Returns the final revision.
 
 Optional functional options (`DeleteOption`) reach the proto fields that were
 previously unreachable — `optional_preconditions` and `optional_limit`:
@@ -166,7 +168,7 @@ previously unreachable — `optional_preconditions` and `optional_limit`:
 revision, err := client.DeleteRelationships(ctx, filter,
     client.WithDeleteMustMatch(guardFilter),    // MUST_MATCH precondition
     client.WithDeleteMustNotMatch(otherFilter),  // MUST_NOT_MATCH precondition
-    client.WithDeleteLimit(1000),                // override the 10,000 default page size
+    client.WithDeleteLimit(500),                  // override the 1,000 default page size
 )
 ```
 
@@ -181,7 +183,7 @@ changes between pages, after earlier pages were already deleted. For a
 single-shot, all-or-nothing guarded delete, pair a precondition with
 `WithDeleteLimit` set high enough to cover every matching relationship in one
 call. No options given means unchanged default behavior: no preconditions,
-10,000-item page size, partial deletions allowed (so auto-paging keeps
+1,000-item page size, partial deletions allowed (so auto-paging keeps
 working).
 
 ### Testing
@@ -203,7 +205,7 @@ examples.
 
 - BulkCheck for all check operations (even single)
 - Transparent cursor-based pagination with sensible default page sizes
-- Batched deletions (10,000-item limit) to avoid server-side timeouts
+- Batched deletions (1,000-item limit, matching SpiceDB's default `--max-delete-relationships-limit`) to avoid server-side timeouts
 
 ### Escape Hatches
 

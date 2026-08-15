@@ -98,7 +98,7 @@ re-fetches pages using the `AfterResultCursor` from each response.
 | `lookupResources` | 512 | cursor-based auto-pagination |
 | `lookupSubjects` | — | single streaming call |
 | `exportRelationships` | 512 | cursor-based auto-pagination |
-| `deleteRelationships` | 10,000 | auto-repeats until all deleted |
+| `deleteRelationships` | 1,000 | auto-repeats until all deleted; matches SpiceDB's default `--max-delete-relationships-limit` |
 | `importRelationships` | 1,000 | batches into streaming sends |
 | `updates` | — | server-streaming, no pagination needed |
 
@@ -118,8 +118,10 @@ String revision = client.write(txn);
 ### Deletions
 
 `deleteRelationships` automatically pages through large result sets using a
-limit of 10,000 per RPC call. It repeats until the server reports all matching
-relationships are deleted. Returns the final revision.
+limit of 1,000 per RPC call (matches SpiceDB's default
+`--max-delete-relationships-limit`, so the default works against a stock
+server). It repeats until the server reports all matching relationships are
+deleted. Returns the final revision.
 
 `deleteRelationships(Filter, DeleteOptions)` additionally accepts optional
 MUST_MATCH/MUST_NOT_MATCH preconditions and a per-request page-size override,
@@ -148,7 +150,7 @@ are retried with exponential backoff.
 
 - BulkCheck for all check operations (even single)
 - Transparent cursor-based pagination with sensible default page sizes
-- Batched deletions (10,000-item limit) to avoid server-side timeouts
+- Batched deletions (1,000-item limit, matching SpiceDB's default `--max-delete-relationships-limit`) to avoid server-side timeouts
 - Batched imports (1,000-item chunks)
 - Exponential backoff retry for transient gRPC errors
 

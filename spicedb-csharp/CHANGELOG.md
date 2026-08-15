@@ -4,6 +4,19 @@
 
 ### Added
 
+- **2026-08-15**: The 5 streaming methods (`ReadRelationshipsAsync`,
+  `LookupResourcesAsync`, `LookupSubjectsAsync`, `ExportRelationshipsAsync`,
+  `UpdatesAsync`) now retry stream/page **ESTABLISHMENT** on transient errors
+  (`{UNAVAILABLE, RESOURCE_EXHAUSTED, ABORTED}`), reusing the same backoff and
+  `MaxRetryAttempts` budget as unary calls (reset per page for the paginated
+  methods; per-stream for `LookupSubjectsAsync`/`UpdatesAsync`, which have no
+  cursor). A transient error is retried ONLY while nothing has been yielded
+  yet from the current stream/page — once any item has been yielded, the
+  error is mapped to the typed `SpiceDBException` and rethrown instead, never
+  retried, so callers can never see a replayed/duplicated item. `UpdatesAsync`
+  in particular only retries the initial watch open — never mid-watch. No API
+  shape change.
+
 - **2026-08-15**: `DeleteRelationshipsAsync` now accepts optional `mustMatch`/
   `mustNotMatch`/`limit` parameters, reaching the proto's
   `optional_preconditions` and `optional_limit` fields that were previously

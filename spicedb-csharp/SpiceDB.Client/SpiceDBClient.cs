@@ -230,6 +230,14 @@ public sealed class SpiceDBClient : IAsyncDisposable
     /// Returns an async enumerable of relationships matching the given filter.
     /// Cursors are handled transparently — the client automatically re-fetches
     /// pages of 512 relationships using the AfterResultCursor.
+    /// <para>
+    /// Stream/page ESTABLISHMENT is retried on transient errors (the same
+    /// {UNAVAILABLE, RESOURCE_EXHAUSTED, ABORTED} predicate and backoff/attempt
+    /// budget as unary calls), with the attempt budget reset for each new
+    /// page. Once any item has been yielded from the current page's open
+    /// stream, a transient error is mapped and rethrown instead of retried —
+    /// retrying after a yield would risk re-delivering already-yielded items.
+    /// </para>
     /// </summary>
     public async IAsyncEnumerable<Relationship> ReadRelationshipsAsync(
         ConsistencyStrategy consistency,
@@ -251,35 +259,72 @@ public sealed class SpiceDBClient : IAsyncDisposable
             if (cursor != null)
                 req.OptionalCursor = cursor;
 
-            AsyncServerStreamingCall<ReadRelationshipsResponse> call;
-            try
-            {
-                call = _permissions.ReadRelationships(req, cancellationToken: cancellationToken);
-            }
-            catch (RpcException ex)
-            {
-                throw ErrorMapper.ToSpiceDBException(ex);
-            }
-
-            using var stream = call;
             uint count = 0;
-            while (true)
+            var attempt = 0;
+            var backoff = InitialBackoff;
+            var pageComplete = false;
+
+            while (!pageComplete)
             {
-                ReadRelationshipsResponse resp;
+                AsyncServerStreamingCall<ReadRelationshipsResponse> call;
                 try
                 {
-                    if (!await stream.ResponseStream.MoveNext(cancellationToken))
-                        break;
-                    resp = stream.ResponseStream.Current;
+                    call = _permissions.ReadRelationships(req, cancellationToken: cancellationToken);
+                }
+                catch (RpcException ex) when (attempt < MaxRetryAttempts && ErrorMapper.IsTransient(ex))
+                {
+                    attempt++;
+                    await Task.Delay(backoff, cancellationToken);
+                    backoff *= 2;
+                    continue;
                 }
                 catch (RpcException ex)
                 {
                     throw ErrorMapper.ToSpiceDBException(ex);
                 }
 
-                count++;
-                cursor = resp.AfterResultCursor;
-                yield return Relationship.FromProto(resp.Relationship);
+                using var stream = call;
+                uint yielded = 0;
+
+                while (true)
+                {
+                    ReadRelationshipsResponse? resp = null;
+                    bool hasNext;
+                    try
+                    {
+                        hasNext = await stream.ResponseStream.MoveNext(cancellationToken);
+                        if (hasNext)
+                            resp = stream.ResponseStream.Current;
+                    }
+                    // Establishment retry only: safe while nothing has been
+                    // yielded yet from this page's current open stream.
+                    catch (RpcException ex) when (yielded == 0 && attempt < MaxRetryAttempts && ErrorMapper.IsTransient(ex))
+                    {
+                        attempt++;
+                        break;
+                    }
+                    catch (RpcException ex)
+                    {
+                        throw ErrorMapper.ToSpiceDBException(ex);
+                    }
+
+                    if (!hasNext)
+                    {
+                        pageComplete = true;
+                        break;
+                    }
+
+                    count++;
+                    yielded++;
+                    cursor = resp!.AfterResultCursor;
+                    yield return Relationship.FromProto(resp.Relationship);
+                }
+
+                if (!pageComplete)
+                {
+                    await Task.Delay(backoff, cancellationToken);
+                    backoff *= 2;
+                }
             }
 
             if (count < DefaultReadPageSize)
@@ -372,6 +417,13 @@ public sealed class SpiceDBClient : IAsyncDisposable
     /// permissionship (full grant vs conditional on caveat context) and, for
     /// conditional results, which caveat context was missing. Cursors are
     /// handled transparently with 512-item pages.
+    /// <para>
+    /// Stream/page ESTABLISHMENT is retried on transient errors, with the
+    /// attempt budget reset for each new page. Once any item has been
+    /// yielded from the current page's open stream, a transient error is
+    /// mapped and rethrown instead of retried — see
+    /// <see cref="ReadRelationshipsAsync"/> for the full rationale.
+    /// </para>
     /// </summary>
     public async IAsyncEnumerable<LookupResource> LookupResourcesAsync(
         ConsistencyStrategy consistency,
@@ -404,40 +456,75 @@ public sealed class SpiceDBClient : IAsyncDisposable
             if (cursor != null)
                 req.OptionalCursor = cursor;
 
-            AsyncServerStreamingCall<LookupResourcesResponse> call;
-            try
-            {
-                call = _permissions.LookupResources(req, cancellationToken: cancellationToken);
-            }
-            catch (RpcException ex)
-            {
-                throw ErrorMapper.ToSpiceDBException(ex);
-            }
-
-            using var stream = call;
             int count = 0;
-            while (true)
+            var attempt = 0;
+            var backoff = InitialBackoff;
+            var pageComplete = false;
+
+            while (!pageComplete)
             {
-                LookupResourcesResponse resp;
+                AsyncServerStreamingCall<LookupResourcesResponse> call;
                 try
                 {
-                    if (!await stream.ResponseStream.MoveNext(cancellationToken))
-                        break;
-                    resp = stream.ResponseStream.Current;
+                    call = _permissions.LookupResources(req, cancellationToken: cancellationToken);
+                }
+                catch (RpcException ex) when (attempt < MaxRetryAttempts && ErrorMapper.IsTransient(ex))
+                {
+                    attempt++;
+                    await Task.Delay(backoff, cancellationToken);
+                    backoff *= 2;
+                    continue;
                 }
                 catch (RpcException ex)
                 {
                     throw ErrorMapper.ToSpiceDBException(ex);
                 }
 
-                count++;
-                cursor = resp.AfterResultCursor;
-                yield return new LookupResource
+                using var stream = call;
+                int yielded = 0;
+
+                while (true)
                 {
-                    ResourceID = resp.ResourceObjectId,
-                    Permissionship = ToPermissionship(resp.Permissionship),
-                    PartialCaveat = ToPartialCaveatInfo(resp.PartialCaveatInfo),
-                };
+                    LookupResourcesResponse? resp = null;
+                    bool hasNext;
+                    try
+                    {
+                        hasNext = await stream.ResponseStream.MoveNext(cancellationToken);
+                        if (hasNext)
+                            resp = stream.ResponseStream.Current;
+                    }
+                    catch (RpcException ex) when (yielded == 0 && attempt < MaxRetryAttempts && ErrorMapper.IsTransient(ex))
+                    {
+                        attempt++;
+                        break;
+                    }
+                    catch (RpcException ex)
+                    {
+                        throw ErrorMapper.ToSpiceDBException(ex);
+                    }
+
+                    if (!hasNext)
+                    {
+                        pageComplete = true;
+                        break;
+                    }
+
+                    count++;
+                    yielded++;
+                    cursor = resp!.AfterResultCursor;
+                    yield return new LookupResource
+                    {
+                        ResourceID = resp.ResourceObjectId,
+                        Permissionship = ToPermissionship(resp.Permissionship),
+                        PartialCaveat = ToPartialCaveatInfo(resp.PartialCaveatInfo),
+                    };
+                }
+
+                if (!pageComplete)
+                {
+                    await Task.Delay(backoff, cancellationToken);
+                    backoff *= 2;
+                }
             }
 
             if (count < DefaultLookupPageSize)
@@ -459,6 +546,13 @@ public sealed class SpiceDBClient : IAsyncDisposable
     /// wildcard match as a blanket grant, or they risk granting access to
     /// subjects the server explicitly excluded.
     /// </para>
+    /// <para>
+    /// Since there is one stream (no pages), the retry-on-transient-error
+    /// behavior applies to that single ESTABLISHMENT only: once any subject
+    /// has been yielded, a transient error is mapped and rethrown instead of
+    /// retried — see <see cref="ReadRelationshipsAsync"/> for the full
+    /// rationale.
+    /// </para>
     /// </summary>
     public async IAsyncEnumerable<LookupSubject> LookupSubjectsAsync(
         ConsistencyStrategy consistency,
@@ -470,44 +564,76 @@ public sealed class SpiceDBClient : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(consistency);
 
-        AsyncServerStreamingCall<LookupSubjectsResponse> call;
-        try
+        var req = new LookupSubjectsRequest
         {
-            call = _permissions.LookupSubjects(
-                new LookupSubjectsRequest
-                {
-                    Consistency = consistency.V1Consistency,
-                    Resource = new ObjectReference
-                    {
-                        ObjectType = resourceType,
-                        ObjectId = resourceID,
-                    },
-                    Permission = permission,
-                    SubjectObjectType = subjectType,
-                },
-                cancellationToken: cancellationToken);
-        }
-        catch (RpcException ex)
-        {
-            throw ErrorMapper.ToSpiceDBException(ex);
-        }
+            Consistency = consistency.V1Consistency,
+            Resource = new ObjectReference
+            {
+                ObjectType = resourceType,
+                ObjectId = resourceID,
+            },
+            Permission = permission,
+            SubjectObjectType = subjectType,
+        };
 
-        using var stream = call;
+        var attempt = 0;
+        var backoff = InitialBackoff;
+        var yielded = 0;
+
+        // Establishment-retry loop: LookupSubjects has no cursor support, so
+        // there's a single logical stream — retry re-opens it (not a page).
+        // Once anything has been yielded, retrying is never safe.
         while (true)
         {
-            LookupSubjectsResponse resp;
+            AsyncServerStreamingCall<LookupSubjectsResponse> call;
             try
             {
-                if (!await stream.ResponseStream.MoveNext(cancellationToken))
-                    break;
-                resp = stream.ResponseStream.Current;
+                call = _permissions.LookupSubjects(req, cancellationToken: cancellationToken);
+            }
+            catch (RpcException ex) when (yielded == 0 && attempt < MaxRetryAttempts && ErrorMapper.IsTransient(ex))
+            {
+                attempt++;
+                await Task.Delay(backoff, cancellationToken);
+                backoff *= 2;
+                continue;
             }
             catch (RpcException ex)
             {
                 throw ErrorMapper.ToSpiceDBException(ex);
             }
 
-            yield return ToLookupSubject(resp);
+            using var stream = call;
+
+            while (true)
+            {
+                LookupSubjectsResponse? resp = null;
+                bool hasNext;
+                try
+                {
+                    hasNext = await stream.ResponseStream.MoveNext(cancellationToken);
+                    if (hasNext)
+                        resp = stream.ResponseStream.Current;
+                }
+                catch (RpcException ex) when (yielded == 0 && attempt < MaxRetryAttempts && ErrorMapper.IsTransient(ex))
+                {
+                    attempt++;
+                    break;
+                }
+                catch (RpcException ex)
+                {
+                    throw ErrorMapper.ToSpiceDBException(ex);
+                }
+
+                if (!hasNext)
+                    yield break;
+
+                yielded++;
+                yield return ToLookupSubject(resp!);
+            }
+
+            // Reached only via the transient-retry break above.
+            await Task.Delay(backoff, cancellationToken);
+            backoff *= 2;
         }
     }
 
@@ -804,6 +930,13 @@ public sealed class SpiceDBClient : IAsyncDisposable
     /// Returns an async enumerable over all relationships matching the optional
     /// filter, streamed from SpiceDB in bulk. Cursors are handled transparently
     /// with 512-item pages.
+    /// <para>
+    /// Stream/page ESTABLISHMENT is retried on transient errors, with the
+    /// attempt budget reset for each new page. Once any relationship has been
+    /// yielded from the current page's open stream, a transient error is
+    /// mapped and rethrown instead of retried — see
+    /// <see cref="ReadRelationshipsAsync"/> for the full rationale.
+    /// </para>
     /// </summary>
     public async IAsyncEnumerable<Relationship> ExportRelationshipsAsync(
         ConsistencyStrategy consistency,
@@ -825,37 +958,72 @@ public sealed class SpiceDBClient : IAsyncDisposable
             if (filter != null)
                 req.OptionalRelationshipFilter = filter.ToProto();
 
-            AsyncServerStreamingCall<ExportBulkRelationshipsResponse> call;
-            try
-            {
-                call = _permissions.ExportBulkRelationships(req, cancellationToken: cancellationToken);
-            }
-            catch (RpcException ex)
-            {
-                throw ErrorMapper.ToSpiceDBException(ex);
-            }
-
-            using var stream = call;
             int pageCount = 0;
-            while (true)
+            var attempt = 0;
+            var backoff = InitialBackoff;
+            var pageComplete = false;
+
+            while (!pageComplete)
             {
-                ExportBulkRelationshipsResponse resp;
+                AsyncServerStreamingCall<ExportBulkRelationshipsResponse> call;
                 try
                 {
-                    if (!await stream.ResponseStream.MoveNext(cancellationToken))
-                        break;
-                    resp = stream.ResponseStream.Current;
+                    call = _permissions.ExportBulkRelationships(req, cancellationToken: cancellationToken);
+                }
+                catch (RpcException ex) when (attempt < MaxRetryAttempts && ErrorMapper.IsTransient(ex))
+                {
+                    attempt++;
+                    await Task.Delay(backoff, cancellationToken);
+                    backoff *= 2;
+                    continue;
                 }
                 catch (RpcException ex)
                 {
                     throw ErrorMapper.ToSpiceDBException(ex);
                 }
 
-                cursor = resp.AfterResultCursor;
-                foreach (var r in resp.Relationships)
+                using var stream = call;
+                int yielded = 0;
+
+                while (true)
                 {
-                    pageCount++;
-                    yield return Relationship.FromProto(r);
+                    ExportBulkRelationshipsResponse? resp = null;
+                    bool hasNext;
+                    try
+                    {
+                        hasNext = await stream.ResponseStream.MoveNext(cancellationToken);
+                        if (hasNext)
+                            resp = stream.ResponseStream.Current;
+                    }
+                    catch (RpcException ex) when (yielded == 0 && attempt < MaxRetryAttempts && ErrorMapper.IsTransient(ex))
+                    {
+                        attempt++;
+                        break;
+                    }
+                    catch (RpcException ex)
+                    {
+                        throw ErrorMapper.ToSpiceDBException(ex);
+                    }
+
+                    if (!hasNext)
+                    {
+                        pageComplete = true;
+                        break;
+                    }
+
+                    cursor = resp!.AfterResultCursor;
+                    foreach (var r in resp.Relationships)
+                    {
+                        pageCount++;
+                        yielded++;
+                        yield return Relationship.FromProto(r);
+                    }
+                }
+
+                if (!pageComplete)
+                {
+                    await Task.Delay(backoff, cancellationToken);
+                    backoff *= 2;
                 }
             }
 
@@ -871,6 +1039,15 @@ public sealed class SpiceDBClient : IAsyncDisposable
     /// <summary>
     /// Returns an async enumerable of relationship changes from SpiceDB's watch
     /// API, starting from the given revision.
+    /// <para>
+    /// Watch ESTABLISHMENT is retried on transient errors — but only up until
+    /// the first update is yielded. Once anything has been yielded from the
+    /// current watch stream, a transient error is mapped and rethrown instead
+    /// of retried; retrying mid-watch would risk re-delivering already-seen
+    /// updates (or silently skipping ones the caller never saw), and there is
+    /// no cursor to safely resume from mid-stream. See
+    /// <see cref="ReadRelationshipsAsync"/> for the full rationale.
+    /// </para>
     /// </summary>
     public async IAsyncEnumerable<RelationshipUpdate> UpdatesAsync(
         IEnumerable<string>? objectTypes = null,
@@ -883,35 +1060,66 @@ public sealed class SpiceDBClient : IAsyncDisposable
         if (!string.IsNullOrEmpty(startRevision))
             req.OptionalStartCursor = new ZedToken { Token = startRevision };
 
-        AsyncServerStreamingCall<WatchResponse> call;
-        try
-        {
-            call = _watch.Watch(req, cancellationToken: cancellationToken);
-        }
-        catch (RpcException ex)
-        {
-            throw ErrorMapper.ToSpiceDBException(ex);
-        }
+        var attempt = 0;
+        var backoff = InitialBackoff;
+        var yielded = 0;
 
-        using var stream = call;
+        // Establishment-retry loop: retry re-opening the watch only while
+        // nothing has been yielded yet — never mid-watch.
         while (true)
         {
-            WatchResponse resp;
+            AsyncServerStreamingCall<WatchResponse> call;
             try
             {
-                if (!await stream.ResponseStream.MoveNext(cancellationToken))
-                    break;
-                resp = stream.ResponseStream.Current;
+                call = _watch.Watch(req, cancellationToken: cancellationToken);
+            }
+            catch (RpcException ex) when (yielded == 0 && attempt < MaxRetryAttempts && ErrorMapper.IsTransient(ex))
+            {
+                attempt++;
+                await Task.Delay(backoff, cancellationToken);
+                backoff *= 2;
+                continue;
             }
             catch (RpcException ex)
             {
                 throw ErrorMapper.ToSpiceDBException(ex);
             }
 
-            foreach (var update in resp.Updates)
+            using var stream = call;
+
+            while (true)
             {
-                yield return UpdateFromProto(update);
+                WatchResponse? resp = null;
+                bool hasNext;
+                try
+                {
+                    hasNext = await stream.ResponseStream.MoveNext(cancellationToken);
+                    if (hasNext)
+                        resp = stream.ResponseStream.Current;
+                }
+                catch (RpcException ex) when (yielded == 0 && attempt < MaxRetryAttempts && ErrorMapper.IsTransient(ex))
+                {
+                    attempt++;
+                    break;
+                }
+                catch (RpcException ex)
+                {
+                    throw ErrorMapper.ToSpiceDBException(ex);
+                }
+
+                if (!hasNext)
+                    yield break;
+
+                foreach (var update in resp!.Updates)
+                {
+                    yielded++;
+                    yield return UpdateFromProto(update);
+                }
             }
+
+            // Reached only via the transient-retry break above.
+            await Task.Delay(backoff, cancellationToken);
+            backoff *= 2;
         }
     }
 

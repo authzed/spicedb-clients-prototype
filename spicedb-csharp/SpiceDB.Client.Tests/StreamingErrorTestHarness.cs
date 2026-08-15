@@ -112,4 +112,46 @@ internal static class StreamingTestHelpers
     /// <summary>A representative RpcException(NotFound) used across streaming-error tests.</summary>
     public static RpcException NotFoundError() =>
         new(new Status(StatusCode.NotFound, "nope"));
+
+    /// <summary>
+    /// A representative transient RpcException(Unavailable), used across
+    /// streaming-establishment-retry tests.
+    /// </summary>
+    public static RpcException UnavailableError() =>
+        new(new Status(StatusCode.Unavailable, "unavailable"));
+}
+
+/// <summary>
+/// Scripts a sequence of server-streaming calls: each call to <see cref="Next"/>
+/// pops the next scripted (items, trailing-error) entry and returns a fresh
+/// <see cref="AsyncServerStreamingCall{TResponse}"/> backed by it, recording
+/// how many times the underlying gRPC stub method was invoked. Used to
+/// simulate a stream that fails transiently on first open/establishment and
+/// succeeds on a later retry (or keeps failing, to test budget exhaustion),
+/// while asserting exactly how many times the mocked stub was called — the
+/// signal that establishment was retried (or, symmetrically, was NOT retried
+/// after a yield, to prove no replay).
+/// </summary>
+internal sealed class StreamCallScript<T>
+{
+    private readonly Queue<(IEnumerable<T> Items, RpcException? Error)> _script = new();
+
+    public int CallCount { get; private set; }
+
+    public StreamCallScript<T> Then(IEnumerable<T> items, RpcException? error = null)
+    {
+        _script.Enqueue((items, error));
+        return this;
+    }
+
+    public AsyncServerStreamingCall<T> Next()
+    {
+        CallCount++;
+        if (_script.Count == 0)
+            throw new InvalidOperationException(
+                "StreamCallScript exhausted — the client made more streaming calls than scripted.");
+
+        var (items, error) = _script.Dequeue();
+        return StreamingTestHelpers.MakeServerStreamingCall(new FakeStreamReader<T>(items, error));
+    }
 }

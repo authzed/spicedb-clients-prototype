@@ -551,7 +551,7 @@ public final class SpiceDBClient implements AutoCloseable {
   // -----------------------------------------------------------------------
 
   /** Result of an {@link #expandPermissionTree} call. */
-  public record ExpandResult(PermissionRelationshipTree treeRoot, String revision) {}
+  public record ExpandResult(PermissionTree tree, String revision) {}
 
   /**
    * Expands the permission tree for the given resource and permission, returning the full tree of
@@ -572,7 +572,7 @@ public final class SpiceDBClient implements AutoCloseable {
                                 .build())
                         .setPermission(permission)
                         .build()));
-    return new ExpandResult(resp.getTreeRoot(), resp.getExpandedAt().getToken());
+    return new ExpandResult(toPermissionTree(resp.getTreeRoot()), resp.getExpandedAt().getToken());
   }
 
   // -----------------------------------------------------------------------
@@ -1056,6 +1056,59 @@ public final class SpiceDBClient implements AutoCloseable {
         caveatName,
         caveatContext,
         expiration);
+  }
+
+  /**
+   * Recursively maps a proto {@code PermissionRelationshipTree} to its native {@link
+   * PermissionTree} representation. A null input maps to a zero-value tree.
+   */
+  static PermissionTree toPermissionTree(PermissionRelationshipTree t) {
+    if (t == null) {
+      return new PermissionTree(new PermissionTree.ObjectRef("", ""), "", null, null);
+    }
+
+    PermissionTree.IntermediateNode intermediate = null;
+    if (t.hasIntermediate()) {
+      AlgebraicSubjectSet algebraic = t.getIntermediate();
+      var children = new ArrayList<PermissionTree>(algebraic.getChildrenCount());
+      for (var child : algebraic.getChildrenList()) {
+        children.add(toPermissionTree(child));
+      }
+      intermediate =
+          new PermissionTree.IntermediateNode(
+              toTreeOperation(algebraic.getOperation()), List.copyOf(children));
+    }
+
+    PermissionTree.LeafNode leaf = null;
+    if (t.hasLeaf()) {
+      DirectSubjectSet direct = t.getLeaf();
+      var subjects = new ArrayList<PermissionTree.SubjectRef>(direct.getSubjectsCount());
+      for (var subject : direct.getSubjectsList()) {
+        subjects.add(
+            new PermissionTree.SubjectRef(
+                subject.getObject().getObjectType(),
+                subject.getObject().getObjectId(),
+                subject.getOptionalRelation()));
+      }
+      leaf = new PermissionTree.LeafNode(List.copyOf(subjects));
+    }
+
+    return new PermissionTree(
+        new PermissionTree.ObjectRef(
+            t.getExpandedObject().getObjectType(), t.getExpandedObject().getObjectId()),
+        t.getExpandedRelation(),
+        intermediate,
+        leaf);
+  }
+
+  /** Maps the proto algebraic set operation to its native equivalent. */
+  private static PermissionTree.Operation toTreeOperation(AlgebraicSubjectSet.Operation op) {
+    return switch (op) {
+      case OPERATION_UNION -> PermissionTree.Operation.UNION;
+      case OPERATION_INTERSECTION -> PermissionTree.Operation.INTERSECTION;
+      case OPERATION_EXCLUSION -> PermissionTree.Operation.EXCLUSION;
+      default -> PermissionTree.Operation.UNSPECIFIED;
+    };
   }
 
   private static RelationshipFilter toRelationshipFilter(Filter f) {

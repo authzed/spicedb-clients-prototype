@@ -172,8 +172,8 @@ These may change without following the backwards compatibility mandate.
 - `deleteRelationships(Filter)` → `String` (revision)
 
 **Lookups:**
-- `lookupResources(Consistency, String resourceType, String permission, String subjectType, String subjectID)` → `Stream<String>`
-- `lookupSubjects(Consistency, String resourceType, String resourceID, String permission, String subjectType)` → `Stream<String>`
+- `lookupResources(Consistency, String resourceType, String permission, String subjectType, String subjectID)` → `Stream<LookupResult.LookupResource>`
+- `lookupSubjects(Consistency, String resourceType, String resourceID, String permission, String subjectType)` → `Stream<LookupResult.LookupSubject>`
 
 **Schema:**
 - `readSchema()` → `SchemaResult` (schema + revision)

@@ -78,7 +78,7 @@ class StreamingErrorMappingTest {
 
     try (TestServers servers = TestServers.start(service)) {
       SpiceDBClient client = servers.client();
-      try (Stream<String> stream =
+      try (Stream<LookupResult.LookupResource> stream =
           client.lookupResources(Consistency.full(), "document", "view", "user", "alice")) {
         assertThrows(NotFoundException.class, () -> stream.forEach(r -> {}));
       }

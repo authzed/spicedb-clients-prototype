@@ -4,6 +4,41 @@
 
 ### Breaking Changes
 
+- **2026-08-15**: `lookupResources`/`lookupSubjects` now yield native `LookupResult` records instead of bare `String`s. Each result carries the `permissionship` (full grant vs conditional on caveat context) and, for `lookupSubjects`, the `excludedSubjects` of a wildcard (`"*"`) match — previously dropped entirely, which meant callers treating a wildcard `Stream<String>` result as a blanket grant had **no way to know which subjects were actually excluded from it** (an over-grant risk). Mirrors `spicedb-go`'s `LookupResource`/`LookupSubject`/`ResolvedSubject`/`PartialCaveatInfo` types.
+
+  Before:
+  ```java
+  try (Stream<String> stream = client.lookupResources(consistency, "document", "view", "user", "alice")) {
+      List<String> resourceIDs = stream.toList();
+  }
+  try (Stream<String> stream = client.lookupSubjects(consistency, "document", "doc1", "view", "user")) {
+      List<String> subjectIDs = stream.toList(); // a "*" here silently included excluded subjects
+  }
+  ```
+  After:
+  ```java
+  try (Stream<LookupResult.LookupResource> stream =
+      client.lookupResources(consistency, "document", "view", "user", "alice")) {
+      stream.forEach(r -> {
+          if (r.permissionship() == LookupResult.Permissionship.CONDITIONAL_PERMISSION) {
+              return; // not a full grant until r.partialCaveat().missingRequiredContext() is supplied
+          }
+          use(r.resourceId());
+      });
+  }
+  try (Stream<LookupResult.LookupSubject> stream =
+      client.lookupSubjects(consistency, "document", "doc1", "view", "user")) {
+      stream.forEach(s -> {
+          Set<String> excludedIds =
+              s.excludedSubjects().stream().map(LookupResult.ResolvedSubject::subjectId).collect(toSet());
+          if (s.subject().subjectId().equals("*") && excludedIds.contains(myUserId)) {
+              return; // explicitly excluded from the wildcard grant — do NOT treat as authorized
+          }
+          use(s.subject().subjectId());
+      });
+  }
+  ```
+
 - **2026-08-14**: `ExpandResult.treeRoot` (the leaked proto `PermissionRelationshipTree`) is replaced with `ExpandResult.tree()`, a native `PermissionTree` record family (`ObjectRef`, `SubjectRef`, `IntermediateNode`, `LeafNode`, `Operation`), mirroring `spicedb-go`'s native expand tree. No protobuf types are exposed from `expandPermissionTree` anymore.
 
   Before:

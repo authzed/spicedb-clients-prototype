@@ -277,19 +277,21 @@ public final class SpiceDBClient implements AutoCloseable {
   // -----------------------------------------------------------------------
 
   /**
-   * Returns a stream over resource IDs of the given type that the subject has the specified
-   * permission on. Cursors are handled transparently.
+   * Returns a stream over resources of the given type that the subject has the specified
+   * permission on. Each result carries the permissionship (full grant vs conditional on caveat
+   * context) and, for conditional results, which caveat context was missing. Cursors are handled
+   * transparently.
    *
    * <p>The returned stream should be closed when done.
    */
-  public Stream<String> lookupResources(
+  public Stream<LookupResult.LookupResource> lookupResources(
       Consistency consistency,
       String resourceType,
       String permission,
       String subjectType,
       String subjectID) {
     Context.CancellableContext cancelCtx = Context.current().withCancellation();
-    Iterator<String> iterator =
+    Iterator<LookupResult.LookupResource> iterator =
         new Iterator<>() {
           private Cursor cursor = null;
           private Iterator<LookupResourcesResponse> currentPage = Collections.emptyIterator();
@@ -305,12 +307,12 @@ public final class SpiceDBClient implements AutoCloseable {
           }
 
           @Override
-          public String next() {
+          public LookupResult.LookupResource next() {
             if (!hasNext()) throw new NoSuchElementException();
             LookupResourcesResponse resp = currentPage.next();
             pageCount++;
             cursor = resp.getAfterResultCursor();
-            return resp.getResourceObjectId();
+            return lookupResourceFromProto(resp);
           }
 
           private void fetchNextPage() {
@@ -365,13 +367,19 @@ public final class SpiceDBClient implements AutoCloseable {
   }
 
   /**
-   * Returns a stream over subject IDs of the given type that have the specified permission on the
+   * Returns a stream over subjects of the given type that have the specified permission on the
    * resource. Unlike lookupResources, this does not use cursor-based pagination (not supported in
    * SpiceDB yet) and streams all results in a single call.
    *
+   * <p>When a yielded {@link LookupResult.LookupSubject#subject} is the wildcard {@code "*"}, the
+   * server has granted the permission to every subject of the requested subject type EXCEPT those
+   * listed in {@link LookupResult.LookupSubject#excludedSubjects}. Callers MUST check {@code
+   * excludedSubjects} before treating a wildcard match as a blanket grant, or they risk granting
+   * access to subjects the server explicitly excluded.
+   *
    * <p>The returned stream should be closed when done.
    */
-  public Stream<String> lookupSubjects(
+  public Stream<LookupResult.LookupSubject> lookupSubjects(
       Consistency consistency,
       String resourceType,
       String resourceID,
@@ -398,16 +406,7 @@ public final class SpiceDBClient implements AutoCloseable {
           return null;
         });
 
-    return responses.stream()
-        .map(
-            resp -> {
-              String id = resp.getSubject().getSubjectObjectId();
-              if (id == null || id.isEmpty()) {
-                // Fall back to deprecated field
-                id = resp.getSubjectObjectId();
-              }
-              return id;
-            });
+    return responses.stream().map(SpiceDBClient::lookupSubjectFromProto);
   }
 
   // -----------------------------------------------------------------------
@@ -1151,6 +1150,102 @@ public final class SpiceDBClient implements AutoCloseable {
         caveatName,
         caveatContext,
         expiration);
+  }
+
+  /**
+   * Maps the proto {@code LookupPermissionship} enum to its native equivalent. Unrecognized
+   * values map to {@code UNSPECIFIED}.
+   */
+  private static LookupResult.Permissionship permissionshipFromProto(LookupPermissionship v) {
+    return switch (v) {
+      case LOOKUP_PERMISSIONSHIP_HAS_PERMISSION -> LookupResult.Permissionship.HAS_PERMISSION;
+      case LOOKUP_PERMISSIONSHIP_CONDITIONAL_PERMISSION ->
+          LookupResult.Permissionship.CONDITIONAL_PERMISSION;
+      default -> LookupResult.Permissionship.UNSPECIFIED;
+    };
+  }
+
+  /**
+   * Maps a proto {@code PartialCaveatInfo} to its native equivalent. A null input maps to null.
+   */
+  private static LookupResult.PartialCaveatInfo partialCaveatFromProto(
+      build.buf.gen.authzed.api.v1.PartialCaveatInfo v) {
+    if (v == null) {
+      return null;
+    }
+    return new LookupResult.PartialCaveatInfo(List.copyOf(v.getMissingRequiredContextList()));
+  }
+
+  /**
+   * Maps a proto {@code LookupResourcesResponse} to a native {@link LookupResult.LookupResource}.
+   */
+  private static LookupResult.LookupResource lookupResourceFromProto(
+      LookupResourcesResponse resp) {
+    return new LookupResult.LookupResource(
+        resp.getResourceObjectId(),
+        permissionshipFromProto(resp.getPermissionship()),
+        partialCaveatFromProto(resp.hasPartialCaveatInfo() ? resp.getPartialCaveatInfo() : null));
+  }
+
+  /**
+   * Maps a proto {@code ResolvedSubject} to its native equivalent. A null input maps to a
+   * zero-value {@link LookupResult.ResolvedSubject} (empty {@code subjectId}), which callers use
+   * as the trigger for falling back to deprecated response-level fields.
+   */
+  private static LookupResult.ResolvedSubject resolvedSubjectFromProto(
+      build.buf.gen.authzed.api.v1.ResolvedSubject v) {
+    if (v == null) {
+      return new LookupResult.ResolvedSubject("", LookupResult.Permissionship.UNSPECIFIED, null);
+    }
+    return new LookupResult.ResolvedSubject(
+        v.getSubjectObjectId(),
+        permissionshipFromProto(v.getPermissionship()),
+        partialCaveatFromProto(v.hasPartialCaveatInfo() ? v.getPartialCaveatInfo() : null));
+  }
+
+  /**
+   * Maps a proto {@code LookupSubjectsResponse} to a native {@link LookupResult.LookupSubject},
+   * falling back to the deprecated {@code subject_object_id}/{@code permissionship}/{@code
+   * partial_caveat_info} fields when {@code subject} isn't populated (older servers), and to the
+   * deprecated {@code excluded_subject_ids} (IDs only, no permissionship/caveat info) when {@code
+   * excluded_subjects} isn't populated. Mirrors {@code spicedb-go}'s {@code lookup.go}.
+   */
+  @SuppressWarnings("deprecation") // intentional fallback to deprecated fields, see below
+  private static LookupResult.LookupSubject lookupSubjectFromProto(LookupSubjectsResponse resp) {
+    LookupResult.ResolvedSubject subject =
+        resp.hasSubject() ? resolvedSubjectFromProto(resp.getSubject()) : null;
+    if (subject == null || subject.subjectId().isEmpty()) {
+      // Fall back to the deprecated top-level fields for servers that don't yet populate the
+      // non-deprecated `subject` field.
+      subject =
+          new LookupResult.ResolvedSubject(
+              resp.getSubjectObjectId(),
+              permissionshipFromProto(resp.getPermissionship()),
+              partialCaveatFromProto(
+                  resp.hasPartialCaveatInfo() ? resp.getPartialCaveatInfo() : null));
+    }
+
+    List<LookupResult.ResolvedSubject> excluded;
+    if (!resp.getExcludedSubjectsList().isEmpty()) {
+      excluded =
+          resp.getExcludedSubjectsList().stream()
+              .map(SpiceDBClient::resolvedSubjectFromProto)
+              .toList();
+    } else if (!resp.getExcludedSubjectIdsList().isEmpty()) {
+      // Fall back to the deprecated excluded_subject_ids field, which carries only IDs (no
+      // permissionship/caveat info).
+      excluded =
+          resp.getExcludedSubjectIdsList().stream()
+              .map(
+                  id ->
+                      new LookupResult.ResolvedSubject(
+                          id, LookupResult.Permissionship.UNSPECIFIED, null))
+              .toList();
+    } else {
+      excluded = List.of();
+    }
+
+    return new LookupResult.LookupSubject(subject, excluded);
   }
 
   /**

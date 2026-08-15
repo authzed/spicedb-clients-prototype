@@ -23,6 +23,7 @@ from spicedb.types import (
     Filter,
     PermissionTree,
     ReflectSchemaResult,
+    RelationReference,
     Relationship,
     SchemaDiff,
     Transaction,
@@ -563,6 +564,47 @@ class SpiceDBClient:
 
         resp = await self._with_retry(_call)
         return [_schema_diff_from_proto(d) for d in resp.diffs]
+
+    # ── Schema Introspection: Computable Permissions / Dependent Relations ──
+
+    async def computable_permissions(
+        self,
+        consistency: Consistency,
+        definition_name: str,
+        relation_name: str,
+    ) -> list[RelationReference]:
+        """Return the permissions that are computable for the given relation
+        on a definition."""
+        request = schema_service_pb2.ComputablePermissionsRequest(
+            consistency=consistency._to_proto(),
+            definition_name=definition_name,
+            relation_name=relation_name,
+        )
+
+        async def _call() -> schema_service_pb2.ComputablePermissionsResponse:
+            return await self._schema.ComputablePermissions(request)
+
+        resp = await self._with_retry(_call)
+        return [RelationReference._from_proto(p) for p in resp.permissions]
+
+    async def dependent_relations(
+        self,
+        consistency: Consistency,
+        definition_name: str,
+        permission_name: str,
+    ) -> list[RelationReference]:
+        """Return the relations that the given permission depends on."""
+        request = schema_service_pb2.DependentRelationsRequest(
+            consistency=consistency._to_proto(),
+            definition_name=definition_name,
+            permission_name=permission_name,
+        )
+
+        async def _call() -> schema_service_pb2.DependentRelationsResponse:
+            return await self._schema.DependentRelations(request)
+
+        resp = await self._with_retry(_call)
+        return [RelationReference._from_proto(r) for r in resp.relations]
 
 
 class _BearerTokenInterceptor(

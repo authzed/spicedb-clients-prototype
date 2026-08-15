@@ -376,9 +376,7 @@ def _permission_tree_from_proto(
 # Mirrors spicedb-go's native schema types and mappers
 # (spicedb-go/client/schema.go): ReflectSchemaResult, SchemaDefinition,
 # SchemaRelation, SchemaPermission, SchemaCaveat, SchemaCaveatParameter,
-# and SchemaDiff. (spicedb-go's RelationReference type, used by
-# ComputablePermissions/DependentRelations, has no Python counterpart yet —
-# those two methods are not implemented in this client.)
+# SchemaDiff, and RelationReference.
 
 
 @dataclass(frozen=True)
@@ -495,6 +493,30 @@ class ReflectSchemaResult:
             definitions=[SchemaDefinition._from_proto(d) for d in proto.definitions],
             caveats=[SchemaCaveat._from_proto(c) for c in proto.caveats],
             revision=proto.read_at.token,
+        )
+
+
+@dataclass(frozen=True)
+class RelationReference:
+    """Identifies a relation or permission on a definition.
+
+    Returned by `computable_permissions()`/`dependent_relations()`; mirrors
+    spicedb-go's `RelationReference` (client/schema.go).
+    """
+
+    definition_name: str
+    relation_name: str
+    is_permission: bool
+
+    @classmethod
+    def _from_proto(
+        cls, proto: schema_service_pb2.ReflectionRelationReference
+    ) -> "RelationReference":
+        """Create from a proto ReflectionRelationReference."""
+        return cls(
+            definition_name=proto.definition_name,
+            relation_name=proto.relation_name,
+            is_permission=proto.is_permission,
         )
 
 

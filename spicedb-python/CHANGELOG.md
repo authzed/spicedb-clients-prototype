@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Added
+
+- `SpiceDBClient.computable_permissions()` and `SpiceDBClient.dependent_relations()`
+  — previously missing `SchemaService` RPCs (API-coverage gap). Both take
+  `(consistency, definition_name, relation_name_or_permission_name)` and
+  return `list[RelationReference]` (new native type: `definition_name`,
+  `relation_name`, `is_permission`), mirroring `spicedb-go`'s
+  `ComputablePermissions`/`DependentRelations`/`RelationReference`
+  (`spicedb-go/client/schema.go`). These are stable `SchemaService` RPCs, not
+  experimental.
+
+  ```python
+  permissions = await client.computable_permissions(full(), "document", "viewer")
+  for p in permissions:  # p: RelationReference
+      print(p.relation_name, p.is_permission)
+
+  relations = await client.dependent_relations(full(), "document", "view")
+  ```
+
 ### Fixed
 
 - `Update._from_proto()` no longer raises a bare `KeyError` when the wire
@@ -103,10 +122,7 @@
   raw proto response. Added native `ReflectSchemaResult`, `SchemaDefinition`,
   `SchemaRelation`, `SchemaPermission`, `SchemaCaveat`,
   `SchemaCaveatParameter`, and `SchemaDiff` types (mirrors the shape in
-  `spicedb-go/client/schema.go`). Note: `computable_permissions()`/
-  `dependent_relations()` (which use `spicedb-go`'s native
-  `RelationReference` type) are not yet implemented in this client at all —
-  out of scope for this change.
+  `spicedb-go/client/schema.go`).
 
   Before:
   ```python

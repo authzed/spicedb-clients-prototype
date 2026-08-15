@@ -4,10 +4,10 @@ import inspect
 from unittest.mock import AsyncMock
 
 import pytest
-from authzed.api.v1 import permission_service_pb2
+from authzed.api.v1 import core_pb2, permission_service_pb2, schema_service_pb2
 from google.rpc import status_pb2
 
-from spicedb import Relationship, SpiceDBClient, full
+from spicedb import Relationship, RelationReference, SpiceDBClient, full
 from spicedb.errors import InvalidArgumentError, SpiceDBError
 
 
@@ -37,6 +37,99 @@ class TestSchemaReflectionSignatures:
     def test_diff_schema_returns_native_list(self):
         sig = inspect.signature(SpiceDBClient.diff_schema)
         assert sig.return_annotation == "list[SchemaDiff]"
+
+    def test_computable_permissions_returns_native_list(self):
+        sig = inspect.signature(SpiceDBClient.computable_permissions)
+        assert sig.return_annotation == "list[RelationReference]"
+
+    def test_dependent_relations_returns_native_list(self):
+        sig = inspect.signature(SpiceDBClient.dependent_relations)
+        assert sig.return_annotation == "list[RelationReference]"
+
+
+class TestComputablePermissions:
+    """`computable_permissions` mirrors spicedb-go's ComputablePermissions
+    (client/schema.go): request {consistency, definition_name, relation_name},
+    response .permissions (list of RelationReference) + .read_at."""
+
+    async def test_maps_permissions_field_by_field(self):
+        client = SpiceDBClient("localhost:50051", token="testtoken", insecure=True)
+        response = schema_service_pb2.ComputablePermissionsResponse(
+            permissions=[
+                schema_service_pb2.ReflectionRelationReference(
+                    definition_name="document",
+                    relation_name="view",
+                    is_permission=True,
+                ),
+                schema_service_pb2.ReflectionRelationReference(
+                    definition_name="document",
+                    relation_name="view_and_edit",
+                    is_permission=True,
+                ),
+            ],
+            read_at=core_pb2.ZedToken(token="deadbeef"),
+        )
+        client._schema.ComputablePermissions = AsyncMock(return_value=response)
+
+        result = await client.computable_permissions(full(), "document", "viewer")
+
+        assert result == [
+            RelationReference(
+                definition_name="document", relation_name="view", is_permission=True
+            ),
+            RelationReference(
+                definition_name="document",
+                relation_name="view_and_edit",
+                is_permission=True,
+            ),
+        ]
+
+        client._schema.ComputablePermissions.assert_awaited_once()
+        request = client._schema.ComputablePermissions.await_args.args[0]
+        assert request.definition_name == "document"
+        assert request.relation_name == "viewer"
+
+
+class TestDependentRelations:
+    """`dependent_relations` mirrors spicedb-go's DependentRelations
+    (client/schema.go): request {consistency, definition_name,
+    permission_name}, response .relations (list of RelationReference) +
+    .read_at."""
+
+    async def test_maps_relations_field_by_field(self):
+        client = SpiceDBClient("localhost:50051", token="testtoken", insecure=True)
+        response = schema_service_pb2.DependentRelationsResponse(
+            relations=[
+                schema_service_pb2.ReflectionRelationReference(
+                    definition_name="document",
+                    relation_name="viewer",
+                    is_permission=False,
+                ),
+                schema_service_pb2.ReflectionRelationReference(
+                    definition_name="document",
+                    relation_name="editor",
+                    is_permission=False,
+                ),
+            ],
+            read_at=core_pb2.ZedToken(token="cafebabe"),
+        )
+        client._schema.DependentRelations = AsyncMock(return_value=response)
+
+        result = await client.dependent_relations(full(), "document", "view")
+
+        assert result == [
+            RelationReference(
+                definition_name="document", relation_name="viewer", is_permission=False
+            ),
+            RelationReference(
+                definition_name="document", relation_name="editor", is_permission=False
+            ),
+        ]
+
+        client._schema.DependentRelations.assert_awaited_once()
+        request = client._schema.DependentRelations.await_args.args[0]
+        assert request.definition_name == "document"
+        assert request.permission_name == "view"
 
 
 class TestBulkCheckPerItemErrorFidelity:

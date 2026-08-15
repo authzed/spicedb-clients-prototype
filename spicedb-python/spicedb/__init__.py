@@ -24,6 +24,7 @@ from spicedb.types import (
     ObjectRef,
     PermissionTree,
     ReflectSchemaResult,
+    RelationReference,
     Relationship,
     SchemaCaveat,
     SchemaCaveatParameter,
@@ -68,6 +69,7 @@ __all__ = [
     "SchemaCaveat",
     "SchemaCaveatParameter",
     "SchemaDiff",
+    "RelationReference",
     # Errors
     "SpiceDBError",
     "PermissionDeniedError",

@@ -3,13 +3,15 @@ instance needed.
 
 Mirrors the Go reference test coverage implied by spicedb-go/client/schema.go's
 mappers (ReflectSchemaResult, SchemaDefinition, SchemaRelation,
-SchemaPermission, SchemaCaveat, SchemaCaveatParameter, SchemaDiff).
+SchemaPermission, SchemaCaveat, SchemaCaveatParameter, SchemaDiff,
+RelationReference).
 """
 
 from authzed.api.v1 import core_pb2, schema_service_pb2
 
 from spicedb.types import (
     ReflectSchemaResult,
+    RelationReference,
     SchemaCaveat,
     SchemaCaveatParameter,
     SchemaDefinition,
@@ -232,6 +234,45 @@ class TestSchemaDiffFromProto:
         diff = _schema_diff_from_proto(schema_service_pb2.ReflectionSchemaDiff())
         try:
             diff.kind = "other"  # type: ignore[misc]
+            assert False, "should have raised"
+        except AttributeError:
+            pass
+
+
+class TestRelationReferenceFromProto:
+    """Mirrors spicedb-go's RelationReference (client/schema.go), used by
+    ComputablePermissions/DependentRelations."""
+
+    def test_from_proto(self):
+        proto = schema_service_pb2.ReflectionRelationReference(
+            definition_name="document",
+            relation_name="view",
+            is_permission=True,
+        )
+        assert RelationReference._from_proto(proto) == RelationReference(
+            definition_name="document",
+            relation_name="view",
+            is_permission=True,
+        )
+
+    def test_from_proto_relation_not_permission(self):
+        proto = schema_service_pb2.ReflectionRelationReference(
+            definition_name="document",
+            relation_name="viewer",
+            is_permission=False,
+        )
+        assert RelationReference._from_proto(proto) == RelationReference(
+            definition_name="document",
+            relation_name="viewer",
+            is_permission=False,
+        )
+
+    def test_frozen(self):
+        ref = RelationReference(
+            definition_name="document", relation_name="view", is_permission=True
+        )
+        try:
+            ref.relation_name = "other"  # type: ignore[misc]
             assert False, "should have raised"
         except AttributeError:
             pass

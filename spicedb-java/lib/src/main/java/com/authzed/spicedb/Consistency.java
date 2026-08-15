@@ -19,10 +19,10 @@ public final class Consistency {
   }
 
   /**
-   * Returns the underlying proto Consistency for use by the client. This is exposed for advanced
-   * use cases only.
+   * Returns the underlying proto Consistency for use by the client. Package-private: proto types
+   * must never appear in the public API surface.
    */
-  public build.buf.gen.authzed.api.v1.Consistency toProto() {
+  build.buf.gen.authzed.api.v1.Consistency toProto() {
     return proto;
   }
 

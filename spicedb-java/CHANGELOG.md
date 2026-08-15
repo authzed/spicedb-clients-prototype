@@ -9,6 +9,7 @@
 - **Delete page size correction**: `DEFAULT_DELETE_PAGE_SIZE` is now 10,000 (matching Go client and DESIGN.md spec), not 1,000
 - **Escape-hatch documentation**: `ClientOption.apply()` and `create(...)` are now documented as advanced escape hatches for gRPC channel configuration. Removed unused `DEFAULT_CHECK_BATCH_SIZE` constant
 - **Retry count alignment**: transient gRPC errors are now retried up to 4 total attempts (1 initial + 3 retries), matching the retry behavior of the other SpiceDB clients (was 3 total attempts / 2 retries)
+- **`Consistency.toProto()` visibility**: made package-private (was `public`), since proto types must never appear in the public API surface. It was only used internally by `SpiceDBClient`
 
 ## 0.1.0 (2026-03-18)
 

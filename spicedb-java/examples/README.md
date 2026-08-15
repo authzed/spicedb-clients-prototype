@@ -31,6 +31,7 @@ Or use `mage test` which starts a SpiceDB container automatically.
 | `LookupSubjectsTest` | Finding subjects with access to a resource |
 | `WatchChangesTest` | Watching for relationship changes via the watch API |
 | `SchemaManagementTest` | Schema read/write operations |
-| `BulkOperationsTest` | Bulk permission checks with `checkPermissions`, `checkAll`, `checkAny` |
+| `BulkOperationsTest` | Bulk permission checks with `checkPermissions`, `checkAll`, `checkAny`, plus bulk `importRelationships`/`exportRelationships` |
 | `SchemaReflectionTest` | Schema reflection, computable permissions, dependent relations, schema diff |
 | `RelationshipCountersTest` | Experimental relationship counter registration and reading |
+| `ExpandPermissionTreeTest` | Expanding a permission with `expandPermissionTree` and walking the native `PermissionTree` (intermediate/leaf nodes, subjects) |

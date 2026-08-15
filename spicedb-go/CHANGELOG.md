@@ -6,9 +6,34 @@
 
 - **2026-08-14**: `ExpandResult.TreeRoot` (a leaked `*v1.PermissionRelationshipTree` proto type) is replaced with `ExpandResult.Tree`, a native `PermissionTree` (see `client/expand_tree.go`: `PermissionTree`, `IntermediateNode`, `LeafNode`, `ObjectRef`, `SubjectRef`, `TreeOperation`). No protobuf types are exposed from `ExpandPermissionTree` anymore.
 
+  Before:
+  ```go
+  result, _ := c.ExpandPermissionTree(ctx, cs, "document", "1", "view")
+  root := result.TreeRoot // *v1.PermissionRelationshipTree
+  ```
+  After:
+  ```go
+  result, _ := c.ExpandPermissionTree(ctx, cs, "document", "1", "view")
+  tree := result.Tree // client.PermissionTree (native)
+  ```
+
 ### Bug Fixes
 
 - **2026-08-14**: `client.Error.Code` is now a native `client.ErrorCode` enum (`CodeUnknown`, `CodeNotFound`, `CodeAlreadyExists`, `CodeInvalidArgument`, `CodeFailedPrecondition`, `CodePermissionDenied`, `CodeUnauthenticated`, `CodeUnavailable`, `CodeResourceExhausted`, `CodeAborted`, `CodeDeadlineExceeded`, `CodeCanceled`, `CodeInternal`), replacing the raw `google.golang.org/grpc/codes.Code` that was previously exposed on the field. This closes a gap left by the earlier native-error-mapping fix, which mapped errors into `*client.Error` but left the raw gRPC code type on the struct. `errors.Is`/sentinel matching (`ErrNotFound`, etc.) is unchanged for callers; `errors.Unwrap` still exposes the underlying gRPC status error as an escape hatch. Any code that compared `err.(*client.Error).Code` against `codes.X` must switch to comparing against `client.CodeX`.
+
+  Before:
+  ```go
+  if cerr, ok := err.(*client.Error); ok && cerr.Code == codes.NotFound {
+      // handle not found
+  }
+  ```
+  After:
+  ```go
+  if cerr, ok := err.(*client.Error); ok && cerr.Code == client.CodeNotFound {
+      // handle not found
+  }
+  // or, unchanged: errors.Is(err, client.ErrNotFound)
+  ```
 
 ### Features
 

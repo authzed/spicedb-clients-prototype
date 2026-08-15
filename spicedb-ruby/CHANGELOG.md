@@ -6,6 +6,17 @@
 
 - **Breaking**: `expand_permission_tree` no longer leaks the raw protobuf `PermissionRelationshipTree` through `ExpandResult`. `ExpandResult#tree_root` is replaced by `ExpandResult#tree`, a native `SpiceDB::PermissionTree` built from new `Data.define` value types (`ObjectRef`, `SubjectRef`, `IntermediateNode`, `LeafNode`, `PermissionTree`), mirroring the Go client's native expand tree.
 
+  Before:
+  ```ruby
+  result = client.expand_permission_tree(consistency, "document", "1", "view")
+  root = result.tree_root # proto PermissionRelationshipTree
+  ```
+  After:
+  ```ruby
+  result = client.expand_permission_tree(consistency, "document", "1", "view")
+  tree = result.tree # SpiceDB::PermissionTree (native)
+  ```
+
 ### Fixed
 
 - **Delete page size correction**: `DEFAULT_DELETE_PAGE_SIZE` is now 10,000 (matching DESIGN.md spec), not 1,000

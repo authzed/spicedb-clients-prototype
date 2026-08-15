@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Breaking Changes
+
+- **2026-08-14**: `ExpandResult.treeRoot` (the leaked proto `PermissionRelationshipTree`) is replaced with `ExpandResult.tree()`, a native `PermissionTree` record family (`ObjectRef`, `SubjectRef`, `IntermediateNode`, `LeafNode`, `Operation`), mirroring `spicedb-go`'s native expand tree. No protobuf types are exposed from `expandPermissionTree` anymore.
+
+  Before:
+  ```java
+  ExpandResult result = client.expandPermissionTree(consistency, "document", "1", "view");
+  var root = result.treeRoot(); // PermissionRelationshipTree (proto)
+  ```
+  After:
+  ```java
+  ExpandResult result = client.expandPermissionTree(consistency, "document", "1", "view");
+  PermissionTree tree = result.tree(); // native record
+  ```
+
 ### Fixes
 
 - **Streaming error mapping**: `readRelationships`, `lookupResources`, `lookupSubjects`, `exportRelationships`, and `updates` now map mid-stream gRPC errors (raised while iterating `serverStream.hasNext()`/`next()`) to the typed `SpiceDBException` hierarchy via `ErrorMapper`, instead of leaking a raw `io.grpc.StatusRuntimeException` to stream consumers
@@ -10,6 +25,18 @@
 - **Escape-hatch documentation**: `ClientOption.apply()` and `create(...)` are now documented as advanced escape hatches for gRPC channel configuration. Removed unused `DEFAULT_CHECK_BATCH_SIZE` constant
 - **Retry count alignment**: transient gRPC errors are now retried up to 4 total attempts (1 initial + 3 retries), matching the retry behavior of the other SpiceDB clients (was 3 total attempts / 2 retries)
 - **`Consistency.toProto()` visibility**: made package-private (was `public`), since proto types must never appear in the public API surface. It was only used internally by `SpiceDBClient`
+
+  Before:
+  ```java
+  Consistency cs = Consistency.full();
+  var proto = cs.toProto(); // public accessor, callable from any package
+  ```
+  After:
+  ```java
+  Consistency cs = Consistency.full();
+  // toProto() is package-private; construct via full()/atLeast()/etc. and
+  // pass `cs` directly to SpiceDBClient methods
+  ```
 
 ## 0.1.0 (2026-03-18)
 

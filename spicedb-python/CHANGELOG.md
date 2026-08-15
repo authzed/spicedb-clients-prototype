@@ -27,10 +27,36 @@
 - `SpiceDBClient.watch()` now yields `tuple[list[Update], str]` instead of
   `tuple[list[core_pb2.RelationshipUpdate], str]`. Added `Update` and
   `UpdateOperation` native types.
+
+  Before:
+  ```python
+  async for updates, revision in client.watch():
+      for u in updates:  # u: core_pb2.RelationshipUpdate (proto)
+          print(u.operation, u.relationship)
+  ```
+  After:
+  ```python
+  async for updates, revision in client.watch():
+      for u in updates:  # u: spicedb.Update (native)
+          print(u.operation, u.relationship)  # operation: UpdateOperation
+  ```
 - `SpiceDBClient.expand_permission_tree()` now returns `tuple[PermissionTree, str]`
   instead of `tuple[core_pb2.PermissionRelationshipTree, str]`. Added native
   `PermissionTree`, `IntermediateNode`, `LeafNode`, `ObjectRef`, `SubjectRef`,
   and `TreeOperation` types (mirrors the shape in `spicedb-go`).
+
+  Before:
+  ```python
+  tree, revision = await client.expand_permission_tree(("document", "1"), "view", full())
+  # tree: core_pb2.PermissionRelationshipTree (proto)
+  ```
+  After:
+  ```python
+  tree, revision = await client.expand_permission_tree(("document", "1"), "view", full())
+  # tree: spicedb.PermissionTree (native dataclass)
+  for subject in tree.leaf.subjects:  # leaf: LeafNode | None
+      print(subject.subject_id)
+  ```
 - `SpiceDBClient.reflect_schema()` now returns a native `ReflectSchemaResult`
   (`definitions: list[SchemaDefinition]`, `caveats: list[SchemaCaveat]`,
   `revision: str`) instead of the raw proto response. Also fixes a
@@ -38,6 +64,19 @@
   (`ExpSchemaFilter`, which does not exist) instead of
   `ReflectionSchemaFilter`, which made every `reflect_schema()` call raise
   `AttributeError`.
+
+  Before:
+  ```python
+  resp = await client.reflect_schema(full())
+  for d in resp.definitions:  # resp: proto ReflectSchemaResponse
+      print(d.name)
+  ```
+  After:
+  ```python
+  result = await client.reflect_schema(full())
+  for d in result.definitions:  # result: native ReflectSchemaResult
+      print(d.name)  # d: SchemaDefinition
+  ```
 - `Consistency` is now an opaque native frozen dataclass instead of a
   `permission_service_pb2.Consistency` proto alias. `full()`, `min_latency()`,
   `at_least()`, `snapshot()`, `at_least_or_full()`, and
@@ -47,6 +86,19 @@
   that reached into the proto's oneof fields directly (e.g.
   `full().fully_consistent`) will break; construct via the helper functions
   and let the client handle the rest.
+
+  Before:
+  ```python
+  cs = full()
+  if cs.fully_consistent:  # direct proto oneof field access
+      ...
+  ```
+  After:
+  ```python
+  cs = full()
+  # no direct field access; construct via full()/at_least()/etc. and pass
+  # `cs` straight to client calls — internals handle the rest
+  ```
 - `SpiceDBClient.diff_schema()` now returns `list[SchemaDiff]` instead of the
   raw proto response. Added native `ReflectSchemaResult`, `SchemaDefinition`,
   `SchemaRelation`, `SchemaPermission`, `SchemaCaveat`,
@@ -55,6 +107,19 @@
   `dependent_relations()` (which use `spicedb-go`'s native
   `RelationReference` type) are not yet implemented in this client at all —
   out of scope for this change.
+
+  Before:
+  ```python
+  resp = await client.diff_schema(full(), new_schema)
+  for d in resp.diffs:  # resp: proto DiffSchemaResponse
+      print(d.definition_added.name)
+  ```
+  After:
+  ```python
+  diffs = await client.diff_schema(full(), new_schema)
+  for d in diffs:  # diffs: list[SchemaDiff] (native)
+      print(d.kind, d.definition_name)
+  ```
 
 ## 0.1.0 (2026-03-16)
 

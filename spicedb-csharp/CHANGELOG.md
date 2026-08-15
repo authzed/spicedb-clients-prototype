@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Breaking Changes
+
+- **2026-08-14**: `ExpandResult.TreeRoot` (the leaked proto `PermissionRelationshipTree`) is replaced with `ExpandResult.Tree`, a native `PermissionTree` record family (`ObjectRef`, `SubjectRef`, `IntermediateNode`, `LeafNode`, `TreeOperation`), mirroring `spicedb-go`'s native expand tree. No protobuf types are exposed from `ExpandPermissionTreeAsync` anymore.
+
+  Before:
+  ```csharp
+  var result = await client.ExpandPermissionTreeAsync(consistency, "document", "1", "view");
+  var root = result.TreeRoot; // PermissionRelationshipTree (proto)
+  ```
+  After:
+  ```csharp
+  var result = await client.ExpandPermissionTreeAsync(consistency, "document", "1", "view");
+  PermissionTree tree = result.Tree; // native record
+  ```
+
 ### Fixed
 
 - **2026-08-14**: Streaming/bulk methods (`ReadRelationshipsAsync`,

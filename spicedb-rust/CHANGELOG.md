@@ -4,6 +4,7 @@
 
 ### Fixes
 
+- **Delete page size correction**: `DEFAULT_DELETE_PAGE_SIZE` is now 10,000 (matching DESIGN.md spec), not 1,000
 - **Standardized the retryable gRPC code set to `{UNAVAILABLE, RESOURCE_EXHAUSTED,
   ABORTED}`**, aligning with the other idiomatic clients. `DEADLINE_EXCEEDED` is no
   longer treated as transient/retried — a deadline is a caller-set budget, and

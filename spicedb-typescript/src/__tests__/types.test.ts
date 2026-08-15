@@ -1,10 +1,13 @@
 import { describe, it, expect } from "vitest";
+import { Precondition_Operation } from "@spicedb/proto";
 import {
   relationship,
   relationshipFromTuple,
   Transaction,
   toProtoRelationship,
   fromProtoRelationship,
+  toProtoDeletePreconditions,
+  toProtoDeleteRelationshipsRequest,
 } from "../types.js";
 
 describe("relationship()", () => {
@@ -142,5 +145,110 @@ describe("Transaction", () => {
     expect(txn.updates).toHaveLength(3);
     expect(txn.preconditions).toHaveLength(1);
     expect(txn.metadata).toEqual({ source: "test" });
+  });
+});
+
+describe("toProtoDeletePreconditions()", () => {
+  it("returns an empty array when no options are given", () => {
+    expect(toProtoDeletePreconditions()).toEqual([]);
+  });
+
+  it("returns an empty array when options has no mustMatch/mustNotMatch", () => {
+    expect(toProtoDeletePreconditions({ limit: 10 })).toEqual([]);
+  });
+
+  it("builds MUST_MATCH preconditions from mustMatch filters", () => {
+    const preconditions = toProtoDeletePreconditions({
+      mustMatch: [{ resourceType: "document", resourceId: "readme" }],
+    });
+    expect(preconditions).toHaveLength(1);
+    expect(preconditions[0].operation).toBe(
+      Precondition_Operation.MUST_MATCH,
+    );
+    expect(preconditions[0].filter?.resourceType).toBe("document");
+    expect(preconditions[0].filter?.optionalResourceId).toBe("readme");
+  });
+
+  it("builds MUST_NOT_MATCH preconditions from mustNotMatch filters", () => {
+    const preconditions = toProtoDeletePreconditions({
+      mustNotMatch: [{ resourceType: "document", resourceId: "secret" }],
+    });
+    expect(preconditions).toHaveLength(1);
+    expect(preconditions[0].operation).toBe(
+      Precondition_Operation.MUST_NOT_MATCH,
+    );
+    expect(preconditions[0].filter?.optionalResourceId).toBe("secret");
+  });
+
+  it("orders mustMatch preconditions before mustNotMatch, supporting multiple of each", () => {
+    const preconditions = toProtoDeletePreconditions({
+      mustMatch: [
+        { resourceType: "document", resourceId: "a" },
+        { resourceType: "document", resourceId: "b" },
+      ],
+      mustNotMatch: [{ resourceType: "document", resourceId: "c" }],
+    });
+    expect(preconditions).toHaveLength(3);
+    expect(
+      preconditions.map((p) => [p.operation, p.filter?.optionalResourceId]),
+    ).toEqual([
+      [Precondition_Operation.MUST_MATCH, "a"],
+      [Precondition_Operation.MUST_MATCH, "b"],
+      [Precondition_Operation.MUST_NOT_MATCH, "c"],
+    ]);
+  });
+});
+
+describe("toProtoDeleteRelationshipsRequest()", () => {
+  it("defaults to no preconditions, zero limit, and allowPartialDeletions=false", () => {
+    const req = toProtoDeleteRelationshipsRequest({
+      resourceType: "document",
+    });
+    expect(req.relationshipFilter?.resourceType).toBe("document");
+    expect(req.optionalPreconditions).toEqual([]);
+    expect(req.optionalLimit).toBe(0);
+    expect(req.optionalAllowPartialDeletions).toBe(false);
+  });
+
+  it("threads mustMatch/mustNotMatch into optionalPreconditions", () => {
+    const req = toProtoDeleteRelationshipsRequest(
+      { resourceType: "document" },
+      {
+        mustMatch: [{ resourceType: "document", resourceId: "readme" }],
+        mustNotMatch: [{ resourceType: "document", resourceId: "secret" }],
+      },
+    );
+    expect(req.optionalPreconditions).toHaveLength(2);
+    expect(req.optionalPreconditions[0].operation).toBe(
+      Precondition_Operation.MUST_MATCH,
+    );
+    expect(req.optionalPreconditions[1].operation).toBe(
+      Precondition_Operation.MUST_NOT_MATCH,
+    );
+    // Setting preconditions alone must not imply a limit or partial deletion.
+    expect(req.optionalLimit).toBe(0);
+    expect(req.optionalAllowPartialDeletions).toBe(false);
+  });
+
+  it("sets optionalLimit and optionalAllowPartialDeletions=true when limit is provided", () => {
+    const req = toProtoDeleteRelationshipsRequest(
+      { resourceType: "document" },
+      { limit: 500 },
+    );
+    expect(req.optionalLimit).toBe(500);
+    expect(req.optionalAllowPartialDeletions).toBe(true);
+  });
+
+  it("combines preconditions and limit in a single request", () => {
+    const req = toProtoDeleteRelationshipsRequest(
+      { resourceType: "document" },
+      {
+        mustMatch: [{ resourceType: "document", resourceId: "readme" }],
+        limit: 100,
+      },
+    );
+    expect(req.optionalPreconditions).toHaveLength(1);
+    expect(req.optionalLimit).toBe(100);
+    expect(req.optionalAllowPartialDeletions).toBe(true);
   });
 });

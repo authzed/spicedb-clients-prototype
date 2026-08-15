@@ -15,6 +15,8 @@ import {
   type Precondition as ProtoPrecondition,
   PreconditionSchema,
   Precondition_Operation,
+  type DeleteRelationshipsRequest as ProtoDeleteRelationshipsRequest,
+  DeleteRelationshipsRequestSchema,
   type PermissionRelationshipTree as ProtoPermissionRelationshipTree,
   AlgebraicSubjectSet_Operation,
   type ReflectionDefinition as ProtoReflectionDefinition,
@@ -55,6 +57,39 @@ export interface RelationshipFilterOptions {
   subjectType?: string;
   subjectId?: string;
   subjectRelation?: string;
+}
+
+/**
+ * Options for {@link SpiceDBClient.deleteRelationships}: preconditions that
+ * guard the delete, and an optional limit on how many relationships a single
+ * call deletes.
+ *
+ * Mirrors spicedb-go's `WithDeleteMustMatch`/`WithDeleteMustNotMatch`/
+ * `WithDeleteLimit` (client/relationships.go) and spicedb-python's
+ * `delete_relationships` keyword arguments.
+ */
+export interface DeleteOptions {
+  /**
+   * Preconditions requiring at least one relationship matching each filter
+   * to exist at evaluation time. If any `mustMatch` filter has no matches,
+   * the server rejects the delete and deletes nothing.
+   */
+  mustMatch?: RelationshipFilterOptions[];
+  /**
+   * Preconditions requiring that no relationship matches each filter at
+   * evaluation time. If any `mustNotMatch` filter has a match, the server
+   * rejects the delete and deletes nothing.
+   */
+  mustNotMatch?: RelationshipFilterOptions[];
+  /**
+   * Bounds how many relationships this call deletes. If more relationships
+   * match the filter than `limit`, only `limit` of them are deleted by this
+   * call (setting `limit` automatically allows this partial deletion on the
+   * server, since the server otherwise rejects a limited delete found to
+   * span more matches than the limit). This does not auto-page — call again
+   * with the same filter to continue deleting what remains.
+   */
+  limit?: number;
 }
 
 /**
@@ -369,10 +404,7 @@ export class Transaction {
    */
   mustNotMatch(filter: RelationshipFilterOptions): this {
     this.preconditions.push(
-      create(PreconditionSchema, {
-        operation: Precondition_Operation.MUST_NOT_MATCH,
-        filter: toProtoRelationshipFilter(filter),
-      }),
+      toProtoPrecondition(Precondition_Operation.MUST_NOT_MATCH, filter),
     );
     return this;
   }
@@ -383,10 +415,7 @@ export class Transaction {
    */
   mustMatch(filter: RelationshipFilterOptions): this {
     this.preconditions.push(
-      create(PreconditionSchema, {
-        operation: Precondition_Operation.MUST_MATCH,
-        filter: toProtoRelationshipFilter(filter),
-      }),
+      toProtoPrecondition(Precondition_Operation.MUST_MATCH, filter),
     );
     return this;
   }
@@ -570,6 +599,64 @@ export function toProtoRelationshipFilter(
   }
 
   return proto;
+}
+
+/**
+ * Builds a Precondition proto from an operation and filter. Shared by
+ * {@link Transaction}'s `mustMatch`/`mustNotMatch` and
+ * {@link toProtoDeletePreconditions} so both build preconditions identically.
+ *
+ * @internal
+ */
+export function toProtoPrecondition(
+  operation: Precondition_Operation,
+  filter: RelationshipFilterOptions,
+): ProtoPrecondition {
+  return create(PreconditionSchema, {
+    operation,
+    filter: toProtoRelationshipFilter(filter),
+  });
+}
+
+/**
+ * Builds the `optionalPreconditions` array for a delete request from
+ * {@link DeleteOptions}: `mustMatch` filters first, then `mustNotMatch`
+ * filters, mirroring spicedb-python's `delete_relationships`.
+ *
+ * @internal
+ */
+export function toProtoDeletePreconditions(
+  options?: DeleteOptions,
+): ProtoPrecondition[] {
+  return [
+    ...(options?.mustMatch ?? []).map((filter) =>
+      toProtoPrecondition(Precondition_Operation.MUST_MATCH, filter),
+    ),
+    ...(options?.mustNotMatch ?? []).map((filter) =>
+      toProtoPrecondition(Precondition_Operation.MUST_NOT_MATCH, filter),
+    ),
+  ];
+}
+
+/**
+ * Builds a DeleteRelationshipsRequest proto from a filter and
+ * {@link DeleteOptions}. `optionalAllowPartialDeletions` is set whenever
+ * `limit` is provided — the server otherwise rejects a limited delete that
+ * finds more matches than the limit. Exported for testing the request shape
+ * directly; the client sends exactly what this returns.
+ *
+ * @internal
+ */
+export function toProtoDeleteRelationshipsRequest(
+  filter: RelationshipFilterOptions,
+  options?: DeleteOptions,
+): ProtoDeleteRelationshipsRequest {
+  return create(DeleteRelationshipsRequestSchema, {
+    relationshipFilter: toProtoRelationshipFilter(filter),
+    optionalPreconditions: toProtoDeletePreconditions(options),
+    optionalLimit: options?.limit ?? 0,
+    optionalAllowPartialDeletions: options?.limit !== undefined,
+  });
 }
 
 // ---------------------------------------------------------------------------

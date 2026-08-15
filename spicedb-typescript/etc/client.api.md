@@ -63,6 +63,13 @@ export function createSpiceDBClient(endpoint: string, token: string, options?: {
 }): SpiceDBClient;
 
 // @public
+export interface DeleteOptions {
+    limit?: number;
+    mustMatch?: RelationshipFilterOptions[];
+    mustNotMatch?: RelationshipFilterOptions[];
+}
+
+// @public
 export interface DependentRelationsParams {
     // (undocumented)
     definitionName: string;
@@ -382,7 +389,7 @@ export class SpiceDBClient {
         permissions: RelationReference[];
         revision: string;
     }>;
-    deleteRelationships(filter: RelationshipFilterOptions): Promise<string>;
+    deleteRelationships(filter: RelationshipFilterOptions, options?: DeleteOptions): Promise<string>;
     dependentRelations(consistency: Consistency, params: DependentRelationsParams): Promise<{
         relations: RelationReference[];
         revision: string;

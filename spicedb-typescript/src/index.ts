@@ -8,6 +8,7 @@ export { Consistency, full, minLatency, atLeast, atLeastOrFull, atLeastOrMinLate
 export {
   type Relationship,
   type RelationshipFilterOptions,
+  type DeleteOptions,
   type LookupResourcesParams,
   type LookupSubjectsParams,
   type CheckRequest,

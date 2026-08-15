@@ -8,7 +8,6 @@ import {
   CheckPermissionRequestSchema,
   ReadRelationshipsRequestSchema,
   WriteRelationshipsRequestSchema,
-  DeleteRelationshipsRequestSchema,
   LookupResourcesRequestSchema,
   LookupSubjectsRequestSchema,
   ExpandPermissionTreeRequestSchema,
@@ -52,6 +51,7 @@ import {
   type RelationReference,
   type RelationshipCountResult,
   type Transaction,
+  type DeleteOptions,
   type PermissionTree,
   type SchemaDefinition,
   type SchemaCaveat,
@@ -59,6 +59,7 @@ import {
   toProtoRelationship,
   fromProtoRelationship,
   toProtoRelationshipFilter,
+  toProtoDeleteRelationshipsRequest,
   fromProtoPermissionTree,
   fromProtoSchemaDefinition,
   fromProtoSchemaCaveat,
@@ -272,16 +273,29 @@ export class SpiceDBClient {
   /**
    * Deletes all relationships matching the given filter.
    *
+   * `options.mustMatch`/`options.mustNotMatch` add preconditions that guard
+   * the delete: if a precondition fails, the server rejects the call and
+   * deletes nothing. Mirrors spicedb-go's `WithDeleteMustMatch`/
+   * `WithDeleteMustNotMatch` (client/relationships.go).
+   *
+   * `options.limit` bounds how many relationships this call deletes. If
+   * more relationships match the filter than `limit`, only `limit` of them
+   * are deleted by this call (the server requires
+   * `optionalAllowPartialDeletions`, which this sets automatically whenever
+   * `limit` is given, to permit that). Unlike spicedb-go's
+   * `WithDeleteLimit`, this does not auto-page — it does not loop to delete
+   * every match when the match count exceeds `limit`; call again with the
+   * same filter to continue deleting what remains.
+   *
    * @returns The revision at which the deletion was committed.
    */
   async deleteRelationships(
     filter: RelationshipFilterOptions,
+    options?: DeleteOptions,
   ): Promise<string> {
     return this.withRetry(async () => {
       const resp = await this.proto.permissions.deleteRelationships(
-        create(DeleteRelationshipsRequestSchema, {
-          relationshipFilter: toProtoRelationshipFilter(filter),
-        }),
+        toProtoDeleteRelationshipsRequest(filter, options),
       );
       return resp.deletedAt?.token ?? "";
     });

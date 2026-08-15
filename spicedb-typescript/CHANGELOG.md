@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+### Added
+
+- **2026-08-15**: `deleteRelationships()` now accepts an optional
+  `DeleteOptions` second argument with `mustMatch`/`mustNotMatch`
+  (each `RelationshipFilterOptions[]`) and `limit`, mirroring spicedb-go's
+  `WithDeleteMustMatch`/`WithDeleteMustNotMatch`/`WithDeleteLimit`
+  (`spicedb-go/client/relationships.go`) and spicedb-python's
+  `delete_relationships` keyword arguments. Previously the proto's
+  `optionalPreconditions`/`optionalLimit` fields were unreachable, so there
+  was no way to do a precondition-guarded or bounded delete. Preconditions
+  are built the same way as `Transaction.mustMatch`/`mustNotMatch`. Setting
+  `limit` also sets `optionalAllowPartialDeletions: true` — the server
+  otherwise rejects a limited delete that finds more matches than the limit.
+  Additive — existing `deleteRelationships(filter)` call sites are
+  unaffected (no preconditions, no limit, `optionalAllowPartialDeletions:
+  false`, same as before). `DeleteOptions` is exported from the package
+  root.
+
+  ```typescript
+  // Only delete if an `owner` relationship still exists on the resource:
+  const revision = await client.deleteRelationships(filter, {
+    mustMatch: [{ resourceType: "document", resourceId: "1", resourceRelation: "owner" }],
+    limit: 1000,
+  });
+  ```
+
 ### Fixed
 
 - **2026-08-14**: Enabled `stripInternal` in `tsconfig.json` so `@internal`-tagged

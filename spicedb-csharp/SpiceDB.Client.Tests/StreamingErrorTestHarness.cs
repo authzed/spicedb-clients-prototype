@@ -96,6 +96,19 @@ internal static class StreamingTestHelpers
             () => new Metadata(),
             () => { });
 
+    /// <summary>
+    /// Wraps a response in a real <see cref="AsyncUnaryCall{TResponse}"/>, as
+    /// returned by generated gRPC unary client methods (e.g.
+    /// DeleteRelationshipsAsync/WriteRelationshipsAsync).
+    /// </summary>
+    public static AsyncUnaryCall<TResponse> MakeUnaryCall<TResponse>(TResponse response) =>
+        new(
+            Task.FromResult(response),
+            Task.FromResult(new Metadata()),
+            () => Status.DefaultSuccess,
+            () => new Metadata(),
+            () => { });
+
     /// <summary>A representative RpcException(NotFound) used across streaming-error tests.</summary>
     public static RpcException NotFoundError() =>
         new(new Status(StatusCode.NotFound, "nope"));

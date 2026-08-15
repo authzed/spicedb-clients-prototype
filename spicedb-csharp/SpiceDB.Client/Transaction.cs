@@ -71,11 +71,7 @@ public sealed class Transaction
     public void MustNotMatch(Filter filter)
     {
         ArgumentNullException.ThrowIfNull(filter);
-        _preconditions.Add(new Precondition
-        {
-            Operation = Precondition.Types.Operation.MustNotMatch,
-            Filter = filter.ToProto(),
-        });
+        _preconditions.Add(BuildPrecondition(Precondition.Types.Operation.MustNotMatch, filter));
     }
 
     /// <summary>
@@ -84,10 +80,23 @@ public sealed class Transaction
     public void MustMatch(Filter filter)
     {
         ArgumentNullException.ThrowIfNull(filter);
-        _preconditions.Add(new Precondition
+        _preconditions.Add(BuildPrecondition(Precondition.Types.Operation.MustMatch, filter));
+    }
+
+    /// <summary>
+    /// Builds a <see cref="Precondition"/> proto from an operation and filter.
+    /// Shared by <see cref="MustMatch"/>/<see cref="MustNotMatch"/> and
+    /// <see cref="SpiceDBClient.DeleteRelationshipsAsync"/> so both build
+    /// preconditions identically. Internal — exposed to the test assembly via
+    /// InternalsVisibleTo; not part of the public API.
+    /// </summary>
+    internal static Precondition BuildPrecondition(Precondition.Types.Operation operation, Filter filter)
+    {
+        ArgumentNullException.ThrowIfNull(filter);
+        return new Precondition
         {
-            Operation = Precondition.Types.Operation.MustMatch,
+            Operation = operation,
             Filter = filter.ToProto(),
-        });
+        };
     }
 }

@@ -289,26 +289,69 @@ public sealed class SpiceDBClient : IAsyncDisposable
 
     /// <summary>
     /// Deletes all relationships matching the given filter. Large result sets
-    /// are automatically paged in batches of 10,000. Returns the revision of
-    /// the final deletion.
+    /// are automatically paged in batches of 10,000 (override with
+    /// <paramref name="limit"/>). Returns the revision of the final deletion.
+    /// <para>
+    /// <paramref name="mustMatch"/>/<paramref name="mustNotMatch"/> add
+    /// preconditions that guard the delete: if a precondition fails, the
+    /// server rejects that call and deletes nothing for it. Preconditions are
+    /// a per-request proto field, so when a delete spans multiple pages
+    /// (i.e. more matches than the page size), they are re-evaluated by the
+    /// server on every page — there is no "check-once, apply-to-all-pages"
+    /// semantics. This means a delete that starts successfully can still fail
+    /// partway through if the guarded state changes between pages, after
+    /// earlier pages have already been deleted. For a single-shot,
+    /// all-or-nothing guarded delete, pair the precondition with a
+    /// <paramref name="limit"/> large enough to cover every matching
+    /// relationship in one call.
+    /// </para>
+    /// <para>
+    /// Mirrors spicedb-go's <c>WithDeleteMustMatch</c>/
+    /// <c>WithDeleteMustNotMatch</c>/<c>WithDeleteLimit</c>
+    /// (client/relationships.go). Additive — existing
+    /// <c>DeleteRelationshipsAsync(filter)</c> calls are unaffected: no
+    /// preconditions, 10,000-item page size, partial deletions allowed, same
+    /// as before.
+    /// </para>
     /// </summary>
     public async Task<string> DeleteRelationshipsAsync(
         Filter filter,
+        IReadOnlyList<Filter>? mustMatch = null,
+        IReadOnlyList<Filter>? mustNotMatch = null,
+        uint? limit = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(filter);
 
+        var preconditions = new List<Precondition>();
+        if (mustMatch != null)
+        {
+            foreach (var f in mustMatch)
+                preconditions.Add(Transaction.BuildPrecondition(Precondition.Types.Operation.MustMatch, f));
+        }
+        if (mustNotMatch != null)
+        {
+            foreach (var f in mustNotMatch)
+                preconditions.Add(Transaction.BuildPrecondition(Precondition.Types.Operation.MustNotMatch, f));
+        }
+
+        uint pageSize = limit ?? DefaultDeletePageSize;
+
         string revision = "";
         while (true)
         {
+            var req = new DeleteRelationshipsRequest
+            {
+                RelationshipFilter = filter.ToProto(),
+                OptionalLimit = pageSize,
+                OptionalAllowPartialDeletions = true,
+            };
+            if (preconditions.Count > 0)
+                req.OptionalPreconditions.AddRange(preconditions);
+
             var resp = await RetryAsync(async () =>
                 await _permissions.DeleteRelationshipsAsync(
-                    new DeleteRelationshipsRequest
-                    {
-                        RelationshipFilter = filter.ToProto(),
-                        OptionalLimit = DefaultDeletePageSize,
-                        OptionalAllowPartialDeletions = true,
-                    },
+                    req,
                     cancellationToken: cancellationToken),
                 cancellationToken);
 

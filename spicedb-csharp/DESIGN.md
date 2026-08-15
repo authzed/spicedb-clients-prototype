@@ -198,10 +198,36 @@ populate the non-deprecated `subject`/`excluded_subjects` fields.
 
 ### Deletions
 
-- `DeleteRelationshipsAsync(filter)` → `Task<string>` (revision)
+- `DeleteRelationshipsAsync(filter, mustMatch?, mustNotMatch?, limit?)` → `Task<string>` (revision)
 
 Automatically pages through large result sets using a limit of 10,000 per RPC
-call. Repeats until the server reports all matching relationships are deleted.
+call (override with `limit`). Repeats until the server reports all matching
+relationships are deleted.
+
+Optional parameters reach the proto fields that were previously unreachable —
+`optional_preconditions` and `optional_limit`:
+
+```csharp
+var revision = await client.DeleteRelationshipsAsync(
+    filter,
+    mustMatch: [guardFilter],       // MUST_MATCH precondition
+    mustNotMatch: [otherFilter],    // MUST_NOT_MATCH precondition
+    limit: 1000);                   // override the 10,000 default page size
+```
+
+`mustMatch`/`mustNotMatch` build a `Precondition` from a `Filter` via the
+same internal helper `Transaction.MustMatch`/`MustNotMatch` use
+(`Transaction.BuildPrecondition`); the server rejects the whole call
+(deleting nothing for that call) if a precondition isn't satisfied.
+Preconditions are a per-request proto field, so when a delete spans multiple
+pages, they're re-evaluated by the server on every page — there's no "check
+once, apply to every page" semantics. A delete that starts successfully can
+still fail partway through if the guarded state changes between pages, after
+earlier pages were already deleted. For a single-shot, all-or-nothing guarded
+delete, pair a precondition with `limit` set high enough to cover every
+matching relationship in one call. No optional parameters given means
+unchanged default behavior: no preconditions, 10,000-item page size, partial
+deletions allowed (so auto-paging keeps working).
 
 ### Schema
 

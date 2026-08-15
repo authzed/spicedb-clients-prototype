@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+### Added
+
+- **2026-08-15**: `DeleteRelationshipsAsync` now accepts optional `mustMatch`/
+  `mustNotMatch`/`limit` parameters, reaching the proto's
+  `optional_preconditions` and `optional_limit` fields that were previously
+  unset by the client. Additive — existing `client.DeleteRelationshipsAsync(filter)`
+  calls are unaffected (no preconditions, 10,000-item page size, partial
+  deletions allowed, same as before). `mustMatch`/`mustNotMatch` add
+  MUST_MATCH/MUST_NOT_MATCH preconditions (built the same way as
+  `Transaction.MustMatch`/`MustNotMatch`, via the shared internal
+  `Transaction.BuildPrecondition` helper) that guard the delete, rejecting it
+  if unsatisfied; `limit` overrides the default 10,000-per-call page size.
+  Mirrors `spicedb-go`'s `WithDeleteMustMatch`/`WithDeleteMustNotMatch`/
+  `WithDeleteLimit` (`client/relationships.go`) — see `DESIGN.md`
+  ("Deletions") for the semantics of combining preconditions with
+  auto-paging.
+
+  ```csharp
+  // Before:
+  var revision = await client.DeleteRelationshipsAsync(filter);
+
+  // After — same call still works, plus optional guards:
+  var revision = await client.DeleteRelationshipsAsync(
+      filter,
+      mustMatch: [ownerGuard],
+      mustNotMatch: [lockedGuard],
+      limit: 1000);
+  ```
+
 ### Breaking Changes
 
 - **2026-08-15**: `LookupResourcesAsync`/`LookupSubjectsAsync` now yield native records instead of bare `string`s: `IAsyncEnumerable<LookupResource>` and `IAsyncEnumerable<LookupSubject>` respectively, mirroring `spicedb-go`'s `client/lookup_types.go`. Each result carries `Permissionship` (`HasPermission`/`ConditionalPermission`/`Unspecified`) and, for conditional results, `PartialCaveat.MissingRequiredContext`. Critically, `LookupSubject.ExcludedSubjects` now surfaces the subjects excluded from a wildcard `"*"` match — previously this information was silently dropped, so code that treated a wildcard subject ID as a blanket grant risked **over-granting access** to subjects the server had explicitly excluded. Deprecated proto fallback fields (`subject_object_id`/`permissionship`/`partial_caveat_info`/`excluded_subject_ids`) are still handled transparently for older servers.

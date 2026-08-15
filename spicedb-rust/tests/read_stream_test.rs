@@ -20,7 +20,7 @@ use std::sync::atomic::Ordering;
 use futures::StreamExt;
 use spicedb::client::SpiceDBClient;
 use spicedb::consistency;
-use spicedb::types::Filter;
+use spicedb::types::{Filter, Permissionship};
 use spicedb_proto::authzed::api::v1 as proto;
 
 use support::{spawn_permissions_server, MockPermissionsService};
@@ -194,8 +194,10 @@ async fn lookup_resources_yields_incrementally_and_paginates_lazily() {
         .next()
         .await
         .expect("stream should yield a first item")
-        .expect("first item should be Ok(String)");
-    assert_eq!(first, "doc-0");
+        .expect("first item should be Ok(LookupResource)");
+    assert_eq!(first.resource_id, "doc-0");
+    assert_eq!(first.permissionship, Permissionship::HasPermission);
+    assert_eq!(first.partial_caveat, None);
     assert_eq!(
         calls.load(Ordering::SeqCst),
         1,
@@ -204,12 +206,17 @@ async fn lookup_resources_yields_incrementally_and_paginates_lazily() {
 
     let mut all = vec![first];
     while let Some(item) = stream.next().await {
-        all.push(item.expect("item should be Ok(String)"));
+        all.push(item.expect("item should be Ok(LookupResource)"));
     }
 
     assert_eq!(all.len(), PAGE_SIZE + 4);
-    for (i, id) in all.iter().enumerate() {
-        assert_eq!(id, &format!("doc-{i}"), "items must arrive in order");
+    for (i, result) in all.iter().enumerate() {
+        assert_eq!(
+            result.resource_id,
+            format!("doc-{i}"),
+            "items must arrive in order"
+        );
+        assert_eq!(result.permissionship, Permissionship::HasPermission);
     }
 
     assert_eq!(
@@ -284,16 +291,18 @@ async fn lookup_subjects_yields_incrementally_over_a_single_call() {
         .next()
         .await
         .expect("stream should yield a first item")
-        .expect("first item should be Ok(String)");
-    assert_eq!(first, "alice");
+        .expect("first item should be Ok(LookupSubject)");
+    assert_eq!(first.subject.subject_id, "alice");
+    assert_eq!(first.subject.permissionship, Permissionship::HasPermission);
+    assert!(first.excluded_subjects.is_empty());
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 
     let second = stream
         .next()
         .await
         .expect("stream should yield a second item")
-        .expect("second item should be Ok(String)");
-    assert_eq!(second, "bob");
+        .expect("second item should be Ok(LookupSubject)");
+    assert_eq!(second.subject.subject_id, "bob");
 
     assert!(
         stream.next().await.is_none(),
@@ -304,6 +313,154 @@ async fn lookup_subjects_yields_incrementally_over_a_single_call() {
         1,
         "lookup_subjects has no pagination — exactly one server call"
     );
+}
+
+// ---------------------------------------------------------------------------
+// lookup_subjects — wildcard excluded subjects (security-critical)
+// ---------------------------------------------------------------------------
+
+/// Proves that when the server resolves a wildcard ("*") subject with
+/// exclusions, the client surfaces `excluded_subjects` to the caller instead
+/// of dropping them. A caller that ignores this list would incorrectly treat
+/// the wildcard as a blanket grant to every subject, including ones the
+/// server explicitly excluded — the over-grant risk this task fixes.
+#[tokio::test]
+async fn lookup_subjects_surfaces_wildcard_excluded_subjects() {
+    let responses = vec![proto::LookupSubjectsResponse {
+        looked_up_at: None,
+        #[allow(deprecated)]
+        subject_object_id: String::new(),
+        #[allow(deprecated)]
+        excluded_subject_ids: Vec::new(),
+        #[allow(deprecated)]
+        permissionship: 0,
+        #[allow(deprecated)]
+        partial_caveat_info: None,
+        subject: Some(proto::ResolvedSubject {
+            subject_object_id: "*".to_string(),
+            permissionship: proto::LookupPermissionship::HasPermission as i32,
+            partial_caveat_info: None,
+        }),
+        excluded_subjects: vec![
+            proto::ResolvedSubject {
+                subject_object_id: "banned1".to_string(),
+                permissionship: proto::LookupPermissionship::HasPermission as i32,
+                partial_caveat_info: None,
+            },
+            proto::ResolvedSubject {
+                subject_object_id: "banned2".to_string(),
+                permissionship: proto::LookupPermissionship::HasPermission as i32,
+                partial_caveat_info: None,
+            },
+        ],
+        after_result_cursor: None,
+    }];
+
+    let mock = MockPermissionsService::new();
+    mock.set_lookup_subjects_responses(responses);
+
+    let addr = spawn_permissions_server(mock).await;
+    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
+        .await
+        .expect("client should connect to mock server");
+
+    let stream =
+        client.lookup_subjects(&consistency::full(), "document", "firstdoc", "view", "user");
+    tokio::pin!(stream);
+
+    let result = stream
+        .next()
+        .await
+        .expect("stream should yield a result")
+        .expect("result should be Ok(LookupSubject)");
+
+    assert_eq!(
+        result.subject.subject_id, "*",
+        "subject should be the wildcard"
+    );
+    assert_eq!(result.subject.permissionship, Permissionship::HasPermission);
+
+    let excluded_ids: Vec<&str> = result
+        .excluded_subjects
+        .iter()
+        .map(|s| s.subject_id.as_str())
+        .collect();
+    assert_eq!(
+        excluded_ids,
+        vec!["banned1", "banned2"],
+        "excluded_subjects must be surfaced to the caller so wildcard exclusions aren't silently dropped"
+    );
+    for excluded in &result.excluded_subjects {
+        assert_eq!(excluded.permissionship, Permissionship::HasPermission);
+    }
+
+    assert!(stream.next().await.is_none());
+}
+
+/// Proves that when a server only populates the deprecated
+/// `excluded_subject_ids` field (no `excluded_subjects`) and the deprecated
+/// top-level `subject_object_id`/`permissionship` fields (no nested
+/// `subject`), the client still reconstructs equivalent native results
+/// instead of yielding empty/missing data.
+#[tokio::test]
+async fn lookup_subjects_falls_back_to_deprecated_fields() {
+    let responses = vec![proto::LookupSubjectsResponse {
+        looked_up_at: None,
+        #[allow(deprecated)]
+        subject_object_id: "*".to_string(),
+        #[allow(deprecated)]
+        excluded_subject_ids: vec!["banned1".to_string(), "banned2".to_string()],
+        #[allow(deprecated)]
+        permissionship: proto::LookupPermissionship::HasPermission as i32,
+        #[allow(deprecated)]
+        partial_caveat_info: None,
+        subject: None,
+        excluded_subjects: Vec::new(),
+        after_result_cursor: None,
+    }];
+
+    let mock = MockPermissionsService::new();
+    mock.set_lookup_subjects_responses(responses);
+
+    let addr = spawn_permissions_server(mock).await;
+    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
+        .await
+        .expect("client should connect to mock server");
+
+    let stream =
+        client.lookup_subjects(&consistency::full(), "document", "firstdoc", "view", "user");
+    tokio::pin!(stream);
+
+    let result = stream
+        .next()
+        .await
+        .expect("stream should yield a result")
+        .expect("result should be Ok(LookupSubject)");
+
+    assert_eq!(
+        result.subject.subject_id, "*",
+        "should fall back to deprecated subject_object_id when subject is unset"
+    );
+    assert_eq!(result.subject.permissionship, Permissionship::HasPermission);
+
+    let excluded_ids: Vec<&str> = result
+        .excluded_subjects
+        .iter()
+        .map(|s| s.subject_id.as_str())
+        .collect();
+    assert_eq!(
+        excluded_ids,
+        vec!["banned1", "banned2"],
+        "should fall back to deprecated excluded_subject_ids when excluded_subjects is unset"
+    );
+    // The deprecated excluded_subject_ids field carries only IDs, so
+    // permissionship falls back to Unspecified for those entries.
+    for excluded in &result.excluded_subjects {
+        assert_eq!(excluded.permissionship, Permissionship::Unspecified);
+        assert_eq!(excluded.partial_caveat, None);
+    }
+
+    assert!(stream.next().await.is_none());
 }
 
 // ---------------------------------------------------------------------------

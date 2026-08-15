@@ -577,6 +577,98 @@ pub struct CheckResult {
     pub has_permission: bool,
 }
 
+/// Indicates whether a lookup result reflects a full grant or is conditional
+/// on caveat context that was not fully evaluated by the server. Callers
+/// MUST check this before treating a result as a full grant — a
+/// `ConditionalPermission` result may resolve to `false` once the missing
+/// caveat context is supplied.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Permissionship {
+    Unspecified,
+    HasPermission,
+    ConditionalPermission,
+}
+
+/// Caveat context that was missing to fully evaluate a conditional result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PartialCaveatInfo {
+    pub missing_required_context: Vec<String>,
+}
+
+/// One result from `lookup_resources`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LookupResource {
+    pub resource_id: String,
+    pub permissionship: Permissionship,
+    /// Non-`None` when `permissionship` is `ConditionalPermission`.
+    pub partial_caveat: Option<PartialCaveatInfo>,
+}
+
+/// A subject resolved by `lookup_subjects` — either the matched subject, or
+/// (when found in [`LookupSubject::excluded_subjects`]) a subject excluded
+/// from a wildcard match.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedSubject {
+    pub subject_id: String,
+    pub permissionship: Permissionship,
+    pub partial_caveat: Option<PartialCaveatInfo>,
+}
+
+/// One result from `lookup_subjects`. When `subject.subject_id` is the
+/// wildcard `"*"`, the server has granted the permission to every subject of
+/// the requested subject type EXCEPT those listed in `excluded_subjects`.
+/// Callers MUST check `excluded_subjects` before treating a wildcard match as
+/// a blanket grant, or they risk granting access to subjects the server
+/// explicitly excluded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LookupSubject {
+    pub subject: ResolvedSubject,
+    pub excluded_subjects: Vec<ResolvedSubject>,
+}
+
+/// Maps the proto `LookupPermissionship` enum (represented as `i32` by
+/// prost) to its native equivalent. Unrecognized values map to
+/// `Permissionship::Unspecified`.
+pub(crate) fn permissionship_from_proto(v: i32) -> Permissionship {
+    match v {
+        x if x == proto::LookupPermissionship::HasPermission as i32 => {
+            Permissionship::HasPermission
+        }
+        x if x == proto::LookupPermissionship::ConditionalPermission as i32 => {
+            Permissionship::ConditionalPermission
+        }
+        _ => Permissionship::Unspecified,
+    }
+}
+
+/// Maps a proto `PartialCaveatInfo` to its native equivalent. `None` maps to
+/// `None`.
+pub(crate) fn partial_caveat_from_proto(
+    v: Option<&proto::PartialCaveatInfo>,
+) -> Option<PartialCaveatInfo> {
+    v.map(|c| PartialCaveatInfo {
+        missing_required_context: c.missing_required_context.clone(),
+    })
+}
+
+/// Maps a proto `ResolvedSubject` to its native equivalent. `None` maps to a
+/// zero-value `ResolvedSubject` (empty `subject_id`), which callers use as
+/// the trigger for falling back to deprecated response-level fields.
+pub(crate) fn resolved_subject_from_proto(v: Option<&proto::ResolvedSubject>) -> ResolvedSubject {
+    match v {
+        Some(v) => ResolvedSubject {
+            subject_id: v.subject_object_id.clone(),
+            permissionship: permissionship_from_proto(v.permissionship),
+            partial_caveat: partial_caveat_from_proto(v.partial_caveat_info.as_ref()),
+        },
+        None => ResolvedSubject {
+            subject_id: String::new(),
+            permissionship: Permissionship::Unspecified,
+            partial_caveat: None,
+        },
+    }
+}
+
 /// Convert a `serde_json::Value` to a `prost_types::Value`.
 fn json_value_to_prost(v: &serde_json::Value) -> prost_types::Value {
     use prost_types::value::Kind;
@@ -865,5 +957,62 @@ mod tests {
         };
         assert_eq!(cr.relationship_count, 42);
         assert_eq!(cr.revision, "rev-1");
+    }
+
+    #[test]
+    fn test_permissionship_from_proto() {
+        assert_eq!(
+            permissionship_from_proto(proto::LookupPermissionship::Unspecified as i32),
+            Permissionship::Unspecified
+        );
+        assert_eq!(
+            permissionship_from_proto(proto::LookupPermissionship::HasPermission as i32),
+            Permissionship::HasPermission
+        );
+        assert_eq!(
+            permissionship_from_proto(proto::LookupPermissionship::ConditionalPermission as i32),
+            Permissionship::ConditionalPermission
+        );
+        // Unrecognized values fail safe to Unspecified rather than panicking.
+        assert_eq!(permissionship_from_proto(99), Permissionship::Unspecified);
+    }
+
+    #[test]
+    fn test_partial_caveat_from_proto_none() {
+        assert_eq!(partial_caveat_from_proto(None), None);
+    }
+
+    #[test]
+    fn test_partial_caveat_from_proto_some() {
+        let proto_caveat = proto::PartialCaveatInfo {
+            missing_required_context: vec!["ip_address".to_string()],
+        };
+        assert_eq!(
+            partial_caveat_from_proto(Some(&proto_caveat)),
+            Some(PartialCaveatInfo {
+                missing_required_context: vec!["ip_address".to_string()],
+            })
+        );
+    }
+
+    #[test]
+    fn test_resolved_subject_from_proto_none_yields_zero_value() {
+        let subject = resolved_subject_from_proto(None);
+        assert_eq!(subject.subject_id, "");
+        assert_eq!(subject.permissionship, Permissionship::Unspecified);
+        assert_eq!(subject.partial_caveat, None);
+    }
+
+    #[test]
+    fn test_resolved_subject_from_proto_some() {
+        let proto_subject = proto::ResolvedSubject {
+            subject_object_id: "alice".to_string(),
+            permissionship: proto::LookupPermissionship::HasPermission as i32,
+            partial_caveat_info: None,
+        };
+        let subject = resolved_subject_from_proto(Some(&proto_subject));
+        assert_eq!(subject.subject_id, "alice");
+        assert_eq!(subject.permissionship, Permissionship::HasPermission);
+        assert_eq!(subject.partial_caveat, None);
     }
 }

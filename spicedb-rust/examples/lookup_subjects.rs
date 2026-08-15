@@ -50,10 +50,28 @@ async fn main() {
     tokio::pin!(stream);
 
     let mut subject_ids = Vec::new();
-    while let Some(id) = stream.next().await {
-        let id = id.expect("lookup failed");
-        println!("user:{id} can view document:firstdoc");
-        subject_ids.push(id);
+    while let Some(result) = stream.next().await {
+        let result = result.expect("lookup failed");
+        let subject_id = result.subject.subject_id;
+
+        // If the subject is the wildcard "*", the permission was granted to
+        // every subject of the requested type EXCEPT those explicitly listed
+        // in `excluded_subjects` — callers MUST check this list before
+        // treating a wildcard match as a blanket grant.
+        if subject_id == "*" {
+            for excluded in &result.excluded_subjects {
+                println!(
+                    "user:{} is explicitly excluded from the wildcard grant",
+                    excluded.subject_id
+                );
+            }
+        }
+
+        println!(
+            "user:{subject_id} can view document:firstdoc ({:?})",
+            result.subject.permissionship
+        );
+        subject_ids.push(subject_id);
     }
 
     assert!(

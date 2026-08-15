@@ -112,6 +112,13 @@ response. Default page sizes use sensible defaults:
 | `delete_relationships` | 10,000 | auto-repeats until all matched rels deleted |
 | `import_relationships` | 1,000 | batches into client-streaming sends |
 
+`lookup_resources` and `lookup_subjects` yield native result structs (`LookupResource` /
+`LookupSubject`), not bare IDs -- each carries `permissionship` (full grant vs. conditional
+on caveat context) and, where applicable, `partial_caveat`. `LookupSubject` additionally
+carries `excluded_subjects`: when `subject.subject_id` is the wildcard `"*"`, those excluded
+subjects MUST be treated as NOT holding the permission even though the wildcard would
+otherwise suggest a blanket grant.
+
 ### Writes
 
 Transaction builder pattern:
@@ -185,8 +192,10 @@ ABORTED).
 - `delete_relationships(&self, &filter) -> Result<String, SpiceDBError>`
 
 **Lookups:**
-- `lookup_resources(&self, cs, resource_type, permission, subject_type, subject_id) -> impl Stream`
-- `lookup_subjects(&self, cs, resource_type, resource_id, permission, subject_type) -> impl Stream`
+- `lookup_resources(&self, cs, resource_type, permission, subject_type, subject_id) -> impl Stream<Item = Result<LookupResource, SpiceDBError>>`
+- `lookup_subjects(&self, cs, resource_type, resource_id, permission, subject_type) -> impl Stream<Item = Result<LookupSubject, SpiceDBError>>`
+  -- `LookupSubject.excluded_subjects` MUST be checked whenever `LookupSubject.subject.subject_id`
+  is the wildcard `"*"`: those subjects are explicitly excluded from the wildcard grant
 
 **Schema:**
 - `read_schema(&self) -> Result<(String, String), SpiceDBError>`
@@ -229,6 +238,10 @@ ABORTED).
 - `Precondition`, `PreconditionOperation`
 - `Update`, `UpdateOperation`
 - `CheckResult` (`#[must_use]`)
+- `Permissionship` (`Unspecified` / `HasPermission` / `ConditionalPermission`), `PartialCaveatInfo`
+- `LookupResource` (result of `lookup_resources`)
+- `ResolvedSubject`, `LookupSubject` (results of `lookup_subjects`; `LookupSubject.excluded_subjects`
+  carries wildcard exclusions -- see Lookups above)
 - `SchemaDefinition`, `SchemaRelation`, `SchemaPermission`
 - `SchemaCaveat`, `SchemaCaveatParameter`
 - `ReflectSchemaResult`, `RelationReference`, `SchemaDiff`

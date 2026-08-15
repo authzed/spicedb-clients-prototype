@@ -24,6 +24,46 @@
 
 ### Breaking changes
 
+- **`lookup_resources` and `lookup_subjects` now yield native result structs
+  instead of bare `String`s.** Previously, `lookup_subjects` silently dropped
+  `excluded_subjects` — the list of subjects explicitly excluded from a
+  wildcard (`"*"`) grant. A caller treating a wildcard-subject result as a
+  blanket grant (the natural reading of a bare ID stream) could therefore
+  grant access to a subject the server had explicitly excluded. Both methods
+  now surface `permissionship` (full grant vs. conditional on caveat context)
+  and, for `lookup_subjects`, `excluded_subjects`:
+
+  ```rust
+  // Before:
+  // fn lookup_resources(...) -> impl Stream<Item = Result<String, SpiceDBError>>;
+  // fn lookup_subjects(...) -> impl Stream<Item = Result<String, SpiceDBError>>;
+
+  // After:
+  // fn lookup_resources(...) -> impl Stream<Item = Result<LookupResource, SpiceDBError>>;
+  // fn lookup_subjects(...) -> impl Stream<Item = Result<LookupSubject, SpiceDBError>>;
+
+  use futures::StreamExt;
+
+  let stream = client.lookup_resources(&consistency, "document", "view", "user", "alice");
+  tokio::pin!(stream);
+  while let Some(result) = stream.next().await {
+      let result = result?;
+      println!("{} ({:?})", result.resource_id, result.permissionship);
+  }
+
+  let stream = client.lookup_subjects(&consistency, "document", "doc1", "view", "user");
+  tokio::pin!(stream);
+  while let Some(result) = stream.next().await {
+      let result = result?;
+      if result.subject.subject_id == "*" {
+          // MUST check excluded_subjects before treating "*" as a blanket grant.
+          for excluded in &result.excluded_subjects {
+              // excluded.subject_id does NOT have the permission.
+          }
+      }
+  }
+  ```
+
 - **`updates()` (watch) is now a real `Stream`.** It changed from
   `async fn updates(...) -> Result<Vec<Update>, SpiceDBError>` to
   `fn updates(...) -> impl Stream<Item = Result<Update, SpiceDBError>>`. The old

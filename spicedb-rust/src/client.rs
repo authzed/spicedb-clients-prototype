@@ -14,9 +14,11 @@
 use crate::consistency::Strategy;
 use crate::error::{self, SpiceDBError};
 use crate::types::{
-    CheckResult, CountResult, ExpandResult, Filter, PreconditionOperation, ReflectSchemaResult,
-    RelationReference, Relationship, SchemaCaveat, SchemaCaveatParameter, SchemaDefinition,
-    SchemaDiff, SchemaPermission, SchemaRelation, Transaction, Update, UpdateOperation,
+    partial_caveat_from_proto, permissionship_from_proto, resolved_subject_from_proto, CheckResult,
+    CountResult, ExpandResult, Filter, LookupResource, LookupSubject, Permissionship,
+    PreconditionOperation, ReflectSchemaResult, RelationReference, Relationship, ResolvedSubject,
+    SchemaCaveat, SchemaCaveatParameter, SchemaDefinition, SchemaDiff, SchemaPermission,
+    SchemaRelation, Transaction, Update, UpdateOperation,
 };
 
 use futures::Stream;
@@ -414,8 +416,10 @@ impl SpiceDBClient {
     // Lookups
     // -----------------------------------------------------------------------
 
-    /// Returns a stream of resource IDs that the subject has the given
-    /// permission on.
+    /// Returns a stream of resources that the subject has the given
+    /// permission on. Each yielded [`LookupResource`] carries the
+    /// permissionship (full grant vs conditional on caveat context) and, for
+    /// conditional results, which caveat context was missing.
     ///
     /// Cursors are handled transparently — the client automatically re-fetches
     /// pages of 512 results, lazily fetching the next page only once the
@@ -423,10 +427,10 @@ impl SpiceDBClient {
     ///
     /// # Streaming
     ///
-    /// Returns `impl Stream<Item = Result<String, SpiceDBError>>`. Items are
-    /// yielded incrementally as they arrive from the server. Consume with
-    /// [`StreamExt::next`](futures::StreamExt::next) (pin it first, e.g.
-    /// `tokio::pin!`).
+    /// Returns `impl Stream<Item = Result<LookupResource, SpiceDBError>>`.
+    /// Items are yielded incrementally as they arrive from the server.
+    /// Consume with [`StreamExt::next`](futures::StreamExt::next) (pin it
+    /// first, e.g. `tokio::pin!`).
     pub fn lookup_resources(
         &self,
         consistency: &Strategy,
@@ -434,7 +438,7 @@ impl SpiceDBClient {
         permission: &str,
         subject_type: &str,
         subject_id: &str,
-    ) -> impl Stream<Item = Result<String, SpiceDBError>> + 'static {
+    ) -> impl Stream<Item = Result<LookupResource, SpiceDBError>> + 'static {
         let consistency = consistency.to_proto();
         let resource_type = resource_type.to_string();
         let permission = permission.to_string();
@@ -480,7 +484,13 @@ impl SpiceDBClient {
                     if let Some(c) = resp.after_result_cursor {
                         cursor = Some(c);
                     }
-                    yield resp.resource_object_id;
+                    let permissionship = permissionship_from_proto(resp.permissionship);
+                    let partial_caveat = partial_caveat_from_proto(resp.partial_caveat_info.as_ref());
+                    yield LookupResource {
+                        resource_id: resp.resource_object_id,
+                        permissionship,
+                        partial_caveat,
+                    };
                 }
 
                 if count < DEFAULT_LOOKUP_PAGE_SIZE {
@@ -490,8 +500,15 @@ impl SpiceDBClient {
         }
     }
 
-    /// Returns a stream of subject IDs that have the given permission on the
+    /// Returns a stream of subjects that have the given permission on the
     /// resource.
+    ///
+    /// When a yielded [`LookupSubject::subject`] is the wildcard `"*"`, the
+    /// server has granted the permission to every subject of `subject_type`
+    /// EXCEPT those listed in [`LookupSubject::excluded_subjects`]. Callers
+    /// MUST check `excluded_subjects` before treating a wildcard match as a
+    /// blanket grant, or they risk granting access to subjects the server
+    /// explicitly excluded.
     ///
     /// Unlike `lookup_resources`, `lookup_subjects` does not currently support
     /// cursor-based pagination in SpiceDB — all results stream in a single
@@ -499,10 +516,10 @@ impl SpiceDBClient {
     ///
     /// # Streaming
     ///
-    /// Returns `impl Stream<Item = Result<String, SpiceDBError>>`. Items are
-    /// yielded incrementally as they arrive from the server. Consume with
-    /// [`StreamExt::next`](futures::StreamExt::next) (pin it first, e.g.
-    /// `tokio::pin!`).
+    /// Returns `impl Stream<Item = Result<LookupSubject, SpiceDBError>>`.
+    /// Items are yielded incrementally as they arrive from the server.
+    /// Consume with [`StreamExt::next`](futures::StreamExt::next) (pin it
+    /// first, e.g. `tokio::pin!`).
     pub fn lookup_subjects(
         &self,
         consistency: &Strategy,
@@ -510,7 +527,7 @@ impl SpiceDBClient {
         resource_id: &str,
         permission: &str,
         subject_type: &str,
-    ) -> impl Stream<Item = Result<String, SpiceDBError>> + 'static {
+    ) -> impl Stream<Item = Result<LookupSubject, SpiceDBError>> + 'static {
         let consistency = consistency.to_proto();
         let resource_type = resource_type.to_string();
         let resource_id = resource_id.to_string();
@@ -547,14 +564,47 @@ impl SpiceDBClient {
                 .await
                 .map_err(|s| error::from_grpc_status(s.code() as i32, s.message().to_string()))?
             {
-                // Prefer the nested subject field; fall back to deprecated top-level field.
-                #[allow(deprecated)]
-                let subject_id = resp
-                    .subject
-                    .as_ref()
-                    .map(|s| s.subject_object_id.clone())
-                    .unwrap_or(resp.subject_object_id);
-                yield subject_id;
+                // Prefer the nested subject field; fall back to the deprecated
+                // top-level fields for servers that don't yet populate it.
+                let primary_subject = resolved_subject_from_proto(resp.subject.as_ref());
+                let subject = if primary_subject.subject_id.is_empty() {
+                    #[allow(deprecated, clippy::let_and_return)]
+                    let fallback = ResolvedSubject {
+                        subject_id: resp.subject_object_id.clone(),
+                        permissionship: permissionship_from_proto(resp.permissionship),
+                        partial_caveat: partial_caveat_from_proto(resp.partial_caveat_info.as_ref()),
+                    };
+                    fallback
+                } else {
+                    primary_subject
+                };
+
+                // Prefer the nested excluded_subjects field (carries full
+                // permissionship/caveat info); fall back to the deprecated
+                // excluded_subject_ids field (IDs only) for servers that don't
+                // yet populate it.
+                let excluded_subjects: Vec<ResolvedSubject> = if !resp.excluded_subjects.is_empty()
+                {
+                    resp.excluded_subjects
+                        .iter()
+                        .map(|s| resolved_subject_from_proto(Some(s)))
+                        .collect()
+                } else {
+                    #[allow(deprecated)]
+                    let ids = resp.excluded_subject_ids.clone();
+                    ids.into_iter()
+                        .map(|id| ResolvedSubject {
+                            subject_id: id,
+                            permissionship: Permissionship::Unspecified,
+                            partial_caveat: None,
+                        })
+                        .collect()
+                };
+
+                yield LookupSubject {
+                    subject,
+                    excluded_subjects,
+                };
             }
         }
     }

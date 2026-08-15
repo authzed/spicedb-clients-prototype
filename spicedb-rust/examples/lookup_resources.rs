@@ -49,10 +49,13 @@ async fn main() {
     tokio::pin!(stream);
 
     let mut resource_ids = Vec::new();
-    while let Some(id) = stream.next().await {
-        let id = id.expect("lookup failed");
-        println!("alice can view document:{id}");
-        resource_ids.push(id);
+    while let Some(result) = stream.next().await {
+        let result = result.expect("lookup failed");
+        println!(
+            "alice can view document:{} ({:?})",
+            result.resource_id, result.permissionship
+        );
+        resource_ids.push(result.resource_id);
     }
 
     assert!(

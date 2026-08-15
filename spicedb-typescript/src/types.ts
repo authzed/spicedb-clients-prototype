@@ -21,6 +21,11 @@ import {
   type ReflectionCaveat as ProtoReflectionCaveat,
   type ReflectionRelationReference as ProtoReflectionRelationReference,
   type ReflectionSchemaDiff as ProtoReflectionSchemaDiff,
+  type PartialCaveatInfo as ProtoPartialCaveatInfo,
+  type ResolvedSubject as ProtoResolvedSubject,
+  type LookupResourcesResponse as ProtoLookupResourcesResponse,
+  type LookupSubjectsResponse as ProtoLookupSubjectsResponse,
+  LookupPermissionship,
 } from "@spicedb/proto";
 import { timestampFromDate } from "@bufbuild/protobuf/wkt";
 
@@ -800,4 +805,169 @@ export function fromProtoSchemaDiff(d: ProtoReflectionSchemaDiff): SchemaDiff {
     default:
       return base;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Lookup results (mirrors spicedb-go's native lookup types and mappers,
+// client/lookup_types.go: Permissionship, PartialCaveatInfo, LookupResource,
+// ResolvedSubject, LookupSubject)
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether a lookup result reflects a full grant or is conditional on caveat
+ * context that was not fully evaluated by the server. Callers MUST check
+ * this before treating a result as a full grant — a `"conditionalPermission"`
+ * result may resolve to false once the missing caveat context is supplied.
+ */
+export type Permissionship =
+  | "unspecified"
+  | "hasPermission"
+  | "conditionalPermission";
+
+/**
+ * Caveat context that was missing to fully evaluate a conditional result.
+ */
+export interface PartialCaveatInfo {
+  missingRequiredContext: string[];
+}
+
+/**
+ * One result from {@link SpiceDBClient.lookupResources}.
+ */
+export interface LookupResource {
+  resourceId: string;
+  permissionship: Permissionship;
+  /** Set when `permissionship` is `"conditionalPermission"`. */
+  partialCaveat?: PartialCaveatInfo;
+}
+
+/**
+ * A subject resolved by {@link SpiceDBClient.lookupSubjects} — either the
+ * matched subject, or (when found in {@link LookupSubject.excludedSubjects})
+ * a subject excluded from a wildcard match.
+ */
+export interface ResolvedSubject {
+  subjectId: string;
+  permissionship: Permissionship;
+  partialCaveat?: PartialCaveatInfo;
+}
+
+/**
+ * One result from {@link SpiceDBClient.lookupSubjects}. When
+ * `subject.subjectId` is the wildcard `"*"`, `excludedSubjects` lists
+ * subjects excluded from that wildcard grant — callers MUST treat those
+ * subjects as NOT having the permission, even though the wildcard would
+ * otherwise suggest they do.
+ */
+export interface LookupSubject {
+  subject: ResolvedSubject;
+  excludedSubjects: ResolvedSubject[];
+}
+
+/**
+ * Maps the proto `LookupPermissionship` enum to its native equivalent.
+ * Unrecognized values map to `"unspecified"`. Mirrors spicedb-go's
+ * `permissionshipFromProto` (client/lookup_types.go).
+ * @internal
+ */
+export function permissionshipFromProto(
+  v: LookupPermissionship,
+): Permissionship {
+  switch (v) {
+    case LookupPermissionship.HAS_PERMISSION:
+      return "hasPermission";
+    case LookupPermissionship.CONDITIONAL_PERMISSION:
+      return "conditionalPermission";
+    default:
+      return "unspecified";
+  }
+}
+
+/**
+ * Maps a proto `PartialCaveatInfo` to its native equivalent. An undefined
+ * input maps to undefined. Mirrors spicedb-go's `partialCaveatFromProto`
+ * (client/lookup_types.go).
+ * @internal
+ */
+export function partialCaveatFromProto(
+  v?: ProtoPartialCaveatInfo,
+): PartialCaveatInfo | undefined {
+  if (!v) {
+    return undefined;
+  }
+  return { missingRequiredContext: v.missingRequiredContext };
+}
+
+/**
+ * Maps a proto `ResolvedSubject` to its native equivalent. An undefined
+ * input maps to a zero-value `ResolvedSubject` (empty `subjectId`), which
+ * callers use as the trigger for falling back to deprecated response-level
+ * fields. Mirrors spicedb-go's `resolvedSubjectFromProto`
+ * (client/lookup_types.go).
+ * @internal
+ */
+export function resolvedSubjectFromProto(
+  v?: ProtoResolvedSubject,
+): ResolvedSubject {
+  return {
+    subjectId: v?.subjectObjectId ?? "",
+    permissionship: permissionshipFromProto(
+      v?.permissionship ?? LookupPermissionship.UNSPECIFIED,
+    ),
+    partialCaveat: partialCaveatFromProto(v?.partialCaveatInfo),
+  };
+}
+
+/**
+ * Maps a proto `LookupResourcesResponse` to its native equivalent.
+ * @internal
+ */
+export function fromProtoLookupResource(
+  resp: ProtoLookupResourcesResponse,
+): LookupResource {
+  return {
+    resourceId: resp.resourceObjectId,
+    permissionship: permissionshipFromProto(resp.permissionship),
+    partialCaveat: partialCaveatFromProto(resp.partialCaveatInfo),
+  };
+}
+
+/**
+ * Maps a proto `LookupSubjectsResponse` to its native equivalent, falling
+ * back to the deprecated top-level `subjectObjectId`/`permissionship`/
+ * `partialCaveatInfo` fields when `subject` is unset, and to the deprecated
+ * `excludedSubjectIds` (IDs only, no permissionship/caveat info) when
+ * `excludedSubjects` is empty. Mirrors spicedb-go's `LookupSubjects` loop
+ * body (client/lookup.go).
+ * @internal
+ */
+export function fromProtoLookupSubject(
+  resp: ProtoLookupSubjectsResponse,
+): LookupSubject {
+  let subject = resolvedSubjectFromProto(resp.subject);
+  if (!subject.subjectId) {
+    // Fall back to the deprecated top-level fields for servers that don't
+    // yet populate the non-deprecated `subject` field.
+    subject = {
+      subjectId: resp.subjectObjectId,
+      permissionship: permissionshipFromProto(resp.permissionship),
+      partialCaveat: partialCaveatFromProto(resp.partialCaveatInfo),
+    };
+  }
+
+  let excludedSubjects: ResolvedSubject[] = [];
+  if (resp.excludedSubjects.length > 0) {
+    excludedSubjects = resp.excludedSubjects.map((e) =>
+      resolvedSubjectFromProto(e),
+    );
+  } else if (resp.excludedSubjectIds.length > 0) {
+    // Fall back to the deprecated excluded_subject_ids field, which carries
+    // only IDs (no permissionship/caveat info).
+    excludedSubjects = resp.excludedSubjectIds.map((id) => ({
+      subjectId: id,
+      permissionship: "unspecified" as const,
+    }));
+  }
+
+  return { subject, excludedSubjects };
 }

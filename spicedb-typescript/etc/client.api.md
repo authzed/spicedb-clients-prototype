@@ -108,6 +108,15 @@ export interface LeafNode {
 }
 
 // @public
+export interface LookupResource {
+    partialCaveat?: PartialCaveatInfo;
+    // (undocumented)
+    permissionship: Permissionship;
+    // (undocumented)
+    resourceId: string;
+}
+
+// @public
 export interface LookupResourcesParams {
     // (undocumented)
     context?: Record<string, unknown>;
@@ -123,6 +132,14 @@ export interface LookupResourcesParams {
     subjectRelation?: string;
     // (undocumented)
     subjectType: string;
+}
+
+// @public
+export interface LookupSubject {
+    // (undocumented)
+    excludedSubjects: ResolvedSubject[];
+    // (undocumented)
+    subject: ResolvedSubject;
 }
 
 // @public
@@ -160,9 +177,18 @@ export interface ObjectRef {
 }
 
 // @public
+export interface PartialCaveatInfo {
+    // (undocumented)
+    missingRequiredContext: string[];
+}
+
+// @public
 export class PermissionDeniedError extends SpiceDBError {
     constructor(message: string, options?: ErrorOptions);
 }
+
+// @public
+export type Permissionship = "unspecified" | "hasPermission" | "conditionalPermission";
 
 // @public
 export interface PermissionTree {
@@ -265,6 +291,16 @@ export interface RelationshipFilterOptions {
 export function relationshipFromTuple(resourceTuple: string, subject: string): Relationship;
 
 // @public
+export interface ResolvedSubject {
+    // (undocumented)
+    partialCaveat?: PartialCaveatInfo;
+    // (undocumented)
+    permissionship: Permissionship;
+    // (undocumented)
+    subjectId: string;
+}
+
+// @public
 export interface SchemaCaveat {
     // (undocumented)
     comment: string;
@@ -364,8 +400,8 @@ export class SpiceDBClient {
     experimentalUnregisterRelationshipCounter(name: string): Promise<void>;
     exportBulkRelationships(consistency: Consistency, filter?: RelationshipFilterOptions): AsyncIterableIterator<Relationship>;
     importBulkRelationships(relationships: Relationship[]): Promise<bigint>;
-    lookupResources(params: LookupResourcesParams, consistency: Consistency): AsyncIterableIterator<string>;
-    lookupSubjects(params: LookupSubjectsParams, consistency: Consistency): AsyncIterableIterator<string>;
+    lookupResources(params: LookupResourcesParams, consistency: Consistency): AsyncIterableIterator<LookupResource>;
+    lookupSubjects(params: LookupSubjectsParams, consistency: Consistency): AsyncIterableIterator<LookupSubject>;
     readRelationships(filter: RelationshipFilterOptions, consistency: Consistency): AsyncIterableIterator<Relationship>;
     readSchema(): Promise<{
         schema: string;

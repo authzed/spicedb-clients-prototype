@@ -1,7 +1,10 @@
 /**
  * Example: Resource lookup
  *
- * Demonstrates looking up all resources a subject has access to.
+ * Demonstrates looking up all resources a subject has access to, including
+ * how to read the `permissionship` of each result. A permissionship of
+ * `"conditionalPermission"` means the match depends on caveat context that
+ * wasn't supplied — callers must not treat it as an unconditional grant.
  */
 import {
   createSpiceDBClient,
@@ -43,7 +46,7 @@ await client.write(txn);
 // Find all documents that user:jimmy can view
 console.log("Documents user:jimmy can view:");
 const found = new Set<string>();
-for await (const resourceId of client.lookupResources(
+for await (const resource of client.lookupResources(
   {
     resourceType: "document",
     permission: "view",
@@ -52,8 +55,20 @@ for await (const resourceId of client.lookupResources(
   },
   full(),
 )) {
-  console.log(`  document:${resourceId}`);
-  found.add(resourceId);
+  console.log(
+    `  document:${resource.resourceId} (permissionship=${resource.permissionship})`,
+  );
+  if (resource.permissionship !== "hasPermission") {
+    // A conditional result means caveat context is missing; partialCaveat
+    // lists which context. Never treat a conditional result as a full
+    // grant.
+    console.error(
+      `ASSERTION FAILED: unexpected permissionship for document:${resource.resourceId}: ` +
+        `${resource.permissionship} (missing context: ${JSON.stringify(resource.partialCaveat)})`,
+    );
+    process.exit(1);
+  }
+  found.add(resource.resourceId);
 }
 
 assert(found.has("readme"), "expected readme in results");

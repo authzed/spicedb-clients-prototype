@@ -39,6 +39,8 @@ import {
   type RelationshipFilterOptions,
   type LookupResourcesParams,
   type LookupSubjectsParams,
+  type LookupResource,
+  type LookupSubject,
   type CheckRequest,
   type WatchChange,
   type WatchEvent,
@@ -62,6 +64,8 @@ import {
   fromProtoSchemaCaveat,
   fromProtoRelationReference,
   fromProtoSchemaDiff,
+  fromProtoLookupResource,
+  fromProtoLookupSubject,
 } from "./types.js";
 
 import {
@@ -288,15 +292,18 @@ export class SpiceDBClient {
   // ---------------------------------------------------------------------------
 
   /**
-   * Looks up all resource IDs of the given type that the subject has
-   * the specified permission on.
+   * Looks up all resources of the given type that the subject has the
+   * specified permission on. Each result carries the permissionship (full
+   * grant vs conditional on caveat context) and, for conditional results,
+   * which caveat context was missing. Callers MUST check `permissionship`
+   * before treating a result as a full grant.
    *
-   * @returns An async iterable of resource object IDs.
+   * @returns An async iterable of {@link LookupResource}.
    */
   async *lookupResources(
     params: LookupResourcesParams,
     consistency: Consistency,
-  ): AsyncIterableIterator<string> {
+  ): AsyncIterableIterator<LookupResource> {
     const stream = this.proto.permissions.lookupResources(
       create(LookupResourcesRequestSchema, {
         consistency: consistency._toProto(),
@@ -315,7 +322,7 @@ export class SpiceDBClient {
     );
     try {
       for await (const resp of stream) {
-        yield resp.resourceObjectId;
+        yield fromProtoLookupResource(resp);
       }
     } catch (err) {
       throw toSpiceDBError(err);
@@ -323,15 +330,21 @@ export class SpiceDBClient {
   }
 
   /**
-   * Looks up all subject IDs of the given type that have the specified
+   * Looks up all subjects of the given type that have the specified
    * permission on the resource.
    *
-   * @returns An async iterable of subject object IDs.
+   * When a yielded `LookupSubject.subject` is the wildcard `"*"`, the server
+   * has granted the permission to every subject of `subjectType` EXCEPT
+   * those listed in `LookupSubject.excludedSubjects`. Callers MUST check
+   * `excludedSubjects` before treating a wildcard match as a blanket grant,
+   * or they risk granting access to subjects the server explicitly excluded.
+   *
+   * @returns An async iterable of {@link LookupSubject}.
    */
   async *lookupSubjects(
     params: LookupSubjectsParams,
     consistency: Consistency,
-  ): AsyncIterableIterator<string> {
+  ): AsyncIterableIterator<LookupSubject> {
     const stream = this.proto.permissions.lookupSubjects(
       create(LookupSubjectsRequestSchema, {
         consistency: consistency._toProto(),
@@ -348,9 +361,7 @@ export class SpiceDBClient {
     );
     try {
       for await (const resp of stream) {
-        if (resp.subject) {
-          yield resp.subject.subjectObjectId;
-        }
+        yield fromProtoLookupSubject(resp);
       }
     } catch (err) {
       throw toSpiceDBError(err);

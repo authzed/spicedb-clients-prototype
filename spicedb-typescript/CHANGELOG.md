@@ -14,6 +14,42 @@
 
 ### Breaking Changes
 
+- **2026-08-15**: `lookupResources`/`lookupSubjects` now yield native result
+  objects instead of bare `string` IDs, closing an over-grant risk: the
+  previous `string`-only shape silently dropped `excludedSubjects` for
+  wildcard (`user:*`) matches, so a caller iterating IDs alone could treat a
+  wildcard-excluded subject as granted. `lookupResources` now yields
+  `LookupResource` (`resourceId`, `permissionship`, `partialCaveat?`);
+  `lookupSubjects` now yields `LookupSubject` (`subject: ResolvedSubject`,
+  `excludedSubjects: ResolvedSubject[]`). Both use the shared `Permissionship`
+  (`"unspecified" | "hasPermission" | "conditionalPermission"`) and
+  `PartialCaveatInfo` types. Mirrors spicedb-go's
+  `client/lookup_types.go`/`lookup.go`, including its fallback to the
+  deprecated `subjectObjectId`/`excludedSubjectIds` proto fields for servers
+  that don't yet populate the modern `subject`/`excludedSubjects` fields.
+  All new types are exported from the package root.
+
+  Before:
+  ```ts
+  for await (const resourceId of client.lookupResources(params, cs)) {
+    grant(resourceId); // string only — no permissionship signal
+  }
+  for await (const subjectId of client.lookupSubjects(params, cs)) {
+    grant(subjectId); // wildcard "*" treated as unconditional — over-grant risk
+  }
+  ```
+  After:
+  ```ts
+  for await (const resource of client.lookupResources(params, cs)) {
+    if (resource.permissionship !== "hasPermission") continue; // skip conditional
+    grant(resource.resourceId);
+  }
+  for await (const result of client.lookupSubjects(params, cs)) {
+    const excluded = new Set(result.excludedSubjects.map((s) => s.subjectId));
+    if (result.subject.subjectId === "*" && excluded.has(callerId)) continue;
+    grant(result.subject.subjectId);
+  }
+  ```
 - **2026-08-14**: Removed `@bufbuild/protobuf`'s `JsonObject` from the public
   API. `Relationship.caveatContext`, `CheckRequest.context`,
   `LookupResourcesParams.context`, `LookupSubjectsParams.context`,

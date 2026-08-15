@@ -92,10 +92,40 @@ for await (const rel of client.readRelationships(filter, consistency)) {
   // ...
 }
 
-for await (const id of client.lookupResources(params, consistency)) {
-  // ...
+for await (const resource of client.lookupResources(params, consistency)) {
+  // resource: LookupResource — { resourceId, permissionship, partialCaveat? }
 }
 ```
+
+### Lookup Results
+
+`lookupResources`/`lookupSubjects` yield native result objects — never bare
+IDs — so callers can't accidentally treat a caveated or wildcard-excluded
+match as an unconditional grant:
+
+```typescript
+interface LookupResource {
+  resourceId: string;
+  permissionship: Permissionship; // "unspecified" | "hasPermission" | "conditionalPermission"
+  partialCaveat?: PartialCaveatInfo; // set when permissionship is "conditionalPermission"
+}
+
+interface ResolvedSubject {
+  subjectId: string;
+  permissionship: Permissionship;
+  partialCaveat?: PartialCaveatInfo;
+}
+
+interface LookupSubject {
+  subject: ResolvedSubject;
+  excludedSubjects: ResolvedSubject[]; // wildcard "*" exclusions — MUST check
+}
+```
+
+Callers MUST check `permissionship` before treating a result as a full
+grant, and — critically — when `subject.subjectId` is the wildcard `"*"`,
+MUST check `excludedSubjects` before treating the wildcard as a blanket
+grant. Mirrors spicedb-go's `client/lookup_types.go`.
 
 ### Writes
 
@@ -146,8 +176,8 @@ See package sections above.
 | `check_permission/` | Basic permission check |
 | `write_relationships/` | Writing relationships with transaction builder |
 | `read_relationships/` | Reading relationships with async iterator |
-| `lookup_resources/` | Resource lookup |
-| `lookup_subjects/` | Subject lookup |
+| `lookup_resources/` | Resource lookup, incl. reading `permissionship`/`partialCaveat` |
+| `lookup_subjects/` | Subject lookup, incl. wildcard `"*"` + `excludedSubjects` |
 | `watch_changes/` | Watching for changes |
 | `schema_management/` | Schema read/write |
 | `bulk_operations/` | Bulk checks and imports |

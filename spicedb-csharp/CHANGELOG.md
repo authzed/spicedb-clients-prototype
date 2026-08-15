@@ -14,6 +14,17 @@
   `NotFoundException`. No API shape change — only the exception type thrown
   from these `IAsyncEnumerable<T>`/`Task` methods on stream failure.
 
+- **2026-08-14**: Standardized the retryable (transient) status code set to
+  `{UNAVAILABLE, RESOURCE_EXHAUSTED, ABORTED}`, aligning with the other
+  SpiceDB clients. `DEADLINE_EXCEEDED` is no longer treated as transient and
+  is no longer retried (the `Grpc.Core.StatusCode.DeadlineExceeded` →
+  `DeadlineExceededException` mapping is unchanged; it just no longer counts
+  as transient for `ErrorMapper.IsTransient`/`RetryAsync`). Added
+  `AbortedException` with a `Grpc.Core.StatusCode.Aborted` mapping in
+  `ErrorMapper.ToSpiceDBException`. Also reduced `MaxRetryAttempts` from `5`
+  to `3` (4 total attempts instead of 6) to align retry attempts with the
+  other clients.
+
 ## 0.1.0 (2026-03-18)
 
 Initial release of the idiomatic C# SpiceDB client.

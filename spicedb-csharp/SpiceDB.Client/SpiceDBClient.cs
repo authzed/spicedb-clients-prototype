@@ -25,7 +25,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
     private const int DefaultImportBatchSize = 1_000;
     private const int DefaultExportPageSize = 512;
     private const int DefaultCheckBatchSize = 1_000;
-    private const int MaxRetryAttempts = 5;
+    private const int MaxRetryAttempts = 3;
     private static readonly TimeSpan InitialBackoff = TimeSpan.FromMilliseconds(100);
 
     private readonly SpiceDBProtoClient? _protoClient;

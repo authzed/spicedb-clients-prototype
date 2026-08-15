@@ -92,6 +92,16 @@ public class ErrorsTests
     }
 
     [Fact]
+    public void ToSpiceDBException_MapsAborted()
+    {
+        var rpc = new RpcException(new Status(StatusCode.Aborted, "aborted"));
+        var ex = ErrorMapper.ToSpiceDBException(rpc);
+
+        ex.Should().BeOfType<AbortedException>();
+        ex.Should().BeAssignableTo<SpiceDBException>();
+    }
+
+    [Fact]
     public void ToSpiceDBException_UnknownCode_ReturnsBaseException()
     {
         var rpc = new RpcException(new Status(StatusCode.Internal, "internal error"));
@@ -116,16 +126,23 @@ public class ErrorsTests
     }
 
     [Fact]
-    public void IsTransient_DeadlineExceeded_ReturnsTrue()
+    public void IsTransient_DeadlineExceeded_ReturnsFalse()
     {
         var rpc = new RpcException(new Status(StatusCode.DeadlineExceeded, ""));
-        ErrorMapper.IsTransient(rpc).Should().BeTrue();
+        ErrorMapper.IsTransient(rpc).Should().BeFalse();
     }
 
     [Fact]
     public void IsTransient_ResourceExhausted_ReturnsTrue()
     {
         var rpc = new RpcException(new Status(StatusCode.ResourceExhausted, ""));
+        ErrorMapper.IsTransient(rpc).Should().BeTrue();
+    }
+
+    [Fact]
+    public void IsTransient_Aborted_ReturnsTrue()
+    {
+        var rpc = new RpcException(new Status(StatusCode.Aborted, ""));
         ErrorMapper.IsTransient(rpc).Should().BeTrue();
     }
 
@@ -144,16 +161,23 @@ public class ErrorsTests
     }
 
     [Fact]
-    public void IsTransient_TypedDeadlineExceededException_ReturnsTrue()
+    public void IsTransient_TypedDeadlineExceededException_ReturnsFalse()
     {
         var ex = new DeadlineExceededException("test");
-        ErrorMapper.IsTransient(ex).Should().BeTrue();
+        ErrorMapper.IsTransient(ex).Should().BeFalse();
     }
 
     [Fact]
     public void IsTransient_TypedResourceExhaustedException_ReturnsTrue()
     {
         var ex = new ResourceExhaustedException("test");
+        ErrorMapper.IsTransient(ex).Should().BeTrue();
+    }
+
+    [Fact]
+    public void IsTransient_TypedAbortedException_ReturnsTrue()
+    {
+        var ex = new AbortedException("test");
         ErrorMapper.IsTransient(ex).Should().BeTrue();
     }
 
@@ -176,5 +200,6 @@ public class ErrorsTests
         new CancelledException("").Should().BeAssignableTo<SpiceDBException>();
         new ResourceExhaustedException("").Should().BeAssignableTo<SpiceDBException>();
         new DeadlineExceededException("").Should().BeAssignableTo<SpiceDBException>();
+        new AbortedException("").Should().BeAssignableTo<SpiceDBException>();
     }
 }

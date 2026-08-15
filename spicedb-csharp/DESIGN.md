@@ -219,17 +219,18 @@ Exception hierarchy rooted at `SpiceDBException`:
 - `CancelledException`
 - `ResourceExhaustedException`
 - `DeadlineExceededException`
+- `AbortedException`
 
 `ErrorMapper` static class:
 
 - `ToSpiceDBException(RpcException)` — maps gRPC status codes to typed exceptions
-- `IsTransient(Exception)` — returns true for UNAVAILABLE, DEADLINE_EXCEEDED, RESOURCE_EXHAUSTED
+- `IsTransient(Exception)` — returns true for UNAVAILABLE, RESOURCE_EXHAUSTED, ABORTED
 
 ### Auto-Retry
 
 Automatic retry with exponential backoff for transient gRPC errors (UNAVAILABLE,
-DEADLINE_EXCEEDED, RESOURCE_EXHAUSTED). Max 5 attempts with 100ms initial
-backoff, doubling each retry.
+RESOURCE_EXHAUSTED, ABORTED). Max 3 retries (4 attempts total) with 100ms
+initial backoff, doubling each retry.
 
 ### Supporting Types
 

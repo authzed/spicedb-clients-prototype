@@ -77,6 +77,13 @@ public sealed class DeadlineExceededException : SpiceDBException
     public DeadlineExceededException(string message, Exception innerException) : base(message, innerException) { }
 }
 
+/// <summary>The operation was aborted, typically due to a concurrency conflict.</summary>
+public sealed class AbortedException : SpiceDBException
+{
+    public AbortedException(string message) : base(message) { }
+    public AbortedException(string message, Exception innerException) : base(message, innerException) { }
+}
+
 /// <summary>
 /// Maps gRPC RpcException status codes to typed SpiceDB exceptions.
 /// </summary>
@@ -85,8 +92,8 @@ public static class ErrorMapper
     private static readonly HashSet<StatusCode> TransientCodes =
     [
         StatusCode.Unavailable,
-        StatusCode.DeadlineExceeded,
         StatusCode.ResourceExhausted,
+        StatusCode.Aborted,
     ];
 
     /// <summary>
@@ -108,13 +115,14 @@ public static class ErrorMapper
             StatusCode.Cancelled => new CancelledException(message, rpcException),
             StatusCode.ResourceExhausted => new ResourceExhaustedException(message, rpcException),
             StatusCode.DeadlineExceeded => new DeadlineExceededException(message, rpcException),
+            StatusCode.Aborted => new AbortedException(message, rpcException),
             _ => new SpiceDBException(message, rpcException),
         };
     }
 
     /// <summary>
     /// Returns true if the exception is transient and worth retrying
-    /// (UNAVAILABLE, DEADLINE_EXCEEDED, RESOURCE_EXHAUSTED).
+    /// (UNAVAILABLE, RESOURCE_EXHAUSTED, ABORTED).
     /// </summary>
     public static bool IsTransient(Exception exception)
     {
@@ -122,7 +130,7 @@ public static class ErrorMapper
             return TransientCodes.Contains(rpc.StatusCode);
 
         return exception is UnavailableException
-            or DeadlineExceededException
-            or ResourceExhaustedException;
+            or ResourceExhaustedException
+            or AbortedException;
     }
 }

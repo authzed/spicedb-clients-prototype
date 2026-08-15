@@ -380,6 +380,16 @@ module SpiceDB
         call_watch(object_types, start_revision) do |update|
           yielder << update
         end
+      rescue StandardError => e
+        # We intentionally do NOT retry the streaming watch here (unlike
+        # with_retry for unary/paginated calls) — retrying a live
+        # server-stream mid-flight risks re-emitting/replaying updates the
+        # caller has already seen. Mapping the error to a native SpiceDB::*
+        # type (instead of leaking a raw GRPC::BadStatus) is the correctness
+        # fix; retry is left to the caller.
+        raise SpiceDB.to_spicedb_error(e) if e.respond_to?(:code)
+
+        raise
       end
     end
 
@@ -387,6 +397,8 @@ module SpiceDB
 
     # Registers a named counter that tracks relationships matching the given filter.
     # The counter is computed asynchronously by SpiceDB.
+    #
+    # @note Experimental: wraps SpiceDB's ExperimentalService and may change without following the backwards-compatibility mandate.
     #
     # @param name [String] counter name
     # @param filter [SpiceDB::Filter]
@@ -398,6 +410,8 @@ module SpiceDB
 
     # Reads the value of a previously registered relationship counter.
     #
+    # @note Experimental: wraps SpiceDB's ExperimentalService and may change without following the backwards-compatibility mandate.
+    #
     # @param name [String] counter name
     # @return [SpiceDB::CountResult]
     def experimental_count_relationships(name)
@@ -405,6 +419,8 @@ module SpiceDB
     end
 
     # Removes a previously registered relationship counter.
+    #
+    # @note Experimental: wraps SpiceDB's ExperimentalService and may change without following the backwards-compatibility mandate.
     #
     # @param name [String] counter name
     # @return [nil]
@@ -592,7 +608,7 @@ module SpiceDB
       )
 
       resp.pairs.map do |pair|
-        raise SpiceDB::Error, pair.error.message if pair.respond_to?(:error) && pair.error && pair.error.respond_to?(:message) && !pair.error.message.empty?
+        raise SpiceDB.to_spicedb_error(pair.error) if pair.respond_to?(:error) && pair.error && pair.error.respond_to?(:message) && !pair.error.message.empty?
 
         # Ruby protobuf returns enum values as symbols, not integers
         { has_permission: pair.item.permissionship == :PERMISSIONSHIP_HAS_PERMISSION }

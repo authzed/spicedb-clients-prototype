@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Added
+
+- **`deleteRelationships` preconditions and limit**: added `deleteRelationships(Filter, DeleteOptions)`, an additive overload accepting optional MUST_MATCH/MUST_NOT_MATCH preconditions and a per-request page-size override, mirroring `spicedb-go`'s `WithDeleteMustMatch`/`WithDeleteMustNotMatch`/`WithDeleteLimit` (`client/relationships.go`). `DeleteOptions` is an immutable record with `Filter`-style `withMustMatch`/`withMustNotMatch`/`withLimit` builder methods. The existing `deleteRelationships(Filter)` overload is unchanged — it delegates to `DeleteOptions.none()` (no preconditions, 10,000-item page size), same as before.
+
+  ```java
+  var options = SpiceDBClient.DeleteOptions.none()
+      .withMustMatch(existsFilter)
+      .withLimit(500);
+  String revision = client.deleteRelationships(filter, options);
+  ```
+
 ### Breaking Changes
 
 - **2026-08-15**: `lookupResources`/`lookupSubjects` now yield native `LookupResult` records instead of bare `String`s. Each result carries the `permissionship` (full grant vs conditional on caveat context) and, for `lookupSubjects`, the `excludedSubjects` of a wildcard (`"*"`) match — previously dropped entirely, which meant callers treating a wildcard `Stream<String>` result as a blanket grant had **no way to know which subjects were actually excluded from it** (an over-grant risk). Mirrors `spicedb-go`'s `LookupResource`/`LookupSubject`/`ResolvedSubject`/`PartialCaveatInfo` types.

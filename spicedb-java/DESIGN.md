@@ -121,6 +121,16 @@ String revision = client.write(txn);
 limit of 10,000 per RPC call. It repeats until the server reports all matching
 relationships are deleted. Returns the final revision.
 
+`deleteRelationships(Filter, DeleteOptions)` additionally accepts optional
+MUST_MATCH/MUST_NOT_MATCH preconditions and a per-request page-size override,
+mirroring `spicedb-go`'s `WithDeleteMustMatch`/`WithDeleteMustNotMatch`/
+`WithDeleteLimit`. `DeleteOptions` is an immutable record with `Filter`-style
+`withMustMatch`/`withMustNotMatch`/`withLimit` builder methods; start from
+`DeleteOptions.none()`, which reproduces the single-argument overload's
+behavior exactly. Preconditions are re-evaluated by the server on every page
+of a multi-page delete — pair them with `withLimit` for a single-shot,
+all-or-nothing guarded delete.
+
 ### Error Handling
 
 Unchecked exceptions extending `RuntimeException`:
@@ -170,6 +180,7 @@ These may change without following the backwards compatibility mandate.
 - `write(Transaction)` → `String` (revision)
 - `readRelationships(Consistency, Filter)` → `Stream<Relationship>`
 - `deleteRelationships(Filter)` → `String` (revision)
+- `deleteRelationships(Filter, DeleteOptions)` → `String` (revision)
 
 **Lookups:**
 - `lookupResources(Consistency, String resourceType, String permission, String subjectType, String subjectID)` → `Stream<LookupResult.LookupResource>`

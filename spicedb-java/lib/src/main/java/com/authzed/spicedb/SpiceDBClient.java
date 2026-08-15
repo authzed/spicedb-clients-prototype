@@ -249,10 +249,94 @@ public final class SpiceDBClient implements AutoCloseable {
   // -----------------------------------------------------------------------
 
   /**
-   * Deletes all relationships matching the given filter. Large result sets are automatically paged
-   * in batches of 10,000. Returns the revision of the final deletion.
+   * Optional preconditions and page-size override for {@link #deleteRelationships(Filter,
+   * DeleteOptions)}.
+   *
+   * <p>Immutable — {@code withMustMatch}/{@code withMustNotMatch}/{@code withLimit} each return a
+   * new instance, mirroring {@link Filter}'s builder style. Start from {@link #none()}, which is
+   * exactly the behavior of the single-argument {@link #deleteRelationships(Filter)} overload.
+   *
+   * <p>Preconditions are a per-request proto field, so when a delete spans multiple pages (i.e.
+   * more matches than the page size), they are re-evaluated by the server on every page — there is
+   * no "check-once, apply-to-all-pages" semantics. This means a delete that starts successfully can
+   * still fail partway through if the guarded state changes between pages, after earlier pages have
+   * already been deleted. For a single-shot, all-or-nothing guarded delete, pair the precondition
+   * with a {@link #withLimit} large enough to cover every matching relationship in one call.
+   * Mirrors {@code spicedb-go}'s {@code WithDeleteMustMatch}/{@code WithDeleteMustNotMatch}/{@code
+   * WithDeleteLimit} (client/relationships.go).
+   *
+   * <pre>{@code
+   * var options = SpiceDBClient.DeleteOptions.none()
+   *     .withMustMatch(existsFilter)
+   *     .withLimit(500);
+   * client.deleteRelationships(filter, options);
+   * }</pre>
    */
-  public String deleteRelationships(Filter filter) {
+  public record DeleteOptions(List<Filter> mustMatch, List<Filter> mustNotMatch, Integer limit) {
+
+    public DeleteOptions {
+      mustMatch = mustMatch == null ? List.of() : List.copyOf(mustMatch);
+      mustNotMatch = mustNotMatch == null ? List.of() : List.copyOf(mustNotMatch);
+      if (limit != null && limit <= 0) {
+        throw new IllegalArgumentException("limit must be positive");
+      }
+    }
+
+    /**
+     * No preconditions, default page size (10,000) — identical behavior to {@link
+     * #deleteRelationships(Filter)}.
+     */
+    public static DeleteOptions none() {
+      return new DeleteOptions(List.of(), List.of(), null);
+    }
+
+    /**
+     * Adds a MUST_MATCH precondition: the server rejects the delete (and deletes nothing) unless
+     * at least one relationship matching {@code filter} exists at evaluation time. Multiple calls
+     * accumulate; all are sent with every page of the delete.
+     */
+    public DeleteOptions withMustMatch(Filter filter) {
+      var updated = new ArrayList<>(mustMatch);
+      updated.add(filter);
+      return new DeleteOptions(updated, mustNotMatch, limit);
+    }
+
+    /**
+     * Adds a MUST_NOT_MATCH precondition: the server rejects the delete (and deletes nothing) if
+     * any relationship matching {@code filter} exists at evaluation time. Multiple calls
+     * accumulate; all are sent with every page of the delete.
+     */
+    public DeleteOptions withMustNotMatch(Filter filter) {
+      var updated = new ArrayList<>(mustNotMatch);
+      updated.add(filter);
+      return new DeleteOptions(mustMatch, updated, limit);
+    }
+
+    /** Overrides the per-request page size used by the auto-paging delete loop (default 10,000). */
+    public DeleteOptions withLimit(int limit) {
+      return new DeleteOptions(mustMatch, mustNotMatch, limit);
+    }
+  }
+
+  /**
+   * Deletes all relationships matching the given filter, guarded by optional preconditions and
+   * with an optional page-size override supplied via {@code options}. Returns the revision of the
+   * final deletion. See {@link DeleteOptions} for precondition/paging semantics.
+   */
+  public String deleteRelationships(Filter filter, DeleteOptions options) {
+    var preconditions = new ArrayList<Precondition>();
+    for (Filter f : options.mustMatch()) {
+      preconditions.add(
+          toPrecondition(
+              new Transaction.Precondition(Transaction.PreconditionOperation.MUST_MATCH, f)));
+    }
+    for (Filter f : options.mustNotMatch()) {
+      preconditions.add(
+          toPrecondition(
+              new Transaction.Precondition(Transaction.PreconditionOperation.MUST_NOT_MATCH, f)));
+    }
+    int pageSize = options.limit() != null ? options.limit() : DEFAULT_DELETE_PAGE_SIZE;
+
     String revision = "";
     while (true) {
       DeleteRelationshipsResponse resp =
@@ -261,7 +345,8 @@ public final class SpiceDBClient implements AutoCloseable {
                   permissionsStub.deleteRelationships(
                       DeleteRelationshipsRequest.newBuilder()
                           .setRelationshipFilter(toRelationshipFilter(filter))
-                          .setOptionalLimit(DEFAULT_DELETE_PAGE_SIZE)
+                          .addAllOptionalPreconditions(preconditions)
+                          .setOptionalLimit(pageSize)
                           .setOptionalAllowPartialDeletions(true)
                           .build()));
       revision = resp.getDeletedAt().getToken();
@@ -270,6 +355,14 @@ public final class SpiceDBClient implements AutoCloseable {
         return revision;
       }
     }
+  }
+
+  /**
+   * Deletes all relationships matching the given filter. Large result sets are automatically paged
+   * in batches of 10,000. Returns the revision of the final deletion.
+   */
+  public String deleteRelationships(Filter filter) {
+    return deleteRelationships(filter, DeleteOptions.none());
   }
 
   // -----------------------------------------------------------------------

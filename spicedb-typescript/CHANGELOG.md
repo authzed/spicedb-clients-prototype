@@ -4,6 +4,19 @@
 
 ### Added
 
+- **2026-08-15**: `readRelationships()`, `lookupResources()`,
+  `lookupSubjects()`, `exportBulkRelationships()`, and `watch()` now retry
+  stream ESTABLISHMENT on transient errors (`UNAVAILABLE`,
+  `RESOURCE_EXHAUSTED`, `ABORTED`), reusing the same `isTransientError`
+  predicate and exponential backoff as `withRetry`. Retry is scoped strictly
+  to (re-)opening the stream: once any item has been yielded to the caller
+  from the current stream, a later transient error is never retried — it is
+  surfaced as-is, since retrying after a yield would replay/duplicate
+  already-delivered items. `watch()` in particular never retries mid-watch,
+  only before the first update of a given `watch()` call is yielded. Mirrors
+  spicedb-python's `_should_retry_establishment` approach
+  (`spicedb-python/spicedb/client.py`). No public API change.
+
 - **2026-08-15**: `deleteRelationships()` now accepts an optional
   `DeleteOptions` second argument with `mustMatch`/`mustNotMatch`
   (each `RelationshipFilterOptions[]`) and `limit`, mirroring spicedb-go's

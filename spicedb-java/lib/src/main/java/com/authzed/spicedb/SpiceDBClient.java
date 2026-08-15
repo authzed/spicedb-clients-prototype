@@ -103,6 +103,14 @@ public final class SpiceDBClient implements AutoCloseable {
     return new SpiceDBClient(builder.build(), bearerMetadata(presharedKey));
   }
 
+  /**
+   * Test-only factory that wires a client directly to a pre-built {@link ManagedChannel} (e.g. an
+   * in-process transport for tests). Package-private: not part of the public API surface.
+   */
+  static SpiceDBClient forChannel(ManagedChannel channel) {
+    return new SpiceDBClient(channel, new Metadata());
+  }
+
   /** Functional option for customizing the client. */
   @FunctionalInterface
   public interface ClientOption {
@@ -312,7 +320,11 @@ public final class SpiceDBClient implements AutoCloseable {
 
             var responses = new ArrayList<LookupResourcesResponse>();
             var serverStream = withRetry(() -> permissionsStub.lookupResources(reqBuilder.build()));
-            serverStream.forEachRemaining(responses::add);
+            mapStreamErrors(
+                () -> {
+                  serverStream.forEachRemaining(responses::add);
+                  return null;
+                });
 
             currentPage = responses.iterator();
             if (responses.size() < DEFAULT_LOOKUP_PAGE_SIZE) {
@@ -357,7 +369,11 @@ public final class SpiceDBClient implements AutoCloseable {
                         .setPermission(permission)
                         .setSubjectObjectType(subjectType)
                         .build()));
-    serverStream.forEachRemaining(responses::add);
+    mapStreamErrors(
+        () -> {
+          serverStream.forEachRemaining(responses::add);
+          return null;
+        });
 
     return responses.stream()
         .map(
@@ -692,8 +708,8 @@ public final class SpiceDBClient implements AutoCloseable {
                 withRetry(() -> permissionsStub.exportBulkRelationships(reqBuilder.build()));
 
             int pageCount = 0;
-            while (serverStream.hasNext()) {
-              ExportBulkRelationshipsResponse resp = serverStream.next();
+            while (mapStreamErrors(serverStream::hasNext)) {
+              ExportBulkRelationshipsResponse resp = mapStreamErrors(serverStream::next);
               cursor = resp.getAfterResultCursor();
               for (var r : resp.getRelationshipsList()) {
                 buffer.add(fromProtoRelationship(r));
@@ -749,8 +765,8 @@ public final class SpiceDBClient implements AutoCloseable {
           @Override
           public boolean hasNext() {
             if (!buffer.isEmpty()) return true;
-            if (!serverStream.hasNext()) return false;
-            WatchResponse resp = serverStream.next();
+            if (!mapStreamErrors(serverStream::hasNext)) return false;
+            WatchResponse resp = mapStreamErrors(serverStream::next);
             for (var u : resp.getUpdatesList()) {
               buffer.add(updateFromProto(u));
             }
@@ -861,6 +877,22 @@ public final class SpiceDBClient implements AutoCloseable {
     T call();
   }
 
+  /**
+   * Runs a blocking mid-stream operation (e.g. {@code serverStream.hasNext()}/{@code next()}),
+   * mapping any {@link StatusRuntimeException} it throws to a typed {@link SpiceDBException}.
+   *
+   * <p>Unlike {@link #withRetry}, this does NOT retry — mid-stream errors (including transient
+   * ones) are not safely retryable without re-issuing the whole call, since some results may have
+   * already been delivered to the consumer.
+   */
+  private static <T> T mapStreamErrors(java.util.function.Supplier<T> op) {
+    try {
+      return op.get();
+    } catch (StatusRuntimeException e) {
+      throw ErrorMapper.toSpiceDBException(e);
+    }
+  }
+
   private <T> T withRetry(RetryableCall<T> call) {
     long backoff = INITIAL_BACKOFF_MS;
     for (int attempt = 0; attempt < MAX_RETRIES; attempt++) {
@@ -922,8 +954,8 @@ public final class SpiceDBClient implements AutoCloseable {
             var serverStream =
                 withRetry(() -> permissionsStub.readRelationships(reqBuilder.build()));
 
-            while (serverStream.hasNext()) {
-              ReadRelationshipsResponse resp = serverStream.next();
+            while (mapStreamErrors(serverStream::hasNext)) {
+              ReadRelationshipsResponse resp = mapStreamErrors(serverStream::next);
               cursor = resp.getAfterResultCursor();
               buffer.add(fromProtoRelationship(resp.getRelationship()));
             }

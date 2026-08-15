@@ -11,6 +11,7 @@ dependencies {
     implementation("io.grpc:grpc-protobuf:1.68.0")
 
     testImplementation("org.junit.jupiter:junit-jupiter:5.11.3")
+    testImplementation("io.grpc:grpc-inprocess:1.68.0")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 

@@ -40,3 +40,4 @@ bundle exec rspec check_permission/check_permission_spec.rb
 | `bulk_operations/` | Bulk checks, check_all, check_any, and import |
 | `schema_reflection/` | Schema reflection, computable permissions, diffs |
 | `relationship_counters/` | Registering and reading relationship counters |
+| `expand_permission_tree/` | Expanding a permission into its native `PermissionTree` (intermediate/leaf nodes, subjects) |

@@ -14,7 +14,14 @@ module SpiceDB
       super
     end
   end
-  ExpandResult = Data.define(:tree_root, :revision)
+  # rubocop:disable Lint/DataDefineOverride -- :object_id mirrors the wire field and Go's ObjectRef.ObjectID; overriding Kernel#object_id is safe here since Data uses field-based ==/hash
+  ObjectRef = Data.define(:object_type, :object_id)
+  # rubocop:enable Lint/DataDefineOverride
+  SubjectRef = Data.define(:subject_type, :subject_id, :optional_relation)
+  IntermediateNode = Data.define(:operation, :children)
+  LeafNode = Data.define(:subjects)
+  PermissionTree = Data.define(:expanded_object, :expanded_relation, :intermediate, :leaf)
+  ExpandResult = Data.define(:tree, :revision)
   CountResult = Data.define(:relationship_count, :revision, :still_calculating)
   Update = Data.define(:operation, :relationship)
 
@@ -837,7 +844,7 @@ module SpiceDB
       )
 
       ExpandResult.new(
-        tree_root: resp.tree_root,
+        tree: permission_tree_from_proto(resp.tree_root),
         revision: resp.expanded_at.token
       )
     end
@@ -953,6 +960,60 @@ module SpiceDB
         Authzed::Api::V1::ExperimentalUnregisterRelationshipCounterRequest.new(
           name: name
         )
+      )
+    end
+
+    # Maps the proto AlgebraicSubjectSet operation enum to a native symbol.
+    PERMISSION_TREE_OPERATION_MAP = {
+      OPERATION_UNION: :union,
+      OPERATION_INTERSECTION: :intersection,
+      OPERATION_EXCLUSION: :exclusion
+    }.freeze
+
+    # Recursively maps a proto Authzed::Api::V1::PermissionRelationshipTree to
+    # a native SpiceDB::PermissionTree. Returns nil for a nil input.
+    #
+    # The proto uses a oneof for intermediate/leaf, which in Ruby becomes a
+    # set of methods that return nil if not set.
+    def permission_tree_from_proto(t)
+      return nil if t.nil?
+
+      # NOTE: use bracket access for object_id — Authzed::Api::V1::ObjectReference#object_id
+      # collides with Kernel#object_id, so the dot-accessor returns Ruby's internal object
+      # identity instead of the protobuf field (see also relationship_from_proto below).
+      expanded_object = ObjectRef.new(
+        object_type: t.expanded_object&.object_type,
+        object_id: t.expanded_object&.[]('object_id')
+      )
+
+      intermediate = nil
+      leaf = nil
+
+      if (v = t.intermediate)
+        intermediate = IntermediateNode.new(
+          operation: PERMISSION_TREE_OPERATION_MAP.fetch(v.operation, :unspecified),
+          children: v.children.map { |child| permission_tree_from_proto(child) }
+        )
+      elsif (v = t.leaf)
+        leaf = LeafNode.new(
+          subjects: v.subjects.map { |subject| subject_ref_from_proto(subject) }
+        )
+      end
+
+      PermissionTree.new(
+        expanded_object: expanded_object,
+        expanded_relation: t.expanded_relation,
+        intermediate: intermediate,
+        leaf: leaf
+      )
+    end
+
+    # Maps a proto Authzed::Api::V1::SubjectReference to a SpiceDB::SubjectRef.
+    def subject_ref_from_proto(subject)
+      SubjectRef.new(
+        subject_type: subject.object&.object_type,
+        subject_id: subject.object&.[]('object_id'),
+        optional_relation: subject.optional_relation
       )
     end
 

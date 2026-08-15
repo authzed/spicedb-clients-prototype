@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative '../lib/spicedb'
+require 'spicedb_proto'
 
 RSpec.describe SpiceDB::Client do
   describe '.new_plaintext' do
@@ -60,10 +61,34 @@ RSpec.describe SpiceDB::Client do
     end
 
     describe 'SpiceDB::ExpandResult' do
-      it 'is a Data.define value type' do
-        result = SpiceDB::ExpandResult.new(tree_root: { 'type' => 'union' }, revision: 'rev1')
+      it 'is a Data.define value type holding a native PermissionTree, not a proto' do
+        tree = SpiceDB::PermissionTree.new(
+          expanded_object: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'doc1'),
+          expanded_relation: 'view',
+          intermediate: nil,
+          leaf: SpiceDB::LeafNode.new(subjects: [])
+        )
+        result = SpiceDB::ExpandResult.new(tree: tree, revision: 'rev1')
+        expect(result.tree).to eq(tree)
         expect(result.revision).to eq('rev1')
         expect(result).to be_frozen
+        expect(result.tree).not_to be_a(Authzed::Api::V1::PermissionRelationshipTree)
+      end
+    end
+
+    describe 'SpiceDB::PermissionTree' do
+      it 'holds exactly one of intermediate or leaf' do
+        leaf_tree = SpiceDB::PermissionTree.new(
+          expanded_object: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'doc1'),
+          expanded_relation: 'view',
+          intermediate: nil,
+          leaf: SpiceDB::LeafNode.new(
+            subjects: [SpiceDB::SubjectRef.new(subject_type: 'user', subject_id: 'alice', optional_relation: '')]
+          )
+        )
+        expect(leaf_tree.leaf.subjects.first.subject_id).to eq('alice')
+        expect(leaf_tree.intermediate).to be_nil
+        expect(leaf_tree).to be_frozen
       end
     end
 

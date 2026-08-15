@@ -74,4 +74,9 @@ for await (const resource of client.lookupResources(
 assert(found.has("readme"), "expected readme in results");
 assert(found.has("design"), "expected design in results (editor implies view)");
 
+// Clean up so later examples that write a narrower schema aren't blocked by
+// leftover relationships (examples run in sequence against one shared
+// SpiceDB instance).
+await client.deleteRelationships({ resourceType: "document" });
+
 console.log("lookup_resources: PASS");

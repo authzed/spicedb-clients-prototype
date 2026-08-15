@@ -89,4 +89,9 @@ assert(
   `expected exactly 3 expanded subjects, got ${subjectIds.size}`,
 );
 
+// Clean up so later examples that write a narrower schema aren't blocked by
+// leftover relationships (examples run in sequence against one shared
+// SpiceDB instance).
+await client.deleteRelationships({ resourceType: "document" });
+
 console.log("\nexpand_permission_tree: PASS");

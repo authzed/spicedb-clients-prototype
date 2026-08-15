@@ -95,4 +95,9 @@ for await (const result of client.lookupSubjects(
 }
 assert(found.has("bob"), "expected bob in edit results");
 
+// Clean up so later examples that write a narrower schema (e.g. one without
+// a `banned` relation) aren't blocked by leftover relationships (examples
+// run in sequence against one shared SpiceDB instance).
+await client.deleteRelationships({ resourceType: "document" });
+
 console.log("lookup_subjects: PASS");

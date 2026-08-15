@@ -110,4 +110,9 @@ const allAllowed = await client.checkAll(atLeast(setupRevision), ...checks);
 console.log(`All permissions granted: ${allAllowed}`);
 assert(allAllowed, "expected all permissions granted");
 
+// Clean up so later examples that write a narrower schema aren't blocked by
+// leftover relationships (examples run in sequence against one shared
+// SpiceDB instance).
+await client.deleteRelationships({ resourceType: "document" });
+
 console.log("bulk_operations: PASS");

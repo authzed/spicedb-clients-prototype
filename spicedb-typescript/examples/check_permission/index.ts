@@ -76,4 +76,9 @@ const hasAll = await client.checkAll(full(), ...checks);
 console.log(`user:jimmy has all permissions: ${hasAll}`);
 assert(!hasAll, "expected jimmy to NOT have all permissions");
 
+// Clean up so later examples that write a narrower schema aren't blocked by
+// leftover relationships (examples run in sequence against one shared
+// SpiceDB instance).
+await client.deleteRelationships({ resourceType: "document" });
+
 console.log("check_permission: PASS");

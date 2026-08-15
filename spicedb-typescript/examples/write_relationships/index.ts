@@ -52,4 +52,9 @@ const revision = await client.write(txn);
 console.log(`Written at revision: ${revision}`);
 assert(revision !== "", "expected non-empty revision");
 
+// Clean up so later examples that write a narrower schema aren't blocked by
+// leftover relationships (examples run in sequence against one shared
+// SpiceDB instance).
+await client.deleteRelationships({ resourceType: "document" });
+
 console.log("write_relationships: PASS");

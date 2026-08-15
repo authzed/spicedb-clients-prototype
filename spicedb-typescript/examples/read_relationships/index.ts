@@ -69,4 +69,9 @@ for await (const rel of client.readRelationships(
 }
 assert(viewerCount >= 1, "expected at least one viewer relationship");
 
+// Clean up so later examples that write a narrower schema aren't blocked by
+// leftover relationships (examples run in sequence against one shared
+// SpiceDB instance).
+await client.deleteRelationships({ resourceType: "document" });
+
 console.log("read_relationships: PASS");

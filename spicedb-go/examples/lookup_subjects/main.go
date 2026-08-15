@@ -90,4 +90,11 @@ definition document {
 	if !found["bob"] {
 		log.Fatalf("expected bob in edit results")
 	}
+
+	// Clean up so later examples that write a narrower schema (e.g. one
+	// without a `banned` relation) aren't blocked by leftover relationships
+	// (examples run in sequence against one shared SpiceDB instance).
+	if _, err := c.DeleteRelationships(ctx, rel.NewFilter("document")); err != nil {
+		log.Fatalf("cleanup failed: %v", err)
+	}
 }

@@ -78,4 +78,11 @@ definition document {
 		log.Fatalf("unregister counter failed: %v", err)
 	}
 	fmt.Println("unregistered counter: document_viewers")
+
+	// Clean up so later examples that write a narrower schema aren't blocked
+	// by leftover relationships (examples run in sequence against one shared
+	// SpiceDB instance).
+	if _, err := c.DeleteRelationships(ctx, rel.NewFilter("document")); err != nil {
+		log.Fatalf("cleanup failed: %v", err)
+	}
 }

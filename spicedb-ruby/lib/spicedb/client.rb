@@ -25,6 +25,20 @@ module SpiceDB
   CountResult = Data.define(:relationship_count, :revision, :still_calculating)
   Update = Data.define(:operation, :relationship)
 
+  # Lookup result types — mirror spicedb-go's client/lookup_types.go.
+  # `permissionship` is one of :unspecified, :has_permission, :conditional_permission.
+  # Callers MUST check `permissionship` before treating a result as a full
+  # grant — a :conditional_permission result may resolve to false once the
+  # missing caveat context (see `partial_caveat`) is supplied.
+  PartialCaveatInfo = Data.define(:missing_required_context)
+  LookupResource = Data.define(:resource_id, :permissionship, :partial_caveat)
+  ResolvedSubject = Data.define(:subject_id, :permissionship, :partial_caveat)
+  # When `subject.subject_id` is the wildcard "*", `excluded_subjects` lists
+  # subjects excluded from that wildcard grant — callers MUST treat those
+  # subjects as NOT having the permission, even though the wildcard would
+  # otherwise suggest they do.
+  LookupSubject = Data.define(:subject, :excluded_subjects)
+
   # The idiomatic SpiceDB client for Ruby.
   #
   # Use {.new_plaintext} or {.new_system_tls} to create a client.
@@ -220,25 +234,28 @@ module SpiceDB
 
     # --- Lookups ---
 
-    # Returns an Enumerator over resource IDs of the given type that the
-    # subject has the specified permission on. Cursors are handled transparently.
+    # Returns an Enumerator over resources of the given type that the subject
+    # has the specified permission on. Each result carries the permissionship
+    # (full grant vs conditional on caveat context) and, for conditional
+    # results, which caveat context was missing. Cursors are handled
+    # transparently.
     #
     # @param consistency [SpiceDB::Consistency::Strategy]
     # @param resource_type [String]
     # @param permission [String]
     # @param subject_type [String]
     # @param subject_id [String]
-    # @return [Enumerator<String>]
+    # @return [Enumerator<SpiceDB::LookupResource>]
     def lookup_resources(consistency, resource_type, permission, subject_type, subject_id)
       Enumerator.new do |yielder|
         cursor = nil
         loop do
-          ids, new_cursor, count = with_retry do
+          resources, new_cursor, count = with_retry do
             call_lookup_resources(consistency, resource_type, permission, subject_type, subject_id, cursor,
                                   DEFAULT_LOOKUP_PAGE_SIZE)
           end
 
-          ids.each { |id| yielder << id }
+          resources.each { |resource| yielder << resource }
 
           break if count < DEFAULT_LOOKUP_PAGE_SIZE
 
@@ -247,21 +264,27 @@ module SpiceDB
       end
     end
 
-    # Returns an Enumerator over subject IDs of the given type that have the
+    # Returns an Enumerator over subjects of the given type that have the
     # specified permission on the resource. Unlike lookup_resources, this does
     # not support cursor-based pagination and streams all results.
+    #
+    # When a yielded LookupSubject#subject is the wildcard "*", the server
+    # has granted the permission to every subject of subject_type EXCEPT
+    # those listed in LookupSubject#excluded_subjects. Callers MUST check
+    # excluded_subjects before treating a wildcard match as a blanket grant,
+    # or they risk granting access to subjects the server explicitly excluded.
     #
     # @param consistency [SpiceDB::Consistency::Strategy]
     # @param resource_type [String]
     # @param resource_id [String]
     # @param permission [String]
     # @param subject_type [String]
-    # @return [Enumerator<String>]
+    # @return [Enumerator<SpiceDB::LookupSubject>]
     def lookup_subjects(consistency, resource_type, resource_id, permission, subject_type)
       Enumerator.new do |yielder|
         with_retry do
-          call_lookup_subjects(consistency, resource_type, resource_id, permission, subject_type) do |subject_id|
-            yielder << subject_id
+          call_lookup_subjects(consistency, resource_type, resource_id, permission, subject_type) do |lookup_subject|
+            yielder << lookup_subject
           end
         end
       end
@@ -694,19 +717,19 @@ module SpiceDB
       }
       req_args[:optional_cursor] = Authzed::Api::V1::Cursor.new(token: cursor) if cursor
 
-      ids = []
+      resources = []
       new_cursor = nil
       count = 0
 
       @proto_client.permissions.lookup_resources(
         Authzed::Api::V1::LookupResourcesRequest.new(**req_args)
       ).each do |resp|
-        ids << resp.resource_object_id
+        resources << lookup_resource_from_proto(resp)
         new_cursor = resp.after_result_cursor.token
         count += 1
       end
 
-      [ids, new_cursor, count]
+      [resources, new_cursor, count]
     end
 
     def call_lookup_subjects(consistency, resource_type, resource_id, permission, subject_type)
@@ -721,10 +744,7 @@ module SpiceDB
       )
 
       @proto_client.permissions.lookup_subjects(req).each do |resp|
-        subject_id = resp.subject.subject_object_id
-        # Fall back to deprecated field if needed
-        subject_id = resp.subject_object_id if subject_id.nil? || subject_id.empty?
-        yield subject_id
+        yield lookup_subject_from_proto(resp)
       end
     end
 
@@ -1031,6 +1051,88 @@ module SpiceDB
         subject_id: subject.object&.[]('object_id'),
         optional_relation: subject.optional_relation
       )
+    end
+
+    # Maps the proto LookupPermissionship enum (returned as a Symbol by the
+    # Ruby protobuf gem) to a native permissionship symbol. Unrecognized
+    # values (including UNSPECIFIED and nil) map to :unspecified.
+    LOOKUP_PERMISSIONSHIP_MAP = {
+      LOOKUP_PERMISSIONSHIP_HAS_PERMISSION: :has_permission,
+      LOOKUP_PERMISSIONSHIP_CONDITIONAL_PERMISSION: :conditional_permission
+    }.freeze
+
+    # Maps the proto LookupPermissionship enum to its native symbol
+    # equivalent. Callers MUST check this before treating a lookup result as
+    # a full grant — a :conditional_permission result may resolve to false
+    # once the missing caveat context is supplied.
+    def permissionship_from_proto(v)
+      LOOKUP_PERMISSIONSHIP_MAP.fetch(v, :unspecified)
+    end
+
+    # Maps a proto PartialCaveatInfo to a native SpiceDB::PartialCaveatInfo.
+    # A nil input (the field is unset) maps to nil.
+    def partial_caveat_from_proto(v)
+      return nil if v.nil?
+
+      PartialCaveatInfo.new(missing_required_context: v.missing_required_context.to_a)
+    end
+
+    # Maps a proto ResolvedSubject to a native SpiceDB::ResolvedSubject. A
+    # nil input maps to a zero-value ResolvedSubject (nil subject_id), which
+    # callers use as the trigger for falling back to deprecated
+    # response-level fields.
+    def resolved_subject_from_proto(v)
+      ResolvedSubject.new(
+        subject_id: v&.subject_object_id,
+        permissionship: permissionship_from_proto(v&.permissionship),
+        partial_caveat: partial_caveat_from_proto(v&.partial_caveat_info)
+      )
+    end
+
+    # Maps a proto LookupResourcesResponse to a native SpiceDB::LookupResource.
+    def lookup_resource_from_proto(resp)
+      LookupResource.new(
+        resource_id: resp.resource_object_id,
+        permissionship: permissionship_from_proto(resp.permissionship),
+        partial_caveat: partial_caveat_from_proto(resp.partial_caveat_info)
+      )
+    end
+
+    # Maps the excluded-subjects list off a proto LookupSubjectsResponse,
+    # preferring the non-deprecated `excluded_subjects` (which carries
+    # permissionship + caveat info per subject) and falling back to the
+    # deprecated `excluded_subject_ids` (IDs only) for servers that don't yet
+    # populate the newer field.
+    def excluded_subjects_from_proto(resp)
+      return resp.excluded_subjects.map { |e| resolved_subject_from_proto(e) } unless resp.excluded_subjects.empty?
+
+      unless resp.excluded_subject_ids.empty?
+        return resp.excluded_subject_ids.map do |id|
+          ResolvedSubject.new(subject_id: id, permissionship: :unspecified, partial_caveat: nil)
+        end
+      end
+
+      []
+    end
+
+    # Maps a proto LookupSubjectsResponse to a native SpiceDB::LookupSubject.
+    # When the result's Subject#subject_id is the wildcard "*",
+    # ExcludedSubjects lists subjects excluded from that wildcard grant —
+    # callers MUST treat those subjects as NOT having the permission, even
+    # though the wildcard would otherwise suggest they do.
+    def lookup_subject_from_proto(resp)
+      subject = resolved_subject_from_proto(resp.subject)
+      if subject.subject_id.nil? || subject.subject_id.empty?
+        # Fall back to the deprecated top-level fields for servers that
+        # don't yet populate the non-deprecated `subject` field.
+        subject = ResolvedSubject.new(
+          subject_id: resp.subject_object_id,
+          permissionship: permissionship_from_proto(resp.permissionship),
+          partial_caveat: partial_caveat_from_proto(resp.partial_caveat_info)
+        )
+      end
+
+      LookupSubject.new(subject: subject, excluded_subjects: excluded_subjects_from_proto(resp))
     end
 
     # Maps a proto ReflectionSchemaDiff to a SpiceDB::SchemaDiff.

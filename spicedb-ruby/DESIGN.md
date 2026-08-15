@@ -89,6 +89,37 @@ All checks use `BulkCheckPermissions` under the hood:
 - `check_any(consistency, permission, *relationships)` → `Boolean`
 - `check_all(consistency, permission, *relationships)` → `Boolean`
 
+### Lookups
+
+`lookup_resources`/`lookup_subjects` yield native result objects — never
+bare ID strings — so callers can't accidentally treat a caveated or
+wildcard-excluded result as a full grant. Mirrors spicedb-go's
+`client/lookup_types.go`.
+
+```ruby
+SpiceDB::PartialCaveatInfo = Data.define(:missing_required_context)
+SpiceDB::LookupResource    = Data.define(:resource_id, :permissionship, :partial_caveat)
+SpiceDB::ResolvedSubject   = Data.define(:subject_id, :permissionship, :partial_caveat)
+SpiceDB::LookupSubject     = Data.define(:subject, :excluded_subjects)
+```
+
+`permissionship` is a Symbol: `:unspecified`, `:has_permission`, or
+`:conditional_permission`. `partial_caveat` is `nil` unless
+`permissionship` is `:conditional_permission`, in which case it carries the
+`missing_required_context` that must be supplied to fully evaluate the
+grant.
+
+- `lookup_resources(...)` → `Enumerator<SpiceDB::LookupResource>`
+- `lookup_subjects(...)` → `Enumerator<SpiceDB::LookupSubject>`, where
+  `LookupSubject#subject` is a `ResolvedSubject` and
+  `LookupSubject#excluded_subjects` is an `Array<ResolvedSubject>`
+
+Callers MUST check `permissionship` before treating a `LookupResource` as a
+full grant. For `lookup_subjects`, when `subject.subject_id` is the
+wildcard `"*"`, callers MUST check `excluded_subjects` before treating the
+wildcard as a blanket grant — the server grants the permission to every
+subject of the requested type EXCEPT those listed there.
+
 ### Streaming & Transparent Cursor Pagination
 
 Ruby `Enumerator` for all streaming RPCs. **Cursors are fully internal** —
@@ -158,8 +189,8 @@ Automatic retry with exponential backoff for transient gRPC errors
 - `delete_relationships(filter)` → `String` (revision)
 
 **Lookups:**
-- `lookup_resources(consistency, resource_type, permission, subject_type, subject_id)` → `Enumerator<String>`
-- `lookup_subjects(consistency, resource_type, resource_id, permission, subject_type)` → `Enumerator<String>`
+- `lookup_resources(consistency, resource_type, permission, subject_type, subject_id)` → `Enumerator<LookupResource>`
+- `lookup_subjects(consistency, resource_type, resource_id, permission, subject_type)` → `Enumerator<LookupSubject>`
 
 **Schema:**
 - `read_schema` → `[String, String]` (schema, revision)

@@ -4,6 +4,32 @@
 
 ### Changed
 
+- **Breaking**: `lookup_resources`/`lookup_subjects` now yield native result objects instead of bare `String` IDs, closing an over-grant risk: the previous string-only shape silently dropped `excluded_subjects` for wildcard (`user:*`) matches, so a caller iterating IDs alone could treat a wildcard-excluded subject as granted. `lookup_resources` now yields `SpiceDB::LookupResource` (`resource_id`, `permissionship`, `partial_caveat`); `lookup_subjects` now yields `SpiceDB::LookupSubject` (`subject: ResolvedSubject`, `excluded_subjects: Array<ResolvedSubject>`). Both use the new `permissionship` Symbol (`:unspecified` / `:has_permission` / `:conditional_permission`) and `SpiceDB::PartialCaveatInfo`. Mirrors spicedb-go's `client/lookup_types.go`/`lookup.go`, including its fallback to the deprecated `subject_object_id`/`excluded_subject_ids` proto fields for servers that don't yet populate the modern `subject`/`excluded_subjects` fields.
+
+  Before:
+  ```ruby
+  client.lookup_resources(consistency, "document", "view", "user", "alice").each do |resource_id|
+    grant(resource_id) # String only — no permissionship signal
+  end
+  client.lookup_subjects(consistency, "document", "doc1", "view", "user").each do |subject_id|
+    grant(subject_id) # wildcard "*" treated as unconditional — over-grant risk
+  end
+  ```
+  After:
+  ```ruby
+  client.lookup_resources(consistency, "document", "view", "user", "alice").each do |result|
+    next unless result.permissionship == :has_permission # skip conditional
+
+    grant(result.resource_id)
+  end
+  client.lookup_subjects(consistency, "document", "doc1", "view", "user").each do |result|
+    excluded = result.excluded_subjects.map(&:subject_id).to_set
+    next if result.subject.subject_id == '*' && excluded.include?(caller_id)
+
+    grant(result.subject.subject_id)
+  end
+  ```
+
 - **Breaking**: `expand_permission_tree` no longer leaks the raw protobuf `PermissionRelationshipTree` through `ExpandResult`. `ExpandResult#tree_root` is replaced by `ExpandResult#tree`, a native `SpiceDB::PermissionTree` built from new `Data.define` value types (`ObjectRef`, `SubjectRef`, `IntermediateNode`, `LeafNode`, `PermissionTree`), mirroring the Go client's native expand tree.
 
   Before:

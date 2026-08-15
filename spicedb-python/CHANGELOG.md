@@ -4,6 +4,22 @@
 
 ### Added
 
+- `SpiceDBClient.delete_relationships()` now accepts optional `must_match`/
+  `must_not_match` (each `list[Filter]`) and `limit` keyword args, mirroring
+  `spicedb-go`'s `WithDeleteMustMatch`/`WithDeleteMustNotMatch`/
+  `WithDeleteLimit` (`spicedb-go/client/relationships.go`). Previously the
+  proto's `optional_preconditions`/`optional_limit` fields were silently left
+  unset, so there was no way to do a precondition-guarded delete. Additive —
+  existing `delete_relationships(filter)` call sites are unaffected.
+
+  ```python
+  # Only delete if an `owner` relationship still exists on the resource:
+  revision = await client.delete_relationships(
+      filter,
+      must_match=[Filter(resource_type="document", resource_id="1", relation="owner")],
+      limit=1000,
+  )
+  ```
 - `SpiceDBClient.computable_permissions()` and `SpiceDBClient.dependent_relations()`
   — previously missing `SchemaService` RPCs (API-coverage gap). Both take
   `(consistency, definition_name, relation_name_or_permission_name)` and

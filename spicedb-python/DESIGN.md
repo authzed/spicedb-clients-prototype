@@ -151,6 +151,37 @@ txn.must_not_match(filter)  # precondition
 revision = await client.write(txn)
 ```
 
+### Deletions
+
+`delete_relationships(filter, *, must_match=None, must_not_match=None, limit=None)`
+reaches the proto's `optional_preconditions`/`optional_limit` fields, mirroring
+`spicedb-go`'s `WithDeleteMustMatch`/`WithDeleteMustNotMatch`/`WithDeleteLimit`
+(`spicedb-go/client/relationships.go`):
+
+```python
+revision = await client.delete_relationships(
+    filter,
+    must_match=[guard_filter],       # MUST_MATCH precondition(s)
+    must_not_match=[other_filter],   # MUST_NOT_MATCH precondition(s)
+    limit=1000,                      # optional_limit
+)
+```
+
+`must_match`/`must_not_match` build `Precondition` protos the same way
+`Transaction.must_match`/`must_not_match` do; the server rejects the whole
+call (deleting nothing) if a precondition isn't satisfied. No options given
+means the request is unchanged from before: no preconditions, no limit.
+
+Unlike `spicedb-go`'s `DeleteRelationships`, this client does not yet
+auto-page a delete across multiple RPCs when the match set exceeds a single
+server-side page — that gap is pre-existing and out of scope for this
+addition. Supplying `limit` bounds a single call to deleting at most that
+many relationships; when more relationships match than `limit`, the server
+requires `optional_allow_partial_deletions` to permit that (otherwise it
+rejects the call outright), so this client sets it automatically whenever
+`limit` is given. Callers that need to delete more than `limit` matches must
+call again with the same filter to continue.
+
 ### Testing
 
 Use `pytest` with `pytest-asyncio` for all tests. Examples should also be

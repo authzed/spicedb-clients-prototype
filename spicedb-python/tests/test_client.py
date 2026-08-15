@@ -7,7 +7,7 @@ import pytest
 from authzed.api.v1 import core_pb2, permission_service_pb2, schema_service_pb2
 from google.rpc import status_pb2
 
-from spicedb import Relationship, RelationReference, SpiceDBClient, full
+from spicedb import Filter, Relationship, RelationReference, SpiceDBClient, full
 from spicedb.errors import InvalidArgumentError, SpiceDBError
 from spicedb.types import LookupResource, Permissionship, ResolvedSubject
 
@@ -383,3 +383,111 @@ class TestLookupSignatures:
     def test_lookup_subjects_returns_lookup_subject_iterator(self):
         sig = inspect.signature(SpiceDBClient.lookup_subjects)
         assert sig.return_annotation == "AsyncIterator[LookupSubject]"
+
+
+class TestDeleteRelationships:
+    """delete_relationships mirrors spicedb-go's DeleteRelationships
+    (client/relationships.go) `WithDeleteMustMatch`/`WithDeleteMustNotMatch`/
+    `WithDeleteLimit` options: optional keyword args build
+    DeleteRelationshipsRequest.optional_preconditions/optional_limit. Additive
+    — the no-kwargs call must keep sending the same request as before."""
+
+    def _client(self) -> SpiceDBClient:
+        client = SpiceDBClient("localhost:50051", token="testtoken", insecure=True)
+        response = permission_service_pb2.DeleteRelationshipsResponse(
+            deleted_at=core_pb2.ZedToken(token="deadbeef"),
+        )
+        client._permissions.DeleteRelationships = AsyncMock(return_value=response)
+        return client
+
+    async def test_no_options_preserves_default_behavior(self):
+        client = self._client()
+        f = Filter(resource_type="document", resource_id="1")
+
+        revision = await client.delete_relationships(f)
+
+        assert revision == "deadbeef"
+        client._permissions.DeleteRelationships.assert_awaited_once()
+        request = client._permissions.DeleteRelationships.await_args.args[0]
+        assert request.relationship_filter == f._to_proto()
+        assert list(request.optional_preconditions) == []
+        assert request.optional_limit == 0
+        assert request.optional_allow_partial_deletions is False
+
+    async def test_must_match_sets_precondition(self):
+        client = self._client()
+        f = Filter(resource_type="document", resource_id="1")
+        guard = Filter(resource_type="document", resource_id="1", relation="owner")
+
+        await client.delete_relationships(f, must_match=[guard])
+
+        request = client._permissions.DeleteRelationships.await_args.args[0]
+        assert list(request.optional_preconditions) == [
+            permission_service_pb2.Precondition(
+                operation=permission_service_pb2.Precondition.OPERATION_MUST_MATCH,
+                filter=guard._to_proto(),
+            )
+        ]
+
+    async def test_must_not_match_sets_precondition(self):
+        client = self._client()
+        f = Filter(resource_type="document", resource_id="1")
+        guard = Filter(resource_type="document", resource_id="1", relation="banned")
+
+        await client.delete_relationships(f, must_not_match=[guard])
+
+        request = client._permissions.DeleteRelationships.await_args.args[0]
+        assert list(request.optional_preconditions) == [
+            permission_service_pb2.Precondition(
+                operation=permission_service_pb2.Precondition.OPERATION_MUST_NOT_MATCH,
+                filter=guard._to_proto(),
+            )
+        ]
+
+    async def test_must_match_and_must_not_match_accumulate_in_order(self):
+        client = self._client()
+        f = Filter(resource_type="document", resource_id="1")
+        match_guard = Filter(resource_type="document", resource_id="1", relation="owner")
+        not_match_guard = Filter(
+            resource_type="document", resource_id="1", relation="banned"
+        )
+
+        await client.delete_relationships(
+            f, must_match=[match_guard], must_not_match=[not_match_guard]
+        )
+
+        request = client._permissions.DeleteRelationships.await_args.args[0]
+        assert list(request.optional_preconditions) == [
+            permission_service_pb2.Precondition(
+                operation=permission_service_pb2.Precondition.OPERATION_MUST_MATCH,
+                filter=match_guard._to_proto(),
+            ),
+            permission_service_pb2.Precondition(
+                operation=permission_service_pb2.Precondition.OPERATION_MUST_NOT_MATCH,
+                filter=not_match_guard._to_proto(),
+            ),
+        ]
+
+    async def test_limit_sets_optional_limit(self):
+        client = self._client()
+        f = Filter(resource_type="document", resource_id="1")
+
+        await client.delete_relationships(f, limit=50)
+
+        request = client._permissions.DeleteRelationships.await_args.args[0]
+        assert request.optional_limit == 50
+        # The server rejects a limited delete outright if more relationships
+        # match than the limit unless partial deletions are allowed — so
+        # supplying `limit` must also flip this on, or `limit` would only
+        # ever work when the caller already knows the exact match count.
+        assert request.optional_allow_partial_deletions is True
+
+    async def test_limit_none_leaves_optional_limit_unset(self):
+        client = self._client()
+        f = Filter(resource_type="document", resource_id="1")
+
+        await client.delete_relationships(f, limit=None)
+
+        request = client._permissions.DeleteRelationships.await_args.args[0]
+        assert request.optional_limit == 0
+        assert request.optional_allow_partial_deletions is False

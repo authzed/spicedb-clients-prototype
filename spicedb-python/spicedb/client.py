@@ -391,10 +391,46 @@ class SpiceDBClient:
     async def delete_relationships(
         self,
         filter: Filter,
+        *,
+        must_match: list[Filter] | None = None,
+        must_not_match: list[Filter] | None = None,
+        limit: int | None = None,
     ) -> str:
-        """Delete relationships matching the filter. Returns the revision string."""
+        """Delete relationships matching the filter. Returns the revision string.
+
+        ``must_match``/``must_not_match`` add preconditions that guard the
+        delete: if a precondition fails, the server rejects the call and
+        deletes nothing. Mirrors spicedb-go's `WithDeleteMustMatch`/
+        `WithDeleteMustNotMatch` (client/relationships.go).
+
+        ``limit`` bounds how many relationships this single call deletes. If
+        more relationships match the filter than ``limit``, only ``limit`` of
+        them are deleted by this call (the server requires
+        ``optional_allow_partial_deletions``, which this sets automatically
+        whenever ``limit`` is given, to permit that). Unlike spicedb-go's
+        `WithDeleteLimit`, this does not auto-page — it does not loop to
+        delete every match when the match count exceeds ``limit``; call again
+        with the same filter to continue deleting what remains.
+        """
+        preconditions = [
+            permission_service_pb2.Precondition(
+                operation=permission_service_pb2.Precondition.OPERATION_MUST_MATCH,
+                filter=f._to_proto(),
+            )
+            for f in (must_match or [])
+        ] + [
+            permission_service_pb2.Precondition(
+                operation=permission_service_pb2.Precondition.OPERATION_MUST_NOT_MATCH,
+                filter=f._to_proto(),
+            )
+            for f in (must_not_match or [])
+        ]
+
         request = permission_service_pb2.DeleteRelationshipsRequest(
             relationship_filter=filter._to_proto(),
+            optional_preconditions=preconditions,
+            optional_limit=limit if limit is not None else 0,
+            optional_allow_partial_deletions=limit is not None,
         )
 
         async def _call() -> permission_service_pb2.DeleteRelationshipsResponse:

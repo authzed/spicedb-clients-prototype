@@ -155,10 +155,42 @@ re-fetches pages using the `AfterResultCursor` from each response.
 Async enumerables:
 
 - `ReadRelationshipsAsync(consistency, filter)` → `IAsyncEnumerable<Relationship>`
-- `LookupResourcesAsync(consistency, resourceType, permission, subjectType, subjectID)` → `IAsyncEnumerable<string>`
-- `LookupSubjectsAsync(consistency, resourceType, resourceID, permission, subjectType)` → `IAsyncEnumerable<string>`
+- `LookupResourcesAsync(consistency, resourceType, permission, subjectType, subjectID)` → `IAsyncEnumerable<LookupResource>`
+- `LookupSubjectsAsync(consistency, resourceType, resourceID, permission, subjectType)` → `IAsyncEnumerable<LookupSubject>`
 - `ExportRelationshipsAsync(consistency, filter?)` → `IAsyncEnumerable<Relationship>`
 - `UpdatesAsync(objectTypes?, startRevision?)` → `IAsyncEnumerable<RelationshipUpdate>`
+
+### Lookups
+
+`LookupResourcesAsync`/`LookupSubjectsAsync` yield native records instead of
+bare strings — the proto `LookupPermissionship`/`PartialCaveatInfo`/
+`ResolvedSubject` types are never exposed. Mirrors `spicedb-go`'s
+`client/lookup_types.go`.
+
+```csharp
+public enum Permissionship { Unspecified, HasPermission, ConditionalPermission }
+public sealed record PartialCaveatInfo { MissingRequiredContext }
+public sealed record LookupResource { ResourceID, Permissionship, PartialCaveat }
+public sealed record ResolvedSubject { SubjectID, Permissionship, PartialCaveat }
+public sealed record LookupSubject { Subject, ExcludedSubjects }
+```
+
+- `LookupResourcesAsync(consistency, resourceType, permission, subjectType, subjectID)` → `IAsyncEnumerable<LookupResource>`
+- `LookupSubjectsAsync(consistency, resourceType, resourceID, permission, subjectType)` → `IAsyncEnumerable<LookupSubject>`
+
+`Permissionship` MUST be checked before treating a result as a full grant —
+`ConditionalPermission` results depend on caveat context (`PartialCaveat`)
+that the server did not fully evaluate.
+
+**Wildcard exclusions**: when `LookupSubject.Subject.SubjectID` is the
+wildcard `"*"`, the server has granted the permission to every subject of
+`subjectType` EXCEPT those listed in `LookupSubject.ExcludedSubjects`.
+Callers MUST check `ExcludedSubjects` before treating a wildcard match as a
+blanket grant — ignoring it risks granting access to subjects the server
+explicitly excluded. The deprecated proto fallback fields
+(`subject_object_id`/`permissionship`/`partial_caveat_info`/
+`excluded_subject_ids`) are handled transparently for servers that don't yet
+populate the non-deprecated `subject`/`excluded_subjects` fields.
 
 ### Writes
 
@@ -253,6 +285,11 @@ public sealed record SubjectRef { SubjectType, SubjectID, OptionalRelation }
 public sealed record IntermediateNode { Operation, Children }
 public sealed record LeafNode { Subjects }
 public enum TreeOperation { Unspecified, Union, Intersection, Exclusion }
+public enum Permissionship { Unspecified, HasPermission, ConditionalPermission }
+public sealed record PartialCaveatInfo { MissingRequiredContext }
+public sealed record LookupResource { ResourceID, Permissionship, PartialCaveat }
+public sealed record ResolvedSubject { SubjectID, Permissionship, PartialCaveat }
+public sealed record LookupSubject { Subject, ExcludedSubjects }
 ```
 
 ### Escape Hatches

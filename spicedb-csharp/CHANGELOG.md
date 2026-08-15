@@ -4,6 +4,44 @@
 
 ### Breaking Changes
 
+- **2026-08-15**: `LookupResourcesAsync`/`LookupSubjectsAsync` now yield native records instead of bare `string`s: `IAsyncEnumerable<LookupResource>` and `IAsyncEnumerable<LookupSubject>` respectively, mirroring `spicedb-go`'s `client/lookup_types.go`. Each result carries `Permissionship` (`HasPermission`/`ConditionalPermission`/`Unspecified`) and, for conditional results, `PartialCaveat.MissingRequiredContext`. Critically, `LookupSubject.ExcludedSubjects` now surfaces the subjects excluded from a wildcard `"*"` match — previously this information was silently dropped, so code that treated a wildcard subject ID as a blanket grant risked **over-granting access** to subjects the server had explicitly excluded. Deprecated proto fallback fields (`subject_object_id`/`permissionship`/`partial_caveat_info`/`excluded_subject_ids`) are still handled transparently for older servers.
+
+  Before:
+  ```csharp
+  await foreach (var subjectID in client.LookupSubjectsAsync(consistency, "document", "1", "view", "user"))
+  {
+      grantedSubjectIDs.Add(subjectID); // wildcard "*" treated as blanket grant — unsafe!
+  }
+  ```
+  After:
+  ```csharp
+  await foreach (var result in client.LookupSubjectsAsync(consistency, "document", "1", "view", "user"))
+  {
+      if (result.Subject.Permissionship != Permissionship.HasPermission)
+          continue; // skip conditional results until caveat context is supplied
+
+      if (result.Subject.SubjectID == "*")
+      {
+          // Wildcard grant — MUST honor ExcludedSubjects to avoid over-granting.
+          grantedSubjectIDs.Add("*");
+          excludedSubjectIDs.UnionWith(result.ExcludedSubjects.Select(s => s.SubjectID));
+      }
+      else
+      {
+          grantedSubjectIDs.Add(result.Subject.SubjectID);
+      }
+  }
+  ```
+
+  `LookupResourcesAsync` follows the same shape change (`LookupResource.ResourceID`/`.Permissionship`/`.PartialCaveat` in place of the old bare `string`):
+  ```csharp
+  await foreach (var result in client.LookupResourcesAsync(consistency, "document", "view", "user", "alice"))
+  {
+      if (result.Permissionship == Permissionship.HasPermission)
+          accessibleResourceIDs.Add(result.ResourceID);
+  }
+  ```
+
 - **2026-08-14**: `ExpandResult.TreeRoot` (the leaked proto `PermissionRelationshipTree`) is replaced with `ExpandResult.Tree`, a native `PermissionTree` record family (`ObjectRef`, `SubjectRef`, `IntermediateNode`, `LeafNode`, `TreeOperation`), mirroring `spicedb-go`'s native expand tree. No protobuf types are exposed from `ExpandPermissionTreeAsync` anymore.
 
   Before:

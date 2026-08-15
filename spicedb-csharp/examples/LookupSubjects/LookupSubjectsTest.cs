@@ -31,12 +31,18 @@ public class LookupSubjectsTest
         txn.Touch(Relationship.FromTriple("document", "firstdoc", "editor", "user", "bob"));
         await client.WriteAsync(txn);
 
-        // Lookup subjects who can view the document
+        // Lookup subjects who can view the document. Each result is a native
+        // LookupSubject: Subject carries the subject ID plus permissionship,
+        // and ExcludedSubjects lists subjects excluded from a wildcard "*"
+        // match — callers MUST check ExcludedSubjects before treating a
+        // wildcard Subject as a blanket grant.
         var subjectIDs = new HashSet<string>();
-        await foreach (var subjectID in client.LookupSubjectsAsync(
+        await foreach (var result in client.LookupSubjectsAsync(
             Full(), "document", "firstdoc", "view", "user"))
         {
-            subjectIDs.Add(subjectID);
+            Assert.Equal(Permissionship.HasPermission, result.Subject.Permissionship);
+            Assert.Empty(result.ExcludedSubjects); // no wildcard relationships in this example
+            subjectIDs.Add(result.Subject.SubjectID);
         }
 
         Assert.Contains("alice", subjectIDs);

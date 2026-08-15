@@ -324,11 +324,13 @@ public sealed class SpiceDBClient : IAsyncDisposable
     // ──────────────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Returns an async enumerable of resource IDs of the given type that the
-    /// subject has the specified permission on. Cursors are handled
-    /// transparently with 512-item pages.
+    /// Returns an async enumerable of resources of the given type that the
+    /// subject has the specified permission on. Each result carries the
+    /// permissionship (full grant vs conditional on caveat context) and, for
+    /// conditional results, which caveat context was missing. Cursors are
+    /// handled transparently with 512-item pages.
     /// </summary>
-    public async IAsyncEnumerable<string> LookupResourcesAsync(
+    public async IAsyncEnumerable<LookupResource> LookupResourcesAsync(
         ConsistencyStrategy consistency,
         string resourceType,
         string permission,
@@ -387,7 +389,12 @@ public sealed class SpiceDBClient : IAsyncDisposable
 
                 count++;
                 cursor = resp.AfterResultCursor;
-                yield return resp.ResourceObjectId;
+                yield return new LookupResource
+                {
+                    ResourceID = resp.ResourceObjectId,
+                    Permissionship = ToPermissionship(resp.Permissionship),
+                    PartialCaveat = ToPartialCaveatInfo(resp.PartialCaveatInfo),
+                };
             }
 
             if (count < DefaultLookupPageSize)
@@ -396,12 +403,21 @@ public sealed class SpiceDBClient : IAsyncDisposable
     }
 
     /// <summary>
-    /// Returns an async enumerable of subject IDs of the given type that have
+    /// Returns an async enumerable of subjects of the given type that have
     /// the specified permission on the resource. Unlike LookupResources,
     /// LookupSubjects does not currently support cursor-based pagination in
     /// SpiceDB and streams all results in a single server-streaming call.
+    /// <para>
+    /// When a yielded <see cref="LookupSubject.Subject"/> is the wildcard
+    /// "*", the server has granted the permission to every subject of
+    /// <paramref name="subjectType"/> EXCEPT those listed in
+    /// <see cref="LookupSubject.ExcludedSubjects"/>. Callers MUST check
+    /// <see cref="LookupSubject.ExcludedSubjects"/> before treating a
+    /// wildcard match as a blanket grant, or they risk granting access to
+    /// subjects the server explicitly excluded.
+    /// </para>
     /// </summary>
-    public async IAsyncEnumerable<string> LookupSubjectsAsync(
+    public async IAsyncEnumerable<LookupSubject> LookupSubjectsAsync(
         ConsistencyStrategy consistency,
         string resourceType,
         string resourceID,
@@ -448,10 +464,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
                 throw ErrorMapper.ToSpiceDBException(ex);
             }
 
-            var subjectId = resp.Subject?.SubjectObjectId;
-            if (string.IsNullOrEmpty(subjectId))
-                subjectId = resp.SubjectObjectId; // deprecated field fallback
-            yield return subjectId;
+            yield return ToLookupSubject(resp);
         }
     }
 
@@ -968,6 +981,86 @@ public sealed class SpiceDBClient : IAsyncDisposable
                 OptionalRelation = r.SubjectRelation,
             },
         };
+
+    /// <summary>
+    /// Maps the proto LookupPermissionship enum to its native equivalent.
+    /// Unrecognized values map to Permissionship.Unspecified. Internal —
+    /// exposed to the test assembly via InternalsVisibleTo; not part of the
+    /// public API.
+    /// </summary>
+    internal static Permissionship ToPermissionship(Authzed.Api.V1.LookupPermissionship v) => v switch
+    {
+        Authzed.Api.V1.LookupPermissionship.HasPermission => Permissionship.HasPermission,
+        Authzed.Api.V1.LookupPermissionship.ConditionalPermission => Permissionship.ConditionalPermission,
+        _ => Permissionship.Unspecified,
+    };
+
+    /// <summary>
+    /// Maps a proto PartialCaveatInfo to its native equivalent. A null input
+    /// maps to null.
+    /// </summary>
+    internal static PartialCaveatInfo? ToPartialCaveatInfo(Authzed.Api.V1.PartialCaveatInfo? v)
+    {
+        if (v == null)
+            return null;
+        return new PartialCaveatInfo { MissingRequiredContext = v.MissingRequiredContext.ToList() };
+    }
+
+    /// <summary>
+    /// Maps a proto ResolvedSubject to its native equivalent. A null input
+    /// maps to a zero-value ResolvedSubject (empty SubjectID), which callers
+    /// use as the trigger for falling back to deprecated response-level
+    /// fields.
+    /// </summary>
+    internal static ResolvedSubject ToResolvedSubject(Authzed.Api.V1.ResolvedSubject? v)
+    {
+        if (v == null)
+            return new ResolvedSubject();
+        return new ResolvedSubject
+        {
+            SubjectID = v.SubjectObjectId,
+            Permissionship = ToPermissionship(v.Permissionship),
+            PartialCaveat = ToPartialCaveatInfo(v.PartialCaveatInfo),
+        };
+    }
+
+    /// <summary>
+    /// Maps a LookupSubjectsResponse to its native LookupSubject, including
+    /// the deprecated-field fallbacks for both the resolved subject
+    /// (`subject_object_id`/`permissionship`/`partial_caveat_info`) and the
+    /// excluded subjects (`excluded_subject_ids`) for servers that don't yet
+    /// populate the non-deprecated `subject`/`excluded_subjects` fields.
+    /// </summary>
+    internal static LookupSubject ToLookupSubject(LookupSubjectsResponse resp)
+    {
+        var subject = ToResolvedSubject(resp.Subject);
+        if (string.IsNullOrEmpty(subject.SubjectID))
+        {
+#pragma warning disable CS0612 // deprecated proto fields — explicit fallback for older servers
+            subject = new ResolvedSubject
+            {
+                SubjectID = resp.SubjectObjectId,
+                Permissionship = ToPermissionship(resp.Permissionship),
+                PartialCaveat = ToPartialCaveatInfo(resp.PartialCaveatInfo),
+            };
+#pragma warning restore CS0612
+        }
+
+        List<ResolvedSubject> excluded = [];
+        if (resp.ExcludedSubjects.Count > 0)
+        {
+            excluded = resp.ExcludedSubjects.Select(ToResolvedSubject).ToList();
+        }
+        else
+        {
+#pragma warning disable CS0612 // deprecated proto field — explicit fallback for older servers
+            if (resp.ExcludedSubjectIds.Count > 0)
+                excluded = resp.ExcludedSubjectIds.Select(id => new ResolvedSubject { SubjectID = id }).ToList();
+#pragma warning restore CS0612
+        }
+
+        return new LookupSubject { Subject = subject, ExcludedSubjects = excluded };
+    }
 
     /// <summary>
     /// Recursively maps a proto PermissionRelationshipTree to its native

@@ -31,12 +31,17 @@ public class LookupResourcesTest
         txn.Touch(Relationship.FromTriple("document", "seconddoc", "editor", "user", "alice"));
         await client.WriteAsync(txn);
 
-        // Lookup resources alice can view
+        // Lookup resources alice can view. Each result is a native
+        // LookupResource carrying the resource ID plus permissionship — check
+        // Permissionship before treating a result as a full grant, since
+        // ConditionalPermission results depend on caveat context that was not
+        // fully evaluated by the server.
         var resourceIDs = new HashSet<string>();
-        await foreach (var resourceID in client.LookupResourcesAsync(
+        await foreach (var result in client.LookupResourcesAsync(
             Full(), "document", "view", "user", "alice"))
         {
-            resourceIDs.Add(resourceID);
+            Assert.Equal(Permissionship.HasPermission, result.Permissionship);
+            resourceIDs.Add(result.ResourceID);
         }
 
         Assert.Contains("firstdoc", resourceIDs);

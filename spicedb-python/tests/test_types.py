@@ -221,6 +221,20 @@ class TestUpdate:
         update = Update._from_proto(proto)
         assert update.operation == UpdateOperation.DELETE
 
+    def test_from_proto_unspecified_does_not_raise(self):
+        proto = self._proto_update(core_pb2.RelationshipUpdate.OPERATION_UNSPECIFIED)
+        update = Update._from_proto(proto)
+        assert update.operation == UpdateOperation.UNSPECIFIED
+
+    def test_from_proto_unknown_op_maps_to_unspecified(self):
+        # An out-of-range int (not a valid enum value on the wire) must not
+        # raise a bare KeyError -- that would kill a live watch() stream with
+        # a non-SpiceDBError.
+        proto = self._proto_update(core_pb2.RelationshipUpdate.OPERATION_TOUCH)
+        proto.operation = 99
+        update = Update._from_proto(proto)
+        assert update.operation == UpdateOperation.UNSPECIFIED
+
     def test_frozen(self):
         proto = self._proto_update(core_pb2.RelationshipUpdate.OPERATION_TOUCH)
         update = Update._from_proto(proto)

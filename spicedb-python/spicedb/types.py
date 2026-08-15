@@ -146,6 +146,15 @@ class UpdateOperation(Enum):
     CREATE = "create"
     TOUCH = "touch"
     DELETE = "delete"
+    UNSPECIFIED = "unspecified"
+
+
+_UPDATE_OP_MAP = {
+    core_pb2.RelationshipUpdate.OPERATION_CREATE: UpdateOperation.CREATE,
+    core_pb2.RelationshipUpdate.OPERATION_TOUCH: UpdateOperation.TOUCH,
+    core_pb2.RelationshipUpdate.OPERATION_DELETE: UpdateOperation.DELETE,
+    core_pb2.RelationshipUpdate.OPERATION_UNSPECIFIED: UpdateOperation.UNSPECIFIED,
+}
 
 
 @dataclass(frozen=True)
@@ -158,11 +167,7 @@ class Update:
     @staticmethod
     def _from_proto(u: core_pb2.RelationshipUpdate) -> "Update":
         """Create from a proto RelationshipUpdate."""
-        op = {
-            core_pb2.RelationshipUpdate.OPERATION_CREATE: UpdateOperation.CREATE,
-            core_pb2.RelationshipUpdate.OPERATION_TOUCH: UpdateOperation.TOUCH,
-            core_pb2.RelationshipUpdate.OPERATION_DELETE: UpdateOperation.DELETE,
-        }[u.operation]
+        op = _UPDATE_OP_MAP.get(u.operation, UpdateOperation.UNSPECIFIED)
         return Update(operation=op, relationship=Relationship._from_proto(u.relationship))
 
 

@@ -4,6 +4,11 @@
 
 ### Fixed
 
+- `Update._from_proto()` no longer raises a bare `KeyError` when the wire
+  `RelationshipUpdate.operation` is `OPERATION_UNSPECIFIED` or any other
+  unrecognized value — that killed a live `watch()` stream with a
+  non-`SpiceDBError`. Unknown/unspecified operations now map to the new
+  `UpdateOperation.UNSPECIFIED` enum member instead.
 - `SpiceDBClient.check_permissions()` (and `check_permission`/`check_any`/
   `check_all`, which delegate to it) no longer fabricates a generic
   `SpiceDBError` (mapped from a synthetic `INTERNAL` gRPC error) when a

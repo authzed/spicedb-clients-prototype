@@ -184,6 +184,11 @@ call. Repeats until the server reports all matching relationships are deleted.
 
 - `ExpandPermissionTreeAsync(consistency, resourceType, resourceID, permission)` → `Task<ExpandResult>`
 
+`ExpandResult.Tree` is a native `PermissionTree` record — the proto
+`PermissionRelationshipTree` is never exposed. Exactly one of
+`Intermediate`/`Leaf` is non-null on each node, mapped recursively from the
+proto `tree_type` oneof.
+
 ### Bulk Import / Export
 
 - `ImportRelationshipsAsync(IAsyncEnumerable<Relationship>)` → `Task<ulong>` (numLoaded)
@@ -237,10 +242,16 @@ public sealed record SchemaCaveatParameter { Name, Type, ParentCaveatName }
 public sealed record ReflectSchemaResult { Definitions, Caveats, Revision }
 public sealed record RelationReference { DefinitionName, RelationName, IsPermission }
 public sealed record SchemaDiff { Kind, DefinitionName, RelationName, PermissionName, CaveatName }
-public sealed record ExpandResult { TreeRoot, Revision }
+public sealed record ExpandResult { Tree, Revision }
 public sealed record CountResult { RelationshipCount, Revision }
 public sealed record RelationshipUpdate { Operation, Relationship }
 public enum UpdateOperation { Create = 1, Touch = 2, Delete = 3 }
+public sealed record PermissionTree { ExpandedObject, ExpandedRelation, Intermediate, Leaf }
+public sealed record ObjectRef { ObjectType, ObjectID }
+public sealed record SubjectRef { SubjectType, SubjectID, OptionalRelation }
+public sealed record IntermediateNode { Operation, Children }
+public sealed record LeafNode { Subjects }
+public enum TreeOperation { Unspecified, Union, Intersection, Exclusion }
 ```
 
 ### Escape Hatches

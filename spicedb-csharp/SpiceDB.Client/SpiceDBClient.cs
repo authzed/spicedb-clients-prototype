@@ -6,6 +6,10 @@ using Authzed.Api.V1;
 using Grpc.Core;
 using Grpc.Net.Client;
 
+// Exposes internal helpers (e.g. the proto -> native PermissionTree mapper)
+// to the test assembly without making them part of the public API surface.
+[assembly: InternalsVisibleTo("SpiceDB.Client.Tests")]
+
 namespace SpiceDB.Client;
 
 /// <summary>
@@ -595,7 +599,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
 
         return new ExpandResult
         {
-            TreeRoot = resp.TreeRoot,
+            Tree = ToPermissionTree(resp.TreeRoot),
             Revision = resp.ExpandedAt?.Token ?? "",
         };
     }
@@ -828,6 +832,69 @@ public sealed class SpiceDBClient : IAsyncDisposable
             },
         };
 
+    /// <summary>
+    /// Recursively maps a proto PermissionRelationshipTree to its native
+    /// representation. A null input maps to a zero-value PermissionTree.
+    /// Internal — exposed to the test assembly via InternalsVisibleTo for
+    /// direct field-by-field verification; not part of the public API.
+    /// </summary>
+    internal static PermissionTree ToPermissionTree(PermissionRelationshipTree? t)
+    {
+        if (t == null)
+            return new PermissionTree();
+
+        var tree = new PermissionTree
+        {
+            ExpandedObject = new ObjectRef
+            {
+                ObjectType = t.ExpandedObject?.ObjectType ?? "",
+                ObjectID = t.ExpandedObject?.ObjectId ?? "",
+            },
+            ExpandedRelation = t.ExpandedRelation ?? "",
+        };
+
+        switch (t.TreeTypeCase)
+        {
+            case PermissionRelationshipTree.TreeTypeOneofCase.Intermediate:
+                tree = tree with
+                {
+                    Intermediate = new IntermediateNode
+                    {
+                        Operation = ToTreeOperation(t.Intermediate.Operation),
+                        Children = t.Intermediate.Children.Select(ToPermissionTree).ToList(),
+                    },
+                };
+                break;
+            case PermissionRelationshipTree.TreeTypeOneofCase.Leaf:
+                tree = tree with
+                {
+                    Leaf = new LeafNode
+                    {
+                        Subjects = t.Leaf.Subjects.Select(s => new SubjectRef
+                        {
+                            SubjectType = s.Object?.ObjectType ?? "",
+                            SubjectID = s.Object?.ObjectId ?? "",
+                            OptionalRelation = s.OptionalRelation ?? "",
+                        }).ToList(),
+                    },
+                };
+                break;
+        }
+
+        return tree;
+    }
+
+    /// <summary>
+    /// Maps the proto algebraic set operation to its native equivalent.
+    /// </summary>
+    private static TreeOperation ToTreeOperation(AlgebraicSubjectSet.Types.Operation op) => op switch
+    {
+        AlgebraicSubjectSet.Types.Operation.Union => TreeOperation.Union,
+        AlgebraicSubjectSet.Types.Operation.Intersection => TreeOperation.Intersection,
+        AlgebraicSubjectSet.Types.Operation.Exclusion => TreeOperation.Exclusion,
+        _ => TreeOperation.Unspecified,
+    };
+
     private static RelationshipUpdate UpdateFromProto(Authzed.Api.V1.RelationshipUpdate pu)
     {
         var op = pu.Operation switch
@@ -992,11 +1059,8 @@ public sealed record SchemaDiff
 /// <summary>Holds the result of a permission tree expansion.</summary>
 public sealed record ExpandResult
 {
-    /// <summary>
-    /// The root of the expanded permission tree. This is the underlying proto
-    /// type since the tree structure is complex and deeply nested.
-    /// </summary>
-    public PermissionRelationshipTree? TreeRoot { get; init; }
+    /// <summary>The root of the expanded permission tree.</summary>
+    public PermissionTree Tree { get; init; } = new();
     public string Revision { get; init; } = "";
 }
 

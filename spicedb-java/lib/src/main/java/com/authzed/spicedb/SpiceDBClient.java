@@ -37,10 +37,9 @@ public final class SpiceDBClient implements AutoCloseable {
 
   private static final int DEFAULT_READ_PAGE_SIZE = 512;
   private static final int DEFAULT_LOOKUP_PAGE_SIZE = 512;
-  private static final int DEFAULT_DELETE_PAGE_SIZE = 1_000;
+  private static final int DEFAULT_DELETE_PAGE_SIZE = 10_000;
   private static final int DEFAULT_IMPORT_BATCH_SIZE = 1_000;
   private static final int DEFAULT_EXPORT_PAGE_SIZE = 512;
-  private static final int DEFAULT_CHECK_BATCH_SIZE = 1_000;
 
   private static final int MAX_RETRIES = 3;
   private static final long INITIAL_BACKOFF_MS = 100;
@@ -92,6 +91,10 @@ public final class SpiceDBClient implements AutoCloseable {
   /**
    * Creates a client with custom options.
    *
+   * <p>{@link ClientOption}s may include advanced escape-hatch options that expose the underlying
+   * gRPC channel builder for configuration not covered by the primary API. Most users should prefer
+   * {@link #createPlaintext} or {@link #createSystemTls}.
+   *
    * @param endpoint the SpiceDB endpoint
    * @param presharedKey the bearer token
    * @param options additional configuration options
@@ -116,6 +119,15 @@ public final class SpiceDBClient implements AutoCloseable {
   /** Functional option for customizing the client. */
   @FunctionalInterface
   public interface ClientOption {
+    /**
+     * Applies this option to the underlying gRPC {@link ManagedChannelBuilder}.
+     *
+     * <p><b>Advanced escape hatch:</b> this method exposes {@code io.grpc.ManagedChannelBuilder}
+     * directly for configuration not covered by the primary API. Most users should prefer {@link
+     * #createPlaintext} or {@link #createSystemTls} and the standard {@code withInsecure()} option.
+     *
+     * @param builder the channel builder to configure
+     */
     void apply(ManagedChannelBuilder<?> builder);
   }
 

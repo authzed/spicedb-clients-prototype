@@ -50,9 +50,18 @@ import {
   type RelationReference,
   type RelationshipCountResult,
   type Transaction,
+  type PermissionTree,
+  type SchemaDefinition,
+  type SchemaCaveat,
+  type SchemaDiff,
   toProtoRelationship,
   fromProtoRelationship,
   toProtoRelationshipFilter,
+  fromProtoPermissionTree,
+  fromProtoSchemaDefinition,
+  fromProtoSchemaCaveat,
+  fromProtoRelationReference,
+  fromProtoSchemaDiff,
 } from "./types.js";
 
 import {
@@ -160,7 +169,7 @@ export class SpiceDBClient {
                 }),
                 optionalRelation: check.subjectRelation ?? "",
               }),
-              context: check.context,
+              context: check.context as JsonObject | undefined,
             }),
           ),
         }),
@@ -249,7 +258,7 @@ export class SpiceDBClient {
         create(WriteRelationshipsRequestSchema, {
           updates: txn.updates,
           optionalPreconditions: txn.preconditions,
-          optionalTransactionMetadata: txn.metadata,
+          optionalTransactionMetadata: txn.metadata as JsonObject | undefined,
         }),
       );
       return resp.writtenAt?.token ?? "";
@@ -353,13 +362,12 @@ export class SpiceDBClient {
   // ---------------------------------------------------------------------------
 
   /**
-   * Expands a permission tree for the given resource and permission,
-   * returning the raw proto tree structure.
+   * Expands a permission tree for the given resource and permission.
    */
   async expandPermissionTree(
     consistency: Consistency,
     params: ExpandPermissionTreeParams,
-  ): Promise<{ expandedAt: string; treeRoot: unknown }> {
+  ): Promise<{ expandedAt: string; treeRoot: PermissionTree }> {
     return this.withRetry(async () => {
       const resp = await this.proto.permissions.expandPermissionTree(
         create(ExpandPermissionTreeRequestSchema, {
@@ -373,7 +381,7 @@ export class SpiceDBClient {
       );
       return {
         expandedAt: resp.expandedAt?.token ?? "",
-        treeRoot: resp.treeRoot,
+        treeRoot: fromProtoPermissionTree(resp.treeRoot),
       };
     });
   }
@@ -478,7 +486,11 @@ export class SpiceDBClient {
   async reflectSchema(
     consistency: Consistency,
     options?: ReflectSchemaOptions,
-  ): Promise<{ definitions: unknown[]; caveats: unknown[]; revision: string }> {
+  ): Promise<{
+    definitions: SchemaDefinition[];
+    caveats: SchemaCaveat[];
+    revision: string;
+  }> {
     return this.withRetry(async () => {
       const filters = options
         ? [
@@ -501,8 +513,8 @@ export class SpiceDBClient {
         }),
       );
       return {
-        definitions: resp.definitions as unknown[],
-        caveats: resp.caveats as unknown[],
+        definitions: resp.definitions.map((def) => fromProtoSchemaDefinition(def)),
+        caveats: resp.caveats.map((cav) => fromProtoSchemaCaveat(cav)),
         revision: resp.readAt?.token ?? "",
       };
     });
@@ -525,11 +537,7 @@ export class SpiceDBClient {
         }),
       );
       return {
-        permissions: resp.permissions.map((p) => ({
-          definitionName: p.definitionName,
-          relationName: p.relationName,
-          isPermission: p.isPermission,
-        })),
+        permissions: resp.permissions.map((p) => fromProtoRelationReference(p)),
         revision: resp.readAt?.token ?? "",
       };
     });
@@ -551,11 +559,7 @@ export class SpiceDBClient {
         }),
       );
       return {
-        relations: resp.relations.map((r) => ({
-          definitionName: r.definitionName,
-          relationName: r.relationName,
-          isPermission: r.isPermission,
-        })),
+        relations: resp.relations.map((r) => fromProtoRelationReference(r)),
         revision: resp.readAt?.token ?? "",
       };
     });
@@ -567,7 +571,7 @@ export class SpiceDBClient {
   async diffSchema(
     consistency: Consistency,
     comparisonSchema: string,
-  ): Promise<{ diffs: unknown[]; revision: string }> {
+  ): Promise<{ diffs: SchemaDiff[]; revision: string }> {
     return this.withRetry(async () => {
       const resp = await this.proto.schema.diffSchema(
         create(DiffSchemaRequestSchema, {
@@ -576,7 +580,7 @@ export class SpiceDBClient {
         }),
       );
       return {
-        diffs: resp.diffs as unknown[],
+        diffs: resp.diffs.map((d) => fromProtoSchemaDiff(d)),
         revision: resp.readAt?.token ?? "",
       };
     });
@@ -696,9 +700,7 @@ export class SpiceDBClient {
         yield {
           changes,
           revision: resp.changesThrough?.token ?? "",
-          metadata: resp.optionalTransactionMetadata as
-            | JsonObject
-            | undefined,
+          metadata: resp.optionalTransactionMetadata,
           schemaUpdated: resp.schemaUpdated,
           isCheckpoint: resp.isCheckpoint,
         };

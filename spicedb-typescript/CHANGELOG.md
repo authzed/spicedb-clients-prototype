@@ -4,6 +4,24 @@
 
 ### Breaking Changes
 
+- **2026-08-14**: Removed `@bufbuild/protobuf`'s `JsonObject` from the public
+  API. `Relationship.caveatContext`, `CheckRequest.context`,
+  `LookupResourcesParams.context`, `LookupSubjectsParams.context`,
+  `WatchEvent.metadata`, and `Transaction.withMetadata()` now use the native
+  `Record<string, unknown>` type instead. No call-site changes are required
+  for plain object literals; only code that explicitly imported `JsonObject`
+  from `@bufbuild/protobuf` to type these values needs to switch to
+  `Record<string, unknown>`.
+- **2026-08-14**: `expandPermissionTree`, `reflectSchema`, `diffSchema`,
+  `computablePermissions`, and `dependentRelations` now return fully-typed
+  native structures instead of `unknown`/`unknown[]` proto leakage.
+  `expandPermissionTree`'s `treeRoot` is now a native `PermissionTree`
+  (mirrors spicedb-go's `PermissionTree`/`IntermediateNode`/`LeafNode`/
+  `ObjectRef`/`SubjectRef`/`TreeOperation`); `reflectSchema`'s `definitions`/
+  `caveats` are now `SchemaDefinition[]`/`SchemaCaveat[]`; `diffSchema`'s
+  `diffs` are now `SchemaDiff[]`; `computablePermissions`/`dependentRelations`
+  continue to return `RelationReference[]`, now built via a shared mapper.
+  All new types are exported from the package root.
 - **2026-08-14**: `Consistency` is now an opaque native class instead of a
   re-exported protobuf-es type. `full()`, `minLatency()`, `atLeast()`,
   `snapshot()`, `atLeastOrFull()`, and `atLeastOrMinLatency()` now return the

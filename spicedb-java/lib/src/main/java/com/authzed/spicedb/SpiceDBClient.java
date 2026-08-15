@@ -291,8 +291,8 @@ public final class SpiceDBClient implements AutoCloseable {
     }
 
     /**
-     * Adds a MUST_MATCH precondition: the server rejects the delete (and deletes nothing) unless
-     * at least one relationship matching {@code filter} exists at evaluation time. Multiple calls
+     * Adds a MUST_MATCH precondition: the server rejects the delete (and deletes nothing) unless at
+     * least one relationship matching {@code filter} exists at evaluation time. Multiple calls
      * accumulate; all are sent with every page of the delete.
      */
     public DeleteOptions withMustMatch(Filter filter) {
@@ -319,9 +319,9 @@ public final class SpiceDBClient implements AutoCloseable {
   }
 
   /**
-   * Deletes all relationships matching the given filter, guarded by optional preconditions and
-   * with an optional page-size override supplied via {@code options}. Returns the revision of the
-   * final deletion. See {@link DeleteOptions} for precondition/paging semantics.
+   * Deletes all relationships matching the given filter, guarded by optional preconditions and with
+   * an optional page-size override supplied via {@code options}. Returns the revision of the final
+   * deletion. See {@link DeleteOptions} for precondition/paging semantics.
    */
   public String deleteRelationships(Filter filter, DeleteOptions options) {
     var preconditions = new ArrayList<Precondition>();
@@ -370,10 +370,9 @@ public final class SpiceDBClient implements AutoCloseable {
   // -----------------------------------------------------------------------
 
   /**
-   * Returns a stream over resources of the given type that the subject has the specified
-   * permission on. Each result carries the permissionship (full grant vs conditional on caveat
-   * context) and, for conditional results, which caveat context was missing. Cursors are handled
-   * transparently.
+   * Returns a stream over resources of the given type that the subject has the specified permission
+   * on. Each result carries the permissionship (full grant vs conditional on caveat context) and,
+   * for conditional results, which caveat context was missing. Cursors are handled transparently.
    *
    * <p>The returned stream should be closed when done.
    */
@@ -1301,8 +1300,8 @@ public final class SpiceDBClient implements AutoCloseable {
   }
 
   /**
-   * Maps the proto {@code LookupPermissionship} enum to its native equivalent. Unrecognized
-   * values map to {@code UNSPECIFIED}.
+   * Maps the proto {@code LookupPermissionship} enum to its native equivalent. Unrecognized values
+   * map to {@code UNSPECIFIED}.
    */
   private static LookupResult.Permissionship permissionshipFromProto(LookupPermissionship v) {
     return switch (v) {
@@ -1313,9 +1312,7 @@ public final class SpiceDBClient implements AutoCloseable {
     };
   }
 
-  /**
-   * Maps a proto {@code PartialCaveatInfo} to its native equivalent. A null input maps to null.
-   */
+  /** Maps a proto {@code PartialCaveatInfo} to its native equivalent. A null input maps to null. */
   private static LookupResult.PartialCaveatInfo partialCaveatFromProto(
       build.buf.gen.authzed.api.v1.PartialCaveatInfo v) {
     if (v == null) {
@@ -1327,8 +1324,7 @@ public final class SpiceDBClient implements AutoCloseable {
   /**
    * Maps a proto {@code LookupResourcesResponse} to a native {@link LookupResult.LookupResource}.
    */
-  private static LookupResult.LookupResource lookupResourceFromProto(
-      LookupResourcesResponse resp) {
+  private static LookupResult.LookupResource lookupResourceFromProto(LookupResourcesResponse resp) {
     return new LookupResult.LookupResource(
         resp.getResourceObjectId(),
         permissionshipFromProto(resp.getPermissionship()),
@@ -1337,8 +1333,8 @@ public final class SpiceDBClient implements AutoCloseable {
 
   /**
    * Maps a proto {@code ResolvedSubject} to its native equivalent. A null input maps to a
-   * zero-value {@link LookupResult.ResolvedSubject} (empty {@code subjectId}), which callers use
-   * as the trigger for falling back to deprecated response-level fields.
+   * zero-value {@link LookupResult.ResolvedSubject} (empty {@code subjectId}), which callers use as
+   * the trigger for falling back to deprecated response-level fields.
    */
   private static LookupResult.ResolvedSubject resolvedSubjectFromProto(
       build.buf.gen.authzed.api.v1.ResolvedSubject v) {

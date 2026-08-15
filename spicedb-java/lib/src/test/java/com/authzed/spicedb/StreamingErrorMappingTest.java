@@ -25,9 +25,9 @@ import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
 
 /**
- * Proves that all 5 streaming methods on {@link SpiceDBClient} map mid-stream gRPC errors to
- * native {@link com.authzed.spicedb.errors.SpiceDBException} subtypes, rather than leaking a raw
- * {@link io.grpc.StatusRuntimeException} to the consumer of the returned {@link Stream}.
+ * Proves that all 5 streaming methods on {@link SpiceDBClient} map mid-stream gRPC errors to native
+ * {@link com.authzed.spicedb.errors.SpiceDBException} subtypes, rather than leaking a raw {@link
+ * io.grpc.StatusRuntimeException} to the consumer of the returned {@link Stream}.
  *
  * <p>Uses the reusable in-process gRPC harness ({@link TestServers}) to drive real gRPC framing
  * (not just unit-level mocks), so the assertions exercise the actual blocking-stub iteration path.
@@ -154,8 +154,7 @@ class StreamingErrorMappingTest {
                             .setOperation(RelationshipUpdate.Operation.OPERATION_TOUCH)
                             .setRelationship(
                                 SpiceDBClient.toProtoRelationship(
-                                    Relationship.of(
-                                        "document", "doc1", "viewer", "user", "alice")))
+                                    Relationship.of("document", "doc1", "viewer", "user", "alice")))
                             .build())
                     .build());
             responseObserver.onError(

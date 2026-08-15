@@ -17,13 +17,12 @@ import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
 
 /**
- * Proves that {@link SpiceDBClient#lookupResources} and {@link SpiceDBClient#lookupSubjects}
- * yield rich native {@link LookupResult} records (permissionship, partial caveat info, and —
- * critically — excluded subjects for wildcard {@code "*"} matches) instead of bare {@code
- * String}s.
+ * Proves that {@link SpiceDBClient#lookupResources} and {@link SpiceDBClient#lookupSubjects} yield
+ * rich native {@link LookupResult} records (permissionship, partial caveat info, and — critically —
+ * excluded subjects for wildcard {@code "*"} matches) instead of bare {@code String}s.
  *
- * <p>Also proves the deprecated response-level fallback fields (used by older SpiceDB servers
- * that don't yet populate the non-deprecated {@code subject}/{@code excluded_subjects} fields) are
+ * <p>Also proves the deprecated response-level fallback fields (used by older SpiceDB servers that
+ * don't yet populate the non-deprecated {@code subject}/{@code excluded_subjects} fields) are
  * honored, mirroring {@code spicedb-go}'s {@code lookup.go}.
  */
 class LookupResultsTest {
@@ -43,8 +42,7 @@ class LookupResultsTest {
             responseObserver.onNext(
                 LookupResourcesResponse.newBuilder()
                     .setResourceObjectId("firstdoc")
-                    .setPermissionship(
-                        LookupPermissionship.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION)
+                    .setPermissionship(LookupPermissionship.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION)
                     .build());
             responseObserver.onCompleted();
           }
@@ -80,9 +78,7 @@ class LookupResultsTest {
                     .setPermissionship(
                         LookupPermissionship.LOOKUP_PERMISSIONSHIP_CONDITIONAL_PERMISSION)
                     .setPartialCaveatInfo(
-                        PartialCaveatInfo.newBuilder()
-                            .addMissingRequiredContext("region")
-                            .build())
+                        PartialCaveatInfo.newBuilder().addMissingRequiredContext("region").build())
                     .build());
             responseObserver.onCompleted();
           }
@@ -290,7 +286,8 @@ class LookupResultsTest {
       assertEquals(1, results.size());
       List<LookupResult.ResolvedSubject> excluded = results.get(0).excludedSubjects();
       assertEquals(2, excluded.size());
-      List<String> excludedIds = excluded.stream().map(LookupResult.ResolvedSubject::subjectId).toList();
+      List<String> excludedIds =
+          excluded.stream().map(LookupResult.ResolvedSubject::subjectId).toList();
       assertTrue(excludedIds.containsAll(List.of("legacy-banned-1", "legacy-banned-2")));
       // Deprecated excluded_subject_ids carries only IDs — no permissionship/caveat info.
       for (LookupResult.ResolvedSubject s : excluded) {

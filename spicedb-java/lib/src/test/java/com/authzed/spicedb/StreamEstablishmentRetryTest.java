@@ -38,10 +38,10 @@ import org.junit.jupiter.api.Test;
  * <p>Each method gets two tests:
  *
  * <ul>
- *   <li><b>retries establishment</b>: the mock service fails the FIRST establishment attempt with
- *       a transient {@code UNAVAILABLE}, then succeeds on the second. Asserts the client
- *       ultimately yields the expected item(s) AND that the server observed exactly 2
- *       establishment attempts (proving the retry is EFFECTIVE, not merely tolerated).
+ *   <li><b>retries establishment</b>: the mock service fails the FIRST establishment attempt with a
+ *       transient {@code UNAVAILABLE}, then succeeds on the second. Asserts the client ultimately
+ *       yields the expected item(s) AND that the server observed exactly 2 establishment attempts
+ *       (proving the retry is EFFECTIVE, not merely tolerated).
  *   <li><b>does not retry after an item is read</b>: the mock service successfully delivers at
  *       least one item, THEN fails with a transient {@code UNAVAILABLE}. Asserts the error is
  *       mapped to {@link SpiceDBException} and rethrown, AND that the server observed exactly 1
@@ -151,8 +151,7 @@ class StreamEstablishmentRetryTest {
             responseObserver.onNext(
                 LookupResourcesResponse.newBuilder()
                     .setResourceObjectId("doc1")
-                    .setPermissionship(
-                        LookupPermissionship.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION)
+                    .setPermissionship(LookupPermissionship.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION)
                     .build());
             responseObserver.onCompleted();
           }
@@ -185,8 +184,7 @@ class StreamEstablishmentRetryTest {
             responseObserver.onNext(
                 LookupResourcesResponse.newBuilder()
                     .setResourceObjectId("doc1")
-                    .setPermissionship(
-                        LookupPermissionship.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION)
+                    .setPermissionship(LookupPermissionship.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION)
                     .build());
             responseObserver.onError(
                 Status.UNAVAILABLE.withDescription("mid-page failure").asRuntimeException());
@@ -429,7 +427,8 @@ class StreamEstablishmentRetryTest {
 
         assertThrows(SpiceDBException.class, iterator::hasNext);
       }
-      assertEquals(1, attempts.get(), "a transient error after an update was yielded must not retry");
+      assertEquals(
+          1, attempts.get(), "a transient error after an update was yielded must not retry");
     }
   }
 }

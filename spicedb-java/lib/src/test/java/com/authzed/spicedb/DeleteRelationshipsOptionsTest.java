@@ -15,13 +15,13 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Tests for {@link SpiceDBClient#deleteRelationships(Filter, SpiceDBClient.DeleteOptions)} —
- * optional preconditions (must-match/must-not-match) and per-request page-size limit, threaded
- * into the auto-paging delete loop. Mirrors {@code spicedb-go}'s {@code client/relationships.go}
- * {@code WithDeleteMustMatch}/{@code WithDeleteMustNotMatch}/{@code WithDeleteLimit}.
+ * optional preconditions (must-match/must-not-match) and per-request page-size limit, threaded into
+ * the auto-paging delete loop. Mirrors {@code spicedb-go}'s {@code client/relationships.go} {@code
+ * WithDeleteMustMatch}/{@code WithDeleteMustNotMatch}/{@code WithDeleteLimit}.
  *
- * <p>Uses the in-process gRPC harness ({@link TestServers}) with a mock {@code
- * PermissionsService} that captures every outbound {@link DeleteRelationshipsRequest} so tests can
- * assert on exactly what was sent over the wire.
+ * <p>Uses the in-process gRPC harness ({@link TestServers}) with a mock {@code PermissionsService}
+ * that captures every outbound {@link DeleteRelationshipsRequest} so tests can assert on exactly
+ * what was sent over the wire.
  */
 class DeleteRelationshipsOptionsTest {
 

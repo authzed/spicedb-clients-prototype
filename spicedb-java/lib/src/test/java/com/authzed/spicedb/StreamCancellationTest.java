@@ -20,8 +20,8 @@ import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
 
 /**
- * Proves that closing a lazy streaming {@link SpiceDBClient} {@link Stream} cancels the
- * underlying gRPC server-streaming call, rather than leaving it open server-side.
+ * Proves that closing a lazy streaming {@link SpiceDBClient} {@link Stream} cancels the underlying
+ * gRPC server-streaming call, rather than leaving it open server-side.
  *
  * <p>Each mock service holds its RPC open indefinitely (sends one item, never calls {@code
  * onCompleted}/{@code onError}) and registers {@link ServerCallStreamObserver#setOnCancelHandler}
@@ -42,8 +42,7 @@ class StreamCancellationTest {
     var service =
         new WatchServiceGrpc.WatchServiceImplBase() {
           @Override
-          public void watch(
-              WatchRequest request, StreamObserver<WatchResponse> responseObserver) {
+          public void watch(WatchRequest request, StreamObserver<WatchResponse> responseObserver) {
             var scso = (ServerCallStreamObserver<WatchResponse>) responseObserver;
             scso.setOnCancelHandler(cancelLatch::countDown);
             scso.onNext(
@@ -53,8 +52,7 @@ class StreamCancellationTest {
                             .setOperation(RelationshipUpdate.Operation.OPERATION_TOUCH)
                             .setRelationship(
                                 SpiceDBClient.toProtoRelationship(
-                                    Relationship.of(
-                                        "document", "doc1", "viewer", "user", "alice")))
+                                    Relationship.of("document", "doc1", "viewer", "user", "alice")))
                             .build())
                     .build());
             // Never call onCompleted/onError — hold the stream open so we can prove close()

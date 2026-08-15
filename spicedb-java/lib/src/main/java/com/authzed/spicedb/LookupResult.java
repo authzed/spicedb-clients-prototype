@@ -6,10 +6,10 @@ import java.util.List;
  * Native result types for {@link SpiceDBClient#lookupResources} and {@link
  * SpiceDBClient#lookupSubjects}.
  *
- * <p>Avoids leaking the proto lookup response types in favor of plain Java records — grouped
- * under one wrapper the same way {@link PermissionTree} groups the expand-tree record family (and
- * so that these native names don't collide with the proto {@code PartialCaveatInfo}/{@code
- * ResolvedSubject} types wildcard-imported in {@code SpiceDBClient}).
+ * <p>Avoids leaking the proto lookup response types in favor of plain Java records — grouped under
+ * one wrapper the same way {@link PermissionTree} groups the expand-tree record family (and so that
+ * these native names don't collide with the proto {@code PartialCaveatInfo}/{@code ResolvedSubject}
+ * types wildcard-imported in {@code SpiceDBClient}).
  */
 public final class LookupResult {
 
@@ -17,9 +17,9 @@ public final class LookupResult {
 
   /**
    * Indicates whether a lookup result reflects a full grant or is conditional on caveat context
-   * that was not fully evaluated by the server. Callers MUST check this before treating a result
-   * as a full grant — a {@code CONDITIONAL_PERMISSION} result may resolve to false once the
-   * missing caveat context is supplied.
+   * that was not fully evaluated by the server. Callers MUST check this before treating a result as
+   * a full grant — a {@code CONDITIONAL_PERMISSION} result may resolve to false once the missing
+   * caveat context is supplied.
    */
   public enum Permissionship {
     UNSPECIFIED,

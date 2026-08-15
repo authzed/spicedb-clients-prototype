@@ -30,6 +30,7 @@ Or use `mage test` which starts a SpiceDB container automatically.
 | `LookupSubjects/` | Subject lookup |
 | `WatchChanges/` | Watching for changes |
 | `SchemaManagement/` | Schema read/write |
-| `BulkOperations/` | Bulk checks and batch writes |
+| `BulkOperations/` | Bulk checks, batch writes, and bulk relationship import/export |
 | `SchemaReflection/` | Schema reflection, computable permissions, diffs |
 | `RelationshipCounters/` | Relationship counter registration and counting |
+| `ExpandPermissionTree/` | Expanding a permission into its native `PermissionTree` of subjects |

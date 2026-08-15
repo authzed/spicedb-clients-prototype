@@ -1,5 +1,6 @@
 using Xunit;
-// Example BulkOperations demonstrates bulk checks and batch writes.
+// Example BulkOperations demonstrates bulk checks, batch writes, and bulk
+// relationship import/export.
 
 using SpiceDB.Client;
 using static SpiceDB.Client.Consistency;
@@ -98,5 +99,50 @@ public class BulkOperationsTest
             AtLeast(revision), "view", default, checks);
 
         Assert.True(anyAllowed, "expected at least one user to have view permission");
+    }
+
+    [Fact]
+    public async Task ImportRelationships_And_ExportRelationships()
+    {
+        await using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "somerandomkeyhere");
+
+        await client.WriteSchemaAsync(Schema);
+
+        // Bulk import relationships from an async stream. Relationships are
+        // automatically batched into chunks of 1,000 under the hood.
+        var users = new[] { "alice", "bob", "charlie" };
+        var imported = users
+            .Select(u => Relationship.FromTriple("document", "imported-doc", "viewer", "user", u))
+            .ToArray();
+
+        var numLoaded = await client.ImportRelationshipsAsync(ToAsyncEnumerable(imported));
+        Assert.Equal((ulong)imported.Length, numLoaded);
+
+        // Bulk export relationships back out, filtered to the resource we
+        // just imported. Cursors are handled transparently by the client.
+        var filter = new Filter("document").WithResourceID("imported-doc");
+
+        var exported = new List<Relationship>();
+        await foreach (var rel in client.ExportRelationshipsAsync(Full(), filter))
+        {
+            exported.Add(rel);
+        }
+
+        var exportedSubjectIDs = exported.Select(r => r.SubjectID).ToHashSet();
+        foreach (var user in users)
+        {
+            Assert.Contains(user, exportedSubjectIDs);
+        }
+    }
+
+    private static async IAsyncEnumerable<Relationship> ToAsyncEnumerable(
+        IEnumerable<Relationship> relationships)
+    {
+        foreach (var rel in relationships)
+        {
+            yield return rel;
+        }
+
+        await Task.CompletedTask;
     }
 }

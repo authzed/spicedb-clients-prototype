@@ -19,8 +19,8 @@ import org.junit.jupiter.api.Test;
 /**
  * Demonstrates expanding a permission into its full tree of subjects using {@link
  * com.authzed.spicedb.SpiceDBClient#expandPermissionTree}, and walking the native {@link
- * PermissionTree} result (expandedObject, expandedRelation, and exactly one of
- * intermediate/leaf) down to its leaf subjects.
+ * PermissionTree} result (expandedObject, expandedRelation, and exactly one of intermediate/leaf)
+ * down to its leaf subjects.
  */
 class ExpandPermissionTreeTest extends SpiceDBIntegrationTest {
 

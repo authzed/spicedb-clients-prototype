@@ -39,8 +39,11 @@ class LookupResourcesTest extends SpiceDBIntegrationTest {
     // CONDITIONAL_PERMISSION result as a full grant (see wildcard/caveat-aware examples).
     assertThat(results)
         .allSatisfy(
-            r -> assertThat(r.permissionship()).isEqualTo(LookupResult.Permissionship.HAS_PERMISSION));
-    List<String> resourceIDs = results.stream().map(LookupResult.LookupResource::resourceId).toList();
+            r ->
+                assertThat(r.permissionship())
+                    .isEqualTo(LookupResult.Permissionship.HAS_PERMISSION));
+    List<String> resourceIDs =
+        results.stream().map(LookupResult.LookupResource::resourceId).toList();
     assertThat(resourceIDs).containsExactlyInAnyOrder("firstdoc", "seconddoc");
   }
 

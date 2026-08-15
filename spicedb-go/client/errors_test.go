@@ -30,16 +30,17 @@ var allErrorSentinels = []error{
 
 func TestMapGRPCError_MapsKnownCodesToSentinels(t *testing.T) {
 	cases := []struct {
-		name     string
-		code     codes.Code
-		sentinel error
+		name       string
+		code       codes.Code
+		nativeCode ErrorCode
+		sentinel   error
 	}{
-		{"NotFound", codes.NotFound, ErrNotFound},
-		{"AlreadyExists", codes.AlreadyExists, ErrAlreadyExists},
-		{"InvalidArgument", codes.InvalidArgument, ErrInvalidArgument},
-		{"FailedPrecondition", codes.FailedPrecondition, ErrFailedPrecondition},
-		{"PermissionDenied", codes.PermissionDenied, ErrPermissionDenied},
-		{"Unauthenticated", codes.Unauthenticated, ErrUnauthenticated},
+		{"NotFound", codes.NotFound, CodeNotFound, ErrNotFound},
+		{"AlreadyExists", codes.AlreadyExists, CodeAlreadyExists, ErrAlreadyExists},
+		{"InvalidArgument", codes.InvalidArgument, CodeInvalidArgument, ErrInvalidArgument},
+		{"FailedPrecondition", codes.FailedPrecondition, CodeFailedPrecondition, ErrFailedPrecondition},
+		{"PermissionDenied", codes.PermissionDenied, CodePermissionDenied, ErrPermissionDenied},
+		{"Unauthenticated", codes.Unauthenticated, CodeUnauthenticated, ErrUnauthenticated},
 	}
 
 	for _, tc := range cases {
@@ -59,7 +60,7 @@ func TestMapGRPCError_MapsKnownCodesToSentinels(t *testing.T) {
 
 			nativeErr, ok := got.(*Error)
 			require.True(t, ok, "expected mapGRPCError to return *Error")
-			require.Equal(t, tc.code, nativeErr.Code)
+			require.Equal(t, tc.nativeCode, nativeErr.Code)
 			require.Contains(t, nativeErr.Message, "some op")
 			require.Contains(t, nativeErr.Message, "boom")
 
@@ -81,11 +82,24 @@ func TestMapGRPCError_UnmappedCodeMatchesNoSentinel(t *testing.T) {
 
 	nativeErr, ok := got.(*Error)
 	require.True(t, ok, "expected mapGRPCError to return *Error")
-	require.Equal(t, codes.Internal, nativeErr.Code)
+	require.Equal(t, CodeInternal, nativeErr.Code)
 
 	for _, sentinel := range allErrorSentinels {
 		require.False(t, errors.Is(got, sentinel), "codes.Internal should not match sentinel %v", sentinel)
 	}
+}
+
+func TestMapGRPCError_UnknownCodeMapsToCodeUnknown(t *testing.T) {
+	// codes.Code(9999) has no entry in the internal codes.Code -> ErrorCode
+	// mapping table, so it must fall back to CodeUnknown rather than the zero
+	// value of some unrelated code.
+	src := status.Error(codes.Code(9999), "mystery")
+	got := mapGRPCError("some op", src)
+	require.Error(t, got)
+
+	nativeErr, ok := got.(*Error)
+	require.True(t, ok, "expected mapGRPCError to return *Error")
+	require.Equal(t, CodeUnknown, nativeErr.Code)
 }
 
 // erroringPermissionsServer's ReadRelationships fails immediately with
@@ -151,5 +165,15 @@ func TestReadRelationships_StreamErrorIsMappedToNativeError(t *testing.T) {
 
 	nativeErr, ok := gotErr.(*Error)
 	require.True(t, ok, "expected the stream error to be a native *Error")
-	require.Equal(t, codes.NotFound, nativeErr.Code)
+	require.Equal(t, CodeNotFound, nativeErr.Code)
+}
+
+// TestErrorCode_IsNativeType is a compile-time-flavored assertion that
+// Error.Code is the native ErrorCode type, not grpc/codes.Code: assigning it
+// to an ErrorCode-typed variable (with no conversion) would fail to compile
+// if the field's type ever regressed to codes.Code.
+func TestErrorCode_IsNativeType(t *testing.T) {
+	var e Error
+	var code ErrorCode = e.Code
+	require.Equal(t, CodeUnknown, code)
 }

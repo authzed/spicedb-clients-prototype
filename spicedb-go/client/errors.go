@@ -18,11 +18,88 @@ var (
 	ErrUnauthenticated    = errors.New("spicedb: unauthenticated")
 )
 
-// Error is a native SpiceDB error carrying the gRPC status code and message.
+// ErrorCode is a native, gRPC-independent classification of a SpiceDB error.
+// It exists so the primary error API (Error.Code) never exposes a raw
+// google.golang.org/grpc/codes.Code value to callers; use errors.Unwrap plus
+// google.golang.org/grpc/status for advanced inspection of the underlying
+// gRPC status, if needed.
+type ErrorCode int
+
+const (
+	// CodeUnknown is the fallback for any gRPC code without a more specific
+	// native mapping (including codes not defined at the time this client was
+	// built).
+	CodeUnknown ErrorCode = iota
+	CodeNotFound
+	CodeAlreadyExists
+	CodeInvalidArgument
+	CodeFailedPrecondition
+	CodePermissionDenied
+	CodeUnauthenticated
+	CodeUnavailable
+	CodeResourceExhausted
+	CodeAborted
+	CodeDeadlineExceeded
+	CodeCanceled
+	CodeInternal
+)
+
+// String returns a human-readable name for the ErrorCode, matching the
+// constant's name without the "Code" prefix (e.g. CodeNotFound -> "NotFound").
+func (c ErrorCode) String() string {
+	switch c {
+	case CodeNotFound:
+		return "NotFound"
+	case CodeAlreadyExists:
+		return "AlreadyExists"
+	case CodeInvalidArgument:
+		return "InvalidArgument"
+	case CodeFailedPrecondition:
+		return "FailedPrecondition"
+	case CodePermissionDenied:
+		return "PermissionDenied"
+	case CodeUnauthenticated:
+		return "Unauthenticated"
+	case CodeUnavailable:
+		return "Unavailable"
+	case CodeResourceExhausted:
+		return "ResourceExhausted"
+	case CodeAborted:
+		return "Aborted"
+	case CodeDeadlineExceeded:
+		return "DeadlineExceeded"
+	case CodeCanceled:
+		return "Canceled"
+	case CodeInternal:
+		return "Internal"
+	default:
+		return "Unknown"
+	}
+}
+
+// grpcCodeToErrorCode maps a gRPC status code to its native ErrorCode
+// equivalent. Codes with no entry (including any not listed here) map to
+// CodeUnknown via the zero value returned by the map lookup.
+var grpcCodeToErrorCode = map[codes.Code]ErrorCode{
+	codes.NotFound:           CodeNotFound,
+	codes.AlreadyExists:      CodeAlreadyExists,
+	codes.InvalidArgument:    CodeInvalidArgument,
+	codes.FailedPrecondition: CodeFailedPrecondition,
+	codes.PermissionDenied:   CodePermissionDenied,
+	codes.Unauthenticated:    CodeUnauthenticated,
+	codes.Unavailable:        CodeUnavailable,
+	codes.ResourceExhausted:  CodeResourceExhausted,
+	codes.Aborted:            CodeAborted,
+	codes.DeadlineExceeded:   CodeDeadlineExceeded,
+	codes.Canceled:           CodeCanceled,
+	codes.Internal:           CodeInternal,
+}
+
+// Error is a native SpiceDB error carrying a native error code and message.
 // It satisfies errors.Is against the sentinel matching its Code, and Unwrap
 // exposes the underlying gRPC status error for advanced inspection.
 type Error struct {
-	Code    codes.Code
+	Code    ErrorCode
 	Message string
 	err     error // underlying gRPC status error
 }
@@ -32,17 +109,17 @@ func (e *Error) Unwrap() error { return e.err }
 func (e *Error) Is(target error) bool {
 	switch target {
 	case ErrNotFound:
-		return e.Code == codes.NotFound
+		return e.Code == CodeNotFound
 	case ErrAlreadyExists:
-		return e.Code == codes.AlreadyExists
+		return e.Code == CodeAlreadyExists
 	case ErrInvalidArgument:
-		return e.Code == codes.InvalidArgument
+		return e.Code == CodeInvalidArgument
 	case ErrFailedPrecondition:
-		return e.Code == codes.FailedPrecondition
+		return e.Code == CodeFailedPrecondition
 	case ErrPermissionDenied:
-		return e.Code == codes.PermissionDenied
+		return e.Code == CodePermissionDenied
 	case ErrUnauthenticated:
-		return e.Code == codes.Unauthenticated
+		return e.Code == CodeUnauthenticated
 	}
 	return false
 }
@@ -55,7 +132,7 @@ func mapGRPCError(op string, err error) error {
 	}
 	st, _ := status.FromError(err)
 	return &Error{
-		Code:    st.Code(),
+		Code:    grpcCodeToErrorCode[st.Code()],
 		Message: fmt.Sprintf("spicedb: %s: %s", op, st.Message()),
 		err:     err,
 	}

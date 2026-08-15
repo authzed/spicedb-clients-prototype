@@ -87,6 +87,6 @@ func TestCheck_PerItemErrorIsMappedToNativeError(t *testing.T) {
 
 	nativeErr, ok := gotErr.(*Error)
 	require.True(t, ok, "expected the per-item error to be a native *Error")
-	require.Equal(t, codes.InvalidArgument, nativeErr.Code)
+	require.Equal(t, CodeInvalidArgument, nativeErr.Code)
 	require.Contains(t, nativeErr.Message, "bad resource id")
 }

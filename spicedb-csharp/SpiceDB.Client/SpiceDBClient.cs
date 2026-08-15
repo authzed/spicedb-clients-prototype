@@ -28,7 +28,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
     private const int MaxRetryAttempts = 5;
     private static readonly TimeSpan InitialBackoff = TimeSpan.FromMilliseconds(100);
 
-    private readonly SpiceDBProtoClient _protoClient;
+    private readonly SpiceDBProtoClient? _protoClient;
     private readonly PermissionsService.PermissionsServiceClient _permissions;
     private readonly SchemaService.SchemaServiceClient _schema;
     private readonly WatchService.WatchServiceClient _watch;
@@ -41,6 +41,25 @@ public sealed class SpiceDBClient : IAsyncDisposable
         _schema = protoClient.Schema;
         _watch = protoClient.Watch;
         _experimental = protoClient.Experimental;
+    }
+
+    /// <summary>
+    /// Test-only seam: constructs a client directly from (typically mocked)
+    /// service clients, bypassing channel/proto-client construction entirely.
+    /// Not part of the public API — exposed to the test assembly only via
+    /// <see cref="System.Runtime.CompilerServices.InternalsVisibleToAttribute"/>.
+    /// </summary>
+    internal SpiceDBClient(
+        PermissionsService.PermissionsServiceClient permissions,
+        SchemaService.SchemaServiceClient schema,
+        WatchService.WatchServiceClient watch,
+        ExperimentalService.ExperimentalServiceClient experimental)
+    {
+        _protoClient = null;
+        _permissions = permissions;
+        _schema = schema;
+        _watch = watch;
+        _experimental = experimental;
     }
 
     /// <summary>
@@ -92,7 +111,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
 
     public ValueTask DisposeAsync()
     {
-        _protoClient.Dispose();
+        _protoClient?.Dispose();
         return ValueTask.CompletedTask;
     }
 
@@ -232,13 +251,33 @@ public sealed class SpiceDBClient : IAsyncDisposable
             if (cursor != null)
                 req.OptionalCursor = cursor;
 
-            using var stream = _permissions.ReadRelationships(req, cancellationToken: cancellationToken);
-
-            uint count = 0;
-            while (await stream.ResponseStream.MoveNext(cancellationToken))
+            AsyncServerStreamingCall<ReadRelationshipsResponse> call;
+            try
             {
+                call = _permissions.ReadRelationships(req, cancellationToken: cancellationToken);
+            }
+            catch (RpcException ex)
+            {
+                throw ErrorMapper.ToSpiceDBException(ex);
+            }
+
+            using var stream = call;
+            uint count = 0;
+            while (true)
+            {
+                ReadRelationshipsResponse resp;
+                try
+                {
+                    if (!await stream.ResponseStream.MoveNext(cancellationToken))
+                        break;
+                    resp = stream.ResponseStream.Current;
+                }
+                catch (RpcException ex)
+                {
+                    throw ErrorMapper.ToSpiceDBException(ex);
+                }
+
                 count++;
-                var resp = stream.ResponseStream.Current;
                 cursor = resp.AfterResultCursor;
                 yield return Relationship.FromProto(resp.Relationship);
             }
@@ -320,13 +359,33 @@ public sealed class SpiceDBClient : IAsyncDisposable
             if (cursor != null)
                 req.OptionalCursor = cursor;
 
-            using var stream = _permissions.LookupResources(req, cancellationToken: cancellationToken);
-
-            int count = 0;
-            while (await stream.ResponseStream.MoveNext(cancellationToken))
+            AsyncServerStreamingCall<LookupResourcesResponse> call;
+            try
             {
+                call = _permissions.LookupResources(req, cancellationToken: cancellationToken);
+            }
+            catch (RpcException ex)
+            {
+                throw ErrorMapper.ToSpiceDBException(ex);
+            }
+
+            using var stream = call;
+            int count = 0;
+            while (true)
+            {
+                LookupResourcesResponse resp;
+                try
+                {
+                    if (!await stream.ResponseStream.MoveNext(cancellationToken))
+                        break;
+                    resp = stream.ResponseStream.Current;
+                }
+                catch (RpcException ex)
+                {
+                    throw ErrorMapper.ToSpiceDBException(ex);
+                }
+
                 count++;
-                var resp = stream.ResponseStream.Current;
                 cursor = resp.AfterResultCursor;
                 yield return resp.ResourceObjectId;
             }
@@ -352,23 +411,43 @@ public sealed class SpiceDBClient : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(consistency);
 
-        using var stream = _permissions.LookupSubjects(
-            new LookupSubjectsRequest
-            {
-                Consistency = consistency.V1Consistency,
-                Resource = new ObjectReference
-                {
-                    ObjectType = resourceType,
-                    ObjectId = resourceID,
-                },
-                Permission = permission,
-                SubjectObjectType = subjectType,
-            },
-            cancellationToken: cancellationToken);
-
-        while (await stream.ResponseStream.MoveNext(cancellationToken))
+        AsyncServerStreamingCall<LookupSubjectsResponse> call;
+        try
         {
-            var resp = stream.ResponseStream.Current;
+            call = _permissions.LookupSubjects(
+                new LookupSubjectsRequest
+                {
+                    Consistency = consistency.V1Consistency,
+                    Resource = new ObjectReference
+                    {
+                        ObjectType = resourceType,
+                        ObjectId = resourceID,
+                    },
+                    Permission = permission,
+                    SubjectObjectType = subjectType,
+                },
+                cancellationToken: cancellationToken);
+        }
+        catch (RpcException ex)
+        {
+            throw ErrorMapper.ToSpiceDBException(ex);
+        }
+
+        using var stream = call;
+        while (true)
+        {
+            LookupSubjectsResponse resp;
+            try
+            {
+                if (!await stream.ResponseStream.MoveNext(cancellationToken))
+                    break;
+                resp = stream.ResponseStream.Current;
+            }
+            catch (RpcException ex)
+            {
+                throw ErrorMapper.ToSpiceDBException(ex);
+            }
+
             var subjectId = resp.Subject?.SubjectObjectId;
             if (string.IsNullOrEmpty(subjectId))
                 subjectId = resp.SubjectObjectId; // deprecated field fallback
@@ -619,32 +698,50 @@ public sealed class SpiceDBClient : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(relationships);
 
-        using var stream = _permissions.ImportBulkRelationships(cancellationToken: cancellationToken);
-
-        var batch = new List<Authzed.Api.V1.Relationship>(DefaultImportBatchSize);
-
-        await foreach (var rel in relationships.WithCancellation(cancellationToken))
+        AsyncClientStreamingCall<ImportBulkRelationshipsRequest, ImportBulkRelationshipsResponse> stream;
+        try
         {
-            batch.Add(rel.ToProto());
-            if (batch.Count >= DefaultImportBatchSize)
+            stream = _permissions.ImportBulkRelationships(cancellationToken: cancellationToken);
+        }
+        catch (RpcException ex)
+        {
+            throw ErrorMapper.ToSpiceDBException(ex);
+        }
+
+        using (stream)
+        {
+            try
             {
-                var req = new ImportBulkRelationshipsRequest();
-                req.Relationships.AddRange(batch);
-                await stream.RequestStream.WriteAsync(req, cancellationToken);
-                batch.Clear();
+                var batch = new List<Authzed.Api.V1.Relationship>(DefaultImportBatchSize);
+
+                await foreach (var rel in relationships.WithCancellation(cancellationToken))
+                {
+                    batch.Add(rel.ToProto());
+                    if (batch.Count >= DefaultImportBatchSize)
+                    {
+                        var req = new ImportBulkRelationshipsRequest();
+                        req.Relationships.AddRange(batch);
+                        await stream.RequestStream.WriteAsync(req, cancellationToken);
+                        batch.Clear();
+                    }
+                }
+
+                if (batch.Count > 0)
+                {
+                    var req = new ImportBulkRelationshipsRequest();
+                    req.Relationships.AddRange(batch);
+                    await stream.RequestStream.WriteAsync(req, cancellationToken);
+                }
+
+                await stream.RequestStream.CompleteAsync();
+                var resp = await stream;
+                return resp.NumLoaded;
+            }
+            catch (RpcException ex)
+            {
+                throw ErrorMapper.ToSpiceDBException(ex);
             }
         }
-
-        if (batch.Count > 0)
-        {
-            var req = new ImportBulkRelationshipsRequest();
-            req.Relationships.AddRange(batch);
-            await stream.RequestStream.WriteAsync(req, cancellationToken);
-        }
-
-        await stream.RequestStream.CompleteAsync();
-        var resp = await stream;
-        return resp.NumLoaded;
     }
 
     /// <summary>
@@ -672,12 +769,32 @@ public sealed class SpiceDBClient : IAsyncDisposable
             if (filter != null)
                 req.OptionalRelationshipFilter = filter.ToProto();
 
-            using var stream = _permissions.ExportBulkRelationships(req, cancellationToken: cancellationToken);
-
-            int pageCount = 0;
-            while (await stream.ResponseStream.MoveNext(cancellationToken))
+            AsyncServerStreamingCall<ExportBulkRelationshipsResponse> call;
+            try
             {
-                var resp = stream.ResponseStream.Current;
+                call = _permissions.ExportBulkRelationships(req, cancellationToken: cancellationToken);
+            }
+            catch (RpcException ex)
+            {
+                throw ErrorMapper.ToSpiceDBException(ex);
+            }
+
+            using var stream = call;
+            int pageCount = 0;
+            while (true)
+            {
+                ExportBulkRelationshipsResponse resp;
+                try
+                {
+                    if (!await stream.ResponseStream.MoveNext(cancellationToken))
+                        break;
+                    resp = stream.ResponseStream.Current;
+                }
+                catch (RpcException ex)
+                {
+                    throw ErrorMapper.ToSpiceDBException(ex);
+                }
+
                 cursor = resp.AfterResultCursor;
                 foreach (var r in resp.Relationships)
                 {
@@ -710,11 +827,31 @@ public sealed class SpiceDBClient : IAsyncDisposable
         if (!string.IsNullOrEmpty(startRevision))
             req.OptionalStartCursor = new ZedToken { Token = startRevision };
 
-        using var stream = _watch.Watch(req, cancellationToken: cancellationToken);
-
-        while (await stream.ResponseStream.MoveNext(cancellationToken))
+        AsyncServerStreamingCall<WatchResponse> call;
+        try
         {
-            var resp = stream.ResponseStream.Current;
+            call = _watch.Watch(req, cancellationToken: cancellationToken);
+        }
+        catch (RpcException ex)
+        {
+            throw ErrorMapper.ToSpiceDBException(ex);
+        }
+
+        using var stream = call;
+        while (true)
+        {
+            WatchResponse resp;
+            try
+            {
+                if (!await stream.ResponseStream.MoveNext(cancellationToken))
+                    break;
+                resp = stream.ResponseStream.Current;
+            }
+            catch (RpcException ex)
+            {
+                throw ErrorMapper.ToSpiceDBException(ex);
+            }
+
             foreach (var update in resp.Updates)
             {
                 yield return UpdateFromProto(update);

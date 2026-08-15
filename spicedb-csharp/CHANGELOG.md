@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **2026-08-14**: Streaming/bulk methods (`ReadRelationshipsAsync`,
+  `LookupResourcesAsync`, `LookupSubjectsAsync`, `ExportRelationshipsAsync`,
+  `UpdatesAsync`, `ImportRelationshipsAsync`) now map `Grpc.Core.RpcException`
+  raised while opening or iterating the underlying gRPC stream to the native
+  `SpiceDBException` hierarchy via `ErrorMapper.ToSpiceDBException`, matching
+  the mapping unary calls already got through `RetryAsync`. Previously a raw
+  `RpcException` propagated to the `await foreach` consumer instead of e.g.
+  `NotFoundException`. No API shape change — only the exception type thrown
+  from these `IAsyncEnumerable<T>`/`Task` methods on stream failure.
+
 ## 0.1.0 (2026-03-18)
 
 Initial release of the idiomatic C# SpiceDB client.

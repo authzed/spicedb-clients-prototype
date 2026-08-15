@@ -30,8 +30,9 @@ import {
   RelationshipSchema,
   ZedTokenSchema,
   RelationshipUpdate_Operation,
-  type Consistency,
 } from "@spicedb/proto";
+
+import { Consistency } from "./consistency.js";
 
 import {
   type Relationship,
@@ -107,7 +108,7 @@ export class SpiceDBClient {
     return this.withRetry(async () => {
       const resp = await this.proto.permissions.checkPermission(
         create(CheckPermissionRequestSchema, {
-          consistency,
+          consistency: consistency._toProto(),
           resource: create(ObjectReferenceSchema, {
             objectType: check.resourceType,
             objectId: check.resourceId,
@@ -144,7 +145,7 @@ export class SpiceDBClient {
     return this.withRetry(async () => {
       const resp = await this.proto.permissions.checkBulkPermissions(
         create(CheckBulkPermissionsRequestSchema, {
-          consistency,
+          consistency: consistency._toProto(),
           items: checks.map((check) =>
             create(CheckBulkPermissionsRequestItemSchema, {
               resource: create(ObjectReferenceSchema, {
@@ -218,7 +219,7 @@ export class SpiceDBClient {
   ): AsyncIterableIterator<Relationship> {
     const stream = this.proto.permissions.readRelationships(
       create(ReadRelationshipsRequestSchema, {
-        consistency,
+        consistency: consistency._toProto(),
         relationshipFilter: toProtoRelationshipFilter(filter),
       }),
     );
@@ -289,7 +290,7 @@ export class SpiceDBClient {
   ): AsyncIterableIterator<string> {
     const stream = this.proto.permissions.lookupResources(
       create(LookupResourcesRequestSchema, {
-        consistency,
+        consistency: consistency._toProto(),
         resourceObjectType: params.resourceType,
         permission: params.permission,
         subject: create(SubjectReferenceSchema, {
@@ -324,7 +325,7 @@ export class SpiceDBClient {
   ): AsyncIterableIterator<string> {
     const stream = this.proto.permissions.lookupSubjects(
       create(LookupSubjectsRequestSchema, {
-        consistency,
+        consistency: consistency._toProto(),
         resource: create(ObjectReferenceSchema, {
           objectType: params.resourceType,
           objectId: params.resourceId,
@@ -362,7 +363,7 @@ export class SpiceDBClient {
     return this.withRetry(async () => {
       const resp = await this.proto.permissions.expandPermissionTree(
         create(ExpandPermissionTreeRequestSchema, {
-          consistency,
+          consistency: consistency._toProto(),
           resource: create(ObjectReferenceSchema, {
             objectType: params.resourceType,
             objectId: params.resourceId,
@@ -419,7 +420,7 @@ export class SpiceDBClient {
   ): AsyncIterableIterator<Relationship> {
     const stream = this.proto.permissions.exportBulkRelationships(
       create(ExportBulkRelationshipsRequestSchema, {
-        consistency,
+        consistency: consistency._toProto(),
         optionalRelationshipFilter: filter
           ? toProtoRelationshipFilter(filter)
           : undefined,
@@ -495,7 +496,7 @@ export class SpiceDBClient {
 
       const resp = await this.proto.schema.reflectSchema(
         create(ReflectSchemaRequestSchema, {
-          consistency,
+          consistency: consistency._toProto(),
           optionalFilters: filters,
         }),
       );
@@ -517,7 +518,7 @@ export class SpiceDBClient {
     return this.withRetry(async () => {
       const resp = await this.proto.schema.computablePermissions(
         create(ComputablePermissionsRequestSchema, {
-          consistency,
+          consistency: consistency._toProto(),
           definitionName: params.definitionName,
           relationName: params.relationName,
           optionalDefinitionNameFilter: params.definitionNameFilter ?? "",
@@ -544,7 +545,7 @@ export class SpiceDBClient {
     return this.withRetry(async () => {
       const resp = await this.proto.schema.dependentRelations(
         create(DependentRelationsRequestSchema, {
-          consistency,
+          consistency: consistency._toProto(),
           definitionName: params.definitionName,
           permissionName: params.permissionName,
         }),
@@ -570,7 +571,7 @@ export class SpiceDBClient {
     return this.withRetry(async () => {
       const resp = await this.proto.schema.diffSchema(
         create(DiffSchemaRequestSchema, {
-          consistency,
+          consistency: consistency._toProto(),
           comparisonSchema,
         }),
       );

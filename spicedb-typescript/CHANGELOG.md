@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Breaking Changes
+
+- **2026-08-14**: `Consistency` is now an opaque native class instead of a
+  re-exported protobuf-es type. `full()`, `minLatency()`, `atLeast()`,
+  `snapshot()`, `atLeastOrFull()`, and `atLeastOrMinLatency()` now return the
+  native `Consistency` class; the underlying proto message is no longer part
+  of the public API. All `SpiceDBClient` methods that accept `consistency`
+  unwrap it internally via an `@internal` `_toProto()` method before building
+  the proto request. No call-site changes are required — construct consistency
+  values only via the exported helper functions, never directly.
+
 ## 0.1.0 (2026-03-16)
 
 Initial release of the idiomatic TypeScript SpiceDB client.

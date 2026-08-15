@@ -4,7 +4,7 @@
 
 ```ts
 
-import { Consistency } from '@spicedb/proto';
+import { Consistency as Consistency_2 } from '@spicedb/proto';
 import { JsonObject } from '@bufbuild/protobuf';
 import { Precondition } from '@spicedb/proto';
 import { RelationshipUpdate } from '@spicedb/proto';
@@ -54,6 +54,14 @@ export interface ComputablePermissionsParams {
     definitionNameFilter?: string;
     // (undocumented)
     relationName: string;
+}
+
+// @public
+export class Consistency {
+    // @internal (undocumented)
+    _toProto(): Consistency_2;
+    // @internal (undocumented)
+    static _wrap(proto: Consistency_2): Consistency;
 }
 
 // @public

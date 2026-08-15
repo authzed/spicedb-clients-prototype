@@ -2,7 +2,7 @@
 export { SpiceDBClient, createSpiceDBClient, type SpiceDBClientOptions } from "./client.js";
 
 // Consistency
-export { full, minLatency, atLeast, atLeastOrFull, atLeastOrMinLatency, snapshot } from "./consistency.js";
+export { Consistency, full, minLatency, atLeast, atLeastOrFull, atLeastOrMinLatency, snapshot } from "./consistency.js";
 
 // Types
 export {

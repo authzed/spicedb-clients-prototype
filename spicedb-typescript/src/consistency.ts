@@ -1,18 +1,40 @@
 import { create } from "@bufbuild/protobuf";
 import {
-  type Consistency,
+  type Consistency as ProtoConsistency,
   ConsistencySchema,
 } from "@spicedb/proto";
 import { ZedTokenSchema } from "@spicedb/proto";
+
+/**
+ * Opaque consistency strategy. Construct via {@link full}, {@link minLatency},
+ * {@link atLeast}, {@link snapshot}, {@link atLeastOrFull}, or
+ * {@link atLeastOrMinLatency} -- never directly.
+ */
+export class Consistency {
+  /** @internal */
+  private constructor(private readonly proto: ProtoConsistency) {}
+
+  /** @internal */
+  static _wrap(proto: ProtoConsistency): Consistency {
+    return new Consistency(proto);
+  }
+
+  /** @internal */
+  _toProto(): ProtoConsistency {
+    return this.proto;
+  }
+}
 
 /**
  * Creates a consistency requirement for fully consistent reads.
  * This is the slowest option but guarantees the most up-to-date data.
  */
 export function full(): Consistency {
-  return create(ConsistencySchema, {
-    requirement: { case: "fullyConsistent", value: true },
-  });
+  return Consistency._wrap(
+    create(ConsistencySchema, {
+      requirement: { case: "fullyConsistent", value: true },
+    }),
+  );
 }
 
 /**
@@ -20,9 +42,11 @@ export function full(): Consistency {
  * the fastest snapshot available.
  */
 export function minLatency(): Consistency {
-  return create(ConsistencySchema, {
-    requirement: { case: "minimizeLatency", value: true },
-  });
+  return Consistency._wrap(
+    create(ConsistencySchema, {
+      requirement: { case: "minimizeLatency", value: true },
+    }),
+  );
 }
 
 /**
@@ -32,12 +56,14 @@ export function minLatency(): Consistency {
  * @param revision - An opaque revision string returned from a previous write
  */
 export function atLeast(revision: string): Consistency {
-  return create(ConsistencySchema, {
-    requirement: {
-      case: "atLeastAsFresh",
-      value: create(ZedTokenSchema, { token: revision }),
-    },
-  });
+  return Consistency._wrap(
+    create(ConsistencySchema, {
+      requirement: {
+        case: "atLeastAsFresh",
+        value: create(ZedTokenSchema, { token: revision }),
+      },
+    }),
+  );
 }
 
 /**
@@ -75,10 +101,12 @@ export function atLeastOrMinLatency(revision: string): Consistency {
  * @param revision - An opaque revision string returned from a previous write
  */
 export function snapshot(revision: string): Consistency {
-  return create(ConsistencySchema, {
-    requirement: {
-      case: "atExactSnapshot",
-      value: create(ZedTokenSchema, { token: revision }),
-    },
-  });
+  return Consistency._wrap(
+    create(ConsistencySchema, {
+      requirement: {
+        case: "atExactSnapshot",
+        value: create(ZedTokenSchema, { token: revision }),
+      },
+    }),
+  );
 }

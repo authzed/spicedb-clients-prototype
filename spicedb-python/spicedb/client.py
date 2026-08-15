@@ -120,6 +120,23 @@ class SpiceDBClient:
                 await asyncio.sleep(min(0.1 * (2**attempt), 5.0))
         raise to_spicedb_error(last_err) from last_err  # type: ignore[arg-type]
 
+    async def _should_retry_establishment(
+        self, attempt: int, err: grpc.aio.AioRpcError
+    ) -> bool:
+        """Decide whether to retry a streaming RPC's ESTABLISHMENT after a
+        transient error, sleeping with the same backoff as `_with_retry`.
+
+        Callers MUST only retry when zero items have been yielded from the
+        current stream/page — retrying after any item has been yielded
+        would replay/duplicate it for the caller. This helper only makes
+        the transient/attempt-budget decision; the zero-yielded guard is
+        the caller's responsibility.
+        """
+        if not is_transient(err) or attempt == self._max_retries:
+            return False
+        await asyncio.sleep(min(0.1 * (2**attempt), 5.0))
+        return True
+
     # ── Permission checks ──────────────────────────────────────────
 
     async def check_permission(
@@ -220,16 +237,24 @@ class SpiceDBClient:
                 optional_limit=_DEFAULT_PAGE_SIZE,
                 optional_cursor=cursor,
             )
-            try:
-                count = 0
-                async for resp in self._permissions.ReadRelationships(request, metadata=self._metadata):
-                    yield Relationship._from_proto(resp.relationship)
-                    cursor = resp.after_result_cursor
-                    count += 1
-                if count < _DEFAULT_PAGE_SIZE:
-                    return
-            except grpc.aio.AioRpcError as e:
-                raise to_spicedb_error(e) from e
+            attempt = 0
+            count = 0
+            while True:
+                yielded = 0
+                try:
+                    async for resp in self._permissions.ReadRelationships(request, metadata=self._metadata):
+                        yielded += 1
+                        count += 1
+                        yield Relationship._from_proto(resp.relationship)
+                        cursor = resp.after_result_cursor
+                    break
+                except grpc.aio.AioRpcError as e:
+                    if yielded == 0 and await self._should_retry_establishment(attempt, e):
+                        attempt += 1
+                        continue
+                    raise to_spicedb_error(e) from e
+            if count < _DEFAULT_PAGE_SIZE:
+                return
 
     async def lookup_resources(
         self,
@@ -286,20 +311,28 @@ class SpiceDBClient:
                 optional_limit=_DEFAULT_PAGE_SIZE,
                 optional_cursor=cursor,
             )
-            try:
-                count = 0
-                async for resp in self._permissions.LookupResources(request, metadata=self._metadata):
-                    yield LookupResource(
-                        resource_id=resp.resource_object_id,
-                        permissionship=_permissionship_from_proto(resp.permissionship),
-                        partial_caveat=_partial_caveat_from_proto(resp),
-                    )
-                    cursor = resp.after_result_cursor
-                    count += 1
-                if count < _DEFAULT_PAGE_SIZE:
-                    return
-            except grpc.aio.AioRpcError as e:
-                raise to_spicedb_error(e) from e
+            attempt = 0
+            count = 0
+            while True:
+                yielded = 0
+                try:
+                    async for resp in self._permissions.LookupResources(request, metadata=self._metadata):
+                        yielded += 1
+                        count += 1
+                        yield LookupResource(
+                            resource_id=resp.resource_object_id,
+                            permissionship=_permissionship_from_proto(resp.permissionship),
+                            partial_caveat=_partial_caveat_from_proto(resp),
+                        )
+                        cursor = resp.after_result_cursor
+                    break
+                except grpc.aio.AioRpcError as e:
+                    if yielded == 0 and await self._should_retry_establishment(attempt, e):
+                        attempt += 1
+                        continue
+                    raise to_spicedb_error(e) from e
+            if count < _DEFAULT_PAGE_SIZE:
+                return
 
     async def lookup_subjects(
         self,
@@ -339,39 +372,47 @@ class SpiceDBClient:
             optional_subject_relation=subject_relation,
             context=ctx_struct,
         )
-        try:
-            async for resp in self._permissions.LookupSubjects(request, metadata=self._metadata):
-                subject = _resolved_subject_from_proto(resp.subject)
-                if not subject.subject_id:
-                    # Fall back to the deprecated top-level fields for
-                    # servers that don't yet populate the non-deprecated
-                    # `subject` field.
-                    subject = ResolvedSubject(
-                        subject_id=resp.subject_object_id,
-                        permissionship=_permissionship_from_proto(resp.permissionship),
-                        partial_caveat=_partial_caveat_from_proto(resp),
-                    )
-
-                excluded: list[ResolvedSubject] = []
-                if resp.excluded_subjects:
-                    excluded = [
-                        _resolved_subject_from_proto(e) for e in resp.excluded_subjects
-                    ]
-                elif resp.excluded_subject_ids:
-                    # Fall back to the deprecated excluded_subject_ids
-                    # field, which carries only IDs (no
-                    # permissionship/caveat info).
-                    excluded = [
-                        ResolvedSubject(
-                            subject_id=subject_id,
-                            permissionship=Permissionship.UNSPECIFIED,
+        attempt = 0
+        while True:
+            yielded = 0
+            try:
+                async for resp in self._permissions.LookupSubjects(request, metadata=self._metadata):
+                    yielded += 1
+                    subject = _resolved_subject_from_proto(resp.subject)
+                    if not subject.subject_id:
+                        # Fall back to the deprecated top-level fields for
+                        # servers that don't yet populate the non-deprecated
+                        # `subject` field.
+                        subject = ResolvedSubject(
+                            subject_id=resp.subject_object_id,
+                            permissionship=_permissionship_from_proto(resp.permissionship),
+                            partial_caveat=_partial_caveat_from_proto(resp),
                         )
-                        for subject_id in resp.excluded_subject_ids
-                    ]
 
-                yield LookupSubject(subject=subject, excluded_subjects=excluded)
-        except grpc.aio.AioRpcError as e:
-            raise to_spicedb_error(e) from e
+                    excluded: list[ResolvedSubject] = []
+                    if resp.excluded_subjects:
+                        excluded = [
+                            _resolved_subject_from_proto(e) for e in resp.excluded_subjects
+                        ]
+                    elif resp.excluded_subject_ids:
+                        # Fall back to the deprecated excluded_subject_ids
+                        # field, which carries only IDs (no
+                        # permissionship/caveat info).
+                        excluded = [
+                            ResolvedSubject(
+                                subject_id=subject_id,
+                                permissionship=Permissionship.UNSPECIFIED,
+                            )
+                            for subject_id in resp.excluded_subject_ids
+                        ]
+
+                    yield LookupSubject(subject=subject, excluded_subjects=excluded)
+                return
+            except grpc.aio.AioRpcError as e:
+                if yielded == 0 and await self._should_retry_establishment(attempt, e):
+                    attempt += 1
+                    continue
+                raise to_spicedb_error(e) from e
 
     # ── Writes ──────────────────────────────────────────────────────
 
@@ -478,11 +519,22 @@ class SpiceDBClient:
             optional_object_types=object_types or [],
             optional_start_cursor=cursor,
         )
-        try:
-            async for resp in self._watch.Watch(request, metadata=self._metadata):
-                yield [Update._from_proto(u) for u in resp.updates], resp.changes_through.token
-        except grpc.aio.AioRpcError as e:
-            raise to_spicedb_error(e) from e
+        attempt = 0
+        while True:
+            yielded = 0
+            try:
+                async for resp in self._watch.Watch(request, metadata=self._metadata):
+                    yielded += 1
+                    yield [Update._from_proto(u) for u in resp.updates], resp.changes_through.token
+                return
+            except grpc.aio.AioRpcError as e:
+                # Retrying is only safe before any update has been yielded
+                # (stream ESTABLISHMENT) — never retry mid-watch, since
+                # that would replay/duplicate already-delivered updates.
+                if yielded == 0 and await self._should_retry_establishment(attempt, e):
+                    attempt += 1
+                    continue
+                raise to_spicedb_error(e) from e
 
     # ── Bulk operations ─────────────────────────────────────────────
 
@@ -519,17 +571,25 @@ class SpiceDBClient:
                 optional_cursor=cursor,
                 optional_relationship_filter=rel_filter,
             )
-            try:
-                count = 0
-                async for resp in self._permissions.ExportBulkRelationships(request, metadata=self._metadata):
-                    for proto_rel in resp.relationships:
-                        yield Relationship._from_proto(proto_rel)
-                        count += 1
-                    cursor = resp.after_result_cursor
-                if count < _DEFAULT_PAGE_SIZE:
-                    return
-            except grpc.aio.AioRpcError as e:
-                raise to_spicedb_error(e) from e
+            attempt = 0
+            count = 0
+            while True:
+                yielded = 0
+                try:
+                    async for resp in self._permissions.ExportBulkRelationships(request, metadata=self._metadata):
+                        for proto_rel in resp.relationships:
+                            yield Relationship._from_proto(proto_rel)
+                            yielded += 1
+                            count += 1
+                        cursor = resp.after_result_cursor
+                    break
+                except grpc.aio.AioRpcError as e:
+                    if yielded == 0 and await self._should_retry_establishment(attempt, e):
+                        attempt += 1
+                        continue
+                    raise to_spicedb_error(e) from e
+            if count < _DEFAULT_PAGE_SIZE:
+                return
 
     # ── Expand ──────────────────────────────────────────────────────
 

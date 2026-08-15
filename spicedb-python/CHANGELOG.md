@@ -39,6 +39,17 @@
 
 ### Fixed
 
+- `read_relationships()`, `lookup_resources()`, `lookup_subjects()`,
+  `watch()`, and `export_relationships()` now retry a transient gRPC error
+  (`UNAVAILABLE`/`RESOURCE_EXHAUSTED`/`ABORTED`) that occurs while
+  ESTABLISHING the stream (or, for the paginated methods, a page), using the
+  same exponential backoff as `_with_retry`. Previously these streaming RPCs
+  re-raised immediately on any transient error, even when it happened before
+  a single item had been produced — a gap DESIGN.md's "automatic retry on
+  transient errors" doesn't carve streaming out of. The retry is guarded so
+  it only ever fires when zero items have been yielded from the current
+  stream/page; a transient error after any item has been yielded is never
+  retried, so callers can never see a duplicated/replayed item.
 - `Update._from_proto()` no longer raises a bare `KeyError` when the wire
   `RelationshipUpdate.operation` is `OPERATION_UNSPECIFIED` or any other
   unrecognized value — that killed a live `watch()` stream with a

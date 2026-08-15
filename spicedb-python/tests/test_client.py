@@ -3,12 +3,18 @@
 import inspect
 from unittest.mock import AsyncMock
 
+import grpc
 import pytest
-from authzed.api.v1 import core_pb2, permission_service_pb2, schema_service_pb2
+from authzed.api.v1 import (
+    core_pb2,
+    permission_service_pb2,
+    schema_service_pb2,
+    watch_service_pb2,
+)
 from google.rpc import status_pb2
 
 from spicedb import Filter, Relationship, RelationReference, SpiceDBClient, full
-from spicedb.errors import InvalidArgumentError, SpiceDBError
+from spicedb.errors import InvalidArgumentError, SpiceDBError, UnavailableError
 from spicedb.types import LookupResource, Permissionship, ResolvedSubject
 
 
@@ -27,6 +33,57 @@ def _async_stream(*responses):
     async def _gen(*_args, **_kwargs):
         for r in responses:
             yield r
+
+    def _call(*args, **kwargs):
+        _call.calls.append((args, kwargs))
+        return _gen()
+
+    _call.calls = []
+    return _call
+
+
+def _transient_error(code: grpc.StatusCode = grpc.StatusCode.UNAVAILABLE) -> grpc.aio.AioRpcError:
+    return grpc.aio.AioRpcError(
+        code, grpc.aio.Metadata(), grpc.aio.Metadata(), details="transient failure"
+    )
+
+
+def _stream_open_fails_then_succeeds(*responses, fail_times: int = 1):
+    """Stub whose first `fail_times` invocations raise a transient
+    ``AioRpcError`` immediately — before yielding anything — simulating a
+    stream that fails at ESTABLISHMENT. The next invocation succeeds,
+    yielding ``responses``. Used to assert establishment retry happens:
+    since nothing was ever yielded by the failed attempt(s), retrying
+    cannot replay anything.
+    """
+    state = {"opens": 0}
+
+    async def _gen(*_args, **_kwargs):
+        state["opens"] += 1
+        if state["opens"] <= fail_times:
+            raise _transient_error()
+        for r in responses:
+            yield r
+
+    def _call(*args, **kwargs):
+        _call.calls.append((args, kwargs))
+        return _gen()
+
+    _call.calls = []
+    return _call
+
+
+def _stream_fails_after_yielding(*responses):
+    """Stub that yields ``responses`` and then raises a transient
+    ``AioRpcError``. Used to assert a transient error occurring AFTER at
+    least one item has been yielded is NEVER retried — retrying would
+    replay ``responses`` to the caller a second time.
+    """
+
+    async def _gen(*_args, **_kwargs):
+        for r in responses:
+            yield r
+        raise _transient_error()
 
     def _call(*args, **kwargs):
         _call.calls.append((args, kwargs))
@@ -491,3 +548,225 @@ class TestDeleteRelationships:
         request = client._permissions.DeleteRelationships.await_args.args[0]
         assert request.optional_limit == 0
         assert request.optional_allow_partial_deletions is False
+
+
+# ── Streaming establishment retry (RB4) ─────────────────────────────────
+#
+# DESIGN.md mandates automatic retry for transient errors with no
+# streaming carve-out. The streaming methods must retry stream/page
+# ESTABLISHMENT on a transient error, but must NEVER retry once any item
+# has been yielded from the current stream/page — doing so would
+# replay/duplicate items for the caller. Each class below asserts both
+# halves: establishment retry succeeds, and a post-yield transient error
+# is surfaced as-is (not retried, not replayed).
+
+
+def _rel_response(doc_id: str, cursor_token: str):
+    return permission_service_pb2.ReadRelationshipsResponse(
+        relationship=core_pb2.Relationship(
+            resource=core_pb2.ObjectReference(object_type="document", object_id=doc_id),
+            relation="viewer",
+            subject=core_pb2.SubjectReference(
+                object=core_pb2.ObjectReference(object_type="user", object_id="alice")
+            ),
+        ),
+        after_result_cursor=core_pb2.Cursor(token=cursor_token),
+    )
+
+
+class TestReadRelationshipsEstablishmentRetry:
+    async def test_retries_establishment_on_first_open_transient_error(self):
+        client = SpiceDBClient("localhost:50051", token="testtoken", insecure=True)
+        client._permissions.ReadRelationships = _stream_open_fails_then_succeeds(
+            _rel_response("doc1", "c1"),
+        )
+
+        got = [
+            r
+            async for r in client.read_relationships(
+                Filter(resource_type="document"), full()
+            )
+        ]
+
+        assert [r.resource_id for r in got] == ["doc1"]
+        # One failed open + one successful open == 2 calls to the stub.
+        assert len(client._permissions.ReadRelationships.calls) == 2
+
+    async def test_transient_error_after_yielding_is_not_retried(self):
+        client = SpiceDBClient("localhost:50051", token="testtoken", insecure=True)
+        client._permissions.ReadRelationships = _stream_fails_after_yielding(
+            _rel_response("doc1", "c1"),
+        )
+
+        got = []
+        with pytest.raises(UnavailableError):
+            async for r in client.read_relationships(
+                Filter(resource_type="document"), full()
+            ):
+                got.append(r)
+
+        # The item that streamed before the failure was yielded exactly
+        # once — a retry here would have replayed it.
+        assert [r.resource_id for r in got] == ["doc1"]
+        assert len(client._permissions.ReadRelationships.calls) == 1
+
+
+class TestLookupResourcesEstablishmentRetry:
+    def _response(self, doc_id: str, cursor_token: str):
+        return permission_service_pb2.LookupResourcesResponse(
+            resource_object_id=doc_id,
+            permissionship=permission_service_pb2.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION,
+            after_result_cursor=core_pb2.Cursor(token=cursor_token),
+        )
+
+    async def test_retries_establishment_on_first_open_transient_error(self):
+        client = SpiceDBClient("localhost:50051", token="testtoken", insecure=True)
+        client._permissions.LookupResources = _stream_open_fails_then_succeeds(
+            self._response("doc1", "c1"),
+        )
+
+        got = [
+            r
+            async for r in client.lookup_resources(
+                "document", "view", ("user:alice", ""), full()
+            )
+        ]
+
+        assert [r.resource_id for r in got] == ["doc1"]
+        assert len(client._permissions.LookupResources.calls) == 2
+
+    async def test_transient_error_after_yielding_is_not_retried(self):
+        client = SpiceDBClient("localhost:50051", token="testtoken", insecure=True)
+        client._permissions.LookupResources = _stream_fails_after_yielding(
+            self._response("doc1", "c1"),
+        )
+
+        got = []
+        with pytest.raises(UnavailableError):
+            async for r in client.lookup_resources(
+                "document", "view", ("user:alice", ""), full()
+            ):
+                got.append(r)
+
+        assert [r.resource_id for r in got] == ["doc1"]
+        assert len(client._permissions.LookupResources.calls) == 1
+
+
+class TestLookupSubjectsEstablishmentRetry:
+    def _response(self, subject_id: str):
+        return permission_service_pb2.LookupSubjectsResponse(
+            subject=permission_service_pb2.ResolvedSubject(
+                subject_object_id=subject_id,
+                permissionship=permission_service_pb2.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION,
+            ),
+        )
+
+    async def test_retries_establishment_on_first_open_transient_error(self):
+        client = SpiceDBClient("localhost:50051", token="testtoken", insecure=True)
+        client._permissions.LookupSubjects = _stream_open_fails_then_succeeds(
+            self._response("alice"),
+        )
+
+        got = [
+            s
+            async for s in client.lookup_subjects(
+                ("document", "doc1"), "view", "user", full()
+            )
+        ]
+
+        assert [s.subject.subject_id for s in got] == ["alice"]
+        assert len(client._permissions.LookupSubjects.calls) == 2
+
+    async def test_transient_error_after_yielding_is_not_retried(self):
+        client = SpiceDBClient("localhost:50051", token="testtoken", insecure=True)
+        client._permissions.LookupSubjects = _stream_fails_after_yielding(
+            self._response("alice"),
+        )
+
+        got = []
+        with pytest.raises(UnavailableError):
+            async for s in client.lookup_subjects(
+                ("document", "doc1"), "view", "user", full()
+            ):
+                got.append(s)
+
+        assert [s.subject.subject_id for s in got] == ["alice"]
+        assert len(client._permissions.LookupSubjects.calls) == 1
+
+
+class TestWatchEstablishmentRetry:
+    def _response(self, token: str):
+        return watch_service_pb2.WatchResponse(
+            updates=[],
+            changes_through=core_pb2.ZedToken(token=token),
+        )
+
+    async def test_retries_establishment_on_first_open_transient_error(self):
+        client = SpiceDBClient("localhost:50051", token="testtoken", insecure=True)
+        client._watch.Watch = _stream_open_fails_then_succeeds(
+            self._response("rev1"),
+        )
+
+        got = [rev async for _updates, rev in client.watch()]
+
+        assert got == ["rev1"]
+        assert len(client._watch.Watch.calls) == 2
+
+    async def test_transient_error_after_yielding_is_not_retried(self):
+        client = SpiceDBClient("localhost:50051", token="testtoken", insecure=True)
+        client._watch.Watch = _stream_fails_after_yielding(
+            self._response("rev1"),
+        )
+
+        got = []
+        with pytest.raises(UnavailableError):
+            async for _updates, rev in client.watch():
+                got.append(rev)
+
+        assert got == ["rev1"]
+        assert len(client._watch.Watch.calls) == 1
+
+
+class TestExportRelationshipsEstablishmentRetry:
+    def _response(self, doc_id: str, cursor_token: str):
+        return permission_service_pb2.ExportBulkRelationshipsResponse(
+            relationships=[
+                core_pb2.Relationship(
+                    resource=core_pb2.ObjectReference(
+                        object_type="document", object_id=doc_id
+                    ),
+                    relation="viewer",
+                    subject=core_pb2.SubjectReference(
+                        object=core_pb2.ObjectReference(
+                            object_type="user", object_id="alice"
+                        )
+                    ),
+                )
+            ],
+            after_result_cursor=core_pb2.Cursor(token=cursor_token),
+        )
+
+    async def test_retries_establishment_on_first_open_transient_error(self):
+        client = SpiceDBClient("localhost:50051", token="testtoken", insecure=True)
+        client._permissions.ExportBulkRelationships = _stream_open_fails_then_succeeds(
+            self._response("doc1", "c1"),
+        )
+
+        got = [r async for r in client.export_relationships(full())]
+
+        assert [r.resource_id for r in got] == ["doc1"]
+        assert len(client._permissions.ExportBulkRelationships.calls) == 2
+
+    async def test_transient_error_after_yielding_is_not_retried(self):
+        client = SpiceDBClient("localhost:50051", token="testtoken", insecure=True)
+        client._permissions.ExportBulkRelationships = _stream_fails_after_yielding(
+            self._response("doc1", "c1"),
+        )
+
+        got = []
+        with pytest.raises(UnavailableError):
+            async for r in client.export_relationships(full()):
+                got.append(r)
+
+        assert [r.resource_id for r in got] == ["doc1"]
+        assert len(client._permissions.ExportBulkRelationships.calls) == 1

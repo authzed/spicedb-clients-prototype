@@ -21,6 +21,7 @@ Or use `mage test` which starts a SpiceDB container automatically.
 | `check_permission/` | Basic permission check |
 | `write_relationships/` | Writing relationships |
 | `read_relationships/` | Reading relationships with iterators |
+| `delete_relationships/` | Deleting relationships, including precondition-guarded deletes |
 | `lookup_resources/` | Resource lookup |
 | `lookup_subjects/` | Subject lookup |
 | `watch_changes/` | Watching for changes |

@@ -73,6 +73,18 @@
 
 ### Features
 
+- **2026-08-15**: `DeleteRelationships` now accepts variadic `DeleteOption`s, reaching the proto's `optional_preconditions` and `optional_limit` fields that were previously unset by the client. Additive — existing `c.DeleteRelationships(ctx, filter)` calls are unaffected (no preconditions, 10,000-item page size, partial deletions allowed, same as before). New: `client.WithDeleteMustMatch(filter)`/`client.WithDeleteMustNotMatch(filter)` add MUST_MATCH/MUST_NOT_MATCH preconditions (built the same way as `rel.Txn.MustMatch`/`MustNotMatch`) that guard the delete, rejecting it if unsatisfied; `client.WithDeleteLimit(n)` overrides the default 10,000-per-call page size. See `spicedb-go/DESIGN.md` ("Deletions") for the semantics of combining preconditions with auto-paging. New example: `examples/delete_relationships/`.
+
+  ```go
+  // Before (still works, unchanged):
+  revision, err := client.DeleteRelationships(ctx, filter)
+
+  // After (new, optional):
+  revision, err := client.DeleteRelationships(ctx, filter,
+      client.WithDeleteMustMatch(ownerGuard),
+      client.WithDeleteLimit(1000),
+  )
+  ```
 - **2026-08-14**: Added automatic retry with exponential backoff for transient gRPC errors (`UNAVAILABLE`, `RESOURCE_EXHAUSTED`, `ABORTED`), configured via gRPC's built-in service-config `retryPolicy` in `NewClient`'s dial options (proto-client tier). Up to 3 retries (4 total attempts), 100ms initial backoff, 2x multiplier, 5s max backoff. No public API change; callers can still override via `WithDialOptions`.
 - **2026-08-14**: RPC and stream errors are now mapped to native `*client.Error` values inspectable via `errors.Is`/`errors.As`, instead of raw `%w`-wrapped gRPC status errors. New sentinels: `client.ErrNotFound`, `client.ErrAlreadyExists`, `client.ErrInvalidArgument`, `client.ErrFailedPrecondition`, `client.ErrPermissionDenied`, `client.ErrUnauthenticated`. Applies to every RPC call and every `iter.Seq2` streaming iterator (`ReadRelationships`, `LookupResources`, `LookupSubjects`, `ExportRelationships`, `Updates`), so mid-stream errors are native too. `errors.Unwrap` still exposes the underlying gRPC status error for advanced inspection.
 - **2026-08-14**: Per-item errors from `Check`/`CheckOne`/`CheckAny`/`CheckAll`/`CheckIter` (surfaced via `BulkCheckPermissions` response pairs) are now mapped to native `*client.Error` values through the same `mapGRPCError` path as top-level RPC errors, instead of being string-formatted. `errors.Is(err, client.ErrInvalidArgument)` (and the other sentinels) now works for per-item bulk-check failures, not just top-level RPC failures.

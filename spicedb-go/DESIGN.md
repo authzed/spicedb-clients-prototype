@@ -96,7 +96,7 @@ use sensible defaults:
 | `LookupResources` | 512 | cursor-based auto-pagination |
 | `LookupSubjects` | — | no cursor support in SpiceDB yet; single streaming call |
 | `ExportRelationships` | 512 | cursor-based auto-pagination |
-| `DeleteRelationships` | 10,000 | auto-repeats until all matched rels deleted |
+| `DeleteRelationships` | 10,000 | auto-repeats until all matched rels deleted; override via `WithDeleteLimit` |
 | `CheckIter` | 1,000 | batches input rels into bulk check calls |
 | `ImportRelationships` | 1,000 | batches into client-streaming sends |
 | `Updates` | — | server-streaming, no pagination needed |
@@ -158,6 +158,31 @@ revision, err := client.Write(ctx, txn)
 `DeleteRelationships` automatically pages through large result sets using a
 limit of 10,000 per RPC call. It repeats until the server reports all matching
 relationships are deleted. Returns the final revision.
+
+Optional functional options (`DeleteOption`) reach the proto fields that were
+previously unreachable — `optional_preconditions` and `optional_limit`:
+
+```go
+revision, err := client.DeleteRelationships(ctx, filter,
+    client.WithDeleteMustMatch(guardFilter),    // MUST_MATCH precondition
+    client.WithDeleteMustNotMatch(otherFilter),  // MUST_NOT_MATCH precondition
+    client.WithDeleteLimit(1000),                // override the 10,000 default page size
+)
+```
+
+`WithDeleteMustMatch`/`WithDeleteMustNotMatch` build a `*v1.Precondition` from
+a `rel.Filter` (same pattern as `Txn.MustMatch`/`Txn.MustNotMatch`); the
+server rejects the whole call (deleting nothing for that call) if a
+precondition isn't satisfied. Preconditions are a per-request proto field, so
+when a delete spans multiple pages, they're re-evaluated by the server on
+every page — there's no "check once, apply to every page" semantics. A delete
+that starts successfully can still fail partway through if the guarded state
+changes between pages, after earlier pages were already deleted. For a
+single-shot, all-or-nothing guarded delete, pair a precondition with
+`WithDeleteLimit` set high enough to cover every matching relationship in one
+call. No options given means unchanged default behavior: no preconditions,
+10,000-item page size, partial deletions allowed (so auto-paging keeps
+working).
 
 ### Testing
 

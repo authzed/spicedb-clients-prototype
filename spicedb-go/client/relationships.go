@@ -75,14 +75,81 @@ func (c *Client) ReadRelationships(ctx context.Context, cs consistency.Strategy,
 	}
 }
 
+// DeleteOption configures an optional aspect of a DeleteRelationships call:
+// preconditions that guard the delete, or an override of the per-call page
+// size.
+type DeleteOption func(*deleteOptions)
+
+type deleteOptions struct {
+	preconditions []*v1.Precondition
+	limit         uint32 // 0 = use defaultDeletePageSize
+}
+
+// WithDeleteMustMatch adds a MUST_MATCH precondition to the delete: the
+// server rejects the delete (and returns an error, deleting nothing) unless
+// at least one relationship matching filter exists at evaluation time.
+// Multiple precondition options accumulate; all are sent with every request.
+func WithDeleteMustMatch(filter rel.Filter) DeleteOption {
+	return func(o *deleteOptions) {
+		o.preconditions = append(o.preconditions, &v1.Precondition{
+			Operation: v1.Precondition_OPERATION_MUST_MATCH,
+			Filter:    filter.ToProto(),
+		})
+	}
+}
+
+// WithDeleteMustNotMatch adds a MUST_NOT_MATCH precondition to the delete:
+// the server rejects the delete (and returns an error, deleting nothing) if
+// any relationship matching filter exists at evaluation time. Multiple
+// precondition options accumulate; all are sent with every request.
+func WithDeleteMustNotMatch(filter rel.Filter) DeleteOption {
+	return func(o *deleteOptions) {
+		o.preconditions = append(o.preconditions, &v1.Precondition{
+			Operation: v1.Precondition_OPERATION_MUST_NOT_MATCH,
+			Filter:    filter.ToProto(),
+		})
+	}
+}
+
+// WithDeleteLimit overrides the default per-request page size (10,000) used
+// by DeleteRelationships' auto-paging loop.
+func WithDeleteLimit(n uint32) DeleteOption {
+	return func(o *deleteOptions) {
+		o.limit = n
+	}
+}
+
 // DeleteRelationships deletes all relationships matching the given filter.
-// Large result sets are automatically paged in batches of 10,000. Returns
-// the revision of the final deletion.
-func (c *Client) DeleteRelationships(ctx context.Context, f rel.Filter) (revision string, err error) {
+// Large result sets are automatically paged in batches of 10,000 (override
+// with WithDeleteLimit). Returns the revision of the final deletion.
+//
+// WithDeleteMustMatch/WithDeleteMustNotMatch add preconditions that guard
+// the delete: if a precondition fails, the server rejects that call and
+// deletes nothing for it. Preconditions are a per-request proto field, so
+// when a delete spans multiple pages (i.e. more matches than the limit),
+// they are re-evaluated by the server on every page — there is no
+// "check-once, apply-to-all-pages" semantics. This means a delete that
+// starts successfully can still fail partway through if the guarded state
+// changes between pages, after earlier pages have already been deleted. For
+// a single-shot, all-or-nothing guarded delete, pair the precondition with a
+// WithDeleteLimit large enough to cover every matching relationship in one
+// call.
+func (c *Client) DeleteRelationships(ctx context.Context, f rel.Filter, opts ...DeleteOption) (revision string, err error) {
+	var o deleteOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+
+	limit := uint32(defaultDeletePageSize)
+	if o.limit != 0 {
+		limit = o.limit
+	}
+
 	for {
 		resp, err := c.psc.DeleteRelationships(ctx, &v1.DeleteRelationshipsRequest{
-			RelationshipFilter:          f.ToProto(),
-			OptionalLimit:               defaultDeletePageSize,
+			RelationshipFilter:            f.ToProto(),
+			OptionalPreconditions:         o.preconditions,
+			OptionalLimit:                 limit,
 			OptionalAllowPartialDeletions: true,
 		})
 		if err != nil {

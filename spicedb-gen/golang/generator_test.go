@@ -121,8 +121,8 @@ func TestGenerateSampleSchema(t *testing.T) {
 
 	// Check and lookup functions (non-generic, accept Subject interface)
 	assert.Contains(t, output, "func Check(ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm Permission, subject Subject) (bool, error) {")
-	assert.Contains(t, output, "func LookupResources(ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm PermissionRef, subject Subject) iter.Seq2[string, error] {")
-	assert.Contains(t, output, "func LookupSubjects(ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm Permission, subjectType Subject) iter.Seq2[string, error] {")
+	assert.Contains(t, output, "func LookupResources(ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm PermissionRef, subject Subject) iter.Seq2[client.LookupResource, error] {")
+	assert.Contains(t, output, "func LookupSubjects(ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm Permission, subjectType Subject) iter.Seq2[client.LookupSubject, error] {")
 
 	// Write methods
 	assert.Contains(t, output, "func (tc *TypedClient) Touch(ctx context.Context, rels ...TypedRelationship) (string, error) {")

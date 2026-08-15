@@ -5,6 +5,8 @@ import {
     createSpiceDBClient,
     Transaction,
     type Relationship,
+    type LookupResource,
+    type LookupSubject,
 } from "@spicedb/client";
 import { full } from "@spicedb/client";
 type Consistency = ReturnType<typeof full>;
@@ -136,10 +138,10 @@ export class TypedClient {
     }
 
     // LookupResources overloads
-    async lookupResources(c: Consistency, p: { _type: "document"; _permission: "view" }, s: UserRef | UserIpRangeRef | UserTimeWindowRef | TeamMemberRef): Promise<AsyncIterableIterator<string>>;
-    async lookupResources(c: Consistency, p: { _type: "document"; _permission: "edit" }, s: UserRef): Promise<AsyncIterableIterator<string>>;
-    async lookupResources(c: Consistency, p: { _type: "document"; _permission: "delete" }, s: UserRef): Promise<AsyncIterableIterator<string>>;
-    async lookupResources(c: Consistency, p: { _type: string; _permission: string }, s: { _type: string; _id: string; _relation?: string }): Promise<AsyncIterableIterator<string>> {
+    async lookupResources(c: Consistency, p: { _type: "document"; _permission: "view" }, s: UserRef | UserIpRangeRef | UserTimeWindowRef | TeamMemberRef): Promise<AsyncIterableIterator<LookupResource>>;
+    async lookupResources(c: Consistency, p: { _type: "document"; _permission: "edit" }, s: UserRef): Promise<AsyncIterableIterator<LookupResource>>;
+    async lookupResources(c: Consistency, p: { _type: "document"; _permission: "delete" }, s: UserRef): Promise<AsyncIterableIterator<LookupResource>>;
+    async lookupResources(c: Consistency, p: { _type: string; _permission: string }, s: { _type: string; _id: string; _relation?: string }): Promise<AsyncIterableIterator<LookupResource>> {
         return this.client.lookupResources({
             resourceType: p._type, permission: p._permission,
             subjectType: s._type, subjectId: s._id, subjectRelation: (s as any)._relation,
@@ -147,10 +149,10 @@ export class TypedClient {
     }
 
     // LookupSubjects overloads
-    async lookupSubjects(c: Consistency, p: { _type: "document"; _id: string; _permission: "view" }, subjectType: (id: string) => { _type: string }): Promise<AsyncIterableIterator<string>>;
-    async lookupSubjects(c: Consistency, p: { _type: "document"; _id: string; _permission: "edit" }, subjectType: (id: string) => { _type: string }): Promise<AsyncIterableIterator<string>>;
-    async lookupSubjects(c: Consistency, p: { _type: "document"; _id: string; _permission: "delete" }, subjectType: (id: string) => { _type: string }): Promise<AsyncIterableIterator<string>>;
-    async lookupSubjects(c: Consistency, p: { _type: string; _id: string; _permission: string }, subjectType: (id: string) => { _type: string }): Promise<AsyncIterableIterator<string>> {
+    async lookupSubjects(c: Consistency, p: { _type: "document"; _id: string; _permission: "view" }, subjectType: (id: string) => { _type: string }): Promise<AsyncIterableIterator<LookupSubject>>;
+    async lookupSubjects(c: Consistency, p: { _type: "document"; _id: string; _permission: "edit" }, subjectType: (id: string) => { _type: string }): Promise<AsyncIterableIterator<LookupSubject>>;
+    async lookupSubjects(c: Consistency, p: { _type: "document"; _id: string; _permission: "delete" }, subjectType: (id: string) => { _type: string }): Promise<AsyncIterableIterator<LookupSubject>>;
+    async lookupSubjects(c: Consistency, p: { _type: string; _id: string; _permission: string }, subjectType: (id: string) => { _type: string }): Promise<AsyncIterableIterator<LookupSubject>> {
         return this.client.lookupSubjects({
             subjectType: subjectType("")._type,
             permission: p._permission,

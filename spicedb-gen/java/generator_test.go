@@ -111,8 +111,8 @@ func TestGenerate(t *testing.T) {
 	// Check TypedClient class.
 	assert.Contains(t, content, "public static final class TypedClient")
 	assert.Contains(t, content, "public <S extends Subject> boolean check(")
-	assert.Contains(t, content, "public <S extends Subject> Stream<String> lookupResources(")
-	assert.Contains(t, content, "public <S extends Subject> Stream<String> lookupSubjects(")
+	assert.Contains(t, content, "public <S extends Subject> Stream<LookupResult.LookupResource> lookupResources(")
+	assert.Contains(t, content, "public <S extends Subject> Stream<LookupResult.LookupSubject> lookupSubjects(")
 	assert.Contains(t, content, "public String touch(TypedRelationship... rels)")
 	assert.Contains(t, content, "public String create(TypedRelationship... rels)")
 	assert.Contains(t, content, "public String delete(TypedRelationship... rels)")

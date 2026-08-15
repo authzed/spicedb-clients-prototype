@@ -1,6 +1,7 @@
 package com.authzed.spicedb.gen.test;
 
 import com.authzed.spicedb.Filter;
+import com.authzed.spicedb.LookupResult;
 import com.authzed.spicedb.SpiceDBClient;
 
 import org.junit.jupiter.api.AfterAll;
@@ -142,6 +143,7 @@ class PermissionsTest {
         );
 
         List<String> resources = tc.lookupResources(full(), Document_View, User("alice"))
+            .map(LookupResult.LookupResource::resourceId)
             .collect(Collectors.toList());
 
         assertThat(resources).containsExactlyInAnyOrder("doc1", "doc2");
@@ -156,6 +158,7 @@ class PermissionsTest {
         );
 
         List<String> resources = tc.lookupResources(full(), Document_Edit, User("alice"))
+            .map(LookupResult.LookupResource::resourceId)
             .collect(Collectors.toList());
 
         assertThat(resources).containsExactlyInAnyOrder("doc2", "doc3");
@@ -172,6 +175,7 @@ class PermissionsTest {
         );
 
         List<String> subjects = tc.lookupSubjects(full(), Document("readme").view(), UserType)
+            .map(ls -> ls.subject().subjectId())
             .collect(Collectors.toList());
 
         assertThat(subjects).containsExactlyInAnyOrder("alice", "bob", "charlie");
@@ -186,6 +190,7 @@ class PermissionsTest {
         );
 
         List<String> subjects = tc.lookupSubjects(full(), Document("readme").edit(), UserType)
+            .map(ls -> ls.subject().subjectId())
             .collect(Collectors.toList());
 
         assertThat(subjects).containsExactlyInAnyOrder("bob", "charlie");

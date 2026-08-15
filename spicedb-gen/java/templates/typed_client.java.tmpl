@@ -148,12 +148,12 @@ public final class Permissions {
             return client.checkPermission(c, perm.permission(), r);
         }
 
-        public <S extends Subject> Stream<String> lookupResources(Consistency c, PermissionRef<S> perm, S subject) {
+        public <S extends Subject> Stream<LookupResult.LookupResource> lookupResources(Consistency c, PermissionRef<S> perm, S subject) {
             return client.lookupResources(c, perm.resourceType(), perm.permission(),
                 subject.definitionName(), subject.id());
         }
 
-        public <S extends Subject> Stream<String> lookupSubjects(Consistency c, Permission<S> perm, S subject) {
+        public <S extends Subject> Stream<LookupResult.LookupSubject> lookupSubjects(Consistency c, Permission<S> perm, S subject) {
             return client.lookupSubjects(c, perm.resourceType(), perm.resourceId(), perm.permission(),
                 subject.definitionName());
         }

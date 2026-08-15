@@ -79,7 +79,7 @@ func TestGenerateSampleSchema(t *testing.T) {
 	assert.Contains(t, output, `async delete(`)
 
 	// LookupResources overloads
-	assert.Contains(t, output, `async lookupResources(c: Consistency, p: { _type: "document"; _permission: "view" }, s: UserRef | UserIpRangeRef | UserTimeWindowRef | TeamMemberRef): Promise<AsyncIterableIterator<string>>;`)
+	assert.Contains(t, output, `async lookupResources(c: Consistency, p: { _type: "document"; _permission: "view" }, s: UserRef | UserIpRangeRef | UserTimeWindowRef | TeamMemberRef): Promise<AsyncIterableIterator<LookupResource>>;`)
 
 	// LookupSubjects overloads
 	assert.Contains(t, output, `async lookupSubjects(c: Consistency, p: { _type: "document"; _id: string; _permission: "view" }`)

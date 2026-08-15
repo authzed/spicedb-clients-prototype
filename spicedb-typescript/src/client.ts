@@ -805,7 +805,7 @@ export class SpiceDBClient {
 
   /**
    * Decides whether to retry a streaming RPC's ESTABLISHMENT after a
-   * transient error, sleeping with the same backoff as {@link withRetry}.
+   * transient error, sleeping with the same backoff as `withRetry`.
    *
    * Callers MUST only invoke this when zero items have been yielded from
    * the current stream — retrying after any item has been yielded would

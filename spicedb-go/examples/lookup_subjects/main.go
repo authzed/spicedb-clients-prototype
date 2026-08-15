@@ -1,4 +1,8 @@
-// Example lookup_subjects demonstrates finding subjects with access to a resource.
+// Example lookup_subjects demonstrates finding subjects with access to a
+// resource, including the wildcard/excluded-subjects case: when the server
+// resolves a wildcard "*" subject, ExcludedSubjects lists the subjects
+// carved out of that wildcard grant. Treating a wildcard match as "everyone
+// has access" without checking ExcludedSubjects is a real over-grant risk.
 package main
 
 import (
@@ -19,14 +23,16 @@ func main() {
 
 	ctx := context.Background()
 
-	// Setup: write schema and data
+	// Setup: write schema and data. `banned` carves subjects out of the
+	// public/wildcard viewer grant below.
 	_, err = c.WriteSchema(ctx, `definition user {}
 
 definition document {
-	relation viewer: user
+	relation viewer: user | user:*
 	relation editor: user
 	relation owner: user
-	permission view = viewer + editor + owner
+	relation banned: user
+	permission view = (viewer + editor + owner) - banned
 	permission edit = editor + owner
 	permission delete = owner
 }`)
@@ -35,27 +41,53 @@ definition document {
 	}
 
 	var txn rel.Txn
-	txn.Touch(rel.MustFromTriple("document", "firstdoc", "viewer", "user", "alice", ""))
 	txn.Touch(rel.MustFromTriple("document", "firstdoc", "editor", "user", "bob", ""))
+	// Grant view to every user (wildcard), except those in `banned`.
+	txn.Touch(rel.MustFromTriple("document", "firstdoc", "viewer", "user", "*", ""))
+	txn.Touch(rel.MustFromTriple("document", "firstdoc", "banned", "user", "eve", ""))
 	_, err = c.Write(ctx, txn)
 	if err != nil {
 		log.Fatalf("write relationships failed: %v", err)
 	}
 
 	// Lookup subjects
-	found := map[string]bool{}
-	for subjectID, err := range c.LookupSubjects(ctx, consistency.Full(), "document", "firstdoc", "view", "user") {
+	var sawWildcard bool
+	excludedIDs := map[string]bool{}
+	for subject, err := range c.LookupSubjects(ctx, consistency.Full(), "document", "firstdoc", "view", "user") {
 		if err != nil {
 			log.Fatalf("lookup failed: %v", err)
 		}
-		fmt.Printf("user:%s can view document:firstdoc\n", subjectID)
-		found[subjectID] = true
+
+		fmt.Printf("subject:%s can view document:firstdoc (permissionship=%s)\n", subject.Subject.SubjectID, subject.Subject.Permissionship)
+
+		if subject.Subject.SubjectID == "*" {
+			sawWildcard = true
+			// This is the over-grant-risk case: "*" alone would mean "every
+			// user", but ExcludedSubjects carves specific subjects back out.
+			// Never grant access based on the wildcard match alone.
+			for _, excluded := range subject.ExcludedSubjects {
+				fmt.Printf("  excluded from wildcard: user:%s\n", excluded.SubjectID)
+				excludedIDs[excluded.SubjectID] = true
+			}
+		}
 	}
 
-	if !found["alice"] {
-		log.Fatalf("expected alice in results")
+	if !sawWildcard {
+		log.Fatalf("expected a wildcard (*) subject in results")
+	}
+	if !excludedIDs["eve"] {
+		log.Fatalf("expected eve to be excluded from the wildcard grant")
+	}
+
+	// bob has view via `editor`, independent of the wildcard/banned rule.
+	found := map[string]bool{}
+	for subject, err := range c.LookupSubjects(ctx, consistency.Full(), "document", "firstdoc", "edit", "user") {
+		if err != nil {
+			log.Fatalf("lookup failed: %v", err)
+		}
+		found[subject.Subject.SubjectID] = true
 	}
 	if !found["bob"] {
-		log.Fatalf("expected bob in results (editor implies view)")
+		log.Fatalf("expected bob in edit results")
 	}
 }

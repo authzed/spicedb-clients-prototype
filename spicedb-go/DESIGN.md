@@ -103,10 +103,42 @@ use sensible defaults:
 
 Iterators:
 - `ReadRelationships(...)` → `iter.Seq2[rel.Relationship, error]`
-- `LookupResources(...)` → `iter.Seq2[string, error]`
-- `LookupSubjects(...)` → `iter.Seq2[string, error]`
+- `LookupResources(...)` → `iter.Seq2[client.LookupResource, error]`
+- `LookupSubjects(...)` → `iter.Seq2[client.LookupSubject, error]`
 - `ExportRelationships(...)` → `iter.Seq2[rel.Relationship, error]`
 - `Updates(...)` → `iter.Seq2[rel.Update, error]`
+
+`LookupResource` and `LookupSubject` (see `client/lookup_types.go`) are native
+result structs, not bare ID strings — they carry the data a caller needs to
+avoid silently over-granting access:
+
+```go
+type LookupResource struct {
+    ResourceID     string
+    Permissionship Permissionship     // HasPermission vs ConditionalPermission
+    PartialCaveat  *PartialCaveatInfo // non-nil when Conditional
+}
+
+type ResolvedSubject struct {
+    SubjectID      string
+    Permissionship Permissionship
+    PartialCaveat  *PartialCaveatInfo
+}
+
+type LookupSubject struct {
+    Subject          ResolvedSubject
+    ExcludedSubjects []ResolvedSubject // populated when Subject.SubjectID == "*"
+}
+```
+
+`Permissionship` is `PermissionshipHasPermission` for a full grant, or
+`PermissionshipConditionalPermission` when the match depends on caveat
+context that wasn't supplied (`PartialCaveat.MissingRequiredContext` lists
+what's missing). A conditional result is NOT a full grant. When
+`LookupSubject.Subject.SubjectID` is the wildcard `"*"`,
+`LookupSubject.ExcludedSubjects` lists the subjects carved out of that
+wildcard grant — callers MUST check it before treating `"*"` as "every
+subject has access," or they risk over-granting to excluded subjects.
 
 ### Writes
 

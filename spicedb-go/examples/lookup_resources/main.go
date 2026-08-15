@@ -1,4 +1,8 @@
-// Example lookup_resources demonstrates finding resources a subject can access.
+// Example lookup_resources demonstrates finding resources a subject can
+// access, including how to read the Permissionship of each result. A
+// Permissionship of PermissionshipConditionalPermission means the match
+// depends on caveat context that wasn't supplied — callers must not treat
+// it as an unconditional grant.
 package main
 
 import (
@@ -44,12 +48,18 @@ definition document {
 
 	// Lookup resources
 	found := map[string]bool{}
-	for resourceID, err := range c.LookupResources(ctx, consistency.Full(), "document", "view", "user", "alice") {
+	for resource, err := range c.LookupResources(ctx, consistency.Full(), "document", "view", "user", "alice") {
 		if err != nil {
 			log.Fatalf("lookup failed: %v", err)
 		}
-		fmt.Printf("alice can view document:%s\n", resourceID)
-		found[resourceID] = true
+		fmt.Printf("alice can view document:%s (permissionship=%s)\n", resource.ResourceID, resource.Permissionship)
+		if resource.Permissionship != client.PermissionshipHasPermission {
+			// A conditional result means caveat context is missing; PartialCaveat
+			// lists which context. Never treat a conditional result as a full
+			// grant.
+			log.Fatalf("unexpected permissionship for document:%s: %s (missing context: %v)", resource.ResourceID, resource.Permissionship, resource.PartialCaveat)
+		}
+		found[resource.ResourceID] = true
 	}
 
 	if !found["firstdoc"] {

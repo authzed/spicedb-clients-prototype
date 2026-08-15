@@ -4,6 +4,42 @@
 
 ### Breaking Changes
 
+- **2026-08-14**: `LookupResources` and `LookupSubjects` now yield native result structs instead of bare ID strings, so callers no longer have to blindly trust an ID string — they can see whether a match is a full grant or conditional on caveat context, and (critically) which subjects are excluded from a wildcard `"*"` match. Dropping `excluded_subjects` was a real over-grant risk: a caller that saw `"*"` and nothing else had no way to know some subjects were carved out of that grant. New types in `client/lookup_types.go`: `Permissionship`, `PartialCaveatInfo`, `LookupResource`, `ResolvedSubject`, `LookupSubject`.
+
+  Before:
+  ```go
+  for resourceID, err := range c.LookupResources(ctx, cs, "document", "view", "user", "alice") {
+      if err != nil { log.Fatal(err) }
+      fmt.Println(resourceID)
+  }
+
+  for subjectID, err := range c.LookupSubjects(ctx, cs, "document", "doc1", "view", "user") {
+      if err != nil { log.Fatal(err) }
+      fmt.Println(subjectID) // "*" here silently meant "everyone", excluded subjects were dropped
+  }
+  ```
+  After:
+  ```go
+  for resource, err := range c.LookupResources(ctx, cs, "document", "view", "user", "alice") {
+      if err != nil { log.Fatal(err) }
+      if resource.Permissionship != client.PermissionshipHasPermission {
+          continue // conditional match; resource.PartialCaveat lists what's missing
+      }
+      fmt.Println(resource.ResourceID)
+  }
+
+  for subject, err := range c.LookupSubjects(ctx, cs, "document", "doc1", "view", "user") {
+      if err != nil { log.Fatal(err) }
+      if subject.Subject.SubjectID == "*" {
+          excluded := map[string]bool{}
+          for _, e := range subject.ExcludedSubjects {
+              excluded[e.SubjectID] = true // MUST check before granting to "everyone"
+          }
+      }
+      fmt.Println(subject.Subject.SubjectID)
+  }
+  ```
+
 - **2026-08-14**: `ExpandResult.TreeRoot` (a leaked `*v1.PermissionRelationshipTree` proto type) is replaced with `ExpandResult.Tree`, a native `PermissionTree` (see `client/expand_tree.go`: `PermissionTree`, `IntermediateNode`, `LeafNode`, `ObjectRef`, `SubjectRef`, `TreeOperation`). No protobuf types are exposed from `ExpandPermissionTree` anymore.
 
   Before:

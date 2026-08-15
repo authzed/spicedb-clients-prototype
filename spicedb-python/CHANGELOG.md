@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Fixed
+
+- `SpiceDBClient.check_permissions()` (and `check_permission`/`check_any`/
+  `check_all`, which delegate to it) no longer fabricates a generic
+  `SpiceDBError` (mapped from a synthetic `INTERNAL` gRPC error) when a
+  `CheckBulkPermissions` response pair carries a per-item error. It now maps
+  the real `google.rpc.Status` on the pair to the correct typed
+  `SpiceDBError` subclass (e.g. `InvalidArgumentError`, `NotFoundError`) via
+  the new `error_from_status_proto()` helper in `spicedb.errors`, preserving
+  both the real status code and message.
+- `Consistency` (the native type introduced for the `Consistency` proto
+  removal, see below) is now exported from the package root — `from spicedb
+  import Consistency` works for type annotations, matching the constructor
+  functions which were already exported.
+
 ### Breaking
 
 - `SpiceDBClient.watch()` now yields `tuple[list[Update], str]` instead of

@@ -18,7 +18,7 @@ from authzed.api.v1 import (
 from google.protobuf import struct_pb2
 
 from spicedb.consistency import Consistency
-from spicedb.errors import is_transient, to_spicedb_error
+from spicedb.errors import error_from_status_proto, is_transient, to_spicedb_error
 from spicedb.types import (
     Filter,
     PermissionTree,
@@ -172,13 +172,7 @@ class SpiceDBClient:
         results: list[bool] = []
         for pair in resp.pairs:
             if pair.HasField("error"):
-                raise to_spicedb_error(
-                    grpc.aio.AioRpcError(
-                        grpc.StatusCode.INTERNAL,
-                        None,  # type: ignore[arg-type]
-                        None,  # type: ignore[arg-type]
-                    )
-                )
+                raise error_from_status_proto(pair.error)
             results.append(pair.item.permissionship == HAS)
         return results
 

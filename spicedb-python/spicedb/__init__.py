@@ -2,6 +2,7 @@
 
 from spicedb.client import SpiceDBClient
 from spicedb.consistency import (
+    Consistency,
     at_least,
     at_least_or_full,
     at_least_or_min_latency,
@@ -40,6 +41,7 @@ from spicedb.types import (
 __all__ = [
     "SpiceDBClient",
     # Consistency
+    "Consistency",
     "full",
     "min_latency",
     "at_least",

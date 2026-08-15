@@ -78,3 +78,15 @@ def test_snapshot():
     assert isinstance(c, Consistency)
     proto = c._to_proto()
     assert proto.at_exact_snapshot.token == "sometoken123"
+
+
+def test_consistency_is_exported_from_package_root():
+    """`Consistency` must be importable from `spicedb` directly (alongside
+    the constructor functions) so callers can use it in type annotations,
+    e.g. `def foo(c: Consistency) -> None: ...`."""
+    import spicedb
+    from spicedb import Consistency as ExportedConsistency
+
+    assert ExportedConsistency is Consistency
+    assert "Consistency" in spicedb.__all__
+    assert isinstance(spicedb.full(), ExportedConsistency)

@@ -138,6 +138,26 @@ let revision = client.write(&txn).await?;
 limit of 10,000 per RPC call. It repeats until the server reports all matching
 relationships are deleted. Returns the final revision.
 
+`delete_relationships_with(filter, &options)` adds optional preconditions and
+a page-size override via a `DeleteOptions` builder:
+
+```rust
+let options = DeleteOptions::new()
+    .with_must_match(filter_that_must_exist)
+    .with_must_not_match(filter_that_must_not_exist)
+    .with_limit(1_000);
+let revision = client.delete_relationships_with(&filter, &options).await?;
+```
+
+`DeleteOptions::must_match`/`must_not_match` add `Precondition`s that guard the
+delete: if a precondition fails, the server rejects that call and deletes
+nothing for it. Preconditions are a per-request proto field, so when a delete
+spans multiple pages, they are re-evaluated by the server on every page — pair
+a precondition with a `DeleteOptions::with_limit` large enough to cover every
+matching relationship in one call for single-shot, all-or-nothing semantics.
+`delete_relationships(filter)` remains the ergonomic no-options path
+(equivalent to `delete_relationships_with(filter, &DeleteOptions::default())`).
+
 ### Error Handling
 
 - `SpiceDBError` enum with `thiserror` for all errors
@@ -190,6 +210,7 @@ ABORTED).
 - `write(&self, &txn) -> Result<String, SpiceDBError>`
 - `read_relationships(&self, cs, &filter) -> impl Stream<Item = Result<Relationship, SpiceDBError>>`
 - `delete_relationships(&self, &filter) -> Result<String, SpiceDBError>`
+- `delete_relationships_with(&self, &filter, &DeleteOptions) -> Result<String, SpiceDBError>`
 
 **Lookups:**
 - `lookup_resources(&self, cs, resource_type, permission, subject_type, subject_id) -> impl Stream<Item = Result<LookupResource, SpiceDBError>>`
@@ -236,6 +257,7 @@ ABORTED).
 - `Filter` struct + builder methods
 - `Transaction` struct + `create`/`touch`/`delete`/`must_not_match`/`must_match`
 - `Precondition`, `PreconditionOperation`
+- `DeleteOptions` struct (`must_match`, `must_not_match`, `limit`) + `with_must_match`/`with_must_not_match`/`with_limit` builder methods -- used by `delete_relationships_with`
 - `Update`, `UpdateOperation`
 - `CheckResult` (`#[must_use]`)
 - `Permissionship` (`Unspecified` / `HasPermission` / `ConditionalPermission`), `PartialCaveatInfo`

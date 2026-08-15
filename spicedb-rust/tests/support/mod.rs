@@ -167,10 +167,11 @@ type ProtoResponseStream<T> = Pin<Box<dyn Stream<Item = Result<T, Status>> + Sen
 
 /// A configurable mock implementation of SpiceDB's `PermissionsService`.
 ///
-/// Only the four RPCs exercised by `tests/read_stream_test.rs`
-/// (`ReadRelationships`, `LookupResources`, `LookupSubjects`,
-/// `ExportBulkRelationships`) have real behavior; the rest of the trait is
-/// `unimplemented!()` since nothing in this harness calls them.
+/// Only the RPCs exercised by the behavioral test suites — `ReadRelationships`,
+/// `LookupResources`, `LookupSubjects`, `ExportBulkRelationships` (all used by
+/// `tests/read_stream_test.rs`), and `DeleteRelationships` (used by
+/// `tests/delete_relationships_test.rs`) — have real behavior; the rest of the
+/// trait is `unimplemented!()` since nothing in this harness calls them.
 ///
 /// The paginating RPCs (`read_relationships`, `lookup_resources`,
 /// `export_bulk_relationships`) are configured with a *queue of pages*: each
@@ -194,6 +195,10 @@ pub struct MockPermissionsService {
     export_relationships_pages: Mutex<VecDeque<Vec<proto::ExportBulkRelationshipsResponse>>>,
     export_relationships_calls: Arc<AtomicUsize>,
     export_relationships_cursors: Arc<Mutex<Vec<Option<proto::Cursor>>>>,
+
+    delete_relationships_responses: Mutex<VecDeque<proto::DeleteRelationshipsResponse>>,
+    delete_relationships_calls: Arc<AtomicUsize>,
+    delete_relationships_requests: Arc<Mutex<Vec<proto::DeleteRelationshipsRequest>>>,
 }
 
 impl MockPermissionsService {
@@ -215,6 +220,10 @@ impl MockPermissionsService {
             export_relationships_pages: Mutex::new(VecDeque::new()),
             export_relationships_calls: Arc::new(AtomicUsize::new(0)),
             export_relationships_cursors: Arc::new(Mutex::new(Vec::new())),
+
+            delete_relationships_responses: Mutex::new(VecDeque::new()),
+            delete_relationships_calls: Arc::new(AtomicUsize::new(0)),
+            delete_relationships_requests: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -289,6 +298,32 @@ impl MockPermissionsService {
     pub fn export_relationships_cursors(&self) -> Arc<Mutex<Vec<Option<proto::Cursor>>>> {
         self.export_relationships_cursors.clone()
     }
+
+    /// Queues one `DeleteRelationships` response, popped and returned in the
+    /// order pushed. If the queue is exhausted, the mock falls back to a
+    /// default `DELETION_PROGRESS_COMPLETE` response — so single-call tests
+    /// that don't care about the response body don't need to push one.
+    pub fn push_delete_relationships_response(&self, resp: proto::DeleteRelationshipsResponse) {
+        self.delete_relationships_responses
+            .lock()
+            .unwrap()
+            .push_back(resp);
+    }
+
+    /// Returns a live handle to the `DeleteRelationships` call counter. Grab
+    /// this *before* moving the mock into [`spawn_permissions_server`].
+    pub fn delete_relationships_calls(&self) -> Arc<AtomicUsize> {
+        self.delete_relationships_calls.clone()
+    }
+
+    /// Returns a live handle to the full `DeleteRelationshipsRequest` received
+    /// on each call, in call order — lets tests assert on the filter,
+    /// preconditions, and limit the client actually sent.
+    pub fn delete_relationships_requests(
+        &self,
+    ) -> Arc<Mutex<Vec<proto::DeleteRelationshipsRequest>>> {
+        self.delete_relationships_requests.clone()
+    }
 }
 
 impl Default for MockPermissionsService {
@@ -333,9 +368,28 @@ impl PermissionsService for MockPermissionsService {
 
     async fn delete_relationships(
         &self,
-        _request: Request<proto::DeleteRelationshipsRequest>,
+        request: Request<proto::DeleteRelationshipsRequest>,
     ) -> Result<Response<proto::DeleteRelationshipsResponse>, Status> {
-        unimplemented!("not exercised by the read-stream behavioral tests")
+        self.delete_relationships_calls
+            .fetch_add(1, Ordering::SeqCst);
+        self.delete_relationships_requests
+            .lock()
+            .unwrap()
+            .push(request.into_inner());
+        let resp = self
+            .delete_relationships_responses
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or(proto::DeleteRelationshipsResponse {
+                deleted_at: Some(proto::ZedToken {
+                    token: "rev-default".to_string(),
+                }),
+                deletion_progress: proto::delete_relationships_response::DeletionProgress::Complete
+                    as i32,
+                relationships_deleted_count: 0,
+            });
+        Ok(Response::new(resp))
     }
 
     async fn check_permission(

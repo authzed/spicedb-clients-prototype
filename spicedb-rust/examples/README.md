@@ -25,7 +25,7 @@ cargo run --example check_permission
 | Example | Description |
 |---------|-------------|
 | `check_permission` | Basic permission check |
-| `write_relationships` | Writing relationships with preconditions |
+| `write_relationships` | Writing relationships with preconditions, and a guarded delete with `DeleteOptions` |
 | `read_relationships` | Reading relationships with filters |
 | `lookup_resources` | Finding resources a subject can access |
 | `lookup_subjects` | Finding subjects with access to a resource |

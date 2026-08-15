@@ -408,6 +408,97 @@ pub enum PreconditionOperation {
     MustMatch,
 }
 
+/// Optional preconditions and a page-size override for
+/// [`SpiceDBClient::delete_relationships_with`](crate::client::SpiceDBClient::delete_relationships_with).
+///
+/// Use [`DeleteOptions::default`] (or [`DeleteOptions::new`]) for no
+/// preconditions and the default page size (10,000), and the builder methods
+/// to add guards:
+///
+/// ```
+/// use spicedb::types::{DeleteOptions, Filter};
+///
+/// let options = DeleteOptions::new()
+///     .with_must_match(Filter::new("document").with_resource_id("doc1"))
+///     .with_must_not_match(Filter::new("document").with_resource_id("doc2"))
+///     .with_limit(100);
+/// ```
+///
+/// # Preconditions and paging
+///
+/// Preconditions are a per-request proto field, so when a delete spans
+/// multiple pages (more matches than the limit), they are re-evaluated by the
+/// server on every page — there is no "check-once, apply-to-all-pages"
+/// semantics. This means a delete that starts successfully can still fail
+/// partway through if the guarded state changes between pages, after earlier
+/// pages have already been deleted. For a single-shot, all-or-nothing guarded
+/// delete, pair the precondition with [`DeleteOptions::with_limit`] set large
+/// enough to cover every matching relationship in one call.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DeleteOptions {
+    /// Filters that must each match at least one existing relationship for
+    /// the delete to proceed.
+    pub must_match: Vec<Filter>,
+    /// Filters that must each match no existing relationship for the delete
+    /// to proceed.
+    pub must_not_match: Vec<Filter>,
+    /// Overrides the default per-request page size (10,000) used by
+    /// `delete_relationships`'/`delete_relationships_with`'s auto-paging loop.
+    pub limit: Option<u32>,
+}
+
+impl DeleteOptions {
+    /// Creates an empty `DeleteOptions`: no preconditions, default page size.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Adds a precondition that at least one relationship must match
+    /// `filter`. Multiple calls accumulate; all are sent with every request.
+    pub fn with_must_match(mut self, filter: Filter) -> Self {
+        self.must_match.push(filter);
+        self
+    }
+
+    /// Adds a precondition that no relationship may match `filter`. Multiple
+    /// calls accumulate; all are sent with every request.
+    pub fn with_must_not_match(mut self, filter: Filter) -> Self {
+        self.must_not_match.push(filter);
+        self
+    }
+
+    /// Overrides the default per-request page size (10,000).
+    pub fn with_limit(mut self, limit: u32) -> Self {
+        self.limit = Some(limit);
+        self
+    }
+
+    /// Converts the accumulated must-match/must-not-match filters into
+    /// [`Precondition`]s (must-match filters first, then must-not-match).
+    ///
+    /// This mirrors [`Transaction::preconditions`]'s shape so both delete and
+    /// write preconditions flow through the same proto conversion in
+    /// `client.rs`.
+    pub(crate) fn preconditions(&self) -> Vec<Precondition> {
+        let mut preconditions =
+            Vec::with_capacity(self.must_match.len() + self.must_not_match.len());
+        preconditions.extend(self.must_match.iter().cloned().map(|filter| Precondition {
+            operation: PreconditionOperation::MustMatch,
+            filter,
+        }));
+        preconditions.extend(
+            self.must_not_match
+                .iter()
+                .cloned()
+                .map(|filter| Precondition {
+                    operation: PreconditionOperation::MustNotMatch,
+                    filter,
+                }),
+        );
+        preconditions
+    }
+}
+
 impl Transaction {
     /// Creates an empty transaction.
     pub fn new() -> Self {
@@ -894,6 +985,60 @@ mod tests {
             txn.preconditions()[1].operation,
             PreconditionOperation::MustMatch
         );
+    }
+
+    #[test]
+    fn test_delete_options_default_is_empty() {
+        let options = DeleteOptions::default();
+        assert!(options.must_match.is_empty());
+        assert!(options.must_not_match.is_empty());
+        assert_eq!(options.limit, None);
+        assert!(options.preconditions().is_empty());
+    }
+
+    #[test]
+    fn test_delete_options_builder() {
+        let must_match_filter = Filter::new("document").with_resource_id("doc1");
+        let must_not_match_filter = Filter::new("document").with_resource_id("doc2");
+        let options = DeleteOptions::new()
+            .with_must_match(must_match_filter.clone())
+            .with_must_not_match(must_not_match_filter.clone())
+            .with_limit(100);
+
+        assert_eq!(options.must_match, vec![must_match_filter]);
+        assert_eq!(options.must_not_match, vec![must_not_match_filter]);
+        assert_eq!(options.limit, Some(100));
+    }
+
+    #[test]
+    fn test_delete_options_preconditions_must_match_before_must_not_match() {
+        let must_match_filter = Filter::new("document").with_resource_id("doc1");
+        let must_not_match_filter = Filter::new("document").with_resource_id("doc2");
+        let options = DeleteOptions::new()
+            .with_must_not_match(must_not_match_filter.clone())
+            .with_must_match(must_match_filter.clone());
+
+        let preconditions = options.preconditions();
+        assert_eq!(preconditions.len(), 2);
+        assert_eq!(preconditions[0].operation, PreconditionOperation::MustMatch);
+        assert_eq!(preconditions[0].filter, must_match_filter);
+        assert_eq!(
+            preconditions[1].operation,
+            PreconditionOperation::MustNotMatch
+        );
+        assert_eq!(preconditions[1].filter, must_not_match_filter);
+    }
+
+    #[test]
+    fn test_delete_options_multiple_must_match_accumulate() {
+        let f1 = Filter::new("document").with_resource_id("doc1");
+        let f2 = Filter::new("document").with_resource_id("doc2");
+        let options = DeleteOptions::new()
+            .with_must_match(f1.clone())
+            .with_must_match(f2.clone());
+
+        assert_eq!(options.must_match, vec![f1, f2]);
+        assert_eq!(options.preconditions().len(), 2);
     }
 
     #[test]

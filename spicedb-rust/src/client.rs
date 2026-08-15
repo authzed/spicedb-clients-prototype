@@ -15,10 +15,10 @@ use crate::consistency::Strategy;
 use crate::error::{self, SpiceDBError};
 use crate::types::{
     partial_caveat_from_proto, permissionship_from_proto, resolved_subject_from_proto, CheckResult,
-    CountResult, ExpandResult, Filter, LookupResource, LookupSubject, Permissionship,
-    PreconditionOperation, ReflectSchemaResult, RelationReference, Relationship, ResolvedSubject,
-    SchemaCaveat, SchemaCaveatParameter, SchemaDefinition, SchemaDiff, SchemaPermission,
-    SchemaRelation, Transaction, Update, UpdateOperation,
+    CountResult, DeleteOptions, ExpandResult, Filter, LookupResource, LookupSubject,
+    Permissionship, Precondition, PreconditionOperation, ReflectSchemaResult, RelationReference,
+    Relationship, ResolvedSubject, SchemaCaveat, SchemaCaveatParameter, SchemaDefinition,
+    SchemaDiff, SchemaPermission, SchemaRelation, Transaction, Update, UpdateOperation,
 };
 
 use futures::Stream;
@@ -262,21 +262,7 @@ impl SpiceDBClient {
             })
             .collect();
 
-        let mut preconditions = Vec::new();
-        for pc in txn.preconditions() {
-            let operation = match pc.operation {
-                PreconditionOperation::MustNotMatch => {
-                    proto::precondition::Operation::MustNotMatch as i32
-                }
-                PreconditionOperation::MustMatch => {
-                    proto::precondition::Operation::MustMatch as i32
-                }
-            };
-            preconditions.push(proto::Precondition {
-                operation,
-                filter: Some(pc.filter.to_proto()),
-            });
-        }
+        let preconditions = preconditions_to_proto(txn.preconditions());
 
         let resp = self
             .retry(|| async {
@@ -382,7 +368,37 @@ impl SpiceDBClient {
     /// until the server reports all matching relationships are deleted.
     ///
     /// Returns the revision of the final deletion.
+    ///
+    /// This is a convenience wrapper around
+    /// [`delete_relationships_with`](Self::delete_relationships_with) with
+    /// [`DeleteOptions::default`] (no preconditions, default page size). To
+    /// guard the delete with preconditions or override the page size, use
+    /// `delete_relationships_with` directly.
     pub async fn delete_relationships(&self, filter: &Filter) -> Result<String, SpiceDBError> {
+        self.delete_relationships_with(filter, &DeleteOptions::default())
+            .await
+    }
+
+    /// Deletes all relationships matching the given filter, guarded by
+    /// optional preconditions and/or an overridden page size.
+    ///
+    /// Large result sets are automatically paged — in batches of 10,000, or
+    /// [`DeleteOptions::limit`] if set. Repeats until the server reports all
+    /// matching relationships are deleted. Returns the revision of the final
+    /// deletion.
+    ///
+    /// [`DeleteOptions::must_match`]/[`DeleteOptions::must_not_match`] add
+    /// preconditions that guard the delete: if a precondition fails, the
+    /// server rejects that call and deletes nothing for it. See
+    /// [`DeleteOptions`]'s docs for how preconditions interact with paging.
+    pub async fn delete_relationships_with(
+        &self,
+        filter: &Filter,
+        options: &DeleteOptions,
+    ) -> Result<String, SpiceDBError> {
+        let preconditions = preconditions_to_proto(&options.preconditions());
+        let limit = options.limit.unwrap_or(DEFAULT_DELETE_PAGE_SIZE);
+
         loop {
             let resp = self
                 .retry(|| async {
@@ -391,9 +407,9 @@ impl SpiceDBClient {
                         .clone()
                         .delete_relationships(proto::DeleteRelationshipsRequest {
                             relationship_filter: Some(filter.to_proto()),
-                            optional_limit: DEFAULT_DELETE_PAGE_SIZE,
+                            optional_limit: limit,
                             optional_allow_partial_deletions: true,
-                            optional_preconditions: Vec::new(),
+                            optional_preconditions: preconditions.clone(),
                             optional_transaction_metadata: None,
                         })
                         .await
@@ -1215,6 +1231,28 @@ where
             }
         }
     }
+}
+
+/// Converts idiomatic [`Precondition`]s (shared by [`Transaction`] and
+/// [`DeleteOptions`]) into their proto representation.
+fn preconditions_to_proto(preconditions: &[Precondition]) -> Vec<proto::Precondition> {
+    preconditions
+        .iter()
+        .map(|pc| {
+            let operation = match pc.operation {
+                PreconditionOperation::MustNotMatch => {
+                    proto::precondition::Operation::MustNotMatch as i32
+                }
+                PreconditionOperation::MustMatch => {
+                    proto::precondition::Operation::MustMatch as i32
+                }
+            };
+            proto::Precondition {
+                operation,
+                filter: Some(pc.filter.to_proto()),
+            }
+        })
+        .collect()
 }
 
 /// Converts a proto ReflectionSchemaDiff into an idiomatic SchemaDiff.

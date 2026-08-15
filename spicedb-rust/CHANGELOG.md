@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+### Features
+
+- **`delete_relationships_with(filter, &DeleteOptions)`**: guarded deletes.
+  Previously `delete_relationships` took only a filter, so the proto
+  `optional_preconditions`/`optional_limit` fields were unreachable — there
+  was no way to guard a delete on other relationship state, or to override the
+  10,000-item auto-paging page size. `DeleteOptions` is a `Default`-derived
+  builder:
+
+  ```rust
+  use spicedb::types::DeleteOptions;
+
+  let options = DeleteOptions::new()
+      .with_must_match(filter_that_must_exist)
+      .with_must_not_match(filter_that_must_not_exist)
+      .with_limit(1_000);
+  let revision = client.delete_relationships_with(&filter, &options).await?;
+  ```
+
+  `delete_relationships(filter)` is unchanged and remains the ergonomic
+  no-options path (it now delegates to `delete_relationships_with` with
+  `DeleteOptions::default()`). As with write preconditions, delete
+  preconditions are a per-request proto field: on a multi-page delete they are
+  re-evaluated by the server on every page, so pair a precondition with
+  `DeleteOptions::with_limit` set large enough to cover every matching
+  relationship in one call for single-shot, all-or-nothing semantics.
+
 ### Fixes
 
 - **Delete page size correction**: `DEFAULT_DELETE_PAGE_SIZE` is now 10,000 (matching DESIGN.md spec), not 1,000

@@ -4,6 +4,25 @@
 
 ### Added
 
+- **2026-08-15**: The 5 streaming methods (`readRelationships`, `lookupResources`,
+  `lookupSubjects`, `exportRelationships`, `updates`) now retry stream/page
+  **ESTABLISHMENT** on transient errors (`{UNAVAILABLE, RESOURCE_EXHAUSTED, ABORTED}`),
+  reusing the same backoff and `MAX_RETRIES` budget as unary calls (reset per page for
+  the paginated methods; per-stream for `lookupSubjects`/`updates`, which have no
+  cursor). A transient error is retried ONLY while nothing has been read yet from the
+  current stream/page — once any item has been read, the error is mapped to the typed
+  `SpiceDBException` and rethrown instead, never retried, so callers can never see a
+  replayed/duplicated item. `updates` in particular only retries the initial watch
+  open — never mid-watch — and, to make that safe without blocking the caller on the
+  first watch event, now opens its underlying gRPC call lazily (on the first pull from
+  the returned `Stream`) instead of eagerly inside the `updates()` call itself. No API
+  shape change.
+
+  Previously, wrapping only the blocking-stub call in the existing retry helper did
+  **not** actually retry anything for grpc-java's blocking server-streaming: the RPC's
+  outcome only surfaces on the returned iterator's first `hasNext()`/`next()` call,
+  which happened outside the retry loop.
+
 - **`deleteRelationships` preconditions and limit**: added `deleteRelationships(Filter, DeleteOptions)`, an additive overload accepting optional MUST_MATCH/MUST_NOT_MATCH preconditions and a per-request page-size override, mirroring `spicedb-go`'s `WithDeleteMustMatch`/`WithDeleteMustNotMatch`/`WithDeleteLimit` (`client/relationships.go`). `DeleteOptions` is an immutable record with `Filter`-style `withMustMatch`/`withMustNotMatch`/`withLimit` builder methods. The existing `deleteRelationships(Filter)` overload is unchanged — it delegates to `DeleteOptions.none()` (no preconditions, 10,000-item page size), same as before.
 
   ```java

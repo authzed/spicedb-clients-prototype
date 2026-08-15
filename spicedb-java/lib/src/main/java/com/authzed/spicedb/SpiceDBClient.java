@@ -432,15 +432,17 @@ public final class SpiceDBClient implements AutoCloseable {
             Iterator<LookupResourcesResponse> serverStream;
             Context previous = cancelCtx.attach();
             try {
-              serverStream = withRetry(() -> permissionsStub.lookupResources(reqBuilder.build()));
+              serverStream =
+                  openStreamWithRetry(() -> permissionsStub.lookupResources(reqBuilder.build()));
             } finally {
               cancelCtx.detach(previous);
             }
-            mapStreamErrors(
-                () -> {
-                  serverStream.forEachRemaining(responses::add);
-                  return null;
-                });
+            // The first hasNext() is already primed by openStreamWithRetry (retried above); every
+            // poll from here on is mapped-but-not-retried, since an item may already have been
+            // appended to `responses` by the time a later one fails.
+            while (mapStreamErrors(serverStream::hasNext)) {
+              responses.add(mapStreamErrors(serverStream::next));
+            }
 
             currentPage = responses.iterator();
             if (responses.size() < DEFAULT_LOOKUP_PAGE_SIZE) {
@@ -478,9 +480,8 @@ public final class SpiceDBClient implements AutoCloseable {
       String resourceID,
       String permission,
       String subjectType) {
-    var responses = new ArrayList<LookupSubjectsResponse>();
-    var serverStream =
-        withRetry(
+    Iterator<LookupSubjectsResponse> serverStream =
+        openStreamWithRetry(
             () ->
                 permissionsStub.lookupSubjects(
                     LookupSubjectsRequest.newBuilder()
@@ -493,11 +494,13 @@ public final class SpiceDBClient implements AutoCloseable {
                         .setPermission(permission)
                         .setSubjectObjectType(subjectType)
                         .build()));
-    mapStreamErrors(
-        () -> {
-          serverStream.forEachRemaining(responses::add);
-          return null;
-        });
+    // The first hasNext() is already primed by openStreamWithRetry (retried above); every poll
+    // from here on is mapped-but-not-retried, since an item may already have been added to
+    // `responses` by the time a later one fails.
+    var responses = new ArrayList<LookupSubjectsResponse>();
+    while (mapStreamErrors(serverStream::hasNext)) {
+      responses.add(mapStreamErrors(serverStream::next));
+    }
 
     return responses.stream().map(SpiceDBClient::lookupSubjectFromProto);
   }
@@ -824,7 +827,8 @@ public final class SpiceDBClient implements AutoCloseable {
             Context previous = cancelCtx.attach();
             try {
               serverStream =
-                  withRetry(() -> permissionsStub.exportBulkRelationships(reqBuilder.build()));
+                  openStreamWithRetry(
+                      () -> permissionsStub.exportBulkRelationships(reqBuilder.build()));
             } finally {
               cancelCtx.detach(previous);
             }
@@ -881,21 +885,39 @@ public final class SpiceDBClient implements AutoCloseable {
     }
 
     Context.CancellableContext cancelCtx = Context.current().withCancellation();
-    Iterator<WatchResponse> serverStream;
-    Context previous = cancelCtx.attach();
-    try {
-      serverStream = withRetry(() -> watchStub.watch(reqBuilder.build()));
-    } finally {
-      cancelCtx.detach(previous);
-    }
 
     Iterator<Update> iterator =
         new Iterator<>() {
           private final Queue<Update> buffer = new ArrayDeque<>();
+          // Opened lazily, on the first hasNext() call below — not eagerly here in updates()
+          // itself. This matters for correctness, not just style: grpc-java's blocking-stub
+          // priming call (which openStreamWithRetry needs, to make retry effective — see its
+          // Javadoc) blocks until the first message OR the call terminates. For watch, "the first
+          // message" can be arbitrarily far in the future (it's an indefinite live feed), so
+          // priming eagerly would turn updates() into a call that can hang for however long
+          // there's no relationship change — a real behavioral regression for a method whose
+          // whole contract is "return a stream promptly, block only when the caller pulls from
+          // it". Deferring the open (and its retry) to the caller's first pull preserves that
+          // contract while still making establishment retry effective once the caller does pull.
+          private Iterator<WatchResponse> serverStream;
 
           @Override
           public boolean hasNext() {
             if (!buffer.isEmpty()) return true;
+
+            if (serverStream == null) {
+              // Establishment retry: applies ONLY to this first open. Once serverStream is set,
+              // every later call skips straight to mapStreamErrors below (no retry) — so a
+              // transient error after the watch has connected (mid-watch) is mapped and rethrown,
+              // never retried, since retrying would replay/duplicate already-delivered updates.
+              Context previous = cancelCtx.attach();
+              try {
+                serverStream = openStreamWithRetry(() -> watchStub.watch(reqBuilder.build()));
+              } finally {
+                cancelCtx.detach(previous);
+              }
+            }
+
             if (!mapStreamErrors(serverStream::hasNext)) return false;
             WatchResponse resp = mapStreamErrors(serverStream::next);
             for (var u : resp.getUpdatesList()) {
@@ -1061,6 +1083,38 @@ public final class SpiceDBClient implements AutoCloseable {
     throw new SpiceDBException("unreachable");
   }
 
+  /**
+   * Opens a server-streaming RPC and makes stream/page ESTABLISHMENT effectively retryable on
+   * transient errors, reusing {@link #withRetry}'s transient predicate, {@code MAX_RETRIES}, and
+   * backoff verbatim (no divergent retry policy).
+   *
+   * <p>For grpc-java's blocking stub, {@code stub.someStreamingMethod(request)} never throws — it
+   * only enqueues the call and returns an {@link Iterator}; the RPC's actual outcome (including a
+   * transient {@code UNAVAILABLE}/{@code RESOURCE_EXHAUSTED}/{@code ABORTED}) only surfaces on the
+   * iterator's first {@code hasNext()}/{@code next()} call. Wrapping only the stub call in {@link
+   * #withRetry} (the old code) therefore never actually retries anything — the exception always
+   * escapes on the caller's first poll, past the retry loop. This method fixes that by folding the
+   * priming {@code hasNext()} call INTO the retried unit of work: if it throws a transient error,
+   * {@link #withRetry} re-issues {@code openCall} (a fresh RPC, e.g. from the same page cursor)
+   * after backoff, exactly as it would for a unary call.
+   *
+   * <p><b>No-replay guarantee:</b> this method must only ever be used to open a stream/page BEFORE
+   * any item has been handed to the caller. Once it returns, the returned iterator is primed (its
+   * first {@code hasNext()} result is already cached), and every subsequent poll MUST go through
+   * {@link #mapStreamErrors} — not this method — since re-opening after an item has already been
+   * yielded would replay/duplicate it.
+   */
+  private <T> Iterator<T> openStreamWithRetry(RetryableCall<Iterator<T>> openCall) {
+    return withRetry(
+        () -> {
+          Iterator<T> serverStream = openCall.call();
+          // Force establishment now, inside the retried unit of work, instead of leaving it to
+          // whatever unretried call the caller makes next.
+          serverStream.hasNext();
+          return serverStream;
+        });
+  }
+
   private Stream<Relationship> paginatedRelationshipStream(
       Consistency consistency, Filter filter, int pageSize) {
     Context.CancellableContext cancelCtx = Context.current().withCancellation();
@@ -1102,7 +1156,8 @@ public final class SpiceDBClient implements AutoCloseable {
             Iterator<ReadRelationshipsResponse> serverStream;
             Context previous = cancelCtx.attach();
             try {
-              serverStream = withRetry(() -> permissionsStub.readRelationships(reqBuilder.build()));
+              serverStream =
+                  openStreamWithRetry(() -> permissionsStub.readRelationships(reqBuilder.build()));
             } finally {
               cancelCtx.detach(previous);
             }

@@ -242,6 +242,46 @@ func TestLookupSubjects_FallsBackToDeprecatedFields(t *testing.T) {
 	require.Equal(t, PermissionshipHasPermission, got[0].Subject.Permissionship)
 }
 
+// TestLookupSubjects_ExcludedSubjectsFallsBackToDeprecatedIds proves that
+// when a server populates a wildcard "*" match's exclusions ONLY via the
+// deprecated top-level excluded_subject_ids field (leaving the
+// non-deprecated excluded_subjects list empty), the client still surfaces
+// those exclusions as ResolvedSubjects. This is security-relevant: dropping
+// exclusions from an older-wire-format server would silently over-grant
+// access to the excluded subjects. Removing the excluded_subject_ids
+// fallback branch in LookupSubjects MUST fail this test.
+func TestLookupSubjects_ExcludedSubjectsFallsBackToDeprecatedIds(t *testing.T) {
+	stub := &lookupStubServer{
+		lookupSubjectsResponses: []*v1.LookupSubjectsResponse{
+			{
+				Subject: &v1.ResolvedSubject{
+					SubjectObjectId: "*",
+					Permissionship:  v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_HAS_PERMISSION,
+				},
+				// Non-deprecated excluded_subjects deliberately left empty;
+				// only the deprecated excluded_subject_ids is populated.
+				ExcludedSubjectIds: []string{"eve", "mallory"}, //nolint:staticcheck
+			},
+		},
+	}
+	dialer := startLookupStubServer(t, stub)
+	c := newTestClient(t, dialer)
+
+	var got []LookupSubject
+	for s, err := range c.LookupSubjects(context.Background(), consistency.MinLatency(), "document", "doc1", "view", "user") {
+		require.NoError(t, err)
+		got = append(got, s)
+	}
+
+	require.Len(t, got, 1)
+	require.Equal(t, "*", got[0].Subject.SubjectID)
+	require.Len(t, got[0].ExcludedSubjects, 2)
+	require.Equal(t, []ResolvedSubject{
+		{SubjectID: "eve"},
+		{SubjectID: "mallory"},
+	}, got[0].ExcludedSubjects)
+}
+
 // TestLookupSubjects_StreamErrorYieldsZeroValueAndMappedError proves the
 // (result, error) iterator contract holds for LookupSubjects too.
 func TestLookupSubjects_StreamErrorYieldsZeroValueAndMappedError(t *testing.T) {

@@ -11,3 +11,18 @@ export SPICEDB_TOKEN=testtoken
 ```
 
 Or use `mage test` which starts a SpiceDB container automatically.
+
+## Examples
+
+| Directory | Description |
+|-----------|-------------|
+| `check_permission/` | Basic permission check |
+| `write_relationships/` | Writing relationships with the transaction builder |
+| `read_relationships/` | Reading relationships with an async iterator |
+| `delete_relationships/` | Deleting relationships, including precondition-guarded deletes |
+| `lookup_resources/` | Resource lookup |
+| `lookup_subjects/` | Subject lookup |
+| `watch_changes/` | Watching for changes |
+| `schema_management/` | Schema read/write/reflect/diff, plus computable_permissions/dependent_relations introspection |
+| `bulk_operations/` | Bulk checks and bulk relationship import/export |
+| `expand_permission_tree/` | Expanding a permission into its tree of subjects |

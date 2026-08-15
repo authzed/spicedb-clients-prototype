@@ -169,7 +169,9 @@ class Update:
     def _from_proto(u: core_pb2.RelationshipUpdate) -> "Update":
         """Create from a proto RelationshipUpdate."""
         op = _UPDATE_OP_MAP.get(u.operation, UpdateOperation.UNSPECIFIED)
-        return Update(operation=op, relationship=Relationship._from_proto(u.relationship))
+        return Update(
+            operation=op, relationship=Relationship._from_proto(u.relationship)
+        )
 
 
 @dataclass(frozen=True)
@@ -389,7 +391,9 @@ class SchemaRelation:
     parent_definition_name: str
 
     @classmethod
-    def _from_proto(cls, proto: schema_service_pb2.ReflectionRelation) -> "SchemaRelation":
+    def _from_proto(
+        cls, proto: schema_service_pb2.ReflectionRelation
+    ) -> "SchemaRelation":
         """Create from a proto ReflectionRelation."""
         return cls(
             name=proto.name,
@@ -407,7 +411,9 @@ class SchemaPermission:
     parent_definition_name: str
 
     @classmethod
-    def _from_proto(cls, proto: schema_service_pb2.ReflectionPermission) -> "SchemaPermission":
+    def _from_proto(
+        cls, proto: schema_service_pb2.ReflectionPermission
+    ) -> "SchemaPermission":
         """Create from a proto ReflectionPermission."""
         return cls(
             name=proto.name,
@@ -447,7 +453,9 @@ class SchemaDefinition:
     permissions: list[SchemaPermission]
 
     @classmethod
-    def _from_proto(cls, proto: schema_service_pb2.ReflectionDefinition) -> "SchemaDefinition":
+    def _from_proto(
+        cls, proto: schema_service_pb2.ReflectionDefinition
+    ) -> "SchemaDefinition":
         """Create from a proto ReflectionDefinition."""
         return cls(
             name=proto.name,
@@ -542,7 +550,9 @@ class SchemaDiff:
     caveat_name: str = ""
 
 
-def _schema_diff_from_proto(proto: schema_service_pb2.ReflectionSchemaDiff) -> SchemaDiff:
+def _schema_diff_from_proto(
+    proto: schema_service_pb2.ReflectionSchemaDiff,
+) -> SchemaDiff:
     """Map a single proto ReflectionSchemaDiff to its native representation.
     Mirrors spicedb-go's `schemaDiffFromProto` (client/schema.go).
     """
@@ -694,7 +704,9 @@ def _partial_caveat_from_proto(parent: Message) -> PartialCaveatInfo | None:
     if not parent.HasField("partial_caveat_info"):
         return None
     return PartialCaveatInfo(
-        missing_required_context=list(parent.partial_caveat_info.missing_required_context)
+        missing_required_context=list(
+            parent.partial_caveat_info.missing_required_context
+        )
     )
 
 
@@ -704,7 +716,9 @@ class LookupResource:
 
     resource_id: str
     permissionship: Permissionship
-    partial_caveat: PartialCaveatInfo | None = None  # non-None when Permissionship is Conditional
+    partial_caveat: PartialCaveatInfo | None = (
+        None  # non-None when Permissionship is Conditional
+    )
 
 
 @dataclass(frozen=True)

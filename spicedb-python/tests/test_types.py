@@ -475,7 +475,9 @@ class TestResolvedSubjectFromProto:
     def test_zero_value_is_empty_subject_id(self):
         got = _resolved_subject_from_proto(permission_service_pb2.ResolvedSubject())
         assert got == ResolvedSubject(
-            subject_id="", permissionship=Permissionship.UNSPECIFIED, partial_caveat=None
+            subject_id="",
+            permissionship=Permissionship.UNSPECIFIED,
+            partial_caveat=None,
         )
 
     def test_maps_all_fields(self):
@@ -490,4 +492,6 @@ class TestResolvedSubjectFromProto:
         )
         assert got.subject_id == "*"
         assert got.permissionship == Permissionship.CONDITIONAL_PERMISSION
-        assert got.partial_caveat == PartialCaveatInfo(missing_required_context=["region"])
+        assert got.partial_caveat == PartialCaveatInfo(
+            missing_required_context=["region"]
+        )

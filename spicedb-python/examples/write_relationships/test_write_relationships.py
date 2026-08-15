@@ -32,3 +32,9 @@ async def test_write_relationships(client: SpiceDBClient):
     revision = await client.write(txn)
     print(f"wrote relationships at revision: {revision}")
     assert revision  # non-empty revision string
+
+    # Clean up so later examples that write a narrower schema aren't blocked
+    # by leftover relationships.
+    await client.delete_relationships(
+        Filter(resource_type="document", resource_id="firstdoc")
+    )

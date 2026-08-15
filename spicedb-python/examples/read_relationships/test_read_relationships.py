@@ -36,3 +36,9 @@ async def test_read_relationships(client: SpiceDBClient):
     subject_ids = {r.subject_id for r in found}
     assert "alice" in subject_ids
     assert "bob" in subject_ids
+
+    # Clean up so later examples that write a narrower schema aren't blocked
+    # by leftover relationships.
+    await client.delete_relationships(
+        Filter(resource_type="document", resource_id="firstdoc")
+    )

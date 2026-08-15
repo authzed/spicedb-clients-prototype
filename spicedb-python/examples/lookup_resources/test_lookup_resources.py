@@ -8,7 +8,7 @@ callers must not treat it as an unconditional grant.
 
 import pytest
 
-from spicedb import Permissionship, Relationship, SpiceDBClient, full
+from spicedb import Filter, Permissionship, Relationship, SpiceDBClient, full
 from spicedb.types import Transaction
 
 
@@ -43,3 +43,10 @@ async def test_lookup_resources(client: SpiceDBClient):
 
     assert "readme" in resource_ids
     assert "design" in resource_ids
+
+    # Clean up so later examples that write a narrower schema aren't blocked
+    # by leftover relationships.
+    for resource_id in ("readme", "design", "secret"):
+        await client.delete_relationships(
+            Filter(resource_type="document", resource_id=resource_id)
+        )

@@ -18,9 +18,7 @@ async def test_bulk_checks(client: SpiceDBClient):
     users = ["alice", "bob", "charlie"]
     txn = Transaction()
     for user in users:
-        txn.touch(
-            Relationship.from_triple("document:report", "viewer", f"user:{user}")
-        )
+        txn.touch(Relationship.from_triple("document:report", "viewer", f"user:{user}"))
     revision = await client.write(txn)
     print(f"wrote {len(users)} relationships at revision: {revision}")
 
@@ -45,6 +43,12 @@ async def test_bulk_checks(client: SpiceDBClient):
     print(f"any user can view: {any_allowed}")
     assert any_allowed is True
 
+    # Clean up so later examples that write a narrower schema aren't blocked
+    # by leftover relationships.
+    await client.delete_relationships(
+        Filter(resource_type="document", resource_id="report")
+    )
+
 
 async def test_bulk_import_export(client: SpiceDBClient):
     # import_relationships streams relationships to the server in batches
@@ -68,3 +72,7 @@ async def test_bulk_import_export(client: SpiceDBClient):
     exported_subject_ids = {rel.subject_id for rel in exported}
     for user in users:
         assert user in exported_subject_ids
+
+    # Clean up so later examples that write a narrower schema aren't blocked
+    # by leftover relationships.
+    await client.delete_relationships(filter)

@@ -5,7 +5,7 @@ Demonstrates check_permission, check_permissions, check_any, and check_all.
 
 import pytest
 
-from spicedb import Relationship, SpiceDBClient, full
+from spicedb import Filter, Relationship, SpiceDBClient, full
 from spicedb.consistency import at_least
 from spicedb.types import Transaction
 
@@ -39,9 +39,9 @@ async def test_check_permission(client: SpiceDBClient):
     ]
     results = await client.check_permissions(full(), *checks)
     print(f"Bulk check results: {results}")
-    assert results[0] is True   # alice can view (she's a viewer)
+    assert results[0] is True  # alice can view (she's a viewer)
     assert results[1] is False  # alice cannot edit
-    assert results[2] is True   # bob can view (he's an editor, editor implies view)
+    assert results[2] is True  # bob can view (he's an editor, editor implies view)
 
     # check_any: does alice have any of view or edit?
     has_any = await client.check_any(
@@ -60,3 +60,9 @@ async def test_check_permission(client: SpiceDBClient):
     )
     print(f"user:bob has all permissions: {has_all}")
     assert has_all is True
+
+    # Clean up so later examples that write a narrower schema aren't blocked
+    # by leftover relationships.
+    await client.delete_relationships(
+        Filter(resource_type="document", resource_id="readme")
+    )

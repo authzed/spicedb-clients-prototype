@@ -147,9 +147,7 @@ class SpiceDBClient:
         context: dict[str, Any] | None = None,
     ) -> bool:
         """Check a single permission. Returns True if the subject has the permission."""
-        results = await self.check_permissions(
-            consistency, rel, context=context
-        )
+        results = await self.check_permissions(consistency, rel, context=context)
         return results[0]
 
     async def check_permissions(
@@ -193,7 +191,9 @@ class SpiceDBClient:
             return await self._permissions.CheckBulkPermissions(request)
 
         resp = await self._with_retry(_call)
-        HAS = permission_service_pb2.CheckPermissionResponse.PERMISSIONSHIP_HAS_PERMISSION
+        HAS = (
+            permission_service_pb2.CheckPermissionResponse.PERMISSIONSHIP_HAS_PERMISSION
+        )
         results: list[bool] = []
         for pair in resp.pairs:
             if pair.HasField("error"):
@@ -242,14 +242,18 @@ class SpiceDBClient:
             while True:
                 yielded = 0
                 try:
-                    async for resp in self._permissions.ReadRelationships(request, metadata=self._metadata):
+                    async for resp in self._permissions.ReadRelationships(
+                        request, metadata=self._metadata
+                    ):
                         yielded += 1
                         count += 1
                         yield Relationship._from_proto(resp.relationship)
                         cursor = resp.after_result_cursor
                     break
                 except grpc.aio.AioRpcError as e:
-                    if yielded == 0 and await self._should_retry_establishment(attempt, e):
+                    if yielded == 0 and await self._should_retry_establishment(
+                        attempt, e
+                    ):
                         attempt += 1
                         continue
                     raise to_spicedb_error(e) from e
@@ -316,18 +320,24 @@ class SpiceDBClient:
             while True:
                 yielded = 0
                 try:
-                    async for resp in self._permissions.LookupResources(request, metadata=self._metadata):
+                    async for resp in self._permissions.LookupResources(
+                        request, metadata=self._metadata
+                    ):
                         yielded += 1
                         count += 1
                         yield LookupResource(
                             resource_id=resp.resource_object_id,
-                            permissionship=_permissionship_from_proto(resp.permissionship),
+                            permissionship=_permissionship_from_proto(
+                                resp.permissionship
+                            ),
                             partial_caveat=_partial_caveat_from_proto(resp),
                         )
                         cursor = resp.after_result_cursor
                     break
                 except grpc.aio.AioRpcError as e:
-                    if yielded == 0 and await self._should_retry_establishment(attempt, e):
+                    if yielded == 0 and await self._should_retry_establishment(
+                        attempt, e
+                    ):
                         attempt += 1
                         continue
                     raise to_spicedb_error(e) from e
@@ -376,7 +386,9 @@ class SpiceDBClient:
         while True:
             yielded = 0
             try:
-                async for resp in self._permissions.LookupSubjects(request, metadata=self._metadata):
+                async for resp in self._permissions.LookupSubjects(
+                    request, metadata=self._metadata
+                ):
                     yielded += 1
                     subject = _resolved_subject_from_proto(resp.subject)
                     if not subject.subject_id:
@@ -385,14 +397,17 @@ class SpiceDBClient:
                         # `subject` field.
                         subject = ResolvedSubject(
                             subject_id=resp.subject_object_id,
-                            permissionship=_permissionship_from_proto(resp.permissionship),
+                            permissionship=_permissionship_from_proto(
+                                resp.permissionship
+                            ),
                             partial_caveat=_partial_caveat_from_proto(resp),
                         )
 
                     excluded: list[ResolvedSubject] = []
                     if resp.excluded_subjects:
                         excluded = [
-                            _resolved_subject_from_proto(e) for e in resp.excluded_subjects
+                            _resolved_subject_from_proto(e)
+                            for e in resp.excluded_subjects
                         ]
                     elif resp.excluded_subject_ids:
                         # Fall back to the deprecated excluded_subject_ids
@@ -484,16 +499,16 @@ class SpiceDBClient:
 
     async def read_schema(self) -> str:
         """Read the current schema. Returns the schema text."""
+
         async def _call() -> schema_service_pb2.ReadSchemaResponse:
-            return await self._schema.ReadSchema(
-                schema_service_pb2.ReadSchemaRequest()
-            )
+            return await self._schema.ReadSchema(schema_service_pb2.ReadSchemaRequest())
 
         resp = await self._with_retry(_call)
         return resp.schema_text
 
     async def write_schema(self, schema: str) -> str:
         """Write a schema. Returns the revision string."""
+
         async def _call() -> schema_service_pb2.WriteSchemaResponse:
             return await self._schema.WriteSchema(
                 schema_service_pb2.WriteSchemaRequest(schema=schema)
@@ -525,7 +540,10 @@ class SpiceDBClient:
             try:
                 async for resp in self._watch.Watch(request, metadata=self._metadata):
                     yielded += 1
-                    yield [Update._from_proto(u) for u in resp.updates], resp.changes_through.token
+                    yield (
+                        [Update._from_proto(u) for u in resp.updates],
+                        resp.changes_through.token,
+                    )
                 return
             except grpc.aio.AioRpcError as e:
                 # Retrying is only safe before any update has been yielded
@@ -538,10 +556,9 @@ class SpiceDBClient:
 
     # ── Bulk operations ─────────────────────────────────────────────
 
-    async def import_relationships(
-        self, relationships: list[Relationship]
-    ) -> int:
+    async def import_relationships(self, relationships: list[Relationship]) -> int:
         """Import relationships in bulk. Returns the number loaded."""
+
         async def _request_iter():
             for i in range(0, len(relationships), _IMPORT_BATCH_SIZE):
                 batch = relationships[i : i + _IMPORT_BATCH_SIZE]
@@ -550,7 +567,9 @@ class SpiceDBClient:
                 )
 
         try:
-            resp = await self._permissions.ImportBulkRelationships(_request_iter(), metadata=self._metadata)
+            resp = await self._permissions.ImportBulkRelationships(
+                _request_iter(), metadata=self._metadata
+            )
             return resp.num_loaded
         except grpc.aio.AioRpcError as e:
             raise to_spicedb_error(e) from e
@@ -576,7 +595,9 @@ class SpiceDBClient:
             while True:
                 yielded = 0
                 try:
-                    async for resp in self._permissions.ExportBulkRelationships(request, metadata=self._metadata):
+                    async for resp in self._permissions.ExportBulkRelationships(
+                        request, metadata=self._metadata
+                    ):
                         for proto_rel in resp.relationships:
                             yield Relationship._from_proto(proto_rel)
                             yielded += 1
@@ -584,7 +605,9 @@ class SpiceDBClient:
                         cursor = resp.after_result_cursor
                     break
                 except grpc.aio.AioRpcError as e:
-                    if yielded == 0 and await self._should_retry_establishment(attempt, e):
+                    if yielded == 0 and await self._should_retry_establishment(
+                        attempt, e
+                    ):
                         attempt += 1
                         continue
                     raise to_spicedb_error(e) from e
@@ -624,9 +647,11 @@ class SpiceDBClient:
         filter: Filter,
     ) -> None:
         """Experimental: Register a relationship counter."""
-        request = experimental_service_pb2.ExperimentalRegisterRelationshipCounterRequest(
-            name=name,
-            relationship_filter=filter._to_proto(),
+        request = (
+            experimental_service_pb2.ExperimentalRegisterRelationshipCounterRequest(
+                name=name,
+                relationship_filter=filter._to_proto(),
+            )
         )
 
         async def _call() -> Any:
@@ -659,8 +684,10 @@ class SpiceDBClient:
         name: str,
     ) -> None:
         """Experimental: Unregister a relationship counter."""
-        request = experimental_service_pb2.ExperimentalUnregisterRelationshipCounterRequest(
-            name=name,
+        request = (
+            experimental_service_pb2.ExperimentalUnregisterRelationshipCounterRequest(
+                name=name,
+            )
         )
 
         async def _call() -> Any:

@@ -42,7 +42,9 @@ def _async_stream(*responses):
     return _call
 
 
-def _transient_error(code: grpc.StatusCode = grpc.StatusCode.UNAVAILABLE) -> grpc.aio.AioRpcError:
+def _transient_error(
+    code: grpc.StatusCode = grpc.StatusCode.UNAVAILABLE,
+) -> grpc.aio.AioRpcError:
     return grpc.aio.AioRpcError(
         code, grpc.aio.Metadata(), grpc.aio.Metadata(), details="transient failure"
     )
@@ -99,9 +101,7 @@ def test_constructor_insecure():
 
 
 async def test_context_manager():
-    async with SpiceDBClient(
-        "localhost:50051", token="testtoken", insecure=True
-    ) as c:
+    async with SpiceDBClient("localhost:50051", token="testtoken", insecure=True) as c:
         assert c._channel is not None
 
 
@@ -329,7 +329,9 @@ class TestLookupSubjectsWildcardSubjectExposesExcludedSubjects:
 
         assert len(got) == 1
         assert got[0].subject == ResolvedSubject(
-            subject_id="*", permissionship=Permissionship.HAS_PERMISSION, partial_caveat=None
+            subject_id="*",
+            permissionship=Permissionship.HAS_PERMISSION,
+            partial_caveat=None,
         )
         assert len(got[0].excluded_subjects) == 2
         excluded_ids = {e.subject_id for e in got[0].excluded_subjects}
@@ -422,8 +424,12 @@ class TestLookupSubjectsExcludedSubjectsFallsBackToDeprecatedIds:
         assert len(got) == 1
         assert got[0].subject.subject_id == "*"
         assert got[0].excluded_subjects == [
-            ResolvedSubject(subject_id="eve", permissionship=Permissionship.UNSPECIFIED),
-            ResolvedSubject(subject_id="mallory", permissionship=Permissionship.UNSPECIFIED),
+            ResolvedSubject(
+                subject_id="eve", permissionship=Permissionship.UNSPECIFIED
+            ),
+            ResolvedSubject(
+                subject_id="mallory", permissionship=Permissionship.UNSPECIFIED
+            ),
         ]
 
 
@@ -504,7 +510,9 @@ class TestDeleteRelationships:
     async def test_must_match_and_must_not_match_accumulate_in_order(self):
         client = self._client()
         f = Filter(resource_type="document", resource_id="1")
-        match_guard = Filter(resource_type="document", resource_id="1", relation="owner")
+        match_guard = Filter(
+            resource_type="document", resource_id="1", relation="owner"
+        )
         not_match_guard = Filter(
             resource_type="document", resource_id="1", relation="banned"
         )

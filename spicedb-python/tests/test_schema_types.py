@@ -115,10 +115,14 @@ class TestReflectSchemaResultFromProto:
         )
         result = ReflectSchemaResult._from_proto(resp)
         assert isinstance(result.definitions[0], SchemaDefinition)
-        assert not isinstance(result.definitions[0], schema_service_pb2.ReflectionDefinition)
+        assert not isinstance(
+            result.definitions[0], schema_service_pb2.ReflectionDefinition
+        )
 
     def test_frozen(self):
-        result = ReflectSchemaResult._from_proto(schema_service_pb2.ReflectSchemaResponse())
+        result = ReflectSchemaResult._from_proto(
+            schema_service_pb2.ReflectSchemaResponse()
+        )
         try:
             result.revision = "other"  # type: ignore[misc]
             assert False, "should have raised"
@@ -216,10 +220,14 @@ class TestSchemaDiffFromProto:
         resp = schema_service_pb2.DiffSchemaResponse(
             diffs=[
                 schema_service_pb2.ReflectionSchemaDiff(
-                    definition_added=schema_service_pb2.ReflectionDefinition(name="document"),
+                    definition_added=schema_service_pb2.ReflectionDefinition(
+                        name="document"
+                    ),
                 ),
                 schema_service_pb2.ReflectionSchemaDiff(
-                    caveat_removed=schema_service_pb2.ReflectionCaveat(name="is_weekday"),
+                    caveat_removed=schema_service_pb2.ReflectionCaveat(
+                        name="is_weekday"
+                    ),
                 ),
             ],
             read_at=core_pb2.ZedToken(token="cafebabe"),

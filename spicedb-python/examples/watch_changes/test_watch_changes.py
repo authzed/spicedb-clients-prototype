@@ -7,7 +7,7 @@ import asyncio
 
 import pytest
 
-from spicedb import Relationship, SpiceDBClient, UpdateOperation
+from spicedb import Filter, Relationship, SpiceDBClient, UpdateOperation
 from spicedb.types import Transaction
 
 
@@ -44,7 +44,7 @@ async def test_watch_changes(client: SpiceDBClient):
 
     try:
         await asyncio.wait_for(watch, timeout=5.0)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         pytest.skip("watch timed out — SpiceDB may not support watch")
 
     assert len(received) >= 1
@@ -56,4 +56,12 @@ async def test_watch_changes(client: SpiceDBClient):
             UpdateOperation.DELETE,
         )
         assert isinstance(update.relationship, Relationship)
-    print(f"received {len(received)} update(s): {[u.operation.value for u in received]}")
+    print(
+        f"received {len(received)} update(s): {[u.operation.value for u in received]}"
+    )
+
+    # Clean up so later examples that write a narrower schema aren't blocked
+    # by leftover relationships.
+    await client.delete_relationships(
+        Filter(resource_type="document", resource_id="watched")
+    )

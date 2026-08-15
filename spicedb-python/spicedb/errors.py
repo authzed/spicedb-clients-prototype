@@ -48,11 +48,13 @@ _CODE_TO_ERROR: dict[grpc.StatusCode, type[SpiceDBError]] = {
     grpc.StatusCode.CANCELLED: CancelledError,
 }
 
-_TRANSIENT_CODES = frozenset({
-    grpc.StatusCode.UNAVAILABLE,
-    grpc.StatusCode.RESOURCE_EXHAUSTED,
-    grpc.StatusCode.ABORTED,
-})
+_TRANSIENT_CODES = frozenset(
+    {
+        grpc.StatusCode.UNAVAILABLE,
+        grpc.StatusCode.RESOURCE_EXHAUSTED,
+        grpc.StatusCode.ABORTED,
+    }
+)
 
 # Reverse map: int gRPC code -> grpc.StatusCode, used to interpret the
 # int `code` field of a google.rpc.Status (e.g. a per-item bulk-check error).

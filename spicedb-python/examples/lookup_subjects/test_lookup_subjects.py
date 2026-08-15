@@ -9,7 +9,7 @@ checking ``excluded_subjects`` is a real over-grant risk.
 
 import pytest
 
-from spicedb import Relationship, SpiceDBClient, full
+from spicedb import Filter, Relationship, SpiceDBClient, full
 from spicedb.types import Transaction
 
 
@@ -33,6 +33,12 @@ async def test_lookup_subjects(client: SpiceDBClient):
 
     assert "alice" in subject_ids
     assert "bob" in subject_ids  # editors can also view
+
+    # Clean up so later examples that write a narrower schema aren't blocked
+    # by leftover relationships.
+    await client.delete_relationships(
+        Filter(resource_type="document", resource_id="firstdoc")
+    )
 
 
 async def test_lookup_subjects_wildcard_excludes_banned(client: SpiceDBClient):
@@ -82,3 +88,9 @@ definition document {
 
     assert saw_wildcard, "expected a wildcard (*) subject in results"
     assert "eve" in excluded_ids, "expected eve to be excluded from the wildcard grant"
+
+    # Clean up so later tests that write a narrower schema (e.g. one
+    # without a `banned` relation) aren't blocked by leftover relationships.
+    await client.delete_relationships(
+        Filter(resource_type="document", resource_id="seconddoc")
+    )

@@ -9,6 +9,7 @@ from typing import Any
 
 from authzed.api.v1 import core_pb2, permission_service_pb2, schema_service_pb2
 from google.protobuf import struct_pb2, timestamp_pb2
+from google.protobuf.message import Message
 
 
 @dataclass(frozen=True)
@@ -632,3 +633,110 @@ def _schema_diff_from_proto(proto: schema_service_pb2.ReflectionSchemaDiff) -> S
             caveat_name=proto.caveat_parameter_type_changed.parameter.parent_caveat_name,
         )
     return SchemaDiff(kind="unknown")
+
+
+# ── Lookup results ─────────────────────────────────────────────────────
+#
+# Mirrors spicedb-go's native lookup types and mappers
+# (spicedb-go/client/lookup_types.go): Permissionship, PartialCaveatInfo,
+# LookupResource, ResolvedSubject, LookupSubject.
+#
+# Note on the nil-handling difference from Go: Go's mappers take nilable
+# pointers (`*v1.PartialCaveatInfo`) and return nil for a nil input. Python
+# protobuf message fields are never `None` on attribute access — an unset
+# submessage returns a default (zero-value) instance — so
+# `_partial_caveat_from_proto` instead takes the *containing* message and
+# uses `HasField` to detect presence.
+
+
+class Permissionship(Enum):
+    """Whether a lookup result reflects a full grant or is conditional on
+    caveat context that was not fully evaluated by the server. Callers MUST
+    check this before treating a result as a full grant — a
+    CONDITIONAL_PERMISSION result may resolve to false once the missing
+    caveat context is supplied.
+    """
+
+    UNSPECIFIED = 0
+    HAS_PERMISSION = 1
+    CONDITIONAL_PERMISSION = 2
+
+
+_PERMISSIONSHIP_MAP = {
+    permission_service_pb2.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION: Permissionship.HAS_PERMISSION,
+    permission_service_pb2.LOOKUP_PERMISSIONSHIP_CONDITIONAL_PERMISSION: (
+        Permissionship.CONDITIONAL_PERMISSION
+    ),
+}
+
+
+def _permissionship_from_proto(v: int) -> Permissionship:
+    """Map the proto LookupPermissionship enum to its native equivalent.
+    Unrecognized values map to Permissionship.UNSPECIFIED. Mirrors
+    spicedb-go's `permissionshipFromProto` (client/lookup_types.go)."""
+    return _PERMISSIONSHIP_MAP.get(v, Permissionship.UNSPECIFIED)
+
+
+@dataclass(frozen=True)
+class PartialCaveatInfo:
+    """Caveat context that was missing to fully evaluate a conditional
+    result."""
+
+    missing_required_context: list[str]
+
+
+def _partial_caveat_from_proto(parent: Message) -> PartialCaveatInfo | None:
+    """Map a proto message's `partial_caveat_info` field to its native
+    equivalent. An unset field maps to None. Mirrors spicedb-go's
+    `partialCaveatFromProto` (client/lookup_types.go); see the module-level
+    note above for why this takes the containing message rather than the
+    submessage directly."""
+    if not parent.HasField("partial_caveat_info"):
+        return None
+    return PartialCaveatInfo(
+        missing_required_context=list(parent.partial_caveat_info.missing_required_context)
+    )
+
+
+@dataclass(frozen=True)
+class LookupResource:
+    """One result from `SpiceDBClient.lookup_resources()`."""
+
+    resource_id: str
+    permissionship: Permissionship
+    partial_caveat: PartialCaveatInfo | None = None  # non-None when Permissionship is Conditional
+
+
+@dataclass(frozen=True)
+class ResolvedSubject:
+    """A subject resolved by `SpiceDBClient.lookup_subjects()` — either the
+    matched subject, or (when found in `LookupSubject.excluded_subjects`) a
+    subject excluded from a wildcard match."""
+
+    subject_id: str
+    permissionship: Permissionship
+    partial_caveat: PartialCaveatInfo | None = None
+
+
+@dataclass(frozen=True)
+class LookupSubject:
+    """One result from `SpiceDBClient.lookup_subjects()`. When
+    `subject.subject_id` is the wildcard "*", `excluded_subjects` lists
+    subjects excluded from that wildcard grant — callers MUST treat those
+    subjects as NOT having the permission, even though the wildcard would
+    otherwise suggest they do."""
+
+    subject: ResolvedSubject
+    excluded_subjects: list[ResolvedSubject]
+
+
+def _resolved_subject_from_proto(
+    v: permission_service_pb2.ResolvedSubject,
+) -> ResolvedSubject:
+    """Map a proto ResolvedSubject to its native equivalent. Mirrors
+    spicedb-go's `resolvedSubjectFromProto` (client/lookup_types.go)."""
+    return ResolvedSubject(
+        subject_id=v.subject_object_id,
+        permissionship=_permissionship_from_proto(v.permissionship),
+        partial_caveat=_partial_caveat_from_proto(v),
+    )

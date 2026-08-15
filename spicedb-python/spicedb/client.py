@@ -21,14 +21,21 @@ from spicedb.consistency import Consistency
 from spicedb.errors import error_from_status_proto, is_transient, to_spicedb_error
 from spicedb.types import (
     Filter,
+    LookupResource,
+    LookupSubject,
+    Permissionship,
     PermissionTree,
     ReflectSchemaResult,
     RelationReference,
     Relationship,
+    ResolvedSubject,
     SchemaDiff,
     Transaction,
     Update,
+    _partial_caveat_from_proto,
     _permission_tree_from_proto,
+    _permissionship_from_proto,
+    _resolved_subject_from_proto,
     _schema_diff_from_proto,
 )
 
@@ -232,11 +239,17 @@ class SpiceDBClient:
         consistency: Consistency,
         *,
         context: dict[str, Any] | None = None,
-    ) -> AsyncIterator[str]:
-        """Look up resource IDs where the subject has the given permission.
+    ) -> AsyncIterator[LookupResource]:
+        """Look up resources the subject has the given permission on.
 
         ``subject`` can be a Relationship (using its subject fields) or a
         tuple of ``("type:id", "optional_relation")``.
+
+        Yields ``LookupResource`` — each result carries the permissionship
+        (full grant vs conditional on caveat context) and, for conditional
+        results, which caveat context was missing. Callers MUST check
+        ``permissionship`` before treating a result as a full grant.
+        Handles pagination automatically.
         """
         if isinstance(subject, Relationship):
             subj_ref = core_pb2.SubjectReference(
@@ -276,7 +289,11 @@ class SpiceDBClient:
             try:
                 count = 0
                 async for resp in self._permissions.LookupResources(request, metadata=self._metadata):
-                    yield resp.resource_object_id
+                    yield LookupResource(
+                        resource_id=resp.resource_object_id,
+                        permissionship=_permissionship_from_proto(resp.permissionship),
+                        partial_caveat=_partial_caveat_from_proto(resp),
+                    )
                     cursor = resp.after_result_cursor
                     count += 1
                 if count < _DEFAULT_PAGE_SIZE:
@@ -293,10 +310,17 @@ class SpiceDBClient:
         *,
         subject_relation: str = "",
         context: dict[str, Any] | None = None,
-    ) -> AsyncIterator[str]:
-        """Look up subject IDs that have the given permission on the resource.
+    ) -> AsyncIterator[LookupSubject]:
+        """Look up subjects that have the given permission on the resource.
 
         ``resource`` is a tuple of ``("type", "id")``.
+
+        Yields ``LookupSubject``. When a yielded ``subject.subject_id`` is
+        the wildcard ``"*"``, the server has granted the permission to every
+        subject of ``subject_type`` EXCEPT those listed in
+        ``excluded_subjects``. Callers MUST check ``excluded_subjects``
+        before treating a wildcard match as a blanket grant, or they risk
+        granting access to subjects the server explicitly excluded.
         """
         res_type, res_id = resource
         ctx_struct = None
@@ -317,7 +341,35 @@ class SpiceDBClient:
         )
         try:
             async for resp in self._permissions.LookupSubjects(request, metadata=self._metadata):
-                yield resp.subject.subject_object_id
+                subject = _resolved_subject_from_proto(resp.subject)
+                if not subject.subject_id:
+                    # Fall back to the deprecated top-level fields for
+                    # servers that don't yet populate the non-deprecated
+                    # `subject` field.
+                    subject = ResolvedSubject(
+                        subject_id=resp.subject_object_id,
+                        permissionship=_permissionship_from_proto(resp.permissionship),
+                        partial_caveat=_partial_caveat_from_proto(resp),
+                    )
+
+                excluded: list[ResolvedSubject] = []
+                if resp.excluded_subjects:
+                    excluded = [
+                        _resolved_subject_from_proto(e) for e in resp.excluded_subjects
+                    ]
+                elif resp.excluded_subject_ids:
+                    # Fall back to the deprecated excluded_subject_ids
+                    # field, which carries only IDs (no
+                    # permissionship/caveat info).
+                    excluded = [
+                        ResolvedSubject(
+                            subject_id=subject_id,
+                            permissionship=Permissionship.UNSPECIFIED,
+                        )
+                        for subject_id in resp.excluded_subject_ids
+                    ]
+
+                yield LookupSubject(subject=subject, excluded_subjects=excluded)
         except grpc.aio.AioRpcError as e:
             raise to_spicedb_error(e) from e
 

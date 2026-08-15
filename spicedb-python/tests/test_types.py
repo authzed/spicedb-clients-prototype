@@ -2,21 +2,27 @@
 
 from datetime import datetime, timezone
 
-from authzed.api.v1 import core_pb2
+from authzed.api.v1 import core_pb2, permission_service_pb2
 
 from spicedb.types import (
     Filter,
     IntermediateNode,
     LeafNode,
     ObjectRef,
+    PartialCaveatInfo,
+    Permissionship,
     PermissionTree,
     Relationship,
+    ResolvedSubject,
     SubjectRef,
     Transaction,
     TreeOperation,
     Update,
     UpdateOperation,
+    _partial_caveat_from_proto,
     _permission_tree_from_proto,
+    _permissionship_from_proto,
+    _resolved_subject_from_proto,
 )
 
 
@@ -406,3 +412,82 @@ class TestPermissionTreeFromProto:
             assert False, "should have raised"
         except AttributeError:
             pass
+
+
+# ── Lookup types / mappers ─────────────────────────────────────────────
+#
+# Mirrors spicedb-go's lookup_types_test.go (client/lookup_types_test.go):
+# permissionshipFromProto, partialCaveatFromProto, resolvedSubjectFromProto.
+# Python protobuf submessages are never `None` on attribute access (you get
+# a default instance), so — unlike the Go mappers, which take nilable
+# pointers — `_partial_caveat_from_proto` takes the *containing* message and
+# checks `HasField` to decide presence.
+
+
+class TestPermissionshipFromProto:
+    def test_unspecified(self):
+        assert (
+            _permissionship_from_proto(
+                permission_service_pb2.LOOKUP_PERMISSIONSHIP_UNSPECIFIED
+            )
+            == Permissionship.UNSPECIFIED
+        )
+
+    def test_has_permission(self):
+        assert (
+            _permissionship_from_proto(
+                permission_service_pb2.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION
+            )
+            == Permissionship.HAS_PERMISSION
+        )
+
+    def test_conditional_permission(self):
+        assert (
+            _permissionship_from_proto(
+                permission_service_pb2.LOOKUP_PERMISSIONSHIP_CONDITIONAL_PERMISSION
+            )
+            == Permissionship.CONDITIONAL_PERMISSION
+        )
+
+    def test_unknown_value_maps_to_unspecified(self):
+        assert _permissionship_from_proto(99) == Permissionship.UNSPECIFIED
+
+
+class TestPartialCaveatFromProto:
+    def test_unset_field_is_none(self):
+        resp = permission_service_pb2.LookupResourcesResponse(resource_object_id="doc1")
+        assert _partial_caveat_from_proto(resp) is None
+
+    def test_maps_missing_context(self):
+        resp = permission_service_pb2.LookupResourcesResponse(
+            resource_object_id="doc1",
+            partial_caveat_info=core_pb2.PartialCaveatInfo(
+                missing_required_context=["ip_address", "time_of_day"]
+            ),
+        )
+        got = _partial_caveat_from_proto(resp)
+        assert got == PartialCaveatInfo(
+            missing_required_context=["ip_address", "time_of_day"]
+        )
+
+
+class TestResolvedSubjectFromProto:
+    def test_zero_value_is_empty_subject_id(self):
+        got = _resolved_subject_from_proto(permission_service_pb2.ResolvedSubject())
+        assert got == ResolvedSubject(
+            subject_id="", permissionship=Permissionship.UNSPECIFIED, partial_caveat=None
+        )
+
+    def test_maps_all_fields(self):
+        got = _resolved_subject_from_proto(
+            permission_service_pb2.ResolvedSubject(
+                subject_object_id="*",
+                permissionship=permission_service_pb2.LOOKUP_PERMISSIONSHIP_CONDITIONAL_PERMISSION,
+                partial_caveat_info=core_pb2.PartialCaveatInfo(
+                    missing_required_context=["region"]
+                ),
+            )
+        )
+        assert got.subject_id == "*"
+        assert got.permissionship == Permissionship.CONDITIONAL_PERMISSION
+        assert got.partial_caveat == PartialCaveatInfo(missing_required_context=["region"])

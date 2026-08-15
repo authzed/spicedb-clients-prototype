@@ -43,6 +43,38 @@
 
 ### Breaking
 
+- `SpiceDBClient.lookup_resources()` and `SpiceDBClient.lookup_subjects()`
+  now yield native `LookupResource`/`LookupSubject` result dataclasses
+  instead of bare ID strings, so callers no longer have to blindly trust an
+  ID string — they can see whether a match is a full grant or conditional on
+  caveat context, and (critically) which subjects are excluded from a
+  wildcard `"*"` match. Dropping `excluded_subjects` was a real over-grant
+  risk: a caller that saw `"*"` and nothing else had no way to know some
+  subjects were carved out of that grant. New types in `spicedb/types.py`:
+  `Permissionship`, `PartialCaveatInfo`, `LookupResource`, `ResolvedSubject`,
+  `LookupSubject` — mirrors `spicedb-go`'s reference design
+  (`spicedb-go/client/lookup_types.go`).
+
+  Before:
+  ```python
+  async for resource_id in client.lookup_resources("document", "view", ("user:alice", ""), full()):
+      print(resource_id)
+
+  async for subject_id in client.lookup_subjects(("document", "doc1"), "view", "user", full()):
+      print(subject_id)  # "*" here silently meant "everyone", excluded subjects were dropped
+  ```
+  After:
+  ```python
+  async for resource in client.lookup_resources("document", "view", ("user:alice", ""), full()):
+      if resource.permissionship != Permissionship.HAS_PERMISSION:
+          continue  # conditional match; resource.partial_caveat lists what's missing
+      print(resource.resource_id)
+
+  async for subject in client.lookup_subjects(("document", "doc1"), "view", "user", full()):
+      if subject.subject.subject_id == "*":
+          excluded = {e.subject_id for e in subject.excluded_subjects}  # MUST check before granting to "everyone"
+      print(subject.subject.subject_id)
+  ```
 - `SpiceDBClient.watch()` now yields `tuple[list[Update], str]` instead of
   `tuple[list[core_pb2.RelationshipUpdate], str]`. Added `Update` and
   `UpdateOperation` native types.

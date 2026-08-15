@@ -89,9 +89,54 @@ Async iterators for streaming RPCs:
 async for rel in client.read_relationships(filter, consistency):
     ...
 
-async for resource_id in client.lookup_resources(..., consistency):
-    ...
+async for resource in client.lookup_resources(..., consistency):
+    ...  # resource: LookupResource
+
+async for subject in client.lookup_subjects(..., consistency):
+    ...  # subject: LookupSubject
 ```
+
+`lookup_resources()`/`lookup_subjects()` yield native result dataclasses, not
+bare ID strings — they carry the data a caller needs to avoid silently
+over-granting access (mirrors `spicedb-go`'s `client/lookup_types.go`, the
+reference design for this pattern):
+
+```python
+class Permissionship(Enum):
+    UNSPECIFIED = 0
+    HAS_PERMISSION = 1
+    CONDITIONAL_PERMISSION = 2
+
+@dataclass(frozen=True)
+class PartialCaveatInfo:
+    missing_required_context: list[str]
+
+@dataclass(frozen=True)
+class LookupResource:
+    resource_id: str
+    permissionship: Permissionship
+    partial_caveat: PartialCaveatInfo | None = None  # non-None when Conditional
+
+@dataclass(frozen=True)
+class ResolvedSubject:
+    subject_id: str
+    permissionship: Permissionship
+    partial_caveat: PartialCaveatInfo | None = None
+
+@dataclass(frozen=True)
+class LookupSubject:
+    subject: ResolvedSubject
+    excluded_subjects: list[ResolvedSubject]  # populated when subject.subject_id == "*"
+```
+
+`Permissionship.HAS_PERMISSION` is a full grant; `CONDITIONAL_PERMISSION`
+means the match depends on caveat context that wasn't supplied
+(`partial_caveat.missing_required_context` lists what's missing) — a
+conditional result is NOT a full grant. When
+`LookupSubject.subject.subject_id` is the wildcard `"*"`,
+`LookupSubject.excluded_subjects` lists the subjects carved out of that
+wildcard grant — callers MUST check it before treating `"*"` as "every
+subject has access," or they risk over-granting to excluded subjects.
 
 ### Writes
 

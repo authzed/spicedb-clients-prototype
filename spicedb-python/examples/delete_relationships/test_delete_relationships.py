@@ -6,7 +6,8 @@ preconditions (guarded deletes) and a limit override.
 
 import pytest
 
-from spicedb import Filter, Relationship, SpiceDBClient, full
+from spicedb import Filter, Relationship, full
+from spicedb.aio import SpiceDBClient
 from spicedb.errors import FailedPreconditionError
 from spicedb.types import Transaction
 

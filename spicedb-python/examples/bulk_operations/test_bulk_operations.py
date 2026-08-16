@@ -5,7 +5,8 @@ Demonstrates bulk permission checks and bulk relationship import/export.
 
 import pytest
 
-from spicedb import Filter, Relationship, SpiceDBClient, full
+from spicedb import Filter, Relationship, full
+from spicedb.aio import SpiceDBClient
 from spicedb.consistency import at_least
 from spicedb.types import Transaction
 

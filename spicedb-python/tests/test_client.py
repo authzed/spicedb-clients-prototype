@@ -13,7 +13,8 @@ from authzed.api.v1 import (
 )
 from google.rpc import status_pb2
 
-from spicedb import Filter, Relationship, RelationReference, SpiceDBClient, full
+from spicedb import Filter, Relationship, RelationReference, full
+from spicedb.aio import SpiceDBClient
 from spicedb.errors import InvalidArgumentError, SpiceDBError, UnavailableError
 from spicedb.types import LookupResource, Permissionship, ResolvedSubject
 

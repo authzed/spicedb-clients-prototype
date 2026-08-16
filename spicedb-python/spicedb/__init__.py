@@ -1,6 +1,15 @@
-"""Idiomatic Python client for SpiceDB."""
+"""Idiomatic Python client for SpiceDB.
 
-from spicedb.client import SpiceDBClient
+Clients are explicit about their concurrency model -- import the one you want::
+
+    from spicedb.sync import SpiceDBClient   # synchronous
+    from spicedb.aio import SpiceDBClient    # asynchronous
+
+Everything else in this package (relationship types, filters, transactions,
+consistency constructors, the error hierarchy) is shared by both flavors and
+imported from here.
+"""
+
 from spicedb.consistency import (
     Consistency,
     at_least,
@@ -48,7 +57,6 @@ from spicedb.types import (
 )
 
 __all__ = [
-    "SpiceDBClient",
     # Consistency
     "Consistency",
     "full",

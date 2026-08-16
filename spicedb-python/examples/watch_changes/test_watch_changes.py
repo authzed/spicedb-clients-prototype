@@ -7,7 +7,8 @@ import asyncio
 
 import pytest
 
-from spicedb import Filter, Relationship, SpiceDBClient, UpdateOperation
+from spicedb import Filter, Relationship, UpdateOperation
+from spicedb.aio import SpiceDBClient
 from spicedb.types import Transaction
 
 

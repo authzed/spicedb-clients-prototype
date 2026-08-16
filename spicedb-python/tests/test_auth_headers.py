@@ -21,6 +21,7 @@ import pytest
 from authzed.api.v1 import permission_service_pb2 as psp
 
 from spicedb import Filter
+from spicedb.aio import SpiceDBClient
 from spicedb.consistency import full
 
 TOKEN = "test-token"
@@ -117,11 +118,6 @@ def _trusting(tls_pair):
 async def test_aio_sends_exactly_one_authorization_header(
     secure: bool, streaming: bool, tls_pair
 ):
-    # Pre-move path: `spicedb.aio` does not exist until Task 5, which rewrites
-    # every `spicedb.client` import site (its Step 5 grep already covers this
-    # file). Do NOT import spicedb.aio here -- it would fail at collection.
-    from spicedb.client import SpiceDBClient
-
     recorder = _Recorder()
     server, port = _serve(recorder, tls_pair if secure else None)
     try:

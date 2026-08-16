@@ -6,7 +6,8 @@ Demonstrates reading, writing, reflecting, diffing, and introspecting
 
 import pytest
 
-from spicedb import SpiceDBClient, full
+from spicedb import full
+from spicedb.aio import SpiceDBClient
 
 
 pytestmark = pytest.mark.integration

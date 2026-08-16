@@ -2,7 +2,7 @@
 
 import pytest
 
-from spicedb import SpiceDBClient
+from spicedb.aio import SpiceDBClient
 
 
 SCHEMA = """\

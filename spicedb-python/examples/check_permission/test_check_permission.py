@@ -5,7 +5,8 @@ Demonstrates check_permission, check_permissions, check_any, and check_all.
 
 import pytest
 
-from spicedb import Filter, Relationship, SpiceDBClient, full
+from spicedb import Filter, Relationship, full
+from spicedb.aio import SpiceDBClient
 from spicedb.consistency import at_least
 from spicedb.types import Transaction
 

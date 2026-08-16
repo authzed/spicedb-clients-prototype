@@ -9,7 +9,8 @@ checking ``excluded_subjects`` is a real over-grant risk.
 
 import pytest
 
-from spicedb import Filter, Relationship, SpiceDBClient, full
+from spicedb import Filter, Relationship, full
+from spicedb.aio import SpiceDBClient
 from spicedb.types import Transaction
 
 

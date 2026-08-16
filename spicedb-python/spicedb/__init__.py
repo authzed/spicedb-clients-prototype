@@ -12,10 +12,13 @@ from spicedb.consistency import (
 )
 from spicedb.errors import (
     AlreadyExistsError,
+    CancelledError,
+    FailedPreconditionError,
     InvalidArgumentError,
     NotFoundError,
     PermissionDeniedError,
     SpiceDBError,
+    UnavailableError,
 )
 from spicedb.types import (
     Filter,
@@ -87,4 +90,7 @@ __all__ = [
     "NotFoundError",
     "AlreadyExistsError",
     "InvalidArgumentError",
+    "FailedPreconditionError",
+    "UnavailableError",
+    "CancelledError",
 ]

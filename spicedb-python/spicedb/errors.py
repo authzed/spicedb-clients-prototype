@@ -63,8 +63,12 @@ _INT_TO_STATUS_CODE: dict[int, grpc.StatusCode] = {
 }
 
 
-def to_spicedb_error(err: grpc.aio.AioRpcError) -> SpiceDBError:
-    """Convert a gRPC error to a typed SpiceDB exception."""
+def to_spicedb_error(err: grpc.RpcError) -> SpiceDBError:
+    """Convert a gRPC error to a typed SpiceDB exception.
+
+    Accepts both sync (`grpc.RpcError`) and async (`grpc.aio.AioRpcError`)
+    errors; `AioRpcError` is a subclass of `grpc.RpcError`.
+    """
     code = err.code()
     cls = _CODE_TO_ERROR.get(code, SpiceDBError)
     return cls(err.details())
@@ -80,7 +84,17 @@ def error_from_status_proto(status: status_pb2.Status) -> SpiceDBError:
 
 
 def is_transient(err: Exception) -> bool:
-    """Return True if the error is transient and worth retrying."""
-    if isinstance(err, grpc.aio.AioRpcError):
-        return err.code() in _TRANSIENT_CODES
+    """Return True if the error is transient and worth retrying.
+
+    Checks `grpc.RpcError` rather than `grpc.aio.AioRpcError` so that BOTH
+    client flavors retry. The sync channel raises `grpc._channel._InactiveRpcError`,
+    which is a `grpc.RpcError` but NOT an `AioRpcError` — narrowing this check
+    to the aio type silently disables retries for the sync client.
+    """
+    if isinstance(err, grpc.RpcError):
+        try:
+            code = err.code()
+        except AttributeError:
+            return False
+        return code in _TRANSIENT_CODES
     return isinstance(err, UnavailableError)

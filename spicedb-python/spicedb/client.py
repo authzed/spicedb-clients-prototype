@@ -15,6 +15,7 @@ from authzed.api.v1 import (
 )
 
 from spicedb import _mapping, _requests
+from spicedb._auth import bearer_metadata
 from spicedb._requests import DEFAULT_PAGE_SIZE as _DEFAULT_PAGE_SIZE
 from spicedb._requests import IMPORT_BATCH_SIZE as _IMPORT_BATCH_SIZE
 from spicedb.consistency import Consistency
@@ -55,20 +56,12 @@ class SpiceDBClient:
         max_retries: int = _DEFAULT_MAX_RETRIES,
     ):
         self._max_retries = max_retries
-        self._metadata = [("authorization", f"Bearer {token}")]
-        interceptors = [_BearerTokenInterceptor(token)]
+        self._metadata = bearer_metadata(token)
         if insecure:
-            self._channel = grpc.aio.insecure_channel(
-                endpoint, interceptors=interceptors
-            )
+            self._channel = grpc.aio.insecure_channel(endpoint)
         else:
-            call_creds = grpc.access_token_call_credentials(token)
-            channel_creds = grpc.ssl_channel_credentials()
-            composite_creds = grpc.composite_channel_credentials(
-                channel_creds, call_creds
-            )
             self._channel = grpc.aio.secure_channel(
-                endpoint, composite_creds, interceptors=interceptors
+                endpoint, grpc.ssl_channel_credentials()
             )
 
         from authzed.api.v1 import (
@@ -153,7 +146,9 @@ class SpiceDBClient:
         request = _requests.check_bulk_request(consistency, rels, context)
 
         async def _call() -> permission_service_pb2.CheckBulkPermissionsResponse:
-            return await self._permissions.CheckBulkPermissions(request)
+            return await self._permissions.CheckBulkPermissions(
+                request, metadata=self._metadata
+            )
 
         resp = await self._with_retry(_call)
         return _mapping.check_results(resp)
@@ -324,7 +319,9 @@ class SpiceDBClient:
         request = _requests.write_request(txn)
 
         async def _call() -> permission_service_pb2.WriteRelationshipsResponse:
-            return await self._permissions.WriteRelationships(request)
+            return await self._permissions.WriteRelationships(
+                request, metadata=self._metadata
+            )
 
         resp = await self._with_retry(_call)
         return resp.written_at.token
@@ -358,7 +355,9 @@ class SpiceDBClient:
         )
 
         async def _call() -> permission_service_pb2.DeleteRelationshipsResponse:
-            return await self._permissions.DeleteRelationships(request)
+            return await self._permissions.DeleteRelationships(
+                request, metadata=self._metadata
+            )
 
         resp = await self._with_retry(_call)
         return resp.deleted_at.token
@@ -369,7 +368,9 @@ class SpiceDBClient:
         """Read the current schema. Returns the schema text."""
 
         async def _call() -> schema_service_pb2.ReadSchemaResponse:
-            return await self._schema.ReadSchema(schema_service_pb2.ReadSchemaRequest())
+            return await self._schema.ReadSchema(
+                schema_service_pb2.ReadSchemaRequest(), metadata=self._metadata
+            )
 
         resp = await self._with_retry(_call)
         return resp.schema_text
@@ -379,7 +380,8 @@ class SpiceDBClient:
 
         async def _call() -> schema_service_pb2.WriteSchemaResponse:
             return await self._schema.WriteSchema(
-                schema_service_pb2.WriteSchemaRequest(schema=schema)
+                schema_service_pb2.WriteSchemaRequest(schema=schema),
+                metadata=self._metadata,
             )
 
         resp = await self._with_retry(_call)
@@ -474,7 +476,9 @@ class SpiceDBClient:
         request = _requests.expand_request(resource, permission, consistency)
 
         async def _call() -> permission_service_pb2.ExpandPermissionTreeResponse:
-            return await self._permissions.ExpandPermissionTree(request)
+            return await self._permissions.ExpandPermissionTree(
+                request, metadata=self._metadata
+            )
 
         resp = await self._with_retry(_call)
         return _permission_tree_from_proto(resp.tree_root), resp.expanded_at.token
@@ -496,7 +500,7 @@ class SpiceDBClient:
 
         async def _call() -> Any:
             return await self._experimental.ExperimentalRegisterRelationshipCounter(
-                request
+                request, metadata=self._metadata
             )
 
         await self._with_retry(_call)
@@ -514,7 +518,9 @@ class SpiceDBClient:
         )
 
         async def _call() -> Any:
-            return await self._experimental.ExperimentalCountRelationships(request)
+            return await self._experimental.ExperimentalCountRelationships(
+                request, metadata=self._metadata
+            )
 
         resp = await self._with_retry(_call)
         return resp.counter_result.relationship_count, resp.read_counter_at.token
@@ -532,7 +538,7 @@ class SpiceDBClient:
 
         async def _call() -> Any:
             return await self._experimental.ExperimentalUnregisterRelationshipCounter(
-                request
+                request, metadata=self._metadata
             )
 
         await self._with_retry(_call)
@@ -550,7 +556,7 @@ class SpiceDBClient:
         request = _requests.reflect_schema_request(consistency, filters)
 
         async def _call() -> schema_service_pb2.ReflectSchemaResponse:
-            return await self._schema.ReflectSchema(request)
+            return await self._schema.ReflectSchema(request, metadata=self._metadata)
 
         resp = await self._with_retry(_call)
         return ReflectSchemaResult._from_proto(resp)
@@ -564,7 +570,7 @@ class SpiceDBClient:
         request = _requests.diff_schema_request(consistency, comparison_schema)
 
         async def _call() -> schema_service_pb2.DiffSchemaResponse:
-            return await self._schema.DiffSchema(request)
+            return await self._schema.DiffSchema(request, metadata=self._metadata)
 
         resp = await self._with_retry(_call)
         return [_schema_diff_from_proto(d) for d in resp.diffs]
@@ -584,7 +590,9 @@ class SpiceDBClient:
         )
 
         async def _call() -> schema_service_pb2.ComputablePermissionsResponse:
-            return await self._schema.ComputablePermissions(request)
+            return await self._schema.ComputablePermissions(
+                request, metadata=self._metadata
+            )
 
         resp = await self._with_retry(_call)
         return [RelationReference._from_proto(p) for p in resp.permissions]
@@ -601,50 +609,9 @@ class SpiceDBClient:
         )
 
         async def _call() -> schema_service_pb2.DependentRelationsResponse:
-            return await self._schema.DependentRelations(request)
+            return await self._schema.DependentRelations(
+                request, metadata=self._metadata
+            )
 
         resp = await self._with_retry(_call)
         return [RelationReference._from_proto(r) for r in resp.relations]
-
-
-class _BearerTokenInterceptor(
-    grpc.aio.UnaryUnaryClientInterceptor,
-    grpc.aio.UnaryStreamClientInterceptor,
-    grpc.aio.StreamUnaryClientInterceptor,
-    grpc.aio.StreamStreamClientInterceptor,
-):
-    def __init__(self, token: str):
-        self._metadata = (("authorization", f"Bearer {token}"),)
-
-    def _add_metadata(
-        self, client_call_details: grpc.aio.ClientCallDetails
-    ) -> grpc.aio.ClientCallDetails:
-        metadata = list(client_call_details.metadata or [])
-        metadata.extend(self._metadata)
-        return grpc.aio.ClientCallDetails(
-            client_call_details.method,
-            client_call_details.timeout,
-            metadata,
-            client_call_details.credentials,
-            client_call_details.wait_for_ready,
-        )
-
-    async def intercept_unary_unary(self, continuation, client_call_details, request):
-        return await continuation(self._add_metadata(client_call_details), request)
-
-    async def intercept_unary_stream(self, continuation, client_call_details, request):
-        return await continuation(self._add_metadata(client_call_details), request)
-
-    async def intercept_stream_unary(
-        self, continuation, client_call_details, request_iterator
-    ):
-        return await continuation(
-            self._add_metadata(client_call_details), request_iterator
-        )
-
-    async def intercept_stream_stream(
-        self, continuation, client_call_details, request_iterator
-    ):
-        return await continuation(
-            self._add_metadata(client_call_details), request_iterator
-        )

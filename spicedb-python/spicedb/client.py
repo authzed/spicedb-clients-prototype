@@ -14,28 +14,23 @@ from authzed.api.v1 import (
     schema_service_pb2,
 )
 
-from spicedb import _requests
+from spicedb import _mapping, _requests
 from spicedb._requests import DEFAULT_PAGE_SIZE as _DEFAULT_PAGE_SIZE
 from spicedb._requests import IMPORT_BATCH_SIZE as _IMPORT_BATCH_SIZE
 from spicedb.consistency import Consistency
-from spicedb.errors import error_from_status_proto, is_transient, to_spicedb_error
+from spicedb.errors import is_transient, to_spicedb_error
 from spicedb.types import (
     Filter,
     LookupResource,
     LookupSubject,
-    Permissionship,
     PermissionTree,
     ReflectSchemaResult,
     RelationReference,
     Relationship,
-    ResolvedSubject,
     SchemaDiff,
     Transaction,
     Update,
-    _partial_caveat_from_proto,
     _permission_tree_from_proto,
-    _permissionship_from_proto,
-    _resolved_subject_from_proto,
     _schema_diff_from_proto,
 )
 
@@ -161,15 +156,7 @@ class SpiceDBClient:
             return await self._permissions.CheckBulkPermissions(request)
 
         resp = await self._with_retry(_call)
-        HAS = (
-            permission_service_pb2.CheckPermissionResponse.PERMISSIONSHIP_HAS_PERMISSION
-        )
-        results: list[bool] = []
-        for pair in resp.pairs:
-            if pair.HasField("error"):
-                raise error_from_status_proto(pair.error)
-            results.append(pair.item.permissionship == HAS)
-        return results
+        return _mapping.check_results(resp)
 
     async def check_any(
         self,
@@ -271,13 +258,7 @@ class SpiceDBClient:
                     ):
                         yielded += 1
                         count += 1
-                        yield LookupResource(
-                            resource_id=resp.resource_object_id,
-                            permissionship=_permissionship_from_proto(
-                                resp.permissionship
-                            ),
-                            partial_caveat=_partial_caveat_from_proto(resp),
-                        )
+                        yield _mapping.lookup_resource(resp)
                         cursor = resp.after_result_cursor
                     break
                 except grpc.aio.AioRpcError as e:
@@ -328,38 +309,7 @@ class SpiceDBClient:
                     request, metadata=self._metadata
                 ):
                     yielded += 1
-                    subject = _resolved_subject_from_proto(resp.subject)
-                    if not subject.subject_id:
-                        # Fall back to the deprecated top-level fields for
-                        # servers that don't yet populate the non-deprecated
-                        # `subject` field.
-                        subject = ResolvedSubject(
-                            subject_id=resp.subject_object_id,
-                            permissionship=_permissionship_from_proto(
-                                resp.permissionship
-                            ),
-                            partial_caveat=_partial_caveat_from_proto(resp),
-                        )
-
-                    excluded: list[ResolvedSubject] = []
-                    if resp.excluded_subjects:
-                        excluded = [
-                            _resolved_subject_from_proto(e)
-                            for e in resp.excluded_subjects
-                        ]
-                    elif resp.excluded_subject_ids:
-                        # Fall back to the deprecated excluded_subject_ids
-                        # field, which carries only IDs (no
-                        # permissionship/caveat info).
-                        excluded = [
-                            ResolvedSubject(
-                                subject_id=subject_id,
-                                permissionship=Permissionship.UNSPECIFIED,
-                            )
-                            for subject_id in resp.excluded_subject_ids
-                        ]
-
-                    yield LookupSubject(subject=subject, excluded_subjects=excluded)
+                    yield _mapping.lookup_subject(resp)
                 return
             except grpc.aio.AioRpcError as e:
                 if yielded == 0 and await self._should_retry_establishment(attempt, e):
@@ -451,10 +401,7 @@ class SpiceDBClient:
             try:
                 async for resp in self._watch.Watch(request, metadata=self._metadata):
                     yielded += 1
-                    yield (
-                        [Update._from_proto(u) for u in resp.updates],
-                        resp.changes_through.token,
-                    )
+                    yield _mapping.watch_event(resp)
                 return
             except grpc.aio.AioRpcError as e:
                 # Retrying is only safe before any update has been yielded

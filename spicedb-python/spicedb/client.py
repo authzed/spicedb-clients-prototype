@@ -9,14 +9,14 @@ from typing import Any
 import grpc
 import grpc.aio
 from authzed.api.v1 import (
-    core_pb2,
     experimental_service_pb2,
     permission_service_pb2,
     schema_service_pb2,
-    watch_service_pb2,
 )
-from google.protobuf import struct_pb2
 
+from spicedb import _requests
+from spicedb._requests import DEFAULT_PAGE_SIZE as _DEFAULT_PAGE_SIZE
+from spicedb._requests import IMPORT_BATCH_SIZE as _IMPORT_BATCH_SIZE
 from spicedb.consistency import Consistency
 from spicedb.errors import error_from_status_proto, is_transient, to_spicedb_error
 from spicedb.types import (
@@ -39,8 +39,6 @@ from spicedb.types import (
     _schema_diff_from_proto,
 )
 
-_DEFAULT_PAGE_SIZE = 512
-_IMPORT_BATCH_SIZE = 1000
 _DEFAULT_MAX_RETRIES = 3
 
 
@@ -157,35 +155,7 @@ class SpiceDBClient:
         context: dict[str, Any] | None = None,
     ) -> list[bool]:
         """Check multiple permissions via BulkCheckPermissions. Returns list of bools."""
-        ctx_struct = None
-        if context is not None:
-            ctx_struct = struct_pb2.Struct()
-            ctx_struct.update(context)
-
-        items = []
-        for rel in rels:
-            items.append(
-                permission_service_pb2.CheckBulkPermissionsRequestItem(
-                    resource=core_pb2.ObjectReference(
-                        object_type=rel.resource_type,
-                        object_id=rel.resource_id,
-                    ),
-                    permission=rel.resource_relation,
-                    subject=core_pb2.SubjectReference(
-                        object=core_pb2.ObjectReference(
-                            object_type=rel.subject_type,
-                            object_id=rel.subject_id,
-                        ),
-                        optional_relation=rel.subject_relation,
-                    ),
-                    context=ctx_struct,
-                )
-            )
-
-        request = permission_service_pb2.CheckBulkPermissionsRequest(
-            consistency=consistency._to_proto(),
-            items=items,
-        )
+        request = _requests.check_bulk_request(consistency, rels, context)
 
         async def _call() -> permission_service_pb2.CheckBulkPermissionsResponse:
             return await self._permissions.CheckBulkPermissions(request)
@@ -231,11 +201,8 @@ class SpiceDBClient:
         """Read relationships matching the filter. Handles pagination automatically."""
         cursor = None
         while True:
-            request = permission_service_pb2.ReadRelationshipsRequest(
-                consistency=consistency._to_proto(),
-                relationship_filter=filter._to_proto(),
-                optional_limit=_DEFAULT_PAGE_SIZE,
-                optional_cursor=cursor,
+            request = _requests.read_relationships_request(
+                filter, consistency, _DEFAULT_PAGE_SIZE, cursor
             )
             attempt = 0
             count = 0
@@ -280,40 +247,19 @@ class SpiceDBClient:
         ``permissionship`` before treating a result as a full grant.
         Handles pagination automatically.
         """
-        if isinstance(subject, Relationship):
-            subj_ref = core_pb2.SubjectReference(
-                object=core_pb2.ObjectReference(
-                    object_type=subject.subject_type,
-                    object_id=subject.subject_id,
-                ),
-                optional_relation=subject.subject_relation,
-            )
-        else:
-            subj_str, subj_rel = subject
-            s_type, s_id = subj_str.split(":", 1)
-            subj_ref = core_pb2.SubjectReference(
-                object=core_pb2.ObjectReference(
-                    object_type=s_type,
-                    object_id=s_id,
-                ),
-                optional_relation=subj_rel,
-            )
-
-        ctx_struct = None
-        if context is not None:
-            ctx_struct = struct_pb2.Struct()
-            ctx_struct.update(context)
+        subj_ref = _requests.subject_reference(subject)
+        ctx_struct = _requests.context_struct(context)
 
         cursor = None
         while True:
-            request = permission_service_pb2.LookupResourcesRequest(
-                consistency=consistency._to_proto(),
-                resource_object_type=resource_type,
-                permission=permission,
-                subject=subj_ref,
-                context=ctx_struct,
-                optional_limit=_DEFAULT_PAGE_SIZE,
-                optional_cursor=cursor,
+            request = _requests.lookup_resources_request(
+                resource_type,
+                permission,
+                subj_ref,
+                ctx_struct,
+                consistency,
+                _DEFAULT_PAGE_SIZE,
+                cursor,
             )
             attempt = 0
             count = 0
@@ -365,22 +311,14 @@ class SpiceDBClient:
         before treating a wildcard match as a blanket grant, or they risk
         granting access to subjects the server explicitly excluded.
         """
-        res_type, res_id = resource
-        ctx_struct = None
-        if context is not None:
-            ctx_struct = struct_pb2.Struct()
-            ctx_struct.update(context)
-
-        request = permission_service_pb2.LookupSubjectsRequest(
-            consistency=consistency._to_proto(),
-            resource=core_pb2.ObjectReference(
-                object_type=res_type,
-                object_id=res_id,
-            ),
-            permission=permission,
-            subject_object_type=subject_type,
-            optional_subject_relation=subject_relation,
-            context=ctx_struct,
+        ctx_struct = _requests.context_struct(context)
+        request = _requests.lookup_subjects_request(
+            resource,
+            permission,
+            subject_type,
+            subject_relation,
+            ctx_struct,
+            consistency,
         )
         attempt = 0
         while True:
@@ -433,10 +371,7 @@ class SpiceDBClient:
 
     async def write(self, txn: Transaction) -> str:
         """Execute a transaction and return the revision string."""
-        request = permission_service_pb2.WriteRelationshipsRequest(
-            updates=txn._updates,
-            optional_preconditions=txn._preconditions,
-        )
+        request = _requests.write_request(txn)
 
         async def _call() -> permission_service_pb2.WriteRelationshipsResponse:
             return await self._permissions.WriteRelationships(request)
@@ -468,25 +403,8 @@ class SpiceDBClient:
         delete every match when the match count exceeds ``limit``; call again
         with the same filter to continue deleting what remains.
         """
-        preconditions = [
-            permission_service_pb2.Precondition(
-                operation=permission_service_pb2.Precondition.OPERATION_MUST_MATCH,
-                filter=f._to_proto(),
-            )
-            for f in (must_match or [])
-        ] + [
-            permission_service_pb2.Precondition(
-                operation=permission_service_pb2.Precondition.OPERATION_MUST_NOT_MATCH,
-                filter=f._to_proto(),
-            )
-            for f in (must_not_match or [])
-        ]
-
-        request = permission_service_pb2.DeleteRelationshipsRequest(
-            relationship_filter=filter._to_proto(),
-            optional_preconditions=preconditions,
-            optional_limit=limit if limit is not None else 0,
-            optional_allow_partial_deletions=limit is not None,
+        request = _requests.delete_relationships_request(
+            filter, must_match, must_not_match, limit
         )
 
         async def _call() -> permission_service_pb2.DeleteRelationshipsResponse:
@@ -526,14 +444,7 @@ class SpiceDBClient:
         start_revision: str | None = None,
     ) -> AsyncIterator[tuple[list[Update], str]]:
         """Watch for relationship changes. Yields (updates, revision) tuples."""
-        cursor = None
-        if start_revision is not None:
-            cursor = core_pb2.ZedToken(token=start_revision)
-
-        request = watch_service_pb2.WatchRequest(
-            optional_object_types=object_types or [],
-            optional_start_cursor=cursor,
-        )
+        request = _requests.watch_request(object_types, start_revision)
         attempt = 0
         while True:
             yielded = 0
@@ -558,17 +469,10 @@ class SpiceDBClient:
 
     async def import_relationships(self, relationships: list[Relationship]) -> int:
         """Import relationships in bulk. Returns the number loaded."""
-
-        async def _request_iter():
-            for i in range(0, len(relationships), _IMPORT_BATCH_SIZE):
-                batch = relationships[i : i + _IMPORT_BATCH_SIZE]
-                yield permission_service_pb2.ImportBulkRelationshipsRequest(
-                    relationships=[r._to_proto() for r in batch]
-                )
-
         try:
             resp = await self._permissions.ImportBulkRelationships(
-                _request_iter(), metadata=self._metadata
+                _requests.import_batches(relationships, _IMPORT_BATCH_SIZE),
+                metadata=self._metadata,
             )
             return resp.num_loaded
         except grpc.aio.AioRpcError as e:
@@ -584,11 +488,8 @@ class SpiceDBClient:
         cursor = None
         rel_filter = filter._to_proto() if filter else None
         while True:
-            request = permission_service_pb2.ExportBulkRelationshipsRequest(
-                consistency=consistency._to_proto(),
-                optional_limit=_DEFAULT_PAGE_SIZE,
-                optional_cursor=cursor,
-                optional_relationship_filter=rel_filter,
+            request = _requests.export_request(
+                consistency, rel_filter, _DEFAULT_PAGE_SIZE, cursor
             )
             attempt = 0
             count = 0
@@ -623,15 +524,7 @@ class SpiceDBClient:
         consistency: Consistency,
     ) -> tuple[PermissionTree, str]:
         """Expand a permission tree. Returns (tree, revision)."""
-        res_type, res_id = resource
-        request = permission_service_pb2.ExpandPermissionTreeRequest(
-            consistency=consistency._to_proto(),
-            resource=core_pb2.ObjectReference(
-                object_type=res_type,
-                object_id=res_id,
-            ),
-            permission=permission,
-        )
+        request = _requests.expand_request(resource, permission, consistency)
 
         async def _call() -> permission_service_pb2.ExpandPermissionTreeResponse:
             return await self._permissions.ExpandPermissionTree(request)
@@ -707,15 +600,7 @@ class SpiceDBClient:
     ) -> ReflectSchemaResult:
         """Experimental: Reflect the schema, returning its definitions and
         caveats."""
-        request = schema_service_pb2.ReflectSchemaRequest(
-            consistency=consistency._to_proto(),
-            optional_filters=[
-                schema_service_pb2.ReflectionSchemaFilter(
-                    optional_definition_name_filter=f,
-                )
-                for f in (filters or [])
-            ],
-        )
+        request = _requests.reflect_schema_request(consistency, filters)
 
         async def _call() -> schema_service_pb2.ReflectSchemaResponse:
             return await self._schema.ReflectSchema(request)
@@ -729,10 +614,7 @@ class SpiceDBClient:
         comparison_schema: str,
     ) -> list[SchemaDiff]:
         """Experimental: Diff two schemas, returning the list of differences."""
-        request = schema_service_pb2.DiffSchemaRequest(
-            consistency=consistency._to_proto(),
-            comparison_schema=comparison_schema,
-        )
+        request = _requests.diff_schema_request(consistency, comparison_schema)
 
         async def _call() -> schema_service_pb2.DiffSchemaResponse:
             return await self._schema.DiffSchema(request)
@@ -750,10 +632,8 @@ class SpiceDBClient:
     ) -> list[RelationReference]:
         """Return the permissions that are computable for the given relation
         on a definition."""
-        request = schema_service_pb2.ComputablePermissionsRequest(
-            consistency=consistency._to_proto(),
-            definition_name=definition_name,
-            relation_name=relation_name,
+        request = _requests.computable_permissions_request(
+            consistency, definition_name, relation_name
         )
 
         async def _call() -> schema_service_pb2.ComputablePermissionsResponse:
@@ -769,10 +649,8 @@ class SpiceDBClient:
         permission_name: str,
     ) -> list[RelationReference]:
         """Return the relations that the given permission depends on."""
-        request = schema_service_pb2.DependentRelationsRequest(
-            consistency=consistency._to_proto(),
-            definition_name=definition_name,
-            permission_name=permission_name,
+        request = _requests.dependent_relations_request(
+            consistency, definition_name, permission_name
         )
 
         async def _call() -> schema_service_pb2.DependentRelationsResponse:

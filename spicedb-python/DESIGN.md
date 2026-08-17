@@ -234,11 +234,20 @@ reaches the proto's `optional_preconditions`/`optional_limit` fields, mirroring
 (`spicedb-go/client/relationships.go`):
 
 ```python
+# aio
 revision = await client.delete_relationships(
     filter,
     must_match=[guard_filter],       # MUST_MATCH precondition(s)
     must_not_match=[other_filter],   # MUST_NOT_MATCH precondition(s)
     limit=1000,                      # optional_limit
+)
+
+# sync — identical signature, no `await`
+revision = client.delete_relationships(
+    filter,
+    must_match=[guard_filter],
+    must_not_match=[other_filter],
+    limit=1000,
 )
 ```
 

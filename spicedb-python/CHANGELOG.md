@@ -16,7 +16,7 @@
 
   client = SpiceDBClient("localhost:50051", token="t", insecure=True)
   allowed = client.check_permission(full(), rel)
-  for rel in client.read_relationships(filter, full()):
+  for found in client.read_relationships(filter, full()):
       ...
   ```
 - `EventLoopBindingError` — new exception, exported from `spicedb`. Raised by

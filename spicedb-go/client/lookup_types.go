@@ -4,17 +4,31 @@ import (
 	v1 "github.com/authzed/spicedb-clients/proto-clients/spicedb-go-proto/gen/authzed/api/v1"
 )
 
-// Permissionship indicates whether a lookup result reflects a full grant or
-// is conditional on caveat context that was not fully evaluated by the
-// server. Callers MUST check this before treating a result as a full grant —
-// a Conditional result may resolve to false once the missing caveat context
-// is supplied.
+// Permissionship indicates whether a check or lookup result reflects a full
+// grant, a full denial, or is conditional on caveat context that was not
+// fully evaluated by the server. Callers MUST check this before treating a
+// result as a full grant — a Conditional result may resolve to false once
+// the missing caveat context is supplied.
+//
+// This type serves both the check surface (CheckResult) and the lookup
+// surface (LookupResource, ResolvedSubject). Lookups never yield
+// PermissionshipNoPermission: a subject/resource pair that lacks the
+// permission is simply absent from a lookup stream rather than being
+// yielded with that permissionship. NoPermission only appears on
+// CheckResult, where the server is answering a question about one specific
+// pair and "no" is itself an answer.
+//
+// PermissionshipNoPermission was added after HasPermission and
+// ConditionalPermission and is deliberately appended at the end of the
+// const block (not inserted alongside PermissionshipUnspecified) so the
+// iota values of the two pre-existing constants are not renumbered.
 type Permissionship int
 
 const (
 	PermissionshipUnspecified Permissionship = iota
 	PermissionshipHasPermission
 	PermissionshipConditionalPermission
+	PermissionshipNoPermission
 )
 
 // String returns a human-readable name for the Permissionship.
@@ -24,6 +38,8 @@ func (p Permissionship) String() string {
 		return "HasPermission"
 	case PermissionshipConditionalPermission:
 		return "ConditionalPermission"
+	case PermissionshipNoPermission:
+		return "NoPermission"
 	default:
 		return "Unspecified"
 	}
@@ -40,6 +56,10 @@ type LookupResource struct {
 	ResourceID     string
 	Permissionship Permissionship
 	PartialCaveat  *PartialCaveatInfo // non-nil when Permissionship is Conditional
+	// LookedUpAt is the revision this result was computed at. It is identical
+	// for every item yielded by a single LookupResources call — it is a
+	// property of the call, not of the individual resource.
+	LookedUpAt string
 }
 
 // ResolvedSubject is a subject resolved by LookupSubjects — either the
@@ -58,6 +78,10 @@ type ResolvedSubject struct {
 type LookupSubject struct {
 	Subject          ResolvedSubject
 	ExcludedSubjects []ResolvedSubject
+	// LookedUpAt is the revision this result was computed at. It is identical
+	// for every item yielded by a single LookupSubjects call — it is a
+	// property of the call, not of the individual subject.
+	LookedUpAt string
 }
 
 // permissionshipFromProto maps the proto LookupPermissionship enum to its

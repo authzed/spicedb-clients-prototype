@@ -14,10 +14,15 @@ import (
 
 const defaultCheckBatchSize = 1000
 
-// Check performs a bulk permission check on the given relationships and returns
-// a bool for each relationship indicating whether permission is granted.
-// All checks use BulkCheckPermissions under the hood.
-func (c *Client) Check(ctx context.Context, cs consistency.Strategy, permission string, rs ...rel.Relationship) ([]bool, error) {
+// Check performs a bulk permission check on the given relationships and
+// returns a CheckResult for each relationship. All checks use
+// BulkCheckPermissions under the hood.
+//
+// CheckResult.Permissionship carries the server's three-valued answer — a
+// Conditional result means the server needed caveat context that was not
+// supplied, and is NOT a grant. Prefer CheckResult.HasPermission() over
+// comparing Permissionship directly for the common case.
+func (c *Client) Check(ctx context.Context, cs consistency.Strategy, permission string, rs ...rel.Relationship) ([]CheckResult, error) {
 	if len(rs) == 0 {
 		return nil, nil
 	}
@@ -35,48 +40,52 @@ func (c *Client) Check(ctx context.Context, cs consistency.Strategy, permission 
 		return nil, mapGRPCError("check", err)
 	}
 
-	results := make([]bool, len(resp.GetPairs()))
+	checkedAt := resp.GetCheckedAt().GetToken()
+	results := make([]CheckResult, len(resp.GetPairs()))
 	for i, pair := range resp.GetPairs() {
 		if errResp := pair.GetError(); errResp != nil {
 			return nil, mapGRPCError(fmt.Sprintf("check item %d", i), status.FromProto(errResp).Err())
 		}
-		item := pair.GetItem()
-		results[i] = item.GetPermissionship() == v1.CheckPermissionResponse_PERMISSIONSHIP_HAS_PERMISSION
+		results[i] = checkResultFromBulkItem(pair.GetItem(), checkedAt)
 	}
 	return results, nil
 }
 
-// CheckOne checks a single permission and returns true if granted.
-func (c *Client) CheckOne(ctx context.Context, cs consistency.Strategy, permission string, r rel.Relationship) (bool, error) {
+// CheckOne checks a single permission and returns its CheckResult.
+func (c *Client) CheckOne(ctx context.Context, cs consistency.Strategy, permission string, r rel.Relationship) (CheckResult, error) {
 	results, err := c.Check(ctx, cs, permission, r)
 	if err != nil {
-		return false, err
+		return CheckResult{}, err
 	}
 	return results[0], nil
 }
 
-// CheckAny returns true if any of the given relationships have the permission.
+// CheckAny returns true if any of the given relationships have the
+// permission outright. A Conditional result does not count as granted — only
+// CheckResult.HasPermission() results are considered.
 func (c *Client) CheckAny(ctx context.Context, cs consistency.Strategy, permission string, rs ...rel.Relationship) (bool, error) {
 	results, err := c.Check(ctx, cs, permission, rs...)
 	if err != nil {
 		return false, err
 	}
 	for _, r := range results {
-		if r {
+		if r.HasPermission() {
 			return true, nil
 		}
 	}
 	return false, nil
 }
 
-// CheckAll returns true if all of the given relationships have the permission.
+// CheckAll returns true if all of the given relationships have the
+// permission outright. A Conditional result does not count as granted — every
+// result must satisfy CheckResult.HasPermission() for CheckAll to return true.
 func (c *Client) CheckAll(ctx context.Context, cs consistency.Strategy, permission string, rs ...rel.Relationship) (bool, error) {
 	results, err := c.Check(ctx, cs, permission, rs...)
 	if err != nil {
 		return false, err
 	}
 	for _, r := range results {
-		if !r {
+		if !r.HasPermission() {
 			return false, nil
 		}
 	}
@@ -84,10 +93,10 @@ func (c *Client) CheckAll(ctx context.Context, cs consistency.Strategy, permissi
 }
 
 // CheckIter checks permissions for relationships from an iterator, yielding
-// results as they are computed. Relationships are automatically batched into
-// chunks of 1,000 for efficient bulk checking.
-func (c *Client) CheckIter(ctx context.Context, cs consistency.Strategy, permission string, rels iter.Seq[rel.Relationship]) iter.Seq2[bool, error] {
-	return func(yield func(bool, error) bool) {
+// CheckResults as they are computed. Relationships are automatically batched
+// into chunks of 1,000 for efficient bulk checking.
+func (c *Client) CheckIter(ctx context.Context, cs consistency.Strategy, permission string, rels iter.Seq[rel.Relationship]) iter.Seq2[CheckResult, error] {
+	return func(yield func(CheckResult, error) bool) {
 		batch := make([]rel.Relationship, 0, defaultCheckBatchSize)
 
 		flush := func() bool {
@@ -96,7 +105,7 @@ func (c *Client) CheckIter(ctx context.Context, cs consistency.Strategy, permiss
 			}
 			results, err := c.Check(ctx, cs, permission, batch...)
 			if err != nil {
-				return yield(false, err)
+				return yield(CheckResult{}, err)
 			}
 			for _, result := range results {
 				if !yield(result, nil) {

@@ -76,12 +76,42 @@ Immutable modifiers: `r.WithCaveat()`, `r.WithExpiration()`, `r.Filter()`
 ### Checks
 
 All checks use `BulkCheckPermissions` under the hood:
-- `Check(ctx, cs, rs...) ([]bool, error)`
-- `CheckOne(ctx, cs, r) (bool, error)`
-- `CheckAny(ctx, cs, rs...) (bool, error)`
-- `CheckAll(ctx, cs, rs...) (bool, error)`
-- `CheckIter(ctx, cs, iter) iter.Seq2[bool, error]` — auto-batches in chunks
-  of 1000
+- `Check(ctx, cs, rs...) ([]CheckResult, error)`
+- `CheckOne(ctx, cs, r) (CheckResult, error)`
+- `CheckAny(ctx, cs, rs...) (bool, error)` — true only if at least one result
+  is `HasPermission()`; a Conditional result does not count
+- `CheckAll(ctx, cs, rs...) (bool, error)` — true only if every result is
+  `HasPermission()`; a Conditional result does not count
+- `CheckIter(ctx, cs, iter) iter.Seq2[CheckResult, error]` — auto-batches in
+  chunks of 1000
+
+`CheckResult` (see `client/check_types.go`) carries the server's
+three-valued answer, not a collapsed bool:
+
+```go
+type CheckResult struct {
+    Permissionship Permissionship // HasPermission, NoPermission, or ConditionalPermission
+    MissingContext []string       // caveat context keys the server needed but didn't get
+    CheckedAt      string         // revision this check was evaluated at
+}
+
+func (r CheckResult) HasPermission() bool // true only for PermissionshipHasPermission
+```
+
+A Conditional result is **NOT a grant**: it means the server found a
+caveated relationship but was not given the context needed to evaluate the
+caveat, so it could not determine `HasPermission`/`NoPermission` either way.
+`HasPermission()` returns `false` for a Conditional result — treating it as
+`true` would authorize access on a condition nobody evaluated.
+`MissingContext` names what was needed (e.g. `["now"]`), and `CheckedAt` is
+the revision the check was evaluated at — thread it into
+`consistency.AtLeast` so a subsequent read observes everything this check
+observed (read-your-writes for checks).
+
+`CheckAny`/`CheckAll` stay boolean since they already collapse a slice of
+results into one decision, but they count **only** `HasPermission()` results
+as granted — a Conditional result is treated as not-granted, same as
+`NoPermission`, to stay fail-closed.
 
 ### Streaming & Transparent Cursor Pagination
 
@@ -117,6 +147,7 @@ type LookupResource struct {
     ResourceID     string
     Permissionship Permissionship     // HasPermission vs ConditionalPermission
     PartialCaveat  *PartialCaveatInfo // non-nil when Conditional
+    LookedUpAt     string             // revision this result was computed at
 }
 
 type ResolvedSubject struct {
@@ -128,8 +159,18 @@ type ResolvedSubject struct {
 type LookupSubject struct {
     Subject          ResolvedSubject
     ExcludedSubjects []ResolvedSubject // populated when Subject.SubjectID == "*"
+    LookedUpAt       string            // revision this result was computed at
 }
 ```
+
+`LookedUpAt` is identical for every item yielded by a single
+`LookupResources`/`LookupSubjects` call — it's the revision of the call as a
+whole (`looked_up_at` on each streamed response), not a per-item value.
+`Permissionship` on a lookup result is never `PermissionshipNoPermission`: a
+resource/subject lacking the permission is simply absent from the stream
+rather than yielded with that value. `NoPermission` only appears on
+`CheckResult`, from the check surface, where the server is answering a
+question about one specific pair and "no" is itself the answer.
 
 `Permissionship` is `PermissionshipHasPermission` for a full grant, or
 `PermissionshipConditionalPermission` when the match depends on caveat
@@ -152,6 +193,13 @@ txn.Delete(relationship)
 txn.MustNotMatch(filter) // precondition
 revision, err := client.Write(ctx, txn)
 ```
+
+`Write`, `DeleteRelationships`, and `WriteSchema` all return the revision the
+mutation occurred at. `ImportRelationships` (bulk import) is the one
+exception: it returns `(numLoaded uint64, error)` with no revision, because
+`ImportBulkRelationshipsResponse` carries no `ZedToken` field at all — the
+proto itself gives the client nothing to expose there, not a client-side
+gap.
 
 ### Deletions
 
@@ -220,7 +268,7 @@ See package sections above for the complete API manifest.
 
 | Directory | Demonstrates |
 |-----------|-------------|
-| `check_permission/` | Basic permission check with CheckOne |
+| `check_permission/` | Basic permission check with CheckOne, plus a caveated check with no context to show a Conditional CheckResult |
 | `write_relationships/` | Writing relationships with transaction builder |
 | `read_relationships/` | Reading relationships with iterator |
 | `lookup_resources/` | Finding resources a subject can access |

@@ -55,6 +55,7 @@ func (c *Client) LookupResources(ctx context.Context, cs consistency.Strategy, r
 					ResourceID:     resp.GetResourceObjectId(),
 					Permissionship: permissionshipFromProto(resp.GetPermissionship()),
 					PartialCaveat:  partialCaveatFromProto(resp.GetPartialCaveatInfo()),
+					LookedUpAt:     resp.GetLookedUpAt().GetToken(),
 				}
 				if !yield(result, nil) {
 					return
@@ -130,7 +131,12 @@ func (c *Client) LookupSubjects(ctx context.Context, cs consistency.Strategy, re
 				}
 			}
 
-			if !yield(LookupSubject{Subject: subject, ExcludedSubjects: excluded}, nil) {
+			result := LookupSubject{
+				Subject:          subject,
+				ExcludedSubjects: excluded,
+				LookedUpAt:       resp.GetLookedUpAt().GetToken(),
+			}
+			if !yield(result, nil) {
 				return
 			}
 		}

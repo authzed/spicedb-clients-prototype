@@ -4,6 +4,39 @@
 
 ### Breaking Changes
 
+- **2026-08-17**: `Check`, `CheckOne`, and `CheckIter` now return a `CheckResult` (or `iter.Seq2[CheckResult, error]`) instead of a bare `bool`/`iter.Seq2[bool, error]`, so a caveated relationship whose context wasn't supplied at check time is distinguishable from a real denial instead of being silently collapsed to `false`. `CheckPermissionResponse.checked_at` — populated by the server on every check but never previously exposed by this client — is now reachable via `CheckResult.CheckedAt`, so read-your-writes is possible through the public API instead of requiring a raw gRPC stub. New type in `client/check_types.go`: `CheckResult{Permissionship, MissingContext, CheckedAt}` with `HasPermission() bool`, true only for `PermissionshipHasPermission`. `Permissionship` gains a fourth value, `PermissionshipNoPermission`, appended after `PermissionshipConditionalPermission` (not inserted alongside `PermissionshipUnspecified`) so the two pre-existing constants keep their `iota` values. `CheckAny`/`CheckAll` are unchanged in shape (still `(bool, error)`) but now count only `HasPermission()` results as granted — a Conditional result does not count, matching the fail-closed behavior of the new `CheckResult.HasPermission()`.
+
+  `LookupResource`/`LookupSubject` also gain a `LookedUpAt string` field (from each response's `looked_up_at`), for the same read-your-writes reason — identical for every item in a single lookup stream.
+
+  Before:
+  ```go
+  allowed, err := c.CheckOne(ctx, cs, "view", r)
+  if err != nil { log.Fatal(err) }
+  if allowed { /* ... */ } // true for both HAS_PERMISSION and (bug) CONDITIONAL_PERMISSION on some clients
+
+  results, err := c.Check(ctx, cs, "view", rs...)
+  for _, ok := range results { /* ok is a bare bool */ }
+  ```
+  After:
+  ```go
+  result, err := c.CheckOne(ctx, cs, "view", r)
+  if err != nil { log.Fatal(err) }
+  if result.HasPermission() { /* only true for a full grant */ }
+  if result.Permissionship == client.PermissionshipConditionalPermission {
+      // NOT a grant — result.MissingContext lists what the server needed
+      // (e.g. ["now"]) and didn't get.
+  }
+  // Thread result.CheckedAt into consistency.AtLeast(...) for a later read
+  // to observe this check.
+
+  results, err := c.Check(ctx, cs, "view", rs...)
+  for _, r := range results { r.HasPermission() /* ... */ }
+  ```
+
+  Write-surface audit for this change: `Write`, `DeleteRelationships`, and `WriteSchema` already returned a revision — no gap there. `ImportRelationships` (bulk import) does not, but that's because `ImportBulkRelationshipsResponse` has no `ZedToken` field in the proto at all — nothing for the client to expose.
+
+- **2026-08-16** (carried forward from the cross-client error-hierarchy work, which made no CHANGELOG entries of its own): four sentinel errors were added to `client/errors.go` for `errors.Is` matching: `client.ErrUnavailable`, `client.ErrCanceled`, `client.ErrDeadlineExceeded`, `client.ErrResourceExhausted`. These complete the set alongside the six already present (`ErrNotFound`, `ErrAlreadyExists`, `ErrInvalidArgument`, `ErrFailedPrecondition`, `ErrPermissionDenied`, `ErrUnauthenticated`) — `client.Error.Code`/`client.ErrorCode` already had full gRPC-code coverage, but `errors.Is` sentinel matching was previously missing for these four codes. Additive; no existing sentinel changed meaning.
+
 - **2026-08-14**: `LookupResources` and `LookupSubjects` now yield native result structs instead of bare ID strings, so callers no longer have to blindly trust an ID string — they can see whether a match is a full grant or conditional on caveat context, and (critically) which subjects are excluded from a wildcard `"*"` match. Dropping `excluded_subjects` was a real over-grant risk: a caller that saw `"*"` and nothing else had no way to know some subjects were carved out of that grant. New types in `client/lookup_types.go`: `Permissionship`, `PartialCaveatInfo`, `LookupResource`, `ResolvedSubject`, `LookupSubject`.
 
   Before:

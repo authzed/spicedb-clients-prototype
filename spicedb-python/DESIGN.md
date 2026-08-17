@@ -117,11 +117,21 @@ class Relationship:
     caveat_name: str | None = None
     caveat_context: dict[str, Any] | None = None
     expiration: datetime | None = None
+    check_context: dict[str, Any] | None = None
 ```
 
 Constructor helpers:
 - `Relationship.from_triple("document:example", "viewer", "user:jimmy")`
 - `Relationship.from_tuple("document:example#viewer", "user:jimmy")`
+
+`check_context` is a distinct concept from `caveat_context` and the two must
+not be conflated: `caveat_context` is written to the server as part of the
+relationship (`_to_proto()` embeds it in `optional_caveat`) and is evaluated
+whenever anything checks against that stored relationship in the future.
+`check_context` has no wire representation on `core_pb2.Relationship` at
+all — it only matters when this `Relationship` is passed to
+`check_permission()`/`check_permissions()` as the item being checked, where
+it supplies per-item caveat context for that one check. See "Checks" below.
 
 ### Checks
 
@@ -197,6 +207,47 @@ it observed (read-your-writes for checks; see `examples/read_your_writes/`).
 `CheckBulkPermissionsResponse.checked_at` is response-level, not per-item, so
 `check_permissions()` propagates that one token onto every `CheckResult` it
 returns.
+
+#### Caveat context: call-level default and per-item override
+
+`check_permission()`/`check_permissions()` take a call-level `context=`
+keyword — a default fanned out onto every item, since the wire has no
+call-level context field (`CheckBulkPermissionsRequest` carries only
+`consistency`/`items`/`with_tracing`; only
+`CheckBulkPermissionsRequestItem.context`, proto field 4, exists per-item).
+A `Relationship` passed in as an item can also carry its own
+`check_context`, which overrides `context` for that one item:
+
+```python
+rel_a = Relationship.from_triple(
+    "document:a", "conditional_view", "user:alice",
+    check_context={"region": "eu"},   # overrides for this item only
+)
+rel_b = Relationship.from_triple("document:b", "conditional_view", "user:alice")
+
+results = await client.check_permissions(
+    full(), rel_a, rel_b, context={"now": 42, "region": "us"}
+)
+# item for rel_a is checked with {"now": 42, "region": "eu"}
+# item for rel_b is checked with {"now": 42, "region": "us"} (unmodified default)
+```
+
+The merge is **key-level, item wins** — `{**context, **rel.check_context}`
+— not wholesale replacement. An item's `check_context` only overrides the
+keys it actually names; call-level keys it doesn't mention are retained. If
+an item's context replaced the call-level context outright, supplying one
+key would silently drop every other call-level key the caveat still needed,
+landing the caller right back in the confusing `CONDITIONAL_PERMISSION`
+state this whole mechanism exists to make legible. If neither call-level nor
+per-item context is supplied for an item, no `context` field is set on that
+item's wire request at all (not an empty `Struct`).
+
+This is purely additive: no existing `check_permission()`/`check_permissions()`
+call site changes, and `Relationship.check_context` defaults to `None`, so
+every existing `Relationship` construction is unaffected. The merge itself
+lives in the flavor-free `spicedb/_requests.py::check_bulk_request` (and its
+private `_merge_check_context` helper), shared by both `spicedb.aio` and
+`spicedb.sync`.
 
 ### Streaming
 
@@ -384,7 +435,7 @@ See package sections above.
 | Directory | Demonstrates |
 |-----------|-------------|
 | `check_permission/` | Basic permission check |
-| `caveated_check/` | Checking a caveated relationship with no context supplied (CONDITIONAL_PERMISSION) |
+| `caveated_check/` | Checking a caveated relationship with no context supplied (CONDITIONAL_PERMISSION), and resolving the same conditional to a grant by supplying the missing context via `Relationship.check_context` |
 | `read_your_writes/` | Using `CheckResult.checked_at`/`LookupResource.looked_up_at` with `at_least()` to make a later call observe an earlier write |
 | `write_relationships/` | Writing relationships with transaction builder |
 | `read_relationships/` | Reading relationships with async iterator |

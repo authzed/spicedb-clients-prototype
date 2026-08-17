@@ -86,3 +86,50 @@ async def test_caveated_check_without_context_is_conditional(client: SpiceDBClie
     await client.delete_relationships(
         Filter(resource_type="document", resource_id="caveated")
     )
+
+
+async def test_caveated_check_with_context_resolves_to_grant(client: SpiceDBClient):
+    """The payoff test for per-item check context (spec D3b): the prior test
+    proves a caveated check comes back CONDITIONAL_PERMISSION with
+    missing_context=["now"] when no context is supplied. This test proves a
+    caller can ACT on that -- supplying the missing "now" resolves the same
+    conditional into a real HAS_PERMISSION grant.
+
+    Uses `Relationship.from_triple(..., check_context=...)`, the new
+    per-item override, rather than the call-level `context=` kwarg that
+    already existed -- this is what this change actually adds.
+    """
+    await client.write_schema(CAVEATED_SCHEMA)
+
+    txn = Transaction()
+    txn.touch(
+        Relationship.from_triple(
+            "document:caveated",
+            "conditional_viewer",
+            "user:alice",
+            caveat_name="active",
+        )
+    )
+    await client.write(txn)
+
+    # Check WITH context, supplied per-item via check_context rather than
+    # the call-level context= kwarg. "now" < 100 -- the caveat is satisfied.
+    rel = Relationship.from_triple(
+        "document:caveated",
+        "conditional_view",
+        "user:alice",
+        check_context={"now": 50},
+    )
+    result = await client.check_permission(full(), rel)
+
+    print(
+        f"alice can view document:caveated with context supplied: "
+        f"{result.has_permission} (permissionship={result.permissionship})"
+    )
+    assert result.permissionship == Permissionship.HAS_PERMISSION
+    assert result.has_permission is True
+    assert result.missing_context == []
+
+    await client.delete_relationships(
+        Filter(resource_type="document", resource_id="caveated")
+    )

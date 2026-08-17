@@ -178,7 +178,11 @@ class SpiceDBClient:
         `.has_permission` for the common bool case, or inspect
         `.permissionship` directly to distinguish a CONDITIONAL_PERMISSION
         result (caveat context was needed but not supplied) from a real
-        denial."""
+        denial.
+
+        `context` supplies caveat context for this check. `rel` can also
+        carry its own `Relationship.check_context`, which overrides `context`
+        key-by-key for this one check (see `check_permissions` below)."""
         self._ensure_channel()
         results = await self.check_permissions(consistency, rel, context=context)
         return results[0]
@@ -190,7 +194,18 @@ class SpiceDBClient:
         context: dict[str, Any] | None = None,
     ) -> list[CheckResult]:
         """Check multiple permissions via BulkCheckPermissions. Returns a
-        list of CheckResult, one per relationship, in the same order."""
+        list of CheckResult, one per relationship, in the same order.
+
+        `context` is a call-level default applied to every relationship's
+        check item. A relationship built with its own
+        `check_context` (e.g. `Relationship.from_triple(..., check_context=
+        {...})`) overrides `context` for that one item -- merged key-by-key
+        (this item's keys win on conflict; call-level keys the item doesn't
+        mention are retained, NOT replaced wholesale). An item with no
+        `check_context` inherits `context` unchanged. `check_context` is
+        check-time-only and distinct from `Relationship.caveat_context`,
+        which is written into a relationship at write time -- see the
+        `Relationship` docstring."""
         self._ensure_channel()
         request = _requests.check_bulk_request(consistency, rels, context)
 

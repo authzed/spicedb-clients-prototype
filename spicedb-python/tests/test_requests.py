@@ -62,6 +62,60 @@ def test_check_bulk_request_carries_at_least_as_fresh_token():
     assert r.consistency.at_least_as_fresh.token == "cafebabe"
 
 
+def test_check_bulk_request_call_level_context_reaches_every_item():
+    """C1: a call-level context reaches every item, by value."""
+    rels = [
+        Relationship.from_triple("document:a", "view", "user:jimmy"),
+        Relationship.from_triple("document:b", "view", "user:jimmy"),
+    ]
+    r = req.check_bulk_request(full(), rels, {"now": 42, "region": "us"})
+    assert dict(r.items[0].context) == {"now": 42, "region": "us"}
+    assert dict(r.items[1].context) == {"now": 42, "region": "us"}
+
+
+def test_check_bulk_request_per_item_context_reaches_only_that_item():
+    """C2: a per-item check_context override reaches only that item; a
+    sibling item with no override gets no context field at all."""
+    rels = [
+        Relationship.from_triple(
+            "document:a", "view", "user:jimmy", check_context={"region": "eu"}
+        ),
+        Relationship.from_triple("document:b", "view", "user:jimmy"),
+    ]
+    r = req.check_bulk_request(full(), rels, None)
+    assert dict(r.items[0].context) == {"region": "eu"}
+    assert not r.items[1].HasField("context")
+
+
+def test_check_bulk_request_merges_call_level_and_per_item_context():
+    """C3: the merge rule is key-level, item wins -- NOT wholesale
+    replacement. Call-level {"now": 42, "region": "us"} + item-level
+    {"region": "eu"} produces {"now": 42, "region": "eu"} for that item
+    (item's "region" wins, call-level "now" is retained), and the unmodified
+    call-level {"now": 42, "region": "us"} for a sibling item that supplied
+    none. Asserting only the overriding item would also pass under
+    wholesale-replacement semantics, so both items must be checked to pin
+    the merge rule.
+    """
+    rels = [
+        Relationship.from_triple(
+            "document:a", "view", "user:jimmy", check_context={"region": "eu"}
+        ),
+        Relationship.from_triple("document:b", "view", "user:jimmy"),
+    ]
+    r = req.check_bulk_request(full(), rels, {"now": 42, "region": "us"})
+    assert dict(r.items[0].context) == {"now": 42, "region": "eu"}
+    assert dict(r.items[1].context) == {"now": 42, "region": "us"}
+
+
+def test_check_bulk_request_no_context_supplied_leaves_field_unset():
+    """C4: neither call-level nor per-item context supplied -> no `context`
+    field set on the wire (not an empty Struct)."""
+    rels = [Relationship.from_triple("document:a", "view", "user:jimmy")]
+    r = req.check_bulk_request(full(), rels, None)
+    assert not r.items[0].HasField("context")
+
+
 def test_lookup_resources_request_carries_at_least_as_fresh_token():
     """Same round-trip as above, for the lookup_resources() request builder
     -- examples/read_your_writes/ threads at_least(written_at) through this

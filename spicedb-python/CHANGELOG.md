@@ -88,6 +88,42 @@
   # resource.looked_up_at can be threaded into at_least() for a later call
   ```
 
+- `Relationship` gained a `check_context: dict[str, Any] | None = None` field
+  (also accepted by `Relationship.from_triple()`/`from_tuple()`), letting a
+  `Relationship` passed to `check_permission()`/`check_permissions()` supply
+  or override caveat context for just that one check item. It merges with
+  the pre-existing call-level `context=` keyword key-by-key — this item's
+  keys win on conflict, call-level keys the item doesn't mention are
+  retained (NOT wholesale replacement) — and an item with no `check_context`
+  inherits `context` unchanged. Previously this client could only apply one
+  context dict to every item in a bulk check, with no way to vary it
+  per-relationship, making a `CheckResult.missing_context` on one item
+  unactionable without either supplying that context for every other item
+  too or issuing a second call. `check_context` is check-time-only and has
+  no wire representation on `core_pb2.Relationship` — it is distinct from
+  the pre-existing `caveat_context`, which is written into a relationship at
+  write time (`optional_caveat`) and evaluated on every future check against
+  it; the two must not be conflated. Fully additive: no existing
+  `check_permission()`/`check_permissions()` call site changes, and
+  `check_context` defaults to `None`, so no existing `Relationship`
+  construction is affected. The merge lives in the shared
+  `spicedb/_requests.py::check_bulk_request`, used identically by both
+  `spicedb.aio.SpiceDBClient` and `spicedb.sync.SpiceDBClient`.
+
+  ```python
+  rel_a = Relationship.from_triple(
+      "document:a", "conditional_view", "user:alice",
+      check_context={"region": "eu"},  # overrides for this item only
+  )
+  rel_b = Relationship.from_triple("document:b", "conditional_view", "user:alice")
+
+  results = await client.check_permissions(
+      full(), rel_a, rel_b, context={"now": 42, "region": "us"}
+  )
+  # rel_a's item is checked with {"now": 42, "region": "eu"}
+  # rel_b's item is checked with {"now": 42, "region": "us"} (call-level default, unmodified)
+  ```
+
 ### Fixed
 
 - The secure (TLS) path sent the `authorization` header twice on every

@@ -14,7 +14,26 @@ from google.protobuf.message import Message
 
 @dataclass(frozen=True)
 class Relationship:
-    """An immutable representation of a SpiceDB relationship."""
+    """An immutable representation of a SpiceDB relationship.
+
+    ``caveat_name``/``caveat_context`` describe a caveat carried BY the
+    relationship: they are written to the server (``_to_proto()`` embeds
+    them in ``core_pb2.Relationship.optional_caveat``) and evaluated
+    whenever anything checks against this stored relationship in the
+    future.
+
+    ``check_context`` is a different, check-time-only concept and must not
+    be conflated with ``caveat_context``. It has no wire representation on
+    ``core_pb2.Relationship`` at all -- ``_to_proto()``/``_from_proto()``
+    never read or set it, so it is never written to the server and never
+    round-trips through a write. It only matters when this ``Relationship``
+    is passed as one of the items to
+    ``SpiceDBClient.check_permission()``/``check_permissions()``: there, it
+    supplies (or overrides) caveat context for THIS ONE check, merged
+    key-by-key with those methods' call-level ``context=`` keyword (this
+    item's keys win on conflict; call-level keys the item doesn't mention
+    are retained -- see ``spicedb._requests.check_bulk_request``).
+    """
 
     resource_type: str
     resource_id: str
@@ -25,6 +44,7 @@ class Relationship:
     caveat_name: str | None = None
     caveat_context: dict[str, Any] | None = None
     expiration: datetime | None = None
+    check_context: dict[str, Any] | None = None
 
     @classmethod
     def from_triple(
@@ -36,10 +56,15 @@ class Relationship:
         caveat_name: str | None = None,
         caveat_context: dict[str, Any] | None = None,
         expiration: datetime | None = None,
+        check_context: dict[str, Any] | None = None,
     ) -> Relationship:
         """Create a Relationship from 'type:id', 'relation', 'type:id' strings.
 
         Optionally, the subject string can include a relation as 'type:id#relation'.
+
+        ``check_context`` is check-time-only per-item caveat context -- see
+        the class docstring; it is distinct from ``caveat_context``, which is
+        written into the relationship at write time.
         """
         res_type, res_id = resource.split(":", 1)
         if "#" in subject:
@@ -58,6 +83,7 @@ class Relationship:
             caveat_name=caveat_name,
             caveat_context=caveat_context,
             expiration=expiration,
+            check_context=check_context,
         )
 
     @classmethod
@@ -69,8 +95,14 @@ class Relationship:
         caveat_name: str | None = None,
         caveat_context: dict[str, Any] | None = None,
         expiration: datetime | None = None,
+        check_context: dict[str, Any] | None = None,
     ) -> Relationship:
-        """Create from 'type:id#relation' and 'type:id' (or 'type:id#relation')."""
+        """Create from 'type:id#relation' and 'type:id' (or 'type:id#relation').
+
+        ``check_context`` is check-time-only per-item caveat context -- see
+        the class docstring; it is distinct from ``caveat_context``, which is
+        written into the relationship at write time.
+        """
         res_ref, relation = resource_and_relation.rsplit("#", 1)
         return cls.from_triple(
             res_ref,
@@ -79,6 +111,7 @@ class Relationship:
             caveat_name=caveat_name,
             caveat_context=caveat_context,
             expiration=expiration,
+            check_context=check_context,
         )
 
     def _to_proto(self) -> core_pb2.Relationship:

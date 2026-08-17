@@ -91,6 +91,42 @@ class TestRelationship:
         )
         assert r.expiration == exp
 
+    def test_check_context_defaults_to_none(self):
+        r = Relationship.from_triple("document:readme", "viewer", "user:alice")
+        assert r.check_context is None
+
+    def test_from_triple_with_check_context(self):
+        r = Relationship.from_triple(
+            "document:readme",
+            "viewer",
+            "user:alice",
+            check_context={"now": 42},
+        )
+        assert r.check_context == {"now": 42}
+        # check_context is check-time-only and distinct from caveat_context
+        # (write-time) -- setting one must not set the other.
+        assert r.caveat_context is None
+
+    def test_from_tuple_with_check_context(self):
+        r = Relationship.from_tuple(
+            "document:readme#viewer", "user:alice", check_context={"now": 42}
+        )
+        assert r.check_context == {"now": 42}
+
+    def test_check_context_has_no_wire_representation(self):
+        """check_context must never be written to the server -- it has no
+        field on core_pb2.Relationship, so _to_proto() must not touch it and
+        a proto round-trip must not resurrect it."""
+        r = Relationship.from_triple(
+            "document:readme",
+            "viewer",
+            "user:alice",
+            check_context={"now": 42},
+        )
+        proto = r._to_proto()
+        r2 = Relationship._from_proto(proto)
+        assert r2.check_context is None
+
     def test_frozen(self):
         r = Relationship.from_triple("document:readme", "viewer", "user:alice")
         try:

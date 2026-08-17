@@ -71,6 +71,48 @@ All idiomatic clients should provide:
    full consistency instead. Another should be provided to return minimize
    latency instead. Both should have descriptive names.
 
+## RULE: Only an unconditional grant is true
+
+**Binding on every client, in every language, with no exceptions.**
+
+`CheckPermissionResponse.permissionship` has three non-error values:
+`NO_PERMISSION`, `HAS_PERMISSION`, and `CONDITIONAL_PERMISSION`. A
+`CONDITIONAL_PERMISSION` means the server found a matching relationship but could
+**not** evaluate its caveat, because the required context was not supplied. The
+server is saying "I need more information" — it is **not** saying yes.
+
+Therefore:
+
+1. **Only `HAS_PERMISSION` may ever be treated as a grant.** `CONDITIONAL_PERMISSION`,
+   `NO_PERMISSION`, and `UNSPECIFIED` are all not-a-grant. An unrecognized future
+   enum value is also not-a-grant.
+2. **Every predicate that answers "does this subject have the permission" —
+   `HasPermission()`, `has_permission`, `has_permission?`, `hasPermission()` — must
+   return true for `HAS_PERMISSION` and false for everything else.** A single
+   equality comparison, never a disjunction.
+3. **Aggregate predicates count only `HAS_PERMISSION`.** `check_any` returns true
+   only if some result is an unconditional grant; `check_all` only if every result
+   is. A conditional never contributes to a true.
+4. **Where a language can make a check result behave as a boolean, it must yield
+   the same answer.** Python's `CheckResult.__bool__` returns `has_permission`, so
+   `if result:` is safe.
+5. **Where a language cannot** — Ruby (every object but `nil`/`false` is truthy) and
+   TypeScript (objects are unconditionally truthy), with no override available —
+   **no documentation, docstring, README, or example in that client may show a
+   check result used directly as a condition.** Every sample must go through the
+   predicate. This is a hard requirement, not a style preference: in those clients a
+   bare `if result` silently grants on an unevaluated caveat, and the docs are the
+   only thing standing between a reader and that bug. Go, Rust, C#, and Java are
+   safe by construction — `if result` does not compile.
+6. **The third state must remain reachable.** Collapsing the check surface to a
+   bare boolean is forbidden, because it makes "denied" indistinguishable from
+   "you did not supply the caveat context." Callers must be able to tell those
+   apart, and to learn which context was missing.
+
+The failure this rule exists to prevent is real and shipped: one client previously
+returned `true` for `CONDITIONAL_PERMISSION` by design, granting access on a caveat
+that was never evaluated.
+
 ## What NOT To Do
 
 - No auto-generated feeling — the API should read like hand-written code
@@ -79,6 +121,7 @@ All idiomatic clients should provide:
 - No silent defaults for consistency — make users choose explicitly
 - No exposing gRPC internals (channels, stubs, metadata) in the primary API
   (escape hatches for advanced use are acceptable as clearly marked secondary API)
+- **No treating a conditional permission as a grant** — see the RULE above
 
 ## CI Workflow Conventions
 

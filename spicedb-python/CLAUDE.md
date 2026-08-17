@@ -9,7 +9,11 @@ This is the idiomatic Python client for SpiceDB.
 3. When updating after a proto change: check the proto client diff
 4. NEVER remove or rename public API methods/types — add new methods instead
 5. Propagate deprecation using `warnings.warn(..., DeprecationWarning)`
-6. Update `examples/` to cover new functionality
-7. Never delete an example — mark deprecated ones with a note instead
-8. Update CHANGELOG.md after making changes
-9. Run `uv run pytest` after making changes
+6. `spicedb.sync.SpiceDBClient` and `spicedb.aio.SpiceDBClient` must change
+   together — same method names, same signatures, differing only in
+   `async`/`await` and `Iterator` vs `AsyncIterator`. `tests/test_parity.py`
+   enforces this and fails the build on any drift.
+7. Update `examples/` to cover new functionality
+8. Never delete an example — mark deprecated ones with a note instead
+9. Update CHANGELOG.md after making changes
+10. Run `uv run pytest` after making changes

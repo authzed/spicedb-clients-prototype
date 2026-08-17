@@ -13,26 +13,79 @@ decisions.
 Pythonic API that feels like a native library. Use modern Python features
 (3.11+): type hints everywhere, dataclasses, async/await, exception hierarchy.
 
+### Sync and Async
+
+Both concurrency models are first-class and neither owns the bare namespace:
+
+```python
+from spicedb.sync import SpiceDBClient   # synchronous
+from spicedb.aio import SpiceDBClient    # asynchronous
+```
+
+There is deliberately no `spicedb.SpiceDBClient`. Everything else — relationship
+types, filters, transactions, consistency constructors, the error hierarchy — is
+flavor-free and imported from `spicedb` directly.
+
+The two clients expose identical method names and signatures; only
+`async`/`await` and `Iterator` vs `AsyncIterator` differ.
+`tests/test_parity.py` enforces this.
+
+Request building and response mapping live in `spicedb/_requests.py` and
+`spicedb/_mapping.py`, shared by both flavors so neither can drift on
+proto handling.
+
+Neither client uses a gRPC interceptor. Both attach the bearer token as
+per-call metadata, because `grpc` and `grpc.aio` differ in interceptor
+registration semantics in ways that silently change which calls get
+authenticated.
+
+Sync callers should build one client at startup and reuse it. Async callers
+must not share a client across event loops — doing so raises
+`EventLoopBindingError`, which points at `spicedb.sync`.
+
 ### Package Structure
 
-- **`spicedb`** — main package
-- **`spicedb.client`** — the async `Client` class and all operations
+- **`spicedb`** — main package; relationship types, filters, transactions,
+  consistency constructors, and the error hierarchy all live at this level
+- **`spicedb.aio`** — the asynchronous `SpiceDBClient`
+- **`spicedb.sync`** — the synchronous `SpiceDBClient`
 - **`spicedb.types`** — relationship types, filters, transactions (dataclasses)
 - **`spicedb.consistency`** — consistency strategy constructors
 - **`spicedb.errors`** — typed exception hierarchy
 
+There is no `spicedb.client` module anymore, and no `spicedb.SpiceDBClient`
+alias — import `spicedb.aio.SpiceDBClient` or `spicedb.sync.SpiceDBClient`
+explicitly. See "Sync and Async" above.
+
 ### Client Construction
 
 ```python
+from spicedb.aio import SpiceDBClient    # or: from spicedb.sync import SpiceDBClient
+
 # For production (TLS)
 client = SpiceDBClient("grpc.example.com:443", token="my-token")
 
 # For testing (plaintext)
 client = SpiceDBClient("localhost:50051", token="testtoken", insecure=True)
+```
 
-# Context manager
-async with SpiceDBClient(...) as client:
+Context manager — `async with` on `spicedb.aio`, `with` on `spicedb.sync`:
+
+```python
+async with SpiceDBClient(...) as client:  # aio
     ...
+
+with SpiceDBClient(...) as client:  # sync
+    ...
+```
+
+`spicedb.sync.SpiceDBClient` needs no event loop, so a sync caller typically
+skips the context manager and builds one client at process startup instead,
+reusing it for the process lifetime:
+
+```python
+client = SpiceDBClient("localhost:50051", token="testtoken", insecure=True)
+# reused by every caller for the life of the process; nothing to await
 ```
 
 ### Consistency
@@ -40,10 +93,10 @@ async with SpiceDBClient(...) as client:
 Consistency is explicit, never defaulted:
 
 ```python
-from spicedb.consistency import full, min_latency, at_least, snapshot
+from spicedb import full, min_latency, at_least, snapshot
 
-result = await client.check_permission(rel, consistency=full())
-result = await client.check_permission(rel, consistency=at_least(revision))
+result = await client.check_permission(full(), rel)
+result = await client.check_permission(at_least(revision), rel)
 ```
 
 All write operations return a `revision: str`.
@@ -73,19 +126,29 @@ Constructor helpers:
 ### Checks
 
 ```python
+# aio
 results = await client.check_permissions(consistency, *relationships)  # list[bool]
 allowed = await client.check_permission(consistency, relationship)     # bool
 any_allowed = await client.check_any(consistency, *relationships)      # bool
 all_allowed = await client.check_all(consistency, *relationships)      # bool
+
+# sync — identical signatures, no `await`
+results = client.check_permissions(consistency, *relationships)
+allowed = client.check_permission(consistency, relationship)
+any_allowed = client.check_any(consistency, *relationships)
+all_allowed = client.check_all(consistency, *relationships)
 ```
 
 All checks use BulkCheckPermissions under the hood.
 
 ### Streaming
 
-Async iterators for streaming RPCs:
+`spicedb.aio` yields `AsyncIterator`s; `spicedb.sync` yields plain
+`Iterator`s. Same method names, same automatic pagination — only `for` vs
+`async for` differs:
 
 ```python
+# aio
 async for rel in client.read_relationships(filter, consistency):
     ...
 
@@ -93,6 +156,16 @@ async for resource in client.lookup_resources(..., consistency):
     ...  # resource: LookupResource
 
 async for subject in client.lookup_subjects(..., consistency):
+    ...  # subject: LookupSubject
+
+# sync
+for rel in client.read_relationships(filter, consistency):
+    ...
+
+for resource in client.lookup_resources(..., consistency):
+    ...  # resource: LookupResource
+
+for subject in client.lookup_subjects(..., consistency):
     ...  # subject: LookupSubject
 ```
 
@@ -140,7 +213,7 @@ subject has access," or they risk over-granting to excluded subjects.
 
 ### Writes
 
-Transaction builder:
+Transaction builder — identical on both flavors except the final call:
 
 ```python
 txn = Transaction()
@@ -148,7 +221,9 @@ txn.create(relationship)
 txn.touch(relationship)
 txn.delete(relationship)
 txn.must_not_match(filter)  # precondition
-revision = await client.write(txn)
+
+revision = await client.write(txn)  # aio
+revision = client.write(txn)        # sync
 ```
 
 ### Deletions
@@ -196,9 +271,23 @@ class PermissionDeniedError(SpiceDBError): ...
 class NotFoundError(SpiceDBError): ...
 class AlreadyExistsError(SpiceDBError): ...
 class InvalidArgumentError(SpiceDBError): ...
+class FailedPreconditionError(SpiceDBError): ...
+class UnavailableError(SpiceDBError): ...
+class CancelledError(SpiceDBError): ...
+class EventLoopBindingError(SpiceDBError): ...
 ```
 
-Automatic retry with exponential backoff for transient errors.
+All nine are exported from `spicedb` directly — no flavor prefix.
+
+`EventLoopBindingError` doesn't come from a gRPC status; it's raised by
+`spicedb.aio.SpiceDBClient` when a client already bound to one asyncio event
+loop is reused from a different one. It can't happen on
+`spicedb.sync.SpiceDBClient`, which has no event loop to bind to.
+
+Automatic retry with exponential backoff for transient errors
+(`UNAVAILABLE`/`RESOURCE_EXHAUSTED`/`ABORTED`) on both flavors —
+`is_transient()` checks against `grpc.RpcError`, the base type both `grpc`'s
+and `grpc.aio`'s error classes satisfy.
 
 ### Type Hints
 
@@ -215,11 +304,17 @@ See package sections above.
 | `check_permission/` | Basic permission check |
 | `write_relationships/` | Writing relationships with transaction builder |
 | `read_relationships/` | Reading relationships with async iterator |
+| `delete_relationships/` | Deleting relationships, including precondition-guarded deletes |
 | `lookup_resources/` | Resource lookup |
 | `lookup_subjects/` | Subject lookup |
 | `watch_changes/` | Watching for changes |
 | `schema_management/` | Schema read/write |
 | `bulk_operations/` | Bulk checks and imports |
+| `expand_permission_tree/` | Expanding a permission into its tree of subjects |
+| `sync_check_permission/` | Basic permission check with `spicedb.sync` — one client built at startup, reused, no event loop |
+| `sync_write_relationships/` | Writing relationships with the transaction builder, synchronously |
+| `sync_read_relationships/` | Reading relationships with a plain `for` loop instead of `async for` |
+| `sync_watch_changes/` | Watching for changes from a blocking generator |
 
 ## Changelog
 

@@ -4,6 +4,34 @@
 
 ### Added
 
+- `spicedb.sync.SpiceDBClient` — a synchronous flavor of the client, exposing
+  the same 22 methods as `spicedb.aio.SpiceDBClient` with identical names and
+  signatures (`tests/test_parity.py` fails the build if the two surfaces
+  drift). Intended for callers with no event loop — Django, Flask, scripts,
+  batch jobs — that want to build one client at startup and reuse it for the
+  life of the process.
+
+  ```python
+  from spicedb.sync import SpiceDBClient
+
+  client = SpiceDBClient("localhost:50051", token="t", insecure=True)
+  allowed = client.check_permission(full(), rel)
+  for rel in client.read_relationships(filter, full()):
+      ...
+  ```
+- `EventLoopBindingError` — new exception, exported from `spicedb`. Raised by
+  `spicedb.aio.SpiceDBClient` when the client is used from a different
+  asyncio event loop than the one it bound its gRPC channel to on first use.
+  The message points callers at `spicedb.sync.SpiceDBClient` as the fix for
+  code that can't guarantee a single long-lived event loop.
+- `FailedPreconditionError`, `UnavailableError`, and `CancelledError` are now
+  exported from the package root (`from spicedb import ...`) and included in
+  `spicedb.__all__`. These exception classes already existed and were already
+  raised for their corresponding gRPC status codes; they were just missing
+  from the public export surface, so `from spicedb import UnavailableError`
+  previously failed even though `except spicedb.errors.UnavailableError`
+  worked.
+
 - `SpiceDBClient.delete_relationships()` now accepts optional `must_match`/
   `must_not_match` (each `list[Filter]`) and `limit` keyword args, mirroring
   `spicedb-go`'s `WithDeleteMustMatch`/`WithDeleteMustNotMatch`/
@@ -39,6 +67,30 @@
 
 ### Fixed
 
+- The secure (TLS) path sent the `authorization` header twice on every
+  call — once from a gRPC call-credentials layer, once from an interceptor —
+  while the insecure path sent it once. A server that logged or rate-limited
+  on that header would have seen it duplicated only for TLS connections.
+  Neither client now uses a gRPC interceptor or composes call credentials;
+  both attach the bearer token as per-call `metadata=` exactly once, on every
+  call, on both the secure and insecure paths, for both flavors.
+- `is_transient()` checked only `grpc.aio.AioRpcError`, so it always returned
+  `False` for errors raised by a sync `grpc.Channel`
+  (`grpc._channel._InactiveRpcError`, a `grpc.RpcError` but not an
+  `AioRpcError`). A transient failure — a restart, a load balancer hiccup —
+  would have been raised straight to the caller by `spicedb.sync.SpiceDBClient`
+  with no retry at all. `is_transient()` now checks `grpc.RpcError`, the base
+  type both `grpc`'s and `grpc.aio`'s error classes satisfy, so both flavors
+  retry the same transient codes.
+- `spicedb.aio.SpiceDBClient` opened its gRPC channel in `__init__`, binding
+  it to whatever asyncio event loop was running at construction time —
+  usually none. A client constructed at import time or module load (a common
+  pattern, and the one `spicedb.sync.SpiceDBClient` is designed to support)
+  would fail on its first real call, since `asyncio.run()` creates a new loop
+  per invocation. The channel now opens lazily on first use and binds to
+  whichever loop is running then; reusing the same client from a second event
+  loop now raises the new `EventLoopBindingError` with a message that
+  explains the constraint, instead of an opaque low-level gRPC failure.
 - `read_relationships()`, `lookup_resources()`, `lookup_subjects()`,
   `watch()`, and `export_relationships()` now retry a transient gRPC error
   (`UNAVAILABLE`/`RESOURCE_EXHAUSTED`/`ABORTED`) that occurs while
@@ -69,6 +121,29 @@
   functions which were already exported.
 
 ### Breaking
+
+- `spicedb.SpiceDBClient` no longer exists. Import `spicedb.aio.SpiceDBClient`
+  (async — same behavior as the old top-level client) or the new
+  `spicedb.sync.SpiceDBClient` (synchronous) instead. Everything else —
+  `Relationship`, `Filter`, `Transaction`, the consistency constructors, the
+  error hierarchy — is unaffected and still imports from `spicedb` directly.
+
+  Before:
+  ```python
+  from spicedb import SpiceDBClient
+  async with SpiceDBClient("localhost:50051", token="t", insecure=True) as client:
+      ...
+  ```
+  After:
+  ```python
+  from spicedb.aio import SpiceDBClient
+  async with SpiceDBClient("localhost:50051", token="t", insecure=True) as client:
+      ...
+  ```
+- `spicedb-gen`'s generated typed client now emits three files —
+  `permissions.py`, `sync.py`, and `aio.py` — instead of a single generated
+  client module, mirroring the sync/async split above. Regenerate any
+  checked-in generated output after upgrading `spicedb-gen`.
 
 - `SpiceDBClient.lookup_resources()` and `SpiceDBClient.lookup_subjects()`
   now yield native `LookupResource`/`LookupSubject` result dataclasses

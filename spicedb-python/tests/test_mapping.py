@@ -78,8 +78,6 @@ def test_lookup_subject_falls_back_to_deprecated_excluded_ids():
 
 
 def test_lookup_subject_prefers_modern_fields_over_deprecated():
-    from authzed.api.v1 import core_pb2
-
     resp = psp.LookupSubjectsResponse(
         subject=psp.ResolvedSubject(
             subject_object_id="modern",
@@ -88,7 +86,6 @@ def test_lookup_subject_prefers_modern_fields_over_deprecated():
         subject_object_id="deprecated",
     )
     assert mapping.lookup_subject(resp).subject.subject_id == "modern"
-    assert core_pb2 is not None
 
 
 def test_lookup_resource_maps_has_permission_with_no_partial_caveat():

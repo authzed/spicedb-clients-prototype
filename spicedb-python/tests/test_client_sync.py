@@ -89,6 +89,38 @@ def test_check_permission_returns_check_result(make_client):
         assert result.checked_at == "deadbeef"
 
 
+def test_check_any_and_check_all_do_not_count_conditional(make_client):
+    """Sync-flavor counterpart of
+    tests/test_client.py::TestCheckPermissionReturnsCheckResult::test_check_any_and_check_all_do_not_count_conditional.
+
+    check_any/check_all are implemented independently in each flavor's
+    client.py (not shared via _mapping.py), and test_parity.py only compares
+    signatures -- it would not catch the sync flavor alone regressing to
+    counting a Conditional result as granted. This must stay in lockstep
+    with the aio-flavor test above.
+    """
+    from authzed.api.v1 import core_pb2
+    from authzed.api.v1 import permission_service_pb2 as psp
+
+    c = make_client()
+    resp = psp.CheckBulkPermissionsResponse(
+        checked_at=core_pb2.ZedToken(token="deadbeef"),
+        pairs=[
+            psp.CheckBulkPermissionsPair(
+                item=psp.CheckBulkPermissionsResponseItem(
+                    permissionship=psp.CheckPermissionResponse.PERMISSIONSHIP_CONDITIONAL_PERMISSION
+                )
+            )
+        ]
+    )
+    with mock.patch.object(c._permissions, "CheckBulkPermissions", return_value=resp):
+        rel = Relationship.from_triple(
+            "document:readme", "conditional_view", "user:jimmy"
+        )
+        assert c.check_any(full(), rel) is False
+        assert c.check_all(full(), rel) is False
+
+
 def test_transient_error_is_retried_then_succeeds(make_client):
     """Guards the Task 1 is_transient fix -- without it this retries zero times."""
     from authzed.api.v1 import permission_service_pb2 as psp

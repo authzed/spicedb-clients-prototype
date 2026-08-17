@@ -159,12 +159,23 @@ class CheckResult:
         """True ONLY for HAS_PERMISSION."""
         ...
 
+    def __bool__(self) -> bool:
+        """Mirrors has_permission, so `if result:` is safe."""
+        ...
+
 result = await client.check_permission(full(), rel)
 if result.permissionship == Permissionship.CONDITIONAL_PERMISSION:
     print(f"needs context: {result.missing_context}")  # e.g. ["now"]
-elif result.has_permission:
+elif result:  # or result.has_permission -- __bool__ mirrors it
     ...  # a full grant
 ```
+
+`CheckResult.__bool__` exists because `if result:` is the single most natural
+migration path from the old bool-returning `check_permission()`, and a plain
+object (with no `__bool__`) is unconditionally truthy — `if result:` would
+otherwise silently grant on a `CONDITIONAL_PERMISSION`, reintroducing via the
+most obvious code the exact fail-open this change removes from
+`.has_permission`. `bool(result)` and `result.has_permission` always agree.
 
 `Permissionship` gained a fourth member, `NO_PERMISSION`, appended after
 `CONDITIONAL_PERMISSION` (not inserted alongside `UNSPECIFIED`) so the

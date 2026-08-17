@@ -6,7 +6,7 @@ clients at once. Nothing here touches a channel.
 
 from spicedb import Filter, Relationship, Transaction
 from spicedb import _requests as req
-from spicedb.consistency import full
+from spicedb.consistency import at_least, full
 
 
 def test_context_struct_none_returns_none():
@@ -44,6 +44,33 @@ def test_check_bulk_request_builds_one_item_per_relationship():
     assert r.items[0].resource.object_id == "a"
     assert r.items[0].permission == "view"
     assert r.items[1].resource.object_id == "b"
+
+
+def test_check_bulk_request_carries_at_least_as_fresh_token():
+    """The read-your-writes chain (write() -> revision -> at_least(revision)
+    -> check_permission()) depends on the Consistency built by at_least()
+    actually reaching the outgoing CheckBulkPermissionsRequest.
+    test_consistency.py::test_at_least only proves at_least() builds a
+    Consistency whose own _to_proto() carries the token in isolation; this
+    is the part of the chain that was previously verified by nothing --
+    that check_bulk_request() threads that Consistency's proto through to
+    request.consistency.at_least_as_fresh rather than dropping or
+    overwriting it.
+    """
+    rels = [Relationship.from_triple("document:a", "view", "user:jimmy")]
+    r = req.check_bulk_request(at_least("cafebabe"), rels, None)
+    assert r.consistency.at_least_as_fresh.token == "cafebabe"
+
+
+def test_lookup_resources_request_carries_at_least_as_fresh_token():
+    """Same round-trip as above, for the lookup_resources() request builder
+    -- examples/read_your_writes/ threads at_least(written_at) through this
+    path too."""
+    subj_ref = req.subject_reference(("user:alice", ""))
+    r = req.lookup_resources_request(
+        "document", "view", subj_ref, None, at_least("cafebabe"), req.DEFAULT_PAGE_SIZE, None
+    )
+    assert r.consistency.at_least_as_fresh.token == "cafebabe"
 
 
 def test_read_relationships_request_sets_limit_and_cursor():

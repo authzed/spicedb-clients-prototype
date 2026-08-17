@@ -15,7 +15,8 @@
   from spicedb.sync import SpiceDBClient
 
   client = SpiceDBClient("localhost:50051", token="t", insecure=True)
-  allowed = client.check_permission(full(), rel)
+  if client.check_permission(full(), rel).has_permission:
+      ...
   for found in client.read_relationships(filter, full()):
       ...
   ```
@@ -167,7 +168,11 @@
   ZedToken), previously unreachable through this client's public API at all
   — thread it into `at_least()` to make a later call observe this check
   (read-your-writes for checks; see `examples/read_your_writes/` and
-  `examples/caveated_check/`).
+  `examples/caveated_check/`). `CheckResult` also implements `__bool__`,
+  mirroring `has_permission` — so `if result:` (the most natural migration
+  path from the old bool-returning `check_permission()`) is safe and is
+  `False` for a `CONDITIONAL_PERMISSION` result, not unconditionally `True`
+  the way a plain object would otherwise be.
 
   Before:
   ```python
@@ -179,7 +184,7 @@
   After:
   ```python
   result = await client.check_permission(full(), rel)  # CheckResult
-  if result.has_permission:  # True ONLY for HAS_PERMISSION
+  if result:  # __bool__ mirrors has_permission -- False for CONDITIONAL_PERMISSION
       ...
   elif result.permissionship == Permissionship.CONDITIONAL_PERMISSION:
       print(f"needs context: {result.missing_context}")

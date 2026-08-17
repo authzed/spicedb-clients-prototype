@@ -307,7 +307,14 @@ class TestCheckPermissionReturnsCheckResult:
     ):
         """check_any/check_all stay boolean but must count ONLY
         HasPermission -- a Conditional result is not a grant, so it must not
-        flip either to True."""
+        flip either to True.
+
+        check_any/check_all are implemented independently in each flavor's
+        client.py (not shared via _mapping.py), so this must stay in
+        lockstep with the sync-flavor counterpart,
+        tests/test_client_sync.py::test_check_any_and_check_all_do_not_count_conditional
+        -- test_parity.py only compares signatures and would not catch one
+        flavor alone regressing here."""
         client = make_client()
         response = permission_service_pb2.CheckBulkPermissionsResponse(
             checked_at=core_pb2.ZedToken(token="deadbeef"),

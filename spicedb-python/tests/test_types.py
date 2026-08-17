@@ -581,3 +581,42 @@ class TestCheckResultHasPermission:
             assert False, "should have raised"
         except AttributeError:
             pass
+
+
+class TestCheckResultBool:
+    """spec D3a: CheckResult.__bool__ mirrors has_permission, so `if
+    result:` -- the most natural migration path from the old bool-returning
+    check_permission() -- is safe. Without this, a CheckResult is an object
+    and therefore unconditionally truthy, which would silently grant on a
+    CONDITIONAL_PERMISSION -- reintroducing via `if result:` the exact
+    fail-open this whole change removes from `.has_permission`."""
+
+    @pytest.mark.parametrize(
+        "permissionship,expected",
+        [
+            (Permissionship.UNSPECIFIED, False),
+            (Permissionship.NO_PERMISSION, False),
+            (Permissionship.HAS_PERMISSION, True),
+            (Permissionship.CONDITIONAL_PERMISSION, False),
+        ],
+    )
+    def test_bool_matches_has_permission(self, permissionship, expected):
+        result = CheckResult(
+            permissionship=permissionship,
+            missing_context=[],
+            checked_at="",
+        )
+        assert bool(result) is expected
+        assert bool(result) is result.has_permission
+
+    def test_bool_is_false_for_conditional_even_with_missing_context(self):
+        """The case Fix 1 exists for: `if result:` on a caveated check whose
+        context wasn't supplied must not silently grant."""
+        result = CheckResult(
+            permissionship=Permissionship.CONDITIONAL_PERMISSION,
+            missing_context=["now"],
+            checked_at="deadbeef",
+        )
+        assert not result
+        if result:
+            assert False, "a CONDITIONAL_PERMISSION result must be falsy"

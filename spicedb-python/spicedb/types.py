@@ -786,6 +786,14 @@ class CheckResult:
         condition."""
         return self.permissionship == Permissionship.HAS_PERMISSION
 
+    def __bool__(self) -> bool:
+        """Truthiness mirrors has_permission, so `if result:` is safe.
+
+        A CheckResult is an object and would otherwise be unconditionally
+        truthy, which would silently grant on a CONDITIONAL_PERMISSION.
+        """
+        return self.has_permission
+
 
 @dataclass(frozen=True)
 class ResolvedSubject:

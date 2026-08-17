@@ -56,9 +56,9 @@ def test_check_permission_sync():
     assert result.has_permission is True
 
     other = Relationship.from_triple("document:readme", "view", "user:stranger")
-    denied = client.check_permission(full(), other)
-    print(f"user:stranger can view document:readme: {denied.has_permission}")
-    assert denied.has_permission is False
+    stranger_result = client.check_permission(full(), other)
+    print(f"user:stranger can view document:readme: {stranger_result.has_permission}")
+    assert stranger_result.has_permission is False
 
     # Check again pinned to the write's own revision -- still the same
     # client.

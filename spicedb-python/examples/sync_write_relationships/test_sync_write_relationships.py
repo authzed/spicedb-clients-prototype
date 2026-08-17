@@ -8,25 +8,13 @@ Demonstrates create, touch, delete, and preconditions, all built with
 
 import pytest
 
+from conftest import SCHEMA
 from spicedb import Filter, Relationship, full
 from spicedb.sync import SpiceDBClient
 from spicedb.types import Transaction
 
 
 pytestmark = pytest.mark.integration
-
-SCHEMA = """\
-definition user {}
-
-definition document {
-    relation viewer: user
-    relation editor: user
-    relation owner: user
-    permission view = viewer + editor + owner
-    permission edit = editor + owner
-    permission delete = owner
-}
-"""
 
 
 def test_write_relationships_sync():

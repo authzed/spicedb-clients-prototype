@@ -16,6 +16,7 @@ all reusing the one client below.
 
 import pytest
 
+from conftest import SCHEMA
 from spicedb import Filter, Relationship, full
 from spicedb.consistency import at_least
 from spicedb.sync import SpiceDBClient
@@ -23,19 +24,6 @@ from spicedb.types import Transaction
 
 
 pytestmark = pytest.mark.integration
-
-SCHEMA = """\
-definition user {}
-
-definition document {
-    relation viewer: user
-    relation editor: user
-    relation owner: user
-    permission view = viewer + editor + owner
-    permission edit = editor + owner
-    permission delete = owner
-}
-"""
 
 # Built once, at import time -- not inside a fixture, not inside a `with`
 # block scoped to a single test. A real app builds exactly one of these at

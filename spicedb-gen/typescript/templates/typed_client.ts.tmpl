@@ -21,6 +21,17 @@ export interface {{.InterfaceName}} {
     {{.Name}}?: {{.TSType}};
 {{- end}}
 }
+// {{.ConverterFuncName}} translates {{.InterfaceName}}'s camelCase, TypeScript-facing field
+// names back to the RAW schema parameter names SpiceDB's CEL evaluator looks up (e.g.
+// "allowedCidr" -> "allowed_cidr"). A field left undefined is omitted entirely, not sent as an
+// explicit null/undefined value.
+function {{.ConverterFuncName}}(ctx: {{.InterfaceName}}): Record<string, unknown> {
+    const raw: Record<string, unknown> = {};
+{{- range .Fields}}
+    if (ctx.{{.Name}} !== undefined) raw["{{.RawName}}"] = ctx.{{.Name}};
+{{- end}}
+    return raw;
+}
 {{- end}}
 {{- end}}
 
@@ -34,9 +45,9 @@ type {{$sr.RefTypeName}} = { _type: "{{$def.Name}}"; _id: string; _relation: "{{
 {{- if .CaveatedSubjectTypes}}
 {{- range .CaveatedSubjectTypes}}
 {{- if .HasRelation}}
-type {{.TypeName}} = { _type: "{{.Definition}}"; _id: string; _relation: "{{.Relation}}"; _caveat: "{{.CaveatName}}"; _caveatContext: {{.ContextType}} };
+type {{.TypeName}} = { _type: "{{.Definition}}"; _id: string; _relation: "{{.Relation}}"; _caveat: "{{.CaveatName}}"; _caveatContext: Record<string, unknown> };
 {{- else}}
-type {{.TypeName}} = { _type: "{{.Definition}}"; _id: string; _caveat: "{{.CaveatName}}"; _caveatContext: {{.ContextType}} };
+type {{.TypeName}} = { _type: "{{.Definition}}"; _id: string; _caveat: "{{.CaveatName}}"; _caveatContext: Record<string, unknown> };
 {{- end}}
 {{- end}}
 {{- end}}
@@ -53,7 +64,7 @@ export function {{$def.PascalName}}(id: string) {
         // Caveat methods
 {{- range $def.CaveatMethods}}
         {{.MethodName}}: (ctx: {{.ContextType}}): {{.ReturnType}} => ({
-            _type: "{{$def.Name}}", _id: id, _caveat: "{{.CaveatName}}" as const, _caveatContext: ctx,
+            _type: "{{$def.Name}}", _id: id, _caveat: "{{.CaveatName}}" as const, _caveatContext: {{.ConverterFuncName}}(ctx),
         }),
 {{- end}}
     };
@@ -93,7 +104,7 @@ export function {{$def.PascalName}}(id: string) {
         // Caveat methods
 {{- range $def.CaveatMethods}}
         {{.MethodName}}: (ctx: {{.ContextType}}): {{.ReturnType}} => ({
-            _type: "{{$def.Name}}", _id: id, _caveat: "{{.CaveatName}}" as const, _caveatContext: ctx,
+            _type: "{{$def.Name}}", _id: id, _caveat: "{{.CaveatName}}" as const, _caveatContext: {{.ConverterFuncName}}(ctx),
         }),
 {{- end}}
 {{- end}}
@@ -125,9 +136,15 @@ export class TypedClient {
 {{- end}}
 {{- end}}
     async check(c: Consistency, p: { _type: string; _id: string; _permission: string }, s: { _type: string; _id: string; _relation?: string; _caveat?: string; _caveatContext?: Record<string, any> }, options?: CheckOptions): Promise<CheckResult> {
+        // s._caveatContext (e.g. from User("dave").withIpRange(ctx)) is the
+        // ITEM-LEVEL context for this one check -- it wins per-key over
+        // options.context (the call-level default) via checkPermission's own
+        // mergeCheckContext; call-level keys the subject doesn't mention are
+        // retained.
         return this.client.checkPermission(c, {
             resourceType: p._type, resourceId: p._id, permission: p._permission,
             subjectType: s._type, subjectId: s._id, subjectRelation: (s as any)._relation,
+            context: s._caveatContext,
         }, options);
     }
 

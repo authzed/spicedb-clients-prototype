@@ -119,6 +119,62 @@ func TestTouchAndCheck(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, result.HasPermission(), "supplying allowed_cidr at check time should resolve erin's conditional check into a grant")
 	assert.Equal(t, client.PermissionshipHasPermission, result.Permissionship)
+
+	// A caveated relationship with no context supplied at write time. The
+	// PLAIN Check (no call-level context at all) must still resolve it via
+	// the subject's OWN embedded context (User(...).WithIpRange(ctx) passed
+	// directly to Check) -- this is what makes the fix functional for the
+	// simplest call shape, not just CheckWithContext.
+	_, err = tc.Touch(ctx,
+		Document("readme").Viewer(User("frank").WithIpRange(IpRangeContext{})),
+	)
+	require.NoError(t, err)
+
+	result, err = Check(ctx, tc, cs, Document("readme").View(),
+		User("frank").WithIpRange(IpRangeContext{}.WithAllowedCidr("0.0.0.0/0")))
+	require.NoError(t, err)
+	assert.True(t, result.HasPermission(),
+		"frank's plain Check with the subject's own embedded context (no call-level context at all) should resolve to a grant")
+
+	// Merge proof 1 (value-sensitive): the subject's own context must WIN
+	// per-key over a conflicting call-level default. The call-level default
+	// below is a WRONG cidr that would fail the caveat on its own; the
+	// subject's own embedded context supplies the CORRECT cidr.
+	_, err = tc.Touch(ctx,
+		Document("readme").Viewer(User("grace").WithIpRange(IpRangeContext{})),
+	)
+	require.NoError(t, err)
+
+	result, err = CheckWithContext(
+		ctx, tc, cs, Document("readme").View(),
+		map[string]any{"allowed_cidr": "wrong-value-must-be-overridden"},
+		User("grace").WithIpRange(IpRangeContext{}.WithAllowedCidr("0.0.0.0/0")),
+	)
+	require.NoError(t, err)
+	assert.True(t, result.HasPermission(),
+		"grace's own allowed_cidr must win over the call-level default that would fail the caveat")
+
+	// Merge proof 2 (presence-sensitive): a call-level key the subject
+	// doesn't mention at all must SURVIVE the merge -- this is NOT wholesale
+	// replacement. The subject supplies ONLY "start" (via WithTimeWindow); the
+	// call-level default supplies "end", a key the subject never mentions. If
+	// the merge were wholesale replacement, "end" would be silently dropped
+	// and the caveat (start != "" && end != "") would come back Conditional
+	// on a MISSING "end", not a grant.
+	_, err = tc.Touch(ctx,
+		Document("readme").Viewer(User("henry").WithTimeWindow(TimeWindowContext{})),
+	)
+	require.NoError(t, err)
+
+	result, err = CheckWithContext(
+		ctx, tc, cs, Document("readme").View(),
+		map[string]any{"end": "5pm"},
+		User("henry").WithTimeWindow(TimeWindowContext{}.WithStart("9am")),
+	)
+	require.NoError(t, err)
+	assert.True(t, result.HasPermission(),
+		"call-level 'end' (a key the subject doesn't mention) must survive the merge")
+	assert.Empty(t, result.MissingContext)
 }
 
 func TestLookupResources(t *testing.T) {

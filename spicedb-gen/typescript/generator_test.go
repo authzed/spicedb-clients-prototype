@@ -105,8 +105,11 @@ func TestGenerateSampleSchema(t *testing.T) {
 	assert.Contains(t, output, `end?: string;`)
 
 	// Caveated subject variant types
-	assert.Contains(t, output, `type UserIpRangeRef = { _type: "user"; _id: string; _caveat: "ip_range"; _caveatContext: IpRangeContext };`)
-	assert.Contains(t, output, `type UserTimeWindowRef = { _type: "user"; _id: string; _caveat: "time_window"; _caveatContext: TimeWindowContext };`)
+	// _caveatContext holds the RAW-schema-keyed converted context (see
+	// TestCaveatContextPreservesRawNames), not the camelCase IpRangeContext/
+	// TimeWindowContext interface shape the caveat method's PARAMETER uses.
+	assert.Contains(t, output, `type UserIpRangeRef = { _type: "user"; _id: string; _caveat: "ip_range"; _caveatContext: Record<string, unknown> };`)
+	assert.Contains(t, output, `type UserTimeWindowRef = { _type: "user"; _id: string; _caveat: "time_window"; _caveatContext: Record<string, unknown> };`)
 
 	// Caveat methods on User factory
 	assert.Contains(t, output, `withIpRange: (ctx: IpRangeContext): UserIpRangeRef`)
@@ -211,6 +214,76 @@ func TestCheckAcceptsContext(t *testing.T) {
 	// silently dropped — a signature-only assertion would pass even if the
 	// body never read `options`.
 	assert.Contains(t, output, "}, options);")
+}
+
+// TestCheckForwardsSubjectCaveatContext verifies the generated check()
+// forwards a caveated subject's own _caveatContext into the CheckRequest's
+// item-level `context` field, so it participates in
+// SpiceDBClient.checkPermission's mergeCheckContext (item wins over
+// options.context, the call-level default). Before this fix, s._caveatContext
+// was accepted on the subject union type (UserIpRangeRef/UserTimeWindowRef
+// are members of the check subject union) but never read anywhere in
+// check()'s body -- a caveated subject ref passed to check() supplied NO
+// context to the actual check RPC at all.
+func TestCheckForwardsSubjectCaveatContext(t *testing.T) {
+	s, err := schema.ParseFile("../testdata/sample.zed")
+	require.NoError(t, err)
+
+	g := &Generator{}
+	files, err := g.Generate(s, nil)
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+
+	output := string(files[0].Content)
+
+	// The subject's own _caveatContext must be forwarded as the CheckRequest's
+	// item-level context, inside the same checkPermission(...) call the
+	// dispatching check() implementation makes.
+	assert.Contains(t, output, "context: s._caveatContext,")
+
+	// Guard against a regression that reverts to the old object literal
+	// (subjectRelation as the last field, no context) while still passing
+	// TestCheckAcceptsContext's looser assertions.
+	assert.NotContains(t, output,
+		"subjectType: s._type, subjectId: s._id, subjectRelation: (s as any)._relation,\n        }, options);")
+}
+
+// TestCaveatContextPreservesRawNames verifies caveat context objects built
+// by a withXxx factory method are converted to their RAW schema parameter
+// names (e.g. "allowed_cidr") before being used as _caveatContext, rather
+// than the camelCase TypeScript field name (e.g. "allowedCidr") the
+// IpRangeContext interface exposes to callers.
+//
+// Found while wiring subject-embedded context into check() (spec D3b
+// follow-up): CaveatFieldData only ever carried the camelCase name, so
+// withIpRange({ allowedCidr: "..." })'s _caveatContext was previously sent
+// to SpiceDB verbatim with the camelCase key. SpiceDB's CEL evaluator looks
+// up the RAW schema name ("allowed_cidr"), so any multi-word caveat
+// parameter's context was silently unreachable -- both at write time
+// (touch/create/delete, pre-existing) and now at check time (this task) --
+// exactly the "accepts a value it discards" defect class this whole fix
+// round exists to close. Single-word parameters (e.g. time_window's "start"
+// and "end") happened to survive camelCase conversion unchanged, which is
+// why this was never caught by existing single-word-only caveats in earlier
+// tasks' tests.
+func TestCaveatContextPreservesRawNames(t *testing.T) {
+	s, err := schema.ParseFile("../testdata/sample.zed")
+	require.NoError(t, err)
+
+	g := &Generator{}
+	files, err := g.Generate(s, nil)
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+
+	output := string(files[0].Content)
+
+	// The converter must map the camelCase field to the RAW schema name.
+	assert.Contains(t, output, `raw["allowed_cidr"] = ctx.allowedCidr`)
+
+	// withIpRange must route through the converter, not pass ctx straight
+	// through as _caveatContext (which would leak the camelCase key).
+	assert.Contains(t, output, "_caveatContext: ipRangeContextToRaw(ctx)")
+	assert.NotContains(t, output, "_caveatContext: ctx,")
 }
 
 func TestGenerateEmptySchema(t *testing.T) {

@@ -68,14 +68,19 @@ type SubRefTypeData struct {
 
 // CaveatContextData represents a caveat context interface.
 type CaveatContextData struct {
-	InterfaceName string              // e.g. "IpRangeContext"
-	CaveatName    string              // e.g. "ip_range"
-	Fields        []CaveatFieldData   // e.g. [{Name: "allowedCidr", TSType: "string"}]
+	InterfaceName     string            // e.g. "IpRangeContext"
+	CaveatName        string            // e.g. "ip_range"
+	ConverterFuncName string            // e.g. "ipRangeContextToRaw"
+	Fields            []CaveatFieldData // e.g. [{Name: "allowedCidr", RawName: "allowed_cidr", TSType: "string"}]
 }
 
 // CaveatFieldData represents a single field of a caveat context interface.
 type CaveatFieldData struct {
-	Name   string // camelCase name, e.g. "allowedCidr"
+	Name    string // camelCase name, e.g. "allowedCidr"
+	RawName string // original schema param name, e.g. "allowed_cidr" -- the
+	// key SpiceDB's CEL evaluator actually looks up. Kept distinct from Name
+	// so the generated raw-context converter can translate camelCase (the
+	// TypeScript-facing identifier) back to the wire-level name.
 	TSType string // TypeScript type, e.g. "string"
 }
 
@@ -91,10 +96,11 @@ type CaveatedSubjectTypeData struct {
 
 // CaveatMethodData represents a withCaveat method on a factory function.
 type CaveatMethodData struct {
-	MethodName    string // e.g. "withIpRange"
-	ContextType   string // e.g. "IpRangeContext"
-	ReturnType    string // e.g. "UserIpRangeRef"
-	CaveatName    string // e.g. "ip_range"
+	MethodName        string // e.g. "withIpRange"
+	ContextType       string // e.g. "IpRangeContext"
+	ReturnType        string // e.g. "UserIpRangeRef"
+	CaveatName        string // e.g. "ip_range"
+	ConverterFuncName string // e.g. "ipRangeContextToRaw"
 }
 
 // Generate produces generated TypeScript files from the parsed schema.
@@ -190,13 +196,15 @@ func buildTemplateData(s *schema.Schema) TemplateData {
 			continue
 		}
 		cc := CaveatContextData{
-			InterfaceName: toPascalCase(c.Name) + "Context",
-			CaveatName:    c.Name,
+			InterfaceName:     toPascalCase(c.Name) + "Context",
+			CaveatName:        c.Name,
+			ConverterFuncName: toCamelCase(c.Name) + "ContextToRaw",
 		}
 		for _, p := range c.Params {
 			cc.Fields = append(cc.Fields, CaveatFieldData{
-				Name:   toCamelCase(p.Name),
-				TSType: celTypeToTS(p.Type),
+				Name:    toCamelCase(p.Name),
+				RawName: p.Name,
+				TSType:  celTypeToTS(p.Type),
 			})
 		}
 		caveatContexts = append(caveatContexts, cc)
@@ -238,10 +246,11 @@ func buildTemplateData(s *schema.Schema) TemplateData {
 		methodName := "with" + toPascalCase(cr.caveatName)
 		returnType := caveatedSubjectTypeName(st)
 		defCaveatMethods[cr.definition] = append(defCaveatMethods[cr.definition], CaveatMethodData{
-			MethodName:  methodName,
-			ContextType: toPascalCase(cr.caveatName) + "Context",
-			ReturnType:  returnType,
-			CaveatName:  cr.caveatName,
+			MethodName:        methodName,
+			ContextType:       toPascalCase(cr.caveatName) + "Context",
+			ReturnType:        returnType,
+			CaveatName:        cr.caveatName,
+			ConverterFuncName: toCamelCase(cr.caveatName) + "ContextToRaw",
 		})
 	}
 

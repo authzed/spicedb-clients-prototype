@@ -6,12 +6,15 @@ const SCHEMA = `
 caveat ip_range(allowed_cidr string) {
     allowed_cidr == "0.0.0.0/0"
 }
+caveat time_window(start string, end string) {
+    start != "" && end != ""
+}
 definition user {}
 definition team {
     relation member: user | team#member
 }
 definition document {
-    relation viewer: user | user with ip_range | team#member
+    relation viewer: user | user with ip_range | user with time_window | team#member
     relation editor: user
     relation owner: user
     permission view = viewer + editor + owner
@@ -70,6 +73,58 @@ describe("TypedClient", () => {
             });
             expect(resolved.hasPermission()).toBe(true);
             expect(resolved.permissionship).toBe("hasPermission");
+        });
+
+        it("resolves a conditional check via the subject's own embedded context alone (no call-level options)", async () => {
+            // A caveated relationship with no context supplied at write time. The
+            // PLAIN check() call (no options/call-level context at all) must
+            // still resolve it via the subject's OWN embedded context
+            // (User(...).withIpRange(ctx) passed directly as the check subject) --
+            // this is what makes the fix functional for the simplest call shape.
+            await tc.touch(
+                Document("readme").viewer(User("grace").withIpRange({})),
+            );
+
+            const result = await tc.check(
+                full(), Document("readme").view, User("grace").withIpRange({ allowedCidr: "0.0.0.0/0" }),
+            );
+            expect(result.hasPermission()).toBe(true);
+        });
+
+        it("merges: subject's own context wins over a conflicting call-level default", async () => {
+            // The call-level default is a WRONG cidr that would fail the caveat
+            // on its own; the subject's own embedded context supplies the
+            // CORRECT cidr, which must win per-key.
+            await tc.touch(
+                Document("readme").viewer(User("henry").withIpRange({})),
+            );
+
+            const result = await tc.check(
+                full(), Document("readme").view,
+                User("henry").withIpRange({ allowedCidr: "0.0.0.0/0" }),
+                { context: { allowed_cidr: "wrong-value-must-be-overridden" } },
+            );
+            expect(result.hasPermission()).toBe(true);
+        });
+
+        it("merges: a call-level key the subject doesn't mention survives (not wholesale replacement)", async () => {
+            // The subject supplies ONLY "start" (via withTimeWindow); the
+            // call-level default supplies "end", a key the subject never
+            // mentions. If the merge were wholesale replacement instead of a
+            // key-level merge, "end" would be silently dropped and the caveat
+            // (start != "" && end != "") would come back conditional on a
+            // MISSING "end", not a grant.
+            await tc.touch(
+                Document("readme").viewer(User("ivan").withTimeWindow({})),
+            );
+
+            const result = await tc.check(
+                full(), Document("readme").view,
+                User("ivan").withTimeWindow({ start: "9am" }),
+                { context: { end: "5pm" } },
+            );
+            expect(result.hasPermission()).toBe(true);
+            expect(result.missingContext).toEqual([]);
         });
     });
 

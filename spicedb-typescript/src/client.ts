@@ -40,6 +40,7 @@ import {
   type LookupResource,
   type LookupSubject,
   type CheckRequest,
+  type CheckOptions,
   CheckResult,
   type WatchChange,
   type WatchEvent,
@@ -69,6 +70,7 @@ import {
   fromProtoLookupSubject,
   checkResultFromProto,
   checkResultFromBulkItem,
+  mergeCheckContext,
 } from "./types.js";
 
 import {
@@ -89,6 +91,43 @@ export interface SpiceDBClientOptions {
 }
 
 const DEFAULT_MAX_RETRIES = 3;
+
+/**
+ * Normalizes the two calling conventions shared by `checkPermissions`,
+ * `checkAny`, and `checkAll` into a plain `{ checks, options }` pair:
+ *
+ * - Classic variadic form — `(consistency, check1, check2, ...)` — every
+ *   positional argument after `consistency` is an individual
+ *   {@link CheckRequest}. Distinguished from the array form purely by
+ *   `Array.isArray`: a real `CheckRequest` is never an array, so this can
+ *   never misfire on an existing call site.
+ * - Explicit-array form — `(consistency, checks, options?)` — `checksOrFirst`
+ *   is the full `CheckRequest[]` and `optionsOrSecond`, if present, is
+ *   {@link CheckOptions}.
+ *
+ * This keeps the pre-existing rest-parameter overload's behavior byte-for-
+ * byte unchanged (no `options` is ever produced for it), while giving the
+ * array form a place to carry a call-level default context.
+ * @internal
+ */
+function normalizeBulkCheckArgs(
+  checksOrFirst: CheckRequest[] | CheckRequest | undefined,
+  optionsOrSecond: CheckOptions | CheckRequest | undefined,
+  rest: CheckRequest[],
+): { checks: CheckRequest[]; options?: CheckOptions } {
+  if (Array.isArray(checksOrFirst)) {
+    return { checks: checksOrFirst, options: optionsOrSecond as CheckOptions | undefined };
+  }
+  const checks: CheckRequest[] = [];
+  if (checksOrFirst !== undefined) {
+    checks.push(checksOrFirst);
+  }
+  if (optionsOrSecond !== undefined) {
+    checks.push(optionsOrSecond as CheckRequest);
+  }
+  checks.push(...rest);
+  return { checks };
+}
 
 /**
  * SpiceDBClient provides an idiomatic TypeScript interface to SpiceDB.
@@ -118,16 +157,25 @@ export class SpiceDBClient {
    * Uses the single-check `CheckPermission` RPC directly (not routed
    * through `CheckBulkPermissions`).
    *
+   * `options.context`, when supplied, is a call-level default caveat
+   * context. It is merged key-by-key with `check.context` — `check.context`
+   * wins on conflict, and default keys `check.context` does not mention are
+   * retained (see {@link CheckOptions.context} for the exact rule). For a
+   * single check this mostly reads as "either supplies context," but it
+   * keeps the same `CheckOptions` shape usable across all four check
+   * surfaces.
+   *
    * @returns A {@link CheckResult}. Use `result.hasPermission()` for the
    *          common case — it is `true` ONLY when the server's answer is an
    *          unconditional grant. A `"conditionalPermission"` result means
    *          the server needed caveat context that was not supplied in
-   *          `check.context`; it is NOT a grant, and
+   *          `check.context`/`options.context`; it is NOT a grant, and
    *          `result.hasPermission()` returns `false` for it.
    */
   async checkPermission(
     consistency: Consistency,
     check: CheckRequest,
+    options?: CheckOptions,
   ): Promise<CheckResult> {
     return this.withRetry(async () => {
       const resp = await this.proto.permissions.checkPermission(
@@ -145,7 +193,7 @@ export class SpiceDBClient {
             }),
             optionalRelation: check.subjectRelation ?? "",
           }),
-          context: check.context as JsonObject | undefined,
+          context: mergeCheckContext(options?.context, check.context),
         }),
       );
       return checkResultFromProto(resp);
@@ -154,6 +202,16 @@ export class SpiceDBClient {
 
   /**
    * Checks multiple permissions in a single bulk request.
+   *
+   * Two calling conventions:
+   * - The classic variadic form (`consistency, check1, check2, ...`) —
+   *   unchanged, and it never sets a call-level default.
+   * - An explicit-array form (`consistency, checks, options`) that
+   *   additionally accepts {@link CheckOptions}. `options.context` is a
+   *   call-level default caveat context fanned out onto every item (the
+   *   wire has no request-level context field — see
+   *   {@link CheckOptions.context} for the exact per-item merge rule with
+   *   each check's own `context`).
    *
    * A per-item failure (e.g. an internal error evaluating one specific
    * check) is surfaced by throwing a typed {@link SpiceDBError} — it is
@@ -169,6 +227,38 @@ export class SpiceDBClient {
   async checkPermissions(
     consistency: Consistency,
     ...checks: CheckRequest[]
+  ): Promise<CheckResult[]>;
+  async checkPermissions(
+    consistency: Consistency,
+    checks: CheckRequest[],
+    options?: CheckOptions,
+  ): Promise<CheckResult[]>;
+  async checkPermissions(
+    consistency: Consistency,
+    checksOrFirst?: CheckRequest[] | CheckRequest,
+    optionsOrSecond?: CheckOptions | CheckRequest,
+    ...rest: CheckRequest[]
+  ): Promise<CheckResult[]> {
+    const { checks, options } = normalizeBulkCheckArgs(
+      checksOrFirst,
+      optionsOrSecond,
+      rest,
+    );
+    return this.runBulkCheck(consistency, checks, options);
+  }
+
+  /**
+   * Shared implementation behind {@link checkPermissions}, {@link checkAny},
+   * and {@link checkAll} — all three are aggregates/pass-throughs over the
+   * same `CheckBulkPermissions` request, so the request-building and
+   * response-mapping logic (including the call-level `options.context`
+   * merge) lives here once.
+   * @internal
+   */
+  private async runBulkCheck(
+    consistency: Consistency,
+    checks: CheckRequest[],
+    options?: CheckOptions,
   ): Promise<CheckResult[]> {
     return this.withRetry(async () => {
       const resp = await this.proto.permissions.checkBulkPermissions(
@@ -188,7 +278,7 @@ export class SpiceDBClient {
                 }),
                 optionalRelation: check.subjectRelation ?? "",
               }),
-              context: check.context as JsonObject | undefined,
+              context: mergeCheckContext(options?.context, check.context),
             }),
           ),
         }),
@@ -216,12 +306,32 @@ export class SpiceDBClient {
    * outright. A `"conditionalPermission"` result does NOT count as
    * granted — only results where {@link CheckResult.hasPermission} is
    * `true` are considered. This is deliberate and fail-closed.
+   *
+   * Accepts the same two calling conventions as `checkPermissions`,
+   * including the explicit-array form with a call-level {@link CheckOptions}
+   * default.
    */
   async checkAny(
     consistency: Consistency,
     ...checks: CheckRequest[]
+  ): Promise<boolean>;
+  async checkAny(
+    consistency: Consistency,
+    checks: CheckRequest[],
+    options?: CheckOptions,
+  ): Promise<boolean>;
+  async checkAny(
+    consistency: Consistency,
+    checksOrFirst?: CheckRequest[] | CheckRequest,
+    optionsOrSecond?: CheckOptions | CheckRequest,
+    ...rest: CheckRequest[]
   ): Promise<boolean> {
-    const results = await this.checkPermissions(consistency, ...checks);
+    const { checks, options } = normalizeBulkCheckArgs(
+      checksOrFirst,
+      optionsOrSecond,
+      rest,
+    );
+    const results = await this.runBulkCheck(consistency, checks, options);
     return results.some((r) => r.hasPermission());
   }
 
@@ -230,12 +340,32 @@ export class SpiceDBClient {
    * outright. A `"conditionalPermission"` result does NOT count as
    * granted — every result must satisfy {@link CheckResult.hasPermission}
    * for this to return `true`. This is deliberate and fail-closed.
+   *
+   * Accepts the same two calling conventions as `checkPermissions`,
+   * including the explicit-array form with a call-level {@link CheckOptions}
+   * default.
    */
   async checkAll(
     consistency: Consistency,
     ...checks: CheckRequest[]
+  ): Promise<boolean>;
+  async checkAll(
+    consistency: Consistency,
+    checks: CheckRequest[],
+    options?: CheckOptions,
+  ): Promise<boolean>;
+  async checkAll(
+    consistency: Consistency,
+    checksOrFirst?: CheckRequest[] | CheckRequest,
+    optionsOrSecond?: CheckOptions | CheckRequest,
+    ...rest: CheckRequest[]
   ): Promise<boolean> {
-    const results = await this.checkPermissions(consistency, ...checks);
+    const { checks, options } = normalizeBulkCheckArgs(
+      checksOrFirst,
+      optionsOrSecond,
+      rest,
+    );
+    const results = await this.runBulkCheck(consistency, checks, options);
     return results.every((r) => r.hasPermission());
   }
 

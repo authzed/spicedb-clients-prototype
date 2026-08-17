@@ -421,3 +421,175 @@ describe("checkAny / checkAll — conditional does not count as granted (fail-cl
     ).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Task 16 — call-level caveat context default (`CheckOptions`), and its
+// merge with the pre-existing per-item context (`CheckRequest.context`).
+//
+// All assertions here inspect the actual request built by the client (the
+// fake proto fn's captured argument), by value — not just the observed
+// CheckResult behavior — so a wholesale-replacement merge implementation
+// (which would silently drop shared call-level keys) cannot pass these.
+// ---------------------------------------------------------------------------
+describe("call-level CheckOptions — default context, per-item context, and their merge (Task 16)", () => {
+  function bulkFake(count: number) {
+    return vi.fn().mockResolvedValue({
+      checkedAt: create(ZedTokenSchema, { token: "r" }),
+      pairs: Array.from({ length: count }, () => ({
+        response: {
+          case: "item" as const,
+          value: create(CheckBulkPermissionsResponseItemSchema, {
+            permissionship: CheckPermissionResponse_Permissionship.HAS_PERMISSION,
+          }),
+        },
+      })),
+    });
+  }
+
+  // C1
+  it("call-level context alone reaches every item in a bulk request", async () => {
+    const fn = bulkFake(2);
+    const client = clientWithFakeProto({ permissions: { checkBulkPermissions: fn } });
+
+    await client.checkPermissions(
+      full(),
+      [aCheck({ subjectId: "a" }), aCheck({ subjectId: "b" })],
+      { context: { now: 42 } },
+    );
+
+    const request = fn.mock.calls[0][0];
+    expect(request.items).toHaveLength(2);
+    expect(request.items[0].context).toEqual({ now: 42 });
+    expect(request.items[1].context).toEqual({ now: 42 });
+  });
+
+  // C2 — per-item context (pre-existing) reaches only that item; also
+  // confirms the classic variadic call form's request shape is unchanged.
+  it("per-item context alone reaches only that item", async () => {
+    const fn = bulkFake(2);
+    const client = clientWithFakeProto({ permissions: { checkBulkPermissions: fn } });
+
+    await client.checkPermissions(
+      full(),
+      aCheck({ subjectId: "a", context: { region: "eu" } }),
+      aCheck({ subjectId: "b" }),
+    );
+
+    const request = fn.mock.calls[0][0];
+    expect(request.items[0].context).toEqual({ region: "eu" });
+    expect(request.items[1].context).toBeUndefined();
+  });
+
+  // C3 — THE merge rule. Both items are asserted: asserting only the
+  // overriding item would also pass under wholesale-replacement semantics,
+  // so a single-item assertion does not pin the rule.
+  it("merges call-level default with per-item context: item wins on key conflict, call-level keys the item didn't override are retained", async () => {
+    const fn = bulkFake(2);
+    const client = clientWithFakeProto({ permissions: { checkBulkPermissions: fn } });
+
+    await client.checkPermissions(
+      full(),
+      [
+        aCheck({ subjectId: "overrides-region", context: { region: "eu" } }),
+        aCheck({ subjectId: "no-override" }),
+      ],
+      { context: { now: 42, region: "us" } },
+    );
+
+    const request = fn.mock.calls[0][0];
+    // Overriding item: its own `region` wins, but it still gets the
+    // call-level `now` it never mentioned.
+    expect(request.items[0].context).toEqual({ now: 42, region: "eu" });
+    // Sibling that supplied no context of its own: gets the call-level
+    // default untouched.
+    expect(request.items[1].context).toEqual({ now: 42, region: "us" });
+  });
+
+  // C4
+  it("sets no context field on the wire when neither call-level nor item-level context is supplied", async () => {
+    const fn = bulkFake(1);
+    const client = clientWithFakeProto({ permissions: { checkBulkPermissions: fn } });
+
+    await client.checkPermissions(full(), aCheck());
+
+    const request = fn.mock.calls[0][0];
+    expect(request.items[0].context).toBeUndefined();
+  });
+
+  it("checkPermission (single-check surface) applies CheckOptions.context as a default, merged with the check's own context", async () => {
+    const fn = vi.fn().mockResolvedValue(
+      create(CheckPermissionResponseSchema, {
+        permissionship: CheckPermissionResponse_Permissionship.HAS_PERMISSION,
+      }),
+    );
+    const client = clientWithFakeProto({ permissions: { checkPermission: fn } });
+
+    await client.checkPermission(full(), aCheck({ context: { region: "eu" } }), {
+      context: { now: 42, region: "us" },
+    });
+
+    const request = fn.mock.calls[0][0];
+    expect(request.context).toEqual({ now: 42, region: "eu" });
+  });
+
+  it("checkPermission with no CheckOptions and no item context sets no context field on the wire", async () => {
+    const fn = vi.fn().mockResolvedValue(
+      create(CheckPermissionResponseSchema, {
+        permissionship: CheckPermissionResponse_Permissionship.HAS_PERMISSION,
+      }),
+    );
+    const client = clientWithFakeProto({ permissions: { checkPermission: fn } });
+
+    await client.checkPermission(full(), aCheck());
+
+    const request = fn.mock.calls[0][0];
+    expect(request.context).toBeUndefined();
+  });
+
+  it("checkAny accepts the array+options form and applies the call-level default to every item", async () => {
+    const fn = bulkFake(2);
+    const client = clientWithFakeProto({ permissions: { checkBulkPermissions: fn } });
+
+    const result = await client.checkAny(
+      full(),
+      [aCheck({ subjectId: "a" }), aCheck({ subjectId: "b" })],
+      { context: { now: 42 } },
+    );
+
+    expect(result).toBe(true);
+    const request = fn.mock.calls[0][0];
+    expect(request.items[0].context).toEqual({ now: 42 });
+    expect(request.items[1].context).toEqual({ now: 42 });
+  });
+
+  it("checkAll accepts the array+options form and applies the call-level default to every item", async () => {
+    const fn = bulkFake(2);
+    const client = clientWithFakeProto({ permissions: { checkBulkPermissions: fn } });
+
+    const result = await client.checkAll(
+      full(),
+      [aCheck({ subjectId: "a" }), aCheck({ subjectId: "b" })],
+      { context: { now: 42 } },
+    );
+
+    expect(result).toBe(true);
+    const request = fn.mock.calls[0][0];
+    expect(request.items[0].context).toEqual({ now: 42 });
+    expect(request.items[1].context).toEqual({ now: 42 });
+  });
+
+  // Binding invariant: the pre-existing variadic call sites' request shape
+  // must not change. No CheckOptions supplied -> no context field, same as
+  // before this task.
+  it("does not change the existing variadic call sites' built request", async () => {
+    const fn = bulkFake(2);
+    const client = clientWithFakeProto({ permissions: { checkBulkPermissions: fn } });
+
+    await client.checkPermissions(full(), aCheck({ subjectId: "a" }), aCheck({ subjectId: "b" }));
+
+    const request = fn.mock.calls[0][0];
+    expect(request.items).toHaveLength(2);
+    expect(request.items[0].context).toBeUndefined();
+    expect(request.items[1].context).toBeUndefined();
+  });
+});

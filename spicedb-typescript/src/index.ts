@@ -12,6 +12,7 @@ export {
   type LookupResourcesParams,
   type LookupSubjectsParams,
   type CheckRequest,
+  type CheckOptions,
   type WatchChange,
   type WatchEvent,
   type WatchOptions,

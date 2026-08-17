@@ -4,6 +4,40 @@
 
 ### Added
 
+- **2026-08-17**: `checkPermission`/`checkPermissions`/`checkAny`/`checkAll`
+  gain a call-level default caveat context via a new `CheckOptions` type
+  (`{ context?: Record<string, unknown> }`). Previously the only way to
+  supply caveat context was per-item, on each `CheckRequest.context` — there
+  was no way to set one default across a whole check/bulk-check call, so a
+  caller checking many items with the same caveat context had to repeat it
+  on every `CheckRequest`. `checkPermission` accepts `CheckOptions` as a new
+  optional third argument. `checkPermissions`/`checkAny`/`checkAll` gain a
+  second, explicit-array overload — `(consistency, checks: CheckRequest[],
+  options?: CheckOptions)` — since their existing variadic form
+  (`consistency, ...checks`) has nowhere to put a trailing options argument;
+  that variadic form is completely unchanged and never produces a
+  call-level default. The proto wire has no request-level context field
+  (`CheckBulkPermissionsRequest` carries no `context`, only
+  `CheckBulkPermissionsRequestItem.context`), so `options.context` is fanned
+  out onto every item at request-build time and merged key-by-key with that
+  item's own `context`: the item's own keys win on conflict, and call-level
+  keys the item doesn't mention are retained (not a wholesale replacement).
+  If neither is supplied, no context field is set on the request (never an
+  empty Struct). Purely additive — no existing call site changes.
+  `CheckOptions` is exported from the package root.
+
+  ```typescript
+  // Per-item context (existing, unchanged):
+  await client.checkPermission(consistency, { ...check, context: { now: 42 } });
+
+  // New: a call-level default, applied to every item in a bulk check:
+  await client.checkPermissions(
+    consistency,
+    [check1, check2],
+    { context: { now: 42 } },
+  );
+  ```
+
 - **2026-08-17**: `LookupResource` and `LookupSubject` gain a `lookedUpAt`
   field: the revision that result was computed at (from the response's
   `looked_up_at` ZedToken). It is identical for every item yielded by a

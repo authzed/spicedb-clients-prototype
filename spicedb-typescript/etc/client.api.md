@@ -24,6 +24,11 @@ export class CancelledError extends SpiceDBError {
 }
 
 // @public
+export interface CheckOptions {
+    context?: Record<string, unknown>;
+}
+
+// @public
 export interface CheckRequest {
     // (undocumented)
     context?: Record<string, unknown>;
@@ -406,9 +411,15 @@ export function snapshot(revision: string): Consistency;
 export class SpiceDBClient {
     constructor(options: SpiceDBClientOptions);
     checkAll(consistency: Consistency, ...checks: CheckRequest[]): Promise<boolean>;
+    // (undocumented)
+    checkAll(consistency: Consistency, checks: CheckRequest[], options?: CheckOptions): Promise<boolean>;
     checkAny(consistency: Consistency, ...checks: CheckRequest[]): Promise<boolean>;
-    checkPermission(consistency: Consistency, check: CheckRequest): Promise<CheckResult>;
+    // (undocumented)
+    checkAny(consistency: Consistency, checks: CheckRequest[], options?: CheckOptions): Promise<boolean>;
+    checkPermission(consistency: Consistency, check: CheckRequest, options?: CheckOptions): Promise<CheckResult>;
     checkPermissions(consistency: Consistency, ...checks: CheckRequest[]): Promise<CheckResult[]>;
+    // (undocumented)
+    checkPermissions(consistency: Consistency, checks: CheckRequest[], options?: CheckOptions): Promise<CheckResult[]>;
     computablePermissions(consistency: Consistency, params: ComputablePermissionsParams): Promise<{
         permissions: RelationReference[];
         revision: string;

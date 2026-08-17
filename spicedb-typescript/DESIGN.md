@@ -110,6 +110,48 @@ true` results as granted — a conditional result never counts, even for
 per-item error from `CheckBulkPermissions` is surfaced by throwing a typed
 error, never coerced into a result.
 
+### Caveat context: per-item and call-level
+
+`CheckRequest.context` supplies per-item caveat context — the values a
+caveat needs, scoped to one specific check. All four check surfaces also
+accept an optional trailing `CheckOptions` with a call-level default
+`context`, applied to every check the call evaluates:
+
+```typescript
+const result = await client.checkPermission(consistency, check, {
+  context: { now: Date.now() / 1000 },
+});
+
+const results = await client.checkPermissions(
+  consistency,
+  [check1, check2],           // explicit-array form — required to pass options
+  { context: { now: Date.now() / 1000 } },
+);
+```
+
+`checkPermissions`/`checkAny`/`checkAll` keep their original variadic form
+(`consistency, ...checks`) unchanged — no existing call site needs to
+change. `CheckOptions` is only reachable through a second, explicit-array
+overload (`consistency, checks, options?`), since a call-level default has
+nowhere to go in a trailing-variadic call.
+
+The proto wire has no request-level context field — `CheckBulkPermissionsRequest`
+carries no `context`, only `CheckBulkPermissionsRequestItem.context` — so a
+call-level default is fanned out onto every item at request-build time and
+merged **key-by-key** with that item's own `context`: the item's own keys
+win on conflict, and call-level keys the item doesn't mention are retained.
+This is not a wholesale replacement — an item supplying one key does not
+drop every other call-level key:
+
+```typescript
+// call-level: { now: 42, region: "us" }
+// item-level: { region: "eu" }
+// sent for that item: { now: 42, region: "eu" }
+```
+
+If neither a call-level nor an item-level context is supplied, no context
+field is set on the request (never an empty Struct).
+
 ### Streaming
 
 AsyncIterableIterator for streaming RPCs:
@@ -212,7 +254,7 @@ See package sections above.
 
 | Directory | Demonstrates |
 |-----------|-------------|
-| `check_permission/` | Basic permission check, plus a caveated check with no context to show a `conditionalPermission` CheckResult |
+| `check_permission/` | Basic permission check, plus a caveated check with no context to show a `conditionalPermission` CheckResult, then resolving that conditional into a grant by supplying the missing context via `CheckOptions` (single-check and bulk) |
 | `write_relationships/` | Writing relationships with transaction builder |
 | `read_relationships/` | Reading relationships with async iterator |
 | `lookup_resources/` | Resource lookup, incl. reading `permissionship`/`partialCaveat` |

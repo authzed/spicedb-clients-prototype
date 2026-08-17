@@ -3,7 +3,10 @@
  *
  * Demonstrates using checkPermission, checkPermissions, checkAny, and
  * checkAll — including the CheckResult returned for a caveated relationship
- * whose context was not supplied at check time.
+ * whose context was not supplied at check time, and resolving that
+ * conditional into a grant by supplying the missing context via
+ * CheckOptions (a call-level default, fanned out and merged with any
+ * per-item context on bulk checks).
  */
 import {
   createSpiceDBClient,
@@ -138,6 +141,65 @@ assert(
 assert(
   condResult.missingContext.length === 1 && condResult.missingContext[0] === "now",
   `expected missingContext == ["now"], got ${condResult.missingContext}`,
+);
+
+// -----------------------------------------------------------------------
+// Resolving the conditional: supply the caveat context the previous check
+// reported as missing (via `condResult.missingContext`) and check again.
+// This is the payoff of missingContext being actionable at all — the
+// caller now knows exactly what to supply, supplies it, and the same
+// conditional relationship resolves to an unconditional grant.
+//
+// `checkPermission`'s third argument is `CheckOptions` — a call-level
+// default caveat context. For a single check this is equivalent to setting
+// `context` directly on the check, but the same `CheckOptions` shape also
+// applies (as a default, fanned out and merged per-item) to
+// `checkPermissions`/`checkAny`/`checkAll` below.
+// -----------------------------------------------------------------------
+const resolvedResult = await client.checkPermission(
+  full(),
+  {
+    resourceType: "document",
+    resourceId: "conditionaldoc",
+    permission: "conditional_view",
+    subjectType: "user",
+    subjectId: "jimmy",
+  },
+  { context: { now: 42 } }, // "now < 100" — satisfies the "active" caveat
+);
+console.log(
+  `user:jimmy can conditionally view document:conditionaldoc once "now" is supplied: ` +
+    `${resolvedResult.hasPermission()} (permissionship: ${resolvedResult.permissionship})`,
+);
+assert(
+  resolvedResult.hasPermission(),
+  `expected supplying the missing "now" context to resolve the conditional into a grant, got ${resolvedResult.permissionship}`,
+);
+
+// -----------------------------------------------------------------------
+// Call-level context on a bulk check: a single default applied to every
+// item in the array. Per-item context (already shown above via `context`
+// on an individual CheckRequest) is merged key-by-key with the call-level
+// default — an item's own keys win, but call-level keys the item doesn't
+// mention are still applied. Here neither item overrides `now`, so both
+// resolve to a grant from the call-level default alone.
+// -----------------------------------------------------------------------
+const bulkResolved = await client.checkPermissions(
+  full(),
+  [
+    {
+      resourceType: "document",
+      resourceId: "conditionaldoc",
+      permission: "conditional_view",
+      subjectType: "user",
+      subjectId: "jimmy",
+    },
+  ],
+  { context: { now: 42 } },
+);
+assert(
+  bulkResolved.length === 1 && bulkResolved[0].hasPermission(),
+  "expected the call-level default context to resolve the bulk conditional check into a grant",
 );
 
 // Clean up so later examples that write a narrower schema aren't blocked by

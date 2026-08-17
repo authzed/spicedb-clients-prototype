@@ -135,6 +135,35 @@ export interface CheckRequest {
 }
 
 /**
+ * Call-level defaults for `checkPermission`, `checkPermissions`,
+ * `checkAny`, and `checkAll` on `SpiceDBClient`.
+ */
+export interface CheckOptions {
+  /**
+   * Default caveat context applied to every check that this call evaluates.
+   * Merged key-by-key with each individual check's own
+   * {@link CheckRequest.context} — for any key present in both, the check's
+   * own value wins; default keys the check does not override are retained.
+   * This is a key-level merge, NOT a wholesale replacement: a check
+   * supplying one key does not drop the other default keys. If neither this
+   * default nor the check's own `context` is supplied, no context field is
+   * set on the request (never an empty Struct).
+   *
+   * @example
+   * ```typescript
+   * // Both items get `now`; the second item's own `region` wins over the
+   * // default for that key alone.
+   * await client.checkPermissions(
+   *   full(),
+   *   [check1, { ...check2, context: { region: "eu" } }],
+   *   { context: { now: 42, region: "us" } },
+   * );
+   * ```
+   */
+  context?: Record<string, unknown>;
+}
+
+/**
  * A change event from the Watch API.
  */
 export interface WatchChange {
@@ -1137,6 +1166,29 @@ export class CheckResult {
   hasPermission(): boolean {
     return this.permissionship === "hasPermission";
   }
+}
+
+/**
+ * Merges a call-level default caveat context ({@link CheckOptions.context})
+ * with a single check's own item-level context
+ * ({@link CheckRequest.context}): a key-level merge where the item's own
+ * value wins on conflict and default keys the item does not override are
+ * retained — NOT a wholesale replacement, which would silently drop every
+ * default key an item didn't happen to mention. Returns `undefined` (never
+ * an empty object) when neither is supplied, so no context field is set on
+ * the wire. Shared by {@link SpiceDBClient.checkPermission} and the
+ * `CheckBulkPermissions`-backed surfaces (`checkPermissions`/`checkAny`/
+ * `checkAll`) so both build the merged context identically.
+ * @internal
+ */
+export function mergeCheckContext(
+  defaultContext: Record<string, unknown> | undefined,
+  itemContext: Record<string, unknown> | undefined,
+): JsonObject | undefined {
+  if (!defaultContext && !itemContext) {
+    return undefined;
+  }
+  return { ...defaultContext, ...itemContext } as JsonObject;
 }
 
 /**

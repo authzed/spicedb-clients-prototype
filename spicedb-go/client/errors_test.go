@@ -26,6 +26,10 @@ var allErrorSentinels = []error{
 	ErrFailedPrecondition,
 	ErrPermissionDenied,
 	ErrUnauthenticated,
+	ErrUnavailable,
+	ErrCanceled,
+	ErrDeadlineExceeded,
+	ErrResourceExhausted,
 }
 
 func TestMapGRPCError_MapsKnownCodesToSentinels(t *testing.T) {
@@ -41,6 +45,10 @@ func TestMapGRPCError_MapsKnownCodesToSentinels(t *testing.T) {
 		{"FailedPrecondition", codes.FailedPrecondition, CodeFailedPrecondition, ErrFailedPrecondition},
 		{"PermissionDenied", codes.PermissionDenied, CodePermissionDenied, ErrPermissionDenied},
 		{"Unauthenticated", codes.Unauthenticated, CodeUnauthenticated, ErrUnauthenticated},
+		{"Unavailable", codes.Unavailable, CodeUnavailable, ErrUnavailable},
+		{"Canceled", codes.Canceled, CodeCanceled, ErrCanceled},
+		{"DeadlineExceeded", codes.DeadlineExceeded, CodeDeadlineExceeded, ErrDeadlineExceeded},
+		{"ResourceExhausted", codes.ResourceExhausted, CodeResourceExhausted, ErrResourceExhausted},
 	}
 
 	for _, tc := range cases {

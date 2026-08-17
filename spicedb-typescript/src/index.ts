@@ -54,4 +54,6 @@ export {
   CancelledError,
   FailedPreconditionError,
   UnavailableError,
+  DeadlineExceededError,
+  ResourceExhaustedError,
 } from "./errors.js";

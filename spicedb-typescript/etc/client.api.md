@@ -63,6 +63,11 @@ export function createSpiceDBClient(endpoint: string, token: string, options?: {
 }): SpiceDBClient;
 
 // @public
+export class DeadlineExceededError extends SpiceDBError {
+    constructor(message: string, options?: ErrorOptions);
+}
+
+// @public
 export interface DeleteOptions {
     limit?: number;
     mustMatch?: RelationshipFilterOptions[];
@@ -305,6 +310,11 @@ export interface ResolvedSubject {
     permissionship: Permissionship;
     // (undocumented)
     subjectId: string;
+}
+
+// @public
+export class ResourceExhaustedError extends SpiceDBError {
+    constructor(message: string, options?: ErrorOptions);
 }
 
 // @public

@@ -37,6 +37,14 @@ pub enum SpiceDBError {
     #[error("cancelled: {0}")]
     Cancelled(String),
 
+    /// The operation deadline was exceeded before it could complete.
+    #[error("deadline exceeded: {0}")]
+    DeadlineExceeded(String),
+
+    /// A resource quota or limit was exhausted, such as a rate limit.
+    #[error("resource exhausted: {0}")]
+    ResourceExhausted(String),
+
     /// A transport-level error occurred (connection refused, TLS failure, etc.).
     #[error("transport error: {0}")]
     Transport(String),
@@ -55,6 +63,7 @@ pub enum SpiceDBError {
 /// These mirror tonic::Code values.
 mod codes {
     pub const CANCELLED: i32 = 1;
+    pub const DEADLINE_EXCEEDED: i32 = 4;
     pub const NOT_FOUND: i32 = 5;
     pub const ALREADY_EXISTS: i32 = 6;
     pub const PERMISSION_DENIED: i32 = 7;
@@ -79,6 +88,8 @@ pub fn from_grpc_status(code: i32, message: String) -> SpiceDBError {
         codes::FAILED_PRECONDITION => SpiceDBError::FailedPrecondition(message),
         codes::UNAVAILABLE => SpiceDBError::Unavailable(message),
         codes::CANCELLED => SpiceDBError::Cancelled(message),
+        codes::DEADLINE_EXCEEDED => SpiceDBError::DeadlineExceeded(message),
+        codes::RESOURCE_EXHAUSTED => SpiceDBError::ResourceExhausted(message),
         _ => SpiceDBError::Status { code, message },
     }
 }
@@ -89,6 +100,7 @@ pub fn from_grpc_status(code: i32, message: String) -> SpiceDBError {
 pub fn is_transient(err: &SpiceDBError) -> bool {
     match err {
         SpiceDBError::Unavailable(_) => true,
+        SpiceDBError::ResourceExhausted(_) => true,
         SpiceDBError::Status { code, .. } => {
             *code == codes::RESOURCE_EXHAUSTED || *code == codes::ABORTED
         }
@@ -144,6 +156,18 @@ mod tests {
     }
 
     #[test]
+    fn test_from_grpc_status_deadline_exceeded() {
+        let err = from_grpc_status(codes::DEADLINE_EXCEEDED, "timeout".into());
+        assert!(matches!(err, SpiceDBError::DeadlineExceeded(_)));
+    }
+
+    #[test]
+    fn test_from_grpc_status_resource_exhausted() {
+        let err = from_grpc_status(codes::RESOURCE_EXHAUSTED, "quota".into());
+        assert!(matches!(err, SpiceDBError::ResourceExhausted(_)));
+    }
+
+    #[test]
     fn test_from_grpc_status_unknown_code() {
         let err = from_grpc_status(99, "unknown".into());
         assert!(matches!(err, SpiceDBError::Status { code: 99, .. }));
@@ -172,6 +196,20 @@ mod tests {
             message: "quota".into(),
         };
         assert!(is_transient(&err));
+    }
+
+    #[test]
+    fn test_is_transient_resource_exhausted_via_from_grpc_status() {
+        let err = from_grpc_status(codes::RESOURCE_EXHAUSTED, "quota".into());
+        assert!(matches!(err, SpiceDBError::ResourceExhausted(_)));
+        assert!(is_transient(&err));
+    }
+
+    #[test]
+    fn test_deadline_exceeded_via_from_grpc_status_is_not_transient() {
+        let err = from_grpc_status(codes::DEADLINE_EXCEEDED, "timeout".into());
+        assert!(matches!(err, SpiceDBError::DeadlineExceeded(_)));
+        assert!(!is_transient(&err));
     }
 
     #[test]

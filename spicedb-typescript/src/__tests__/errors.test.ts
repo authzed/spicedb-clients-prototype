@@ -8,6 +8,9 @@ import {
   InvalidArgumentError,
   UnavailableError,
   FailedPreconditionError,
+  CancelledError,
+  DeadlineExceededError,
+  ResourceExhaustedError,
   toSpiceDBError,
   isTransientError,
 } from "../errors.js";
@@ -43,6 +46,21 @@ describe("toSpiceDBError", () => {
   it("maps Unavailable", () => {
     const err = new ConnectError("unavailable", Code.Unavailable);
     expect(toSpiceDBError(err)).toBeInstanceOf(UnavailableError);
+  });
+
+  it("maps Cancelled", () => {
+    const err = new ConnectError("cancelled", Code.Canceled);
+    expect(toSpiceDBError(err)).toBeInstanceOf(CancelledError);
+  });
+
+  it("maps DeadlineExceeded", () => {
+    const err = new ConnectError("timeout", Code.DeadlineExceeded);
+    expect(toSpiceDBError(err)).toBeInstanceOf(DeadlineExceededError);
+  });
+
+  it("maps ResourceExhausted", () => {
+    const err = new ConnectError("quota", Code.ResourceExhausted);
+    expect(toSpiceDBError(err)).toBeInstanceOf(ResourceExhaustedError);
   });
 
   it("maps unknown errors", () => {

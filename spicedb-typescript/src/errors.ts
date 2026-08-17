@@ -80,6 +80,26 @@ export class UnavailableError extends SpiceDBError {
   }
 }
 
+/**
+ * The operation deadline was exceeded before it could complete.
+ */
+export class DeadlineExceededError extends SpiceDBError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "DeadlineExceededError";
+  }
+}
+
+/**
+ * A resource quota or limit was exhausted, such as a rate limit.
+ */
+export class ResourceExhaustedError extends SpiceDBError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "ResourceExhaustedError";
+  }
+}
+
 const TRANSIENT_CODES = new Set([
   Code.Unavailable,
   Code.ResourceExhausted,
@@ -119,8 +139,11 @@ export function toSpiceDBError(err: unknown): SpiceDBError {
         return new CancelledError(msg, { cause: err });
       case Code.FailedPrecondition:
         return new FailedPreconditionError(msg, { cause: err });
-      case Code.Unavailable:
+      case Code.DeadlineExceeded:
+        return new DeadlineExceededError(msg, { cause: err });
       case Code.ResourceExhausted:
+        return new ResourceExhaustedError(msg, { cause: err });
+      case Code.Unavailable:
       case Code.Aborted:
         return new UnavailableError(msg, { cause: err });
       default:

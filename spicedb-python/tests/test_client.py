@@ -785,3 +785,9 @@ def test_reusing_a_client_across_event_loops_raises_a_clear_error():
     msg = str(excinfo.value)
     assert "spicedb.sync" in msg, "the error must point at the sync client"
     assert "event loop" in msg.lower()
+
+    # Clean up the channel bound to loop #1 -- by this point the assertions
+    # above have already fired, so closing here cannot affect what the test
+    # verifies. Left open, the abandoned grpc.aio channel's GC teardown
+    # produces a ResourceWarning: unclosed event loop.
+    asyncio.run(client.close())

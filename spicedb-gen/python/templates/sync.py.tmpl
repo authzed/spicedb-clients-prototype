@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from typing import Any, overload
 
-from spicedb import Transaction, Relationship, Filter, LookupResource, LookupSubject
+from spicedb import Transaction, Relationship, Filter, LookupResource, LookupSubject, CheckResult
 from spicedb.consistency import Consistency
 from spicedb.sync import SpiceDBClient
 
@@ -43,9 +43,9 @@ class TypedClient:
     # ── check ──────────────────────────────────────────────────────────
 {{range $o := .CheckOverloads}}
     @overload
-    def check(self, c: Consistency, p: {{$o.PermClassName}}, s: {{$o.SubjectUnion}}) -> bool: ...
+    def check(self, c: Consistency, p: {{$o.PermClassName}}, s: {{$o.SubjectUnion}}) -> CheckResult: ...
 {{end}}
-    def check(self, c: Consistency, p: Any, s: Any) -> bool:
+    def check(self, c: Consistency, p: Any, s: Any) -> CheckResult:
         sub_type, sub_id, sub_rel = s._subject_ref()
         c_info = s._caveat_info()
         context: dict[str, Any] | None = c_info[1] if c_info is not None else None

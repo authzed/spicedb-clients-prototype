@@ -349,10 +349,12 @@ func TestGenerateSampleSchema(t *testing.T) {
 		assert.Contains(t, output, flavor.defKw+" "+flavor.exit, flavor.name)
 		assert.Contains(t, output, flavor.defKw+" close", flavor.name)
 
-		// check — per-permission overloads + generic dispatch
-		assert.Contains(t, output, flavor.defKw+" check(self, c: Consistency, p: _DocumentViewPermission, s: DocumentViewSubject) -> bool:", flavor.name)
-		assert.Contains(t, output, flavor.defKw+" check(self, c: Consistency, p: _DocumentEditPermission, s: DocumentEditSubject) -> bool:", flavor.name)
-		assert.Contains(t, output, flavor.defKw+" check(self, c: Consistency, p: _DocumentDeletePermission, s: DocumentDeleteSubject) -> bool:", flavor.name)
+		// check — per-permission overloads + generic dispatch. Returns
+		// CheckResult, not bool: see TestCheckSurfacesCheckResult below for the
+		// rigorous regression guard.
+		assert.Contains(t, output, flavor.defKw+" check(self, c: Consistency, p: _DocumentViewPermission, s: DocumentViewSubject) -> CheckResult:", flavor.name)
+		assert.Contains(t, output, flavor.defKw+" check(self, c: Consistency, p: _DocumentEditPermission, s: DocumentEditSubject) -> CheckResult:", flavor.name)
+		assert.Contains(t, output, flavor.defKw+" check(self, c: Consistency, p: _DocumentDeletePermission, s: DocumentDeleteSubject) -> CheckResult:", flavor.name)
 
 		// writes
 		assert.Contains(t, output, flavor.defKw+" touch(self, *rels: TypedRelationship) -> str:", flavor.name)
@@ -381,6 +383,63 @@ func TestGenerateSampleSchema(t *testing.T) {
 	// cover this more exhaustively; these are a quick sanity check here.)
 	assert.NotContains(t, sync, "async def")
 	assert.NotContains(t, aio, "from spicedb.sync import")
+}
+
+// TestCheckSurfacesCheckResult verifies the generated `check` method — both
+// its @overload declarations and its dispatching implementation, in both
+// sync.py and aio.py — returns spicedb.CheckResult, not bool.
+//
+// Collapsing to bool would silently reintroduce the bug CheckResult exists to
+// fix: a CONDITIONAL_PERMISSION result (server needed caveat context it
+// didn't get) would become indistinguishable from a real denial. This test
+// checks the exact signature (so a stray docstring mention of "CheckResult"
+// can't fake a pass), asserts the old bool-returning forms are entirely gone,
+// and asserts the underlying client's CheckResult return value is passed
+// through untouched rather than re-collapsed inside the generated wrapper.
+// Mirrors the rigor of the Go equivalent in golang/generator_test.go.
+func TestCheckSurfacesCheckResult(t *testing.T) {
+	g := &Generator{}
+	files, err := g.Generate(testSchema(t), nil)
+	require.NoError(t, err)
+
+	sync := fileContent(t, files, "sync.py")
+	aio := fileContent(t, files, "aio.py")
+
+	for _, flavor := range []struct {
+		name        string
+		output      string
+		defKw       string // "def" or "async def"
+		awaitPrefix string // "" or "await "
+	}{
+		{"sync.py", sync, "def", ""},
+		{"aio.py", aio, "async def", "await "},
+	} {
+		output := flavor.output
+
+		// CheckResult must be imported from spicedb.
+		assert.Contains(t, output, "from spicedb import Transaction, Relationship, Filter, LookupResource, LookupSubject, CheckResult", flavor.name)
+
+		// @overload declarations — exact signature per permission, returning CheckResult.
+		assert.Contains(t, output, "def check(self, c: Consistency, p: _DocumentViewPermission, s: DocumentViewSubject) -> CheckResult: ...", flavor.name)
+		assert.Contains(t, output, "def check(self, c: Consistency, p: _DocumentEditPermission, s: DocumentEditSubject) -> CheckResult: ...", flavor.name)
+		assert.Contains(t, output, "def check(self, c: Consistency, p: _DocumentDeletePermission, s: DocumentDeleteSubject) -> CheckResult: ...", flavor.name)
+
+		// Dispatching implementation — exact signature, returning CheckResult.
+		assert.Contains(t, output, flavor.defKw+" check(self, c: Consistency, p: Any, s: Any) -> CheckResult:", flavor.name)
+
+		// The old bool-returning forms must be entirely gone. Asserting merely
+		// that the string "CheckResult" appears somewhere would pass even on a
+		// broken template that returns bool but mentions CheckResult only in a
+		// docstring — these NotContains checks discriminate that regression.
+		assert.NotContains(t, output, "-> bool: ...", flavor.name)
+		assert.NotContains(t, output, "check(self, c: Consistency, p: Any, s: Any) -> bool:", flavor.name)
+
+		// The CheckResult returned by the underlying client is passed through
+		// untouched, not re-collapsed to a bool inside the generated wrapper —
+		// which would silently reintroduce the exact bug CheckResult exists to
+		// fix, hidden inside generated code users don't read.
+		assert.Contains(t, output, "return "+flavor.awaitPrefix+"self.client.check_permission(c, rel, context=context)", flavor.name)
+	}
 }
 
 // TestCaveatParamKeywordCollision verifies that when a caveat parameter's name

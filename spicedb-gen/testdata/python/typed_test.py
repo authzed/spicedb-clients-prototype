@@ -13,7 +13,7 @@ Requires SpiceDB at localhost:50051.
 from __future__ import annotations
 
 import pytest
-from spicedb import full, Filter
+from spicedb import full, Filter, Permissionship
 
 from testdata.permissions import (
     TypedTransaction,
@@ -81,12 +81,25 @@ class TestAsyncTypedClient:
             ),
         )
 
-        assert await tc.check(full(), Document("readme").view, User("alice")) is True
-        assert await tc.check(full(), Document("readme").edit, User("alice")) is False
-        assert await tc.check(full(), Document("readme").view, User("bob")) is True
-        assert await tc.check(full(), Document("readme").edit, User("bob")) is True
-        assert await tc.check(full(), Document("readme").delete, User("charlie")) is True
-        assert await tc.check(full(), Document("readme").view, Team("eng").member) is True
+        assert (await tc.check(full(), Document("readme").view, User("alice"))).has_permission is True
+        assert (await tc.check(full(), Document("readme").edit, User("alice"))).has_permission is False
+        assert (await tc.check(full(), Document("readme").view, User("bob"))).has_permission is True
+        assert (await tc.check(full(), Document("readme").edit, User("bob"))).has_permission is True
+        assert (await tc.check(full(), Document("readme").delete, User("charlie"))).has_permission is True
+        assert (await tc.check(full(), Document("readme").view, Team("eng").member)).has_permission is True
+
+        # A caveated relationship missing its context surfaces as
+        # CONDITIONAL_PERMISSION, not as a bare denial -- this is the state a
+        # bool return would have collapsed away. It is reachable here because
+        # tc.check() returns the full CheckResult instead of a bool.
+        await tc.touch(
+            Document("readme").viewer(User("frank").with_ip_range(IpRangeContext())),
+        )
+        result = await tc.check(full(), Document("readme").view, User("frank"))
+        assert result.has_permission is False
+        assert result.permissionship == Permissionship.CONDITIONAL_PERMISSION
+        assert "allowed_cidr" in result.missing_context
+        assert result.checked_at
 
     @pytest.mark.integration
     async def test_lookup_resources(self, tc: AsyncTypedClient) -> None:
@@ -133,10 +146,10 @@ class TestAsyncTypedClient:
     async def test_create_and_delete(self, tc: AsyncTypedClient) -> None:
         """Test create shortcut writes new relationships and delete removes them."""
         await tc.create(Document("manual").viewer(User("erin")))
-        assert await tc.check(full(), Document("manual").view, User("erin")) is True
+        assert (await tc.check(full(), Document("manual").view, User("erin"))).has_permission is True
 
         await tc.delete(Document("manual").viewer(User("erin")))
-        assert await tc.check(full(), Document("manual").view, User("erin")) is False
+        assert (await tc.check(full(), Document("manual").view, User("erin"))).has_permission is False
 
     @pytest.mark.integration
     async def test_typed_transaction_mixed_ops(self, tc: AsyncTypedClient) -> None:
@@ -151,9 +164,9 @@ class TestAsyncTypedClient:
         revision = await tc.write(txn)
         assert revision  # non-empty revision token
 
-        assert await tc.check(full(), Document("rfc").view, User("alice")) is True
-        assert await tc.check(full(), Document("rfc").edit, User("bob")) is True
-        assert await tc.check(full(), Document("rfc").delete, User("eve")) is False
+        assert (await tc.check(full(), Document("rfc").view, User("alice"))).has_permission is True
+        assert (await tc.check(full(), Document("rfc").edit, User("bob"))).has_permission is True
+        assert (await tc.check(full(), Document("rfc").delete, User("eve"))).has_permission is False
 
     @pytest.mark.integration
     async def test_typed_transaction_chainable(self, tc: AsyncTypedClient) -> None:
@@ -240,8 +253,7 @@ class TestAsyncTypedClient:
 
         assert (
             await tc.check(full(), Document("teamdoc").view, Team("backend").member)
-            is True
-        )
+        ).has_permission is True
 
         # Lookup subjects of type team#member
         team_members = [
@@ -289,12 +301,25 @@ class TestSyncTypedClient:
             ),
         )
 
-        assert tc.check(full(), Document("readme-sync").view, User("alice")) is True
-        assert tc.check(full(), Document("readme-sync").edit, User("alice")) is False
-        assert tc.check(full(), Document("readme-sync").view, User("bob")) is True
-        assert tc.check(full(), Document("readme-sync").edit, User("bob")) is True
-        assert tc.check(full(), Document("readme-sync").delete, User("charlie")) is True
-        assert tc.check(full(), Document("readme-sync").view, Team("eng-sync").member) is True
+        assert tc.check(full(), Document("readme-sync").view, User("alice")).has_permission is True
+        assert tc.check(full(), Document("readme-sync").edit, User("alice")).has_permission is False
+        assert tc.check(full(), Document("readme-sync").view, User("bob")).has_permission is True
+        assert tc.check(full(), Document("readme-sync").edit, User("bob")).has_permission is True
+        assert tc.check(full(), Document("readme-sync").delete, User("charlie")).has_permission is True
+        assert tc.check(full(), Document("readme-sync").view, Team("eng-sync").member).has_permission is True
+
+        # A caveated relationship missing its context surfaces as
+        # CONDITIONAL_PERMISSION, not as a bare denial -- this is the state a
+        # bool return would have collapsed away. It is reachable here because
+        # tc.check() returns the full CheckResult instead of a bool.
+        tc.touch(
+            Document("readme-sync").viewer(User("frank-sync").with_ip_range(IpRangeContext())),
+        )
+        result = tc.check(full(), Document("readme-sync").view, User("frank-sync"))
+        assert result.has_permission is False
+        assert result.permissionship == Permissionship.CONDITIONAL_PERMISSION
+        assert "allowed_cidr" in result.missing_context
+        assert result.checked_at
 
     @pytest.mark.integration
     def test_lookup_resources(self, tc: SyncTypedClient) -> None:
@@ -341,10 +366,10 @@ class TestSyncTypedClient:
     def test_create_and_delete(self, tc: SyncTypedClient) -> None:
         """Test create shortcut writes new relationships and delete removes them."""
         tc.create(Document("manual-sync").viewer(User("erin")))
-        assert tc.check(full(), Document("manual-sync").view, User("erin")) is True
+        assert tc.check(full(), Document("manual-sync").view, User("erin")).has_permission is True
 
         tc.delete(Document("manual-sync").viewer(User("erin")))
-        assert tc.check(full(), Document("manual-sync").view, User("erin")) is False
+        assert tc.check(full(), Document("manual-sync").view, User("erin")).has_permission is False
 
     @pytest.mark.integration
     def test_typed_transaction_mixed_ops(self, tc: SyncTypedClient) -> None:
@@ -359,9 +384,9 @@ class TestSyncTypedClient:
         revision = tc.write(txn)
         assert revision  # non-empty revision token
 
-        assert tc.check(full(), Document("rfc-sync").view, User("alice")) is True
-        assert tc.check(full(), Document("rfc-sync").edit, User("bob")) is True
-        assert tc.check(full(), Document("rfc-sync").delete, User("eve")) is False
+        assert tc.check(full(), Document("rfc-sync").view, User("alice")).has_permission is True
+        assert tc.check(full(), Document("rfc-sync").edit, User("bob")).has_permission is True
+        assert tc.check(full(), Document("rfc-sync").delete, User("eve")).has_permission is False
 
     @pytest.mark.integration
     def test_typed_transaction_chainable(self, tc: SyncTypedClient) -> None:
@@ -448,8 +473,7 @@ class TestSyncTypedClient:
 
         assert (
             tc.check(full(), Document("teamdoc-sync").view, Team("backend-sync").member)
-            is True
-        )
+        ).has_permission is True
 
         # Lookup subjects of type team#member
         team_members = [

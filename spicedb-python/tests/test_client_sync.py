@@ -26,20 +26,39 @@ class _SyncRpcError(grpc.RpcError):
         return self._details
 
 
-def _client(**kw) -> SpiceDBClient:
-    return SpiceDBClient("localhost:50051", token="t", insecure=True, **kw)
+@pytest.fixture
+def make_client():
+    """Construct SpiceDBClient(s) for a test and close them all on teardown.
+
+    A factory (not a plain fixture) because several tests vary
+    ``max_retries`` -- a fixed fixture would force those to keep
+    constructing by hand, which is how the leaked-channel debt this fixture
+    fixes originally persisted.
+    """
+    created = []
+
+    def _make(**kw):
+        c = SpiceDBClient("localhost:50051", token="t", insecure=True, **kw)
+        c._ensure_channel()
+        created.append(c)
+        return c
+
+    yield _make
+    for c in created:
+        c.close()
 
 
 def test_construction_opens_no_channel():
-    assert _client()._channel is None
+    c = SpiceDBClient("localhost:50051", token="t", insecure=True)
+    assert c._channel is None
 
 
 def test_close_before_any_call_is_a_noop():
-    _client().close()  # must not raise
+    SpiceDBClient("localhost:50051", token="t", insecure=True).close()  # must not raise
 
 
 def test_context_manager_closes_the_channel():
-    c = _client()
+    c = SpiceDBClient("localhost:50051", token="t", insecure=True)
     with c as entered:
         assert entered is c
         entered._ensure_channel()
@@ -47,11 +66,10 @@ def test_context_manager_closes_the_channel():
     assert c._channel is None
 
 
-def test_check_permission_returns_bool():
+def test_check_permission_returns_bool(make_client):
     from authzed.api.v1 import permission_service_pb2 as psp
 
-    c = _client()
-    c._ensure_channel()
+    c = make_client()
     resp = psp.CheckBulkPermissionsResponse(
         pairs=[
             psp.CheckBulkPermissionsPair(
@@ -66,12 +84,11 @@ def test_check_permission_returns_bool():
         assert c.check_permission(full(), rel) is True
 
 
-def test_transient_error_is_retried_then_succeeds():
+def test_transient_error_is_retried_then_succeeds(make_client):
     """Guards the Task 1 is_transient fix -- without it this retries zero times."""
     from authzed.api.v1 import permission_service_pb2 as psp
 
-    c = _client(max_retries=2)
-    c._ensure_channel()
+    c = make_client(max_retries=2)
     ok = psp.WriteRelationshipsResponse()
     stub = mock.Mock(side_effect=[_SyncRpcError(grpc.StatusCode.UNAVAILABLE), ok])
     with mock.patch.object(c._permissions, "WriteRelationships", stub):
@@ -83,9 +100,8 @@ def test_transient_error_is_retried_then_succeeds():
     assert stub.call_count == 2, "a transient error must be retried"
 
 
-def test_transient_error_gives_up_after_max_retries():
-    c = _client(max_retries=1)
-    c._ensure_channel()
+def test_transient_error_gives_up_after_max_retries(make_client):
+    c = make_client(max_retries=1)
     stub = mock.Mock(side_effect=_SyncRpcError(grpc.StatusCode.UNAVAILABLE))
     with mock.patch.object(c._schema, "ReadSchema", stub):
         with pytest.raises(UnavailableError):
@@ -93,9 +109,8 @@ def test_transient_error_gives_up_after_max_retries():
     assert stub.call_count == 2, "initial attempt + 1 retry"
 
 
-def test_non_transient_error_is_not_retried():
-    c = _client(max_retries=3)
-    c._ensure_channel()
+def test_non_transient_error_is_not_retried(make_client):
+    c = make_client(max_retries=3)
     stub = mock.Mock(side_effect=_SyncRpcError(grpc.StatusCode.PERMISSION_DENIED))
     with mock.patch.object(c._schema, "ReadSchema", stub):
         with pytest.raises(PermissionDeniedError):
@@ -108,14 +123,13 @@ def test_no_event_loop_is_required_anywhere():
 
     with pytest.raises(RuntimeError):
         asyncio.get_running_loop()  # proves we are outside a loop
-    assert _client()._channel is None
+    assert SpiceDBClient("localhost:50051", token="t", insecure=True)._channel is None
 
 
-def test_read_relationships_returns_a_plain_iterator():
+def test_read_relationships_returns_a_plain_iterator(make_client):
     from authzed.api.v1 import permission_service_pb2 as psp
 
-    c = _client()
-    c._ensure_channel()
+    c = make_client()
     page = [
         psp.ReadRelationshipsResponse(
             relationship=Relationship.from_triple(
@@ -129,12 +143,11 @@ def test_read_relationships_returns_a_plain_iterator():
     assert [r.resource_id for r in got] == ["0", "1", "2"]
 
 
-def test_read_relationships_stops_when_page_is_short():
+def test_read_relationships_stops_when_page_is_short(make_client):
     """A page smaller than DEFAULT_PAGE_SIZE means the last page -- do not re-request."""
     from authzed.api.v1 import permission_service_pb2 as psp
 
-    c = _client()
-    c._ensure_channel()
+    c = make_client()
     stub = mock.Mock(
         return_value=iter(
             [
@@ -151,12 +164,11 @@ def test_read_relationships_stops_when_page_is_short():
     assert stub.call_count == 1
 
 
-def test_streaming_retries_establishment_only_before_first_yield():
+def test_streaming_retries_establishment_only_before_first_yield(make_client):
     """Retrying after an item was yielded would duplicate it for the caller."""
     from authzed.api.v1 import permission_service_pb2 as psp
 
-    c = _client(max_retries=3)
-    c._ensure_channel()
+    c = make_client(max_retries=3)
 
     def _one_then_fail():
         yield psp.ReadRelationshipsResponse(
@@ -175,11 +187,10 @@ def test_streaming_retries_establishment_only_before_first_yield():
     assert stub.call_count == 1, "must NOT retry after an item was yielded"
 
 
-def test_import_relationships_returns_num_loaded():
+def test_import_relationships_returns_num_loaded(make_client):
     from authzed.api.v1 import permission_service_pb2 as psp
 
-    c = _client()
-    c._ensure_channel()
+    c = make_client()
     with mock.patch.object(
         c._permissions,
         "ImportBulkRelationships",

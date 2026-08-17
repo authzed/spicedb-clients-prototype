@@ -119,8 +119,15 @@ func TestGenerateSampleSchema(t *testing.T) {
 	// Relation method renamed to ForMember due to SubRef conflict
 	assert.Contains(t, output, "func (d TeamRef) ForMember(subject TeamMemberSubject) TypedRelationship {")
 
-	// Check and lookup functions (non-generic, accept Subject interface)
-	assert.Contains(t, output, "func Check(ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm Permission, subject Subject) (bool, error) {")
+	// Check and lookup functions (non-generic, accept Subject interface).
+	// Check surfaces the full client.CheckResult — including the Conditional
+	// permissionship for a caveated relationship missing context — rather than
+	// collapsing it to a bool, which would make that state unreachable.
+	assert.Contains(t, output, "func Check(ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm Permission, subject Subject) (client.CheckResult, error) {")
+	assert.NotContains(t, output, "(bool, error)")
+	// The CheckResult returned by the underlying client is passed through
+	// untouched, so a Conditional result (and its MissingContext) survives.
+	assert.Contains(t, output, "return tc.Client.CheckOne(ctx, cs, perm.permission, r)")
 	assert.Contains(t, output, "func LookupResources(ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm PermissionRef, subject Subject) iter.Seq2[client.LookupResource, error] {")
 	assert.Contains(t, output, "func LookupSubjects(ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm Permission, subjectType Subject) iter.Seq2[client.LookupSubject, error] {")
 

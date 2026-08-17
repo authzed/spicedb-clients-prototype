@@ -403,12 +403,19 @@ func (d DocumentRef) Owner(subject DocumentOwnerSubject) TypedRelationship {
 
 // --- Check and Lookup Functions ---
 
-// Check checks whether the given subject has the specified permission on the resource.
-func Check(ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm Permission, subject Subject) (bool, error) {
+// Check checks whether the given subject has the specified permission on the
+// resource.
+//
+// Check surfaces the underlying client's full CheckResult (Permissionship,
+// MissingContext, CheckedAt) rather than collapsing it to a bool: a
+// Conditional result means the server needed caveat context that was not
+// supplied, and is NOT a grant. Prefer CheckResult.HasPermission() over
+// comparing Permissionship directly for the common case.
+func Check(ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm Permission, subject Subject) (client.CheckResult, error) {
 	sType, sID, sRel := subject.subjectRef()
 	r, err := rel.FromTriple(perm.resourceType, perm.resourceID, perm.permission, sType, sID, sRel)
 	if err != nil {
-		return false, err
+		return client.CheckResult{}, err
 	}
 	return tc.Client.CheckOne(ctx, cs, perm.permission, r)
 }

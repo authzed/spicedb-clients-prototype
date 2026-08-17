@@ -67,32 +67,50 @@ func TestTouchAndCheck(t *testing.T) {
 	)
 	require.NoError(t, err)
 
+	// Write a caveated relationship with no context supplied at write time, so
+	// checking it needs context the server does not have.
+	_, err = tc.Touch(ctx,
+		Document("readme").Viewer(User("erin").WithIpRange(IpRangeContext{})),
+	)
+	require.NoError(t, err)
+
 	// Check permissions
 	cs := consistency.Full()
 
-	allowed, err := Check(ctx, tc, cs, Document("readme").View(), User("alice"))
+	result, err := Check(ctx, tc, cs, Document("readme").View(), User("alice"))
 	require.NoError(t, err)
-	assert.True(t, allowed, "alice should be able to view")
+	assert.True(t, result.HasPermission(), "alice should be able to view")
 
-	allowed, err = Check(ctx, tc, cs, Document("readme").Edit(), User("alice"))
+	result, err = Check(ctx, tc, cs, Document("readme").Edit(), User("alice"))
 	require.NoError(t, err)
-	assert.False(t, allowed, "alice should not be able to edit")
+	assert.False(t, result.HasPermission(), "alice should not be able to edit")
 
-	allowed, err = Check(ctx, tc, cs, Document("readme").View(), User("bob"))
+	result, err = Check(ctx, tc, cs, Document("readme").View(), User("bob"))
 	require.NoError(t, err)
-	assert.True(t, allowed, "bob should be able to view (via editor)")
+	assert.True(t, result.HasPermission(), "bob should be able to view (via editor)")
 
-	allowed, err = Check(ctx, tc, cs, Document("readme").Edit(), User("bob"))
+	result, err = Check(ctx, tc, cs, Document("readme").Edit(), User("bob"))
 	require.NoError(t, err)
-	assert.True(t, allowed, "bob should be able to edit")
+	assert.True(t, result.HasPermission(), "bob should be able to edit")
 
-	allowed, err = Check(ctx, tc, cs, Document("readme").Delete(), User("charlie"))
+	result, err = Check(ctx, tc, cs, Document("readme").Delete(), User("charlie"))
 	require.NoError(t, err)
-	assert.True(t, allowed, "charlie should be able to delete")
+	assert.True(t, result.HasPermission(), "charlie should be able to delete")
 
-	allowed, err = Check(ctx, tc, cs, Document("readme").View(), Team("eng").Member())
+	result, err = Check(ctx, tc, cs, Document("readme").View(), Team("eng").Member())
 	require.NoError(t, err)
-	assert.True(t, allowed, "team#member eng should be able to view")
+	assert.True(t, result.HasPermission(), "team#member eng should be able to view")
+
+	// A caveated relationship missing its context surfaces as Conditional, not
+	// as a bare denial — this is the state a bool return would have collapsed
+	// away. It is reachable from the generated Check function because Check
+	// returns the full client.CheckResult instead of a bool.
+	result, err = Check(ctx, tc, cs, Document("readme").View(), User("erin"))
+	require.NoError(t, err)
+	assert.False(t, result.HasPermission(), "erin's caveated relationship is missing context, so it is not a grant")
+	assert.Equal(t, client.PermissionshipConditionalPermission, result.Permissionship, "erin's check is conditional on the missing ip_range context")
+	assert.Contains(t, result.MissingContext, "allowed_cidr")
+	assert.NotEmpty(t, result.CheckedAt)
 }
 
 func TestLookupResources(t *testing.T) {

@@ -150,3 +150,4 @@ def test_sync_sends_exactly_one_authorization_header(
 ):
     """Filled in by Task 8; skipped until the sync client exists."""
     pytest.importorskip("spicedb.sync")
+    pytest.fail("Task 8: implement sync auth-header assertions")

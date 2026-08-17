@@ -50,6 +50,30 @@ def test_return_annotations_match_after_normalization(name: str):
     assert sync_ret == normalized, f"return-type drift in {name}()"
 
 
+def test_asyncgen_methods_have_asynciterator_annotation():
+    """Blind spot in test_return_annotations_match_after_normalization: that
+    test normalizes aio's `AsyncIterator[T]` to `Iterator[T]` before comparing
+    against sync, so it catches sync drifting away from `Iterator`. But if
+    aio's OWN annotation lost its `Async` prefix (`AsyncIterator[T]` written
+    as `Iterator[T]`), normalization would make it equal to sync's annotation
+    and the drift would pass silently -- normalizing both sides to the same
+    string hides a real difference in kind, not just spelling.
+
+    Guard that directly, independent of sync: every aio method that IS an
+    async generator at runtime (checked via `inspect.isasyncgenfunction`,
+    not the annotation) must have a raw, un-normalized return annotation that
+    starts with `AsyncIterator`.
+    """
+    for name, fn in _public_methods(AsyncClient).items():
+        if not inspect.isasyncgenfunction(fn):
+            continue
+        raw = str(inspect.signature(fn).return_annotation)
+        assert raw.startswith("AsyncIterator"), (
+            f"{name} is an async generator at runtime but its return "
+            f"annotation {raw!r} does not start with 'AsyncIterator'"
+        )
+
+
 def test_no_sync_method_is_a_coroutine_or_async_generator():
     for name, fn in _public_methods(SyncClient).items():
         assert not inspect.iscoroutinefunction(fn), f"{name} must not be async"

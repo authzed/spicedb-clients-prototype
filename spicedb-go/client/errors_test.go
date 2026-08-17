@@ -182,6 +182,6 @@ func TestReadRelationships_StreamErrorIsMappedToNativeError(t *testing.T) {
 // if the field's type ever regressed to codes.Code.
 func TestErrorCode_IsNativeType(t *testing.T) {
 	var e Error
-	var code ErrorCode = e.Code
+	var code ErrorCode = e.Code //nolint:staticcheck // intentional: explicit type is the compile-time guard described above
 	require.Equal(t, CodeUnknown, code)
 }

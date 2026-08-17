@@ -2,7 +2,6 @@ package client
 
 import (
 	"context"
-	"iter"
 	"net"
 	"slices"
 	"testing"
@@ -288,7 +287,7 @@ func TestWithContextVariants_ForwardCallLevelContextToWire(t *testing.T) {
 
 	t.Run("CheckIterWithContext", func(t *testing.T) {
 		c, srv := newCapturingTestClient(t)
-		var seq iter.Seq[rel.Relationship] = slices.Values([]rel.Relationship{r1, r2})
+		seq := slices.Values([]rel.Relationship{r1, r2})
 		var count int
 		for result, err := range c.CheckIterWithContext(context.Background(), consistency.MinLatency(), "view", want, seq) {
 			require.NoError(t, err)

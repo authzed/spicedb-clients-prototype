@@ -12,6 +12,7 @@ fails the build if the two surfaces diverge.
 from __future__ import annotations
 
 import time
+from collections.abc import Iterator
 from typing import Any
 
 import grpc
@@ -23,16 +24,21 @@ from authzed.api.v1 import (
 
 from spicedb import _mapping, _requests
 from spicedb._auth import bearer_metadata
+from spicedb._requests import DEFAULT_PAGE_SIZE as _DEFAULT_PAGE_SIZE
+from spicedb._requests import IMPORT_BATCH_SIZE as _IMPORT_BATCH_SIZE
 from spicedb.consistency import Consistency
 from spicedb.errors import is_transient, to_spicedb_error
 from spicedb.types import (
     Filter,
+    LookupResource,
+    LookupSubject,
     PermissionTree,
     ReflectSchemaResult,
     RelationReference,
     Relationship,
     SchemaDiff,
     Transaction,
+    Update,
     _permission_tree_from_proto,
     _schema_diff_from_proto,
 )
@@ -200,6 +206,144 @@ class SpiceDBClient:
         results = self.check_permissions(consistency, *rels, context=context)
         return all(results)
 
+    # ── Reads ───────────────────────────────────────────────────────
+
+    def read_relationships(
+        self,
+        filter: Filter,
+        consistency: Consistency,
+    ) -> Iterator[Relationship]:
+        """Read relationships matching the filter. Handles pagination automatically."""
+        self._ensure_channel()
+        cursor = None
+        while True:
+            request = _requests.read_relationships_request(
+                filter, consistency, _DEFAULT_PAGE_SIZE, cursor
+            )
+            attempt = 0
+            count = 0
+            while True:
+                yielded = 0
+                try:
+                    for resp in self._permissions.ReadRelationships(
+                        request, metadata=self._metadata
+                    ):
+                        yielded += 1
+                        count += 1
+                        yield Relationship._from_proto(resp.relationship)
+                        cursor = resp.after_result_cursor
+                    break
+                except grpc.RpcError as e:
+                    if yielded == 0 and self._should_retry_establishment(attempt, e):
+                        attempt += 1
+                        continue
+                    raise to_spicedb_error(e) from e
+            if count < _DEFAULT_PAGE_SIZE:
+                return
+
+    def lookup_resources(
+        self,
+        resource_type: str,
+        permission: str,
+        subject: Relationship | tuple[str, str],
+        consistency: Consistency,
+        *,
+        context: dict[str, Any] | None = None,
+    ) -> Iterator[LookupResource]:
+        """Look up resources the subject has the given permission on.
+
+        ``subject`` can be a Relationship (using its subject fields) or a
+        tuple of ``("type:id", "optional_relation")``.
+
+        Yields ``LookupResource`` — each result carries the permissionship
+        (full grant vs conditional on caveat context) and, for conditional
+        results, which caveat context was missing. Callers MUST check
+        ``permissionship`` before treating a result as a full grant.
+        Handles pagination automatically.
+        """
+        self._ensure_channel()
+        subj_ref = _requests.subject_reference(subject)
+        ctx_struct = _requests.context_struct(context)
+
+        cursor = None
+        while True:
+            request = _requests.lookup_resources_request(
+                resource_type,
+                permission,
+                subj_ref,
+                ctx_struct,
+                consistency,
+                _DEFAULT_PAGE_SIZE,
+                cursor,
+            )
+            attempt = 0
+            count = 0
+            while True:
+                yielded = 0
+                try:
+                    for resp in self._permissions.LookupResources(
+                        request, metadata=self._metadata
+                    ):
+                        yielded += 1
+                        count += 1
+                        yield _mapping.lookup_resource(resp)
+                        cursor = resp.after_result_cursor
+                    break
+                except grpc.RpcError as e:
+                    if yielded == 0 and self._should_retry_establishment(attempt, e):
+                        attempt += 1
+                        continue
+                    raise to_spicedb_error(e) from e
+            if count < _DEFAULT_PAGE_SIZE:
+                return
+
+    def lookup_subjects(
+        self,
+        resource: tuple[str, str],
+        permission: str,
+        subject_type: str,
+        consistency: Consistency,
+        *,
+        subject_relation: str = "",
+        context: dict[str, Any] | None = None,
+    ) -> Iterator[LookupSubject]:
+        """Look up subjects that have the given permission on the resource.
+
+        ``resource`` is a tuple of ``("type", "id")``.
+
+        Yields ``LookupSubject``. When a yielded ``subject.subject_id`` is
+        the wildcard ``"*"``, the server has granted the permission to every
+        subject of ``subject_type`` EXCEPT those listed in
+        ``excluded_subjects``. Callers MUST check ``excluded_subjects``
+        before treating a wildcard match as a blanket grant, or they risk
+        granting access to subjects the server explicitly excluded.
+        """
+        self._ensure_channel()
+        ctx_struct = _requests.context_struct(context)
+        request = _requests.lookup_subjects_request(
+            resource,
+            permission,
+            subject_type,
+            subject_relation,
+            ctx_struct,
+            consistency,
+        )
+        attempt = 0
+        while True:
+            yielded = 0
+            try:
+                for resp in self._permissions.LookupSubjects(
+                    request, metadata=self._metadata
+                ):
+                    yielded += 1
+                    yield _mapping.lookup_subject(resp)
+                return
+            except grpc.RpcError as e:
+                if yielded == 0 and self._should_retry_establishment(attempt, e):
+                    attempt += 1
+                    continue
+                raise to_spicedb_error(e) from e
+
     # ── Writes ──────────────────────────────────────────────────────
 
     def write(self, txn: Transaction) -> str:
@@ -278,6 +422,84 @@ class SpiceDBClient:
 
         resp = self._with_retry(_call)
         return resp.written_at.token
+
+    # ── Watch ───────────────────────────────────────────────────────
+
+    def watch(
+        self,
+        *,
+        object_types: list[str] | None = None,
+        start_revision: str | None = None,
+    ) -> Iterator[tuple[list[Update], str]]:
+        """Watch for relationship changes. Yields (updates, revision) tuples."""
+        self._ensure_channel()
+        request = _requests.watch_request(object_types, start_revision)
+        attempt = 0
+        while True:
+            yielded = 0
+            try:
+                for resp in self._watch.Watch(request, metadata=self._metadata):
+                    yielded += 1
+                    yield _mapping.watch_event(resp)
+                return
+            except grpc.RpcError as e:
+                # Retrying is only safe before any update has been yielded
+                # (stream ESTABLISHMENT) — never retry mid-watch, since
+                # that would replay/duplicate already-delivered updates.
+                if yielded == 0 and self._should_retry_establishment(attempt, e):
+                    attempt += 1
+                    continue
+                raise to_spicedb_error(e) from e
+
+    # ── Bulk operations ─────────────────────────────────────────────
+
+    def import_relationships(self, relationships: list[Relationship]) -> int:
+        """Import relationships in bulk. Returns the number loaded."""
+        self._ensure_channel()
+        try:
+            resp = self._permissions.ImportBulkRelationships(
+                _requests.import_batches(relationships, _IMPORT_BATCH_SIZE),
+                metadata=self._metadata,
+            )
+            return resp.num_loaded
+        except grpc.RpcError as e:
+            raise to_spicedb_error(e) from e
+
+    def export_relationships(
+        self,
+        consistency: Consistency,
+        *,
+        filter: Filter | None = None,
+    ) -> Iterator[Relationship]:
+        """Export relationships in bulk. Handles pagination automatically."""
+        self._ensure_channel()
+        cursor = None
+        rel_filter = filter._to_proto() if filter else None
+        while True:
+            request = _requests.export_request(
+                consistency, rel_filter, _DEFAULT_PAGE_SIZE, cursor
+            )
+            attempt = 0
+            count = 0
+            while True:
+                yielded = 0
+                try:
+                    for resp in self._permissions.ExportBulkRelationships(
+                        request, metadata=self._metadata
+                    ):
+                        for proto_rel in resp.relationships:
+                            yield Relationship._from_proto(proto_rel)
+                            yielded += 1
+                            count += 1
+                        cursor = resp.after_result_cursor
+                    break
+                except grpc.RpcError as e:
+                    if yielded == 0 and self._should_retry_establishment(attempt, e):
+                        attempt += 1
+                        continue
+                    raise to_spicedb_error(e) from e
+            if count < _DEFAULT_PAGE_SIZE:
+                return
 
     # ── Expand ──────────────────────────────────────────────────────
 

@@ -148,6 +148,28 @@ async def test_aio_sends_exactly_one_authorization_header(
 def test_sync_sends_exactly_one_authorization_header(
     secure: bool, streaming: bool, tls_pair
 ):
-    """Filled in by Task 8; skipped until the sync client exists."""
-    pytest.importorskip("spicedb.sync")
-    pytest.fail("Task 8: implement sync auth-header assertions")
+    from spicedb.sync import SpiceDBClient as SyncSpiceDBClient
+
+    recorder = _Recorder()
+    server, port = _serve(recorder, tls_pair if secure else None)
+    try:
+        with _trusting(tls_pair) if secure else contextlib.nullcontext():
+            client = SyncSpiceDBClient(
+                f"localhost:{port}", token=TOKEN, insecure=not secure
+            )
+            if streaming:
+                for _ in client.read_relationships(
+                    Filter(resource_type="document"), full()
+                ):
+                    pass
+            else:
+                client.check_permissions(full())
+            client.close()
+    finally:
+        server.stop(0)
+
+    assert len(recorder.headers) == 1, (
+        f"expected exactly 1 authorization header, got {len(recorder.headers)}: "
+        f"{recorder.headers}"
+    )
+    assert recorder.headers[0][1] == f"Bearer {TOKEN}"

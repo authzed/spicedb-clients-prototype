@@ -1,5 +1,6 @@
 """Unit tests for SpiceDBClient construction — no SpiceDB instance needed."""
 
+import asyncio
 import inspect
 from unittest.mock import AsyncMock
 
@@ -15,7 +16,12 @@ from google.rpc import status_pb2
 
 from spicedb import Filter, Relationship, RelationReference, full
 from spicedb.aio import SpiceDBClient
-from spicedb.errors import InvalidArgumentError, SpiceDBError, UnavailableError
+from spicedb.errors import (
+    EventLoopBindingError,
+    InvalidArgumentError,
+    SpiceDBError,
+    UnavailableError,
+)
 from spicedb.types import LookupResource, Permissionship, ResolvedSubject
 
 
@@ -96,13 +102,17 @@ def _stream_fails_after_yielding(*responses):
     return _call
 
 
-def test_constructor_insecure():
+async def test_constructor_insecure_opens_channel_on_ensure():
+    """The channel binds lazily -- exercise `_ensure_channel()` explicitly to
+    confirm the insecure code path still produces a real channel."""
     c = SpiceDBClient("localhost:50051", token="testtoken", insecure=True)
+    c._ensure_channel()
     assert c._channel is not None
 
 
 async def test_context_manager():
     async with SpiceDBClient("localhost:50051", token="testtoken", insecure=True) as c:
+        c._ensure_channel()
         assert c._channel is not None
 
 
@@ -137,6 +147,7 @@ class TestComputablePermissions:
 
     async def test_maps_permissions_field_by_field(self):
         client = SpiceDBClient("localhost:50051", token="testtoken", insecure=True)
+        client._ensure_channel()
         response = schema_service_pb2.ComputablePermissionsResponse(
             permissions=[
                 schema_service_pb2.ReflectionRelationReference(
@@ -181,6 +192,7 @@ class TestDependentRelations:
 
     async def test_maps_relations_field_by_field(self):
         client = SpiceDBClient("localhost:50051", token="testtoken", insecure=True)
+        client._ensure_channel()
         response = schema_service_pb2.DependentRelationsResponse(
             relations=[
                 schema_service_pb2.ReflectionRelationReference(
@@ -222,6 +234,7 @@ class TestBulkCheckPerItemErrorFidelity:
 
     async def test_per_item_invalid_argument_surfaces_as_typed_error(self):
         client = SpiceDBClient("localhost:50051", token="testtoken", insecure=True)
+        client._ensure_channel()
         pair = permission_service_pb2.CheckBulkPermissionsPair(
             error=status_pb2.Status(code=3, message="bad item"),  # INVALID_ARGUMENT
         )
@@ -260,6 +273,7 @@ class TestLookupResourcesYieldsPermissionshipAndPartialCaveat:
 
     async def test_maps_has_and_conditional_results(self):
         client = SpiceDBClient("localhost:50051", token="testtoken", insecure=True)
+        client._ensure_channel()
         client._permissions.LookupResources = _async_stream(
             permission_service_pb2.LookupResourcesResponse(
                 resource_object_id="doc1",
@@ -302,6 +316,7 @@ class TestLookupSubjectsWildcardSubjectExposesExcludedSubjects:
 
     async def test_wildcard_excluded_subjects_surfaced(self):
         client = SpiceDBClient("localhost:50051", token="testtoken", insecure=True)
+        client._ensure_channel()
         client._permissions.LookupSubjects = _async_stream(
             permission_service_pb2.LookupSubjectsResponse(
                 subject=permission_service_pb2.ResolvedSubject(
@@ -345,6 +360,7 @@ class TestLookupSubjectsNonWildcardHasNoExcludedSubjects:
 
     async def test_no_excluded_subjects(self):
         client = SpiceDBClient("localhost:50051", token="testtoken", insecure=True)
+        client._ensure_channel()
         client._permissions.LookupSubjects = _async_stream(
             permission_service_pb2.LookupSubjectsResponse(
                 subject=permission_service_pb2.ResolvedSubject(
@@ -390,6 +406,7 @@ class TestDeleteRelationships:
 
     def _client(self) -> SpiceDBClient:
         client = SpiceDBClient("localhost:50051", token="testtoken", insecure=True)
+        client._ensure_channel()
         response = permission_service_pb2.DeleteRelationshipsResponse(
             deleted_at=core_pb2.ZedToken(token="deadbeef"),
         )
@@ -518,6 +535,7 @@ def _rel_response(doc_id: str, cursor_token: str):
 class TestReadRelationshipsEstablishmentRetry:
     async def test_retries_establishment_on_first_open_transient_error(self):
         client = SpiceDBClient("localhost:50051", token="testtoken", insecure=True)
+        client._ensure_channel()
         client._permissions.ReadRelationships = _stream_open_fails_then_succeeds(
             _rel_response("doc1", "c1"),
         )
@@ -535,6 +553,7 @@ class TestReadRelationshipsEstablishmentRetry:
 
     async def test_transient_error_after_yielding_is_not_retried(self):
         client = SpiceDBClient("localhost:50051", token="testtoken", insecure=True)
+        client._ensure_channel()
         client._permissions.ReadRelationships = _stream_fails_after_yielding(
             _rel_response("doc1", "c1"),
         )
@@ -562,6 +581,7 @@ class TestLookupResourcesEstablishmentRetry:
 
     async def test_retries_establishment_on_first_open_transient_error(self):
         client = SpiceDBClient("localhost:50051", token="testtoken", insecure=True)
+        client._ensure_channel()
         client._permissions.LookupResources = _stream_open_fails_then_succeeds(
             self._response("doc1", "c1"),
         )
@@ -578,6 +598,7 @@ class TestLookupResourcesEstablishmentRetry:
 
     async def test_transient_error_after_yielding_is_not_retried(self):
         client = SpiceDBClient("localhost:50051", token="testtoken", insecure=True)
+        client._ensure_channel()
         client._permissions.LookupResources = _stream_fails_after_yielding(
             self._response("doc1", "c1"),
         )
@@ -604,6 +625,7 @@ class TestLookupSubjectsEstablishmentRetry:
 
     async def test_retries_establishment_on_first_open_transient_error(self):
         client = SpiceDBClient("localhost:50051", token="testtoken", insecure=True)
+        client._ensure_channel()
         client._permissions.LookupSubjects = _stream_open_fails_then_succeeds(
             self._response("alice"),
         )
@@ -620,6 +642,7 @@ class TestLookupSubjectsEstablishmentRetry:
 
     async def test_transient_error_after_yielding_is_not_retried(self):
         client = SpiceDBClient("localhost:50051", token="testtoken", insecure=True)
+        client._ensure_channel()
         client._permissions.LookupSubjects = _stream_fails_after_yielding(
             self._response("alice"),
         )
@@ -644,6 +667,7 @@ class TestWatchEstablishmentRetry:
 
     async def test_retries_establishment_on_first_open_transient_error(self):
         client = SpiceDBClient("localhost:50051", token="testtoken", insecure=True)
+        client._ensure_channel()
         client._watch.Watch = _stream_open_fails_then_succeeds(
             self._response("rev1"),
         )
@@ -655,6 +679,7 @@ class TestWatchEstablishmentRetry:
 
     async def test_transient_error_after_yielding_is_not_retried(self):
         client = SpiceDBClient("localhost:50051", token="testtoken", insecure=True)
+        client._ensure_channel()
         client._watch.Watch = _stream_fails_after_yielding(
             self._response("rev1"),
         )
@@ -689,6 +714,7 @@ class TestExportRelationshipsEstablishmentRetry:
 
     async def test_retries_establishment_on_first_open_transient_error(self):
         client = SpiceDBClient("localhost:50051", token="testtoken", insecure=True)
+        client._ensure_channel()
         client._permissions.ExportBulkRelationships = _stream_open_fails_then_succeeds(
             self._response("doc1", "c1"),
         )
@@ -700,6 +726,7 @@ class TestExportRelationshipsEstablishmentRetry:
 
     async def test_transient_error_after_yielding_is_not_retried(self):
         client = SpiceDBClient("localhost:50051", token="testtoken", insecure=True)
+        client._ensure_channel()
         client._permissions.ExportBulkRelationships = _stream_fails_after_yielding(
             self._response("doc1", "c1"),
         )
@@ -711,3 +738,50 @@ class TestExportRelationshipsEstablishmentRetry:
 
         assert [r.resource_id for r in got] == ["doc1"]
         assert len(client._permissions.ExportBulkRelationships.calls) == 1
+
+
+# ── Lazy channel binding (D6) ───────────────────────────────────────────
+#
+# The reported bug: a client built once at startup (no running loop), then
+# driven by `asyncio.run(...)` per call. A `grpc.aio` channel binds to the
+# event loop present when it is constructed, so building eagerly in
+# `__init__` breaks the very "build once, reuse" pattern callers expect from
+# every other client. The channel must instead open on first *use*, and
+# reuse from a second loop must raise a typed, actionable error rather than
+# an opaque grpc/asyncio failure.
+
+
+def test_construction_outside_a_loop_does_not_raise():
+    """The reported failure: build once at startup, no loop running."""
+    client = SpiceDBClient("localhost:50051", token="t", insecure=True)
+    assert client is not None
+
+
+def test_construction_opens_no_channel():
+    client = SpiceDBClient("localhost:50051", token="t", insecure=True)
+    assert client._channel is None, "channel must bind lazily, at first use"
+
+
+def test_close_before_any_call_is_a_noop():
+    client = SpiceDBClient("localhost:50051", token="t", insecure=True)
+    asyncio.run(client.close())  # must not raise
+
+
+def test_reusing_a_client_across_event_loops_raises_a_clear_error():
+    """asyncio.run() per call is exactly what the bug report did."""
+    client = SpiceDBClient("localhost:50051", token="t", insecure=True)
+
+    async def _bind():
+        client._ensure_channel()
+
+    asyncio.run(_bind())          # binds to loop #1, which then closes
+
+    async def _use_again():
+        client._ensure_channel()  # loop #2
+
+    with pytest.raises(EventLoopBindingError) as excinfo:
+        asyncio.run(_use_again())
+
+    msg = str(excinfo.value)
+    assert "spicedb.sync" in msg, "the error must point at the sync client"
+    assert "event loop" in msg.lower()

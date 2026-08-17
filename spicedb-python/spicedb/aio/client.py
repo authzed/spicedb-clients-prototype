@@ -19,7 +19,7 @@ from spicedb._auth import bearer_metadata
 from spicedb._requests import DEFAULT_PAGE_SIZE as _DEFAULT_PAGE_SIZE
 from spicedb._requests import IMPORT_BATCH_SIZE as _IMPORT_BATCH_SIZE
 from spicedb.consistency import Consistency
-from spicedb.errors import is_transient, to_spicedb_error
+from spicedb.errors import EventLoopBindingError, is_transient, to_spicedb_error
 from spicedb.types import (
     Filter,
     LookupResource,
@@ -55,14 +55,44 @@ class SpiceDBClient:
         insecure: bool = False,
         max_retries: int = _DEFAULT_MAX_RETRIES,
     ):
+        self._endpoint = endpoint
+        self._insecure = insecure
         self._max_retries = max_retries
         self._metadata = bearer_metadata(token)
-        if insecure:
-            self._channel = grpc.aio.insecure_channel(endpoint)
+        self._channel: grpc.aio.Channel | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._permissions = None
+        self._schema = None
+        self._watch = None
+        self._experimental = None
+
+    def _ensure_channel(self) -> None:
+        """Open the channel on first use, binding it to the running loop.
+
+        Constructing in __init__ would bind to whatever loop existed at
+        construction time -- usually none -- which is why building a client at
+        import time and then calling asyncio.run() per request fails.
+        """
+        loop = asyncio.get_running_loop()
+        if self._channel is not None:
+            if self._loop is not loop:
+                raise EventLoopBindingError(
+                    "This SpiceDBClient is bound to a different asyncio event "
+                    "loop than the one now running. A grpc.aio channel cannot "
+                    "be shared across event loops, so calling asyncio.run() per "
+                    "request against a client built at startup will always fail. "
+                    "Use spicedb.sync.SpiceDBClient from synchronous code, or "
+                    "keep one event loop for the process lifetime."
+                )
+            return
+
+        if self._insecure:
+            self._channel = grpc.aio.insecure_channel(self._endpoint)
         else:
             self._channel = grpc.aio.secure_channel(
-                endpoint, grpc.ssl_channel_credentials()
+                self._endpoint, grpc.ssl_channel_credentials()
             )
+        self._loop = loop
 
         from authzed.api.v1 import (
             experimental_service_pb2_grpc,
@@ -81,8 +111,11 @@ class SpiceDBClient:
         )
 
     async def close(self) -> None:
-        """Close the underlying gRPC channel."""
-        await self._channel.close()
+        """Close the underlying gRPC channel. A no-op if never used."""
+        if self._channel is not None:
+            await self._channel.close()
+            self._channel = None
+            self._loop = None
 
     async def __aenter__(self) -> SpiceDBClient:
         return self
@@ -133,6 +166,7 @@ class SpiceDBClient:
         context: dict[str, Any] | None = None,
     ) -> bool:
         """Check a single permission. Returns True if the subject has the permission."""
+        self._ensure_channel()
         results = await self.check_permissions(consistency, rel, context=context)
         return results[0]
 
@@ -143,6 +177,7 @@ class SpiceDBClient:
         context: dict[str, Any] | None = None,
     ) -> list[bool]:
         """Check multiple permissions via BulkCheckPermissions. Returns list of bools."""
+        self._ensure_channel()
         request = _requests.check_bulk_request(consistency, rels, context)
 
         async def _call() -> permission_service_pb2.CheckBulkPermissionsResponse:
@@ -160,6 +195,7 @@ class SpiceDBClient:
         context: dict[str, Any] | None = None,
     ) -> bool:
         """Return True if any of the permission checks pass."""
+        self._ensure_channel()
         results = await self.check_permissions(consistency, *rels, context=context)
         return any(results)
 
@@ -170,6 +206,7 @@ class SpiceDBClient:
         context: dict[str, Any] | None = None,
     ) -> bool:
         """Return True if all of the permission checks pass."""
+        self._ensure_channel()
         results = await self.check_permissions(consistency, *rels, context=context)
         return all(results)
 
@@ -181,6 +218,7 @@ class SpiceDBClient:
         consistency: Consistency,
     ) -> AsyncIterator[Relationship]:
         """Read relationships matching the filter. Handles pagination automatically."""
+        self._ensure_channel()
         cursor = None
         while True:
             request = _requests.read_relationships_request(
@@ -229,6 +267,7 @@ class SpiceDBClient:
         ``permissionship`` before treating a result as a full grant.
         Handles pagination automatically.
         """
+        self._ensure_channel()
         subj_ref = _requests.subject_reference(subject)
         ctx_struct = _requests.context_struct(context)
 
@@ -287,6 +326,7 @@ class SpiceDBClient:
         before treating a wildcard match as a blanket grant, or they risk
         granting access to subjects the server explicitly excluded.
         """
+        self._ensure_channel()
         ctx_struct = _requests.context_struct(context)
         request = _requests.lookup_subjects_request(
             resource,
@@ -316,6 +356,7 @@ class SpiceDBClient:
 
     async def write(self, txn: Transaction) -> str:
         """Execute a transaction and return the revision string."""
+        self._ensure_channel()
         request = _requests.write_request(txn)
 
         async def _call() -> permission_service_pb2.WriteRelationshipsResponse:
@@ -350,6 +391,7 @@ class SpiceDBClient:
         delete every match when the match count exceeds ``limit``; call again
         with the same filter to continue deleting what remains.
         """
+        self._ensure_channel()
         request = _requests.delete_relationships_request(
             filter, must_match, must_not_match, limit
         )
@@ -366,6 +408,7 @@ class SpiceDBClient:
 
     async def read_schema(self) -> str:
         """Read the current schema. Returns the schema text."""
+        self._ensure_channel()
 
         async def _call() -> schema_service_pb2.ReadSchemaResponse:
             return await self._schema.ReadSchema(
@@ -377,6 +420,7 @@ class SpiceDBClient:
 
     async def write_schema(self, schema: str) -> str:
         """Write a schema. Returns the revision string."""
+        self._ensure_channel()
 
         async def _call() -> schema_service_pb2.WriteSchemaResponse:
             return await self._schema.WriteSchema(
@@ -396,6 +440,7 @@ class SpiceDBClient:
         start_revision: str | None = None,
     ) -> AsyncIterator[tuple[list[Update], str]]:
         """Watch for relationship changes. Yields (updates, revision) tuples."""
+        self._ensure_channel()
         request = _requests.watch_request(object_types, start_revision)
         attempt = 0
         while True:
@@ -418,6 +463,7 @@ class SpiceDBClient:
 
     async def import_relationships(self, relationships: list[Relationship]) -> int:
         """Import relationships in bulk. Returns the number loaded."""
+        self._ensure_channel()
         try:
             resp = await self._permissions.ImportBulkRelationships(
                 _requests.import_batches(relationships, _IMPORT_BATCH_SIZE),
@@ -434,6 +480,7 @@ class SpiceDBClient:
         filter: Filter | None = None,
     ) -> AsyncIterator[Relationship]:
         """Export relationships in bulk. Handles pagination automatically."""
+        self._ensure_channel()
         cursor = None
         rel_filter = filter._to_proto() if filter else None
         while True:
@@ -473,6 +520,7 @@ class SpiceDBClient:
         consistency: Consistency,
     ) -> tuple[PermissionTree, str]:
         """Expand a permission tree. Returns (tree, revision)."""
+        self._ensure_channel()
         request = _requests.expand_request(resource, permission, consistency)
 
         async def _call() -> permission_service_pb2.ExpandPermissionTreeResponse:
@@ -491,6 +539,7 @@ class SpiceDBClient:
         filter: Filter,
     ) -> None:
         """Experimental: Register a relationship counter."""
+        self._ensure_channel()
         request = (
             experimental_service_pb2.ExperimentalRegisterRelationshipCounterRequest(
                 name=name,
@@ -513,6 +562,7 @@ class SpiceDBClient:
 
         Returns (count, revision).
         """
+        self._ensure_channel()
         request = experimental_service_pb2.ExperimentalCountRelationshipsRequest(
             name=name,
         )
@@ -530,6 +580,7 @@ class SpiceDBClient:
         name: str,
     ) -> None:
         """Experimental: Unregister a relationship counter."""
+        self._ensure_channel()
         request = (
             experimental_service_pb2.ExperimentalUnregisterRelationshipCounterRequest(
                 name=name,
@@ -553,6 +604,7 @@ class SpiceDBClient:
     ) -> ReflectSchemaResult:
         """Experimental: Reflect the schema, returning its definitions and
         caveats."""
+        self._ensure_channel()
         request = _requests.reflect_schema_request(consistency, filters)
 
         async def _call() -> schema_service_pb2.ReflectSchemaResponse:
@@ -567,6 +619,7 @@ class SpiceDBClient:
         comparison_schema: str,
     ) -> list[SchemaDiff]:
         """Experimental: Diff two schemas, returning the list of differences."""
+        self._ensure_channel()
         request = _requests.diff_schema_request(consistency, comparison_schema)
 
         async def _call() -> schema_service_pb2.DiffSchemaResponse:
@@ -585,6 +638,7 @@ class SpiceDBClient:
     ) -> list[RelationReference]:
         """Return the permissions that are computable for the given relation
         on a definition."""
+        self._ensure_channel()
         request = _requests.computable_permissions_request(
             consistency, definition_name, relation_name
         )
@@ -604,6 +658,7 @@ class SpiceDBClient:
         permission_name: str,
     ) -> list[RelationReference]:
         """Return the relations that the given permission depends on."""
+        self._ensure_channel()
         request = _requests.dependent_relations_request(
             consistency, definition_name, permission_name
         )

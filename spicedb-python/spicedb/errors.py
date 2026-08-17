@@ -38,6 +38,16 @@ class CancelledError(SpiceDBError):
     """The operation was cancelled."""
 
 
+class EventLoopBindingError(SpiceDBError):
+    """An async client was used from a different event loop than it bound to.
+
+    A `grpc.aio` channel binds to the event loop running when it is first used.
+    Calling into the same client from another loop -- most commonly by calling
+    `asyncio.run()` once per request against a client built at startup -- cannot
+    work. Use `spicedb.sync.SpiceDBClient` from synchronous code instead.
+    """
+
+
 _CODE_TO_ERROR: dict[grpc.StatusCode, type[SpiceDBError]] = {
     grpc.StatusCode.PERMISSION_DENIED: PermissionDeniedError,
     grpc.StatusCode.NOT_FOUND: NotFoundError,

@@ -22,6 +22,7 @@ from spicedb.consistency import (
 from spicedb.errors import (
     AlreadyExistsError,
     CancelledError,
+    EventLoopBindingError,
     FailedPreconditionError,
     InvalidArgumentError,
     NotFoundError,
@@ -101,4 +102,5 @@ __all__ = [
     "FailedPreconditionError",
     "UnavailableError",
     "CancelledError",
+    "EventLoopBindingError",
 ]

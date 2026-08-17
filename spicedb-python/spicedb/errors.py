@@ -102,9 +102,5 @@ def is_transient(err: Exception) -> bool:
     to the aio type silently disables retries for the sync client.
     """
     if isinstance(err, grpc.RpcError):
-        try:
-            code = err.code()
-        except AttributeError:
-            return False
-        return code in _TRANSIENT_CODES
+        return err.code() in _TRANSIENT_CODES
     return isinstance(err, UnavailableError)

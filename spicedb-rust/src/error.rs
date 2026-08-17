@@ -72,6 +72,11 @@ mod codes {
     pub const UNAVAILABLE: i32 = 14;
     pub const INVALID_ARGUMENT: i32 = 3;
     pub const ABORTED: i32 = 10;
+    /// Not currently used by `from_grpc_status` (no server response maps to
+    /// it today) — reused by [`internal`] below for locally-detected
+    /// protocol invariant violations, so those errors share the same code
+    /// space as a real server-side INTERNAL status.
+    pub const INTERNAL: i32 = 13;
 }
 
 /// Convert a gRPC status code and message to a [`SpiceDBError`].
@@ -91,6 +96,19 @@ pub fn from_grpc_status(code: i32, message: String) -> SpiceDBError {
         codes::DEADLINE_EXCEEDED => SpiceDBError::DeadlineExceeded(message),
         codes::RESOURCE_EXHAUSTED => SpiceDBError::ResourceExhausted(message),
         _ => SpiceDBError::Status { code, message },
+    }
+}
+
+/// Constructs a [`SpiceDBError`] for a locally-detected protocol invariant
+/// violation that has no backing gRPC status at all — e.g. a `oneof` field
+/// the proto schema guarantees is always populated (such as
+/// `CheckBulkPermissionsPair.response`) arriving unset. Uses gRPC code 13
+/// (INTERNAL) so the error is classified consistently with a genuine
+/// server-side internal error rather than any of the more specific variants.
+pub fn internal(message: String) -> SpiceDBError {
+    SpiceDBError::Status {
+        code: codes::INTERNAL,
+        message,
     }
 }
 

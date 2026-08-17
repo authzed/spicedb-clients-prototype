@@ -51,6 +51,17 @@ fn error_pair(code: i32, message: &str) -> proto::CheckBulkPermissionsPair {
     }
 }
 
+/// A pair whose `response` oneof is unset — neither `Item` nor `Error`.
+/// The proto schema guarantees a well-behaved server never sends this, but
+/// nothing on the wire prevents it, and `Option<Response>` is exactly the
+/// shape a malformed/adversarial/future-incompatible response would take.
+fn malformed_pair() -> proto::CheckBulkPermissionsPair {
+    proto::CheckBulkPermissionsPair {
+        request: None,
+        response: None,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // HARD REQUIREMENT: per-item errors must route through the real error
 // mapper, not a hardcoded InvalidArgument.
@@ -238,5 +249,95 @@ async fn check_all_does_not_count_conditional_as_granted() {
     assert!(
         !all,
         "a Conditional result must not count as granted for check_all"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// HARD REQUIREMENT: a malformed pair (response oneof unset — neither Item
+// nor Error) must fail loudly, not silently vanish from the results.
+//
+// Before the fix, `None => {}` in the pair-handling match simply skipped the
+// index, so `Vec<CheckResult>` came back shorter than the input slice and
+// every subsequent `results[i]` was misaligned with `relationships[i]` — a
+// caller zipping results against inputs would attribute an answer to the
+// wrong resource.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn check_permissions_errors_on_malformed_pair_instead_of_shrinking_results() {
+    let mock = MockPermissionsService::new();
+    mock.push_check_bulk_permissions_response(proto::CheckBulkPermissionsResponse {
+        checked_at: Some(proto::ZedToken {
+            token: "rev-1".to_string(),
+        }),
+        pairs: vec![malformed_pair()],
+    });
+
+    let addr = spawn_permissions_server(mock).await;
+    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
+        .await
+        .expect("client should connect to mock server");
+
+    let rel =
+        Relationship::new("document", "doc1", "view", "user", "alice", "").expect("valid rel");
+    let err = client
+        .check_permissions(&consistency::full(), "view", &[rel])
+        .await
+        .expect_err(
+            "a malformed pair (neither Item nor Error) must surface as an Err, not silently \
+             produce a short results vector",
+        );
+
+    assert!(
+        matches!(err, SpiceDBError::Status { code: 13, .. }),
+        "expected SpiceDBError::Status{{code: 13 (INTERNAL), ..}} for a malformed pair, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn check_permissions_malformed_pair_does_not_desync_results_from_inputs() {
+    // Three relationships; the MIDDLE pair is malformed. Before the fix this
+    // returned Ok(vec![result_for_rel1, result_for_rel3]) — a 2-length
+    // vector for a 3-length input, silently attributing rel3's answer to
+    // index 1. Proves the fix rejects the whole batch instead of returning
+    // a misaligned-but-successful result.
+    let mock = MockPermissionsService::new();
+    mock.push_check_bulk_permissions_response(proto::CheckBulkPermissionsResponse {
+        checked_at: Some(proto::ZedToken {
+            token: "rev-1".to_string(),
+        }),
+        pairs: vec![
+            item_pair(
+                proto::check_permission_response::Permissionship::HasPermission,
+                None,
+            ),
+            malformed_pair(),
+            item_pair(
+                proto::check_permission_response::Permissionship::HasPermission,
+                None,
+            ),
+        ],
+    });
+
+    let addr = spawn_permissions_server(mock).await;
+    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
+        .await
+        .expect("client should connect to mock server");
+
+    let rel1 =
+        Relationship::new("document", "doc1", "view", "user", "alice", "").expect("valid rel");
+    let rel2 =
+        Relationship::new("document", "doc2", "view", "user", "alice", "").expect("valid rel");
+    let rel3 =
+        Relationship::new("document", "doc3", "view", "user", "alice", "").expect("valid rel");
+
+    let result = client
+        .check_permissions(&consistency::full(), "view", &[rel1, rel2, rel3])
+        .await;
+
+    assert!(
+        result.is_err(),
+        "a batch containing a malformed pair must fail entirely, not return a \
+         shorter-than-input Vec<CheckResult> that desyncs results[i] from relationships[i]"
     );
 }

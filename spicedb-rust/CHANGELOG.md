@@ -116,6 +116,23 @@
 
 ### Fixes
 
+- **Fixed `check_permissions`/`check_permissions_with_context` silently
+  dropping an index from the results when a `CheckBulkPermissionsPair`
+  arrived with its `response` oneof unset (neither `Item` nor `Error`).**
+  The proto schema guarantees a well-behaved server never sends this, but
+  nothing on the wire enforces it, and the old handling was:
+  ```rust
+  // Before:
+  None => {}
+  ```
+  which silently skipped that index, so the returned `Vec<CheckResult>`
+  came back shorter than the input `relationships` slice — every
+  subsequent `results[i]` was then misaligned with `relationships[i]`, so
+  a caller zipping results against inputs would attribute an answer to the
+  wrong resource. It now returns `Err(error::internal(..))` (gRPC code 13,
+  `SpiceDBError::Status { code: 13, .. }`) instead of building a
+  misaligned-but-"successful" result. Pre-existing; not introduced by the
+  caveat-context work above.
 - **Fixed a per-item `CheckBulkPermissions` error being reported as a
   hardcoded `SpiceDBError::InvalidArgument` regardless of its actual gRPC
   status code.** `check_permissions` previously did:

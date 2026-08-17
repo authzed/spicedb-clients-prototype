@@ -275,7 +275,20 @@ impl SpiceDBClient {
                     Some(proto::check_bulk_permissions_pair::Response::Item(item)) => {
                         all_results.push(check_result_from_bulk_item(item, &checked_at));
                     }
-                    None => {}
+                    None => {
+                        // The proto's `response` is a oneof — a well-behaved
+                        // server always sets it to Item or Error, so this
+                        // should be unreachable in practice. Silently
+                        // skipping the index here would shrink all_results
+                        // below relationships.len(), desyncing every
+                        // subsequent results[i] from relationships[i] for
+                        // the rest of the batch. Fail loudly instead of
+                        // returning a misaligned-but-"successful" Vec.
+                        return Err(error::internal(format!(
+                            "check item {i}: malformed CheckBulkPermissionsPair (neither Item \
+                             nor Error set)"
+                        )));
+                    }
                 }
             }
         }

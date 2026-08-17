@@ -90,11 +90,72 @@ All checks use `BulkCheckPermissions` under the hood:
 
 - `check_permission(&self, cs, permission, &rel)` -- single check, returns
   `CheckResult` (marked `#[must_use]`)
-- `check_permissions(&self, cs, permission, &[rel])` -- batch check
-- `check_any(&self, cs, permission, &[rel])` -- returns true if any granted
-- `check_all(&self, cs, permission, &[rel])` -- returns true if all granted
+- `check_permissions(&self, cs, permission, &[rel])` -- batch check, returns
+  `Vec<CheckResult>` (one per input relationship, same order)
+- `check_any(&self, cs, permission, &[rel])` -- returns `true` if any
+  relationship's result has `has_permission() == true`
+- `check_all(&self, cs, permission, &[rel])` -- returns `true` if every
+  relationship's result has `has_permission() == true`
 
 All permission parameters are `&str`, not `String`.
+
+`CheckResult` carries the server's three-valued (four with `Unspecified`)
+answer, not a bare bool:
+
+```rust
+pub struct CheckResult {
+    pub permissionship: Permissionship,
+    pub missing_context: Vec<String>,
+    pub checked_at: String,
+}
+
+impl CheckResult {
+    pub fn has_permission(&self) -> bool { /* true only for Permissionship::HasPermission */ }
+}
+```
+
+A `ConditionalPermission` result means the server needed caveat context that
+was not supplied at check time -- it is **not** a grant, and
+`has_permission()` is `false` for it. This distinguishes "denied" from "you
+forgot to pass context," which a bare bool collapsed. `missing_context` lists
+the caveat parameter names the server needed (from
+`partial_caveat_info.missing_required_context`) and is only non-empty for a
+`ConditionalPermission` result. `checked_at` is the revision (ZedToken) the
+check was evaluated at -- thread it into `consistency::at_least` for
+read-your-writes on a subsequent read.
+
+`check_any`/`check_all` deliberately gate on `has_permission()`, not on
+`permissionship != Unspecified`/truthiness -- a `ConditionalPermission` result
+does **not** count as granted for either. This is fail-closed by design: an
+unevaluated caveat should never silently widen a bulk any/all check into a
+grant.
+
+`Permissionship` serves both the check surface (`CheckResult`) and the lookup
+surface (`LookupResource`, `ResolvedSubject`):
+
+```rust
+pub enum Permissionship {
+    Unspecified,
+    NoPermission,
+    HasPermission,
+    ConditionalPermission,
+}
+```
+
+Lookups never yield `NoPermission` -- a resource/subject that lacks the
+permission is simply absent from a lookup stream rather than yielded with
+that permissionship. `NoPermission` only appears on `CheckResult`, where the
+server is answering a yes/no question about one specific pair.
+
+`check_permission` and `check_permissions` both route through
+`BulkCheckPermissions` (there is no separate call site for the single-item
+`CheckPermission` RPC in this client); a per-item error in the batch response
+is mapped through the same `error::from_grpc_status` used by every other RPC
+in this client, so a per-item `PERMISSION_DENIED` surfaces as
+`SpiceDBError::PermissionDenied`, not a generic fallback.
+`CheckBulkPermissionsResponse.checked_at` is one token for the whole
+response (not per-item), so every `CheckResult` in a batch call shares the
+same `checked_at`.
 
 ### Streaming and Transparent Cursor Pagination
 
@@ -114,12 +175,24 @@ response. Default page sizes use sensible defaults:
 
 `lookup_resources` and `lookup_subjects` yield native result structs (`LookupResource` /
 `LookupSubject`), not bare IDs -- each carries `permissionship` (full grant vs. conditional
-on caveat context) and, where applicable, `partial_caveat`. `LookupSubject` additionally
+on caveat context), where applicable `partial_caveat`, and `looked_up_at` (the revision
+the result was computed at -- identical for every item in a single call, since it's a
+property of the call rather than of the individual resource/subject; thread it into
+`consistency::at_least` for read-your-writes). `LookupSubject` additionally
 carries `excluded_subjects`: when `subject.subject_id` is the wildcard `"*"`, those excluded
 subjects MUST be treated as NOT holding the permission even though the wildcard would
 otherwise suggest a blanket grant.
 
 ### Writes
+
+Every write RPC that has a `ZedToken` in its proto response already returns
+it as the revision: `write` (`WriteRelationshipsResponse.written_at`),
+`delete_relationships`/`delete_relationships_with`
+(`DeleteRelationshipsResponse.deleted_at`), and `write_schema`
+(`WriteSchemaResponse.written_at`). `import_relationships` is the one
+exception: it returns `u64` (the count loaded), not a revision --
+`ImportBulkRelationshipsResponse` has exactly one field, `num_loaded`, with no
+`ZedToken` in the proto at all, so there is nothing to expose.
 
 Transaction builder pattern:
 
@@ -204,9 +277,9 @@ ABORTED).
 
 **Checks:**
 - `check_permission(&self, cs, permission, &rel) -> Result<CheckResult, SpiceDBError>`
-- `check_permissions(&self, cs, permission, &[rel]) -> Result<Vec<bool>, SpiceDBError>`
-- `check_any(&self, cs, permission, &[rel]) -> Result<bool, SpiceDBError>`
-- `check_all(&self, cs, permission, &[rel]) -> Result<bool, SpiceDBError>`
+- `check_permissions(&self, cs, permission, &[rel]) -> Result<Vec<CheckResult>, SpiceDBError>`
+- `check_any(&self, cs, permission, &[rel]) -> Result<bool, SpiceDBError>` -- counts only `has_permission()` results
+- `check_all(&self, cs, permission, &[rel]) -> Result<bool, SpiceDBError>` -- counts only `has_permission()` results
 
 **Relationships:**
 - `write(&self, &txn) -> Result<String, SpiceDBError>`
@@ -264,11 +337,12 @@ ABORTED).
 - `Precondition`, `PreconditionOperation`
 - `DeleteOptions` struct (`must_match`, `must_not_match`, `limit`) + `with_must_match`/`with_must_not_match`/`with_limit` builder methods -- used by `delete_relationships_with`
 - `Update`, `UpdateOperation`
-- `CheckResult` (`#[must_use]`)
-- `Permissionship` (`Unspecified` / `HasPermission` / `ConditionalPermission`), `PartialCaveatInfo`
-- `LookupResource` (result of `lookup_resources`)
+- `CheckResult` (`#[must_use]`; `permissionship`, `missing_context`, `checked_at`, `has_permission()`)
+- `Permissionship` (`Unspecified` / `NoPermission` / `HasPermission` / `ConditionalPermission` --
+  shared by the check and lookup surfaces; lookups never yield `NoPermission`), `PartialCaveatInfo`
+- `LookupResource` (result of `lookup_resources`; carries `looked_up_at`)
 - `ResolvedSubject`, `LookupSubject` (results of `lookup_subjects`; `LookupSubject.excluded_subjects`
-  carries wildcard exclusions -- see Lookups above)
+  carries wildcard exclusions -- see Lookups above; `LookupSubject.looked_up_at` is the call's revision)
 - `SchemaDefinition`, `SchemaRelation`, `SchemaPermission`
 - `SchemaCaveat`, `SchemaCaveatParameter`
 - `ReflectSchemaResult`, `RelationReference`, `SchemaDiff`

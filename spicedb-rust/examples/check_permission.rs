@@ -8,13 +8,19 @@ use spicedb::types::{Relationship, Transaction};
 
 const SCHEMA: &str = r#"definition user {}
 
+caveat active(now int) {
+    now < 100
+}
+
 definition document {
     relation viewer: user
     relation editor: user
     relation owner: user
+    relation conditional_viewer: user with active
     permission view = viewer + editor + owner
     permission edit = editor + owner
     permission delete = owner
+    permission conditional_view = conditional_viewer
 }"#;
 
 #[tokio::main]
@@ -49,11 +55,71 @@ async fn main() {
         .expect("check failed");
 
     println!(
-        "alice can view document:firstdoc: {}",
-        result.has_permission
+        "alice can view document:firstdoc: {} (permissionship: {:?})",
+        result.has_permission(),
+        result.permissionship
     );
     assert!(
-        result.has_permission,
+        result.has_permission(),
         "expected alice to have view permission"
+    );
+    assert!(
+        !result.checked_at.is_empty(),
+        "checked_at should be populated from the response"
+    );
+
+    // Conditional check: alice is a conditional_viewer of conditionaldoc via
+    // the `active` caveat, but no caveat context is supplied at check time —
+    // the server cannot evaluate `now < 100`, so it returns a Conditional
+    // result rather than a grant.
+    let conditional_rel = Relationship::new(
+        "document",
+        "conditionaldoc",
+        "conditional_viewer",
+        "user",
+        "alice",
+        "",
+    )
+    .expect("invalid relationship")
+    .with_caveat("active", None);
+    let mut conditional_txn = Transaction::new();
+    conditional_txn.touch(&conditional_rel);
+    let conditional_revision = client
+        .write(&conditional_txn)
+        .await
+        .expect("write conditional relationship failed");
+
+    let conditional_check_rel = Relationship::new(
+        "document",
+        "conditionaldoc",
+        "conditional_view",
+        "user",
+        "alice",
+        "",
+    )
+    .expect("invalid relationship");
+    let conditional_result = client
+        .check_permission(
+            &consistency::at_least(&conditional_revision),
+            "conditional_view",
+            &conditional_check_rel,
+        )
+        .await
+        .expect("conditional check failed");
+
+    println!(
+        "alice can conditionally view document:conditionaldoc: {} (permissionship: {:?}, missing context: {:?})",
+        conditional_result.has_permission(),
+        conditional_result.permissionship,
+        conditional_result.missing_context
+    );
+    assert!(
+        !conditional_result.has_permission(),
+        "a Conditional result must not report has_permission() == true"
+    );
+    assert_eq!(
+        conditional_result.missing_context,
+        vec!["now".to_string()],
+        "expected the server to report `now` as the missing caveat parameter"
     );
 }

@@ -789,26 +789,62 @@ pub struct CountResult {
     pub revision: String,
 }
 
-/// Result of a check_permission call.
+/// Indicates whether a check or lookup result reflects a full grant, a full
+/// denial, or is conditional on caveat context that was not fully evaluated
+/// by the server. Callers MUST check this before treating a result as a full
+/// grant — a `ConditionalPermission` result may resolve to `false` once the
+/// missing caveat context is supplied.
 ///
-/// Marked `#[must_use]` to prevent silently ignoring permission check results.
-#[must_use]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CheckResult {
-    /// Whether the permission is granted.
-    pub has_permission: bool,
-}
-
-/// Indicates whether a lookup result reflects a full grant or is conditional
-/// on caveat context that was not fully evaluated by the server. Callers
-/// MUST check this before treating a result as a full grant — a
-/// `ConditionalPermission` result may resolve to `false` once the missing
-/// caveat context is supplied.
+/// This type serves both the check surface ([`CheckResult`]) and the lookup
+/// surface ([`LookupResource`], [`ResolvedSubject`]). Lookups never yield
+/// `NoPermission`: a subject/resource pair that lacks the permission is
+/// simply absent from a lookup stream rather than being yielded with that
+/// permissionship. `NoPermission` only appears on `CheckResult`, where the
+/// server is answering a question about one specific pair and "no" is
+/// itself an answer.
+///
+/// `NoPermission` is inserted directly after `Unspecified` rather than
+/// appended at the end — this enum carries no explicit discriminants, so
+/// there's no risk of renumbering the other variants by doing so.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Permissionship {
     Unspecified,
+    NoPermission,
     HasPermission,
     ConditionalPermission,
+}
+
+/// Result of a [`SpiceDBClient::check_permission`](crate::client::SpiceDBClient::check_permission)/
+/// [`check_permissions`](crate::client::SpiceDBClient::check_permissions) call.
+///
+/// `permissionship` carries the server's answer. A `ConditionalPermission`
+/// result means the server needed caveat context that was not supplied — it
+/// is NOT a grant. Prefer [`CheckResult::has_permission`] over comparing
+/// `permissionship` directly for the common case.
+///
+/// Marked `#[must_use]` to prevent silently ignoring permission check results.
+#[must_use]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckResult {
+    /// The server's answer for this check.
+    pub permissionship: Permissionship,
+    /// Caveat context keys the server needed and did not receive. Empty
+    /// unless `permissionship` is `ConditionalPermission`.
+    pub missing_context: Vec<String>,
+    /// The revision (ZedToken) this check was evaluated at. Thread it into
+    /// [`crate::consistency::at_least`] so a later read observes this check.
+    pub checked_at: String,
+}
+
+impl CheckResult {
+    /// Returns `true` only when the permission was granted outright.
+    ///
+    /// This is `false` for a `ConditionalPermission` result: the server
+    /// could not evaluate the caveat, so treating it as a grant would
+    /// authorize on an unevaluated condition.
+    pub fn has_permission(&self) -> bool {
+        self.permissionship == Permissionship::HasPermission
+    }
 }
 
 /// Caveat context that was missing to fully evaluate a conditional result.
@@ -824,6 +860,10 @@ pub struct LookupResource {
     pub permissionship: Permissionship,
     /// Non-`None` when `permissionship` is `ConditionalPermission`.
     pub partial_caveat: Option<PartialCaveatInfo>,
+    /// The revision (ZedToken) this result was computed at. Identical for
+    /// every item yielded by a single `lookup_resources` call — it's a
+    /// property of the call, not of the individual resource.
+    pub looked_up_at: String,
 }
 
 /// A subject resolved by `lookup_subjects` — either the matched subject, or
@@ -846,6 +886,10 @@ pub struct ResolvedSubject {
 pub struct LookupSubject {
     pub subject: ResolvedSubject,
     pub excluded_subjects: Vec<ResolvedSubject>,
+    /// The revision (ZedToken) this result was computed at. Identical for
+    /// every item yielded by a single `lookup_subjects` call — it's a
+    /// property of the call, not of the individual subject.
+    pub looked_up_at: String,
 }
 
 /// Maps the proto `LookupPermissionship` enum (represented as `i32` by
@@ -860,6 +904,50 @@ pub(crate) fn permissionship_from_proto(v: i32) -> Permissionship {
             Permissionship::ConditionalPermission
         }
         _ => Permissionship::Unspecified,
+    }
+}
+
+/// Maps the proto `CheckPermissionResponse.Permissionship` enum (used by
+/// both `CheckPermissionResponse` and `CheckBulkPermissionsResponseItem`,
+/// represented as `i32` by prost) to its native equivalent. Unlike
+/// [`permissionship_from_proto`] (used for lookups), this proto enum has a
+/// `NoPermission` value. Unrecognized values map to
+/// `Permissionship::Unspecified`.
+pub(crate) fn check_permissionship_from_proto(v: i32) -> Permissionship {
+    match v {
+        x if x == proto::check_permission_response::Permissionship::NoPermission as i32 => {
+            Permissionship::NoPermission
+        }
+        x if x == proto::check_permission_response::Permissionship::HasPermission as i32 => {
+            Permissionship::HasPermission
+        }
+        x if x
+            == proto::check_permission_response::Permissionship::ConditionalPermission as i32 =>
+        {
+            Permissionship::ConditionalPermission
+        }
+        _ => Permissionship::Unspecified,
+    }
+}
+
+/// Maps a proto `CheckBulkPermissionsResponseItem` (one pair's successful
+/// result from a `CheckBulkPermissions` call) to a native [`CheckResult`].
+/// `CheckBulkPermissionsResponseItem` has no per-item `checked_at` of its
+/// own — the token lives once on the enclosing `CheckBulkPermissionsResponse`
+/// and applies to every pair in it, so callers pass it in as `checked_at` to
+/// propagate onto each item.
+pub(crate) fn check_result_from_bulk_item(
+    item: &proto::CheckBulkPermissionsResponseItem,
+    checked_at: &str,
+) -> CheckResult {
+    CheckResult {
+        permissionship: check_permissionship_from_proto(item.permissionship),
+        missing_context: item
+            .partial_caveat_info
+            .as_ref()
+            .map(|c| c.missing_required_context.clone())
+            .unwrap_or_default(),
+        checked_at: checked_at.to_string(),
     }
 }
 
@@ -1191,10 +1279,139 @@ mod tests {
     #[test]
     fn test_check_result_must_use() {
         let result = CheckResult {
-            has_permission: true,
+            permissionship: Permissionship::HasPermission,
+            missing_context: Vec::new(),
+            checked_at: "rev-1".to_string(),
         };
         // Using the result (must_use is a compile-time lint, tested by compilation)
-        assert!(result.has_permission);
+        assert!(result.has_permission());
+    }
+
+    // T1: has_permission() is false for every variant except HasPermission,
+    // parametrized over all four Permissionship values.
+    #[test]
+    fn test_check_result_has_permission_only_true_for_has_permission() {
+        let cases = [
+            (Permissionship::Unspecified, false),
+            (Permissionship::NoPermission, false),
+            (Permissionship::HasPermission, true),
+            (Permissionship::ConditionalPermission, false),
+        ];
+        for (permissionship, expected) in cases {
+            let result = CheckResult {
+                permissionship: permissionship.clone(),
+                missing_context: Vec::new(),
+                checked_at: String::new(),
+            };
+            assert_eq!(
+                result.has_permission(),
+                expected,
+                "has_permission() should be {expected} for {permissionship:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_check_permissionship_from_proto() {
+        assert_eq!(
+            check_permissionship_from_proto(
+                proto::check_permission_response::Permissionship::Unspecified as i32
+            ),
+            Permissionship::Unspecified
+        );
+        assert_eq!(
+            check_permissionship_from_proto(
+                proto::check_permission_response::Permissionship::NoPermission as i32
+            ),
+            Permissionship::NoPermission
+        );
+        assert_eq!(
+            check_permissionship_from_proto(
+                proto::check_permission_response::Permissionship::HasPermission as i32
+            ),
+            Permissionship::HasPermission
+        );
+        assert_eq!(
+            check_permissionship_from_proto(
+                proto::check_permission_response::Permissionship::ConditionalPermission as i32
+            ),
+            Permissionship::ConditionalPermission
+        );
+        // Unrecognized values fail safe to Unspecified rather than panicking.
+        assert_eq!(
+            check_permissionship_from_proto(99),
+            Permissionship::Unspecified
+        );
+    }
+
+    // T2: missing context carries the server's `missing_required_context`
+    // contents, asserted by value (not merely non-empty).
+    #[test]
+    fn test_check_result_from_bulk_item_missing_context_by_value() {
+        let item = proto::CheckBulkPermissionsResponseItem {
+            permissionship: proto::check_permission_response::Permissionship::ConditionalPermission
+                as i32,
+            partial_caveat_info: Some(proto::PartialCaveatInfo {
+                missing_required_context: vec!["ip_address".to_string(), "now".to_string()],
+            }),
+            debug_trace: None,
+        };
+        let result = check_result_from_bulk_item(&item, "rev-1");
+        assert_eq!(
+            result.missing_context,
+            vec!["ip_address".to_string(), "now".to_string()]
+        );
+        assert_eq!(result.permissionship, Permissionship::ConditionalPermission);
+    }
+
+    #[test]
+    fn test_check_result_from_bulk_item_no_partial_caveat_info_yields_empty_missing_context() {
+        let item = proto::CheckBulkPermissionsResponseItem {
+            permissionship: proto::check_permission_response::Permissionship::HasPermission as i32,
+            partial_caveat_info: None,
+            debug_trace: None,
+        };
+        let result = check_result_from_bulk_item(&item, "rev-1");
+        assert!(result.missing_context.is_empty());
+    }
+
+    // T3: the checked-at token is populated from the (response-level) value
+    // passed in, since CheckBulkPermissionsResponseItem carries no per-item
+    // checked_at of its own.
+    #[test]
+    fn test_check_result_from_bulk_item_checked_at_populated() {
+        let item = proto::CheckBulkPermissionsResponseItem {
+            permissionship: proto::check_permission_response::Permissionship::HasPermission as i32,
+            partial_caveat_info: None,
+            debug_trace: None,
+        };
+        let result = check_result_from_bulk_item(&item, "zedtoken-abc123");
+        assert_eq!(result.checked_at, "zedtoken-abc123");
+    }
+
+    #[test]
+    fn test_lookup_resource_has_looked_up_at() {
+        let lr = LookupResource {
+            resource_id: "doc1".into(),
+            permissionship: Permissionship::HasPermission,
+            partial_caveat: None,
+            looked_up_at: "rev-1".into(),
+        };
+        assert_eq!(lr.looked_up_at, "rev-1");
+    }
+
+    #[test]
+    fn test_lookup_subject_has_looked_up_at() {
+        let ls = LookupSubject {
+            subject: ResolvedSubject {
+                subject_id: "alice".into(),
+                permissionship: Permissionship::HasPermission,
+                partial_caveat: None,
+            },
+            excluded_subjects: Vec::new(),
+            looked_up_at: "rev-1".into(),
+        };
+        assert_eq!(ls.looked_up_at, "rev-1");
     }
 
     #[test]

@@ -2,6 +2,95 @@
 
 ## Unreleased
 
+### Breaking changes
+
+- **`check_permission` and `check_permissions` now return `CheckResult`/`Vec<CheckResult>`
+  instead of `bool`/`Vec<bool>`.** `CheckPermissionResponse.permissionship` is
+  three-valued on the wire (`NO_PERMISSION`, `HAS_PERMISSION`,
+  `CONDITIONAL_PERMISSION`), and the old bool return collapsed a
+  `CONDITIONAL_PERMISSION` result — a caveated relationship whose context
+  wasn't supplied at check time — into the same `false` as an outright
+  denial. `CheckResult` keeps that distinction:
+
+  ```rust
+  // Before:
+  // async fn check_permission(...) -> Result<CheckResult, SpiceDBError>; // CheckResult { has_permission: bool }
+  // async fn check_permissions(...) -> Result<Vec<bool>, SpiceDBError>;
+
+  // After:
+  pub struct CheckResult {
+      pub permissionship: Permissionship, // Unspecified | NoPermission | HasPermission | ConditionalPermission
+      pub missing_context: Vec<String>,   // non-empty only when permissionship is ConditionalPermission
+      pub checked_at: String,             // ZedToken; thread into consistency::at_least for read-your-writes
+  }
+  impl CheckResult {
+      pub fn has_permission(&self) -> bool { /* true only for Permissionship::HasPermission */ }
+  }
+
+  // async fn check_permission(...) -> Result<CheckResult, SpiceDBError>;
+  // async fn check_permissions(...) -> Result<Vec<CheckResult>, SpiceDBError>;
+
+  let result = client.check_permission(&cs, "view", &rel).await?;
+  if result.has_permission() {
+      // granted outright
+  }
+  ```
+
+  `check_any`/`check_all` keep their `bool` return, but now gate on
+  `CheckResult::has_permission()` — a `ConditionalPermission` result does
+  **not** count as granted for either (fail-closed by design: an unevaluated
+  caveat must never silently widen a bulk any/all check into a grant).
+
+  `Permissionship` gains a fourth value, `NoPermission`, inserted directly
+  after `Unspecified` (this enum has no explicit discriminants, so there's no
+  renumbering risk). It now serves both the check surface (`CheckResult`) and
+  the lookup surface (`LookupResource`, `ResolvedSubject`); lookups never
+  yield `NoPermission` — a resource/subject lacking the permission is simply
+  absent from a lookup stream rather than yielded with that permissionship.
+
+  `LookupResource` and `LookupSubject` gain a `looked_up_at: String` field
+  (the revision the result was computed at — `CheckPermissionResponse.checked_at`'s
+  read-your-writes counterpart for the lookup surface, previously
+  unreachable through the public API).
+
+  Rust's compile-time type checking makes the truthiness hazard other
+  languages faced here (`if result:` silently granting on a truthy
+  `CheckResult` object) structurally impossible — `if result` on a struct is
+  a compile error, not a silent fail-open.
+
+### Fixes
+
+- **Fixed a per-item `CheckBulkPermissions` error being reported as a
+  hardcoded `SpiceDBError::InvalidArgument` regardless of its actual gRPC
+  status code.** `check_permissions` previously did:
+  ```rust
+  // Before:
+  if let Some(Response::Error(err_resp)) = &pair.response {
+      return Err(SpiceDBError::InvalidArgument(format!("check item {i}: {}", err_resp.message)));
+  }
+  ```
+  so a per-item `PERMISSION_DENIED` was reported to the caller as
+  `InvalidArgument` — worse than a generic fallback, since it actively
+  misrepresents the failure mode. It now routes through the same
+  `error::from_grpc_status` mapper every other RPC in this client uses:
+  ```rust
+  // After:
+  Some(Response::Error(err_resp)) => {
+      return Err(error::from_grpc_status(err_resp.code, format!("check item {i}: {}", err_resp.message)));
+  }
+  ```
+  A per-item `PERMISSION_DENIED` now correctly surfaces as
+  `SpiceDBError::PermissionDenied`.
+- **`SpiceDBError` gained `DeadlineExceeded` and `ResourceExhausted` variants**
+  (from a prior, unreleased change to this client's error hierarchy). Both
+  gRPC codes previously fell through to the generic `Status { code, message }`
+  fallback. As part of that change, `is_transient` was updated to recognize
+  `SpiceDBError::ResourceExhausted` directly — before, `RESOURCE_EXHAUSTED`
+  was only recognized via the `Status { code, .. }` match arm, which stopped
+  matching once `from_grpc_status` started returning the dedicated
+  `ResourceExhausted` variant for that code; without the fix, rate-limited
+  calls would have silently stopped retrying.
+
 ### Features
 
 - **`delete_relationships_with(filter, &DeleteOptions)`**: guarded deletes.

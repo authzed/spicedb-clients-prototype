@@ -233,9 +233,22 @@ fn test_transaction_borrows_relationship() {
 #[test]
 fn test_check_result_must_use() {
     let result = CheckResult {
-        has_permission: true,
+        permissionship: Permissionship::HasPermission,
+        missing_context: Vec::new(),
+        checked_at: "rev-1".to_string(),
     };
-    assert!(result.has_permission);
+    assert!(result.has_permission());
+}
+
+#[test]
+fn test_check_result_conditional_is_not_has_permission() {
+    let result = CheckResult {
+        permissionship: Permissionship::ConditionalPermission,
+        missing_context: vec!["now".to_string()],
+        checked_at: "rev-1".to_string(),
+    };
+    assert!(!result.has_permission());
+    assert_eq!(result.missing_context, vec!["now".to_string()]);
 }
 
 #[test]

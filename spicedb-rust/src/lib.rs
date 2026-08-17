@@ -34,7 +34,7 @@
 //! // Check a permission
 //! let cs = consistency::at_least(&revision);
 //! let result = client.check_permission(&cs, "view", &rel).await?;
-//! assert!(result.has_permission);
+//! assert!(result.has_permission());
 //! # Ok(())
 //! # }
 //! ```

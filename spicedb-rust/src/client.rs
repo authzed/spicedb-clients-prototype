@@ -14,12 +14,12 @@
 use crate::consistency::Strategy;
 use crate::error::{self, SpiceDBError};
 use crate::types::{
-    partial_caveat_from_proto, permission_tree_from_proto, permissionship_from_proto,
-    resolved_subject_from_proto, CheckResult, CountResult, DeleteOptions, ExpandResult, Filter,
-    LookupResource, LookupSubject, Permissionship, Precondition, PreconditionOperation,
-    ReflectSchemaResult, RelationReference, Relationship, ResolvedSubject, SchemaCaveat,
-    SchemaCaveatParameter, SchemaDefinition, SchemaDiff, SchemaPermission, SchemaRelation,
-    Transaction, Update, UpdateOperation,
+    check_result_from_bulk_item, partial_caveat_from_proto, permission_tree_from_proto,
+    permissionship_from_proto, resolved_subject_from_proto, CheckResult, CountResult,
+    DeleteOptions, ExpandResult, Filter, LookupResource, LookupSubject, Permissionship,
+    Precondition, PreconditionOperation, ReflectSchemaResult, RelationReference, Relationship,
+    ResolvedSubject, SchemaCaveat, SchemaCaveatParameter, SchemaDefinition, SchemaDiff,
+    SchemaPermission, SchemaRelation, Transaction, Update, UpdateOperation,
 };
 
 use futures::Stream;
@@ -117,7 +117,11 @@ impl SpiceDBClient {
 
     /// Checks a single permission and returns a [`CheckResult`].
     ///
-    /// Uses `BulkCheckPermissions` under the hood.
+    /// Uses `BulkCheckPermissions` under the hood. `CheckResult::permissionship`
+    /// carries the server's answer — a `ConditionalPermission` result means the
+    /// server needed caveat context that was not supplied, and is NOT a grant.
+    /// Prefer [`CheckResult::has_permission`] over comparing `permissionship`
+    /// directly for the common case.
     ///
     /// # Errors
     ///
@@ -129,25 +133,25 @@ impl SpiceDBClient {
         permission: &str,
         relationship: &Relationship,
     ) -> Result<CheckResult, SpiceDBError> {
-        let results = self
+        let mut results = self
             .check_permissions(consistency, permission, std::slice::from_ref(relationship))
             .await?;
-        Ok(CheckResult {
-            has_permission: results[0],
-        })
+        Ok(results.remove(0))
     }
 
-    /// Checks permissions on multiple relationships and returns a `Vec<bool>`
-    /// indicating whether each is granted.
+    /// Checks permissions on multiple relationships and returns a
+    /// [`CheckResult`] for each, in the same order as `relationships`.
     ///
     /// Uses `BulkCheckPermissions` under the hood. Large batches are
-    /// automatically split into chunks of 1,000.
+    /// automatically split into chunks of 1,000. Each result's `checked_at`
+    /// is the revision the whole batch was evaluated at (`BulkCheckPermissions`
+    /// carries one `checked_at` per response, not per item).
     pub async fn check_permissions(
         &self,
         consistency: &Strategy,
         permission: &str,
         relationships: &[Relationship],
-    ) -> Result<Vec<bool>, SpiceDBError> {
+    ) -> Result<Vec<CheckResult>, SpiceDBError> {
         if relationships.is_empty() {
             return Ok(Vec::new());
         }
@@ -189,23 +193,23 @@ impl SpiceDBClient {
                 .await?;
 
             let inner = resp.into_inner();
+            let checked_at = inner.checked_at.map(|z| z.token).unwrap_or_default();
             for (i, pair) in inner.pairs.iter().enumerate() {
-                if let Some(proto::check_bulk_permissions_pair::Response::Error(err_resp)) =
-                    &pair.response
-                {
-                    return Err(SpiceDBError::InvalidArgument(format!(
-                        "check item {}: {}",
-                        i, err_resp.message
-                    )));
-                }
-                if let Some(proto::check_bulk_permissions_pair::Response::Item(item)) =
-                    &pair.response
-                {
-                    all_results.push(
-                        item.permissionship
-                            == proto::check_permission_response::Permissionship::HasPermission
-                                as i32,
-                    );
+                match &pair.response {
+                    Some(proto::check_bulk_permissions_pair::Response::Error(err_resp)) => {
+                        // Route through the same mapper every other error path
+                        // uses, instead of hardcoding a status — a per-item
+                        // PERMISSION_DENIED must surface as PermissionDenied,
+                        // not as a generic InvalidArgument.
+                        return Err(error::from_grpc_status(
+                            err_resp.code,
+                            format!("check item {}: {}", i, err_resp.message),
+                        ));
+                    }
+                    Some(proto::check_bulk_permissions_pair::Response::Item(item)) => {
+                        all_results.push(check_result_from_bulk_item(item, &checked_at));
+                    }
+                    None => {}
                 }
             }
         }
@@ -213,7 +217,10 @@ impl SpiceDBClient {
         Ok(all_results)
     }
 
-    /// Returns `true` if **any** of the given relationships have the permission.
+    /// Returns `true` if **any** of the given relationships have the permission
+    /// outright. A `ConditionalPermission` result does not count as granted —
+    /// only results where [`CheckResult::has_permission`] is `true` are
+    /// considered.
     pub async fn check_any(
         &self,
         consistency: &Strategy,
@@ -223,10 +230,13 @@ impl SpiceDBClient {
         let results = self
             .check_permissions(consistency, permission, relationships)
             .await?;
-        Ok(results.iter().any(|&r| r))
+        Ok(results.iter().any(CheckResult::has_permission))
     }
 
-    /// Returns `true` if **all** of the given relationships have the permission.
+    /// Returns `true` if **all** of the given relationships have the permission
+    /// outright. A `ConditionalPermission` result does not count as granted —
+    /// every result must satisfy [`CheckResult::has_permission`] for this to
+    /// return `true`.
     pub async fn check_all(
         &self,
         consistency: &Strategy,
@@ -236,7 +246,7 @@ impl SpiceDBClient {
         let results = self
             .check_permissions(consistency, permission, relationships)
             .await?;
-        Ok(results.iter().all(|&r| r))
+        Ok(results.iter().all(CheckResult::has_permission))
     }
 
     // -----------------------------------------------------------------------
@@ -503,10 +513,12 @@ impl SpiceDBClient {
                     }
                     let permissionship = permissionship_from_proto(resp.permissionship);
                     let partial_caveat = partial_caveat_from_proto(resp.partial_caveat_info.as_ref());
+                    let looked_up_at = resp.looked_up_at.map(|z| z.token).unwrap_or_default();
                     yield LookupResource {
                         resource_id: resp.resource_object_id,
                         permissionship,
                         partial_caveat,
+                        looked_up_at,
                     };
                 }
 
@@ -618,9 +630,11 @@ impl SpiceDBClient {
                         .collect()
                 };
 
+                let looked_up_at = resp.looked_up_at.map(|z| z.token).unwrap_or_default();
                 yield LookupSubject {
                     subject,
                     excluded_subjects,
+                    looked_up_at,
                 };
             }
         }

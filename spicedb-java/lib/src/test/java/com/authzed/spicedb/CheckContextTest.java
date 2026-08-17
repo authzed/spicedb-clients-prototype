@@ -164,6 +164,97 @@ class CheckContextTest {
   }
 
   // ---------------------------------------------------------------------
+  // C5 -- nested Map/List values in CHECK-TIME context must convert to a
+  // proper proto Struct/ListValue, not get stringified. Scalars already
+  // worked (see C1-C4), which is why no earlier test caught this. Write-time
+  // caveat context stringification (Relationship#toProtoRelationship) is
+  // untouched and out of scope here.
+  // ---------------------------------------------------------------------
+
+  @Test
+  void c5_nestedMapContextConvertsToProtoStruct() throws IOException {
+    var captured = new ArrayList<CheckBulkPermissionsRequest>();
+    try (TestServers servers = TestServers.start(capturingService(captured))) {
+      SpiceDBClient client = servers.client();
+
+      Map<String, Object> nested = Map.of("min", 10, "max", 20);
+      Map<String, Object> callLevel = Map.of("range", nested);
+
+      client.checkPermissions(
+          Consistency.full(),
+          "view",
+          callLevel,
+          Relationship.of("document", "doc1", "view", "user", "alice"));
+
+      Struct context = captured.get(0).getItems(0).getContext();
+      Value rangeValue = context.getFieldsOrThrow("range");
+
+      assertEquals(
+          Value.KindCase.STRUCT_VALUE,
+          rangeValue.getKindCase(),
+          "nested map must become a proto Struct, not a stringified value: " + rangeValue);
+      Struct rangeStruct = rangeValue.getStructValue();
+      assertEquals(10.0, rangeStruct.getFieldsOrThrow("min").getNumberValue());
+      assertEquals(20.0, rangeStruct.getFieldsOrThrow("max").getNumberValue());
+    }
+  }
+
+  @Test
+  void c5_listContextConvertsToProtoListValue() throws IOException {
+    var captured = new ArrayList<CheckBulkPermissionsRequest>();
+    try (TestServers servers = TestServers.start(capturingService(captured))) {
+      SpiceDBClient client = servers.client();
+
+      Map<String, Object> callLevel = Map.of("tags", List.of("a", "b", 3));
+
+      client.checkPermissions(
+          Consistency.full(),
+          "view",
+          callLevel,
+          Relationship.of("document", "doc1", "view", "user", "alice"));
+
+      Struct context = captured.get(0).getItems(0).getContext();
+      Value tagsValue = context.getFieldsOrThrow("tags");
+
+      assertEquals(
+          Value.KindCase.LIST_VALUE,
+          tagsValue.getKindCase(),
+          "list must become a proto ListValue, not a stringified value: " + tagsValue);
+      List<Value> values = tagsValue.getListValue().getValuesList();
+      assertEquals(3, values.size());
+      assertEquals("a", values.get(0).getStringValue());
+      assertEquals("b", values.get(1).getStringValue());
+      assertEquals(3.0, values.get(2).getNumberValue());
+    }
+  }
+
+  @Test
+  void c5_deeplyNestedMapAndListConvertRecursively() throws IOException {
+    var captured = new ArrayList<CheckBulkPermissionsRequest>();
+    try (TestServers servers = TestServers.start(capturingService(captured))) {
+      SpiceDBClient client = servers.client();
+
+      Map<String, Object> inner = Map.of("ids", List.of(1, 2));
+      Map<String, Object> outer = Map.of("filter", inner);
+      Map<String, Object> callLevel = Map.of("query", outer);
+
+      client.checkPermissions(
+          Consistency.full(),
+          "view",
+          callLevel,
+          Relationship.of("document", "doc1", "view", "user", "alice"));
+
+      Struct context = captured.get(0).getItems(0).getContext();
+      Struct query = context.getFieldsOrThrow("query").getStructValue();
+      Struct filter = query.getFieldsOrThrow("filter").getStructValue();
+      List<Value> ids = filter.getFieldsOrThrow("ids").getListValue().getValuesList();
+      assertEquals(2, ids.size());
+      assertEquals(1.0, ids.get(0).getNumberValue());
+      assertEquals(2.0, ids.get(1).getNumberValue());
+    }
+  }
+
+  // ---------------------------------------------------------------------
   // checkPermission (singular) and checkAny/checkAll must accept context too
   // (the brief: "checkAny/checkAll need the same shape -- they are
   // aggregates over the same request and must evaluate caveats too").

@@ -1338,13 +1338,54 @@ public final class SpiceDBClient implements AutoCloseable {
     return merged;
   }
 
-  /** Converts a check-time context map to a proto {@code Struct}, reusing {@link #toProtoValue}. */
+  /**
+   * Converts a check-time context map to a proto {@code Struct}, reusing {@link
+   * #checkContextToProtoValue}.
+   */
   private static com.google.protobuf.Struct toProtoStruct(Map<String, Object> context) {
     var builder = com.google.protobuf.Struct.newBuilder();
     for (var entry : context.entrySet()) {
-      builder.putFields(entry.getKey(), toProtoValue(entry.getValue()));
+      builder.putFields(entry.getKey(), checkContextToProtoValue(entry.getValue()));
     }
     return builder.build();
+  }
+
+  /**
+   * Converts a native Java value into a protobuf {@code Value} for CHECK-TIME caveat context.
+   * Unlike {@link #toProtoValue} (used by the write-time relationship caveat-context path, which
+   * intentionally stringifies anything it doesn't recognize, including nested {@link Map}/{@link
+   * List} values), this recurses into nested maps and lists so a caveat expecting a nested object
+   * or list receives a proper {@code Struct}/{@code ListValue} instead of a string the caveat
+   * evaluator can't use. Do not reuse this for the write-time path -- write-time stringification is
+   * intentional there and out of scope for this conversion.
+   */
+  private static com.google.protobuf.Value checkContextToProtoValue(Object value) {
+    if (value == null) {
+      return com.google.protobuf.Value.newBuilder()
+          .setNullValue(com.google.protobuf.NullValue.NULL_VALUE)
+          .build();
+    } else if (value instanceof Boolean b) {
+      return com.google.protobuf.Value.newBuilder().setBoolValue(b).build();
+    } else if (value instanceof Number n) {
+      return com.google.protobuf.Value.newBuilder().setNumberValue(n.doubleValue()).build();
+    } else if (value instanceof String s) {
+      return com.google.protobuf.Value.newBuilder().setStringValue(s).build();
+    } else if (value instanceof Map<?, ?> m) {
+      var structBuilder = com.google.protobuf.Struct.newBuilder();
+      for (var entry : m.entrySet()) {
+        structBuilder.putFields(
+            String.valueOf(entry.getKey()), checkContextToProtoValue(entry.getValue()));
+      }
+      return com.google.protobuf.Value.newBuilder().setStructValue(structBuilder.build()).build();
+    } else if (value instanceof List<?> l) {
+      var listBuilder = com.google.protobuf.ListValue.newBuilder();
+      for (var item : l) {
+        listBuilder.addValues(checkContextToProtoValue(item));
+      }
+      return com.google.protobuf.Value.newBuilder().setListValue(listBuilder.build()).build();
+    } else {
+      return com.google.protobuf.Value.newBuilder().setStringValue(value.toString()).build();
+    }
   }
 
   private static RelationshipUpdate toRelationshipUpdate(Transaction.Mutation m) {

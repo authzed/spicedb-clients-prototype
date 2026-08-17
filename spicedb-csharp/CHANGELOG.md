@@ -2,6 +2,69 @@
 
 ## Unreleased
 
+### Added
+
+- **2026-08-17**: The check surface can now supply caveat context, in both
+  forms. Previously `MissingContext` on a `ConditionalPermission` result
+  told a caller what the server needed, but there was no parameter to
+  supply it — this closes that gap. Purely additive; no existing call site
+  changes.
+
+  - **Call-level default**, fanned out onto every relationship in the
+    call: `CheckPermissionsWithContextAsync`, `CheckAnyWithContextAsync`,
+    and `CheckAllWithContextAsync` are new methods (the wire's
+    `CheckBulkPermissionsRequestItem.context` is per-item — the request
+    itself has no context field — so a call-level default has to be
+    fanned out at request-build time). `CheckPermissionAsync` (the
+    single-relationship form) instead gets a new **trailing optional**
+    `context = null` parameter on the existing method — its shape has no
+    `params` array in the way, so no new method name was needed there.
+  - **Per-item**, overriding the call-level default for one relationship:
+    `Relationship.WithCheckContext(context)` / the new
+    `Relationship.CheckContext` field.
+
+  **Merge rule (key-level, item wins):** an item's context is the
+  call-level dictionary with the item's own entries overwriting matching
+  keys — call-level keys the item doesn't mention are retained, never
+  discarded wholesale. A call-level `{now: 42, region: "us"}` plus a
+  per-item `{region: "eu"}` sends `{now: 42, region: "eu"}` for that item;
+  a sibling item with no per-item context still gets
+  `{now: 42, region: "us"}`. When neither is supplied, no `context` field
+  is set on the wire (`null`, never an empty `Struct`).
+
+  `Relationship.CheckContext` is check-time-only and distinct from the
+  existing `Relationship.CaveatContext` (write-time, stored with the
+  relationship's caveat) — `Relationship.ToProto()` never reads
+  `CheckContext`, so it can never leak into a stored relationship via
+  `WriteAsync`.
+
+  Why new methods instead of overloading `CheckPermissionsAsync`/
+  `CheckAnyAsync`/`CheckAllAsync` directly? Each ends in
+  `params Relationship[]`, and C# forbids any parameter after `params` — a
+  `context` parameter would have to land before it, adjacent to the
+  existing `CancellationToken cancellationToken = default` slot that
+  existing calls already fill positionally with `default`. Distinct method
+  names avoid relying on overload-resolution betterness rules to keep
+  those call sites compiling unchanged, and match how `spicedb-go`/
+  `spicedb-rust` solved the identical shape problem with `*WithContext`
+  methods.
+
+  ```csharp
+  // relB carries a per-item override (wins over any call-level default
+  // for that item); relA carries none, so it inherits the call-level
+  // default unchanged.
+  var relB = Relationship.FromTriple("document", "doc2", "view", "user", "bob")
+      .WithCheckContext(new Dictionary<string, object> { ["region"] = "eu" });
+
+  var results = await client.CheckPermissionsWithContextAsync(
+      consistency, "view", new Dictionary<string, object> { ["now"] = 42, ["region"] = "us" },
+      default, relA, relB);
+
+  // Single check:
+  var result = await client.CheckPermissionAsync(
+      consistency, "view", rel, default, new Dictionary<string, object> { ["now"] = 42 });
+  ```
+
 ### Breaking Changes
 
 - **2026-08-16**: `CheckPermissionAsync` now returns `Task<CheckResult>`

@@ -149,6 +149,62 @@ public class RelationshipTests
     }
 
     [Fact]
+    public void WithCheckContext_ReturnsCopyWithCheckContext()
+    {
+        var original = Relationship.FromTriple("document", "doc1", "viewer", "user", "alice");
+        var context = new Dictionary<string, object> { ["now"] = 42 };
+        var withContext = original.WithCheckContext(context);
+
+        // Original unchanged
+        original.CheckContext.Should().BeNull();
+
+        // New carries the check-time context
+        withContext.CheckContext.Should().ContainKey("now");
+
+        // Other fields unchanged
+        withContext.ResourceType.Should().Be("document");
+        withContext.SubjectID.Should().Be("alice");
+    }
+
+    [Fact]
+    public void CheckContext_IsDistinctFromCaveatContext()
+    {
+        // CheckContext (check-time, supplied fresh on every check call) and
+        // CaveatContext (write-time, stored WITH the relationship's caveat)
+        // are deliberately separate fields. Setting one must never populate
+        // or be confused with the other — a caller who means to attach
+        // check-time context must not accidentally alter what would be
+        // written to SpiceDB, and vice versa.
+        var rel = Relationship
+            .FromTriple("document", "doc1", "caveated_viewer", "user", "alice")
+            .WithCaveat("active")
+            .WithCheckContext(new Dictionary<string, object> { ["now"] = 42 });
+
+        rel.CaveatContext.Should().BeNull();
+        rel.CheckContext.Should().NotBeNull();
+        rel.CheckContext.Should().ContainKey("now");
+    }
+
+    [Fact]
+    public void ToProto_NeverIncludesCheckContext()
+    {
+        // CheckContext is check-time-only and must NEVER reach the wire via
+        // WriteAsync (Relationship.ToProto) — only CaveatContext does, via
+        // OptionalCaveat.Context. A leak here would silently alter what gets
+        // stored in SpiceDB based on data that was only ever meant to answer
+        // one check call.
+        var rel = Relationship
+            .FromTriple("document", "doc1", "caveated_viewer", "user", "alice")
+            .WithCaveat("active")
+            .WithCheckContext(new Dictionary<string, object> { ["now"] = 42, ["secret"] = "leak-me-not" });
+
+        var proto = rel.ToProto();
+
+        proto.OptionalCaveat.CaveatName.Should().Be("active");
+        proto.OptionalCaveat.Context.Should().BeNull("write-time caveat context was never supplied");
+    }
+
+    [Fact]
     public void ToString_BasicFormat()
     {
         var rel = Relationship.FromTriple("document", "doc1", "viewer", "user", "alice");

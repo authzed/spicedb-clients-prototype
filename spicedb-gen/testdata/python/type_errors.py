@@ -5,7 +5,7 @@ Each call site is annotated with the expected error class.
 
 from __future__ import annotations
 
-from permissions import (
+from testdata.permissions import (
     Document,
     Team,
     TeamMember,

@@ -1,4 +1,6 @@
 permissions.py
+sync.py
+aio.py
 .venv/
 .uv-cache/
 .pdm-build/

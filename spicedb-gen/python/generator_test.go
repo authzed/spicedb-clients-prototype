@@ -1,25 +1,145 @@
 package python
 
 import (
+	"strings"
 	"testing"
 
+	"github.com/authzed/spicedb-clients/spicedb-gen/generator"
 	"github.com/authzed/spicedb-clients/spicedb-gen/schema"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// testSchema parses the shared sample schema used across generator tests.
+func testSchema(t *testing.T) *schema.Schema {
+	t.Helper()
+	s, err := schema.ParseFile("../testdata/sample.zed")
+	require.NoError(t, err)
+	return s
+}
+
+// fileContent returns the content of the generated file at path, failing the
+// test if it's not present in files.
+func fileContent(t *testing.T, files []generator.GeneratedFile, path string) string {
+	t.Helper()
+	for _, f := range files {
+		if f.Path == path {
+			return string(f.Content)
+		}
+	}
+	t.Fatalf("no generated file %q among %d files", path, len(files))
+	return ""
+}
 
 func TestLanguage(t *testing.T) {
 	g := &Generator{}
 	assert.Equal(t, "python", g.Language())
 }
 
+// TestGeneratesThreeFiles verifies the split output: permissions.py holds the
+// flavor-agnostic types, sync.py and aio.py each hold a TypedClient bound to
+// their flavor's SpiceDBClient.
+//
+// The brief illustrating this test assumed a package-level `Generate(schema)`
+// function. The real API is a method on *Generator with an opts map:
+// `(&Generator{}).Generate(s, nil)` — see generator.go:134.
+func TestGeneratesThreeFiles(t *testing.T) {
+	g := &Generator{}
+	files, err := g.Generate(testSchema(t), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{"permissions.py": false, "sync.py": false, "aio.py": false}
+	for _, f := range files {
+		if _, ok := want[f.Path]; !ok {
+			t.Errorf("unexpected generated file %q", f.Path)
+			continue
+		}
+		want[f.Path] = true
+	}
+	for path, seen := range want {
+		if !seen {
+			t.Errorf("missing generated file %q", path)
+		}
+	}
+}
+
+func TestSyncClientHasNoAwait(t *testing.T) {
+	g := &Generator{}
+	files, err := g.Generate(testSchema(t), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range files {
+		if f.Path != "sync.py" {
+			continue
+		}
+		src := string(f.Content)
+		for _, bad := range []string{"async def", "await ", "__aenter__", "spicedb.aio"} {
+			if strings.Contains(src, bad) {
+				t.Errorf("sync.py must not contain %q", bad)
+			}
+		}
+		if !strings.Contains(src, "from spicedb.sync import SpiceDBClient") {
+			t.Error("sync.py must import the sync client")
+		}
+	}
+}
+
+// TestAioClientHasAwait is the mirror-image guard for TestSyncClientHasNoAwait:
+// it makes sure aio.py actually kept its async surface rather than both files
+// accidentally emitting the same (sync or async) body.
+func TestAioClientHasAwait(t *testing.T) {
+	g := &Generator{}
+	files, err := g.Generate(testSchema(t), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range files {
+		if f.Path != "aio.py" {
+			continue
+		}
+		src := string(f.Content)
+		for _, want := range []string{"async def", "await ", "__aenter__", "__aexit__", "from spicedb.aio import SpiceDBClient"} {
+			if !strings.Contains(src, want) {
+				t.Errorf("aio.py must contain %q", want)
+			}
+		}
+		if strings.Contains(src, "from spicedb.sync import") {
+			t.Error("aio.py must not import the sync client")
+		}
+	}
+}
+
+// TestPermissionsFileHasNoClientFlavor verifies permissions.py stays
+// flavor-agnostic: no SpiceDBClient import (sync or async) and no TypedClient
+// class, since that now lives in sync.py/aio.py.
+func TestPermissionsFileHasNoClientFlavor(t *testing.T) {
+	g := &Generator{}
+	files, err := g.Generate(testSchema(t), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range files {
+		if f.Path != "permissions.py" {
+			continue
+		}
+		src := string(f.Content)
+		for _, bad := range []string{"SpiceDBClient", "class TypedClient", "spicedb.sync", "spicedb.aio"} {
+			if strings.Contains(src, bad) {
+				t.Errorf("permissions.py must not contain %q", bad)
+			}
+		}
+	}
+}
+
 func TestToPascalCase(t *testing.T) {
 	for input, expected := range map[string]string{
-		"user":         "User",
-		"team_member":  "TeamMember",
-		"ip_range":     "IpRange",
-		"time_window":  "TimeWindow",
-		"already":      "Already",
+		"user":        "User",
+		"team_member": "TeamMember",
+		"ip_range":    "IpRange",
+		"time_window": "TimeWindow",
+		"already":     "Already",
 	} {
 		assert.Equal(t, expected, toPascalCase(input), "input=%q", input)
 	}
@@ -27,11 +147,11 @@ func TestToPascalCase(t *testing.T) {
 
 func TestToSnakeCase(t *testing.T) {
 	for input, expected := range map[string]string{
-		"user":          "user",
-		"team_member":   "team_member",
-		"TeamMember":    "team_member",
-		"CamelCase":     "camel_case",
-		"with_already":  "with_already",
+		"user":         "user",
+		"team_member":  "team_member",
+		"TeamMember":   "team_member",
+		"CamelCase":    "camel_case",
+		"with_already": "with_already",
 	} {
 		assert.Equal(t, expected, toSnakeCase(input), "input=%q", input)
 	}
@@ -75,150 +195,192 @@ func TestGenerateSampleSchema(t *testing.T) {
 	g := &Generator{}
 	files, err := g.Generate(s, nil)
 	require.NoError(t, err)
-	require.Len(t, files, 1)
-	assert.Equal(t, "permissions.py", files[0].Path)
+	require.Len(t, files, 3)
 
-	output := string(files[0].Content)
+	permissions := fileContent(t, files, "permissions.py")
+	sync := fileContent(t, files, "sync.py")
+	aio := fileContent(t, files, "aio.py")
 
-	// Header
-	assert.Contains(t, output, "# Code generated by spicedb-gen. DO NOT EDIT.")
+	// Header — every emitted file carries it.
+	for name, output := range map[string]string{"permissions.py": permissions, "sync.py": sync, "aio.py": aio} {
+		assert.Contains(t, output, "# Code generated by spicedb-gen. DO NOT EDIT.", "missing header in %s", name)
+	}
 
-	// Imports
-	assert.Contains(t, output, "from __future__ import annotations")
-	assert.Contains(t, output, "from collections.abc import AsyncIterator")
-	assert.Contains(t, output, "from dataclasses import dataclass")
-	assert.Contains(t, output, "from datetime import datetime")
-	assert.Contains(t, output, "from typing import Any, ClassVar, TypeAlias, overload")
-	assert.Contains(t, output, "from spicedb import SpiceDBClient, Transaction, Relationship, Filter, LookupResource, LookupSubject")
-	assert.Contains(t, output, "from spicedb.consistency import Consistency")
+	// --- permissions.py: flavor-agnostic types only ---
+
+	assert.Contains(t, permissions, "from __future__ import annotations")
+	assert.Contains(t, permissions, "from dataclasses import dataclass")
+	assert.Contains(t, permissions, "from datetime import datetime")
+	assert.Contains(t, permissions, "from typing import Any, ClassVar, TypeAlias")
+	assert.Contains(t, permissions, "from spicedb import Transaction, Relationship, Filter")
+	assert.NotContains(t, permissions, "SpiceDBClient")
+	assert.NotContains(t, permissions, "class TypedClient")
+	assert.NotContains(t, permissions, "collections.abc import AsyncIterator")
+	assert.NotContains(t, permissions, "spicedb.consistency import Consistency")
 
 	// Base value types — all frozen dataclasses
-	assert.Contains(t, output, "@dataclass(frozen=True)\nclass Permission:")
-	assert.Contains(t, output, "@dataclass(frozen=True)\nclass PermissionRef:")
-	assert.Contains(t, output, "@dataclass(frozen=True)\nclass TypedRelationship:")
+	assert.Contains(t, permissions, "@dataclass(frozen=True)\nclass Permission:")
+	assert.Contains(t, permissions, "@dataclass(frozen=True)\nclass PermissionRef:")
+	assert.Contains(t, permissions, "@dataclass(frozen=True)\nclass TypedRelationship:")
 
 	// Caveat context dataclasses
-	assert.Contains(t, output, "class IpRangeContext:")
-	assert.Contains(t, output, "allowed_cidr: str | None = None")
-	assert.Contains(t, output, "class TimeWindowContext:")
-	assert.Contains(t, output, "end: str | None = None")
-	assert.Contains(t, output, "start: str | None = None")
-	assert.Contains(t, output, "def _to_dict(self) -> dict[str, Any]:")
+	assert.Contains(t, permissions, "class IpRangeContext:")
+	assert.Contains(t, permissions, "allowed_cidr: str | None = None")
+	assert.Contains(t, permissions, "class TimeWindowContext:")
+	assert.Contains(t, permissions, "end: str | None = None")
+	assert.Contains(t, permissions, "start: str | None = None")
+	assert.Contains(t, permissions, "def _to_dict(self) -> dict[str, Any]:")
 
 	// The dict-key in _to_dict must be the raw schema param name, not the
 	// Python identifier, so SpiceDB's CEL evaluator can bind it correctly.
-	assert.Contains(t, output, `d["allowed_cidr"] = self.allowed_cidr`)
+	assert.Contains(t, permissions, `d["allowed_cidr"] = self.allowed_cidr`)
 
 	// Subject ref dataclasses — base
-	assert.Contains(t, output, "class User:")
-	assert.Contains(t, output, "_type: ClassVar[str] = \"user\"")
+	assert.Contains(t, permissions, "class User:")
+	assert.Contains(t, permissions, "_type: ClassVar[str] = \"user\"")
 
 	// Sub-relation ref (referenced as a subject)
-	assert.Contains(t, output, "class TeamMember:")
-	assert.Contains(t, output, "_relation: ClassVar[str] = \"member\"")
+	assert.Contains(t, permissions, "class TeamMember:")
+	assert.Contains(t, permissions, "_relation: ClassVar[str] = \"member\"")
 
 	// Caveated variants
-	assert.Contains(t, output, "class UserIpRange:")
-	assert.Contains(t, output, "context: IpRangeContext")
-	assert.Contains(t, output, "_caveat: ClassVar[str] = \"ip_range\"")
-	assert.Contains(t, output, "class UserTimeWindow:")
+	assert.Contains(t, permissions, "class UserIpRange:")
+	assert.Contains(t, permissions, "context: IpRangeContext")
+	assert.Contains(t, permissions, "_caveat: ClassVar[str] = \"ip_range\"")
+	assert.Contains(t, permissions, "class UserTimeWindow:")
 
 	// Internal accessors on every ref
-	assert.Contains(t, output, "def _subject_ref(self) -> tuple[str, str, str]:")
-	assert.Contains(t, output, "def _caveat_info(self) -> tuple[str, dict[str, Any]] | None:")
-	assert.Contains(t, output, "def _expiration(self) -> datetime | None:")
+	assert.Contains(t, permissions, "def _subject_ref(self) -> tuple[str, str, str]:")
+	assert.Contains(t, permissions, "def _caveat_info(self) -> tuple[str, dict[str, Any]] | None:")
+	assert.Contains(t, permissions, "def _expiration(self) -> datetime | None:")
 
 	// Caveat builder methods on User
-	assert.Contains(t, output, "def with_ip_range(self, ctx: IpRangeContext) -> UserIpRange:")
-	assert.Contains(t, output, "def with_time_window(self, ctx: TimeWindowContext) -> UserTimeWindow:")
+	assert.Contains(t, permissions, "def with_ip_range(self, ctx: IpRangeContext) -> UserIpRange:")
+	assert.Contains(t, permissions, "def with_time_window(self, ctx: TimeWindowContext) -> UserTimeWindow:")
 
 	// UserIpRange's _caveat_info returns the right values
-	assert.Contains(t, output, "return \"ip_range\", self.context._to_dict()")
+	assert.Contains(t, permissions, "return \"ip_range\", self.context._to_dict()")
 
 	// Document resource ref
-	assert.Contains(t, output, "class Document:")
-	assert.Contains(t, output, "    @property")
-	assert.Contains(t, output, "    def view(self) -> _DocumentViewPermission:")
-	assert.Contains(t, output, "    def edit(self) -> _DocumentEditPermission:")
-	assert.Contains(t, output, "    def delete(self) -> _DocumentDeletePermission:")
-	assert.Contains(t, output, "    def viewer(self, subject: DocumentViewerSubject) -> TypedRelationship:")
-	assert.Contains(t, output, "    def editor(self, subject: DocumentEditorSubject) -> TypedRelationship:")
-	assert.Contains(t, output, "    def owner(self, subject: DocumentOwnerSubject) -> TypedRelationship:")
+	assert.Contains(t, permissions, "class Document:")
+	assert.Contains(t, permissions, "    @property")
+	assert.Contains(t, permissions, "    def view(self) -> _DocumentViewPermission:")
+	assert.Contains(t, permissions, "    def edit(self) -> _DocumentEditPermission:")
+	assert.Contains(t, permissions, "    def delete(self) -> _DocumentDeletePermission:")
+	assert.Contains(t, permissions, "    def viewer(self, subject: DocumentViewerSubject) -> TypedRelationship:")
+	assert.Contains(t, permissions, "    def editor(self, subject: DocumentEditorSubject) -> TypedRelationship:")
+	assert.Contains(t, permissions, "    def owner(self, subject: DocumentOwnerSubject) -> TypedRelationship:")
 
 	// Team resource ref — sub-ref property + renamed relation write
-	assert.Contains(t, output, "class Team:")
-	assert.Contains(t, output, "    def member(self) -> TeamMember:")            // @property
-	assert.Contains(t, output, "    def for_member(self, subject: TeamMemberSubject) -> TypedRelationship:")
+	assert.Contains(t, permissions, "class Team:")
+	assert.Contains(t, permissions, "    def member(self) -> TeamMember:") // @property
+	assert.Contains(t, permissions, "    def for_member(self, subject: TeamMemberSubject) -> TypedRelationship:")
 
 	// Sub-ref property body
-	assert.Contains(t, output, "return TeamMember(id=self.id)")
+	assert.Contains(t, permissions, "return TeamMember(id=self.id)")
 
 	// Per-permission narrowing subclasses — must be frozen dataclasses, since
 	// they're constructed at @property access time and shared across calls.
-	assert.Contains(t, output, "@dataclass(frozen=True)\nclass _DocumentViewPermission(Permission): pass")
-	assert.Contains(t, output, "@dataclass(frozen=True)\nclass _DocumentEditPermission(Permission): pass")
-	assert.Contains(t, output, "@dataclass(frozen=True)\nclass _DocumentDeletePermission(Permission): pass")
-	assert.Contains(t, output, "@dataclass(frozen=True)\nclass _DocumentViewRef(PermissionRef): pass")
-	assert.Contains(t, output, "@dataclass(frozen=True)\nclass _DocumentEditRef(PermissionRef): pass")
-	assert.Contains(t, output, "@dataclass(frozen=True)\nclass _DocumentDeleteRef(PermissionRef): pass")
+	assert.Contains(t, permissions, "@dataclass(frozen=True)\nclass _DocumentViewPermission(Permission): pass")
+	assert.Contains(t, permissions, "@dataclass(frozen=True)\nclass _DocumentEditPermission(Permission): pass")
+	assert.Contains(t, permissions, "@dataclass(frozen=True)\nclass _DocumentDeletePermission(Permission): pass")
+	assert.Contains(t, permissions, "@dataclass(frozen=True)\nclass _DocumentViewRef(PermissionRef): pass")
+	assert.Contains(t, permissions, "@dataclass(frozen=True)\nclass _DocumentEditRef(PermissionRef): pass")
+	assert.Contains(t, permissions, "@dataclass(frozen=True)\nclass _DocumentDeleteRef(PermissionRef): pass")
 
 	// Sealed subject TypeAlias unions
-	assert.Contains(t, output, "DocumentViewerSubject: TypeAlias = TeamMember | User | UserIpRange | UserTimeWindow")
-	assert.Contains(t, output, "DocumentEditorSubject: TypeAlias = User")
-	assert.Contains(t, output, "DocumentOwnerSubject: TypeAlias = User")
-	assert.Contains(t, output, "DocumentViewSubject: TypeAlias = TeamMember | User | UserIpRange | UserTimeWindow")
-	assert.Contains(t, output, "DocumentEditSubject: TypeAlias = User")
-	assert.Contains(t, output, "DocumentDeleteSubject: TypeAlias = User")
-	assert.Contains(t, output, "TeamMemberSubject: TypeAlias = TeamMember | User")
+	assert.Contains(t, permissions, "DocumentViewerSubject: TypeAlias = TeamMember | User | UserIpRange | UserTimeWindow")
+	assert.Contains(t, permissions, "DocumentEditorSubject: TypeAlias = User")
+	assert.Contains(t, permissions, "DocumentOwnerSubject: TypeAlias = User")
+	assert.Contains(t, permissions, "DocumentViewSubject: TypeAlias = TeamMember | User | UserIpRange | UserTimeWindow")
+	assert.Contains(t, permissions, "DocumentEditSubject: TypeAlias = User")
+	assert.Contains(t, permissions, "DocumentDeleteSubject: TypeAlias = User")
+	assert.Contains(t, permissions, "TeamMemberSubject: TypeAlias = TeamMember | User")
 
 	// Static permission ref constants
-	assert.Contains(t, output, `DocumentView: _DocumentViewRef = _DocumentViewRef(_resource_type="document", _permission="view")`)
-	assert.Contains(t, output, `DocumentEdit: _DocumentEditRef = _DocumentEditRef(_resource_type="document", _permission="edit")`)
-	assert.Contains(t, output, `DocumentDelete: _DocumentDeleteRef = _DocumentDeleteRef(_resource_type="document", _permission="delete")`)
-
-	// TypedClient skeleton
-	assert.Contains(t, output, "class TypedClient:")
-	assert.Contains(t, output, "client: SpiceDBClient")
-	assert.Contains(t, output, "def __init__(self, client: SpiceDBClient)")
-	assert.Contains(t, output, `def connect(cls, endpoint: str, token: str, *, insecure: bool = False) -> "TypedClient":`)
-	assert.Contains(t, output, "async def __aenter__")
-	assert.Contains(t, output, "async def __aexit__")
-	assert.Contains(t, output, "async def close")
-
-	// check — per-permission overloads + generic dispatch
-	assert.Contains(t, output, "async def check(self, c: Consistency, p: _DocumentViewPermission, s: DocumentViewSubject) -> bool:")
-	assert.Contains(t, output, "async def check(self, c: Consistency, p: _DocumentEditPermission, s: DocumentEditSubject) -> bool:")
-	assert.Contains(t, output, "async def check(self, c: Consistency, p: _DocumentDeletePermission, s: DocumentDeleteSubject) -> bool:")
-
-	// writes
-	assert.Contains(t, output, "async def touch(self, *rels: TypedRelationship) -> str:")
-	assert.Contains(t, output, "async def create(self, *rels: TypedRelationship) -> str:")
-	assert.Contains(t, output, "async def delete(self, *rels: TypedRelationship) -> str:")
-
-	// lookup_resources — overload keyed on PermissionRef subclass
-	assert.Contains(t, output, "def lookup_resources(self, c: Consistency, p: _DocumentViewRef, s: DocumentViewSubject) -> AsyncIterator[LookupResource]:")
-	assert.Contains(t, output, "def lookup_resources(self, c: Consistency, p: _DocumentEditRef, s: DocumentEditSubject) -> AsyncIterator[LookupResource]:")
-	assert.Contains(t, output, "def lookup_resources(self, c: Consistency, p: _DocumentDeleteRef, s: DocumentDeleteSubject) -> AsyncIterator[LookupResource]:")
-
-	// lookup_subjects — overload keyed on Permission subclass; sentinel = type[…]
-	assert.Contains(t, output, "def lookup_subjects(")
-	assert.Contains(t, output, "type[TeamMember] | type[User] | type[UserIpRange] | type[UserTimeWindow]")
-
-	// read_relationships — untyped passthrough
-	assert.Contains(t, output, "def read_relationships(self, c: Consistency, f: Filter) -> AsyncIterator[Relationship]:")
+	assert.Contains(t, permissions, `DocumentView: _DocumentViewRef = _DocumentViewRef(_resource_type="document", _permission="view")`)
+	assert.Contains(t, permissions, `DocumentEdit: _DocumentEditRef = _DocumentEditRef(_resource_type="document", _permission="edit")`)
+	assert.Contains(t, permissions, `DocumentDelete: _DocumentDeleteRef = _DocumentDeleteRef(_resource_type="document", _permission="delete")`)
 
 	// TypedTransaction — mixed-op transaction with preconditions
-	assert.Contains(t, output, "class TypedTransaction:")
-	assert.Contains(t, output, "_txn: Transaction = field(default_factory=Transaction)")
-	assert.Contains(t, output, `def create(self, *rels: TypedRelationship) -> "TypedTransaction":`)
-	assert.Contains(t, output, `def touch(self, *rels: TypedRelationship) -> "TypedTransaction":`)
-	assert.Contains(t, output, `def delete(self, *rels: TypedRelationship) -> "TypedTransaction":`)
-	assert.Contains(t, output, `def must_match(self, f: Filter) -> "TypedTransaction":`)
-	assert.Contains(t, output, `def must_not_match(self, f: Filter) -> "TypedTransaction":`)
+	assert.Contains(t, permissions, "class TypedTransaction:")
+	assert.Contains(t, permissions, "_txn: Transaction = field(default_factory=Transaction)")
+	assert.Contains(t, permissions, `def create(self, *rels: TypedRelationship) -> "TypedTransaction":`)
+	assert.Contains(t, permissions, `def touch(self, *rels: TypedRelationship) -> "TypedTransaction":`)
+	assert.Contains(t, permissions, `def delete(self, *rels: TypedRelationship) -> "TypedTransaction":`)
+	assert.Contains(t, permissions, `def must_match(self, f: Filter) -> "TypedTransaction":`)
+	assert.Contains(t, permissions, `def must_not_match(self, f: Filter) -> "TypedTransaction":`)
 
-	// TypedClient.write(txn) — atomic write of a TypedTransaction
-	assert.Contains(t, output, "async def write(self, txn: TypedTransaction) -> str:")
-	assert.Contains(t, output, "return await self.client.write(txn._txn)")
+	// --- sync.py / aio.py: per-flavor TypedClient ---
+
+	for _, flavor := range []struct {
+		name         string
+		output       string
+		flavorImport string
+		defKw        string // "def" or "async def"
+		enter, exit  string
+		iterKind     string // "Iterator" or "AsyncIterator"
+		awaitPrefix  string // "" or "await "
+	}{
+		{"sync.py", sync, "from spicedb.sync import SpiceDBClient", "def", "__enter__", "__exit__", "Iterator", ""},
+		{"aio.py", aio, "from spicedb.aio import SpiceDBClient", "async def", "__aenter__", "__aexit__", "AsyncIterator", "await "},
+	} {
+		output := flavor.output
+
+		// Imports
+		assert.Contains(t, output, "from __future__ import annotations", flavor.name)
+		assert.Contains(t, output, "from collections.abc import "+flavor.iterKind, flavor.name)
+		assert.Contains(t, output, "from typing import Any, overload", flavor.name)
+		assert.Contains(t, output, "from spicedb import Transaction, Relationship, Filter, LookupResource, LookupSubject", flavor.name)
+		assert.Contains(t, output, "from spicedb.consistency import Consistency", flavor.name)
+		assert.Contains(t, output, flavor.flavorImport, flavor.name)
+		assert.Contains(t, output, "from .permissions import (", flavor.name)
+		assert.Contains(t, output, "    TypedRelationship,", flavor.name)
+		assert.Contains(t, output, "    TypedTransaction,", flavor.name)
+		assert.Contains(t, output, "    _DocumentViewPermission,", flavor.name)
+		assert.Contains(t, output, "    DocumentViewSubject,", flavor.name)
+
+		// TypedClient skeleton
+		assert.Contains(t, output, "class TypedClient:", flavor.name)
+		assert.Contains(t, output, "client: SpiceDBClient", flavor.name)
+		assert.Contains(t, output, "def __init__(self, client: SpiceDBClient)", flavor.name)
+		assert.Contains(t, output, `def connect(cls, endpoint: str, token: str, *, insecure: bool = False) -> "TypedClient":`, flavor.name)
+		assert.Contains(t, output, flavor.defKw+" "+flavor.enter, flavor.name)
+		assert.Contains(t, output, flavor.defKw+" "+flavor.exit, flavor.name)
+		assert.Contains(t, output, flavor.defKw+" close", flavor.name)
+
+		// check — per-permission overloads + generic dispatch
+		assert.Contains(t, output, flavor.defKw+" check(self, c: Consistency, p: _DocumentViewPermission, s: DocumentViewSubject) -> bool:", flavor.name)
+		assert.Contains(t, output, flavor.defKw+" check(self, c: Consistency, p: _DocumentEditPermission, s: DocumentEditSubject) -> bool:", flavor.name)
+		assert.Contains(t, output, flavor.defKw+" check(self, c: Consistency, p: _DocumentDeletePermission, s: DocumentDeleteSubject) -> bool:", flavor.name)
+
+		// writes
+		assert.Contains(t, output, flavor.defKw+" touch(self, *rels: TypedRelationship) -> str:", flavor.name)
+		assert.Contains(t, output, flavor.defKw+" create(self, *rels: TypedRelationship) -> str:", flavor.name)
+		assert.Contains(t, output, flavor.defKw+" delete(self, *rels: TypedRelationship) -> str:", flavor.name)
+
+		// lookup_resources — overload keyed on PermissionRef subclass
+		assert.Contains(t, output, "def lookup_resources(self, c: Consistency, p: _DocumentViewRef, s: DocumentViewSubject) -> "+flavor.iterKind+"[LookupResource]:", flavor.name)
+		assert.Contains(t, output, "def lookup_resources(self, c: Consistency, p: _DocumentEditRef, s: DocumentEditSubject) -> "+flavor.iterKind+"[LookupResource]:", flavor.name)
+		assert.Contains(t, output, "def lookup_resources(self, c: Consistency, p: _DocumentDeleteRef, s: DocumentDeleteSubject) -> "+flavor.iterKind+"[LookupResource]:", flavor.name)
+
+		// lookup_subjects — overload keyed on Permission subclass; sentinel = type[…]
+		assert.Contains(t, output, "def lookup_subjects(", flavor.name)
+		assert.Contains(t, output, "type[TeamMember] | type[User] | type[UserIpRange] | type[UserTimeWindow]", flavor.name)
+
+		// read_relationships — untyped passthrough
+		assert.Contains(t, output, "def read_relationships(self, c: Consistency, f: Filter) -> "+flavor.iterKind+"[Relationship]:", flavor.name)
+
+		// TypedClient.write(txn) — atomic write of a TypedTransaction
+		assert.Contains(t, output, flavor.defKw+" write(self, txn: TypedTransaction) -> str:", flavor.name)
+		assert.Contains(t, output, "return "+flavor.awaitPrefix+"self.client.write(txn._txn)", flavor.name)
+	}
+
+	// sync.py must not carry any async remnants; aio.py must not carry the
+	// sync client import. (TestSyncClientHasNoAwait/TestAioClientHasAwait
+	// cover this more exhaustively; these are a quick sanity check here.)
+	assert.NotContains(t, sync, "async def")
+	assert.NotContains(t, aio, "from spicedb.sync import")
 }
 
 // TestCaveatParamKeywordCollision verifies that when a caveat parameter's name
@@ -263,7 +425,7 @@ func TestCaveatParamKeywordCollision(t *testing.T) {
 	g := &Generator{}
 	files, err := g.Generate(s, nil)
 	require.NoError(t, err)
-	output := string(files[0].Content)
+	output := fileContent(t, files, "permissions.py")
 
 	assert.Contains(t, output, "id_: str | None = None",
 		"keyword-conflicting param should be escaped on the dataclass field")
@@ -276,18 +438,32 @@ func TestGenerateEmptySchema(t *testing.T) {
 	g := &Generator{}
 	files, err := g.Generate(s, nil)
 	require.NoError(t, err)
-	require.Len(t, files, 1)
+	require.Len(t, files, 3)
 
-	output := string(files[0].Content)
+	permissions := fileContent(t, files, "permissions.py")
+	sync := fileContent(t, files, "sync.py")
+	aio := fileContent(t, files, "aio.py")
 
-	// Base types and TypedClient should still emit.
-	assert.Contains(t, output, "class Permission:")
-	assert.Contains(t, output, "class TypedClient:")
+	// Base types should still emit in permissions.py; TypedClient in both
+	// client files.
+	assert.Contains(t, permissions, "class Permission:")
+	assert.NotContains(t, permissions, "class TypedClient:")
+	assert.Contains(t, sync, "class TypedClient:")
+	assert.Contains(t, aio, "class TypedClient:")
 
-	// No definitions, refs, or overloads.
-	assert.NotContains(t, output, "class User:")
-	assert.NotContains(t, output, "class Document:")
-	assert.NotContains(t, output, "@overload")
+	// No definitions, refs, or overloads anywhere.
+	for name, output := range map[string]string{"permissions.py": permissions, "sync.py": sync, "aio.py": aio} {
+		assert.NotContains(t, output, "class User:", name)
+		assert.NotContains(t, output, "class Document:", name)
+		assert.NotContains(t, output, "@overload", name)
+	}
+
+	// The client files' `from .permissions import (...)` block still holds
+	// the two unconditional names even with no schema definitions.
+	for name, output := range map[string]string{"sync.py": sync, "aio.py": aio} {
+		assert.Contains(t, output, "    TypedRelationship,", name)
+		assert.Contains(t, output, "    TypedTransaction,", name)
+	}
 }
 
 // TestDualRoleDefinitionRejected ensures the generator refuses to emit a

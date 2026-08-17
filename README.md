@@ -9,6 +9,13 @@ Monorepo of idiomatic SpiceDB client libraries for Go, Python, TypeScript, C#, J
 
 Pick your language. Languages where `spicedb-gen` supports typed wrappers (**Go**, **TypeScript**, **Java**, **Python**) use the **typed client** examples — invalid permission checks, wrong subject types, and typos in resource names become compile-time errors. The remaining languages (**C#**, **Ruby**, **Rust**) use the **idiomatic client** directly.
 
+> **A check never returns a bare boolean.** Every client's check surface returns a
+> `CheckResult` carrying a three-valued `permissionship`, the caveat context the
+> server was missing, and the revision the check ran at. **Only an unconditional
+> grant is true** — always go through the predicate (`HasPermission()`,
+> `has_permission`, `has_permission?`, `hasPermission()`), never the result object
+> itself. See [DESIGN.md](DESIGN.md#rule-only-an-unconditional-grant-is-true).
+
 For typed examples, first generate the wrapper from your schema:
 
 ```bash
@@ -48,12 +55,15 @@ _, err = tc.Touch(ctx,
     Document("readme").Editor(User("bob")),
 )
 
-// Checks — autocomplete shows .View(), .Edit(), .Delete() on Document
-allowed, err := Check(ctx, tc, consistency.Full(), Document("readme").View(), User("alice"))
+// Checks — autocomplete shows .View(), .Edit(), .Delete() on Document.
+// Check returns a client.CheckResult, never a bare bool: only HasPermission()
+// is a grant. A Conditional result means caveat context was missing, not "yes".
+result, err := Check(ctx, tc, consistency.Full(), Document("readme").View(), User("alice"))
+if result.HasPermission() { ... }
 
 // Lookups
-for id, err := range LookupResources(ctx, tc, consistency.Full(), Document_View, User("alice")) { ... }
-for id, err := range LookupSubjects(ctx, tc, consistency.Full(), Document("readme").View(), UserType) { ... }
+for res, err := range LookupResources(ctx, tc, consistency.Full(), Document_View, User("alice")) { ... }
+for sub, err := range LookupSubjects(ctx, tc, consistency.Full(), Document("readme").View(), UserType) { ... }
 
 // Type errors caught at compile time:
 // Document("readme").Editor(Team("eng")) // ERROR: editor only allows user
@@ -73,12 +83,15 @@ await tc.touch(
     Document("readme").editor(User("bob")),
 );
 
-// Checks — autocomplete shows .view, .edit, .delete on Document
-const allowed = await tc.check(full(), Document("readme").view, User("alice"));
+// Checks — autocomplete shows .view, .edit, .delete on Document.
+// check() returns a CheckResult, never a bare boolean. NEVER write `if (result)`:
+// every object is truthy in JS, so that would grant on an unevaluated caveat.
+const result = await tc.check(full(), Document("readme").view, User("alice"));
+if (result.hasPermission()) { ... }
 
 // Lookups
-for await (const id of await tc.lookupResources(full(), Document.view, User("alice"))) { ... }
-for await (const id of await tc.lookupSubjects(full(), Document("readme").view, User)) { ... }
+for await (const res of await tc.lookupResources(full(), Document.view, User("alice"))) { ... }
+for await (const sub of await tc.lookupSubjects(full(), Document("readme").view, User)) { ... }
 
 // Type errors caught at compile time:
 // Document("readme").editor(Team("eng"));  // ERROR: editor only allows user
@@ -99,8 +112,11 @@ tc.touch(
     Document("readme").editor(User("bob"))
 );
 
-// Checks — autocomplete shows .view(), .edit(), .delete() on Document
-boolean allowed = tc.check(full(), Document("readme").view(), User("alice"));
+// Checks — autocomplete shows .view(), .edit(), .delete() on Document.
+// check() returns a CheckResult, never a bare boolean: only hasPermission()
+// is a grant. A CONDITIONAL_PERMISSION result means caveat context was missing.
+var result = tc.check(full(), Document("readme").view(), User("alice"));
+if (result.hasPermission()) { ... }
 
 // Type errors caught at compile time:
 // Document("readme").editor(Team("eng")); // ERROR: editor only allows user
@@ -120,12 +136,15 @@ try:
         Document("readme").editor(User("bob")),
     )
 
-    # Checks — autocomplete shows .view, .edit, .delete on Document
-    allowed = await tc.check(full(), Document("readme").view, User("alice"))
+    # Checks — autocomplete shows .view, .edit, .delete on Document.
+    # check() returns a CheckResult, never a bare bool: only .has_permission is
+    # a grant. A CONDITIONAL_PERMISSION result means caveat context was missing.
+    result = await tc.check(full(), Document("readme").view, User("alice"))
+    if result.has_permission: ...
 
     # Lookups
-    async for rid in tc.lookup_resources(full(), DocumentView, User("alice")): ...
-    async for sid in tc.lookup_subjects(full(), Document("readme").view, User): ...
+    async for res in tc.lookup_resources(full(), DocumentView, User("alice")): ...
+    async for sub in tc.lookup_subjects(full(), Document("readme").view, User): ...
 
     # Type errors caught at static-analysis time (pyright/mypy):
     # Document("readme").editor(Team("eng"))  # ERROR: editor only allows user
@@ -142,9 +161,14 @@ using static SpiceDB.Client.Consistency;
 await using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "somerandomkeyhere");
 
 var rel = Relationship.FromTriple("document", "readme", "viewer", "user", "alice");
-await client.WriteRelationshipsAsync(Transaction.Touch(rel));
+var txn = new Transaction();
+txn.Touch(rel);
+string revision = await client.WriteAsync(txn);
 
-bool allowed = await client.CheckPermission(Full(), "view", rel);
+// CheckPermissionAsync returns a CheckResult, never a bare bool: only
+// HasPermission is a grant. `if (result)` is a compile error by design.
+CheckResult result = await client.CheckPermissionAsync(AtLeast(revision), "view", rel);
+if (result.HasPermission) { ... }
 ```
 
 ### Ruby (idiomatic)
@@ -154,23 +178,34 @@ require "spicedb"
 
 SpiceDB::Client.new_plaintext("localhost:50051", "somerandomkeyhere") do |client|
   rel = SpiceDB::Relationship.from_triple("document", "readme", "viewer", "user", "alice")
-  client.write_relationships(SpiceDB::Transaction.touch(rel))
+  txn = SpiceDB::Transaction.new
+  txn.touch(rel)
+  revision = client.write(txn)
 
-  allowed = client.check_permission(SpiceDB::Consistency.full, "view", rel)
+  # check_permission returns a CheckResult, never a boolean. NEVER write
+  # `if result` — every Ruby object but nil/false is truthy, so that would
+  # grant on a conditional result the server never actually evaluated.
+  result = client.check_permission(SpiceDB::Consistency.at_least(revision), "view", rel)
+  puts result.has_permission?
 end
 ```
 
 ### Rust (idiomatic)
 
 ```rust
-use spicedb::{client::SpiceDBClient, consistency, types::Relationship};
+use spicedb::{client::SpiceDBClient, consistency, types::{Relationship, Transaction}};
 
 let client = SpiceDBClient::new_plaintext("localhost:50051", "somerandomkeyhere").await?;
 
 let rel = Relationship::new("document", "readme", "viewer", "user", "alice", "")?;
-client.write_relationships(&[rel.clone()]).await?;
+let mut txn = Transaction::new();
+txn.touch(&rel);
+let revision = client.write(&txn).await?;
 
-let allowed = client.check_permission(consistency::full(), "view", &rel).await?;
+// check_permission returns a CheckResult, never a bare bool: only
+// has_permission() is a grant. `if result` does not compile.
+let result = client.check_permission(&consistency::at_least(&revision), "view", &rel).await?;
+if result.has_permission() { ... }
 ```
 
 ## Structure

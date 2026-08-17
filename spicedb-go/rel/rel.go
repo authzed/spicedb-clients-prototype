@@ -156,11 +156,14 @@ func (r Relationship) WithExpiration(t time.Time) Relationship {
 // caveat context for check calls. See the CheckContext field doc for how
 // this differs from WithCaveat's context.
 //
-// When a call-level default is also supplied (via client.WithCheckContext),
-// the two are merged key by key for this item: this item's keys win on
-// conflict, and any call-level keys not present here are retained. For
-// example, a call-level {"now": 42, "region": "us"} plus a per-item
-// {"region": "eu"} produces {"now": 42, "region": "eu"} for this item.
+// When a call-level default is also supplied (via the client's *WithContext
+// check methods — Client.CheckWithContext, Client.CheckOneWithContext,
+// Client.CheckAnyWithContext, Client.CheckAllWithContext, and
+// Client.CheckIterWithContext), the two are merged key by key for this
+// item: this item's keys win on conflict, and any call-level keys not
+// present here are retained. For example, a call-level {"now": 42,
+// "region": "us"} plus a per-item {"region": "eu"} produces
+// {"now": 42, "region": "eu"} for this item.
 func (r Relationship) WithCheckContext(context map[string]any) Relationship {
 	r.CheckContext = context
 	return r

@@ -113,6 +113,95 @@ The failure this rule exists to prevent is real and shipped: one client previous
 returned `true` for `CONDITIONAL_PERMISSION` by design, granting access on a caveat
 that was never evaluated.
 
+## The Check Surface: a three-valued result, not a boolean
+
+**Binding on every client.** The RULE above says what a check *means*; this section
+says what a check *returns*. Per-client `DESIGN.md`s inherit from here — they name
+the fields in their own idiom, they do not redefine the contract.
+
+Both check methods — the singular (`check_permission`) and the plural
+(`check_permissions`) — return a `CheckResult`, never a bare `bool`. `CheckResult`
+carries exactly three pieces of state:
+
+| Concept | Contract |
+|---|---|
+| `permissionship` | The server's answer, from the four-valued shared `Permissionship` enum: unspecified, no-permission, has-permission, conditional-permission. Unrecognized future wire values map to *unspecified*, which is not a grant. |
+| `missing_context` | The caveat context keys the server needed and did not receive, from `CheckPermissionResponse.partial_caveat_info.missing_required_context`. Empty unless the result is conditional. It must carry the server's actual key names — a bare "something was missing" flag does not satisfy this. |
+| `checked_at` | The `ZedToken` from `CheckPermissionResponse.checked_at`. Threading it into the client's `at_least`-equivalent consistency strategy is how a caller gets read-your-writes through the public API. |
+
+Plus the predicate (`has_permission`), governed by the RULE.
+
+Invariants that hold in all seven clients:
+
+1. **One `Permissionship` type serves both check and lookup.** A caller learns the
+   concept once. Lookups never yield *no-permission* (a non-matching pair is simply
+   absent from the stream); *no-permission* only appears on a check, where "no" is
+   itself an answer. Where a language exposes the enum's ordinal, the value is an
+   implementation detail: no client serializes it, compares it ordinally, or relies
+   on its ordering. Every client maps to and from the wire explicitly, so the native
+   ordinals may differ between clients and from the proto's, harmlessly and by
+   design.
+2. **`checked_at` on a bulk check is response-level, not per-item.**
+   `CheckBulkPermissionsResponseItem` has no token of its own, so the one token on
+   the enclosing response is propagated onto every result in the batch.
+3. **`check_any` / `check_all` stay boolean and count only an unconditional grant**
+   (RULE clause 3). Callers needing the third state use the plural method.
+4. **A per-item error in a bulk check is raised as a typed error**, never coerced
+   into a falsy or unspecified result — otherwise permission-denied, invalid-argument,
+   and a real "no" become indistinguishable.
+5. **Reads and writes yield a revision too.** The write surface returns the revision
+   it committed at wherever the proto carries one, and every yielded lookup item
+   carries `looked_up_at` (identical for every item in one stream — it is a property
+   of the call, not the item). Bulk import is the one exception, because
+   `ImportBulkRelationshipsResponse` has no token on the wire at all.
+
+## Caveat Context on the Check Surface
+
+**Binding on every client.** `missing_context` names the keys the server needed;
+this is the API that supplies them. Without it the diagnostic would not be
+actionable.
+
+Every client accepts caveat context on a check in **both** forms:
+
+- **Call-level** — a default applied to every relationship in the call.
+- **Per-item** — attached to one relationship, overriding the call-level default
+  for that relationship only.
+
+**Merge rule: key-level, item wins.** For each item the client sends
+`{...call_level, ...item_level}`. The item's keys win on conflict; call-level keys
+the item does not mention are **retained**. Wholesale replacement is forbidden — an
+item supplying one key would silently drop every shared key, and the caveat would
+then fail for missing context, landing the caller back in the conditional state this
+work exists to make legible.
+
+```
+call-level:  {now: 42, region: "us"}
+item-level:  {region: "eu"}
+sent for that item: {now: 42, region: "eu"}
+```
+
+An item that supplies no context inherits the call-level context unchanged. When
+neither is supplied, **no `context` field is set on the wire at all** — not an empty
+struct.
+
+Two further requirements:
+
+- **Check-time context is not write-time caveat context.** The context attached to a
+  relationship on write (`with_caveat` and friends, stored in
+  `Relationship.optional_caveat.context`) and the context supplied at check time
+  (`CheckPermissionRequest.context` field 5 /
+  `CheckBulkPermissionsRequestItem.context` field 4) are different wire fields with
+  different lifetimes. A client must keep them as separate concepts and must never
+  send one where the other belongs.
+- **Types are preserved on the check path.** Caveat context values go onto
+  `google.protobuf.Value`'s `kind` oneof by type — numbers as numbers, booleans as
+  booleans, null as null, nested maps/lists recursively. Stringifying a numeric
+  parameter makes a caveat like `now < 100` fail to evaluate, and it fails *quietly*,
+  as another conditional result.
+
+`check_any` / `check_all` accept the same context shape as `check_permissions` — they
+aggregate over the same request and must be able to evaluate caveats.
+
 ## What NOT To Do
 
 - No auto-generated feeling — the API should read like hand-written code

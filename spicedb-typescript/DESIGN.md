@@ -101,6 +101,29 @@ types below) so `hasPermission()` travels with the data. Always prefer
 `"conditionalPermission"` result means the server needed caveat context that
 was not supplied and is NOT a grant.
 
+**Never use a `CheckResult` as a bare condition.** Objects are unconditionally
+truthy in JavaScript, and TypeScript offers no hook to override that (there is
+no equivalent of Python's `__bool__`, and no compile error like Go's or Rust's).
+So `if (result)` is `true` for *every* result — including a
+`"conditionalPermission"` one, which would silently grant access on a caveat
+the server never evaluated. This is the exact fail-open this client used to
+ship (`checkPermission` returned `true` for `CONDITIONAL_PERMISSION` by design),
+and it is also the shape a naive migration from the old `boolean` API produces:
+
+```typescript
+// WRONG — always true, grants on an unevaluated caveat
+const result = await client.checkPermission(consistency, rel);
+if (result) grant();
+
+// RIGHT — false for conditional, denied, and unspecified alike
+if (result.hasPermission()) grant();
+```
+
+Because the language cannot enforce this, documentation is the only mitigation:
+no docstring, README, or example in this client may show a check result used
+directly as a condition. Every sample goes through `hasPermission()`. See root
+`DESIGN.md`, "RULE: Only an unconditional grant is true", clause 5.
+
 `checkAny`/`checkAll` stay `boolean` and count ONLY `hasPermission() ===
 true` results as granted — a conditional result never counts, even for
 `checkAny`. This is deliberate and fail-closed.

@@ -7,17 +7,34 @@
 namespace SpiceDB.Client;
 
 /// <summary>
-/// Indicates whether a lookup result reflects a full grant or is conditional
-/// on caveat context that was not fully evaluated by the server. Callers
-/// MUST check this before treating a result as a full grant — a
-/// <see cref="ConditionalPermission"/> result may resolve to false once the
-/// missing caveat context is supplied.
+/// Indicates whether a check or lookup result reflects a full grant, a full
+/// denial, or is conditional on caveat context that was not fully evaluated
+/// by the server. Callers MUST check this before treating a result as a full
+/// grant — a <see cref="ConditionalPermission"/> result may resolve to false
+/// once the missing caveat context is supplied.
+/// <para>
+/// This type serves both the check surface (<see cref="CheckResult"/>) and
+/// the lookup surface (<see cref="LookupResource"/>, <see cref="ResolvedSubject"/>).
+/// Lookups never yield <see cref="NoPermission"/>: a subject/resource pair
+/// that lacks the permission is simply absent from a lookup stream rather
+/// than being yielded with that permissionship. <see cref="NoPermission"/>
+/// only appears on <see cref="CheckResult"/>, where the server is answering a
+/// question about one specific pair and "no" is itself an answer.
+/// </para>
 /// </summary>
 public enum Permissionship
 {
     Unspecified,
     HasPermission,
     ConditionalPermission,
+
+    /// <summary>
+    /// Added after <see cref="HasPermission"/> and
+    /// <see cref="ConditionalPermission"/>, and deliberately appended here —
+    /// not inserted next to <see cref="Unspecified"/> — so the underlying
+    /// int values of the two pre-existing members are not renumbered.
+    /// </summary>
+    NoPermission,
 }
 
 /// <summary>
@@ -40,6 +57,13 @@ public sealed record LookupResource
     /// <see cref="Client.Permissionship.ConditionalPermission"/>.
     /// </summary>
     public PartialCaveatInfo? PartialCaveat { get; init; }
+
+    /// <summary>
+    /// The revision this result was computed at. Identical for every item
+    /// yielded by a single <see cref="SpiceDBClient.LookupResourcesAsync"/>
+    /// call — a property of the call, not of the individual resource.
+    /// </summary>
+    public string LookedUpAt { get; init; } = "";
 }
 
 /// <summary>
@@ -67,4 +91,11 @@ public sealed record LookupSubject
 {
     public ResolvedSubject Subject { get; init; } = new();
     public IReadOnlyList<ResolvedSubject> ExcludedSubjects { get; init; } = [];
+
+    /// <summary>
+    /// The revision this result was computed at. Identical for every item
+    /// yielded by a single <see cref="SpiceDBClient.LookupSubjectsAsync"/>
+    /// call — a property of the call, not of the individual subject.
+    /// </summary>
+    public string LookedUpAt { get; init; } = "";
 }

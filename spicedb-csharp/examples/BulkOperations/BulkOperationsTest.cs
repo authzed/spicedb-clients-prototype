@@ -48,7 +48,9 @@ public class BulkOperationsTest
 
         for (var i = 0; i < users.Length; i++)
         {
-            Assert.True(results[i], $"expected {users[i]} to have view permission");
+            // Always go through HasPermission — never treat a CheckResult
+            // itself as a condition.
+            Assert.True(results[i].HasPermission, $"expected {users[i]} to have view permission");
         }
     }
 

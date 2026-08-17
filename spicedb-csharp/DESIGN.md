@@ -129,12 +129,62 @@ Exposes `V1Updates` and `Preconditions` for advanced use cases.
 
 ### Checks
 
-All checks use `BulkCheckPermissions` under the hood:
+All checks use `BulkCheckPermissions` under the hood — there is no production
+call site for the single-item `CheckPermission` RPC.
 
-- `CheckPermissionAsync(consistency, permission, relationship)` → `Task<bool>`
-- `CheckPermissionsAsync(consistency, permission, cancellationToken, params relationships)` → `Task<bool[]>`
+- `CheckPermissionAsync(consistency, permission, relationship)` → `Task<CheckResult>`
+- `CheckPermissionsAsync(consistency, permission, cancellationToken, params relationships)` → `Task<CheckResult[]>`
 - `CheckAnyAsync(consistency, permission, cancellationToken, params relationships)` → `Task<bool>`
 - `CheckAllAsync(consistency, permission, cancellationToken, params relationships)` → `Task<bool>`
+
+`CheckResult` carries the server's four-valued answer instead of collapsing
+it to a `bool` (root DESIGN.md, "RULE: Only an unconditional grant is
+true"):
+
+```csharp
+public sealed record CheckResult
+{
+    public Permissionship Permissionship { get; init; }
+    public IReadOnlyList<string> MissingContext { get; init; } = [];
+    public string CheckedAt { get; init; } = "";
+    public bool HasPermission => Permissionship == Permissionship.HasPermission;
+}
+```
+
+- `Permissionship` — `Unspecified`/`NoPermission`/`HasPermission`/`ConditionalPermission`
+  (the same enum used by the lookup surface; see "Lookups" below). A
+  `ConditionalPermission` result means the server found a matching
+  relationship but could not evaluate its caveat because the required
+  context was not supplied — it is NOT a grant.
+- `MissingContext` — the caveat context keys the server needed and did not
+  receive. Empty unless `Permissionship` is `ConditionalPermission`.
+- `CheckedAt` — the ZedToken revision this check was evaluated at. Thread it
+  into `Consistency.AtLeast` for read-your-writes.
+- `HasPermission` — true ONLY for `HasPermission`, a single equality
+  comparison. Prefer this over comparing `Permissionship` directly.
+
+**No `operator bool`/`operator true`/`false` is defined on `CheckResult`.**
+This is a deliberate choice, not an oversight: `if (result)` is a compile
+error by design, forcing callers through `HasPermission` (or an explicit
+`Permissionship` comparison) to get a boolean answer. C# records don't
+implicitly participate in boolean contexts, so omitting these operators is
+the safe default — it preserves the compile error rather than introducing a
+truthy conversion that could disagree with `HasPermission` for a
+`ConditionalPermission` result. C# is one of the languages that is "safe by
+construction" per root DESIGN.md clause 5 (`if (result)` does not compile).
+
+`CheckAnyAsync`/`CheckAllAsync` count only `HasPermission` results — a
+`ConditionalPermission` never contributes to a `true`.
+
+`CheckBulkPermissionsResponse.checked_at` is response-level, not per-item —
+the bulk path propagates that one token onto every `CheckResult.CheckedAt`
+in the batch.
+
+A per-item `CheckBulkPermissions` error (`google.rpc.Status`, carried as the
+`error` arm of the pair's oneof) is routed through the same `ErrorMapper`
+switch used by every other RPC — synthesized into an `RpcException` from its
+numeric code/message — so callers get the specific typed exception (e.g.
+`PermissionDeniedException`) instead of the base `SpiceDBException`.
 
 ### Streaming & Transparent Cursor Pagination
 
@@ -168,11 +218,11 @@ bare strings — the proto `LookupPermissionship`/`PartialCaveatInfo`/
 `client/lookup_types.go`.
 
 ```csharp
-public enum Permissionship { Unspecified, HasPermission, ConditionalPermission }
+public enum Permissionship { Unspecified, HasPermission, ConditionalPermission, NoPermission }
 public sealed record PartialCaveatInfo { MissingRequiredContext }
-public sealed record LookupResource { ResourceID, Permissionship, PartialCaveat }
+public sealed record LookupResource { ResourceID, Permissionship, PartialCaveat, LookedUpAt }
 public sealed record ResolvedSubject { SubjectID, Permissionship, PartialCaveat }
-public sealed record LookupSubject { Subject, ExcludedSubjects }
+public sealed record LookupSubject { Subject, ExcludedSubjects, LookedUpAt }
 ```
 
 - `LookupResourcesAsync(consistency, resourceType, permission, subjectType, subjectID)` → `IAsyncEnumerable<LookupResource>`
@@ -180,7 +230,17 @@ public sealed record LookupSubject { Subject, ExcludedSubjects }
 
 `Permissionship` MUST be checked before treating a result as a full grant —
 `ConditionalPermission` results depend on caveat context (`PartialCaveat`)
-that the server did not fully evaluate.
+that the server did not fully evaluate. `Permissionship` now also serves the
+check surface (`CheckResult`, above) with a fourth value, `NoPermission`,
+which — deliberately — lookups never yield: a subject/resource pair lacking
+the permission is simply absent from a lookup stream rather than yielded
+with that permissionship.
+
+`LookedUpAt` (on both `LookupResource` and `LookupSubject`) is the ZedToken
+revision the result was computed at — identical for every item yielded by a
+single call, since it's a property of the call, not of the individual
+result. It maps the proto `looked_up_at` field that was previously
+unreachable through the idiomatic client.
 
 **Wildcard exclusions**: when `LookupSubject.Subject.SubjectID` is the
 wildcard `"*"`, the server has granted the permission to every subject of
@@ -313,11 +373,12 @@ public sealed record SubjectRef { SubjectType, SubjectID, OptionalRelation }
 public sealed record IntermediateNode { Operation, Children }
 public sealed record LeafNode { Subjects }
 public enum TreeOperation { Unspecified, Union, Intersection, Exclusion }
-public enum Permissionship { Unspecified, HasPermission, ConditionalPermission }
+public enum Permissionship { Unspecified, HasPermission, ConditionalPermission, NoPermission }
 public sealed record PartialCaveatInfo { MissingRequiredContext }
-public sealed record LookupResource { ResourceID, Permissionship, PartialCaveat }
+public sealed record LookupResource { ResourceID, Permissionship, PartialCaveat, LookedUpAt }
 public sealed record ResolvedSubject { SubjectID, Permissionship, PartialCaveat }
-public sealed record LookupSubject { Subject, ExcludedSubjects }
+public sealed record LookupSubject { Subject, ExcludedSubjects, LookedUpAt }
+public sealed record CheckResult { Permissionship, MissingContext, CheckedAt, HasPermission }
 ```
 
 ### Escape Hatches

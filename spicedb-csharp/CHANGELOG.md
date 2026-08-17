@@ -2,6 +2,68 @@
 
 ## Unreleased
 
+### Breaking Changes
+
+- **2026-08-16**: `CheckPermissionAsync` now returns `Task<CheckResult>`
+  (was `Task<bool>`) and `CheckPermissionsAsync` now returns
+  `Task<CheckResult[]>` (was `Task<bool[]>`). `CheckAnyAsync`/`CheckAllAsync`
+  are unchanged (`Task<bool>`), but now count only `HasPermission` results —
+  a `ConditionalPermission` never contributes to a `true`. This follows root
+  DESIGN.md's "RULE: Only an unconditional grant is true": `permissionship`
+  on `CheckPermissionResponse` is three-valued
+  (`NO_PERMISSION`/`HAS_PERMISSION`/`CONDITIONAL_PERMISSION`), and a bare
+  `bool` collapsed "denied" and "the server needed caveat context you didn't
+  supply" into the same `false` — silently indistinguishable, and one client
+  in this repo previously returned `true` for the conditional case by
+  mistake.
+
+  `Permissionship` (previously used only by the lookup surface) gains a
+  fourth value, `NoPermission`, appended after `ConditionalPermission` so the
+  underlying int values of the pre-existing members are not renumbered.
+  Lookups never yield `NoPermission` — only `CheckResult` does.
+
+  `CheckResult` carries `Permissionship`, `MissingContext` (the caveat
+  context keys the server needed and didn't receive), `CheckedAt` (a ZedToken
+  — thread it into `Consistency.AtLeast` for read-your-writes), and a derived
+  `HasPermission` property that is true ONLY for `Permissionship.HasPermission`.
+  `CheckResult` deliberately does NOT define `operator true`/`false` or a
+  bool conversion — `if (result)` remains a compile error, forcing callers
+  through `HasPermission` explicitly.
+
+  Before:
+  ```csharp
+  var allowed = await client.CheckPermissionAsync(consistency, "view", rel);
+  if (allowed) { /* ... */ }
+  ```
+  After:
+  ```csharp
+  var result = await client.CheckPermissionAsync(consistency, "view", rel);
+  if (result.HasPermission) { /* ... */ }
+  // A conditional result carries the missing context and the revision:
+  if (result.Permissionship == Permissionship.ConditionalPermission)
+      Log($"missing: {string.Join(", ", result.MissingContext)}");
+  ```
+
+- **2026-08-16**: `LookupResource` and `LookupSubject` gain a `LookedUpAt`
+  field — the ZedToken revision the result was computed at (maps the proto
+  `looked_up_at` field, previously unreachable through the idiomatic
+  client). Identical for every item yielded by a single
+  `LookupResourcesAsync`/`LookupSubjectsAsync` call. Additive to those
+  records; existing field access is unaffected.
+
+### Fixed
+
+- **2026-08-16**: A per-item error from `CheckBulkPermissions` (surfaced via
+  `CheckPermissionAsync`/`CheckPermissionsAsync`) now maps through
+  `ErrorMapper.ToSpiceDBException` like every other RPC in this client,
+  instead of discarding the `google.rpc.Status` error code and throwing the
+  base `SpiceDBException`. A caller can now distinguish a per-item
+  `PERMISSION_DENIED` (→ `PermissionDeniedException`) from any other
+  per-item failure without string-matching the exception message. The fix
+  synthesizes a `Grpc.Core.RpcException` from the pair's numeric
+  `google.rpc.Status` code/message so it can be routed through the existing
+  mapper switch unchanged.
+
 ### Added
 
 - **2026-08-15**: The 5 streaming methods (`ReadRelationshipsAsync`,

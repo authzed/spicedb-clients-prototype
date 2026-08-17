@@ -43,6 +43,15 @@ Naming/MethodParameterName:
 Naming/PredicateMethod:
   Enabled: false
 
+# CheckResult#has_permission? intentionally keeps the has_ prefix (rather
+# than the bare `permission?` this cop prefers) to mirror the predicate name
+# used across every other SpiceDB client library for this exact concept —
+# cross-client consistency wins over this single-library style preference.
+Naming/PredicatePrefix:
+  AllowedMethods:
+    - is_a?
+    - has_permission?
+
 # Line length limit — 120 is too tight for gRPC one-liners with optional chain.
 Layout/LineLength:
   Max: 160

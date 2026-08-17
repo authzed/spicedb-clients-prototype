@@ -18,6 +18,10 @@ RSpec.describe 'BulkOperations' do
       SpiceDB::Relationship.from_triple('document', 'report', 'viewer', 'user', user)
     end
 
+    # check_permissions returns an Array<SpiceDB::CheckResult>, not
+    # booleans — use #has_permission? per result rather than testing a
+    # result itself (every CheckResult is truthy in Ruby regardless of
+    # permissionship, since Ruby has no `__bool__`-style override).
     results = client.check_permissions(
       SpiceDB::Consistency.at_least(@revision),
       'view',
@@ -25,7 +29,8 @@ RSpec.describe 'BulkOperations' do
     )
 
     expect(results.length).to eq(3)
-    expect(results).to all(be true)
+    expect(results).to all(be_a(SpiceDB::CheckResult))
+    expect(results.map(&:has_permission?)).to all(be true)
   end
 
   it 'check_all returns true when all subjects have permission' do

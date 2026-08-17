@@ -16,7 +16,24 @@
   client.delete_relationships(viewer_filter, limit: 500)
   ```
 
+- `SpiceDB::LookupResource` and `SpiceDB::LookupSubject` gain a `looked_up_at` field — the ZedToken (`String`) the lookup was evaluated against, closing the same read-your-writes gap `CheckResult#checked_at` closes for checks (see below). Both types are constructed exclusively by `lookup_resources`/`lookup_subjects`, so this has no effect on normal call sites; it only matters if code constructs `LookupResource.new(...)`/`LookupSubject.new(...)` directly (e.g. in tests), which now requires the extra keyword.
+
 ### Changed
+
+- **Breaking**: `check_permission`/`check_permissions` now return `SpiceDB::CheckResult`/`Array<SpiceDB::CheckResult>` instead of `Boolean`/`Array<Boolean>`. `CheckPermissionResponse#permissionship` is four-valued (`UNSPECIFIED`/`NO_PERMISSION`/`HAS_PERMISSION`/`CONDITIONAL_PERMISSION`) — a caveated relationship whose context wasn't supplied at check time comes back `CONDITIONAL_PERMISSION`, which the old Boolean return silently collapsed into either a grant or a denial, losing the "SpiceDB couldn't evaluate this" signal entirely. `CheckResult` carries `permissionship` (Symbol: `:unspecified`/`:no_permission`/`:has_permission`/`:conditional_permission` — the same native symbols `lookup_resources`/`lookup_subjects` use), `missing_context` (`Array<String>` of caveat parameter names that weren't supplied — `[]` unless conditional), `checked_at` (the ZedToken `String` the check was evaluated against, enabling read-your-writes chaining that was previously unreachable), and `has_permission?` (`true` ONLY for `:has_permission`). `check_any`/`check_all` are unaffected in shape — still plain `Boolean` — but now explicitly count ONLY `:has_permission`; a `:conditional_permission` result does NOT count as a grant for either (deliberately fail-closed).
+
+  **Ruby has no way to override truthiness** — every object except `nil`/`false` is truthy, unlike Python's `__bool__` hook. `if result` on a `CheckResult` is unconditionally `true`, including for a conditional permission. Anyone migrating from the old Boolean API by writing `if client.check_permission(...)` gets a silent grant on an unevaluated caveat. **Callers MUST use `result.has_permission?` — never test the result itself.**
+
+  Before:
+  ```ruby
+  allowed = client.check_permission(consistency, "view", rel)
+  grant_access if allowed # Boolean — no permissionship signal
+  ```
+  After:
+  ```ruby
+  result = client.check_permission(consistency, "view", rel)
+  grant_access if result.has_permission? # NOT `if result` — every CheckResult is truthy in Ruby
+  ```
 
 - **Breaking**: `lookup_resources`/`lookup_subjects` now yield native result objects instead of bare `String` IDs, closing an over-grant risk: the previous string-only shape silently dropped `excluded_subjects` for wildcard (`user:*`) matches, so a caller iterating IDs alone could treat a wildcard-excluded subject as granted. `lookup_resources` now yields `SpiceDB::LookupResource` (`resource_id`, `permissionship`, `partial_caveat`); `lookup_subjects` now yields `SpiceDB::LookupSubject` (`subject: ResolvedSubject`, `excluded_subjects: Array<ResolvedSubject>`). Both use the new `permissionship` Symbol (`:unspecified` / `:has_permission` / `:conditional_permission`) and `SpiceDB::PartialCaveatInfo`. Mirrors spicedb-go's `client/lookup_types.go`/`lookup.go`, including its fallback to the deprecated `subject_object_id`/`excluded_subject_ids` proto fields for servers that don't yet populate the modern `subject`/`excluded_subjects` fields.
 

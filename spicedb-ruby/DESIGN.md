@@ -84,10 +84,51 @@ Immutable modifiers (return new instances):
 ### Checks
 
 All checks use `BulkCheckPermissions` under the hood:
-- `check_permission(consistency, permission, relationship)` → `Boolean`
-- `check_permissions(consistency, permission, *relationships)` → `Array<Boolean>`
+- `check_permission(consistency, permission, relationship)` → `CheckResult`
+- `check_permissions(consistency, permission, *relationships)` → `Array<CheckResult>`
 - `check_any(consistency, permission, *relationships)` → `Boolean`
 - `check_all(consistency, permission, *relationships)` → `Boolean`
+
+`check_permission`/`check_permissions` return `SpiceDB::CheckResult`, not a
+bare `Boolean` — `CheckPermissionResponse#permissionship` is four-valued
+(`UNSPECIFIED`/`NO_PERMISSION`/`HAS_PERMISSION`/`CONDITIONAL_PERMISSION`), and
+a caveated relationship whose context wasn't supplied at check time comes
+back `CONDITIONAL_PERMISSION` — the server saying "I need more information,"
+which collapsing to a Boolean would silently turn into either a grant or a
+denial.
+
+```ruby
+SpiceDB::CheckResult = Data.define(:permissionship, :missing_context, :checked_at) do
+  def has_permission?
+    permissionship == :has_permission
+  end
+end
+```
+
+- `permissionship` — a Symbol: `:unspecified`, `:no_permission`,
+  `:has_permission`, or `:conditional_permission` (the same native symbol
+  set the lookup surfaces use, below — checks are simply the one surface
+  that can affirmatively produce `:no_permission`)
+- `missing_context` — `Array<String>` of caveat parameter names SpiceDB
+  couldn't evaluate because context wasn't supplied; `[]` unless
+  `permissionship` is `:conditional_permission`
+- `checked_at` — the ZedToken (`String`) the check was evaluated against
+- `has_permission?` — `true` ONLY when `permissionship` is
+  `:has_permission`
+
+**Callers MUST call `result.has_permission?` — never test the result
+itself.** Ruby has no `__bool__`-style hook: every `CheckResult` is truthy in
+a bare `if result` regardless of `permissionship`, so `if result` is
+unconditionally true even for a `:conditional_permission` result. This is
+the one mitigation available in Ruby for the truthiness hazard that a
+Boolean-returning check API creates when it's replaced by an object — unlike
+Python (`__bool__`), Ruby cannot make the object itself refuse to be truthy.
+
+`check_any`/`check_all` remain plain `Boolean` — they count ONLY
+`:has_permission` results. A `:conditional_permission` result does NOT
+count as a grant for either (deliberately fail-closed): `check_any` is
+`results.any?(&:has_permission?)` and `check_all` is
+`results.all?(&:has_permission?)`.
 
 ### Lookups
 
@@ -98,16 +139,19 @@ wildcard-excluded result as a full grant. Mirrors spicedb-go's
 
 ```ruby
 SpiceDB::PartialCaveatInfo = Data.define(:missing_required_context)
-SpiceDB::LookupResource    = Data.define(:resource_id, :permissionship, :partial_caveat)
+SpiceDB::LookupResource    = Data.define(:resource_id, :permissionship, :partial_caveat, :looked_up_at)
 SpiceDB::ResolvedSubject   = Data.define(:subject_id, :permissionship, :partial_caveat)
-SpiceDB::LookupSubject     = Data.define(:subject, :excluded_subjects)
+SpiceDB::LookupSubject     = Data.define(:subject, :excluded_subjects, :looked_up_at)
 ```
 
 `permissionship` is a Symbol: `:unspecified`, `:has_permission`, or
-`:conditional_permission`. `partial_caveat` is `nil` unless
+`:conditional_permission` (lookups never produce `:no_permission` — see
+Checks above for the fourth value). `partial_caveat` is `nil` unless
 `permissionship` is `:conditional_permission`, in which case it carries the
 `missing_required_context` that must be supplied to fully evaluate the
-grant.
+grant. `looked_up_at` is the ZedToken (`String`) the lookup was evaluated
+against — pass it to a later `Consistency.at_least` for read-your-writes
+against this result.
 
 - `lookup_resources(...)` → `Enumerator<SpiceDB::LookupResource>`
 - `lookup_subjects(...)` → `Enumerator<SpiceDB::LookupSubject>`, where
@@ -193,8 +237,8 @@ Automatic retry with exponential backoff for transient gRPC errors
 ### Complete Method List
 
 **Checks:**
-- `check_permission(consistency, permission, relationship)` → `Boolean`
-- `check_permissions(consistency, permission, *relationships)` → `Array<Boolean>`
+- `check_permission(consistency, permission, relationship)` → `CheckResult`
+- `check_permissions(consistency, permission, *relationships)` → `Array<CheckResult>`
 - `check_any(consistency, permission, *relationships)` → `Boolean`
 - `check_all(consistency, permission, *relationships)` → `Boolean`
 

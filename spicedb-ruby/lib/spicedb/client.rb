@@ -26,18 +26,52 @@ module SpiceDB
   Update = Data.define(:operation, :relationship)
 
   # Lookup result types — mirror spicedb-go's client/lookup_types.go.
-  # `permissionship` is one of :unspecified, :has_permission, :conditional_permission.
+  # `permissionship` is one of :unspecified, :no_permission, :has_permission,
+  # :conditional_permission — the same native symbol set CheckResult uses
+  # below. Lookup surfaces never produce :no_permission (a resource/subject
+  # without the permission simply doesn't appear in lookup results — SpiceDB's
+  # LookupPermissionship proto enum has no NO_PERMISSION value at all).
   # Callers MUST check `permissionship` before treating a result as a full
   # grant — a :conditional_permission result may resolve to false once the
   # missing caveat context (see `partial_caveat`) is supplied.
   PartialCaveatInfo = Data.define(:missing_required_context)
-  LookupResource = Data.define(:resource_id, :permissionship, :partial_caveat)
+  # `looked_up_at` is the ZedToken (String) the lookup was evaluated
+  # against — pass it to a later `Consistency.at_least` for read-your-writes
+  # against this result.
+  LookupResource = Data.define(:resource_id, :permissionship, :partial_caveat, :looked_up_at)
   ResolvedSubject = Data.define(:subject_id, :permissionship, :partial_caveat)
   # When `subject.subject_id` is the wildcard "*", `excluded_subjects` lists
   # subjects excluded from that wildcard grant — callers MUST treat those
   # subjects as NOT having the permission, even though the wildcard would
-  # otherwise suggest they do.
-  LookupSubject = Data.define(:subject, :excluded_subjects)
+  # otherwise suggest they do. `looked_up_at` is the ZedToken (String) the
+  # lookup was evaluated against.
+  LookupSubject = Data.define(:subject, :excluded_subjects, :looked_up_at)
+
+  # Check result types.
+  #
+  # `permissionship` is one of :unspecified, :no_permission, :has_permission,
+  # :conditional_permission — CheckPermissionResponse's four-valued
+  # Permissionship (unlike the lookup surfaces above, checks can
+  # affirmatively report :no_permission). `missing_context` carries the
+  # caveat parameter names SpiceDB could not evaluate because context wasn't
+  # supplied at check time; it is `[]` unless `permissionship` is
+  # :conditional_permission. `checked_at` is the ZedToken (String) the check
+  # was evaluated against.
+  #
+  # `has_permission?` is true ONLY for :has_permission. A
+  # :conditional_permission result is NOT a grant — it means SpiceDB could
+  # not evaluate the caveat because context was missing, not that the caveat
+  # evaluated to false. Ruby has no `__bool__`-style hook: every CheckResult
+  # is truthy in a bare `if result`/`result ? ... : ...` regardless of
+  # permissionship, so callers MUST call `result.has_permission?` explicitly
+  # — testing the result itself is unconditionally true and will silently
+  # treat a conditional (unevaluated) grant as allowed.
+  CheckResult = Data.define(:permissionship, :missing_context, :checked_at) do
+    # @return [Boolean] true only when permissionship is :has_permission
+    def has_permission?
+      permissionship == :has_permission
+    end
+  end
 
   # The idiomatic SpiceDB client for Ruby.
   #
@@ -127,23 +161,33 @@ module SpiceDB
 
     # --- Checks (all via BulkCheckPermissions) ---
 
-    # Checks a single permission and returns true if granted.
+    # Checks a single permission.
+    #
+    # Returns a {SpiceDB::CheckResult}, not a Boolean — a caveated
+    # relationship whose context wasn't supplied at check time comes back
+    # with `permissionship == :conditional_permission`, which is neither a
+    # grant nor a denial. Callers MUST use `result.has_permission?` (true
+    # ONLY for :has_permission) rather than testing the result itself: Ruby
+    # has no way to make an object falsy, so `if result` is unconditionally
+    # true even for a conditional result.
     #
     # @param consistency [SpiceDB::Consistency::Strategy]
     # @param permission [String] the permission to check
     # @param relationship [SpiceDB::Relationship]
-    # @return [Boolean]
+    # @return [SpiceDB::CheckResult]
     def check_permission(consistency, permission, relationship)
       check_permissions(consistency, permission, relationship).first
     end
 
-    # Performs a bulk permission check on the given relationships and returns
-    # a boolean for each relationship indicating whether permission is granted.
+    # Performs a bulk permission check on the given relationships.
+    #
+    # Returns a {SpiceDB::CheckResult} for each relationship — see
+    # {#check_permission} for why this isn't a Boolean.
     #
     # @param consistency [SpiceDB::Consistency::Strategy]
     # @param permission [String] the permission to check
     # @param relationships [Array<SpiceDB::Relationship>]
-    # @return [Array<Boolean>]
+    # @return [Array<SpiceDB::CheckResult>]
     def check_permissions(consistency, permission, *relationships)
       relationships = relationships.flatten
       return [] if relationships.empty?
@@ -153,30 +197,37 @@ module SpiceDB
         # Each relationship becomes a CheckBulkPermissionsRequestItem
         items = relationships.map { |r| check_item_from_rel(r, permission) }
 
-        resp = call_bulk_check(consistency, items)
-        resp.map { |pair| pair[:has_permission] }
+        call_bulk_check(consistency, items)
       end
     end
 
     # Returns true if any of the given relationships have the permission.
+    #
+    # Counts ONLY :has_permission results — a :conditional_permission result
+    # does NOT count as a grant, since SpiceDB couldn't evaluate the caveat
+    # without the missing context. This is deliberately fail-closed.
     #
     # @param consistency [SpiceDB::Consistency::Strategy]
     # @param permission [String]
     # @param relationships [Array<SpiceDB::Relationship>]
     # @return [Boolean]
     def check_any(consistency, permission, *relationships)
-      check_permissions(consistency, permission, *relationships).any?
+      check_permissions(consistency, permission, *relationships).any?(&:has_permission?)
     end
 
     # Returns true if all of the given relationships have the permission.
+    #
+    # Requires EVERY result to be :has_permission — a single
+    # :conditional_permission result fails the check, since SpiceDB couldn't
+    # evaluate that caveat without the missing context. This is deliberately
+    # fail-closed.
     #
     # @param consistency [SpiceDB::Consistency::Strategy]
     # @param permission [String]
     # @param relationships [Array<SpiceDB::Relationship>]
     # @return [Boolean]
     def check_all(consistency, permission, *relationships)
-      results = check_permissions(consistency, permission, *relationships)
-      results.all?
+      check_permissions(consistency, permission, *relationships).all?(&:has_permission?)
     end
 
     # --- Relationships ---
@@ -663,11 +714,21 @@ module SpiceDB
         )
       )
 
+      # CheckBulkPermissionsResponse#checked_at is a single response-level
+      # ZedToken (not per-pair) — propagate it to every CheckResult below.
+      # Message-typed proto fields are nil when unset (unlike scalar
+      # fields), so guard with `&.` — ZedTokens are documented as opaque,
+      # never-nil Strings, so fall back to ''.
+      checked_at = resp.checked_at&.token || ''
+
       resp.pairs.map do |pair|
         raise SpiceDB.to_spicedb_error(pair.error) if pair.respond_to?(:error) && pair.error && pair.error.respond_to?(:message) && !pair.error.message.empty?
 
-        # Ruby protobuf returns enum values as symbols, not integers
-        { has_permission: pair.item.permissionship == :PERMISSIONSHIP_HAS_PERMISSION }
+        CheckResult.new(
+          permissionship: check_permissionship_from_proto(pair.item.permissionship),
+          missing_context: missing_context_from_proto(pair.item.partial_caveat_info),
+          checked_at: checked_at
+        )
       end
     end
 
@@ -1097,12 +1158,43 @@ module SpiceDB
       LOOKUP_PERMISSIONSHIP_MAP.fetch(v, :unspecified)
     end
 
+    # Maps the proto CheckPermissionResponse::Permissionship enum (returned
+    # as a Symbol by the Ruby protobuf gem) to the native permissionship
+    # symbol used by CheckResult. Unlike LOOKUP_PERMISSIONSHIP_MAP above,
+    # this proto enum is four-valued — it can affirmatively report
+    # PERMISSIONSHIP_NO_PERMISSION — matching CheckResult#has_permission?'s
+    # fail-closed contract (only :has_permission is true). Unrecognized
+    # values (including UNSPECIFIED and nil) map to :unspecified.
+    CHECK_PERMISSIONSHIP_MAP = {
+      PERMISSIONSHIP_NO_PERMISSION: :no_permission,
+      PERMISSIONSHIP_HAS_PERMISSION: :has_permission,
+      PERMISSIONSHIP_CONDITIONAL_PERMISSION: :conditional_permission
+    }.freeze
+
+    # Maps the proto CheckPermissionResponse::Permissionship enum to its
+    # native symbol equivalent (see CHECK_PERMISSIONSHIP_MAP above).
+    def check_permissionship_from_proto(v)
+      CHECK_PERMISSIONSHIP_MAP.fetch(v, :unspecified)
+    end
+
     # Maps a proto PartialCaveatInfo to a native SpiceDB::PartialCaveatInfo.
     # A nil input (the field is unset) maps to nil.
     def partial_caveat_from_proto(v)
       return nil if v.nil?
 
       PartialCaveatInfo.new(missing_required_context: v.missing_required_context.to_a)
+    end
+
+    # Maps a proto PartialCaveatInfo to the flat Array<String>
+    # CheckResult#missing_context expects. Unlike partial_caveat_from_proto
+    # above (which wraps the value in a PartialCaveatInfo for the lookup
+    # surfaces), CheckResult exposes the missing-context list directly,
+    # since it's the only caveat detail a check result carries. A nil input
+    # (the field is unset — i.e. the check wasn't conditional) maps to [].
+    def missing_context_from_proto(v)
+      return [] if v.nil?
+
+      v.missing_required_context.to_a
     end
 
     # Maps a proto ResolvedSubject to a native SpiceDB::ResolvedSubject. A
@@ -1122,7 +1214,8 @@ module SpiceDB
       LookupResource.new(
         resource_id: resp.resource_object_id,
         permissionship: permissionship_from_proto(resp.permissionship),
-        partial_caveat: partial_caveat_from_proto(resp.partial_caveat_info)
+        partial_caveat: partial_caveat_from_proto(resp.partial_caveat_info),
+        looked_up_at: resp.looked_up_at&.token || ''
       )
     end
 
@@ -1160,7 +1253,11 @@ module SpiceDB
         )
       end
 
-      LookupSubject.new(subject: subject, excluded_subjects: excluded_subjects_from_proto(resp))
+      LookupSubject.new(
+        subject: subject,
+        excluded_subjects: excluded_subjects_from_proto(resp),
+        looked_up_at: resp.looked_up_at&.token || ''
+      )
     end
 
     # Maps a proto ReflectionSchemaDiff to a SpiceDB::SchemaDiff.

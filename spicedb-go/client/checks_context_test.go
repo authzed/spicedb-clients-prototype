@@ -2,7 +2,9 @@ package client
 
 import (
 	"context"
+	"iter"
 	"net"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -106,10 +108,8 @@ func TestCheck_CallLevelContextReachesEveryItem(t *testing.T) {
 	r1 := rel.MustFromTriple("document", "1", "view", "user", "alice", "")
 	r2 := rel.MustFromTriple("document", "2", "view", "user", "bob", "")
 
-	_, err := c.Check(context.Background(), consistency.MinLatency(), "view",
-		[]rel.Relationship{r1, r2},
-		WithCheckContext(map[string]any{"now": 42}),
-	)
+	_, err := c.CheckWithContext(context.Background(), consistency.MinLatency(), "view",
+		map[string]any{"now": 42}, r1, r2)
 	require.NoError(t, err)
 	require.Len(t, srv.requests, 1)
 
@@ -121,7 +121,10 @@ func TestCheck_CallLevelContextReachesEveryItem(t *testing.T) {
 	require.Equal(t, want, asMap(items[1].GetContext()), "item 1 should carry the call-level context")
 }
 
-// C2: per-item context alone reaches only that item.
+// C2: per-item context alone reaches only that item. Uses the plain,
+// non-context Check (variadic, no call-level context argument) to prove
+// per-item override works even through the delegating, backward-compatible
+// entry point.
 func TestCheck_PerItemContextReachesOnlyThatItem(t *testing.T) {
 	c, srv := newCapturingTestClient(t)
 
@@ -129,9 +132,7 @@ func TestCheck_PerItemContextReachesOnlyThatItem(t *testing.T) {
 	r2 := rel.MustFromTriple("document", "2", "view", "user", "bob", "").
 		WithCheckContext(map[string]any{"now": 42})
 
-	_, err := c.Check(context.Background(), consistency.MinLatency(), "view",
-		[]rel.Relationship{r1, r2},
-	)
+	_, err := c.Check(context.Background(), consistency.MinLatency(), "view", r1, r2)
 	require.NoError(t, err)
 	require.Len(t, srv.requests, 1)
 
@@ -154,10 +155,8 @@ func TestCheck_MergesCallLevelAndPerItemContext(t *testing.T) {
 	overridden := rel.MustFromTriple("document", "2", "view", "user", "bob", "").
 		WithCheckContext(map[string]any{"region": "eu"})
 
-	_, err := c.Check(context.Background(), consistency.MinLatency(), "view",
-		[]rel.Relationship{sibling, overridden},
-		WithCheckContext(map[string]any{"now": 42, "region": "us"}),
-	)
+	_, err := c.CheckWithContext(context.Background(), consistency.MinLatency(), "view",
+		map[string]any{"now": 42, "region": "us"}, sibling, overridden)
 	require.NoError(t, err)
 	require.Len(t, srv.requests, 1)
 
@@ -170,17 +169,15 @@ func TestCheck_MergesCallLevelAndPerItemContext(t *testing.T) {
 		"overridden item's region key must win, but the call-level now key (absent from the item) must be retained")
 }
 
-// C4: neither call-level nor per-item context supplied => no context field
-// set on the wire.
+// C4: neither call-level nor per-item context supplied via CheckWithContext
+// (an explicit nil call-level context) => no context field set on the wire.
 func TestCheck_NoContextSuppliedSetsNoContextField(t *testing.T) {
 	c, srv := newCapturingTestClient(t)
 
 	r1 := rel.MustFromTriple("document", "1", "view", "user", "alice", "")
 	r2 := rel.MustFromTriple("document", "2", "view", "user", "bob", "")
 
-	_, err := c.Check(context.Background(), consistency.MinLatency(), "view",
-		[]rel.Relationship{r1, r2},
-	)
+	_, err := c.CheckWithContext(context.Background(), consistency.MinLatency(), "view", nil, r1, r2)
 	require.NoError(t, err)
 	require.Len(t, srv.requests, 1)
 
@@ -189,4 +186,119 @@ func TestCheck_NoContextSuppliedSetsNoContextField(t *testing.T) {
 
 	require.Nil(t, items[0].GetContext())
 	require.Nil(t, items[1].GetContext())
+}
+
+// Regression guard for the ergonomics decision: the non-context methods
+// (Check, CheckAny, CheckAll, CheckOne, CheckIter) must keep their exact
+// pre-existing variadic call shape — no slice literal, no options — and
+// must still set no context field on the wire when nothing supplies one.
+func TestNonContextMethods_StayVariadicAndSetNoContext(t *testing.T) {
+	r1 := rel.MustFromTriple("document", "1", "view", "user", "alice", "")
+	r2 := rel.MustFromTriple("document", "2", "view", "user", "bob", "")
+
+	t.Run("Check", func(t *testing.T) {
+		c, srv := newCapturingTestClient(t)
+		_, err := c.Check(context.Background(), consistency.MinLatency(), "view", r1, r2)
+		require.NoError(t, err)
+		require.Len(t, srv.requests, 1)
+		for _, item := range srv.requests[0].GetItems() {
+			require.Nil(t, item.GetContext())
+		}
+	})
+
+	t.Run("CheckOne", func(t *testing.T) {
+		c, srv := newCapturingTestClient(t)
+		_, err := c.CheckOne(context.Background(), consistency.MinLatency(), "view", r1)
+		require.NoError(t, err)
+		require.Len(t, srv.requests, 1)
+		require.Nil(t, srv.requests[0].GetItems()[0].GetContext())
+	})
+
+	t.Run("CheckAny", func(t *testing.T) {
+		c, srv := newCapturingTestClient(t)
+		_, err := c.CheckAny(context.Background(), consistency.MinLatency(), "view", r1, r2)
+		require.NoError(t, err)
+		require.Len(t, srv.requests, 1)
+		for _, item := range srv.requests[0].GetItems() {
+			require.Nil(t, item.GetContext())
+		}
+	})
+
+	t.Run("CheckAll", func(t *testing.T) {
+		c, srv := newCapturingTestClient(t)
+		_, err := c.CheckAll(context.Background(), consistency.MinLatency(), "view", r1, r2)
+		require.NoError(t, err)
+		require.Len(t, srv.requests, 1)
+		for _, item := range srv.requests[0].GetItems() {
+			require.Nil(t, item.GetContext())
+		}
+	})
+
+	t.Run("CheckIter", func(t *testing.T) {
+		c, srv := newCapturingTestClient(t)
+		var count int
+		for result, err := range c.CheckIter(context.Background(), consistency.MinLatency(), "view", slices.Values([]rel.Relationship{r1, r2})) {
+			require.NoError(t, err)
+			require.True(t, result.HasPermission())
+			count++
+		}
+		require.Equal(t, 2, count)
+		require.Len(t, srv.requests, 1)
+		for _, item := range srv.requests[0].GetItems() {
+			require.Nil(t, item.GetContext())
+		}
+	})
+}
+
+// Delegation sanity: the WithContext variants of CheckOne/CheckAny/CheckAll/
+// CheckIter must actually forward checkContext through to the wire, not
+// just accept the parameter and drop it.
+func TestWithContextVariants_ForwardCallLevelContextToWire(t *testing.T) {
+	r1 := rel.MustFromTriple("document", "1", "view", "user", "alice", "")
+	r2 := rel.MustFromTriple("document", "2", "view", "user", "bob", "")
+	want := map[string]any{"now": 7}
+
+	t.Run("CheckOneWithContext", func(t *testing.T) {
+		c, srv := newCapturingTestClient(t)
+		_, err := c.CheckOneWithContext(context.Background(), consistency.MinLatency(), "view", want, r1)
+		require.NoError(t, err)
+		require.Len(t, srv.requests, 1)
+		require.Equal(t, wantMap(t, want), asMap(srv.requests[0].GetItems()[0].GetContext()))
+	})
+
+	t.Run("CheckAnyWithContext", func(t *testing.T) {
+		c, srv := newCapturingTestClient(t)
+		_, err := c.CheckAnyWithContext(context.Background(), consistency.MinLatency(), "view", want, r1, r2)
+		require.NoError(t, err)
+		require.Len(t, srv.requests, 1)
+		for _, item := range srv.requests[0].GetItems() {
+			require.Equal(t, wantMap(t, want), asMap(item.GetContext()))
+		}
+	})
+
+	t.Run("CheckAllWithContext", func(t *testing.T) {
+		c, srv := newCapturingTestClient(t)
+		_, err := c.CheckAllWithContext(context.Background(), consistency.MinLatency(), "view", want, r1, r2)
+		require.NoError(t, err)
+		require.Len(t, srv.requests, 1)
+		for _, item := range srv.requests[0].GetItems() {
+			require.Equal(t, wantMap(t, want), asMap(item.GetContext()))
+		}
+	})
+
+	t.Run("CheckIterWithContext", func(t *testing.T) {
+		c, srv := newCapturingTestClient(t)
+		var seq iter.Seq[rel.Relationship] = slices.Values([]rel.Relationship{r1, r2})
+		var count int
+		for result, err := range c.CheckIterWithContext(context.Background(), consistency.MinLatency(), "view", want, seq) {
+			require.NoError(t, err)
+			require.True(t, result.HasPermission())
+			count++
+		}
+		require.Equal(t, 2, count)
+		require.Len(t, srv.requests, 1)
+		for _, item := range srv.requests[0].GetItems() {
+			require.Equal(t, wantMap(t, want), asMap(item.GetContext()))
+		}
+	})
 }

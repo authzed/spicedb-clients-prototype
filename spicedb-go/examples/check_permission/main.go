@@ -100,16 +100,16 @@ definition document {
 		log.Fatalf(`expected MissingContext == ["now"], got %v`, condResult.MissingContext)
 	}
 
-	// Now supply the context the server said was missing. WithCheckContext
+	// Now supply the context the server said was missing. CheckOneWithContext
 	// puts "now" into the check request (not into the stored relationship —
 	// the relationship was written above with a nil caveat context and stays
 	// that way). "now" (50) satisfies the caveat's "now < 100", so the same
 	// check that came back Conditional above now resolves to a real grant:
 	// this is the payoff of MissingContext being actionable instead of just
 	// informational.
-	resolvedResult, err := c.CheckOne(ctx, consistency.Full(), "conditional_view",
+	resolvedResult, err := c.CheckOneWithContext(ctx, consistency.Full(), "conditional_view",
+		map[string]any{"now": 50},
 		rel.MustFromTriple("document", "conditionaldoc", "conditional_view", "user", "alice", ""),
-		client.WithCheckContext(map[string]any{"now": 50}),
 	)
 	if err != nil {
 		log.Fatalf("check with context failed: %v", err)

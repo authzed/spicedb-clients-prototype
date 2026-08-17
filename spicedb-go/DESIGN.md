@@ -85,21 +85,37 @@ encounters. See "Checks" below for how it combines with a call-level default.
 ### Checks
 
 All checks use `BulkCheckPermissions` under the hood:
-- `Check(ctx, cs, permission, rs []rel.Relationship, opts ...CheckOption) ([]CheckResult, error)`
-- `CheckOne(ctx, cs, permission, r rel.Relationship, opts ...CheckOption) (CheckResult, error)`
-- `CheckAny(ctx, cs, permission, rs []rel.Relationship, opts ...CheckOption) (bool, error)` —
-  true only if at least one result is `HasPermission()`; a Conditional result
-  does not count
-- `CheckAll(ctx, cs, permission, rs []rel.Relationship, opts ...CheckOption) (bool, error)` —
-  true only if every result is `HasPermission()`; a Conditional result does
+- `Check(ctx, cs, permission, rs ...rel.Relationship) ([]CheckResult, error)`
+- `CheckOne(ctx, cs, permission, r rel.Relationship) (CheckResult, error)`
+- `CheckAny(ctx, cs, permission, rs ...rel.Relationship) (bool, error)` — true
+  only if at least one result is `HasPermission()`; a Conditional result does
   not count
-- `CheckIter(ctx, cs, permission, iter, opts ...CheckOption) iter.Seq2[CheckResult, error]` —
+- `CheckAll(ctx, cs, permission, rs ...rel.Relationship) (bool, error)` — true
+  only if every result is `HasPermission()`; a Conditional result does not
+  count
+- `CheckIter(ctx, cs, permission, iter) iter.Seq2[CheckResult, error]` —
   auto-batches in chunks of 1000
 
-`rs` takes a plain `[]rel.Relationship` (not variadic) on `Check`/`CheckAny`/
-`CheckAll` so that `opts ...CheckOption` — the trailing variadic — can occupy
-the option-idiom slot Go reserves for the last parameter (mirrors
-`DeleteRelationships(ctx, f, opts ...DeleteOption)`; see "Deletions").
+Each has a `*WithContext` counterpart taking an extra `checkContext
+map[string]any` parameter (positioned right after `permission`, before the
+relationships) for supplying a call-level caveat context:
+`CheckWithContext`, `CheckOneWithContext`, `CheckAnyWithContext`,
+`CheckAllWithContext`, `CheckIterWithContext`. The relationships parameter
+stays variadic on every method, including the `*WithContext` variants —
+`checkContext` is an ordinary (non-variadic) parameter, so it doesn't
+conflict with Go's one-variadic-parameter-last rule the way a trailing
+`opts ...CheckOption` would have. The non-context method is a thin
+delegation to its `*WithContext` counterpart with a `nil` checkContext — one
+implementation, two entry points — so existing call sites
+(`client.Check(ctx, cs, "view", r1, r2)`) are completely unaffected: no
+brackets, no options, same signature as before this feature existed. This
+was a deliberate call-site-readability tradeoff — an earlier version of this
+feature added `opts ...CheckOption` to the existing methods, which forced
+`rs ...rel.Relationship` to become `rs []rel.Relationship` on `Check`/
+`CheckAny`/`CheckAll` to make room for the trailing variadic slot,
+degrading every caller (including the majority who never touch caveat
+context) for the benefit of the few who do. Parallel `*WithContext` methods
+avoid that entirely, at the cost of five more exported names.
 
 #### Check-time caveat context
 
@@ -108,10 +124,11 @@ The proto only ever attaches caveat context to an individual check item
 — there is no request-level context field, so a call-level default has to be
 fanned out onto every item at request-build time. Two forms are supported:
 
-- **Call-level default**, via `client.WithCheckContext(map[string]any)`
-  passed as a `CheckOption` — applied to every relationship in the call.
+- **Call-level default**, via the `checkContext map[string]any` parameter on
+  a `*WithContext` method — applied to every relationship in the call.
 - **Per-item**, via `rel.Relationship.WithCheckContext(map[string]any)` —
-  overrides the default for that one relationship.
+  overrides the default for that one relationship. Works with both the
+  plain and `*WithContext` methods.
 
 They merge **key by key, item wins**: each item's context is built as
 `{...call-level, ...item-level}`. Item keys win on conflict; call-level keys
@@ -121,19 +138,21 @@ with no per-item context inherits the call-level context unchanged; if
 neither is supplied, no `context` field is set on the wire.
 
 ```go
-result, err := c.CheckOne(ctx, cs, "conditional_view",
-    r, // has no per-item context
-    client.WithCheckContext(map[string]any{"now": time.Now().Unix()}),
+result, err := c.CheckOneWithContext(ctx, cs, "conditional_view",
+    map[string]any{"now": time.Now().Unix()},
+    r, // has no per-item context, so it gets the call-level default above
 )
 
 // Per-item overrides a shared default for one relationship in a bulk call:
-results, err := c.Check(ctx, cs, "view",
-    []rel.Relationship{
-        r1,                                            // gets {"now": N, "region": "us"}
-        r2.WithCheckContext(map[string]any{"region": "eu"}), // gets {"now": N, "region": "eu"}
-    },
-    client.WithCheckContext(map[string]any{"now": N, "region": "us"}),
+results, err := c.CheckWithContext(ctx, cs, "view",
+    map[string]any{"now": N, "region": "us"},
+    r1,                                                   // gets {"now": N, "region": "us"}
+    r2.WithCheckContext(map[string]any{"region": "eu"}),  // gets {"now": N, "region": "eu"}
 )
+
+// No caveat context involved: call sites are unchanged from before this
+// feature existed.
+results, err := c.Check(ctx, cs, "view", r1, r2)
 ```
 
 `CheckResult` (see `client/check_types.go`) carries the server's

@@ -20,7 +20,7 @@ import grpc
 import pytest
 from authzed.api.v1 import permission_service_pb2 as psp
 
-from spicedb import Filter
+from spicedb import Filter, Relationship
 from spicedb.aio import SpiceDBClient
 from spicedb.consistency import full
 
@@ -63,6 +63,18 @@ class _Recorder:
         self._record(context)
         return iter(())  # empty page -> client stops after one request
 
+    def import_bulk(self, request_iterator, context) -> bytes:
+        """Stream-unary handler: drains the real request feed the sync/aio
+        clients hand to grpc, mirroring what a real server does.
+        """
+        self._record(context)
+        total = 0
+        for raw in request_iterator:
+            req = psp.ImportBulkRelationshipsRequest()
+            req.ParseFromString(raw)
+            total += len(req.relationships)
+        return psp.ImportBulkRelationshipsResponse(num_loaded=total).SerializeToString()
+
 
 def _serve(recorder: _Recorder, tls: tuple[bytes, bytes] | None):
     """Serve the real SpiceDB method paths so a real client can drive them.
@@ -81,6 +93,9 @@ def _serve(recorder: _Recorder, tls: tuple[bytes, bytes] | None):
                     ),
                     "ReadRelationships": grpc.unary_stream_rpc_method_handler(
                         recorder.read_relationships, lambda b: b, lambda b: b
+                    ),
+                    "ImportBulkRelationships": grpc.stream_unary_rpc_method_handler(
+                        recorder.import_bulk, lambda b: b, lambda b: b
                     ),
                 },
             ),
@@ -136,6 +151,47 @@ async def test_aio_sends_exactly_one_authorization_header(
     finally:
         server.stop(0)
 
+    assert len(recorder.headers) == 1, (
+        f"expected exactly 1 authorization header, got {len(recorder.headers)}: "
+        f"{recorder.headers}"
+    )
+    assert recorder.headers[0][1] == f"Bearer {TOKEN}"
+
+
+@pytest.mark.parametrize("secure", [False, True])
+def test_sync_import_relationships_sends_exactly_one_authorization_header(
+    secure: bool, tls_pair
+):
+    """Drives spicedb.sync's ImportBulkRelationships over a real grpc.Channel.
+
+    `import_relationships` is the sync client's only stream-unary call --
+    a fundamentally different grpc.Channel code path (request-iterator feed)
+    than every other call, which is unary. This is the only test that
+    actually runs that path against a real (in-process) gRPC server: it
+    proves the `_requests.import_batches(...)` generator is drained by the
+    real stream-unary send, that the resulting request reaches the server
+    with the expected relationships (via `num_loaded`), and that the bearer
+    auth metadata is attached exactly once on that path too.
+    """
+    from spicedb.sync import SpiceDBClient as SyncSpiceDBClient
+
+    recorder = _Recorder()
+    server, port = _serve(recorder, tls_pair if secure else None)
+    try:
+        with _trusting(tls_pair) if secure else contextlib.nullcontext():
+            client = SyncSpiceDBClient(
+                f"localhost:{port}", token=TOKEN, insecure=not secure
+            )
+            rels = [
+                Relationship.from_triple("document:a", "viewer", "user:jimmy"),
+                Relationship.from_triple("document:b", "viewer", "user:jimmy"),
+            ]
+            num_loaded = client.import_relationships(rels)
+            client.close()
+    finally:
+        server.stop(0)
+
+    assert num_loaded == 2, "the real server must see both relationships sent"
     assert len(recorder.headers) == 1, (
         f"expected exactly 1 authorization header, got {len(recorder.headers)}: "
         f"{recorder.headers}"

@@ -122,4 +122,29 @@ async fn main() {
         vec!["now".to_string()],
         "expected the server to report `now` as the missing caveat parameter"
     );
+
+    // Resolve the conditional: supply the `now` context the server reported
+    // as missing via `check_permission_with_context`. `now < 100` evaluates
+    // true, so this time the check resolves to an outright grant.
+    let mut context = std::collections::HashMap::new();
+    context.insert("now".to_string(), serde_json::json!(42));
+    let resolved_result = client
+        .check_permission_with_context(
+            &consistency::at_least(&conditional_revision),
+            "conditional_view",
+            &conditional_check_rel,
+            Some(&context),
+        )
+        .await
+        .expect("check with context failed");
+
+    println!(
+        "alice can conditionally view document:conditionaldoc with context {{now: 42}}: {} (permissionship: {:?})",
+        resolved_result.has_permission(),
+        resolved_result.permissionship
+    );
+    assert!(
+        resolved_result.has_permission(),
+        "expected supplying the missing `now` context to resolve the caveat to a grant"
+    );
 }

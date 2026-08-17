@@ -2,6 +2,62 @@
 
 ## Unreleased
 
+### Features
+
+- **Caveat context on the check surface.** A prior change gave
+  `CheckResult` a `missing_context: Vec<String>` field naming the caveat
+  keys the server needed and didn't get — but there was no way to actually
+  supply them. `Relationship` gains a `check_context: Option<HashMap<String,
+  serde_json::Value>>` field (set via `.with_check_context(context)`) for
+  per-item context, and each check method gains a `_with_context` sibling
+  for a call-level default:
+
+  ```rust
+  use std::collections::HashMap;
+  use spicedb::types::Relationship;
+
+  let rel = Relationship::new("doc", "doc1", "view", "user", "alice", "")?;
+  let mut context = HashMap::new();
+  context.insert("now".to_string(), serde_json::json!(42));
+
+  // Call-level default, applied to every relationship in the call:
+  let result = client
+      .check_permission_with_context(&cs, "view", &rel, Some(&context))
+      .await?;
+
+  // check_permissions_with_context / check_any_with_context /
+  // check_all_with_context follow the same shape for the batch/aggregate
+  // surface.
+  ```
+
+  Per-item context (via `Relationship::with_check_context`) merges with a
+  call-level default **key by key, item wins**: the item's keys override
+  matching call-level keys, and call-level keys the item doesn't specify are
+  retained — not wholesale replacement, which would silently drop shared
+  keys and reintroduce the exact "why is this still Conditional" confusion
+  `missing_context` exists to resolve. When neither applies to an item, no
+  `context` field is set on that item's wire request (`None`, not an empty
+  `Struct`).
+
+  `check_context` is a *different concept* from `caveat_context`:
+  `caveat_context` is stored with a relationship as part of a **write** and
+  supplies values for the caveat baked into that specific tuple;
+  `check_context` is never sent on a write (`Relationship::to_proto` does
+  not reference it) and instead supplies values for evaluating whatever
+  caveat a permission **check** encounters. Keeping them on separate fields
+  prevents a check-time value from silently leaking into a write and
+  altering a stored relationship's caveat context.
+
+  This is **purely additive** — `check_permission`, `check_permissions`,
+  `check_any`, and `check_all` are unchanged and now delegate to their
+  `_with_context` counterpart with `context: None`. No existing call site
+  changes:
+
+  ```rust
+  // Before and after — identical:
+  let result = client.check_permission(&cs, "view", &rel).await?;
+  ```
+
 ### Breaking changes
 
 - **`check_permission` and `check_permissions` now return `CheckResult`/`Vec<CheckResult>`

@@ -79,3 +79,71 @@ async fn check_permission_with_missing_caveat_context_is_conditional_not_granted
         "checked_at should be populated from the response"
     );
 }
+
+/// C5: the payoff test for spec D3b. Same caveat schema and relationship as
+/// the test above (server needs `now` and doesn't get it => Conditional),
+/// but this time the caller supplies the missing context via
+/// `check_permission_with_context` — proving `missing_context` is
+/// actionable: a caller can resolve a Conditional into a real grant.
+#[tokio::test]
+#[ignore = "requires a live SpiceDB server (see module docs)"]
+async fn check_permission_with_context_resolves_conditional_to_grant() {
+    let client = SpiceDBClient::new_plaintext("localhost:50051", "testtoken")
+        .await
+        .expect("connect to live SpiceDB");
+
+    client
+        .write_schema(CAVEATED_SCHEMA)
+        .await
+        .expect("write schema");
+
+    let rel = Relationship::new("doc", "contextresolveddoc", "viewer", "user", "alice", "")
+        .expect("valid relationship")
+        .with_caveat("active", None);
+    let mut txn = Transaction::new();
+    txn.touch(&rel);
+    let revision = client.write(&txn).await.expect("write relationship");
+
+    let check_rel = Relationship::new("doc", "contextresolveddoc", "view", "user", "alice", "")
+        .expect("valid relationship");
+
+    // Without context: Conditional, per the test above.
+    let conditional = client
+        .check_permission(&consistency::at_least(&revision), "view", &check_rel)
+        .await
+        .expect("check should succeed");
+    assert_eq!(
+        conditional.permissionship,
+        Permissionship::ConditionalPermission,
+        "sanity check: without context the server must still answer Conditional"
+    );
+
+    // With context supplying `now`: `now < 100` evaluates true, so the
+    // caveat passes and the check resolves to an outright grant.
+    let mut context = std::collections::HashMap::new();
+    context.insert("now".to_string(), serde_json::json!(42));
+    let granted = client
+        .check_permission_with_context(
+            &consistency::at_least(&revision),
+            "view",
+            &check_rel,
+            Some(&context),
+        )
+        .await
+        .expect("check with context should succeed");
+
+    assert_eq!(
+        granted.permissionship,
+        Permissionship::HasPermission,
+        "expected supplying the missing `now` context to resolve the caveat to a grant, got {:?}",
+        granted.permissionship
+    );
+    assert!(
+        granted.has_permission(),
+        "has_permission() must be true once the missing caveat context is supplied"
+    );
+    assert!(
+        granted.missing_context.is_empty(),
+        "a HasPermission result must not report missing context"
+    );
+}

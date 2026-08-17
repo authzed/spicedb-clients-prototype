@@ -69,14 +69,27 @@ pub struct Relationship {
     pub caveat_name: String,
     pub caveat_context: Option<HashMap<String, serde_json::Value>>,
     pub expiration: Option<DateTime<Utc>>,
+    pub check_context: Option<HashMap<String, serde_json::Value>>,
 }
 ```
 
 All types derive `Debug, Clone, PartialEq, Eq`.
 
+`check_context` is per-item caveat context used only when this relationship
+is passed to a check call (`check_permission_with_context`/
+`check_permissions_with_context`/`check_any_with_context`/
+`check_all_with_context`) -- see "Checks" below. It is a **different
+concept** from `caveat_context`, which is stored with the relationship as
+part of a write and supplies values for the caveat baked into that specific
+tuple: `check_context` is never sent on a write (`Relationship::to_proto`
+does not reference it) and instead supplies values for evaluating whatever
+caveat a permission check encounters at check time. Keeping them on separate
+fields prevents a check-time value from silently leaking into a write and
+altering a stored relationship's caveat context.
+
 Constructors: `Relationship::new()`, `from_objects()`, `from_tuple()`
 
-Immutable modifiers: `.with_caveat()`, `.with_expiration()`, `.filter()`
+Immutable modifiers: `.with_caveat()`, `.with_expiration()`, `.with_check_context()`, `.filter()`
 
 ### Ownership and Borrowing
 
@@ -98,6 +111,53 @@ All checks use `BulkCheckPermissions` under the hood:
   relationship's result has `has_permission() == true`
 
 All permission parameters are `&str`, not `String`.
+
+#### Caveat context on the check surface
+
+`CheckPermissionRequest.context` (proto field 5) and
+`CheckBulkPermissionsRequestItem.context` (proto field 4) are the wire
+locations for check-time caveat context -- values SpiceDB needs to evaluate a
+caveat expression encountered during a check (e.g. `"now"`). Without it, a
+caveated match comes back as `Permissionship::ConditionalPermission` instead
+of a grant, and `CheckResult::missing_context` names what was needed.
+`CheckBulkPermissionsRequest` itself has **no** context field, so a
+call-level default is fanned out onto every item at request-build time.
+
+Rust has no default arguments and no overloading, so adding a `context`
+parameter to `check_permission`/`check_permissions`/`check_any`/`check_all`
+directly would break every existing call site. Following this client's
+existing convention for optional call-shaped parameters (an explicit
+`Option<...>` parameter, as `export_relationships`'s `filter: Option<&Filter>`
+already does), each gained a parallel `_with_context` method instead --
+mirroring the shape Go needed for the same reason (Go permits only one
+trailing variadic):
+
+- `check_permission_with_context(&self, cs, permission, &rel, context: Option<&HashMap<String, serde_json::Value>>)`
+- `check_permissions_with_context(&self, cs, permission, &[rel], context: Option<&HashMap<String, serde_json::Value>>)`
+- `check_any_with_context(&self, cs, permission, &[rel], context: Option<&HashMap<String, serde_json::Value>>)`
+- `check_all_with_context(&self, cs, permission, &[rel], context: Option<&HashMap<String, serde_json::Value>>)`
+
+`context` is the call-level default applied to every relationship in the
+call. Per-item context is supplied by building the relationship with
+`Relationship::with_check_context(context)` beforehand -- distinct from
+`with_caveat`'s write-time context (see "Relationships" above). The two are
+merged **key by key, item wins**: the item's keys override matching
+call-level keys, and any call-level keys the item doesn't specify are
+retained. For example, a call-level `{now: 42, region: "us"}` plus a
+per-item `{region: "eu"}` sends `{now: 42, region: "eu"}` for that item,
+while a sibling item with no per-item context still gets the untouched
+call-level default `{now: 42, region: "us"}`. Wholesale replacement (an item
+supplying one key silently dropping every call-level key it didn't mention)
+is deliberately not the behavior -- it would make a caveat evaluation fail
+for context the caller thought it had already supplied at the call level.
+When neither a call-level nor a per-item context applies to a given item, no
+`context` field is set on that item's wire request (`None`, not an empty
+`Struct`).
+
+The non-context methods (`check_permission`, `check_permissions`,
+`check_any`, `check_all`) are unchanged and delegate to their
+`_with_context` counterpart with `context: None` -- no existing call site
+changed.
 
 `CheckResult` carries the server's three-valued (four with `Unspecified`)
 answer, not a bare bool:
@@ -277,9 +337,13 @@ ABORTED).
 
 **Checks:**
 - `check_permission(&self, cs, permission, &rel) -> Result<CheckResult, SpiceDBError>`
+- `check_permission_with_context(&self, cs, permission, &rel, context: Option<&HashMap<String, serde_json::Value>>) -> Result<CheckResult, SpiceDBError>`
 - `check_permissions(&self, cs, permission, &[rel]) -> Result<Vec<CheckResult>, SpiceDBError>`
+- `check_permissions_with_context(&self, cs, permission, &[rel], context: Option<&HashMap<String, serde_json::Value>>) -> Result<Vec<CheckResult>, SpiceDBError>` -- call-level context default, merged key-by-key (item wins) with any per-item `Relationship::with_check_context`
 - `check_any(&self, cs, permission, &[rel]) -> Result<bool, SpiceDBError>` -- counts only `has_permission()` results
+- `check_any_with_context(&self, cs, permission, &[rel], context: Option<&HashMap<String, serde_json::Value>>) -> Result<bool, SpiceDBError>`
 - `check_all(&self, cs, permission, &[rel]) -> Result<bool, SpiceDBError>` -- counts only `has_permission()` results
+- `check_all_with_context(&self, cs, permission, &[rel], context: Option<&HashMap<String, serde_json::Value>>) -> Result<bool, SpiceDBError>`
 
 **Relationships:**
 - `write(&self, &txn) -> Result<String, SpiceDBError>`
@@ -330,7 +394,7 @@ ABORTED).
 
 ### `types` module
 
-- `Relationship` struct + constructors + modifiers
+- `Relationship` struct + constructors + modifiers -- `check_context` (set via `with_check_context`) is per-item check-time caveat context, distinct from `caveat_context`'s write-time context (see "Relationships" above)
 - `RelationshipError` enum
 - `Filter` struct + builder methods
 - `Transaction` struct + `create`/`touch`/`delete`/`must_not_match`/`must_match`
@@ -364,7 +428,7 @@ ABORTED).
 
 | Directory | Demonstrates |
 |-----------|-------------|
-| `check_permission/` | Basic permission check |
+| `check_permission/` | Basic permission check, plus a caveated check that comes back `ConditionalPermission` and is then resolved to a grant via `check_permission_with_context` |
 | `write_relationships/` | Writing relationships with transaction builder |
 | `read_relationships/` | Reading relationships with stream |
 | `lookup_resources/` | Finding resources a subject can access |

@@ -25,6 +25,21 @@ pub struct Relationship {
     pub caveat_name: String,
     pub caveat_context: Option<HashMap<String, serde_json::Value>>,
     pub expiration: Option<DateTime<Utc>>,
+    /// Per-item caveat context used only when this relationship is passed to
+    /// a check call (`check_permission_with_context`/
+    /// `check_permissions_with_context`/`check_any_with_context`/
+    /// `check_all_with_context`).
+    ///
+    /// This is a **different concept** from `caveat_context`, which is
+    /// stored with the relationship as part of a write and supplies values
+    /// for the caveat baked into that specific tuple: `check_context` is
+    /// never sent on a write (see [`Relationship::to_proto`]) and instead
+    /// supplies values for evaluating whatever caveat a permission check
+    /// encounters at check time. Keeping them on separate fields prevents a
+    /// check-time value from silently leaking into a write and altering a
+    /// stored relationship's caveat context. Set it with
+    /// [`Relationship::with_check_context`].
+    pub check_context: Option<HashMap<String, serde_json::Value>>,
 }
 
 impl Relationship {
@@ -50,6 +65,7 @@ impl Relationship {
             caveat_name: String::new(),
             caveat_context: None,
             expiration: None,
+            check_context: None,
         };
         r.validate()?;
         Ok(r)
@@ -127,6 +143,20 @@ impl Relationship {
     /// Returns a copy of this relationship with the given expiration.
     pub fn with_expiration(mut self, expiration: DateTime<Utc>) -> Self {
         self.expiration = Some(expiration);
+        self
+    }
+
+    /// Returns a copy of this relationship carrying per-item caveat context
+    /// for check calls. See the `check_context` field doc for how this
+    /// differs from [`with_caveat`](Self::with_caveat)'s context.
+    ///
+    /// When a call-level default is also supplied to the `_with_context`
+    /// check method, the two are merged key by key: this item's keys win on
+    /// conflict, and any call-level keys not present here are retained. For
+    /// example, a call-level `{now: 42, region: "us"}` plus a per-item
+    /// `{region: "eu"}` produces `{now: 42, region: "eu"}` for this item.
+    pub fn with_check_context(mut self, context: HashMap<String, serde_json::Value>) -> Self {
+        self.check_context = Some(context);
         self
     }
 
@@ -232,6 +262,10 @@ impl Relationship {
             caveat_name,
             caveat_context,
             expiration,
+            // check_context is a client-side-only, check-time annotation —
+            // it has no wire representation on proto::Relationship, so a
+            // relationship read back from the server never carries one.
+            check_context: None,
         }
     }
 }
@@ -951,6 +985,51 @@ pub(crate) fn check_result_from_bulk_item(
     }
 }
 
+/// Merges call-level and per-item check-time caveat context per the
+/// key-level merge rule (spec D3b): item keys win on conflict, and
+/// call-level keys the item doesn't specify are retained. Returns `None`
+/// only when neither is supplied — callers must not attach a `context`
+/// field to the wire in that case (an empty `Struct` is not the same as no
+/// context at all).
+///
+/// This is distinct from wholesale replacement: an item supplying one key
+/// must not drop every call-level key it didn't mention, or the caveat
+/// would fail for missing context that the caller thought it had already
+/// supplied at the call level.
+pub(crate) fn merge_check_context(
+    call_level: Option<&HashMap<String, serde_json::Value>>,
+    item: Option<&HashMap<String, serde_json::Value>>,
+) -> Option<HashMap<String, serde_json::Value>> {
+    if call_level.is_none() && item.is_none() {
+        return None;
+    }
+    let mut merged = call_level.cloned().unwrap_or_default();
+    if let Some(item) = item {
+        for (k, v) in item {
+            merged.insert(k.clone(), v.clone());
+        }
+    }
+    Some(merged)
+}
+
+/// Converts a check-time caveat context map to the wire `Struct` type used
+/// by `CheckBulkPermissionsRequestItem.context` (proto field 4) /
+/// `CheckPermissionRequest.context` (proto field 5). Mirrors the write-time
+/// conversion inlined in [`Relationship::to_proto`], but check-time context
+/// is a different wire field on a different message — never
+/// `Relationship.optional_caveat.context` — so it goes through its own
+/// conversion rather than sharing `Relationship::to_proto`'s.
+pub(crate) fn check_context_to_proto(
+    ctx: &HashMap<String, serde_json::Value>,
+) -> prost_types::Struct {
+    prost_types::Struct {
+        fields: ctx
+            .iter()
+            .map(|(k, v)| (k.clone(), json_value_to_prost(v)))
+            .collect(),
+    }
+}
+
 /// Maps a proto `PartialCaveatInfo` to its native equivalent. `None` maps to
 /// `None`.
 pub(crate) fn partial_caveat_from_proto(
@@ -1619,5 +1698,117 @@ mod tests {
             .as_ref()
             .expect("expected child to be a leaf");
         assert_eq!(child_leaf.subjects[0].subject_id, "bob");
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 17: caveat context on the check surface (spec D3b)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_relationship_with_check_context_is_distinct_from_caveat_context() {
+        let mut check_ctx = HashMap::new();
+        check_ctx.insert("now".to_string(), serde_json::json!(42.0));
+
+        let mut write_ctx = HashMap::new();
+        write_ctx.insert("threshold".to_string(), serde_json::json!(10.0));
+
+        let r = Relationship::new("document", "doc1", "viewer", "user", "alice", "")
+            .unwrap()
+            .with_caveat("active", Some(write_ctx.clone()))
+            .with_check_context(check_ctx.clone());
+
+        assert_eq!(r.caveat_context, Some(write_ctx));
+        assert_eq!(r.check_context, Some(check_ctx));
+    }
+
+    #[test]
+    fn test_relationship_default_check_context_is_none() {
+        let r = Relationship::new("document", "doc1", "viewer", "user", "alice", "").unwrap();
+        assert_eq!(r.check_context, None);
+    }
+
+    // Proves check_context never leaks onto the wire write path — a leak
+    // here would silently alter a stored relationship's caveat context.
+    #[test]
+    fn test_relationship_to_proto_does_not_leak_check_context_into_write_path() {
+        let mut check_ctx = HashMap::new();
+        check_ctx.insert("now".to_string(), serde_json::json!(42.0));
+
+        let mut write_ctx = HashMap::new();
+        write_ctx.insert("threshold".to_string(), serde_json::json!(10.0));
+
+        let r = Relationship::new("document", "doc1", "viewer", "user", "alice", "")
+            .unwrap()
+            .with_caveat("active", Some(write_ctx))
+            .with_check_context(check_ctx);
+
+        let proto_rel = r.to_proto();
+        let caveat = proto_rel.optional_caveat.expect("caveat should be set");
+        let ctx = caveat.context.expect("caveat context should be set");
+        assert_eq!(ctx.fields.len(), 1);
+        assert!(
+            ctx.fields.contains_key("threshold"),
+            "write path must carry only caveat_context, not check_context"
+        );
+        assert!(
+            !ctx.fields.contains_key("now"),
+            "check_context must never leak onto the wire write path"
+        );
+    }
+
+    #[test]
+    fn test_merge_check_context_neither_supplied_is_none() {
+        assert_eq!(merge_check_context(None, None), None);
+    }
+
+    #[test]
+    fn test_merge_check_context_call_level_only() {
+        let mut call_level = HashMap::new();
+        call_level.insert("now".to_string(), serde_json::json!(42.0));
+        assert_eq!(
+            merge_check_context(Some(&call_level), None),
+            Some(call_level)
+        );
+    }
+
+    #[test]
+    fn test_merge_check_context_item_only() {
+        let mut item = HashMap::new();
+        item.insert("now".to_string(), serde_json::json!(42.0));
+        assert_eq!(merge_check_context(None, Some(&item)), Some(item));
+    }
+
+    // C3 at the pure-function level: item key wins on conflict, call-level
+    // key absent from the item is retained.
+    #[test]
+    fn test_merge_check_context_merge_rule() {
+        let mut call_level = HashMap::new();
+        call_level.insert("now".to_string(), serde_json::json!(42.0));
+        call_level.insert("region".to_string(), serde_json::json!("us"));
+
+        let mut item = HashMap::new();
+        item.insert("region".to_string(), serde_json::json!("eu"));
+
+        let merged = merge_check_context(Some(&call_level), Some(&item)).unwrap();
+
+        let mut want = HashMap::new();
+        want.insert("now".to_string(), serde_json::json!(42.0));
+        want.insert("region".to_string(), serde_json::json!("eu"));
+        assert_eq!(merged, want);
+    }
+
+    #[test]
+    fn test_check_context_to_proto_round_trips() {
+        let mut ctx = HashMap::new();
+        ctx.insert("now".to_string(), serde_json::json!(42.0));
+        ctx.insert("region".to_string(), serde_json::json!("us"));
+
+        let proto_struct = check_context_to_proto(&ctx);
+        let round_tripped: HashMap<String, serde_json::Value> = proto_struct
+            .fields
+            .iter()
+            .map(|(k, v)| (k.clone(), prost_value_to_json(v)))
+            .collect();
+        assert_eq!(round_tripped, ctx);
     }
 }

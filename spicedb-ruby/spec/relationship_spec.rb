@@ -27,6 +27,7 @@ RSpec.describe SpiceDB::Relationship do
       expect(rel.caveat_name).to be_nil
       expect(rel.caveat_context).to be_nil
       expect(rel.expiration).to be_nil
+      expect(rel.check_context).to be_nil
     end
 
     it 'is frozen (immutable)' do
@@ -167,6 +168,40 @@ RSpec.describe SpiceDB::Relationship do
       expect(r.expiration).to eq(t)
       # Original is unchanged
       expect(rel.expiration).to be_nil
+    end
+  end
+
+  # check_context is check-time-only caveat context for the check surface
+  # (see SpiceDB::Client#check_permission/#check_permissions) -- a
+  # DIFFERENT concept from caveat_context, which is write-time context
+  # embedded in the relationship's optional_caveat on the wire. The two
+  # must stay independently settable so one can never leak into the other.
+  describe '#with_check_context' do
+    it 'returns a new relationship with check_context set' do
+      r = rel.with_check_context({ now: 42 })
+      expect(r.check_context).to eq({ now: 42 })
+      # Original is unchanged
+      expect(rel.check_context).to be_nil
+    end
+
+    it 'preserves other fields, including an unrelated caveat_context' do
+      base = rel.with_caveat('is_owner', { 'owner_id' => 'alice' })
+      r = base.with_check_context({ now: 42 })
+
+      expect(r.resource_type).to eq('document')
+      expect(r.subject_id).to eq('alice')
+      expect(r.caveat_name).to eq('is_owner')
+      expect(r.caveat_context).to eq({ 'owner_id' => 'alice' })
+      expect(r.check_context).to eq({ now: 42 })
+    end
+
+    it 'is independent of caveat_context -- setting one never sets the other' do
+      write_time = rel.with_caveat('is_owner', { 'owner_id' => 'alice' })
+      check_time = rel.with_check_context({ now: 42 })
+
+      expect(write_time.check_context).to be_nil
+      expect(check_time.caveat_context).to be_nil
+      expect(check_time.caveat_name).to be_nil
     end
   end
 

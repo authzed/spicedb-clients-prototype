@@ -22,9 +22,18 @@ module SpiceDB
     :subject_relation,
     :caveat_name,
     :caveat_context,
-    :expiration
+    :expiration,
+    :check_context
   ) do
     # Creates a Relationship with default nil values for optional fields.
+    #
+    # `check_context` is check-time-only caveat context — see
+    # {#with_check_context} — and is a DIFFERENT concept from
+    # `caveat_context`, which is write-time context embedded in the
+    # relationship's `optional_caveat` on the wire. Keep them distinct: a
+    # leak from one into the other would either silently alter a stored
+    # relationship (write path) or never reach the check request (check
+    # path).
     def initialize(
       resource_type:,
       resource_id:,
@@ -34,7 +43,8 @@ module SpiceDB
       subject_relation: '',
       caveat_name: nil,
       caveat_context: nil,
-      expiration: nil
+      expiration: nil,
+      check_context: nil
     )
       super
     end
@@ -116,7 +126,8 @@ module SpiceDB
         subject_relation: subject_relation,
         caveat_name: name,
         caveat_context: context,
-        expiration: expiration
+        expiration: expiration,
+        check_context: check_context
       )
     end
 
@@ -134,7 +145,37 @@ module SpiceDB
         subject_relation: subject_relation,
         caveat_name: caveat_name,
         caveat_context: caveat_context,
-        expiration: time
+        expiration: time,
+        check_context: check_context
+      )
+    end
+
+    # Returns a new Relationship with the given check-time caveat context
+    # attached, for use as an argument to
+    # {SpiceDB::Client#check_permission}/{SpiceDB::Client#check_permissions}.
+    #
+    # This is a DIFFERENT concept from {#with_caveat}'s `context` argument.
+    # `with_caveat`'s context is written to SpiceDB and affects every future
+    # evaluation of this stored relationship's caveat; `check_context` is
+    # never written anywhere — it exists only on this in-memory value and is
+    # read exclusively by the check surface, where it overrides (merged
+    # key-by-key, this taking precedence) the call-level `context:` keyword
+    # for this one check. Setting one never sets or clears the other.
+    #
+    # @param context [Hash] caveat context for this check only
+    # @return [Relationship]
+    def with_check_context(context)
+      self.class.new(
+        resource_type: resource_type,
+        resource_id: resource_id,
+        resource_relation: resource_relation,
+        subject_type: subject_type,
+        subject_id: subject_id,
+        subject_relation: subject_relation,
+        caveat_name: caveat_name,
+        caveat_context: caveat_context,
+        expiration: expiration,
+        check_context: context
       )
     end
 

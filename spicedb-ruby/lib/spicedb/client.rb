@@ -171,12 +171,18 @@ module SpiceDB
     # has no way to make an object falsy, so `if result` is unconditionally
     # true even for a conditional result.
     #
+    # `context:` supplies caveat context for this check. `relationship` can
+    # also carry its own `Relationship#check_context`, which overrides
+    # `context:` for this one check — see {#check_permissions} for the
+    # merge rule.
+    #
     # @param consistency [SpiceDB::Consistency::Strategy]
     # @param permission [String] the permission to check
     # @param relationship [SpiceDB::Relationship]
+    # @param context [Hash, nil] call-level caveat context for this check
     # @return [SpiceDB::CheckResult]
-    def check_permission(consistency, permission, relationship)
-      check_permissions(consistency, permission, relationship).first
+    def check_permission(consistency, permission, relationship, context: nil)
+      check_permissions(consistency, permission, relationship, context: context).first
     end
 
     # Performs a bulk permission check on the given relationships.
@@ -184,11 +190,22 @@ module SpiceDB
     # Returns a {SpiceDB::CheckResult} for each relationship — see
     # {#check_permission} for why this isn't a Boolean.
     #
+    # `context:` is a call-level default applied to every relationship's
+    # check. Each relationship can instead (or in addition) carry its own
+    # `Relationship#check_context` (e.g. `rel.with_check_context({...})`),
+    # which overrides `context:` for that one item — merged key-by-key, NOT
+    # a wholesale replacement: the item's keys win on conflict, but
+    # call-level keys the item doesn't mention are retained. An item with no
+    # `check_context` inherits `context:` unchanged. `check_context` is
+    # check-time-only and distinct from `Relationship#caveat_context` (which
+    # is written to SpiceDB at write time) — see {SpiceDB::Relationship}.
+    #
     # @param consistency [SpiceDB::Consistency::Strategy]
     # @param permission [String] the permission to check
     # @param relationships [Array<SpiceDB::Relationship>]
+    # @param context [Hash, nil] call-level caveat context, applied to every item
     # @return [Array<SpiceDB::CheckResult>]
-    def check_permissions(consistency, permission, *relationships)
+    def check_permissions(consistency, permission, *relationships, context: nil)
       relationships = relationships.flatten
       return [] if relationships.empty?
 
@@ -197,7 +214,7 @@ module SpiceDB
         # Each relationship becomes a CheckBulkPermissionsRequestItem
         items = relationships.map { |r| check_item_from_rel(r, permission) }
 
-        call_bulk_check(consistency, items)
+        call_bulk_check(consistency, items, context)
       end
     end
 
@@ -210,9 +227,10 @@ module SpiceDB
     # @param consistency [SpiceDB::Consistency::Strategy]
     # @param permission [String]
     # @param relationships [Array<SpiceDB::Relationship>]
+    # @param context [Hash, nil] call-level caveat context, applied to every item — see {#check_permissions}
     # @return [Boolean]
-    def check_any(consistency, permission, *relationships)
-      check_permissions(consistency, permission, *relationships).any?(&:has_permission?)
+    def check_any(consistency, permission, *relationships, context: nil)
+      check_permissions(consistency, permission, *relationships, context: context).any?(&:has_permission?)
     end
 
     # Returns true if all of the given relationships have the permission.
@@ -225,9 +243,10 @@ module SpiceDB
     # @param consistency [SpiceDB::Consistency::Strategy]
     # @param permission [String]
     # @param relationships [Array<SpiceDB::Relationship>]
+    # @param context [Hash, nil] call-level caveat context, applied to every item — see {#check_permissions}
     # @return [Boolean]
-    def check_all(consistency, permission, *relationships)
-      check_permissions(consistency, permission, *relationships).all?(&:has_permission?)
+    def check_all(consistency, permission, *relationships, context: nil)
+      check_permissions(consistency, permission, *relationships, context: context).all?(&:has_permission?)
     end
 
     # --- Relationships ---
@@ -543,6 +562,10 @@ module SpiceDB
     end
 
     # Builds a check item hash from a relationship and permission.
+    # `check_context` carries the relationship's check-time-only per-item
+    # caveat context (SpiceDB::Relationship#check_context) — distinct from
+    # the relationship's write-time `caveat_context` — through to
+    # `call_bulk_check`, where it's merged with the call-level context.
     def check_item_from_rel(relationship, permission)
       {
         resource_type: relationship.resource_type,
@@ -550,8 +573,68 @@ module SpiceDB
         permission: permission,
         subject_type: relationship.subject_type,
         subject_id: relationship.subject_id,
-        subject_relation: relationship.subject_relation
+        subject_relation: relationship.subject_relation,
+        check_context: relationship.check_context
       }
+    end
+
+    # Merges call-level and per-item caveat context for one check item.
+    #
+    # Key-level, item wins: `(call_level || {}).merge(item_level || {})`.
+    # Item keys override call-level keys on conflict; call-level keys the
+    # item doesn't mention are RETAINED — this is NOT wholesale replacement.
+    # An item that supplies only one key must not silently drop every other
+    # call-level key, or a caveat would fail for context the caller believed
+    # it had already supplied (spec D3b), landing the caller right back in
+    # the confusing CONDITIONAL_PERMISSION state this feature exists to
+    # resolve.
+    #
+    # Returns nil — so the wire request sets no `context` field at all,
+    # rather than an empty Struct — only when both inputs are nil (neither
+    # call-level nor per-item context was supplied).
+    def merge_check_context(call_level, item_level)
+      return nil if call_level.nil? && item_level.nil?
+
+      (call_level || {}).merge(item_level || {})
+    end
+
+    # Builds a Google::Protobuf::Struct from a merged caveat-context Hash,
+    # or nil if context is nil. Struct requires String keys, so Symbol (or
+    # other) keys are stringified. Values are dispatched by Ruby class onto
+    # google.protobuf.Value's `kind` oneof (see #check_context_value) so
+    # types are preserved on the wire — unlike a naive #to_s, this keeps
+    # e.g. an Integer caveat parameter evaluable by CEL as a number rather
+    # than turning it into the string "42".
+    def check_context_to_struct(context)
+      return nil if context.nil?
+
+      struct = Google::Protobuf::Struct.new
+      context.each { |k, v| struct.fields[k.to_s] = check_context_value(v) }
+      struct
+    end
+
+    # Converts one Ruby value into a Google::Protobuf::Value, dispatched by
+    # class onto the proto's `kind` oneof. Hash/Array recurse so nested
+    # caveat context (e.g. a list or map parameter) round-trips correctly,
+    # not just flat scalars.
+    def check_context_value(value)
+      case value
+      when nil
+        Google::Protobuf::Value.new(null_value: :NULL_VALUE)
+      when true, false
+        Google::Protobuf::Value.new(bool_value: value)
+      when Numeric
+        Google::Protobuf::Value.new(number_value: value)
+      when String
+        Google::Protobuf::Value.new(string_value: value)
+      when Hash
+        Google::Protobuf::Value.new(struct_value: check_context_to_struct(value))
+      when Array
+        list = Google::Protobuf::ListValue.new(values: value.map { |v| check_context_value(v) })
+        Google::Protobuf::Value.new(list_value: list)
+      else
+        raise SpiceDB::InvalidArgumentError, "unsupported caveat context value type: #{value.class}"
+      end
     end
 
     # --- Proto helpers ---
@@ -689,9 +772,16 @@ module SpiceDB
 
     # --- Proto client call implementations ---
 
-    def call_bulk_check(consistency, items)
+    # `call_level_context` is the call-level default (from
+    # check_permissions' `context:` keyword); each item's own
+    # `check_context` (if any) is merged on top per `merge_check_context` —
+    # CheckBulkPermissionsRequest has no context field of its own (proto
+    # ground truth: only CheckBulkPermissionsRequestItem#context, field 4,
+    # carries context on the wire), so the merged context must be built and
+    # attached per item here.
+    def call_bulk_check(consistency, items, call_level_context = nil)
       proto_items = items.map do |item|
-        Authzed::Api::V1::CheckBulkPermissionsRequestItem.new(
+        item_args = {
           resource: Authzed::Api::V1::ObjectReference.new(
             object_type: item[:resource_type],
             object_id: item[:resource_id]
@@ -704,7 +794,13 @@ module SpiceDB
             ),
             optional_relation: item[:subject_relation] || ''
           )
-        )
+        }
+
+        merged_context = merge_check_context(call_level_context, item[:check_context])
+        struct = check_context_to_struct(merged_context)
+        item_args[:context] = struct if struct
+
+        Authzed::Api::V1::CheckBulkPermissionsRequestItem.new(**item_args)
       end
 
       resp = @proto_client.permissions.check_bulk_permissions(

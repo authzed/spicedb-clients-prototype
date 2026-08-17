@@ -4,6 +4,21 @@
 
 ### Added
 
+- **Caveat context on the check surface**: `check_permission`/`check_permissions`/`check_any`/`check_all` gain an optional `context:` keyword, and `SpiceDB::Relationship` gains a `check_context` field (with a matching `with_check_context(context)` builder). Previously a `CheckResult` with `permissionship == :conditional_permission` told you `missing_context` — the caveat parameter names SpiceDB couldn't evaluate — but there was no way to actually supply them, leaving the caller stuck. `context:` is a call-level default fanned out onto every relationship in the call (all checks go through `BulkCheckPermissions`, whose wire format attaches context per item — `CheckBulkPermissionsRequestItem#context`, proto field 4 — since `CheckBulkPermissionsRequest` itself has no context field); `relationship.with_check_context({...})` overrides that default for one relationship only, merged **key-by-key** with the call-level context (the item's keys win on conflict, but call-level keys the item doesn't mention are retained — NOT a wholesale replacement, which would silently drop shared keys and land the caller right back in `CONDITIONAL_PERMISSION`). An item with no `check_context` inherits `context:` unchanged; if neither is supplied, no `context` field is set on the wire at all (`nil`, not an empty `Struct`). Purely additive: `context:` defaults to `nil` on every check method and `check_context` defaults to `nil` on `Relationship`, so no existing call site changes.
+
+  `check_context` is check-time-only and a **different concept** from the pre-existing `Relationship#caveat_context` (write-time context embedded in `optional_caveat`, persisted to SpiceDB). `check_context` has no wire representation on the write path at all — it's read exclusively by the check methods — so it can never leak into a write and silently alter a stored relationship's caveat. `with_caveat` and `with_check_context` never touch each other's field.
+
+  ```ruby
+  # Call-level: applies to every relationship checked in this call.
+  results = client.check_permissions(consistency, "view", rel1, rel2, context: { now: 42 })
+
+  # Per-item: overrides the call-level default for just this relationship.
+  rel = SpiceDB::Relationship.from_triple("doc", "1", "viewer", "user", "alice")
+                              .with_check_context({ now: 42 })
+  result = client.check_permission(consistency, "view", rel)
+  result.has_permission? # => true, now that the caveat could be evaluated
+  ```
+
 - `delete_relationships` gains optional `must_match:`/`must_not_match:` preconditions and a `limit:` override, mirroring spicedb-go's `client.DeleteRelationships` + `WithDeleteMustMatch`/`WithDeleteMustNotMatch`/`WithDeleteLimit`. Previously the only way to guard a delete with a precondition was to route it through `write` with a `Transaction`; now `delete_relationships` can build and send `optional_preconditions` directly. As with the Go client, preconditions are a per-request proto field, so a delete spanning multiple auto-paged pages re-evaluates them on every page rather than checking once for the whole operation — pair a precondition with a `limit:` large enough to cover all matches in one call for all-or-nothing semantics. Additive keyword arguments; existing `delete_relationships(filter)` callers are unaffected.
 
   ```ruby

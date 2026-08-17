@@ -90,4 +90,40 @@ RSpec.describe 'CheckPermission' do
     # SpiceDB rejecting it for a dangling relationship/caveat reference.
     client.delete_relationships(SpiceDB::Filter.new(resource_type: 'doc'))
   end
+
+  # C5 (integration/payoff test): the whole point of `missing_context` is
+  # that a caller can act on it -- supply the context it names and get a
+  # real grant back, not just a different flavor of "I don't know." Same
+  # caveat schema as the CONDITIONAL_PERMISSION test above (`active(now
+  # int) { now < 100 }`); this time `now: 42` (which satisfies `now < 100`)
+  # is supplied at check time via the call-level `context:` keyword, and
+  # the conditional resolves to an actual :has_permission grant.
+  it 'resolves a CONDITIONAL_PERMISSION into a grant when the missing caveat context is supplied' do
+    client.write_schema(<<~SCHEMA)
+      caveat active(now int) { now < 100 }
+      definition user {}
+      definition doc {
+      	relation viewer: user with active
+      	permission view = viewer
+      }
+    SCHEMA
+
+    txn = SpiceDB::Transaction.new
+    txn.touch(
+      SpiceDB::Relationship.from_triple('doc', 'conditionaldoc', 'viewer', 'user', 'alice')
+                            .with_caveat('active', {})
+    )
+    client.write(txn)
+
+    rel = SpiceDB::Relationship.from_triple('doc', 'conditionaldoc', 'viewer', 'user', 'alice')
+    # `now: 42` satisfies `now < 100` -- supplying it at check time is what
+    # turns the earlier CONDITIONAL_PERMISSION into a real grant.
+    result = client.check_permission(SpiceDB::Consistency.full, 'view', rel, context: { now: 42 })
+
+    expect(result.permissionship).to eq(:has_permission)
+    expect(result.has_permission?).to be true
+    expect(result.missing_context).to eq([])
+  ensure
+    client.delete_relationships(SpiceDB::Filter.new(resource_type: 'doc'))
+  end
 end

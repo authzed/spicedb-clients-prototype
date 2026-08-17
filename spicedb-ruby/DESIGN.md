@@ -67,7 +67,8 @@ Immutable `Data.define` value type:
 SpiceDB::Relationship = Data.define(
   :resource_type, :resource_id, :resource_relation,
   :subject_type, :subject_id, :subject_relation,
-  :caveat_name, :caveat_context, :expiration
+  :caveat_name, :caveat_context, :expiration,
+  :check_context
 )
 ```
 
@@ -79,15 +80,28 @@ Constructors:
 Immutable modifiers (return new instances):
 - `r.with_caveat(name, context)` — returns new relationship with caveat
 - `r.with_expiration(time)` — returns new relationship with expiration
+- `r.with_check_context(context)` — returns new relationship with check-time
+  caveat context (see Checks below) — distinct from `with_caveat`'s
+  write-time context
 - `r.to_filter` — returns a Filter matching this relationship's resource
+
+`check_context` is check-time-only caveat context for the check surface — a
+**different concept** from `caveat_context`, which is write-time context
+embedded in `optional_caveat` and persisted to SpiceDB. `check_context` has
+no wire representation on the write path at all; it is read exclusively by
+`check_permission`/`check_permissions` (see Checks below). Conflating the
+two would leak check-time-only context into a write, silently altering a
+stored relationship's evaluated caveat forever — they are kept independently
+settable (`with_caveat` and `with_check_context` never touch each other's
+field) for exactly that reason.
 
 ### Checks
 
 All checks use `BulkCheckPermissions` under the hood:
-- `check_permission(consistency, permission, relationship)` → `CheckResult`
-- `check_permissions(consistency, permission, *relationships)` → `Array<CheckResult>`
-- `check_any(consistency, permission, *relationships)` → `Boolean`
-- `check_all(consistency, permission, *relationships)` → `Boolean`
+- `check_permission(consistency, permission, relationship, context: nil)` → `CheckResult`
+- `check_permissions(consistency, permission, *relationships, context: nil)` → `Array<CheckResult>`
+- `check_any(consistency, permission, *relationships, context: nil)` → `Boolean`
+- `check_all(consistency, permission, *relationships, context: nil)` → `Boolean`
 
 `check_permission`/`check_permissions` return `SpiceDB::CheckResult`, not a
 bare `Boolean` — `CheckPermissionResponse#permissionship` is four-valued
@@ -129,6 +143,59 @@ Python (`__bool__`), Ruby cannot make the object itself refuse to be truthy.
 count as a grant for either (deliberately fail-closed): `check_any` is
 `results.any?(&:has_permission?)` and `check_all` is
 `results.all?(&:has_permission?)`.
+
+#### Supplying caveat context
+
+`:conditional_permission` alone is not actionable — the caller also needs a
+way to supply the caveat context named in `missing_context` and get back an
+actual grant/denial. All four check methods accept an optional `context:`
+keyword, and `SpiceDB::Relationship` carries a matching `check_context`
+field, so a caller can supply context two ways:
+
+- **Call-level** — `context:` on `check_permission`/`check_permissions`/
+  `check_any`/`check_all` is a default applied to every relationship in the
+  call.
+- **Per-item** — `relationship.with_check_context({...})` (or
+  `Relationship.new(..., check_context: {...})`) overrides `context:` for
+  that one relationship's check.
+
+```ruby
+# Call-level: applies to every relationship checked in this call.
+client.check_permissions(consistency, "view", rel1, rel2, context: { now: 42 })
+
+# Per-item: overrides the call-level default for just this relationship.
+rel = SpiceDB::Relationship.from_triple("doc", "1", "viewer", "user", "alice")
+                            .with_check_context({ now: 42 })
+client.check_permission(consistency, "view", rel)
+```
+
+All checks go through `BulkCheckPermissions` under the hood, whose wire
+format (`CheckBulkPermissionsRequestItem#context`, proto field 4) attaches
+context **per item** — `CheckBulkPermissionsRequest` itself has no context
+field. So `context:` is fanned out onto every item at request-build time,
+and each item's own `check_context` (if any) is then merged on top:
+
+**Merge rule: key-level, item wins.** `call_level.merge(item_level)` — an
+item's own keys override the call-level default on conflict, but call-level
+keys the item doesn't mention are **retained**, not dropped. An item with no
+`check_context` inherits `context:` unchanged. This is deliberately NOT a
+wholesale replacement: if a single per-item key silently discarded every
+other call-level key, a caveat would fail for context the caller believed it
+had already supplied, landing right back in the confusing
+`CONDITIONAL_PERMISSION` state this feature exists to make legible.
+
+```
+call-level:  { now: 42, region: "us" }
+item-level:  { region: "eu" }
+sent for that item: { now: 42, region: "eu" }
+```
+
+If neither call-level nor per-item context is supplied for an item, no
+`context` field is set on the wire at all (nil, not an empty `Struct`).
+
+This is purely additive — `context:` defaults to `nil` on every check
+method and `check_context` defaults to `nil` on `Relationship`, so no
+existing call site changes.
 
 ### Lookups
 
@@ -237,10 +304,10 @@ Automatic retry with exponential backoff for transient gRPC errors
 ### Complete Method List
 
 **Checks:**
-- `check_permission(consistency, permission, relationship)` → `CheckResult`
-- `check_permissions(consistency, permission, *relationships)` → `Array<CheckResult>`
-- `check_any(consistency, permission, *relationships)` → `Boolean`
-- `check_all(consistency, permission, *relationships)` → `Boolean`
+- `check_permission(consistency, permission, relationship, context: nil)` → `CheckResult`
+- `check_permissions(consistency, permission, *relationships, context: nil)` → `Array<CheckResult>`
+- `check_any(consistency, permission, *relationships, context: nil)` → `Boolean`
+- `check_all(consistency, permission, *relationships, context: nil)` → `Boolean`
 
 **Relationships:**
 - `write(transaction)` → `String` (revision)

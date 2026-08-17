@@ -116,6 +116,14 @@
 
 ### Fixes
 
+- **Fixed all 11 `examples/*.rs` hardcoding the preshared key
+  `"somerandomkeyhere"`, which does not match `--grpc-preshared-key
+  testtoken` in `docker-compose.test.yml`.** Running any example against
+  this crate's own test harness failed with
+  `PermissionDenied("invalid preshared key: invalid token")`. Examples now
+  use `"testtoken"`, matching the harness. `docker-compose.test.yml` was
+  left unchanged (the smaller fix, and changing it would have affected the
+  `cargo test -- --ignored` tests that already pass against it).
 - **Fixed `check_permissions`/`check_permissions_with_context` silently
   dropping an index from the results when a `CheckBulkPermissionsPair`
   arrived with its `response` oneof unset (neither `Item` nor `Error`).**

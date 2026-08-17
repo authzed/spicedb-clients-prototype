@@ -35,7 +35,7 @@ fn collect_leaf_subjects(tree: &PermissionTree, out: &mut Vec<(String, String)>)
 
 #[tokio::main]
 async fn main() {
-    let client = SpiceDBClient::new_plaintext("localhost:50051", "somerandomkeyhere")
+    let client = SpiceDBClient::new_plaintext("localhost:50051", "testtoken")
         .await
         .expect("failed to create client");
 

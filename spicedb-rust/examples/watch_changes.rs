@@ -8,7 +8,7 @@ use spicedb::types::UpdateOperation;
 
 #[tokio::main]
 async fn main() {
-    let client = SpiceDBClient::new_plaintext("localhost:50051", "somerandomkeyhere")
+    let client = SpiceDBClient::new_plaintext("localhost:50051", "testtoken")
         .await
         .expect("failed to create client");
 

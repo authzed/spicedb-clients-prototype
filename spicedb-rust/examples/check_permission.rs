@@ -26,7 +26,7 @@ definition document {
 #[tokio::main]
 async fn main() {
     // Create a plaintext client (testing only — no TLS)
-    let client = SpiceDBClient::new_plaintext("localhost:50051", "somerandomkeyhere")
+    let client = SpiceDBClient::new_plaintext("localhost:50051", "testtoken")
         .await
         .expect("failed to create client");
 

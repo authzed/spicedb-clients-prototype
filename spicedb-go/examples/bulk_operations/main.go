@@ -57,7 +57,7 @@ definition document {
 		checks = append(checks, rel.MustFromTriple("document", "report", "view", "user", user, ""))
 	}
 
-	results, err := c.Check(ctx, consistency.AtLeast(revision), "view", checks...)
+	results, err := c.Check(ctx, consistency.AtLeast(revision), "view", checks)
 	if err != nil {
 		log.Fatalf("bulk check failed: %v", err)
 	}
@@ -70,7 +70,7 @@ definition document {
 	}
 
 	// CheckAll
-	allAllowed, err := c.CheckAll(ctx, consistency.AtLeast(revision), "view", checks...)
+	allAllowed, err := c.CheckAll(ctx, consistency.AtLeast(revision), "view", checks)
 	if err != nil {
 		log.Fatalf("check all failed: %v", err)
 	}
@@ -80,7 +80,7 @@ definition document {
 	}
 
 	// CheckAny
-	anyAllowed, err := c.CheckAny(ctx, consistency.AtLeast(revision), "view", checks...)
+	anyAllowed, err := c.CheckAny(ctx, consistency.AtLeast(revision), "view", checks)
 	if err != nil {
 		log.Fatalf("check any failed: %v", err)
 	}

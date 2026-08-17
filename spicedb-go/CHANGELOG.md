@@ -4,6 +4,30 @@
 
 ### Breaking Changes
 
+- **2026-08-17**: `Check`, `CheckAny`, and `CheckAll` now take `rs []rel.Relationship` (a plain slice) instead of `rs ...rel.Relationship` (variadic), and all five check methods (`Check`, `CheckOne`, `CheckAny`, `CheckAll`, `CheckIter`) gain a trailing `opts ...CheckOption` parameter. The relationship parameter had to give up the variadic slot — Go allows only one variadic parameter, and it must be last — so that `opts ...CheckOption` could occupy it, mirroring `DeleteRelationships(ctx, f, opts ...DeleteOption)`. This closes a real gap: `CheckResult.MissingContext` (added above) told a caller a check needed caveat context like `"now"`, but there was previously no parameter anywhere on the check surface to supply it, making the information non-actionable. New: `client.WithCheckContext(map[string]any)` (a `CheckOption`) sets a call-level default context applied to every relationship in the call; `rel.Relationship.WithCheckContext(map[string]any)` sets per-item context that overrides the default for just that relationship. They merge key by key — item keys win on conflict, call-level keys absent from the item are retained — never wholesale-replaced, so a per-item override can't silently drop a shared key the caveat still needs. New field on `rel.Relationship`: `CheckContext map[string]any`, distinct from the existing `CaveatContext` (which is stored with a relationship on write, not sent on check).
+
+  Before:
+  ```go
+  results, err := c.Check(ctx, cs, "view", r1, r2, r3)
+  allAllowed, err := c.CheckAll(ctx, cs, "view", r1, r2, r3)
+  // no way to supply caveat context on a check at all
+  ```
+  After:
+  ```go
+  results, err := c.Check(ctx, cs, "view", []rel.Relationship{r1, r2, r3})
+  allAllowed, err := c.CheckAll(ctx, cs, "view", []rel.Relationship{r1, r2, r3})
+
+  // Call-level default context, applied to every relationship in the call:
+  results, err = c.Check(ctx, cs, "view", []rel.Relationship{r1, r2},
+      client.WithCheckContext(map[string]any{"now": time.Now().Unix()}))
+
+  // Per-item context overrides the default for just that one relationship
+  // (merged key by key, not replaced):
+  r2WithOverride := r2.WithCheckContext(map[string]any{"region": "eu"})
+  ```
+
+  `CheckOne`'s and `CheckIter`'s existing (non-relationship) parameters are unchanged in shape — only the new trailing `opts ...CheckOption` was added, so calls with no options are unaffected.
+
 - **2026-08-17**: `Check`, `CheckOne`, and `CheckIter` now return a `CheckResult` (or `iter.Seq2[CheckResult, error]`) instead of a bare `bool`/`iter.Seq2[bool, error]`, so a caveated relationship whose context wasn't supplied at check time is distinguishable from a real denial instead of being silently collapsed to `false`. `CheckPermissionResponse.checked_at` — populated by the server on every check but never previously exposed by this client — is now reachable via `CheckResult.CheckedAt`, so read-your-writes is possible through the public API instead of requiring a raw gRPC stub. New type in `client/check_types.go`: `CheckResult{Permissionship, MissingContext, CheckedAt}` with `HasPermission() bool`, true only for `PermissionshipHasPermission`. `Permissionship` gains a fourth value, `PermissionshipNoPermission`, appended after `PermissionshipConditionalPermission` (not inserted alongside `PermissionshipUnspecified`) so the two pre-existing constants keep their `iota` values. `CheckAny`/`CheckAll` are unchanged in shape (still `(bool, error)`) but now count only `HasPermission()` results as granted — a Conditional result does not count, matching the fail-closed behavior of the new `CheckResult.HasPermission()`.
 
   `LookupResource`/`LookupSubject` also gain a `LookedUpAt string` field (from each response's `looked_up_at`), for the same read-your-writes reason — identical for every item in a single lookup stream.

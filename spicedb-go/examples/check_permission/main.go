@@ -100,6 +100,26 @@ definition document {
 		log.Fatalf(`expected MissingContext == ["now"], got %v`, condResult.MissingContext)
 	}
 
+	// Now supply the context the server said was missing. WithCheckContext
+	// puts "now" into the check request (not into the stored relationship —
+	// the relationship was written above with a nil caveat context and stays
+	// that way). "now" (50) satisfies the caveat's "now < 100", so the same
+	// check that came back Conditional above now resolves to a real grant:
+	// this is the payoff of MissingContext being actionable instead of just
+	// informational.
+	resolvedResult, err := c.CheckOne(ctx, consistency.Full(), "conditional_view",
+		rel.MustFromTriple("document", "conditionaldoc", "conditional_view", "user", "alice", ""),
+		client.WithCheckContext(map[string]any{"now": 50}),
+	)
+	if err != nil {
+		log.Fatalf("check with context failed: %v", err)
+	}
+	fmt.Printf("alice can view document:conditionaldoc with now=50 supplied: %v (permissionship: %s)\n",
+		resolvedResult.HasPermission(), resolvedResult.Permissionship)
+	if !resolvedResult.HasPermission() {
+		log.Fatalf("expected supplying the missing caveat context to resolve the conditional check to a grant, got %s", resolvedResult.Permissionship)
+	}
+
 	// Clean up so later examples that write a narrower schema aren't blocked
 	// by leftover relationships (examples run in sequence against one shared
 	// SpiceDB instance).

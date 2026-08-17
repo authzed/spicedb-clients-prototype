@@ -60,6 +60,7 @@ type Relationship struct {
     CaveatName    string
     CaveatContext map[string]any
     Expiration    *time.Time
+    CheckContext  map[string]any
 }
 ```
 
@@ -71,19 +72,69 @@ type Interface interface { Relationship() Relationship }
 
 Constructors: `FromTriple()`, `MustFromTriple()`, `FromTuple()`, `FromObjects()`
 
-Immutable modifiers: `r.WithCaveat()`, `r.WithExpiration()`, `r.Filter()`
+Immutable modifiers: `r.WithCaveat()`, `r.WithExpiration()`, `r.WithCheckContext()`, `r.Filter()`
+
+`CaveatContext` (via `WithCaveat`) and `CheckContext` (via `WithCheckContext`) are
+both `map[string]any`, but serve different moments: `CaveatContext` is stored
+with the relationship as part of a write, supplying values for the caveat
+baked into that specific tuple. `CheckContext` is never sent on a write — it's
+read only when the `Relationship` is passed to a check call, supplying
+per-item values for evaluating whatever caveat the permission check
+encounters. See "Checks" below for how it combines with a call-level default.
 
 ### Checks
 
 All checks use `BulkCheckPermissions` under the hood:
-- `Check(ctx, cs, rs...) ([]CheckResult, error)`
-- `CheckOne(ctx, cs, r) (CheckResult, error)`
-- `CheckAny(ctx, cs, rs...) (bool, error)` — true only if at least one result
-  is `HasPermission()`; a Conditional result does not count
-- `CheckAll(ctx, cs, rs...) (bool, error)` — true only if every result is
-  `HasPermission()`; a Conditional result does not count
-- `CheckIter(ctx, cs, iter) iter.Seq2[CheckResult, error]` — auto-batches in
-  chunks of 1000
+- `Check(ctx, cs, permission, rs []rel.Relationship, opts ...CheckOption) ([]CheckResult, error)`
+- `CheckOne(ctx, cs, permission, r rel.Relationship, opts ...CheckOption) (CheckResult, error)`
+- `CheckAny(ctx, cs, permission, rs []rel.Relationship, opts ...CheckOption) (bool, error)` —
+  true only if at least one result is `HasPermission()`; a Conditional result
+  does not count
+- `CheckAll(ctx, cs, permission, rs []rel.Relationship, opts ...CheckOption) (bool, error)` —
+  true only if every result is `HasPermission()`; a Conditional result does
+  not count
+- `CheckIter(ctx, cs, permission, iter, opts ...CheckOption) iter.Seq2[CheckResult, error]` —
+  auto-batches in chunks of 1000
+
+`rs` takes a plain `[]rel.Relationship` (not variadic) on `Check`/`CheckAny`/
+`CheckAll` so that `opts ...CheckOption` — the trailing variadic — can occupy
+the option-idiom slot Go reserves for the last parameter (mirrors
+`DeleteRelationships(ctx, f, opts ...DeleteOption)`; see "Deletions").
+
+#### Check-time caveat context
+
+The proto only ever attaches caveat context to an individual check item
+(`CheckPermissionRequest.context`, `CheckBulkPermissionsRequestItem.context`)
+— there is no request-level context field, so a call-level default has to be
+fanned out onto every item at request-build time. Two forms are supported:
+
+- **Call-level default**, via `client.WithCheckContext(map[string]any)`
+  passed as a `CheckOption` — applied to every relationship in the call.
+- **Per-item**, via `rel.Relationship.WithCheckContext(map[string]any)` —
+  overrides the default for that one relationship.
+
+They merge **key by key, item wins**: each item's context is built as
+`{...call-level, ...item-level}`. Item keys win on conflict; call-level keys
+absent from the item are retained (wholesale replacement would silently drop
+shared keys and push the caveat back into `ConditionalPermission`). An item
+with no per-item context inherits the call-level context unchanged; if
+neither is supplied, no `context` field is set on the wire.
+
+```go
+result, err := c.CheckOne(ctx, cs, "conditional_view",
+    r, // has no per-item context
+    client.WithCheckContext(map[string]any{"now": time.Now().Unix()}),
+)
+
+// Per-item overrides a shared default for one relationship in a bulk call:
+results, err := c.Check(ctx, cs, "view",
+    []rel.Relationship{
+        r1,                                            // gets {"now": N, "region": "us"}
+        r2.WithCheckContext(map[string]any{"region": "eu"}), // gets {"now": N, "region": "eu"}
+    },
+    client.WithCheckContext(map[string]any{"now": N, "region": "us"}),
+)
+```
 
 `CheckResult` (see `client/check_types.go`) carries the server's
 three-valued answer, not a collapsed bool:

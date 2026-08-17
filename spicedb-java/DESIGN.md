@@ -18,6 +18,8 @@ sealed types, streams, try-with-resources) should be used throughout.
 Single package: `com.authzed.spicedb`
 
 - **`SpiceDBClient`** — the client and all SpiceDB operations (AutoCloseable)
+- **`CheckResult`** — native result record for `checkPermission`/`checkPermissions`
+- **`LookupResult`** — native result records for `lookupResources`/`lookupSubjects`, and the shared `Permissionship` enum used by both the check and lookup surfaces
 - **`Relationship`** — Java record for relationships
 - **`Filter`** — immutable filter builder
 - **`Transaction`** — builder for batching writes
@@ -81,10 +83,41 @@ Immutable modifiers: `withCaveat(...)`, `withExpiration(...)`, `toFilter()`
 ### Checks
 
 All checks use `BulkCheckPermissions` under the hood:
-- `checkPermission(consistency, permission, relationship)` → `boolean`
-- `checkPermissions(consistency, permission, relationships...)` → `List<Boolean>`
+- `checkPermission(consistency, permission, relationship)` → `CheckResult`
+- `checkPermissions(consistency, permission, relationships...)` → `List<CheckResult>`
 - `checkAny(consistency, permission, relationships...)` → `boolean`
 - `checkAll(consistency, permission, relationships...)` → `boolean`
+
+`CheckResult` (a record, mirroring `LookupResult`'s shape) carries the server's full answer instead
+of collapsing it to a `boolean`:
+
+```java
+public record CheckResult(
+    LookupResult.Permissionship permissionship, List<String> missingContext, String checkedAt) {
+  public boolean hasPermission() { ... } // true ONLY for HAS_PERMISSION
+}
+```
+
+`LookupResult.Permissionship` is shared by both the check and lookup surfaces and has four values:
+`UNSPECIFIED`, `NO_PERMISSION`, `HAS_PERMISSION`, `CONDITIONAL_PERMISSION`. Lookups never yield
+`NO_PERMISSION` — a subject/resource pair lacking the permission is simply absent from a lookup
+stream, whereas a check is always answering a yes/no/conditional question about one specific pair.
+
+**RULE (root DESIGN.md, "Only an unconditional grant is true"):** only `HAS_PERMISSION` is a grant.
+`checkPermission`/`checkPermissions` callers MUST use `CheckResult.hasPermission()` (a single
+equality comparison against `HAS_PERMISSION`, never a disjunction) rather than treating any other
+value — especially `CONDITIONAL_PERMISSION` — as authorized. `checkAny`/`checkAll` enforce this
+internally: they count only `hasPermission()` results, so a conditional never contributes to a
+`true`. `if (result)` does not compile in Java, so `CheckResult` is safe by construction — there is
+no bare-boolean coercion to guard against in documentation, unlike Ruby/TypeScript.
+
+`checkPermission` and `checkPermissions` always call `CheckBulkPermissions` — there is no
+production call site for the non-bulk `CheckPermission` RPC (matches Go/Python/Ruby/C#).
+`CheckBulkPermissionsResponseItem` carries no per-item `checked_at` of its own; the single
+response-level token is propagated onto every `CheckResult` in the batch. A per-item error in a
+`CheckBulkPermissionsPair` is routed through `ErrorMapper` (using the item's own gRPC code) so
+callers get the specific typed exception (e.g. `PermissionDeniedException`), with the item's index
+preserved in the message (`"check item %d: ..."`, matching `spicedb-go`).
 
 ### Streaming & Transparent Cursor Pagination
 
@@ -173,8 +206,8 @@ These may change without following the backwards compatibility mandate.
 - `create(String endpoint, String presharedKey, ClientOption... options)`
 
 **Checks:**
-- `checkPermission(Consistency, String permission, Relationship)` → `boolean`
-- `checkPermissions(Consistency, String permission, Relationship...)` → `List<Boolean>`
+- `checkPermission(Consistency, String permission, Relationship)` → `CheckResult`
+- `checkPermissions(Consistency, String permission, Relationship...)` → `List<CheckResult>`
 - `checkAny(Consistency, String permission, Relationship...)` → `boolean`
 - `checkAll(Consistency, String permission, Relationship...)` → `boolean`
 
@@ -185,8 +218,8 @@ These may change without following the backwards compatibility mandate.
 - `deleteRelationships(Filter, DeleteOptions)` → `String` (revision)
 
 **Lookups:**
-- `lookupResources(Consistency, String resourceType, String permission, String subjectType, String subjectID)` → `Stream<LookupResult.LookupResource>`
-- `lookupSubjects(Consistency, String resourceType, String resourceID, String permission, String subjectType)` → `Stream<LookupResult.LookupSubject>`
+- `lookupResources(Consistency, String resourceType, String permission, String subjectType, String subjectID)` → `Stream<LookupResult.LookupResource>` (each result now also carries `lookedUpAt`, the revision it was computed at)
+- `lookupSubjects(Consistency, String resourceType, String resourceID, String permission, String subjectType)` → `Stream<LookupResult.LookupSubject>` (each result now also carries `lookedUpAt`)
 
 **Schema:**
 - `readSchema()` → `SchemaResult` (schema + revision)
@@ -216,6 +249,7 @@ These may change without following the backwards compatibility mandate.
 | Directory | Demonstrates |
 |-----------|-------------|
 | `check_permission/` | Basic permission check with checkPermission |
+| `conditional_check/` | `CONDITIONAL_PERMISSION` against a live caveated relationship whose context was never supplied — `hasPermission()` must be false |
 | `write_relationships/` | Writing relationships with transaction builder |
 | `read_relationships/` | Reading relationships with stream |
 | `lookup_resources/` | Finding resources a subject can access |

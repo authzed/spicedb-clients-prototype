@@ -24,7 +24,8 @@ Or use `mage test` which starts a SpiceDB container automatically.
 
 | Test Class | Description |
 |---|---|
-| `CheckPermissionTest` | Basic permission check with `checkPermission` |
+| `CheckPermissionTest` | Basic permission check with `checkPermission`, returning `CheckResult` |
+| `ConditionalCheckTest` | `CONDITIONAL_PERMISSION` against a live caveated relationship whose context was never supplied — `hasPermission()` must be false |
 | `WriteRelationshipsTest` | Writing relationships with `Transaction` builder |
 | `ReadRelationshipsTest` | Reading relationships with cursor-based auto-pagination |
 | `LookupResourcesTest` | Finding resources a subject can access |

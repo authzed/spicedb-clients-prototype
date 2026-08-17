@@ -27,9 +27,10 @@ import java.util.stream.StreamSupport;
  *
  * <pre>{@code
  * try (var client = SpiceDBClient.createPlaintext("localhost:50051", "testtoken")) {
- *     boolean allowed = client.checkPermission(
+ *     CheckResult result = client.checkPermission(
  *         Consistency.full(), "view",
  *         Relationship.of("document", "doc1", "viewer", "user", "alice"));
+ *     boolean allowed = result.hasPermission();
  * }
  * }</pre>
  */
@@ -141,19 +142,27 @@ public final class SpiceDBClient implements AutoCloseable {
   // -----------------------------------------------------------------------
 
   /**
-   * Checks a single permission and returns true if granted. Uses BulkCheckPermissions under the
-   * hood.
+   * Checks a single permission, returning a {@link CheckResult} carrying the server's full
+   * three-valued answer, the caveat context that was missing (if any), and the {@link ZedToken}
+   * revision the check was evaluated at. Uses BulkCheckPermissions under the hood.
+   *
+   * <p><b>RULE (root DESIGN.md, "Only an unconditional grant is true"):</b> prefer {@link
+   * CheckResult#hasPermission()} over comparing {@link CheckResult#permissionship()} directly — a
+   * {@code CONDITIONAL_PERMISSION} result means the server needed caveat context that was not
+   * supplied, and is NOT a grant.
    */
-  public boolean checkPermission(Consistency consistency, String permission, Relationship r) {
-    List<Boolean> results = checkPermissions(consistency, permission, r);
+  public CheckResult checkPermission(Consistency consistency, String permission, Relationship r) {
+    List<CheckResult> results = checkPermissions(consistency, permission, r);
     return results.get(0);
   }
 
   /**
-   * Checks permissions for multiple relationships, returning a boolean for each. All checks use
-   * BulkCheckPermissions under the hood.
+   * Checks permissions for multiple relationships, returning a {@link CheckResult} for each. All
+   * checks use BulkCheckPermissions under the hood.
+   *
+   * <p>See {@link #checkPermission} for the RULE governing how to interpret each result.
    */
-  public List<Boolean> checkPermissions(
+  public List<CheckResult> checkPermissions(
       Consistency consistency, String permission, Relationship... relationships) {
     if (relationships.length == 0) {
       return List.of();
@@ -173,35 +182,55 @@ public final class SpiceDBClient implements AutoCloseable {
                         .addAllItems(items)
                         .build()));
 
-    var results = new ArrayList<Boolean>(resp.getPairsCount());
+    // CheckBulkPermissionsResponseItem carries no per-item checked_at of its own — the token lives
+    // once on the enclosing response and applies to every pair in it.
+    String checkedAt = resp.getCheckedAt().getToken();
+
+    var results = new ArrayList<CheckResult>(resp.getPairsCount());
     for (int i = 0; i < resp.getPairsCount(); i++) {
       CheckBulkPermissionsPair pair = resp.getPairs(i);
       if (pair.hasError()) {
-        throw new SpiceDBException("check item " + i + ": " + pair.getError().getMessage());
+        // Route the per-item error through ErrorMapper (by way of a synthesized
+        // StatusRuntimeException carrying the item's own code) so callers get the SPECIFIC typed
+        // exception (e.g. PermissionDeniedException) instead of the untyped base SpiceDBException
+        // — the item's code was previously discarded here. The item index is preserved in the
+        // message, matching spicedb-go's `fmt.Sprintf("check item %d", i)`.
+        build.buf.gen.google.rpc.Status errorStatus = pair.getError();
+        StatusRuntimeException sre =
+            Status.fromCodeValue(errorStatus.getCode())
+                .withDescription("check item " + i + ": " + errorStatus.getMessage())
+                .asRuntimeException();
+        throw ErrorMapper.toSpiceDBException(sre);
       }
-      results.add(
-          pair.getItem().getPermissionship()
-              == CheckPermissionResponse.Permissionship.PERMISSIONSHIP_HAS_PERMISSION);
+      results.add(checkResultFromBulkItem(pair.getItem(), checkedAt));
     }
     return results;
   }
 
-  /** Returns true if any of the given relationships have the permission. */
+  /**
+   * Returns true if any of the given relationships have the permission unconditionally. A {@code
+   * CONDITIONAL_PERMISSION} result does not count as granted — only {@link
+   * CheckResult#hasPermission()} results are considered (RULE, clause 3).
+   */
   public boolean checkAny(
       Consistency consistency, String permission, Relationship... relationships) {
-    List<Boolean> results = checkPermissions(consistency, permission, relationships);
-    for (boolean r : results) {
-      if (r) return true;
+    List<CheckResult> results = checkPermissions(consistency, permission, relationships);
+    for (CheckResult r : results) {
+      if (r.hasPermission()) return true;
     }
     return false;
   }
 
-  /** Returns true if all of the given relationships have the permission. */
+  /**
+   * Returns true if all of the given relationships have the permission unconditionally. A {@code
+   * CONDITIONAL_PERMISSION} result does not count as granted — every result must be {@link
+   * CheckResult#hasPermission()} for this to return true (RULE, clause 3).
+   */
   public boolean checkAll(
       Consistency consistency, String permission, Relationship... relationships) {
-    List<Boolean> results = checkPermissions(consistency, permission, relationships);
-    for (boolean r : results) {
-      if (!r) return false;
+    List<CheckResult> results = checkPermissions(consistency, permission, relationships);
+    for (CheckResult r : results) {
+      if (!r.hasPermission()) return false;
     }
     return true;
   }
@@ -1322,13 +1351,48 @@ public final class SpiceDBClient implements AutoCloseable {
   }
 
   /**
+   * Maps the proto {@code CheckPermissionResponse.Permissionship} enum to its native equivalent.
+   * Unlike {@code LookupPermissionship} (mapped by {@link #permissionshipFromProto}), this enum has
+   * a {@code NO_PERMISSION} value — the check surface answers a yes/no/conditional question about
+   * one specific pair, so "no" is itself an answer. Unrecognized values map to {@code UNSPECIFIED}.
+   */
+  private static LookupResult.Permissionship checkPermissionshipFromProto(
+      CheckPermissionResponse.Permissionship v) {
+    return switch (v) {
+      case PERMISSIONSHIP_HAS_PERMISSION -> LookupResult.Permissionship.HAS_PERMISSION;
+      case PERMISSIONSHIP_CONDITIONAL_PERMISSION ->
+          LookupResult.Permissionship.CONDITIONAL_PERMISSION;
+      case PERMISSIONSHIP_NO_PERMISSION -> LookupResult.Permissionship.NO_PERMISSION;
+      default -> LookupResult.Permissionship.UNSPECIFIED;
+    };
+  }
+
+  /**
+   * Maps a proto {@code CheckBulkPermissionsResponseItem} (one pair's successful result from a
+   * CheckBulkPermissions call) to a native {@link CheckResult}. {@code
+   * CheckBulkPermissionsResponseItem} carries no per-item {@code checked_at} of its own — the token
+   * lives once on the enclosing {@code CheckBulkPermissionsResponse} and applies to every pair in
+   * it, so callers pass it in as {@code responseCheckedAt} to propagate onto each item.
+   */
+  private static CheckResult checkResultFromBulkItem(
+      CheckBulkPermissionsResponseItem item, String responseCheckedAt) {
+    return new CheckResult(
+        checkPermissionshipFromProto(item.getPermissionship()),
+        item.hasPartialCaveatInfo()
+            ? item.getPartialCaveatInfo().getMissingRequiredContextList()
+            : List.of(),
+        responseCheckedAt);
+  }
+
+  /**
    * Maps a proto {@code LookupResourcesResponse} to a native {@link LookupResult.LookupResource}.
    */
   private static LookupResult.LookupResource lookupResourceFromProto(LookupResourcesResponse resp) {
     return new LookupResult.LookupResource(
         resp.getResourceObjectId(),
         permissionshipFromProto(resp.getPermissionship()),
-        partialCaveatFromProto(resp.hasPartialCaveatInfo() ? resp.getPartialCaveatInfo() : null));
+        partialCaveatFromProto(resp.hasPartialCaveatInfo() ? resp.getPartialCaveatInfo() : null),
+        resp.getLookedUpAt().getToken());
   }
 
   /**
@@ -1389,7 +1453,7 @@ public final class SpiceDBClient implements AutoCloseable {
       excluded = List.of();
     }
 
-    return new LookupResult.LookupSubject(subject, excluded);
+    return new LookupResult.LookupSubject(subject, excluded, resp.getLookedUpAt().getToken());
   }
 
   /**

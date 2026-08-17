@@ -55,7 +55,11 @@ func (c *Client) CheckWithContext(ctx context.Context, cs consistency.Strategy, 
 
 	items := make([]*v1.CheckBulkPermissionsRequestItem, len(rs))
 	for i, r := range rs {
-		items[i] = checkItemFromRel(r, permission, checkContext)
+		item, err := checkItemFromRel(r, permission, checkContext)
+		if err != nil {
+			return nil, err
+		}
+		items[i] = item
 	}
 
 	resp, err := c.psc.CheckBulkPermissions(ctx, &v1.CheckBulkPermissionsRequest{
@@ -197,7 +201,13 @@ func mergeCheckContext(callLevel, item map[string]any) map[string]any {
 	return merged
 }
 
-func checkItemFromRel(r rel.Relationship, permission string, callLevelContext map[string]any) *v1.CheckBulkPermissionsRequestItem {
+// checkItemFromRel builds the wire item for r, merging call-level and
+// per-item caveat context. Returns an error — instead of silently sending
+// the item with no context — if the merged context cannot be converted to a
+// protobuf Struct (structpb.NewStruct fails on values it cannot represent,
+// e.g. unsupported types), so a caller never mistakes "your context was
+// dropped" for "the server needed more context than you supplied".
+func checkItemFromRel(r rel.Relationship, permission string, callLevelContext map[string]any) (*v1.CheckBulkPermissionsRequestItem, error) {
 	item := &v1.CheckBulkPermissionsRequestItem{
 		Resource: &v1.ObjectReference{
 			ObjectType: r.ResourceType,
@@ -214,10 +224,16 @@ func checkItemFromRel(r rel.Relationship, permission string, callLevelContext ma
 	}
 
 	if merged := mergeCheckContext(callLevelContext, r.CheckContext); merged != nil {
-		if ctx, err := structpb.NewStruct(merged); err == nil {
-			item.Context = ctx
+		ctx, err := structpb.NewStruct(merged)
+		if err != nil {
+			return nil, &Error{
+				Code:    CodeInvalidArgument,
+				Message: fmt.Sprintf("spicedb: check %s/%s: invalid caveat context: %s", r.ResourceType, r.ResourceID, err),
+				err:     err,
+			}
 		}
+		item.Context = ctx
 	}
 
-	return item
+	return item, nil
 }

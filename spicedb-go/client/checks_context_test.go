@@ -301,3 +301,83 @@ func TestWithContextVariants_ForwardCallLevelContextToWire(t *testing.T) {
 		}
 	})
 }
+
+// unconvertibleContext is a caveat context value that structpb.NewStruct
+// cannot represent (channels have no protobuf Value encoding), used to prove
+// that a conversion failure is surfaced as an error rather than silently
+// dropped from the outgoing request.
+func unconvertibleContext() map[string]any {
+	return map[string]any{"bad": make(chan int)}
+}
+
+// TestCheck_UnconvertibleContextReturnsError proves that every check surface
+// taking caveat context reports an error — instead of silently sending the
+// request with no context field — when the merged context cannot be
+// converted to a protobuf Struct. Before the fix, checkItemFromRel discarded
+// structpb.NewStruct's error and proceeded with item.Context left nil, so
+// the server would come back with a Conditional result the caller could not
+// distinguish from "the server legitimately needed more than I supplied".
+func TestCheck_UnconvertibleContextReturnsError(t *testing.T) {
+	r1 := rel.MustFromTriple("document", "1", "view", "user", "alice", "")
+	r2 := rel.MustFromTriple("document", "2", "view", "user", "alice", "")
+	bad := unconvertibleContext()
+
+	assertRejected := func(t *testing.T, srv *checkCapturingServer, err error) {
+		t.Helper()
+		require.Error(t, err)
+		require.ErrorIs(t, err, ErrInvalidArgument)
+		nativeErr, ok := err.(*Error)
+		require.True(t, ok, "expected the conversion failure to be a native *Error, got %T: %v", err, err)
+		require.Equal(t, CodeInvalidArgument, nativeErr.Code)
+		require.Empty(t, srv.requests, "request must not be sent once context conversion fails")
+	}
+
+	t.Run("CheckWithContext call-level", func(t *testing.T) {
+		c, srv := newCapturingTestClient(t)
+		results, err := c.CheckWithContext(context.Background(), consistency.MinLatency(), "view", bad, r1)
+		require.Nil(t, results)
+		assertRejected(t, srv, err)
+	})
+
+	t.Run("CheckWithContext per-item", func(t *testing.T) {
+		c, srv := newCapturingTestClient(t)
+		results, err := c.CheckWithContext(context.Background(), consistency.MinLatency(), "view", nil, r1.WithCheckContext(bad))
+		require.Nil(t, results)
+		assertRejected(t, srv, err)
+	})
+
+	t.Run("CheckOneWithContext", func(t *testing.T) {
+		c, srv := newCapturingTestClient(t)
+		result, err := c.CheckOneWithContext(context.Background(), consistency.MinLatency(), "view", bad, r1)
+		require.Equal(t, CheckResult{}, result)
+		assertRejected(t, srv, err)
+	})
+
+	t.Run("CheckAnyWithContext", func(t *testing.T) {
+		c, srv := newCapturingTestClient(t)
+		got, err := c.CheckAnyWithContext(context.Background(), consistency.MinLatency(), "view", bad, r1, r2)
+		require.False(t, got)
+		assertRejected(t, srv, err)
+	})
+
+	t.Run("CheckAllWithContext", func(t *testing.T) {
+		c, srv := newCapturingTestClient(t)
+		got, err := c.CheckAllWithContext(context.Background(), consistency.MinLatency(), "view", bad, r1, r2)
+		require.False(t, got)
+		assertRejected(t, srv, err)
+	})
+
+	t.Run("CheckIterWithContext", func(t *testing.T) {
+		c, srv := newCapturingTestClient(t)
+		seq := slices.Values([]rel.Relationship{r1, r2})
+		var gotErr error
+		var count int
+		for result, err := range c.CheckIterWithContext(context.Background(), consistency.MinLatency(), "view", bad, seq) {
+			count++
+			require.Equal(t, CheckResult{}, result)
+			gotErr = err
+		}
+		require.Equal(t, 1, count, "CheckIterWithContext must yield exactly one (zero-value, error) pair, not silently skip the batch")
+		assertRejected(t, srv, gotErr)
+	})
+}

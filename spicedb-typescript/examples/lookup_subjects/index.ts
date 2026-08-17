@@ -64,6 +64,9 @@ for await (const result of client.lookupSubjects(
   console.log(
     `  user:${result.subject.subjectId} (permissionship=${result.subject.permissionship})`,
   );
+  // lookedUpAt is the revision this result was computed at — thread it into
+  // atLeast()/atLeastOrFull() for read-your-writes on a later call.
+  assert(result.lookedUpAt !== "", "expected a non-empty lookedUpAt token");
 
   if (result.subject.subjectId === "*") {
     sawWildcard = true;

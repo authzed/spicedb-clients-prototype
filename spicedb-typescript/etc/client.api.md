@@ -42,6 +42,18 @@ export interface CheckRequest {
 }
 
 // @public
+export class CheckResult {
+    constructor(
+    permissionship: Permissionship,
+    missingContext: string[],
+    checkedAt: string);
+    readonly checkedAt: string;
+    hasPermission(): boolean;
+    readonly missingContext: string[];
+    readonly permissionship: Permissionship;
+}
+
+// @public
 export interface ComputablePermissionsParams {
     // (undocumented)
     definitionName: string;
@@ -121,6 +133,7 @@ export interface LeafNode {
 
 // @public
 export interface LookupResource {
+    lookedUpAt: string;
     partialCaveat?: PartialCaveatInfo;
     // (undocumented)
     permissionship: Permissionship;
@@ -150,6 +163,7 @@ export interface LookupResourcesParams {
 export interface LookupSubject {
     // (undocumented)
     excludedSubjects: ResolvedSubject[];
+    lookedUpAt: string;
     // (undocumented)
     subject: ResolvedSubject;
 }
@@ -200,7 +214,7 @@ export class PermissionDeniedError extends SpiceDBError {
 }
 
 // @public
-export type Permissionship = "unspecified" | "hasPermission" | "conditionalPermission";
+export type Permissionship = "unspecified" | "hasPermission" | "conditionalPermission" | "noPermission";
 
 // @public
 export interface PermissionTree {
@@ -393,8 +407,8 @@ export class SpiceDBClient {
     constructor(options: SpiceDBClientOptions);
     checkAll(consistency: Consistency, ...checks: CheckRequest[]): Promise<boolean>;
     checkAny(consistency: Consistency, ...checks: CheckRequest[]): Promise<boolean>;
-    checkPermission(consistency: Consistency, check: CheckRequest): Promise<boolean>;
-    checkPermissions(consistency: Consistency, ...checks: CheckRequest[]): Promise<boolean[]>;
+    checkPermission(consistency: Consistency, check: CheckRequest): Promise<CheckResult>;
+    checkPermissions(consistency: Consistency, ...checks: CheckRequest[]): Promise<CheckResult[]>;
     computablePermissions(consistency: Consistency, params: ComputablePermissionsParams): Promise<{
         permissions: RelationReference[];
         revision: string;

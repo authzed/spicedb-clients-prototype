@@ -157,3 +157,27 @@ export function toSpiceDBError(err: unknown): SpiceDBError {
 
   return new SpiceDBError(String(err));
 }
+
+/**
+ * Converts a per-item `google.rpc.Status` (the shape carried by
+ * `CheckBulkPermissionsPair.error`, and any other per-item bulk-response
+ * error) to a typed {@link SpiceDBError}, reusing {@link toSpiceDBError}'s
+ * code -> error-class mapping.
+ *
+ * `google.rpc.Code`'s numeric values are identical to Connect's {@link Code}
+ * enum — both mirror the standard gRPC status codes — so the status's
+ * `code` can be passed straight through to `ConnectError`'s constructor
+ * without a separate mapping table.
+ *
+ * A per-item error from a bulk RPC (e.g. `CheckBulkPermissions`) MUST be
+ * routed through here rather than silently coerced into a falsy result —
+ * a permission-denied, an invalid-argument, and an internal server error
+ * are meaningfully different outcomes for a caller and must not be
+ * indistinguishable.
+ */
+export function toSpiceDBErrorFromStatus(status: {
+  code: number;
+  message: string;
+}): SpiceDBError {
+  return toSpiceDBError(new ConnectError(status.message, status.code as Code));
+}

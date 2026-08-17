@@ -2,7 +2,6 @@ import { create, type JsonObject } from "@bufbuild/protobuf";
 import {
   createSpiceDBClient as createProtoClient,
   type ClientOptions as ProtoClientOptions,
-  CheckPermissionResponse_Permissionship,
   CheckBulkPermissionsRequestItemSchema,
   CheckBulkPermissionsRequestSchema,
   CheckPermissionRequestSchema,
@@ -41,6 +40,7 @@ import {
   type LookupResource,
   type LookupSubject,
   type CheckRequest,
+  CheckResult,
   type WatchChange,
   type WatchEvent,
   type WatchOptions,
@@ -67,10 +67,13 @@ import {
   fromProtoSchemaDiff,
   fromProtoLookupResource,
   fromProtoLookupSubject,
+  checkResultFromProto,
+  checkResultFromBulkItem,
 } from "./types.js";
 
 import {
   toSpiceDBError,
+  toSpiceDBErrorFromStatus,
   isTransientError,
 } from "./errors.js";
 
@@ -112,13 +115,20 @@ export class SpiceDBClient {
   /**
    * Checks whether the subject has the given permission on the resource.
    *
-   * @returns `true` if the subject has the permission, `false` otherwise.
-   *          Caveated (conditional) permissions return `true`.
+   * Uses the single-check `CheckPermission` RPC directly (not routed
+   * through `CheckBulkPermissions`).
+   *
+   * @returns A {@link CheckResult}. Use `result.hasPermission()` for the
+   *          common case — it is `true` ONLY when the server's answer is an
+   *          unconditional grant. A `"conditionalPermission"` result means
+   *          the server needed caveat context that was not supplied in
+   *          `check.context`; it is NOT a grant, and
+   *          `result.hasPermission()` returns `false` for it.
    */
   async checkPermission(
     consistency: Consistency,
     check: CheckRequest,
-  ): Promise<boolean> {
+  ): Promise<CheckResult> {
     return this.withRetry(async () => {
       const resp = await this.proto.permissions.checkPermission(
         create(CheckPermissionRequestSchema, {
@@ -138,24 +148,28 @@ export class SpiceDBClient {
           context: check.context as JsonObject | undefined,
         }),
       );
-      return (
-        resp.permissionship ===
-          CheckPermissionResponse_Permissionship.HAS_PERMISSION ||
-        resp.permissionship ===
-          CheckPermissionResponse_Permissionship.CONDITIONAL_PERMISSION
-      );
+      return checkResultFromProto(resp);
     });
   }
 
   /**
    * Checks multiple permissions in a single bulk request.
    *
-   * @returns An array of booleans corresponding to each check request.
+   * A per-item failure (e.g. an internal error evaluating one specific
+   * check) is surfaced by throwing a typed {@link SpiceDBError} — it is
+   * NEVER silently coerced into a result, since that would make a
+   * permission-denied, an invalid-argument, and an internal server error
+   * all indistinguishable from a real "no permission" answer.
+   *
+   * @returns An array of {@link CheckResult}, one per check request, in the
+   *          same order. Every result shares the same `checkedAt` — the
+   *          response carries a single token for the whole batch, not one
+   *          per item.
    */
   async checkPermissions(
     consistency: Consistency,
     ...checks: CheckRequest[]
-  ): Promise<boolean[]> {
+  ): Promise<CheckResult[]> {
     return this.withRetry(async () => {
       const resp = await this.proto.permissions.checkBulkPermissions(
         create(CheckBulkPermissionsRequestSchema, {
@@ -179,43 +193,50 @@ export class SpiceDBClient {
           ),
         }),
       );
+      const checkedAt = resp.checkedAt?.token ?? "";
       return resp.pairs.map((pair) => {
         if (pair.response.case === "error") {
-          return false;
+          // A per-item error MUST reach the caller as a typed error, not as
+          // a falsy/failing CheckResult — see the doc comment above.
+          throw toSpiceDBErrorFromStatus(pair.response.value);
         }
         if (pair.response.case === "item") {
-          return (
-            pair.response.value.permissionship ===
-              CheckPermissionResponse_Permissionship.HAS_PERMISSION ||
-            pair.response.value.permissionship ===
-              CheckPermissionResponse_Permissionship.CONDITIONAL_PERMISSION
-          );
+          return checkResultFromBulkItem(pair.response.value, checkedAt);
         }
-        return false;
+        // Malformed pair: the oneof has neither `item` nor `error` set.
+        // Fail closed with an unspecified (non-granting) result rather than
+        // throwing on what should never happen from a well-behaved server.
+        return new CheckResult("unspecified", [], checkedAt);
       });
     });
   }
 
   /**
-   * Returns `true` if the subject has ANY of the specified permissions.
+   * Returns `true` if the subject has ANY of the specified permissions
+   * outright. A `"conditionalPermission"` result does NOT count as
+   * granted — only results where {@link CheckResult.hasPermission} is
+   * `true` are considered. This is deliberate and fail-closed.
    */
   async checkAny(
     consistency: Consistency,
     ...checks: CheckRequest[]
   ): Promise<boolean> {
     const results = await this.checkPermissions(consistency, ...checks);
-    return results.some((r) => r);
+    return results.some((r) => r.hasPermission());
   }
 
   /**
-   * Returns `true` if the subject has ALL of the specified permissions.
+   * Returns `true` if the subject has ALL of the specified permissions
+   * outright. A `"conditionalPermission"` result does NOT count as
+   * granted — every result must satisfy {@link CheckResult.hasPermission}
+   * for this to return `true`. This is deliberate and fail-closed.
    */
   async checkAll(
     consistency: Consistency,
     ...checks: CheckRequest[]
   ): Promise<boolean> {
     const results = await this.checkPermissions(consistency, ...checks);
-    return results.every((r) => r);
+    return results.every((r) => r.hasPermission());
   }
 
   // ---------------------------------------------------------------------------
@@ -320,9 +341,10 @@ export class SpiceDBClient {
   /**
    * Looks up all resources of the given type that the subject has the
    * specified permission on. Each result carries the permissionship (full
-   * grant vs conditional on caveat context) and, for conditional results,
-   * which caveat context was missing. Callers MUST check `permissionship`
-   * before treating a result as a full grant.
+   * grant vs conditional on caveat context), and, for conditional results,
+   * which caveat context was missing, and `lookedUpAt` — the revision the
+   * result was computed at. Callers MUST check `permissionship` before
+   * treating a result as a full grant.
    *
    * @returns An async iterable of {@link LookupResource}.
    */
@@ -376,6 +398,7 @@ export class SpiceDBClient {
    * those listed in `LookupSubject.excludedSubjects`. Callers MUST check
    * `excludedSubjects` before treating a wildcard match as a blanket grant,
    * or they risk granting access to subjects the server explicitly excluded.
+   * `lookedUpAt` carries the revision the result was computed at.
    *
    * @returns An async iterable of {@link LookupSubject}.
    */

@@ -75,13 +75,40 @@ Builder helpers:
 ### Checks
 
 ```typescript
-const results = await client.checkPermissions(consistency, ...rels); // boolean[]
-const allowed = await client.checkPermission(consistency, rel);      // boolean
+const results = await client.checkPermissions(consistency, ...rels); // CheckResult[]
+const result = await client.checkPermission(consistency, rel);       // CheckResult
 const any = await client.checkAny(consistency, ...rels);             // boolean
 const all = await client.checkAll(consistency, ...rels);             // boolean
 ```
 
-All use BulkCheckPermissions under the hood.
+`checkPermission`/`checkPermissions` return `CheckResult` — never a bare
+`boolean` — so a caveated relationship whose context wasn't supplied at check
+time is distinguishable from a real denial instead of being silently
+collapsed to `true` or `false`:
+
+```typescript
+interface CheckResult {
+  permissionship: Permissionship; // "unspecified" | "hasPermission" | "conditionalPermission" | "noPermission"
+  missingContext: string[];       // caveat context keys the server needed; empty unless conditionalPermission
+  checkedAt: string;              // revision this check was evaluated at
+  hasPermission(): boolean;       // true ONLY for permissionship === "hasPermission"
+}
+```
+
+`CheckResult` is a class (not a plain interface, unlike the lookup result
+types below) so `hasPermission()` travels with the data. Always prefer
+`result.hasPermission()` over comparing `permissionship` directly — a
+`"conditionalPermission"` result means the server needed caveat context that
+was not supplied and is NOT a grant.
+
+`checkAny`/`checkAll` stay `boolean` and count ONLY `hasPermission() ===
+true` results as granted — a conditional result never counts, even for
+`checkAny`. This is deliberate and fail-closed.
+
+`checkPermission` uses the single-check `CheckPermission` RPC directly;
+`checkPermissions`/`checkAny`/`checkAll` use `BulkCheckPermissions`. A
+per-item error from `CheckBulkPermissions` is surfaced by throwing a typed
+error, never coerced into a result.
 
 ### Streaming
 
@@ -106,8 +133,9 @@ match as an unconditional grant:
 ```typescript
 interface LookupResource {
   resourceId: string;
-  permissionship: Permissionship; // "unspecified" | "hasPermission" | "conditionalPermission"
+  permissionship: Permissionship; // "unspecified" | "hasPermission" | "conditionalPermission" | "noPermission"
   partialCaveat?: PartialCaveatInfo; // set when permissionship is "conditionalPermission"
+  lookedUpAt: string; // revision this result was computed at
 }
 
 interface ResolvedSubject {
@@ -119,13 +147,17 @@ interface ResolvedSubject {
 interface LookupSubject {
   subject: ResolvedSubject;
   excludedSubjects: ResolvedSubject[]; // wildcard "*" exclusions — MUST check
+  lookedUpAt: string; // revision this result was computed at
 }
 ```
 
 Callers MUST check `permissionship` before treating a result as a full
 grant, and — critically — when `subject.subjectId` is the wildcard `"*"`,
 MUST check `excludedSubjects` before treating the wildcard as a blanket
-grant. Mirrors spicedb-go's `client/lookup_types.go`.
+grant. `permissionship` is shared with `CheckResult` (see Checks above) —
+lookups never yield `"noPermission"`: a subject/resource pair that lacks the
+permission is simply absent from the stream. Mirrors spicedb-go's
+`client/lookup_types.go`.
 
 ### Writes
 
@@ -139,6 +171,13 @@ txn.delete(relationship);
 txn.mustNotMatch(filter);
 const revision = await client.write(txn);
 ```
+
+`write`, `deleteRelationships`, and `writeSchema` all return the revision
+the mutation occurred at. `importBulkRelationships` (bulk import) is the one
+exception: it returns `Promise<bigint>` (the number of relationships
+loaded) with no revision, because `ImportBulkRelationshipsResponse` carries
+no `ZedToken` field at all — the proto itself gives the client nothing to
+expose there, not a client-side gap.
 
 ### Testing
 
@@ -173,7 +212,7 @@ See package sections above.
 
 | Directory | Demonstrates |
 |-----------|-------------|
-| `check_permission/` | Basic permission check |
+| `check_permission/` | Basic permission check, plus a caveated check with no context to show a `conditionalPermission` CheckResult |
 | `write_relationships/` | Writing relationships with transaction builder |
 | `read_relationships/` | Reading relationships with async iterator |
 | `lookup_resources/` | Resource lookup, incl. reading `permissionship`/`partialCaveat` |

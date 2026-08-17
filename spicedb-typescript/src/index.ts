@@ -39,6 +39,7 @@ export {
   type LookupResource,
   type ResolvedSubject,
   type LookupSubject,
+  CheckResult,
   Transaction,
   relationship,
   relationshipFromTuple,

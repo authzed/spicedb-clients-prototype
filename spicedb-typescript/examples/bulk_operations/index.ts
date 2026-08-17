@@ -65,9 +65,10 @@ const results = await client.checkPermissions(atLeast(setupRevision), ...checks)
 for (let i = 0; i < checks.length; i++) {
   const c = checks[i];
   console.log(
-    `${c.subjectType}:${c.subjectId} ${c.permission} ${c.resourceType}:${c.resourceId}: ${results[i]}`,
+    `${c.subjectType}:${c.subjectId} ${c.permission} ${c.resourceType}:${c.resourceId}: ` +
+      `${results[i].hasPermission()} (permissionship: ${results[i].permissionship})`,
   );
-  assert(results[i] === true, `expected check ${i} to be true`);
+  assert(results[i].hasPermission(), `expected check ${i} to have permission`);
 }
 
 // Bulk import: load many relationships in a single streaming call

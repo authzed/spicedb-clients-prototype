@@ -8,6 +8,7 @@ import {
     type Relationship,
     type LookupResource,
     type LookupSubject,
+    type CheckOptions,
 } from "@spicedb/client";
 import { full } from "@spicedb/client";
 type Consistency = ReturnType<typeof full>;
@@ -120,14 +121,14 @@ export class TypedClient {
     // Check overloads
 {{- range $def := .Definitions}}
 {{- range $def.Permissions}}
-    async check(c: Consistency, p: { _type: "{{$def.Name}}"; _id: string; _permission: "{{.Name}}" }, s: {{.SubjectUnion}}): Promise<CheckResult>;
+    async check(c: Consistency, p: { _type: "{{$def.Name}}"; _id: string; _permission: "{{.Name}}" }, s: {{.SubjectUnion}}, options?: CheckOptions): Promise<CheckResult>;
 {{- end}}
 {{- end}}
-    async check(c: Consistency, p: { _type: string; _id: string; _permission: string }, s: { _type: string; _id: string; _relation?: string; _caveat?: string; _caveatContext?: Record<string, any> }): Promise<CheckResult> {
+    async check(c: Consistency, p: { _type: string; _id: string; _permission: string }, s: { _type: string; _id: string; _relation?: string; _caveat?: string; _caveatContext?: Record<string, any> }, options?: CheckOptions): Promise<CheckResult> {
         return this.client.checkPermission(c, {
             resourceType: p._type, resourceId: p._id, permission: p._permission,
             subjectType: s._type, subjectId: s._id, subjectRelation: (s as any)._relation,
-        });
+        }, options);
     }
 
     // Write operations

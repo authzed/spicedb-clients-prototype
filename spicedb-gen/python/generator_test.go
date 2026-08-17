@@ -351,10 +351,11 @@ func TestGenerateSampleSchema(t *testing.T) {
 
 		// check — per-permission overloads + generic dispatch. Returns
 		// CheckResult, not bool: see TestCheckSurfacesCheckResult below for the
-		// rigorous regression guard.
-		assert.Contains(t, output, flavor.defKw+" check(self, c: Consistency, p: _DocumentViewPermission, s: DocumentViewSubject) -> CheckResult:", flavor.name)
-		assert.Contains(t, output, flavor.defKw+" check(self, c: Consistency, p: _DocumentEditPermission, s: DocumentEditSubject) -> CheckResult:", flavor.name)
-		assert.Contains(t, output, flavor.defKw+" check(self, c: Consistency, p: _DocumentDeletePermission, s: DocumentDeleteSubject) -> CheckResult:", flavor.name)
+		// rigorous regression guard. Accepts a keyword-only context parameter:
+		// see TestCheckAcceptsContext for the rigorous regression guard on that.
+		assert.Contains(t, output, flavor.defKw+" check(self, c: Consistency, p: _DocumentViewPermission, s: DocumentViewSubject, *, context: dict[str, Any] | None = None) -> CheckResult:", flavor.name)
+		assert.Contains(t, output, flavor.defKw+" check(self, c: Consistency, p: _DocumentEditPermission, s: DocumentEditSubject, *, context: dict[str, Any] | None = None) -> CheckResult:", flavor.name)
+		assert.Contains(t, output, flavor.defKw+" check(self, c: Consistency, p: _DocumentDeletePermission, s: DocumentDeleteSubject, *, context: dict[str, Any] | None = None) -> CheckResult:", flavor.name)
 
 		// writes
 		assert.Contains(t, output, flavor.defKw+" touch(self, *rels: TypedRelationship) -> str:", flavor.name)
@@ -420,12 +421,12 @@ func TestCheckSurfacesCheckResult(t *testing.T) {
 		assert.Contains(t, output, "from spicedb import Transaction, Relationship, Filter, LookupResource, LookupSubject, CheckResult", flavor.name)
 
 		// @overload declarations — exact signature per permission, returning CheckResult.
-		assert.Contains(t, output, "def check(self, c: Consistency, p: _DocumentViewPermission, s: DocumentViewSubject) -> CheckResult: ...", flavor.name)
-		assert.Contains(t, output, "def check(self, c: Consistency, p: _DocumentEditPermission, s: DocumentEditSubject) -> CheckResult: ...", flavor.name)
-		assert.Contains(t, output, "def check(self, c: Consistency, p: _DocumentDeletePermission, s: DocumentDeleteSubject) -> CheckResult: ...", flavor.name)
+		assert.Contains(t, output, "def check(self, c: Consistency, p: _DocumentViewPermission, s: DocumentViewSubject, *, context: dict[str, Any] | None = None) -> CheckResult: ...", flavor.name)
+		assert.Contains(t, output, "def check(self, c: Consistency, p: _DocumentEditPermission, s: DocumentEditSubject, *, context: dict[str, Any] | None = None) -> CheckResult: ...", flavor.name)
+		assert.Contains(t, output, "def check(self, c: Consistency, p: _DocumentDeletePermission, s: DocumentDeleteSubject, *, context: dict[str, Any] | None = None) -> CheckResult: ...", flavor.name)
 
 		// Dispatching implementation — exact signature, returning CheckResult.
-		assert.Contains(t, output, flavor.defKw+" check(self, c: Consistency, p: Any, s: Any) -> CheckResult:", flavor.name)
+		assert.Contains(t, output, flavor.defKw+" check(self, c: Consistency, p: Any, s: Any, *, context: dict[str, Any] | None = None) -> CheckResult:", flavor.name)
 
 		// The old bool-returning forms must be entirely gone. Asserting merely
 		// that the string "CheckResult" appears somewhere would pass even on a
@@ -438,7 +439,66 @@ func TestCheckSurfacesCheckResult(t *testing.T) {
 		// untouched, not re-collapsed to a bool inside the generated wrapper —
 		// which would silently reintroduce the exact bug CheckResult exists to
 		// fix, hidden inside generated code users don't read.
-		assert.Contains(t, output, "return "+flavor.awaitPrefix+"self.client.check_permission(c, rel, context=context)", flavor.name)
+		assert.Contains(t, output, "return "+flavor.awaitPrefix+"self.client.check_permission(c, rel, context=merged_context)", flavor.name)
+	}
+}
+
+// TestCheckAcceptsContext verifies the generated `check` method accepts a new
+// keyword-only `context` parameter (call-level caveat CHECK-TIME context),
+// matching the underlying spicedb.sync/aio SpiceDBClient.check_permission's
+// own `context=` shape (spec D3b), in both sync.py and aio.py, on both the
+// @overload declarations and the dispatching implementation.
+//
+// check() already derived a context value from the subject's own caveat info
+// (`s._caveat_info()`) before this task -- that mechanism is preserved
+// (it lets a caveated subject ref like User("dave").with_ip_range(ctx)
+// supply check-time context on its own) and is now merged, key-level with
+// the SUBJECT's context winning on conflict, with the new call-level
+// `context` parameter -- mirroring the merge rule used everywhere else in
+// this plan (call-level default, item-level override wins).
+func TestCheckAcceptsContext(t *testing.T) {
+	g := &Generator{}
+	files, err := g.Generate(testSchema(t), nil)
+	require.NoError(t, err)
+
+	sync := fileContent(t, files, "sync.py")
+	aio := fileContent(t, files, "aio.py")
+
+	for _, flavor := range []struct {
+		name        string
+		output      string
+		defKw       string // "def" or "async def"
+		awaitPrefix string // "" or "await "
+	}{
+		{"sync.py", sync, "def", ""},
+		{"aio.py", aio, "async def", "await "},
+	} {
+		output := flavor.output
+
+		// @overload declarations gain the new keyword-only context parameter.
+		assert.Contains(t, output, "def check(self, c: Consistency, p: _DocumentViewPermission, s: DocumentViewSubject, *, context: dict[str, Any] | None = None) -> CheckResult: ...", flavor.name)
+		assert.Contains(t, output, "def check(self, c: Consistency, p: _DocumentEditPermission, s: DocumentEditSubject, *, context: dict[str, Any] | None = None) -> CheckResult: ...", flavor.name)
+		assert.Contains(t, output, "def check(self, c: Consistency, p: _DocumentDeletePermission, s: DocumentDeleteSubject, *, context: dict[str, Any] | None = None) -> CheckResult: ...", flavor.name)
+
+		// Dispatching implementation gains the same parameter.
+		assert.Contains(t, output, flavor.defKw+" check(self, c: Consistency, p: Any, s: Any, *, context: dict[str, Any] | None = None) -> CheckResult:", flavor.name)
+
+		// The OLD context-less forms must be entirely gone -- guards against a
+		// regression that adds the parameter to only some of the declarations
+		// (e.g. only the overloads, or only the implementation).
+		assert.NotContains(t, output, "def check(self, c: Consistency, p: _DocumentViewPermission, s: DocumentViewSubject) -> CheckResult: ...", flavor.name)
+		assert.NotContains(t, output, "def check(self, c: Consistency, p: _DocumentEditPermission, s: DocumentEditSubject) -> CheckResult: ...", flavor.name)
+		assert.NotContains(t, output, "def check(self, c: Consistency, p: _DocumentDeletePermission, s: DocumentDeleteSubject) -> CheckResult: ...", flavor.name)
+		assert.NotContains(t, output, flavor.defKw+" check(self, c: Consistency, p: Any, s: Any) -> CheckResult:", flavor.name)
+
+		// The merge -- call-level `context` and the subject's own caveat info
+		// are combined key-level, subject wins -- must actually be present, not
+		// just the new parameter accepted and silently dropped. Asserting only
+		// the signature would pass even if `context` were never read in the
+		// body, which would silently reintroduce the exact "context is
+		// unreachable" gap this task exists to close.
+		assert.Contains(t, output, "{**(context or {}), **(subject_context or {})}", flavor.name)
+		assert.Contains(t, output, "return "+flavor.awaitPrefix+"self.client.check_permission(c, rel, context=merged_context)", flavor.name)
 	}
 }
 

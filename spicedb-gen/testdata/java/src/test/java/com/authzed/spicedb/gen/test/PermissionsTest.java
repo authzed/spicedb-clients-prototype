@@ -10,6 +10,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 import static com.authzed.spicedb.Consistency.*;
@@ -138,6 +139,46 @@ class PermissionsTest {
         assertThat(result.permissionship()).isEqualTo(LookupResult.Permissionship.CONDITIONAL_PERMISSION);
         assertThat(result.missingContext()).contains("allowed_cidr");
         assertThat(result.checkedAt()).isNotBlank();
+    }
+
+    @Test
+    void caveated_viewer_resolved_by_check_time_context_parameter() {
+        // The payoff (spec D3b): the SAME relationship shape as the test above
+        // (no context supplied at write time) resolves into a genuine grant when
+        // the missing caveat context is supplied at CHECK time via the new
+        // check(..., Map) overload, instead of only being observable via
+        // missingContext().
+        tc.touch(Document("readme").viewer(
+            User("grace").withIpRange(new IpRangeContext())
+        ));
+
+        var result = tc.check(
+            full(), Document("readme").view(), User("grace"), Map.of("allowed_cidr", "0.0.0.0/0"));
+
+        assertThat(result.hasPermission()).isTrue();
+        assertThat(result.permissionship()).isEqualTo(LookupResult.Permissionship.HAS_PERMISSION);
+    }
+
+    @Test
+    void caveated_viewer_resolved_by_subject_supplied_context_on_plain_check() {
+        // Proves the generator's pre-existing defect fix: passing a caveated
+        // SUBJECT ref directly to the plain (no explicit context parameter)
+        // check() must supply that subject's own context to the CHECK, via
+        // Relationship.withCheckContext -- not the write-time withCaveat the
+        // template used before, which spicedb-java's checkItemFromRel never
+        // reads and was therefore silently inert. No context is supplied at
+        // write time here, so this only passes if withCheckContext is wired up.
+        tc.touch(Document("readme").viewer(
+            User("henry").withIpRange(new IpRangeContext())
+        ));
+
+        var result = tc.check(
+            full(),
+            Document("readme").view(),
+            User("henry").withIpRange(new IpRangeContext().withAllowedCidr("0.0.0.0/0")));
+
+        assertThat(result.hasPermission()).isTrue();
+        assertThat(result.permissionship()).isEqualTo(LookupResult.Permissionship.HAS_PERMISSION);
     }
 
     // --- Touch + Check (sub-ref) ---

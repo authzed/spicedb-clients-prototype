@@ -156,6 +156,45 @@ func TestCheckSurfacesCheckResult(t *testing.T) {
 	assert.Contains(t, content, "return client.checkPermission(c, perm.permission(), r);")
 }
 
+// TestCheckAcceptsContext verifies the generated TypedClient gains a
+// context-accepting check() overload matching spicedb-java's own
+// checkPermission(Consistency, String, Relationship, Map) shape (spec D3b),
+// and that the pre-existing 3-arg check() is fixed to route the subject's own
+// caveat context through the CHECK-TIME r.withCheckContext(...) instead of
+// the WRITE-TIME r.withCaveat(...) it was using before -- a genuine
+// pre-existing defect: spicedb-java's checkItemFromRel only ever reads
+// Relationship.checkContext() for checks, never caveatContext()/caveatName(),
+// so withCaveat(...) on the ephemeral relationship built inside check() was
+// silently inert (a caveated subject passed to check() supplied no context
+// to the actual check RPC at all).
+func TestCheckAcceptsContext(t *testing.T) {
+	s, err := schema.ParseFile("../testdata/sample.zed")
+	require.NoError(t, err)
+
+	gen := &Generator{}
+	files, err := gen.Generate(s, map[string]string{"package": "com.authzed.spicedb.gen.test"})
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+
+	content := string(files[0].Content)
+
+	// New overload: context accepted as a trailing Map<String, Object>.
+	assert.Contains(t, content,
+		"public <S extends Subject> CheckResult check(Consistency c, Permission<S> perm, S subject, Map<String, Object> context) {")
+
+	// Pass-through: context is handed to the 4-arg checkPermission untouched.
+	assert.Contains(t, content, "return client.checkPermission(c, perm.permission(), r, context);")
+
+	// The defect fix: check() must route the subject's own caveat context
+	// through withCheckContext (CHECK-TIME), never withCaveat (WRITE-TIME) --
+	// withCaveat on the ephemeral check relationship has zero effect on the
+	// actual check, since checkItemFromRel never reads caveatContext/
+	// caveatName. This NotContains guards against the old inert call
+	// reappearing in EITHER check() overload.
+	assert.NotContains(t, content, "r = r.withCaveat(subject.caveatName(), subject.caveatContext());")
+	assert.Contains(t, content, "r = r.withCheckContext(subject.caveatContext());")
+}
+
 func TestBuildTemplateData(t *testing.T) {
 	s, err := schema.ParseFile("../testdata/sample.zed")
 	require.NoError(t, err)

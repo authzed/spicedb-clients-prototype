@@ -101,6 +101,28 @@ class TestAsyncTypedClient:
         assert "allowed_cidr" in result.missing_context
         assert result.checked_at
 
+        # The payoff (spec D3b): supplying the missing caveat context at CHECK
+        # TIME (not write time), via the new context= keyword parameter,
+        # resolves frank's CONDITIONAL_PERMISSION into a genuine grant.
+        result = await tc.check(
+            full(), Document("readme").view, User("frank"), context={"allowed_cidr": "0.0.0.0/0"}
+        )
+        assert result.has_permission is True
+        assert result.permissionship == Permissionship.HAS_PERMISSION
+
+        # Bonus proof of the merge rule against a real caveat evaluation: a
+        # call-level default that would FAIL the caveat (a value other than
+        # the "0.0.0.0/0" the schema's caveat requires) is overridden by the
+        # subject's own caveat context (supplied via with_ip_range), which
+        # must win per-key over the call-level default.
+        result = await tc.check(
+            full(),
+            Document("readme").view,
+            User("frank").with_ip_range(IpRangeContext(allowed_cidr="0.0.0.0/0")),
+            context={"allowed_cidr": "not-a-match"},
+        )
+        assert result.has_permission is True
+
     @pytest.mark.integration
     async def test_lookup_resources(self, tc: AsyncTypedClient) -> None:
         """Test lookup_resources returns resources a user can access."""
@@ -320,6 +342,30 @@ class TestSyncTypedClient:
         assert result.permissionship == Permissionship.CONDITIONAL_PERMISSION
         assert "allowed_cidr" in result.missing_context
         assert result.checked_at
+
+        # The payoff (spec D3b): supplying the missing caveat context at CHECK
+        # TIME (not write time), via the new context= keyword parameter,
+        # resolves frank-sync's CONDITIONAL_PERMISSION into a genuine grant.
+        result = tc.check(
+            full(),
+            Document("readme-sync").view,
+            User("frank-sync"),
+            context={"allowed_cidr": "0.0.0.0/0"},
+        )
+        assert result.has_permission is True
+        assert result.permissionship == Permissionship.HAS_PERMISSION
+
+        # Bonus proof of the merge rule against a real caveat evaluation: a
+        # call-level default that would FAIL the caveat is overridden by the
+        # subject's own caveat context (supplied via with_ip_range), which
+        # must win per-key over the call-level default.
+        result = tc.check(
+            full(),
+            Document("readme-sync").view,
+            User("frank-sync").with_ip_range(IpRangeContext(allowed_cidr="0.0.0.0/0")),
+            context={"allowed_cidr": "not-a-match"},
+        )
+        assert result.has_permission is True
 
     @pytest.mark.integration
     def test_lookup_resources(self, tc: SyncTypedClient) -> None:

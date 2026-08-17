@@ -111,6 +111,14 @@ func TestTouchAndCheck(t *testing.T) {
 	assert.Equal(t, client.PermissionshipConditionalPermission, result.Permissionship, "erin's check is conditional on the missing ip_range context")
 	assert.Contains(t, result.MissingContext, "allowed_cidr")
 	assert.NotEmpty(t, result.CheckedAt)
+
+	// The payoff (spec D3b): supplying the missing caveat context at CHECK
+	// TIME (not write time), via the new CheckWithContext, resolves erin's
+	// CONDITIONAL_PERMISSION into a genuine grant.
+	result, err = CheckWithContext(ctx, tc, cs, Document("readme").View(), map[string]any{"allowed_cidr": "0.0.0.0/0"}, User("erin"))
+	require.NoError(t, err)
+	assert.True(t, result.HasPermission(), "supplying allowed_cidr at check time should resolve erin's conditional check into a grant")
+	assert.Equal(t, client.PermissionshipHasPermission, result.Permissionship)
 }
 
 func TestLookupResources(t *testing.T) {

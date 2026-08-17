@@ -59,6 +59,18 @@ describe("TypedClient", () => {
             expect(result.missingContext).toContain("allowed_cidr");
             expect(result.checkedAt).toBeTruthy();
         });
+
+        it("resolves a conditional check into a grant when context is supplied at check time", async () => {
+            // The payoff (spec D3b): frank's relationship (touched above) is still
+            // missing allowed_cidr at write time; supplying it via the new
+            // `options.context` parameter at CHECK time must resolve the caveat
+            // into a grant.
+            const resolved = await tc.check(full(), Document("readme").view, User("frank"), {
+                context: { allowed_cidr: "0.0.0.0/0" },
+            });
+            expect(resolved.hasPermission()).toBe(true);
+            expect(resolved.permissionship).toBe("hasPermission");
+        });
     });
 
     describe("lookupResources", () => {

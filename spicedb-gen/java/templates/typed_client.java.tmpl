@@ -144,8 +144,15 @@ public final class Permissions {
         public <S extends Subject> CheckResult check(Consistency c, Permission<S> perm, S subject) {
             var r = Relationship.of(perm.resourceType(), perm.resourceId(), perm.permission(),
                 subject.definitionName(), subject.id(), subject.subRelation());
-            if (!subject.caveatName().isEmpty()) r = r.withCaveat(subject.caveatName(), subject.caveatContext());
+            r = r.withCheckContext(subject.caveatContext());
             return client.checkPermission(c, perm.permission(), r);
+        }
+
+        public <S extends Subject> CheckResult check(Consistency c, Permission<S> perm, S subject, Map<String, Object> context) {
+            var r = Relationship.of(perm.resourceType(), perm.resourceId(), perm.permission(),
+                subject.definitionName(), subject.id(), subject.subRelation());
+            r = r.withCheckContext(subject.caveatContext());
+            return client.checkPermission(c, perm.permission(), r, context);
         }
 
         public <S extends Subject> Stream<LookupResult.LookupResource> lookupResources(Consistency c, PermissionRef<S> perm, S subject) {

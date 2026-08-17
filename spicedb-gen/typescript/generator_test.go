@@ -68,9 +68,11 @@ func TestGenerateSampleSchema(t *testing.T) {
 	// Check overloads (view includes caveated variants). Returns
 	// Promise<CheckResult>, not Promise<boolean>: see
 	// TestCheckSurfacesCheckResult below for the rigorous regression guard.
-	assert.Contains(t, output, `async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "view" }, s: UserRef | UserIpRangeRef | UserTimeWindowRef | TeamMemberRef): Promise<CheckResult>;`)
-	assert.Contains(t, output, `async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "edit" }, s: UserRef): Promise<CheckResult>;`)
-	assert.Contains(t, output, `async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "delete" }, s: UserRef): Promise<CheckResult>;`)
+	// Accepts an optional CheckOptions: see TestCheckAcceptsContext for that
+	// regression guard.
+	assert.Contains(t, output, `async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "view" }, s: UserRef | UserIpRangeRef | UserTimeWindowRef | TeamMemberRef, options?: CheckOptions): Promise<CheckResult>;`)
+	assert.Contains(t, output, `async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "edit" }, s: UserRef, options?: CheckOptions): Promise<CheckResult>;`)
+	assert.Contains(t, output, `async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "delete" }, s: UserRef, options?: CheckOptions): Promise<CheckResult>;`)
 
 	// Check implementation
 	assert.Contains(t, output, `return this.client.checkPermission(c, {`)
@@ -148,12 +150,12 @@ func TestCheckSurfacesCheckResult(t *testing.T) {
 
 	// Overload declarations — exact signature per permission, returning
 	// Promise<CheckResult>.
-	assert.Contains(t, output, `async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "view" }, s: UserRef | UserIpRangeRef | UserTimeWindowRef | TeamMemberRef): Promise<CheckResult>;`)
-	assert.Contains(t, output, `async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "edit" }, s: UserRef): Promise<CheckResult>;`)
-	assert.Contains(t, output, `async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "delete" }, s: UserRef): Promise<CheckResult>;`)
+	assert.Contains(t, output, `async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "view" }, s: UserRef | UserIpRangeRef | UserTimeWindowRef | TeamMemberRef, options?: CheckOptions): Promise<CheckResult>;`)
+	assert.Contains(t, output, `async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "edit" }, s: UserRef, options?: CheckOptions): Promise<CheckResult>;`)
+	assert.Contains(t, output, `async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "delete" }, s: UserRef, options?: CheckOptions): Promise<CheckResult>;`)
 
 	// Dispatching implementation — exact signature, returning Promise<CheckResult>.
-	assert.Contains(t, output, `async check(c: Consistency, p: { _type: string; _id: string; _permission: string }, s: { _type: string; _id: string; _relation?: string; _caveat?: string; _caveatContext?: Record<string, any> }): Promise<CheckResult> {`)
+	assert.Contains(t, output, `async check(c: Consistency, p: { _type: string; _id: string; _permission: string }, s: { _type: string; _id: string; _relation?: string; _caveat?: string; _caveatContext?: Record<string, any> }, options?: CheckOptions): Promise<CheckResult> {`)
 
 	// The old Promise<boolean> forms must be entirely gone. Asserting merely
 	// that the string "CheckResult" appears somewhere would pass even on a
@@ -167,6 +169,48 @@ func TestCheckSurfacesCheckResult(t *testing.T) {
 	// which would silently reintroduce the exact bug CheckResult exists to
 	// fix, hidden inside generated code users don't read.
 	assert.Contains(t, output, "return this.client.checkPermission(c, {")
+}
+
+// TestCheckAcceptsContext verifies the generated `check` method — both its
+// per-permission overload declarations and its dispatching implementation —
+// accepts a new optional `options?: CheckOptions` parameter, matching
+// SpiceDBClient.checkPermission's own `(consistency, check, options?)` shape
+// (spec D3b). The existing 3-arg call shape must remain valid (options is
+// optional), and the value must actually be threaded through to the
+// underlying client, not merely accepted and dropped.
+func TestCheckAcceptsContext(t *testing.T) {
+	s, err := schema.ParseFile("../testdata/sample.zed")
+	require.NoError(t, err)
+
+	g := &Generator{}
+	files, err := g.Generate(s, nil)
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+
+	output := string(files[0].Content)
+
+	// CheckOptions must be imported from the client package.
+	assert.Contains(t, output, "type CheckOptions")
+
+	// Overload declarations — exact signature per permission, with the new
+	// optional options parameter.
+	assert.Contains(t, output, `async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "view" }, s: UserRef | UserIpRangeRef | UserTimeWindowRef | TeamMemberRef, options?: CheckOptions): Promise<CheckResult>;`)
+	assert.Contains(t, output, `async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "edit" }, s: UserRef, options?: CheckOptions): Promise<CheckResult>;`)
+	assert.Contains(t, output, `async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "delete" }, s: UserRef, options?: CheckOptions): Promise<CheckResult>;`)
+
+	// Dispatching implementation — exact signature, with the new parameter.
+	assert.Contains(t, output, `async check(c: Consistency, p: { _type: string; _id: string; _permission: string }, s: { _type: string; _id: string; _relation?: string; _caveat?: string; _caveatContext?: Record<string, any> }, options?: CheckOptions): Promise<CheckResult> {`)
+
+	// The OLD context-less forms must be entirely gone — guards against a
+	// regression that adds the parameter to only some declarations.
+	assert.NotContains(t, output, `s: UserRef | UserIpRangeRef | UserTimeWindowRef | TeamMemberRef): Promise<CheckResult>;`)
+	assert.NotContains(t, output, `p: { _type: "document"; _id: string; _permission: "edit" }, s: UserRef): Promise<CheckResult>;`)
+	assert.NotContains(t, output, `_caveatContext?: Record<string, any> }): Promise<CheckResult> {`)
+
+	// options is actually threaded through to the underlying client call, not
+	// silently dropped — a signature-only assertion would pass even if the
+	// body never read `options`.
+	assert.Contains(t, output, "}, options);")
 }
 
 func TestGenerateEmptySchema(t *testing.T) {

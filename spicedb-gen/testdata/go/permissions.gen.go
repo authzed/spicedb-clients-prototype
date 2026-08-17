@@ -411,6 +411,10 @@ func (d DocumentRef) Owner(subject DocumentOwnerSubject) TypedRelationship {
 // Conditional result means the server needed caveat context that was not
 // supplied, and is NOT a grant. Prefer CheckResult.HasPermission() over
 // comparing Permissionship directly for the common case.
+//
+// See CheckWithContext to supply a call-level caveat CHECK-TIME context for
+// evaluating caveats encountered during the check (Check is CheckWithContext
+// with a nil checkContext).
 func Check(ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm Permission, subject Subject) (client.CheckResult, error) {
 	sType, sID, sRel := subject.subjectRef()
 	r, err := rel.FromTriple(perm.resourceType, perm.resourceID, perm.permission, sType, sID, sRel)
@@ -418,6 +422,20 @@ func Check(ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm P
 		return client.CheckResult{}, err
 	}
 	return tc.Client.CheckOne(ctx, cs, perm.permission, r)
+}
+
+// CheckWithContext is Check with a call-level default caveat CHECK-TIME
+// context applied to the check, mirroring the underlying
+// client.CheckOneWithContext. See client.CheckWithContext for the merge rule
+// with any per-item context on a relationship built via
+// rel.Relationship.WithCheckContext.
+func CheckWithContext(ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm Permission, checkContext map[string]any, subject Subject) (client.CheckResult, error) {
+	sType, sID, sRel := subject.subjectRef()
+	r, err := rel.FromTriple(perm.resourceType, perm.resourceID, perm.permission, sType, sID, sRel)
+	if err != nil {
+		return client.CheckResult{}, err
+	}
+	return tc.Client.CheckOneWithContext(ctx, cs, perm.permission, checkContext, r)
 }
 
 // LookupResources returns an iterator of resources that the subject has the specified permission on.

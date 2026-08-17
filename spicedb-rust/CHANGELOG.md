@@ -137,10 +137,19 @@
   came back shorter than the input `relationships` slice — every
   subsequent `results[i]` was then misaligned with `relationships[i]`, so
   a caller zipping results against inputs would attribute an answer to the
-  wrong resource. It now returns `Err(error::internal(..))` (gRPC code 13,
-  `SpiceDBError::Status { code: 13, .. }`) instead of building a
-  misaligned-but-"successful" result. Pre-existing; not introduced by the
-  caveat-context work above.
+  wrong resource. A malformed pair now returns `Err(error::internal(..))`
+  (gRPC code 13, `SpiceDBError::Status { code: 13, .. }`) instead of being
+  silently skipped. Pre-existing; not introduced by the caveat-context work
+  above.
+
+  This closes the malformed-pair case specifically; it does not guarantee
+  `results.len() == relationships.len()` in general. Nothing checks that
+  `inner.pairs` itself has as many entries as the `items` sent in the
+  request, so a server that returns a `pairs` list shorter than the batch
+  (but with no malformed entries among the pairs it does return) still
+  produces a `Vec<CheckResult>` shorter than `relationships`, silently and
+  without error. Callers zipping results against inputs still rely on the
+  server returning exactly one pair per item.
 - **Fixed a per-item `CheckBulkPermissions` error being reported as a
   hardcoded `SpiceDBError::InvalidArgument` regardless of its actual gRPC
   status code.** `check_permissions` previously did:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import grpc
 import grpc.aio
@@ -13,6 +13,14 @@ from authzed.api.v1 import (
     permission_service_pb2,
     schema_service_pb2,
 )
+
+if TYPE_CHECKING:
+    from authzed.api.v1 import (
+        experimental_service_pb2_grpc,
+        permission_service_pb2_grpc,
+        schema_service_pb2_grpc,
+        watch_service_pb2_grpc,
+    )
 
 from spicedb import _mapping, _requests
 from spicedb._auth import bearer_metadata
@@ -61,10 +69,10 @@ class SpiceDBClient:
         self._metadata = bearer_metadata(token)
         self._channel: grpc.aio.Channel | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
-        self._permissions = None
-        self._schema = None
-        self._watch = None
-        self._experimental = None
+        self._permissions: permission_service_pb2_grpc.PermissionsServiceStub | None = None
+        self._schema: schema_service_pb2_grpc.SchemaServiceStub | None = None
+        self._watch: watch_service_pb2_grpc.WatchServiceStub | None = None
+        self._experimental: experimental_service_pb2_grpc.ExperimentalServiceStub | None = None
 
     def _ensure_channel(self) -> None:
         """Open the channel on first use, binding it to the running loop.

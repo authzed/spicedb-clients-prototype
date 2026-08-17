@@ -4,6 +4,40 @@
 
 ### Added
 
+- **2026-08-17**: Caveat CHECK-TIME context on the check surface. Two forms, both additive
+  overloads — the existing `checkPermission`/`checkPermissions`/`checkAny`/`checkAll` signatures
+  are byte-for-byte unchanged:
+  - **Call-level**: `checkPermission(consistency, permission, relationship, context)`,
+    `checkPermissions(consistency, permission, context, relationships...)`,
+    `checkAny(consistency, permission, context, relationships...)`,
+    `checkAll(consistency, permission, context, relationships...)` — a `Map<String, Object>`
+    default applied to every relationship in the call.
+  - **Per-item**: `Relationship.withCheckContext(context)` — flows through even the plain,
+    context-less overloads.
+
+  **Merge rule (key-level, item wins)**: `{...callLevel, ...item}` — an item's own context
+  overrides the call-level default per-key; call-level keys the item doesn't mention are retained,
+  never wholesale-replaced. When neither is supplied, no `context` field is set on the wire at all
+  (never an empty `Struct`). This is what makes `CheckResult.missingContext()` actionable: a caller
+  can now resolve a `CONDITIONAL_PERMISSION` into a grant by supplying the named keys at check time,
+  instead of only being able to observe that they were missing.
+
+  `Relationship` gains a `checkContext` field (10th, distinct from the existing write-time
+  `caveatContext`) and `withCheckContext(Map<String, Object>)`, mirroring `withCaveat`/
+  `withExpiration`. `checkContext` is read ONLY by the check-request builder
+  (`checkItemFromRel`); `caveatContext` is read ONLY by the write-request builder
+  (`toProtoRelationship`) — the two are pinned distinct so a check-time context can never leak into
+  a stored relationship.
+
+  ```java
+  var callLevel = Map.<String, Object>of("now", 42, "region", "us");
+  var item0 = Relationship.of("document", "doc1", "viewer", "user", "alice")
+      .withCheckContext(Map.of("region", "eu"));
+  var item1 = Relationship.of("document", "doc2", "viewer", "user", "bob");
+  // item0 -> {now: 42, region: "eu"}; item1 -> {now: 42, region: "us"} (call-level default retained)
+  List<CheckResult> results = client.checkPermissions(consistency, "view", callLevel, item0, item1);
+  ```
+
 - **2026-08-17**: `checkPermission`/`checkPermissions` now return a `CheckResult`/`List<CheckResult>` instead of `boolean`/`List<Boolean>`. `CheckResult` carries the server's full three-valued `permissionship` (`HAS_PERMISSION`, `NO_PERMISSION`, `CONDITIONAL_PERMISSION`), `missingContext` (the caveat context keys the server needed and did not receive), and `checkedAt` (the `ZedToken` revision the check was evaluated at — feed it to `Consistency.atLeast` for read-your-writes). `hasPermission()` is true ONLY for `HAS_PERMISSION`, per root DESIGN.md's "RULE: Only an unconditional grant is true". `checkAny`/`checkAll` are unchanged in shape (still `boolean`) but now explicitly count only `hasPermission()` results — a `CONDITIONAL_PERMISSION` never contributes to a `true`. See **Breaking Changes** below for the full migration.
 
   `checkPermission`/`checkPermissions` always call `CheckBulkPermissions` — there was and is no production call site for the non-bulk `CheckPermission` RPC (matches `spicedb-go`/`spicedb-python`/`spicedb-ruby`/`spicedb-csharp`). `CheckBulkPermissionsResponseItem` carries no per-item `checked_at` of its own; the single response-level token is now propagated onto every `CheckResult` in a batch.

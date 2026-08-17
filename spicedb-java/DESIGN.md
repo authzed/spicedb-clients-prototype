@@ -72,21 +72,31 @@ public record Relationship(
     String subjectRelation,
     String caveatName,
     Map<String, Object> caveatContext,
-    Instant expiration
+    Instant expiration,
+    Map<String, Object> checkContext
 ) { }
 ```
 
 Constructors: `Relationship.of(...)`, `Relationship.fromTuple(String)`
 
-Immutable modifiers: `withCaveat(...)`, `withExpiration(...)`, `toFilter()`
+Immutable modifiers: `withCaveat(...)`, `withExpiration(...)`, `withCheckContext(...)`, `toFilter()`
+
+`checkContext` is a **CHECK-TIME-only** caveat context, distinct from `caveatContext` (write-time,
+stored WITH the relationship). `withCaveat`'s context is read only by the write path
+(`toProtoRelationship`); `withCheckContext`'s context is read only by the check path
+(`checkItemFromRel`) — the two never mix, so setting one can never leak into the other's request.
 
 ### Checks
 
 All checks use `BulkCheckPermissions` under the hood:
 - `checkPermission(consistency, permission, relationship)` → `CheckResult`
+- `checkPermission(consistency, permission, relationship, context)` → `CheckResult`
 - `checkPermissions(consistency, permission, relationships...)` → `List<CheckResult>`
+- `checkPermissions(consistency, permission, context, relationships...)` → `List<CheckResult>`
 - `checkAny(consistency, permission, relationships...)` → `boolean`
+- `checkAny(consistency, permission, context, relationships...)` → `boolean`
 - `checkAll(consistency, permission, relationships...)` → `boolean`
+- `checkAll(consistency, permission, context, relationships...)` → `boolean`
 
 `CheckResult` (a record, mirroring `LookupResult`'s shape) carries the server's full answer instead
 of collapsing it to a `boolean`:
@@ -118,6 +128,44 @@ response-level token is propagated onto every `CheckResult` in the batch. A per-
 `CheckBulkPermissionsPair` is routed through `ErrorMapper` (using the item's own gRPC code) so
 callers get the specific typed exception (e.g. `PermissionDeniedException`), with the item's index
 preserved in the message (`"check item %d: ..."`, matching `spicedb-go`).
+
+#### Caveat context on checks
+
+A caveated relationship's check can come back `CONDITIONAL_PERMISSION` — the server found a
+matching relationship but couldn't evaluate its caveat because the required context wasn't
+supplied (`CheckResult.missingContext()` names what's missing). Both check-time forms let a caller
+resolve that:
+
+- **Call-level** — a `Map<String, Object> context` overload on each of `checkPermission`,
+  `checkPermissions`, `checkAny`, `checkAll`, applied as a default to every relationship checked in
+  that call.
+- **Per-item** — `Relationship.withCheckContext(context)`, which flows through even the plain
+  (no-context-parameter) overloads.
+
+**Merge rule (key-level, item wins):** for each relationship, the context sent to the server is the
+call-level map with that relationship's own `checkContext` entries overwriting matching keys —
+call-level keys absent from the item are retained, never wholesale-replaced.
+
+```java
+var callLevel = Map.<String, Object>of("now", 42, "region", "us");
+var item0 = Relationship.of("document", "doc1", "viewer", "user", "alice")
+    .withCheckContext(Map.of("region", "eu"));               // overrides "region" only
+var item1 = Relationship.of("document", "doc2", "viewer", "user", "bob"); // no per-item context
+
+// item0 gets {now: 42, region: "eu"}; item1 gets {now: 42, region: "us"} unchanged.
+List<CheckResult> results = client.checkPermissions(consistency, "view", callLevel, item0, item1);
+```
+
+When neither call-level nor per-item context is supplied, no `context` field is set on the wire at
+all (never an empty `Struct`).
+
+**Additive, no existing call site changed.** All four context-accepting forms are new *overloads*
+alongside the untouched originals — Java has overloading (unlike C#/TypeScript, it has no default
+arguments), so this needed no `WithContext`-suffixed sibling methods the way Go does. The context
+parameter sits immediately before the variadic `relationships...` on the three plural methods
+(matching where `spicedb-go`'s `CheckWithContext` puts its `checkContext` parameter, relative to
+its own variadic) and as a trailing parameter on the singular `checkPermission` (no variadic to
+avoid there).
 
 ### Streaming & Transparent Cursor Pagination
 
@@ -207,9 +255,13 @@ These may change without following the backwards compatibility mandate.
 
 **Checks:**
 - `checkPermission(Consistency, String permission, Relationship)` → `CheckResult`
+- `checkPermission(Consistency, String permission, Relationship, Map<String, Object> context)` → `CheckResult`
 - `checkPermissions(Consistency, String permission, Relationship...)` → `List<CheckResult>`
+- `checkPermissions(Consistency, String permission, Map<String, Object> context, Relationship...)` → `List<CheckResult>`
 - `checkAny(Consistency, String permission, Relationship...)` → `boolean`
+- `checkAny(Consistency, String permission, Map<String, Object> context, Relationship...)` → `boolean`
 - `checkAll(Consistency, String permission, Relationship...)` → `boolean`
+- `checkAll(Consistency, String permission, Map<String, Object> context, Relationship...)` → `boolean`
 
 **Relationships:**
 - `write(Transaction)` → `String` (revision)

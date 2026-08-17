@@ -8,6 +8,7 @@ import com.authzed.spicedb.Filter;
 import com.authzed.spicedb.LookupResult;
 import com.authzed.spicedb.Relationship;
 import com.authzed.spicedb.Transaction;
+import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -79,5 +80,47 @@ class ConditionalCheckTest extends SpiceDBIntegrationTest {
     assertThat(result.hasPermission()).isFalse();
     assertThat(result.missingContext()).containsExactly("now");
     assertThat(result.checkedAt()).isNotEmpty();
+  }
+
+  /**
+   * C5 (spec D3b, the payoff test): the SAME relationship that comes back CONDITIONAL_PERMISSION
+   * above resolves into a genuine grant when the missing caveat context is supplied at CHECK time
+   * (not write time) via the new {@code checkPermission(..., Map)} overload. This is what makes
+   * {@code missingContext} actionable rather than merely observable.
+   */
+  @Test
+  void check_with_context_supplied_at_check_time_resolves_to_a_grant() {
+    CheckResult result =
+        client.checkPermission(
+            full(),
+            "view",
+            Relationship.of("doc", "firstdoc", "view", "user", "alice"),
+            Map.of("now", 42));
+
+    assertThat(result.permissionship()).isEqualTo(LookupResult.Permissionship.HAS_PERMISSION);
+    assertThat(result.hasPermission()).isTrue();
+    assertThat(result.missingContext()).isEmpty();
+    assertThat(result.checkedAt()).isNotEmpty();
+  }
+
+  /**
+   * Bonus live proof of the merge rule (C3) against a real caveat evaluation, not just a captured
+   * request: a call-level default of {@code now=200} fails the caveat ({@code now < 100}), but the
+   * checked relationship overrides it with its own {@code now=42} via {@link
+   * Relationship#withCheckContext}, which must win per-key over the call-level default.
+   */
+  @Test
+  void check_context_merge_item_override_wins_over_call_level_default() {
+    Relationship overridden =
+        Relationship.of("doc", "firstdoc", "view", "user", "alice")
+            .withCheckContext(Map.of("now", 42));
+
+    List<CheckResult> results =
+        client.checkPermissions(full(), "view", Map.of("now", 200), overridden);
+
+    assertThat(results).hasSize(1);
+    assertThat(results.get(0).hasPermission())
+        .as("item-level now=42 must win over the call-level now=200 default")
+        .isTrue();
   }
 }

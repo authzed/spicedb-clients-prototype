@@ -157,6 +157,23 @@ public final class SpiceDBClient implements AutoCloseable {
   }
 
   /**
+   * Checks a single permission with a caveat CHECK-TIME {@code context}, in addition to any
+   * per-item context set via {@link Relationship#withCheckContext} on {@code r} itself (item wins
+   * per-key over this call-level default; see {@link #checkPermissions(Consistency, String, Map,
+   * Relationship...)} for the merge rule). Distinct from {@code r}'s write-time {@code
+   * caveatContext} (set via {@link Relationship#withCaveat}) — this context is never written, only
+   * used to evaluate the caveat for this check.
+   *
+   * <p>See {@link #checkPermission(Consistency, String, Relationship)} for the RULE governing how
+   * to interpret the result.
+   */
+  public CheckResult checkPermission(
+      Consistency consistency, String permission, Relationship r, Map<String, Object> context) {
+    List<CheckResult> results = checkPermissions(consistency, permission, context, r);
+    return results.get(0);
+  }
+
+  /**
    * Checks permissions for multiple relationships, returning a {@link CheckResult} for each. All
    * checks use BulkCheckPermissions under the hood.
    *
@@ -164,13 +181,40 @@ public final class SpiceDBClient implements AutoCloseable {
    */
   public List<CheckResult> checkPermissions(
       Consistency consistency, String permission, Relationship... relationships) {
+    return checkPermissions(consistency, permission, (Map<String, Object>) null, relationships);
+  }
+
+  /**
+   * Checks permissions for multiple relationships with a caveat CHECK-TIME {@code context} applied,
+   * by default, to every relationship — plus any per-item context set via {@link
+   * Relationship#withCheckContext} on individual relationships.
+   *
+   * <p><b>Merge rule (key-level, item wins):</b> for each relationship, the context sent to the
+   * server is the call-level {@code context} map with that relationship's own {@link
+   * Relationship#checkContext()} entries overwriting matching keys — call-level keys absent from
+   * the item are retained, never wholesale-replaced. For example, call-level {@code {now: 42,
+   * region: "us"}} plus a per-item {@code {region: "eu"}} sends {@code {now: 42, region: "eu"}} for
+   * that item, while a sibling relationship with no per-item context still sends {@code {now: 42,
+   * region: "us"}}. When neither call-level nor per-item context is supplied for a relationship, no
+   * {@code context} field is set on the wire at all (not an empty {@code Struct}).
+   *
+   * <p>Distinct from write-time {@code caveatContext} (set via {@link Relationship#withCaveat}) —
+   * this context is never written, only used to evaluate the caveat for this check.
+   *
+   * <p>See {@link #checkPermission} for the RULE governing how to interpret each result.
+   */
+  public List<CheckResult> checkPermissions(
+      Consistency consistency,
+      String permission,
+      Map<String, Object> context,
+      Relationship... relationships) {
     if (relationships.length == 0) {
       return List.of();
     }
 
     var items = new ArrayList<CheckBulkPermissionsRequestItem>(relationships.length);
     for (Relationship r : relationships) {
-      items.add(checkItemFromRel(r, permission));
+      items.add(checkItemFromRel(r, permission, context));
     }
 
     CheckBulkPermissionsResponse resp =
@@ -214,7 +258,22 @@ public final class SpiceDBClient implements AutoCloseable {
    */
   public boolean checkAny(
       Consistency consistency, String permission, Relationship... relationships) {
-    List<CheckResult> results = checkPermissions(consistency, permission, relationships);
+    return checkAny(consistency, permission, null, relationships);
+  }
+
+  /**
+   * Returns true if any of the given relationships have the permission unconditionally, evaluating
+   * caveats with the given call-level/per-item CHECK-TIME {@code context} (see {@link
+   * #checkPermissions(Consistency, String, Map, Relationship...)} for the merge rule). A {@code
+   * CONDITIONAL_PERMISSION} result does not count as granted — only {@link
+   * CheckResult#hasPermission()} results are considered (RULE, clause 3).
+   */
+  public boolean checkAny(
+      Consistency consistency,
+      String permission,
+      Map<String, Object> context,
+      Relationship... relationships) {
+    List<CheckResult> results = checkPermissions(consistency, permission, context, relationships);
     for (CheckResult r : results) {
       if (r.hasPermission()) return true;
     }
@@ -228,7 +287,22 @@ public final class SpiceDBClient implements AutoCloseable {
    */
   public boolean checkAll(
       Consistency consistency, String permission, Relationship... relationships) {
-    List<CheckResult> results = checkPermissions(consistency, permission, relationships);
+    return checkAll(consistency, permission, null, relationships);
+  }
+
+  /**
+   * Returns true if all of the given relationships have the permission unconditionally, evaluating
+   * caveats with the given call-level/per-item CHECK-TIME {@code context} (see {@link
+   * #checkPermissions(Consistency, String, Map, Relationship...)} for the merge rule). A {@code
+   * CONDITIONAL_PERMISSION} result does not count as granted — every result must be {@link
+   * CheckResult#hasPermission()} for this to return true (RULE, clause 3).
+   */
+  public boolean checkAll(
+      Consistency consistency,
+      String permission,
+      Map<String, Object> context,
+      Relationship... relationships) {
+    List<CheckResult> results = checkPermissions(consistency, permission, context, relationships);
     for (CheckResult r : results) {
       if (!r.hasPermission()) return false;
     }
@@ -1209,24 +1283,68 @@ public final class SpiceDBClient implements AutoCloseable {
   }
 
   private static CheckBulkPermissionsRequestItem checkItemFromRel(
-      Relationship r, String permission) {
-    return CheckBulkPermissionsRequestItem.newBuilder()
-        .setResource(
-            ObjectReference.newBuilder()
-                .setObjectType(r.resourceType())
-                .setObjectId(r.resourceID())
-                .build())
-        .setPermission(permission)
-        .setSubject(
-            SubjectReference.newBuilder()
-                .setObject(
-                    ObjectReference.newBuilder()
-                        .setObjectType(r.subjectType())
-                        .setObjectId(r.subjectID())
-                        .build())
-                .setOptionalRelation(r.subjectRelation() != null ? r.subjectRelation() : "")
-                .build())
-        .build();
+      Relationship r, String permission, Map<String, Object> callLevelContext) {
+    var builder =
+        CheckBulkPermissionsRequestItem.newBuilder()
+            .setResource(
+                ObjectReference.newBuilder()
+                    .setObjectType(r.resourceType())
+                    .setObjectId(r.resourceID())
+                    .build())
+            .setPermission(permission)
+            .setSubject(
+                SubjectReference.newBuilder()
+                    .setObject(
+                        ObjectReference.newBuilder()
+                            .setObjectType(r.subjectType())
+                            .setObjectId(r.subjectID())
+                            .build())
+                    .setOptionalRelation(r.subjectRelation() != null ? r.subjectRelation() : "")
+                    .build());
+
+    // CHECK-TIME context only -- r.caveatContext() (write-time) is never read here. See
+    // mergeCheckContext for the key-level, item-wins merge rule.
+    Map<String, Object> merged = mergeCheckContext(callLevelContext, r.checkContext());
+    if (merged != null) {
+      builder.setContext(toProtoStruct(merged));
+    }
+    return builder.build();
+  }
+
+  /**
+   * Merges call-level and per-item CHECK-TIME caveat context using a key-level merge where the
+   * item's keys win: {@code {...callLevel, ...item}}. Call-level keys absent from {@code item} are
+   * retained -- this is NOT wholesale replacement, since an item supplying one key must not
+   * silently drop every call-level key (the caveat would then fail to evaluate for the dropped
+   * keys, landing the caller back in the confusing CONDITIONAL_PERMISSION state this contract
+   * exists to make legible). Returns {@code null} (never an empty map) when both inputs are
+   * null/empty, so the caller knows to omit the wire {@code context} field entirely rather than
+   * sending an empty {@code Struct}.
+   */
+  private static Map<String, Object> mergeCheckContext(
+      Map<String, Object> callLevel, Map<String, Object> item) {
+    boolean callEmpty = callLevel == null || callLevel.isEmpty();
+    boolean itemEmpty = item == null || item.isEmpty();
+    if (callEmpty && itemEmpty) {
+      return null;
+    }
+    var merged = new LinkedHashMap<String, Object>();
+    if (callLevel != null) {
+      merged.putAll(callLevel);
+    }
+    if (item != null) {
+      merged.putAll(item);
+    }
+    return merged;
+  }
+
+  /** Converts a check-time context map to a proto {@code Struct}, reusing {@link #toProtoValue}. */
+  private static com.google.protobuf.Struct toProtoStruct(Map<String, Object> context) {
+    var builder = com.google.protobuf.Struct.newBuilder();
+    for (var entry : context.entrySet()) {
+      builder.putFields(entry.getKey(), toProtoValue(entry.getValue()));
+    }
+    return builder.build();
   }
 
   private static RelationshipUpdate toRelationshipUpdate(Transaction.Mutation m) {
@@ -1325,7 +1443,10 @@ public final class SpiceDBClient implements AutoCloseable {
         pr.getSubject().getOptionalRelation(),
         caveatName,
         caveatContext,
-        expiration);
+        expiration,
+        // checkContext is CHECK-TIME only and never round-trips through a write/read — a
+        // relationship read back from the server never carries it.
+        null);
   }
 
   /**

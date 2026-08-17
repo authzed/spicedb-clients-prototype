@@ -20,6 +20,7 @@ class RelationshipTest {
     assertNull(r.caveatName());
     assertNull(r.caveatContext());
     assertNull(r.expiration());
+    assertNull(r.checkContext());
   }
 
   @Test
@@ -120,6 +121,32 @@ class RelationshipTest {
 
     assertNull(original.expiration());
     assertEquals(exp, withExp.expiration());
+  }
+
+  @Test
+  void withCheckContextReturnsNewInstance() {
+    Relationship original = Relationship.of("document", "doc1", "viewer", "user", "alice");
+    Map<String, Object> ctx = Map.of("now", 42);
+    Relationship withCheckContext = original.withCheckContext(ctx);
+
+    assertNull(original.checkContext());
+    assertEquals(ctx, withCheckContext.checkContext());
+    // Original fields preserved
+    assertEquals("document", withCheckContext.resourceType());
+  }
+
+  @Test
+  void checkContextIsDistinctFromCaveatContext() {
+    // Same relationship, DISJOINT keys in each context -- proves the two fields are independent,
+    // not aliases of one another. caveatContext is write-time (stored WITH the relationship);
+    // checkContext is check-time only (supplied fresh on each check call, never written).
+    Relationship r =
+        Relationship.of("document", "doc1", "viewer", "user", "alice")
+            .withCaveat("is_allowed", Map.of("write_time_key", "w"))
+            .withCheckContext(Map.of("check_time_key", "c"));
+
+    assertEquals(Map.of("write_time_key", "w"), r.caveatContext());
+    assertEquals(Map.of("check_time_key", "c"), r.checkContext());
   }
 
   @Test

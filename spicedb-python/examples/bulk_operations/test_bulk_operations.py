@@ -23,7 +23,9 @@ async def test_bulk_checks(client: SpiceDBClient):
     revision = await client.write(txn)
     print(f"wrote {len(users)} relationships at revision: {revision}")
 
-    # Bulk check permissions
+    # Bulk check permissions. check_permissions() returns a list of
+    # CheckResult, not bare bools -- .has_permission is true ONLY for a full
+    # HAS_PERMISSION grant.
     checks = [
         Relationship.from_triple("document:report", "view", f"user:{user}")
         for user in users
@@ -31,8 +33,8 @@ async def test_bulk_checks(client: SpiceDBClient):
     results = await client.check_permissions(at_least(revision), *checks)
 
     for user, result in zip(users, results):
-        print(f"user:{user} can view document:report: {result}")
-        assert result is True
+        print(f"user:{user} can view document:report: {result.has_permission}")
+        assert result.has_permission is True
 
     # check_all — verify all users have permission
     all_allowed = await client.check_all(at_least(revision), *checks)

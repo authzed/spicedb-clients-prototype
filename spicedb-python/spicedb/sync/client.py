@@ -37,6 +37,7 @@ from spicedb._requests import IMPORT_BATCH_SIZE as _IMPORT_BATCH_SIZE
 from spicedb.consistency import Consistency
 from spicedb.errors import is_transient, to_spicedb_error
 from spicedb.types import (
+    CheckResult,
     Filter,
     LookupResource,
     LookupSubject,
@@ -168,8 +169,12 @@ class SpiceDBClient:
         rel: Relationship,
         *,
         context: dict[str, Any] | None = None,
-    ) -> bool:
-        """Check a single permission. Returns True if the subject has the permission."""
+    ) -> CheckResult:
+        """Check a single permission. Returns a CheckResult -- use
+        `.has_permission` for the common bool case, or inspect
+        `.permissionship` directly to distinguish a CONDITIONAL_PERMISSION
+        result (caveat context was needed but not supplied) from a real
+        denial."""
         self._ensure_channel()
         results = self.check_permissions(consistency, rel, context=context)
         return results[0]
@@ -179,8 +184,9 @@ class SpiceDBClient:
         consistency: Consistency,
         *rels: Relationship,
         context: dict[str, Any] | None = None,
-    ) -> list[bool]:
-        """Check multiple permissions via BulkCheckPermissions. Returns list of bools."""
+    ) -> list[CheckResult]:
+        """Check multiple permissions via BulkCheckPermissions. Returns a
+        list of CheckResult, one per relationship, in the same order."""
         self._ensure_channel()
         request = _requests.check_bulk_request(consistency, rels, context)
 
@@ -198,10 +204,12 @@ class SpiceDBClient:
         *rels: Relationship,
         context: dict[str, Any] | None = None,
     ) -> bool:
-        """Return True if any of the permission checks pass."""
+        """Return True if any of the permission checks pass outright. Only
+        `CheckResult.has_permission` results count -- a CONDITIONAL_PERMISSION
+        result is not a grant, so it can never make this True."""
         self._ensure_channel()
         results = self.check_permissions(consistency, *rels, context=context)
-        return any(results)
+        return any(r.has_permission for r in results)
 
     def check_all(
         self,
@@ -209,10 +217,12 @@ class SpiceDBClient:
         *rels: Relationship,
         context: dict[str, Any] | None = None,
     ) -> bool:
-        """Return True if all of the permission checks pass."""
+        """Return True if all of the permission checks pass outright. Only
+        `CheckResult.has_permission` results count -- a CONDITIONAL_PERMISSION
+        result is not a grant, so it makes this False."""
         self._ensure_channel()
         results = self.check_permissions(consistency, *rels, context=context)
-        return all(results)
+        return all(r.has_permission for r in results)
 
     # ── Reads ───────────────────────────────────────────────────────
 

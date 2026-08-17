@@ -9,7 +9,7 @@ from unittest import mock
 import grpc
 import pytest
 
-from spicedb import Filter, Relationship
+from spicedb import Filter, Permissionship, Relationship
 from spicedb.consistency import full
 from spicedb.errors import PermissionDeniedError, UnavailableError
 from spicedb.sync import SpiceDBClient
@@ -66,11 +66,13 @@ def test_context_manager_closes_the_channel():
     assert c._channel is None
 
 
-def test_check_permission_returns_bool(make_client):
+def test_check_permission_returns_check_result(make_client):
+    from authzed.api.v1 import core_pb2
     from authzed.api.v1 import permission_service_pb2 as psp
 
     c = make_client()
     resp = psp.CheckBulkPermissionsResponse(
+        checked_at=core_pb2.ZedToken(token="deadbeef"),
         pairs=[
             psp.CheckBulkPermissionsPair(
                 item=psp.CheckBulkPermissionsResponseItem(
@@ -81,7 +83,10 @@ def test_check_permission_returns_bool(make_client):
     )
     with mock.patch.object(c._permissions, "CheckBulkPermissions", return_value=resp):
         rel = Relationship.from_triple("document:readme", "view", "user:jimmy")
-        assert c.check_permission(full(), rel) is True
+        result = c.check_permission(full(), rel)
+        assert result.permissionship == Permissionship.HAS_PERMISSION
+        assert result.has_permission is True
+        assert result.checked_at == "deadbeef"
 
 
 def test_transient_error_is_retried_then_succeeds(make_client):

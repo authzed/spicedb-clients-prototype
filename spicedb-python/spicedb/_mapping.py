@@ -13,30 +13,45 @@ from authzed.api.v1 import permission_service_pb2, watch_service_pb2
 
 from spicedb.errors import error_from_status_proto
 from spicedb.types import (
+    CheckResult,
     LookupResource,
     LookupSubject,
     Permissionship,
     ResolvedSubject,
     Update,
+    _check_permissionship_from_proto,
     _partial_caveat_from_proto,
     _permissionship_from_proto,
     _resolved_subject_from_proto,
 )
 
-_HAS_PERMISSION = (
-    permission_service_pb2.CheckPermissionResponse.PERMISSIONSHIP_HAS_PERMISSION
-)
-
 
 def check_results(
     resp: permission_service_pb2.CheckBulkPermissionsResponse,
-) -> list[bool]:
-    """Map a bulk-check response to bools, raising on any per-item error."""
-    results: list[bool] = []
+) -> list[CheckResult]:
+    """Map a bulk-check response to CheckResults, raising on any per-item
+    error.
+
+    CheckBulkPermissionsResponse.checked_at is response-level, not
+    per-item — CheckBulkPermissionsResponseItem carries no token of its
+    own — so the one token on the response is propagated onto every result.
+    """
+    checked_at = resp.checked_at.token
+    results: list[CheckResult] = []
     for pair in resp.pairs:
         if pair.HasField("error"):
             raise error_from_status_proto(pair.error)
-        results.append(pair.item.permissionship == _HAS_PERMISSION)
+        results.append(
+            CheckResult(
+                permissionship=_check_permissionship_from_proto(
+                    pair.item.permissionship
+                ),
+                missing_context=list(
+                    pair.item.partial_caveat_info.missing_required_context
+                ),
+                checked_at=checked_at,
+            )
+        )
     return results
 
 
@@ -47,6 +62,7 @@ def lookup_resource(
         resource_id=resp.resource_object_id,
         permissionship=_permissionship_from_proto(resp.permissionship),
         partial_caveat=_partial_caveat_from_proto(resp),
+        looked_up_at=resp.looked_up_at.token,
     )
 
 
@@ -76,7 +92,11 @@ def lookup_subject(
             for subject_id in resp.excluded_subject_ids
         ]
 
-    return LookupSubject(subject=subject, excluded_subjects=excluded)
+    return LookupSubject(
+        subject=subject,
+        excluded_subjects=excluded,
+        looked_up_at=resp.looked_up_at.token,
+    )
 
 
 def watch_event(resp: watch_service_pb2.WatchResponse) -> tuple[list[Update], str]:

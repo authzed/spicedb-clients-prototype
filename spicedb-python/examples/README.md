@@ -17,6 +17,8 @@ Or use `mage test` which starts a SpiceDB container automatically.
 | Directory | Description |
 |-----------|-------------|
 | `check_permission/` | Basic permission check |
+| `caveated_check/` | Checking a caveated relationship with no context supplied (CONDITIONAL_PERMISSION) |
+| `read_your_writes/` | Using `CheckResult.checked_at`/`LookupResource.looked_up_at` with `at_least()` to make a later call observe an earlier write |
 | `write_relationships/` | Writing relationships with the transaction builder |
 | `read_relationships/` | Reading relationships with an async iterator |
 | `delete_relationships/` | Deleting relationships, including precondition-guarded deletes |

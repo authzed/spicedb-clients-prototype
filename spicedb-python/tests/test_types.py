@@ -2,9 +2,11 @@
 
 from datetime import datetime, timezone
 
+import pytest
 from authzed.api.v1 import core_pb2, permission_service_pb2
 
 from spicedb.types import (
+    CheckResult,
     Filter,
     IntermediateNode,
     LeafNode,
@@ -19,6 +21,7 @@ from spicedb.types import (
     TreeOperation,
     Update,
     UpdateOperation,
+    _check_permissionship_from_proto,
     _partial_caveat_from_proto,
     _permission_tree_from_proto,
     _permissionship_from_proto,
@@ -495,3 +498,86 @@ class TestResolvedSubjectFromProto:
         assert got.partial_caveat == PartialCaveatInfo(
             missing_required_context=["region"]
         )
+
+
+# ── Check results / mappers ─────────────────────────────────────────────
+#
+# Mirrors spicedb-go's client/check_types_test.go. Unlike LookupPermissionship,
+# CheckPermissionResponse.Permissionship has a fourth value (NO_PERMISSION),
+# since a single check answers a yes/no/conditional question about one
+# specific pair rather than streaming only the matches. Lookups never yield
+# NO_PERMISSION -- a non-match is simply absent from the stream.
+
+
+class TestCheckPermissionshipFromProto:
+    def test_unspecified(self):
+        assert (
+            _check_permissionship_from_proto(
+                permission_service_pb2.CheckPermissionResponse.PERMISSIONSHIP_UNSPECIFIED
+            )
+            == Permissionship.UNSPECIFIED
+        )
+
+    def test_no_permission(self):
+        assert (
+            _check_permissionship_from_proto(
+                permission_service_pb2.CheckPermissionResponse.PERMISSIONSHIP_NO_PERMISSION
+            )
+            == Permissionship.NO_PERMISSION
+        )
+
+    def test_has_permission(self):
+        assert (
+            _check_permissionship_from_proto(
+                permission_service_pb2.CheckPermissionResponse.PERMISSIONSHIP_HAS_PERMISSION
+            )
+            == Permissionship.HAS_PERMISSION
+        )
+
+    def test_conditional_permission(self):
+        assert (
+            _check_permissionship_from_proto(
+                permission_service_pb2.CheckPermissionResponse.PERMISSIONSHIP_CONDITIONAL_PERMISSION
+            )
+            == Permissionship.CONDITIONAL_PERMISSION
+        )
+
+    def test_unknown_value_maps_to_unspecified(self):
+        assert _check_permissionship_from_proto(99) == Permissionship.UNSPECIFIED
+
+
+class TestCheckResultHasPermission:
+    """T1: has_permission must be True ONLY for HAS_PERMISSION -- a
+    CONDITIONAL_PERMISSION result is NOT a grant (fail-closed: a caveat the
+    server couldn't evaluate must never be treated as satisfied)."""
+
+    @pytest.mark.parametrize(
+        "permissionship,expected",
+        [
+            (Permissionship.UNSPECIFIED, False),
+            (Permissionship.NO_PERMISSION, False),
+            (Permissionship.HAS_PERMISSION, True),
+            (Permissionship.CONDITIONAL_PERMISSION, False),
+        ],
+    )
+    def test_has_permission_true_only_for_has_permission(
+        self, permissionship, expected
+    ):
+        result = CheckResult(
+            permissionship=permissionship,
+            missing_context=[],
+            checked_at="",
+        )
+        assert result.has_permission is expected
+
+    def test_frozen(self):
+        result = CheckResult(
+            permissionship=Permissionship.HAS_PERMISSION,
+            missing_context=[],
+            checked_at="deadbeef",
+        )
+        try:
+            result.permissionship = Permissionship.NO_PERMISSION  # type: ignore[misc]
+            assert False, "should have raised"
+        except AttributeError:
+            pass

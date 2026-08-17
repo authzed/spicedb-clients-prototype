@@ -660,16 +660,29 @@ def _schema_diff_from_proto(
 
 
 class Permissionship(Enum):
-    """Whether a lookup result reflects a full grant or is conditional on
-    caveat context that was not fully evaluated by the server. Callers MUST
-    check this before treating a result as a full grant — a
-    CONDITIONAL_PERMISSION result may resolve to false once the missing
-    caveat context is supplied.
+    """Whether a check or lookup result reflects a full grant, a full
+    denial, or is conditional on caveat context that was not fully evaluated
+    by the server. Callers MUST check this before treating a result as a
+    full grant — a CONDITIONAL_PERMISSION result may resolve to false once
+    the missing caveat context is supplied.
+
+    This enum serves both the check surface (`CheckResult`) and the lookup
+    surface (`LookupResource`, `ResolvedSubject`). Lookups never yield
+    NO_PERMISSION: a subject/resource pair that lacks the permission is
+    simply absent from a lookup stream rather than yielded with that
+    permissionship. NO_PERMISSION only appears on `CheckResult`, where the
+    server is answering a yes/no/conditional question about one specific
+    pair and "no" is itself an answer.
+
+    NO_PERMISSION is appended after CONDITIONAL_PERMISSION (not inserted
+    alongside UNSPECIFIED) so the values of the pre-existing members are not
+    renumbered.
     """
 
     UNSPECIFIED = 0
     HAS_PERMISSION = 1
     CONDITIONAL_PERMISSION = 2
+    NO_PERMISSION = 3
 
 
 _PERMISSIONSHIP_MAP = {
@@ -685,6 +698,28 @@ def _permissionship_from_proto(v: int) -> Permissionship:
     Unrecognized values map to Permissionship.UNSPECIFIED. Mirrors
     spicedb-go's `permissionshipFromProto` (client/lookup_types.go)."""
     return _PERMISSIONSHIP_MAP.get(v, Permissionship.UNSPECIFIED)
+
+
+_CHECK_PERMISSIONSHIP_MAP = {
+    permission_service_pb2.CheckPermissionResponse.PERMISSIONSHIP_HAS_PERMISSION: (
+        Permissionship.HAS_PERMISSION
+    ),
+    permission_service_pb2.CheckPermissionResponse.PERMISSIONSHIP_CONDITIONAL_PERMISSION: (
+        Permissionship.CONDITIONAL_PERMISSION
+    ),
+    permission_service_pb2.CheckPermissionResponse.PERMISSIONSHIP_NO_PERMISSION: (
+        Permissionship.NO_PERMISSION
+    ),
+}
+
+
+def _check_permissionship_from_proto(v: int) -> Permissionship:
+    """Map the proto CheckPermissionResponse.Permissionship enum (which,
+    unlike LookupPermissionship, has a NO_PERMISSION value) to its native
+    equivalent. Unrecognized values map to Permissionship.UNSPECIFIED.
+    Mirrors spicedb-go's `checkPermissionshipFromProto`
+    (client/check_types.go)."""
+    return _CHECK_PERMISSIONSHIP_MAP.get(v, Permissionship.UNSPECIFIED)
 
 
 @dataclass(frozen=True)
@@ -719,6 +754,37 @@ class LookupResource:
     partial_caveat: PartialCaveatInfo | None = (
         None  # non-None when Permissionship is Conditional
     )
+    # The revision this result was computed at. Identical for every item
+    # yielded by a single lookup_resources() call -- it is a property of the
+    # call, not of the individual resource. Thread it into at_least() to make
+    # a later read observe this lookup (read-your-writes for lookups).
+    looked_up_at: str = ""
+
+
+@dataclass(frozen=True)
+class CheckResult:
+    """The outcome of a permission check. `permissionship` carries the
+    server's three-valued answer — a CONDITIONAL_PERMISSION result means the
+    server needed caveat context that was not supplied and is NOT a grant.
+    Prefer `has_permission` for the common case.
+    """
+
+    permissionship: Permissionship
+    # The caveat context keys the server needed and did not receive. Empty
+    # unless permissionship is CONDITIONAL_PERMISSION.
+    missing_context: list[str]
+    # The revision this check was evaluated at. Thread it into at_least() to
+    # make a later read observe this check (and everything it observed) --
+    # read-your-writes for checks.
+    checked_at: str
+
+    @property
+    def has_permission(self) -> bool:
+        """Whether the subject has the permission outright. False for a
+        CONDITIONAL_PERMISSION result -- the server could not evaluate the
+        caveat, so treating it as a grant would authorize on an unevaluated
+        condition."""
+        return self.permissionship == Permissionship.HAS_PERMISSION
 
 
 @dataclass(frozen=True)
@@ -742,6 +808,10 @@ class LookupSubject:
 
     subject: ResolvedSubject
     excluded_subjects: list[ResolvedSubject]
+    # The revision this result was computed at. Identical for every item
+    # yielded by a single lookup_subjects() call -- it is a property of the
+    # call, not of the individual subject.
+    looked_up_at: str = ""
 
 
 def _resolved_subject_from_proto(

@@ -33,6 +33,7 @@ from spicedb.errors import (
     UnavailableError,
 )
 from spicedb.types import (
+    CheckResult,
     Filter,
     IntermediateNode,
     LeafNode,
@@ -80,6 +81,8 @@ __all__ = [
     "SubjectRef",
     "ObjectRef",
     "TreeOperation",
+    # Check results
+    "CheckResult",
     # Lookup results
     "LookupResource",
     "LookupSubject",

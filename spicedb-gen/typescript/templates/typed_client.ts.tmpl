@@ -4,6 +4,7 @@ import {
     SpiceDBClient,
     createSpiceDBClient,
     Transaction,
+    CheckResult,
     type Relationship,
     type LookupResource,
     type LookupSubject,
@@ -119,10 +120,10 @@ export class TypedClient {
     // Check overloads
 {{- range $def := .Definitions}}
 {{- range $def.Permissions}}
-    async check(c: Consistency, p: { _type: "{{$def.Name}}"; _id: string; _permission: "{{.Name}}" }, s: {{.SubjectUnion}}): Promise<boolean>;
+    async check(c: Consistency, p: { _type: "{{$def.Name}}"; _id: string; _permission: "{{.Name}}" }, s: {{.SubjectUnion}}): Promise<CheckResult>;
 {{- end}}
 {{- end}}
-    async check(c: Consistency, p: { _type: string; _id: string; _permission: string }, s: { _type: string; _id: string; _relation?: string; _caveat?: string; _caveatContext?: Record<string, any> }): Promise<boolean> {
+    async check(c: Consistency, p: { _type: string; _id: string; _permission: string }, s: { _type: string; _id: string; _relation?: string; _caveat?: string; _caveatContext?: Record<string, any> }): Promise<CheckResult> {
         return this.client.checkPermission(c, {
             resourceType: p._type, resourceId: p._id, permission: p._permission,
             subjectType: s._type, subjectId: s._id, subjectRelation: (s as any)._relation,

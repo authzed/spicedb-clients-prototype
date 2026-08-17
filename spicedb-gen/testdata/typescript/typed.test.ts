@@ -3,12 +3,15 @@ import { full, type Relationship } from "@spicedb/client";
 import { TypedClient, Document, User, Team } from "./permissions";
 
 const SCHEMA = `
+caveat ip_range(allowed_cidr string) {
+    allowed_cidr == "0.0.0.0/0"
+}
 definition user {}
 definition team {
     relation member: user | team#member
 }
 definition document {
-    relation viewer: user | team#member
+    relation viewer: user | user with ip_range | team#member
     relation editor: user
     relation owner: user
     permission view = viewer + editor + owner
@@ -33,12 +36,28 @@ describe("TypedClient", () => {
                 Document("readme").viewer(Team("eng").member()),
             );
 
-            expect(await tc.check(full(), Document("readme").view, User("alice"))).toBe(true);
-            expect(await tc.check(full(), Document("readme").edit, User("alice"))).toBe(false);
-            expect(await tc.check(full(), Document("readme").view, User("bob"))).toBe(true);
-            expect(await tc.check(full(), Document("readme").edit, User("bob"))).toBe(true);
-            expect(await tc.check(full(), Document("readme").delete, User("charlie"))).toBe(true);
-            expect(await tc.check(full(), Document("readme").view, Team("eng").member())).toBe(true);
+            expect((await tc.check(full(), Document("readme").view, User("alice"))).hasPermission()).toBe(true);
+            expect((await tc.check(full(), Document("readme").edit, User("alice"))).hasPermission()).toBe(false);
+            expect((await tc.check(full(), Document("readme").view, User("bob"))).hasPermission()).toBe(true);
+            expect((await tc.check(full(), Document("readme").edit, User("bob"))).hasPermission()).toBe(true);
+            expect((await tc.check(full(), Document("readme").delete, User("charlie"))).hasPermission()).toBe(true);
+            expect((await tc.check(full(), Document("readme").view, Team("eng").member())).hasPermission()).toBe(true);
+        });
+
+        it("surfaces a caveated relationship missing context as conditional, not a bare denial", async () => {
+            // This is the state a boolean return would have collapsed away --
+            // it's reachable here only because tc.check() returns the full
+            // CheckResult instead of a bool. Before Task 4/11, TypeScript's
+            // check() would have returned `true` for this case: a fail-open bug.
+            await tc.touch(
+                Document("readme").viewer(User("frank").withIpRange({})),
+            );
+
+            const result = await tc.check(full(), Document("readme").view, User("frank"));
+            expect(result.hasPermission()).toBe(false);
+            expect(result.permissionship).toBe("conditionalPermission");
+            expect(result.missingContext).toContain("allowed_cidr");
+            expect(result.checkedAt).toBeTruthy();
         });
     });
 

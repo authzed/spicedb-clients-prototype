@@ -65,10 +65,12 @@ func TestGenerateSampleSchema(t *testing.T) {
 	assert.Contains(t, output, `readonly client: SpiceDBClient;`)
 	assert.Contains(t, output, `static create(endpoint: string, token: string`)
 
-	// Check overloads (view includes caveated variants)
-	assert.Contains(t, output, `async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "view" }, s: UserRef | UserIpRangeRef | UserTimeWindowRef | TeamMemberRef): Promise<boolean>;`)
-	assert.Contains(t, output, `async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "edit" }, s: UserRef): Promise<boolean>;`)
-	assert.Contains(t, output, `async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "delete" }, s: UserRef): Promise<boolean>;`)
+	// Check overloads (view includes caveated variants). Returns
+	// Promise<CheckResult>, not Promise<boolean>: see
+	// TestCheckSurfacesCheckResult below for the rigorous regression guard.
+	assert.Contains(t, output, `async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "view" }, s: UserRef | UserIpRangeRef | UserTimeWindowRef | TeamMemberRef): Promise<CheckResult>;`)
+	assert.Contains(t, output, `async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "edit" }, s: UserRef): Promise<CheckResult>;`)
+	assert.Contains(t, output, `async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "delete" }, s: UserRef): Promise<CheckResult>;`)
 
 	// Check implementation
 	assert.Contains(t, output, `return this.client.checkPermission(c, {`)
@@ -114,6 +116,57 @@ func TestGenerateSampleSchema(t *testing.T) {
 
 	// Generated file header
 	assert.Contains(t, output, `DO NOT EDIT`)
+}
+
+// TestCheckSurfacesCheckResult verifies the generated `check` method — both
+// its per-permission overload declarations and its dispatching
+// implementation — returns Promise<CheckResult>, not Promise<boolean>.
+//
+// Collapsing to boolean would silently reintroduce the bug CheckResult
+// exists to fix: a "conditionalPermission" result (server needed caveat
+// context it didn't get) would become indistinguishable from a real denial.
+// This test asserts the exact new signatures (so a stray comment mentioning
+// "CheckResult" can't fake a pass), asserts the old Promise<boolean> forms
+// are entirely gone, and asserts the underlying client's CheckResult return
+// value is passed through untouched rather than re-collapsed inside the
+// generated wrapper. Mirrors the rigor of the Go/Python equivalents in
+// golang/generator_test.go and python/generator_test.go.
+func TestCheckSurfacesCheckResult(t *testing.T) {
+	s, err := schema.ParseFile("../testdata/sample.zed")
+	require.NoError(t, err)
+
+	g := &Generator{}
+	files, err := g.Generate(s, nil)
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+
+	output := string(files[0].Content)
+
+	// CheckResult must be imported as a value (not type-only) from the client
+	// package, matching how it's exported from spicedb-typescript's index.ts.
+	assert.Contains(t, output, "    CheckResult,\n")
+
+	// Overload declarations — exact signature per permission, returning
+	// Promise<CheckResult>.
+	assert.Contains(t, output, `async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "view" }, s: UserRef | UserIpRangeRef | UserTimeWindowRef | TeamMemberRef): Promise<CheckResult>;`)
+	assert.Contains(t, output, `async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "edit" }, s: UserRef): Promise<CheckResult>;`)
+	assert.Contains(t, output, `async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "delete" }, s: UserRef): Promise<CheckResult>;`)
+
+	// Dispatching implementation — exact signature, returning Promise<CheckResult>.
+	assert.Contains(t, output, `async check(c: Consistency, p: { _type: string; _id: string; _permission: string }, s: { _type: string; _id: string; _relation?: string; _caveat?: string; _caveatContext?: Record<string, any> }): Promise<CheckResult> {`)
+
+	// The old Promise<boolean> forms must be entirely gone. Asserting merely
+	// that the string "CheckResult" appears somewhere would pass even on a
+	// broken template that returns boolean but mentions CheckResult only in a
+	// comment or unrelated import — these NotContains checks discriminate
+	// that regression.
+	assert.NotContains(t, output, "Promise<boolean>")
+
+	// The CheckResult returned by the underlying client is passed through
+	// untouched, not re-collapsed to a boolean inside the generated wrapper —
+	// which would silently reintroduce the exact bug CheckResult exists to
+	// fix, hidden inside generated code users don't read.
+	assert.Contains(t, output, "return this.client.checkPermission(c, {")
 }
 
 func TestGenerateEmptySchema(t *testing.T) {

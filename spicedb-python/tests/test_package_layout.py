@@ -30,7 +30,7 @@ def test_shared_vocabulary_stays_top_level():
         assert hasattr(spicedb, name), f"{name} must remain importable from spicedb"
 
 
-@pytest.mark.parametrize("flavor", ["aio"])
+@pytest.mark.parametrize("flavor", ["aio", "sync"])
 def test_flavor_module_exports_only_the_client(flavor):
     mod = __import__(f"spicedb.{flavor}", fromlist=["SpiceDBClient"])
     assert mod.__all__ == ["SpiceDBClient"]

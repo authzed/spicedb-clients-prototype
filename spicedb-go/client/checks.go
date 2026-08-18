@@ -200,6 +200,19 @@ func (c *Client) CheckIterWithContext(ctx context.Context, cs consistency.Strate
 				return true
 			}
 			results, err := c.CheckWithContext(ctx, cs, permission, checkContext, batch...)
+			// Clear the batch unconditionally, before yield runs, on both the
+			// error and success paths. Go's iterator contract says yield
+			// returning true means "keep going" -- a consumer that logs an
+			// error and continues must start the next batch from empty, not
+			// from the batch that just failed. Returning on the error path
+			// before this line (the original bug) left the failed batch in
+			// place: the next relationship pushed it over
+			// defaultCheckBatchSize, so flush was called again with the SAME
+			// failing batch plus one -- and again for every remaining
+			// element, growing without bound until it crossed SpiceDB's
+			// maxBulkCheckCount and the transient error became a permanent
+			// InvalidArgument.
+			batch = batch[:0]
 			if err != nil {
 				return yield(CheckResult{}, err)
 			}
@@ -208,7 +221,6 @@ func (c *Client) CheckIterWithContext(ctx context.Context, cs consistency.Strate
 					return false
 				}
 			}
-			batch = batch[:0]
 			return true
 		}
 

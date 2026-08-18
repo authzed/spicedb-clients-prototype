@@ -157,6 +157,15 @@
 
 ### Bug Fixes
 
+- **2026-08-18**: `CheckIterWithContext`'s internal `flush` cleared the accumulated batch AFTER
+  calling `yield` on the success path, but returned on the error path (`return yield(CheckResult{},
+  err)`) BEFORE clearing it. Go's iterator contract treats `yield` returning `true` as "keep
+  going", so a consumer that logged the error and continued (rather than `break`ing, which is why
+  this had never been noticed) left the failed batch in place: the next relationship pushed it
+  past `defaultCheckBatchSize`, so `flush` resent the SAME failing batch plus one on every
+  subsequent element -- an unbounded, monotonically growing batch until it crossed SpiceDB's
+  `maxBulkCheckCount` and the transient error became a permanent `InvalidArgument`. `flush` now
+  clears the batch unconditionally before invoking `yield`, on both paths.
 - **2026-08-18**: Watch resumability. `Updates` previously dropped
   `WatchResponse.changes_through` entirely and had no way to request
   `WATCH_KIND_INCLUDE_CHECKPOINTS`.

@@ -61,12 +61,41 @@ def subject_reference(
     )
 
 
+def _merge_check_context(
+    call_level: dict[str, Any] | None, item_level: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """Merge call-level and per-item caveat context for one check item.
+
+    Key-level, item wins: ``{**call_level, **item_level}``. Item keys
+    override call-level keys on conflict; call-level keys the item doesn't
+    mention are retained -- this is NOT wholesale replacement. An item that
+    supplies only one key must not silently drop every other call-level key,
+    or a caveat would fail for context the caller believed it had already
+    supplied (spec D3b).
+
+    Returns None -- so the wire request sets no ``context`` field at all,
+    rather than an empty Struct -- only when both inputs are None (neither
+    call-level nor per-item context was supplied).
+    """
+    if call_level is None and item_level is None:
+        return None
+    return {**(call_level or {}), **(item_level or {})}
+
+
 def check_bulk_request(
     consistency: Consistency,
     rels: tuple[Relationship, ...] | list[Relationship],
     context: dict[str, Any] | None,
 ) -> permission_service_pb2.CheckBulkPermissionsRequest:
-    ctx_struct = context_struct(context)
+    """Build a CheckBulkPermissionsRequest, one item per relationship.
+
+    ``context`` is the call-level default; it is fanned out onto every item
+    because ``CheckBulkPermissionsRequest`` itself has no context field on
+    the wire -- only ``CheckBulkPermissionsRequestItem.context`` does (proto
+    field 4). Each relationship's own ``check_context`` (if any) is merged
+    on top per ``_merge_check_context``: an item with no ``check_context``
+    inherits ``context`` unchanged.
+    """
     items = [
         permission_service_pb2.CheckBulkPermissionsRequestItem(
             resource=core_pb2.ObjectReference(
@@ -81,7 +110,7 @@ def check_bulk_request(
                 ),
                 optional_relation=rel.subject_relation,
             ),
-            context=ctx_struct,
+            context=context_struct(_merge_check_context(context, rel.check_context)),
         )
         for rel in rels
     ]

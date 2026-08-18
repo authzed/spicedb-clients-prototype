@@ -38,6 +38,14 @@ class CancelledError(SpiceDBError):
     """The operation was cancelled."""
 
 
+class DeadlineExceededError(SpiceDBError):
+    """The operation deadline was exceeded before it could complete."""
+
+
+class ResourceExhaustedError(SpiceDBError):
+    """A resource quota or limit was exhausted, such as a rate limit."""
+
+
 class EventLoopBindingError(SpiceDBError):
     """An async client was used from a different event loop than it bound to.
 
@@ -56,6 +64,8 @@ _CODE_TO_ERROR: dict[grpc.StatusCode, type[SpiceDBError]] = {
     grpc.StatusCode.FAILED_PRECONDITION: FailedPreconditionError,
     grpc.StatusCode.UNAVAILABLE: UnavailableError,
     grpc.StatusCode.CANCELLED: CancelledError,
+    grpc.StatusCode.DEADLINE_EXCEEDED: DeadlineExceededError,
+    grpc.StatusCode.RESOURCE_EXHAUSTED: ResourceExhaustedError,
 }
 
 _TRANSIENT_CODES = frozenset(
@@ -103,4 +113,4 @@ def is_transient(err: Exception) -> bool:
     """
     if isinstance(err, grpc.RpcError):
         return err.code() in _TRANSIENT_CODES
-    return isinstance(err, UnavailableError)
+    return isinstance(err, (UnavailableError, ResourceExhaustedError))

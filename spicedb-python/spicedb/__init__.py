@@ -22,15 +22,18 @@ from spicedb.consistency import (
 from spicedb.errors import (
     AlreadyExistsError,
     CancelledError,
+    DeadlineExceededError,
     EventLoopBindingError,
     FailedPreconditionError,
     InvalidArgumentError,
     NotFoundError,
     PermissionDeniedError,
+    ResourceExhaustedError,
     SpiceDBError,
     UnavailableError,
 )
 from spicedb.types import (
+    CheckResult,
     Filter,
     IntermediateNode,
     LeafNode,
@@ -78,6 +81,8 @@ __all__ = [
     "SubjectRef",
     "ObjectRef",
     "TreeOperation",
+    # Check results
+    "CheckResult",
     # Lookup results
     "LookupResource",
     "LookupSubject",
@@ -102,5 +107,7 @@ __all__ = [
     "FailedPreconditionError",
     "UnavailableError",
     "CancelledError",
+    "DeadlineExceededError",
+    "ResourceExhaustedError",
     "EventLoopBindingError",
 ]

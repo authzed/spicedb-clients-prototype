@@ -3,6 +3,7 @@
 using System.Runtime.CompilerServices;
 using Authzed.Api.SpiceDB.Proto;
 using Authzed.Api.V1;
+using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Grpc.Net.Client;
 
@@ -121,14 +122,85 @@ public sealed class SpiceDBClient : IAsyncDisposable
 
     /// <summary>
     /// Performs a bulk permission check on the given relationships and returns
-    /// a bool for each relationship indicating whether permission is granted.
-    /// All checks use BulkCheckPermissions under the hood.
+    /// a <see cref="CheckResult"/> for each relationship. All checks use
+    /// BulkCheckPermissions under the hood.
+    /// <para>
+    /// <see cref="CheckResult.Permissionship"/> carries the server's
+    /// four-valued answer — a <see cref="Client.Permissionship.ConditionalPermission"/>
+    /// result means the server needed caveat context that was not supplied,
+    /// and is NOT a grant. Prefer <see cref="CheckResult.HasPermission"/>
+    /// over comparing <see cref="CheckResult.Permissionship"/> directly for
+    /// the common case.
+    /// </para>
+    /// <para>
+    /// This overload sends no call-level default caveat context. Any
+    /// relationship built with <see cref="Relationship.WithCheckContext"/>
+    /// still supplies its own per-item context through this method — see
+    /// <see cref="CheckPermissionsWithContextAsync"/> for a call-level
+    /// default and the exact per-key merge rule with per-item context.
+    /// </para>
     /// </summary>
-    public async Task<bool[]> CheckPermissionsAsync(
+    public async Task<CheckResult[]> CheckPermissionsAsync(
         ConsistencyStrategy consistency,
         string permission,
         CancellationToken cancellationToken = default,
-        params Relationship[] relationships)
+        params Relationship[] relationships) =>
+        await CheckPermissionsCoreAsync(consistency, permission, null, cancellationToken, relationships);
+
+    /// <summary>
+    /// <see cref="CheckPermissionsAsync"/> with a call-level default caveat
+    /// context applied to every relationship in <paramref name="relationships"/>.
+    /// Caveat context supplies named values (e.g. "now") that SpiceDB needs
+    /// to evaluate a caveat expression encountered during the check; without
+    /// it, a caveated match comes back as
+    /// <see cref="Client.Permissionship.ConditionalPermission"/> instead of a
+    /// grant, and <see cref="CheckResult.MissingContext"/> names what was
+    /// needed.
+    /// <para>
+    /// A relationship built with <see cref="Relationship.WithCheckContext"/>
+    /// overrides <paramref name="context"/> on a per-key basis for that one
+    /// relationship: the item's own keys win on conflict, and any call-level
+    /// keys the item doesn't specify are retained. For example, a call-level
+    /// <c>{"now": 42, "region": "us"}</c> plus a per-item
+    /// <c>{"region": "eu"}</c> sends <c>{"now": 42, "region": "eu"}</c> for
+    /// that item, while a sibling item with no per-item context still gets
+    /// the untouched call-level default. Pass a <c>null</c>
+    /// <paramref name="context"/> for no call-level default (equivalent to
+    /// calling <see cref="CheckPermissionsAsync"/>).
+    /// </para>
+    /// <para>
+    /// The wire has no request-level context field — only
+    /// <c>CheckBulkPermissionsRequestItem.context</c> (per item) — so
+    /// <paramref name="context"/> is fanned out onto every item at
+    /// request-build time. When neither the call-level nor an item's own
+    /// context is supplied, no context field is set on that item's wire
+    /// representation (never an empty <c>Struct</c>).
+    /// </para>
+    /// </summary>
+    public async Task<CheckResult[]> CheckPermissionsWithContextAsync(
+        ConsistencyStrategy consistency,
+        string permission,
+        IReadOnlyDictionary<string, object>? context,
+        CancellationToken cancellationToken = default,
+        params Relationship[] relationships) =>
+        await CheckPermissionsCoreAsync(consistency, permission, context, cancellationToken, relationships);
+
+    /// <summary>
+    /// Shared implementation behind <see cref="CheckPermissionsAsync"/>,
+    /// <see cref="CheckPermissionsWithContextAsync"/>,
+    /// <see cref="CheckPermissionAsync"/>, <see cref="CheckAnyAsync"/>/
+    /// <see cref="CheckAnyWithContextAsync"/>, and
+    /// <see cref="CheckAllAsync"/>/<see cref="CheckAllWithContextAsync"/> —
+    /// all of them are aggregates or pass-throughs over the same
+    /// CheckBulkPermissions request, so the request-building, per-item
+    /// context merge, and response-mapping logic lives here once.
+    /// </summary>
+    private async Task<CheckResult[]> CheckPermissionsCoreAsync(
+        ConsistencyStrategy consistency,
+        string permission,
+        IReadOnlyDictionary<string, object>? context,
+        CancellationToken cancellationToken,
+        Relationship[] relationships)
     {
         ArgumentNullException.ThrowIfNull(consistency);
         if (string.IsNullOrEmpty(permission))
@@ -136,7 +208,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
         if (relationships.Length == 0)
             return [];
 
-        var items = relationships.Select(r => CheckItemFromRel(r, permission)).ToList();
+        var items = relationships.Select(r => CheckItemFromRel(r, permission, context)).ToList();
 
         var resp = await RetryAsync(async () =>
             await _permissions.CheckBulkPermissionsAsync(
@@ -148,32 +220,55 @@ public sealed class SpiceDBClient : IAsyncDisposable
                 cancellationToken: cancellationToken),
             cancellationToken);
 
-        var results = new bool[resp.Pairs.Count];
+        // checked_at lives once on the response and applies to every pair —
+        // CheckBulkPermissionsResponseItem has no per-item token of its own.
+        var checkedAt = resp.CheckedAt?.Token ?? "";
+
+        var results = new CheckResult[resp.Pairs.Count];
         for (var i = 0; i < resp.Pairs.Count; i++)
         {
             var pair = resp.Pairs[i];
             if (pair.Error != null)
-                throw new SpiceDBException($"Check item {i}: {pair.Error.Message}");
-            results[i] = pair.Item.Permissionship == CheckPermissionResponse.Types.Permissionship.HasPermission;
+            {
+                // pair.Error is a google.rpc.Status (numeric code + message),
+                // not a thrown RpcException. Synthesize one so the per-item
+                // error routes through the same ErrorMapper switch as every
+                // other RPC in this client, instead of discarding the code
+                // and throwing the base SpiceDBException.
+                var status = new Status((StatusCode)pair.Error.Code, pair.Error.Message);
+                throw ErrorMapper.ToSpiceDBException(new RpcException(status));
+            }
+            results[i] = ToCheckResult(pair.Item, checkedAt);
         }
         return results;
     }
 
     /// <summary>
-    /// Checks a single permission and returns true if granted.
+    /// Checks a single permission and returns its <see cref="CheckResult"/>.
+    /// <paramref name="context"/> is an optional caveat context supplied for
+    /// this one check — see
+    /// <see cref="CheckPermissionsWithContextAsync"/> for the merge rule
+    /// with any per-item context on <paramref name="relationship"/> itself
+    /// (via <see cref="Relationship.WithCheckContext"/>); for a single check
+    /// this mostly reads as "either supplies context," but it keeps the same
+    /// shape usable across all four check methods.
     /// </summary>
-    public async Task<bool> CheckPermissionAsync(
+    public async Task<CheckResult> CheckPermissionAsync(
         ConsistencyStrategy consistency,
         string permission,
         Relationship relationship,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IReadOnlyDictionary<string, object>? context = null)
     {
-        var results = await CheckPermissionsAsync(consistency, permission, cancellationToken, relationship);
+        var results = await CheckPermissionsCoreAsync(consistency, permission, context, cancellationToken, [relationship]);
         return results[0];
     }
 
     /// <summary>
-    /// Returns true if any of the given relationships have the permission.
+    /// Returns true if any of the given relationships have the permission
+    /// outright. A <see cref="Client.Permissionship.ConditionalPermission"/>
+    /// result does not count as granted — only
+    /// <see cref="CheckResult.HasPermission"/> results are considered.
     /// </summary>
     public async Task<bool> CheckAnyAsync(
         ConsistencyStrategy consistency,
@@ -181,12 +276,31 @@ public sealed class SpiceDBClient : IAsyncDisposable
         CancellationToken cancellationToken = default,
         params Relationship[] relationships)
     {
-        var results = await CheckPermissionsAsync(consistency, permission, cancellationToken, relationships);
-        return results.Any(r => r);
+        var results = await CheckPermissionsCoreAsync(consistency, permission, null, cancellationToken, relationships);
+        return results.Any(r => r.HasPermission);
     }
 
     /// <summary>
-    /// Returns true if all of the given relationships have the permission.
+    /// <see cref="CheckAnyAsync"/> with a call-level default caveat context
+    /// (see <see cref="CheckPermissionsWithContextAsync"/> for the merge
+    /// rule with any per-item context).
+    /// </summary>
+    public async Task<bool> CheckAnyWithContextAsync(
+        ConsistencyStrategy consistency,
+        string permission,
+        IReadOnlyDictionary<string, object>? context,
+        CancellationToken cancellationToken = default,
+        params Relationship[] relationships)
+    {
+        var results = await CheckPermissionsCoreAsync(consistency, permission, context, cancellationToken, relationships);
+        return results.Any(r => r.HasPermission);
+    }
+
+    /// <summary>
+    /// Returns true if all of the given relationships have the permission
+    /// outright. A <see cref="Client.Permissionship.ConditionalPermission"/>
+    /// result does not count as granted — every result must satisfy
+    /// <see cref="CheckResult.HasPermission"/> for this to return true.
     /// </summary>
     public async Task<bool> CheckAllAsync(
         ConsistencyStrategy consistency,
@@ -194,8 +308,24 @@ public sealed class SpiceDBClient : IAsyncDisposable
         CancellationToken cancellationToken = default,
         params Relationship[] relationships)
     {
-        var results = await CheckPermissionsAsync(consistency, permission, cancellationToken, relationships);
-        return results.All(r => r);
+        var results = await CheckPermissionsCoreAsync(consistency, permission, null, cancellationToken, relationships);
+        return results.All(r => r.HasPermission);
+    }
+
+    /// <summary>
+    /// <see cref="CheckAllAsync"/> with a call-level default caveat context
+    /// (see <see cref="CheckPermissionsWithContextAsync"/> for the merge
+    /// rule with any per-item context).
+    /// </summary>
+    public async Task<bool> CheckAllWithContextAsync(
+        ConsistencyStrategy consistency,
+        string permission,
+        IReadOnlyDictionary<string, object>? context,
+        CancellationToken cancellationToken = default,
+        params Relationship[] relationships)
+    {
+        var results = await CheckPermissionsCoreAsync(consistency, permission, context, cancellationToken, relationships);
+        return results.All(r => r.HasPermission);
     }
 
     // ──────────────────────────────────────────────────────────────────────
@@ -517,6 +647,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
                         ResourceID = resp.ResourceObjectId,
                         Permissionship = ToPermissionship(resp.Permissionship),
                         PartialCaveat = ToPartialCaveatInfo(resp.PartialCaveatInfo),
+                        LookedUpAt = resp.LookedUpAt?.Token ?? "",
                     };
                 }
 
@@ -1213,8 +1344,10 @@ public sealed class SpiceDBClient : IAsyncDisposable
     // Internals
     // ──────────────────────────────────────────────────────────────────────
 
-    private static CheckBulkPermissionsRequestItem CheckItemFromRel(Relationship r, string permission) =>
-        new()
+    private static CheckBulkPermissionsRequestItem CheckItemFromRel(
+        Relationship r, string permission, IReadOnlyDictionary<string, object>? callLevelContext)
+    {
+        var item = new CheckBulkPermissionsRequestItem
         {
             Resource = new ObjectReference
             {
@@ -1232,6 +1365,86 @@ public sealed class SpiceDBClient : IAsyncDisposable
                 OptionalRelation = r.SubjectRelation,
             },
         };
+
+        var context = MergeCheckContext(callLevelContext, r.CheckContext);
+        if (context != null)
+            item.Context = context;
+
+        return item;
+    }
+
+    /// <summary>
+    /// Merges call-level and per-item check-time caveat context per the
+    /// key-level merge rule: the item's own keys win on conflict, and any
+    /// call-level keys the item doesn't specify are retained. Returns
+    /// <c>null</c> (no context field to set on the wire) when both are
+    /// null/empty — deliberately never an empty <see cref="Struct"/>, so a
+    /// caller who supplies no context at all sees no <c>context</c> field on
+    /// the built request. Internal — exposed to the test assembly via
+    /// InternalsVisibleTo; not part of the public API.
+    /// </summary>
+    internal static Struct? MergeCheckContext(
+        IReadOnlyDictionary<string, object>? callLevel,
+        IReadOnlyDictionary<string, object>? item)
+    {
+        if ((callLevel == null || callLevel.Count == 0) && (item == null || item.Count == 0))
+            return null;
+
+        var merged = new Struct();
+        if (callLevel != null)
+        {
+            foreach (var (key, value) in callLevel)
+                merged.Fields[key] = ToProtoValue(value);
+        }
+        if (item != null)
+        {
+            // Applied after callLevel so item keys overwrite matching
+            // call-level keys — this IS the "item wins" half of the merge
+            // rule. Call-level keys the item doesn't mention are untouched
+            // by this loop, which is the "call-level retained" half.
+            foreach (var (key, value) in item)
+                merged.Fields[key] = ToProtoValue(value);
+        }
+
+        return merged;
+    }
+
+    /// <summary>
+    /// Converts a native .NET value into a protobuf Struct <see cref="Value"/>
+    /// for check-time caveat context. Unlike <see cref="Relationship.ToProto"/>'s
+    /// write-time CaveatContext conversion (which stringifies every value),
+    /// this preserves numeric/bool/null/nested shapes so caveat expressions
+    /// that compare typed parameters (e.g. a schema's <c>now &lt; 100</c>
+    /// against an <c>int</c>) evaluate correctly instead of comparing against
+    /// a string SpiceDB would reject or fail to coerce.
+    /// </summary>
+    internal static Value ToProtoValue(object? value) => value switch
+    {
+        null => Value.ForNull(),
+        bool b => Value.ForBool(b),
+        string s => Value.ForString(s),
+        sbyte or byte or short or ushort or int or uint or long or ulong or float or double or decimal =>
+            Value.ForNumber(Convert.ToDouble(value)),
+        IReadOnlyDictionary<string, object> nested => Value.ForStruct(ToProtoStructFrom(nested)),
+        System.Collections.IEnumerable list => Value.ForList(ToProtoValueList(list)),
+        _ => Value.ForString(value.ToString() ?? ""),
+    };
+
+    private static Struct ToProtoStructFrom(IReadOnlyDictionary<string, object> dict)
+    {
+        var s = new Struct();
+        foreach (var (key, value) in dict)
+            s.Fields[key] = ToProtoValue(value);
+        return s;
+    }
+
+    private static Value[] ToProtoValueList(System.Collections.IEnumerable list)
+    {
+        var values = new List<Value>();
+        foreach (var item in list)
+            values.Add(ToProtoValue(item));
+        return values.ToArray();
+    }
 
     /// <summary>
     /// Maps the proto LookupPermissionship enum to its native equivalent.
@@ -1256,6 +1469,41 @@ public sealed class SpiceDBClient : IAsyncDisposable
             return null;
         return new PartialCaveatInfo { MissingRequiredContext = v.MissingRequiredContext.ToList() };
     }
+
+    /// <summary>
+    /// Maps the proto CheckPermissionResponse.Types.Permissionship enum
+    /// (which, unlike LookupPermissionship, has a NoPermission value in
+    /// addition to Unspecified/HasPermission/ConditionalPermission) to its
+    /// native equivalent. Unrecognized values map to
+    /// Permissionship.Unspecified. Internal — exposed to the test assembly
+    /// via InternalsVisibleTo; not part of the public API.
+    /// </summary>
+    internal static Permissionship ToCheckPermissionship(CheckPermissionResponse.Types.Permissionship v) => v switch
+    {
+        CheckPermissionResponse.Types.Permissionship.HasPermission => Permissionship.HasPermission,
+        CheckPermissionResponse.Types.Permissionship.NoPermission => Permissionship.NoPermission,
+        CheckPermissionResponse.Types.Permissionship.ConditionalPermission => Permissionship.ConditionalPermission,
+        _ => Permissionship.Unspecified,
+    };
+
+    /// <summary>
+    /// Maps one successful CheckBulkPermissionsResponseItem pair to a native
+    /// CheckResult. CheckBulkPermissionsResponseItem carries the same
+    /// permissionship/partial-caveat-info fields as CheckPermissionResponse,
+    /// but has no per-item checked_at of its own — the token lives once on
+    /// the enclosing CheckBulkPermissionsResponse and applies to every pair
+    /// in it, so callers pass it in as <paramref name="checkedAt"/> to
+    /// propagate it onto each result.
+    /// </summary>
+    internal static CheckResult ToCheckResult(CheckBulkPermissionsResponseItem item, string checkedAt) =>
+        new()
+        {
+            Permissionship = ToCheckPermissionship(item.Permissionship),
+            MissingContext = item.PartialCaveatInfo != null
+                ? item.PartialCaveatInfo.MissingRequiredContext.ToList()
+                : [],
+            CheckedAt = checkedAt,
+        };
 
     /// <summary>
     /// Maps a proto ResolvedSubject to its native equivalent. A null input
@@ -1310,7 +1558,12 @@ public sealed class SpiceDBClient : IAsyncDisposable
 #pragma warning restore CS0612
         }
 
-        return new LookupSubject { Subject = subject, ExcludedSubjects = excluded };
+        return new LookupSubject
+        {
+            Subject = subject,
+            ExcludedSubjects = excluded,
+            LookedUpAt = resp.LookedUpAt?.Token ?? "",
+        };
     }
 
     /// <summary>

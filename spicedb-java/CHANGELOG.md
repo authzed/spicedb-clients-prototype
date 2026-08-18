@@ -4,6 +4,50 @@
 
 ### Added
 
+- **2026-08-17**: Caveat CHECK-TIME context on the check surface. Two forms, both additive
+  overloads — the existing `checkPermission`/`checkPermissions`/`checkAny`/`checkAll` signatures
+  are byte-for-byte unchanged:
+  - **Call-level**: `checkPermission(consistency, permission, relationship, context)`,
+    `checkPermissions(consistency, permission, context, relationships...)`,
+    `checkAny(consistency, permission, context, relationships...)`,
+    `checkAll(consistency, permission, context, relationships...)` — a `Map<String, Object>`
+    default applied to every relationship in the call.
+  - **Per-item**: `Relationship.withCheckContext(context)` — flows through even the plain,
+    context-less overloads.
+
+  **Merge rule (key-level, item wins)**: `{...callLevel, ...item}` — an item's own context
+  overrides the call-level default per-key; call-level keys the item doesn't mention are retained,
+  never wholesale-replaced. When neither is supplied, no `context` field is set on the wire at all
+  (never an empty `Struct`). This is what makes `CheckResult.missingContext()` actionable: a caller
+  can now resolve a `CONDITIONAL_PERMISSION` into a grant by supplying the named keys at check time,
+  instead of only being able to observe that they were missing.
+
+  `Relationship` gains a `checkContext` field (10th, distinct from the existing write-time
+  `caveatContext`) and `withCheckContext(Map<String, Object>)`, mirroring `withCaveat`/
+  `withExpiration`. `checkContext` is read ONLY by the check-request builder
+  (`checkItemFromRel`); `caveatContext` is read ONLY by the write-request builder
+  (`toProtoRelationship`) — the two are pinned distinct so a check-time context can never leak into
+  a stored relationship.
+
+  ```java
+  var callLevel = Map.<String, Object>of("now", 42, "region", "us");
+  var item0 = Relationship.of("document", "doc1", "viewer", "user", "alice")
+      .withCheckContext(Map.of("region", "eu"));
+  var item1 = Relationship.of("document", "doc2", "viewer", "user", "bob");
+  // item0 -> {now: 42, region: "eu"}; item1 -> {now: 42, region: "us"} (call-level default retained)
+  List<CheckResult> results = client.checkPermissions(consistency, "view", callLevel, item0, item1);
+  ```
+
+- **2026-08-17**: `checkPermission`/`checkPermissions` now return a `CheckResult`/`List<CheckResult>` instead of `boolean`/`List<Boolean>`. `CheckResult` carries the server's full three-valued `permissionship` (`HAS_PERMISSION`, `NO_PERMISSION`, `CONDITIONAL_PERMISSION`), `missingContext` (the caveat context keys the server needed and did not receive), and `checkedAt` (the `ZedToken` revision the check was evaluated at — feed it to `Consistency.atLeast` for read-your-writes). `hasPermission()` is true ONLY for `HAS_PERMISSION`, per root DESIGN.md's "RULE: Only an unconditional grant is true". `checkAny`/`checkAll` are unchanged in shape (still `boolean`) but now explicitly count only `hasPermission()` results — a `CONDITIONAL_PERMISSION` never contributes to a `true`. See **Breaking Changes** below for the full migration.
+
+  `checkPermission`/`checkPermissions` always call `CheckBulkPermissions` — there was and is no production call site for the non-bulk `CheckPermission` RPC (matches `spicedb-go`/`spicedb-python`/`spicedb-ruby`/`spicedb-csharp`). `CheckBulkPermissionsResponseItem` carries no per-item `checked_at` of its own; the single response-level token is now propagated onto every `CheckResult` in a batch.
+
+- **`LookupResult.Permissionship` gains `NO_PERMISSION`** and is now shared by both the check and lookup surfaces (previously lookup-only, with three values). Lookups still never yield `NO_PERMISSION` — a subject/resource pair lacking the permission is simply absent from a lookup stream — but a check is always answering a yes/no/conditional question about one specific pair, so `NO_PERMISSION` is a real, expected `CheckResult.permissionship()` value. This is purely additive to the enum; existing `HAS_PERMISSION`/`CONDITIONAL_PERMISSION`/`UNSPECIFIED` usages are unaffected other than needing to handle the new case in an exhaustive `switch`.
+
+- **`LookupResult.LookupResource` and `LookupResult.LookupSubject` gain a `lookedUpAt` field** — the `ZedToken` revision the result was computed at (identical for every item yielded by a single `lookupResources`/`lookupSubjects` call; it is a property of the call, not of the individual resource/subject). Threadable into `Consistency.atLeast` the same way `CheckResult.checkedAt` and `write()`'s returned revision are.
+
+- **2026-08-16**: 5 new typed exceptions — `FailedPreconditionException`, `UnavailableException`, `CancelledException`, `DeadlineExceededException`, `ResourceExhaustedException` — plus the matching `ErrorMapper` switch arms, bringing Java's mapped gRPC status codes from 4 to the canonical 9 (matching Ruby/C#). Previously these 5 codes fell through to the untyped base `SpiceDBException`, so e.g. a `FAILED_PRECONDITION` from a schema mismatch was indistinguishable from any other unmapped error without string-matching the message.
+
 - **2026-08-15**: The 5 streaming methods (`readRelationships`, `lookupResources`,
   `lookupSubjects`, `exportRelationships`, `updates`) now retry stream/page
   **ESTABLISHMENT** on transient errors (`{UNAVAILABLE, RESOURCE_EXHAUSTED, ABORTED}`),
@@ -33,6 +77,28 @@
   ```
 
 ### Breaking Changes
+
+- **2026-08-17**: `checkPermission` now returns `CheckResult` instead of `boolean`, and `checkPermissions` now returns `List<CheckResult>` instead of `List<Boolean>`. This client is unreleased, so there is no deprecated boolean-returning overload — callers must migrate to `hasPermission()`. `checkAny`/`checkAll` are unchanged in shape.
+
+  A previously-shipped client collapsed `CONDITIONAL_PERMISSION` to `true`, granting access on a caveat that was never evaluated — see root DESIGN.md, "RULE: Only an unconditional grant is true". `CheckResult` makes that state impossible to silently ignore: `if (result)` does not compile (`CheckResult` is a record, not a `boolean`), so every caller must go through `hasPermission()` or compare `permissionship()` explicitly.
+
+  Before:
+  ```java
+  boolean allowed = client.checkPermission(
+      consistency, "view", Relationship.of("document", "doc1", "view", "user", "alice"));
+  ```
+  After:
+  ```java
+  CheckResult result = client.checkPermission(
+      consistency, "view", Relationship.of("document", "doc1", "view", "user", "alice"));
+  boolean allowed = result.hasPermission(); // false for CONDITIONAL_PERMISSION, NOT just NO_PERMISSION
+
+  // The three-valued answer is now inspectable directly when the distinction matters:
+  if (result.permissionship() == LookupResult.Permissionship.CONDITIONAL_PERMISSION) {
+      // the server found a matching caveated relationship but couldn't evaluate it —
+      // result.missingContext() lists which caveat parameters were not supplied
+  }
+  ```
 
 - **2026-08-15**: `lookupResources`/`lookupSubjects` now yield native `LookupResult` records instead of bare `String`s. Each result carries the `permissionship` (full grant vs conditional on caveat context) and, for `lookupSubjects`, the `excludedSubjects` of a wildcard (`"*"`) match — previously dropped entirely, which meant callers treating a wildcard `Stream<String>` result as a blanket grant had **no way to know which subjects were actually excluded from it** (an over-grant risk). Mirrors `spicedb-go`'s `LookupResource`/`LookupSubject`/`ResolvedSubject`/`PartialCaveatInfo` types.
 
@@ -83,6 +149,21 @@
   ```
 
 ### Fixes
+
+- **Check-time caveat context: nested `Map`/`List` values no longer stringified**: `toProtoStruct`'s per-value conversion (used to build the `context` field on `CheckBulkPermissionsRequestItem`) previously delegated every value, including nested `Map`/`List`, to `toProtoValue`, whose fallback `value.toString()` case handled anything it didn't recognize -- correct for scalars, but a nested map's `toString()` is Java's `{key=value, ...}` debug format, and a caveat expecting a proper nested object or list received that string instead, so evaluation failed or misbehaved in a way the caller couldn't diagnose. A new check-time-only `checkContextToProtoValue` recurses into `Map`/`List`, converting them to a proper protobuf `Struct`/`ListValue`. `toProtoValue` itself is untouched and continues to stringify nested values for the **write-time** relationship caveat-context path (`toProtoRelationship`) -- that stringification is intentional there and out of scope for this fix.
+- **Per-item bulk-check error mapping**: a `CheckBulkPermissionsPair` error (`pair.hasError()`) is now routed through `ErrorMapper`, so callers get the SPECIFIC typed exception (e.g. `PermissionDeniedException`, `FailedPreconditionException`) instead of the untyped base `SpiceDBException`. The per-item gRPC code was previously discarded — only the message was used, forcing callers to string-match it to tell a schema mismatch from a permission denial, the exact problem the typed exception hierarchy exists to solve. The item's index is still preserved in the exception message (`"check item %d: ..."`), matching `spicedb-go`'s `fmt.Sprintf("check item %d", i)`.
+
+  Before:
+  ```java
+  // pair.getError().getMessage() only -- the gRPC code was thrown away, always the base type:
+  throw new SpiceDBException("check item " + i + ": " + pair.getError().getMessage());
+  ```
+  After:
+  ```java
+  // pair.getError().getCode() is preserved and mapped, so a PERMISSION_DENIED item throws
+  // PermissionDeniedException (catchable specifically), not the base SpiceDBException:
+  throw ErrorMapper.toSpiceDBException(syntheticStatusRuntimeExceptionFor(pair.getError(), i));
+  ```
 
 - **Streaming error mapping**: `readRelationships`, `lookupResources`, `lookupSubjects`, `exportRelationships`, and `updates` now map mid-stream gRPC errors (raised while iterating `serverStream.hasNext()`/`next()`) to the typed `SpiceDBException` hierarchy via `ErrorMapper`, instead of leaking a raw `io.grpc.StatusRuntimeException` to stream consumers
 - **Cancelable streams**: `readRelationships`, `lookupResources`, `exportRelationships`, and `updates` now bind their underlying gRPC server-streaming call to a per-stream `io.grpc.Context.CancellableContext` and cancel it when the returned `Stream` is closed (e.g. via try-with-resources), so `close()` actually stops the server from producing further results instead of leaving the call open (`lookupSubjects` streams eagerly and has no open call to cancel)

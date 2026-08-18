@@ -11,9 +11,12 @@
 //!   production.
 //! - **Builder** — full control over TLS configuration and other options.
 
+use std::collections::HashMap;
+
 use crate::consistency::Strategy;
 use crate::error::{self, SpiceDBError};
 use crate::types::{
+    check_context_to_proto, check_result_from_bulk_item, merge_check_context,
     partial_caveat_from_proto, permission_tree_from_proto, permissionship_from_proto,
     resolved_subject_from_proto, CheckResult, CountResult, DeleteOptions, ExpandResult, Filter,
     LookupResource, LookupSubject, Permissionship, Precondition, PreconditionOperation,
@@ -117,7 +120,18 @@ impl SpiceDBClient {
 
     /// Checks a single permission and returns a [`CheckResult`].
     ///
-    /// Uses `BulkCheckPermissions` under the hood.
+    /// Uses `BulkCheckPermissions` under the hood. `CheckResult::permissionship`
+    /// carries the server's answer — a `ConditionalPermission` result means the
+    /// server needed caveat context that was not supplied, and is NOT a grant.
+    /// Prefer [`CheckResult::has_permission`] over comparing `permissionship`
+    /// directly for the common case.
+    ///
+    /// See [`check_permission_with_context`](Self::check_permission_with_context)
+    /// to supply a caveat context for evaluating caveats encountered during
+    /// the check; a relationship built with
+    /// [`Relationship::with_check_context`] still supplies its own context
+    /// through this method (`check_permission` is
+    /// `check_permission_with_context` with no context).
     ///
     /// # Errors
     ///
@@ -129,25 +143,98 @@ impl SpiceDBClient {
         permission: &str,
         relationship: &Relationship,
     ) -> Result<CheckResult, SpiceDBError> {
-        let results = self
-            .check_permissions(consistency, permission, std::slice::from_ref(relationship))
-            .await?;
-        Ok(CheckResult {
-            has_permission: results[0],
-        })
+        self.check_permission_with_context(consistency, permission, relationship, None)
+            .await
     }
 
-    /// Checks permissions on multiple relationships and returns a `Vec<bool>`
-    /// indicating whether each is granted.
+    /// [`check_permission`](Self::check_permission) with a caveat context.
+    /// Caveat context supplies named values (e.g. `"now"`) that SpiceDB
+    /// needs to evaluate a caveat expression encountered during the check;
+    /// without it, a caveated match comes back as
+    /// `Permissionship::ConditionalPermission` instead of a grant, and
+    /// `CheckResult::missing_context` names what was needed.
+    ///
+    /// If `relationship` was built with [`Relationship::with_check_context`],
+    /// its context is merged with `context` per the key-level merge rule
+    /// documented on
+    /// [`check_permissions_with_context`](Self::check_permissions_with_context):
+    /// the relationship's keys win on conflict, and any `context` keys it
+    /// doesn't specify are retained. Pass `None` for no context (equivalent
+    /// to [`check_permission`](Self::check_permission)).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpiceDBError`] if the gRPC call fails.
+    #[must_use = "check results should not be silently discarded"]
+    pub async fn check_permission_with_context(
+        &self,
+        consistency: &Strategy,
+        permission: &str,
+        relationship: &Relationship,
+        context: Option<&HashMap<String, serde_json::Value>>,
+    ) -> Result<CheckResult, SpiceDBError> {
+        let mut results = self
+            .check_permissions_with_context(
+                consistency,
+                permission,
+                std::slice::from_ref(relationship),
+                context,
+            )
+            .await?;
+        Ok(results.remove(0))
+    }
+
+    /// Checks permissions on multiple relationships and returns a
+    /// [`CheckResult`] for each, in the same order as `relationships`.
     ///
     /// Uses `BulkCheckPermissions` under the hood. Large batches are
-    /// automatically split into chunks of 1,000.
+    /// automatically split into chunks of 1,000. Each result's `checked_at`
+    /// is the revision the whole batch was evaluated at (`BulkCheckPermissions`
+    /// carries one `checked_at` per response, not per item).
+    ///
+    /// See [`check_permissions_with_context`](Self::check_permissions_with_context)
+    /// to supply a call-level caveat context default; a relationship built
+    /// with [`Relationship::with_check_context`] still supplies its own
+    /// per-item context through this method.
     pub async fn check_permissions(
         &self,
         consistency: &Strategy,
         permission: &str,
         relationships: &[Relationship],
-    ) -> Result<Vec<bool>, SpiceDBError> {
+    ) -> Result<Vec<CheckResult>, SpiceDBError> {
+        self.check_permissions_with_context(consistency, permission, relationships, None)
+            .await
+    }
+
+    /// [`check_permissions`](Self::check_permissions) with a call-level
+    /// default caveat context applied to every relationship in
+    /// `relationships`.
+    ///
+    /// A relationship built with [`Relationship::with_check_context`]
+    /// overrides `context` on a per-key basis for that one relationship: the
+    /// item's keys win on conflict, and any call-level keys the item doesn't
+    /// specify are retained. For example, a call-level
+    /// `{now: 42, region: "us"}` plus a per-item `{region: "eu"}` sends
+    /// `{now: 42, region: "eu"}` for that item, while a sibling item with no
+    /// per-item context still gets the untouched call-level default. Pass
+    /// `None` for no call-level default (equivalent to
+    /// [`check_permissions`](Self::check_permissions)).
+    ///
+    /// When neither a call-level nor a per-item context applies to a given
+    /// item, no `context` field is set on that item's wire request — never
+    /// an empty `Struct`.
+    ///
+    /// `CheckBulkPermissionsRequest` has no call-level context field on the
+    /// wire (only `CheckBulkPermissionsRequestItem.context`, one per item),
+    /// so `context` is fanned out onto every item at request-build time
+    /// rather than sent once for the whole batch.
+    pub async fn check_permissions_with_context(
+        &self,
+        consistency: &Strategy,
+        permission: &str,
+        relationships: &[Relationship],
+        context: Option<&HashMap<String, serde_json::Value>>,
+    ) -> Result<Vec<CheckResult>, SpiceDBError> {
         if relationships.is_empty() {
             return Ok(Vec::new());
         }
@@ -155,24 +242,7 @@ impl SpiceDBClient {
         let mut all_results = Vec::with_capacity(relationships.len());
 
         for chunk in relationships.chunks(DEFAULT_CHECK_BATCH_SIZE) {
-            let items: Vec<proto::CheckBulkPermissionsRequestItem> = chunk
-                .iter()
-                .map(|r| proto::CheckBulkPermissionsRequestItem {
-                    resource: Some(proto::ObjectReference {
-                        object_type: r.resource_type.clone(),
-                        object_id: r.resource_id.clone(),
-                    }),
-                    permission: permission.to_string(),
-                    subject: Some(proto::SubjectReference {
-                        object: Some(proto::ObjectReference {
-                            object_type: r.subject_type.clone(),
-                            object_id: r.subject_id.clone(),
-                        }),
-                        optional_relation: r.subject_relation.clone(),
-                    }),
-                    context: None,
-                })
-                .collect();
+            let items = build_check_items(permission, chunk, context);
 
             let resp = self
                 .retry(|| async {
@@ -189,23 +259,36 @@ impl SpiceDBClient {
                 .await?;
 
             let inner = resp.into_inner();
+            let checked_at = inner.checked_at.map(|z| z.token).unwrap_or_default();
             for (i, pair) in inner.pairs.iter().enumerate() {
-                if let Some(proto::check_bulk_permissions_pair::Response::Error(err_resp)) =
-                    &pair.response
-                {
-                    return Err(SpiceDBError::InvalidArgument(format!(
-                        "check item {}: {}",
-                        i, err_resp.message
-                    )));
-                }
-                if let Some(proto::check_bulk_permissions_pair::Response::Item(item)) =
-                    &pair.response
-                {
-                    all_results.push(
-                        item.permissionship
-                            == proto::check_permission_response::Permissionship::HasPermission
-                                as i32,
-                    );
+                match &pair.response {
+                    Some(proto::check_bulk_permissions_pair::Response::Error(err_resp)) => {
+                        // Route through the same mapper every other error path
+                        // uses, instead of hardcoding a status — a per-item
+                        // PERMISSION_DENIED must surface as PermissionDenied,
+                        // not as a generic InvalidArgument.
+                        return Err(error::from_grpc_status(
+                            err_resp.code,
+                            format!("check item {}: {}", i, err_resp.message),
+                        ));
+                    }
+                    Some(proto::check_bulk_permissions_pair::Response::Item(item)) => {
+                        all_results.push(check_result_from_bulk_item(item, &checked_at));
+                    }
+                    None => {
+                        // The proto's `response` is a oneof — a well-behaved
+                        // server always sets it to Item or Error, so this
+                        // should be unreachable in practice. Silently
+                        // skipping the index here would shrink all_results
+                        // below relationships.len(), desyncing every
+                        // subsequent results[i] from relationships[i] for
+                        // the rest of the batch. Fail loudly instead of
+                        // returning a misaligned-but-"successful" Vec.
+                        return Err(error::internal(format!(
+                            "check item {i}: malformed CheckBulkPermissionsPair (neither Item \
+                             nor Error set)"
+                        )));
+                    }
                 }
             }
         }
@@ -213,30 +296,66 @@ impl SpiceDBClient {
         Ok(all_results)
     }
 
-    /// Returns `true` if **any** of the given relationships have the permission.
+    /// Returns `true` if **any** of the given relationships have the permission
+    /// outright. A `ConditionalPermission` result does not count as granted —
+    /// only results where [`CheckResult::has_permission`] is `true` are
+    /// considered.
     pub async fn check_any(
         &self,
         consistency: &Strategy,
         permission: &str,
         relationships: &[Relationship],
     ) -> Result<bool, SpiceDBError> {
-        let results = self
-            .check_permissions(consistency, permission, relationships)
-            .await?;
-        Ok(results.iter().any(|&r| r))
+        self.check_any_with_context(consistency, permission, relationships, None)
+            .await
     }
 
-    /// Returns `true` if **all** of the given relationships have the permission.
+    /// [`check_any`](Self::check_any) with a call-level default caveat
+    /// context (see
+    /// [`check_permissions_with_context`](Self::check_permissions_with_context)
+    /// for the merge rule with any per-item context).
+    pub async fn check_any_with_context(
+        &self,
+        consistency: &Strategy,
+        permission: &str,
+        relationships: &[Relationship],
+        context: Option<&HashMap<String, serde_json::Value>>,
+    ) -> Result<bool, SpiceDBError> {
+        let results = self
+            .check_permissions_with_context(consistency, permission, relationships, context)
+            .await?;
+        Ok(results.iter().any(CheckResult::has_permission))
+    }
+
+    /// Returns `true` if **all** of the given relationships have the permission
+    /// outright. A `ConditionalPermission` result does not count as granted —
+    /// every result must satisfy [`CheckResult::has_permission`] for this to
+    /// return `true`.
     pub async fn check_all(
         &self,
         consistency: &Strategy,
         permission: &str,
         relationships: &[Relationship],
     ) -> Result<bool, SpiceDBError> {
+        self.check_all_with_context(consistency, permission, relationships, None)
+            .await
+    }
+
+    /// [`check_all`](Self::check_all) with a call-level default caveat
+    /// context (see
+    /// [`check_permissions_with_context`](Self::check_permissions_with_context)
+    /// for the merge rule with any per-item context).
+    pub async fn check_all_with_context(
+        &self,
+        consistency: &Strategy,
+        permission: &str,
+        relationships: &[Relationship],
+        context: Option<&HashMap<String, serde_json::Value>>,
+    ) -> Result<bool, SpiceDBError> {
         let results = self
-            .check_permissions(consistency, permission, relationships)
+            .check_permissions_with_context(consistency, permission, relationships, context)
             .await?;
-        Ok(results.iter().all(|&r| r))
+        Ok(results.iter().all(CheckResult::has_permission))
     }
 
     // -----------------------------------------------------------------------
@@ -503,10 +622,12 @@ impl SpiceDBClient {
                     }
                     let permissionship = permissionship_from_proto(resp.permissionship);
                     let partial_caveat = partial_caveat_from_proto(resp.partial_caveat_info.as_ref());
+                    let looked_up_at = resp.looked_up_at.map(|z| z.token).unwrap_or_default();
                     yield LookupResource {
                         resource_id: resp.resource_object_id,
                         permissionship,
                         partial_caveat,
+                        looked_up_at,
                     };
                 }
 
@@ -618,9 +739,11 @@ impl SpiceDBClient {
                         .collect()
                 };
 
+                let looked_up_at = resp.looked_up_at.map(|z| z.token).unwrap_or_default();
                 yield LookupSubject {
                     subject,
                     excluded_subjects,
+                    looked_up_at,
                 };
             }
         }
@@ -1235,6 +1358,39 @@ where
     }
 }
 
+/// Builds the `CheckBulkPermissionsRequestItem`s for a chunk of
+/// relationships, merging call-level and per-item check-time caveat context
+/// per the key-level merge rule (see
+/// [`SpiceDBClient::check_permissions_with_context`]). A free function (no
+/// `&self` needed) so it's directly unit-testable without a mock server.
+fn build_check_items(
+    permission: &str,
+    relationships: &[Relationship],
+    call_level_context: Option<&HashMap<String, serde_json::Value>>,
+) -> Vec<proto::CheckBulkPermissionsRequestItem> {
+    relationships
+        .iter()
+        .map(|r| {
+            let merged = merge_check_context(call_level_context, r.check_context.as_ref());
+            proto::CheckBulkPermissionsRequestItem {
+                resource: Some(proto::ObjectReference {
+                    object_type: r.resource_type.clone(),
+                    object_id: r.resource_id.clone(),
+                }),
+                permission: permission.to_string(),
+                subject: Some(proto::SubjectReference {
+                    object: Some(proto::ObjectReference {
+                        object_type: r.subject_type.clone(),
+                        object_id: r.subject_id.clone(),
+                    }),
+                    optional_relation: r.subject_relation.clone(),
+                }),
+                context: merged.as_ref().map(check_context_to_proto),
+            }
+        })
+        .collect()
+}
+
 /// Converts idiomatic [`Precondition`]s (shared by [`Transaction`] and
 /// [`DeleteOptions`]) into their proto representation.
 fn preconditions_to_proto(preconditions: &[Precondition]) -> Vec<proto::Precondition> {
@@ -1412,5 +1568,72 @@ mod tests {
     fn test_retry_constants() {
         assert_eq!(MAX_RETRIES, 3);
         assert_eq!(BASE_RETRY_DELAY_MS, 100);
+    }
+
+    // Pure-function coverage of build_check_items, complementing the
+    // mock-server-backed C1-C4 tests in tests/check_context_test.rs: same
+    // merge rule, exercised directly on the built proto items with no
+    // network involved.
+    #[test]
+    fn test_build_check_items_merge_rule() {
+        let sibling = Relationship::new("document", "1", "view", "user", "alice", "").unwrap();
+        let mut item_ctx = HashMap::new();
+        item_ctx.insert("region".to_string(), serde_json::json!("eu"));
+        let overridden = Relationship::new("document", "2", "view", "user", "bob", "")
+            .unwrap()
+            .with_check_context(item_ctx);
+
+        let mut call_level = HashMap::new();
+        call_level.insert("now".to_string(), serde_json::json!(42.0));
+        call_level.insert("region".to_string(), serde_json::json!("us"));
+
+        let items = build_check_items("view", &[sibling, overridden], Some(&call_level));
+        assert_eq!(items.len(), 2);
+
+        let sibling_ctx = items[0]
+            .context
+            .as_ref()
+            .expect("sibling should have context");
+        assert_eq!(sibling_ctx.fields.len(), 2);
+        assert_eq!(
+            sibling_ctx.fields.get("now").and_then(|v| v.kind.clone()),
+            Some(prost_types::value::Kind::NumberValue(42.0))
+        );
+        assert_eq!(
+            sibling_ctx
+                .fields
+                .get("region")
+                .and_then(|v| v.kind.clone()),
+            Some(prost_types::value::Kind::StringValue("us".to_string()))
+        );
+
+        let overridden_ctx = items[1]
+            .context
+            .as_ref()
+            .expect("overridden item should have context");
+        assert_eq!(
+            overridden_ctx
+                .fields
+                .get("region")
+                .and_then(|v| v.kind.clone()),
+            Some(prost_types::value::Kind::StringValue("eu".to_string())),
+            "item's region key must win over the call-level default"
+        );
+        assert_eq!(
+            overridden_ctx
+                .fields
+                .get("now")
+                .and_then(|v| v.kind.clone()),
+            Some(prost_types::value::Kind::NumberValue(42.0)),
+            "call-level now key (absent from the item) must be retained"
+        );
+    }
+
+    #[test]
+    fn test_build_check_items_neither_supplied_sets_no_context() {
+        let r = Relationship::new("document", "1", "view", "user", "alice", "").unwrap();
+        let items = build_check_items("view", &[r], None);
+        assert_eq!(items.len(), 1);
+        assert!(items[0].context.is_none());
     }
 }

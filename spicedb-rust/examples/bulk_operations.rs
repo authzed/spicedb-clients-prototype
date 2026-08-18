@@ -20,7 +20,7 @@ definition document {
 
 #[tokio::main]
 async fn main() {
-    let client = SpiceDBClient::new_plaintext("localhost:50051", "somerandomkeyhere")
+    let client = SpiceDBClient::new_plaintext("localhost:50051", "testtoken")
         .await
         .expect("failed to create client");
 
@@ -67,8 +67,15 @@ async fn main() {
         .expect("bulk check failed");
 
     for (i, user) in users.iter().enumerate() {
-        println!("user:{user} can view document:report: {}", results[i]);
-        assert!(results[i], "expected user:{user} to have view permission");
+        println!(
+            "user:{user} can view document:report: {} (permissionship: {:?})",
+            results[i].has_permission(),
+            results[i].permissionship
+        );
+        assert!(
+            results[i].has_permission(),
+            "expected user:{user} to have view permission"
+        );
     }
 
     // Check all

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from typing import Any, overload
 
-from spicedb import Transaction, Relationship, Filter, LookupResource, LookupSubject
+from spicedb import Transaction, Relationship, Filter, LookupResource, LookupSubject, CheckResult
 from spicedb.consistency import Consistency
 from spicedb.sync import SpiceDBClient
 
@@ -43,12 +43,19 @@ class TypedClient:
     # ── check ──────────────────────────────────────────────────────────
 {{range $o := .CheckOverloads}}
     @overload
-    def check(self, c: Consistency, p: {{$o.PermClassName}}, s: {{$o.SubjectUnion}}) -> bool: ...
+    def check(self, c: Consistency, p: {{$o.PermClassName}}, s: {{$o.SubjectUnion}}, *, context: dict[str, Any] | None = None) -> CheckResult: ...
 {{end}}
-    def check(self, c: Consistency, p: Any, s: Any) -> bool:
+    def check(self, c: Consistency, p: Any, s: Any, *, context: dict[str, Any] | None = None) -> CheckResult:
         sub_type, sub_id, sub_rel = s._subject_ref()
         c_info = s._caveat_info()
-        context: dict[str, Any] | None = c_info[1] if c_info is not None else None
+        subject_context: dict[str, Any] | None = c_info[1] if c_info is not None else None
+        # Key-level merge, subject wins: the subject's own caveat context
+        # (e.g. User("dave").with_ip_range(ctx)) overrides matching keys from
+        # the call-level default; call-level keys the subject doesn't mention
+        # are retained -- NOT wholesale replacement.
+        merged_context: dict[str, Any] | None = (
+            {**(context or {}), **(subject_context or {})} if context or subject_context else None
+        )
         rel = Relationship(
             resource_type=p._resource_type,
             resource_id=p._resource_id,
@@ -57,7 +64,7 @@ class TypedClient:
             subject_id=sub_id,
             subject_relation=sub_rel,
         )
-        return self.client.check_permission(c, rel, context=context)
+        return self.client.check_permission(c, rel, context=merged_context)
 
     # ── writes ─────────────────────────────────────────────────────────
     def touch(self, *rels: TypedRelationship) -> str:

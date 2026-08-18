@@ -37,6 +37,16 @@ type Relationship struct {
 	CaveatName       string
 	CaveatContext    map[string]any
 	Expiration       *time.Time
+
+	// CheckContext is per-item caveat context used only when this
+	// Relationship is passed to a check call (Check/CheckOne/CheckAny/
+	// CheckAll/CheckIter). It is distinct from CaveatContext, which is
+	// stored with the relationship as part of a write and supplies values
+	// for the caveat baked into that specific tuple: CheckContext is never
+	// sent on a write, and supplies values for evaluating whatever caveat
+	// the permission check encounters at check time. Set it with
+	// WithCheckContext.
+	CheckContext map[string]any
 }
 
 // Interface allows user-defined domain types to be used as relationships.
@@ -139,6 +149,23 @@ func (r Relationship) WithCaveat(name string, context map[string]any) Relationsh
 // WithExpiration returns a copy of the relationship with the given expiration.
 func (r Relationship) WithExpiration(t time.Time) Relationship {
 	r.Expiration = &t
+	return r
+}
+
+// WithCheckContext returns a copy of the relationship carrying per-item
+// caveat context for check calls. See the CheckContext field doc for how
+// this differs from WithCaveat's context.
+//
+// When a call-level default is also supplied (via the client's *WithContext
+// check methods — Client.CheckWithContext, Client.CheckOneWithContext,
+// Client.CheckAnyWithContext, Client.CheckAllWithContext, and
+// Client.CheckIterWithContext), the two are merged key by key for this
+// item: this item's keys win on conflict, and any call-level keys not
+// present here are retained. For example, a call-level {"now": 42,
+// "region": "us"} plus a per-item {"region": "eu"} produces
+// {"now": 42, "region": "eu"} for this item.
+func (r Relationship) WithCheckContext(context map[string]any) Relationship {
+	r.CheckContext = context
 	return r
 }
 

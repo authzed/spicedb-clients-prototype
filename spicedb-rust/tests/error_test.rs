@@ -50,6 +50,20 @@ fn test_cancelled() {
 }
 
 #[test]
+fn test_deadline_exceeded() {
+    let err = from_grpc_status(4, "timeout".into());
+    assert!(matches!(err, SpiceDBError::DeadlineExceeded(_)));
+    assert_eq!(err.to_string(), "deadline exceeded: timeout");
+}
+
+#[test]
+fn test_resource_exhausted() {
+    let err = from_grpc_status(8, "quota".into());
+    assert!(matches!(err, SpiceDBError::ResourceExhausted(_)));
+    assert_eq!(err.to_string(), "resource exhausted: quota");
+}
+
+#[test]
 fn test_unknown_status_code() {
     let err = from_grpc_status(99, "unknown".into());
     assert!(matches!(err, SpiceDBError::Status { code: 99, .. }));
@@ -84,6 +98,20 @@ fn test_is_transient_resource_exhausted() {
         message: "quota".into(),
     };
     assert!(is_transient(&err));
+}
+
+#[test]
+fn test_is_transient_resource_exhausted_via_from_grpc_status() {
+    let err = from_grpc_status(8, "quota".into());
+    assert!(matches!(err, SpiceDBError::ResourceExhausted(_)));
+    assert!(is_transient(&err));
+}
+
+#[test]
+fn test_deadline_exceeded_via_from_grpc_status_is_not_transient() {
+    let err = from_grpc_status(4, "timeout".into());
+    assert!(matches!(err, SpiceDBError::DeadlineExceeded(_)));
+    assert!(!is_transient(&err));
 }
 
 #[test]

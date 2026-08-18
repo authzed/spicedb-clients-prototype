@@ -12,6 +12,7 @@ export {
   type LookupResourcesParams,
   type LookupSubjectsParams,
   type CheckRequest,
+  type CheckOptions,
   type WatchChange,
   type WatchEvent,
   type WatchOptions,
@@ -39,6 +40,7 @@ export {
   type LookupResource,
   type ResolvedSubject,
   type LookupSubject,
+  CheckResult,
   Transaction,
   relationship,
   relationshipFromTuple,
@@ -54,4 +56,6 @@ export {
   CancelledError,
   FailedPreconditionError,
   UnavailableError,
+  DeadlineExceededError,
+  ResourceExhaustedError,
 } from "./errors.js";

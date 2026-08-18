@@ -24,6 +24,11 @@ export class CancelledError extends SpiceDBError {
 }
 
 // @public
+export interface CheckOptions {
+    context?: Record<string, unknown>;
+}
+
+// @public
 export interface CheckRequest {
     // (undocumented)
     context?: Record<string, unknown>;
@@ -39,6 +44,18 @@ export interface CheckRequest {
     subjectRelation?: string;
     // (undocumented)
     subjectType: string;
+}
+
+// @public
+export class CheckResult {
+    constructor(
+    permissionship: Permissionship,
+    missingContext: string[],
+    checkedAt: string);
+    readonly checkedAt: string;
+    hasPermission(): boolean;
+    readonly missingContext: string[];
+    readonly permissionship: Permissionship;
 }
 
 // @public
@@ -61,6 +78,11 @@ export function createSpiceDBClient(endpoint: string, token: string, options?: {
     headers?: Record<string, string>;
     maxRetries?: number;
 }): SpiceDBClient;
+
+// @public
+export class DeadlineExceededError extends SpiceDBError {
+    constructor(message: string, options?: ErrorOptions);
+}
 
 // @public
 export interface DeleteOptions {
@@ -116,6 +138,7 @@ export interface LeafNode {
 
 // @public
 export interface LookupResource {
+    lookedUpAt: string;
     partialCaveat?: PartialCaveatInfo;
     // (undocumented)
     permissionship: Permissionship;
@@ -145,6 +168,7 @@ export interface LookupResourcesParams {
 export interface LookupSubject {
     // (undocumented)
     excludedSubjects: ResolvedSubject[];
+    lookedUpAt: string;
     // (undocumented)
     subject: ResolvedSubject;
 }
@@ -195,7 +219,7 @@ export class PermissionDeniedError extends SpiceDBError {
 }
 
 // @public
-export type Permissionship = "unspecified" | "hasPermission" | "conditionalPermission";
+export type Permissionship = "unspecified" | "hasPermission" | "conditionalPermission" | "noPermission";
 
 // @public
 export interface PermissionTree {
@@ -308,6 +332,11 @@ export interface ResolvedSubject {
 }
 
 // @public
+export class ResourceExhaustedError extends SpiceDBError {
+    constructor(message: string, options?: ErrorOptions);
+}
+
+// @public
 export interface SchemaCaveat {
     // (undocumented)
     comment: string;
@@ -382,9 +411,15 @@ export function snapshot(revision: string): Consistency;
 export class SpiceDBClient {
     constructor(options: SpiceDBClientOptions);
     checkAll(consistency: Consistency, ...checks: CheckRequest[]): Promise<boolean>;
+    // (undocumented)
+    checkAll(consistency: Consistency, checks: CheckRequest[], options?: CheckOptions): Promise<boolean>;
     checkAny(consistency: Consistency, ...checks: CheckRequest[]): Promise<boolean>;
-    checkPermission(consistency: Consistency, check: CheckRequest): Promise<boolean>;
-    checkPermissions(consistency: Consistency, ...checks: CheckRequest[]): Promise<boolean[]>;
+    // (undocumented)
+    checkAny(consistency: Consistency, checks: CheckRequest[], options?: CheckOptions): Promise<boolean>;
+    checkPermission(consistency: Consistency, check: CheckRequest, options?: CheckOptions): Promise<CheckResult>;
+    checkPermissions(consistency: Consistency, ...checks: CheckRequest[]): Promise<CheckResult[]>;
+    // (undocumented)
+    checkPermissions(consistency: Consistency, checks: CheckRequest[], options?: CheckOptions): Promise<CheckResult[]>;
     computablePermissions(consistency: Consistency, params: ComputablePermissionsParams): Promise<{
         permissions: RelationReference[];
         revision: string;

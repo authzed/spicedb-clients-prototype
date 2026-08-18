@@ -48,22 +48,23 @@ def test_check_permission_sync():
 
     # Single permission check with full consistency, on the client built
     # once above -- this is the call every request handler in a real app
-    # would make, all sharing the same client instance.
+    # would make, all sharing the same client instance. check_permission()
+    # returns a CheckResult, not a bare bool.
     rel = Relationship.from_triple("document:readme", "view", "user:jimmy")
-    allowed = client.check_permission(full(), rel)
-    print(f"user:jimmy can view document:readme: {allowed}")
-    assert allowed is True
+    result = client.check_permission(full(), rel)
+    print(f"user:jimmy can view document:readme: {result.has_permission}")
+    assert result.has_permission is True
 
     other = Relationship.from_triple("document:readme", "view", "user:stranger")
-    denied = client.check_permission(full(), other)
-    print(f"user:stranger can view document:readme: {denied}")
-    assert denied is False
+    stranger_result = client.check_permission(full(), other)
+    print(f"user:stranger can view document:readme: {stranger_result.has_permission}")
+    assert stranger_result.has_permission is False
 
     # Check again pinned to the write's own revision -- still the same
     # client.
-    allowed_at = client.check_permission(at_least(revision), rel)
-    print(f"(at_least) user:jimmy can view document:readme: {allowed_at}")
-    assert allowed_at is True
+    result_at = client.check_permission(at_least(revision), rel)
+    print(f"(at_least) user:jimmy can view document:readme: {result_at.has_permission}")
+    assert result_at.has_permission is True
 
     # Bulk check: multiple permissions in one round trip.
     checks = [
@@ -71,9 +72,9 @@ def test_check_permission_sync():
         Relationship.from_triple("document:readme", "edit", "user:jimmy"),
     ]
     results = client.check_permissions(full(), *checks)
-    print(f"Bulk check results: {results}")
-    assert results[0] is True  # jimmy can view (he's a viewer)
-    assert results[1] is False  # jimmy cannot edit
+    print(f"Bulk check results: {[r.has_permission for r in results]}")
+    assert results[0].has_permission is True  # jimmy can view (he's a viewer)
+    assert results[1].has_permission is False  # jimmy cannot edit
 
     # check_any / check_all round out the check surface -- same client,
     # again.

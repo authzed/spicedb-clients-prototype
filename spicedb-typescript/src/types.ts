@@ -28,6 +28,9 @@ import {
   type LookupResourcesResponse as ProtoLookupResourcesResponse,
   type LookupSubjectsResponse as ProtoLookupSubjectsResponse,
   LookupPermissionship,
+  type CheckPermissionResponse as ProtoCheckPermissionResponse,
+  type CheckBulkPermissionsResponseItem as ProtoCheckBulkPermissionsResponseItem,
+  CheckPermissionResponse_Permissionship,
 } from "@spicedb/proto";
 import { timestampFromDate } from "@bufbuild/protobuf/wkt";
 
@@ -128,6 +131,35 @@ export interface CheckRequest {
   subjectType: string;
   subjectId: string;
   subjectRelation?: string;
+  context?: Record<string, unknown>;
+}
+
+/**
+ * Call-level defaults for `checkPermission`, `checkPermissions`,
+ * `checkAny`, and `checkAll` on `SpiceDBClient`.
+ */
+export interface CheckOptions {
+  /**
+   * Default caveat context applied to every check that this call evaluates.
+   * Merged key-by-key with each individual check's own
+   * {@link CheckRequest.context} — for any key present in both, the check's
+   * own value wins; default keys the check does not override are retained.
+   * This is a key-level merge, NOT a wholesale replacement: a check
+   * supplying one key does not drop the other default keys. If neither this
+   * default nor the check's own `context` is supplied, no context field is
+   * set on the request (never an empty Struct).
+   *
+   * @example
+   * ```typescript
+   * // Both items get `now`; the second item's own `region` wins over the
+   * // default for that key alone.
+   * await client.checkPermissions(
+   *   full(),
+   *   [check1, { ...check2, context: { region: "eu" } }],
+   *   { context: { now: 42, region: "us" } },
+   * );
+   * ```
+   */
   context?: Record<string, unknown>;
 }
 
@@ -901,15 +933,30 @@ export function fromProtoSchemaDiff(d: ProtoReflectionSchemaDiff): SchemaDiff {
 // ---------------------------------------------------------------------------
 
 /**
- * Whether a lookup result reflects a full grant or is conditional on caveat
- * context that was not fully evaluated by the server. Callers MUST check
- * this before treating a result as a full grant — a `"conditionalPermission"`
- * result may resolve to false once the missing caveat context is supplied.
+ * Whether a check or lookup result reflects a full grant, a full denial, or
+ * is conditional on caveat context that was not fully evaluated by the
+ * server. Callers MUST check this before treating a result as a full grant —
+ * a `"conditionalPermission"` result may resolve to false once the missing
+ * caveat context is supplied.
+ *
+ * This type serves both the check surface ({@link CheckResult}) and the
+ * lookup surface ({@link LookupResource}, {@link ResolvedSubject}). Lookups
+ * never yield `"noPermission"`: a subject/resource pair that lacks the
+ * permission is simply absent from a lookup stream rather than being yielded
+ * with that permissionship. `"noPermission"` only appears on
+ * {@link CheckResult}, where the server is answering a question about one
+ * specific pair and "no" is itself an answer.
+ *
+ * `"noPermission"` was added after the three pre-existing values (not
+ * inserted before them) so that any code depending on the historical
+ * ordering of this union is unaffected. Mirrors spicedb-go's
+ * `Permissionship`/`PermissionshipNoPermission` (client/lookup_types.go).
  */
 export type Permissionship =
   | "unspecified"
   | "hasPermission"
-  | "conditionalPermission";
+  | "conditionalPermission"
+  | "noPermission";
 
 /**
  * Caveat context that was missing to fully evaluate a conditional result.
@@ -926,6 +973,13 @@ export interface LookupResource {
   permissionship: Permissionship;
   /** Set when `permissionship` is `"conditionalPermission"`. */
   partialCaveat?: PartialCaveatInfo;
+  /**
+   * The revision this result was computed at. Identical for every item
+   * yielded by a single {@link SpiceDBClient.lookupResources} call — it is a
+   * property of the call, not of the individual resource. Thread it into
+   * `atLeast()`/`atLeastOrFull()` for read-your-writes on a later call.
+   */
+  lookedUpAt: string;
 }
 
 /**
@@ -949,6 +1003,13 @@ export interface ResolvedSubject {
 export interface LookupSubject {
   subject: ResolvedSubject;
   excludedSubjects: ResolvedSubject[];
+  /**
+   * The revision this result was computed at. Identical for every item
+   * yielded by a single {@link SpiceDBClient.lookupSubjects} call — it is a
+   * property of the call, not of the individual subject. Thread it into
+   * `atLeast()`/`atLeastOrFull()` for read-your-writes on a later call.
+   */
+  lookedUpAt: string;
 }
 
 /**
@@ -1016,6 +1077,7 @@ export function fromProtoLookupResource(
     resourceId: resp.resourceObjectId,
     permissionship: permissionshipFromProto(resp.permissionship),
     partialCaveat: partialCaveatFromProto(resp.partialCaveatInfo),
+    lookedUpAt: resp.lookedUpAt?.token ?? "",
   };
 }
 
@@ -1056,5 +1118,136 @@ export function fromProtoLookupSubject(
     }));
   }
 
-  return { subject, excludedSubjects };
+  return { subject, excludedSubjects, lookedUpAt: resp.lookedUpAt?.token ?? "" };
+}
+
+// ---------------------------------------------------------------------------
+// Check results (mirrors spicedb-go's native check types and mappers,
+// client/check_types.go: CheckResult, checkPermissionshipFromProto,
+// checkResultFromProto, checkResultFromBulkItem)
+// ---------------------------------------------------------------------------
+
+/**
+ * The outcome of a permission check. `permissionship` carries the server's
+ * answer; a `"conditionalPermission"` result means the server needed caveat
+ * context that was not supplied in the check's `context` and is NOT a
+ * grant — prefer {@link CheckResult.hasPermission} over comparing
+ * `permissionship` directly for the common case.
+ *
+ * A class (rather than a plain object, unlike {@link LookupResource}) so
+ * that `hasPermission()` travels with the data instead of requiring a
+ * separate helper import at every call site — the same reasoning that makes
+ * {@link Transaction} and `Consistency` classes elsewhere in this file.
+ */
+export class CheckResult {
+  constructor(
+    /** The server's answer. Prefer `hasPermission()` for the common case. */
+    readonly permissionship: Permissionship,
+    /**
+     * Caveat context keys the server needed and did not receive. Empty
+     * unless `permissionship` is `"conditionalPermission"`.
+     */
+    readonly missingContext: string[],
+    /**
+     * The revision this check was evaluated at. Thread it into
+     * `atLeast()`/`atLeastOrFull()` to make a later read observe this check
+     * (and everything it observed) — read-your-writes for checks.
+     */
+    readonly checkedAt: string,
+  ) {}
+
+  /**
+   * Whether the subject has the permission outright. `false` for a
+   * `"conditionalPermission"` result: the server could not evaluate the
+   * caveat, so treating it as a grant would authorize on an unevaluated
+   * condition. This is the ONLY case that returns `true` — `"noPermission"`,
+   * `"unspecified"`, and `"conditionalPermission"` are all `false`.
+   */
+  hasPermission(): boolean {
+    return this.permissionship === "hasPermission";
+  }
+}
+
+/**
+ * Merges a call-level default caveat context ({@link CheckOptions.context})
+ * with a single check's own item-level context
+ * ({@link CheckRequest.context}): a key-level merge where the item's own
+ * value wins on conflict and default keys the item does not override are
+ * retained — NOT a wholesale replacement, which would silently drop every
+ * default key an item didn't happen to mention. Returns `undefined` (never
+ * an empty object) when neither is supplied, so no context field is set on
+ * the wire. Shared by {@link SpiceDBClient.checkPermission} and the
+ * `CheckBulkPermissions`-backed surfaces (`checkPermissions`/`checkAny`/
+ * `checkAll`) so both build the merged context identically.
+ * @internal
+ */
+export function mergeCheckContext(
+  defaultContext: Record<string, unknown> | undefined,
+  itemContext: Record<string, unknown> | undefined,
+): JsonObject | undefined {
+  if (!defaultContext && !itemContext) {
+    return undefined;
+  }
+  return { ...defaultContext, ...itemContext } as JsonObject;
+}
+
+/**
+ * Maps the proto `CheckPermissionResponse.Permissionship` enum (which,
+ * unlike `LookupPermissionship`, has a `NO_PERMISSION` value) to its native
+ * equivalent. Unrecognized values map to `"unspecified"`. Mirrors
+ * spicedb-go's `checkPermissionshipFromProto` (client/check_types.go).
+ * @internal
+ */
+export function checkPermissionshipFromProto(
+  v: CheckPermissionResponse_Permissionship,
+): Permissionship {
+  switch (v) {
+    case CheckPermissionResponse_Permissionship.HAS_PERMISSION:
+      return "hasPermission";
+    case CheckPermissionResponse_Permissionship.CONDITIONAL_PERMISSION:
+      return "conditionalPermission";
+    case CheckPermissionResponse_Permissionship.NO_PERMISSION:
+      return "noPermission";
+    default:
+      return "unspecified";
+  }
+}
+
+/**
+ * Maps a proto `CheckPermissionResponse` (the response from a single,
+ * non-bulk `CheckPermission` RPC) to a native {@link CheckResult}. Uses the
+ * response's own `checked_at` directly. Mirrors spicedb-go's
+ * `checkResultFromProto` (client/check_types.go).
+ * @internal
+ */
+export function checkResultFromProto(
+  resp: ProtoCheckPermissionResponse,
+): CheckResult {
+  return new CheckResult(
+    checkPermissionshipFromProto(resp.permissionship),
+    resp.partialCaveatInfo?.missingRequiredContext ?? [],
+    resp.checkedAt?.token ?? "",
+  );
+}
+
+/**
+ * Maps a proto `CheckBulkPermissionsResponseItem` (one pair's successful
+ * result from a `CheckBulkPermissions` call) to a native {@link CheckResult}.
+ * `CheckBulkPermissionsResponseItem` carries the same
+ * permissionship/partial-caveat-info fields as `CheckPermissionResponse`,
+ * but has no per-item `checked_at` of its own — the token lives once on the
+ * enclosing `CheckBulkPermissionsResponse` and applies to every pair in it,
+ * so callers pass it in as `responseCheckedAt` to propagate onto each item.
+ * Mirrors spicedb-go's `checkResultFromBulkItem` (client/check_types.go).
+ * @internal
+ */
+export function checkResultFromBulkItem(
+  item: ProtoCheckBulkPermissionsResponseItem,
+  responseCheckedAt: string,
+): CheckResult {
+  return new CheckResult(
+    checkPermissionshipFromProto(item.permissionship),
+    item.partialCaveatInfo?.missingRequiredContext ?? [],
+    responseCheckedAt,
+  );
 }

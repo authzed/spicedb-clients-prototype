@@ -42,7 +42,8 @@ RSpec.describe 'SpiceDB::Client lookup native results' do
       results = client.lookup_resources(SpiceDB::Consistency.full, 'document', 'view', 'user', 'alice').to_a
 
       expect(results).to eq(
-        [SpiceDB::LookupResource.new(resource_id: 'doc1', permissionship: :has_permission, partial_caveat: nil)]
+        [SpiceDB::LookupResource.new(resource_id: 'doc1', permissionship: :has_permission, partial_caveat: nil,
+                                     looked_up_at: '')]
       )
     end
 
@@ -59,6 +60,20 @@ RSpec.describe 'SpiceDB::Client lookup native results' do
 
       expect(result.permissionship).to eq(:conditional_permission)
       expect(result.partial_caveat).to eq(SpiceDB::PartialCaveatInfo.new(missing_required_context: ['ip_address']))
+    end
+
+    it 'surfaces looked_up_at from the proto response' do
+      resp = Authzed::Api::V1::LookupResourcesResponse.new(
+        resource_object_id: 'doc3',
+        permissionship: :LOOKUP_PERMISSIONSHIP_HAS_PERMISSION,
+        looked_up_at: Authzed::Api::V1::ZedToken.new(token: 'zed-lookup-1'),
+        after_result_cursor: Authzed::Api::V1::Cursor.new(token: 'cursor3')
+      )
+      stub_lookup_resources([resp])
+
+      result = client.lookup_resources(SpiceDB::Consistency.full, 'document', 'view', 'user', 'alice').first
+
+      expect(result.looked_up_at).to eq('zed-lookup-1')
     end
   end
 
@@ -133,6 +148,19 @@ RSpec.describe 'SpiceDB::Client lookup native results' do
       result = client.lookup_subjects(SpiceDB::Consistency.full, 'document', 'doc1', 'view', 'user').first
 
       expect(result.excluded_subjects).to eq([])
+    end
+
+    it 'surfaces looked_up_at from the proto response' do
+      resp = Authzed::Api::V1::LookupSubjectsResponse.new(
+        subject: Authzed::Api::V1::ResolvedSubject.new(subject_object_id: 'bob',
+                                                       permissionship: :LOOKUP_PERMISSIONSHIP_HAS_PERMISSION),
+        looked_up_at: Authzed::Api::V1::ZedToken.new(token: 'zed-lookup-2')
+      )
+      stub_lookup_subjects([resp])
+
+      result = client.lookup_subjects(SpiceDB::Consistency.full, 'document', 'doc1', 'view', 'user').first
+
+      expect(result.looked_up_at).to eq('zed-lookup-2')
     end
   end
 

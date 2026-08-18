@@ -6,10 +6,12 @@ from google.rpc import status_pb2
 from spicedb.errors import (
     AlreadyExistsError,
     CancelledError,
+    DeadlineExceededError,
     FailedPreconditionError,
     InvalidArgumentError,
     NotFoundError,
     PermissionDeniedError,
+    ResourceExhaustedError,
     SpiceDBError,
     UnavailableError,
     error_from_status_proto,
@@ -26,6 +28,8 @@ def test_error_hierarchy():
     assert issubclass(FailedPreconditionError, SpiceDBError)
     assert issubclass(UnavailableError, SpiceDBError)
     assert issubclass(CancelledError, SpiceDBError)
+    assert issubclass(DeadlineExceededError, SpiceDBError)
+    assert issubclass(ResourceExhaustedError, SpiceDBError)
 
 
 def test_is_transient_unavailable():
@@ -91,10 +95,26 @@ def test_is_transient_still_true_for_spicedb_unavailable_error():
     assert is_transient(UnavailableError("down")) is True
 
 
+def test_is_transient_true_for_spicedb_resource_exhausted_error():
+    assert is_transient(ResourceExhaustedError("quota")) is True
+
+
 def test_to_spicedb_error_maps_sync_error():
     err = to_spicedb_error(_SyncRpcError(grpc.StatusCode.UNAVAILABLE, "gone"))
     assert isinstance(err, UnavailableError)
     assert str(err) == "gone"
+
+
+def test_to_spicedb_error_maps_deadline_exceeded():
+    err = to_spicedb_error(_SyncRpcError(grpc.StatusCode.DEADLINE_EXCEEDED, "too slow"))
+    assert isinstance(err, DeadlineExceededError)
+    assert str(err) == "too slow"
+
+
+def test_to_spicedb_error_maps_resource_exhausted():
+    err = to_spicedb_error(_SyncRpcError(grpc.StatusCode.RESOURCE_EXHAUSTED, "quota"))
+    assert isinstance(err, ResourceExhaustedError)
+    assert str(err) == "quota"
 
 
 def test_all_error_types_are_exported():
@@ -104,6 +124,8 @@ def test_all_error_types_are_exported():
         "FailedPreconditionError",
         "UnavailableError",
         "CancelledError",
+        "DeadlineExceededError",
+        "ResourceExhaustedError",
     ):
         assert name in spicedb.__all__, f"{name} missing from spicedb.__all__"
         assert hasattr(spicedb, name)

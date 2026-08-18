@@ -169,9 +169,10 @@ type ProtoResponseStream<T> = Pin<Box<dyn Stream<Item = Result<T, Status>> + Sen
 ///
 /// Only the RPCs exercised by the behavioral test suites — `ReadRelationships`,
 /// `LookupResources`, `LookupSubjects`, `ExportBulkRelationships` (all used by
-/// `tests/read_stream_test.rs`), and `DeleteRelationships` (used by
-/// `tests/delete_relationships_test.rs`) — have real behavior; the rest of the
-/// trait is `unimplemented!()` since nothing in this harness calls them.
+/// `tests/read_stream_test.rs`), `DeleteRelationships` (used by
+/// `tests/delete_relationships_test.rs`), and `CheckBulkPermissions` (used by
+/// `tests/check_bulk_permissions_test.rs`) — have real behavior; the rest of
+/// the trait is `unimplemented!()` since nothing in this harness calls them.
 ///
 /// The paginating RPCs (`read_relationships`, `lookup_resources`,
 /// `export_bulk_relationships`) are configured with a *queue of pages*: each
@@ -199,6 +200,10 @@ pub struct MockPermissionsService {
     delete_relationships_responses: Mutex<VecDeque<proto::DeleteRelationshipsResponse>>,
     delete_relationships_calls: Arc<AtomicUsize>,
     delete_relationships_requests: Arc<Mutex<Vec<proto::DeleteRelationshipsRequest>>>,
+
+    check_bulk_permissions_responses: Mutex<VecDeque<proto::CheckBulkPermissionsResponse>>,
+    check_bulk_permissions_calls: Arc<AtomicUsize>,
+    check_bulk_permissions_requests: Arc<Mutex<Vec<proto::CheckBulkPermissionsRequest>>>,
 }
 
 impl MockPermissionsService {
@@ -224,6 +229,10 @@ impl MockPermissionsService {
             delete_relationships_responses: Mutex::new(VecDeque::new()),
             delete_relationships_calls: Arc::new(AtomicUsize::new(0)),
             delete_relationships_requests: Arc::new(Mutex::new(Vec::new())),
+
+            check_bulk_permissions_responses: Mutex::new(VecDeque::new()),
+            check_bulk_permissions_calls: Arc::new(AtomicUsize::new(0)),
+            check_bulk_permissions_requests: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -324,6 +333,30 @@ impl MockPermissionsService {
     ) -> Arc<Mutex<Vec<proto::DeleteRelationshipsRequest>>> {
         self.delete_relationships_requests.clone()
     }
+
+    /// Queues one `CheckBulkPermissions` response, popped and returned in the
+    /// order pushed. If the queue is exhausted, the mock falls back to a
+    /// default (empty-pairs) response.
+    pub fn push_check_bulk_permissions_response(&self, resp: proto::CheckBulkPermissionsResponse) {
+        self.check_bulk_permissions_responses
+            .lock()
+            .unwrap()
+            .push_back(resp);
+    }
+
+    /// Returns a live handle to the `CheckBulkPermissions` call counter. Grab
+    /// this *before* moving the mock into [`spawn_permissions_server`].
+    pub fn check_bulk_permissions_calls(&self) -> Arc<AtomicUsize> {
+        self.check_bulk_permissions_calls.clone()
+    }
+
+    /// Returns a live handle to the full `CheckBulkPermissionsRequest`
+    /// received on each call, in call order.
+    pub fn check_bulk_permissions_requests(
+        &self,
+    ) -> Arc<Mutex<Vec<proto::CheckBulkPermissionsRequest>>> {
+        self.check_bulk_permissions_requests.clone()
+    }
 }
 
 impl Default for MockPermissionsService {
@@ -401,9 +434,21 @@ impl PermissionsService for MockPermissionsService {
 
     async fn check_bulk_permissions(
         &self,
-        _request: Request<proto::CheckBulkPermissionsRequest>,
+        request: Request<proto::CheckBulkPermissionsRequest>,
     ) -> Result<Response<proto::CheckBulkPermissionsResponse>, Status> {
-        unimplemented!("not exercised by the read-stream behavioral tests")
+        self.check_bulk_permissions_calls
+            .fetch_add(1, Ordering::SeqCst);
+        self.check_bulk_permissions_requests
+            .lock()
+            .unwrap()
+            .push(request.into_inner());
+        let resp = self
+            .check_bulk_permissions_responses
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or_default();
+        Ok(Response::new(resp))
     }
 
     async fn expand_permission_tree(

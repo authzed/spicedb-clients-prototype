@@ -25,6 +25,21 @@ pub struct Relationship {
     pub caveat_name: String,
     pub caveat_context: Option<HashMap<String, serde_json::Value>>,
     pub expiration: Option<DateTime<Utc>>,
+    /// Per-item caveat context used only when this relationship is passed to
+    /// a check call (`check_permission_with_context`/
+    /// `check_permissions_with_context`/`check_any_with_context`/
+    /// `check_all_with_context`).
+    ///
+    /// This is a **different concept** from `caveat_context`, which is
+    /// stored with the relationship as part of a write and supplies values
+    /// for the caveat baked into that specific tuple: `check_context` is
+    /// never sent on a write (see [`Relationship::to_proto`]) and instead
+    /// supplies values for evaluating whatever caveat a permission check
+    /// encounters at check time. Keeping them on separate fields prevents a
+    /// check-time value from silently leaking into a write and altering a
+    /// stored relationship's caveat context. Set it with
+    /// [`Relationship::with_check_context`].
+    pub check_context: Option<HashMap<String, serde_json::Value>>,
 }
 
 impl Relationship {
@@ -50,6 +65,7 @@ impl Relationship {
             caveat_name: String::new(),
             caveat_context: None,
             expiration: None,
+            check_context: None,
         };
         r.validate()?;
         Ok(r)
@@ -127,6 +143,20 @@ impl Relationship {
     /// Returns a copy of this relationship with the given expiration.
     pub fn with_expiration(mut self, expiration: DateTime<Utc>) -> Self {
         self.expiration = Some(expiration);
+        self
+    }
+
+    /// Returns a copy of this relationship carrying per-item caveat context
+    /// for check calls. See the `check_context` field doc for how this
+    /// differs from [`with_caveat`](Self::with_caveat)'s context.
+    ///
+    /// When a call-level default is also supplied to the `_with_context`
+    /// check method, the two are merged key by key: this item's keys win on
+    /// conflict, and any call-level keys not present here are retained. For
+    /// example, a call-level `{now: 42, region: "us"}` plus a per-item
+    /// `{region: "eu"}` produces `{now: 42, region: "eu"}` for this item.
+    pub fn with_check_context(mut self, context: HashMap<String, serde_json::Value>) -> Self {
+        self.check_context = Some(context);
         self
     }
 
@@ -232,6 +262,10 @@ impl Relationship {
             caveat_name,
             caveat_context,
             expiration,
+            // check_context is a client-side-only, check-time annotation —
+            // it has no wire representation on proto::Relationship, so a
+            // relationship read back from the server never carries one.
+            check_context: None,
         }
     }
 }
@@ -789,26 +823,62 @@ pub struct CountResult {
     pub revision: String,
 }
 
-/// Result of a check_permission call.
+/// Indicates whether a check or lookup result reflects a full grant, a full
+/// denial, or is conditional on caveat context that was not fully evaluated
+/// by the server. Callers MUST check this before treating a result as a full
+/// grant — a `ConditionalPermission` result may resolve to `false` once the
+/// missing caveat context is supplied.
 ///
-/// Marked `#[must_use]` to prevent silently ignoring permission check results.
-#[must_use]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CheckResult {
-    /// Whether the permission is granted.
-    pub has_permission: bool,
-}
-
-/// Indicates whether a lookup result reflects a full grant or is conditional
-/// on caveat context that was not fully evaluated by the server. Callers
-/// MUST check this before treating a result as a full grant — a
-/// `ConditionalPermission` result may resolve to `false` once the missing
-/// caveat context is supplied.
+/// This type serves both the check surface ([`CheckResult`]) and the lookup
+/// surface ([`LookupResource`], [`ResolvedSubject`]). Lookups never yield
+/// `NoPermission`: a subject/resource pair that lacks the permission is
+/// simply absent from a lookup stream rather than being yielded with that
+/// permissionship. `NoPermission` only appears on `CheckResult`, where the
+/// server is answering a question about one specific pair and "no" is
+/// itself an answer.
+///
+/// `NoPermission` is inserted directly after `Unspecified` rather than
+/// appended at the end — this enum carries no explicit discriminants, so
+/// there's no risk of renumbering the other variants by doing so.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Permissionship {
     Unspecified,
+    NoPermission,
     HasPermission,
     ConditionalPermission,
+}
+
+/// Result of a [`SpiceDBClient::check_permission`](crate::client::SpiceDBClient::check_permission)/
+/// [`check_permissions`](crate::client::SpiceDBClient::check_permissions) call.
+///
+/// `permissionship` carries the server's answer. A `ConditionalPermission`
+/// result means the server needed caveat context that was not supplied — it
+/// is NOT a grant. Prefer [`CheckResult::has_permission`] over comparing
+/// `permissionship` directly for the common case.
+///
+/// Marked `#[must_use]` to prevent silently ignoring permission check results.
+#[must_use]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckResult {
+    /// The server's answer for this check.
+    pub permissionship: Permissionship,
+    /// Caveat context keys the server needed and did not receive. Empty
+    /// unless `permissionship` is `ConditionalPermission`.
+    pub missing_context: Vec<String>,
+    /// The revision (ZedToken) this check was evaluated at. Thread it into
+    /// [`crate::consistency::at_least`] so a later read observes this check.
+    pub checked_at: String,
+}
+
+impl CheckResult {
+    /// Returns `true` only when the permission was granted outright.
+    ///
+    /// This is `false` for a `ConditionalPermission` result: the server
+    /// could not evaluate the caveat, so treating it as a grant would
+    /// authorize on an unevaluated condition.
+    pub fn has_permission(&self) -> bool {
+        self.permissionship == Permissionship::HasPermission
+    }
 }
 
 /// Caveat context that was missing to fully evaluate a conditional result.
@@ -824,6 +894,10 @@ pub struct LookupResource {
     pub permissionship: Permissionship,
     /// Non-`None` when `permissionship` is `ConditionalPermission`.
     pub partial_caveat: Option<PartialCaveatInfo>,
+    /// The revision (ZedToken) this result was computed at. Identical for
+    /// every item yielded by a single `lookup_resources` call — it's a
+    /// property of the call, not of the individual resource.
+    pub looked_up_at: String,
 }
 
 /// A subject resolved by `lookup_subjects` — either the matched subject, or
@@ -846,6 +920,10 @@ pub struct ResolvedSubject {
 pub struct LookupSubject {
     pub subject: ResolvedSubject,
     pub excluded_subjects: Vec<ResolvedSubject>,
+    /// The revision (ZedToken) this result was computed at. Identical for
+    /// every item yielded by a single `lookup_subjects` call — it's a
+    /// property of the call, not of the individual subject.
+    pub looked_up_at: String,
 }
 
 /// Maps the proto `LookupPermissionship` enum (represented as `i32` by
@@ -860,6 +938,95 @@ pub(crate) fn permissionship_from_proto(v: i32) -> Permissionship {
             Permissionship::ConditionalPermission
         }
         _ => Permissionship::Unspecified,
+    }
+}
+
+/// Maps the proto `CheckPermissionResponse.Permissionship` enum (used by
+/// both `CheckPermissionResponse` and `CheckBulkPermissionsResponseItem`,
+/// represented as `i32` by prost) to its native equivalent. Unlike
+/// [`permissionship_from_proto`] (used for lookups), this proto enum has a
+/// `NoPermission` value. Unrecognized values map to
+/// `Permissionship::Unspecified`.
+pub(crate) fn check_permissionship_from_proto(v: i32) -> Permissionship {
+    match v {
+        x if x == proto::check_permission_response::Permissionship::NoPermission as i32 => {
+            Permissionship::NoPermission
+        }
+        x if x == proto::check_permission_response::Permissionship::HasPermission as i32 => {
+            Permissionship::HasPermission
+        }
+        x if x
+            == proto::check_permission_response::Permissionship::ConditionalPermission as i32 =>
+        {
+            Permissionship::ConditionalPermission
+        }
+        _ => Permissionship::Unspecified,
+    }
+}
+
+/// Maps a proto `CheckBulkPermissionsResponseItem` (one pair's successful
+/// result from a `CheckBulkPermissions` call) to a native [`CheckResult`].
+/// `CheckBulkPermissionsResponseItem` has no per-item `checked_at` of its
+/// own — the token lives once on the enclosing `CheckBulkPermissionsResponse`
+/// and applies to every pair in it, so callers pass it in as `checked_at` to
+/// propagate onto each item.
+pub(crate) fn check_result_from_bulk_item(
+    item: &proto::CheckBulkPermissionsResponseItem,
+    checked_at: &str,
+) -> CheckResult {
+    CheckResult {
+        permissionship: check_permissionship_from_proto(item.permissionship),
+        missing_context: item
+            .partial_caveat_info
+            .as_ref()
+            .map(|c| c.missing_required_context.clone())
+            .unwrap_or_default(),
+        checked_at: checked_at.to_string(),
+    }
+}
+
+/// Merges call-level and per-item check-time caveat context per the
+/// key-level merge rule (spec D3b): item keys win on conflict, and
+/// call-level keys the item doesn't specify are retained. Returns `None`
+/// only when neither is supplied — callers must not attach a `context`
+/// field to the wire in that case (an empty `Struct` is not the same as no
+/// context at all).
+///
+/// This is distinct from wholesale replacement: an item supplying one key
+/// must not drop every call-level key it didn't mention, or the caveat
+/// would fail for missing context that the caller thought it had already
+/// supplied at the call level.
+pub(crate) fn merge_check_context(
+    call_level: Option<&HashMap<String, serde_json::Value>>,
+    item: Option<&HashMap<String, serde_json::Value>>,
+) -> Option<HashMap<String, serde_json::Value>> {
+    if call_level.is_none() && item.is_none() {
+        return None;
+    }
+    let mut merged = call_level.cloned().unwrap_or_default();
+    if let Some(item) = item {
+        for (k, v) in item {
+            merged.insert(k.clone(), v.clone());
+        }
+    }
+    Some(merged)
+}
+
+/// Converts a check-time caveat context map to the wire `Struct` type used
+/// by `CheckBulkPermissionsRequestItem.context` (proto field 4) /
+/// `CheckPermissionRequest.context` (proto field 5). Mirrors the write-time
+/// conversion inlined in [`Relationship::to_proto`], but check-time context
+/// is a different wire field on a different message — never
+/// `Relationship.optional_caveat.context` — so it goes through its own
+/// conversion rather than sharing `Relationship::to_proto`'s.
+pub(crate) fn check_context_to_proto(
+    ctx: &HashMap<String, serde_json::Value>,
+) -> prost_types::Struct {
+    prost_types::Struct {
+        fields: ctx
+            .iter()
+            .map(|(k, v)| (k.clone(), json_value_to_prost(v)))
+            .collect(),
     }
 }
 
@@ -1191,10 +1358,139 @@ mod tests {
     #[test]
     fn test_check_result_must_use() {
         let result = CheckResult {
-            has_permission: true,
+            permissionship: Permissionship::HasPermission,
+            missing_context: Vec::new(),
+            checked_at: "rev-1".to_string(),
         };
         // Using the result (must_use is a compile-time lint, tested by compilation)
-        assert!(result.has_permission);
+        assert!(result.has_permission());
+    }
+
+    // T1: has_permission() is false for every variant except HasPermission,
+    // parametrized over all four Permissionship values.
+    #[test]
+    fn test_check_result_has_permission_only_true_for_has_permission() {
+        let cases = [
+            (Permissionship::Unspecified, false),
+            (Permissionship::NoPermission, false),
+            (Permissionship::HasPermission, true),
+            (Permissionship::ConditionalPermission, false),
+        ];
+        for (permissionship, expected) in cases {
+            let result = CheckResult {
+                permissionship: permissionship.clone(),
+                missing_context: Vec::new(),
+                checked_at: String::new(),
+            };
+            assert_eq!(
+                result.has_permission(),
+                expected,
+                "has_permission() should be {expected} for {permissionship:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_check_permissionship_from_proto() {
+        assert_eq!(
+            check_permissionship_from_proto(
+                proto::check_permission_response::Permissionship::Unspecified as i32
+            ),
+            Permissionship::Unspecified
+        );
+        assert_eq!(
+            check_permissionship_from_proto(
+                proto::check_permission_response::Permissionship::NoPermission as i32
+            ),
+            Permissionship::NoPermission
+        );
+        assert_eq!(
+            check_permissionship_from_proto(
+                proto::check_permission_response::Permissionship::HasPermission as i32
+            ),
+            Permissionship::HasPermission
+        );
+        assert_eq!(
+            check_permissionship_from_proto(
+                proto::check_permission_response::Permissionship::ConditionalPermission as i32
+            ),
+            Permissionship::ConditionalPermission
+        );
+        // Unrecognized values fail safe to Unspecified rather than panicking.
+        assert_eq!(
+            check_permissionship_from_proto(99),
+            Permissionship::Unspecified
+        );
+    }
+
+    // T2: missing context carries the server's `missing_required_context`
+    // contents, asserted by value (not merely non-empty).
+    #[test]
+    fn test_check_result_from_bulk_item_missing_context_by_value() {
+        let item = proto::CheckBulkPermissionsResponseItem {
+            permissionship: proto::check_permission_response::Permissionship::ConditionalPermission
+                as i32,
+            partial_caveat_info: Some(proto::PartialCaveatInfo {
+                missing_required_context: vec!["ip_address".to_string(), "now".to_string()],
+            }),
+            debug_trace: None,
+        };
+        let result = check_result_from_bulk_item(&item, "rev-1");
+        assert_eq!(
+            result.missing_context,
+            vec!["ip_address".to_string(), "now".to_string()]
+        );
+        assert_eq!(result.permissionship, Permissionship::ConditionalPermission);
+    }
+
+    #[test]
+    fn test_check_result_from_bulk_item_no_partial_caveat_info_yields_empty_missing_context() {
+        let item = proto::CheckBulkPermissionsResponseItem {
+            permissionship: proto::check_permission_response::Permissionship::HasPermission as i32,
+            partial_caveat_info: None,
+            debug_trace: None,
+        };
+        let result = check_result_from_bulk_item(&item, "rev-1");
+        assert!(result.missing_context.is_empty());
+    }
+
+    // T3: the checked-at token is populated from the (response-level) value
+    // passed in, since CheckBulkPermissionsResponseItem carries no per-item
+    // checked_at of its own.
+    #[test]
+    fn test_check_result_from_bulk_item_checked_at_populated() {
+        let item = proto::CheckBulkPermissionsResponseItem {
+            permissionship: proto::check_permission_response::Permissionship::HasPermission as i32,
+            partial_caveat_info: None,
+            debug_trace: None,
+        };
+        let result = check_result_from_bulk_item(&item, "zedtoken-abc123");
+        assert_eq!(result.checked_at, "zedtoken-abc123");
+    }
+
+    #[test]
+    fn test_lookup_resource_has_looked_up_at() {
+        let lr = LookupResource {
+            resource_id: "doc1".into(),
+            permissionship: Permissionship::HasPermission,
+            partial_caveat: None,
+            looked_up_at: "rev-1".into(),
+        };
+        assert_eq!(lr.looked_up_at, "rev-1");
+    }
+
+    #[test]
+    fn test_lookup_subject_has_looked_up_at() {
+        let ls = LookupSubject {
+            subject: ResolvedSubject {
+                subject_id: "alice".into(),
+                permissionship: Permissionship::HasPermission,
+                partial_caveat: None,
+            },
+            excluded_subjects: Vec::new(),
+            looked_up_at: "rev-1".into(),
+        };
+        assert_eq!(ls.looked_up_at, "rev-1");
     }
 
     #[test]
@@ -1402,5 +1698,117 @@ mod tests {
             .as_ref()
             .expect("expected child to be a leaf");
         assert_eq!(child_leaf.subjects[0].subject_id, "bob");
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 17: caveat context on the check surface (spec D3b)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_relationship_with_check_context_is_distinct_from_caveat_context() {
+        let mut check_ctx = HashMap::new();
+        check_ctx.insert("now".to_string(), serde_json::json!(42.0));
+
+        let mut write_ctx = HashMap::new();
+        write_ctx.insert("threshold".to_string(), serde_json::json!(10.0));
+
+        let r = Relationship::new("document", "doc1", "viewer", "user", "alice", "")
+            .unwrap()
+            .with_caveat("active", Some(write_ctx.clone()))
+            .with_check_context(check_ctx.clone());
+
+        assert_eq!(r.caveat_context, Some(write_ctx));
+        assert_eq!(r.check_context, Some(check_ctx));
+    }
+
+    #[test]
+    fn test_relationship_default_check_context_is_none() {
+        let r = Relationship::new("document", "doc1", "viewer", "user", "alice", "").unwrap();
+        assert_eq!(r.check_context, None);
+    }
+
+    // Proves check_context never leaks onto the wire write path — a leak
+    // here would silently alter a stored relationship's caveat context.
+    #[test]
+    fn test_relationship_to_proto_does_not_leak_check_context_into_write_path() {
+        let mut check_ctx = HashMap::new();
+        check_ctx.insert("now".to_string(), serde_json::json!(42.0));
+
+        let mut write_ctx = HashMap::new();
+        write_ctx.insert("threshold".to_string(), serde_json::json!(10.0));
+
+        let r = Relationship::new("document", "doc1", "viewer", "user", "alice", "")
+            .unwrap()
+            .with_caveat("active", Some(write_ctx))
+            .with_check_context(check_ctx);
+
+        let proto_rel = r.to_proto();
+        let caveat = proto_rel.optional_caveat.expect("caveat should be set");
+        let ctx = caveat.context.expect("caveat context should be set");
+        assert_eq!(ctx.fields.len(), 1);
+        assert!(
+            ctx.fields.contains_key("threshold"),
+            "write path must carry only caveat_context, not check_context"
+        );
+        assert!(
+            !ctx.fields.contains_key("now"),
+            "check_context must never leak onto the wire write path"
+        );
+    }
+
+    #[test]
+    fn test_merge_check_context_neither_supplied_is_none() {
+        assert_eq!(merge_check_context(None, None), None);
+    }
+
+    #[test]
+    fn test_merge_check_context_call_level_only() {
+        let mut call_level = HashMap::new();
+        call_level.insert("now".to_string(), serde_json::json!(42.0));
+        assert_eq!(
+            merge_check_context(Some(&call_level), None),
+            Some(call_level)
+        );
+    }
+
+    #[test]
+    fn test_merge_check_context_item_only() {
+        let mut item = HashMap::new();
+        item.insert("now".to_string(), serde_json::json!(42.0));
+        assert_eq!(merge_check_context(None, Some(&item)), Some(item));
+    }
+
+    // C3 at the pure-function level: item key wins on conflict, call-level
+    // key absent from the item is retained.
+    #[test]
+    fn test_merge_check_context_merge_rule() {
+        let mut call_level = HashMap::new();
+        call_level.insert("now".to_string(), serde_json::json!(42.0));
+        call_level.insert("region".to_string(), serde_json::json!("us"));
+
+        let mut item = HashMap::new();
+        item.insert("region".to_string(), serde_json::json!("eu"));
+
+        let merged = merge_check_context(Some(&call_level), Some(&item)).unwrap();
+
+        let mut want = HashMap::new();
+        want.insert("now".to_string(), serde_json::json!(42.0));
+        want.insert("region".to_string(), serde_json::json!("eu"));
+        assert_eq!(merged, want);
+    }
+
+    #[test]
+    fn test_check_context_to_proto_round_trips() {
+        let mut ctx = HashMap::new();
+        ctx.insert("now".to_string(), serde_json::json!(42.0));
+        ctx.insert("region".to_string(), serde_json::json!("us"));
+
+        let proto_struct = check_context_to_proto(&ctx);
+        let round_tripped: HashMap<String, serde_json::Value> = proto_struct
+            .fields
+            .iter()
+            .map(|(k, v)| (k.clone(), prost_value_to_json(v)))
+            .collect();
+        assert_eq!(round_tripped, ctx);
     }
 }

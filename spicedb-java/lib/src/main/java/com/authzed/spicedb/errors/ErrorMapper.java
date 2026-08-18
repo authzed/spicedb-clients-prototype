@@ -34,6 +34,11 @@ public final class ErrorMapper {
       case NOT_FOUND -> new NotFoundException(message, e);
       case ALREADY_EXISTS -> new AlreadyExistsException(message, e);
       case INVALID_ARGUMENT -> new InvalidArgumentException(message, e);
+      case FAILED_PRECONDITION -> new FailedPreconditionException(message, e);
+      case UNAVAILABLE -> new UnavailableException(message, e);
+      case CANCELLED -> new CancelledException(message, e);
+      case DEADLINE_EXCEEDED -> new DeadlineExceededException(message, e);
+      case RESOURCE_EXHAUSTED -> new ResourceExhaustedException(message, e);
       default -> new SpiceDBException(message, e);
     };
   }

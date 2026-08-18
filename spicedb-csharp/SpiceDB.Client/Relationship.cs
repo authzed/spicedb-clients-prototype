@@ -23,6 +23,25 @@ public sealed record Relationship
     public DateTimeOffset? Expiration { get; init; }
 
     /// <summary>
+    /// Per-item caveat context for CHECK-TIME evaluation only. Distinct from
+    /// <see cref="CaveatContext"/>: <see cref="CaveatContext"/> is stored
+    /// WITH the relationship (write-time — sent by <c>WriteAsync</c> as part
+    /// of the relationship's caveat), while <see cref="CheckContext"/> is
+    /// supplied fresh on every check call and is NEVER written to SpiceDB —
+    /// <see cref="ToProto"/> never reads it. Conflating the two would leak
+    /// check-time-only data into a stored relationship the next time this
+    /// record round-trips through <c>WriteAsync</c>.
+    /// <para>
+    /// When a call-level default context is also supplied to a check call
+    /// (see <c>SpiceDBClient.CheckPermissionsWithContextAsync</c> and
+    /// siblings), the two are merged key by key: this relationship's own
+    /// keys win on conflict, and call-level keys this relationship doesn't
+    /// specify are retained unchanged.
+    /// </para>
+    /// </summary>
+    public IReadOnlyDictionary<string, object>? CheckContext { get; init; }
+
+    /// <summary>
     /// Creates a Relationship from explicit resource and subject fields.
     /// </summary>
     /// <exception cref="ArgumentException">Thrown when any required field is empty.</exception>
@@ -96,6 +115,15 @@ public sealed record Relationship
     /// </summary>
     public Relationship WithExpiration(DateTimeOffset expiration) =>
         this with { Expiration = expiration };
+
+    /// <summary>
+    /// Returns a copy of the relationship carrying per-item caveat context
+    /// for check calls. See <see cref="CheckContext"/> for how this differs
+    /// from <see cref="WithCaveat"/>'s write-time context, and how it merges
+    /// with any call-level default supplied to the check call.
+    /// </summary>
+    public Relationship WithCheckContext(IReadOnlyDictionary<string, object>? context) =>
+        this with { CheckContext = context };
 
     /// <summary>
     /// Converts this relationship to its proto representation.

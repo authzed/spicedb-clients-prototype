@@ -10,6 +10,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 import static com.authzed.spicedb.Consistency.*;
@@ -78,7 +79,7 @@ class PermissionsTest {
     void user_viewer_can_view() {
         tc.touch(Document("readme").viewer(User("alice")));
 
-        boolean allowed = tc.check(full(), Document("readme").view(), User("alice"));
+        boolean allowed = tc.check(full(), Document("readme").view(), User("alice")).hasPermission();
         assertThat(allowed).isTrue();
     }
 
@@ -86,7 +87,7 @@ class PermissionsTest {
     void user_viewer_cannot_edit() {
         tc.touch(Document("readme").viewer(User("alice")));
 
-        boolean allowed = tc.check(full(), Document("readme").edit(), User("alice"));
+        boolean allowed = tc.check(full(), Document("readme").edit(), User("alice")).hasPermission();
         assertThat(allowed).isFalse();
     }
 
@@ -94,17 +95,17 @@ class PermissionsTest {
     void user_editor_can_edit_and_view() {
         tc.touch(Document("readme").editor(User("bob")));
 
-        assertThat(tc.check(full(), Document("readme").edit(), User("bob"))).isTrue();
-        assertThat(tc.check(full(), Document("readme").view(), User("bob"))).isTrue();
+        assertThat(tc.check(full(), Document("readme").edit(), User("bob")).hasPermission()).isTrue();
+        assertThat(tc.check(full(), Document("readme").view(), User("bob")).hasPermission()).isTrue();
     }
 
     @Test
     void user_owner_can_delete() {
         tc.touch(Document("readme").owner(User("charlie")));
 
-        assertThat(tc.check(full(), Document("readme").delete(), User("charlie"))).isTrue();
-        assertThat(tc.check(full(), Document("readme").edit(), User("charlie"))).isTrue();
-        assertThat(tc.check(full(), Document("readme").view(), User("charlie"))).isTrue();
+        assertThat(tc.check(full(), Document("readme").delete(), User("charlie")).hasPermission()).isTrue();
+        assertThat(tc.check(full(), Document("readme").edit(), User("charlie")).hasPermission()).isTrue();
+        assertThat(tc.check(full(), Document("readme").view(), User("charlie")).hasPermission()).isTrue();
     }
 
     // --- Touch + Check (caveated) ---
@@ -116,8 +117,68 @@ class PermissionsTest {
         ));
 
         // Caveated permission check — SpiceDB evaluates the caveat.
-        boolean allowed = tc.check(full(), Document("readme").view(), User("alice"));
+        boolean allowed = tc.check(full(), Document("readme").view(), User("alice")).hasPermission();
         assertThat(allowed).isTrue();
+    }
+
+    @Test
+    void caveated_viewer_missing_context_is_conditional_not_denied() {
+        // No context supplied at check time, so the caveat cannot be evaluated.
+        // RULE (root DESIGN.md, "Only an unconditional grant is true"): this must
+        // surface as CONDITIONAL_PERMISSION, not silently collapse to a bare denial
+        // (or, worse, a grant). hasPermission() must be false either way, but the
+        // *reason* must be observable via permissionship()/missingContext() — that
+        // observability is exactly what a boolean-returning check() would destroy.
+        tc.touch(Document("readme").viewer(
+            User("frank").withIpRange(new IpRangeContext())
+        ));
+
+        var result = tc.check(full(), Document("readme").view(), User("frank"));
+
+        assertThat(result.hasPermission()).isFalse();
+        assertThat(result.permissionship()).isEqualTo(LookupResult.Permissionship.CONDITIONAL_PERMISSION);
+        assertThat(result.missingContext()).contains("allowed_cidr");
+        assertThat(result.checkedAt()).isNotBlank();
+    }
+
+    @Test
+    void caveated_viewer_resolved_by_check_time_context_parameter() {
+        // The payoff (spec D3b): the SAME relationship shape as the test above
+        // (no context supplied at write time) resolves into a genuine grant when
+        // the missing caveat context is supplied at CHECK time via the new
+        // check(..., Map) overload, instead of only being observable via
+        // missingContext().
+        tc.touch(Document("readme").viewer(
+            User("grace").withIpRange(new IpRangeContext())
+        ));
+
+        var result = tc.check(
+            full(), Document("readme").view(), User("grace"), Map.of("allowed_cidr", "0.0.0.0/0"));
+
+        assertThat(result.hasPermission()).isTrue();
+        assertThat(result.permissionship()).isEqualTo(LookupResult.Permissionship.HAS_PERMISSION);
+    }
+
+    @Test
+    void caveated_viewer_resolved_by_subject_supplied_context_on_plain_check() {
+        // Proves the generator's pre-existing defect fix: passing a caveated
+        // SUBJECT ref directly to the plain (no explicit context parameter)
+        // check() must supply that subject's own context to the CHECK, via
+        // Relationship.withCheckContext -- not the write-time withCaveat the
+        // template used before, which spicedb-java's checkItemFromRel never
+        // reads and was therefore silently inert. No context is supplied at
+        // write time here, so this only passes if withCheckContext is wired up.
+        tc.touch(Document("readme").viewer(
+            User("henry").withIpRange(new IpRangeContext())
+        ));
+
+        var result = tc.check(
+            full(),
+            Document("readme").view(),
+            User("henry").withIpRange(new IpRangeContext().withAllowedCidr("0.0.0.0/0")));
+
+        assertThat(result.hasPermission()).isTrue();
+        assertThat(result.permissionship()).isEqualTo(LookupResult.Permissionship.HAS_PERMISSION);
     }
 
     // --- Touch + Check (sub-ref) ---
@@ -129,7 +190,7 @@ class PermissionsTest {
             Document("readme").viewer(Team("eng").member())
         );
 
-        assertThat(tc.check(full(), Document("readme").view(), User("alice"))).isTrue();
+        assertThat(tc.check(full(), Document("readme").view(), User("alice")).hasPermission()).isTrue();
     }
 
     // --- LookupResources ---

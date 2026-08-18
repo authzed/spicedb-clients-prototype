@@ -403,14 +403,50 @@ func (d DocumentRef) Owner(subject DocumentOwnerSubject) TypedRelationship {
 
 // --- Check and Lookup Functions ---
 
-// Check checks whether the given subject has the specified permission on the resource.
-func Check(ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm Permission, subject Subject) (bool, error) {
+// Check checks whether the given subject has the specified permission on the
+// resource.
+//
+// Check surfaces the underlying client's full CheckResult (Permissionship,
+// MissingContext, CheckedAt) rather than collapsing it to a bool: a
+// Conditional result means the server needed caveat context that was not
+// supplied, and is NOT a grant. Prefer CheckResult.HasPermission() over
+// comparing Permissionship directly for the common case.
+//
+// See CheckWithContext to supply a call-level caveat CHECK-TIME context for
+// evaluating caveats encountered during the check (Check is CheckWithContext
+// with a nil checkContext).
+//
+// A caveated subject ref (e.g. User("dave").WithIpRange(ctx)) supplies its
+// own context to the check via rel.Relationship.WithCheckContext, the same
+// accessor (subject.caveatInfo()) the write paths use to attach a caveat at
+// write time -- but here it is applied to the ephemeral relationship built
+// for this check only, never written.
+func Check(ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm Permission, subject Subject) (client.CheckResult, error) {
 	sType, sID, sRel := subject.subjectRef()
 	r, err := rel.FromTriple(perm.resourceType, perm.resourceID, perm.permission, sType, sID, sRel)
 	if err != nil {
-		return false, err
+		return client.CheckResult{}, err
 	}
+	_, sCtx := subject.caveatInfo()
+	r = r.WithCheckContext(sCtx)
 	return tc.Client.CheckOne(ctx, cs, perm.permission, r)
+}
+
+// CheckWithContext is Check with a call-level default caveat CHECK-TIME
+// context applied to the check, mirroring the underlying
+// client.CheckOneWithContext. The subject's own context (see Check) is the
+// ITEM-LEVEL value under client.CheckWithContext's merge rule: it wins
+// per-key over this call-level checkContext, and call-level keys the subject
+// doesn't mention are retained.
+func CheckWithContext(ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm Permission, checkContext map[string]any, subject Subject) (client.CheckResult, error) {
+	sType, sID, sRel := subject.subjectRef()
+	r, err := rel.FromTriple(perm.resourceType, perm.resourceID, perm.permission, sType, sID, sRel)
+	if err != nil {
+		return client.CheckResult{}, err
+	}
+	_, sCtx := subject.caveatInfo()
+	r = r.WithCheckContext(sCtx)
+	return tc.Client.CheckOneWithContext(ctx, cs, perm.permission, checkContext, r)
 }
 
 // LookupResources returns an iterator of resources that the subject has the specified permission on.

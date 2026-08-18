@@ -3,6 +3,7 @@ package com.authzed.spicedb.examples;
 import static com.authzed.spicedb.Consistency.*;
 import static org.assertj.core.api.Assertions.*;
 
+import com.authzed.spicedb.CheckResult;
 import com.authzed.spicedb.Filter;
 import com.authzed.spicedb.Relationship;
 import com.authzed.spicedb.Transaction;
@@ -37,7 +38,7 @@ class BulkOperationsTest extends SpiceDBIntegrationTest {
 
   @Test
   void bulk_check_returns_result_per_relationship() {
-    List<Boolean> results =
+    List<CheckResult> results =
         client.checkPermissions(
             atLeast(writeRevision),
             "view",
@@ -46,7 +47,9 @@ class BulkOperationsTest extends SpiceDBIntegrationTest {
             Relationship.of("document", "report", "view", "user", "charlie"));
 
     assertThat(results).hasSize(3);
-    assertThat(results).containsExactly(true, true, true);
+    assertThat(results).allSatisfy(r -> assertThat(r.hasPermission()).isTrue());
+    // Every result carries checked_at, threadable into Consistency.atLeast for read-your-writes.
+    assertThat(results).allSatisfy(r -> assertThat(r.checkedAt()).isNotEmpty());
   }
 
   @Test

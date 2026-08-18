@@ -13,7 +13,7 @@ Requires SpiceDB at localhost:50051.
 from __future__ import annotations
 
 import pytest
-from spicedb import full, Filter
+from spicedb import full, Filter, Permissionship
 
 from testdata.permissions import (
     TypedTransaction,
@@ -81,12 +81,47 @@ class TestAsyncTypedClient:
             ),
         )
 
-        assert await tc.check(full(), Document("readme").view, User("alice")) is True
-        assert await tc.check(full(), Document("readme").edit, User("alice")) is False
-        assert await tc.check(full(), Document("readme").view, User("bob")) is True
-        assert await tc.check(full(), Document("readme").edit, User("bob")) is True
-        assert await tc.check(full(), Document("readme").delete, User("charlie")) is True
-        assert await tc.check(full(), Document("readme").view, Team("eng").member) is True
+        assert (await tc.check(full(), Document("readme").view, User("alice"))).has_permission is True
+        assert (await tc.check(full(), Document("readme").edit, User("alice"))).has_permission is False
+        assert (await tc.check(full(), Document("readme").view, User("bob"))).has_permission is True
+        assert (await tc.check(full(), Document("readme").edit, User("bob"))).has_permission is True
+        assert (await tc.check(full(), Document("readme").delete, User("charlie"))).has_permission is True
+        assert (await tc.check(full(), Document("readme").view, Team("eng").member)).has_permission is True
+
+        # A caveated relationship missing its context surfaces as
+        # CONDITIONAL_PERMISSION, not as a bare denial -- this is the state a
+        # bool return would have collapsed away. It is reachable here because
+        # tc.check() returns the full CheckResult instead of a bool.
+        await tc.touch(
+            Document("readme").viewer(User("frank").with_ip_range(IpRangeContext())),
+        )
+        result = await tc.check(full(), Document("readme").view, User("frank"))
+        assert result.has_permission is False
+        assert result.permissionship == Permissionship.CONDITIONAL_PERMISSION
+        assert "allowed_cidr" in result.missing_context
+        assert result.checked_at
+
+        # The payoff (spec D3b): supplying the missing caveat context at CHECK
+        # TIME (not write time), via the new context= keyword parameter,
+        # resolves frank's CONDITIONAL_PERMISSION into a genuine grant.
+        result = await tc.check(
+            full(), Document("readme").view, User("frank"), context={"allowed_cidr": "0.0.0.0/0"}
+        )
+        assert result.has_permission is True
+        assert result.permissionship == Permissionship.HAS_PERMISSION
+
+        # Bonus proof of the merge rule against a real caveat evaluation: a
+        # call-level default that would FAIL the caveat (a value other than
+        # the "0.0.0.0/0" the schema's caveat requires) is overridden by the
+        # subject's own caveat context (supplied via with_ip_range), which
+        # must win per-key over the call-level default.
+        result = await tc.check(
+            full(),
+            Document("readme").view,
+            User("frank").with_ip_range(IpRangeContext(allowed_cidr="0.0.0.0/0")),
+            context={"allowed_cidr": "not-a-match"},
+        )
+        assert result.has_permission is True
 
     @pytest.mark.integration
     async def test_lookup_resources(self, tc: AsyncTypedClient) -> None:
@@ -133,10 +168,10 @@ class TestAsyncTypedClient:
     async def test_create_and_delete(self, tc: AsyncTypedClient) -> None:
         """Test create shortcut writes new relationships and delete removes them."""
         await tc.create(Document("manual").viewer(User("erin")))
-        assert await tc.check(full(), Document("manual").view, User("erin")) is True
+        assert (await tc.check(full(), Document("manual").view, User("erin"))).has_permission is True
 
         await tc.delete(Document("manual").viewer(User("erin")))
-        assert await tc.check(full(), Document("manual").view, User("erin")) is False
+        assert (await tc.check(full(), Document("manual").view, User("erin"))).has_permission is False
 
     @pytest.mark.integration
     async def test_typed_transaction_mixed_ops(self, tc: AsyncTypedClient) -> None:
@@ -151,9 +186,9 @@ class TestAsyncTypedClient:
         revision = await tc.write(txn)
         assert revision  # non-empty revision token
 
-        assert await tc.check(full(), Document("rfc").view, User("alice")) is True
-        assert await tc.check(full(), Document("rfc").edit, User("bob")) is True
-        assert await tc.check(full(), Document("rfc").delete, User("eve")) is False
+        assert (await tc.check(full(), Document("rfc").view, User("alice"))).has_permission is True
+        assert (await tc.check(full(), Document("rfc").edit, User("bob"))).has_permission is True
+        assert (await tc.check(full(), Document("rfc").delete, User("eve"))).has_permission is False
 
     @pytest.mark.integration
     async def test_typed_transaction_chainable(self, tc: AsyncTypedClient) -> None:
@@ -240,8 +275,7 @@ class TestAsyncTypedClient:
 
         assert (
             await tc.check(full(), Document("teamdoc").view, Team("backend").member)
-            is True
-        )
+        ).has_permission is True
 
         # Lookup subjects of type team#member
         team_members = [
@@ -289,12 +323,49 @@ class TestSyncTypedClient:
             ),
         )
 
-        assert tc.check(full(), Document("readme-sync").view, User("alice")) is True
-        assert tc.check(full(), Document("readme-sync").edit, User("alice")) is False
-        assert tc.check(full(), Document("readme-sync").view, User("bob")) is True
-        assert tc.check(full(), Document("readme-sync").edit, User("bob")) is True
-        assert tc.check(full(), Document("readme-sync").delete, User("charlie")) is True
-        assert tc.check(full(), Document("readme-sync").view, Team("eng-sync").member) is True
+        assert tc.check(full(), Document("readme-sync").view, User("alice")).has_permission is True
+        assert tc.check(full(), Document("readme-sync").edit, User("alice")).has_permission is False
+        assert tc.check(full(), Document("readme-sync").view, User("bob")).has_permission is True
+        assert tc.check(full(), Document("readme-sync").edit, User("bob")).has_permission is True
+        assert tc.check(full(), Document("readme-sync").delete, User("charlie")).has_permission is True
+        assert tc.check(full(), Document("readme-sync").view, Team("eng-sync").member).has_permission is True
+
+        # A caveated relationship missing its context surfaces as
+        # CONDITIONAL_PERMISSION, not as a bare denial -- this is the state a
+        # bool return would have collapsed away. It is reachable here because
+        # tc.check() returns the full CheckResult instead of a bool.
+        tc.touch(
+            Document("readme-sync").viewer(User("frank-sync").with_ip_range(IpRangeContext())),
+        )
+        result = tc.check(full(), Document("readme-sync").view, User("frank-sync"))
+        assert result.has_permission is False
+        assert result.permissionship == Permissionship.CONDITIONAL_PERMISSION
+        assert "allowed_cidr" in result.missing_context
+        assert result.checked_at
+
+        # The payoff (spec D3b): supplying the missing caveat context at CHECK
+        # TIME (not write time), via the new context= keyword parameter,
+        # resolves frank-sync's CONDITIONAL_PERMISSION into a genuine grant.
+        result = tc.check(
+            full(),
+            Document("readme-sync").view,
+            User("frank-sync"),
+            context={"allowed_cidr": "0.0.0.0/0"},
+        )
+        assert result.has_permission is True
+        assert result.permissionship == Permissionship.HAS_PERMISSION
+
+        # Bonus proof of the merge rule against a real caveat evaluation: a
+        # call-level default that would FAIL the caveat is overridden by the
+        # subject's own caveat context (supplied via with_ip_range), which
+        # must win per-key over the call-level default.
+        result = tc.check(
+            full(),
+            Document("readme-sync").view,
+            User("frank-sync").with_ip_range(IpRangeContext(allowed_cidr="0.0.0.0/0")),
+            context={"allowed_cidr": "not-a-match"},
+        )
+        assert result.has_permission is True
 
     @pytest.mark.integration
     def test_lookup_resources(self, tc: SyncTypedClient) -> None:
@@ -341,10 +412,10 @@ class TestSyncTypedClient:
     def test_create_and_delete(self, tc: SyncTypedClient) -> None:
         """Test create shortcut writes new relationships and delete removes them."""
         tc.create(Document("manual-sync").viewer(User("erin")))
-        assert tc.check(full(), Document("manual-sync").view, User("erin")) is True
+        assert tc.check(full(), Document("manual-sync").view, User("erin")).has_permission is True
 
         tc.delete(Document("manual-sync").viewer(User("erin")))
-        assert tc.check(full(), Document("manual-sync").view, User("erin")) is False
+        assert tc.check(full(), Document("manual-sync").view, User("erin")).has_permission is False
 
     @pytest.mark.integration
     def test_typed_transaction_mixed_ops(self, tc: SyncTypedClient) -> None:
@@ -359,9 +430,9 @@ class TestSyncTypedClient:
         revision = tc.write(txn)
         assert revision  # non-empty revision token
 
-        assert tc.check(full(), Document("rfc-sync").view, User("alice")) is True
-        assert tc.check(full(), Document("rfc-sync").edit, User("bob")) is True
-        assert tc.check(full(), Document("rfc-sync").delete, User("eve")) is False
+        assert tc.check(full(), Document("rfc-sync").view, User("alice")).has_permission is True
+        assert tc.check(full(), Document("rfc-sync").edit, User("bob")).has_permission is True
+        assert tc.check(full(), Document("rfc-sync").delete, User("eve")).has_permission is False
 
     @pytest.mark.integration
     def test_typed_transaction_chainable(self, tc: SyncTypedClient) -> None:
@@ -448,8 +519,7 @@ class TestSyncTypedClient:
 
         assert (
             tc.check(full(), Document("teamdoc-sync").view, Team("backend-sync").member)
-            is True
-        )
+        ).has_permission is True
 
         # Lookup subjects of type team#member
         team_members = [

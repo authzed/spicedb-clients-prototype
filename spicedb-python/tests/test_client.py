@@ -22,7 +22,7 @@ from spicedb.errors import (
     SpiceDBError,
     UnavailableError,
 )
-from spicedb.types import LookupResource, Permissionship, ResolvedSubject
+from spicedb.types import CheckResult, LookupResource, Permissionship, ResolvedSubject
 
 
 @pytest.fixture
@@ -244,6 +244,93 @@ class TestDependentRelations:
         request = client._schema.DependentRelations.await_args.args[0]
         assert request.definition_name == "document"
         assert request.permission_name == "view"
+
+
+class TestCheckPermissionReturnsCheckResult:
+    """check_permission/check_permissions return CheckResult (permissionship,
+    missing_context, checked_at, has_permission) instead of a bare bool, so a
+    caveated relationship whose context wasn't supplied is distinguishable
+    from a real denial."""
+
+    async def test_check_permission_returns_check_result(self, make_client):
+        client = make_client()
+        response = permission_service_pb2.CheckBulkPermissionsResponse(
+            checked_at=core_pb2.ZedToken(token="deadbeef"),
+            pairs=[
+                permission_service_pb2.CheckBulkPermissionsPair(
+                    item=permission_service_pb2.CheckBulkPermissionsResponseItem(
+                        permissionship=permission_service_pb2.CheckPermissionResponse.PERMISSIONSHIP_HAS_PERMISSION
+                    )
+                )
+            ],
+        )
+        client._permissions.CheckBulkPermissions = AsyncMock(return_value=response)
+
+        rel = Relationship.from_triple("document:readme", "view", "user:alice")
+        result = await client.check_permission(full(), rel)
+
+        assert result == CheckResult(
+            permissionship=Permissionship.HAS_PERMISSION,
+            missing_context=[],
+            checked_at="deadbeef",
+        )
+        assert result.has_permission is True
+
+    async def test_check_permission_conditional_has_permission_false(
+        self, make_client
+    ):
+        client = make_client()
+        response = permission_service_pb2.CheckBulkPermissionsResponse(
+            checked_at=core_pb2.ZedToken(token="deadbeef"),
+            pairs=[
+                permission_service_pb2.CheckBulkPermissionsPair(
+                    item=permission_service_pb2.CheckBulkPermissionsResponseItem(
+                        permissionship=permission_service_pb2.CheckPermissionResponse.PERMISSIONSHIP_CONDITIONAL_PERMISSION,
+                        partial_caveat_info=core_pb2.PartialCaveatInfo(
+                            missing_required_context=["now"]
+                        ),
+                    )
+                )
+            ],
+        )
+        client._permissions.CheckBulkPermissions = AsyncMock(return_value=response)
+
+        rel = Relationship.from_triple("document:readme", "conditional_view", "user:alice")
+        result = await client.check_permission(full(), rel)
+
+        assert result.permissionship == Permissionship.CONDITIONAL_PERMISSION
+        assert result.has_permission is False
+        assert result.missing_context == ["now"]
+
+    async def test_check_any_and_check_all_do_not_count_conditional(
+        self, make_client
+    ):
+        """check_any/check_all stay boolean but must count ONLY
+        HasPermission -- a Conditional result is not a grant, so it must not
+        flip either to True.
+
+        check_any/check_all are implemented independently in each flavor's
+        client.py (not shared via _mapping.py), so this must stay in
+        lockstep with the sync-flavor counterpart,
+        tests/test_client_sync.py::test_check_any_and_check_all_do_not_count_conditional
+        -- test_parity.py only compares signatures and would not catch one
+        flavor alone regressing here."""
+        client = make_client()
+        response = permission_service_pb2.CheckBulkPermissionsResponse(
+            checked_at=core_pb2.ZedToken(token="deadbeef"),
+            pairs=[
+                permission_service_pb2.CheckBulkPermissionsPair(
+                    item=permission_service_pb2.CheckBulkPermissionsResponseItem(
+                        permissionship=permission_service_pb2.CheckPermissionResponse.PERMISSIONSHIP_CONDITIONAL_PERMISSION
+                    )
+                )
+            ],
+        )
+        client._permissions.CheckBulkPermissions = AsyncMock(return_value=response)
+
+        rel = Relationship.from_triple("document:readme", "conditional_view", "user:alice")
+        assert await client.check_any(full(), rel) is False
+        assert await client.check_all(full(), rel) is False
 
 
 class TestBulkCheckPerItemErrorFidelity:

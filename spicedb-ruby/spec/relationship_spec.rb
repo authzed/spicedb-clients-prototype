@@ -27,6 +27,7 @@ RSpec.describe SpiceDB::Relationship do
       expect(rel.caveat_name).to be_nil
       expect(rel.caveat_context).to be_nil
       expect(rel.expiration).to be_nil
+      expect(rel.check_context).to be_nil
     end
 
     it 'is frozen (immutable)' do
@@ -170,6 +171,40 @@ RSpec.describe SpiceDB::Relationship do
     end
   end
 
+  # check_context is check-time-only caveat context for the check surface
+  # (see SpiceDB::Client#check_permission/#check_permissions) -- a
+  # DIFFERENT concept from caveat_context, which is write-time context
+  # embedded in the relationship's optional_caveat on the wire. The two
+  # must stay independently settable so one can never leak into the other.
+  describe '#with_check_context' do
+    it 'returns a new relationship with check_context set' do
+      r = rel.with_check_context({ now: 42 })
+      expect(r.check_context).to eq({ now: 42 })
+      # Original is unchanged
+      expect(rel.check_context).to be_nil
+    end
+
+    it 'preserves other fields, including an unrelated caveat_context' do
+      base = rel.with_caveat('is_owner', { 'owner_id' => 'alice' })
+      r = base.with_check_context({ now: 42 })
+
+      expect(r.resource_type).to eq('document')
+      expect(r.subject_id).to eq('alice')
+      expect(r.caveat_name).to eq('is_owner')
+      expect(r.caveat_context).to eq({ 'owner_id' => 'alice' })
+      expect(r.check_context).to eq({ now: 42 })
+    end
+
+    it 'is independent of caveat_context -- setting one never sets the other' do
+      write_time = rel.with_caveat('is_owner', { 'owner_id' => 'alice' })
+      check_time = rel.with_check_context({ now: 42 })
+
+      expect(write_time.check_context).to be_nil
+      expect(check_time.caveat_context).to be_nil
+      expect(check_time.caveat_name).to be_nil
+    end
+  end
+
   describe '#to_filter' do
     it "returns a filter matching the relationship's resource" do
       f = rel.to_filter
@@ -205,5 +240,42 @@ RSpec.describe SpiceDB::Relationship do
       b = described_class.from_tuple('document:doc1#viewer@user:bob')
       expect(a).not_to eq(b)
     end
+  end
+end
+
+# Wire-level coverage for Relationship#expiration.
+#
+# The pre-existing expiration specs asserted only against the value object, never
+# crossing the proto boundary -- which is why a wrong field name
+# (`optional_expiration`, a field that does not exist; the real one is
+# `optional_expires_at`) shipped undetected in BOTH directions: the write path raised
+# a bare ArgumentError, and the read path silently returned nil forever, so an
+# expiring relationship read back as permanent.
+RSpec.describe 'SpiceDB::Relationship expiration wire round-trip' do
+  let(:client) { SpiceDB::Client.new_plaintext('localhost:50051', 'testtoken') }
+
+  it 'writes expiration to optional_expires_at and reads it back with nanosecond precision' do
+    expires = Time.at(1_764_547_200, 123_456_789, :nsec)
+    rel = SpiceDB::Relationship
+          .from_triple('document', 'doc1', 'viewer', 'user', 'alice')
+          .with_expiration(expires)
+
+    proto = client.send(:relationship_to_proto, rel)
+
+    expect(proto.optional_expires_at.seconds).to eq(1_764_547_200)
+    expect(proto.optional_expires_at.nanos).to eq(123_456_789)
+
+    round_tripped = client.send(:relationship_from_proto, proto)
+
+    expect(round_tripped.expiration.to_i).to eq(expires.to_i)
+    expect(round_tripped.expiration.nsec).to eq(expires.nsec)
+  end
+
+  it 'leaves expiration nil when none was set' do
+    rel = SpiceDB::Relationship.from_triple('document', 'doc1', 'viewer', 'user', 'alice')
+
+    proto = client.send(:relationship_to_proto, rel)
+
+    expect(client.send(:relationship_from_proto, proto).expiration).to be_nil
   end
 end

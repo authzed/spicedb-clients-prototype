@@ -2,9 +2,11 @@
 
 from datetime import datetime, timezone
 
+import pytest
 from authzed.api.v1 import core_pb2, permission_service_pb2
 
 from spicedb.types import (
+    CheckResult,
     Filter,
     IntermediateNode,
     LeafNode,
@@ -19,6 +21,7 @@ from spicedb.types import (
     TreeOperation,
     Update,
     UpdateOperation,
+    _check_permissionship_from_proto,
     _partial_caveat_from_proto,
     _permission_tree_from_proto,
     _permissionship_from_proto,
@@ -87,6 +90,42 @@ class TestRelationship:
             "document:readme", "viewer", "user:alice", expiration=exp
         )
         assert r.expiration == exp
+
+    def test_check_context_defaults_to_none(self):
+        r = Relationship.from_triple("document:readme", "viewer", "user:alice")
+        assert r.check_context is None
+
+    def test_from_triple_with_check_context(self):
+        r = Relationship.from_triple(
+            "document:readme",
+            "viewer",
+            "user:alice",
+            check_context={"now": 42},
+        )
+        assert r.check_context == {"now": 42}
+        # check_context is check-time-only and distinct from caveat_context
+        # (write-time) -- setting one must not set the other.
+        assert r.caveat_context is None
+
+    def test_from_tuple_with_check_context(self):
+        r = Relationship.from_tuple(
+            "document:readme#viewer", "user:alice", check_context={"now": 42}
+        )
+        assert r.check_context == {"now": 42}
+
+    def test_check_context_has_no_wire_representation(self):
+        """check_context must never be written to the server -- it has no
+        field on core_pb2.Relationship, so _to_proto() must not touch it and
+        a proto round-trip must not resurrect it."""
+        r = Relationship.from_triple(
+            "document:readme",
+            "viewer",
+            "user:alice",
+            check_context={"now": 42},
+        )
+        proto = r._to_proto()
+        r2 = Relationship._from_proto(proto)
+        assert r2.check_context is None
 
     def test_frozen(self):
         r = Relationship.from_triple("document:readme", "viewer", "user:alice")
@@ -495,3 +534,125 @@ class TestResolvedSubjectFromProto:
         assert got.partial_caveat == PartialCaveatInfo(
             missing_required_context=["region"]
         )
+
+
+# ── Check results / mappers ─────────────────────────────────────────────
+#
+# Mirrors spicedb-go's client/check_types_test.go. Unlike LookupPermissionship,
+# CheckPermissionResponse.Permissionship has a fourth value (NO_PERMISSION),
+# since a single check answers a yes/no/conditional question about one
+# specific pair rather than streaming only the matches. Lookups never yield
+# NO_PERMISSION -- a non-match is simply absent from the stream.
+
+
+class TestCheckPermissionshipFromProto:
+    def test_unspecified(self):
+        assert (
+            _check_permissionship_from_proto(
+                permission_service_pb2.CheckPermissionResponse.PERMISSIONSHIP_UNSPECIFIED
+            )
+            == Permissionship.UNSPECIFIED
+        )
+
+    def test_no_permission(self):
+        assert (
+            _check_permissionship_from_proto(
+                permission_service_pb2.CheckPermissionResponse.PERMISSIONSHIP_NO_PERMISSION
+            )
+            == Permissionship.NO_PERMISSION
+        )
+
+    def test_has_permission(self):
+        assert (
+            _check_permissionship_from_proto(
+                permission_service_pb2.CheckPermissionResponse.PERMISSIONSHIP_HAS_PERMISSION
+            )
+            == Permissionship.HAS_PERMISSION
+        )
+
+    def test_conditional_permission(self):
+        assert (
+            _check_permissionship_from_proto(
+                permission_service_pb2.CheckPermissionResponse.PERMISSIONSHIP_CONDITIONAL_PERMISSION
+            )
+            == Permissionship.CONDITIONAL_PERMISSION
+        )
+
+    def test_unknown_value_maps_to_unspecified(self):
+        assert _check_permissionship_from_proto(99) == Permissionship.UNSPECIFIED
+
+
+class TestCheckResultHasPermission:
+    """T1: has_permission must be True ONLY for HAS_PERMISSION -- a
+    CONDITIONAL_PERMISSION result is NOT a grant (fail-closed: a caveat the
+    server couldn't evaluate must never be treated as satisfied)."""
+
+    @pytest.mark.parametrize(
+        "permissionship,expected",
+        [
+            (Permissionship.UNSPECIFIED, False),
+            (Permissionship.NO_PERMISSION, False),
+            (Permissionship.HAS_PERMISSION, True),
+            (Permissionship.CONDITIONAL_PERMISSION, False),
+        ],
+    )
+    def test_has_permission_true_only_for_has_permission(
+        self, permissionship, expected
+    ):
+        result = CheckResult(
+            permissionship=permissionship,
+            missing_context=[],
+            checked_at="",
+        )
+        assert result.has_permission is expected
+
+    def test_frozen(self):
+        result = CheckResult(
+            permissionship=Permissionship.HAS_PERMISSION,
+            missing_context=[],
+            checked_at="deadbeef",
+        )
+        try:
+            result.permissionship = Permissionship.NO_PERMISSION  # type: ignore[misc]
+            assert False, "should have raised"
+        except AttributeError:
+            pass
+
+
+class TestCheckResultBool:
+    """spec D3a: CheckResult.__bool__ mirrors has_permission, so `if
+    result:` -- the most natural migration path from the old bool-returning
+    check_permission() -- is safe. Without this, a CheckResult is an object
+    and therefore unconditionally truthy, which would silently grant on a
+    CONDITIONAL_PERMISSION -- reintroducing via `if result:` the exact
+    fail-open this whole change removes from `.has_permission`."""
+
+    @pytest.mark.parametrize(
+        "permissionship,expected",
+        [
+            (Permissionship.UNSPECIFIED, False),
+            (Permissionship.NO_PERMISSION, False),
+            (Permissionship.HAS_PERMISSION, True),
+            (Permissionship.CONDITIONAL_PERMISSION, False),
+        ],
+    )
+    def test_bool_matches_has_permission(self, permissionship, expected):
+        result = CheckResult(
+            permissionship=permissionship,
+            missing_context=[],
+            checked_at="",
+        )
+        assert bool(result) is expected
+        assert bool(result) is result.has_permission
+
+    def test_bool_is_false_for_conditional_even_with_missing_context(self):
+        """The case Fix 1 exists for: `if result:` on a caveated check whose
+        context wasn't supplied must not silently grant."""
+        result = CheckResult(
+            permissionship=Permissionship.CONDITIONAL_PERMISSION,
+            missing_context=["now"],
+            checked_at="deadbeef",
+        )
+        assert not result
+        if result:
+            assert False, "a CONDITIONAL_PERMISSION result must be falsy"

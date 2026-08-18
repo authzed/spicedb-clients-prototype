@@ -26,6 +26,10 @@ var allErrorSentinels = []error{
 	ErrFailedPrecondition,
 	ErrPermissionDenied,
 	ErrUnauthenticated,
+	ErrUnavailable,
+	ErrCanceled,
+	ErrDeadlineExceeded,
+	ErrResourceExhausted,
 }
 
 func TestMapGRPCError_MapsKnownCodesToSentinels(t *testing.T) {
@@ -41,6 +45,10 @@ func TestMapGRPCError_MapsKnownCodesToSentinels(t *testing.T) {
 		{"FailedPrecondition", codes.FailedPrecondition, CodeFailedPrecondition, ErrFailedPrecondition},
 		{"PermissionDenied", codes.PermissionDenied, CodePermissionDenied, ErrPermissionDenied},
 		{"Unauthenticated", codes.Unauthenticated, CodeUnauthenticated, ErrUnauthenticated},
+		{"Unavailable", codes.Unavailable, CodeUnavailable, ErrUnavailable},
+		{"Canceled", codes.Canceled, CodeCanceled, ErrCanceled},
+		{"DeadlineExceeded", codes.DeadlineExceeded, CodeDeadlineExceeded, ErrDeadlineExceeded},
+		{"ResourceExhausted", codes.ResourceExhausted, CodeResourceExhausted, ErrResourceExhausted},
 	}
 
 	for _, tc := range cases {
@@ -174,6 +182,6 @@ func TestReadRelationships_StreamErrorIsMappedToNativeError(t *testing.T) {
 // if the field's type ever regressed to codes.Code.
 func TestErrorCode_IsNativeType(t *testing.T) {
 	var e Error
-	var code ErrorCode = e.Code
+	var code ErrorCode = e.Code //nolint:staticcheck // intentional: explicit type is the compile-time guard described above
 	require.Equal(t, CodeUnknown, code)
 }

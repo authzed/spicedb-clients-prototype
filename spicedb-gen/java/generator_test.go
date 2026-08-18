@@ -110,7 +110,7 @@ func TestGenerate(t *testing.T) {
 
 	// Check TypedClient class.
 	assert.Contains(t, content, "public static final class TypedClient")
-	assert.Contains(t, content, "public <S extends Subject> boolean check(")
+	assert.Contains(t, content, "public <S extends Subject> CheckResult check(")
 	assert.Contains(t, content, "public <S extends Subject> Stream<LookupResult.LookupResource> lookupResources(")
 	assert.Contains(t, content, "public <S extends Subject> Stream<LookupResult.LookupSubject> lookupSubjects(")
 	assert.Contains(t, content, "public String touch(TypedRelationship... rels)")
@@ -119,6 +119,80 @@ func TestGenerate(t *testing.T) {
 
 	// Check relation methods produce TypedRelationship.
 	assert.Contains(t, content, "public TypedRelationship viewer(DocumentViewerSubject subject)")
+}
+
+// TestCheckSurfacesCheckResult guards against the generated TypedClient.check()
+// wrapper re-collapsing spicedb-java's CheckResult (Task 8) back into a bare
+// boolean. Root DESIGN.md's "RULE: Only an unconditional grant is true" requires
+// the CONDITIONAL_PERMISSION state to remain reachable through every client tier,
+// including generated code users don't read.
+func TestCheckSurfacesCheckResult(t *testing.T) {
+	s, err := schema.ParseFile("../testdata/sample.zed")
+	require.NoError(t, err)
+
+	gen := &Generator{}
+	files, err := gen.Generate(s, map[string]string{"package": "com.authzed.spicedb.gen.test"})
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+
+	content := string(files[0].Content)
+
+	// Exact new signature: check() must declare CheckResult as its return type.
+	assert.Contains(t, content,
+		"public <S extends Subject> CheckResult check(Consistency c, Permission<S> perm, S subject) {")
+
+	// Guard against the old boolean form still being present anywhere (e.g. only
+	// half of a signature/body pair got updated).
+	assert.NotContains(t, content,
+		"public <S extends Subject> boolean check(Consistency c, Permission<S> perm, S subject) {")
+	assert.NotContains(t, content, "boolean check(")
+
+	// Pass-through return: the wrapper must hand back the underlying
+	// checkPermission() result untouched, not unwrap it (e.g. via hasPermission())
+	// and rebuild a fresh CheckResult — a regression that would still be
+	// type-correct (still returns CheckResult) but would silently collapse
+	// CONDITIONAL_PERMISSION into a boolean internally before rewrapping it,
+	// discarding permissionship/missingContext/checkedAt.
+	assert.Contains(t, content, "return client.checkPermission(c, perm.permission(), r);")
+}
+
+// TestCheckAcceptsContext verifies the generated TypedClient gains a
+// context-accepting check() overload matching spicedb-java's own
+// checkPermission(Consistency, String, Relationship, Map) shape (spec D3b),
+// and that the pre-existing 3-arg check() is fixed to route the subject's own
+// caveat context through the CHECK-TIME r.withCheckContext(...) instead of
+// the WRITE-TIME r.withCaveat(...) it was using before -- a genuine
+// pre-existing defect: spicedb-java's checkItemFromRel only ever reads
+// Relationship.checkContext() for checks, never caveatContext()/caveatName(),
+// so withCaveat(...) on the ephemeral relationship built inside check() was
+// silently inert (a caveated subject passed to check() supplied no context
+// to the actual check RPC at all).
+func TestCheckAcceptsContext(t *testing.T) {
+	s, err := schema.ParseFile("../testdata/sample.zed")
+	require.NoError(t, err)
+
+	gen := &Generator{}
+	files, err := gen.Generate(s, map[string]string{"package": "com.authzed.spicedb.gen.test"})
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+
+	content := string(files[0].Content)
+
+	// New overload: context accepted as a trailing Map<String, Object>.
+	assert.Contains(t, content,
+		"public <S extends Subject> CheckResult check(Consistency c, Permission<S> perm, S subject, Map<String, Object> context) {")
+
+	// Pass-through: context is handed to the 4-arg checkPermission untouched.
+	assert.Contains(t, content, "return client.checkPermission(c, perm.permission(), r, context);")
+
+	// The defect fix: check() must route the subject's own caveat context
+	// through withCheckContext (CHECK-TIME), never withCaveat (WRITE-TIME) --
+	// withCaveat on the ephemeral check relationship has zero effect on the
+	// actual check, since checkItemFromRel never reads caveatContext/
+	// caveatName. This NotContains guards against the old inert call
+	// reappearing in EITHER check() overload.
+	assert.NotContains(t, content, "r = r.withCaveat(subject.caveatName(), subject.caveatContext());")
+	assert.Contains(t, content, "r = r.withCheckContext(subject.caveatContext());")
 }
 
 func TestBuildTemplateData(t *testing.T) {

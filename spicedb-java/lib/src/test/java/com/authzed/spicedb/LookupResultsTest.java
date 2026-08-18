@@ -10,6 +10,7 @@ import build.buf.gen.authzed.api.v1.LookupSubjectsResponse;
 import build.buf.gen.authzed.api.v1.PartialCaveatInfo;
 import build.buf.gen.authzed.api.v1.PermissionsServiceGrpc;
 import build.buf.gen.authzed.api.v1.ResolvedSubject;
+import build.buf.gen.authzed.api.v1.ZedToken;
 import io.grpc.stub.StreamObserver;
 import java.io.IOException;
 import java.util.List;
@@ -43,6 +44,7 @@ class LookupResultsTest {
                 LookupResourcesResponse.newBuilder()
                     .setResourceObjectId("firstdoc")
                     .setPermissionship(LookupPermissionship.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION)
+                    .setLookedUpAt(ZedToken.newBuilder().setToken("lookup-rev-1").build())
                     .build());
             responseObserver.onCompleted();
           }
@@ -61,6 +63,7 @@ class LookupResultsTest {
       assertEquals("firstdoc", result.resourceId());
       assertEquals(LookupResult.Permissionship.HAS_PERMISSION, result.permissionship());
       assertNull(result.partialCaveat());
+      assertEquals("lookup-rev-1", result.lookedUpAt());
     }
   }
 
@@ -115,6 +118,7 @@ class LookupResultsTest {
               StreamObserver<LookupSubjectsResponse> responseObserver) {
             responseObserver.onNext(
                 LookupSubjectsResponse.newBuilder()
+                    .setLookedUpAt(ZedToken.newBuilder().setToken("lookup-rev-wildcard").build())
                     .setSubject(
                         ResolvedSubject.newBuilder()
                             .setSubjectObjectId("*")
@@ -154,6 +158,7 @@ class LookupResultsTest {
       LookupResult.LookupSubject result = results.get(0);
       assertEquals("*", result.subject().subjectId());
       assertEquals(LookupResult.Permissionship.HAS_PERMISSION, result.subject().permissionship());
+      assertEquals("lookup-rev-wildcard", result.lookedUpAt());
 
       // The over-grant risk this task exists to fix: excluded subjects MUST be surfaced so
       // callers can exclude them from a wildcard grant, rather than silently disappearing.

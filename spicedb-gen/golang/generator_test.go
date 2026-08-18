@@ -1,6 +1,7 @@
 package golang
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/authzed/spicedb-clients/spicedb-gen/schema"
@@ -119,8 +120,15 @@ func TestGenerateSampleSchema(t *testing.T) {
 	// Relation method renamed to ForMember due to SubRef conflict
 	assert.Contains(t, output, "func (d TeamRef) ForMember(subject TeamMemberSubject) TypedRelationship {")
 
-	// Check and lookup functions (non-generic, accept Subject interface)
-	assert.Contains(t, output, "func Check(ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm Permission, subject Subject) (bool, error) {")
+	// Check and lookup functions (non-generic, accept Subject interface).
+	// Check surfaces the full client.CheckResult — including the Conditional
+	// permissionship for a caveated relationship missing context — rather than
+	// collapsing it to a bool, which would make that state unreachable.
+	assert.Contains(t, output, "func Check(ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm Permission, subject Subject) (client.CheckResult, error) {")
+	assert.NotContains(t, output, "(bool, error)")
+	// The CheckResult returned by the underlying client is passed through
+	// untouched, so a Conditional result (and its MissingContext) survives.
+	assert.Contains(t, output, "return tc.Client.CheckOne(ctx, cs, perm.permission, r)")
 	assert.Contains(t, output, "func LookupResources(ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm PermissionRef, subject Subject) iter.Seq2[client.LookupResource, error] {")
 	assert.Contains(t, output, "func LookupSubjects(ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm Permission, subjectType Subject) iter.Seq2[client.LookupSubject, error] {")
 
@@ -128,6 +136,75 @@ func TestGenerateSampleSchema(t *testing.T) {
 	assert.Contains(t, output, "func (tc *TypedClient) Touch(ctx context.Context, rels ...TypedRelationship) (string, error) {")
 	assert.Contains(t, output, "func (tc *TypedClient) Create(ctx context.Context, rels ...TypedRelationship) (string, error) {")
 	assert.Contains(t, output, "func (tc *TypedClient) Delete(ctx context.Context, rels ...TypedRelationship) (string, error) {")
+}
+
+// TestCheckAcceptsContext verifies the generator emits a CheckWithContext
+// free function alongside Check, mirroring spicedb-go client.Check's own
+// CheckWithContext sibling (spec D3b). Check's existing signature must stay
+// byte-for-byte unchanged (no existing call site changes); CheckWithContext
+// is purely additive and passes checkContext through to CheckOneWithContext
+// untouched, not re-derived or dropped.
+func TestCheckAcceptsContext(t *testing.T) {
+	s, err := schema.ParseFile("../testdata/sample.zed")
+	require.NoError(t, err)
+
+	g := &Generator{}
+	files, err := g.Generate(s, nil)
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+
+	output := string(files[0].Content)
+
+	// Check's existing signature is untouched.
+	assert.Contains(t, output, "func Check(ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm Permission, subject Subject) (client.CheckResult, error) {")
+	assert.Contains(t, output, "return tc.Client.CheckOne(ctx, cs, perm.permission, r)")
+
+	// New CheckWithContext function: checkContext positioned right before the
+	// subject parameter, mirroring client.CheckOneWithContext's own parameter
+	// order (checkContext immediately before the relationship).
+	assert.Contains(t, output, "func CheckWithContext(ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm Permission, checkContext map[string]any, subject Subject) (client.CheckResult, error) {")
+
+	// The old context-less CheckWithContext-shaped signature must not exist
+	// (guards against a regression that adds the function but drops the
+	// checkContext parameter).
+	assert.NotContains(t, output, "func CheckWithContext(ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm Permission, subject Subject) (client.CheckResult, error) {")
+
+	// checkContext is passed through to CheckOneWithContext untouched, not
+	// dropped or re-derived from the subject.
+	assert.Contains(t, output, "return tc.Client.CheckOneWithContext(ctx, cs, perm.permission, checkContext, r)")
+}
+
+// TestCheckForwardsSubjectCaveatContext verifies both Check and
+// CheckWithContext forward a caveated subject's own context (via
+// subject.caveatInfo(), the same accessor the write paths use) into the
+// relationship built for the check, via rel.Relationship.WithCheckContext —
+// treating it as the ITEM-LEVEL value under the standard merge rule (item
+// wins over CheckWithContext's call-level checkContext; call-level keys the
+// subject doesn't mention are retained by client.CheckOneWithContext's own
+// merge). Before this fix, a caveated subject ref (e.g.
+// User("dave").WithIpRange(ctx)) passed to Check/CheckWithContext supplied
+// NO context to the actual check RPC at all — caveatInfo() was read by the
+// write paths (Viewer/Editor/... methods) but never by Check.
+func TestCheckForwardsSubjectCaveatContext(t *testing.T) {
+	s, err := schema.ParseFile("../testdata/sample.zed")
+	require.NoError(t, err)
+
+	g := &Generator{}
+	files, err := g.Generate(s, nil)
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+
+	output := string(files[0].Content)
+
+	// Both Check and CheckWithContext must read the subject's own context and
+	// apply it to the relationship via WithCheckContext before checking, not
+	// merely build the bare triple.
+	forwardingLine := "r = r.WithCheckContext(sCtx)"
+	extractLine := "_, sCtx := subject.caveatInfo()"
+	assert.Equal(t, 2, strings.Count(output, forwardingLine),
+		"expected WithCheckContext forwarding in both Check and CheckWithContext, got:\n%s", output)
+	assert.Equal(t, 2, strings.Count(output, extractLine),
+		"expected caveatInfo() extraction in both Check and CheckWithContext, got:\n%s", output)
 }
 
 func TestGenerateEmptySchema(t *testing.T) {

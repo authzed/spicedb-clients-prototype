@@ -16,6 +16,10 @@ var (
 	ErrFailedPrecondition = errors.New("spicedb: failed precondition")
 	ErrPermissionDenied   = errors.New("spicedb: permission denied")
 	ErrUnauthenticated    = errors.New("spicedb: unauthenticated")
+	ErrUnavailable        = errors.New("spicedb: unavailable")
+	ErrCanceled           = errors.New("spicedb: canceled")
+	ErrDeadlineExceeded   = errors.New("spicedb: deadline exceeded")
+	ErrResourceExhausted  = errors.New("spicedb: resource exhausted")
 )
 
 // ErrorCode is a native, gRPC-independent classification of a SpiceDB error.
@@ -120,6 +124,14 @@ func (e *Error) Is(target error) bool {
 		return e.Code == CodePermissionDenied
 	case ErrUnauthenticated:
 		return e.Code == CodeUnauthenticated
+	case ErrUnavailable:
+		return e.Code == CodeUnavailable
+	case ErrCanceled:
+		return e.Code == CodeCanceled
+	case ErrDeadlineExceeded:
+		return e.Code == CodeDeadlineExceeded
+	case ErrResourceExhausted:
+		return e.Code == CodeResourceExhausted
 	}
 	return false
 }

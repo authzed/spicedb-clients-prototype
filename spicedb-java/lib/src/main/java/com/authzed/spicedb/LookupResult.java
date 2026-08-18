@@ -16,13 +16,21 @@ public final class LookupResult {
   private LookupResult() {}
 
   /**
-   * Indicates whether a lookup result reflects a full grant or is conditional on caveat context
-   * that was not fully evaluated by the server. Callers MUST check this before treating a result as
-   * a full grant — a {@code CONDITIONAL_PERMISSION} result may resolve to false once the missing
-   * caveat context is supplied.
+   * Indicates whether a check or lookup result reflects a full grant, a full denial, or is
+   * conditional on caveat context that was not fully evaluated by the server. Callers MUST check
+   * this before treating a result as a full grant — a {@code CONDITIONAL_PERMISSION} result may
+   * resolve to false once the missing caveat context is supplied.
+   *
+   * <p>This type serves both the check surface ({@link CheckResult}) and the lookup surface ({@link
+   * LookupResource}, {@link ResolvedSubject}). Lookups never yield {@code NO_PERMISSION}: a
+   * subject/resource pair that lacks the permission is simply absent from a lookup stream rather
+   * than being yielded with that permissionship. {@code NO_PERMISSION} only appears on {@link
+   * CheckResult}, where the server is answering a question about one specific pair and "no" is
+   * itself an answer.
    */
   public enum Permissionship {
     UNSPECIFIED,
+    NO_PERMISSION,
     HAS_PERMISSION,
     CONDITIONAL_PERMISSION
   }
@@ -40,9 +48,15 @@ public final class LookupResult {
    * @param resourceId the object ID of the resource
    * @param permissionship whether the grant is full or conditional on caveat context
    * @param partialCaveat non-null when {@code permissionship} is {@code CONDITIONAL_PERMISSION}
+   * @param lookedUpAt the revision this result was computed at; identical for every item yielded by
+   *     a single {@code lookupResources} call — it is a property of the call, not of the individual
+   *     resource
    */
   public record LookupResource(
-      String resourceId, Permissionship permissionship, PartialCaveatInfo partialCaveat) {}
+      String resourceId,
+      Permissionship permissionship,
+      PartialCaveatInfo partialCaveat,
+      String lookedUpAt) {}
 
   /**
    * A subject resolved by {@link SpiceDBClient#lookupSubjects} — either the matched subject, or
@@ -67,6 +81,10 @@ public final class LookupResult {
    *
    * @param subject the matched subject
    * @param excludedSubjects subjects excluded from a wildcard match (empty when there are none)
+   * @param lookedUpAt the revision this result was computed at; identical for every item yielded by
+   *     a single {@code lookupSubjects} call — it is a property of the call, not of the individual
+   *     subject
    */
-  public record LookupSubject(ResolvedSubject subject, List<ResolvedSubject> excludedSubjects) {}
+  public record LookupSubject(
+      ResolvedSubject subject, List<ResolvedSubject> excludedSubjects, String lookedUpAt) {}
 }

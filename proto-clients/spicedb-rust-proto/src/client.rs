@@ -77,7 +77,11 @@ impl SpiceDBProtoClient {
         let mut ep = Endpoint::from_shared(uri)?;
 
         if !insecure {
-            ep = ep.tls_config(ClientTlsConfig::new())?;
+            // Platform trust store. `ClientTlsConfig::new()` alone carries an EMPTY
+            // trust-anchor set, so every handshake fails `UnknownIssuer` — see the
+            // root DESIGN.md rule "A system-TLS constructor must reach a real server".
+            // Do not swap in `with_enabled_roots()`: it discards `self`.
+            ep = ep.tls_config(ClientTlsConfig::new().with_native_roots())?;
         }
 
         // Use connect_lazy for insecure (plaintext) connections so that client

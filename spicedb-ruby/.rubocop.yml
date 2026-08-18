@@ -14,8 +14,12 @@ Metrics/BlockLength:
 Metrics/ModuleLength:
   Max: 200
 
+# Bumped for the caveat-context read-path fix, which added two dispatch
+# methods (caveat_context_value_from_proto, struct_to_caveat_context). They
+# share a google.protobuf.Value codec with check_context_value but serve a
+# different wire field on a different path — not a round trip with it.
 Metrics/ClassLength:
-  Max: 830
+  Max: 850
 
 Metrics/AbcSize:
   Max: 80
@@ -42,6 +46,15 @@ Naming/MethodParameterName:
 # predicate convention — adding ? would be misleading.
 Naming/PredicateMethod:
   Enabled: false
+
+# CheckResult#has_permission? intentionally keeps the has_ prefix (rather
+# than the bare `permission?` this cop prefers) to mirror the predicate name
+# used across every other SpiceDB client library for this exact concept —
+# cross-client consistency wins over this single-library style preference.
+Naming/PredicatePrefix:
+  AllowedMethods:
+    - is_a?
+    - has_permission?
 
 # Line length limit — 120 is too tight for gRPC one-liners with optional chain.
 Layout/LineLength:

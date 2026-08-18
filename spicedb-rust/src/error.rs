@@ -37,6 +37,14 @@ pub enum SpiceDBError {
     #[error("cancelled: {0}")]
     Cancelled(String),
 
+    /// The operation deadline was exceeded before it could complete.
+    #[error("deadline exceeded: {0}")]
+    DeadlineExceeded(String),
+
+    /// A resource quota or limit was exhausted, such as a rate limit.
+    #[error("resource exhausted: {0}")]
+    ResourceExhausted(String),
+
     /// A transport-level error occurred (connection refused, TLS failure, etc.).
     #[error("transport error: {0}")]
     Transport(String),
@@ -55,6 +63,7 @@ pub enum SpiceDBError {
 /// These mirror tonic::Code values.
 mod codes {
     pub const CANCELLED: i32 = 1;
+    pub const DEADLINE_EXCEEDED: i32 = 4;
     pub const NOT_FOUND: i32 = 5;
     pub const ALREADY_EXISTS: i32 = 6;
     pub const PERMISSION_DENIED: i32 = 7;
@@ -63,6 +72,11 @@ mod codes {
     pub const UNAVAILABLE: i32 = 14;
     pub const INVALID_ARGUMENT: i32 = 3;
     pub const ABORTED: i32 = 10;
+    /// Not currently used by `from_grpc_status` (no server response maps to
+    /// it today) — reused by [`internal`] below for locally-detected
+    /// protocol invariant violations, so those errors share the same code
+    /// space as a real server-side INTERNAL status.
+    pub const INTERNAL: i32 = 13;
 }
 
 /// Convert a gRPC status code and message to a [`SpiceDBError`].
@@ -79,7 +93,22 @@ pub fn from_grpc_status(code: i32, message: String) -> SpiceDBError {
         codes::FAILED_PRECONDITION => SpiceDBError::FailedPrecondition(message),
         codes::UNAVAILABLE => SpiceDBError::Unavailable(message),
         codes::CANCELLED => SpiceDBError::Cancelled(message),
+        codes::DEADLINE_EXCEEDED => SpiceDBError::DeadlineExceeded(message),
+        codes::RESOURCE_EXHAUSTED => SpiceDBError::ResourceExhausted(message),
         _ => SpiceDBError::Status { code, message },
+    }
+}
+
+/// Constructs a [`SpiceDBError`] for a locally-detected protocol invariant
+/// violation that has no backing gRPC status at all — e.g. a `oneof` field
+/// the proto schema guarantees is always populated (such as
+/// `CheckBulkPermissionsPair.response`) arriving unset. Uses gRPC code 13
+/// (INTERNAL) so the error is classified consistently with a genuine
+/// server-side internal error rather than any of the more specific variants.
+pub fn internal(message: String) -> SpiceDBError {
+    SpiceDBError::Status {
+        code: codes::INTERNAL,
+        message,
     }
 }
 
@@ -89,6 +118,7 @@ pub fn from_grpc_status(code: i32, message: String) -> SpiceDBError {
 pub fn is_transient(err: &SpiceDBError) -> bool {
     match err {
         SpiceDBError::Unavailable(_) => true,
+        SpiceDBError::ResourceExhausted(_) => true,
         SpiceDBError::Status { code, .. } => {
             *code == codes::RESOURCE_EXHAUSTED || *code == codes::ABORTED
         }
@@ -144,6 +174,18 @@ mod tests {
     }
 
     #[test]
+    fn test_from_grpc_status_deadline_exceeded() {
+        let err = from_grpc_status(codes::DEADLINE_EXCEEDED, "timeout".into());
+        assert!(matches!(err, SpiceDBError::DeadlineExceeded(_)));
+    }
+
+    #[test]
+    fn test_from_grpc_status_resource_exhausted() {
+        let err = from_grpc_status(codes::RESOURCE_EXHAUSTED, "quota".into());
+        assert!(matches!(err, SpiceDBError::ResourceExhausted(_)));
+    }
+
+    #[test]
     fn test_from_grpc_status_unknown_code() {
         let err = from_grpc_status(99, "unknown".into());
         assert!(matches!(err, SpiceDBError::Status { code: 99, .. }));
@@ -172,6 +214,20 @@ mod tests {
             message: "quota".into(),
         };
         assert!(is_transient(&err));
+    }
+
+    #[test]
+    fn test_is_transient_resource_exhausted_via_from_grpc_status() {
+        let err = from_grpc_status(codes::RESOURCE_EXHAUSTED, "quota".into());
+        assert!(matches!(err, SpiceDBError::ResourceExhausted(_)));
+        assert!(is_transient(&err));
+    }
+
+    #[test]
+    fn test_deadline_exceeded_via_from_grpc_status_is_not_transient() {
+        let err = from_grpc_status(codes::DEADLINE_EXCEEDED, "timeout".into());
+        assert!(matches!(err, SpiceDBError::DeadlineExceeded(_)));
+        assert!(!is_transient(&err));
     }
 
     #[test]

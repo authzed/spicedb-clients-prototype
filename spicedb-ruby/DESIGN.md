@@ -67,7 +67,8 @@ Immutable `Data.define` value type:
 SpiceDB::Relationship = Data.define(
   :resource_type, :resource_id, :resource_relation,
   :subject_type, :subject_id, :subject_relation,
-  :caveat_name, :caveat_context, :expiration
+  :caveat_name, :caveat_context, :expiration,
+  :check_context
 )
 ```
 
@@ -79,15 +80,151 @@ Constructors:
 Immutable modifiers (return new instances):
 - `r.with_caveat(name, context)` — returns new relationship with caveat
 - `r.with_expiration(time)` — returns new relationship with expiration
+- `r.with_check_context(context)` — returns new relationship with check-time
+  caveat context (see Checks below) — distinct from `with_caveat`'s
+  write-time context
 - `r.to_filter` — returns a Filter matching this relationship's resource
+
+`check_context` is check-time-only caveat context for the check surface — a
+**different concept** from `caveat_context`, which is write-time context
+embedded in `optional_caveat` and persisted to SpiceDB. `check_context` has
+no wire representation on the write path at all; it is read exclusively by
+`check_permission`/`check_permissions` (see Checks below). Conflating the
+two would leak check-time-only context into a write, silently altering a
+stored relationship's evaluated caveat forever — they are kept independently
+settable (`with_caveat` and `with_check_context` never touch each other's
+field) for exactly that reason.
+
+**Caveat context types.** Caveat context crosses the wire as
+`google.protobuf.Struct`, whose values are a `kind` oneof. Conversion must dispatch on
+that oneof in both directions; **today only the read direction does.**
+`relationship_from_proto` dispatches on `kind`, so context already stored in SpiceDB
+reads back with its types intact. `relationship_to_proto` still stringifies every value
+(`Value.new(string_value: v.to_s)`) — a known defect it shares with the Go, C# and Java
+clients, corrected separately in the cross-client write-path work. Until that lands,
+context written *through this client* is stored as strings:
+`with_caveat("x", { "n" => 42 })` reads back the String `"42"` — the read path
+faithfully reporting what is on the wire, not a read bug.
+
+Reading a non-string value via `Value#string_value` returns `""`, silently destroying
+stored context rather than raising — which is why the `kind` dispatch is required for
+correctness and not merely tidiness. `Struct#fields` is a `Google::Protobuf::Map`,
+**not** a `Hash` — Hash-only methods such as `transform_values` raise `NoMethodError`
+on it directly. `Map#to_h` is not a safe
+substitute either: for message-valued maps it recursively converts each `Value` via the
+generic protobuf-to-hash conversion rather than leaving it as a `Value` to dispatch on.
+`Map` includes `Enumerable`, so conversion iterates its raw entries directly (e.g. via
+`each_with_object`) instead of going through `Hash` or `to_h` at all.
+
+A numeric caveat context value reads back as a `Float` (`42` becomes `42.0`), because
+`google.protobuf.Value.number_value` is a `double`. This applies to any value that
+reached the wire *as a number* — written by another client, by `zed`, or by this client
+once its write path is corrected — and so it will apply to a Ruby `Integer` generally
+at that point; today an `Integer` written through `with_caveat` comes back as a
+`String` instead, per the paragraph above. The `Float` widening is inherent to the
+proto and consistent across all seven clients; it is not worked around.
 
 ### Checks
 
 All checks use `BulkCheckPermissions` under the hood:
-- `check_permission(consistency, permission, relationship)` → `Boolean`
-- `check_permissions(consistency, permission, *relationships)` → `Array<Boolean>`
-- `check_any(consistency, permission, *relationships)` → `Boolean`
-- `check_all(consistency, permission, *relationships)` → `Boolean`
+- `check_permission(consistency, permission, relationship, context: nil)` → `CheckResult`
+- `check_permissions(consistency, permission, *relationships, context: nil)` → `Array<CheckResult>`
+- `check_any(consistency, permission, *relationships, context: nil)` → `Boolean`
+- `check_all(consistency, permission, *relationships, context: nil)` → `Boolean`
+
+`check_permission`/`check_permissions` return `SpiceDB::CheckResult`, not a
+bare `Boolean` — `CheckPermissionResponse#permissionship` is four-valued
+(`UNSPECIFIED`/`NO_PERMISSION`/`HAS_PERMISSION`/`CONDITIONAL_PERMISSION`), and
+a caveated relationship whose context wasn't supplied at check time comes
+back `CONDITIONAL_PERMISSION` — the server saying "I need more information,"
+which collapsing to a Boolean would silently turn into either a grant or a
+denial.
+
+```ruby
+SpiceDB::CheckResult = Data.define(:permissionship, :missing_context, :checked_at) do
+  def has_permission?
+    permissionship == :has_permission
+  end
+end
+```
+
+- `permissionship` — a Symbol: `:unspecified`, `:no_permission`,
+  `:has_permission`, or `:conditional_permission` (the same native symbol
+  set the lookup surfaces use, below — checks are simply the one surface
+  that can affirmatively produce `:no_permission`)
+- `missing_context` — `Array<String>` of caveat parameter names SpiceDB
+  couldn't evaluate because context wasn't supplied; `[]` unless
+  `permissionship` is `:conditional_permission`
+- `checked_at` — the ZedToken (`String`) the check was evaluated against
+- `has_permission?` — `true` ONLY when `permissionship` is
+  `:has_permission`
+
+**Callers MUST call `result.has_permission?` — never test the result
+itself.** Ruby has no `__bool__`-style hook: every `CheckResult` is truthy in
+a bare `if result` regardless of `permissionship`, so `if result` is
+unconditionally true even for a `:conditional_permission` result. This is
+the one mitigation available in Ruby for the truthiness hazard that a
+Boolean-returning check API creates when it's replaced by an object — unlike
+Python (`__bool__`), Ruby cannot make the object itself refuse to be truthy.
+
+`check_any`/`check_all` remain plain `Boolean` — they count ONLY
+`:has_permission` results. A `:conditional_permission` result does NOT
+count as a grant for either (deliberately fail-closed): `check_any` is
+`results.any?(&:has_permission?)` and `check_all` is
+`results.all?(&:has_permission?)`.
+
+#### Supplying caveat context
+
+`:conditional_permission` alone is not actionable — the caller also needs a
+way to supply the caveat context named in `missing_context` and get back an
+actual grant/denial. All four check methods accept an optional `context:`
+keyword, and `SpiceDB::Relationship` carries a matching `check_context`
+field, so a caller can supply context two ways:
+
+- **Call-level** — `context:` on `check_permission`/`check_permissions`/
+  `check_any`/`check_all` is a default applied to every relationship in the
+  call.
+- **Per-item** — `relationship.with_check_context({...})` (or
+  `Relationship.new(..., check_context: {...})`) overrides `context:` for
+  that one relationship's check.
+
+```ruby
+# Call-level: applies to every relationship checked in this call.
+client.check_permissions(consistency, "view", rel1, rel2, context: { now: 42 })
+
+# Per-item: overrides the call-level default for just this relationship.
+rel = SpiceDB::Relationship.from_triple("doc", "1", "viewer", "user", "alice")
+                            .with_check_context({ now: 42 })
+client.check_permission(consistency, "view", rel)
+```
+
+All checks go through `BulkCheckPermissions` under the hood, whose wire
+format (`CheckBulkPermissionsRequestItem#context`, proto field 4) attaches
+context **per item** — `CheckBulkPermissionsRequest` itself has no context
+field. So `context:` is fanned out onto every item at request-build time,
+and each item's own `check_context` (if any) is then merged on top:
+
+**Merge rule: key-level, item wins.** `call_level.merge(item_level)` — an
+item's own keys override the call-level default on conflict, but call-level
+keys the item doesn't mention are **retained**, not dropped. An item with no
+`check_context` inherits `context:` unchanged. This is deliberately NOT a
+wholesale replacement: if a single per-item key silently discarded every
+other call-level key, a caveat would fail for context the caller believed it
+had already supplied, landing right back in the confusing
+`CONDITIONAL_PERMISSION` state this feature exists to make legible.
+
+```
+call-level:  { now: 42, region: "us" }
+item-level:  { region: "eu" }
+sent for that item: { now: 42, region: "eu" }
+```
+
+If neither call-level nor per-item context is supplied for an item, no
+`context` field is set on the wire at all (nil, not an empty `Struct`).
+
+This is purely additive — `context:` defaults to `nil` on every check
+method and `check_context` defaults to `nil` on `Relationship`, so no
+existing call site changes.
 
 ### Lookups
 
@@ -98,16 +235,19 @@ wildcard-excluded result as a full grant. Mirrors spicedb-go's
 
 ```ruby
 SpiceDB::PartialCaveatInfo = Data.define(:missing_required_context)
-SpiceDB::LookupResource    = Data.define(:resource_id, :permissionship, :partial_caveat)
+SpiceDB::LookupResource    = Data.define(:resource_id, :permissionship, :partial_caveat, :looked_up_at)
 SpiceDB::ResolvedSubject   = Data.define(:subject_id, :permissionship, :partial_caveat)
-SpiceDB::LookupSubject     = Data.define(:subject, :excluded_subjects)
+SpiceDB::LookupSubject     = Data.define(:subject, :excluded_subjects, :looked_up_at)
 ```
 
 `permissionship` is a Symbol: `:unspecified`, `:has_permission`, or
-`:conditional_permission`. `partial_caveat` is `nil` unless
+`:conditional_permission` (lookups never produce `:no_permission` — see
+Checks above for the fourth value). `partial_caveat` is `nil` unless
 `permissionship` is `:conditional_permission`, in which case it carries the
 `missing_required_context` that must be supplied to fully evaluate the
-grant.
+grant. `looked_up_at` is the ZedToken (`String`) the lookup was evaluated
+against — pass it to a later `Consistency.at_least` for read-your-writes
+against this result.
 
 - `lookup_resources(...)` → `Enumerator<SpiceDB::LookupResource>`
 - `lookup_subjects(...)` → `Enumerator<SpiceDB::LookupSubject>`, where
@@ -193,10 +333,10 @@ Automatic retry with exponential backoff for transient gRPC errors
 ### Complete Method List
 
 **Checks:**
-- `check_permission(consistency, permission, relationship)` → `Boolean`
-- `check_permissions(consistency, permission, *relationships)` → `Array<Boolean>`
-- `check_any(consistency, permission, *relationships)` → `Boolean`
-- `check_all(consistency, permission, *relationships)` → `Boolean`
+- `check_permission(consistency, permission, relationship, context: nil)` → `CheckResult`
+- `check_permissions(consistency, permission, *relationships, context: nil)` → `Array<CheckResult>`
+- `check_any(consistency, permission, *relationships, context: nil)` → `Boolean`
+- `check_all(consistency, permission, *relationships, context: nil)` → `Boolean`
 
 **Relationships:**
 - `write(transaction)` → `String` (revision)

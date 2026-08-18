@@ -75,6 +75,16 @@ jobs:
         run: mage -d proto-clients/spicedb-rust-proto test
       - name: Idiomatic client tests
         run: mage -d spicedb-rust test
+      # Kept as its own step so a network outage stays distinguishable from a TLS
+      # regression. libtest exits 0 when a name filter matches nothing, so the grep
+      # is what makes a renamed or deleted test fail here instead of going green.
+      - name: TLS handshake test (requires network)
+        env:
+          SPICEDB_TLS_INTEGRATION: "1"
+        run: |
+          output=$(cargo test --manifest-path spicedb-rust/Cargo.toml --test client_test test_system_tls_completes_real_handshake -- --nocapture --exact)
+          echo "$output"
+          echo "$output" | grep -q "1 passed" || { echo "::error::handshake test did not run — was it renamed or removed?"; exit 1; }
 
   integration:
     needs: paths-filter

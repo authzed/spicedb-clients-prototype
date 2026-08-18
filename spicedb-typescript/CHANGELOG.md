@@ -4,6 +4,61 @@
 
 ### Added
 
+- **2026-08-17**: `checkPermission`/`checkPermissions`/`checkAny`/`checkAll`
+  gain a call-level default caveat context via a new `CheckOptions` type
+  (`{ context?: Record<string, unknown> }`). Previously the only way to
+  supply caveat context was per-item, on each `CheckRequest.context` — there
+  was no way to set one default across a whole check/bulk-check call, so a
+  caller checking many items with the same caveat context had to repeat it
+  on every `CheckRequest`. `checkPermission` accepts `CheckOptions` as a new
+  optional third argument. `checkPermissions`/`checkAny`/`checkAll` gain a
+  second, explicit-array overload — `(consistency, checks: CheckRequest[],
+  options?: CheckOptions)` — since their existing variadic form
+  (`consistency, ...checks`) has nowhere to put a trailing options argument;
+  that variadic form is completely unchanged and never produces a
+  call-level default. The proto wire has no request-level context field
+  (`CheckBulkPermissionsRequest` carries no `context`, only
+  `CheckBulkPermissionsRequestItem.context`), so `options.context` is fanned
+  out onto every item at request-build time and merged key-by-key with that
+  item's own `context`: the item's own keys win on conflict, and call-level
+  keys the item doesn't mention are retained (not a wholesale replacement).
+  If neither is supplied, no context field is set on the request (never an
+  empty Struct). Purely additive — no existing call site changes.
+  `CheckOptions` is exported from the package root.
+
+  ```typescript
+  // Per-item context (existing, unchanged):
+  await client.checkPermission(consistency, { ...check, context: { now: 42 } });
+
+  // New: a call-level default, applied to every item in a bulk check:
+  await client.checkPermissions(
+    consistency,
+    [check1, check2],
+    { context: { now: 42 } },
+  );
+  ```
+
+- **2026-08-17**: `LookupResource` and `LookupSubject` gain a `lookedUpAt`
+  field: the revision that result was computed at (from the response's
+  `looked_up_at` ZedToken). It is identical for every item yielded by a
+  single `lookupResources`/`lookupSubjects` call — a property of the call,
+  not of the individual resource/subject. Thread it into
+  `atLeast()`/`atLeastOrFull()` for read-your-writes on a later call.
+  Additive — existing destructuring of `LookupResource`/`LookupSubject`
+  continues to work unchanged. Mirrors spicedb-go's
+  `LookupResource.LookedUpAt`/`LookupSubject.LookedUpAt`
+  (`client/lookup_types.go`).
+
+- **2026-08-16**: Added `DeadlineExceededError` and `ResourceExhaustedError`
+  to the typed error hierarchy, and fixed `RESOURCE_EXHAUSTED` (e.g. a rate
+  limit) to map to the new `ResourceExhaustedError` instead of being folded
+  into `UnavailableError`. This brings TypeScript's error hierarchy in line
+  with the canonical nine-type set already present in Go, Java, Python,
+  Rust, Ruby, and C#. `isTransientError()`'s behavior is unchanged —
+  `RESOURCE_EXHAUSTED` was already, and remains, treated as transient; only
+  which typed class it maps to changed. Both new error classes are exported
+  from the package root.
+
 - **2026-08-15**: `readRelationships()`, `lookupResources()`,
   `lookupSubjects()`, `exportBulkRelationships()`, and `watch()` now retry
   stream ESTABLISHMENT on transient errors (`UNAVAILABLE`,
@@ -43,6 +98,17 @@
 
 ### Fixed
 
+- **2026-08-17**: A per-item error from `checkPermissions()`'s underlying
+  `CheckBulkPermissions` call (a permission-denied, an invalid-argument, an
+  internal server error, etc. scoped to one specific check) is now thrown as
+  a typed `SpiceDBError` via the same code -> error-class mapping as a
+  top-level RPC failure. Previously it was silently coerced into `false` —
+  indistinguishable from a real denial, and the caller never learned an
+  error occurred at all. New `toSpiceDBErrorFromStatus()` in `errors.ts`
+  converts the `google.rpc.Status`-shaped per-item error (its numeric
+  `code` matches Connect's `Code` enum, since both mirror the standard gRPC
+  status codes) through the existing `toSpiceDBError()` mapping.
+
 - **2026-08-14**: Enabled `stripInternal` in `tsconfig.json` so `@internal`-tagged
   members are actually removed from the shipped `.d.ts` (previously `@internal`
   JSDoc had no emit effect on its own). `Consistency._toProto()`/`_wrap()` and
@@ -52,6 +118,48 @@
   intended to be public.
 
 ### Breaking Changes
+
+- **2026-08-17**: `checkPermission()` now returns `CheckResult` instead of
+  `boolean`, and `checkPermissions()` now returns `CheckResult[]` instead of
+  `boolean[]` — closing a fail-open. Previously, both methods collapsed
+  `HAS_PERMISSION` and `CONDITIONAL_PERMISSION` together into `true`
+  (`resp.permissionship === HAS_PERMISSION || resp.permissionship ===
+  CONDITIONAL_PERMISSION`), so a caveated relationship whose context was not
+  supplied at check time was granted exactly as if the server had confirmed
+  it — this client's own JSDoc documented it as intentional
+  ("Caveated permissions return `true`"). `CheckResult` — a class, so
+  `hasPermission()` travels with the data — carries `permissionship`
+  (`Permissionship`, now with a fourth value, `"noPermission"`, alongside
+  `"unspecified"` | `"hasPermission"` | `"conditionalPermission"`),
+  `missingContext: string[]` (from `partial_caveat_info`), `checkedAt:
+  string` (from `checked_at`), and `hasPermission(): boolean` — `true` ONLY
+  for `permissionship === "hasPermission"`. `checkAny()`/`checkAll()` keep
+  returning `boolean` but now count only `hasPermission() === true` results
+  as granted; a conditional result never counts, even for `checkAny()`. This
+  is the TypeScript instance of a change applied identically across all
+  seven SpiceDB clients; mirrors spicedb-go's `CheckResult`
+  (`client/check_types.go`).
+
+  Before:
+  ```ts
+  const allowed = await client.checkPermission(cs, check);
+  if (allowed) grant(); // conditional (caveat context missing) ALSO ran this — the fail-open
+
+  const results = await client.checkPermissions(cs, ...checks);
+  if (results[0]) grant();
+  ```
+  After:
+  ```ts
+  const result = await client.checkPermission(cs, check);
+  if (result.hasPermission()) grant(); // false for a conditional result — closed
+
+  const results = await client.checkPermissions(cs, ...checks);
+  if (results[0].hasPermission()) grant();
+  // A conditional result also carries what's missing and when it was checked:
+  if (result.permissionship === "conditionalPermission") {
+    console.log("missing caveat context:", result.missingContext);
+  }
+  ```
 
 - **2026-08-15**: `lookupResources`/`lookupSubjects` now yield native result
   objects instead of bare `string` IDs, closing an over-grant risk: the

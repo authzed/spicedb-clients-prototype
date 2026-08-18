@@ -63,8 +63,8 @@ definition document {
 	}
 
 	for i, user := range users {
-		fmt.Printf("user:%s can view document:report: %v\n", user, results[i])
-		if !results[i] {
+		fmt.Printf("user:%s can view document:report: %v (permissionship: %s)\n", user, results[i].HasPermission(), results[i].Permissionship)
+		if !results[i].HasPermission() {
 			log.Fatalf("expected user:%s to have view permission", user)
 		}
 	}

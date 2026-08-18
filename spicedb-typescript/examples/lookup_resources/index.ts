@@ -68,6 +68,12 @@ for await (const resource of client.lookupResources(
     );
     process.exit(1);
   }
+  // lookedUpAt is the revision this result was computed at — thread it into
+  // atLeast()/atLeastOrFull() for read-your-writes on a later call.
+  assert(
+    resource.lookedUpAt !== "",
+    `expected a non-empty lookedUpAt token for document:${resource.resourceId}`,
+  );
   found.add(resource.resourceId);
 }
 

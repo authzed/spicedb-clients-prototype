@@ -65,10 +65,14 @@ func TestGenerateSampleSchema(t *testing.T) {
 	assert.Contains(t, output, `readonly client: SpiceDBClient;`)
 	assert.Contains(t, output, `static create(endpoint: string, token: string`)
 
-	// Check overloads (view includes caveated variants)
-	assert.Contains(t, output, `async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "view" }, s: UserRef | UserIpRangeRef | UserTimeWindowRef | TeamMemberRef): Promise<boolean>;`)
-	assert.Contains(t, output, `async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "edit" }, s: UserRef): Promise<boolean>;`)
-	assert.Contains(t, output, `async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "delete" }, s: UserRef): Promise<boolean>;`)
+	// Check overloads (view includes caveated variants). Returns
+	// Promise<CheckResult>, not Promise<boolean>: see
+	// TestCheckSurfacesCheckResult below for the rigorous regression guard.
+	// Accepts an optional CheckOptions: see TestCheckAcceptsContext for that
+	// regression guard.
+	assert.Contains(t, output, `async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "view" }, s: UserRef | UserIpRangeRef | UserTimeWindowRef | TeamMemberRef, options?: CheckOptions): Promise<CheckResult>;`)
+	assert.Contains(t, output, `async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "edit" }, s: UserRef, options?: CheckOptions): Promise<CheckResult>;`)
+	assert.Contains(t, output, `async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "delete" }, s: UserRef, options?: CheckOptions): Promise<CheckResult>;`)
 
 	// Check implementation
 	assert.Contains(t, output, `return this.client.checkPermission(c, {`)
@@ -101,8 +105,11 @@ func TestGenerateSampleSchema(t *testing.T) {
 	assert.Contains(t, output, `end?: string;`)
 
 	// Caveated subject variant types
-	assert.Contains(t, output, `type UserIpRangeRef = { _type: "user"; _id: string; _caveat: "ip_range"; _caveatContext: IpRangeContext };`)
-	assert.Contains(t, output, `type UserTimeWindowRef = { _type: "user"; _id: string; _caveat: "time_window"; _caveatContext: TimeWindowContext };`)
+	// _caveatContext holds the RAW-schema-keyed converted context (see
+	// TestCaveatContextPreservesRawNames), not the camelCase IpRangeContext/
+	// TimeWindowContext interface shape the caveat method's PARAMETER uses.
+	assert.Contains(t, output, `type UserIpRangeRef = { _type: "user"; _id: string; _caveat: "ip_range"; _caveatContext: Record<string, unknown> };`)
+	assert.Contains(t, output, `type UserTimeWindowRef = { _type: "user"; _id: string; _caveat: "time_window"; _caveatContext: Record<string, unknown> };`)
 
 	// Caveat methods on User factory
 	assert.Contains(t, output, `withIpRange: (ctx: IpRangeContext): UserIpRangeRef`)
@@ -114,6 +121,169 @@ func TestGenerateSampleSchema(t *testing.T) {
 
 	// Generated file header
 	assert.Contains(t, output, `DO NOT EDIT`)
+}
+
+// TestCheckSurfacesCheckResult verifies the generated `check` method — both
+// its per-permission overload declarations and its dispatching
+// implementation — returns Promise<CheckResult>, not Promise<boolean>.
+//
+// Collapsing to boolean would silently reintroduce the bug CheckResult
+// exists to fix: a "conditionalPermission" result (server needed caveat
+// context it didn't get) would become indistinguishable from a real denial.
+// This test asserts the exact new signatures (so a stray comment mentioning
+// "CheckResult" can't fake a pass), asserts the old Promise<boolean> forms
+// are entirely gone, and asserts the underlying client's CheckResult return
+// value is passed through untouched rather than re-collapsed inside the
+// generated wrapper. Mirrors the rigor of the Go/Python equivalents in
+// golang/generator_test.go and python/generator_test.go.
+func TestCheckSurfacesCheckResult(t *testing.T) {
+	s, err := schema.ParseFile("../testdata/sample.zed")
+	require.NoError(t, err)
+
+	g := &Generator{}
+	files, err := g.Generate(s, nil)
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+
+	output := string(files[0].Content)
+
+	// CheckResult must be imported as a value (not type-only) from the client
+	// package, matching how it's exported from spicedb-typescript's index.ts.
+	assert.Contains(t, output, "    CheckResult,\n")
+
+	// Overload declarations — exact signature per permission, returning
+	// Promise<CheckResult>.
+	assert.Contains(t, output, `async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "view" }, s: UserRef | UserIpRangeRef | UserTimeWindowRef | TeamMemberRef, options?: CheckOptions): Promise<CheckResult>;`)
+	assert.Contains(t, output, `async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "edit" }, s: UserRef, options?: CheckOptions): Promise<CheckResult>;`)
+	assert.Contains(t, output, `async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "delete" }, s: UserRef, options?: CheckOptions): Promise<CheckResult>;`)
+
+	// Dispatching implementation — exact signature, returning Promise<CheckResult>.
+	assert.Contains(t, output, `async check(c: Consistency, p: { _type: string; _id: string; _permission: string }, s: { _type: string; _id: string; _relation?: string; _caveat?: string; _caveatContext?: Record<string, any> }, options?: CheckOptions): Promise<CheckResult> {`)
+
+	// The old Promise<boolean> forms must be entirely gone. Asserting merely
+	// that the string "CheckResult" appears somewhere would pass even on a
+	// broken template that returns boolean but mentions CheckResult only in a
+	// comment or unrelated import — these NotContains checks discriminate
+	// that regression.
+	assert.NotContains(t, output, "Promise<boolean>")
+
+	// The CheckResult returned by the underlying client is passed through
+	// untouched, not re-collapsed to a boolean inside the generated wrapper —
+	// which would silently reintroduce the exact bug CheckResult exists to
+	// fix, hidden inside generated code users don't read.
+	assert.Contains(t, output, "return this.client.checkPermission(c, {")
+}
+
+// TestCheckAcceptsContext verifies the generated `check` method — both its
+// per-permission overload declarations and its dispatching implementation —
+// accepts a new optional `options?: CheckOptions` parameter, matching
+// SpiceDBClient.checkPermission's own `(consistency, check, options?)` shape
+// (spec D3b). The existing 3-arg call shape must remain valid (options is
+// optional), and the value must actually be threaded through to the
+// underlying client, not merely accepted and dropped.
+func TestCheckAcceptsContext(t *testing.T) {
+	s, err := schema.ParseFile("../testdata/sample.zed")
+	require.NoError(t, err)
+
+	g := &Generator{}
+	files, err := g.Generate(s, nil)
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+
+	output := string(files[0].Content)
+
+	// CheckOptions must be imported from the client package.
+	assert.Contains(t, output, "type CheckOptions")
+
+	// Overload declarations — exact signature per permission, with the new
+	// optional options parameter.
+	assert.Contains(t, output, `async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "view" }, s: UserRef | UserIpRangeRef | UserTimeWindowRef | TeamMemberRef, options?: CheckOptions): Promise<CheckResult>;`)
+	assert.Contains(t, output, `async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "edit" }, s: UserRef, options?: CheckOptions): Promise<CheckResult>;`)
+	assert.Contains(t, output, `async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "delete" }, s: UserRef, options?: CheckOptions): Promise<CheckResult>;`)
+
+	// Dispatching implementation — exact signature, with the new parameter.
+	assert.Contains(t, output, `async check(c: Consistency, p: { _type: string; _id: string; _permission: string }, s: { _type: string; _id: string; _relation?: string; _caveat?: string; _caveatContext?: Record<string, any> }, options?: CheckOptions): Promise<CheckResult> {`)
+
+	// The OLD context-less forms must be entirely gone — guards against a
+	// regression that adds the parameter to only some declarations.
+	assert.NotContains(t, output, `s: UserRef | UserIpRangeRef | UserTimeWindowRef | TeamMemberRef): Promise<CheckResult>;`)
+	assert.NotContains(t, output, `p: { _type: "document"; _id: string; _permission: "edit" }, s: UserRef): Promise<CheckResult>;`)
+	assert.NotContains(t, output, `_caveatContext?: Record<string, any> }): Promise<CheckResult> {`)
+
+	// options is actually threaded through to the underlying client call, not
+	// silently dropped — a signature-only assertion would pass even if the
+	// body never read `options`.
+	assert.Contains(t, output, "}, options);")
+}
+
+// TestCheckForwardsSubjectCaveatContext verifies the generated check()
+// forwards a caveated subject's own _caveatContext into the CheckRequest's
+// item-level `context` field, so it participates in
+// SpiceDBClient.checkPermission's mergeCheckContext (item wins over
+// options.context, the call-level default). Before this fix, s._caveatContext
+// was accepted on the subject union type (UserIpRangeRef/UserTimeWindowRef
+// are members of the check subject union) but never read anywhere in
+// check()'s body -- a caveated subject ref passed to check() supplied NO
+// context to the actual check RPC at all.
+func TestCheckForwardsSubjectCaveatContext(t *testing.T) {
+	s, err := schema.ParseFile("../testdata/sample.zed")
+	require.NoError(t, err)
+
+	g := &Generator{}
+	files, err := g.Generate(s, nil)
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+
+	output := string(files[0].Content)
+
+	// The subject's own _caveatContext must be forwarded as the CheckRequest's
+	// item-level context, inside the same checkPermission(...) call the
+	// dispatching check() implementation makes.
+	assert.Contains(t, output, "context: s._caveatContext,")
+
+	// Guard against a regression that reverts to the old object literal
+	// (subjectRelation as the last field, no context) while still passing
+	// TestCheckAcceptsContext's looser assertions.
+	assert.NotContains(t, output,
+		"subjectType: s._type, subjectId: s._id, subjectRelation: (s as any)._relation,\n        }, options);")
+}
+
+// TestCaveatContextPreservesRawNames verifies caveat context objects built
+// by a withXxx factory method are converted to their RAW schema parameter
+// names (e.g. "allowed_cidr") before being used as _caveatContext, rather
+// than the camelCase TypeScript field name (e.g. "allowedCidr") the
+// IpRangeContext interface exposes to callers.
+//
+// Found while wiring subject-embedded context into check() (spec D3b
+// follow-up): CaveatFieldData only ever carried the camelCase name, so
+// withIpRange({ allowedCidr: "..." })'s _caveatContext was previously sent
+// to SpiceDB verbatim with the camelCase key. SpiceDB's CEL evaluator looks
+// up the RAW schema name ("allowed_cidr"), so any multi-word caveat
+// parameter's context was silently unreachable -- both at write time
+// (touch/create/delete, pre-existing) and now at check time (this task) --
+// exactly the "accepts a value it discards" defect class this whole fix
+// round exists to close. Single-word parameters (e.g. time_window's "start"
+// and "end") happened to survive camelCase conversion unchanged, which is
+// why this was never caught by existing single-word-only caveats in earlier
+// tasks' tests.
+func TestCaveatContextPreservesRawNames(t *testing.T) {
+	s, err := schema.ParseFile("../testdata/sample.zed")
+	require.NoError(t, err)
+
+	g := &Generator{}
+	files, err := g.Generate(s, nil)
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+
+	output := string(files[0].Content)
+
+	// The converter must map the camelCase field to the RAW schema name.
+	assert.Contains(t, output, `raw["allowed_cidr"] = ctx.allowedCidr`)
+
+	// withIpRange must route through the converter, not pass ctx straight
+	// through as _caveatContext (which would leak the camelCase key).
+	assert.Contains(t, output, "_caveatContext: ipRangeContextToRaw(ctx)")
+	assert.NotContains(t, output, "_caveatContext: ctx,")
 }
 
 func TestGenerateEmptySchema(t *testing.T) {

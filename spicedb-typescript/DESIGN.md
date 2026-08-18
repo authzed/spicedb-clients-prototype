@@ -75,13 +75,105 @@ Builder helpers:
 ### Checks
 
 ```typescript
-const results = await client.checkPermissions(consistency, ...rels); // boolean[]
-const allowed = await client.checkPermission(consistency, rel);      // boolean
+const results = await client.checkPermissions(consistency, ...rels); // CheckResult[]
+const result = await client.checkPermission(consistency, rel);       // CheckResult
 const any = await client.checkAny(consistency, ...rels);             // boolean
 const all = await client.checkAll(consistency, ...rels);             // boolean
 ```
 
-All use BulkCheckPermissions under the hood.
+`checkPermission`/`checkPermissions` return `CheckResult` — never a bare
+`boolean` — so a caveated relationship whose context wasn't supplied at check
+time is distinguishable from a real denial instead of being silently
+collapsed to `true` or `false`:
+
+```typescript
+interface CheckResult {
+  permissionship: Permissionship; // "unspecified" | "hasPermission" | "conditionalPermission" | "noPermission"
+  missingContext: string[];       // caveat context keys the server needed; empty unless conditionalPermission
+  checkedAt: string;              // revision this check was evaluated at
+  hasPermission(): boolean;       // true ONLY for permissionship === "hasPermission"
+}
+```
+
+`CheckResult` is a class (not a plain interface, unlike the lookup result
+types below) so `hasPermission()` travels with the data. Always prefer
+`result.hasPermission()` over comparing `permissionship` directly — a
+`"conditionalPermission"` result means the server needed caveat context that
+was not supplied and is NOT a grant.
+
+**Never use a `CheckResult` as a bare condition.** Objects are unconditionally
+truthy in JavaScript, and TypeScript offers no hook to override that (there is
+no equivalent of Python's `__bool__`, and no compile error like Go's or Rust's).
+So `if (result)` is `true` for *every* result — including a
+`"conditionalPermission"` one, which would silently grant access on a caveat
+the server never evaluated. This is the exact fail-open this client used to
+ship (`checkPermission` returned `true` for `CONDITIONAL_PERMISSION` by design),
+and it is also the shape a naive migration from the old `boolean` API produces:
+
+```typescript
+// WRONG — always true, grants on an unevaluated caveat
+const result = await client.checkPermission(consistency, rel);
+if (result) grant();
+
+// RIGHT — false for conditional, denied, and unspecified alike
+if (result.hasPermission()) grant();
+```
+
+Because the language cannot enforce this, documentation is the only mitigation:
+no docstring, README, or example in this client may show a check result used
+directly as a condition. Every sample goes through `hasPermission()`. See root
+`DESIGN.md`, "RULE: Only an unconditional grant is true", clause 5.
+
+`checkAny`/`checkAll` stay `boolean` and count ONLY `hasPermission() ===
+true` results as granted — a conditional result never counts, even for
+`checkAny`. This is deliberate and fail-closed.
+
+`checkPermission` uses the single-check `CheckPermission` RPC directly;
+`checkPermissions`/`checkAny`/`checkAll` use `BulkCheckPermissions`. A
+per-item error from `CheckBulkPermissions` is surfaced by throwing a typed
+error, never coerced into a result.
+
+### Caveat context: per-item and call-level
+
+`CheckRequest.context` supplies per-item caveat context — the values a
+caveat needs, scoped to one specific check. All four check surfaces also
+accept an optional trailing `CheckOptions` with a call-level default
+`context`, applied to every check the call evaluates:
+
+```typescript
+const result = await client.checkPermission(consistency, check, {
+  context: { now: Date.now() / 1000 },
+});
+
+const results = await client.checkPermissions(
+  consistency,
+  [check1, check2],           // explicit-array form — required to pass options
+  { context: { now: Date.now() / 1000 } },
+);
+```
+
+`checkPermissions`/`checkAny`/`checkAll` keep their original variadic form
+(`consistency, ...checks`) unchanged — no existing call site needs to
+change. `CheckOptions` is only reachable through a second, explicit-array
+overload (`consistency, checks, options?`), since a call-level default has
+nowhere to go in a trailing-variadic call.
+
+The proto wire has no request-level context field — `CheckBulkPermissionsRequest`
+carries no `context`, only `CheckBulkPermissionsRequestItem.context` — so a
+call-level default is fanned out onto every item at request-build time and
+merged **key-by-key** with that item's own `context`: the item's own keys
+win on conflict, and call-level keys the item doesn't mention are retained.
+This is not a wholesale replacement — an item supplying one key does not
+drop every other call-level key:
+
+```typescript
+// call-level: { now: 42, region: "us" }
+// item-level: { region: "eu" }
+// sent for that item: { now: 42, region: "eu" }
+```
+
+If neither a call-level nor an item-level context is supplied, no context
+field is set on the request (never an empty Struct).
 
 ### Streaming
 
@@ -106,8 +198,9 @@ match as an unconditional grant:
 ```typescript
 interface LookupResource {
   resourceId: string;
-  permissionship: Permissionship; // "unspecified" | "hasPermission" | "conditionalPermission"
+  permissionship: Permissionship; // "unspecified" | "hasPermission" | "conditionalPermission" | "noPermission"
   partialCaveat?: PartialCaveatInfo; // set when permissionship is "conditionalPermission"
+  lookedUpAt: string; // revision this result was computed at
 }
 
 interface ResolvedSubject {
@@ -119,13 +212,17 @@ interface ResolvedSubject {
 interface LookupSubject {
   subject: ResolvedSubject;
   excludedSubjects: ResolvedSubject[]; // wildcard "*" exclusions — MUST check
+  lookedUpAt: string; // revision this result was computed at
 }
 ```
 
 Callers MUST check `permissionship` before treating a result as a full
 grant, and — critically — when `subject.subjectId` is the wildcard `"*"`,
 MUST check `excludedSubjects` before treating the wildcard as a blanket
-grant. Mirrors spicedb-go's `client/lookup_types.go`.
+grant. `permissionship` is shared with `CheckResult` (see Checks above) —
+lookups never yield `"noPermission"`: a subject/resource pair that lacks the
+permission is simply absent from the stream. Mirrors spicedb-go's
+`client/lookup_types.go`.
 
 ### Writes
 
@@ -139,6 +236,13 @@ txn.delete(relationship);
 txn.mustNotMatch(filter);
 const revision = await client.write(txn);
 ```
+
+`write`, `deleteRelationships`, and `writeSchema` all return the revision
+the mutation occurred at. `importBulkRelationships` (bulk import) is the one
+exception: it returns `Promise<bigint>` (the number of relationships
+loaded) with no revision, because `ImportBulkRelationshipsResponse` carries
+no `ZedToken` field at all — the proto itself gives the client nothing to
+expose there, not a client-side gap.
 
 ### Testing
 
@@ -173,7 +277,7 @@ See package sections above.
 
 | Directory | Demonstrates |
 |-----------|-------------|
-| `check_permission/` | Basic permission check |
+| `check_permission/` | Basic permission check, plus a caveated check with no context to show a `conditionalPermission` CheckResult, then resolving that conditional into a grant by supplying the missing context via `CheckOptions` (single-check and bulk) |
 | `write_relationships/` | Writing relationships with transaction builder |
 | `read_relationships/` | Reading relationships with async iterator |
 | `lookup_resources/` | Resource lookup, incl. reading `permissionship`/`partialCaveat` |

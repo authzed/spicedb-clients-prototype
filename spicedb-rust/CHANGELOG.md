@@ -2,7 +2,166 @@
 
 ## Unreleased
 
+### Fixes
+
+- **`new_system_tls` could not connect to any TLS server.** The client enabled tonic's
+  `tls` feature but neither `tls-native-roots` nor `tls-webpki-roots`, and built its
+  config with a bare `ClientTlsConfig::new()`. In tonic 0.12 that carries an empty
+  trust-anchor set, so every handshake failed `UnknownIssuer` — against Authzed's
+  managed service and against any self-hosted SpiceDB behind TLS alike. Because
+  `connect()` is eager, it surfaced at construction as an opaque
+  `SpiceDBError::Transport("transport error")`, which actively misdirected diagnosis.
+  The client now enables `tls-native-roots` and calls `.with_native_roots()`, reading
+  the OS trust store at runtime. (Each sibling client delegates to its own ecosystem's
+  default trust source; those sources differ — see `DESIGN.md` — but none of them is
+  empty.)
+
+  The two tests that covered this asserted `is_err()` against an unreachable host, so
+  they passed whether the failure was DNS or an empty trust store. They have been
+  deleted and replaced with a test that completes a real handshake, per the new root
+  `DESIGN.md` rule *"A system-TLS constructor must reach a real server."*
+
+
+- **Fixed all 11 `examples/*.rs` hardcoding the preshared key
+  `"somerandomkeyhere"`, which does not match `--grpc-preshared-key
+  testtoken` in `docker-compose.test.yml`.** Running any example against
+  this crate's own test harness failed with
+  `PermissionDenied("invalid preshared key: invalid token")`. Examples now
+  use `"testtoken"`, matching the harness. `docker-compose.test.yml` was
+  left unchanged (the smaller fix, and changing it would have affected the
+  `cargo test -- --ignored` tests that already pass against it).
+- **Fixed `check_permissions`/`check_permissions_with_context` silently
+  dropping an index from the results when a `CheckBulkPermissionsPair`
+  arrived with its `response` oneof unset (neither `Item` nor `Error`).**
+  The proto schema guarantees a well-behaved server never sends this, but
+  nothing on the wire enforces it, and the old handling was:
+  ```rust
+  // Before:
+  None => {}
+  ```
+  which silently skipped that index, so the returned `Vec<CheckResult>`
+  came back shorter than the input `relationships` slice — every
+  subsequent `results[i]` was then misaligned with `relationships[i]`, so
+  a caller zipping results against inputs would attribute an answer to the
+  wrong resource. A malformed pair now returns `Err(error::internal(..))`
+  (gRPC code 13, `SpiceDBError::Status { code: 13, .. }`) instead of being
+  silently skipped. Pre-existing; not introduced by the caveat-context work
+  above.
+
+  This closes the malformed-pair case specifically; it does not guarantee
+  `results.len() == relationships.len()` in general. Nothing checks that
+  `inner.pairs` itself has as many entries as the `items` sent in the
+  request, so a server that returns a `pairs` list shorter than the batch
+  (but with no malformed entries among the pairs it does return) still
+  produces a `Vec<CheckResult>` shorter than `relationships`, silently and
+  without error. Callers zipping results against inputs still rely on the
+  server returning exactly one pair per item.
+- **Fixed a per-item `CheckBulkPermissions` error being reported as a
+  hardcoded `SpiceDBError::InvalidArgument` regardless of its actual gRPC
+  status code.** `check_permissions` previously did:
+  ```rust
+  // Before:
+  if let Some(Response::Error(err_resp)) = &pair.response {
+      return Err(SpiceDBError::InvalidArgument(format!("check item {i}: {}", err_resp.message)));
+  }
+  ```
+  so a per-item `PERMISSION_DENIED` was reported to the caller as
+  `InvalidArgument` — worse than a generic fallback, since it actively
+  misrepresents the failure mode. It now routes through the same
+  `error::from_grpc_status` mapper every other RPC in this client uses:
+  ```rust
+  // After:
+  Some(Response::Error(err_resp)) => {
+      return Err(error::from_grpc_status(err_resp.code, format!("check item {i}: {}", err_resp.message)));
+  }
+  ```
+  A per-item `PERMISSION_DENIED` now correctly surfaces as
+  `SpiceDBError::PermissionDenied`.
+- **`SpiceDBError` gained `DeadlineExceeded` and `ResourceExhausted` variants**
+  (from a prior, unreleased change to this client's error hierarchy). Both
+  gRPC codes previously fell through to the generic `Status { code, message }`
+  fallback. As part of that change, `is_transient` was updated to recognize
+  `SpiceDBError::ResourceExhausted` directly — before, `RESOURCE_EXHAUSTED`
+  was only recognized via the `Status { code, .. }` match arm, which stopped
+  matching once `from_grpc_status` started returning the dedicated
+  `ResourceExhausted` variant for that code; without the fix, rate-limited
+  calls would have silently stopped retrying.
+
+
+- **Delete page size correction**: `DEFAULT_DELETE_PAGE_SIZE` is now 1,000 (matching SpiceDB's default `--max-delete-relationships-limit`, so the default `delete_relationships` call works against a stock server), not 10,000 — the earlier "10,000" correction in this file was itself wrong
+- **Standardized the retryable gRPC code set to `{UNAVAILABLE, RESOURCE_EXHAUSTED,
+  ABORTED}`**, aligning with the other idiomatic clients. `DEADLINE_EXCEEDED` is no
+  longer treated as transient/retried — a deadline is a caller-set budget, and
+  retrying past it silently extends an operation beyond the time the caller
+  asked for. `ABORTED` (e.g. optimistic-concurrency/transaction conflicts) is
+  now retried, since a retry is usually exactly the right response.
+- **Lowered `MAX_RETRIES` from 5 to 3** (4 total attempts) and **capped the
+  exponential backoff delay at 5s** per retry, so a long run of transient
+  failures no longer produces unbounded per-attempt waits.
+- **`updates()` (watch) now retries transient failures during stream
+  *establishment***, not just during in-stream reads. Previously, if the
+  initial `Watch` call failed with a transient error (e.g. `UNAVAILABLE`),
+  the returned stream immediately yielded that error with no retry. It now
+  retries establishment the same way other RPCs do. (Note:
+  `import_relationships`, a client-streaming RPC, intentionally does not gain
+  retry — retrying after a partial send would risk re-sending data.)
+
 ### Features
+
+- **Caveat context on the check surface.** A prior change gave
+  `CheckResult` a `missing_context: Vec<String>` field naming the caveat
+  keys the server needed and didn't get — but there was no way to actually
+  supply them. `Relationship` gains a `check_context: Option<HashMap<String,
+  serde_json::Value>>` field (set via `.with_check_context(context)`) for
+  per-item context, and each check method gains a `_with_context` sibling
+  for a call-level default:
+
+  ```rust
+  use std::collections::HashMap;
+  use spicedb::types::Relationship;
+
+  let rel = Relationship::new("doc", "doc1", "view", "user", "alice", "")?;
+  let mut context = HashMap::new();
+  context.insert("now".to_string(), serde_json::json!(42));
+
+  // Call-level default, applied to every relationship in the call:
+  let result = client
+      .check_permission_with_context(&cs, "view", &rel, Some(&context))
+      .await?;
+
+  // check_permissions_with_context / check_any_with_context /
+  // check_all_with_context follow the same shape for the batch/aggregate
+  // surface.
+  ```
+
+  Per-item context (via `Relationship::with_check_context`) merges with a
+  call-level default **key by key, item wins**: the item's keys override
+  matching call-level keys, and call-level keys the item doesn't specify are
+  retained — not wholesale replacement, which would silently drop shared
+  keys and reintroduce the exact "why is this still Conditional" confusion
+  `missing_context` exists to resolve. When neither applies to an item, no
+  `context` field is set on that item's wire request (`None`, not an empty
+  `Struct`).
+
+  `check_context` is a *different concept* from `caveat_context`:
+  `caveat_context` is stored with a relationship as part of a **write** and
+  supplies values for the caveat baked into that specific tuple;
+  `check_context` is never sent on a write (`Relationship::to_proto` does
+  not reference it) and instead supplies values for evaluating whatever
+  caveat a permission **check** encounters. Keeping them on separate fields
+  prevents a check-time value from silently leaking into a write and
+  altering a stored relationship's caveat context.
+
+  This is **purely additive** — `check_permission`, `check_permissions`,
+  `check_any`, and `check_all` are unchanged and now delegate to their
+  `_with_context` counterpart with `context: None`. No existing call site
+  changes:
+
+  ```rust
+  // Before and after — identical:
+  let result = client.check_permission(&cs, "view", &rel).await?;
+  ```
+
 
 - **`delete_relationships_with(filter, &DeleteOptions)`**: guarded deletes.
   Previously `delete_relationships` took only a filter, so the proto
@@ -29,27 +188,62 @@
   `DeleteOptions::with_limit` set large enough to cover every matching
   relationship in one call for single-shot, all-or-nothing semantics.
 
-### Fixes
-
-- **Delete page size correction**: `DEFAULT_DELETE_PAGE_SIZE` is now 1,000 (matching SpiceDB's default `--max-delete-relationships-limit`, so the default `delete_relationships` call works against a stock server), not 10,000 — the earlier "10,000" correction in this file was itself wrong
-- **Standardized the retryable gRPC code set to `{UNAVAILABLE, RESOURCE_EXHAUSTED,
-  ABORTED}`**, aligning with the other idiomatic clients. `DEADLINE_EXCEEDED` is no
-  longer treated as transient/retried — a deadline is a caller-set budget, and
-  retrying past it silently extends an operation beyond the time the caller
-  asked for. `ABORTED` (e.g. optimistic-concurrency/transaction conflicts) is
-  now retried, since a retry is usually exactly the right response.
-- **Lowered `MAX_RETRIES` from 5 to 3** (4 total attempts) and **capped the
-  exponential backoff delay at 5s** per retry, so a long run of transient
-  failures no longer produces unbounded per-attempt waits.
-- **`updates()` (watch) now retries transient failures during stream
-  *establishment***, not just during in-stream reads. Previously, if the
-  initial `Watch` call failed with a transient error (e.g. `UNAVAILABLE`),
-  the returned stream immediately yielded that error with no retry. It now
-  retries establishment the same way other RPCs do. (Note:
-  `import_relationships`, a client-streaming RPC, intentionally does not gain
-  retry — retrying after a partial send would risk re-sending data.)
-
 ### Breaking changes
+
+- **`check_permission` and `check_permissions` now return `CheckResult`/`Vec<CheckResult>`
+  instead of `bool`/`Vec<bool>`.** `CheckPermissionResponse.permissionship` is
+  three-valued on the wire (`NO_PERMISSION`, `HAS_PERMISSION`,
+  `CONDITIONAL_PERMISSION`), and the old bool return collapsed a
+  `CONDITIONAL_PERMISSION` result — a caveated relationship whose context
+  wasn't supplied at check time — into the same `false` as an outright
+  denial. `CheckResult` keeps that distinction:
+
+  ```rust
+  // Before:
+  // async fn check_permission(...) -> Result<CheckResult, SpiceDBError>; // CheckResult { has_permission: bool }
+  // async fn check_permissions(...) -> Result<Vec<bool>, SpiceDBError>;
+
+  // After:
+  pub struct CheckResult {
+      pub permissionship: Permissionship, // Unspecified | NoPermission | HasPermission | ConditionalPermission
+      pub missing_context: Vec<String>,   // non-empty only when permissionship is ConditionalPermission
+      pub checked_at: String,             // ZedToken; thread into consistency::at_least for read-your-writes
+  }
+  impl CheckResult {
+      pub fn has_permission(&self) -> bool { /* true only for Permissionship::HasPermission */ }
+  }
+
+  // async fn check_permission(...) -> Result<CheckResult, SpiceDBError>;
+  // async fn check_permissions(...) -> Result<Vec<CheckResult>, SpiceDBError>;
+
+  let result = client.check_permission(&cs, "view", &rel).await?;
+  if result.has_permission() {
+      // granted outright
+  }
+  ```
+
+  `check_any`/`check_all` keep their `bool` return, but now gate on
+  `CheckResult::has_permission()` — a `ConditionalPermission` result does
+  **not** count as granted for either (fail-closed by design: an unevaluated
+  caveat must never silently widen a bulk any/all check into a grant).
+
+  `Permissionship` gains a fourth value, `NoPermission`, inserted directly
+  after `Unspecified` (this enum has no explicit discriminants, so there's no
+  renumbering risk). It now serves both the check surface (`CheckResult`) and
+  the lookup surface (`LookupResource`, `ResolvedSubject`); lookups never
+  yield `NoPermission` — a resource/subject lacking the permission is simply
+  absent from a lookup stream rather than yielded with that permissionship.
+
+  `LookupResource` and `LookupSubject` gain a `looked_up_at: String` field
+  (the revision the result was computed at — `CheckPermissionResponse.checked_at`'s
+  read-your-writes counterpart for the lookup surface, previously
+  unreachable through the public API).
+
+  Rust's compile-time type checking makes the truthiness hazard other
+  languages faced here (`if result:` silently granting on a truthy
+  `CheckResult` object) structurally impossible — `if result` on a struct is
+  a compile error, not a silent fail-open.
+
 
 - **`lookup_resources` and `lookup_subjects` now yield native result structs
   instead of bare `String`s.** Previously, `lookup_subjects` silently dropped

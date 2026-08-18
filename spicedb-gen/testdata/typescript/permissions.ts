@@ -4,9 +4,11 @@ import {
     SpiceDBClient,
     createSpiceDBClient,
     Transaction,
+    CheckResult,
     type Relationship,
     type LookupResource,
     type LookupSubject,
+    type CheckOptions,
 } from "@spicedb/client";
 import { full } from "@spicedb/client";
 type Consistency = ReturnType<typeof full>;
@@ -15,9 +17,28 @@ type Consistency = ReturnType<typeof full>;
 export interface IpRangeContext {
     allowedCidr?: string;
 }
+// ipRangeContextToRaw translates IpRangeContext's camelCase, TypeScript-facing field
+// names back to the RAW schema parameter names SpiceDB's CEL evaluator looks up (e.g.
+// "allowedCidr" -> "allowed_cidr"). A field left undefined is omitted entirely, not sent as an
+// explicit null/undefined value.
+function ipRangeContextToRaw(ctx: IpRangeContext): Record<string, unknown> {
+    const raw: Record<string, unknown> = {};
+    if (ctx.allowedCidr !== undefined) raw["allowed_cidr"] = ctx.allowedCidr;
+    return raw;
+}
 export interface TimeWindowContext {
     end?: string;
     start?: string;
+}
+// timeWindowContextToRaw translates TimeWindowContext's camelCase, TypeScript-facing field
+// names back to the RAW schema parameter names SpiceDB's CEL evaluator looks up (e.g.
+// "allowedCidr" -> "allowed_cidr"). A field left undefined is omitted entirely, not sent as an
+// explicit null/undefined value.
+function timeWindowContextToRaw(ctx: TimeWindowContext): Record<string, unknown> {
+    const raw: Record<string, unknown> = {};
+    if (ctx.end !== undefined) raw["end"] = ctx.end;
+    if (ctx.start !== undefined) raw["start"] = ctx.start;
+    return raw;
 }
 
 // --- Types ---
@@ -25,8 +46,8 @@ type UserRef = { _type: "user"; _id: string; _caveat?: never };
 type TeamRef = { _type: "team"; _id: string; _caveat?: never };
 type TeamMemberRef = { _type: "team"; _id: string; _relation: "member"; _caveat?: never };
 type DocumentRef = { _type: "document"; _id: string; _caveat?: never };
-type UserIpRangeRef = { _type: "user"; _id: string; _caveat: "ip_range"; _caveatContext: IpRangeContext };
-type UserTimeWindowRef = { _type: "user"; _id: string; _caveat: "time_window"; _caveatContext: TimeWindowContext };
+type UserIpRangeRef = { _type: "user"; _id: string; _caveat: "ip_range"; _caveatContext: Record<string, unknown> };
+type UserTimeWindowRef = { _type: "user"; _id: string; _caveat: "time_window"; _caveatContext: Record<string, unknown> };
 
 // --- Factories ---
 
@@ -37,10 +58,10 @@ export function User(id: string) {
         _caveat: undefined as undefined,
         // Caveat methods
         withIpRange: (ctx: IpRangeContext): UserIpRangeRef => ({
-            _type: "user", _id: id, _caveat: "ip_range" as const, _caveatContext: ctx,
+            _type: "user", _id: id, _caveat: "ip_range" as const, _caveatContext: ipRangeContextToRaw(ctx),
         }),
         withTimeWindow: (ctx: TimeWindowContext): UserTimeWindowRef => ({
-            _type: "user", _id: id, _caveat: "time_window" as const, _caveatContext: ctx,
+            _type: "user", _id: id, _caveat: "time_window" as const, _caveatContext: timeWindowContextToRaw(ctx),
         }),
     };
 }
@@ -96,14 +117,20 @@ export class TypedClient {
     }
 
     // Check overloads
-    async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "view" }, s: UserRef | UserIpRangeRef | UserTimeWindowRef | TeamMemberRef): Promise<boolean>;
-    async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "edit" }, s: UserRef): Promise<boolean>;
-    async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "delete" }, s: UserRef): Promise<boolean>;
-    async check(c: Consistency, p: { _type: string; _id: string; _permission: string }, s: { _type: string; _id: string; _relation?: string; _caveat?: string; _caveatContext?: Record<string, any> }): Promise<boolean> {
+    async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "view" }, s: UserRef | UserIpRangeRef | UserTimeWindowRef | TeamMemberRef, options?: CheckOptions): Promise<CheckResult>;
+    async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "edit" }, s: UserRef, options?: CheckOptions): Promise<CheckResult>;
+    async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "delete" }, s: UserRef, options?: CheckOptions): Promise<CheckResult>;
+    async check(c: Consistency, p: { _type: string; _id: string; _permission: string }, s: { _type: string; _id: string; _relation?: string; _caveat?: string; _caveatContext?: Record<string, any> }, options?: CheckOptions): Promise<CheckResult> {
+        // s._caveatContext (e.g. from User("dave").withIpRange(ctx)) is the
+        // ITEM-LEVEL context for this one check -- it wins per-key over
+        // options.context (the call-level default) via checkPermission's own
+        // mergeCheckContext; call-level keys the subject doesn't mention are
+        // retained.
         return this.client.checkPermission(c, {
             resourceType: p._type, resourceId: p._id, permission: p._permission,
             subjectType: s._type, subjectId: s._id, subjectRelation: (s as any)._relation,
-        });
+            context: s._caveatContext,
+        }, options);
     }
 
     // Write operations

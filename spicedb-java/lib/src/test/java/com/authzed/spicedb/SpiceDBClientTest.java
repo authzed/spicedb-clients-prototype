@@ -81,6 +81,35 @@ class SpiceDBClientTest {
   }
 
   @Test
+  void toProtoRelationshipNeverIncludesCheckContextWhenNoCaveat() {
+    // checkContext is CHECK-TIME only; it must never cause a write-time caveat to appear on the
+    // proto, even when no caveat was set via withCaveat.
+    Relationship r =
+        Relationship.of("document", "doc1", "viewer", "user", "alice")
+            .withCheckContext(Map.of("secret", "leak-if-present"));
+    var proto = SpiceDBClient.toProtoRelationship(r);
+    assertFalse(
+        proto.hasOptionalCaveat(), "checkContext alone must never produce a write-time caveat");
+  }
+
+  @Test
+  void toProtoRelationshipNeverIncludesCheckContextWithDisjointCaveatContext() {
+    // A relationship carrying BOTH a write-time caveat context and a check-time context with
+    // DISJOINT keys -- if toProtoRelationship ever merged them, "secret" would leak into the
+    // write-time proto's caveat context and get silently stored in SpiceDB.
+    Relationship r =
+        Relationship.of("document", "doc1", "viewer", "user", "alice")
+            .withCaveat("is_allowed", Map.of("allowed", true))
+            .withCheckContext(Map.of("secret", "leak-if-present"));
+    var proto = SpiceDBClient.toProtoRelationship(r);
+    assertTrue(proto.hasOptionalCaveat());
+    assertFalse(
+        proto.getOptionalCaveat().getContext().getFieldsMap().containsKey("secret"),
+        "check-time context must never leak into the write-time caveat context");
+    assertTrue(proto.getOptionalCaveat().getContext().getFieldsMap().containsKey("allowed"));
+  }
+
+  @Test
   void fromProtoRelationshipWithExpirationRoundTrip() {
     Instant exp = Instant.parse("2026-06-15T12:00:00Z");
     Relationship original =

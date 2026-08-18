@@ -8,7 +8,11 @@ import {
   InvalidArgumentError,
   UnavailableError,
   FailedPreconditionError,
+  CancelledError,
+  DeadlineExceededError,
+  ResourceExhaustedError,
   toSpiceDBError,
+  toSpiceDBErrorFromStatus,
   isTransientError,
 } from "../errors.js";
 
@@ -45,6 +49,21 @@ describe("toSpiceDBError", () => {
     expect(toSpiceDBError(err)).toBeInstanceOf(UnavailableError);
   });
 
+  it("maps Cancelled", () => {
+    const err = new ConnectError("cancelled", Code.Canceled);
+    expect(toSpiceDBError(err)).toBeInstanceOf(CancelledError);
+  });
+
+  it("maps DeadlineExceeded", () => {
+    const err = new ConnectError("timeout", Code.DeadlineExceeded);
+    expect(toSpiceDBError(err)).toBeInstanceOf(DeadlineExceededError);
+  });
+
+  it("maps ResourceExhausted", () => {
+    const err = new ConnectError("quota", Code.ResourceExhausted);
+    expect(toSpiceDBError(err)).toBeInstanceOf(ResourceExhaustedError);
+  });
+
   it("maps unknown errors", () => {
     const err = new ConnectError("unknown", Code.Internal);
     expect(toSpiceDBError(err)).toBeInstanceOf(SpiceDBError);
@@ -66,6 +85,34 @@ describe("toSpiceDBError", () => {
   it("passes through SpiceDBError", () => {
     const err = new NotFoundError("nope");
     expect(toSpiceDBError(err)).toBe(err);
+  });
+});
+
+describe("toSpiceDBErrorFromStatus", () => {
+  // Regression coverage for the CheckBulkPermissions per-item error path:
+  // a google.rpc.Status-shaped per-item error (numeric code, not a
+  // ConnectError instance) must map to the same typed error classes as a
+  // top-level RPC failure — a caller must not be able to tell a per-item
+  // error apart from an RPC-level one except by catching a typed error.
+  it("maps PermissionDenied (code 7)", () => {
+    const result = toSpiceDBErrorFromStatus({ code: 7, message: "nope" });
+    expect(result).toBeInstanceOf(PermissionDeniedError);
+  });
+
+  it("maps InvalidArgument (code 3)", () => {
+    const result = toSpiceDBErrorFromStatus({ code: 3, message: "bad" });
+    expect(result).toBeInstanceOf(InvalidArgumentError);
+  });
+
+  it("maps an unrecognized/internal code to the base SpiceDBError", () => {
+    const result = toSpiceDBErrorFromStatus({ code: 13, message: "boom" });
+    expect(result).toBeInstanceOf(SpiceDBError);
+  });
+
+  it("carries the status message through", () => {
+    const result = toSpiceDBErrorFromStatus({ code: 5, message: "no such thing" });
+    expect(result).toBeInstanceOf(NotFoundError);
+    expect(result.message).toContain("no such thing");
   });
 });
 

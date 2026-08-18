@@ -6,7 +6,9 @@ jobs. It needs no event loop::
     from spicedb.sync import SpiceDBClient
 
     client = SpiceDBClient("localhost:50051", token="t", insecure=True)
-    allowed = client.check_permission(full(), rel)
+    result = client.check_permission(full(), rel)
+    if result.has_permission:  # True only for a full grant, never a Conditional
+        ...
 
 Async callers want `spicedb.aio` instead.
 """

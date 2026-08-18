@@ -6,6 +6,7 @@ import {
   ResolvedSubjectSchema,
   PartialCaveatInfoSchema,
   LookupPermissionship,
+  ZedTokenSchema,
 } from "@spicedb/proto";
 import {
   permissionshipFromProto,
@@ -85,6 +86,7 @@ describe("fromProtoLookupResource()", () => {
       resourceId: "readme",
       permissionship: "hasPermission",
       partialCaveat: undefined,
+      lookedUpAt: "",
     });
   });
 
@@ -100,7 +102,17 @@ describe("fromProtoLookupResource()", () => {
       resourceId: "design",
       permissionship: "conditionalPermission",
       partialCaveat: { missingRequiredContext: ["is_in_region"] },
+      lookedUpAt: "",
     });
+  });
+
+  it("populates lookedUpAt from the response's looked_up_at token", () => {
+    const resp = create(LookupResourcesResponseSchema, {
+      resourceObjectId: "readme",
+      permissionship: LookupPermissionship.HAS_PERMISSION,
+      lookedUpAt: create(ZedTokenSchema, { token: "rev-42" }),
+    });
+    expect(fromProtoLookupResource(resp).lookedUpAt).toBe("rev-42");
   });
 });
 
@@ -191,5 +203,16 @@ describe("fromProtoLookupSubject()", () => {
     expect(result.excludedSubjects).toEqual([
       { subjectId: "eve", permissionship: "hasPermission", partialCaveat: undefined },
     ]);
+  });
+
+  it("populates lookedUpAt from the response's looked_up_at token", () => {
+    const resp = create(LookupSubjectsResponseSchema, {
+      subject: create(ResolvedSubjectSchema, {
+        subjectObjectId: "jimmy",
+        permissionship: LookupPermissionship.HAS_PERMISSION,
+      }),
+      lookedUpAt: create(ZedTokenSchema, { token: "rev-99" }),
+    });
+    expect(fromProtoLookupSubject(resp).lookedUpAt).toBe("rev-99");
   });
 });

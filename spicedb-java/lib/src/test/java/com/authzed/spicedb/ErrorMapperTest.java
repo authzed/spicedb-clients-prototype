@@ -43,6 +43,46 @@ class ErrorMapperTest {
   }
 
   @Test
+  void failedPreconditionMapsCorrectly() {
+    StatusRuntimeException e =
+        new StatusRuntimeException(Status.FAILED_PRECONDITION.withDescription("boom"));
+    SpiceDBException mapped = ErrorMapper.toSpiceDBException(e);
+    assertInstanceOf(FailedPreconditionException.class, mapped);
+  }
+
+  @Test
+  void unavailableMapsCorrectly() {
+    StatusRuntimeException e =
+        new StatusRuntimeException(Status.UNAVAILABLE.withDescription("down"));
+    SpiceDBException mapped = ErrorMapper.toSpiceDBException(e);
+    assertInstanceOf(UnavailableException.class, mapped);
+  }
+
+  @Test
+  void cancelledMapsCorrectly() {
+    StatusRuntimeException e =
+        new StatusRuntimeException(Status.CANCELLED.withDescription("cancelled"));
+    SpiceDBException mapped = ErrorMapper.toSpiceDBException(e);
+    assertInstanceOf(CancelledException.class, mapped);
+  }
+
+  @Test
+  void deadlineExceededMapsCorrectly() {
+    StatusRuntimeException e =
+        new StatusRuntimeException(Status.DEADLINE_EXCEEDED.withDescription("timeout"));
+    SpiceDBException mapped = ErrorMapper.toSpiceDBException(e);
+    assertInstanceOf(DeadlineExceededException.class, mapped);
+  }
+
+  @Test
+  void resourceExhaustedMapsCorrectly() {
+    StatusRuntimeException e =
+        new StatusRuntimeException(Status.RESOURCE_EXHAUSTED.withDescription("quota"));
+    SpiceDBException mapped = ErrorMapper.toSpiceDBException(e);
+    assertInstanceOf(ResourceExhaustedException.class, mapped);
+  }
+
+  @Test
   void unknownCodeMapsToBaseException() {
     StatusRuntimeException e =
         new StatusRuntimeException(Status.INTERNAL.withDescription("internal error"));

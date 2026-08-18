@@ -15,7 +15,8 @@
   from spicedb.sync import SpiceDBClient
 
   client = SpiceDBClient("localhost:50051", token="t", insecure=True)
-  allowed = client.check_permission(full(), rel)
+  if client.check_permission(full(), rel).has_permission:
+      ...
   for found in client.read_relationships(filter, full()):
       ...
   ```
@@ -63,6 +64,64 @@
       print(p.relation_name, p.is_permission)
 
   relations = await client.dependent_relations(full(), "document", "view")
+  ```
+- `DeadlineExceededError` and `ResourceExhaustedError` — two of the canonical
+  nine SpiceDB error types, previously missing from this client (it mapped
+  only seven of nine gRPC status codes, falling through to the generic
+  `SpiceDBError` for `DEADLINE_EXCEEDED`/`RESOURCE_EXHAUSTED`). Both are
+  exported from `spicedb` and included in `spicedb.__all__`.
+  `is_transient()`'s typed-instance fallback (used when checking whether an
+  already-converted error is worth retrying, as opposed to a raw
+  `grpc.RpcError`) now also recognizes `ResourceExhaustedError`, matching
+  this client's other typed-error retry behavior.
+- `LookupResource`/`LookupSubject` gained `looked_up_at: str` — the revision
+  a `lookup_resources()`/`lookup_subjects()` result was computed at
+  (`LookupResourcesResponse`/`LookupSubjectsResponse.looked_up_at`),
+  identical for every item from a single call. Previously dropped entirely,
+  making it impossible to pin a later call to at least as fresh as an
+  earlier lookup. Additive — the new field defaults to `""` and existing
+  positional/keyword construction of both dataclasses is unaffected.
+
+  ```python
+  async for resource in client.lookup_resources("document", "view", ("user:alice", ""), full()):
+      ...
+  # resource.looked_up_at can be threaded into at_least() for a later call
+  ```
+
+- `Relationship` gained a `check_context: dict[str, Any] | None = None` field
+  (also accepted by `Relationship.from_triple()`/`from_tuple()`), letting a
+  `Relationship` passed to `check_permission()`/`check_permissions()` supply
+  or override caveat context for just that one check item. It merges with
+  the pre-existing call-level `context=` keyword key-by-key — this item's
+  keys win on conflict, call-level keys the item doesn't mention are
+  retained (NOT wholesale replacement) — and an item with no `check_context`
+  inherits `context` unchanged. Previously this client could only apply one
+  context dict to every item in a bulk check, with no way to vary it
+  per-relationship, making a `CheckResult.missing_context` on one item
+  unactionable without either supplying that context for every other item
+  too or issuing a second call. `check_context` is check-time-only and has
+  no wire representation on `core_pb2.Relationship` — it is distinct from
+  the pre-existing `caveat_context`, which is written into a relationship at
+  write time (`optional_caveat`) and evaluated on every future check against
+  it; the two must not be conflated. Fully additive: no existing
+  `check_permission()`/`check_permissions()` call site changes, and
+  `check_context` defaults to `None`, so no existing `Relationship`
+  construction is affected. The merge lives in the shared
+  `spicedb/_requests.py::check_bulk_request`, used identically by both
+  `spicedb.aio.SpiceDBClient` and `spicedb.sync.SpiceDBClient`.
+
+  ```python
+  rel_a = Relationship.from_triple(
+      "document:a", "conditional_view", "user:alice",
+      check_context={"region": "eu"},  # overrides for this item only
+  )
+  rel_b = Relationship.from_triple("document:b", "conditional_view", "user:alice")
+
+  results = await client.check_permissions(
+      full(), rel_a, rel_b, context={"now": 42, "region": "us"}
+  )
+  # rel_a's item is checked with {"now": 42, "region": "eu"}
+  # rel_b's item is checked with {"now": 42, "region": "us"} (call-level default, unmodified)
   ```
 
 ### Fixed
@@ -122,6 +181,50 @@
 
 ### Breaking
 
+- `SpiceDBClient.check_permission()` now returns a `CheckResult` instead of a
+  bare `bool`, and `SpiceDBClient.check_permissions()` now returns
+  `list[CheckResult]` instead of `list[bool]`.
+  `CheckPermissionResponse.permissionship` is three-valued
+  (`NO_PERMISSION`/`HAS_PERMISSION`/`CONDITIONAL_PERMISSION`), and the old
+  bool-returning surface collapsed a `CONDITIONAL_PERMISSION` result — a
+  caveated relationship whose context wasn't supplied at check time — to
+  `False`, making it indistinguishable from a real denial. New
+  `spicedb.CheckResult` (frozen dataclass in `spicedb/types.py`):
+  `permissionship: Permissionship`, `missing_context: list[str]`
+  (populated when conditional), `checked_at: str` (the check's revision —
+  see below), and a `has_permission` property that is `True` **only** for
+  `HAS_PERMISSION`. `Permissionship` gained a fourth member,
+  `NO_PERMISSION`, appended after `CONDITIONAL_PERMISSION` so the
+  pre-existing members keep their values; it appears only on `CheckResult`
+  (lookups never yield it). `check_any()`/`check_all()` keep their `bool`
+  signatures — they already only counted `HAS_PERMISSION` as granted before
+  this change, so their behavior is unaffected; they're now built from
+  `CheckResult.has_permission` instead of a raw permissionship comparison.
+  `CheckResult.checked_at` exposes `CheckPermissionResponse.checked_at` (a
+  ZedToken), previously unreachable through this client's public API at all
+  — thread it into `at_least()` to make a later call observe this check
+  (read-your-writes for checks; see `examples/read_your_writes/` and
+  `examples/caveated_check/`). `CheckResult` also implements `__bool__`,
+  mirroring `has_permission` — so `if result:` (the most natural migration
+  path from the old bool-returning `check_permission()`) is safe and is
+  `False` for a `CONDITIONAL_PERMISSION` result, not unconditionally `True`
+  the way a plain object would otherwise be.
+
+  Before:
+  ```python
+  allowed = await client.check_permission(full(), rel)  # bool
+  if allowed:
+      ...  # WRONG: True here could mean either a real grant or (on some
+           # other clients) a conditional the caller silently treated as one
+  ```
+  After:
+  ```python
+  result = await client.check_permission(full(), rel)  # CheckResult
+  if result:  # __bool__ mirrors has_permission -- False for CONDITIONAL_PERMISSION
+      ...
+  elif result.permissionship == Permissionship.CONDITIONAL_PERMISSION:
+      print(f"needs context: {result.missing_context}")
+  ```
 - `spicedb.SpiceDBClient` no longer exists. Import `spicedb.aio.SpiceDBClient`
   (async — same behavior as the old top-level client) or the new
   `spicedb.sync.SpiceDBClient` (synchronous) instead. Everything else —

@@ -70,6 +70,41 @@ public class SpiceDBClientTests
         // Disposing should not throw
     }
 
+    /// <summary>
+    /// Regression test for root DESIGN.md, "RULE: Credentials over insecure
+    /// transport require an explicit opt-in": CreatePlaintext against a
+    /// non-loopback endpoint, with no allowInsecureRemoteCredentials, must
+    /// refuse to construct a client at all -- before any channel, credential,
+    /// or connection is created. The proto-layer test
+    /// (InsecureHostGuardTest.TestRefusesInsecureNonLoopbackWithoutOptIn) is
+    /// what proves the token itself is never handed to the transport; this
+    /// test proves the idiomatic constructor actually reaches, and propagates,
+    /// that same guard.
+    /// </summary>
+    [Fact]
+    public void CreatePlaintext_RefusesNonLoopbackWithoutOptIn()
+    {
+        var act = () => SpiceDBClient.CreatePlaintext("evil.example.com:1234", "testtoken");
+        var ex = act.Should().Throw<InvalidOperationException>().Which;
+        ex.Message.Should().Contain("evil.example.com:1234");
+        ex.Message.Should().Contain("allowInsecureRemoteCredentials");
+    }
+
+    [Fact]
+    public void CreatePlaintext_LoopbackWorksWithNoOptIn()
+    {
+        var act = () => SpiceDBClient.CreatePlaintext("localhost:50051", "testtoken");
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void CreatePlaintext_AllowInsecureRemoteCredentialsPermitsNonLoopback()
+    {
+        var act = () => SpiceDBClient.CreatePlaintext(
+            "evil.example.com:1234", "testtoken", allowInsecureRemoteCredentials: true);
+        act.Should().NotThrow();
+    }
+
     [Fact]
     public void CreateFromChannel_ThrowsOnNullChannel()
     {

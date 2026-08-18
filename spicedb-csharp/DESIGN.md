@@ -36,6 +36,14 @@ Security-obvious named constructors:
 - `SpiceDBClient.CreateFromChannel(channel, presharedKey)` — escape hatch with
   existing GrpcChannel
 
+Per root DESIGN.md, "RULE: Credentials over insecure transport require an
+explicit opt-in": `CreatePlaintext` only permits plaintext to a loopback
+endpoint (`localhost`, `127.0.0.0/8`, `::1`, or a `unix:` socket target) — the
+local-development case that is the entire reason it exists. Anything else
+needs `allowInsecureRemoteCredentials: true` passed explicitly, or
+`CreatePlaintext` refuses to construct the client at all, before any
+connection is created.
+
 The client implements `IAsyncDisposable`:
 
 ```csharp

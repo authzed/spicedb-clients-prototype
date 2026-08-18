@@ -134,13 +134,29 @@ public sealed class SpiceDBClient : IAsyncDisposable
     /// <paramref name="defaultTimeout"/>, if supplied, overrides the default
     /// applied to every unary call that doesn't pass its own <c>timeout</c>
     /// (see <see cref="DefaultTimeout"/>).
+    /// <para>
+    /// By itself, this only works against a loopback <paramref name="endpoint"/>
+    /// (localhost, 127.0.0.0/8, ::1, or a unix socket target) — the local-development
+    /// case that is the entire reason a plaintext connection exists. For any other
+    /// endpoint, pass <paramref name="allowInsecureRemoteCredentials"/>: true,
+    /// on purpose, if you genuinely mean to send a bearer token in cleartext to a
+    /// remote host. See root DESIGN.md, "RULE: Credentials over insecure transport
+    /// require an explicit opt-in".
+    /// </para>
     /// </summary>
     /// <exception cref="ArgumentException">Thrown when endpoint or presharedKey is empty.</exception>
+    /// <exception cref="InvalidOperationException">
+    /// Thrown when <paramref name="endpoint"/> is not loopback and
+    /// <paramref name="allowInsecureRemoteCredentials"/> is false — before any
+    /// channel, credential, or connection is created.
+    /// </exception>
     public static SpiceDBClient CreatePlaintext(
-        string endpoint, string presharedKey, TimeSpan? defaultTimeout = null)
+        string endpoint, string presharedKey, TimeSpan? defaultTimeout = null,
+        bool allowInsecureRemoteCredentials = false)
     {
         ValidateArgs(endpoint, presharedKey);
-        var protoClient = new SpiceDBProtoClient(endpoint, presharedKey, insecure: true);
+        var protoClient = new SpiceDBProtoClient(
+            endpoint, presharedKey, insecure: true, allowInsecureRemoteCredentials: allowInsecureRemoteCredentials);
         return new SpiceDBClient(protoClient, defaultTimeout ?? DefaultTimeout);
     }
 

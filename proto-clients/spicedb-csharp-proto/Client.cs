@@ -1,3 +1,4 @@
+using System.Net;
 using Grpc.Core;
 using Grpc.Core.Interceptors;
 using Grpc.Net.Client;
@@ -36,8 +37,58 @@ public sealed class SpiceDBProtoClient : IDisposable
     /// <param name="endpoint">The gRPC endpoint (e.g. "grpc.authzed.com:443").</param>
     /// <param name="token">Bearer token for authentication.</param>
     /// <param name="insecure">If true, uses plaintext (no TLS). For testing only.</param>
-    public SpiceDBProtoClient(string endpoint, string token, bool insecure = false)
+    /// <param name="allowInsecureRemoteCredentials">
+    /// By itself, <paramref name="insecure"/> only permits a plaintext connection to a
+    /// loopback endpoint (localhost, 127.0.0.0/8, ::1, or a unix socket target) -- the
+    /// local-development case that is the entire reason <paramref name="insecure"/>
+    /// exists. Set this to <c>true</c>, alongside <paramref name="insecure"/>, only if
+    /// you genuinely mean to send a bearer token in cleartext to a non-loopback host --
+    /// see root DESIGN.md, "RULE: Credentials over insecure transport require an
+    /// explicit opt-in". Named and separate from <paramref name="insecure"/> on purpose:
+    /// the rule requires an option a reader cannot mistake for a default, not a boolean
+    /// that does double duty as the plaintext-transport switch.
+    /// </param>
+    /// <exception cref="InvalidOperationException">
+    /// Thrown when <paramref name="insecure"/> is true, <paramref name="endpoint"/> is not
+    /// loopback, and <paramref name="allowInsecureRemoteCredentials"/> is false -- before
+    /// any channel, credential, or connection is created, so the token can never reach the
+    /// wire for a rejected combination.
+    /// </exception>
+    public SpiceDBProtoClient(
+        string endpoint, string token, bool insecure = false, bool allowInsecureRemoteCredentials = false)
+        : this(endpoint, token, insecure, allowInsecureRemoteCredentials, httpHandler: null)
     {
+        // Public entry point; see the internal overload below for the shared
+        // implementation and the test-only HttpMessageHandler seam.
+    }
+
+    /// <summary>
+    /// Test-only seam: as the public constructor above, but lets a caller (the test
+    /// assembly) override the underlying <see cref="HttpMessageHandler"/>. That lets a
+    /// test capture the exact outgoing <c>authorization</c> header a real call would
+    /// carry -- entirely in-memory, no real socket -- and prove
+    /// TestRefusesInsecureNonLoopbackWithoutOptIn's guard below stops that handler from
+    /// ever being reached for a rejected combination, not merely that an exception was
+    /// thrown. Not part of the public API.
+    /// </summary>
+    internal SpiceDBProtoClient(
+        string endpoint, string token, bool insecure, bool allowInsecureRemoteCredentials, HttpMessageHandler? httpHandler)
+    {
+        // See root DESIGN.md, "RULE: Credentials over insecure transport require an
+        // explicit opt-in". This is the guard for the CallInvoker.Intercept bypass below
+        // (and the InsecureChannelCredentials + interceptor path immediately following) --
+        // both exist because CompositeChannelCredentials requires secure transport, so
+        // nothing else here stops a bearer token from reaching an arbitrary insecure host.
+        // Refusing here, before options.HttpHandler/GrpcChannel.ForAddress/CallCredentials
+        // are ever created, means a rejected combination never has anything -- channel,
+        // credential, or handler -- capable of carrying the token onto the wire.
+        if (insecure && !allowInsecureRemoteCredentials && !IsLoopbackEndpoint(endpoint))
+        {
+            throw new InvalidOperationException(
+                $"spicedb: refusing to send credentials over an insecure (plaintext) connection to non-loopback endpoint \"{endpoint}\": " +
+                "use TLS (pass insecure: false), or pass allowInsecureRemoteCredentials: true if you intend to send a bearer token in cleartext to a remote host");
+        }
+
         var scheme = insecure ? "http" : "https";
         var address = $"{scheme}://{endpoint}";
 
@@ -53,7 +104,7 @@ public sealed class SpiceDBProtoClient : IDisposable
 
         // Compose channel credentials with call credentials for secure channels.
         // For insecure channels, we add the bearer token via a separate interceptor
-        // since CompositeChannelCredentials requires secure transport.
+        // since CompositeChannelCredentials requires secure transport -- guarded above.
         GrpcChannelOptions options;
         if (insecure)
         {
@@ -70,10 +121,15 @@ public sealed class SpiceDBProtoClient : IDisposable
                 Credentials = compositeCredentials,
             };
         }
+        if (httpHandler is not null)
+        {
+            options.HttpHandler = httpHandler;
+        }
 
         _channel = GrpcChannel.ForAddress(address, options);
 
-        // For insecure channels, use CallInvoker with headers to inject the token.
+        // For insecure channels, use CallInvoker with headers to inject the token --
+        // the endpoint has already been proven loopback (or explicitly allowed) above.
         var invoker = _channel.CreateCallInvoker();
         if (insecure)
         {
@@ -119,5 +175,50 @@ public sealed class SpiceDBProtoClient : IDisposable
     public void Dispose()
     {
         _channel.Dispose();
+    }
+
+    /// <summary>
+    /// Reports whether a gRPC target string names a loopback destination: the literal
+    /// hostname "localhost", an IP in 127.0.0.0/8, the IPv6 loopback ::1, or a unix
+    /// domain socket target (a "unix:" prefix). A unix socket never leaves the host's
+    /// kernel, so it is loopback for this check even though it has no IP at all.
+    /// <para>
+    /// This is the exemption in root DESIGN.md, "RULE: Credentials over insecure
+    /// transport require an explicit opt-in": loopback is the reason plaintext
+    /// connections exist at all (local development, docker-compose, CI), so it must
+    /// keep working with no extra ceremony. Anything else requires
+    /// <c>allowInsecureRemoteCredentials: true</c> -- see the constructor above.
+    /// </para>
+    /// </summary>
+    internal static bool IsLoopbackEndpoint(string endpoint)
+    {
+        if (endpoint.StartsWith("unix:", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        // endpoint is "host:port" or a bare host -- strip a trailing ":port" (but not
+        // the colons inside a bracketed IPv6 literal, e.g. "[::1]:50051").
+        var host = endpoint;
+        var bracketEnd = endpoint.IndexOf(']');
+        var lastColon = bracketEnd >= 0 ? endpoint.IndexOf(':', bracketEnd) : endpoint.LastIndexOf(':');
+        if (lastColon >= 0 && (bracketEnd < 0 || lastColon > bracketEnd))
+        {
+            // Only treat this as a "host:port" split if what follows is a numeric
+            // port -- otherwise (e.g. a bare "::1" with no brackets and no port)
+            // leave endpoint untouched so IPAddress.Parse below sees the whole thing.
+            var candidatePort = endpoint[(lastColon + 1)..];
+            if (int.TryParse(candidatePort, out _))
+            {
+                host = endpoint[..lastColon];
+            }
+        }
+        host = host.Trim('[', ']');
+
+        if (string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+        return IPAddress.TryParse(host, out var ip) && IPAddress.IsLoopback(ip);
     }
 }

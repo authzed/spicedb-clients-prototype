@@ -110,6 +110,21 @@
 
 ### Breaking Changes
 
+- **2026-08-18** (behavioral; new optional parameter): per root DESIGN.md, "RULE: Credentials
+  over insecure transport require an explicit opt-in" -- `CreatePlaintext` (and the underlying
+  `SpiceDBProtoClient` constructor's `insecure: true`) now refuse to construct a client for a
+  non-loopback endpoint (loopback means `localhost`, `127.0.0.0/8`, `::1`, or a `unix:` socket
+  target). Previously a plaintext connection would send its bearer token in cleartext to any
+  host -- the `CallInvoker.Intercept`/composite-credentials interceptor in `SpiceDBProtoClient`
+  existed specifically because `CompositeChannelCredentials` requires secure transport, with
+  nothing checking where the connection actually went. A new parameter,
+  `allowInsecureRemoteCredentials: true`, opts in explicitly when a caller genuinely means to
+  send credentials in cleartext to a remote host; it must be passed alongside `insecure`/
+  `CreatePlaintext`, since neither alone is sufficient for a non-loopback endpoint anymore.
+  `CreatePlaintext`/`CreateSystemTls` against `localhost` are unaffected -- no code change needed
+  for local development. `CreateFromChannel` (the pre-configured-`GrpcChannel` escape hatch) is
+  unaffected by this change; the caller already fully controls that channel's transport security.
+
 - **2026-08-18** (behavioral; no signature change): the two entries below change what existing,
   unmodified call sites do. They are listed here because neither announces itself -- nothing
   fails to compile, and the difference only shows up under load or against a slow query.

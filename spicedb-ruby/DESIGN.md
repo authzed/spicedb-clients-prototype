@@ -96,15 +96,26 @@ settable (`with_caveat` and `with_check_context` never touch each other's
 field) for exactly that reason.
 
 **Caveat context types.** Caveat context crosses the wire as
-`google.protobuf.Struct`, whose values are a `kind` oneof. Conversion must dispatch on
-that oneof in both directions; **today only the read direction does.**
-`relationship_from_proto` dispatches on `kind`, so context already stored in SpiceDB
-reads back with its types intact. `relationship_to_proto` still stringifies every value
-(`Value.new(string_value: v.to_s)`) — a known defect it shares with the Go, C# and Java
-clients, corrected separately in the cross-client write-path work. Until that lands,
-context written *through this client* is stored as strings:
-`with_caveat("x", { "n" => 42 })` reads back the String `"42"` — the read path
-faithfully reporting what is on the wire, not a read bug.
+`google.protobuf.Struct`, whose values are a `kind` oneof. Conversion dispatches on
+that oneof in both directions. `relationship_from_proto` dispatches on `kind`, so
+context already stored in SpiceDB reads back with its types intact.
+`relationship_to_proto` dispatches too, via `SpiceDB::CaveatContext#caveat_context_to_struct`
+— the write path used to stringify every value (`Value.new(string_value: v.to_s)`), a
+defect it shared with the Go, C# and Java clients before the cross-client write-path fix.
+`with_caveat("x", { "n" => 42 })` now round-trips `"n"` as the `Float` `42.0` (see below
+for why a `Float`, not the original `Integer`), not the String `"42"`.
+
+The check-time and write-time codecs — `check_context_to_struct`/`check_context_value`
+(check surface) and `caveat_context_to_struct`/`caveat_context_value_from_proto`/
+`struct_to_caveat_context` (write surface) — live in `SpiceDB::CaveatContext`
+(`lib/spicedb/caveat_context.rb`), a module `Client` includes rather than a set of
+private methods defined directly on it. Both write-side entry points
+(`check_context_to_struct` for check-time, `caveat_context_to_struct` for write-time)
+dispatch every value through the same `check_context_value`, so a value that cannot be
+represented (any Ruby type outside `nil`/`true`/`false`/`Numeric`/`String`/`Hash`/`Array`)
+raises `SpiceDB::InvalidArgumentError` naming the offending key on either surface, rather
+than being silently discarded or stringified — the value came from the caller, who can
+see the error and fix their input.
 
 Reading a non-string value via `Value#string_value` returns `""`, silently destroying
 stored context rather than raising — which is why the `kind` dispatch is required for
@@ -118,11 +129,10 @@ generic protobuf-to-hash conversion rather than leaving it as a `Value` to dispa
 
 A numeric caveat context value reads back as a `Float` (`42` becomes `42.0`), because
 `google.protobuf.Value.number_value` is a `double`. This applies to any value that
-reached the wire *as a number* — written by another client, by `zed`, or by this client
-once its write path is corrected — and so it will apply to a Ruby `Integer` generally
-at that point; today an `Integer` written through `with_caveat` comes back as a
-`String` instead, per the paragraph above. The `Float` widening is inherent to the
-proto and consistent across all seven clients; it is not worked around.
+reached the wire *as a number* — written by another client, by `zed`, or by this client's
+own `with_caveat`/`check_context`, both of which send a Ruby `Integer` through as
+`number_value`. The `Float` widening is inherent to the proto and consistent across all
+seven clients; it is not worked around.
 
 ### Checks
 

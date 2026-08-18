@@ -91,6 +91,37 @@
 
 ### Fixed
 
+- **Write-time caveat context was stringified on every value.** `relationship_to_proto`
+  converted every `Relationship#caveat_context` value with
+  `Google::Protobuf::Value.new(string_value: v.to_s)` regardless of its Ruby type — a
+  number, a boolean, `nil`, a nested `Hash`, or a nested `Array` were all flattened to a
+  string. A caveat like `now < 100` stored against the string `"50"` fails to evaluate,
+  and fails *silently*, as a `CONDITIONAL_PERMISSION` result rather than an error. This
+  is worse than the check-time equivalent (fixed separately, see the read-path entry
+  below): a bad check-time context fails one call, but a bad **write-time** context is
+  *persisted* — every future check against that relationship mis-evaluates, and
+  re-checking with correct context never repairs it, only rewriting the relationship
+  does. `relationship_to_proto` now dispatches on type via
+  `SpiceDB::CaveatContext#caveat_context_to_struct`, reusing the same
+  `check_context_value` per-value converter the check surface already used correctly —
+  `with_caveat("x", { "n" => 42 })` now reads back the `Float` `42.0`, not the `String`
+  `"42"` (`google.protobuf.Value.number_value` is a `double`, so an `Integer` round-trips
+  as a `Float` on every path and every client — inherent to the proto, not a defect).
+  Where a value genuinely cannot be represented (any type outside
+  `nil`/`true`/`false`/`Numeric`/`String`/`Hash`/`Array`), conversion now raises
+  `SpiceDB::InvalidArgumentError` naming the offending key, on both the check and write
+  surfaces, rather than silently discarding or stringifying it.
+
+  The caveat-context codec (`check_context_to_struct`, `caveat_context_to_struct`,
+  `check_context_value`, `caveat_context_value_from_proto`, `struct_to_caveat_context`)
+  moved out of `Client` into a new `SpiceDB::CaveatContext` module
+  (`lib/spicedb/caveat_context.rb`), which `Client` includes. This was needed regardless
+  of the fix above: `Client` was at 839 of rubocop's `Metrics/ClassLength` 850-line
+  ceiling (itself raised from 830 by an earlier sub-project, which recorded that it must
+  not be raised again), and adding the write converter inline would have pushed it over.
+  Extracting the codec instead shrank `Client` to 800 lines, so the ceiling in
+  `.rubocop.yml` is **lowered** to 810 — not raised.
+
 - **`check_all` returned `true` for zero relationships.** Ruby's
   `Enumerable#all?` is vacuously `true` over an empty collection. Root
   `DESIGN.md`'s "An aggregate over zero checks is not a grant" clause names
@@ -124,14 +155,9 @@
   nulls, nested maps and lists are returned with their Ruby types intact — the previous
   `&:string_value` would have returned `""` for all of them had it run.
 
-  This fixes the **read** path only. The **write** path still stringifies every caveat
-  context value and is corrected separately, as part of the cross-client write-path work
-  that also covers Go, C# and Java. So context written through this client's
-  `with_caveat` currently reads back as strings — `with_caveat("x", { "n" => 42 })`
-  reads back `"42"`, and that is the writer's bug, not the reader's. Context that
-  reached the wire as a number (written by another client, by `zed`, or by this client
-  once its writer is fixed) reads back as a `Float`, since `Value.number_value` is a
-  `double` — `42` becomes `42.0`.
+  This fixed the **read** path only at the time. The **write** path's matching fix is
+  below (**Write-time caveat context was stringified on every value**) — see that entry
+  for the corrected round-trip behavior.
 
 ### Documentation
 

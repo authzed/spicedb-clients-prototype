@@ -157,6 +157,12 @@
 
 ### Bug Fixes
 
+- **2026-08-18**: `Client` had no way to release its underlying gRPC connection deterministically
+  -- every streaming call (`ReadRelationships`, `LookupResources`, `LookupSubjects`, `Watch`,
+  `ExportRelationships`) shares one connection for the life of the process, per root DESIGN.md,
+  "RULE: Abandoning a stream must release it". Added `Client.Close() error`, idempotent (backed
+  by an atomic CompareAndSwap in the proto layer, since `grpc.ClientConn.Close` is not documented
+  safe to call twice). All twelve examples now `defer c.Close()` after construction.
 - **2026-08-18**: `CheckIterWithContext`'s internal `flush` cleared the accumulated batch AFTER
   calling `yield` on the success path, but returned on the error path (`return yield(CheckResult{},
   err)`) BEFORE clearing it. Go's iterator contract treats `yield` returning `true` as "keep

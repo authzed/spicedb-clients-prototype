@@ -10,12 +10,16 @@ import (
 )
 
 // Client is the idiomatic SpiceDB client. Use NewPlaintext, NewSystemTLS, or
-// NewWithOpts to create one.
+// NewWithOpts to create one. Call Close when done with it to release the
+// underlying gRPC connection deterministically -- see root DESIGN.md, "RULE:
+// Abandoning a stream must release it".
 type Client struct {
 	psc v1.PermissionsServiceClient
 	ssc v1.SchemaServiceClient
 	wsc v1.WatchServiceClient
 	esc v1.ExperimentalServiceClient
+
+	proto *proto.Client
 }
 
 // Option configures the client when using NewWithOpts.
@@ -69,11 +73,24 @@ func NewWithOpts(endpoint, presharedKey string, opts ...Option) (*Client, error)
 	}
 
 	return &Client{
-		psc: pc.PermissionsServiceClient,
-		ssc: pc.SchemaServiceClient,
-		wsc: pc.WatchServiceClient,
-		esc: pc.ExperimentalServiceClient,
+		psc:   pc.PermissionsServiceClient,
+		ssc:   pc.SchemaServiceClient,
+		wsc:   pc.WatchServiceClient,
+		esc:   pc.ExperimentalServiceClient,
+		proto: pc,
 	}, nil
 }
 
-
+// Close releases the underlying gRPC connection. Idempotent -- safe to call
+// more than once, including concurrently with itself (delegates to
+// proto.Client.Close, which guards with a CompareAndSwap).
+//
+// A caller that only ever makes unary calls and never streams may not need
+// this, but every streaming call on Client (ReadRelationships,
+// LookupResources, LookupSubjects, Watch, ExportRelationships) shares this
+// one connection, and there was previously no way to release it
+// deterministically -- see root DESIGN.md, "RULE: Abandoning a stream must
+// release it".
+func (c *Client) Close() error {
+	return c.proto.Close()
+}

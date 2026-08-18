@@ -18,6 +18,20 @@ func TestNewClient(t *testing.T) {
 	require.NotNil(t, client.ExperimentalServiceClient)
 }
 
+// TestClient_CloseIsIdempotent proves Close can be called more than once
+// without error -- root DESIGN.md, "RULE: Abandoning a stream must release
+// it" requires a deterministic release mechanism, and a Close that panics or
+// errors on a second call is a footgun for any caller wrapping it in a
+// defer alongside an explicit early Close.
+func TestClient_CloseIsIdempotent(t *testing.T) {
+	client, err := NewClient("passthrough:///localhost:50051", "test-token", WithInsecure())
+	require.NoError(t, err)
+
+	require.NoError(t, client.Close())
+	require.NoError(t, client.Close())
+	require.NoError(t, client.Close())
+}
+
 func TestWithInsecure(t *testing.T) {
 	cfg := &clientConfig{}
 	WithInsecure()(cfg)

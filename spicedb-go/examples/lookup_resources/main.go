@@ -20,6 +20,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to create client: %v", err)
 	}
+	defer c.Close()
 
 	ctx := context.Background()
 

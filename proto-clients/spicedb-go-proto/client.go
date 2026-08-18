@@ -3,6 +3,7 @@ package spicedbgoproto
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 
 	v1 "github.com/authzed/spicedb-clients/proto-clients/spicedb-go-proto/gen/authzed/api/v1"
 	"google.golang.org/grpc"
@@ -16,6 +17,9 @@ type Client struct {
 	SchemaServiceClient       v1.SchemaServiceClient
 	WatchServiceClient        v1.WatchServiceClient
 	ExperimentalServiceClient v1.ExperimentalServiceClient
+
+	conn   *grpc.ClientConn
+	closed atomic.Bool
 }
 
 // Option configures a Client.
@@ -179,5 +183,21 @@ func NewClient(endpoint string, token string, opts ...Option) (*Client, error) {
 		SchemaServiceClient:       v1.NewSchemaServiceClient(conn),
 		WatchServiceClient:        v1.NewWatchServiceClient(conn),
 		ExperimentalServiceClient: v1.NewExperimentalServiceClient(conn),
+		conn:                      conn,
 	}, nil
+}
+
+// Close releases the underlying gRPC connection. Idempotent -- safe to call
+// more than once, including concurrently with itself.
+//
+// See root DESIGN.md, "RULE: Abandoning a stream must release it": a caller
+// that has abandoned every in-flight call still holds a live transport (and
+// any connection-level resources -- goroutines, sockets) until Close is
+// called. grpc.ClientConn.Close itself is not documented as safe to call
+// twice, so this guards with a CompareAndSwap rather than relying on that.
+func (c *Client) Close() error {
+	if !c.closed.CompareAndSwap(false, true) {
+		return nil
+	}
+	return c.conn.Close()
 }

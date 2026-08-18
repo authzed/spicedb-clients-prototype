@@ -71,6 +71,25 @@ All idiomatic clients should provide:
    full consistency instead. Another should be provided to return minimize
    latency instead. Both should have descriptive names.
 
+## RULE: A system-TLS constructor must reach a real server
+
+A client's default secure constructor — `new_system_tls`, `NewClientWithSystemCerts`,
+or whatever each language calls it — must use the **platform trust store**, and must be
+covered by a test that **completes a real TLS handshake**.
+
+1. The platform store is the contract. A constructor named for system trust that
+   compiles in its own fixed root set is not using system trust, and will not honour a
+   CA an operator installed on the host.
+2. A test that asserts a connection *fails* does not satisfy this rule. An unreachable
+   host, a DNS error, and an empty trust store are indistinguishable to such a test, so
+   it passes for the wrong reason while reading as TLS coverage. Assert success against
+   a reachable endpoint.
+3. Where the handshake test needs the network, gate it behind an environment variable
+   and run it in a CI job that has network access. Gating is acceptable; absence is not.
+
+A client whose default secure constructor cannot reach a public endpoint is not
+shippable, and no amount of green CI substitutes for one honest handshake.
+
 ## RULE: Only an unconditional grant is true
 
 **Binding on every client, in every language, with no exceptions.**

@@ -66,11 +66,14 @@ default, a wedged SpiceDB hangs every caller that didn't opt in to a timeout
 transport level, so nothing ever times out and nothing is ever produced to
 retry. See root DESIGN.md, "RULE: A unary call must have a deadline".
 
-Deliberately NOT applied to streaming calls (`read_relationships`,
+Deliberately NOT applied to server-streaming calls (`read_relationships`,
 `lookup_resources`, `lookup_subjects`, `watch`, `export_relationships`) --
 those are long-lived by design, and applying this default to them would make
-the stream itself the outage (see DESIGN.md, "Streaming calls MUST NOT
-inherit the unary default").
+the stream itself the outage -- NOR to the client-streaming
+`import_relationships`, whose duration scales with the size of the caller's
+dataset rather than server latency, so no fixed default is correct for it
+either (see DESIGN.md, "Streaming calls MUST NOT inherit the unary
+default"). All of these still accept their own per-call `timeout=`.
 """
 
 
@@ -603,14 +606,16 @@ class SpiceDBClient:
     ) -> int:
         """Import relationships in bulk. Returns the number loaded.
 
-        `timeout` (seconds) bounds this call, overriding the client's
-        `default_timeout`."""
+        `ImportBulkRelationships` is client-streaming: its duration scales with
+        the size of `relationships`, not with server latency, so it does NOT
+        inherit `default_timeout` (see root DESIGN.md, "RULE: A unary call
+        must have a deadline", clause 3). Passing no `timeout` here means this
+        call is unbounded; pass `timeout` (seconds) to bound it explicitly."""
         self._ensure_channel()
-        t = self._effective_timeout(timeout)
         try:
             resp = self._permissions.ImportBulkRelationships(
                 _requests.import_batches(relationships, _IMPORT_BATCH_SIZE),
-                timeout=t,
+                timeout=timeout,
                 metadata=self._metadata,
             )
             return resp.num_loaded

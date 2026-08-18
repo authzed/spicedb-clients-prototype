@@ -132,7 +132,7 @@
   every caller forever — the connection looks fine at the transport level, so no error is
   produced and there is nothing for retry logic to act on.
   - Every unary method (`check_permission`/`check_permissions`/`check_any`/`check_all`, `write`,
-    `delete_relationships`, `read_schema`, `write_schema`, `import_relationships`,
+    `delete_relationships`, `read_schema`, `write_schema`,
     `expand_permission_tree`, `register_relationship_counter`/`count_relationships`/
     `unregister_relationship_counter`, `reflect_schema`, `diff_schema`,
     `computable_permissions`, `dependent_relations`) now takes a keyword-only
@@ -148,6 +148,19 @@
     these are long-lived by design (a `watch` may legitimately run for the life of the
     process), and a 30s cutoff would end a legitimate stream, which is a worse defect than
     the one this change fixes.
+  - **Fix round 1 correction**: `import_relationships` (`ImportBulkRelationships`) also takes a
+    `timeout: float | None = None`, but — unlike the unary methods above — it is
+    client-streaming, not unary, and is now explicitly **excluded** from `default_timeout`: its
+    duration scales with the size of the caller's dataset, not with server latency, so no fixed
+    default is correct for it (root DESIGN.md, "RULE: A unary call must have a deadline",
+    clause 3, amended to cover client-streaming and bidirectional RPCs, not only
+    server-streaming). Passing no `timeout` means unbounded; passing one still bounds the call.
+    An earlier version of this fix incorrectly applied `default_timeout` to bulk imports, which
+    would have silently aborted large, legitimate multi-minute loads at 30 seconds.
+  - New `examples/call_deadlines/` demonstrates the `default_timeout` construction parameter,
+    a per-call `timeout` override, and that bulk import is unbounded by default — run against a
+    real SpiceDB, not a mock, so a regression in the documented construction path (e.g. the
+    parameter silently disappearing) fails this test too, not just the unit tests below.
   - `DeadlineExceededError` (added earlier, see below, but never actually produced by this
     client since nothing enforced a deadline) is now reachable: a timed-out call raises it,
     not a generic `SpiceDBError`. `DEADLINE_EXCEEDED` is not in `_TRANSIENT_CODES`, so a

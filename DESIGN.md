@@ -324,14 +324,30 @@ nothing to do with it.
    exists to close. `authzed-node` sets the precedent: it ships a `DEFAULT_DEADLINE_MS`, with a
    comment citing `grpc/grpc-node#541`, a known gRPC failure mode the default exists to guard
    against.
-3. **Streaming calls MUST NOT inherit the unary default.** `watch`, `export`, and the lookup
-   streams (`LookupResources`, `LookupSubjects`, and their variants) are long-lived by design — a
-   `watch` may legitimately run for the life of the process, far past any sensible unary timeout.
-   Applying the unary default to a stream would make the stream itself the outage. Streams get
-   their own release mechanism instead — see **RULE: Abandoning a stream must release it**, below.
+3. **Streaming calls MUST NOT inherit the unary default.** This excludes every RPC that isn't
+   plain unary — server-streaming (`watch`, `export`, and the lookup streams: `LookupResources`,
+   `LookupSubjects`, and their variants), client-streaming (`ImportBulkRelationships`), and any
+   future bidirectional RPC alike. The rule is about call *shape*, not which end does the
+   streaming: `watch` is long-lived because it waits on the server for as long as the process
+   cares to keep watching; `ImportBulkRelationships` is long-lived because its duration scales
+   with the size of the dataset the *caller* is feeding it, and a caller legitimately streaming in
+   millions of relationships can take minutes to do so. No fixed default is correct for either
+   shape, and applying one would make the transfer itself the outage — the caller's data volume,
+   not a wedged server, would be what trips it. A per-call override MUST remain available for
+   these calls; what they must not get is the *default*. Streams additionally get their own
+   release mechanism — see **RULE: Abandoning a stream must release it**, below.
 
 A client with no deadline anywhere is one wedged server away from an outage that looks, from the
 caller's side, exactly like a hang with no cause.
+
+**On worst-case latency**: the timeout described above is a per-*attempt* budget, applied fresh to
+each retry, not a per-operation budget that shrinks across attempts (a shrinking budget would make
+a call that legitimately needs several retries more likely to fail than one that needs none). A
+caller-set timeout of `t` on a call that retries therefore bounds each attempt at `t`, not the
+call as a whole — worst-case latency is `t × (retries + 1)` plus backoff between attempts, and for
+an auto-paging call (e.g. a filtered delete), the same `t` applies fresh to each page. This is the
+correct design, but it means callers reasoning about an end-to-end latency budget must account for
+retries and pagination themselves, not just the timeout value they passed in.
 
 ## RULE: Abandoning a stream must release it
 

@@ -410,11 +410,24 @@ result = await client.check_permission(full(), rel)             # bound by the 5
 result = await client.check_permission(full(), rel, timeout=1.0)  # overrides it for this call
 ```
 
-Streaming calls (`read_relationships`, `lookup_resources`, `lookup_subjects`,
-`watch`, `export_relationships`) do NOT take a `timeout` and are NOT bound by
-`default_timeout` — they are long-lived by design (a `watch` may run for the
-life of the process), and applying the unary default to them would make the
-stream itself the outage.
+Server-streaming calls (`read_relationships`, `lookup_resources`,
+`lookup_subjects`, `watch`, `export_relationships`) do NOT take a `timeout`
+and are NOT bound by `default_timeout` — they are long-lived by design (a
+`watch` may run for the life of the process), and applying the unary default
+to them would make the stream itself the outage.
+
+`import_relationships` (`ImportBulkRelationships`) is client-streaming, not
+server-streaming, but the same exclusion applies for the mirror-image reason:
+its duration scales with the size of the caller's dataset, not with server
+latency, so no fixed default is correct for it. Unlike the server-streaming
+calls above, it DOES still take a `timeout` — passing `None` (the default)
+means unbounded, not "use `default_timeout`"; pass an explicit `timeout` to
+bound a bulk import.
+
+Note for callers reasoning about worst-case latency: `timeout` is a
+per-*attempt* budget, applied fresh on each retry, so a call that retries can
+take up to `timeout × (retries + 1)` plus backoff, and an auto-paging call
+(e.g. `delete_relationships`) applies the same `timeout` fresh to each page.
 
 ### Testing
 

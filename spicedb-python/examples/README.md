@@ -28,6 +28,7 @@ Or use `mage test` which starts a SpiceDB container automatically.
 | `schema_management/` | Schema read/write/reflect/diff, plus computable_permissions/dependent_relations introspection |
 | `bulk_operations/` | Bulk checks and bulk relationship import/export |
 | `expand_permission_tree/` | Expanding a permission into its tree of subjects |
+| `call_deadlines/` | Constructing a client with `default_timeout`, a per-call `timeout` override, and confirming bulk import isn't bounded by the unary default |
 | `sync_check_permission/` | Basic permission check with `spicedb.sync` — build the client once at startup and reuse it, no event loop required |
 | `sync_write_relationships/` | Writing relationships with the transaction builder, synchronously |
 | `sync_read_relationships/` | Reading relationships with a plain `for` loop instead of `async for` |

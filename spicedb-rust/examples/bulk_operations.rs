@@ -99,20 +99,23 @@ async fn main() {
         "expected at least one user to have view permission"
     );
 
-    // Bulk import relationships
-    let import_rels: Vec<Relationship> = (0..100)
-        .map(|i| {
-            Relationship::new(
-                "document",
-                format!("bulk-doc-{i}"),
-                "viewer",
-                "user",
-                "alice",
-                "",
-            )
-            .expect("invalid relationship")
-        })
-        .collect();
+    // Bulk import relationships. import_relationships accepts anything
+    // IntoIterator<Item = Relationship> -- a Vec, or (as here) a plain
+    // iterator/generator passed directly, with no .collect() needed. The
+    // source is consumed lazily, one batch at a time, so a caller streaming
+    // in millions of relationships from a generator or a DB cursor is never
+    // forced to materialize the whole thing into a Vec first.
+    let import_rels = (0..100).map(|i| {
+        Relationship::new(
+            "document",
+            format!("bulk-doc-{i}"),
+            "viewer",
+            "user",
+            "alice",
+            "",
+        )
+        .expect("invalid relationship")
+    });
 
     let count = client
         .import_relationships(import_rels)

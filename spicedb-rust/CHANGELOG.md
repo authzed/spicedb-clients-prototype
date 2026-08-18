@@ -4,6 +4,19 @@
 
 ### Fixes
 
+- **`import_relationships` required a materialized `Vec<Relationship>`.** A caller streaming in a
+  large import from an iterator/generator (a lazy computation, a DB cursor) was forced to collect
+  it into a `Vec` first just to call this method -- unlike every other bulk/paginated RPC,
+  `ImportBulkRelationships` is client-streaming, so the caller is the one producing an unbounded
+  amount of data.
+  - **Breaking:** `import_relationships`/`import_relationships_with_timeout` are now generic over
+    `impl IntoIterator<Item = Relationship> + Send + 'static` (with `IntoIter: Send`) instead of
+    a concrete `Vec<Relationship>` parameter. A `Vec` (or array) still works unchanged -- both
+    implement `IntoIterator<Item = Relationship>` -- so this only breaks a caller that named the
+    concrete parameter type explicitly. The background batching task now chunks the source
+    iterator manually (`Iterator::take`/`by_ref`) instead of `Vec::chunks`, so only one batch
+    (1,000 relationships) is ever held in memory at a time regardless of how the source is
+    produced.
 - **Watch resumability.** `updates` previously dropped `WatchResponse.changes_through`
   entirely and had no way to request `WATCH_KIND_INCLUDE_CHECKPOINTS` -- a prior audit's grep
   hit on `optional_update_kinds: Vec::new()` was a false positive: that's a required

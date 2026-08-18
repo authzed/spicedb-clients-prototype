@@ -1377,8 +1377,14 @@ impl SpiceDBClient {
 
     /// Streams relationships to SpiceDB for bulk import.
     ///
-    /// Accepts a `Vec<Relationship>` and automatically batches
-    /// into chunks of 1,000.
+    /// Accepts anything `IntoIterator<Item = Relationship>` -- a `Vec`, an
+    /// array, or an arbitrary (possibly one-shot) iterator/generator -- and
+    /// automatically batches into chunks of 1,000. The source is consumed
+    /// lazily, one batch at a time, by a background task: unlike every other
+    /// bulk/paginated RPC, `ImportBulkRelationships` is client-streaming, so
+    /// the caller is the one producing an unbounded amount of data, and a
+    /// caller streaming in millions of relationships from an iterator should
+    /// never be forced to collect them into a `Vec` first just to call this.
     ///
     /// `ImportBulkRelationships` is client-streaming: its duration scales
     /// with the size of `relationships`, not with server latency, so unlike
@@ -1389,10 +1395,11 @@ impl SpiceDBClient {
     /// to bound it explicitly.
     ///
     /// Returns the number of relationships loaded.
-    pub async fn import_relationships(
-        &self,
-        relationships: Vec<Relationship>,
-    ) -> Result<u64, SpiceDBError> {
+    pub async fn import_relationships<I>(&self, relationships: I) -> Result<u64, SpiceDBError>
+    where
+        I: IntoIterator<Item = Relationship> + Send + 'static,
+        I::IntoIter: Send,
+    {
         self.import_relationships_impl(relationships, None).await
     }
 
@@ -1400,32 +1407,51 @@ impl SpiceDBClient {
     /// per-call timeout. There is no client default to override here (see
     /// [`import_relationships`](Self::import_relationships)) -- this is the
     /// only way to bound this call at all.
-    pub async fn import_relationships_with_timeout(
+    pub async fn import_relationships_with_timeout<I>(
         &self,
-        relationships: Vec<Relationship>,
+        relationships: I,
         timeout: Duration,
-    ) -> Result<u64, SpiceDBError> {
+    ) -> Result<u64, SpiceDBError>
+    where
+        I: IntoIterator<Item = Relationship> + Send + 'static,
+        I::IntoIter: Send,
+    {
         self.import_relationships_impl(relationships, Some(timeout))
             .await
     }
 
-    async fn import_relationships_impl(
+    async fn import_relationships_impl<I>(
         &self,
-        relationships: Vec<Relationship>,
+        relationships: I,
         timeout: Option<Duration>,
-    ) -> Result<u64, SpiceDBError> {
+    ) -> Result<u64, SpiceDBError>
+    where
+        I: IntoIterator<Item = Relationship> + Send + 'static,
+        I::IntoIter: Send,
+    {
         // Deliberately NOT `self.effective_timeout(timeout)` -- no client
         // default applies here, only an explicit per-call `timeout`.
         let (tx, rx) = tokio::sync::mpsc::channel(4);
 
-        // Spawn a task to batch and send relationships
+        // Spawn a task to batch and send relationships. Chunks the source
+        // iterator manually (rather than `Vec::chunks`, which needs a
+        // contiguous slice the caller may not have materialized) so only one
+        // batch's worth is ever held in memory at a time, regardless of how
+        // `relationships` is produced.
         let batch_task = tokio::spawn(async move {
-            for chunk in relationships.chunks(DEFAULT_IMPORT_BATCH_SIZE) {
-                let proto_rels: Vec<proto::Relationship> =
-                    chunk.iter().map(|r| r.to_proto()).collect();
+            let mut iter = relationships.into_iter();
+            loop {
+                let chunk: Vec<proto::Relationship> = iter
+                    .by_ref()
+                    .take(DEFAULT_IMPORT_BATCH_SIZE)
+                    .map(|r| r.to_proto())
+                    .collect();
+                if chunk.is_empty() {
+                    break;
+                }
                 if tx
                     .send(proto::ImportBulkRelationshipsRequest {
-                        relationships: proto_rels,
+                        relationships: chunk,
                     })
                     .await
                     .is_err()

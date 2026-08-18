@@ -935,3 +935,65 @@ def test_reusing_a_client_across_event_loops_raises_a_clear_error():
     # verifies. Left open, the abandoned grpc.aio channel's GC teardown
     # produces a ResourceWarning: unclosed event loop.
     asyncio.run(client.close())
+
+
+# ── Unary retry safety (DESIGN.md: "Automatic retry is for idempotent
+# operations only") ──────────────────────────────────────────────────────
+#
+# Reads retry on a transient error; mutations (WriteRelationships,
+# DeleteRelationships, WriteSchema, the counter register/unregister calls)
+# do not, regardless of retryable-ness -- a WriteRelationships may carry
+# OPERATION_CREATE or preconditions, and if it actually committed but the
+# response was lost, a retry would surface ALREADY_EXISTS/FAILED_PRECONDITION
+# for a write that in fact succeeded. RESOURCE_EXHAUSTED is never retried at
+# all: in SpiceDB it means memory load-shed or a deterministic
+# MaxDepthExceeded, never a transient hiccup.
+
+
+async def test_read_transient_error_is_retried_then_succeeds(make_client):
+    from authzed.api.v1 import schema_service_pb2 as ssp
+
+    client = make_client(max_retries=2)
+    ok = ssp.ReadSchemaResponse(schema_text="definition user {}")
+    client._schema.ReadSchema = AsyncMock(side_effect=[_transient_error(), ok])
+    result = await client.read_schema()
+    assert result == "definition user {}"
+    assert client._schema.ReadSchema.await_count == 2, "a transient error must be retried"
+
+
+async def test_mutation_transient_error_is_attempted_once_only(make_client):
+    from spicedb import Transaction
+
+    client = make_client(max_retries=3)
+    client._permissions.WriteRelationships = AsyncMock(side_effect=_transient_error())
+    txn = Transaction()
+    txn.create(Relationship.from_triple("document:a", "viewer", "user:jimmy"))
+    with pytest.raises(UnavailableError):
+        await client.write(txn)
+    assert client._permissions.WriteRelationships.await_count == 1, (
+        "mutations must be attempted exactly once"
+    )
+
+
+async def test_resource_exhausted_is_never_retried(make_client):
+    from spicedb.errors import ResourceExhaustedError
+
+    client = make_client(max_retries=3)
+    client._schema.ReadSchema = AsyncMock(
+        side_effect=_transient_error(grpc.StatusCode.RESOURCE_EXHAUSTED)
+    )
+    with pytest.raises(ResourceExhaustedError):
+        await client.read_schema()
+    assert client._schema.ReadSchema.await_count == 1, "RESOURCE_EXHAUSTED must never be retried"
+
+
+def test_backoff_has_jitter():
+    """Backoff must vary between runs -- assert the jitter exists, not an
+    exact value. Without jitter every client in a fleet retries on the
+    same schedule after a server restart (thundering herd).
+
+    `_backoff_seconds` is a staticmethod with no channel/loop dependency,
+    so this does not need `make_client`."""
+    seen = {SpiceDBClient._backoff_seconds(2) for _ in range(50)}
+    assert len(seen) > 1, "backoff should vary between calls"
+    assert all(0 <= v <= 0.4 for v in seen)

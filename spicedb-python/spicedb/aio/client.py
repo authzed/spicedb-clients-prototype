@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import random
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
@@ -135,8 +136,23 @@ class SpiceDBClient:
 
     # ── Retry helper ────────────────────────────────────────────────
 
+    @staticmethod
+    def _backoff_seconds(attempt: int) -> float:
+        """Full-jitter backoff: uniform(0, cap) rather than a fixed delay.
+
+        Plain exponential backoff has every client in a fleet retry on the
+        same schedule after a server restart, turning the recovery into a
+        thundering herd. Sampling uniformly under the cap spreads retries
+        out instead.
+        """
+        cap = min(0.1 * (2**attempt), 5.0)
+        return random.uniform(0, cap)
+
     async def _with_retry(self, fn: Any) -> Any:
-        """Call an async function with exponential backoff on transient errors."""
+        """Call an async function with exponential backoff on transient errors.
+
+        Only for idempotent (read) calls -- see `_call_once` for mutations.
+        """
         last_err: Exception | None = None
         for attempt in range(self._max_retries + 1):
             try:
@@ -145,8 +161,25 @@ class SpiceDBClient:
                 if not is_transient(e) or attempt == self._max_retries:
                     raise to_spicedb_error(e) from e
                 last_err = e
-                await asyncio.sleep(min(0.1 * (2**attempt), 5.0))
+                await asyncio.sleep(self._backoff_seconds(attempt))
         raise to_spicedb_error(last_err) from last_err  # type: ignore[arg-type]
+
+    async def _call_once(self, fn: Any) -> Any:
+        """Call an async function once, converting a gRPC error, but never
+        retrying.
+
+        For mutations. A `WriteRelationships` containing `OPERATION_CREATE`,
+        or any request carrying preconditions, is not idempotent: if it
+        commits and the response is lost (a rolling restart, a proxy
+        dropping the connection), a retry surfaces `ALREADY_EXISTS` or
+        `FAILED_PRECONDITION` for a write that in fact succeeded, and the
+        caller wrongly concludes it failed. See DESIGN.md, "Automatic retry
+        is for idempotent operations only".
+        """
+        try:
+            return await fn()
+        except grpc.aio.AioRpcError as e:
+            raise to_spicedb_error(e) from e
 
     async def _should_retry_establishment(
         self, attempt: int, err: grpc.aio.AioRpcError
@@ -162,7 +195,7 @@ class SpiceDBClient:
         """
         if not is_transient(err) or attempt == self._max_retries:
             return False
-        await asyncio.sleep(min(0.1 * (2**attempt), 5.0))
+        await asyncio.sleep(self._backoff_seconds(attempt))
         return True
 
     # ── Permission checks ──────────────────────────────────────────
@@ -403,7 +436,7 @@ class SpiceDBClient:
                 request, metadata=self._metadata
             )
 
-        resp = await self._with_retry(_call)
+        resp = await self._call_once(_call)
         return resp.written_at.token
 
     async def delete_relationships(
@@ -440,7 +473,7 @@ class SpiceDBClient:
                 request, metadata=self._metadata
             )
 
-        resp = await self._with_retry(_call)
+        resp = await self._call_once(_call)
         return resp.deleted_at.token
 
     # ── Schema ──────────────────────────────────────────────────────
@@ -467,7 +500,7 @@ class SpiceDBClient:
                 metadata=self._metadata,
             )
 
-        resp = await self._with_retry(_call)
+        resp = await self._call_once(_call)
         return resp.written_at.token
 
     # ── Watch ───────────────────────────────────────────────────────
@@ -591,7 +624,7 @@ class SpiceDBClient:
                 request, metadata=self._metadata
             )
 
-        await self._with_retry(_call)
+        await self._call_once(_call)
 
     async def count_relationships(
         self,
@@ -631,7 +664,7 @@ class SpiceDBClient:
                 request, metadata=self._metadata
             )
 
-        await self._with_retry(_call)
+        await self._call_once(_call)
 
     # ── Experimental: Schema Reflection ─────────────────────────────
 

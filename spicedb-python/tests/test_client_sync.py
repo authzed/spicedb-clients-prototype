@@ -149,19 +149,62 @@ def test_check_all_with_zero_relationships_returns_false(make_client):
 
 
 def test_transient_error_is_retried_then_succeeds(make_client):
-    """Guards the Task 1 is_transient fix -- without it this retries zero times."""
-    from authzed.api.v1 import permission_service_pb2 as psp
+    """Guards the Task 1 is_transient fix -- without it this retries zero times.
+
+    Uses a read (ReadSchema), not WriteRelationships: mutations are no
+    longer retried at all (see test_mutation_transient_error_is_attempted_once_only
+    below) -- retrying a WriteRelationships whose response was lost, but
+    which in fact committed, would surface ALREADY_EXISTS/FAILED_PRECONDITION
+    for a write that succeeded. DESIGN.md, "Automatic retry is for
+    idempotent operations only".
+    """
+    from authzed.api.v1 import schema_service_pb2 as ssp
 
     c = make_client(max_retries=2)
-    ok = psp.WriteRelationshipsResponse()
+    ok = ssp.ReadSchemaResponse(schema_text="definition user {}")
     stub = mock.Mock(side_effect=[_SyncRpcError(grpc.StatusCode.UNAVAILABLE), ok])
+    with mock.patch.object(c._schema, "ReadSchema", stub):
+        c.read_schema()
+    assert stub.call_count == 2, "a transient error must be retried"
+
+
+def test_mutation_transient_error_is_attempted_once_only(make_client):
+    """A mutation (WriteRelationships) is NOT retried, even on a retryable
+    code: it may carry OPERATION_CREATE or preconditions, and if it
+    actually committed but the response was lost, a retry would surface
+    ALREADY_EXISTS/FAILED_PRECONDITION for a write that in fact succeeded.
+    DESIGN.md, "Automatic retry is for idempotent operations only"."""
+    c = make_client(max_retries=3)
+    stub = mock.Mock(side_effect=_SyncRpcError(grpc.StatusCode.UNAVAILABLE))
     with mock.patch.object(c._permissions, "WriteRelationships", stub):
         from spicedb import Transaction
 
         txn = Transaction()
         txn.create(Relationship.from_triple("document:a", "viewer", "user:jimmy"))
-        c.write(txn)
-    assert stub.call_count == 2, "a transient error must be retried"
+        with pytest.raises(UnavailableError):
+            c.write(txn)
+    assert stub.call_count == 1, "mutations must be attempted exactly once"
+
+
+def test_resource_exhausted_is_never_retried(make_client):
+    from spicedb.errors import ResourceExhaustedError
+
+    c = make_client(max_retries=3)
+    stub = mock.Mock(side_effect=_SyncRpcError(grpc.StatusCode.RESOURCE_EXHAUSTED))
+    with mock.patch.object(c._schema, "ReadSchema", stub):
+        with pytest.raises(ResourceExhaustedError):
+            c.read_schema()
+    assert stub.call_count == 1, "RESOURCE_EXHAUSTED must never be retried"
+
+
+def test_backoff_has_jitter(make_client):
+    """Backoff must vary between runs -- assert the jitter exists, not an
+    exact value. Without jitter every client in a fleet retries on the
+    same schedule after a server restart (thundering herd)."""
+    c = make_client(max_retries=1)
+    seen = {c._backoff_seconds(2) for _ in range(50)}
+    assert len(seen) > 1, "backoff should vary between calls"
+    assert all(0 <= v <= 0.4 for v in seen)
 
 
 def test_transient_error_gives_up_after_max_retries(make_client):

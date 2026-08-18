@@ -126,6 +126,31 @@
 
 ### Fixed
 
+- **2026-08-18**: Retry safety, per root `DESIGN.md` "RULE: Automatic retry is for idempotent
+  operations only". Three changes, both `spicedb.sync` and `spicedb.aio`:
+  - `RESOURCE_EXHAUSTED` is no longer retried. In SpiceDB it signals memory load-shed (retrying
+    adds load to an already-overloaded server) or a deterministic `MaxDepthExceeded` (retrying can
+    never succeed — it re-runs the most expensive class of check several times before surfacing
+    the same error). Previously it was in `_TRANSIENT_CODES`/`is_transient`'s retryable set.
+  - Mutations (`write`/`WriteRelationships`, `delete_relationships`/`DeleteRelationships`,
+    `write_schema`/`WriteSchema`, `register_relationship_counter`/`unregister_relationship_counter`)
+    are no longer retried on a transient error, even though the underlying gRPC code is retryable.
+    A `WriteRelationships` containing `OPERATION_CREATE`, or any request carrying preconditions, is
+    not idempotent: if it commits and the response is lost (a rolling restart, a proxy dropping the
+    connection), a retry surfaced `ALREADY_EXISTS`/`FAILED_PRECONDITION` for a write that in fact
+    succeeded, and the caller wrongly concluded it had failed. Reads still retry automatically.
+    Both flavors previously routed every RPC, mutations included, through the same `_with_retry`;
+    mutations now go through a new `_call_once` that converts the gRPC error without retrying.
+  - Backoff is now full-jitter (`random.uniform(0, cap)`) instead of plain exponential doubling.
+    Without jitter, every client in a fleet retries on the same schedule after a server restart,
+    turning the recovery into a thundering herd.
+
+  `tests/test_client_sync.py::test_transient_error_is_retried_then_succeeds` previously exercised
+  `write()`/`WriteRelationships` to prove a transient error gets retried; it now exercises
+  `read_schema()`/`ReadSchema` instead, since asserting a `WriteRelationships` retry is exactly the
+  now-fixed defect. `tests/test_errors.py::test_is_transient_true_for_spicedb_resource_exhausted_error`
+  (asserted `is_transient(ResourceExhaustedError(...))` is `True`) is renamed
+  `test_is_transient_false_for_spicedb_resource_exhausted_error` and inverted to `False`.
 - **2026-08-18**: `Filter._to_proto()` silently dropped `subject_id`/`subject_relation` when
   `subject_type` was not set, instead of raising. The `optional_subject_filter` was only built
   inside `if self.subject_type:`, so `Filter("document", subject_id="alice")` produced a proto

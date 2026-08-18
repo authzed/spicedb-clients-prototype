@@ -95,8 +95,17 @@ def test_is_transient_still_true_for_spicedb_unavailable_error():
     assert is_transient(UnavailableError("down")) is True
 
 
-def test_is_transient_true_for_spicedb_resource_exhausted_error():
-    assert is_transient(ResourceExhaustedError("quota")) is True
+def test_is_transient_false_for_spicedb_resource_exhausted_error():
+    """RESOURCE_EXHAUSTED must NOT be retried (inverted from the original
+    "is True" assertion -- see DESIGN.md, "Automatic retry is for
+    idempotent operations only"). In SpiceDB it signals memory load-shed
+    (retrying adds load to an already-overloaded server) or a deterministic
+    MaxDepthExceeded (retrying can never succeed)."""
+    assert is_transient(ResourceExhaustedError("quota")) is False
+
+
+def test_is_transient_false_for_sync_resource_exhausted():
+    assert is_transient(_SyncRpcError(grpc.StatusCode.RESOURCE_EXHAUSTED)) is False
 
 
 def test_to_spicedb_error_maps_sync_error():

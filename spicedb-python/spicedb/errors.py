@@ -71,10 +71,14 @@ _CODE_TO_ERROR: dict[grpc.StatusCode, type[SpiceDBError]] = {
 _TRANSIENT_CODES = frozenset(
     {
         grpc.StatusCode.UNAVAILABLE,
-        grpc.StatusCode.RESOURCE_EXHAUSTED,
         grpc.StatusCode.ABORTED,
     }
 )
+"""RESOURCE_EXHAUSTED is deliberately excluded. In SpiceDB it means either
+memory load-shed (retrying adds load to an already-overloaded server) or a
+deterministic MaxDepthExceeded (retrying can never succeed -- it just re-runs
+the most expensive class of check several times before surfacing the same
+error). See DESIGN.md, "Automatic retry is for idempotent operations only"."""
 
 # Reverse map: int gRPC code -> grpc.StatusCode, used to interpret the
 # int `code` field of a google.rpc.Status (e.g. a per-item bulk-check error).
@@ -113,4 +117,4 @@ def is_transient(err: Exception) -> bool:
     """
     if isinstance(err, grpc.RpcError):
         return err.code() in _TRANSIENT_CODES
-    return isinstance(err, (UnavailableError, ResourceExhaustedError))
+    return isinstance(err, UnavailableError)

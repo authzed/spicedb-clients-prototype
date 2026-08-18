@@ -110,6 +110,7 @@ RSpec.describe "SpiceDBProto::Client.loopback_endpoint?" do
 
   not_loopback = %w[
     example.com:443 staging.internal:443 10.0.0.5:50051 8.8.8.8:443 0.0.0.0:50051
+    localhost.evil.com:443 127.0.0.1.evil.com:443 evil-localhost:443
   ]
   not_loopback.each do |endpoint|
     it "does not treat #{endpoint.inspect} as loopback" do

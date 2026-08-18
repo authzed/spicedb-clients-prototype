@@ -91,8 +91,8 @@ module SpiceDB
     # semantics re-run the whole block (including any side effects, like
     # yielding, that already happened) rather than resuming a partially
     # consumed stream. This method only makes the transient/attempt-budget
-    # decision; the zero-yielded guard is the caller's responsibility (see
-    # {SpiceDB::Client#export_relationships}).
+    # decision; the zero-yielded guard lives in {#with_establishment_retry},
+    # its only caller.
     def should_retry_establishment?(attempt, error)
       return false unless SpiceDB.transient?(error)
       return false unless attempt < MAX_RETRIES

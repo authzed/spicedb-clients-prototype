@@ -311,10 +311,14 @@ honors it; Connect-ES, the counterexample the rule cites, does not.
 
 The chain, for `for`/`each`/`first`/`take` alike:
 
-1. `break` (or `first`'s early stop) unwinds out of `Enumerator#each`, and
-   Ruby propagates that unwind *into* the generator block's Fiber rather
-   than leaving it parked.
-2. The unwind therefore reaches `GRPC::ActiveCall#each_remote_read_then_finish`,
+1. None of these ever create a Fiber. Internal iteration runs the
+   generator block on the caller's own fiber — `Fiber.current` measured
+   inside the block is `Fiber.current` measured outside it — so `break`
+   (or `first`'s early stop) unwinding out of `Enumerator#each` is an
+   ordinary unwind on a single call stack, not a jump across a fiber
+   boundary. (External iteration via `#next` is the one case that *does*
+   run the block on a separate Fiber — see the gap noted below.)
+2. That unwind reaches `GRPC::ActiveCall#each_remote_read_then_finish`,
    whose `ensure` calls `set_input_stream_done`.
 3. That reaches `maybe_finish_and_close_call_locked`, which calls
    `@call.close` — tearing down the core call synchronously, on the calling
@@ -335,6 +339,31 @@ there is nothing to strand. What they must not do is keep *fetching* — an
 abandoned auto-pager that opens the next page is its own leak — and the same
 spec covers that by handing back exactly a full page and asserting no second
 call arrives.
+
+**Known gap: external iteration via `#next` leaks permanently.** Every
+method here returns a public `Enumerator`, and nothing stops a caller from
+driving one with `.next` instead of `each`/`for`. `Enumerator#next` is
+implemented with a real Fiber, unlike the internal-iteration chain above —
+each call resumes it up to the next `yielder <<`. Abandoning that (calling
+`.next` a few times, then dropping the last reference without exhausting or
+explicitly closing the Enumerator) does not release the stream: measured
+directly, ten full `GC.start(full_mark: true, immediate_sweep: true)` passes
+after dropping the reference, and `each_remote_read_then_finish`'s `ensure`
+still had not run. Ruby does not run `ensure` for a garbage-collected Fiber.
+This is not "eventually, on some later GC pass" the way the sync-Python
+finalizer race is — it does not happen at all, on any pass. A caller who
+starts external iteration and walks away leaks the gRPC call and the
+server-side dispatch for the life of the connection.
+
+A cheap guard, if this is ever worth closing: `ObjectSpace.define_finalizer`
+on the returned Enumerator, closing over the raw `GRPC::ActiveCall` (never
+`self`, or the Enumerator can't be collected) and calling `@call.cancel` in
+the finalizer proc. Finalizer procs are a GC-level hook, not a Fiber
+`ensure`, so they run on collection regardless of which Fiber the object's
+work happened on — that's why this would close the gap the internal-
+iteration chain above cannot. Not implemented; recorded here as the shape a
+fix would take, not a recommendation to add one without weighing the same
+kind of transport risk raised below.
 
 **Do not add an explicit cancel here without reading this.** The only way to
 get a cancellable handle out of grpc-ruby is `return_op: true`, and that path

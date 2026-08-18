@@ -12,16 +12,29 @@ require 'timeout'
 # iteration protocol closes a generator on `break`, that only releases the
 # stream if the transport underneath honors it -- "and this is a trap
 # precisely because the call site looks identical whether it does or not."
-# Ruby is on the honoring side of that line, and these specs are the
-# evidence, because nothing else in the codebase is:
+# Ruby is on the honoring side of that line for internal iteration, and
+# these specs are the evidence, because nothing else in the codebase is:
 #
-#   * `break`ing out of `Enumerator#each` unwinds into the generator block's
-#     Fiber, so grpc-ruby's own `ensure set_input_stream_done` in
-#     ActiveCall#each_remote_read_then_finish runs. That reaches
+#   * Internal iteration never creates a Fiber -- the generator block runs
+#     on the caller's own fiber. `break`ing out of `Enumerator#each` is
+#     therefore an ordinary unwind on that one fiber, and it reaches
+#     grpc-ruby's own `ensure set_input_stream_done` in
+#     ActiveCall#each_remote_read_then_finish. That reaches
 #     `maybe_finish_and_close_call_locked`, which calls `@call.close` and
 #     tears the RPC down -- synchronously, not on a GC pass.
-#   * `first` and `take` stop early through the same unwind, as does an
-#     Enumerator abandoned mid-external-iteration and then collected.
+#   * `first` and `take` stop early through the same unwind.
+#
+# WARNING -- external iteration is NOT covered by any of this. Every method
+# here returns a public Enumerator, and driving one with `.next` instead of
+# `each`/`for` runs the block on a real Fiber (that's how `#next` is able to
+# suspend between yields). Abandoning mid-`.next` -- dropping the last
+# reference before exhausting or explicitly closing it -- does not release
+# the stream: Ruby does not run `ensure` for a garbage-collected Fiber, and
+# this is not a "later GC pass" delay, it does not happen on any pass. This
+# leaks the gRPC call and the server-side dispatch permanently. See
+# spicedb-ruby/DESIGN.md, "Known gap: external iteration via `#next` leaks
+# permanently" -- nothing in this file, or anywhere else in the suite,
+# exercises that path.
 #
 # So there is deliberately no explicit `cancel` anywhere in this client, and
 # that absence is easy to misread as the very defect the rule describes -- a

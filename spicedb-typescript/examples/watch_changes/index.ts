@@ -26,6 +26,10 @@ for await (const event of client.watch({ includeCheckpoints: true })) {
     continue;
   }
 
+  // Unlike isCheckpoint above, this branch is presently unreachable: nothing
+  // in this client can yet request WATCH_KIND_INCLUDE_SCHEMA_UPDATES, so the
+  // server has no reason to ever send schemaUpdated: true. Left in place as
+  // documentation for when that support is added.
   if (event.schemaUpdated) {
     console.log(`[schema updated] at revision: ${event.revision}`);
   }

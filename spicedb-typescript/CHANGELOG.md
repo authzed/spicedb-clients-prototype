@@ -104,15 +104,20 @@
   `WATCH_KIND_INCLUDE_RELATIONSHIP_UPDATES`, since a non-empty
   `optionalUpdateKinds` replaces the server's implicit default rather than
   adding to it).
-  - `WatchEvent.isCheckpoint` and `WatchEvent.schemaUpdated` already existed
-    and were already assigned from the response on every event
+  - `WatchEvent.isCheckpoint` and `WatchEvent.schemaUpdated` both already
+    existed and were both already assigned from the response on every event
     (`client.ts`'s `watch()`) — but since nothing could ever request
     `WATCH_KIND_INCLUDE_CHECKPOINTS` or `WATCH_KIND_INCLUDE_SCHEMA_UPDATES`,
-    the server never had a reason to send either, so `isCheckpoint` was
-    always `false` in practice and the `examples/watch_changes/`
-    `if (event.isCheckpoint)` branch was unreachable. Wired up
-    `includeCheckpoints` to make that branch reachable rather than adding a
-    parallel field.
+    the server never had a reason to send either, so both were always
+    `false` in practice and the `examples/watch_changes/`
+    `if (event.isCheckpoint)`/`if (event.schemaUpdated)` branches were both
+    unreachable. This task is in scope for checkpoints only: wired up
+    `includeCheckpoints` to make `isCheckpoint` reachable, rather than
+    adding a parallel field. `schemaUpdated` remains permanently `false` —
+    still unreachable, since nothing yet requests
+    `WATCH_KIND_INCLUDE_SCHEMA_UPDATES`; that field's `if` branch in the
+    example is left as documented but presently dead code, same as before
+    this change, pending a future schema-update-support task.
   - `WatchEvent.revision` was already populated from
     `WatchResponse.changesThrough` — the proto's resume token ("This token
     can be used in a subsequent WatchRequest to resume watching from this

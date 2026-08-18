@@ -328,6 +328,39 @@ not of the individual result — and, like `CheckResult.checked_at`, can be
 threaded into `at_least()` to make a later call observe this lookup
 (read-your-writes for lookups).
 
+### Watch
+
+`watch()` yields one `WatchEvent` per `WatchResponse` from the server — not a
+bare tuple, and not one yield per relationship update:
+
+```python
+@dataclass(frozen=True)
+class Update:
+    operation: UpdateOperation  # CREATE, TOUCH, DELETE, or UNSPECIFIED
+    relationship: Relationship
+
+@dataclass(frozen=True)
+class WatchEvent:
+    updates: list[Update]
+    changes_through: str  # resume token; pass as start_revision to resume after a dropped stream
+    is_checkpoint: bool = False  # True carries no updates -- a fresh resume point only
+```
+
+`changes_through` is always populated — it is the proto's `changes_through`
+ZedToken, "the point in time that the watch response is current through...
+can be used in a subsequent WatchRequest to resume watching from this
+point." Without it, a consumer whose stream dropped could only restart from
+its original `start_revision` (reprocessing everything since, possibly past
+the GC window) or from head (silently losing every change in the gap).
+
+`watch(include_checkpoints=True)` requests `WATCH_KIND_INCLUDE_CHECKPOINTS`
+in addition to relationship updates — recommended if this SpiceDB instance
+is running behind a proxy that aborts idle connections, since a checkpoint
+keeps the stream alive even when there are no changes. A checkpoint event
+carries no `updates`, so `WatchEvent.is_checkpoint` lets a caller tell
+"nothing changed, here is a fresh resume point" from "here are changes"
+rather than silently treating a checkpoint as an empty update batch.
+
 ### Writes
 
 Transaction builder — identical on both flavors except the final call:

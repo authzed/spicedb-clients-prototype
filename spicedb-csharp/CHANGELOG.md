@@ -320,7 +320,22 @@
     mock, inside `Grpc.Net.Client`'s HTTP/2 pipeline.
   - New `examples/CallDeadlines/`, run against a real SpiceDB rather than a mock: constructs a
     client via the documented `defaultTimeout` parameter, overrides it per-call, and confirms
-    bulk import is unbounded by default.
+    bulk import is unbounded by default. (See the CI entry below: when this was written that
+    claim was aspirational, since no example project was in any solution.)
+- **2026-08-18**: No example was built or run by CI. Every project under `examples/` is an xunit
+  project, but none of the twelve was listed in `SpiceDB.Client.sln`, and both `mage test` and
+  `mage integrationTest` ran `dotnet test SpiceDB.Client.sln` -- so `examples/` was never
+  compiled, let alone executed, on any job. A signature change that broke an example would have
+  gone green, and the "run against a real SpiceDB rather than a mock" claim on
+  `examples/CallDeadlines/` above described an intent, not something that happened.
+
+  Added `SpiceDB.Client.Examples.sln`, containing the client plus all twelve example projects.
+  `mage test` now *builds* it (catching a broken example in the unit job, which has no SpiceDB to
+  run against) and `mage integrationTest` *runs* it after starting SpiceDB, matching how every
+  other client in this repo treats its examples. Two solutions rather than one because the
+  examples require a live server and the unit job does not have one. All twelve compile as-is; no
+  example was modified.
+
 - **2026-08-18**: Retry safety, per root `DESIGN.md` "RULE: Automatic retry is for idempotent
   operations only". Three changes:
   - `RESOURCE_EXHAUSTED` is no longer retried. In SpiceDB it signals memory load-shed (retrying

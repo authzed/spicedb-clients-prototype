@@ -23,7 +23,7 @@ use crate::types::{
     LookupResource, LookupSubject, Permissionship, Precondition, PreconditionOperation,
     ReflectSchemaResult, RelationReference, Relationship, ResolvedSubject, SchemaCaveat,
     SchemaCaveatParameter, SchemaDefinition, SchemaDiff, SchemaPermission, SchemaRelation,
-    Transaction, Update, UpdateOperation, WatchEvent,
+    Transaction, Update, UpdateOperation, WatchEvent, WatchOptions,
 };
 
 use futures::Stream;
@@ -1546,9 +1546,9 @@ impl SpiceDBClient {
     // -----------------------------------------------------------------------
 
     /// Returns a stream of watch events from SpiceDB's watch API, starting
-    /// from the given revision. Each yielded [`WatchEvent`] corresponds to
-    /// one server response: zero or more relationship updates, all current
-    /// through [`WatchEvent::changes_through`].
+    /// from head. Each yielded [`WatchEvent`] corresponds to one server
+    /// response: zero or more relationship updates, all current through
+    /// [`WatchEvent::changes_through`].
     ///
     /// Watch is an open-ended server stream: events are yielded incrementally,
     /// as they occur, and the stream stays open indefinitely (until the caller
@@ -1559,7 +1559,7 @@ impl SpiceDBClient {
     /// # use futures::StreamExt;
     /// # async fn demo(client: spicedb::client::SpiceDBClient) -> Result<(), spicedb::error::SpiceDBError> {
     /// let object_types = vec!["document".to_string()];
-    /// let stream = client.updates(&object_types, None, false);
+    /// let stream = client.updates(&object_types);
     /// tokio::pin!(stream);
     /// while let Some(event) = stream.next().await {
     ///     let event = event?;
@@ -1571,22 +1571,56 @@ impl SpiceDBClient {
     /// # }
     /// ```
     ///
-    /// [`WatchEvent::changes_through`] is always populated -- pass it as
-    /// `start_revision` on a later call to resume after a dropped stream,
-    /// instead of restarting from the original `start_revision`
+    /// [`WatchEvent::changes_through`] is always populated -- pass it to
+    /// [`WatchOptions::with_start_revision`] on a later
+    /// [`updates_with`](Self::updates_with) call to resume after a dropped
+    /// stream, instead of restarting from the original revision
     /// (reprocessing everything since, possibly past the GC window) or from
     /// head (silently losing every change in the gap).
     ///
-    /// `include_checkpoints` requests periodic checkpoint events
+    /// This is a convenience wrapper around
+    /// [`updates_with`](Self::updates_with) with
+    /// [`WatchOptions::default`] (from head, no checkpoints). To resume from
+    /// a revision or request checkpoints, use `updates_with` directly.
+    pub fn updates(
+        &self,
+        object_types: &[String],
+    ) -> impl Stream<Item = Result<WatchEvent, SpiceDBError>> + 'static {
+        self.updates_with(object_types, &WatchOptions::default())
+    }
+
+    /// Returns a stream of watch events, resuming from a revision and/or
+    /// requesting checkpoints.
+    ///
+    /// See [`updates`](Self::updates) for the stream's shape and lifetime;
+    /// this differs only in taking [`WatchOptions`]:
+    ///
+    /// ```no_run
+    /// # use futures::StreamExt;
+    /// # use spicedb::types::WatchOptions;
+    /// # async fn demo(client: spicedb::client::SpiceDBClient, resume_from: &str) -> Result<(), spicedb::error::SpiceDBError> {
+    /// let object_types = vec!["document".to_string()];
+    /// let stream = client.updates_with(
+    ///     &object_types,
+    ///     &WatchOptions::new()
+    ///         .with_start_revision(resume_from)
+    ///         .with_checkpoints(),
+    /// );
+    /// # tokio::pin!(stream);
+    /// # while let Some(event) = stream.next().await { let _ = event?; }
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// [`WatchOptions::with_checkpoints`] requests periodic checkpoint events
     /// ([`WatchEvent::is_checkpoint`], no updates) in addition to
     /// relationship updates. Recommended if this SpiceDB instance is
     /// running behind a proxy that aborts idle connections, since a
     /// checkpoint keeps the stream alive even when there are no changes.
-    pub fn updates(
+    pub fn updates_with(
         &self,
         object_types: &[String],
-        start_revision: Option<&str>,
-        include_checkpoints: bool,
+        options: &WatchOptions,
     ) -> impl Stream<Item = Result<WatchEvent, SpiceDBError>> + 'static {
         // Build the request and clone the watch client up front so the returned
         // stream owns everything it needs and borrows nothing from `self` or the
@@ -1597,12 +1631,12 @@ impl SpiceDBClient {
             optional_update_kinds: Vec::new(),
             optional_start_cursor: None,
         };
-        if let Some(rev) = start_revision {
+        if let Some(rev) = options.start_revision.as_deref() {
             req.optional_start_cursor = Some(proto::ZedToken {
                 token: rev.to_string(),
             });
         }
-        if include_checkpoints {
+        if options.include_checkpoints {
             // optional_update_kinds is empty-means-default (relationship updates only, for
             // backwards compatibility) -- a non-empty list is the exact set requested, so
             // asking for checkpoints must also spell out relationship updates or the server

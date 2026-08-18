@@ -468,9 +468,59 @@ pub struct WatchEvent {
     /// True for a checkpoint event, which carries no [`updates`](Self::updates) -- it
     /// exists only to advertise a fresh [`changes_through`](Self::changes_through) and,
     /// behind a proxy that aborts idle connections, to keep the stream
-    /// alive. Checkpoints are only sent when `include_checkpoints` is
-    /// passed to `updates`.
+    /// alive. Checkpoints are only sent when
+    /// [`WatchOptions::with_checkpoints`] was passed to `updates_with`.
     pub is_checkpoint: bool,
+}
+
+/// Optional settings for [`SpiceDBClient::updates_with`](crate::client::SpiceDBClient::updates_with).
+///
+/// Exists so a watch's optional settings read as names at the call site.
+/// `updates` previously took the checkpoint flag as a bare positional
+/// `bool` -- `client.updates(&types, None, false)` -- which is the one place
+/// in this client where a reader could not tell what a literal argument
+/// meant without opening the signature. Built the same way
+/// [`DeleteOptions`] is:
+///
+/// ```
+/// use spicedb::types::WatchOptions;
+///
+/// let options = WatchOptions::new()
+///     .with_start_revision("some-zedtoken")
+///     .with_checkpoints();
+/// ```
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WatchOptions {
+    /// Resume from this revision instead of from head. Pass a
+    /// [`WatchEvent::changes_through`] from a previous stream to pick up
+    /// exactly where it stopped.
+    pub start_revision: Option<String>,
+    /// Request periodic checkpoint events ([`WatchEvent::is_checkpoint`],
+    /// carrying no updates) in addition to relationship updates.
+    /// Recommended if this SpiceDB instance is running behind a proxy that
+    /// aborts idle connections, since a checkpoint keeps the stream alive
+    /// even when there are no changes.
+    pub include_checkpoints: bool,
+}
+
+impl WatchOptions {
+    /// Creates an empty `WatchOptions`: watch from head, no checkpoints.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Resumes from `revision` rather than from head.
+    pub fn with_start_revision(mut self, revision: impl Into<String>) -> Self {
+        self.start_revision = Some(revision.into());
+        self
+    }
+
+    /// Requests periodic checkpoint events in addition to relationship
+    /// updates.
+    pub fn with_checkpoints(mut self) -> Self {
+        self.include_checkpoints = true;
+        self
+    }
 }
 
 /// A transaction builder for batching relationship writes.

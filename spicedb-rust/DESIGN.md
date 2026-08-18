@@ -495,10 +495,27 @@ tonic's own client-side timeout enforcement (`tonic::transport::Channel`'s
 - `export_relationships(&self, cs, filter) -> impl Stream<Item = Result<Relationship, SpiceDBError>>`
 
 **Watch:**
-- `updates(&self, object_types, start_revision, include_checkpoints) -> impl Stream<Item = Result<WatchEvent, SpiceDBError>>`
-  — `include_checkpoints` requests `WATCH_KIND_INCLUDE_CHECKPOINTS` (recommended behind a
-  proxy that aborts idle connections, since a checkpoint keeps the stream alive with no
-  changes to report)
+- `updates(&self, object_types) -> impl Stream<Item = Result<WatchEvent, SpiceDBError>>`
+  — watch from head, no checkpoints
+- `updates_with(&self, object_types, &WatchOptions) -> impl Stream<Item = Result<WatchEvent, SpiceDBError>>`
+
+`WatchOptions` follows the same builder shape as `DeleteOptions`:
+
+```rust
+let stream = client.updates_with(
+    &object_types,
+    &WatchOptions::new()
+        .with_start_revision(resume_token)   // resume, instead of from head
+        .with_checkpoints(),                 // WATCH_KIND_INCLUDE_CHECKPOINTS
+);
+```
+
+`with_checkpoints()` requests `WATCH_KIND_INCLUDE_CHECKPOINTS`, recommended behind a proxy
+that aborts idle connections, since a checkpoint keeps the stream alive with no changes to
+report. It is a named builder rather than a positional `bool` for the reason the whole
+options pattern exists here: `client.updates(&types, None, false)` gave a reader no way to
+tell what the literal meant without opening the signature, and this was the only place in
+the client where that was true.
 
 `WatchEvent { updates: Vec<Update>, changes_through: String, is_checkpoint: bool }` is one
 event per `WatchResponse`. `changes_through` is always populated -- proto: "This token can be

@@ -4,7 +4,7 @@
 
 use futures::StreamExt;
 use spicedb::client::SpiceDBClient;
-use spicedb::types::UpdateOperation;
+use spicedb::types::{UpdateOperation, WatchOptions};
 
 #[tokio::main]
 async fn main() {
@@ -19,7 +19,7 @@ async fn main() {
     // connections, since a checkpoint keeps the stream alive even when
     // nothing has changed.
     let object_types = vec!["document".to_string()];
-    let stream = client.updates(&object_types, None, true);
+    let stream = client.updates_with(&object_types, &WatchOptions::new().with_checkpoints());
     tokio::pin!(stream);
 
     // Watch is an open-ended stream: events arrive incrementally as they

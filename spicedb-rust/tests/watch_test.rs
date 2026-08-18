@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use spicedb::client::SpiceDBClient;
-use spicedb::types::UpdateOperation;
+use spicedb::types::{UpdateOperation, WatchOptions};
 use spicedb_proto::authzed::api::v1 as proto;
 use tonic::Status;
 
@@ -123,7 +123,7 @@ async fn updates_yields_unrecognized_operation_as_unspecified_rather_than_droppi
         .expect("client should connect to mock server");
 
     let object_types: Vec<String> = Vec::new();
-    let stream = client.updates(&object_types, None, false);
+    let stream = client.updates(&object_types);
     tokio::pin!(stream);
 
     let first = tokio::time::timeout(Duration::from_secs(2), stream.next())
@@ -177,7 +177,7 @@ async fn updates_yields_incrementally_while_stream_stays_open() {
         .expect("client should connect to mock server");
 
     let object_types: Vec<String> = Vec::new();
-    let stream = client.updates(&object_types, None, false);
+    let stream = client.updates(&object_types);
     tokio::pin!(stream);
 
     // The FIRST update must arrive promptly — without waiting for the server
@@ -227,7 +227,7 @@ async fn updates_retries_transient_establishment_failures() {
         .expect("client should connect to mock server");
 
     let object_types: Vec<String> = Vec::new();
-    let stream = client.updates(&object_types, None, false);
+    let stream = client.updates(&object_types);
     tokio::pin!(stream);
 
     // The retry backoff (100ms, 200ms) means this can take a few hundred ms;
@@ -270,7 +270,7 @@ async fn watch_event_exposes_usable_resume_token() {
         .expect("client should connect to mock server");
 
     let object_types: Vec<String> = Vec::new();
-    let stream = client.updates(&object_types, None, false);
+    let stream = client.updates(&object_types);
     tokio::pin!(stream);
 
     let event = tokio::time::timeout(Duration::from_secs(2), stream.next())
@@ -292,7 +292,7 @@ async fn updates_without_include_checkpoints_requests_no_update_kinds() {
         .expect("client should connect to mock server");
 
     let object_types: Vec<String> = Vec::new();
-    let stream = client.updates(&object_types, None, false);
+    let stream = client.updates(&object_types);
     tokio::pin!(stream);
     let _ = tokio::time::timeout(Duration::from_secs(2), stream.next()).await;
 
@@ -312,7 +312,7 @@ async fn include_checkpoints_reaches_the_wire() {
         .expect("client should connect to mock server");
 
     let object_types: Vec<String> = Vec::new();
-    let stream = client.updates(&object_types, None, true);
+    let stream = client.updates_with(&object_types, &WatchOptions::new().with_checkpoints());
     tokio::pin!(stream);
     let _ = tokio::time::timeout(Duration::from_secs(2), stream.next()).await;
 
@@ -345,7 +345,7 @@ async fn checkpoint_event_is_distinguishable_from_update_event() {
         .expect("client should connect to mock server");
 
     let object_types: Vec<String> = Vec::new();
-    let stream = client.updates(&object_types, None, true);
+    let stream = client.updates_with(&object_types, &WatchOptions::new().with_checkpoints());
     tokio::pin!(stream);
 
     let checkpoint = tokio::time::timeout(Duration::from_secs(2), stream.next())

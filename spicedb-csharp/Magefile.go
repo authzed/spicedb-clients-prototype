@@ -18,6 +18,13 @@ const (
 	maxRetries     = 3
 	protoClientDir = "../proto-clients/spicedb-csharp-proto"
 	lastGenFile    = ".last-generation"
+
+	// Examples are xunit projects that require a live SpiceDB, so they cannot
+	// join SpiceDB.Client.sln -- the unit job runs that one and has no server.
+	// They get their own solution instead, built by Test and run by
+	// IntegrationTest. Without it nothing in examples/ was compiled or run by
+	// CI at all.
+	examplesSolution = "SpiceDB.Client.Examples.sln"
 )
 
 // Gen updates the idiomatic client based on proto client changes.
@@ -93,12 +100,23 @@ func Gen() error {
 	return nil
 }
 
-// Test builds and runs all tests.
+// Test builds and runs all tests, and compiles the examples.
+//
+// The examples are built but NOT run here: each one is an xunit project that
+// talks to a real SpiceDB, so running them belongs in IntegrationTest. They
+// are still compiled, because a signature change that breaks an example
+// otherwise stays invisible until the integration job -- and, before the
+// examples solution existed, stayed invisible entirely: no example project
+// was in any solution, so `dotnet test SpiceDB.Client.sln` never touched
+// them.
 func Test() error {
 	if err := sh.RunV("dotnet", "build", "SpiceDB.Client.sln"); err != nil {
 		return err
 	}
-	return sh.RunV("dotnet", "test", "SpiceDB.Client.sln", "--no-build", "--verbosity", "normal")
+	if err := sh.RunV("dotnet", "test", "SpiceDB.Client.sln", "--no-build", "--verbosity", "normal"); err != nil {
+		return err
+	}
+	return sh.RunV("dotnet", "build", examplesSolution)
 }
 
 // Lint runs dotnet format to check code style.
@@ -183,7 +201,15 @@ func IntegrationTest() error {
 	// Run integration tests (no --no-build: VSTest cannot load .NET 10 assemblies
 	// without a fresh build step, and the build is fast enough to not matter here)
 	fmt.Println("==> Running integration tests...")
-	return sh.RunV("dotnet", "test", "SpiceDB.Client.sln", "--verbosity", "normal")
+	if err := sh.RunV("dotnet", "test", "SpiceDB.Client.sln", "--verbosity", "normal"); err != nil {
+		return err
+	}
+
+	// Then the examples, which are the integration suite proper -- each one
+	// drives a real SpiceDB. They live in their own solution because they
+	// cannot run in the unit job, which has no server.
+	fmt.Println("==> Running examples against SpiceDB...")
+	return sh.RunV("dotnet", "test", examplesSolution, "--verbosity", "normal")
 }
 
 func waitForReady(addr string, timeout time.Duration) error {

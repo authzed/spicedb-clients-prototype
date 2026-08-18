@@ -374,6 +374,30 @@
 
 ### Breaking changes
 
+- **2026-08-18**: `updates` no longer takes `start_revision` and `include_checkpoints` as
+  positional arguments. `client.updates(&types, None, false)` was the only call in this client
+  where a reader could not tell what a literal argument meant without opening the signature --
+  every other optional setting already goes through a named builder. Watch now matches the
+  `delete_relationships`/`delete_relationships_with` shape the client already had:
+
+  ```rust
+  // Before:
+  let stream = client.updates(&object_types, None, false);
+  let stream = client.updates(&object_types, Some(resume_token), true);
+
+  // After:
+  let stream = client.updates(&object_types);
+  let stream = client.updates_with(
+      &object_types,
+      &WatchOptions::new().with_start_revision(resume_token).with_checkpoints(),
+  );
+  ```
+
+  New `spicedb::types::WatchOptions` with `new()`, `with_start_revision(impl Into<String>)`,
+  and `with_checkpoints()`. Behavior is unchanged in every respect -- the same request is
+  built from the same inputs; only how the caller names them changed.
+
+
 - **2026-08-18** (behavioral; no signature change): the two entries below change what existing,
   unmodified call sites do. They are listed here because neither announces itself -- nothing
   fails to compile, and the difference only shows up under load or against a slow query.

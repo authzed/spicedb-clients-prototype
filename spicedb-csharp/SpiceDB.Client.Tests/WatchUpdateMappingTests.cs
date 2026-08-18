@@ -56,10 +56,12 @@ public class WatchUpdateMappingTests
 
         await using var client = NewClient(watch: mockWatch.Object);
 
-        var got = new List<SpiceDB.Client.RelationshipUpdate>();
-        await foreach (var u in client.UpdatesAsync())
-            got.Add(u);
+        var events = new List<WatchEvent>();
+        await foreach (var e in client.UpdatesAsync())
+            events.Add(e);
 
+        events.Should().HaveCount(1);
+        var got = events[0].Updates;
         got.Should().HaveCount(1);
         got[0].Operation.Should().Be(UpdateOperation.Unspecified);
         got[0].Operation.Should().NotBe(
@@ -105,9 +107,12 @@ public class WatchUpdateMappingTests
 
         await using var client = NewClient(watch: mockWatch.Object);
 
-        var got = new List<SpiceDB.Client.RelationshipUpdate>();
-        await foreach (var u in client.UpdatesAsync())
-            got.Add(u);
+        var events = new List<WatchEvent>();
+        await foreach (var e in client.UpdatesAsync())
+            events.Add(e);
+
+        events.Should().HaveCount(1);
+        var got = events[0].Updates;
 
         got.Select(u => u.Operation).Should().Equal(
             UpdateOperation.Create,

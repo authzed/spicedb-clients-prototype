@@ -1323,11 +1323,28 @@ public sealed class SpiceDBClient : IAsyncDisposable
     // ──────────────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Returns an async enumerable of relationship changes from SpiceDB's watch
-    /// API, starting from the given revision.
+    /// Returns an async enumerable of watch events from SpiceDB's watch API,
+    /// starting from the given revision. Each yielded <see cref="WatchEvent"/>
+    /// corresponds to one server response: zero or more relationship updates,
+    /// all current through <see cref="WatchEvent.ChangesThrough"/>.
+    /// <para>
+    /// <see cref="WatchEvent.ChangesThrough"/> is always populated. Pass it as
+    /// <paramref name="startRevision"/> on a later call to resume after a
+    /// dropped stream, instead of restarting from the original
+    /// <paramref name="startRevision"/> (reprocessing everything since,
+    /// possibly past the GC window) or from head (silently losing every
+    /// change in the gap).
+    /// </para>
+    /// <para>
+    /// <paramref name="includeCheckpoints"/> requests periodic checkpoint
+    /// events (<see cref="WatchEvent.IsCheckpoint"/>, no updates) in addition
+    /// to relationship updates. Recommended if this SpiceDB instance is
+    /// running behind a proxy that aborts idle connections, since a
+    /// checkpoint keeps the stream alive even when there are no changes.
+    /// </para>
     /// <para>
     /// Watch ESTABLISHMENT is retried on transient errors — but only up until
-    /// the first update is yielded. Once anything has been yielded from the
+    /// the first event is yielded. Once anything has been yielded from the
     /// current watch stream, a transient error is mapped and rethrown instead
     /// of retried; retrying mid-watch would risk re-delivering already-seen
     /// updates (or silently skipping ones the caller never saw), and there is
@@ -1335,9 +1352,10 @@ public sealed class SpiceDBClient : IAsyncDisposable
     /// <see cref="ReadRelationshipsAsync"/> for the full rationale.
     /// </para>
     /// </summary>
-    public async IAsyncEnumerable<RelationshipUpdate> UpdatesAsync(
+    public async IAsyncEnumerable<WatchEvent> UpdatesAsync(
         IEnumerable<string>? objectTypes = null,
         string? startRevision = null,
+        bool includeCheckpoints = false,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         var req = new WatchRequest();
@@ -1345,6 +1363,15 @@ public sealed class SpiceDBClient : IAsyncDisposable
             req.OptionalObjectTypes.AddRange(objectTypes);
         if (!string.IsNullOrEmpty(startRevision))
             req.OptionalStartCursor = new ZedToken { Token = startRevision };
+        if (includeCheckpoints)
+        {
+            // OptionalUpdateKinds is empty-means-default (relationship updates only, for
+            // backwards compatibility) -- a non-empty list is the exact set requested, so asking
+            // for checkpoints must also spell out relationship updates or the server would stop
+            // sending them.
+            req.OptionalUpdateKinds.Add(WatchKind.IncludeRelationshipUpdates);
+            req.OptionalUpdateKinds.Add(WatchKind.IncludeCheckpoints);
+        }
 
         var attempt = 0;
         var backoff = InitialBackoff;
@@ -1396,11 +1423,13 @@ public sealed class SpiceDBClient : IAsyncDisposable
                 if (!hasNext)
                     yield break;
 
-                foreach (var update in resp!.Updates)
+                yielded++;
+                yield return new WatchEvent
                 {
-                    yielded++;
-                    yield return UpdateFromProto(update);
-                }
+                    Updates = resp!.Updates.Select(UpdateFromProto).ToList(),
+                    ChangesThrough = resp.ChangesThrough?.Token ?? "",
+                    IsCheckpoint = resp.IsCheckpoint,
+                };
             }
 
             // Reached only via the transient-retry break above.

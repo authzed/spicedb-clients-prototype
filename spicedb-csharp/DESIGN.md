@@ -293,7 +293,7 @@ Async enumerables:
 - `LookupResourcesAsync(consistency, resourceType, permission, subjectType, subjectID)` → `IAsyncEnumerable<LookupResource>`
 - `LookupSubjectsAsync(consistency, resourceType, resourceID, permission, subjectType)` → `IAsyncEnumerable<LookupSubject>`
 - `ExportRelationshipsAsync(consistency, filter?)` → `IAsyncEnumerable<Relationship>`
-- `UpdatesAsync(objectTypes?, startRevision?)` → `IAsyncEnumerable<RelationshipUpdate>`
+- `UpdatesAsync(objectTypes?, startRevision?, includeCheckpoints?)` → `IAsyncEnumerable<WatchEvent>`
 
 ### Lookups
 
@@ -401,7 +401,18 @@ proto `tree_type` oneof.
 
 ### Watch
 
-- `UpdatesAsync(objectTypes?, startRevision?)` → `IAsyncEnumerable<RelationshipUpdate>`
+- `UpdatesAsync(objectTypes?, startRevision?, includeCheckpoints?)` → `IAsyncEnumerable<WatchEvent>`
+  — `includeCheckpoints` (default `false`) requests `WATCH_KIND_INCLUDE_CHECKPOINTS`
+  (recommended behind a proxy that aborts idle connections, since a checkpoint keeps the
+  stream alive with no changes to report)
+
+`WatchEvent { IReadOnlyList<RelationshipUpdate> Updates, string ChangesThrough, bool
+IsCheckpoint }` is one event per `WatchResponse`. `ChangesThrough` is always populated --
+proto: "This token can be used in a subsequent WatchRequest to resume watching from this
+point" -- pass it as `startRevision` to resume after a dropped stream instead of restarting
+from the original `startRevision` (reprocessing, possibly past the GC window) or from head
+(silently losing every change in the gap). `IsCheckpoint` is true for a checkpoint event,
+which carries no `Updates`.
 
 ### Experimental — Relationship Counters
 

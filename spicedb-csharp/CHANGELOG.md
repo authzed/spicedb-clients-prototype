@@ -209,6 +209,41 @@
 
 ### Fixed
 
+- **2026-08-18**: Watch resumability. `UpdatesAsync` previously dropped
+  `WatchResponse.ChangesThrough` entirely and had no way to request
+  `WATCH_KIND_INCLUDE_CHECKPOINTS`.
+  - **Breaking**: `UpdatesAsync(objectTypes?, startRevision?, ...)` now returns
+    `IAsyncEnumerable<WatchEvent>` instead of `IAsyncEnumerable<RelationshipUpdate>`, and yields
+    once per server response (a batch of updates) rather than flattening to one item per
+    relationship update — a checkpoint response carries zero updates, so a per-update-only
+    enumerable has no way to surface one at all.
+
+    ```csharp
+    public sealed record WatchEvent
+    {
+        public IReadOnlyList<RelationshipUpdate> Updates { get; init; }
+        public string ChangesThrough { get; init; } // resume token; pass as startRevision to resume after a dropped stream
+        public bool IsCheckpoint { get; init; }      // true for a checkpoint event, which carries no Updates
+    }
+    ```
+  - `WatchEvent.ChangesThrough` is the proto's `changes_through` -- "This token can be used in
+    a subsequent WatchRequest to resume watching from this point." Without it, a consumer
+    whose stream dropped could only restart from its original `startRevision` (reprocessing
+    everything since, possibly past the GC window) or from head (silently losing every change
+    in the gap).
+  - New `includeCheckpoints` parameter (default `false`) requests
+    `WATCH_KIND_INCLUDE_CHECKPOINTS` (plus `WATCH_KIND_INCLUDE_RELATIONSHIP_UPDATES`, since
+    `OptionalUpdateKinds` is empty-means-default and a non-empty list replaces rather than
+    extends it) -- no prior way existed to ask for this at all. `WatchEvent.IsCheckpoint` lets
+    a caller tell "nothing changed, here is a fresh resume point" from "here are changes".
+    Recommended if this SpiceDB instance is running behind a proxy that aborts idle
+    connections.
+  - `examples/WatchChanges/` updated for the new `WatchEvent` shape and extended with a
+    checkpoint-request test. New `SpiceDB.Client.Tests/WatchResumabilityTests.cs`: a watch
+    event exposes a usable resume token, `includeCheckpoints` reaches the built
+    `WatchRequest`, and a checkpoint event is distinguishable from one carrying updates.
+    `WatchUpdateMappingTests`, `StreamingEstablishmentRetryTests`'s watch cases updated for the
+    new return type without weakening any existing assertion.
 - **2026-08-18**: Call deadlines, per root `DESIGN.md` "RULE: A unary call must have a
   deadline". Previously the client had `CancellationToken` throughout (real caller-side
   cancellation — stops the client from waiting) but no server-enforced deadline: a cancelled

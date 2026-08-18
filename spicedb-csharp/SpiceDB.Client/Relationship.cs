@@ -273,3 +273,31 @@ public enum UpdateOperation
     Touch = 2,
     Delete = 3,
 }
+
+/// <summary>
+/// A single event from <see cref="SpiceDBClient.UpdatesAsync"/>, corresponding to one
+/// <c>WatchResponse</c> from the server.
+/// </summary>
+public sealed record WatchEvent
+{
+    public IReadOnlyList<RelationshipUpdate> Updates { get; init; } = Array.Empty<RelationshipUpdate>();
+
+    /// <summary>
+    /// The point in time this event is current through. Always populated. Proto:
+    /// "the ZedToken that represents the point in time that the watch response is current
+    /// through. This token can be used in a subsequent WatchRequest to resume watching from this
+    /// point." Pass it as <c>startRevision</c> to a later <see cref="SpiceDBClient.UpdatesAsync"/>
+    /// call to resume after a dropped stream, instead of restarting from the original
+    /// <c>startRevision</c> (reprocessing everything since, possibly past the GC window) or from
+    /// head (silently losing every change in the gap).
+    /// </summary>
+    public string ChangesThrough { get; init; } = "";
+
+    /// <summary>
+    /// True for a checkpoint event, which carries no <see cref="Updates"/> — it exists only to
+    /// advertise a fresh <see cref="ChangesThrough"/> and, behind a proxy that aborts idle
+    /// connections, to keep the stream alive. Checkpoints are only sent when
+    /// <c>includeCheckpoints</c> is passed to <see cref="SpiceDBClient.UpdatesAsync"/>.
+    /// </summary>
+    public bool IsCheckpoint { get; init; }
+}

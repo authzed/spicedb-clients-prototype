@@ -32,6 +32,19 @@ module SpiceDB
   # understand into a silent write.
   Update = Data.define(:operation, :relationship)
 
+  # A single event from #updates, corresponding to one WatchResponse from the
+  # server. `changes_through` is always populated -- it's the ZedToken
+  # (String) this event is current through; pass it as `start_revision` to a
+  # later `#updates` call to resume after a dropped stream, instead of
+  # restarting from the original `start_revision` (reprocessing everything
+  # since, possibly past the GC window) or from head (silently losing every
+  # change in the gap). `is_checkpoint` is true for a checkpoint event, which
+  # carries no `updates` -- it exists only to advertise a fresh
+  # `changes_through` and, behind a proxy that aborts idle connections, to
+  # keep the stream alive. Checkpoints are only sent when
+  # `include_checkpoints: true` is passed to `#updates`.
+  WatchEvent = Data.define(:updates, :changes_through, :is_checkpoint)
+
   # Lookup result types — mirror spicedb-go's client/lookup_types.go.
   # `permissionship` is one of :unspecified, :no_permission, :has_permission,
   # :conditional_permission — the same native symbol set CheckResult uses
@@ -96,6 +109,11 @@ module SpiceDB
     # BASE_RETRY_DELAY all come from here -- see {SpiceDB::Retrying}'s
     # module doc for the retry-safety rule they implement.
     include SpiceDB::Retrying
+
+    # watch_request, watch_event_from_proto, and watch_update_from_proto
+    # (the #updates/#call_watch request-building and response-mapping
+    # helpers) come from here -- see {SpiceDB::WatchMapping}'s module doc.
+    include SpiceDB::WatchMapping
 
     # Default page sizes for transparent cursor pagination.
     DEFAULT_READ_PAGE_SIZE   = 512
@@ -564,15 +582,23 @@ module SpiceDB
 
     # --- Watch ---
 
-    # Returns an Enumerator over relationship changes from SpiceDB's watch API.
+    # Returns an Enumerator over watch events from SpiceDB's watch API. Each
+    # yielded SpiceDB::WatchEvent corresponds to one server response: zero or
+    # more relationship updates, all current through
+    # SpiceDB::WatchEvent#changes_through.
     #
     # @param object_types [Array<String>] object types to watch
     # @param start_revision [String, nil] optional revision to start from
-    # @return [Enumerator<SpiceDB::Update>]
-    def updates(object_types, start_revision: nil)
+    # @param include_checkpoints [Boolean] also request periodic checkpoint
+    #   events (SpiceDB::WatchEvent#is_checkpoint, no updates). Recommended
+    #   if this SpiceDB instance is running behind a proxy that aborts idle
+    #   connections, since a checkpoint keeps the stream alive even when
+    #   there are no changes.
+    # @return [Enumerator<SpiceDB::WatchEvent>]
+    def updates(object_types, start_revision: nil, include_checkpoints: false)
       Enumerator.new do |yielder|
-        call_watch(object_types, start_revision) do |update|
-          yielder << update
+        call_watch(object_types, start_revision, include_checkpoints) do |event|
+          yielder << event
         end
       rescue StandardError => e
         # We intentionally do NOT retry the streaming watch here (unlike
@@ -1189,31 +1215,12 @@ module SpiceDB
       [relationships, new_cursor, count]
     end
 
-    def call_watch(object_types, start_revision)
+    def call_watch(object_types, start_revision, include_checkpoints)
       require_proto_client!
-      req_args = { optional_object_types: object_types }
-      req_args[:optional_start_cursor] = Authzed::Api::V1::ZedToken.new(token: start_revision) if start_revision && !start_revision.empty?
+      request = watch_request(object_types, start_revision, include_checkpoints)
 
-      @proto_client.watch.watch(
-        Authzed::Api::V1::WatchRequest.new(**req_args)
-      ).each do |resp|
-        resp.updates.each do |update|
-          # Server-supplied data: an unrecognized operation (OPERATION_UNSPECIFIED, or a future
-          # wire value added after this client shipped) must not map to a write, and must not
-          # raise. Root DESIGN.md, "RULE: A conversion that cannot preserve meaning must fail",
-          # clause 2. :unspecified is the same safe symbol this client already uses for an
-          # unrecognized permissionship, rather than a name unique to this one mapper.
-          op = case update.operation
-               when :OPERATION_CREATE then :create
-               when :OPERATION_TOUCH then :touch
-               when :OPERATION_DELETE then :delete
-               else :unspecified
-               end
-          yield Update.new(
-            operation: op,
-            relationship: relationship_from_proto(update.relationship)
-          )
-        end
+      @proto_client.watch.watch(request).each do |resp|
+        yield watch_event_from_proto(resp)
       end
     end
 

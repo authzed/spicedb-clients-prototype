@@ -56,7 +56,7 @@ RSpec.describe 'SpiceDB::Client#updates operation mapping' do
   it 'maps :OPERATION_UNSPECIFIED to :unspecified, not :touch' do
     stub_watch_updates([[:OPERATION_UNSPECIFIED, 'alice']])
 
-    got = client.updates(['document']).to_a
+    got = client.updates(['document']).flat_map(&:updates)
 
     expect(got.length).to eq(1)
     expect(got.first.operation).to eq(:unspecified)
@@ -70,7 +70,7 @@ RSpec.describe 'SpiceDB::Client#updates operation mapping' do
     # surfaces an unknown enum value as its raw Integer rather than a Symbol.
     stub_watch_updates([[9999, 'bob']])
 
-    got = client.updates(['document']).to_a
+    got = client.updates(['document']).flat_map(&:updates)
 
     expect(got.length).to eq(1)
     expect(got.first.operation).to eq(:unspecified)
@@ -84,7 +84,7 @@ RSpec.describe 'SpiceDB::Client#updates operation mapping' do
                          [:OPERATION_DELETE, 'erin']
                        ])
 
-    got = client.updates(['document']).to_a
+    got = client.updates(['document']).flat_map(&:updates)
 
     expect(got.map(&:operation)).to eq(%i[create touch delete])
     expect(got.map { |u| u.relationship.subject_id }).to eq(%w[carol dave erin])

@@ -431,7 +431,17 @@ are NOT bound by `default_timeout`; `import_relationships` still accepts
 - `export_relationships(consistency, filter = nil)` → `Enumerator<Relationship>`
 
 **Watch:**
-- `updates(object_types, start_revision: nil)` → `Enumerator<Update>`
+- `updates(object_types, start_revision: nil, include_checkpoints: false)` → `Enumerator<WatchEvent>`
+  — `include_checkpoints` requests `WATCH_KIND_INCLUDE_CHECKPOINTS` (recommended behind a
+  proxy that aborts idle connections, since a checkpoint keeps the stream alive with no
+  changes to report)
+
+`WatchEvent = Data.define(:updates, :changes_through, :is_checkpoint)` is one event per
+`WatchResponse`. `changes_through` is always populated -- proto: "This token can be used in a
+subsequent WatchRequest to resume watching from this point" -- pass it as `start_revision` to
+resume after a dropped stream instead of restarting from the original `start_revision`
+(reprocessing, possibly past the GC window) or from head (silently losing every change in the
+gap). `is_checkpoint` is true for a checkpoint event, which carries no `updates`.
 
 **Experimental:**
 - `experimental_register_relationship_counter(name, filter, timeout: nil)` → `nil`

@@ -120,6 +120,48 @@ covered by a test that **completes a real TLS handshake**.
 A client whose default secure constructor cannot reach a public endpoint is not
 shippable, and no amount of green CI substitutes for one honest handshake.
 
+## RULE: Credentials over insecure transport require an explicit opt-in
+
+All seven clients send their bearer token to any host over plaintext with no host check
+whatsoever. An exhaustive search for `127.0.0.1`, `loopback`, and `localhost` across every
+client and every proto tier turned up only doc-comment samples — zero runtime conditionals
+anywhere.
+
+Three clients go further: each contains code written specifically to bypass its transport's
+own refusal to attach call credentials to an insecure channel, with a comment explaining why.
+
+- **Go** — a `PerRPCCredentials` implementation whose `RequireTransportSecurity()` returns
+  `!insecure`, so grpc-go's check passes exactly when the connection is insecure.
+- **C#** — a `CallInvoker.Intercept` that sets the header raw, with the comment *"since
+  CompositeChannelCredentials requires secure transport"*.
+- **Ruby** — a `BearerTokenInterceptor` merging metadata directly, with the comment *"channel
+  credentials can't carry call credentials over a plaintext channel"* — grpc-ruby's C-core
+  actually raises on the composed path, so the bypass avoids a hard failure.
+
+Python, Java, TypeScript, and Rust never engage a checked mechanism at all: plain metadata or
+headers is the only path their underlying libraries offer for an insecure channel, so there is
+no refusal for them to defeat — the guard was simply never built. gRPC's refusal to attach call
+credentials to an insecure channel exists precisely to prevent this. Routing around it —
+deliberately, as in the three clients above, or by omission, as in the other four — is what
+this rule now governs.
+
+1. **A client MUST NOT send credentials over an insecure transport to a non-loopback host
+   unless the caller has explicitly opted in through a named parameter.** Named means a
+   reader cannot mistake it for a default: a distinct, documented option the caller supplies
+   on purpose, never a boolean that does double duty as the plaintext-transport switch.
+2. **A warning is not sufficient.** A log line the developer never reads does not close a
+   credential leak. The client must refuse, or require the explicit opt-in above, before it
+   proceeds — logging while sending the credential anyway does not satisfy this rule.
+3. **The official Python client sets the precedent.** Its insecure posture lives on a
+   separately-named `InsecureClient` a caller must reach for deliberately, not a flag on the
+   default constructor. A client whose only route to insecure operation is a boolean on its
+   primary entry point does not meet this bar.
+
+Name the failure this rule exists to prevent: a developer copies `insecure: true` from a
+localhost example into a staging config, and a long-lived SpiceDB token — a complete
+authorization bypass in anyone else's hands — goes onto the wire in cleartext with nothing
+signalling that it happened.
+
 ## RULE: Only an unconditional grant is true
 
 **Binding on every client, in every language, with no exceptions.**
@@ -289,6 +331,40 @@ other governs data the caller cannot fix by degrading safely. Confusing the two 
 failure mode either way — raising on an unrecognised server enum turns a routine server upgrade
 into a client-side outage, and silently discarding unrepresentable caller data turns a caller's
 mistake into a silent wrong answer.
+
+## RULE: Error mapping must not lose the server's detail
+
+`OUT_OF_RANGE` is mapped to a typed error in 0 of 7 clients. `UNAUTHENTICATED` is mapped in
+only one — Go; the other six leave it indistinguishable from an internal server fault. Every
+proto tier already generates SpiceDB's `ErrorReason` enum from `error_reason.proto`, and not
+one idiomatic client references it anywhere. Six clients do preserve the underlying error
+object — as `cause`, `innerException`, or via `Unwrap` — so the information is reachable but
+unparsed. Rust discards it outright: `from_grpc_status(code: i32, message: String)` reduces the
+status to a code and a string before mapping ever runs, a lossy boundary its own doc comment
+admits.
+
+1. **A client MUST map `OUT_OF_RANGE` and `UNAUTHENTICATED` to typed errors**, not left to fall
+   through to a generic status-code wrapper. These are not exotic codes: they are the two a
+   caller actually hits in production, and every other mapped code in a client's error
+   hierarchy already sets the precedent for treating them the same way.
+2. **A client MUST preserve the underlying status object on every typed error**, so
+   `google.rpc.Status`'s details and SpiceDB's `ErrorReason` remain reachable to a caller who
+   wants them — as `cause`, `inner`, `Unwrap()`, or the language's equivalent. A mapping step
+   that reduces a status to a bare code and string, as Rust's does, has already thrown the
+   information away before it can be used; parsing must work against the original status,
+   never against a string rebuilt from it.
+
+Name both consequences:
+
+- `OUT_OF_RANGE` is SpiceDB's code for an expired or garbage-collected ZedToken. It is the
+  single most actionable recoverable error in a token-threading application, and its correct
+  handling is mechanical — discard the stale token, re-read at full consistency, retry.
+  Collapsed into a generic error, every caller must string-match a message to recover an error
+  the client already knew the shape of.
+- `UNAUTHENTICATED` is the most common error a new integration produces — a wrong, expired, or
+  rotated API token. In six clients it is currently indistinguishable from an internal server
+  fault, so a caller cannot write "refresh credentials on auth failure, page someone on
+  internal error" — the one distinction that error most needs to carry.
 
 ## RULE: Automatic retry is for idempotent operations only
 

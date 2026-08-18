@@ -6,7 +6,8 @@ Demonstrates expand_permission_tree and walking the native PermissionTree
 
 import pytest
 
-from spicedb import Filter, Relationship, SpiceDBClient, full
+from spicedb import Filter, Relationship, full
+from spicedb.aio import SpiceDBClient
 from spicedb.types import PermissionTree, SubjectRef, Transaction
 
 

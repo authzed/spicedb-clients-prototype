@@ -36,6 +36,13 @@ type TemplateData struct {
 	LookupSubjectTypes []LookupSubjectTypeData
 	CheckOverloads     []CheckOverloadData
 	LookupResOverloads []LookupResOverloadData
+
+	// ClientTypeImports lists the names, sorted and deduplicated, that
+	// sync.py/aio.py's TypedClient body references from permissions.py (e.g.
+	// "TypedRelationship", "_DocumentViewPermission", "DocumentViewSubject").
+	// Used to render an explicit `from .permissions import (...)` block
+	// instead of a star import.
+	ClientTypeImports []string
 }
 
 type LookupSubjectTypeData struct {
@@ -54,8 +61,8 @@ type LookupResOverloadData struct {
 }
 
 type DefinitionData struct {
-	ClassName   string             // e.g. "Document"
-	Name        string             // e.g. "document"
+	ClassName   string // e.g. "Document"
+	Name        string // e.g. "document"
 	Permissions []DefPermissionData
 	Relations   []DefRelationData
 	SubRefs     []DefSubRefData
@@ -96,8 +103,8 @@ type DefSubRefData struct {
 }
 
 type CaveatContextData struct {
-	ClassName  string         // e.g. "IpRangeContext"
-	CaveatName string         // e.g. "ip_range"
+	ClassName  string // e.g. "IpRangeContext"
+	CaveatName string // e.g. "ip_range"
 	Params     []CaveatParamData
 }
 
@@ -116,7 +123,7 @@ type SubjectRefData struct {
 	CaveatName     string // e.g. "ip_range" — empty unless caveated
 	CaveatContext  string // e.g. "IpRangeContext"
 	HasCaveat      bool
-	HasExpiration  bool   // true for an expiring variant
+	HasExpiration  bool // true for an expiring variant
 	WithMethods    []WithMethodData
 }
 
@@ -129,7 +136,18 @@ type WithMethodData struct {
 	CaveatName   string // only set when IsCaveat — used by emitter if needed
 }
 
-// Generate produces a permissions.py file from the parsed schema.
+// templateNames are the templates emitted per Generate call, in emission
+// order. Each entry's generated file Path is its name with ".tmpl" trimmed.
+var templateNames = []string{
+	"permissions.py.tmpl",
+	"sync.py.tmpl",
+	"aio.py.tmpl",
+}
+
+// Generate produces permissions.py, sync.py, and aio.py from the parsed
+// schema: permissions.py holds the flavor-agnostic types, while sync.py and
+// aio.py each define a TypedClient bound to spicedb.sync/aio.SpiceDBClient
+// respectively.
 // opts is currently unused.
 func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]generator.GeneratedFile, error) {
 	data, err := buildTemplateData(s)
@@ -137,27 +155,32 @@ func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]genera
 		return nil, err
 	}
 
-	tmpl, err := template.New("typed_client.py.tmpl").ParseFS(templateFS, "templates/*.tmpl")
+	tmpl, err := template.New("permissions.py.tmpl").ParseFS(templateFS, "templates/*.tmpl")
 	if err != nil {
 		return nil, err
 	}
 
-	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, data); err != nil {
-		return nil, err
+	files := make([]generator.GeneratedFile, 0, len(templateNames))
+	for _, name := range templateNames {
+		var buf bytes.Buffer
+		if err := tmpl.ExecuteTemplate(&buf, name, data); err != nil {
+			return nil, fmt.Errorf("executing template %s: %w", name, err)
+		}
+		files = append(files, generator.GeneratedFile{
+			Path:    strings.TrimSuffix(name, ".tmpl"),
+			Content: buf.Bytes(),
+		})
 	}
 
-	return []generator.GeneratedFile{
-		{Path: "permissions.py", Content: buf.Bytes()},
-	}, nil
+	return files, nil
 }
 
 func buildTemplateData(s *schema.Schema) (TemplateData, error) {
 	usedCaveats := map[string]bool{}
-	defCaveats := map[string][]string{}         // def name -> ordered caveat names usable on it
+	defCaveats := map[string][]string{} // def name -> ordered caveat names usable on it
 	defCaveatsSeen := map[string]map[string]bool{}
-	defExpiration := map[string]bool{}           // def name -> uses "with expiration"
-	defIsSubject := map[string]bool{}            // def name -> appears as a base subject anywhere
+	defExpiration := map[string]bool{} // def name -> uses "with expiration"
+	defIsSubject := map[string]bool{}  // def name -> appears as a base subject anywhere
 	type subRef struct{ def, rel string }
 	subRefs := map[subRef]bool{}
 
@@ -462,7 +485,7 @@ func buildTemplateData(s *schema.Schema) (TemplateData, error) {
 		}
 	}
 
-	return TemplateData{
+	data := TemplateData{
 		CaveatContexts:     caveatContexts,
 		SubjectRefs:        subjectRefs,
 		Definitions:        definitions,
@@ -472,7 +495,42 @@ func buildTemplateData(s *schema.Schema) (TemplateData, error) {
 		LookupSubjectTypes: lookupSubjectTypes,
 		CheckOverloads:     checkOverloads,
 		LookupResOverloads: lookupResOverloads,
-	}, nil
+	}
+	data.ClientTypeImports = clientTypeImports(data)
+	return data, nil
+}
+
+// clientTypeImports returns the sorted, deduplicated set of permissions.py
+// type names that a TypedClient body (sync.py/aio.py) references. TypedClient
+// always touches/creates/deletes TypedRelationship values and writes a
+// TypedTransaction, so those two are unconditional; the rest come from the
+// per-permission overloads, which vary with the schema (and are empty for a
+// schema with no definitions/permissions).
+func clientTypeImports(data TemplateData) []string {
+	set := map[string]bool{
+		"TypedRelationship": true,
+		"TypedTransaction":  true,
+	}
+	for _, o := range data.CheckOverloads {
+		set[o.PermClassName] = true
+		set[o.SubjectUnion] = true
+	}
+	for _, o := range data.LookupResOverloads {
+		set[o.RefClassName] = true
+		set[o.SubjectUnion] = true
+	}
+	for _, l := range data.LookupSubjectTypes {
+		set[l.PermClassName] = true
+		for _, m := range l.Members {
+			set[m] = true
+		}
+	}
+	names := make([]string, 0, len(set))
+	for n := range set {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // pySubjectRefName returns the Python class name for a given subject type.

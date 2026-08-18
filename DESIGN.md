@@ -57,8 +57,9 @@ All idiomatic clients should provide:
    inspectable using language-native patterns (Go: sentinel errors + errors.Is,
    Python: exception hierarchy, TypeScript: typed error classes)
 3. **Iterator/async patterns** for streaming RPCs — use the most natural
-   mechanism for the language (Go: iter.Seq2, Python: async iterators,
-   TypeScript: AsyncIterableIterator)
+   mechanism for the language (Go: iter.Seq2, Python: async iterators in
+   `spicedb.aio` and plain iterators in `spicedb.sync`, TypeScript:
+   AsyncIterableIterator)
 4. **Builder or options patterns** for complex requests — users should not need
    to construct nested proto messages
 5. **First-class ZedToken support** — consistency tokens should be opaque

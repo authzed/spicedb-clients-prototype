@@ -218,17 +218,25 @@ func PythonIntegrationTest() error {
 		return fmt.Errorf("build failed: %w", err)
 	}
 
-	// 2. Generate permissions.py from sample.zed
-	fmt.Println("==> Generating permissions.py from sample.zed...")
+	// 2. Generate permissions.py, sync.py, and aio.py from sample.zed. These
+	// land in the "testdata" package (testdata/python/testdata/, which already
+	// has an __init__.py) rather than the project root, since sync.py/aio.py
+	// import permissions.py via a package-relative "from .permissions import"
+	// — that only resolves when the three files live inside an actual package.
+	fmt.Println("==> Generating permissions.py, sync.py, and aio.py from sample.zed...")
 	if err := sh.RunV(
 		"./spicedb-gen",
 		"--schema", "testdata/sample.zed",
 		"--lang", "python",
-		"--out", "testdata/python/permissions.py",
+		"--out", "testdata/python/testdata",
 	); err != nil {
 		return fmt.Errorf("code generation failed: %w", err)
 	}
-	defer os.Remove("testdata/python/permissions.py")
+	defer func() {
+		for _, f := range []string{"permissions.py", "sync.py", "aio.py"} {
+			os.Remove("testdata/python/testdata/" + f)
+		}
+	}()
 
 	// 3. uv sync to install deps
 	fmt.Println("==> Installing python deps via uv...")

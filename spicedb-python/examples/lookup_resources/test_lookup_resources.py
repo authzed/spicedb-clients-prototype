@@ -8,7 +8,8 @@ callers must not treat it as an unconditional grant.
 
 import pytest
 
-from spicedb import Filter, Permissionship, Relationship, SpiceDBClient, full
+from spicedb import Filter, Permissionship, Relationship, full
+from spicedb.aio import SpiceDBClient
 from spicedb.types import Transaction
 
 

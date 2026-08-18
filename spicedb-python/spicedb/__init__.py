@@ -1,6 +1,15 @@
-"""Idiomatic Python client for SpiceDB."""
+"""Idiomatic Python client for SpiceDB.
 
-from spicedb.client import SpiceDBClient
+Clients are explicit about their concurrency model -- import the one you want::
+
+    from spicedb.sync import SpiceDBClient   # synchronous
+    from spicedb.aio import SpiceDBClient    # asynchronous
+
+Everything else in this package (relationship types, filters, transactions,
+consistency constructors, the error hierarchy) is shared by both flavors and
+imported from here.
+"""
+
 from spicedb.consistency import (
     Consistency,
     at_least,
@@ -12,10 +21,14 @@ from spicedb.consistency import (
 )
 from spicedb.errors import (
     AlreadyExistsError,
+    CancelledError,
+    EventLoopBindingError,
+    FailedPreconditionError,
     InvalidArgumentError,
     NotFoundError,
     PermissionDeniedError,
     SpiceDBError,
+    UnavailableError,
 )
 from spicedb.types import (
     Filter,
@@ -45,7 +58,6 @@ from spicedb.types import (
 )
 
 __all__ = [
-    "SpiceDBClient",
     # Consistency
     "Consistency",
     "full",
@@ -87,4 +99,8 @@ __all__ = [
     "NotFoundError",
     "AlreadyExistsError",
     "InvalidArgumentError",
+    "FailedPreconditionError",
+    "UnavailableError",
+    "CancelledError",
+    "EventLoopBindingError",
 ]

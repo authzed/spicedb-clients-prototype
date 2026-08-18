@@ -180,8 +180,18 @@ Python (`__bool__`), Ruby cannot make the object itself refuse to be truthy.
 `check_any`/`check_all` remain plain `Boolean` — they count ONLY
 `:has_permission` results. A `:conditional_permission` result does NOT
 count as a grant for either (deliberately fail-closed): `check_any` is
-`results.any?(&:has_permission?)` and `check_all` is
-`results.all?(&:has_permission?)`.
+`results.any?(&:has_permission?)`, and `check_all` is
+`results.all?(&:has_permission?)` **guarded by an explicit
+`return false if relationships.empty?`**.
+
+That guard is not redundant. `Array#all?` is vacuously `true` on an empty
+array, so a bare `results.all?(&:has_permission?)` granted whenever the
+relationship list came up empty — a filter that matched nothing, an upstream
+returning `nil`, a defensive empty array — with no server round trip and no
+way for the caller to tell a real grant from an empty one. `check_any` needs
+no such guard: `Array#any?` is already `false` on empty. Root `DESIGN.md`,
+"RULE: Only an unconditional grant is true": an aggregate over zero checks is
+not a grant.
 
 #### Supplying caveat context
 

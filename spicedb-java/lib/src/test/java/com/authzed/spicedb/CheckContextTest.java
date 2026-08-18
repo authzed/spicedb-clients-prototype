@@ -166,9 +166,14 @@ class CheckContextTest {
   // ---------------------------------------------------------------------
   // C5 -- nested Map/List values in CHECK-TIME context must convert to a
   // proper proto Struct/ListValue, not get stringified. Scalars already
-  // worked (see C1-C4), which is why no earlier test caught this. Write-time
-  // caveat context stringification (Relationship#toProtoRelationship) is
-  // untouched and out of scope here.
+  // worked (see C1-C4), which is why no earlier test caught this.
+  //
+  // The write path no longer stringifies either: SpiceDBClient#toProtoValue
+  // is now the single converter for BOTH surfaces -- check-time (via
+  // toProtoStruct) and write-time (a relationship's stored caveatContext, via
+  // toProtoRelationship). The tests below stay scoped to the check surface;
+  // the write surface has its own coverage. Keeping them separate is
+  // deliberate, so a regression on one surface can't be masked by the other.
   // ---------------------------------------------------------------------
 
   @Test

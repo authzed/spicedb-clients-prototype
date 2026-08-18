@@ -37,6 +37,14 @@ Security-obvious named constructors:
 All constructors are `async` and return `Result<SpiceDBClient, SpiceDBError>`.
 Endpoint and token parameters accept `impl Into<String>` for ergonomics.
 
+Per root DESIGN.md, "RULE: Credentials over insecure transport require an
+explicit opt-in": `.plaintext()`/`new_plaintext` only permit a plaintext
+connection to a loopback endpoint (`localhost`, `127.0.0.0/8`, `::1`, or a
+`unix:` socket target) — the local-development case that is the entire
+reason they exist. Anything else needs `.allow_insecure_remote_credentials()`
+called explicitly on the builder, or `build()` returns
+`SpiceDBError::InvalidArgument` before any channel is created.
+
 **TLS roots.** `new_system_tls` uses tonic's `tls-native-roots` feature and calls
 `ClientTlsConfig::new().with_native_roots()`, so the OS trust store is read at runtime,
 satisfying the root `DESIGN.md` rule *"A system-TLS constructor must reach a real
@@ -453,6 +461,8 @@ tonic's own client-side timeout enforcement (`tonic::transport::Channel`'s
 - `SpiceDBClient::new_plaintext(endpoint, token) -> Result<Self, SpiceDBError>`
 - `SpiceDBClient::new_system_tls(endpoint, token) -> Result<Self, SpiceDBError>`
 - `SpiceDBClient::builder(endpoint, token) -> SpiceDBClientBuilder`
+- `SpiceDBClientBuilder::allow_insecure_remote_credentials(self) -> Self` -- explicit opt-in for
+  `.plaintext()` against a non-loopback endpoint
 
 **Checks:**
 - `check_permission(&self, cs, permission, &rel) -> Result<CheckResult, SpiceDBError>`

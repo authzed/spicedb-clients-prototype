@@ -374,6 +374,26 @@
 
 ### Breaking changes
 
+- **2026-08-18**: per root DESIGN.md, "RULE: Credentials over insecure transport require an
+  explicit opt-in" -- `SpiceDBClientBuilder::plaintext()` / `SpiceDBClient::new_plaintext` (and
+  the underlying `SpiceDBProtoClient::new`) now refuse to construct a client for a non-loopback
+  endpoint (loopback means `localhost`, `127.0.0.0/8`, `::1`, or a `unix:` socket target).
+  Previously an insecure connection would send its bearer token in cleartext to any host --
+  tonic's `Interceptor` trait has no built-in "refuse over an insecure channel" check the way
+  some other language bindings do, so nothing checked where the connection actually went.
+  - `SpiceDBProtoClient::new`'s error type changed from `tonic::transport::Error` to the new
+    `SpiceDBProtoClientError` (variants `InsecureRemoteHostNotAllowed(String)` and
+    `Transport(tonic::transport::Error)`); a new `SpiceDBProtoClient::new_with_options(endpoint,
+    token, insecure, allow_insecure_remote_credentials)` is the opt-in entry point, and `new`
+    delegates to it with `false`.
+  - `SpiceDBClientBuilder` gains `allow_insecure_remote_credentials()`, for use alongside
+    `.plaintext()`. Named and separate from `plaintext()` on purpose: the rule requires an
+    option a reader cannot mistake for a default, not a boolean that does double duty as the
+    plaintext-transport switch. `build()` now returns `SpiceDBError::InvalidArgument` for a
+    rejected combination, before any channel is created.
+  - `new_plaintext`/`.plaintext()` against `localhost` are unaffected -- no code change needed
+    for local development.
+
 - **2026-08-18**: `updates` no longer takes `start_revision` and `include_checkpoints` as
   positional arguments. `client.updates(&types, None, false)` was the only call in this client
   where a reader could not tell what a literal argument meant without opening the signature --

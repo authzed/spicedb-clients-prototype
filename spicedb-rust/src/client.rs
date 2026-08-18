@@ -93,13 +93,31 @@ pub struct SpiceDBClientBuilder {
     endpoint: String,
     token: String,
     plaintext: bool,
+    allow_insecure_remote_credentials: bool,
     default_timeout: Duration,
 }
 
 impl SpiceDBClientBuilder {
     /// Disables TLS for the connection. Use only for testing.
+    ///
+    /// By itself, this only permits a plaintext connection to a loopback
+    /// endpoint (localhost, 127.0.0.0/8, ::1, or a unix socket target) --
+    /// see root DESIGN.md, "RULE: Credentials over insecure transport
+    /// require an explicit opt-in". For a non-loopback endpoint, also call
+    /// [`allow_insecure_remote_credentials`](Self::allow_insecure_remote_credentials).
     pub fn plaintext(mut self) -> Self {
         self.plaintext = true;
+        self
+    }
+
+    /// Explicit, separately named opt-in permitting [`plaintext`](Self::plaintext)
+    /// to target a non-loopback endpoint. Named and separate from
+    /// `plaintext` on purpose: the rule requires an option a reader cannot
+    /// mistake for a default, not a boolean that does double duty as the
+    /// plaintext-transport switch. Call this only if you genuinely mean to
+    /// send a bearer token in cleartext to a remote host.
+    pub fn allow_insecure_remote_credentials(mut self) -> Self {
+        self.allow_insecure_remote_credentials = true;
         self
     }
 
@@ -112,10 +130,30 @@ impl SpiceDBClientBuilder {
     }
 
     /// Builds the client, establishing the gRPC connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpiceDBError::InvalidArgument`] if [`plaintext`](Self::plaintext)
+    /// was called, `endpoint` is not loopback, and
+    /// [`allow_insecure_remote_credentials`](Self::allow_insecure_remote_credentials)
+    /// was not -- before any channel is created. See root DESIGN.md, "RULE:
+    /// Credentials over insecure transport require an explicit opt-in".
     pub async fn build(self) -> Result<SpiceDBClient, SpiceDBError> {
-        let proto = SpiceDBProtoClient::new(&self.endpoint, &self.token, self.plaintext)
-            .await
-            .map_err(|e| SpiceDBError::Transport(e.to_string()))?;
+        let proto = SpiceDBProtoClient::new_with_options(
+            &self.endpoint,
+            &self.token,
+            self.plaintext,
+            self.allow_insecure_remote_credentials,
+        )
+        .await
+        .map_err(|e| match e {
+            spicedb_proto::SpiceDBProtoClientError::InsecureRemoteHostNotAllowed(msg) => {
+                SpiceDBError::InvalidArgument(msg)
+            }
+            spicedb_proto::SpiceDBProtoClientError::Transport(e) => {
+                SpiceDBError::Transport(e.to_string())
+            }
+        })?;
 
         Ok(SpiceDBClient {
             proto,
@@ -151,6 +189,7 @@ impl SpiceDBClient {
             endpoint: endpoint.into(),
             token: token.into(),
             plaintext: false,
+            allow_insecure_remote_credentials: false,
             default_timeout: DEFAULT_TIMEOUT,
         }
     }

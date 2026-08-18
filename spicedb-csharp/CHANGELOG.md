@@ -209,6 +209,21 @@
 
 ### Fixed
 
+- **2026-08-18**: `Filter.ToProto()` silently dropped `SubjectID`/`SubjectRelation` when
+  `SubjectType` was not set, instead of raising. `OptionalSubjectId`/`OptionalRelation` were
+  nested inside `if (!string.IsNullOrEmpty(SubjectType))`, so
+  `new Filter("document").WithSubjectID("alice")` produced a proto `RelationshipFilter` with
+  **no subject constraint at all**, while the `Filter` object itself still reported
+  `SubjectID == "alice"` — a caller reading the object back would see the constraint they set;
+  the server would not. `DeleteRelationshipsAsync` called with that filter deleted every
+  relationship on every document, not just alice's. The wire's `SubjectFilter.subject_type` is a
+  required field, so there is no way to express a subject ID/relation constraint without it,
+  which makes silent widening the one unsafe resolution — `ToProto()` now throws
+  `InvalidArgumentException` naming the field that was set without `SubjectType`, per root
+  `DESIGN.md` "RULE: A conversion that cannot preserve meaning must fail", clause 1
+  (caller-supplied data the client cannot represent MUST raise a typed error). Replaces
+  `FilterTests.ToProto_WithoutSubjectType_DoesNotSetSubjectFilter`, which asserted the silent-drop
+  behavior as correct, with tests asserting the throw for both `SubjectID` and `SubjectRelation`.
 - **2026-08-18**: `CheckPermissionsCoreAsync` did not verify that
   `CheckBulkPermissions` returned as many pairs as were requested — the
   result array was sized off `resp.Pairs.Count` instead of the request's

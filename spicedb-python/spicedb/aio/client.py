@@ -47,6 +47,24 @@ from spicedb.types import (
 
 _DEFAULT_MAX_RETRIES = 3
 
+_DEFAULT_TIMEOUT_SECONDS = 30.0
+"""Applied to every unary call that does not pass its own `timeout`.
+
+Mirrors `authzed-node`'s `DEFAULT_DEADLINE_MS = 30_000` (its comment cites
+`grpc/grpc-node#541`, a known gRPC failure mode where a channel that accepts
+a connection but never answers produces no error at all). Without a finite
+default, a wedged SpiceDB hangs every caller that didn't opt in to a timeout
+-- in practice, most callers -- forever: the connection looks fine at the
+transport level, so nothing ever times out and nothing is ever produced to
+retry. See root DESIGN.md, "RULE: A unary call must have a deadline".
+
+Deliberately NOT applied to streaming calls (`read_relationships`,
+`lookup_resources`, `lookup_subjects`, `watch`, `export_relationships`) --
+those are long-lived by design, and applying this default to them would make
+the stream itself the outage (see DESIGN.md, "Streaming calls MUST NOT
+inherit the unary default").
+"""
+
 
 class SpiceDBClient:
     """Idiomatic async Python client for SpiceDB.
@@ -64,10 +82,17 @@ class SpiceDBClient:
         *,
         insecure: bool = False,
         max_retries: int = _DEFAULT_MAX_RETRIES,
+        default_timeout: float = _DEFAULT_TIMEOUT_SECONDS,
     ):
+        """``default_timeout`` (seconds) bounds every unary call that does not
+        pass its own ``timeout=``. It is NOT applied to streaming calls
+        (``read_relationships``, ``lookup_resources``, ``lookup_subjects``,
+        ``watch``, ``export_relationships``), which are long-lived by design.
+        """
         self._endpoint = endpoint
         self._insecure = insecure
         self._max_retries = max_retries
+        self._default_timeout = default_timeout
         self._metadata = bearer_metadata(token)
         self._channel: grpc.aio.Channel | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -133,6 +158,18 @@ class SpiceDBClient:
     async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> bool:
         await self.close()
         return False
+
+    # ── Deadlines ───────────────────────────────────────────────────
+
+    def _effective_timeout(self, timeout: float | None) -> float:
+        """Resolve a per-call ``timeout`` against the client default.
+
+        ``None`` (the default on every unary method) means "use
+        ``default_timeout``" -- there is deliberately no way to request an
+        unbounded unary call. See root DESIGN.md, "RULE: A unary call must
+        have a deadline".
+        """
+        return timeout if timeout is not None else self._default_timeout
 
     # ── Retry helper ────────────────────────────────────────────────
 
@@ -206,6 +243,7 @@ class SpiceDBClient:
         rel: Relationship,
         *,
         context: dict[str, Any] | None = None,
+        timeout: float | None = None,
     ) -> CheckResult:
         """Check a single permission. Returns a CheckResult -- use
         `.has_permission` for the common bool case, or inspect
@@ -215,9 +253,14 @@ class SpiceDBClient:
 
         `context` supplies caveat context for this check. `rel` can also
         carry its own `Relationship.check_context`, which overrides `context`
-        key-by-key for this one check (see `check_permissions` below)."""
+        key-by-key for this one check (see `check_permissions` below).
+
+        `timeout` (seconds) bounds this call, overriding the client's
+        `default_timeout`."""
         self._ensure_channel()
-        results = await self.check_permissions(consistency, rel, context=context)
+        results = await self.check_permissions(
+            consistency, rel, context=context, timeout=timeout
+        )
         return results[0]
 
     async def check_permissions(
@@ -225,6 +268,7 @@ class SpiceDBClient:
         consistency: Consistency,
         *rels: Relationship,
         context: dict[str, Any] | None = None,
+        timeout: float | None = None,
     ) -> list[CheckResult]:
         """Check multiple permissions via BulkCheckPermissions. Returns a
         list of CheckResult, one per relationship, in the same order.
@@ -238,13 +282,17 @@ class SpiceDBClient:
         `check_context` inherits `context` unchanged. `check_context` is
         check-time-only and distinct from `Relationship.caveat_context`,
         which is written into a relationship at write time -- see the
-        `Relationship` docstring."""
+        `Relationship` docstring.
+
+        `timeout` (seconds) bounds this call, overriding the client's
+        `default_timeout`."""
         self._ensure_channel()
         request = _requests.check_bulk_request(consistency, rels, context)
+        t = self._effective_timeout(timeout)
 
         async def _call() -> permission_service_pb2.CheckBulkPermissionsResponse:
             return await self._permissions.CheckBulkPermissions(
-                request, metadata=self._metadata
+                request, timeout=t, metadata=self._metadata
             )
 
         resp = await self._with_retry(_call)
@@ -255,12 +303,15 @@ class SpiceDBClient:
         consistency: Consistency,
         *rels: Relationship,
         context: dict[str, Any] | None = None,
+        timeout: float | None = None,
     ) -> bool:
         """Return True if any of the permission checks pass outright. Only
         `CheckResult.has_permission` results count -- a CONDITIONAL_PERMISSION
         result is not a grant, so it can never make this True."""
         self._ensure_channel()
-        results = await self.check_permissions(consistency, *rels, context=context)
+        results = await self.check_permissions(
+            consistency, *rels, context=context, timeout=timeout
+        )
         return any(r.has_permission for r in results)
 
     async def check_all(
@@ -268,6 +319,7 @@ class SpiceDBClient:
         consistency: Consistency,
         *rels: Relationship,
         context: dict[str, Any] | None = None,
+        timeout: float | None = None,
     ) -> bool:
         """Return True if all of the permission checks pass outright. Only
         `CheckResult.has_permission` results count -- a CONDITIONAL_PERMISSION
@@ -279,7 +331,9 @@ class SpiceDBClient:
         self._ensure_channel()
         if not rels:
             return False
-        results = await self.check_permissions(consistency, *rels, context=context)
+        results = await self.check_permissions(
+            consistency, *rels, context=context, timeout=timeout
+        )
         return all(r.has_permission for r in results)
 
     # ── Reads ───────────────────────────────────────────────────────
@@ -426,14 +480,18 @@ class SpiceDBClient:
 
     # ── Writes ──────────────────────────────────────────────────────
 
-    async def write(self, txn: Transaction) -> str:
-        """Execute a transaction and return the revision string."""
+    async def write(self, txn: Transaction, *, timeout: float | None = None) -> str:
+        """Execute a transaction and return the revision string.
+
+        `timeout` (seconds) bounds this call, overriding the client's
+        `default_timeout`."""
         self._ensure_channel()
         request = _requests.write_request(txn)
+        t = self._effective_timeout(timeout)
 
         async def _call() -> permission_service_pb2.WriteRelationshipsResponse:
             return await self._permissions.WriteRelationships(
-                request, metadata=self._metadata
+                request, timeout=t, metadata=self._metadata
             )
 
         resp = await self._call_once(_call)
@@ -446,6 +504,7 @@ class SpiceDBClient:
         must_match: list[Filter] | None = None,
         must_not_match: list[Filter] | None = None,
         limit: int | None = None,
+        timeout: float | None = None,
     ) -> str:
         """Delete relationships matching the filter. Returns the revision string.
 
@@ -462,15 +521,19 @@ class SpiceDBClient:
         `WithDeleteLimit`, this does not auto-page — it does not loop to
         delete every match when the match count exceeds ``limit``; call again
         with the same filter to continue deleting what remains.
+
+        ``timeout`` (seconds) bounds this call, overriding the client's
+        ``default_timeout``.
         """
         self._ensure_channel()
         request = _requests.delete_relationships_request(
             filter, must_match, must_not_match, limit
         )
+        t = self._effective_timeout(timeout)
 
         async def _call() -> permission_service_pb2.DeleteRelationshipsResponse:
             return await self._permissions.DeleteRelationships(
-                request, metadata=self._metadata
+                request, timeout=t, metadata=self._metadata
             )
 
         resp = await self._call_once(_call)
@@ -478,25 +541,36 @@ class SpiceDBClient:
 
     # ── Schema ──────────────────────────────────────────────────────
 
-    async def read_schema(self) -> str:
-        """Read the current schema. Returns the schema text."""
+    async def read_schema(self, *, timeout: float | None = None) -> str:
+        """Read the current schema. Returns the schema text.
+
+        `timeout` (seconds) bounds this call, overriding the client's
+        `default_timeout`."""
         self._ensure_channel()
+        t = self._effective_timeout(timeout)
 
         async def _call() -> schema_service_pb2.ReadSchemaResponse:
             return await self._schema.ReadSchema(
-                schema_service_pb2.ReadSchemaRequest(), metadata=self._metadata
+                schema_service_pb2.ReadSchemaRequest(),
+                timeout=t,
+                metadata=self._metadata,
             )
 
         resp = await self._with_retry(_call)
         return resp.schema_text
 
-    async def write_schema(self, schema: str) -> str:
-        """Write a schema. Returns the revision string."""
+    async def write_schema(self, schema: str, *, timeout: float | None = None) -> str:
+        """Write a schema. Returns the revision string.
+
+        `timeout` (seconds) bounds this call, overriding the client's
+        `default_timeout`."""
         self._ensure_channel()
+        t = self._effective_timeout(timeout)
 
         async def _call() -> schema_service_pb2.WriteSchemaResponse:
             return await self._schema.WriteSchema(
                 schema_service_pb2.WriteSchemaRequest(schema=schema),
+                timeout=t,
                 metadata=self._metadata,
             )
 
@@ -533,12 +607,19 @@ class SpiceDBClient:
 
     # ── Bulk operations ─────────────────────────────────────────────
 
-    async def import_relationships(self, relationships: list[Relationship]) -> int:
-        """Import relationships in bulk. Returns the number loaded."""
+    async def import_relationships(
+        self, relationships: list[Relationship], *, timeout: float | None = None
+    ) -> int:
+        """Import relationships in bulk. Returns the number loaded.
+
+        `timeout` (seconds) bounds this call, overriding the client's
+        `default_timeout`."""
         self._ensure_channel()
+        t = self._effective_timeout(timeout)
         try:
             resp = await self._permissions.ImportBulkRelationships(
                 _requests.import_batches(relationships, _IMPORT_BATCH_SIZE),
+                timeout=t,
                 metadata=self._metadata,
             )
             return resp.num_loaded
@@ -590,14 +671,20 @@ class SpiceDBClient:
         resource: tuple[str, str],
         permission: str,
         consistency: Consistency,
+        *,
+        timeout: float | None = None,
     ) -> tuple[PermissionTree, str]:
-        """Expand a permission tree. Returns (tree, revision)."""
+        """Expand a permission tree. Returns (tree, revision).
+
+        `timeout` (seconds) bounds this call, overriding the client's
+        `default_timeout`."""
         self._ensure_channel()
         request = _requests.expand_request(resource, permission, consistency)
+        t = self._effective_timeout(timeout)
 
         async def _call() -> permission_service_pb2.ExpandPermissionTreeResponse:
             return await self._permissions.ExpandPermissionTree(
-                request, metadata=self._metadata
+                request, timeout=t, metadata=self._metadata
             )
 
         resp = await self._with_retry(_call)
@@ -609,8 +696,13 @@ class SpiceDBClient:
         self,
         name: str,
         filter: Filter,
+        *,
+        timeout: float | None = None,
     ) -> None:
-        """Experimental: Register a relationship counter."""
+        """Experimental: Register a relationship counter.
+
+        `timeout` (seconds) bounds this call, overriding the client's
+        `default_timeout`."""
         self._ensure_channel()
         request = (
             experimental_service_pb2.ExperimentalRegisterRelationshipCounterRequest(
@@ -618,10 +710,11 @@ class SpiceDBClient:
                 relationship_filter=filter._to_proto(),
             )
         )
+        t = self._effective_timeout(timeout)
 
         async def _call() -> Any:
             return await self._experimental.ExperimentalRegisterRelationshipCounter(
-                request, metadata=self._metadata
+                request, timeout=t, metadata=self._metadata
             )
 
         await self._call_once(_call)
@@ -629,19 +722,25 @@ class SpiceDBClient:
     async def count_relationships(
         self,
         name: str,
+        *,
+        timeout: float | None = None,
     ) -> tuple[int, str]:
         """Experimental: Count relationships for a registered counter.
 
         Returns (count, revision).
+
+        `timeout` (seconds) bounds this call, overriding the client's
+        `default_timeout`.
         """
         self._ensure_channel()
         request = experimental_service_pb2.ExperimentalCountRelationshipsRequest(
             name=name,
         )
+        t = self._effective_timeout(timeout)
 
         async def _call() -> Any:
             return await self._experimental.ExperimentalCountRelationships(
-                request, metadata=self._metadata
+                request, timeout=t, metadata=self._metadata
             )
 
         resp = await self._with_retry(_call)
@@ -650,18 +749,24 @@ class SpiceDBClient:
     async def unregister_relationship_counter(
         self,
         name: str,
+        *,
+        timeout: float | None = None,
     ) -> None:
-        """Experimental: Unregister a relationship counter."""
+        """Experimental: Unregister a relationship counter.
+
+        `timeout` (seconds) bounds this call, overriding the client's
+        `default_timeout`."""
         self._ensure_channel()
         request = (
             experimental_service_pb2.ExperimentalUnregisterRelationshipCounterRequest(
                 name=name,
             )
         )
+        t = self._effective_timeout(timeout)
 
         async def _call() -> Any:
             return await self._experimental.ExperimentalUnregisterRelationshipCounter(
-                request, metadata=self._metadata
+                request, timeout=t, metadata=self._metadata
             )
 
         await self._call_once(_call)
@@ -673,14 +778,21 @@ class SpiceDBClient:
         consistency: Consistency,
         *,
         filters: list[str] | None = None,
+        timeout: float | None = None,
     ) -> ReflectSchemaResult:
         """Experimental: Reflect the schema, returning its definitions and
-        caveats."""
+        caveats.
+
+        `timeout` (seconds) bounds this call, overriding the client's
+        `default_timeout`."""
         self._ensure_channel()
         request = _requests.reflect_schema_request(consistency, filters)
+        t = self._effective_timeout(timeout)
 
         async def _call() -> schema_service_pb2.ReflectSchemaResponse:
-            return await self._schema.ReflectSchema(request, metadata=self._metadata)
+            return await self._schema.ReflectSchema(
+                request, timeout=t, metadata=self._metadata
+            )
 
         resp = await self._with_retry(_call)
         return ReflectSchemaResult._from_proto(resp)
@@ -689,13 +801,21 @@ class SpiceDBClient:
         self,
         consistency: Consistency,
         comparison_schema: str,
+        *,
+        timeout: float | None = None,
     ) -> list[SchemaDiff]:
-        """Experimental: Diff two schemas, returning the list of differences."""
+        """Experimental: Diff two schemas, returning the list of differences.
+
+        `timeout` (seconds) bounds this call, overriding the client's
+        `default_timeout`."""
         self._ensure_channel()
         request = _requests.diff_schema_request(consistency, comparison_schema)
+        t = self._effective_timeout(timeout)
 
         async def _call() -> schema_service_pb2.DiffSchemaResponse:
-            return await self._schema.DiffSchema(request, metadata=self._metadata)
+            return await self._schema.DiffSchema(
+                request, timeout=t, metadata=self._metadata
+            )
 
         resp = await self._with_retry(_call)
         return [_schema_diff_from_proto(d) for d in resp.diffs]
@@ -707,17 +827,23 @@ class SpiceDBClient:
         consistency: Consistency,
         definition_name: str,
         relation_name: str,
+        *,
+        timeout: float | None = None,
     ) -> list[RelationReference]:
         """Return the permissions that are computable for the given relation
-        on a definition."""
+        on a definition.
+
+        `timeout` (seconds) bounds this call, overriding the client's
+        `default_timeout`."""
         self._ensure_channel()
         request = _requests.computable_permissions_request(
             consistency, definition_name, relation_name
         )
+        t = self._effective_timeout(timeout)
 
         async def _call() -> schema_service_pb2.ComputablePermissionsResponse:
             return await self._schema.ComputablePermissions(
-                request, metadata=self._metadata
+                request, timeout=t, metadata=self._metadata
             )
 
         resp = await self._with_retry(_call)
@@ -728,16 +854,22 @@ class SpiceDBClient:
         consistency: Consistency,
         definition_name: str,
         permission_name: str,
+        *,
+        timeout: float | None = None,
     ) -> list[RelationReference]:
-        """Return the relations that the given permission depends on."""
+        """Return the relations that the given permission depends on.
+
+        `timeout` (seconds) bounds this call, overriding the client's
+        `default_timeout`."""
         self._ensure_channel()
         request = _requests.dependent_relations_request(
             consistency, definition_name, permission_name
         )
+        t = self._effective_timeout(timeout)
 
         async def _call() -> schema_service_pb2.DependentRelationsResponse:
             return await self._schema.DependentRelations(
-                request, metadata=self._metadata
+                request, timeout=t, metadata=self._metadata
             )
 
         resp = await self._with_retry(_call)

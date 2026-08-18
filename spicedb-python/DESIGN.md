@@ -390,6 +390,32 @@ rejects the call outright), so this client sets it automatically whenever
 `limit` is given. Callers that need to delete more than `limit` matches must
 call again with the same filter to continue.
 
+### Deadlines
+
+Every unary method takes a keyword-only `timeout: float | None = None`
+(seconds), passed straight through as the underlying stub call's `timeout=`.
+`None` (the default on every call site) means "use the client's
+`default_timeout`" -- there is deliberately no way to request an unbounded
+unary call. `SpiceDBClient(..., default_timeout=30.0)` sets that client-wide
+default; both flavors default it to 30 seconds, mirroring `authzed-node`'s
+`DEFAULT_DEADLINE_MS = 30_000` (its comment cites `grpc/grpc-node#541`). See
+root DESIGN.md, "RULE: A unary call must have a deadline" — without a finite
+default, a SpiceDB instance that accepts a connection but never answers hangs
+every caller that didn't opt in to a timeout forever, since the connection
+looks fine at the transport level and nothing is ever produced to retry.
+
+```python
+client = SpiceDBClient("localhost:50051", token="t", insecure=True, default_timeout=5.0)
+result = await client.check_permission(full(), rel)             # bound by the 5s default
+result = await client.check_permission(full(), rel, timeout=1.0)  # overrides it for this call
+```
+
+Streaming calls (`read_relationships`, `lookup_resources`, `lookup_subjects`,
+`watch`, `export_relationships`) do NOT take a `timeout` and are NOT bound by
+`default_timeout` — they are long-lived by design (a `watch` may run for the
+life of the process), and applying the unary default to them would make the
+stream itself the outage.
+
 ### Testing
 
 Use `pytest` with `pytest-asyncio` for all tests. Examples should also be

@@ -126,6 +126,38 @@
 
 ### Fixed
 
+- **2026-08-18**: Call deadlines, per root `DESIGN.md` "RULE: A unary call must have a
+  deadline". Previously no method on either flavor accepted a timeout, and no client-level
+  default existed, so a SpiceDB instance that accepted a connection but never answered hung
+  every caller forever — the connection looks fine at the transport level, so no error is
+  produced and there is nothing for retry logic to act on.
+  - Every unary method (`check_permission`/`check_permissions`/`check_any`/`check_all`, `write`,
+    `delete_relationships`, `read_schema`, `write_schema`, `import_relationships`,
+    `expand_permission_tree`, `register_relationship_counter`/`count_relationships`/
+    `unregister_relationship_counter`, `reflect_schema`, `diff_schema`,
+    `computable_permissions`, `dependent_relations`) now takes a keyword-only
+    `timeout: float | None = None` (seconds), passed straight through as the stub call's
+    `timeout=`. Additive — omitting it is unaffected.
+  - `SpiceDBClient.__init__` gained `default_timeout: float = 30.0`, applied to any unary call
+    that doesn't pass its own `timeout`. 30s mirrors `authzed-node`'s
+    `DEFAULT_DEADLINE_MS = 30_000` (its comment cites `grpc/grpc-node#541`). There is
+    deliberately no way to construct a client whose unary calls have no bound at all.
+  - Streaming calls (`read_relationships`, `lookup_resources`, `lookup_subjects`, `watch`,
+    `export_relationships`) do **not** accept `timeout` and are **not** bound by
+    `default_timeout` — DESIGN.md's "Streaming calls MUST NOT inherit the unary default":
+    these are long-lived by design (a `watch` may legitimately run for the life of the
+    process), and a 30s cutoff would end a legitimate stream, which is a worse defect than
+    the one this change fixes.
+  - `DeadlineExceededError` (added earlier, see below, but never actually produced by this
+    client since nothing enforced a deadline) is now reachable: a timed-out call raises it,
+    not a generic `SpiceDBError`. `DEADLINE_EXCEEDED` is not in `_TRANSIENT_CODES`, so a
+    timeout is never auto-retried.
+  - New `tests/test_deadlines.py`, both flavors, against a real in-process gRPC server whose
+    handlers deliberately stall: a unary call against a stub that never responds raises
+    `DeadlineExceededError` well before the server's stall completes (not a hang), a per-call
+    `timeout=` overrides a much larger client default, and a streaming call outlives a tiny
+    unary default instead of inheriting it. Every test is wrapped in its own watchdog so a
+    regression fails the suite instead of hanging CI.
 - **2026-08-18**: Retry safety, per root `DESIGN.md` "RULE: Automatic retry is for idempotent
   operations only". Three changes, both `spicedb.sync` and `spicedb.aio`:
   - `RESOURCE_EXHAUSTED` is no longer retried. In SpiceDB it signals memory load-shed (retrying

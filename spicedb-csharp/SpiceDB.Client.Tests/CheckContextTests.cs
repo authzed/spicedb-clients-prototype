@@ -248,6 +248,29 @@ public class CheckContextTests
         items[1].Context.Should().Be(AsStruct(("now", 42)));
     }
 
+    // ── Unrepresentable check-time caveat context value must raise, not
+    // ── silently stringify (root DESIGN.md "RULE: A conversion that cannot
+    // ── preserve meaning must fail", clause 1). Shared converter with the
+    // ── write path -- RelationshipTests covers ToProto/Relationship.ToProto.
+
+    private sealed class UnrepresentableValue { }
+
+    [Fact]
+    public async Task CheckPermissionsWithContextAsync_UnrepresentableContextValue_Throws()
+    {
+        var client = NewClient(out _, out _);
+
+        var rel = Relationship.FromTriple("document", "doc1", "viewer", "user", "alice");
+        var context = new Dictionary<string, object> { ["bad_key"] = new UnrepresentableValue() };
+
+        var act = async () => await client.CheckPermissionsWithContextAsync(
+            Consistency.Full(), "view", context, default, rel);
+
+        var result = await act.Should().ThrowAsync<InvalidArgumentException>();
+        result.Which.Message.Should().Contain("bad_key");
+        result.Which.Message.Should().Contain(nameof(UnrepresentableValue));
+    }
+
     [Fact]
     public async Task CheckAllWithContextAsync_FansOutCallLevelContext()
     {

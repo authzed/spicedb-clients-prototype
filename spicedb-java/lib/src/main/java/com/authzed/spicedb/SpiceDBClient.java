@@ -2,6 +2,7 @@ package com.authzed.spicedb;
 
 import build.buf.gen.authzed.api.v1.*;
 import com.authzed.spicedb.errors.ErrorMapper;
+import com.authzed.spicedb.errors.InvalidArgumentException;
 import com.authzed.spicedb.errors.SpiceDBException;
 import io.grpc.Context;
 import io.grpc.ManagedChannel;
@@ -1382,7 +1383,7 @@ public final class SpiceDBClient implements AutoCloseable {
   private static com.google.protobuf.Struct toProtoStruct(Map<String, Object> context) {
     var builder = com.google.protobuf.Struct.newBuilder();
     for (var entry : context.entrySet()) {
-      builder.putFields(entry.getKey(), toProtoValue(entry.getValue()));
+      builder.putFields(entry.getKey(), toProtoValueForKey(entry.getKey(), entry.getValue()));
     }
     return builder.build();
   }
@@ -1436,7 +1437,8 @@ public final class SpiceDBClient implements AutoCloseable {
       if (r.caveatContext() != null) {
         var structBuilder = com.google.protobuf.Struct.newBuilder();
         for (var entry : r.caveatContext().entrySet()) {
-          structBuilder.putFields(entry.getKey(), toProtoValue(entry.getValue()));
+          structBuilder.putFields(
+              entry.getKey(), toProtoValueForKey(entry.getKey(), entry.getValue()));
         }
         caveatBuilder.setContext(structBuilder.build());
       }
@@ -1831,6 +1833,11 @@ public final class SpiceDBClient implements AutoCloseable {
    * a schema's {@code now < 100} against an {@code int}) evaluates correctly on either surface --
    * and on the write path, evaluates correctly on every future check against the stored
    * relationship, since a bad write-time context is persisted rather than failing just once.
+   *
+   * @throws InvalidArgumentException if {@code value}'s type cannot be represented on the wire
+   *     (e.g. a custom class instance). Caveat context is caller-supplied, so per root {@code
+   *     DESIGN.md} "RULE: A conversion that cannot preserve meaning must fail", clause 1, this
+   *     raises a typed error naming the unsupported type instead of silently stringifying it.
    */
   private static com.google.protobuf.Value toProtoValue(Object value) {
     if (value == null) {
@@ -1846,7 +1853,9 @@ public final class SpiceDBClient implements AutoCloseable {
     } else if (value instanceof Map<?, ?> m) {
       var structBuilder = com.google.protobuf.Struct.newBuilder();
       for (var entry : m.entrySet()) {
-        structBuilder.putFields(String.valueOf(entry.getKey()), toProtoValue(entry.getValue()));
+        structBuilder.putFields(
+            String.valueOf(entry.getKey()),
+            toProtoValueForKey(String.valueOf(entry.getKey()), entry.getValue()));
       }
       return com.google.protobuf.Value.newBuilder().setStructValue(structBuilder.build()).build();
     } else if (value instanceof List<?> l) {
@@ -1856,7 +1865,28 @@ public final class SpiceDBClient implements AutoCloseable {
       }
       return com.google.protobuf.Value.newBuilder().setListValue(listBuilder.build()).build();
     } else {
-      return com.google.protobuf.Value.newBuilder().setStringValue(value.toString()).build();
+      // A value this conversion cannot represent came from the caller, who can see this error and
+      // fix their input -- stringifying it instead would silently produce a caveat context value
+      // SpiceDB never intended. Shared by both the check path (toProtoStruct) and the write path
+      // (toProtoRelationship).
+      throw new InvalidArgumentException(
+          "unsupported caveat context value type: " + value.getClass().getName());
+    }
+  }
+
+  /**
+   * Calls {@link #toProtoValue} for one caveat-context entry, and -- if it throws {@link
+   * InvalidArgumentException} because {@code value}'s type cannot be represented -- re-raises with
+   * {@code key} named, so the caller can tell which entry in their context map needs fixing rather
+   * than just "some value, somewhere." For a nested {@link Map}, the innermost failure names its
+   * own (nested) key first, and each enclosing call adds its key in turn, so the message traces
+   * the full path to the offending entry.
+   */
+  private static com.google.protobuf.Value toProtoValueForKey(String key, Object value) {
+    try {
+      return toProtoValue(value);
+    } catch (InvalidArgumentException e) {
+      throw new InvalidArgumentException("caveat context key \"" + key + "\": " + e.getMessage());
     }
   }
 

@@ -255,6 +255,39 @@ class CheckContextTest {
   }
 
   // ---------------------------------------------------------------------
+  // An unrepresentable check-time caveat context value must raise, not
+  // silently stringify (root DESIGN.md "RULE: A conversion that cannot
+  // preserve meaning must fail", clause 1). Shared converter with the write
+  // path -- SpiceDBClientTest covers toProtoRelationship.
+  // ---------------------------------------------------------------------
+
+  private static final class UnrepresentableValue {}
+
+  @Test
+  void unrepresentableCheckContextValueThrows() throws IOException {
+    var captured = new ArrayList<CheckBulkPermissionsRequest>();
+    try (TestServers servers = TestServers.start(capturingService(captured))) {
+      SpiceDBClient client = servers.client();
+
+      var thrown =
+          assertThrows(
+              com.authzed.spicedb.errors.InvalidArgumentException.class,
+              () ->
+                  client.checkPermissions(
+                      Consistency.full(),
+                      "view",
+                      Map.of("bad_key", new UnrepresentableValue()),
+                      Relationship.of("document", "doc1", "view", "user", "alice")));
+
+      assertTrue(thrown.getMessage().contains("bad_key"), thrown.getMessage());
+      assertTrue(
+          thrown.getMessage().contains(UnrepresentableValue.class.getName()),
+          thrown.getMessage());
+      assertTrue(captured.isEmpty(), "no request should have been sent to the server");
+    }
+  }
+
+  // ---------------------------------------------------------------------
   // checkPermission (singular) and checkAny/checkAll must accept context too
   // (the brief: "checkAny/checkAll need the same shape -- they are
   // aggregates over the same request and must evaluate caveats too").

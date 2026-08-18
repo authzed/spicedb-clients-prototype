@@ -170,7 +170,7 @@ public sealed record Relationship
                 var structValue = new Struct();
                 foreach (var (key, value) in CaveatContext)
                 {
-                    structValue.Fields[key] = SpiceDBClient.ToProtoValue(value);
+                    structValue.Fields[key] = SpiceDBClient.ToProtoValueForKey(key, value);
                 }
                 rel.OptionalCaveat.Context = structValue;
             }

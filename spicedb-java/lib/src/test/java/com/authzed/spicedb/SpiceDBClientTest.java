@@ -140,6 +140,31 @@ class SpiceDBClientTest {
     assertEquals(Value.KindCase.BOOL_VALUE, listValues.get(2).getKindCase());
   }
 
+  // toProtoRelationshipUnrepresentableCaveatContextValueThrows: a value toProtoValue cannot
+  // dispatch on any known type/kind case (e.g. a custom class instance) used to fall through to
+  // Value.newBuilder().setStringValue(value.toString()), silently stringifying it instead of
+  // raising. Caveat context is caller-supplied, so per root DESIGN.md "RULE: A conversion that
+  // cannot preserve meaning must fail", clause 1, it must raise a typed error naming the
+  // offending key and the unsupported type instead of guessing. Shared converter -- this
+  // exercises the write path (toProtoRelationship); CheckContextTest covers the check path.
+  private static final class UnrepresentableValue {}
+
+  @Test
+  void toProtoRelationshipUnrepresentableCaveatContextValueThrows() {
+    Relationship r =
+        Relationship.of("document", "doc1", "viewer", "user", "alice")
+            .withCaveat("some_caveat", Map.of("bad_key", new UnrepresentableValue()));
+
+    var thrown =
+        assertThrows(
+            com.authzed.spicedb.errors.InvalidArgumentException.class,
+            () -> SpiceDBClient.toProtoRelationship(r));
+
+    assertTrue(thrown.getMessage().contains("bad_key"), thrown.getMessage());
+    assertTrue(
+        thrown.getMessage().contains(UnrepresentableValue.class.getName()), thrown.getMessage());
+  }
+
   // fromProtoRelationshipPreservesCaveatContextTypes covers the read side, which shares the same
   // toProtoValue/fromProtoValue converters -- a relationship written with a typed caveat context
   // must read back with the same types, not everything collapsed to a String.

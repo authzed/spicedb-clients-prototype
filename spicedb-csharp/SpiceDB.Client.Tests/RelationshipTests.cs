@@ -301,6 +301,34 @@ public class RelationshipTests
         fields["a_list"].ListValue.Values[2].KindCase.Should().Be(Value.KindOneofCase.BoolValue);
     }
 
+    // ToProto_UnrepresentableCaveatContextValue_Throws: a value ToProtoValue
+    // cannot dispatch on any known type/kind case (e.g. a custom class
+    // instance) used to fall through to Value.ForString(value.ToString()),
+    // silently stringifying it instead of raising. Caveat context is
+    // caller-supplied, so per root DESIGN.md "RULE: A conversion that
+    // cannot preserve meaning must fail", clause 1, it must raise a typed
+    // error naming the offending key and the unsupported type instead of
+    // guessing. Shared converter -- this exercises the write path
+    // (Relationship.ToProto); CheckContextTests covers the check path.
+    private sealed class UnrepresentableValue { }
+
+    [Fact]
+    public void ToProto_UnrepresentableCaveatContextValue_Throws()
+    {
+        var context = new Dictionary<string, object>
+        {
+            ["bad_key"] = new UnrepresentableValue(),
+        };
+        var rel = Relationship.FromTriple("document", "doc1", "viewer", "user", "alice")
+            .WithCaveat("some_caveat", context);
+
+        var act = () => rel.ToProto();
+
+        var thrown = act.Should().Throw<InvalidArgumentException>().Which;
+        thrown.Message.Should().Contain("bad_key");
+        thrown.Message.Should().Contain(nameof(UnrepresentableValue));
+    }
+
     // RoundTrip_PreservesCaveatContextTypes covers the symmetric read-side
     // defect: FromProto used to read back every context value via
     // f.Value.StringValue, which returns "" for any non-string Value kind.

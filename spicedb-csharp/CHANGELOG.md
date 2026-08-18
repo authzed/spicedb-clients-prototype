@@ -256,6 +256,22 @@
   described the defect as if it were by design; it's removed now that both
   paths share one converter. No public API shape change — `ToProto`/`FromProto`
   signatures are unchanged, only the values they produce/consume.
+- **2026-08-18**: `ToProtoValue`'s final fallback arm still silently stringified a value it could
+  not otherwise represent (`_ => Value.ForString(value.ToString() ?? "")`) — a custom class
+  instance, say — instead of raising. This fallback is shared by both the check path
+  (`MergeCheckContext`) and the write path (`Relationship.ToProto`), and it was inherited
+  unchanged by the write-time fix directly above rather than introduced by it. Caveat context is
+  caller-supplied, so per root `DESIGN.md` "RULE: A conversion that cannot preserve meaning must
+  fail", clause 1, an unrepresentable value must raise a typed error naming what could not be
+  converted, not degrade to a guess (clause 2's server-data carve-out does not apply here). The
+  fallback now throws `InvalidArgumentException` naming the unsupported type
+  (`"unsupported caveat context value type: {value.GetType()}"`). A new `ToProtoValueForKey`
+  wrapper, used at every per-key call site (`MergeCheckContext`'s two loops,
+  `Relationship.ToProto`'s loop, and `ToProtoStructFrom` for nested dictionaries), catches that
+  and re-raises with the offending key named (`"caveat context key \"K\": ..."`), matching
+  `spicedb-ruby`'s message shape; a nested dictionary's error traces the full key path, since each
+  enclosing call adds its own key in turn. No existing test depended on the old stringify-fallback
+  behavior — the full suite passed unchanged before new tests for the throw were added.
 
 - **2026-08-18**: `CheckAllAsync`/`CheckAllWithContextAsync` returned `true`
   for zero relationships — LINQ's `Enumerable.All` is vacuously `true` over

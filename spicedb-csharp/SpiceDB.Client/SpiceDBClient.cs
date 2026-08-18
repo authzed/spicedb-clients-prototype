@@ -1432,7 +1432,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
         if (callLevel != null)
         {
             foreach (var (key, value) in callLevel)
-                merged.Fields[key] = ToProtoValue(value);
+                merged.Fields[key] = ToProtoValueForKey(key, value);
         }
         if (item != null)
         {
@@ -1441,7 +1441,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
             // rule. Call-level keys the item doesn't mention are untouched
             // by this loop, which is the "call-level retained" half.
             foreach (var (key, value) in item)
-                merged.Fields[key] = ToProtoValue(value);
+                merged.Fields[key] = ToProtoValueForKey(key, value);
         }
 
         return merged;
@@ -1460,6 +1460,10 @@ public sealed class SpiceDBClient : IAsyncDisposable
     /// correctly instead of comparing against a string SpiceDB would reject
     /// or fail to coerce, whichever surface it was supplied on.
     /// </summary>
+    /// <exception cref="InvalidArgumentException">
+    /// Thrown when <paramref name="value"/>'s type cannot be represented on the wire (e.g. a
+    /// custom class instance) — never silently stringified.
+    /// </exception>
     internal static Value ToProtoValue(object? value) => value switch
     {
         null => Value.ForNull(),
@@ -1469,14 +1473,41 @@ public sealed class SpiceDBClient : IAsyncDisposable
             Value.ForNumber(Convert.ToDouble(value)),
         IReadOnlyDictionary<string, object> nested => Value.ForStruct(ToProtoStructFrom(nested)),
         System.Collections.IEnumerable list => Value.ForList(ToProtoValueList(list)),
-        _ => Value.ForString(value.ToString() ?? ""),
+        // A value this conversion cannot represent (e.g. a custom class instance) came from the
+        // caller, who can see this error and fix their input -- stringifying it instead would
+        // silently produce a caveat context value SpiceDB never intended, per root DESIGN.md
+        // "RULE: A conversion that cannot preserve meaning must fail", clause 1. Shared by both
+        // the check path (MergeCheckContext) and the write path (Relationship.ToProto).
+        _ => throw new InvalidArgumentException(
+            $"unsupported caveat context value type: {value.GetType()}"),
     };
+
+    /// <summary>
+    /// Calls <see cref="ToProtoValue"/> for one caveat-context entry, and — if it throws
+    /// <see cref="InvalidArgumentException"/> because <paramref name="value"/>'s type cannot be
+    /// represented — re-raises with <paramref name="key"/> named, so the caller can tell which
+    /// entry in their context dictionary needs fixing rather than just "some value, somewhere."
+    /// For a nested dictionary, the innermost failure names its own (nested) key first, and each
+    /// enclosing call adds its key in turn, so the message traces the full path to the offending
+    /// entry.
+    /// </summary>
+    internal static Value ToProtoValueForKey(string key, object? value)
+    {
+        try
+        {
+            return ToProtoValue(value);
+        }
+        catch (InvalidArgumentException e)
+        {
+            throw new InvalidArgumentException($"caveat context key \"{key}\": {e.Message}", e);
+        }
+    }
 
     private static Struct ToProtoStructFrom(IReadOnlyDictionary<string, object> dict)
     {
         var s = new Struct();
         foreach (var (key, value) in dict)
-            s.Fields[key] = ToProtoValue(value);
+            s.Fields[key] = ToProtoValueForKey(key, value);
         return s;
     }
 

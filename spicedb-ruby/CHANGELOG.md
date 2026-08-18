@@ -104,6 +104,15 @@
   permanent. No TTL-based grant could be built. The read path's `respond_to?` guard,
   which is what made the failure silent, has been removed so a future rename fails
   loudly.
+- **Reading back any caveated relationship raised `NoMethodError`.**
+  `relationship_from_proto` called `transform_values` on `Struct#fields`, which is a
+  `Google::Protobuf::Map` and not a `Hash`. Since that one conversion backs
+  `read_relationships`, `export_relationships` and `updates`, no deployment using
+  caveats could read, export or watch relationships at all. Caveat context is now read
+  by dispatching on `google.protobuf.Value`'s `kind` oneof, so numbers, booleans,
+  nulls, nested maps and lists survive the round trip — the previous `&:string_value`
+  would have returned `""` for all of them had it run. Note that an `Integer` reads
+  back as a `Float`, since `Value.number_value` is a `double`.
 
 ### Documentation
 

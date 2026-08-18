@@ -14,8 +14,11 @@ Metrics/BlockLength:
 Metrics/ModuleLength:
   Max: 200
 
+# Bumped for the caveat-context read-path fix, which added two dispatch
+# methods (caveat_context_value_from_proto, struct_to_caveat_context) that
+# mirror the existing check_context_value in reverse.
 Metrics/ClassLength:
-  Max: 830
+  Max: 850
 
 Metrics/AbcSize:
   Max: 80

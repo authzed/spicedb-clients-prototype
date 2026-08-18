@@ -95,6 +95,21 @@ stored relationship's evaluated caveat forever — they are kept independently
 settable (`with_caveat` and `with_check_context` never touch each other's
 field) for exactly that reason.
 
+**Caveat context types.** Caveat context crosses the wire as
+`google.protobuf.Struct`, whose values are a `kind` oneof. Conversion must dispatch on
+that oneof in both directions: reading a non-string value via `Value#string_value`
+returns `""`, silently destroying stored context rather than raising. `Struct#fields`
+is a `Google::Protobuf::Map`, **not** a `Hash` — Hash-only methods such as
+`transform_values` raise `NoMethodError` on it directly. `Map#to_h` is not a safe
+substitute either: for message-valued maps it recursively converts each `Value` via the
+generic protobuf-to-hash conversion rather than leaving it as a `Value` to dispatch on.
+`Map` includes `Enumerable`, so conversion iterates its raw entries directly (e.g. via
+`each_with_object`) instead of going through `Hash` or `to_h` at all.
+
+A Ruby `Integer` round-trips as a `Float` (`42` becomes `42.0`), because
+`google.protobuf.Value.number_value` is a `double`. This is inherent to the proto and
+is consistent across all seven clients; it is not worked around.
+
 ### Checks
 
 All checks use `BulkCheckPermissions` under the hood:

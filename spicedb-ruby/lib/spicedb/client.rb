@@ -637,6 +637,38 @@ module SpiceDB
       end
     end
 
+    # Converts a Google::Protobuf::Value back into a Ruby value by dispatching on the
+    # `kind` oneof. The inverse of check_context_value; Hash/Array recurse so nested
+    # caveat context round-trips.
+    #
+    # Dispatching on `kind` is required for correctness, not tidiness: reading a
+    # non-string Value via #string_value returns "" rather than raising, which would
+    # silently destroy every numeric, boolean, list and nested value read back from
+    # SpiceDB. An unset kind yields nil.
+    def caveat_context_value_from_proto(value)
+      case value.kind
+      when :null_value   then nil
+      when :bool_value   then value.bool_value
+      when :number_value then value.number_value
+      when :string_value then value.string_value
+      when :struct_value then struct_to_caveat_context(value.struct_value)
+      when :list_value   then value.list_value.values.map { |v| caveat_context_value_from_proto(v) }
+      end
+    end
+
+    # Converts a Google::Protobuf::Struct into a plain string-keyed Ruby Hash.
+    #
+    # Struct#fields is a Google::Protobuf::Map, not a Hash, so Hash-only methods such
+    # as transform_values raise NoMethodError on it directly. Map#to_h is not a safe
+    # substitute either: for message-valued maps it recursively converts each Value via
+    # the generic protobuf-to-hash conversion (e.g. {number_value: 7.0}) rather than
+    # leaving it as a Value we can dispatch on, which would break
+    # caveat_context_value_from_proto's `kind` dispatch. Map includes Enumerable, so we
+    # iterate its raw entries directly instead of going through to_h at all.
+    def struct_to_caveat_context(struct)
+      struct.fields.each_with_object({}) { |(k, v), acc| acc[k] = caveat_context_value_from_proto(v) }
+    end
+
     # --- Proto helpers ---
 
     # Raises if the proto client is not available (e.g. buf hasn't generated stubs).
@@ -720,9 +752,7 @@ module SpiceDB
       caveat_context = nil
       if proto_rel.respond_to?(:optional_caveat) && proto_rel.optional_caveat&.caveat_name && !proto_rel.optional_caveat.caveat_name.empty?
         caveat_name = proto_rel.optional_caveat.caveat_name
-        if proto_rel.optional_caveat.respond_to?(:context) && proto_rel.optional_caveat.context
-          caveat_context = proto_rel.optional_caveat.context.fields.transform_values(&:string_value)
-        end
+        caveat_context = struct_to_caveat_context(proto_rel.optional_caveat.context) if proto_rel.optional_caveat.context
       end
 
       expiration = nil

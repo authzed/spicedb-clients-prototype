@@ -280,6 +280,24 @@
 
 ### Fixed
 
+- **2026-08-18**: **Security — a bypass in the guard that refuses to send credentials over
+  plaintext to a non-loopback host was fixed.** `SpiceDBClient.CreatePlaintext(endpoint,
+  token)` accepted `"127.0.0.1:443@evil.com"` as loopback and sent the bearer token to
+  `evil.com` in cleartext, with no opt-in and nothing reported. The guard split the endpoint
+  on its last colon and read the host as `127.0.0.1`; `GrpcChannel.ForAddress` parsed the
+  same string as a URI, read `127.0.0.1:443` as *userinfo*, and connected to `evil.com`
+  (`GrpcChannel.Target == "evil.com"`). `"[::1]:443@evil.com"` and `"[::1]:0@127.0.0.1:19999"`
+  bypassed it the same way through the bracketed-IPv6 branch.
+
+  The root cause was that the guard parsed the endpoint differently than the transport did,
+  so the fix is not a tighter split: `IsLoopbackEndpoint` now hands the exact URI the client
+  dials (`"http://" + endpoint`) to `System.Uri` — the same parser `GrpcChannel.ForAddress`
+  uses — and applies the loopback test to `Uri.IdnHost`, the host the transport actually
+  resolves. Guard and transport can no longer disagree. Endpoints containing `@`, `/`, `?`,
+  `#`, or whitespace are additionally refused outright, since a legitimate SpiceDB target
+  contains none of them. A bare IPv6 literal (`"::1"`) is bracketed before parsing and keeps
+  working, as do `unix:` targets, `localhost`, and 127.0.0.0/8.
+
 - **2026-08-18**: Call deadlines, per root `DESIGN.md` "RULE: A unary call must have a
   deadline". Previously the client had `CancellationToken` throughout (real caller-side
   cancellation — stops the client from waiting) but no server-enforced deadline: a cancelled

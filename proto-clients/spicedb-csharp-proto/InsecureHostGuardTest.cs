@@ -72,9 +72,66 @@ public class InsecureHostGuardTest
     [InlineData("localhost.evil.com:443", false)]
     [InlineData("127.0.0.1.evil.com:443", false)]
     [InlineData("evil-localhost:443", false)]
+    // Authority-shifting targets. Every one of these was, or could become, a
+    // credential leak: the guard's own last-colon split read a loopback host out of
+    // them while GrpcChannel.ForAddress parsed the SAME string as URI userinfo/path/
+    // query/fragment and dialed somewhere else entirely. See AuthorityShiftingEndpoints
+    // below for the ones proven to dial off-host, and IsLoopbackEndpoint's doc comment
+    // for why the fix is "ask the transport's parser", not "validate the port".
+    [InlineData("127.0.0.1:443@evil.com", false)]  // dialed evil.com; guard said loopback
+    [InlineData("[::1]:443@evil.com", false)]      // dialed evil.com; guard said loopback
+    [InlineData("[::1]:0@127.0.0.1:19999", false)] // guard read "::1"; transport dialed :19999
+    [InlineData("[localhost]:1@127.0.0.1:19999", false)]
+    [InlineData("localhost@evil.com", false)]
+    [InlineData("localhost/../evil.com", false)]
+    [InlineData("localhost#@evil.com", false)]
+    [InlineData("localhost?@evil.com", false)]
+    [InlineData("localhost.", false)]
+    [InlineData("localhost :50051", false)]
+    [InlineData("127.0.0.1 :50051", false)]
     public void TestIsLoopbackEndpoint(string endpoint, bool expected)
     {
         Assert.Equal(expected, SpiceDBProtoClient.IsLoopbackEndpoint(endpoint));
+    }
+
+    /// <summary>
+    /// Endpoints a reviewer proved dial a host the guard never evaluated:
+    /// GrpcChannel.ForAddress("http://127.0.0.1:443@evil.com") reports
+    /// <c>Target == "evil.com"</c>. Before the fix, IsLoopbackEndpoint returned true
+    /// for each of these, so an insecure client was constructed with no opt-in and
+    /// shipped its bearer token to the attacker-controlled host in cleartext.
+    /// </summary>
+    public static TheoryData<string> AuthorityShiftingEndpoints() => new()
+    {
+        "127.0.0.1:443@evil.com",
+        "[::1]:443@evil.com",
+        "[::1]:0@127.0.0.1:19999",
+        "[localhost]:1@127.0.0.1:19999",
+    };
+
+    /// <summary>
+    /// The regression test for the guard bypass. Asserting only that the constructor
+    /// throws would be satisfied by an implementation that opens the connection, sends
+    /// the token, and raises afterwards -- so this asserts on the transport instead:
+    /// handler.InvocationCount proves the HttpMessageHandler that would carry the
+    /// bearer token was never invoked, and CapturedAuth proves no authorization header
+    /// was ever handed to it. Same bar as TestRefusesInsecureNonLoopbackWithoutOptIn
+    /// below, applied to the inputs that used to slip past the guard entirely.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(AuthorityShiftingEndpoints))]
+    public void TestRefusesEndpointThatDialsOffHost(string endpoint)
+    {
+        var handler = new AuthCapturingHandler();
+
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            new SpiceDBProtoClient(endpoint, "super-secret-token", insecure: true, allowInsecureRemoteCredentials: false, httpHandler: handler));
+
+        Assert.Contains(endpoint, ex.Message);
+        Assert.Contains("allowInsecureRemoteCredentials", ex.Message);
+
+        Assert.Equal(0, handler.InvocationCount);
+        Assert.Null(handler.CapturedAuth);
     }
 
     /// <summary>

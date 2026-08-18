@@ -194,10 +194,35 @@ public sealed class SpiceDBProtoClient : IDisposable
     }
 
     /// <summary>
-    /// Reports whether a gRPC target string names a loopback destination: the literal
+    /// Reports whether the connection this client would actually open for
+    /// <paramref name="endpoint"/> terminates on a loopback destination: the literal
     /// hostname "localhost", an IP in 127.0.0.0/8, the IPv6 loopback ::1, or a unix
     /// domain socket target (a "unix:" prefix). A unix socket never leaves the host's
     /// kernel, so it is loopback for this check even though it has no IP at all.
+    /// <para>
+    /// The wording above is deliberate, and is the whole point of this method's
+    /// implementation. It does NOT answer "does this string look like it names a
+    /// loopback host"; it answers "will the transport dial loopback". Those are the
+    /// same question only if this method and the transport agree on where the host
+    /// ends and the rest of the target begins -- and a hand-rolled string split will
+    /// always disagree with a URI parser somewhere. It used to: given
+    /// <c>"127.0.0.1:443@evil.com"</c> a last-colon split yields host "127.0.0.1" and
+    /// reports loopback, while <see cref="GrpcChannel.ForAddress(string)"/> reads
+    /// "127.0.0.1:443" as URI <i>userinfo</i> and connects to evil.com -- so the
+    /// bearer token went to evil.com in cleartext with the guard reporting "loopback".
+    /// Restoring the port validation that once made that particular input fail to
+    /// split would close that one input and leave the class open.
+    /// </para>
+    /// <para>
+    /// So the host is derived by handing the exact URI the constructor above builds
+    /// (<c>"http://" + endpoint</c>) to <see cref="Uri"/> -- the same parser
+    /// <see cref="GrpcChannel.ForAddress(string)"/> uses -- and asking IT for the
+    /// host. Guard and transport cannot disagree, because there is only one parse.
+    /// Before that, anything that could move the authority under URI parsing
+    /// (<c>@</c>, <c>/</c>, <c>?</c>, <c>#</c>, whitespace) is refused outright: a
+    /// legitimate SpiceDB target contains none of those, and failing closed on a weird
+    /// endpoint is the correct trade for a credential leak.
+    /// </para>
     /// <para>
     /// This is the exemption in root DESIGN.md, "RULE: Credentials over insecure
     /// transport require an explicit opt-in": loopback is the reason plaintext
@@ -208,34 +233,53 @@ public sealed class SpiceDBProtoClient : IDisposable
     /// </summary>
     internal static bool IsLoopbackEndpoint(string endpoint)
     {
+        // Checked first, and only on the raw string: a unix target is not a URI
+        // authority at all (it carries a filesystem path, so it legitimately contains
+        // the '/' the reserved-character check below refuses), and it never leaves
+        // the host's kernel regardless of what the path says.
         if (endpoint.StartsWith("unix:", StringComparison.OrdinalIgnoreCase))
         {
             return true;
         }
 
-        // endpoint is "host:port", a bracketed IPv6 literal (with or without a
-        // ":port" suffix), a bare IPv6 literal (e.g. "::1", no port possible
-        // without brackets), or a bare host.
-        string host;
-        var bracketEnd = endpoint.IndexOf(']');
-        if (bracketEnd >= 0)
+        // Fail closed on any character that can shift which part of the string the
+        // URI parser treats as the authority: '@' (userinfo), '/' (path), '?'
+        // (query), '#' (fragment), whitespace. Redundant with the Uri parse below --
+        // deliberately so. The parse is what makes this method correct; this is what
+        // keeps it correct if some future edit ever reaches for a manual split again.
+        foreach (var c in endpoint)
         {
-            // "[::1]:50051" or "[::1]" -> "::1"
-            host = endpoint[1..bracketEnd];
+            if (c is '@' or '/' or '?' or '#' || char.IsWhiteSpace(c))
+            {
+                return false;
+            }
         }
-        else if (endpoint.IndexOf(':') != endpoint.LastIndexOf(':'))
+
+        // A bare IPv6 literal ("::1") is not a legal URI authority -- brackets are the
+        // only form the transport can dial -- so bracket it and let the one parser
+        // below judge it, rather than special-casing it out of the parse entirely.
+        var authority = endpoint;
+        if (!endpoint.StartsWith('[')
+            && IPAddress.TryParse(endpoint, out var bareIp)
+            && bareIp.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6)
         {
-            // More than one ':' with no brackets -- a bare IPv6 literal like
-            // "::1". No port is possible in this form, so the whole string is
-            // the host: a "host:port" split here would corrupt it (e.g.
-            // mistaking "::1"'s trailing "1" for a port and leaving a bare
-            // ":" as the host, which fails every check below).
-            host = endpoint;
+            authority = $"[{endpoint}]";
         }
-        else
+
+        // The scheme is "http" because this guard only ever gates the insecure path;
+        // either way, scheme does not affect how the authority is parsed.
+        if (!Uri.TryCreate($"http://{authority}", UriKind.Absolute, out var uri))
         {
-            var lastColon = endpoint.LastIndexOf(':');
-            host = lastColon >= 0 ? endpoint[..lastColon] : endpoint;
+            return false;
+        }
+
+        // Uri.IdnHost is the host Grpc.Net.Client's SocketsHttpHandler resolves and
+        // connects to; unlike Uri.Host it is already IDN-mapped, so a Unicode host
+        // that maps onto an ASCII one cannot be judged in its pre-mapping form.
+        var host = uri.IdnHost;
+        if (host.StartsWith('[') && host.EndsWith(']'))
+        {
+            host = host[1..^1];
         }
 
         if (string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase))

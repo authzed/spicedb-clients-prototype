@@ -91,6 +91,16 @@ func NewWithOpts(endpoint, presharedKey string, opts ...Option) (*Client, error)
 // one connection, and there was previously no way to release it
 // deterministically -- see root DESIGN.md, "RULE: Abandoning a stream must
 // release it".
+//
+// A Client with no connection is a no-op to close, not a panic. proto is
+// unexported, so a zero-value `client.Client{}` -- or one assembled field by
+// field in a test -- has a nil proto that no constructor could produce. Close
+// is the one method such a value is most likely to reach, via a `defer
+// c.Close()` copied from production code, and dereferencing nil there would
+// turn a test double into a crash.
 func (c *Client) Close() error {
+	if c == nil || c.proto == nil {
+		return nil
+	}
 	return c.proto.Close()
 }

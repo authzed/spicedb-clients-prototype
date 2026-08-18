@@ -32,6 +32,24 @@ func TestClient_CloseIsIdempotent(t *testing.T) {
 	require.NoError(t, client.Close())
 }
 
+// TestClient_CloseOnHandBuiltClientIsANoOp proves Close does not panic on a
+// Client that never dialed. conn is unexported, so a Client built literally
+// from service stubs -- the documented way to point the idiomatic client at
+// a test double -- has a nil conn NewClient could never produce. A `defer
+// client.Close()` copied from production code would otherwise crash the
+// test on a line that has nothing to do with what it is testing.
+func TestClient_CloseOnHandBuiltClientIsANoOp(t *testing.T) {
+	handBuilt := &Client{}
+	require.NotPanics(t, func() {
+		require.NoError(t, handBuilt.Close())
+	})
+
+	var nilClient *Client
+	require.NotPanics(t, func() {
+		require.NoError(t, nilClient.Close())
+	})
+}
+
 func TestWithInsecure(t *testing.T) {
 	cfg := &clientConfig{}
 	WithInsecure()(cfg)

@@ -157,6 +157,33 @@
 
 ### Bug Fixes
 
+- **2026-08-18**: Abandoning a streaming iterator leaked the gRPC stream and the server-side
+  dispatch. Every streaming call (`Updates`, `LookupResources`, `LookupSubjects`,
+  `ReadRelationships`, `ExportRelationships`) returns an `iter.Seq2` that stops on
+  `if !yield(...) { return }` -- i.e. when the consumer `break`s -- while the underlying
+  `grpc.ClientStream` was left open on the caller's own context. grpc-go's
+  `ClientConn.NewStream` contract is explicit that unless the context is cancelled, `Close` is
+  called, or `RecvMsg` drains to a non-nil error, "a goroutine and a context will be leaked";
+  SpiceDB, for its part, keeps a dispatch open per abandoned stream. So the common idiom
+  `for e, err := range c.Updates(ctx, types, "") { ...; break }` with a long-lived `ctx` leaked
+  one HTTP/2 stream and one server-side dispatch permanently. `Client.Close()` was no help: it
+  releases the whole connection, not one stream. Each iterator now derives its own cancellable
+  context and cancels it on the way out, so every exit path -- consumer `break`, mid-stream
+  error, or normal exhaustion -- releases the stream. Per root DESIGN.md, "RULE: Abandoning a
+  stream must release it", clause 2: the transport must actually release, and that is what the
+  new tests in `client/stream_release_test.go` assert, by parking a stub server handler on its
+  own `stream.Context().Done()` and failing if the server never observes the cancellation. No
+  API change -- the caller's context is still honored exactly as before, and cancelling it still
+  cancels the stream.
+
+- **2026-08-18**: `Close()` panicked on a `Client` that never opened a connection. The connection
+  handle is unexported, so a zero-value `client.Client{}`, or a
+  `&spicedbgoproto.Client{PermissionsServiceClient: stub}` assembled by hand to point at a test
+  double, carries a nil one that no constructor could produce -- and `Close` is precisely the
+  method such a value reaches, via a `defer c.Close()` copied from production code. Both tiers
+  now treat a connectionless client as a no-op close (returning nil) rather than dereferencing
+  nil, so a test double no longer crashes on a line unrelated to what it tests. Nil receivers are
+  covered too.
 - **2026-08-18**: `Client` had no way to release its underlying gRPC connection deterministically
   -- every streaming call (`ReadRelationships`, `LookupResources`, `LookupSubjects`, `Watch`,
   `ExportRelationships`) shares one connection for the life of the process, per root DESIGN.md,

@@ -271,6 +271,61 @@ what's missing). A conditional result is NOT a full grant. When
 wildcard grant — callers MUST check it before treating `"*"` as "every
 subject has access," or they risk over-granting to excluded subjects.
 
+#### Stream lifecycle: abandoning an iterator releases it
+
+Root `DESIGN.md`, "RULE: Abandoning a stream must release it", requires that
+stopping early actually tells the server to stop. Go's range-over-func makes
+stopping early the natural idiom — `break` out of the loop and the iterator's
+`yield` returns `false` — so the client must make that idiom safe rather than
+document its way around it.
+
+Every iterator derives its own cancellable context from the one the caller
+passed and cancels it on the way out:
+
+```go
+return func(yield func(WatchEvent, error) bool) {
+    ctx, cancel := context.WithCancel(ctx)
+    defer cancel()
+    // ... open the stream on the derived ctx ...
+}
+```
+
+The `defer` covers every exit path — consumer `break`, mid-stream error, and
+normal exhaustion alike — which is why cancellation is wired to the iterator's
+return rather than to any single one of them. Without it, grpc-go's
+`ClientConn.NewStream` contract applies: unless the context is cancelled,
+`Close` is called, or `RecvMsg` drains to a non-nil error, "a goroutine and a
+context will be leaked", and SpiceDB holds a dispatch open per abandoned
+stream for the life of the connection. The leak is invisible from the caller's
+side of a `break`, which is what makes it worth closing in the library rather
+than in every call site.
+
+This is additive to the caller's own control, not a replacement for it: the
+caller's context still governs the call, and cancelling it still cancels the
+stream. It only adds a release the caller could not otherwise express, because
+the caller's context typically outlives the loop.
+
+`client/stream_release_test.go` holds the tests for this. They assert on a
+*server-side* signal — a stub handler parked on its own `stream.Context()
+.Done()` — because a test asserting only that the range loop exited passes
+whether or not the stream was released.
+
+#### `Close()`: releasing the connection
+
+`Client.Close() error` releases the underlying gRPC connection. It is
+idempotent and safe to call concurrently with itself (the proto tier guards
+with a `CompareAndSwap`, since `grpc.ClientConn.Close` is not documented safe
+to call twice), and it is a no-op on a `Client` that never opened a connection
+— a zero value, or one assembled by hand from stubs in a test.
+
+`Close()` and per-stream cancellation solve different problems and neither
+substitutes for the other. `Close()` is connection-scoped: it tears down the
+one connection every call on this `Client` shares, so it belongs at process or
+component shutdown (`defer c.Close()` after construction, as every example
+does). Abandoning a single iterator must not require tearing down the
+connection the rest of the program is still using — that is what the derived
+per-stream context above is for.
+
 ### Writes
 
 Transaction builder pattern:

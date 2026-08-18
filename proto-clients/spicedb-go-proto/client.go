@@ -195,7 +195,17 @@ func NewClient(endpoint string, token string, opts ...Option) (*Client, error) {
 // any connection-level resources -- goroutines, sockets) until Close is
 // called. grpc.ClientConn.Close itself is not documented as safe to call
 // twice, so this guards with a CompareAndSwap rather than relying on that.
+//
+// A Client with no connection is a no-op to close, not a panic. conn is
+// unexported, so a Client assembled by hand -- `&proto.Client{
+// PermissionsServiceClient: stub}` in a test, or a zero value -- has a nil
+// conn that NewClient could never produce. Close is the one method such a
+// value is most likely to reach (via a defer written to match production
+// code), and dereferencing nil there would turn a test double into a crash.
 func (c *Client) Close() error {
+	if c == nil || c.conn == nil {
+		return nil
+	}
 	if !c.closed.CompareAndSwap(false, true) {
 		return nil
 	}

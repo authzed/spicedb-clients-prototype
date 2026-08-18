@@ -38,6 +38,18 @@ func (c *Client) Write(ctx context.Context, txn rel.Txn) (revision string, err e
 // re-fetches pages of 512 relationships using the AfterResultCursor.
 func (c *Client) ReadRelationships(ctx context.Context, cs consistency.Strategy, f rel.Filter) iter.Seq2[rel.Relationship, error] {
 	return func(yield func(rel.Relationship, error) bool) {
+		// Abandoning this iterator -- a `break` in the consuming range
+		// loop, or any early return -- must release the stream. grpc-go's
+		// ClientConn.NewStream contract is explicit: unless the context is
+		// cancelled, Close is called, or RecvMsg drains to a non-nil error,
+		// "a goroutine and a context will be leaked", and SpiceDB keeps the
+		// server-side dispatch open for as long as the connection lives.
+		// Cancelling on the way out covers every exit path, including the
+		// early return taken when the consumer breaks. See root DESIGN.md,
+		// "RULE: Abandoning a stream must release it".
+		ctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+
 		filterProto, err := f.ToProto()
 		if err != nil {
 			yield(rel.Relationship{}, &Error{

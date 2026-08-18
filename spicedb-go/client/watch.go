@@ -58,6 +58,18 @@ func (c *Client) Updates(ctx context.Context, objectTypes []string, startRevisio
 	}
 
 	return func(yield func(WatchEvent, error) bool) {
+		// Abandoning this iterator -- a `break` in the consuming range
+		// loop, or any early return -- must release the stream. grpc-go's
+		// ClientConn.NewStream contract is explicit: unless the context is
+		// cancelled, Close is called, or RecvMsg drains to a non-nil error,
+		// "a goroutine and a context will be leaked", and SpiceDB keeps the
+		// server-side dispatch open for as long as the connection lives.
+		// Cancelling on the way out covers every exit path, including the
+		// early return taken when the consumer breaks. See root DESIGN.md,
+		// "RULE: Abandoning a stream must release it".
+		ctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+
 		req := &v1.WatchRequest{
 			OptionalObjectTypes: objectTypes,
 		}

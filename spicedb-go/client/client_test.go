@@ -41,3 +41,22 @@ func TestClient_CloseIsIdempotent(t *testing.T) {
 	require.NoError(t, c.Close())
 	require.NoError(t, c.Close())
 }
+
+// TestClient_CloseOnConnectionlessClientIsANoOp proves Close does not panic
+// on a Client that never opened a connection. The connection handle is
+// unexported, so a zero value -- or a Client a test assembled by hand from
+// service stubs -- carries a nil one that no constructor could produce.
+// Close is exactly the method such a value reaches, via a `defer c.Close()`
+// copied from production code, so a nil deref here would turn a working
+// test double into a crash on an unrelated line.
+func TestClient_CloseOnConnectionlessClientIsANoOp(t *testing.T) {
+	var zero client.Client
+	require.NotPanics(t, func() {
+		require.NoError(t, zero.Close())
+	})
+
+	var nilClient *client.Client
+	require.NotPanics(t, func() {
+		require.NoError(t, nilClient.Close())
+	})
+}

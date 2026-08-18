@@ -342,6 +342,27 @@
 
 ### Documentation
 
+- **2026-08-18**: Pinned and documented stream release. Root DESIGN.md, "RULE: Abandoning a stream
+  must release it", requires that stopping early actually tells the server to stop, and this client
+  had no evidence either way: it contains no explicit cancel anywhere (a grep for "cancel" under
+  `lib/` finds only `SpiceDB::CancelledError`), which reads from the outside exactly like the defect
+  the rule describes. Measured against a real `GRPC::RpcServer`, it is not: `break`ing out of an
+  Enumerator unwinds into the generator block's Fiber, which reaches grpc-ruby's own `ensure
+  set_input_stream_done` in `ActiveCall#each_remote_read_then_finish`, which closes the core call
+  synchronously. `first`/`take` and a collected mid-iteration Enumerator go the same way. New
+  `spec/client_stream_release_spec.rb` locks this in for all five streaming methods, asserting on a
+  *server-side* signal (a handler that streams until its own send fails) rather than on the
+  consuming loop having exited, which proves nothing. Verified to have teeth: switching one method
+  to consume its stream by external iteration -- the shape clause 3 of the rule warns about -- makes
+  the specs fail.
+
+  No code change, deliberately. Adding an explicit cancel means `return_op: true`, the only
+  cancellable handle grpc-ruby offers, and that path freezes the call's metadata before the
+  interceptor chain runs -- so on an insecure connection, where this client carries its bearer token
+  in a `GRPC::ClientInterceptor`, every stream opened that way would go out unauthenticated, with
+  every double-based spec still green. See `DESIGN.md`, "Stream lifecycle", before reaching for one.
+
+
 - The three `experimental_*` relationship counter methods are now marked `@note Experimental` in their YARD docs to make clear they may change without following the backwards-compatibility mandate.
 
 ## 0.1.0 (2026-03-18)

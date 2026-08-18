@@ -299,6 +299,54 @@ defaults:
 
 Enumerators support `.lazy` for memory-efficient processing of large result sets.
 
+#### Stream lifecycle: abandoning an Enumerator releases it
+
+Root `DESIGN.md`, "RULE: Abandoning a stream must release it", requires that
+stopping early actually tells the server to stop. This client satisfies it
+with no explicit cancel anywhere, because Ruby's iteration protocol and
+grpc-ruby together already do it — clause 3's "where a language's iteration
+protocol closes a generator by calling `return()` on `break`, that mechanism
+only releases the stream if the transport underneath honors it". grpc-ruby
+honors it; Connect-ES, the counterexample the rule cites, does not.
+
+The chain, for `for`/`each`/`first`/`take` alike:
+
+1. `break` (or `first`'s early stop) unwinds out of `Enumerator#each`, and
+   Ruby propagates that unwind *into* the generator block's Fiber rather
+   than leaving it parked.
+2. The unwind therefore reaches `GRPC::ActiveCall#each_remote_read_then_finish`,
+   whose `ensure` calls `set_input_stream_done`.
+3. That reaches `maybe_finish_and_close_call_locked`, which calls
+   `@call.close` — tearing down the core call synchronously, on the calling
+   thread, not on a GC pass.
+
+`spec/client_stream_release_spec.rb` pins all of this against a real
+`GRPC::RpcServer` whose handlers stream until the send itself fails. It
+asserts the *server* saw the stream end, because a spec that only checked
+the consuming loop exited would pass identically with or without a leak.
+That spec exists because the absence of a `cancel` call reads, from the
+outside, exactly like the defect the rule describes — a grep for "cancel"
+under `lib/` finds only `SpiceDB::CancelledError`.
+
+`read_relationships` and `lookup_resources` are a slightly different case:
+each drains a whole page into an Array before yielding anything, so by the
+time the caller sees result one, that page's stream is already finished and
+there is nothing to strand. What they must not do is keep *fetching* — an
+abandoned auto-pager that opens the next page is its own leak — and the same
+spec covers that by handing back exactly a full page and asserting no second
+call arrives.
+
+**Do not add an explicit cancel here without reading this.** The only way to
+get a cancellable handle out of grpc-ruby is `return_op: true`, and that path
+freezes the call's metadata (`merge_metadata_to_send`) *before* the
+interceptor chain runs. On an insecure connection, where this client carries
+its bearer token in a `GRPC::ClientInterceptor`, every stream opened that way
+goes out unauthenticated — and every double-based spec in the suite stays
+green while it happens, because a double has no transport to notice. Adding
+cancellation would mean plumbing the token explicitly out of
+`SpiceDBProto::Client` alongside it: real risk, taken on to fix something
+that measurably is not broken.
+
 ### Writes
 
 Transaction builder pattern:

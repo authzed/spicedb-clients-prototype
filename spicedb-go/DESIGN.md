@@ -257,12 +257,30 @@ Transaction builder pattern:
 
 ```go
 var txn rel.Txn
-txn.Create(relationship)
-txn.Touch(relationship)
-txn.Delete(relationship)
-txn.MustNotMatch(filter) // precondition
+if err := txn.Create(relationship); err != nil {
+    return err
+}
+if err := txn.Touch(relationship); err != nil {
+    return err
+}
+if err := txn.Delete(relationship); err != nil {
+    return err
+}
+if err := txn.MustNotMatch(filter); err != nil { // precondition
+    return err
+}
 revision, err := client.Write(ctx, txn)
 ```
+
+Every builder method returns `error` and adds nothing to the transaction when
+it does — `Create`/`Touch`/`Delete` if the relationship's `CaveatContext`
+cannot be converted to protobuf (`rel.ErrInvalidCaveatContext`),
+`MustMatch`/`MustNotMatch` if the filter cannot (`rel.ErrInvalidFilter`).
+These are not decorative: discarding them writes a relationship with its
+caveat name attached and its context silently missing, which mis-evaluates
+every future check against that relationship and is only repaired by
+rewriting it. Go permits dropping a return value in statement position, so
+nothing warns you — check them.
 
 `Write`, `DeleteRelationships`, and `WriteSchema` all return the revision the
 mutation occurred at. `ImportRelationships` (bulk import) is the one
@@ -319,6 +337,26 @@ examples.
   - `ErrInvalidFilter` — a `Filter`'s `SubjectID`/`SubjectRelation` is set
     without `SubjectType`; `Filter.ToProto` returns this instead of silently
     building a filter with no subject constraint at all
+  - `ErrInvalidCaveatContext` — a `Relationship`'s `CaveatContext` holds a
+    value protobuf cannot represent; `Relationship.ToProto`,
+    `Txn.Create`/`Touch`/`Delete`, and the check surface all return this
+    instead of writing the relationship with its caveat name attached and its
+    context silently missing. The wrapping error **names the offending key**:
+    `structpb.NewStruct` reports only the value's Go type, so
+    `rel.CaveatContextToStruct` converts per key and identifies the entry —
+    the same thing the C#, Java and Ruby clients report for this failure.
+    `rel.CaveatContextToStruct` is the single converter for both surfaces
+    (write-time `CaveatContext` and check-time `CheckContext`), so the two
+    can never drift apart
+
+  Both sentinels live in `rel`, which is deliberately client-independent — it
+  cannot import `client` without an import cycle. The `client` package wraps
+  them as a `*client.Error` with `CodeInvalidArgument` at its own API
+  boundaries (`ImportRelationships`, `ReadRelationships`,
+  `DeleteRelationships`, and the check surface), so `errors.Is` works against
+  both `rel`'s sentinel and `client.ErrInvalidArgument` for any error that
+  passed through the client. An error returned directly by a `rel` builder
+  (e.g. `Txn.Create`) carries the `rel` sentinel only.
 - `Must*` variants that panic (for tests/initialization)
 - Automatic retry with exponential backoff for transient gRPC errors
 

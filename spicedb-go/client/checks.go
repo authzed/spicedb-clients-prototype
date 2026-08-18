@@ -6,7 +6,6 @@ import (
 	"iter"
 
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/types/known/structpb"
 
 	v1 "github.com/authzed/spicedb-clients/proto-clients/spicedb-go-proto/gen/authzed/api/v1"
 	"github.com/authzed/spicedb-clients/spicedb-go/consistency"
@@ -246,9 +245,10 @@ func mergeCheckContext(callLevel, item map[string]any) map[string]any {
 // checkItemFromRel builds the wire item for r, merging call-level and
 // per-item caveat context. Returns an error — instead of silently sending
 // the item with no context — if the merged context cannot be converted to a
-// protobuf Struct (structpb.NewStruct fails on values it cannot represent,
-// e.g. unsupported types), so a caller never mistakes "your context was
-// dropped" for "the server needed more context than you supplied".
+// protobuf Struct (rel.CaveatContextToStruct rejects values protobuf cannot
+// represent), so a caller never mistakes "your context was dropped" for
+// "the server needed more context than you supplied". The error names the
+// offending key and wraps rel.ErrInvalidCaveatContext.
 func checkItemFromRel(r rel.Relationship, permission string, callLevelContext map[string]any) (*v1.CheckBulkPermissionsRequestItem, error) {
 	item := &v1.CheckBulkPermissionsRequestItem{
 		Resource: &v1.ObjectReference{
@@ -266,11 +266,16 @@ func checkItemFromRel(r rel.Relationship, permission string, callLevelContext ma
 	}
 
 	if merged := mergeCheckContext(callLevelContext, r.CheckContext); merged != nil {
-		ctx, err := structpb.NewStruct(merged)
+		// Shares rel.CaveatContextToStruct with the write path
+		// (rel.Relationship.ToProto) -- one converter for both surfaces, so
+		// the two can never drift apart in what they accept or how they name
+		// a failure. The error it returns wraps rel.ErrInvalidCaveatContext
+		// and names the offending key.
+		ctx, err := rel.CaveatContextToStruct(merged)
 		if err != nil {
 			return nil, &Error{
 				Code:    CodeInvalidArgument,
-				Message: fmt.Sprintf("spicedb: check %s/%s: invalid caveat context: %s", r.ResourceType, r.ResourceID, err),
+				Message: fmt.Sprintf("spicedb: check %s/%s: %s", r.ResourceType, r.ResourceID, err),
 				err:     err,
 			}
 		}

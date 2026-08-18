@@ -336,3 +336,102 @@ func TestUpdateFromProtoRecognizedOperations(t *testing.T) {
 		require.Equal(t, want, u.Operation, "operation %v", proto)
 	}
 }
+
+// TestRelationshipToProtoUnconvertibleContextNamesKeyAndSentinel proves the
+// caveat-context conversion failure is a matchable sentinel that names the
+// offending key, the way its sibling rel.ErrInvalidFilter already was.
+//
+// structpb.NewStruct converts the whole map at once and reports only the
+// value's Go type ("invalid type: chan int"), never which entry held it. On a
+// context map with many keys that leaves the caller guessing which one to
+// fix. C#, Java and Ruby all name the key for the same failure; rel now does
+// too, by converting per key.
+func TestRelationshipToProtoUnconvertibleContextNamesKeyAndSentinel(t *testing.T) {
+	r := rel.MustFromTriple("document", "doc1", "viewer", "user", "alice", "").
+		WithCaveat("only_bizhours", map[string]any{
+			"fine":     42,
+			"alsook":   "yes",
+			"offender": make(chan int),
+		})
+
+	p, err := r.ToProto()
+
+	require.Error(t, err)
+	require.Nil(t, p, "nothing may be produced for an unconvertible context")
+	require.ErrorIs(t, err, rel.ErrInvalidCaveatContext)
+	require.Contains(t, err.Error(), `"offender"`,
+		"the error must name the offending key, not just the value's type")
+	require.Contains(t, err.Error(), r.String(),
+		"the error must still identify the relationship")
+}
+
+// TestTxnPropagatesUnconvertibleContextSentinel proves Txn.Create/Touch/Delete
+// surface the sentinel unchanged and add nothing to the transaction, so a
+// caller can match on it with errors.Is.
+//
+// The sentinel lives in rel rather than being wrapped as a *client.Error here
+// because rel is deliberately client-independent (see the package doc) and
+// client imports rel -- wrapping inside rel would be an import cycle. This is
+// exactly how the sibling rel.ErrInvalidFilter behaves: rel returns the
+// sentinel, and the client package wraps it as a *client.Error with
+// CodeInvalidArgument at its own API boundaries (ImportRelationships,
+// DeleteRelationships, ReadRelationships, checkItemFromRel).
+func TestTxnPropagatesUnconvertibleContextSentinel(t *testing.T) {
+	bad := rel.MustFromTriple("document", "doc1", "viewer", "user", "alice", "").
+		WithCaveat("only_bizhours", map[string]any{"offender": make(chan int)})
+
+	for name, add := range map[string]func(*rel.Txn, rel.Relationship) error{
+		"Create": (*rel.Txn).Create,
+		"Touch":  (*rel.Txn).Touch,
+		"Delete": (*rel.Txn).Delete,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var txn rel.Txn
+
+			err := add(&txn, bad)
+
+			require.Error(t, err)
+			require.ErrorIs(t, err, rel.ErrInvalidCaveatContext)
+			require.Contains(t, err.Error(), `"offender"`)
+			require.Empty(t, txn.V1Updates,
+				"a failed conversion must add nothing to the transaction")
+		})
+	}
+}
+
+// TestCaveatContextToStructConvertsEveryRepresentableKind is the happy-path
+// companion: the per-key conversion must produce exactly what
+// structpb.NewStruct would for values it can represent, including nested
+// maps and lists.
+func TestCaveatContextToStructConvertsEveryRepresentableKind(t *testing.T) {
+	context := map[string]any{
+		"num":    42,
+		"str":    "hello",
+		"boolen": true,
+		"null":   nil,
+		"list":   []any{1, "two", false},
+		"nested": map[string]any{"inner": 7},
+	}
+
+	got, err := rel.CaveatContextToStruct(context)
+	require.NoError(t, err)
+
+	want, err := structpb.NewStruct(context)
+	require.NoError(t, err)
+
+	require.Equal(t, want.AsMap(), got.AsMap())
+}
+
+// TestCaveatContextToStructNilAndEmpty proves the converter's edge cases
+// behave like structpb.NewStruct's: an empty map produces an empty Struct,
+// not an error. (Relationship.ToProto never calls it with nil -- it checks
+// CaveatContext != nil first -- but the exported helper must not panic.)
+func TestCaveatContextToStructNilAndEmpty(t *testing.T) {
+	empty, err := rel.CaveatContextToStruct(map[string]any{})
+	require.NoError(t, err)
+	require.Empty(t, empty.AsMap())
+
+	fromNil, err := rel.CaveatContextToStruct(nil)
+	require.NoError(t, err)
+	require.Empty(t, fromNil.AsMap())
+}

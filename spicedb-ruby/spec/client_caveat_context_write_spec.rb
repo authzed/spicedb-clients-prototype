@@ -120,3 +120,44 @@ RSpec.describe 'SpiceDB::Client caveat context write path' do
     expect(proto.optional_caveat.context).to be_nil
   end
 end
+
+# The check-surface and write-surface entry points must be the SAME method,
+# not two bodies that happen to agree today. They had byte-identical bodies,
+# which is precisely where a future edit can drift the write path from the
+# check path again -- the exact divergence the converter convergence existed
+# to close (the original defect was the write path stringifying while the
+# check path did not).
+RSpec.describe 'SpiceDB::CaveatContext write/check converter convergence' do
+  it 'exposes caveat_context_to_struct as an alias of check_context_to_struct, not a copy' do
+    write_method = SpiceDB::CaveatContext.instance_method(:caveat_context_to_struct)
+    check_method = SpiceDB::CaveatContext.instance_method(:check_context_to_struct)
+
+    # original_name resolves through the alias; == on UnboundMethod is true
+    # only when both refer to the same underlying definition. Two separately
+    # written but identical bodies would fail both assertions.
+    expect(write_method.original_name).to eq(:check_context_to_struct)
+    expect(write_method).to eq(check_method)
+  end
+
+  it 'is still reachable as a module method on both names' do
+    expect(SpiceDB::CaveatContext).to respond_to(:caveat_context_to_struct)
+    expect(SpiceDB::CaveatContext).to respond_to(:check_context_to_struct)
+  end
+
+  it 'produces identical Structs from both names for the same input' do
+    context = { 'count' => 42, :flag => true, 'none' => nil,
+                'nested' => { 'a' => [1, 'x'] } }
+
+    expect(SpiceDB::CaveatContext.caveat_context_to_struct(context))
+      .to eq(SpiceDB::CaveatContext.check_context_to_struct(context))
+  end
+
+  it 'names the offending key on both names' do
+    context = { 'bad' => Object.new }
+
+    expect { SpiceDB::CaveatContext.caveat_context_to_struct(context) }
+      .to raise_error(SpiceDB::InvalidArgumentError, /"bad"/)
+    expect { SpiceDB::CaveatContext.check_context_to_struct(context) }
+      .to raise_error(SpiceDB::InvalidArgumentError, /"bad"/)
+  end
+end

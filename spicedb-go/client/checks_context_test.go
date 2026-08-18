@@ -407,3 +407,33 @@ func TestCheck_UnconvertibleContextReturnsError(t *testing.T) {
 		assertRejected(t, srv, gotErr)
 	})
 }
+
+// TestCheck_UnconvertibleContextNamesOffendingKey proves the check path
+// reports WHICH context entry could not be converted, and that the error
+// carries rel.ErrInvalidCaveatContext so a caller can match it with
+// errors.Is without string-matching.
+//
+// The check path and the write path (rel.Relationship.ToProto) now share one
+// converter, rel.CaveatContextToStruct, so they cannot drift apart in what
+// they accept or how they describe a failure — the divergence that produced
+// the original stringify-on-write defect in several clients in this repo.
+func TestCheck_UnconvertibleContextNamesOffendingKey(t *testing.T) {
+	r := rel.MustFromTriple("document", "1", "view", "user", "alice", "")
+	bad := map[string]any{
+		"fine":     42,
+		"offender": make(chan int),
+	}
+
+	c, srv := newCapturingTestClient(t)
+
+	_, err := c.CheckWithContext(context.Background(), consistency.MinLatency(), "view", bad, r)
+
+	require.Error(t, err)
+	require.ErrorIs(t, err, rel.ErrInvalidCaveatContext,
+		"the check path must carry the same sentinel as the write path")
+	require.ErrorIs(t, err, ErrInvalidArgument,
+		"and must still be a CodeInvalidArgument *client.Error")
+	require.Contains(t, err.Error(), `"offender"`,
+		"the error must name the offending key, not just the value's type")
+	require.Empty(t, srv.requests, "request must not be sent once context conversion fails")
+}

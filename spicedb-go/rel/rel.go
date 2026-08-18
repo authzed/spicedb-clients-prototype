@@ -27,6 +27,15 @@ var (
 	// without SubjectType. The wire's SubjectFilter.subject_type is required,
 	// so there is no way to express a subject constraint without it.
 	ErrInvalidFilter = fmt.Errorf("filter has a subject constraint set without SubjectType")
+	// ErrInvalidCaveatContext indicates a Relationship's CaveatContext holds a
+	// value that cannot be represented as a protobuf Struct (structpb.NewStruct
+	// rejects it). The error wrapping this sentinel names the offending key.
+	//
+	// Caveat context is caller-supplied, so this fails loudly rather than
+	// writing the relationship with its caveat name attached and its context
+	// silently missing — see root DESIGN.md, "RULE: A conversion that cannot
+	// preserve meaning must fail", clause 1.
+	ErrInvalidCaveatContext = fmt.Errorf("caveat context holds a value that cannot be converted to protobuf")
 )
 
 // Relationship is a flat representation of a SpiceDB relationship.
@@ -183,14 +192,19 @@ func (r Relationship) String() string {
 }
 
 // ToProto converts a Relationship to its proto representation. It returns an
-// error — instead of silently dropping the caveat context and writing the
-// relationship anyway — if CaveatContext cannot be converted to a protobuf
-// Struct (structpb.NewStruct fails on values it cannot represent). Silently
-// persisting a caveat name with no context would mis-evaluate every future
-// check against that relationship, and re-checking with correct context
-// would never repair it; only rewriting the relationship would. See
-// checkItemFromRel in client/checks.go for the identical treatment on the
-// check path.
+// error wrapping ErrInvalidCaveatContext — instead of silently dropping the
+// caveat context and writing the relationship anyway — if CaveatContext
+// cannot be converted to a protobuf Struct (structpb.NewStruct fails on
+// values it cannot represent). Silently persisting a caveat name with no
+// context would mis-evaluate every future check against that relationship,
+// and re-checking with correct context would never repair it; only rewriting
+// the relationship would. See checkItemFromRel in client/checks.go for the
+// identical treatment on the check path.
+//
+// The error names the offending key. structpb.NewStruct reports only the
+// value's type, not which entry held it, so the conversion is done per key
+// and the failing key is identified here — matching what the C#, Java and
+// Ruby clients report for the same failure.
 func (r Relationship) ToProto() (*v1.Relationship, error) {
 	rel := &v1.Relationship{
 		Resource: &v1.ObjectReference{
@@ -212,9 +226,9 @@ func (r Relationship) ToProto() (*v1.Relationship, error) {
 			CaveatName: r.CaveatName,
 		}
 		if r.CaveatContext != nil {
-			ctx, err := structpb.NewStruct(r.CaveatContext)
+			ctx, err := CaveatContextToStruct(r.CaveatContext)
 			if err != nil {
-				return nil, fmt.Errorf("spicedb: relationship %s: invalid caveat context: %w", r, err)
+				return nil, fmt.Errorf("spicedb: relationship %s: %w", r, err)
 			}
 			rel.OptionalCaveat.Context = ctx
 		}
@@ -225,6 +239,38 @@ func (r Relationship) ToProto() (*v1.Relationship, error) {
 	}
 
 	return rel, nil
+}
+
+// CaveatContextToStruct converts a caveat-context map to a protobuf Struct,
+// returning an error wrapping ErrInvalidCaveatContext and naming the
+// offending key if any value cannot be represented.
+//
+// This is the single converter for both surfaces that carry caveat context:
+// write-time (a relationship's CaveatContext, via Relationship.ToProto) and
+// check-time (the merged context on a bulk-check item, in
+// client.checkItemFromRel). Keeping one converter is deliberate — the
+// original defect in several clients in this repo was a write path that
+// converted differently from the check path.
+//
+// structpb.NewStruct converts the whole map at once and reports only the
+// value's Go type ("invalid type: chan int"), never which entry held it — on
+// a context map with many keys that leaves the caller guessing. Converting
+// per key costs one extra allocation and lets the error say which entry to
+// fix, the same way C#'s ToProtoValueForKey, Java's toProtoValueForKey, and
+// Ruby's check_context_to_struct rescue-and-re-raise already do.
+func CaveatContextToStruct(context map[string]any) (*structpb.Struct, error) {
+	fields := make(map[string]*structpb.Value, len(context))
+	for k, v := range context {
+		val, err := structpb.NewValue(v)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"caveat context key %q: %w: %s",
+				k, ErrInvalidCaveatContext, err,
+			)
+		}
+		fields[k] = val
+	}
+	return &structpb.Struct{Fields: fields}, nil
 }
 
 // FromProto converts a proto Relationship to an idiomatic Relationship.

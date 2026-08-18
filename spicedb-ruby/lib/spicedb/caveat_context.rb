@@ -52,29 +52,29 @@ module SpiceDB
     # Builds a Google::Protobuf::Struct from a relationship's WRITE-TIME
     # caveat context Hash (Relationship#caveat_context, stored via
     # Relationship.optional_caveat.context on write), or nil if context is
-    # nil. Shares #check_context_value's per-value dispatch with
-    # #check_context_to_struct — the two directions must type-convert
-    # identically — but is named and called separately (from
-    # relationship_to_proto, not the check path) so the two call sites are
-    # never confused with one another, even though the underlying value
-    # conversion is the same. Unlike a naive #to_s per value (this method's
-    # entire reason for existing), this keeps e.g. an Integer caveat
-    # parameter evaluable by CEL as a number rather than the string "42" —
-    # and unlike the check-time path, a bad WRITE-time context is persisted:
-    # every future check against the relationship would mis-evaluate the
-    # caveat, and re-checking with correct context would never repair it,
-    # only rewriting the relationship would.
-    def caveat_context_to_struct(context)
-      return nil if context.nil?
-
-      struct = Google::Protobuf::Struct.new
-      context.each do |k, v|
-        struct.fields[k.to_s] = check_context_value(v)
-      rescue SpiceDB::InvalidArgumentError => e
-        raise SpiceDB::InvalidArgumentError, "caveat context key #{k.to_s.inspect}: #{e.message}"
-      end
-      struct
-    end
+    # nil. Unlike a naive #to_s per value (this converter's entire reason for
+    # existing), this keeps e.g. an Integer caveat parameter evaluable by CEL
+    # as a number rather than the string "42" — and unlike the check-time
+    # path, a bad WRITE-time context is persisted: every future check against
+    # the relationship would mis-evaluate the caveat, and re-checking with
+    # correct context would never repair it, only rewriting the relationship
+    # would.
+    #
+    # This is an ALIAS of #check_context_to_struct, not a copy. The two names
+    # exist so the two call sites read correctly — #caveat_context_to_struct
+    # is called from relationship_to_proto, #check_context_to_struct from the
+    # check path, and confusing them at a call site would be a real bug — but
+    # the conversion itself must be byte-for-byte the same on both surfaces,
+    # and an alias is the only way to make that unfalsifiable. Two separately
+    # maintained bodies (which is what this was) is exactly the drift the
+    # write/check converter convergence existed to close: the original defect
+    # was the write path stringifying while the check path did not.
+    #
+    # If the two surfaces ever genuinely need to differ, do NOT un-alias and
+    # edit one body — add the difference at the call site, or introduce a
+    # parameter, so the divergence is visible rather than latent.
+    alias caveat_context_to_struct check_context_to_struct
+    module_function :caveat_context_to_struct
 
     # Converts one Ruby value into a Google::Protobuf::Value, dispatched by
     # class onto the proto's `kind` oneof. Hash/Array recurse so nested

@@ -410,10 +410,10 @@ for idempotent operations only".
 it commits and the response is lost — a rolling restart, a proxy dropping the
 connection — the retry returns `ALREADY_EXISTS`/`FAILED_PRECONDITION` and the
 caller concludes a write failed that in fact succeeded. Writes, deletes,
-schema writes, bulk import, and the counter registration calls therefore go
-down a call-once path that maps errors but never retries. A caller who wants
-a mutation retried must decide that themselves, knowing their own
-idempotency.
+schema writes, bulk import, and the counter registration calls therefore
+never enter the retry loop: their errors are mapped to this client's typed
+form and raised on the first attempt. A caller who wants a mutation retried
+must decide that themselves, knowing their own idempotency.
 
 **Timeout shape**: the per-call timeout is a per-*attempt* budget, applied
 fresh to each retry rather than shrinking across them, so a call that

@@ -30,6 +30,33 @@ NON_LOOPBACK_ENDPOINTS = [
     "localhost.evil.com:443", "127.0.0.1.evil.com:443", "evil-localhost:443",
 ]
 
+# Authority-shifting targets: endpoints whose URI authority is not what a
+# naive host:port split reads out of them. This exact set defeated the
+# equivalent guard in this repo's C#, Rust, TypeScript and Java clients --
+# a last-colon (or first-"]") split reads a loopback host out of them while
+# those transports parsed the same string as a URI, took "127.0.0.1:443" for
+# userinfo, and connected to evil.com, shipping the bearer token there in
+# cleartext. grpc-python was not exploitable by them (C-core resolves
+# "127.0.0.1:443@evil.com" to ipv4:127.0.0.1:443 and never contacts
+# evil.com), but the guard must fail closed on a target it cannot vouch for,
+# and this fixture is what would catch a future edit that loosened the split
+# here the way the C# one was loosened.
+AUTHORITY_SHIFTING_ENDPOINTS = [
+    "127.0.0.1:443@evil.com",
+    "[::1]:443@evil.com",
+    "[::1]:0@127.0.0.1:19999",
+    "[localhost]:1@127.0.0.1:19999",
+    "localhost@evil.com",
+    "localhost/../evil.com",
+    "localhost#@evil.com",
+    "localhost?@evil.com",
+    "localhost.",
+    "localhost :50051",
+    "127.0.0.1 :50051",
+    # The port validation whose removal from the C# guard opened the bypass.
+    "127.0.0.1:notaport",
+]
+
 
 @pytest.mark.parametrize("endpoint", LOOPBACK_ENDPOINTS)
 def test_is_loopback_endpoint_true(endpoint: str):
@@ -39,6 +66,26 @@ def test_is_loopback_endpoint_true(endpoint: str):
 @pytest.mark.parametrize("endpoint", NON_LOOPBACK_ENDPOINTS)
 def test_is_loopback_endpoint_false(endpoint: str):
     assert _is_loopback_endpoint(endpoint) is False
+
+
+@pytest.mark.parametrize("endpoint", AUTHORITY_SHIFTING_ENDPOINTS)
+def test_is_loopback_endpoint_false_for_authority_shifting(endpoint: str):
+    assert _is_loopback_endpoint(endpoint) is False
+
+
+@pytest.mark.parametrize("endpoint", AUTHORITY_SHIFTING_ENDPOINTS)
+def test_refuses_authority_shifting_endpoint_without_opt_in(endpoint: str):
+    """The regression test for the loopback-guard bypass, asserting
+    non-transmission rather than "an exception was raised": patching
+    grpc.aio.insecure_channel means the channel the token would ride on is
+    the mock, and assert_not_called proves it was never even constructed.
+    An implementation that opened the channel and only then raised would
+    still satisfy pytest.raises but would fail this.
+    """
+    with mock.patch("grpc.aio.insecure_channel") as insecure_channel:
+        with pytest.raises(ValueError, match="allow_insecure_remote_credentials"):
+            Client(endpoint, TOKEN, insecure=True)
+    insecure_channel.assert_not_called()
 
 
 def test_refuses_insecure_non_loopback_without_opt_in():

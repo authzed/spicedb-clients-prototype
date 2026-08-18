@@ -74,6 +74,9 @@ func TestCheck_PerItemErrorIsMappedToNativeError(t *testing.T) {
 
 	c, err := NewWithOpts("passthrough:///bufnet", "test-token",
 		WithInsecure(),
+		// bufnet is an in-memory bufconn dial target, not a real network
+		// destination -- unrelated to what this test exercises.
+		WithInsecureAllowRemoteHost(),
 		WithDialOptions(grpc.WithContextDialer(dialer)),
 	)
 	require.NoError(t, err)

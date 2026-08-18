@@ -4,6 +4,17 @@
 
 ### Breaking Changes
 
+- **2026-08-18** (behavioral; no signature change): per root DESIGN.md, "RULE: Credentials over
+  insecure transport require an explicit opt-in" -- `NewPlaintext`/`NewWithOpts(..., WithInsecure())`
+  now refuse to construct a client for a non-loopback endpoint (loopback means `localhost`,
+  `127.0.0.0/8`, `::1`, or a `unix:` socket target). Previously an insecure connection would send
+  its bearer token in cleartext to any host, including one a caller had no intention of trusting
+  with it -- e.g. an `insecure: true` copied from a localhost example into a staging config. A new
+  option, `WithInsecureAllowRemoteHost()`, opts in explicitly when a caller genuinely means to send
+  credentials in cleartext to a remote host; it must be passed alongside `WithInsecure()`, since
+  `WithInsecure()` alone is no longer sufficient for a non-loopback endpoint. `NewPlaintext` and
+  loopback `NewWithOpts` usage are unaffected -- no code change needed for local development.
+
 - **2026-08-18** (behavioral; no signature change): the entry below changes what existing,
   unmodified call sites do. It is listed here because it does not announce itself -- nothing
   fails to compile, and the difference only shows up under load. (Unlike the other six clients,

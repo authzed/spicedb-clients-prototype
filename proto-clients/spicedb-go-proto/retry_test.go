@@ -68,6 +68,11 @@ func TestNewClient_RetriesTransientErrors(t *testing.T) {
 
 	client, err := NewClient("passthrough:///bufnet", "test-token",
 		WithInsecure(),
+		// bufnet is an in-memory bufconn dial target, not a real network
+		// destination -- the WithInsecureAllowRemoteHost guard this test
+		// would otherwise trip on is unrelated to what these tests exercise
+		// (retry behavior).
+		WithInsecureAllowRemoteHost(),
 		WithDialOptions(grpc.WithContextDialer(dialer)),
 	)
 	require.NoError(t, err)
@@ -147,6 +152,11 @@ func TestNewClient_MutationIsAttemptedExactlyOnceOnRetryableError(t *testing.T) 
 
 	client, err := NewClient("passthrough:///bufnet", "test-token",
 		WithInsecure(),
+		// bufnet is an in-memory bufconn dial target, not a real network
+		// destination -- the WithInsecureAllowRemoteHost guard this test
+		// would otherwise trip on is unrelated to what these tests exercise
+		// (retry behavior).
+		WithInsecureAllowRemoteHost(),
 		WithDialOptions(grpc.WithContextDialer(dialer)),
 	)
 	require.NoError(t, err)
@@ -168,6 +178,11 @@ func TestNewClient_ResourceExhaustedIsNeverRetried(t *testing.T) {
 
 	client, err := NewClient("passthrough:///bufnet", "test-token",
 		WithInsecure(),
+		// bufnet is an in-memory bufconn dial target, not a real network
+		// destination -- the WithInsecureAllowRemoteHost guard this test
+		// would otherwise trip on is unrelated to what these tests exercise
+		// (retry behavior).
+		WithInsecureAllowRemoteHost(),
 		WithDialOptions(grpc.WithContextDialer(dialer)),
 	)
 	require.NoError(t, err)
@@ -235,6 +250,11 @@ func TestNewClient_DeprecatedBulkImportIsAttemptedExactlyOnceOnRetryableError(t 
 
 	client, err := NewClient("passthrough:///bufnet", "test-token",
 		WithInsecure(),
+		// bufnet is an in-memory bufconn dial target, not a real network
+		// destination -- the WithInsecureAllowRemoteHost guard this test
+		// would otherwise trip on is unrelated to what these tests exercise
+		// (retry behavior).
+		WithInsecureAllowRemoteHost(),
 		WithDialOptions(grpc.WithContextDialer(dialer)),
 	)
 	require.NoError(t, err)

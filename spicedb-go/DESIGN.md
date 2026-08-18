@@ -35,6 +35,15 @@ Security-obvious named constructors:
 - `client.NewWithOpts(endpoint string, opts ...Option) (*Client, error)` —
   escape hatch with functional options
 
+Per root DESIGN.md, "RULE: Credentials over insecure transport require an
+explicit opt-in": `WithInsecure()` (and therefore `NewPlaintext`) only permits
+plaintext to a loopback endpoint (`localhost`, `127.0.0.0/8`, `::1`, or a
+`unix:` socket target) — the local-development case that is the entire reason
+`WithInsecure` exists. Anything else needs the separately-named
+`WithInsecureAllowRemoteHost()` option passed alongside `WithInsecure()`, or
+`NewWithOpts` refuses to construct the client at all, before any connection
+is created.
+
 ### Consistency
 
 ZedTokens are opaque `string` values, never proto types. Consistency is an

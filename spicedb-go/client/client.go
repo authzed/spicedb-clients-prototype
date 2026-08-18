@@ -26,13 +26,33 @@ type Client struct {
 type Option func(*options)
 
 type options struct {
-	insecure    bool
-	dialOptions []grpc.DialOption
+	insecure            bool
+	allowInsecureRemote bool
+	dialOptions         []grpc.DialOption
 }
 
 // WithInsecure disables TLS. Use only for testing.
+//
+// By itself this only permits a plaintext connection to a loopback endpoint
+// (localhost, 127.0.0.0/8, ::1, or a unix socket). See root DESIGN.md,
+// "RULE: Credentials over insecure transport require an explicit opt-in":
+// NewWithOpts refuses to send the bearer token to any other endpoint unless
+// WithInsecureAllowRemoteHost is also passed.
 func WithInsecure() Option {
 	return func(o *options) { o.insecure = true }
+}
+
+// WithInsecureAllowRemoteHost permits an insecure (plaintext) connection to
+// send its bearer token to a non-loopback host. Named and separate from
+// WithInsecure on purpose: root DESIGN.md, "RULE: Credentials over
+// insecure transport require an explicit opt-in" requires an option a
+// reader cannot mistake for a default, not a boolean that does double duty
+// as the plaintext-transport switch. Passing this alongside WithInsecure is
+// the caller stating, on purpose, "yes, send a long-lived SpiceDB token in
+// cleartext to a remote host" -- do that only if you understand a SpiceDB
+// token is a complete authorization bypass in anyone else's hands.
+func WithInsecureAllowRemoteHost() Option {
+	return func(o *options) { o.allowInsecureRemote = true }
 }
 
 // WithDialOptions adds custom gRPC dial options.
@@ -42,6 +62,12 @@ func WithDialOptions(opts ...grpc.DialOption) Option {
 
 // NewPlaintext creates a client with an insecure (plaintext) connection.
 // Use this for testing only — the lack of TLS is made obvious by the name.
+//
+// This only works against a loopback endpoint (localhost, 127.0.0.0/8,
+// ::1, or a unix socket) -- see root DESIGN.md, "RULE: Credentials over
+// insecure transport require an explicit opt-in". For a non-loopback
+// endpoint, use NewWithOpts with both WithInsecure and
+// WithInsecureAllowRemoteHost.
 func NewPlaintext(endpoint, presharedKey string) (*Client, error) {
 	return NewWithOpts(endpoint, presharedKey, WithInsecure())
 }
@@ -62,6 +88,9 @@ func NewWithOpts(endpoint, presharedKey string, opts ...Option) (*Client, error)
 	var protoOpts []proto.Option
 	if o.insecure {
 		protoOpts = append(protoOpts, proto.WithInsecure())
+	}
+	if o.allowInsecureRemote {
+		protoOpts = append(protoOpts, proto.WithInsecureAllowRemoteHost())
 	}
 	if len(o.dialOptions) > 0 {
 		protoOpts = append(protoOpts, proto.WithDialOptions(o.dialOptions...))

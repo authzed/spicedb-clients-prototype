@@ -3,6 +3,8 @@ package spicedbgoproto
 import (
 	"context"
 	"fmt"
+	"net"
+	"strings"
 	"sync/atomic"
 
 	v1 "github.com/authzed/spicedb-clients/proto-clients/spicedb-go-proto/gen/authzed/api/v1"
@@ -26,14 +28,36 @@ type Client struct {
 type Option func(*clientConfig)
 
 type clientConfig struct {
-	insecure    bool
-	dialOptions []grpc.DialOption
+	insecure            bool
+	allowInsecureRemote bool
+	dialOptions         []grpc.DialOption
 }
 
 // WithInsecure disables TLS (for testing).
+//
+// By itself this only permits a plaintext connection to a loopback endpoint
+// (localhost, 127.0.0.0/8, ::1, or a unix socket) -- see isLoopbackEndpoint
+// below and root DESIGN.md, "RULE: Credentials over insecure transport
+// require an explicit opt-in". NewClient refuses to send the bearer token
+// to any other endpoint unless WithInsecureAllowRemoteHost is also passed.
 func WithInsecure() Option {
 	return func(cfg *clientConfig) {
 		cfg.insecure = true
+	}
+}
+
+// WithInsecureAllowRemoteHost permits an insecure (plaintext) connection to
+// send its bearer token to a non-loopback host. Named and separate from
+// WithInsecure on purpose: root DESIGN.md, "RULE: Credentials over insecure
+// transport require an explicit opt-in" requires an option a reader cannot
+// mistake for a default, not a boolean that does double duty as the
+// plaintext-transport switch. Passing this alongside WithInsecure is the
+// caller stating, on purpose, "yes, send a long-lived SpiceDB token in
+// cleartext to a remote host" -- do that only if you understand a SpiceDB
+// token is a complete authorization bypass in anyone else's hands.
+func WithInsecureAllowRemoteHost() Option {
+	return func(cfg *clientConfig) {
+		cfg.allowInsecureRemote = true
 	}
 }
 
@@ -42,6 +66,52 @@ func WithDialOptions(opts ...grpc.DialOption) Option {
 	return func(cfg *clientConfig) {
 		cfg.dialOptions = append(cfg.dialOptions, opts...)
 	}
+}
+
+// isLoopbackEndpoint reports whether a gRPC target string names a loopback
+// destination: the literal hostname "localhost", an IP in 127.0.0.0/8, the
+// IPv6 loopback ::1, or a unix domain socket target (unix:path or
+// unix:///path). A unix socket never leaves the host's kernel, so it is
+// loopback for the purposes of this check even though it has no IP at all.
+//
+// This is the exemption in root DESIGN.md, "RULE: Credentials over
+// insecure transport require an explicit opt-in": loopback is the reason
+// WithInsecure exists (local development, docker-compose, CI), so it must
+// keep working with no extra ceremony. Anything else requires
+// WithInsecureAllowRemoteHost -- see NewClient.
+func isLoopbackEndpoint(endpoint string) bool {
+	target := endpoint
+
+	// Strip a grpc-go resolver scheme prefix (dns:///, passthrough:///,
+	// unix://, ...) per https://github.com/grpc/grpc/blob/master/doc/naming.md.
+	if idx := strings.Index(target, "://"); idx >= 0 {
+		scheme, rest := target[:idx], target[idx+3:]
+		if strings.EqualFold(scheme, "unix") {
+			return true
+		}
+		// An authority-form target (e.g. "passthrough:///host:port") has a
+		// third slash separating the (here, empty) authority from the
+		// endpoint; strip it so SplitHostPort below sees "host:port", not
+		// "/host:port".
+		target = strings.TrimPrefix(rest, "/")
+	} else if strings.HasPrefix(target, "unix:") {
+		// grpc-go also accepts the unprefixed "unix:path" form.
+		return true
+	}
+
+	host := target
+	if h, _, err := net.SplitHostPort(target); err == nil {
+		host = h
+	}
+	host = strings.Trim(host, "[]")
+
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }
 
 // retryServiceConfig is the gRPC JSON service config installed by default on
@@ -92,6 +162,20 @@ func (b bearerToken) GetRequestMetadata(_ context.Context, _ ...string) (map[str
 	return map[string]string{"authorization": "Bearer " + b.token}, nil
 }
 
+// RequireTransportSecurity reports whether this credential requires
+// transport security. Returning !b.insecure means grpc-go's own check --
+// which normally refuses to attach PerRPCCredentials to a channel that
+// isn't secure -- passes exactly when the connection IS insecure. That is
+// deliberate: WithInsecure exists for local development, and grpc's
+// default refusal would break it outright.
+//
+// What stops this from silently shipping a bearer token to an arbitrary
+// insecure host is NOT here -- it's NewClient's own check, just below,
+// which refuses to construct a Client at all when insecure and the
+// endpoint isn't loopback and the caller hasn't passed
+// WithInsecureAllowRemoteHost. See isLoopbackEndpoint above and root
+// DESIGN.md, "RULE: Credentials over insecure transport require an
+// explicit opt-in".
 func (b bearerToken) RequireTransportSecurity() bool {
 	return !b.insecure
 }
@@ -102,6 +186,18 @@ func NewClient(endpoint string, token string, opts ...Option) (*Client, error) {
 	cfg := &clientConfig{}
 	for _, opt := range opts {
 		opt(cfg)
+	}
+
+	// See root DESIGN.md, "RULE: Credentials over insecure transport
+	// require an explicit opt-in". Refuse before any dial option, transport
+	// credential, or connection is created -- so a bearer token can never
+	// reach the wire for a rejected combination, not merely fail loudly
+	// after the fact.
+	if cfg.insecure && !cfg.allowInsecureRemote && !isLoopbackEndpoint(endpoint) {
+		return nil, fmt.Errorf(
+			"spicedb: refusing to send credentials over an insecure (plaintext) connection to non-loopback endpoint %q: use TLS (drop WithInsecure), or pass WithInsecureAllowRemoteHost() if you intend to send a bearer token in cleartext to a remote host",
+			endpoint,
+		)
 	}
 
 	var dialOpts []grpc.DialOption

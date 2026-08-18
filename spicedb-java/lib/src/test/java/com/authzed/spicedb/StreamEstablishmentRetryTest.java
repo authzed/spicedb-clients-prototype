@@ -31,7 +31,7 @@ import org.junit.jupiter.api.Test;
  * Proves that the 5 streaming methods on {@link SpiceDBClient} ({@code readRelationships}, {@code
  * lookupResources}, {@code lookupSubjects}, {@code exportRelationships}, {@code updates}) make
  * stream/page ESTABLISHMENT effectively retryable on transient gRPC errors ({@code UNAVAILABLE},
- * {@code RESOURCE_EXHAUSTED}, {@code ABORTED}) — and, just as importantly, that a transient error
+ * {@code ABORTED}) — and, just as importantly, that a transient error
  * occurring AFTER an item has already been read from the current stream/page is NEVER retried
  * (which would risk replaying/duplicating that item for the caller).
  *

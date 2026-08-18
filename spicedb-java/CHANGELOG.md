@@ -150,6 +150,31 @@
 
 ### Fixes
 
+- **2026-08-18**: Retry safety, per root `DESIGN.md` "RULE: Automatic retry is for idempotent
+  operations only". Three changes:
+  - `RESOURCE_EXHAUSTED` is no longer retried. In SpiceDB it signals memory load-shed (retrying
+    adds load to an already-overloaded server) or a deterministic `MaxDepthExceeded` (retrying can
+    never succeed — it re-runs the most expensive class of check several times before surfacing
+    the same error). Previously `ErrorMapper.TRANSIENT_CODES`/`isTransient` treated
+    `Status.Code.RESOURCE_EXHAUSTED` as transient.
+  - Mutations (`write`, `deleteRelationships`, `writeSchema`, and the
+    `experimentalRegisterRelationshipCounter`/`experimentalUnregisterRelationshipCounter` calls)
+    are no longer retried on a transient error, even though the underlying gRPC code is retryable.
+    A `WriteRelationships` carrying `OPERATION_CREATE` or preconditions is not idempotent: if it
+    commits and the response is lost (a rolling restart, a proxy dropping the connection), a retry
+    would surface `ALREADY_EXISTS`/`FAILED_PRECONDITION` for a write that in fact succeeded, and
+    the caller would wrongly conclude it had failed. Reads still retry automatically. All five
+    mutation call sites previously went through `withRetry`; they now go through a new
+    `callOnce`, which converts the gRPC error without retrying.
+  - Backoff is now full-jitter (`jitteredBackoffMs`, `uniform(0, cap)`) instead of plain
+    exponential doubling. Without jitter, every client in a fleet retries on the same schedule
+    after a server restart, turning the recovery into a thundering herd.
+
+  `ErrorMapperTest`'s `isTransientForResourceExhausted` (`assertTrue`) is renamed
+  `isNotTransientForResourceExhausted` and inverted to `assertFalse`, since the old assertion was
+  exactly the defect this fixes. New coverage in `UnaryRetrySafetyTest` (a mutation is attempted
+  exactly once on a retryable error and on `RESOURCE_EXHAUSTED`; a read is retried;
+  `RESOURCE_EXHAUSTED` is never retried on a read; backoff varies between calls).
 - **2026-08-18**: **`toRelationshipFilter` silently dropped `subjectID`/`subjectRelation` when
   `subjectType` was not set, instead of raising.** `optionalSubjectFilter` was only built inside
   `if (f.subjectType() != null && !f.subjectType().isEmpty())`, so

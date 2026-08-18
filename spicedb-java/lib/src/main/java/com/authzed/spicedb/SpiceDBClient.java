@@ -14,6 +14,7 @@ import io.grpc.stub.MetadataUtils;
 import io.grpc.stub.StreamObserver;
 import java.time.Instant;
 import java.util.*;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
@@ -360,7 +361,7 @@ public final class SpiceDBClient implements AutoCloseable {
     }
 
     WriteRelationshipsResponse resp =
-        withRetry(() -> permissionsStub.writeRelationships(reqBuilder.build()));
+        callOnce(() -> permissionsStub.writeRelationships(reqBuilder.build()));
     return resp.getWrittenAt().getToken();
   }
 
@@ -474,7 +475,7 @@ public final class SpiceDBClient implements AutoCloseable {
     String revision = "";
     while (true) {
       DeleteRelationshipsResponse resp =
-          withRetry(
+          callOnce(
               () ->
                   permissionsStub.deleteRelationships(
                       DeleteRelationshipsRequest.newBuilder()
@@ -655,7 +656,7 @@ public final class SpiceDBClient implements AutoCloseable {
   /** Writes a new schema to SpiceDB, returning the revision. */
   public String writeSchema(String schema) {
     WriteSchemaResponse resp =
-        withRetry(
+        callOnce(
             () ->
                 schemaStub.writeSchema(WriteSchemaRequest.newBuilder().setSchema(schema).build()));
     return resp.getWrittenAt().getToken();
@@ -1092,7 +1093,7 @@ public final class SpiceDBClient implements AutoCloseable {
    * <p><b>Experimental:</b> this API may change without notice.
    */
   public void experimentalRegisterRelationshipCounter(String name, Filter filter) {
-    withRetry(
+    callOnce(
         () ->
             experimentalStub.experimentalRegisterRelationshipCounter(
                 ExperimentalRegisterRelationshipCounterRequest.newBuilder()
@@ -1130,7 +1131,7 @@ public final class SpiceDBClient implements AutoCloseable {
    * <p><b>Experimental:</b> this API may change without notice.
    */
   public void experimentalUnregisterRelationshipCounter(String name) {
-    withRetry(
+    callOnce(
         () ->
             experimentalStub.experimentalUnregisterRelationshipCounter(
                 ExperimentalUnregisterRelationshipCounterRequest.newBuilder()
@@ -1203,6 +1204,20 @@ public final class SpiceDBClient implements AutoCloseable {
                 Status.CANCELLED.withDescription("stream closed by caller").asRuntimeException()));
   }
 
+  /**
+   * Full-jitter backoff delay in milliseconds: {@code uniform(0, cap)} rather than the fixed
+   * {@code cap}. Without jitter, every client in a fleet retries on the same schedule after a
+   * server restart, turning the recovery into a thundering herd; sampling uniformly under the cap
+   * spreads retries out instead.
+   */
+  private static long jitteredBackoffMs(long cap) {
+    return (long) (ThreadLocalRandom.current().nextDouble() * cap);
+  }
+
+  /**
+   * Retries {@code call} with full-jitter exponential backoff for transient gRPC errors. Only for
+   * idempotent (read) calls -- see {@link #callOnce} for mutations.
+   */
   private <T> T withRetry(RetryableCall<T> call) {
     long backoff = INITIAL_BACKOFF_MS;
     for (int attempt = 0; attempt < MAX_RETRIES; attempt++) {
@@ -1213,7 +1228,7 @@ public final class SpiceDBClient implements AutoCloseable {
           throw ErrorMapper.toSpiceDBException(e);
         }
         try {
-          Thread.sleep(backoff);
+          Thread.sleep(jitteredBackoffMs(backoff));
         } catch (InterruptedException ie) {
           Thread.currentThread().interrupt();
           throw ErrorMapper.toSpiceDBException(e);
@@ -1225,13 +1240,31 @@ public final class SpiceDBClient implements AutoCloseable {
   }
 
   /**
+   * Runs {@code call} once, converting a {@link StatusRuntimeException}, but never retrying.
+   *
+   * <p>For mutations. A {@code WriteRelationships} containing {@code OPERATION_CREATE}, or any
+   * request carrying preconditions, is not idempotent: if it commits and the response is lost (a
+   * rolling restart, a proxy dropping the connection), a retry would surface {@code
+   * ALREADY_EXISTS}/{@code FAILED_PRECONDITION} for a write that in fact succeeded, and the caller
+   * would wrongly conclude it had failed. See root DESIGN.md, "Automatic retry is for idempotent
+   * operations only".
+   */
+  private <T> T callOnce(RetryableCall<T> call) {
+    try {
+      return call.call();
+    } catch (StatusRuntimeException e) {
+      throw ErrorMapper.toSpiceDBException(e);
+    }
+  }
+
+  /**
    * Opens a server-streaming RPC and makes stream/page ESTABLISHMENT effectively retryable on
    * transient errors, reusing {@link #withRetry}'s transient predicate, {@code MAX_RETRIES}, and
    * backoff verbatim (no divergent retry policy).
    *
    * <p>For grpc-java's blocking stub, {@code stub.someStreamingMethod(request)} never throws — it
    * only enqueues the call and returns an {@link Iterator}; the RPC's actual outcome (including a
-   * transient {@code UNAVAILABLE}/{@code RESOURCE_EXHAUSTED}/{@code ABORTED}) only surfaces on the
+   * transient {@code UNAVAILABLE}/{@code ABORTED}) only surfaces on the
    * iterator's first {@code hasNext()}/{@code next()} call. Wrapping only the stub call in {@link
    * #withRetry} (the old code) therefore never actually retries anything — the exception always
    * escapes on the caller's first poll, past the retry loop. This method fixes that by folding the

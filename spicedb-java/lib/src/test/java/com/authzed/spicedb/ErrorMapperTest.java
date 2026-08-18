@@ -107,9 +107,13 @@ class ErrorMapperTest {
   }
 
   @Test
-  void isTransientForResourceExhausted() {
+  void isNotTransientForResourceExhausted() {
+    // Inverted from "isTransientForResourceExhausted" / assertTrue -- RESOURCE_EXHAUSTED must NOT
+    // be retried. In SpiceDB it signals memory load-shed or a deterministic MaxDepthExceeded,
+    // never a transient hiccup. See DESIGN.md, "Automatic retry is for idempotent operations
+    // only".
     StatusRuntimeException e = new StatusRuntimeException(Status.RESOURCE_EXHAUSTED);
-    assertTrue(ErrorMapper.isTransient(e));
+    assertFalse(ErrorMapper.isTransient(e));
   }
 
   @Test

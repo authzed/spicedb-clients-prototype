@@ -292,16 +292,6 @@ mistake into a silent wrong answer.
 
 ## RULE: Automatic retry is for idempotent operations only
 
-**Status: not yet satisfied by any client.** Unlike the three rules above — each of which is
-discharged by the commits that introduced it — this rule states the target, not the current
-behavior. Every client still retries non-idempotent mutations, still carries `RESOURCE_EXHAUSTED`
-in its retryable set (`spicedb-typescript/src/errors.ts`, `spicedb-rust/src/error.rs`,
-`spicedb-java/.../ErrorMapper.java`), and several have unjittered backoff; green tests currently
-assert that behavior. Bringing the clients into compliance is finding 12 ("Unsafe retry") of
-group C, Tier 2, in `docs/superpowers/specs/2026-08-18-remaining-audit-findings-design.md`.
-Read what follows as the specification that work must meet, and do not cite it as describing
-shipped behavior until this paragraph is removed.
-
 A client MUST NOT silently retry a mutation whose replay changes the outcome. A
 `WriteRelationships` containing `OPERATION_CREATE`, or any request carrying preconditions, is
 not idempotent: if it commits and the response is lost, the retry returns `ALREADY_EXISTS` or

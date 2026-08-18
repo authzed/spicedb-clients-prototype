@@ -84,6 +84,25 @@ assert(
   `expected ${bulkRels.length} relationships imported, got ${numLoaded}`,
 );
 
+// The array above is fine when the data is already in memory. For a dataset
+// bigger than memory -- which is what a bulk import is for -- hand in a
+// generator instead: relationships are converted and batched as they are
+// pulled, so only one batch is ever resident. An async generator works the
+// same way, which is what reading from a DB cursor or a file stream looks
+// like in practice.
+function* generatedRels(count: number) {
+  for (let i = 0; i < count; i++) {
+    yield relationship(`document:generated${i}`, "viewer", "user:sally");
+  }
+}
+
+const numGenerated = await client.importBulkRelationships(generatedRels(5));
+console.log(`Bulk-imported ${numGenerated} relationships from a generator`);
+assert(
+  numGenerated === 5n,
+  `expected 5 relationships imported from the generator, got ${numGenerated}`,
+);
+
 // Export all document relationships (includes both the initial write and
 // the bulk import above)
 console.log("\nExporting all document relationships:");

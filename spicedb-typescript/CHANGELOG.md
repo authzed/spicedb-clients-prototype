@@ -98,6 +98,43 @@
 
 ### Fixed
 
+- **2026-08-18**: `importBulkRelationships` required a materialized array, and then held the
+  dataset twice. The signature was `relationships: Relationship[]`, and the body ran
+  `relationships.map(toProtoRelationship)` before streaming, so the caller's array and a full
+  array of protos were both resident before a single byte went out. That is the wrong shape for
+  the one method whose entire purpose is volume: a caller with a dataset larger than memory had
+  no way to import it, however lazily they could produce it. It now accepts
+  `Iterable<Relationship> | AsyncIterable<Relationship>` -- an array, a generator, an async
+  generator, anything with `Symbol.iterator` or `Symbol.asyncIterator` -- and converts and batches
+  relationships (1,000 per request message, unchanged) as they are pulled, so only one batch is
+  ever resident.
+
+  Widening only; every existing call site is unaffected, since arrays are iterable, and an array
+  is still the right choice when the data is already in memory. This brings the last client into
+  line: Go takes `iter.Seq`, C# `IAsyncEnumerable`, Java `Iterable`, Python `Iterable`, Ruby
+  Enumerable, Rust `IntoIterator`.
+
+  ```ts
+  // Before and after -- unchanged:
+  await client.importBulkRelationships([rel1, rel2, rel3]);
+
+  // New: stream from a cursor without materializing anything.
+  async function* fromCursor() {
+    for await (const row of db.query("SELECT ...")) {
+      yield relationship(`document:${row.id}`, "viewer", `user:${row.userId}`);
+    }
+  }
+  await client.importBulkRelationships(fromCursor());
+  ```
+
+  The sequence is consumed exactly once, which is safe because a bulk import is a mutation and is
+  never retried automatically (root DESIGN.md, "RULE: Automatic retry is for idempotent operations
+  only"). A caller retrying by hand must pass a fresh iterable -- a spent generator yields nothing
+  and would import zero relationships. New tests in `src/__tests__/import-streaming.test.ts` assert
+  on *when* the caller's sequence is pulled (the first batch reaches the server before the
+  generator is exhausted), not just on the returned count, which a buffering implementation would
+  satisfy too.
+
 - **2026-08-18**: Every streaming call (`readRelationships`, `lookupResources`, `lookupSubjects`,
   `watch`, `exportBulkRelationships`) leaked one HTTP/2 stream and one server-side SpiceDB
   dispatch, permanently, whenever a caller stopped consuming before the stream was exhausted --

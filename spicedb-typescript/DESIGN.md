@@ -244,6 +244,41 @@ loaded) with no revision, because `ImportBulkRelationshipsResponse` carries
 no `ZedToken` field at all — the proto itself gives the client nothing to
 expose there, not a client-side gap.
 
+#### Bulk import takes any iterable
+
+`importBulkRelationships(relationships)` accepts
+`Iterable<Relationship> | AsyncIterable<Relationship>` — an array, a
+generator, an async generator, anything with `Symbol.iterator` or
+`Symbol.asyncIterator`. Relationships are converted to protos and batched
+(1,000 per request message) as they are pulled, so only one batch is
+resident at a time:
+
+```typescript
+async function* fromCursor() {
+  for await (const row of db.query("SELECT ...")) {
+    yield relationship(`document:${row.id}`, "viewer", `user:${row.userId}`);
+  }
+}
+await client.importBulkRelationships(fromCursor());
+```
+
+This is the one method whose whole purpose is volume, so requiring a
+materialized array made the likeliest large dataset the hardest one to
+import — and the earlier `relationships.map(toProtoRelationship)` held it
+twice, once as the caller's relationships and once as protos. Every other
+SpiceDB client takes a lazy sequence here (Go `iter.Seq`, C#
+`IAsyncEnumerable`, Java `Iterable`, Python `Iterable`, Ruby Enumerable,
+Rust `IntoIterator`); this one now matches.
+
+Arrays are iterable, so existing call sites are unaffected, and an array is
+still the right answer when the data is already in memory.
+
+The sequence is consumed exactly once, which is safe because this call is
+never retried automatically — a bulk import is a mutation, per root
+`DESIGN.md` "RULE: Automatic retry is for idempotent operations only". A
+caller retrying by hand must supply a fresh iterable; a spent generator
+yields nothing, and would silently import zero relationships.
+
 ### Testing
 
 Use `vitest` for all tests. Examples should also be runnable as vitest tests.

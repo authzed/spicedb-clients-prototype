@@ -461,7 +461,7 @@ export class SpiceDBClient {
     exportBulkRelationships(consistency: Consistency, filter?: RelationshipFilterOptions, options?: {
         signal?: AbortSignal;
     }): AsyncIterableIterator<Relationship>;
-    importBulkRelationships(relationships: Relationship[], options?: {
+    importBulkRelationships(relationships: Iterable<Relationship> | AsyncIterable<Relationship>, options?: {
         timeoutMs?: number;
     }): Promise<bigint>;
     lookupResources(params: LookupResourcesParams, consistency: Consistency): AsyncIterableIterator<LookupResource>;

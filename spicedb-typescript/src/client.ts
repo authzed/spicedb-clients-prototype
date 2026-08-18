@@ -153,6 +153,45 @@ function normalizeBulkCheckArgs(
 }
 
 /**
+ * How many relationships go into one `ImportBulkRelationships` request
+ * message. Matches the batch size every other SpiceDB client uses.
+ * @internal
+ */
+const IMPORT_BATCH_SIZE = 1000;
+
+/**
+ * Converts a caller's relationship sequence into the request stream
+ * `importBulkRelationships` sends, batching as it goes.
+ *
+ * The batching is incremental on purpose. Only one batch is resident at a
+ * time, so a caller can hand in a generator reading from a file or a database
+ * cursor and import a dataset larger than memory. Materializing the sequence
+ * here -- or accepting only an array -- would put the caller's whole dataset
+ * in the heap twice, once as their relationships and once as protos, which is
+ * the shape most likely to run out of memory on the one call whose entire
+ * purpose is bulk volume.
+ *
+ * `for await` accepts both sync and async iterables, so the sync case costs
+ * nothing extra here.
+ * @internal
+ */
+async function* importBatches(
+  relationships: Iterable<Relationship> | AsyncIterable<Relationship>,
+) {
+  let batch = [];
+  for await (const rel of relationships) {
+    batch.push(toProtoRelationship(rel));
+    if (batch.length >= IMPORT_BATCH_SIZE) {
+      yield { relationships: batch };
+      batch = [];
+    }
+  }
+  if (batch.length > 0) {
+    yield { relationships: batch };
+  }
+}
+
+/**
  * SpiceDBClient provides an idiomatic TypeScript interface to SpiceDB.
  *
  * All read methods require an explicit consistency parameter.
@@ -765,8 +804,31 @@ export class SpiceDBClient {
   // ---------------------------------------------------------------------------
 
   /**
-   * Imports relationships in bulk. Pass an array of relationships to import
-   * them all in a single transaction.
+   * Imports relationships in bulk, in a single transaction.
+   *
+   * `relationships` is any iterable -- an array, a generator, an async
+   * generator, anything with `Symbol.iterator` or `Symbol.asyncIterator`.
+   * Relationships are converted and batched as they are pulled, so importing
+   * a dataset larger than memory only requires that the caller produce it
+   * lazily:
+   *
+   * ```ts
+   * async function* fromCursor() {
+   *   for await (const row of db.query("SELECT ...")) {
+   *     yield { resourceType: "document", resourceId: row.id, ... };
+   *   }
+   * }
+   * await client.importBulkRelationships(fromCursor());
+   * ```
+   *
+   * An array still works exactly as before -- arrays are iterable -- and is
+   * the right choice when the data is already in memory.
+   *
+   * The sequence is consumed exactly once. This call is never retried
+   * automatically (a bulk import is a mutation; root DESIGN.md, "RULE:
+   * Automatic retry is for idempotent operations only"), so a single pass is
+   * all it needs. A caller who retries by hand must supply a fresh iterable,
+   * since a spent generator yields nothing.
    *
    * `importBulkRelationships` is client-streaming, not unary: its duration
    * scales with the size of `relationships`, not with server latency, so
@@ -778,23 +840,13 @@ export class SpiceDBClient {
    * @returns The number of relationships loaded.
    */
   async importBulkRelationships(
-    relationships: Relationship[],
+    relationships: Iterable<Relationship> | AsyncIterable<Relationship>,
     options?: { timeoutMs?: number },
   ): Promise<bigint> {
     const timeoutMs = options?.timeoutMs;
     return this.callOnce(async () => {
-      const protoRels = relationships.map((rel) => toProtoRelationship(rel));
       const resp = await this.proto.permissions.importBulkRelationships(
-        // Client streaming: send all relationships in batches
-        (async function* () {
-          // Send in chunks of 1000 for efficiency
-          const chunkSize = 1000;
-          for (let i = 0; i < protoRels.length; i += chunkSize) {
-            yield {
-              relationships: protoRels.slice(i, i + chunkSize),
-            };
-          }
-        })(),
+        importBatches(relationships),
         { timeoutMs },
       );
       return resp.numLoaded;

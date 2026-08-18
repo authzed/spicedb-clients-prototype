@@ -77,9 +77,12 @@ A client's default secure constructor — `new_system_tls`, `NewClientWithSystem
 or whatever each language calls it — must use the **platform trust store**, and must be
 covered by a test that **completes a real TLS handshake**.
 
-1. The platform store is the contract. A constructor named for system trust that
-   compiles in its own fixed root set is not using system trust, and will not honour a
-   CA an operator installed on the host.
+1. The platform store is the contract. A constructor must query the platform trust
+   store at runtime and must not vendor, embed, or compile in its own root-certificate
+   set; a bundled set will silently ignore any CA an operator installed on the host.
+   This clause is enforced by code review: the handshake test cannot distinguish the
+   platform store from a vendored bundle, because a successful connection against any
+   public endpoint succeeds for almost any plausible root set.
 2. A test that asserts a connection *fails* does not satisfy this rule. An unreachable
    host, a DNS error, and an empty trust store are indistinguishable to such a test, so
    it passes for the wrong reason while reading as TLS coverage. Assert success against

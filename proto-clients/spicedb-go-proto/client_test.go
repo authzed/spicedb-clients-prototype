@@ -54,12 +54,14 @@ type jsonServiceConfig struct {
 	MethodConfig []jsonMethodConfig `json:"methodConfig"`
 }
 
-// nonIdempotentMethods must exactly match the six method-level "name"
+// nonIdempotentMethods must exactly match the seven method-level "name"
 // entries in retryServiceConfig's second methodConfig entry -- the RPCs
 // DESIGN.md's "Automatic retry is for idempotent operations only" forbids
 // retrying: WriteRelationships/DeleteRelationships/ImportBulkRelationships
-// (proto's OPERATION_CREATE/preconditions hazard), WriteSchema, and the two
-// relationship-counter register/unregister calls.
+// (proto's OPERATION_CREATE/preconditions hazard), WriteSchema, the two
+// relationship-counter register/unregister calls, and BulkImportRelationships
+// -- ImportBulkRelationships' deprecated predecessor, still reachable via the
+// exported ExperimentalServiceClient and just as non-idempotent a bulk write.
 var nonIdempotentMethods = []jsonName{
 	{Service: "authzed.api.v1.PermissionsService", Method: "WriteRelationships"},
 	{Service: "authzed.api.v1.PermissionsService", Method: "DeleteRelationships"},
@@ -67,10 +69,11 @@ var nonIdempotentMethods = []jsonName{
 	{Service: "authzed.api.v1.SchemaService", Method: "WriteSchema"},
 	{Service: "authzed.api.v1.ExperimentalService", Method: "ExperimentalRegisterRelationshipCounter"},
 	{Service: "authzed.api.v1.ExperimentalService", Method: "ExperimentalUnregisterRelationshipCounter"},
+	{Service: "authzed.api.v1.ExperimentalService", Method: "BulkImportRelationships"},
 }
 
 // TestRetryServiceConfig_MutationsHaveNoRetryPolicy proves the per-method
-// split: the six non-idempotent RPCs above have a "name" entry with no
+// split: the seven non-idempotent RPCs above have a "name" entry with no
 // "retryPolicy" at all, and (per grpc-go's own getMethodConfig -- an exact
 // "/service/method" match always wins over a "/service/" wildcard match)
 // this overrides the broader per-service entry that DOES retry. Regression

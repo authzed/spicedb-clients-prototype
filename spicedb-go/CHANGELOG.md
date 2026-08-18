@@ -164,16 +164,28 @@
   inherits this fix with no change to `spicedb-go/client` itself. Two changes:
   - The JSON service config now has **two** `methodConfig` entries instead of one: a
     service-level entry (unchanged shape) carrying the `retryPolicy` for all four services, and a
-    new method-level entry for the six RPCs that are not safely retryable —
+    new method-level entry for the seven RPCs that are not safely retryable —
     `WriteRelationships`, `DeleteRelationships`, `ImportBulkRelationships`, `WriteSchema`,
-    `ExperimentalRegisterRelationshipCounter`, `ExperimentalUnregisterRelationshipCounter` — with
-    no `retryPolicy` at all. gRPC's own service-config resolution
-    (`google.golang.org/grpc/clientconn.go`'s `getMethodConfig`) always prefers an exact
-    `/service/method` match over a `/service/` wildcard, so these six RPCs get no retry policy,
-    overriding the broader entry, while every other RPC on the same services still retries. A
-    `WriteRelationships` containing `OPERATION_CREATE`, or any request carrying preconditions, is
-    not idempotent: if it commits and the response is lost, a retry surfaces
+    `ExperimentalRegisterRelationshipCounter`, `ExperimentalUnregisterRelationshipCounter`, and
+    `ExperimentalService.BulkImportRelationships` — with no `retryPolicy` at all. gRPC's own
+    service-config resolution (`google.golang.org/grpc/clientconn.go`'s `getMethodConfig`) always
+    prefers an exact `/service/method` match over a `/service/` wildcard, so these seven RPCs get
+    no retry policy, overriding the broader entry, while every other RPC on the same services
+    still retries. A `WriteRelationships` containing `OPERATION_CREATE`, or any request carrying
+    preconditions, is not idempotent: if it commits and the response is lost, a retry surfaces
     `ALREADY_EXISTS`/`FAILED_PRECONDITION` for a write that in fact succeeded.
+
+    `BulkImportRelationships` was missing from the initial version of this list (caught in
+    review): it's the deprecated RPC `ImportBulkRelationships` superseded, still present on the
+    wire (`option deprecated = true`, not removed), and still directly reachable through
+    `Client.ExperimentalServiceClient`, which this package exports — deprecation is a
+    documentation signal, not an enforcement mechanism. It is exactly as non-idempotent a
+    client-streaming bulk write as its replacement. Audited every other RPC on
+    `PermissionsService`, `SchemaService`, and `ExperimentalService` (including the rest of
+    `ExperimentalService`'s deprecated surface — `BulkExportRelationships`,
+    `BulkCheckPermission`, `ExperimentalReflectSchema`, `ExperimentalComputablePermissions`,
+    `ExperimentalDependentRelations`, `ExperimentalDiffSchema`) against the `.proto` sources:
+    every one of them is a read, so none needed adding.
   - `RESOURCE_EXHAUSTED` is removed from `retryableStatusCodes` (now just `UNAVAILABLE`,
     `ABORTED`). In SpiceDB it signals memory load-shed or a deterministic `MaxDepthExceeded`,
     never a transient hiccup. `ABORTED` is unchanged and stays retryable — SpiceDB maps datastore
@@ -190,11 +202,13 @@
   a separately maintained copy that could drift. New tests:
   `TestRetryServiceConfig_MutationsHaveNoRetryPolicy` and
   `TestRetryServiceConfig_ReadsRetryButNotResourceExhausted` (structural), plus
-  `TestNewClient_MutationIsAttemptedExactlyOnceOnRetryableError` and
-  `TestNewClient_ResourceExhaustedIsNeverRetried` in `retry_test.go` (behavioral, real bufconn gRPC
-  server). No pre-existing test asserted a mutation retried or `RESOURCE_EXHAUSTED` was transient,
-  so none needed inverting — `TestNewClient_RetriesTransientErrors` already covered (and continues
-  to cover) that a read (`CheckPermission`) retries on `UNAVAILABLE`.
+  `TestNewClient_MutationIsAttemptedExactlyOnceOnRetryableError`,
+  `TestNewClient_ResourceExhaustedIsNeverRetried`, and
+  `TestNewClient_DeprecatedBulkImportIsAttemptedExactlyOnceOnRetryableError` in `retry_test.go`
+  (behavioral, real bufconn gRPC server). No pre-existing test asserted a mutation retried or
+  `RESOURCE_EXHAUSTED` was transient, so none needed inverting —
+  `TestNewClient_RetriesTransientErrors` already covered (and continues to cover) that a read
+  (`CheckPermission`) retries on `UNAVAILABLE`.
 - **2026-08-18**: the caveat-context conversion error from `rel.Relationship.ToProto` (and therefore from `rel.Txn.Create`/`Touch`/`Delete`) was neither a matchable sentinel nor key-naming, unlike its sibling `rel.ErrInvalidFilter`. A new sentinel, `rel.ErrInvalidCaveatContext`, is now wrapped by every such error, so a caller can use `errors.Is` instead of string-matching. The message also **names the offending key**: `structpb.NewStruct` converts the whole map at once and reports only the value's Go type (`invalid type: chan int`), never which entry held it, which on a context map with many keys left the caller guessing. A new exported helper, `rel.CaveatContextToStruct`, converts per key and identifies the entry — the same thing C#, Java and Ruby already report for this failure. That helper is now the single converter for **both** caveat-context surfaces: write-time (`Relationship.CaveatContext`, via `ToProto`) and check-time (the merged context in `client.checkItemFromRel`, which previously called `structpb.NewStruct` directly), so the two can never drift apart in what they accept or how they describe a failure. Purely additive: no signature changed, and the check path still returns a `CodeInvalidArgument` `*client.Error` — it now additionally satisfies `errors.Is(err, rel.ErrInvalidCaveatContext)`.
 
   The sentinel lives in `rel`, not wrapped as a `*client.Error` inside `Txn.Create`/`Touch`/`Delete`, because `rel` is deliberately client-independent (its package doc says so) and `client` imports `rel` — wrapping there would be an import cycle. This matches `ErrInvalidFilter` exactly: `rel` returns the sentinel, and `client` wraps it as a `*client.Error` with `CodeInvalidArgument` at its own API boundaries (`ImportRelationships`, `ReadRelationships`, `DeleteRelationships`, the check surface).

@@ -181,3 +181,69 @@ func TestNewClient_ResourceExhaustedIsNeverRetried(t *testing.T) {
 	require.Equal(t, codes.ResourceExhausted, status.Code(err))
 	require.EqualValues(t, 1, srv.checkAttempts.Load(), "RESOURCE_EXHAUSTED must never be retried, even on a read")
 }
+
+// alwaysFailExperimentalServer fails every BulkImportRelationships call with
+// the given status as soon as the stream is opened, counting attempts.
+type alwaysFailExperimentalServer struct {
+	v1.UnimplementedExperimentalServiceServer
+
+	failWith error
+
+	bulkImportAttempts atomic.Int32
+}
+
+func (s *alwaysFailExperimentalServer) BulkImportRelationships(_ v1.ExperimentalService_BulkImportRelationshipsServer) error {
+	s.bulkImportAttempts.Add(1)
+	return s.failWith
+}
+
+// startAlwaysFailExperimentalServer starts an in-process gRPC server backed
+// by bufconn, serving srv, and returns a dialer for it.
+func startAlwaysFailExperimentalServer(t *testing.T, srv *alwaysFailExperimentalServer) func(context.Context, string) (net.Conn, error) {
+	t.Helper()
+
+	const bufSize = 1024 * 1024
+	lis := bufconn.Listen(bufSize)
+
+	grpcServer := grpc.NewServer()
+	v1.RegisterExperimentalServiceServer(grpcServer, srv)
+
+	go func() {
+		_ = grpcServer.Serve(lis)
+	}()
+	t.Cleanup(grpcServer.Stop)
+
+	return func(ctx context.Context, _ string) (net.Conn, error) {
+		return lis.DialContext(ctx)
+	}
+}
+
+// TestNewClient_DeprecatedBulkImportIsAttemptedExactlyOnceOnRetryableError
+// proves the fix for the review finding on the first round of this task:
+// ExperimentalService.BulkImportRelationships -- the deprecated RPC
+// ImportBulkRelationships superseded, but still present on the wire and
+// still reachable directly through the exported ExperimentalServiceClient --
+// is excluded from the retry policy exactly like its replacement. Before the
+// fix, this RPC inherited the service-wide retryPolicy (it wasn't in the
+// method-level no-retry entry), so a retryable failure after the transaction
+// had already committed server-side would be silently retried and could
+// surface a spurious duplicate-relationship error to a caller who in fact
+// succeeded.
+func TestNewClient_DeprecatedBulkImportIsAttemptedExactlyOnceOnRetryableError(t *testing.T) {
+	srv := &alwaysFailExperimentalServer{failWith: status.Error(codes.Unavailable, "transiently unavailable")}
+	dialer := startAlwaysFailExperimentalServer(t, srv)
+
+	client, err := NewClient("passthrough:///bufnet", "test-token",
+		WithInsecure(),
+		WithDialOptions(grpc.WithContextDialer(dialer)),
+	)
+	require.NoError(t, err)
+
+	stream, err := client.ExperimentalServiceClient.BulkImportRelationships(context.Background())
+	require.NoError(t, err, "opening a client-streaming call does not itself contact the server")
+
+	_, err = stream.CloseAndRecv()
+	require.Error(t, err)
+	require.Equal(t, codes.Unavailable, status.Code(err))
+	require.EqualValues(t, 1, srv.bulkImportAttempts.Load(), "the deprecated bulk-import RPC must be attempted exactly once, even on a retryable error")
+}

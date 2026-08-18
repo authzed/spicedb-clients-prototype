@@ -71,7 +71,8 @@ const retryServiceConfig = `{
         {"service": "authzed.api.v1.PermissionsService", "method": "ImportBulkRelationships"},
         {"service": "authzed.api.v1.SchemaService", "method": "WriteSchema"},
         {"service": "authzed.api.v1.ExperimentalService", "method": "ExperimentalRegisterRelationshipCounter"},
-        {"service": "authzed.api.v1.ExperimentalService", "method": "ExperimentalUnregisterRelationshipCounter"}
+        {"service": "authzed.api.v1.ExperimentalService", "method": "ExperimentalUnregisterRelationshipCounter"},
+        {"service": "authzed.api.v1.ExperimentalService", "method": "BulkImportRelationships"}
       ]
     }
   ]
@@ -124,19 +125,36 @@ func NewClient(endpoint string, token string, opts ...Option) (*Client, error) {
 	//   - The first entry is a SERVICE-level match (no "method") for all four
 	//     services, carrying the retryPolicy. This is the default for every
 	//     RPC on those services, including reads.
-	//   - The second entry METHOD-level-matches the six mutation RPCs that
+	//   - The second entry METHOD-level-matches the seven mutation RPCs that
 	//     are not safely retryable and carries no retryPolicy at all. gRPC's
 	//     service-config resolution (google.golang.org/grpc/clientconn.go's
 	//     getMethodConfig) always prefers an exact "/service/method" match
-	//     over a "/service/" wildcard, so these six RPCs get no retry policy
-	//     -- overriding the broader entry above -- while every other RPC on
-	//     the same services still retries. WriteRelationships (may carry
-	//     OPERATION_CREATE or preconditions) and DeleteRelationships/
+	//     over a "/service/" wildcard, so these seven RPCs get no retry
+	//     policy -- overriding the broader entry above -- while every other
+	//     RPC on the same services still retries. WriteRelationships (may
+	//     carry OPERATION_CREATE or preconditions) and DeleteRelationships/
 	//     WriteSchema/ImportBulkRelationships/the counter register-unregister
 	//     calls (may carry preconditions, or are not idempotent to replay)
-	//     are the six: if one commits and the response is lost, a retry
-	//     surfaces ALREADY_EXISTS/FAILED_PRECONDITION for a write that in
-	//     fact succeeded.
+	//     are six of the seven: if one commits and the response is lost, a
+	//     retry surfaces ALREADY_EXISTS/FAILED_PRECONDITION for a write that
+	//     in fact succeeded.
+	//
+	//     The seventh, ExperimentalService.BulkImportRelationships, is the
+	//     deprecated RPC ImportBulkRelationships superseded -- still present
+	//     on the wire (option deprecated = true, not removed) and still
+	//     reachable directly through Client.ExperimentalServiceClient, which
+	//     this package exports. Deprecation is a documentation signal, not
+	//     an enforcement mechanism: nothing stops a caller from invoking it,
+	//     and it is exactly as non-idempotent a client-streaming bulk write
+	//     as its replacement, so it needs the same exclusion. Audited every
+	//     other RPC on PermissionsService, SchemaService, and
+	//     ExperimentalService (including the rest of ExperimentalService's
+	//     deprecated surface -- BulkExportRelationships, BulkCheckPermission,
+	//     ExperimentalReflectSchema, ExperimentalComputablePermissions,
+	//     ExperimentalDependentRelations, ExperimentalDiffSchema) against
+	//     schema_service.proto/permission_service.proto/
+	//     experimental_service.proto: every one of them is a read, so
+	//     retrying them is safe and none needed adding here.
 	//
 	// RESOURCE_EXHAUSTED is deliberately absent from retryableStatusCodes: in
 	// SpiceDB it signals memory load-shed or a deterministic

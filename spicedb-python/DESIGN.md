@@ -336,14 +336,24 @@ server to stop. Every streaming method holds the gRPC call object and cancels
 it in a `finally`:
 
 ```python
-call = self._permissions.ReadRelationships(request, metadata=self._metadata)
+call = None
 try:
+    call = self._permissions.ReadRelationships(request, metadata=self._metadata)
     for resp in call:          # `async for` in spicedb.aio
         ...
         yield ...
 finally:
-    call.cancel()
+    if call is not None:
+        call.cancel()
 ```
+
+Opening the call is the first statement *inside* the `try`, not above it,
+and the cancel is guarded with `if call is not None`. If call construction
+itself raises -- before it returns anything to assign -- `call` must already
+be bound to something, or the `finally` that runs on the way out raises
+`UnboundLocalError` and masks the real exception. Assigning `None` first and
+guarding the cancel makes "the call was never opened" a no-op instead of a
+crash.
 
 The `finally` is the load-bearing part. Both surfaces are generators, so
 closing the generator throws `GeneratorExit` in at the suspended `yield` —
@@ -360,8 +370,15 @@ worth knowing:
   reference, CPython closes it immediately, and the cancel happens
   synchronously before the next statement. (Even before the `finally`
   existed, the call object's own finalizer usually got there eventually —
-  but "usually", via refcounting, is not a guarantee: a reference cycle
-  defers it to a gc pass. The explicit cancel makes it deterministic.)
+  via the same refcounting. A reference cycle involving the generator
+  defers both to the same gc pass: an uncollected generator does not run
+  its `finally` any more than an uncollected call object runs its
+  finalizer, so the explicit cancel is not what makes that case
+  deterministic — it isn't. What it actually buys is independence: release
+  no longer depends on CPython's refcounting behavior being what tears the
+  generator down, or on grpc's own `__del__` existing and doing the right
+  thing — properties of the interpreter and the library, not of this
+  client's contract.)
 - **`spicedb.aio`** returns an async generator, whose `aclose()` is a
   coroutine and therefore cannot run at refcount-zero. A bare `break` still
   releases the stream — the event loop's async-generator finalization hook
@@ -572,10 +589,14 @@ must decide that themselves, knowing their own idempotency.
 fresh to each retry rather than shrinking across them, so a call that
 legitimately needs several retries is not made more likely to fail than one
 that needs none. Worst-case latency for a timeout `t` is therefore
-`t × (retries + 1)` plus backoff, and an auto-paging call spends a fresh `t`
-per page. Root `DESIGN.md`, "On worst-case latency", covers why this differs
-from Go's; a caller needing a true end-to-end bound must impose it above this
-client.
+`t × (retries + 1)` plus backoff. This applies to calls that take a
+`timeout` parameter at all -- the auto-paging streaming calls
+(`read_relationships`, `export_relationships`) take none, per root
+`DESIGN.md`, "Streaming calls MUST NOT inherit the unary default": they rely
+on caller cancellation, not a per-page deadline, so there is no `t` to
+re-apply per page. Root `DESIGN.md`, "On worst-case latency", covers why the
+per-attempt shape differs from Go's; a caller needing a true end-to-end
+bound on a timed call must impose it above this client.
 
 This is identical on both flavors: `is_transient()` checks against
 `grpc.RpcError`, the base type both `grpc`'s and `grpc.aio`'s error classes

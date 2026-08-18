@@ -144,9 +144,12 @@
     `contextlib.aclosing()` releases it deterministically -- reach for `aclosing` when the
     release must happen before the next line.
   - `spicedb.sync` mostly got away with it: CPython closes a plain generator at refcount-zero
-    and the call object's own finalizer usually cancelled from there. "Usually" is the problem
-    -- a reference cycle defers that to a gc pass. The explicit cancel makes it deterministic
-    instead of a property of the garbage collector.
+    and the call object's own finalizer usually cancelled from there. "Usually" is the problem,
+    but not the one it looks like -- a reference cycle defers the generator's `finally` to a gc
+    pass exactly as it defers the call object's finalizer, so the explicit cancel does not make
+    that case deterministic. What it buys is independence from CPython's refcounting behavior
+    and from grpc's own `__del__` doing the right thing, neither of which this client should
+    depend on.
 
   New `tests/test_stream_release.py` covers all five streams on both surfaces against a real
   in-process gRPC server whose handlers park until their own RPC terminates. It asserts the

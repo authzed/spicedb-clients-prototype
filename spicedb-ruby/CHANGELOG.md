@@ -91,6 +91,13 @@
 
 ### Fixed
 
+- **2026-08-18**: `SpiceDBProto::Client#initialize` leaked a `GRPC::Core::Channel` per secure
+  (non-`insecure:`) construction. It built a channel with bare (uncomposed) credentials first,
+  then -- for the secure path only -- built a SECOND channel with composed channel+call
+  credentials and reassigned `@channel` to it, discarding the first. `#close` only ever closed
+  whichever channel `@channel` currently referenced, so the first channel (and its connection)
+  was never released. Credentials are now composed BEFORE the one-and-only channel is
+  constructed, so exactly one `GRPC::Core::Channel` is created regardless of `insecure:`.
 - **2026-08-18**: Watch resumability. `updates` previously dropped
   `WatchResponse.changes_through` entirely and had no way to request
   `WATCH_KIND_INCLUDE_CHECKPOINTS`.

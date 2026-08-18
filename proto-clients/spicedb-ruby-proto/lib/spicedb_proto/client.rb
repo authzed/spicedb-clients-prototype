@@ -32,28 +32,32 @@ module SpiceDBProto
     # @param token [String] bearer token for authentication
     # @param insecure [Boolean] if true, use an insecure (plaintext) channel
     def initialize(endpoint, token, insecure: false)
+      # Build final credentials BEFORE constructing the channel, so exactly
+      # one GRPC::Core::Channel is ever created. The previous implementation
+      # built a channel with the bare (uncomposed) credentials first, then
+      # -- for the secure path only -- built a SECOND channel with the
+      # composed channel+call credentials and reassigned @channel to it,
+      # leaking the first: #close only closes whichever channel @channel
+      # currently references, so the discarded one was never closed.
+      #
+      # For secure channels, compose channel + call credentials up front.
+      # For insecure channels, pass call credentials via the interceptor
+      # instead (channel credentials can't carry call credentials over a
+      # plaintext channel).
       if insecure
         credentials = :this_channel_is_insecure
+        @interceptor = BearerTokenInterceptor.new(token)
+        stub_opts = { interceptors: [@interceptor] }
       else
-        credentials = GRPC::Core::ChannelCredentials.new
+        call_creds = GRPC::Core::CallCredentials.new(proc { |_context|
+          { "authorization" => "Bearer #{token}" }
+        })
+        credentials = GRPC::Core::ChannelCredentials.new.compose(call_creds)
+        stub_opts = {}
       end
 
       @channel = GRPC::Core::Channel.new(endpoint, {}, credentials)
-
-      call_creds = GRPC::Core::CallCredentials.new(proc { |_context|
-        { "authorization" => "Bearer #{token}" }
-      })
-
-      # For secure channels, compose channel + call credentials.
-      # For insecure channels, pass call credentials via the interceptor instead.
-      if insecure
-        @interceptor = BearerTokenInterceptor.new(token)
-        stub_opts = { channel_override: @channel, interceptors: [@interceptor] }
-      else
-        combined = credentials.compose(call_creds)
-        @channel = GRPC::Core::Channel.new(endpoint, {}, combined)
-        stub_opts = { channel_override: @channel }
-      end
+      stub_opts[:channel_override] = @channel
 
       @permissions = Authzed::Api::V1::PermissionsService::Stub.new(
         endpoint, nil, **stub_opts

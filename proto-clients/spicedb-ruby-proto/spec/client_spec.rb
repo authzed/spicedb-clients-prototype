@@ -58,6 +58,40 @@ RSpec.describe SpiceDBProto::Client do
       client = described_class.new("localhost:50051", "test-token", insecure: true)
       expect { client.close }.not_to raise_error
     end
+
+    it "is idempotent -- calling it more than once does not raise" do
+      client = described_class.new("localhost:50051", "test-token", insecure: true)
+      expect { client.close }.not_to raise_error
+      expect { client.close }.not_to raise_error
+      expect { client.close }.not_to raise_error
+    end
+  end
+
+  # Regression coverage for the double-channel leak: the secure path used to
+  # build a channel with bare credentials, then build a SECOND channel with
+  # composed channel+call credentials and reassign @channel to it, leaking
+  # the first (#close only closes whichever channel @channel currently
+  # references). Asserting on GRPC::Core::Channel.new's call count -- not
+  # just that construction doesn't raise -- is what would have caught this;
+  # every stub still gets constructed either way.
+  describe "channel construction" do
+    it "creates exactly one underlying channel for a secure connection" do
+      expect(GRPC::Core::Channel).to receive(:new).once.and_call_original
+      described_class.new("localhost:50051", "test-token", insecure: false)
+    end
+
+    it "creates exactly one underlying channel for an insecure connection" do
+      expect(GRPC::Core::Channel).to receive(:new).once.and_call_original
+      described_class.new("localhost:50051", "test-token", insecure: true)
+    end
+
+    it "closing a secure client closes the same channel every stub was built with" do
+      client = described_class.new("localhost:50051", "test-token", insecure: false)
+      channel = client.instance_variable_get(:@channel)
+
+      expect(channel).to receive(:close)
+      client.close
+    end
   end
 end
 

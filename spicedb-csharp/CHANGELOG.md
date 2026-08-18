@@ -65,6 +65,47 @@
       consistency, "view", rel, default, new Dictionary<string, object> { ["now"] = 42 });
   ```
 
+
+- **2026-08-15**: The 5 streaming methods (`ReadRelationshipsAsync`,
+  `LookupResourcesAsync`, `LookupSubjectsAsync`, `ExportRelationshipsAsync`,
+  `UpdatesAsync`) now retry stream/page **ESTABLISHMENT** on transient errors
+  (`{UNAVAILABLE, RESOURCE_EXHAUSTED, ABORTED}`), reusing the same backoff and
+  `MaxRetryAttempts` budget as unary calls (reset per page for the paginated
+  methods; per-stream for `LookupSubjectsAsync`/`UpdatesAsync`, which have no
+  cursor). A transient error is retried ONLY while nothing has been yielded
+  yet from the current stream/page — once any item has been yielded, the
+  error is mapped to the typed `SpiceDBException` and rethrown instead, never
+  retried, so callers can never see a replayed/duplicated item. `UpdatesAsync`
+  in particular only retries the initial watch open — never mid-watch. No API
+  shape change.
+
+- **2026-08-15**: `DeleteRelationshipsAsync` now accepts optional `mustMatch`/
+  `mustNotMatch`/`limit` parameters, reaching the proto's
+  `optional_preconditions` and `optional_limit` fields that were previously
+  unset by the client. Additive — existing `client.DeleteRelationshipsAsync(filter)`
+  calls are unaffected (no preconditions, 1,000-item page size, partial
+  deletions allowed, same as before). `mustMatch`/`mustNotMatch` add
+  MUST_MATCH/MUST_NOT_MATCH preconditions (built the same way as
+  `Transaction.MustMatch`/`MustNotMatch`, via the shared internal
+  `Transaction.BuildPrecondition` helper) that guard the delete, rejecting it
+  if unsatisfied; `limit` overrides the default 1,000-per-call page size.
+  Mirrors `spicedb-go`'s `WithDeleteMustMatch`/`WithDeleteMustNotMatch`/
+  `WithDeleteLimit` (`client/relationships.go`) — see `DESIGN.md`
+  ("Deletions") for the semantics of combining preconditions with
+  auto-paging.
+
+  ```csharp
+  // Before:
+  var revision = await client.DeleteRelationshipsAsync(filter);
+
+  // After — same call still works, plus optional guards:
+  var revision = await client.DeleteRelationshipsAsync(
+      filter,
+      mustMatch: [ownerGuard],
+      mustNotMatch: [lockedGuard],
+      limit: 1000);
+  ```
+
 ### Breaking Changes
 
 - **2026-08-16**: `CheckPermissionAsync` now returns `Task<CheckResult>`
@@ -114,62 +155,6 @@
   `LookupResourcesAsync`/`LookupSubjectsAsync` call. Additive to those
   records; existing field access is unaffected.
 
-### Fixed
-
-- **2026-08-16**: A per-item error from `CheckBulkPermissions` (surfaced via
-  `CheckPermissionAsync`/`CheckPermissionsAsync`) now maps through
-  `ErrorMapper.ToSpiceDBException` like every other RPC in this client,
-  instead of discarding the `google.rpc.Status` error code and throwing the
-  base `SpiceDBException`. A caller can now distinguish a per-item
-  `PERMISSION_DENIED` (→ `PermissionDeniedException`) from any other
-  per-item failure without string-matching the exception message. The fix
-  synthesizes a `Grpc.Core.RpcException` from the pair's numeric
-  `google.rpc.Status` code/message so it can be routed through the existing
-  mapper switch unchanged.
-
-### Added
-
-- **2026-08-15**: The 5 streaming methods (`ReadRelationshipsAsync`,
-  `LookupResourcesAsync`, `LookupSubjectsAsync`, `ExportRelationshipsAsync`,
-  `UpdatesAsync`) now retry stream/page **ESTABLISHMENT** on transient errors
-  (`{UNAVAILABLE, RESOURCE_EXHAUSTED, ABORTED}`), reusing the same backoff and
-  `MaxRetryAttempts` budget as unary calls (reset per page for the paginated
-  methods; per-stream for `LookupSubjectsAsync`/`UpdatesAsync`, which have no
-  cursor). A transient error is retried ONLY while nothing has been yielded
-  yet from the current stream/page — once any item has been yielded, the
-  error is mapped to the typed `SpiceDBException` and rethrown instead, never
-  retried, so callers can never see a replayed/duplicated item. `UpdatesAsync`
-  in particular only retries the initial watch open — never mid-watch. No API
-  shape change.
-
-- **2026-08-15**: `DeleteRelationshipsAsync` now accepts optional `mustMatch`/
-  `mustNotMatch`/`limit` parameters, reaching the proto's
-  `optional_preconditions` and `optional_limit` fields that were previously
-  unset by the client. Additive — existing `client.DeleteRelationshipsAsync(filter)`
-  calls are unaffected (no preconditions, 1,000-item page size, partial
-  deletions allowed, same as before). `mustMatch`/`mustNotMatch` add
-  MUST_MATCH/MUST_NOT_MATCH preconditions (built the same way as
-  `Transaction.MustMatch`/`MustNotMatch`, via the shared internal
-  `Transaction.BuildPrecondition` helper) that guard the delete, rejecting it
-  if unsatisfied; `limit` overrides the default 1,000-per-call page size.
-  Mirrors `spicedb-go`'s `WithDeleteMustMatch`/`WithDeleteMustNotMatch`/
-  `WithDeleteLimit` (`client/relationships.go`) — see `DESIGN.md`
-  ("Deletions") for the semantics of combining preconditions with
-  auto-paging.
-
-  ```csharp
-  // Before:
-  var revision = await client.DeleteRelationshipsAsync(filter);
-
-  // After — same call still works, plus optional guards:
-  var revision = await client.DeleteRelationshipsAsync(
-      filter,
-      mustMatch: [ownerGuard],
-      mustNotMatch: [lockedGuard],
-      limit: 1000);
-  ```
-
-### Breaking Changes
 
 - **2026-08-15**: `LookupResourcesAsync`/`LookupSubjectsAsync` now yield native records instead of bare `string`s: `IAsyncEnumerable<LookupResource>` and `IAsyncEnumerable<LookupSubject>` respectively, mirroring `spicedb-go`'s `client/lookup_types.go`. Each result carries `Permissionship` (`HasPermission`/`ConditionalPermission`/`Unspecified`) and, for conditional results, `PartialCaveat.MissingRequiredContext`. Critically, `LookupSubject.ExcludedSubjects` now surfaces the subjects excluded from a wildcard `"*"` match — previously this information was silently dropped, so code that treated a wildcard subject ID as a blanket grant risked **over-granting access** to subjects the server had explicitly excluded. Deprecated proto fallback fields (`subject_object_id`/`permissionship`/`partial_caveat_info`/`excluded_subject_ids`) are still handled transparently for older servers.
 
@@ -223,6 +208,18 @@
   ```
 
 ### Fixed
+
+- **2026-08-16**: A per-item error from `CheckBulkPermissions` (surfaced via
+  `CheckPermissionAsync`/`CheckPermissionsAsync`) now maps through
+  `ErrorMapper.ToSpiceDBException` like every other RPC in this client,
+  instead of discarding the `google.rpc.Status` error code and throwing the
+  base `SpiceDBException`. A caller can now distinguish a per-item
+  `PERMISSION_DENIED` (→ `PermissionDeniedException`) from any other
+  per-item failure without string-matching the exception message. The fix
+  synthesizes a `Grpc.Core.RpcException` from the pair's numeric
+  `google.rpc.Status` code/message so it can be routed through the existing
+  mapper switch unchanged.
+
 
 - **2026-08-15**: `DefaultDeletePageSize` (the default `DeleteRelationshipsAsync` page size) is now 1,000, not 10,000. SpiceDB's default `--max-delete-relationships-limit` is 1,000, so a default (no explicit `limit`) `DeleteRelationshipsAsync` call against a stock server previously failed with `provided limit 10000 is greater than maximum allowed of 1000`. No API shape change — only the default value sent when `limit` isn't supplied.
 

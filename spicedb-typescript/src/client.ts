@@ -87,7 +87,24 @@ import {
 export interface SpiceDBClientOptions {
   endpoint: string;
   token: string;
+  /**
+   * Use plaintext (insecure) connection instead of TLS.
+   *
+   * By itself, this only permits a plaintext connection to a loopback
+   * endpoint (localhost, 127.0.0.0/8, ::1, or a unix socket target) -- see
+   * root DESIGN.md, "RULE: Credentials over insecure transport require an
+   * explicit opt-in". For a non-loopback endpoint, also pass
+   * `allowInsecureRemoteCredentials: true`.
+   */
   insecure?: boolean;
+  /**
+   * Explicit, separately named opt-in permitting `insecure: true` to target
+   * a non-loopback endpoint. Named and separate from `insecure` on purpose:
+   * a reader must not be able to mistake it for a default. Set this to
+   * `true` only if you genuinely mean to send a bearer token in cleartext
+   * to a remote host.
+   */
+  allowInsecureRemoteCredentials?: boolean;
   headers?: Record<string, string>;
   maxRetries?: number;
   /**
@@ -205,6 +222,7 @@ export class SpiceDBClient {
   constructor(options: SpiceDBClientOptions) {
     this.proto = createProtoClient(options.endpoint, options.token, {
       insecure: options.insecure,
+      allowInsecureRemoteCredentials: options.allowInsecureRemoteCredentials,
       headers: options.headers,
     });
     this.maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
@@ -1338,6 +1356,12 @@ export function createSpiceDBClient(
   token: string,
   options?: {
     insecure?: boolean;
+    /**
+     * Explicit, separately named opt-in permitting `insecure: true` to
+     * target a non-loopback endpoint. See root DESIGN.md, "RULE:
+     * Credentials over insecure transport require an explicit opt-in".
+     */
+    allowInsecureRemoteCredentials?: boolean;
     headers?: Record<string, string>;
     maxRetries?: number;
     defaultTimeoutMs?: number;

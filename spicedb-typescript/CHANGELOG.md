@@ -365,6 +365,19 @@
 
 ### Breaking Changes
 
+- **2026-08-18** (behavioral; new option): per root DESIGN.md, "RULE: Credentials over insecure
+  transport require an explicit opt-in" -- `createSpiceDBClient(..., { insecure: true })` (both
+  the idiomatic client and the underlying proto client) now refuses to construct a client for a
+  non-loopback endpoint (loopback means `localhost`, `127.0.0.0/8`, `::1`, or a `unix:` socket
+  target). Previously an insecure connection would send its bearer token in cleartext to any host
+  -- Connect-ES's request interceptor sets the `authorization` header unconditionally, regardless
+  of transport security, so nothing checked where the connection actually went. A new option,
+  `allowInsecureRemoteCredentials: true`, opts in explicitly when a caller genuinely means to send
+  credentials in cleartext to a remote host; it must be passed alongside `insecure: true`, since
+  neither alone is sufficient for a non-loopback endpoint anymore. `insecure: true` against
+  `localhost` is unaffected -- no code change needed for local development. Thrown as a plain
+  `Error`, before any HTTP/2 session or transport is created.
+
 - **2026-08-18** (behavioral; no signature change): the two entries below change what existing,
   unmodified call sites do. They are listed here because neither announces itself -- nothing
   fails to compile, and the difference only shows up under load or against a slow query.

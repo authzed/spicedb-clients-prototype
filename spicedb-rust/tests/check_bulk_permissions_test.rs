@@ -378,3 +378,54 @@ async fn check_permissions_malformed_pair_does_not_desync_results_from_inputs() 
          shorter-than-input Vec<CheckResult> that desyncs results[i] from relationships[i]"
     );
 }
+
+// ---------------------------------------------------------------------------
+// HARD REQUIREMENT: a response with fewer pairs than request items must fail
+// loudly, not silently return a short-but-"successful" Vec<CheckResult>.
+//
+// The proto guarantees pairs are returned in request order but says nothing
+// about count. Without an explicit length check, a short response would
+// silently desync results[i] from relationships[i] for every item after the
+// gap -- one resource's answer attributed to another. This is distinct from
+// the malformed-pair case above: every pair present here is well-formed, the
+// response is just short.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn check_permissions_errors_when_response_has_fewer_pairs_than_request_items() {
+    let mock = MockPermissionsService::new();
+    mock.push_check_bulk_permissions_response(proto::CheckBulkPermissionsResponse {
+        checked_at: Some(proto::ZedToken {
+            token: "rev-1".to_string(),
+        }),
+        // Two relationships requested, only one pair returned.
+        pairs: vec![item_pair(
+            proto::check_permission_response::Permissionship::HasPermission,
+            None,
+        )],
+    });
+
+    let addr = spawn_permissions_server(mock).await;
+    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
+        .await
+        .expect("client should connect to mock server");
+
+    let rel1 =
+        Relationship::new("document", "doc1", "view", "user", "alice", "").expect("valid rel");
+    let rel2 =
+        Relationship::new("document", "doc2", "view", "user", "alice", "").expect("valid rel");
+
+    let err = client
+        .check_permissions(&consistency::full(), "view", &[rel1, rel2])
+        .await
+        .expect_err(
+            "a response with fewer pairs than request items must surface as an Err, not \
+             silently produce a short results vector",
+        );
+
+    assert!(
+        matches!(err, SpiceDBError::Status { code: 13, .. }),
+        "expected SpiceDBError::Status{{code: 13 (INTERNAL), ..}} for a pairs/items length \
+         mismatch, got {err:?}"
+    );
+}

@@ -209,6 +209,19 @@
 
 ### Fixed
 
+- **2026-08-18**: `CheckPermissionsCoreAsync` did not verify that
+  `CheckBulkPermissions` returned as many pairs as were requested — the
+  result array was sized off `resp.Pairs.Count` instead of the request's
+  item count, and nothing compared the two. The proto guarantees pairs are
+  returned in request order but says nothing about count, so a response
+  with fewer pairs than items would silently produce an array shorter than
+  `relationships` — every `results[i]` after the gap misaligned with
+  `relationships[i]`, attributing one resource's answer to another. It now
+  throws `SpiceDBException` naming both counts (`"CheckBulkPermissions
+  returned N pair(s) for M request item(s)."`) when they differ, before
+  mapping any pair, and also guards the malformed-oneof case — a
+  `CheckBulkPermissionsPair` with neither `Item` nor `Error` set — the same
+  way `spicedb-rust` already did, instead of dereferencing a `null` `Item`.
 - **2026-08-18**: `Relationship.ToProto()` stringified every `CaveatContext`
   value (`Value.ForString(value?.ToString() ?? "")`), and `Relationship.FromProto`
   read every value back via `Value.StringValue` only — a round trip destroyed

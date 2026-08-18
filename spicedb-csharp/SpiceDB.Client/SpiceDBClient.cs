@@ -224,6 +224,18 @@ public sealed class SpiceDBClient : IAsyncDisposable
         // CheckBulkPermissionsResponseItem has no per-item token of its own.
         var checkedAt = resp.CheckedAt?.Token ?? "";
 
+        // The proto guarantees pairs are returned in request order but says
+        // nothing about count. A short response would otherwise silently
+        // desync results[i] from relationships[i] for every item after the
+        // gap — one resource's answer attributed to another. Fail loudly
+        // instead of returning a misaligned-but-"successful" array.
+        if (resp.Pairs.Count != items.Count)
+        {
+            throw new SpiceDBException(
+                $"CheckBulkPermissions returned {resp.Pairs.Count} pair(s) for {items.Count} " +
+                "request item(s).");
+        }
+
         var results = new CheckResult[resp.Pairs.Count];
         for (var i = 0; i < resp.Pairs.Count; i++)
         {
@@ -238,7 +250,20 @@ public sealed class SpiceDBClient : IAsyncDisposable
                 var status = new Status((StatusCode)pair.Error.Code, pair.Error.Message);
                 throw ErrorMapper.ToSpiceDBException(new RpcException(status));
             }
-            results[i] = ToCheckResult(pair.Item, checkedAt);
+            else if (pair.Item != null)
+            {
+                results[i] = ToCheckResult(pair.Item, checkedAt);
+            }
+            else
+            {
+                // pair.Response is a oneof — a well-behaved server always sets
+                // it to Item or Error, so this should be unreachable in
+                // practice. Mirrors spicedb-rust's malformed-oneof guard:
+                // fail loudly instead of dereferencing a null Item.
+                throw new SpiceDBException(
+                    $"check item {i}: malformed CheckBulkPermissionsPair (neither Item nor " +
+                    "Error set).");
+            }
         }
         return results;
     }

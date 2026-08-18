@@ -353,6 +353,99 @@ class CheckResultsTest {
   }
 
   // ---------------------------------------------------------------------
+  // HARD REQUIREMENT: a response with fewer (or more) pairs than request
+  // items must fail loudly with a typed error naming both counts, not
+  // silently return a misaligned List<CheckResult>. The proto guarantees
+  // pairs are returned in request order but says nothing about count, so a
+  // short response would otherwise silently desync results[i] from
+  // relationships[i] for every item after the gap.
+  // ---------------------------------------------------------------------
+
+  @Test
+  void checkPermissionsThrowsWhenResponseHasFewerPairsThanRequestItems() throws IOException {
+    var service =
+        new PermissionsServiceGrpc.PermissionsServiceImplBase() {
+          @Override
+          public void checkBulkPermissions(
+              CheckBulkPermissionsRequest request,
+              StreamObserver<CheckBulkPermissionsResponse> responseObserver) {
+            // Two relationships requested, only one pair returned.
+            responseObserver.onNext(
+                CheckBulkPermissionsResponse.newBuilder()
+                    .setCheckedAt(ZedToken.newBuilder().setToken("rev-short").build())
+                    .addPairs(
+                        CheckBulkPermissionsPair.newBuilder()
+                            .setItem(
+                                CheckBulkPermissionsResponseItem.newBuilder()
+                                    .setPermissionship(
+                                        CheckPermissionResponse.Permissionship
+                                            .PERMISSIONSHIP_HAS_PERMISSION)
+                                    .build())
+                            .build())
+                    .build());
+            responseObserver.onCompleted();
+          }
+        };
+
+    try (TestServers servers = TestServers.start(service)) {
+      SpiceDBClient client = servers.client();
+
+      com.authzed.spicedb.errors.SpiceDBException ex =
+          assertThrows(
+              com.authzed.spicedb.errors.SpiceDBException.class,
+              () ->
+                  client.checkPermissions(
+                      Consistency.full(),
+                      "view",
+                      Relationship.of("document", "doc1", "view", "user", "alice"),
+                      Relationship.of("document", "doc2", "view", "user", "bob")));
+
+      assertTrue(
+          ex.getMessage().contains("1") && ex.getMessage().contains("2"),
+          "expected message to name both the pair count (1) and item count (2), got: "
+              + ex.getMessage());
+    }
+  }
+
+  @Test
+  void checkPermissionsThrowsOnMalformedPairInsteadOfShrinkingResults() throws IOException {
+    var service =
+        new PermissionsServiceGrpc.PermissionsServiceImplBase() {
+          @Override
+          public void checkBulkPermissions(
+              CheckBulkPermissionsRequest request,
+              StreamObserver<CheckBulkPermissionsResponse> responseObserver) {
+            // Neither `item` nor `error` set on the pair's `response` oneof — the proto schema
+            // guarantees a well-behaved server never sends this, but nothing on the wire
+            // prevents it.
+            responseObserver.onNext(
+                CheckBulkPermissionsResponse.newBuilder()
+                    .setCheckedAt(ZedToken.newBuilder().setToken("rev-malformed").build())
+                    .addPairs(CheckBulkPermissionsPair.newBuilder().build())
+                    .build());
+            responseObserver.onCompleted();
+          }
+        };
+
+    try (TestServers servers = TestServers.start(service)) {
+      SpiceDBClient client = servers.client();
+
+      com.authzed.spicedb.errors.SpiceDBException ex =
+          assertThrows(
+              com.authzed.spicedb.errors.SpiceDBException.class,
+              () ->
+                  client.checkPermissions(
+                      Consistency.full(),
+                      "view",
+                      Relationship.of("document", "doc1", "view", "user", "alice")));
+
+      assertTrue(
+          ex.getMessage().contains("check item 0"),
+          "expected message to preserve the item index, got: " + ex.getMessage());
+    }
+  }
+
+  // ---------------------------------------------------------------------
   // Helper
   // ---------------------------------------------------------------------
 

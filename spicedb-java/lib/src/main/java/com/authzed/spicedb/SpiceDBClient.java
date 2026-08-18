@@ -230,6 +230,19 @@ public final class SpiceDBClient implements AutoCloseable {
     // once on the enclosing response and applies to every pair in it.
     String checkedAt = resp.getCheckedAt().getToken();
 
+    // The proto guarantees pairs are returned in request order but says nothing about count. A
+    // short (or long) response would otherwise silently desync results[i] from relationships[i]
+    // for every item after the gap — one resource's answer attributed to another. Fail loudly
+    // instead of returning a misaligned-but-"successful" List.
+    if (resp.getPairsCount() != items.size()) {
+      throw new SpiceDBException(
+          "checkBulkPermissions returned "
+              + resp.getPairsCount()
+              + " pair(s) for "
+              + items.size()
+              + " request item(s)");
+    }
+
     var results = new ArrayList<CheckResult>(resp.getPairsCount());
     for (int i = 0; i < resp.getPairsCount(); i++) {
       CheckBulkPermissionsPair pair = resp.getPairs(i);
@@ -245,8 +258,18 @@ public final class SpiceDBClient implements AutoCloseable {
                 .withDescription("check item " + i + ": " + errorStatus.getMessage())
                 .asRuntimeException();
         throw ErrorMapper.toSpiceDBException(sre);
+      } else if (pair.hasItem()) {
+        results.add(checkResultFromBulkItem(pair.getItem(), checkedAt));
+      } else {
+        // The proto's `response` is a oneof — a well-behaved server always sets it to item or
+        // error, so this should be unreachable in practice. Silently skipping the index here
+        // would shrink `results` below `items.size()`, desyncing every subsequent results[i]
+        // from relationships[i] for the rest of the batch. Fail loudly instead of returning a
+        // misaligned-but-"successful" List. Mirrors spicedb-rust's malformed-oneof guard.
+        throw new SpiceDBException(
+            "check item " + i + ": malformed CheckBulkPermissionsPair (neither item nor error"
+                + " set)");
       }
-      results.add(checkResultFromBulkItem(pair.getItem(), checkedAt));
     }
     return results;
   }

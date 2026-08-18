@@ -91,6 +91,18 @@
 
 ### Fixed
 
+- **`call_bulk_check` did not verify that `check_bulk_permissions` returned as many pairs
+  as were requested.** The result `Array` was built by mapping `resp.pairs` directly, with
+  nothing comparing its length to the number of items sent. The proto guarantees pairs are
+  returned in request order but says nothing about count, so a response with fewer pairs
+  than items would silently produce an `Array` shorter than `relationships` — every
+  `results[i]` after the gap misaligned with `relationships[i]`, attributing one resource's
+  answer to another. `call_bulk_check` now raises `SpiceDB::Error` naming both counts
+  (`"check_bulk_permissions returned N pair(s) for M request item(s)"`) when they differ,
+  before mapping any pair. It also now guards the malformed-oneof case — a
+  `CheckBulkPermissionsPair` whose `response` oneof is unset (`pair.response.nil?`, i.e.
+  neither `item` nor `error`) — the same way `spicedb-rust` already did, instead of
+  raising an unhandled `NoMethodError` on a `nil` `item`.
 - **Write-time caveat context was stringified on every value.** `relationship_to_proto`
   converted every `Relationship#caveat_context` value with
   `Google::Protobuf::Value.new(string_value: v.to_s)` regardless of its Ruby type — a

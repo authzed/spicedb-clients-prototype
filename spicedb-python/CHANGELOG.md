@@ -126,6 +126,21 @@
 
 ### Fixed
 
+- `_mapping.check_results` (shared by both `spicedb.sync` and `spicedb.aio`)
+  did not verify that `BulkCheckPermissions` returned as many pairs as were
+  requested — the result list was built by iterating `resp.pairs`, with
+  nothing comparing its length to the number of items sent. The proto
+  guarantees pairs are returned in request order but says nothing about
+  count, so a response with fewer pairs than items would silently produce a
+  list shorter than the input relationships — every `results[i]` after the
+  gap misaligned with `relationships[i]`, attributing one resource's answer
+  to another. `check_results` now takes the request's item count and raises
+  `SpiceDBError` naming both counts (`"check_bulk_permissions returned N
+  pair(s) for M request item(s)"`) when they differ, before mapping any
+  pair. It also now guards the malformed-oneof case — a
+  `CheckBulkPermissionsPair` whose `response` oneof is unset (neither `item`
+  nor `error`) — the same way `spicedb-rust` already did, instead of
+  silently falling through to `pair.item`'s zero-value default.
 - `check_all`/`await check_all` (both `spicedb.sync` and `spicedb.aio`)
   returned `True` for zero relationships — Python's builtin `all()` is
   vacuously `True` over an empty iterable. Root `DESIGN.md`'s "An aggregate

@@ -259,6 +259,20 @@ impl SpiceDBClient {
                 .await?;
 
             let inner = resp.into_inner();
+
+            // The proto guarantees pairs are returned in request order but says
+            // nothing about count. A short response would otherwise silently
+            // desync results[i] from relationships[i] for every item after the
+            // gap -- one resource's answer attributed to another. Fail loudly
+            // instead of returning a misaligned-but-"successful" Vec.
+            if inner.pairs.len() != items.len() {
+                return Err(error::internal(format!(
+                    "check_bulk_permissions returned {} pair(s) for {} request item(s)",
+                    inner.pairs.len(),
+                    items.len()
+                )));
+            }
+
             let checked_at = inner.checked_at.map(|z| z.token).unwrap_or_default();
             for (i, pair) in inner.pairs.iter().enumerate() {
                 match &pair.response {

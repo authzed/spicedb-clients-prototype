@@ -215,7 +215,7 @@ class SpiceDBClient:
             )
 
         resp = await self._with_retry(_call)
-        return _mapping.check_results(resp)
+        return _mapping.check_results(resp, len(request.items))
 
     async def check_any(
         self,

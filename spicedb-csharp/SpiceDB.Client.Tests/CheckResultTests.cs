@@ -352,6 +352,62 @@ public class CheckResultTests
         await act.Should().ThrowExactlyAsync<NotFoundException>();
     }
 
+    // ── HARD REQUIREMENT: a response with fewer (or more) pairs than request
+    //    items, or a pair whose Response oneof is unset (neither Item nor
+    //    Error), must fail loudly with a typed error rather than silently
+    //    return a misaligned CheckResult[]. The proto guarantees pairs are
+    //    returned in request order but says nothing about count, so a short
+    //    response would otherwise silently desync results[i] from
+    //    relationships[i] for every item after the gap — one resource's
+    //    answer attributed to another. ─────────────────────────────────────
+
+    [Fact]
+    public async Task CheckPermissionsAsync_FewerPairsThanRequestItems_ThrowsSpiceDBException()
+    {
+        // Two relationships requested, only one pair returned.
+        var resp = new CheckBulkPermissionsResponse
+        {
+            Pairs =
+            {
+                new CheckBulkPermissionsPair
+                {
+                    Item = new CheckBulkPermissionsResponseItem { Permissionship = CheckPermissionResponse.Types.Permissionship.HasPermission },
+                },
+            },
+        };
+
+        var mockPermissions = MockCheckBulk(resp);
+        await using var client = NewClient(mockPermissions.Object);
+
+        var rel1 = Relationship.FromTriple("document", "doc1", "viewer", "user", "alice");
+        var rel2 = Relationship.FromTriple("document", "doc2", "viewer", "user", "bob");
+        var act = async () => await client.CheckPermissionsAsync(Consistency.Full(), "view", default, rel1, rel2);
+
+        var result = await act.Should().ThrowExactlyAsync<SpiceDBException>();
+        result.Which.Message.Should().Contain("1").And.Contain("2");
+    }
+
+    [Fact]
+    public async Task CheckPermissionsAsync_MalformedPair_ThrowsInsteadOfShrinkingResults()
+    {
+        // Neither Item nor Error set on the pair's Response oneof — the proto
+        // schema guarantees a well-behaved server never sends this, but
+        // nothing on the wire prevents it.
+        var resp = new CheckBulkPermissionsResponse
+        {
+            Pairs = { new CheckBulkPermissionsPair() },
+        };
+
+        var mockPermissions = MockCheckBulk(resp);
+        await using var client = NewClient(mockPermissions.Object);
+
+        var rel = Relationship.FromTriple("document", "doc1", "viewer", "user", "alice");
+        var act = async () => await client.CheckPermissionAsync(Consistency.Full(), "view", rel);
+
+        var result = await act.Should().ThrowExactlyAsync<SpiceDBException>();
+        result.Which.Message.Should().Contain("check item 0");
+    }
+
     // ── LookupResource/LookupSubject gain LookedUpAt ────────────────────────
 
     [Fact]

@@ -4,6 +4,22 @@
 
 ### Fixes
 
+- **`check_permissions`/`check_permissions_with_context` did not verify that
+  the server returned as many pairs as were requested.** This closes the gap
+  the malformed-pair fix below explicitly documented as still open: nothing
+  checked that `inner.pairs` had as many entries as the `items` sent in the
+  request, so a well-formed-but-short response (fewer pairs than items, no
+  malformed entries among the pairs present) silently produced a
+  `Vec<CheckResult>` shorter than `relationships` — every `results[i]` after
+  the gap misaligned with `relationships[i]`, attributing one resource's
+  answer to another. The proto guarantees pairs are returned in request
+  order but says nothing about count. Each chunk's response is now checked
+  with `inner.pairs.len() != items.len()` before pairs are mapped, returning
+  `Err(error::internal(..))` (gRPC code 13, `SpiceDBError::Status { code:
+  13, .. }`) naming both counts instead of silently returning a short
+  result. This also makes the singular `check_permission`'s
+  `results.remove(0)` unreachable for a zero-pair response — see the
+  dedicated fix and regression test below.
 - **`check_all`/`check_all_with_context` returned `true` for zero
   relationships.** Rust's `Iterator::all` is vacuously `true` over an empty
   sequence. Root `DESIGN.md`'s "An aggregate over zero checks is not a

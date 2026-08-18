@@ -150,6 +150,17 @@
 
 ### Fixes
 
+- **2026-08-18**: **`checkPermissions` did not verify that `checkBulkPermissions` returned as
+  many pairs as were requested.** The result `List<CheckResult>` was sized off
+  `resp.getPairsCount()` instead of the request's item count, and nothing compared the two. The
+  proto guarantees pairs are returned in request order but says nothing about count, so a response
+  with fewer pairs than items would silently produce a `List` shorter than `relationships` — every
+  `results.get(i)` after the gap misaligned with `relationships[i]`, attributing one resource's
+  answer to another. `checkPermissions` now throws `SpiceDBException` naming both counts
+  (`"checkBulkPermissions returned N pair(s) for M request item(s)"`) when they differ, before
+  mapping any pair. It also now guards the malformed-oneof case — a `CheckBulkPermissionsPair`
+  whose `response` oneof is unset (neither `item` nor `error`) — the same way `spicedb-rust`
+  already did, instead of silently falling through to `pair.getItem()`'s zero-value default.
 - **2026-08-18**: **Write-time caveat context: every value was stringified**: `toProtoRelationship`'s caveat-context conversion (`toProtoValue`) stringified every value via its `else -> value.toString()` fallback -- numbers, booleans, `null`, and nested `Map`/`List` values all landed on the wire as a plain string, not the matching `google.protobuf.Value` `kind` (`number_value`, `bool_value`, `null_value`, `struct_value`, `list_value`). A caveat like `now < 100` stored against a stringified `"50"` fails to evaluate, and fails *silently* -- as a `CONDITIONAL_PERMISSION` result rather than an error. This is worse than the equivalent check-time gap fixed above: a bad check-time context fails one call, but a bad **write-time** context is *persisted* -- every future check against that relationship mis-evaluates, and re-checking with correct context never repairs it, only rewriting the relationship does. `toProtoValue` and `checkContextToProtoValue` are now one converter (kept the `toProtoValue` name; `checkContextToProtoValue` is removed), used by both `toProtoRelationship` (write) and `toProtoStruct`/`mergeCheckContext` (check). Its Javadoc previously instructed "Do not reuse this for the write-time path -- write-time stringification is intentional there and out of scope for this conversion"; that instruction was the defect's documentation and has been removed rather than merely contradicted. The read side (`fromProtoValue`, used by `fromProtoRelationship`) is fixed to match: it previously handled `null`/`bool`/`number`/`string` correctly but fell back to the proto `Value`'s debug `toString()` for nested `Struct`/`ListValue`, so a written nested map or list didn't round-trip either; it now recurses. No public API shape change -- `toProtoRelationship`/`fromProtoRelationship`/`Relationship.caveatContext()` signatures are unchanged, only the values they produce/consume.
 
 - **`checkAll` returned `true` for zero relationships**: Java's `for`-loop

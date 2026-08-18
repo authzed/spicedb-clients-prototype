@@ -40,20 +40,28 @@ public class CheckContextTests
                 It.IsAny<CancellationToken>()))
             .Callback<CheckBulkPermissionsRequest, Metadata, DateTime?, CancellationToken>(
                 (req, _, _, _) => captured.Add(req))
-            .Returns(() => MakeUnaryCall(new CheckBulkPermissionsResponse
-            {
-                CheckedAt = new ZedToken { Token = "tok" },
-                Pairs =
+            // Pair count must match the request's item count — the client now
+            // guards CheckBulkPermissions responses against a pairs/items
+            // length mismatch (root DESIGN.md: a short response would
+            // otherwise silently desync results[i] from relationships[i]).
+            // These tests only assert on the captured REQUEST, not on
+            // CheckResult, so one HasPermission pair per requested item keeps
+            // that guard satisfied without changing what's being verified.
+            .Returns<CheckBulkPermissionsRequest, Metadata, DateTime?, CancellationToken>(
+                (req, _, _, _) => MakeUnaryCall(new CheckBulkPermissionsResponse
                 {
-                    Enumerable.Range(0, 8).Select(_ => new CheckBulkPermissionsPair
+                    CheckedAt = new ZedToken { Token = "tok" },
+                    Pairs =
                     {
-                        Item = new CheckBulkPermissionsResponseItem
+                        req.Items.Select(_ => new CheckBulkPermissionsPair
                         {
-                            Permissionship = CheckPermissionResponse.Types.Permissionship.HasPermission,
-                        },
-                    }),
-                },
-            }));
+                            Item = new CheckBulkPermissionsResponseItem
+                            {
+                                Permissionship = CheckPermissionResponse.Types.Permissionship.HasPermission,
+                            },
+                        }),
+                    },
+                }));
 
         mockPermissions = mock;
         capturedRequests = captured;

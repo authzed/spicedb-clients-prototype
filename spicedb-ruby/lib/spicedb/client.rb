@@ -780,6 +780,17 @@ module SpiceDB
         )
       )
 
+      # The proto guarantees pairs are returned in request order but says
+      # nothing about count. A short response would otherwise silently
+      # desync results[i] from relationships[i] for every item after the
+      # gap — one resource's answer attributed to another. Fail loudly
+      # instead of returning a misaligned-but-"successful" Array.
+      if resp.pairs.length != proto_items.length
+        raise SpiceDB::Error,
+              "check_bulk_permissions returned #{resp.pairs.length} pair(s) for " \
+              "#{proto_items.length} request item(s)"
+      end
+
       # CheckBulkPermissionsResponse#checked_at is a single response-level
       # ZedToken (not per-pair) — propagate it to every CheckResult below.
       # Message-typed proto fields are nil when unset (unlike scalar
@@ -787,8 +798,18 @@ module SpiceDB
       # never-nil Strings, so fall back to ''.
       checked_at = resp.checked_at&.token || ''
 
-      resp.pairs.map do |pair|
+      resp.pairs.each_with_index.map do |pair, i|
         raise SpiceDB.to_spicedb_error(pair.error) if pair.respond_to?(:error) && pair.error && pair.error.respond_to?(:message) && !pair.error.message.empty?
+
+        # `response` is the oneof group name — nil means neither `item` nor
+        # `error` was set. The proto schema guarantees a well-behaved server
+        # never sends this, but nothing on the wire prevents it. Mirrors
+        # spicedb-rust's malformed-oneof guard: fail loudly instead of
+        # dereferencing `pair.item`, which is nil in this case.
+        if pair.response.nil?
+          raise SpiceDB::Error,
+                "check item #{i}: malformed CheckBulkPermissionsPair (neither item nor error set)"
+        end
 
         CheckResult.new(
           permissionship: check_permissionship_from_proto(pair.item.permissionship),

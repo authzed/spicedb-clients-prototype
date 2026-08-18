@@ -14,7 +14,7 @@ from authzed.api.v1 import (
 
 from spicedb import Permissionship, UpdateOperation
 from spicedb import _mapping as mapping
-from spicedb.errors import PermissionDeniedError
+from spicedb.errors import PermissionDeniedError, SpiceDBError
 from spicedb.types import CheckResult
 
 
@@ -34,7 +34,7 @@ def test_check_results_maps_permissionship_per_item():
             ),
         ]
     )
-    results = mapping.check_results(resp)
+    results = mapping.check_results(resp, 2)
     assert results == [
         CheckResult(
             permissionship=Permissionship.HAS_PERMISSION,
@@ -62,7 +62,7 @@ def test_check_results_conditional_has_permission_is_false():
             )
         ]
     )
-    results = mapping.check_results(resp)
+    results = mapping.check_results(resp, 1)
     assert results[0].permissionship == Permissionship.CONDITIONAL_PERMISSION
     assert results[0].has_permission is False
 
@@ -82,7 +82,7 @@ def test_check_results_missing_context_carries_server_values():
             )
         ]
     )
-    results = mapping.check_results(resp)
+    results = mapping.check_results(resp, 1)
     assert results[0].missing_context == ["ip_address", "time_of_day"]
 
 
@@ -96,7 +96,7 @@ def test_check_results_missing_context_empty_when_not_conditional():
             )
         ]
     )
-    results = mapping.check_results(resp)
+    results = mapping.check_results(resp, 1)
     assert results[0].missing_context == []
 
 
@@ -119,7 +119,7 @@ def test_check_results_checked_at_populated_from_response():
             ),
         ]
     )
-    results = mapping.check_results(resp)
+    results = mapping.check_results(resp, 2)
     assert [r.checked_at for r in results] == ["cafebabe", "cafebabe"]
 
 
@@ -134,7 +134,36 @@ def test_check_results_raises_typed_error_on_item_error():
         ]
     )
     with pytest.raises(PermissionDeniedError, match="nope"):
-        mapping.check_results(resp)
+        mapping.check_results(resp, 1)
+
+
+def test_check_results_raises_when_response_has_fewer_pairs_than_request_items():
+    """The proto guarantees pairs are returned in request order but says
+    nothing about count. A short response would otherwise silently desync
+    results[i] from relationships[i] for every item after the gap -- one
+    resource's answer attributed to another."""
+    resp = psp.CheckBulkPermissionsResponse(
+        pairs=[
+            psp.CheckBulkPermissionsPair(
+                item=psp.CheckBulkPermissionsResponseItem(
+                    permissionship=psp.CheckPermissionResponse.PERMISSIONSHIP_HAS_PERMISSION
+                )
+            ),
+        ]
+    )
+    with pytest.raises(SpiceDBError, match=r"1 pair.*2 request item"):
+        mapping.check_results(resp, 2)
+
+
+def test_check_results_raises_on_malformed_pair_instead_of_shrinking_results():
+    """A CheckBulkPermissionsPair whose `response` oneof is unset (neither
+    `item` nor `error`) must fail loudly, not silently fall through to the
+    default (zero-value) item."""
+    resp = psp.CheckBulkPermissionsResponse(
+        pairs=[psp.CheckBulkPermissionsPair()]
+    )
+    with pytest.raises(SpiceDBError, match="check item 0"):
+        mapping.check_results(resp, 1)
 
 
 def test_lookup_subject_falls_back_to_deprecated_top_level_fields():

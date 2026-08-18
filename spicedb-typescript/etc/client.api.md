@@ -541,11 +541,9 @@ export interface WatchChange {
 export interface WatchEvent {
     // (undocumented)
     changes: WatchChange[];
-    // (undocumented)
     isCheckpoint: boolean;
     // (undocumented)
     metadata?: Record<string, unknown>;
-    // (undocumented)
     revision: string;
     // (undocumented)
     schemaUpdated: boolean;
@@ -553,6 +551,7 @@ export interface WatchEvent {
 
 // @public
 export interface WatchOptions {
+    includeCheckpoints?: boolean;
     // (undocumented)
     objectTypes?: string[];
     // (undocumented)

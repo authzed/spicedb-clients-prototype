@@ -23,6 +23,7 @@ import {
   ExperimentalCountRelationshipsRequestSchema,
   ExperimentalUnregisterRelationshipCounterRequestSchema,
   WatchRequestSchema,
+  WatchKind,
   ObjectReferenceSchema,
   SubjectReferenceSchema,
   RelationshipSchema,
@@ -1000,6 +1001,16 @@ export class SpiceDBClient {
       req.optionalStartCursor = create(ZedTokenSchema, {
         token: options.startRevision,
       });
+    }
+    if (options?.includeCheckpoints) {
+      // optionalUpdateKinds is empty-means-default (relationship updates
+      // only, for backwards compatibility) -- a non-empty list is the exact
+      // set requested, so asking for checkpoints must also spell out
+      // relationship updates or the server would stop sending them.
+      req.optionalUpdateKinds = [
+        WatchKind.INCLUDE_RELATIONSHIP_UPDATES,
+        WatchKind.INCLUDE_CHECKPOINTS,
+      ];
     }
 
     let attempt = 0;

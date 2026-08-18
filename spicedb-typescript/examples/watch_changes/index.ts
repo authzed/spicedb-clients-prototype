@@ -9,11 +9,20 @@ const client = createSpiceDBClient("localhost:50051", "testtoken", {
   insecure: true,
 });
 
-// Watch all changes
+// Watch all changes. `includeCheckpoints: true` asks the server for
+// periodic checkpoint events in addition to relationship updates --
+// recommended behind a proxy that aborts idle connections, since a
+// checkpoint keeps the stream alive even when nothing has changed. Without
+// it, the server never sends is_checkpoint events, so `event.isCheckpoint`
+// would always be false and the branch below would be unreachable.
 console.log("Watching for all relationship changes...");
-for await (const event of client.watch()) {
+let resumeToken: string | undefined;
+for await (const event of client.watch({ includeCheckpoints: true })) {
   if (event.isCheckpoint) {
+    // A checkpoint carries no changes -- it exists to advertise a fresh
+    // resume point and to keep the stream alive during quiet periods.
     console.log(`[checkpoint] revision: ${event.revision}`);
+    resumeToken = event.revision;
     continue;
   }
 
@@ -30,6 +39,12 @@ for await (const event of client.watch()) {
   if (event.metadata) {
     console.log(`  metadata: ${JSON.stringify(event.metadata)}`);
   }
+
+  // `event.revision` is a resume point for a later `watch({ startRevision })`
+  // call -- keep it if this consumer needs to survive a dropped stream
+  // without reprocessing everything since the original token or silently
+  // losing changes by restarting from head.
+  resumeToken = event.revision;
 }
 
 // Watch only specific object types (commented out since the above loop is infinite)
@@ -37,7 +52,8 @@ for await (const event of client.watch()) {
 //   // Only document changes
 // }
 
-// Resume from a specific revision (commented out)
-// for await (const event of client.watch({ startRevision: "some-token" })) {
-//   // Changes since that revision
+// Resume from a specific revision after a dropped stream (commented out)
+// for await (const event of client.watch({ startRevision: resumeToken })) {
+//   // Changes since that revision, without reprocessing or gaps
 // }
+console.log(`last resume token seen: ${resumeToken}`);

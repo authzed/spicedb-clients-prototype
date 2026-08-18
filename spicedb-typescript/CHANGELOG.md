@@ -98,6 +98,35 @@
 
 ### Fixed
 
+- **2026-08-18**: Watch resumability. `WatchOptions` gains
+  `includeCheckpoints?: boolean`, which requests
+  `WATCH_KIND_INCLUDE_CHECKPOINTS` (alongside
+  `WATCH_KIND_INCLUDE_RELATIONSHIP_UPDATES`, since a non-empty
+  `optionalUpdateKinds` replaces the server's implicit default rather than
+  adding to it).
+  - `WatchEvent.isCheckpoint` and `WatchEvent.schemaUpdated` already existed
+    and were already assigned from the response on every event
+    (`client.ts`'s `watch()`) — but since nothing could ever request
+    `WATCH_KIND_INCLUDE_CHECKPOINTS` or `WATCH_KIND_INCLUDE_SCHEMA_UPDATES`,
+    the server never had a reason to send either, so `isCheckpoint` was
+    always `false` in practice and the `examples/watch_changes/`
+    `if (event.isCheckpoint)` branch was unreachable. Wired up
+    `includeCheckpoints` to make that branch reachable rather than adding a
+    parallel field.
+  - `WatchEvent.revision` was already populated from
+    `WatchResponse.changesThrough` — the proto's resume token ("This token
+    can be used in a subsequent WatchRequest to resume watching from this
+    point") — but undocumented as such. Documented its resumability role on
+    both `WatchEvent.revision` and `WatchOptions.startRevision`.
+  - Without checkpoints, a watch on a quiet namespace behind an idle-timeout
+    proxy (ALB, nginx, Envoy) is killed with no changes to resume from
+    beyond the original `startRevision` — reprocessing everything since,
+    possibly past the GC window.
+  - `examples/watch_changes/index.ts` updated to request checkpoints and
+    exercise both branches; `src/__tests__/watch-operation-mapping.test.ts`
+    gains coverage asserting `includeCheckpoints` reaches the built
+    `WatchRequest` and that a checkpoint event is distinguishable from one
+    carrying updates.
 - **2026-08-18**: Call deadlines, per root `DESIGN.md` "RULE: A unary call must have a
   deadline". Previously no method accepted a timeout and no client-level default existed, so a
   SpiceDB instance that accepted a connection but never answered hung every caller forever — the

@@ -200,9 +200,23 @@ export interface WatchChange {
  */
 export interface WatchEvent {
   changes: WatchChange[];
+  /**
+   * The point in time this event is current through. Pass it as
+   * `WatchOptions.startRevision` on a later `watch()` call to resume after a
+   * dropped stream, instead of restarting from the original revision
+   * (reprocessing everything since, possibly past the GC window) or from
+   * head (silently losing every change in the gap).
+   */
   revision: string;
   metadata?: Record<string, unknown>;
   schemaUpdated: boolean;
+  /**
+   * True for a checkpoint event, which carries no `changes` -- it exists
+   * only to advertise a fresh `revision` and, behind a proxy that aborts
+   * idle connections, to keep the stream alive. Only sent when
+   * `WatchOptions.includeCheckpoints` is set. Check this before assuming an
+   * event with no `changes` means nothing happened.
+   */
   isCheckpoint: boolean;
 }
 
@@ -212,6 +226,13 @@ export interface WatchEvent {
 export interface WatchOptions {
   objectTypes?: string[];
   startRevision?: string;
+  /**
+   * Also request periodic checkpoint events (`WatchEvent.isCheckpoint`, no
+   * `changes`). Recommended if this SpiceDB instance is running behind a
+   * proxy that aborts idle connections, since a checkpoint keeps the stream
+   * alive even when there are no changes to report.
+   */
+  includeCheckpoints?: boolean;
 }
 
 /**

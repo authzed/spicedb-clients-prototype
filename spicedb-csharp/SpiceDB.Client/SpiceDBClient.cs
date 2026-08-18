@@ -78,6 +78,18 @@ public sealed class SpiceDBClient : IAsyncDisposable
     /// </summary>
     private DateTime EffectiveDeadline(TimeSpan? timeout) => DateTime.UtcNow + EffectiveTimeout(timeout);
 
+    /// <summary>
+    /// As <see cref="EffectiveDeadline"/>, but for client-streaming calls
+    /// (currently only <see cref="ImportRelationshipsAsync"/>) that must NOT
+    /// fall back to <see cref="_defaultTimeout"/> — see root DESIGN.md,
+    /// "RULE: A unary call must have a deadline", clause 3 (client-streaming
+    /// RPCs are excluded from the unary default because their duration
+    /// scales with the caller's dataset, not server latency). <c>null</c>
+    /// in, <c>null</c> out: no client default is ever substituted here.
+    /// </summary>
+    private static DateTime? DeadlineOrNull(TimeSpan? timeout) =>
+        timeout.HasValue ? DateTime.UtcNow + timeout.Value : null;
+
     private readonly SpiceDBProtoClient? _protoClient;
     private readonly PermissionsService.PermissionsServiceClient _permissions;
     private readonly SchemaService.SchemaServiceClient _schema;
@@ -1133,6 +1145,17 @@ public sealed class SpiceDBClient : IAsyncDisposable
     /// Streams relationships to SpiceDB for bulk import, returning the number
     /// of relationships loaded. Relationships are automatically batched into
     /// chunks of 1,000.
+    ///
+    /// <para>
+    /// <c>ImportBulkRelationships</c> is client-streaming: its duration scales
+    /// with the size of <paramref name="relationships"/>, not with server
+    /// latency, so unlike every other method on this client, this call does
+    /// NOT fall back to the client's default timeout (root DESIGN.md, "RULE:
+    /// A unary call must have a deadline", clause 3). Omitting
+    /// <paramref name="timeout"/> means this call is unbounded; pass it
+    /// explicitly to bound a bulk import. (<paramref name="cancellationToken"/>
+    /// still cancels the call regardless.)
+    /// </para>
     /// </summary>
     public async Task<ulong> ImportRelationshipsAsync(
         IAsyncEnumerable<Relationship> relationships,
@@ -1145,7 +1168,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
         try
         {
             stream = _permissions.ImportBulkRelationships(
-                deadline: EffectiveDeadline(timeout),
+                deadline: DeadlineOrNull(timeout),
                 cancellationToken: cancellationToken);
         }
         catch (RpcException ex)

@@ -451,9 +451,10 @@ pass its own `timeout` — both default to `SpiceDBClient.DefaultTimeout`
 comment cites `grpc/grpc-node#541`). See root DESIGN.md, "RULE: A unary
 call must have a deadline".
 
-The four `params Relationship[]` check overloads (`CheckPermissionsAsync`,
-`CheckAnyAsync`, `CheckAllAsync`, and their `*WithContextAsync` siblings)
-deliberately do **not** take a `timeout` parameter: inserting one ahead of
+The six `params Relationship[]` check overloads (`CheckPermissionsAsync`,
+`CheckPermissionsWithContextAsync`, `CheckAnyAsync`, `CheckAnyWithContextAsync`,
+`CheckAllAsync`, `CheckAllWithContextAsync`) deliberately do **not** take a
+`timeout` parameter: inserting one ahead of
 the `params` array would silently break any existing positional call site
 passing relationships right after `cancellationToken` (e.g.
 `CheckPermissionsAsync(cs, "view", default, rel1, rel2)` — `rel1` would try
@@ -467,12 +468,27 @@ var result = await client.CheckPermissionAsync(Consistency.Full(), "view", rel);
 var result2 = await client.CheckPermissionAsync(Consistency.Full(), "view", rel, timeout: TimeSpan.FromSeconds(1)); // overrides it
 ```
 
-Streaming methods (`ReadRelationshipsAsync`, `LookupResourcesAsync`,
+Server-streaming methods (`ReadRelationshipsAsync`, `LookupResourcesAsync`,
 `LookupSubjectsAsync`, `UpdatesAsync`, `ExportRelationshipsAsync`) take no
 `timeout` parameter and are NOT bound by `DefaultTimeout` — they are
 long-lived by design (`UpdatesAsync` may run for the life of the process),
 and applying the unary default to them would make the stream itself the
 outage.
+
+`ImportRelationshipsAsync` is client-streaming, not server-streaming, but
+the same exclusion applies for the mirror-image reason: its duration scales
+with the size of the caller's dataset, not with server latency, so no fixed
+default is correct for it either. Unlike the server-streaming methods
+above, it DOES take a `timeout` parameter — omitting it means unbounded
+there, not "use `DefaultTimeout`"; pass it explicitly to bound a bulk
+import. (Its `cancellationToken` still works as caller-side cancellation
+regardless.)
+
+Note for callers reasoning about worst-case latency: `timeout` is a
+per-*attempt* budget, applied fresh on each retry, so a call that retries
+can take up to `timeout × (retries + 1)` plus backoff, and an auto-paging
+call (e.g. `DeleteRelationshipsAsync`) applies the same `timeout` fresh to
+each page.
 
 ### Supporting Types
 

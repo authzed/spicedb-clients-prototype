@@ -28,6 +28,7 @@ Or use `mage test` which starts a SpiceDB container automatically.
 | `ReadRelationships/` | Reading relationships with async enumerables |
 | `LookupResources/` | Resource lookup |
 | `LookupSubjects/` | Subject lookup |
+| `CallDeadlines/` | The `defaultTimeout` construction parameter, a per-call `timeout` override, and confirming bulk import isn't bounded by the unary default |
 | `WatchChanges/` | Watching for changes |
 | `SchemaManagement/` | Schema read/write |
 | `BulkOperations/` | Bulk checks, batch writes, and bulk relationship import/export |

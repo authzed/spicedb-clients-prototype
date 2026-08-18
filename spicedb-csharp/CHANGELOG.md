@@ -216,9 +216,10 @@
   but never answered hung every caller that didn't cancel forever.
   - Every unary method gained an optional `TimeSpan? timeout = null`, applied via
     `CallOptions.Deadline` — **alongside**, not instead of, the pre-existing `CancellationToken`.
-    Additive; existing call sites are unaffected. The four `params Relationship[]` check overloads
-    (`CheckPermissionsAsync`, `CheckAnyAsync`, `CheckAllAsync`, and their `*WithContextAsync`
-    siblings) deliberately do **not** gain a `timeout` parameter — inserting one ahead of the
+    Additive; existing call sites are unaffected. The six `params Relationship[]` check overloads
+    (`CheckPermissionsAsync`, `CheckPermissionsWithContextAsync`, `CheckAnyAsync`,
+    `CheckAnyWithContextAsync`, `CheckAllAsync`, `CheckAllWithContextAsync`) deliberately do
+    **not** gain a `timeout` parameter — inserting one ahead of the
     `params` array would silently break an existing positional call site like
     `CheckPermissionsAsync(cs, "view", default, rel1, rel2)` (`rel1` would try to bind to the new
     parameter instead of the params array). They're still bounded by the client default; use the
@@ -234,6 +235,17 @@
     these are long-lived by design (`UpdatesAsync` may legitimately run for the life of the
     process), and a 30s cutoff would end a legitimate stream, which is a worse defect than the
     one this change fixes.
+  - **Fix round 1 correction:** `ImportRelationshipsAsync` also gained a `timeout` parameter, but
+    — unlike the unary methods above — it is client-streaming, not unary, and is now explicitly
+    **excluded** from `DefaultTimeout`: its duration scales with the size of the caller's
+    dataset, not with server latency, so no fixed default is correct for it (root DESIGN.md,
+    "RULE: A unary call must have a deadline", clause 3, amended to cover client-streaming and
+    bidirectional RPCs, not only server-streaming). Omitting `timeout` now means unbounded there;
+    passing it still bounds the call. Added a `DeadlineOrNull` helper (distinct from
+    `EffectiveDeadline`, which still substitutes `DefaultTimeout`) that never substitutes a
+    default. An earlier version of this fix incorrectly resolved `timeout` against
+    `DefaultTimeout` for this call, which would have silently aborted large, legitimate
+    multi-minute imports at 30 seconds.
   - `DeadlineExceededException` (added earlier, but never actually produced by this client since
     nothing enforced a server-side deadline) is now reachable: a timed-out call throws it, not a
     generic exception. `StatusCode.DeadlineExceeded` was already excluded from
@@ -242,11 +254,17 @@
     (`Grpc.AspNetCore.Server`, added as a test-only dependency) whose handlers deliberately
     stall: a unary call against a stub that never responds throws `DeadlineExceededException`
     well before the stall completes (not a hang), a per-call `timeout` overrides a much larger
-    client default, and a streaming call outlives a tiny unary default instead of inheriting it.
+    client default, a streaming call outlives a tiny unary default instead of inheriting it,
+    bulk import is both unbounded by the default and still honors an explicit `timeout`, and a
+    live call is actually cancelled mid-flight via `CancellationToken` (not just asserted against
+    a Moq `It.IsAny<CancellationToken>()`, which proves plumbing, not propagation).
     Every call is wrapped in a watchdog (`Task.WhenAny` against a timeout) so a regression fails
     the test instead of hanging CI. A Moq-mocked service client (as used elsewhere in this suite)
     can't prove a deadline is actually enforced, since grpc's deadline machinery lives below the
     mock, inside `Grpc.Net.Client`'s HTTP/2 pipeline.
+  - New `examples/CallDeadlines/`, run against a real SpiceDB rather than a mock: constructs a
+    client via the documented `defaultTimeout` parameter, overrides it per-call, and confirms
+    bulk import is unbounded by default.
 - **2026-08-18**: Retry safety, per root `DESIGN.md` "RULE: Automatic retry is for idempotent
   operations only". Three changes:
   - `RESOURCE_EXHAUSTED` is no longer retried. In SpiceDB it signals memory load-shed (retrying

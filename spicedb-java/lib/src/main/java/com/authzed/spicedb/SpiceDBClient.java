@@ -1672,6 +1672,18 @@ public final class SpiceDBClient implements AutoCloseable {
     };
   }
 
+  /**
+   * Converts a {@link Filter} to its proto representation.
+   *
+   * @throws InvalidArgumentException if {@code subjectID} or {@code subjectRelation} is set
+   *     without {@code subjectType}. The wire's {@code SubjectFilter.subject_type} is a required
+   *     field, so there is no way to express a subject ID/relation constraint without it, which
+   *     makes silently dropping the constraint the one unsafe resolution: a caller who wrote
+   *     {@code Filter.of("document").withSubjectID("alice")}, expecting to narrow to alice's
+   *     relationships, would instead match every subject on every document -- e.g. {@code
+   *     deleteRelationships} would delete every relationship on every document, not just alice's.
+   *     See root DESIGN.md, "RULE: A conversion that cannot preserve meaning must fail", clause 1.
+   */
   private static RelationshipFilter toRelationshipFilter(Filter f) {
     var builder = RelationshipFilter.newBuilder().setResourceType(f.resourceType());
 
@@ -1684,16 +1696,28 @@ public final class SpiceDBClient implements AutoCloseable {
     if (f.relation() != null && !f.relation().isEmpty()) {
       builder.setOptionalRelation(f.relation());
     }
+    boolean hasSubjectID = f.subjectID() != null && !f.subjectID().isEmpty();
+    boolean hasSubjectRelation = f.subjectRelation() != null && !f.subjectRelation().isEmpty();
     if (f.subjectType() != null && !f.subjectType().isEmpty()) {
       var subjectBuilder = SubjectFilter.newBuilder().setSubjectType(f.subjectType());
-      if (f.subjectID() != null && !f.subjectID().isEmpty()) {
+      if (hasSubjectID) {
         subjectBuilder.setOptionalSubjectId(f.subjectID());
       }
-      if (f.subjectRelation() != null && !f.subjectRelation().isEmpty()) {
+      if (hasSubjectRelation) {
         subjectBuilder.setOptionalRelation(
             SubjectFilter.RelationFilter.newBuilder().setRelation(f.subjectRelation()).build());
       }
       builder.setOptionalSubjectFilter(subjectBuilder.build());
+    } else if (hasSubjectID || hasSubjectRelation) {
+      String missing = hasSubjectID ? "subjectID" : "subjectRelation";
+      throw new InvalidArgumentException(
+          "Filter has "
+              + missing
+              + " set without subjectType. The wire format requires subjectType whenever a"
+              + " subject constraint is present -- call withSubjectType(...) before with"
+              + Character.toUpperCase(missing.charAt(0))
+              + missing.substring(1)
+              + "(...).");
     }
     return builder.build();
   }

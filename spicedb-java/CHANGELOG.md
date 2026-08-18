@@ -150,6 +150,25 @@
 
 ### Fixes
 
+- **2026-08-18**: **`toRelationshipFilter` silently dropped `subjectID`/`subjectRelation` when
+  `subjectType` was not set, instead of raising.** `optionalSubjectFilter` was only built inside
+  `if (f.subjectType() != null && !f.subjectType().isEmpty())`, so
+  `Filter.of("document").withSubjectID("alice")` produced a proto `RelationshipFilter` with **no
+  subject constraint at all**, while the `Filter` record itself still reported
+  `subjectID() == "alice"` — a caller reading the record back would see the constraint they set;
+  the server would not. `deleteRelationships(filter)` called with that filter deleted every
+  relationship on every document, not just alice's — a correct-looking user-offboarding call that
+  wipes the whole system. The wire's `SubjectFilter.subject_type` is a required field, so there is
+  no way to express a subject ID/relation constraint without it, which makes silent widening the
+  one unsafe resolution — `toRelationshipFilter` now throws `InvalidArgumentException` naming the
+  field that was set without `subjectType`, per root `DESIGN.md` "RULE: A conversion that cannot
+  preserve meaning must fail", clause 1 (caller-supplied data the client cannot represent MUST
+  raise a typed error). `InvalidArgumentException` is unchecked (extends `SpiceDBException`
+  extends `RuntimeException`), so no signature change was needed at any of `toRelationshipFilter`'s
+  five call sites; `deleteRelationships` converts preconditions and the primary filter before any
+  RPC is attempted, so a bad filter — whether the primary one or a `mustMatch`/`mustNotMatch`
+  guard — is rejected with zero requests sent. No pre-existing test asserted the silent-drop
+  behavior, so none needed replacing.
 - **2026-08-18**: **`toProtoValue`'s final `else` still silently stringified a value it could not
   otherwise represent** (`Value.newBuilder().setStringValue(value.toString())`) — a custom class
   instance, say — instead of raising. This fallback is shared by both the check path

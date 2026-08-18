@@ -157,6 +157,12 @@ Therefore:
    bare boolean is forbidden, because it makes "denied" indistinguishable from
    "you did not supply the caveat context." Callers must be able to tell those
    apart, and to learn which context was missing.
+7. **An aggregate over zero checks is not a grant.** `check_all` and its siblings MUST return
+   false for an empty input set. Every language's `all`/`every` primitive is vacuously true on
+   an empty sequence, so the idiomatic implementation is the bug: all seven clients had this
+   defect independently. Guard the empty case explicitly, before the aggregate, and test it.
+   `check_any` is already correctly false on empty — that asymmetry is intentional and must not
+   be "made consistent."
 
 The failure this rule exists to prevent is real and shipped: one client previously
 returned `true` for `CONDITIONAL_PERMISSION` by design, granting access on a caveat
@@ -242,14 +248,44 @@ Two further requirements:
   `CheckBulkPermissionsRequestItem.context` field 4) are different wire fields with
   different lifetimes. A client must keep them as separate concepts and must never
   send one where the other belongs.
-- **Types are preserved on the check path.** Caveat context values go onto
-  `google.protobuf.Value`'s `kind` oneof by type — numbers as numbers, booleans as
-  booleans, null as null, nested maps/lists recursively. Stringifying a numeric
-  parameter makes a caveat like `now < 100` fail to evaluate, and it fails *quietly*,
-  as another conditional result.
+- **Types are preserved on every caveat-context path.** Caveat context values go onto
+  `google.protobuf.Value`'s `kind` oneof by type — numbers as numbers, booleans as booleans,
+  null as null, nested maps and lists recursively — on the check path (`CheckPermissionRequest.context`,
+  `CheckBulkPermissionsRequestItem.context`) **and** on the write path
+  (`Relationship.optional_caveat.context`), in both directions. Stringifying a numeric parameter
+  makes a caveat like `now < 100` fail to evaluate, and it fails *quietly*, as another
+  conditional result. Write-time is the worse half: a bad check context fails one call, while a
+  bad write context is persisted and mis-evaluates every future check against that
+  relationship — re-checking never repairs it, only rewriting does.
 
 `check_any` / `check_all` accept the same context shape as `check_permissions` — they
 aggregate over the same request and must be able to evaluate caveats.
+
+## RULE: A conversion that cannot preserve meaning must fail
+
+Dropping a value, stringifying it, or widening a filter are all silent-wrong-answer machines:
+the call succeeds, the caller proceeds, and the damage surfaces later somewhere else. Where a
+client cannot represent what the caller asked for, it raises a typed error naming what could not
+be converted. It does not approximate, and it does not discard.
+
+This applies to caveat context that will not convert, to a filter whose constraint the wire
+format cannot express, and to any enum value the client does not recognise. An unrecognised
+value is never mapped to a permissive default — never to a grant, and never to a write.
+
+## RULE: Automatic retry is for idempotent operations only
+
+A client MUST NOT silently retry a mutation whose replay changes the outcome. A
+`WriteRelationships` containing `OPERATION_CREATE`, or any request carrying preconditions, is
+not idempotent: if it commits and the response is lost, the retry returns `ALREADY_EXISTS` or
+`FAILED_PRECONDITION` and the caller concludes a write failed that in fact succeeded. Retry
+reads freely; retry mutations only when the caller opts in.
+
+`RESOURCE_EXHAUSTED` MUST NOT be in the retryable set. In SpiceDB it signals memory load-shed or
+a deterministic `MaxDepthExceeded` — the first is made worse by retrying and the second can
+never succeed.
+
+Backoff MUST be jittered. Without jitter every client in a fleet retries on the same schedule
+after a restart, converting a recovery into a thundering herd.
 
 ## What NOT To Do
 

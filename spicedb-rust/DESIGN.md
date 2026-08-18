@@ -37,6 +37,23 @@ Security-obvious named constructors:
 All constructors are `async` and return `Result<SpiceDBClient, SpiceDBError>`.
 Endpoint and token parameters accept `impl Into<String>` for ergonomics.
 
+**TLS roots.** `new_system_tls` uses tonic's `tls-native-roots` feature and calls
+`ClientTlsConfig::new().with_native_roots()`, so the platform trust store is used —
+matching the six sibling clients and satisfying the root `DESIGN.md` rule *"A
+system-TLS constructor must reach a real server."* The trade-off is accepted
+deliberately: a `FROM scratch` image with no OS trust store will fail, exactly as every
+sibling client does there. A caller-supplied CA bundle is the general remedy and is
+tracked separately.
+
+Do **not** substitute `ClientTlsConfig::with_enabled_roots()`. Its body begins
+`let config = ClientTlsConfig::new()`, discarding `self`, so chaining it after
+`.domain(...)` or any other builder call silently drops that configuration.
+
+No test can assert the tonic feature is enabled — `cfg!(feature = ...)` reads the
+*current* crate's features, and `tls-native-roots` belongs to `tonic`. None is needed:
+`with_native_roots` is itself `#[cfg(feature = "tls-native-roots")]`, so removing the
+feature makes this crate fail to compile.
+
 ### Consistency
 
 ZedTokens are opaque `String` values, never proto types. Consistency is an

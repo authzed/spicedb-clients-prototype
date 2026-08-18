@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Fixed
+
+- **`new_system_tls` could not connect to any TLS server.** The client enabled tonic's
+  `tls` feature but neither `tls-native-roots` nor `tls-webpki-roots`, and built its
+  config with a bare `ClientTlsConfig::new()`. In tonic 0.12 that carries an empty
+  trust-anchor set, so every handshake failed `UnknownIssuer` — against Authzed's
+  managed service and against any self-hosted SpiceDB behind TLS alike. Because
+  `connect()` is eager, it surfaced at construction as an opaque
+  `SpiceDBError::Transport("transport error")`, which actively misdirected diagnosis.
+  The client now enables `tls-native-roots` and calls `.with_native_roots()`, using the
+  platform trust store like the six sibling clients.
+
+  The two tests that covered this asserted `is_err()` against an unreachable host, so
+  they passed whether the failure was DNS or an empty trust store. They have been
+  deleted and replaced with a test that completes a real handshake, per the new root
+  `DESIGN.md` rule *"A system-TLS constructor must reach a real server."*
+
 ### Features
 
 - **Caveat context on the check surface.** A prior change gave

@@ -638,8 +638,14 @@ module SpiceDB
     end
 
     # Converts a Google::Protobuf::Value back into a Ruby value by dispatching on the
-    # `kind` oneof. The inverse of check_context_value; Hash/Array recurse so nested
-    # caveat context round-trips.
+    # `kind` oneof. Hash/Array recurse so nested caveat context is fully converted.
+    #
+    # This shares a google.protobuf.Value codec with check_context_value, but is not
+    # its inverse on any data path: check_context_value serves only the check surface
+    # (check_context_to_struct, called from the check path), while this serves only the
+    # relationship read path (struct_to_caveat_context). Check-time context and
+    # write-time caveat context are different wire fields with different lifetimes and
+    # must never be conflated — see DESIGN.md.
     #
     # Dispatching on `kind` is required for correctness, not tidiness: reading a
     # non-string Value via #string_value returns "" rather than raising, which would
@@ -750,7 +756,7 @@ module SpiceDB
     def relationship_from_proto(proto_rel)
       caveat_name = nil
       caveat_context = nil
-      if proto_rel.respond_to?(:optional_caveat) && proto_rel.optional_caveat&.caveat_name && !proto_rel.optional_caveat.caveat_name.empty?
+      if proto_rel.optional_caveat&.caveat_name && !proto_rel.optional_caveat.caveat_name.empty?
         caveat_name = proto_rel.optional_caveat.caveat_name
         caveat_context = struct_to_caveat_context(proto_rel.optional_caveat.context) if proto_rel.optional_caveat.context
       end

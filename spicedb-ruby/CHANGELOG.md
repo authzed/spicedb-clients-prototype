@@ -110,9 +110,17 @@
   `read_relationships`, `export_relationships` and `updates`, no deployment using
   caveats could read, export or watch relationships at all. Caveat context is now read
   by dispatching on `google.protobuf.Value`'s `kind` oneof, so numbers, booleans,
-  nulls, nested maps and lists survive the round trip — the previous `&:string_value`
-  would have returned `""` for all of them had it run. Note that an `Integer` reads
-  back as a `Float`, since `Value.number_value` is a `double`.
+  nulls, nested maps and lists are returned with their Ruby types intact — the previous
+  `&:string_value` would have returned `""` for all of them had it run.
+
+  This fixes the **read** path only. The **write** path still stringifies every caveat
+  context value and is corrected separately, as part of the cross-client write-path work
+  that also covers Go, C# and Java. So context written through this client's
+  `with_caveat` currently reads back as strings — `with_caveat("x", { "n" => 42 })`
+  reads back `"42"`, and that is the writer's bug, not the reader's. Context that
+  reached the wire as a number (written by another client, by `zed`, or by this client
+  once its writer is fixed) reads back as a `Float`, since `Value.number_value` is a
+  `double` — `42` becomes `42.0`.
 
 ### Documentation
 

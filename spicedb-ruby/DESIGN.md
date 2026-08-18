@@ -97,18 +97,32 @@ field) for exactly that reason.
 
 **Caveat context types.** Caveat context crosses the wire as
 `google.protobuf.Struct`, whose values are a `kind` oneof. Conversion must dispatch on
-that oneof in both directions: reading a non-string value via `Value#string_value`
-returns `""`, silently destroying stored context rather than raising. `Struct#fields`
-is a `Google::Protobuf::Map`, **not** a `Hash` — Hash-only methods such as
-`transform_values` raise `NoMethodError` on it directly. `Map#to_h` is not a safe
+that oneof in both directions; **today only the read direction does.**
+`relationship_from_proto` dispatches on `kind`, so context already stored in SpiceDB
+reads back with its types intact. `relationship_to_proto` still stringifies every value
+(`Value.new(string_value: v.to_s)`) — a known defect it shares with the Go, C# and Java
+clients, corrected separately in the cross-client write-path work. Until that lands,
+context written *through this client* is stored as strings:
+`with_caveat("x", { "n" => 42 })` reads back the String `"42"` — the read path
+faithfully reporting what is on the wire, not a read bug.
+
+Reading a non-string value via `Value#string_value` returns `""`, silently destroying
+stored context rather than raising — which is why the `kind` dispatch is required for
+correctness and not merely tidiness. `Struct#fields` is a `Google::Protobuf::Map`,
+**not** a `Hash` — Hash-only methods such as `transform_values` raise `NoMethodError`
+on it directly. `Map#to_h` is not a safe
 substitute either: for message-valued maps it recursively converts each `Value` via the
 generic protobuf-to-hash conversion rather than leaving it as a `Value` to dispatch on.
 `Map` includes `Enumerable`, so conversion iterates its raw entries directly (e.g. via
 `each_with_object`) instead of going through `Hash` or `to_h` at all.
 
-A Ruby `Integer` round-trips as a `Float` (`42` becomes `42.0`), because
-`google.protobuf.Value.number_value` is a `double`. This is inherent to the proto and
-is consistent across all seven clients; it is not worked around.
+A numeric caveat context value reads back as a `Float` (`42` becomes `42.0`), because
+`google.protobuf.Value.number_value` is a `double`. This applies to any value that
+reached the wire *as a number* — written by another client, by `zed`, or by this client
+once its write path is corrected — and so it will apply to a Ruby `Integer` generally
+at that point; today an `Integer` written through `with_caveat` comes back as a
+`String` instead, per the paragraph above. The `Float` widening is inherent to the
+proto and consistent across all seven clients; it is not worked around.
 
 ### Checks
 

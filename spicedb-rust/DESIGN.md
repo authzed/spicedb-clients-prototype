@@ -38,12 +38,20 @@ All constructors are `async` and return `Result<SpiceDBClient, SpiceDBError>`.
 Endpoint and token parameters accept `impl Into<String>` for ergonomics.
 
 **TLS roots.** `new_system_tls` uses tonic's `tls-native-roots` feature and calls
-`ClientTlsConfig::new().with_native_roots()`, so the platform trust store is used —
-matching the six sibling clients and satisfying the root `DESIGN.md` rule *"A
-system-TLS constructor must reach a real server."* The trade-off is accepted
-deliberately: a `FROM scratch` image with no OS trust store will fail, exactly as every
-sibling client does there. A caller-supplied CA bundle is the general remedy and is
-tracked separately.
+`ClientTlsConfig::new().with_native_roots()`, so the OS trust store is read at runtime,
+satisfying the root `DESIGN.md` rule *"A system-TLS constructor must reach a real
+server."* Each sibling client delegates to its own ecosystem's default trust source,
+which is not the same source everywhere: the OS store for Go
+(`credentials.NewTLS(nil)`) and C# (`ChannelCredentials.SecureSsl`), the JDK's
+`cacerts` for Java (`useTransportSecurity()`), gRPC C-core's compiled-in `roots.pem`
+for Python and Ruby, and Node's bundled Mozilla roots for TypeScript. All of those
+satisfy the rule's clause 1 — the clause forbids a client library supplying its own
+roots, not delegating to the runtime's.
+
+The trade-off in this client is therefore accepted deliberately and is not universal: a
+`FROM scratch` image with no OS trust store will fail here, whereas a distroless Python
+or Node image connects fine on its compiled-in bundle. A caller-supplied CA bundle is
+the general remedy and is tracked separately.
 
 Do **not** substitute `ClientTlsConfig::with_enabled_roots()`. Its body begins
 `let config = ClientTlsConfig::new()`, discarding `self`, so chaining it after
@@ -53,6 +61,25 @@ No test can assert the tonic feature is enabled — `cfg!(feature = ...)` reads 
 *current* crate's features, and `tls-native-roots` belongs to `tonic`. None is needed:
 `with_native_roots` is itself `#[cfg(feature = "tls-native-roots")]`, so removing the
 feature makes this crate fail to compile.
+
+**Running the handshake test.** `test_system_tls_completes_real_handshake`
+(`tests/client_test.rs`) is gated behind the `SPICEDB_TLS_INTEGRATION` environment
+variable and returns early unless it is set, so a plain `cargo test` skips it. Run it
+locally with:
+
+```console
+SPICEDB_TLS_INTEGRATION=1 cargo test --test client_test test_system_tls_completes_real_handshake
+```
+
+CI runs it in the `unit` job's "TLS handshake test (requires network)" step in
+`.github/workflows/rust.yaml`, which greps the output for a passing test so that
+renaming or deleting the test fails the step rather than silently running nothing.
+
+The env-var gate is used instead of this repo's usual `#[ignore]` + `mage
+integrationTest` convention (`magefile.go`, which runs `cargo test -- --ignored`)
+because this test needs a real endpoint on the public internet, not the dockerised local
+SpiceDB that `integrationTest` starts — a local server's self-signed certificate is
+exactly what the platform trust store under test would, correctly, reject.
 
 ### Consistency
 

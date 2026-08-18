@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-### Fixed
+### Fixes
 
 - **`new_system_tls` could not connect to any TLS server.** The client enabled tonic's
   `tls` feature but neither `tls-native-roots` nor `tls-webpki-roots`, and built its
@@ -11,8 +11,10 @@
   managed service and against any self-hosted SpiceDB behind TLS alike. Because
   `connect()` is eager, it surfaced at construction as an opaque
   `SpiceDBError::Transport("transport error")`, which actively misdirected diagnosis.
-  The client now enables `tls-native-roots` and calls `.with_native_roots()`, using the
-  platform trust store like the six sibling clients.
+  The client now enables `tls-native-roots` and calls `.with_native_roots()`, reading
+  the OS trust store at runtime. (Each sibling client delegates to its own ecosystem's
+  default trust source; those sources differ — see `DESIGN.md` — but none of them is
+  empty.)
 
   The two tests that covered this asserted `is_err()` against an unreachable host, so
   they passed whether the failure was DNS or an empty trust store. They have been

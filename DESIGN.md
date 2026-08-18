@@ -15,7 +15,7 @@ toward correct, performant usage patterns ("pit of success").
 - Deprecate with new alternatives — add new methods instead of changing existing ones, unless existing methods can be changed in a forward-compatible manner
 - This applies even when idiomatic improvements suggest changes, unless explicitly specified to be a `BREAKING CHANGE`. If so, then that specification tests precedence, confirmation must be received from the runner before the changes are made, and the breaking change should be documented in the release notes
   for each client, with at least one example of how to migrate forward
-- Examples must _ALWAYS_ compile and pass testing, unless the user has _EXPLICITLY_ approved the breaking change
+- Examples must *ALWAYS* compile and pass testing, unless the user has *EXPLICITLY* approved the breaking change
 
 ## Deprecation Propagation
 
@@ -73,22 +73,49 @@ All idiomatic clients should provide:
 
 ## RULE: A system-TLS constructor must reach a real server
 
-A client's default secure constructor — `new_system_tls`, `NewClientWithSystemCerts`,
-or whatever each language calls it — must use the **platform trust store**, and must be
+A client's default secure constructor — Go `NewSystemTLS`, Rust and Ruby
+`new_system_tls`, Java `createSystemTls`, C# `CreateSystemTls`, or whatever else a
+language calls it — must use its ecosystem's **default trust source**, and must be
 covered by a test that **completes a real TLS handshake**.
 
-1. The platform store is the contract. A constructor must query the platform trust
-   store at runtime and must not vendor, embed, or compile in its own root-certificate
-   set; a bundled set will silently ignore any CA an operator installed on the host.
-   This clause is enforced by code review: the handshake test cannot distinguish the
-   platform store from a vendored bundle, because a successful connection against any
-   public endpoint succeeds for almost any plausible root set.
-2. A test that asserts a connection *fails* does not satisfy this rule. An unreachable
-   host, a DNS error, and an empty trust store are indistinguishable to such a test, so
-   it passes for the wrong reason while reading as TLS coverage. Assert success against
-   a reachable endpoint.
+1. **The client library does not supply the roots.** The constructor must take its
+   trust anchors from the platform store or from whatever its language runtime or gRPC
+   implementation uses by default. Delegating to that default *is* system TLS in that
+   ecosystem: Go `credentials.NewTLS(nil)`, C# `ChannelCredentials.SecureSsl`, Python
+   `grpc.ssl_channel_credentials()`, Ruby `GRPC::Core::ChannelCredentials.new`, Java
+   `useTransportSecurity()`, connect-node's default in TypeScript, and tonic's
+   `.with_native_roots()` in Rust all satisfy this clause. What is prohibited is the
+   *client library* vendoring, embedding, compiling in, or otherwise selecting its own
+   root-certificate set in place of that default — including selecting the empty set,
+   which is the defect this clause exists to catch: Rust handed tonic a config with no
+   trust anchors at all, so no handshake could ever succeed.
+
+   The genuine hazard this leaves visible: not every runtime default *is* the OS store.
+   gRPC's C-core (Python's `grpcio`, Ruby's `grpc`) compiles in its own `roots.pem`, and
+   Node ships a bundled Mozilla store, so on those clients a CA an operator installed on
+   the host is not honoured. That is a property of the ecosystem, not a violation of
+   this clause. Giving callers a way to supply their own CA bundle is the remedy, and it
+   is a separate concern tracked for a later sub-project.
+
+   This clause is enforced by code review, not by the handshake test: a connection to a
+   public endpoint succeeds under almost any plausible root set, so the test cannot tell
+   a delegated default from a vendored bundle. What the test does catch — and must keep
+   catching — is the empty trust store.
+2. **The test must complete a handshake.** A test that never gets as far as a TLS
+   handshake proves nothing, whichever way it asserts. Asserting a connection *fails*
+   cannot distinguish an unreachable host, a DNS error, and an empty trust store, so it
+   passes for the wrong reason while reading as TLS coverage. Asserting a constructor
+   *succeeds* is no better wherever the language connects lazily — Ruby's channel is
+   built without dialling, so `new_system_tls('grpc.example.com:443', …)` "passes"
+   without a packet leaving the process. Assert a completed handshake against a
+   reachable endpoint; where the constructor is lazy, force the connection inside the
+   test (an RPC, or the language's explicit connect) so the assertion cannot be
+   satisfied without one.
 3. Where the handshake test needs the network, gate it behind an environment variable
    and run it in a CI job that has network access. Gating is acceptable; absence is not.
+   The CI step must fail if the test did not actually run — a bare name filter that
+   matches nothing exits 0 in most test runners, which reproduces this rule's own
+   failure mode one layer up.
 
 A client whose default secure constructor cannot reach a public endpoint is not
 shippable, and no amount of green CI substitutes for one honest handshake.

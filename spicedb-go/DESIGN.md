@@ -279,8 +279,11 @@ stopping early the natural idiom — `break` out of the loop and the iterator's
 `yield` returns `false` — so the client must make that idiom safe rather than
 document its way around it.
 
-Every iterator derives its own cancellable context from the one the caller
-passed and cancels it on the way out:
+Every streaming iterator derives its own cancellable context from the one
+the caller passed and cancels it on the way out (`CheckIter`/
+`CheckIterWithContext` are excluded: they batch input relationships into
+`BulkCheckPermissions` calls and never open a stream, so there is nothing
+to release):
 
 ```go
 return func(yield func(WatchEvent, error) bool) {
@@ -309,6 +312,16 @@ the caller's context typically outlives the loop.
 *server-side* signal — a stub handler parked on its own `stream.Context()
 .Done()` — because a test asserting only that the range loop exited passes
 whether or not the stream was released.
+
+`ImportRelationships` is the one client-streaming call and does not fit the
+shape above — it consumes an `iter.Seq`, it does not return one — but it
+opens a `grpc.ClientStream` the same way and can abandon it the same way: a
+relationship whose caveat context fails to convert, or a `Send` that fails
+mid-batch, returns early and would otherwise leave that stream unreleased on
+the caller's own (typically long-lived) context. It uses the identical
+fix — a `context.WithCancel` derived at the top of the function and
+deferred once — so it, not just the five iterators above, releases on every
+exit path. Six streaming calls total, all covered.
 
 #### `Close()`: releasing the connection
 

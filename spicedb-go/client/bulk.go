@@ -26,6 +26,19 @@ const (
 // silently dropped context, which bulk import would otherwise persist at
 // scale.
 func (c *Client) ImportRelationships(ctx context.Context, rels iter.Seq[rel.Relationship]) (numLoaded uint64, err error) {
+	// Returning early -- e.g. when a relationship's caveat context fails to
+	// convert to protobuf, or when a Send fails mid-stream -- must still
+	// release the client-streaming call opened below. grpc-go's
+	// ClientConn.NewStream contract is explicit: unless the context is
+	// cancelled, Close is called, or RecvMsg drains to a non-nil error, "a
+	// goroutine and a context will be leaked", and SpiceDB keeps the
+	// server-side dispatch open for as long as the connection lives.
+	// Cancelling on the way out covers every exit path, including these
+	// early returns, the same way ExportRelationships below covers its own.
+	// See root DESIGN.md, "RULE: Abandoning a stream must release it".
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	stream, err := c.psc.ImportBulkRelationships(ctx)
 	if err != nil {
 		return 0, mapGRPCError("import relationships", err)

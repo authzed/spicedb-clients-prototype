@@ -16,7 +16,8 @@ import (
 )
 
 // The tests in this file prove RULE: Abandoning a stream must release it
-// (root DESIGN.md) for every server-streaming iterator the client exposes.
+// (root DESIGN.md) for every server-streaming iterator the client exposes,
+// plus ImportRelationships, the one client-streaming call.
 //
 // They deliberately assert on a *server-side* signal rather than on the
 // consuming loop having exited. A test that only checks the range loop
@@ -111,6 +112,24 @@ func (s *hangingPermissionsServer) ExportBulkRelationships(_ *v1.ExportBulkRelat
 	}); err != nil {
 		return err
 	}
+	return s.sig.awaitCancel(stream.Context())
+}
+
+// ImportBulkRelationships is the client-streaming counterpart: this test
+// drives it with a caveat context that fails ToProto before any batch is
+// flushed, so the server never receives a message at all. A blocked Recv
+// unblocking with an error is itself the proof of release here -- if the
+// client instead returned without cancelling, Recv would block for the
+// life of the test and the test would time out rather than fail fast.
+func (s *hangingPermissionsServer) ImportBulkRelationships(stream grpc.ClientStreamingServer[v1.ImportBulkRelationshipsRequest, v1.ImportBulkRelationshipsResponse]) error {
+	if _, err := stream.Recv(); err != nil {
+		close(s.sig.cancelled)
+		return err
+	}
+	// A batch arrived (not exercised by the test below, but handled so this
+	// stub is not silently wrong if a future test sends one): fall back to
+	// waiting on the stream context the same way the server-streaming
+	// handlers do.
 	return s.sig.awaitCancel(stream.Context())
 }
 
@@ -255,6 +274,29 @@ func TestExportRelationships_BreakReleasesTheStream(t *testing.T) {
 		break
 	}
 	require.Equal(t, 1, seen)
+
+	sig.requireCancelled(t)
+}
+
+// TestImportRelationships_ToProtoFailureReleasesTheStream proves the
+// client-streaming counterpart of the same bug: a relationship whose caveat
+// context fails to convert to protobuf used to return immediately from
+// ImportRelationships, leaving the client-streaming call opened by
+// ImportBulkRelationships neither cancelled, closed, nor drained. The
+// caller's own ctx is deliberately long-lived and never cancelled by the
+// test, matching every other test in this file, because that is the case
+// that used to leak.
+func TestImportRelationships_ToProtoFailureReleasesTheStream(t *testing.T) {
+	c, sig := startHangingStreamServer(t)
+
+	bad := rel.MustFromTriple("document", "doc1", "viewer", "user", "alice", "").
+		WithCaveat("only_bizhours", map[string]any{"offender": make(chan int)})
+
+	numLoaded, err := c.ImportRelationships(context.Background(), func(yield func(rel.Relationship) bool) {
+		yield(bad)
+	})
+	require.ErrorIs(t, err, ErrInvalidArgument)
+	require.Zero(t, numLoaded)
 
 	sig.requireCancelled(t)
 }

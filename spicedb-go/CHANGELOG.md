@@ -213,8 +213,8 @@
 ### Bug Fixes
 
 - **2026-08-18**: Abandoning a streaming iterator leaked the gRPC stream and the server-side
-  dispatch. Every streaming call (`Updates`, `LookupResources`, `LookupSubjects`,
-  `ReadRelationships`, `ExportRelationships`) returns an `iter.Seq2` that stops on
+  dispatch. Every streaming call that returns an iterator (`Updates`, `LookupResources`,
+  `LookupSubjects`, `ReadRelationships`, `ExportRelationships`) returns an `iter.Seq2` that stops on
   `if !yield(...) { return }` -- i.e. when the consumer `break`s -- while the underlying
   `grpc.ClientStream` was left open on the caller's own context. grpc-go's
   `ClientConn.NewStream` contract is explicit that unless the context is cancelled, `Close` is
@@ -231,6 +231,21 @@
   API change -- the caller's context is still honored exactly as before, and cancelling it still
   cancels the stream.
 
+- **2026-08-18**: The fix above covered every streaming call that returns an iterator -- the
+  receiving side. `ImportRelationships`, the one client-streaming call, sends rather than
+  receives, and had the identical grpc-go leak on its own early-return paths: a relationship
+  whose caveat context failed `ToProto()` (a documented, reachable outcome per the method's own
+  doc comment) returned immediately, leaving the client-streaming call opened at
+  `client/bulk.go:29` neither cancelled, closed, nor drained -- on the caller's own, typically
+  long-lived, context. A `Send` failure mid-batch left the same call open the same way. Both
+  paths now run inside a `context.WithCancel` derived at the top of the function and deferred
+  once, the same pattern `ExportRelationships` already used. "Every streaming call" above was an
+  overclaim while this gap existed -- five of six, not six of six; it is accurate now.
+  `TestImportRelationships_ToProtoFailureReleasesTheStream` in
+  `client/stream_release_test.go` covers it the same way as the other five: against a real
+  in-process server, asserting the server's own `Recv` observed the cancellation, not that the
+  call returned an error.
+
 - **2026-08-18**: `Close()` panicked on a `Client` that never opened a connection. The connection
   handle is unexported, so a zero-value `client.Client{}`, or a
   `&spicedbgoproto.Client{PermissionsServiceClient: stub}` assembled by hand to point at a test
@@ -240,9 +255,10 @@
   nil, so a test double no longer crashes on a line unrelated to what it tests. Nil receivers are
   covered too.
 - **2026-08-18**: `Client` had no way to release its underlying gRPC connection deterministically
-  -- every streaming call (`ReadRelationships`, `LookupResources`, `LookupSubjects`, `Watch`,
-  `ExportRelationships`) shares one connection for the life of the process, per root DESIGN.md,
-  "RULE: Abandoning a stream must release it". Added `Client.Close() error`, idempotent (backed
+  -- every streaming call that returns an iterator (`ReadRelationships`, `LookupResources`,
+  `LookupSubjects`, `Watch`, `ExportRelationships`) shares one connection for the life of the
+  process, per root DESIGN.md, "RULE: Abandoning a stream must release it". Added
+  `Client.Close() error`, idempotent (backed
   by an atomic CompareAndSwap in the proto layer, since `grpc.ClientConn.Close` is not documented
   safe to call twice). All twelve examples now `defer c.Close()` after construction.
 - **2026-08-18**: `CheckIterWithContext`'s internal `flush` cleared the accumulated batch AFTER

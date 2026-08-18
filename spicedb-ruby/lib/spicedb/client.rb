@@ -14,9 +14,30 @@ module SpiceDB
       super
     end
   end
-  ExpandResult = Data.define(:tree_root, :revision)
+  # rubocop:disable Lint/DataDefineOverride -- :object_id mirrors the wire field and Go's ObjectRef.ObjectID; overriding Kernel#object_id is safe here since Data uses field-based ==/hash
+  ObjectRef = Data.define(:object_type, :object_id)
+  # rubocop:enable Lint/DataDefineOverride
+  SubjectRef = Data.define(:subject_type, :subject_id, :optional_relation)
+  IntermediateNode = Data.define(:operation, :children)
+  LeafNode = Data.define(:subjects)
+  PermissionTree = Data.define(:expanded_object, :expanded_relation, :intermediate, :leaf)
+  ExpandResult = Data.define(:tree, :revision)
   CountResult = Data.define(:relationship_count, :revision, :still_calculating)
   Update = Data.define(:operation, :relationship)
+
+  # Lookup result types — mirror spicedb-go's client/lookup_types.go.
+  # `permissionship` is one of :unspecified, :has_permission, :conditional_permission.
+  # Callers MUST check `permissionship` before treating a result as a full
+  # grant — a :conditional_permission result may resolve to false once the
+  # missing caveat context (see `partial_caveat`) is supplied.
+  PartialCaveatInfo = Data.define(:missing_required_context)
+  LookupResource = Data.define(:resource_id, :permissionship, :partial_caveat)
+  ResolvedSubject = Data.define(:subject_id, :permissionship, :partial_caveat)
+  # When `subject.subject_id` is the wildcard "*", `excluded_subjects` lists
+  # subjects excluded from that wildcard grant — callers MUST treat those
+  # subjects as NOT having the permission, even though the wildcard would
+  # otherwise suggest they do.
+  LookupSubject = Data.define(:subject, :excluded_subjects)
 
   # The idiomatic SpiceDB client for Ruby.
   #
@@ -195,15 +216,34 @@ module SpiceDB
     end
 
     # Deletes all relationships matching the given filter. Large result sets
-    # are automatically paged in batches of 10,000.
+    # are automatically paged in batches of 1,000 (override with `limit:`).
+    #
+    # `must_match:`/`must_not_match:` add preconditions that guard the
+    # delete: if a precondition fails, the server rejects that call and
+    # deletes nothing for it. Preconditions are a per-request proto field,
+    # so when a delete spans multiple pages (i.e. more matches than the
+    # limit), they are re-evaluated by the server on every page — there is
+    # no "check-once, apply-to-all-pages" semantics. This means a delete
+    # that starts successfully can still fail partway through if the
+    # guarded state changes between pages, after earlier pages have
+    # already been deleted. For a single-shot, all-or-nothing guarded
+    # delete, pair the precondition with a `limit:` large enough to cover
+    # every matching relationship in one call.
     #
     # @param filter [SpiceDB::Filter]
+    # @param must_match [Array<SpiceDB::Filter>] preconditions that must each match at least one relationship
+    # @param must_not_match [Array<SpiceDB::Filter>] preconditions that must each match no relationships
+    # @param limit [Integer, nil] overrides the default per-request page size (1,000)
     # @return [String] the revision of the final deletion
-    def delete_relationships(filter)
+    def delete_relationships(filter, must_match: [], must_not_match: [], limit: nil)
+      preconditions = must_match.map { |f| { operation: :must_match, filter: f } } +
+                      must_not_match.map { |f| { operation: :must_not_match, filter: f } }
+      page_size = limit || DEFAULT_DELETE_PAGE_SIZE
+
       revision = nil
       loop do
         rev, complete = with_retry do
-          call_delete_relationships(filter, DEFAULT_DELETE_PAGE_SIZE)
+          call_delete_relationships(filter, page_size, preconditions)
         end
         revision = rev
         break if complete
@@ -213,25 +253,28 @@ module SpiceDB
 
     # --- Lookups ---
 
-    # Returns an Enumerator over resource IDs of the given type that the
-    # subject has the specified permission on. Cursors are handled transparently.
+    # Returns an Enumerator over resources of the given type that the subject
+    # has the specified permission on. Each result carries the permissionship
+    # (full grant vs conditional on caveat context) and, for conditional
+    # results, which caveat context was missing. Cursors are handled
+    # transparently.
     #
     # @param consistency [SpiceDB::Consistency::Strategy]
     # @param resource_type [String]
     # @param permission [String]
     # @param subject_type [String]
     # @param subject_id [String]
-    # @return [Enumerator<String>]
+    # @return [Enumerator<SpiceDB::LookupResource>]
     def lookup_resources(consistency, resource_type, permission, subject_type, subject_id)
       Enumerator.new do |yielder|
         cursor = nil
         loop do
-          ids, new_cursor, count = with_retry do
+          resources, new_cursor, count = with_retry do
             call_lookup_resources(consistency, resource_type, permission, subject_type, subject_id, cursor,
                                   DEFAULT_LOOKUP_PAGE_SIZE)
           end
 
-          ids.each { |id| yielder << id }
+          resources.each { |resource| yielder << resource }
 
           break if count < DEFAULT_LOOKUP_PAGE_SIZE
 
@@ -240,21 +283,27 @@ module SpiceDB
       end
     end
 
-    # Returns an Enumerator over subject IDs of the given type that have the
+    # Returns an Enumerator over subjects of the given type that have the
     # specified permission on the resource. Unlike lookup_resources, this does
     # not support cursor-based pagination and streams all results.
+    #
+    # When a yielded LookupSubject#subject is the wildcard "*", the server
+    # has granted the permission to every subject of subject_type EXCEPT
+    # those listed in LookupSubject#excluded_subjects. Callers MUST check
+    # excluded_subjects before treating a wildcard match as a blanket grant,
+    # or they risk granting access to subjects the server explicitly excluded.
     #
     # @param consistency [SpiceDB::Consistency::Strategy]
     # @param resource_type [String]
     # @param resource_id [String]
     # @param permission [String]
     # @param subject_type [String]
-    # @return [Enumerator<String>]
+    # @return [Enumerator<SpiceDB::LookupSubject>]
     def lookup_subjects(consistency, resource_type, resource_id, permission, subject_type)
       Enumerator.new do |yielder|
         with_retry do
-          call_lookup_subjects(consistency, resource_type, resource_id, permission, subject_type) do |subject_id|
-            yielder << subject_id
+          call_lookup_subjects(consistency, resource_type, resource_id, permission, subject_type) do |lookup_subject|
+            yielder << lookup_subject
           end
         end
       end
@@ -373,6 +422,16 @@ module SpiceDB
         call_watch(object_types, start_revision) do |update|
           yielder << update
         end
+      rescue StandardError => e
+        # We intentionally do NOT retry the streaming watch here (unlike
+        # with_retry for unary/paginated calls) — retrying a live
+        # server-stream mid-flight risks re-emitting/replaying updates the
+        # caller has already seen. Mapping the error to a native SpiceDB::*
+        # type (instead of leaking a raw GRPC::BadStatus) is the correctness
+        # fix; retry is left to the caller.
+        raise SpiceDB.to_spicedb_error(e) if e.respond_to?(:code)
+
+        raise
       end
     end
 
@@ -380,6 +439,8 @@ module SpiceDB
 
     # Registers a named counter that tracks relationships matching the given filter.
     # The counter is computed asynchronously by SpiceDB.
+    #
+    # @note Experimental: wraps SpiceDB's ExperimentalService and may change without following the backwards-compatibility mandate.
     #
     # @param name [String] counter name
     # @param filter [SpiceDB::Filter]
@@ -391,6 +452,8 @@ module SpiceDB
 
     # Reads the value of a previously registered relationship counter.
     #
+    # @note Experimental: wraps SpiceDB's ExperimentalService and may change without following the backwards-compatibility mandate.
+    #
     # @param name [String] counter name
     # @return [SpiceDB::CountResult]
     def experimental_count_relationships(name)
@@ -398,6 +461,8 @@ module SpiceDB
     end
 
     # Removes a previously registered relationship counter.
+    #
+    # @note Experimental: wraps SpiceDB's ExperimentalService and may change without following the backwards-compatibility mandate.
     #
     # @param name [String] counter name
     # @return [nil]
@@ -557,6 +622,20 @@ module SpiceDB
       must_not_match: :OPERATION_MUST_NOT_MATCH
     }.freeze
 
+    # Builds Authzed::Api::V1::Precondition protos from an array of
+    # {operation:, filter:} hashes (the shape used by both
+    # SpiceDB::Transaction#preconditions and delete_relationships'
+    # must_match:/must_not_match: kwargs).
+    def build_preconditions(preconditions)
+      preconditions.map do |pc|
+        op = Authzed::Api::V1::Precondition::Operation.const_get(PRECONDITION_MAP[pc[:operation]])
+        Authzed::Api::V1::Precondition.new(
+          operation: op,
+          filter: filter_to_proto(pc[:filter])
+        )
+      end
+    end
+
     # --- Proto client call implementations ---
 
     def call_bulk_check(consistency, items)
@@ -585,7 +664,7 @@ module SpiceDB
       )
 
       resp.pairs.map do |pair|
-        raise SpiceDB::Error, pair.error.message if pair.respond_to?(:error) && pair.error && pair.error.respond_to?(:message) && !pair.error.message.empty?
+        raise SpiceDB.to_spicedb_error(pair.error) if pair.respond_to?(:error) && pair.error && pair.error.respond_to?(:message) && !pair.error.message.empty?
 
         # Ruby protobuf returns enum values as symbols, not integers
         { has_permission: pair.item.permissionship == :PERMISSIONSHIP_HAS_PERMISSION }
@@ -601,13 +680,7 @@ module SpiceDB
         )
       end
 
-      preconditions = transaction.preconditions.map do |pc|
-        op = Authzed::Api::V1::Precondition::Operation.const_get(PRECONDITION_MAP[pc[:operation]])
-        Authzed::Api::V1::Precondition.new(
-          operation: op,
-          filter: filter_to_proto(pc[:filter])
-        )
-      end
+      preconditions = build_preconditions(transaction.preconditions)
 
       req_args = { updates: updates }
       req_args[:optional_preconditions] = preconditions unless preconditions.empty?
@@ -642,10 +715,11 @@ module SpiceDB
       [relationships, new_cursor, count]
     end
 
-    def call_delete_relationships(filter, page_size)
+    def call_delete_relationships(filter, page_size, preconditions = [])
       resp = @proto_client.permissions.delete_relationships(
         Authzed::Api::V1::DeleteRelationshipsRequest.new(
           relationship_filter: filter_to_proto(filter),
+          optional_preconditions: build_preconditions(preconditions),
           optional_limit: page_size,
           optional_allow_partial_deletions: true
         )
@@ -671,19 +745,19 @@ module SpiceDB
       }
       req_args[:optional_cursor] = Authzed::Api::V1::Cursor.new(token: cursor) if cursor
 
-      ids = []
+      resources = []
       new_cursor = nil
       count = 0
 
       @proto_client.permissions.lookup_resources(
         Authzed::Api::V1::LookupResourcesRequest.new(**req_args)
       ).each do |resp|
-        ids << resp.resource_object_id
+        resources << lookup_resource_from_proto(resp)
         new_cursor = resp.after_result_cursor.token
         count += 1
       end
 
-      [ids, new_cursor, count]
+      [resources, new_cursor, count]
     end
 
     def call_lookup_subjects(consistency, resource_type, resource_id, permission, subject_type)
@@ -698,10 +772,7 @@ module SpiceDB
       )
 
       @proto_client.permissions.lookup_subjects(req).each do |resp|
-        subject_id = resp.subject.subject_object_id
-        # Fall back to deprecated field if needed
-        subject_id = resp.subject_object_id if subject_id.nil? || subject_id.empty?
-        yield subject_id
+        yield lookup_subject_from_proto(resp)
       end
     end
 
@@ -837,7 +908,7 @@ module SpiceDB
       )
 
       ExpandResult.new(
-        tree_root: resp.tree_root,
+        tree: permission_tree_from_proto(resp.tree_root),
         revision: resp.expanded_at.token
       )
     end
@@ -954,6 +1025,142 @@ module SpiceDB
           name: name
         )
       )
+    end
+
+    # Maps the proto AlgebraicSubjectSet operation enum to a native symbol.
+    PERMISSION_TREE_OPERATION_MAP = {
+      OPERATION_UNION: :union,
+      OPERATION_INTERSECTION: :intersection,
+      OPERATION_EXCLUSION: :exclusion
+    }.freeze
+
+    # Recursively maps a proto Authzed::Api::V1::PermissionRelationshipTree to
+    # a native SpiceDB::PermissionTree. Returns nil for a nil input.
+    #
+    # The proto uses a oneof for intermediate/leaf, which in Ruby becomes a
+    # set of methods that return nil if not set.
+    def permission_tree_from_proto(t)
+      return nil if t.nil?
+
+      # NOTE: use bracket access for object_id — Authzed::Api::V1::ObjectReference#object_id
+      # collides with Kernel#object_id, so the dot-accessor returns Ruby's internal object
+      # identity instead of the protobuf field (see also relationship_from_proto below).
+      expanded_object = ObjectRef.new(
+        object_type: t.expanded_object&.object_type,
+        object_id: t.expanded_object&.[]('object_id')
+      )
+
+      intermediate = nil
+      leaf = nil
+
+      if (v = t.intermediate)
+        intermediate = IntermediateNode.new(
+          operation: PERMISSION_TREE_OPERATION_MAP.fetch(v.operation, :unspecified),
+          children: v.children.map { |child| permission_tree_from_proto(child) }
+        )
+      elsif (v = t.leaf)
+        leaf = LeafNode.new(
+          subjects: v.subjects.map { |subject| subject_ref_from_proto(subject) }
+        )
+      end
+
+      PermissionTree.new(
+        expanded_object: expanded_object,
+        expanded_relation: t.expanded_relation,
+        intermediate: intermediate,
+        leaf: leaf
+      )
+    end
+
+    # Maps a proto Authzed::Api::V1::SubjectReference to a SpiceDB::SubjectRef.
+    def subject_ref_from_proto(subject)
+      SubjectRef.new(
+        subject_type: subject.object&.object_type,
+        subject_id: subject.object&.[]('object_id'),
+        optional_relation: subject.optional_relation
+      )
+    end
+
+    # Maps the proto LookupPermissionship enum (returned as a Symbol by the
+    # Ruby protobuf gem) to a native permissionship symbol. Unrecognized
+    # values (including UNSPECIFIED and nil) map to :unspecified.
+    LOOKUP_PERMISSIONSHIP_MAP = {
+      LOOKUP_PERMISSIONSHIP_HAS_PERMISSION: :has_permission,
+      LOOKUP_PERMISSIONSHIP_CONDITIONAL_PERMISSION: :conditional_permission
+    }.freeze
+
+    # Maps the proto LookupPermissionship enum to its native symbol
+    # equivalent. Callers MUST check this before treating a lookup result as
+    # a full grant — a :conditional_permission result may resolve to false
+    # once the missing caveat context is supplied.
+    def permissionship_from_proto(v)
+      LOOKUP_PERMISSIONSHIP_MAP.fetch(v, :unspecified)
+    end
+
+    # Maps a proto PartialCaveatInfo to a native SpiceDB::PartialCaveatInfo.
+    # A nil input (the field is unset) maps to nil.
+    def partial_caveat_from_proto(v)
+      return nil if v.nil?
+
+      PartialCaveatInfo.new(missing_required_context: v.missing_required_context.to_a)
+    end
+
+    # Maps a proto ResolvedSubject to a native SpiceDB::ResolvedSubject. A
+    # nil input maps to a zero-value ResolvedSubject (nil subject_id), which
+    # callers use as the trigger for falling back to deprecated
+    # response-level fields.
+    def resolved_subject_from_proto(v)
+      ResolvedSubject.new(
+        subject_id: v&.subject_object_id,
+        permissionship: permissionship_from_proto(v&.permissionship),
+        partial_caveat: partial_caveat_from_proto(v&.partial_caveat_info)
+      )
+    end
+
+    # Maps a proto LookupResourcesResponse to a native SpiceDB::LookupResource.
+    def lookup_resource_from_proto(resp)
+      LookupResource.new(
+        resource_id: resp.resource_object_id,
+        permissionship: permissionship_from_proto(resp.permissionship),
+        partial_caveat: partial_caveat_from_proto(resp.partial_caveat_info)
+      )
+    end
+
+    # Maps the excluded-subjects list off a proto LookupSubjectsResponse,
+    # preferring the non-deprecated `excluded_subjects` (which carries
+    # permissionship + caveat info per subject) and falling back to the
+    # deprecated `excluded_subject_ids` (IDs only) for servers that don't yet
+    # populate the newer field.
+    def excluded_subjects_from_proto(resp)
+      return resp.excluded_subjects.map { |e| resolved_subject_from_proto(e) } unless resp.excluded_subjects.empty?
+
+      unless resp.excluded_subject_ids.empty?
+        return resp.excluded_subject_ids.map do |id|
+          ResolvedSubject.new(subject_id: id, permissionship: :unspecified, partial_caveat: nil)
+        end
+      end
+
+      []
+    end
+
+    # Maps a proto LookupSubjectsResponse to a native SpiceDB::LookupSubject.
+    # When the result's Subject#subject_id is the wildcard "*",
+    # ExcludedSubjects lists subjects excluded from that wildcard grant —
+    # callers MUST treat those subjects as NOT having the permission, even
+    # though the wildcard would otherwise suggest they do.
+    def lookup_subject_from_proto(resp)
+      subject = resolved_subject_from_proto(resp.subject)
+      if subject.subject_id.nil? || subject.subject_id.empty?
+        # Fall back to the deprecated top-level fields for servers that
+        # don't yet populate the non-deprecated `subject` field.
+        subject = ResolvedSubject.new(
+          subject_id: resp.subject_object_id,
+          permissionship: permissionship_from_proto(resp.permissionship),
+          partial_caveat: partial_caveat_from_proto(resp.partial_caveat_info)
+        )
+      end
+
+      LookupSubject.new(subject: subject, excluded_subjects: excluded_subjects_from_proto(resp))
     end
 
     # Maps a proto ReflectionSchemaDiff to a SpiceDB::SchemaDiff.

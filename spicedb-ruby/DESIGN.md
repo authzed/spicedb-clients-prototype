@@ -89,6 +89,37 @@ All checks use `BulkCheckPermissions` under the hood:
 - `check_any(consistency, permission, *relationships)` → `Boolean`
 - `check_all(consistency, permission, *relationships)` → `Boolean`
 
+### Lookups
+
+`lookup_resources`/`lookup_subjects` yield native result objects — never
+bare ID strings — so callers can't accidentally treat a caveated or
+wildcard-excluded result as a full grant. Mirrors spicedb-go's
+`client/lookup_types.go`.
+
+```ruby
+SpiceDB::PartialCaveatInfo = Data.define(:missing_required_context)
+SpiceDB::LookupResource    = Data.define(:resource_id, :permissionship, :partial_caveat)
+SpiceDB::ResolvedSubject   = Data.define(:subject_id, :permissionship, :partial_caveat)
+SpiceDB::LookupSubject     = Data.define(:subject, :excluded_subjects)
+```
+
+`permissionship` is a Symbol: `:unspecified`, `:has_permission`, or
+`:conditional_permission`. `partial_caveat` is `nil` unless
+`permissionship` is `:conditional_permission`, in which case it carries the
+`missing_required_context` that must be supplied to fully evaluate the
+grant.
+
+- `lookup_resources(...)` → `Enumerator<SpiceDB::LookupResource>`
+- `lookup_subjects(...)` → `Enumerator<SpiceDB::LookupSubject>`, where
+  `LookupSubject#subject` is a `ResolvedSubject` and
+  `LookupSubject#excluded_subjects` is an `Array<ResolvedSubject>`
+
+Callers MUST check `permissionship` before treating a `LookupResource` as a
+full grant. For `lookup_subjects`, when `subject.subject_id` is the
+wildcard `"*"`, callers MUST check `excluded_subjects` before treating the
+wildcard as a blanket grant — the server grants the permission to every
+subject of the requested type EXCEPT those listed there.
+
 ### Streaming & Transparent Cursor Pagination
 
 Ruby `Enumerator` for all streaming RPCs. **Cursors are fully internal** —
@@ -102,7 +133,7 @@ defaults:
 | `lookup_resources` | 512 | cursor-based auto-pagination |
 | `lookup_subjects` | — | single streaming call |
 | `export_relationships` | 512 | cursor-based auto-pagination |
-| `delete_relationships` | 10,000 | auto-repeats until all deleted |
+| `delete_relationships` | 1,000 | auto-repeats until all deleted; matches SpiceDB's default `--max-delete-relationships-limit` |
 | `import_relationships` | 1,000 | batches into streaming sends |
 | `updates` | — | server-streaming, no pagination |
 
@@ -125,8 +156,23 @@ revision = client.write(txn)
 ### Deletions
 
 `delete_relationships` automatically pages through large result sets using a
-limit of 10,000 per RPC call. It repeats until the server reports all matching
+limit of 1,000 per RPC call (override with `limit:`; matches SpiceDB's
+default `--max-delete-relationships-limit`, so the default works against a
+stock server). It repeats until the server reports all matching
 relationships are deleted. Returns the final revision.
+
+Optional `must_match:`/`must_not_match:` keyword args add preconditions that
+guard the delete, mirroring `Transaction#must_match`/`#must_not_match`:
+
+```ruby
+client.delete_relationships(filter, must_match: [guard_filter])
+client.delete_relationships(filter, must_not_match: [guard_filter], limit: 500)
+```
+
+Preconditions are a per-request proto field, so a delete spanning multiple
+auto-paged calls re-evaluates them on every page rather than checking once
+for the whole operation — pair a precondition with a `limit:` large enough
+to cover every match in one call for all-or-nothing semantics.
 
 ### Error Handling
 
@@ -155,11 +201,11 @@ Automatic retry with exponential backoff for transient gRPC errors
 **Relationships:**
 - `write(transaction)` → `String` (revision)
 - `read_relationships(consistency, filter)` → `Enumerator<Relationship>`
-- `delete_relationships(filter)` → `String` (revision)
+- `delete_relationships(filter, must_match: [], must_not_match: [], limit: nil)` → `String` (revision)
 
 **Lookups:**
-- `lookup_resources(consistency, resource_type, permission, subject_type, subject_id)` → `Enumerator<String>`
-- `lookup_subjects(consistency, resource_type, resource_id, permission, subject_type)` → `Enumerator<String>`
+- `lookup_resources(consistency, resource_type, permission, subject_type, subject_id)` → `Enumerator<LookupResource>`
+- `lookup_subjects(consistency, resource_type, resource_id, permission, subject_type)` → `Enumerator<LookupSubject>`
 
 **Schema:**
 - `read_schema` → `[String, String]` (schema, revision)

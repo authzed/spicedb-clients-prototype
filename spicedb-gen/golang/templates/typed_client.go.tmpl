@@ -267,14 +267,14 @@ func Check(ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm P
 	return tc.Client.CheckOne(ctx, cs, perm.permission, r)
 }
 
-// LookupResources returns an iterator of resource IDs that the subject has the specified permission on.
-func LookupResources(ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm PermissionRef, subject Subject) iter.Seq2[string, error] {
+// LookupResources returns an iterator of resources that the subject has the specified permission on.
+func LookupResources(ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm PermissionRef, subject Subject) iter.Seq2[client.LookupResource, error] {
 	sType, sID, _ := subject.subjectRef()
 	return tc.Client.LookupResources(ctx, cs, perm.resourceType, perm.permission, sType, sID)
 }
 
-// LookupSubjects returns an iterator of subject IDs that have the specified permission on the resource.
-func LookupSubjects(ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm Permission, subjectType Subject) iter.Seq2[string, error] {
+// LookupSubjects returns an iterator of subjects that have the specified permission on the resource.
+func LookupSubjects(ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm Permission, subjectType Subject) iter.Seq2[client.LookupSubject, error] {
 	sType, _, _ := subjectType.subjectRef()
 	return tc.Client.LookupSubjects(ctx, cs, perm.resourceType, perm.resourceID, perm.permission, sType)
 }

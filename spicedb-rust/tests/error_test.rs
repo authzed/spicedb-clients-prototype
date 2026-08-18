@@ -69,12 +69,12 @@ fn test_is_transient_unavailable() {
 }
 
 #[test]
-fn test_is_transient_deadline_exceeded() {
+fn test_deadline_exceeded_is_not_transient() {
     let err = SpiceDBError::Status {
         code: 4, // DEADLINE_EXCEEDED
         message: "timeout".into(),
     };
-    assert!(is_transient(&err));
+    assert!(!is_transient(&err));
 }
 
 #[test]
@@ -82,6 +82,15 @@ fn test_is_transient_resource_exhausted() {
     let err = SpiceDBError::Status {
         code: 8, // RESOURCE_EXHAUSTED
         message: "quota".into(),
+    };
+    assert!(is_transient(&err));
+}
+
+#[test]
+fn test_is_transient_aborted() {
+    let err = SpiceDBError::Status {
+        code: 10, // ABORTED
+        message: "aborted".into(),
     };
     assert!(is_transient(&err));
 }

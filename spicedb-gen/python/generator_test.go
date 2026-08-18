@@ -89,7 +89,7 @@ func TestGenerateSampleSchema(t *testing.T) {
 	assert.Contains(t, output, "from dataclasses import dataclass")
 	assert.Contains(t, output, "from datetime import datetime")
 	assert.Contains(t, output, "from typing import Any, ClassVar, TypeAlias, overload")
-	assert.Contains(t, output, "from spicedb import SpiceDBClient, Transaction, Relationship, Filter")
+	assert.Contains(t, output, "from spicedb import SpiceDBClient, Transaction, Relationship, Filter, LookupResource, LookupSubject")
 	assert.Contains(t, output, "from spicedb.consistency import Consistency")
 
 	// Base value types — all frozen dataclasses
@@ -196,9 +196,9 @@ func TestGenerateSampleSchema(t *testing.T) {
 	assert.Contains(t, output, "async def delete(self, *rels: TypedRelationship) -> str:")
 
 	// lookup_resources — overload keyed on PermissionRef subclass
-	assert.Contains(t, output, "def lookup_resources(self, c: Consistency, p: _DocumentViewRef, s: DocumentViewSubject) -> AsyncIterator[str]:")
-	assert.Contains(t, output, "def lookup_resources(self, c: Consistency, p: _DocumentEditRef, s: DocumentEditSubject) -> AsyncIterator[str]:")
-	assert.Contains(t, output, "def lookup_resources(self, c: Consistency, p: _DocumentDeleteRef, s: DocumentDeleteSubject) -> AsyncIterator[str]:")
+	assert.Contains(t, output, "def lookup_resources(self, c: Consistency, p: _DocumentViewRef, s: DocumentViewSubject) -> AsyncIterator[LookupResource]:")
+	assert.Contains(t, output, "def lookup_resources(self, c: Consistency, p: _DocumentEditRef, s: DocumentEditSubject) -> AsyncIterator[LookupResource]:")
+	assert.Contains(t, output, "def lookup_resources(self, c: Consistency, p: _DocumentDeleteRef, s: DocumentDeleteSubject) -> AsyncIterator[LookupResource]:")
 
 	// lookup_subjects — overload keyed on Permission subclass; sentinel = type[…]
 	assert.Contains(t, output, "def lookup_subjects(")

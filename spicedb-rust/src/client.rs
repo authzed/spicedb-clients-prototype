@@ -14,10 +14,15 @@
 use crate::consistency::Strategy;
 use crate::error::{self, SpiceDBError};
 use crate::types::{
-    CheckResult, CountResult, ExpandResult, Filter, PreconditionOperation, ReflectSchemaResult,
-    RelationReference, Relationship, SchemaCaveat, SchemaCaveatParameter, SchemaDefinition,
-    SchemaDiff, SchemaPermission, SchemaRelation, Transaction, Update, UpdateOperation,
+    partial_caveat_from_proto, permission_tree_from_proto, permissionship_from_proto,
+    resolved_subject_from_proto, CheckResult, CountResult, DeleteOptions, ExpandResult, Filter,
+    LookupResource, LookupSubject, Permissionship, Precondition, PreconditionOperation,
+    ReflectSchemaResult, RelationReference, Relationship, ResolvedSubject, SchemaCaveat,
+    SchemaCaveatParameter, SchemaDefinition, SchemaDiff, SchemaPermission, SchemaRelation,
+    Transaction, Update, UpdateOperation,
 };
+
+use futures::Stream;
 
 use spicedb_proto::authzed::api::v1 as proto;
 use spicedb_proto::SpiceDBProtoClient;
@@ -31,7 +36,7 @@ const DEFAULT_CHECK_BATCH_SIZE: usize = 1_000;
 const DEFAULT_IMPORT_BATCH_SIZE: usize = 1_000;
 
 /// Maximum number of retry attempts for transient gRPC errors.
-const MAX_RETRIES: u32 = 5;
+const MAX_RETRIES: u32 = 3;
 
 /// Base delay for exponential backoff (in milliseconds).
 const BASE_RETRY_DELAY_MS: u64 = 100;
@@ -44,7 +49,7 @@ const BASE_RETRY_DELAY_MS: u64 = 100;
 /// Streaming operations return `impl Stream<Item = Result<T, SpiceDBError>>`.
 /// Cursor-based pagination is handled transparently within the client.
 ///
-/// Transient gRPC errors (UNAVAILABLE, DEADLINE_EXCEEDED, RESOURCE_EXHAUSTED)
+/// Transient gRPC errors (UNAVAILABLE, RESOURCE_EXHAUSTED, ABORTED)
 /// are automatically retried with exponential backoff.
 pub struct SpiceDBClient {
     // The proto client holds the gRPC channel and bearer-token interceptor.
@@ -258,21 +263,7 @@ impl SpiceDBClient {
             })
             .collect();
 
-        let mut preconditions = Vec::new();
-        for pc in txn.preconditions() {
-            let operation = match pc.operation {
-                PreconditionOperation::MustNotMatch => {
-                    proto::precondition::Operation::MustNotMatch as i32
-                }
-                PreconditionOperation::MustMatch => {
-                    proto::precondition::Operation::MustMatch as i32
-                }
-            };
-            preconditions.push(proto::Precondition {
-                operation,
-                filter: Some(pc.filter.to_proto()),
-            });
-        }
+        let preconditions = preconditions_to_proto(txn.preconditions());
 
         let resp = self
             .retry(|| async {
@@ -298,28 +289,48 @@ impl SpiceDBClient {
     /// Returns a stream of relationships matching the given filter.
     ///
     /// Cursors are handled transparently — the client automatically re-fetches
-    /// pages of 512 relationships using the `AfterResultCursor`.
+    /// pages of 512 relationships using the `AfterResultCursor`, lazily
+    /// fetching the next page only once the current page has been consumed.
     ///
     /// # Streaming
     ///
-    /// Returns `impl Stream<Item = Result<Relationship, SpiceDBError>>`.
-    pub async fn read_relationships(
+    /// Returns `impl Stream<Item = Result<Relationship, SpiceDBError>>`. Items
+    /// are yielded incrementally as they arrive from the server. Consume with
+    /// [`StreamExt::next`](futures::StreamExt::next) (pin it first, e.g.
+    /// `tokio::pin!`):
+    ///
+    /// ```no_run
+    /// # use futures::StreamExt;
+    /// # use spicedb::types::Filter;
+    /// # async fn demo(client: spicedb::client::SpiceDBClient, filter: Filter) -> Result<(), spicedb::error::SpiceDBError> {
+    /// let stream = client.read_relationships(&spicedb::consistency::full(), &filter);
+    /// tokio::pin!(stream);
+    /// while let Some(rel) = stream.next().await {
+    ///     let rel = rel?;
+    ///     // ...
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn read_relationships(
         &self,
         consistency: &Strategy,
         filter: &Filter,
-    ) -> Result<Vec<Relationship>, SpiceDBError> {
-        let mut results = Vec::new();
-        let mut cursor: Option<proto::Cursor> = None;
+    ) -> impl Stream<Item = Result<Relationship, SpiceDBError>> + 'static {
+        let consistency = consistency.to_proto();
+        let filter = filter.to_proto();
+        let perms = self.proto.permissions.clone();
 
-        loop {
-            let resp_stream = self
-                .retry(|| async {
-                    self.proto
-                        .permissions
+        async_stream::try_stream! {
+            let mut cursor: Option<proto::Cursor> = None;
+
+            loop {
+                let resp_stream = retry_call(|| async {
+                    perms
                         .clone()
                         .read_relationships(proto::ReadRelationshipsRequest {
-                            consistency: Some(consistency.to_proto()),
-                            relationship_filter: Some(filter.to_proto()),
+                            consistency: Some(consistency.clone()),
+                            relationship_filter: Some(filter.clone()),
                             optional_limit: DEFAULT_READ_PAGE_SIZE,
                             optional_cursor: cursor.clone(),
                         })
@@ -327,30 +338,29 @@ impl SpiceDBClient {
                 })
                 .await?;
 
-            let mut stream = resp_stream.into_inner();
-            let mut count: u32 = 0;
+                let mut stream = resp_stream.into_inner();
+                let mut count: u32 = 0;
 
-            while let Some(resp) = stream
-                .message()
-                .await
-                .map_err(|s| error::from_grpc_status(s.code() as i32, s.message().to_string()))?
-            {
-                count += 1;
-                if let Some(c) = resp.after_result_cursor {
-                    cursor = Some(c);
+                while let Some(resp) = stream
+                    .message()
+                    .await
+                    .map_err(|s| error::from_grpc_status(s.code() as i32, s.message().to_string()))?
+                {
+                    count += 1;
+                    if let Some(c) = resp.after_result_cursor {
+                        cursor = Some(c);
+                    }
+                    if let Some(rel) = resp.relationship {
+                        yield Relationship::from_proto(&rel);
+                    }
                 }
-                if let Some(rel) = resp.relationship {
-                    results.push(Relationship::from_proto(&rel));
-                }
-            }
 
-            // If we got fewer than the page size, we've read everything.
-            if count < DEFAULT_READ_PAGE_SIZE {
-                break;
+                // If we got fewer than the page size, we've read everything.
+                if count < DEFAULT_READ_PAGE_SIZE {
+                    break;
+                }
             }
         }
-
-        Ok(results)
     }
 
     /// Deletes all relationships matching the given filter.
@@ -359,7 +369,37 @@ impl SpiceDBClient {
     /// until the server reports all matching relationships are deleted.
     ///
     /// Returns the revision of the final deletion.
+    ///
+    /// This is a convenience wrapper around
+    /// [`delete_relationships_with`](Self::delete_relationships_with) with
+    /// [`DeleteOptions::default`] (no preconditions, default page size). To
+    /// guard the delete with preconditions or override the page size, use
+    /// `delete_relationships_with` directly.
     pub async fn delete_relationships(&self, filter: &Filter) -> Result<String, SpiceDBError> {
+        self.delete_relationships_with(filter, &DeleteOptions::default())
+            .await
+    }
+
+    /// Deletes all relationships matching the given filter, guarded by
+    /// optional preconditions and/or an overridden page size.
+    ///
+    /// Large result sets are automatically paged — in batches of 1,000, or
+    /// [`DeleteOptions::limit`] if set. Repeats until the server reports all
+    /// matching relationships are deleted. Returns the revision of the final
+    /// deletion.
+    ///
+    /// [`DeleteOptions::must_match`]/[`DeleteOptions::must_not_match`] add
+    /// preconditions that guard the delete: if a precondition fails, the
+    /// server rejects that call and deletes nothing for it. See
+    /// [`DeleteOptions`]'s docs for how preconditions interact with paging.
+    pub async fn delete_relationships_with(
+        &self,
+        filter: &Filter,
+        options: &DeleteOptions,
+    ) -> Result<String, SpiceDBError> {
+        let preconditions = preconditions_to_proto(&options.preconditions());
+        let limit = options.limit.unwrap_or(DEFAULT_DELETE_PAGE_SIZE);
+
         loop {
             let resp = self
                 .retry(|| async {
@@ -368,9 +408,9 @@ impl SpiceDBClient {
                         .clone()
                         .delete_relationships(proto::DeleteRelationshipsRequest {
                             relationship_filter: Some(filter.to_proto()),
-                            optional_limit: DEFAULT_DELETE_PAGE_SIZE,
+                            optional_limit: limit,
                             optional_allow_partial_deletions: true,
-                            optional_preconditions: Vec::new(),
+                            optional_preconditions: preconditions.clone(),
                             optional_transaction_metadata: None,
                         })
                         .await
@@ -393,36 +433,51 @@ impl SpiceDBClient {
     // Lookups
     // -----------------------------------------------------------------------
 
-    /// Returns a stream of resource IDs that the subject has the given
-    /// permission on.
+    /// Returns a stream of resources that the subject has the given
+    /// permission on. Each yielded [`LookupResource`] carries the
+    /// permissionship (full grant vs conditional on caveat context) and, for
+    /// conditional results, which caveat context was missing.
     ///
     /// Cursors are handled transparently — the client automatically re-fetches
-    /// pages of 512 results.
-    pub async fn lookup_resources(
+    /// pages of 512 results, lazily fetching the next page only once the
+    /// current page has been consumed.
+    ///
+    /// # Streaming
+    ///
+    /// Returns `impl Stream<Item = Result<LookupResource, SpiceDBError>>`.
+    /// Items are yielded incrementally as they arrive from the server.
+    /// Consume with [`StreamExt::next`](futures::StreamExt::next) (pin it
+    /// first, e.g. `tokio::pin!`).
+    pub fn lookup_resources(
         &self,
         consistency: &Strategy,
         resource_type: &str,
         permission: &str,
         subject_type: &str,
         subject_id: &str,
-    ) -> Result<Vec<String>, SpiceDBError> {
-        let mut results = Vec::new();
-        let mut cursor: Option<proto::Cursor> = None;
+    ) -> impl Stream<Item = Result<LookupResource, SpiceDBError>> + 'static {
+        let consistency = consistency.to_proto();
+        let resource_type = resource_type.to_string();
+        let permission = permission.to_string();
+        let subject_type = subject_type.to_string();
+        let subject_id = subject_id.to_string();
+        let perms = self.proto.permissions.clone();
 
-        loop {
-            let resp_stream = self
-                .retry(|| async {
-                    self.proto
-                        .permissions
+        async_stream::try_stream! {
+            let mut cursor: Option<proto::Cursor> = None;
+
+            loop {
+                let resp_stream = retry_call(|| async {
+                    perms
                         .clone()
                         .lookup_resources(proto::LookupResourcesRequest {
-                            consistency: Some(consistency.to_proto()),
-                            resource_object_type: resource_type.to_string(),
-                            permission: permission.to_string(),
+                            consistency: Some(consistency.clone()),
+                            resource_object_type: resource_type.clone(),
+                            permission: permission.clone(),
                             subject: Some(proto::SubjectReference {
                                 object: Some(proto::ObjectReference {
-                                    object_type: subject_type.to_string(),
-                                    object_id: subject_id.to_string(),
+                                    object_type: subject_type.clone(),
+                                    object_id: subject_id.clone(),
                                 }),
                                 optional_relation: String::new(),
                             }),
@@ -434,56 +489,81 @@ impl SpiceDBClient {
                 })
                 .await?;
 
-            let mut stream = resp_stream.into_inner();
-            let mut count: u32 = 0;
+                let mut stream = resp_stream.into_inner();
+                let mut count: u32 = 0;
 
-            while let Some(resp) = stream
-                .message()
-                .await
-                .map_err(|s| error::from_grpc_status(s.code() as i32, s.message().to_string()))?
-            {
-                count += 1;
-                if let Some(c) = resp.after_result_cursor {
-                    cursor = Some(c);
+                while let Some(resp) = stream
+                    .message()
+                    .await
+                    .map_err(|s| error::from_grpc_status(s.code() as i32, s.message().to_string()))?
+                {
+                    count += 1;
+                    if let Some(c) = resp.after_result_cursor {
+                        cursor = Some(c);
+                    }
+                    let permissionship = permissionship_from_proto(resp.permissionship);
+                    let partial_caveat = partial_caveat_from_proto(resp.partial_caveat_info.as_ref());
+                    yield LookupResource {
+                        resource_id: resp.resource_object_id,
+                        permissionship,
+                        partial_caveat,
+                    };
                 }
-                results.push(resp.resource_object_id);
-            }
 
-            if count < DEFAULT_LOOKUP_PAGE_SIZE {
-                break;
+                if count < DEFAULT_LOOKUP_PAGE_SIZE {
+                    break;
+                }
             }
         }
-
-        Ok(results)
     }
 
-    /// Returns a stream of subject IDs that have the given permission on the
+    /// Returns a stream of subjects that have the given permission on the
     /// resource.
+    ///
+    /// When a yielded [`LookupSubject::subject`] is the wildcard `"*"`, the
+    /// server has granted the permission to every subject of `subject_type`
+    /// EXCEPT those listed in [`LookupSubject::excluded_subjects`]. Callers
+    /// MUST check `excluded_subjects` before treating a wildcard match as a
+    /// blanket grant, or they risk granting access to subjects the server
+    /// explicitly excluded.
     ///
     /// Unlike `lookup_resources`, `lookup_subjects` does not currently support
     /// cursor-based pagination in SpiceDB — all results stream in a single
     /// server-streaming call.
-    pub async fn lookup_subjects(
+    ///
+    /// # Streaming
+    ///
+    /// Returns `impl Stream<Item = Result<LookupSubject, SpiceDBError>>`.
+    /// Items are yielded incrementally as they arrive from the server.
+    /// Consume with [`StreamExt::next`](futures::StreamExt::next) (pin it
+    /// first, e.g. `tokio::pin!`).
+    pub fn lookup_subjects(
         &self,
         consistency: &Strategy,
         resource_type: &str,
         resource_id: &str,
         permission: &str,
         subject_type: &str,
-    ) -> Result<Vec<String>, SpiceDBError> {
-        let resp_stream = self
-            .retry(|| async {
-                self.proto
-                    .permissions
+    ) -> impl Stream<Item = Result<LookupSubject, SpiceDBError>> + 'static {
+        let consistency = consistency.to_proto();
+        let resource_type = resource_type.to_string();
+        let resource_id = resource_id.to_string();
+        let permission = permission.to_string();
+        let subject_type = subject_type.to_string();
+        let perms = self.proto.permissions.clone();
+
+        async_stream::try_stream! {
+            let resp_stream = retry_call(|| async {
+                perms
                     .clone()
                     .lookup_subjects(proto::LookupSubjectsRequest {
-                        consistency: Some(consistency.to_proto()),
+                        consistency: Some(consistency.clone()),
                         resource: Some(proto::ObjectReference {
-                            object_type: resource_type.to_string(),
-                            object_id: resource_id.to_string(),
+                            object_type: resource_type.clone(),
+                            object_id: resource_id.clone(),
                         }),
-                        permission: permission.to_string(),
-                        subject_object_type: subject_type.to_string(),
+                        permission: permission.clone(),
+                        subject_object_type: subject_type.clone(),
                         optional_subject_relation: String::new(),
                         context: None,
                         optional_concrete_limit: 0,
@@ -494,25 +574,56 @@ impl SpiceDBClient {
             })
             .await?;
 
-        let mut stream = resp_stream.into_inner();
-        let mut results = Vec::new();
+            let mut stream = resp_stream.into_inner();
 
-        while let Some(resp) = stream
-            .message()
-            .await
-            .map_err(|s| error::from_grpc_status(s.code() as i32, s.message().to_string()))?
-        {
-            // Prefer the nested subject field; fall back to deprecated top-level field.
-            #[allow(deprecated)]
-            let subject_id = resp
-                .subject
-                .as_ref()
-                .map(|s| s.subject_object_id.clone())
-                .unwrap_or(resp.subject_object_id);
-            results.push(subject_id);
+            while let Some(resp) = stream
+                .message()
+                .await
+                .map_err(|s| error::from_grpc_status(s.code() as i32, s.message().to_string()))?
+            {
+                // Prefer the nested subject field; fall back to the deprecated
+                // top-level fields for servers that don't yet populate it.
+                let primary_subject = resolved_subject_from_proto(resp.subject.as_ref());
+                let subject = if primary_subject.subject_id.is_empty() {
+                    #[allow(deprecated, clippy::let_and_return)]
+                    let fallback = ResolvedSubject {
+                        subject_id: resp.subject_object_id.clone(),
+                        permissionship: permissionship_from_proto(resp.permissionship),
+                        partial_caveat: partial_caveat_from_proto(resp.partial_caveat_info.as_ref()),
+                    };
+                    fallback
+                } else {
+                    primary_subject
+                };
+
+                // Prefer the nested excluded_subjects field (carries full
+                // permissionship/caveat info); fall back to the deprecated
+                // excluded_subject_ids field (IDs only) for servers that don't
+                // yet populate it.
+                let excluded_subjects: Vec<ResolvedSubject> = if !resp.excluded_subjects.is_empty()
+                {
+                    resp.excluded_subjects
+                        .iter()
+                        .map(|s| resolved_subject_from_proto(Some(s)))
+                        .collect()
+                } else {
+                    #[allow(deprecated)]
+                    let ids = resp.excluded_subject_ids.clone();
+                    ids.into_iter()
+                        .map(|id| ResolvedSubject {
+                            subject_id: id,
+                            permissionship: Permissionship::Unspecified,
+                            partial_caveat: None,
+                        })
+                        .collect()
+                };
+
+                yield LookupSubject {
+                    subject,
+                    excluded_subjects,
+                };
+            }
         }
-
-        Ok(results)
     }
 
     // -----------------------------------------------------------------------
@@ -769,8 +880,9 @@ impl SpiceDBClient {
 
         let inner = resp.into_inner();
         let revision = inner.expanded_at.map(|z| z.token).unwrap_or_default();
+        let tree = permission_tree_from_proto(inner.tree_root.as_ref());
 
-        Ok(ExpandResult { revision })
+        Ok(ExpandResult { tree, revision })
     }
 
     // -----------------------------------------------------------------------
@@ -823,56 +935,62 @@ impl SpiceDBClient {
     /// streamed from SpiceDB in bulk.
     ///
     /// Cursors are handled transparently — the client automatically re-fetches
-    /// pages of 512 relationships.
-    pub async fn export_relationships(
+    /// pages of 512 relationships, lazily fetching the next page only once the
+    /// current page has been consumed.
+    ///
+    /// # Streaming
+    ///
+    /// Returns `impl Stream<Item = Result<Relationship, SpiceDBError>>`. Items
+    /// are yielded incrementally as they arrive from the server. Consume with
+    /// [`StreamExt::next`](futures::StreamExt::next) (pin it first, e.g.
+    /// `tokio::pin!`).
+    pub fn export_relationships(
         &self,
         consistency: &Strategy,
         filter: Option<&Filter>,
-    ) -> Result<Vec<Relationship>, SpiceDBError> {
-        let mut results = Vec::new();
-        let mut cursor: Option<proto::Cursor> = None;
+    ) -> impl Stream<Item = Result<Relationship, SpiceDBError>> + 'static {
+        let consistency = consistency.to_proto();
+        let filter = filter.map(|f| f.to_proto());
+        let perms = self.proto.permissions.clone();
 
-        loop {
-            let req = proto::ExportBulkRelationshipsRequest {
-                consistency: Some(consistency.to_proto()),
-                optional_limit: DEFAULT_EXPORT_PAGE_SIZE,
-                optional_cursor: cursor.clone(),
-                optional_relationship_filter: filter.map(|f| f.to_proto()),
-            };
+        async_stream::try_stream! {
+            let mut cursor: Option<proto::Cursor> = None;
 
-            let resp_stream = self
-                .retry(|| async {
-                    self.proto
-                        .permissions
-                        .clone()
-                        .export_bulk_relationships(req.clone())
-                        .await
+            loop {
+                let req = proto::ExportBulkRelationshipsRequest {
+                    consistency: Some(consistency.clone()),
+                    optional_limit: DEFAULT_EXPORT_PAGE_SIZE,
+                    optional_cursor: cursor.clone(),
+                    optional_relationship_filter: filter.clone(),
+                };
+
+                let resp_stream = retry_call(|| async {
+                    perms.clone().export_bulk_relationships(req.clone()).await
                 })
                 .await?;
 
-            let mut stream = resp_stream.into_inner();
-            let mut page_count: u32 = 0;
+                let mut stream = resp_stream.into_inner();
+                let mut page_count: u32 = 0;
 
-            while let Some(resp) = stream
-                .message()
-                .await
-                .map_err(|s| error::from_grpc_status(s.code() as i32, s.message().to_string()))?
-            {
-                if let Some(c) = resp.after_result_cursor {
-                    cursor = Some(c);
+                while let Some(resp) = stream
+                    .message()
+                    .await
+                    .map_err(|s| error::from_grpc_status(s.code() as i32, s.message().to_string()))?
+                {
+                    if let Some(c) = resp.after_result_cursor {
+                        cursor = Some(c);
+                    }
+                    for rel in &resp.relationships {
+                        page_count += 1;
+                        yield Relationship::from_proto(rel);
+                    }
                 }
-                for rel in &resp.relationships {
-                    page_count += 1;
-                    results.push(Relationship::from_proto(rel));
-                }
-            }
 
-            if page_count < DEFAULT_EXPORT_PAGE_SIZE {
-                break;
+                if page_count < DEFAULT_EXPORT_PAGE_SIZE {
+                    break;
+                }
             }
         }
-
-        Ok(results)
     }
 
     // -----------------------------------------------------------------------
@@ -882,13 +1000,35 @@ impl SpiceDBClient {
     /// Returns a stream of relationship changes from SpiceDB's watch API,
     /// starting from the given revision.
     ///
+    /// Watch is an open-ended server stream: updates are yielded incrementally,
+    /// as they occur, and the stream stays open indefinitely (until the caller
+    /// drops it or the connection fails). Consume it with
+    /// [`StreamExt::next`](futures::StreamExt::next):
+    ///
+    /// ```no_run
+    /// # use futures::StreamExt;
+    /// # async fn demo(client: spicedb::client::SpiceDBClient) -> Result<(), spicedb::error::SpiceDBError> {
+    /// let object_types = vec!["document".to_string()];
+    /// let stream = client.updates(&object_types, None);
+    /// tokio::pin!(stream);
+    /// while let Some(update) = stream.next().await {
+    ///     let update = update?;
+    ///     // handle update.operation / update.relationship
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
     /// Each yielded [`Update`] contains the operation (create/touch/delete)
     /// and the affected relationship.
-    pub async fn updates(
+    pub fn updates(
         &self,
         object_types: &[String],
         start_revision: Option<&str>,
-    ) -> Result<Vec<Update>, SpiceDBError> {
+    ) -> impl Stream<Item = Result<Update, SpiceDBError>> + 'static {
+        // Build the request and clone the watch client up front so the returned
+        // stream owns everything it needs and borrows nothing from `self` or the
+        // arguments (it is therefore `'static`).
         let mut req = proto::WatchRequest {
             optional_object_types: object_types.to_vec(),
             optional_relationship_filters: Vec::new(),
@@ -900,46 +1040,40 @@ impl SpiceDBClient {
                 token: rev.to_string(),
             });
         }
+        let watch = self.proto.watch.clone();
 
-        let resp_stream = self
-            .proto
-            .watch
-            .clone()
-            .watch(req)
-            .await
-            .map_err(|s| error::from_grpc_status(s.code() as i32, s.message().to_string()))?;
+        async_stream::try_stream! {
+            let resp_stream = retry_call(|| async { watch.clone().watch(req.clone()).await }).await?;
 
-        let mut stream = resp_stream.into_inner();
-        let mut results = Vec::new();
+            let mut stream = resp_stream.into_inner();
 
-        while let Some(resp) = stream
-            .message()
-            .await
-            .map_err(|s| error::from_grpc_status(s.code() as i32, s.message().to_string()))?
-        {
-            for update in &resp.updates {
-                let operation = match update.operation {
-                    x if x == proto::relationship_update::Operation::Create as i32 => {
-                        UpdateOperation::Create
+            while let Some(resp) = stream
+                .message()
+                .await
+                .map_err(|s| error::from_grpc_status(s.code() as i32, s.message().to_string()))?
+            {
+                for update in &resp.updates {
+                    let operation = match update.operation {
+                        x if x == proto::relationship_update::Operation::Create as i32 => {
+                            UpdateOperation::Create
+                        }
+                        x if x == proto::relationship_update::Operation::Touch as i32 => {
+                            UpdateOperation::Touch
+                        }
+                        x if x == proto::relationship_update::Operation::Delete as i32 => {
+                            UpdateOperation::Delete
+                        }
+                        _ => continue,
+                    };
+                    if let Some(rel) = &update.relationship {
+                        yield Update {
+                            operation,
+                            relationship: Relationship::from_proto(rel),
+                        };
                     }
-                    x if x == proto::relationship_update::Operation::Touch as i32 => {
-                        UpdateOperation::Touch
-                    }
-                    x if x == proto::relationship_update::Operation::Delete as i32 => {
-                        UpdateOperation::Delete
-                    }
-                    _ => continue,
-                };
-                if let Some(rel) = &update.relationship {
-                    results.push(Update {
-                        operation,
-                        relationship: Relationship::from_proto(rel),
-                    });
                 }
             }
         }
-
-        Ok(results)
     }
 
     // -----------------------------------------------------------------------
@@ -1057,7 +1191,7 @@ impl SpiceDBClient {
 
     /// Retries a gRPC call with exponential backoff for transient errors.
     ///
-    /// Retries on UNAVAILABLE, DEADLINE_EXCEEDED, and RESOURCE_EXHAUSTED up to
+    /// Retries on UNAVAILABLE, RESOURCE_EXHAUSTED, and ABORTED up to
     /// MAX_RETRIES times with exponentially increasing delays starting at
     /// BASE_RETRY_DELAY_MS.
     async fn retry<F, Fut, T>(&self, f: F) -> Result<tonic::Response<T>, SpiceDBError>
@@ -1065,23 +1199,62 @@ impl SpiceDBClient {
         F: Fn() -> Fut,
         Fut: std::future::Future<Output = Result<tonic::Response<T>, tonic::Status>>,
     {
-        let mut attempt = 0u32;
-        loop {
-            match f().await {
-                Ok(resp) => return Ok(resp),
-                Err(status) => {
-                    let err =
-                        error::from_grpc_status(status.code() as i32, status.message().to_string());
-                    if !error::is_transient(&err) || attempt >= MAX_RETRIES {
-                        return Err(err);
-                    }
-                    let delay_ms = BASE_RETRY_DELAY_MS * 2u64.pow(attempt);
-                    tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
-                    attempt += 1;
+        retry_call(f).await
+    }
+}
+
+/// Retries a gRPC call with exponential backoff for transient errors.
+///
+/// Free-function twin of [`SpiceDBClient::retry`] that does not borrow `self`,
+/// so it can be used from inside `+ 'static` streams (which own a cloned
+/// service client rather than borrowing the `SpiceDBClient`).
+///
+/// Retries on UNAVAILABLE, RESOURCE_EXHAUSTED, and ABORTED up to
+/// MAX_RETRIES times with exponentially increasing delays starting at
+/// BASE_RETRY_DELAY_MS, capped at 5s per delay.
+pub(crate) async fn retry_call<F, Fut, T>(f: F) -> Result<tonic::Response<T>, SpiceDBError>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Result<tonic::Response<T>, tonic::Status>>,
+{
+    let mut attempt = 0u32;
+    loop {
+        match f().await {
+            Ok(resp) => return Ok(resp),
+            Err(status) => {
+                let err =
+                    error::from_grpc_status(status.code() as i32, status.message().to_string());
+                if !error::is_transient(&err) || attempt >= MAX_RETRIES {
+                    return Err(err);
                 }
+                let delay_ms = (BASE_RETRY_DELAY_MS * 2u64.pow(attempt)).min(5000);
+                tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+                attempt += 1;
             }
         }
     }
+}
+
+/// Converts idiomatic [`Precondition`]s (shared by [`Transaction`] and
+/// [`DeleteOptions`]) into their proto representation.
+fn preconditions_to_proto(preconditions: &[Precondition]) -> Vec<proto::Precondition> {
+    preconditions
+        .iter()
+        .map(|pc| {
+            let operation = match pc.operation {
+                PreconditionOperation::MustNotMatch => {
+                    proto::precondition::Operation::MustNotMatch as i32
+                }
+                PreconditionOperation::MustMatch => {
+                    proto::precondition::Operation::MustMatch as i32
+                }
+            };
+            proto::Precondition {
+                operation,
+                filter: Some(pc.filter.to_proto()),
+            }
+        })
+        .collect()
 }
 
 /// Converts a proto ReflectionSchemaDiff into an idiomatic SchemaDiff.
@@ -1237,7 +1410,7 @@ mod tests {
 
     #[test]
     fn test_retry_constants() {
-        assert_eq!(MAX_RETRIES, 5);
+        assert_eq!(MAX_RETRIES, 3);
         assert_eq!(BASE_RETRY_DELAY_MS, 100);
     }
 }

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import grpc
+from google.rpc import status_pb2
 
 
 class SpiceDBError(Exception):
@@ -47,11 +48,19 @@ _CODE_TO_ERROR: dict[grpc.StatusCode, type[SpiceDBError]] = {
     grpc.StatusCode.CANCELLED: CancelledError,
 }
 
-_TRANSIENT_CODES = frozenset({
-    grpc.StatusCode.UNAVAILABLE,
-    grpc.StatusCode.RESOURCE_EXHAUSTED,
-    grpc.StatusCode.ABORTED,
-})
+_TRANSIENT_CODES = frozenset(
+    {
+        grpc.StatusCode.UNAVAILABLE,
+        grpc.StatusCode.RESOURCE_EXHAUSTED,
+        grpc.StatusCode.ABORTED,
+    }
+)
+
+# Reverse map: int gRPC code -> grpc.StatusCode, used to interpret the
+# int `code` field of a google.rpc.Status (e.g. a per-item bulk-check error).
+_INT_TO_STATUS_CODE: dict[int, grpc.StatusCode] = {
+    sc.value[0]: sc for sc in grpc.StatusCode
+}
 
 
 def to_spicedb_error(err: grpc.aio.AioRpcError) -> SpiceDBError:
@@ -59,6 +68,15 @@ def to_spicedb_error(err: grpc.aio.AioRpcError) -> SpiceDBError:
     code = err.code()
     cls = _CODE_TO_ERROR.get(code, SpiceDBError)
     return cls(err.details())
+
+
+def error_from_status_proto(status: status_pb2.Status) -> SpiceDBError:
+    """Convert a google.rpc.Status (e.g. a per-item bulk-check error) to a
+    typed SpiceDBError, preserving the real code and message instead of
+    fabricating a generic error."""
+    code = _INT_TO_STATUS_CODE.get(status.code)
+    cls = _CODE_TO_ERROR.get(code, SpiceDBError) if code is not None else SpiceDBError
+    return cls(status.message)
 
 
 def is_transient(err: Exception) -> bool:

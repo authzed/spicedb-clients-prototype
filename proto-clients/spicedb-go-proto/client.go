@@ -75,6 +75,29 @@ func NewClient(endpoint string, token string, opts ...Option) (*Client, error) {
 		insecure: cfg.insecure,
 	}))
 
+	// Retry transient gRPC errors with exponential backoff via gRPC's
+	// built-in service-config retry policy. Placed before user-supplied dial
+	// options so a caller-provided grpc.WithDefaultServiceConfig (via
+	// WithDialOptions) takes precedence, since later dial options override
+	// earlier ones in grpc-go.
+	dialOpts = append(dialOpts, grpc.WithDefaultServiceConfig(`{
+  "methodConfig": [{
+    "name": [
+      {"service": "authzed.api.v1.PermissionsService"},
+      {"service": "authzed.api.v1.SchemaService"},
+      {"service": "authzed.api.v1.WatchService"},
+      {"service": "authzed.api.v1.ExperimentalService"}
+    ],
+    "retryPolicy": {
+      "maxAttempts": 4,
+      "initialBackoff": "0.1s",
+      "maxBackoff": "5s",
+      "backoffMultiplier": 2,
+      "retryableStatusCodes": ["UNAVAILABLE", "RESOURCE_EXHAUSTED", "ABORTED"]
+    }
+  }]
+}`))
+
 	dialOpts = append(dialOpts, cfg.dialOptions...)
 
 	conn, err := grpc.NewClient(endpoint, dialOpts...)

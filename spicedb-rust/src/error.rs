@@ -62,7 +62,7 @@ mod codes {
     pub const FAILED_PRECONDITION: i32 = 9;
     pub const UNAVAILABLE: i32 = 14;
     pub const INVALID_ARGUMENT: i32 = 3;
-    pub const DEADLINE_EXCEEDED: i32 = 4;
+    pub const ABORTED: i32 = 10;
 }
 
 /// Convert a gRPC status code and message to a [`SpiceDBError`].
@@ -84,13 +84,13 @@ pub fn from_grpc_status(code: i32, message: String) -> SpiceDBError {
 }
 
 /// Returns `true` if the error represents a transient gRPC failure that is
-/// worth retrying with exponential backoff (UNAVAILABLE, DEADLINE_EXCEEDED,
-/// RESOURCE_EXHAUSTED).
+/// worth retrying with exponential backoff (UNAVAILABLE, RESOURCE_EXHAUSTED,
+/// ABORTED).
 pub fn is_transient(err: &SpiceDBError) -> bool {
     match err {
         SpiceDBError::Unavailable(_) => true,
         SpiceDBError::Status { code, .. } => {
-            *code == codes::DEADLINE_EXCEEDED || *code == codes::RESOURCE_EXHAUSTED
+            *code == codes::RESOURCE_EXHAUSTED || *code == codes::ABORTED
         }
         _ => false,
     }
@@ -157,12 +157,12 @@ mod tests {
     }
 
     #[test]
-    fn test_is_transient_deadline_exceeded() {
+    fn test_deadline_exceeded_is_not_transient() {
         let err = SpiceDBError::Status {
-            code: codes::DEADLINE_EXCEEDED,
+            code: 4, // DEADLINE_EXCEEDED
             message: "timeout".into(),
         };
-        assert!(is_transient(&err));
+        assert!(!is_transient(&err));
     }
 
     #[test]
@@ -170,6 +170,15 @@ mod tests {
         let err = SpiceDBError::Status {
             code: codes::RESOURCE_EXHAUSTED,
             message: "quota".into(),
+        };
+        assert!(is_transient(&err));
+    }
+
+    #[test]
+    fn test_is_transient_aborted() {
+        let err = SpiceDBError::Status {
+            code: codes::ABORTED,
+            message: "aborted".into(),
         };
         assert!(is_transient(&err));
     }

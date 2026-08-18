@@ -58,12 +58,26 @@ module SpiceDB
 
   # Converts a gRPC error to a typed SpiceDB exception.
   #
-  # @param err [GRPC::BadStatus] a gRPC error
+  # Prefers a usable (non-empty String) `#details` — as found on
+  # `GRPC::BadStatus` — over `#message`. `Google::Rpc::Status` (used for
+  # per-item bulk-check errors) also responds to `#details`, but there it is
+  # a repeated `google.protobuf.Any` field, not a message string, so it is
+  # skipped in favor of `#message`.
+  #
+  # @param err [GRPC::BadStatus, Google::Rpc::Status] a gRPC or rich status error
   # @return [SpiceDB::Error] a typed SpiceDB exception
   def to_spicedb_error(err)
     code = err.respond_to?(:code) ? err.code : nil
     cls = GRPC_CODE_TO_ERROR.fetch(code, Error)
-    cls.new(err.respond_to?(:details) ? err.details : err.message)
+    details = err.respond_to?(:details) ? err.details : nil
+    message = if details.is_a?(String) && !details.empty?
+                details
+              elsif err.respond_to?(:message)
+                err.message
+              else
+                err.to_s
+              end
+    cls.new(message)
   end
 
   # Returns true if the error is transient and worth retrying.

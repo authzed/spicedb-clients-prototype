@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import Enum
 from typing import Any
 
-from authzed.api.v1 import core_pb2, permission_service_pb2
+from authzed.api.v1 import core_pb2, permission_service_pb2, schema_service_pb2
 from google.protobuf import struct_pb2, timestamp_pb2
+from google.protobuf.message import Message
 
 
 @dataclass(frozen=True)
@@ -139,6 +141,39 @@ class Relationship:
         )
 
 
+class UpdateOperation(Enum):
+    """The kind of mutation represented by an `Update` from `watch()`."""
+
+    CREATE = "create"
+    TOUCH = "touch"
+    DELETE = "delete"
+    UNSPECIFIED = "unspecified"
+
+
+_UPDATE_OP_MAP = {
+    core_pb2.RelationshipUpdate.OPERATION_CREATE: UpdateOperation.CREATE,
+    core_pb2.RelationshipUpdate.OPERATION_TOUCH: UpdateOperation.TOUCH,
+    core_pb2.RelationshipUpdate.OPERATION_DELETE: UpdateOperation.DELETE,
+    core_pb2.RelationshipUpdate.OPERATION_UNSPECIFIED: UpdateOperation.UNSPECIFIED,
+}
+
+
+@dataclass(frozen=True)
+class Update:
+    """A single relationship mutation observed via `SpiceDBClient.watch()`."""
+
+    operation: UpdateOperation
+    relationship: Relationship
+
+    @staticmethod
+    def _from_proto(u: core_pb2.RelationshipUpdate) -> "Update":
+        """Create from a proto RelationshipUpdate."""
+        op = _UPDATE_OP_MAP.get(u.operation, UpdateOperation.UNSPECIFIED)
+        return Update(
+            operation=op, relationship=Relationship._from_proto(u.relationship)
+        )
+
+
 @dataclass(frozen=True)
 class Filter:
     """A filter for matching relationships."""
@@ -234,3 +269,488 @@ class Transaction:
             )
         )
         return self
+
+
+class TreeOperation(Enum):
+    """The set operation combining an `IntermediateNode`'s children."""
+
+    UNSPECIFIED = 0
+    UNION = 1
+    INTERSECTION = 2
+    EXCLUSION = 3
+
+
+@dataclass(frozen=True)
+class ObjectRef:
+    """Identifies a resource or subject object."""
+
+    object_type: str
+    object_id: str
+
+
+@dataclass(frozen=True)
+class SubjectRef:
+    """A subject with access at a leaf of a `PermissionTree`."""
+
+    subject_type: str
+    subject_id: str
+    optional_relation: str = ""
+
+
+@dataclass(frozen=True)
+class IntermediateNode:
+    """Combines child subtrees with a set operation."""
+
+    operation: TreeOperation
+    children: list["PermissionTree"]
+
+
+@dataclass(frozen=True)
+class LeafNode:
+    """Holds the concrete subjects at a leaf of a `PermissionTree`."""
+
+    subjects: list[SubjectRef]
+
+
+@dataclass(frozen=True)
+class PermissionTree:
+    """A native node of an expanded permission tree.
+
+    Exactly one of `intermediate` or `leaf` is non-None.
+    """
+
+    expanded_object: ObjectRef
+    expanded_relation: str
+    intermediate: IntermediateNode | None = None
+    leaf: LeafNode | None = None
+
+
+_TREE_OPERATION_MAP = {
+    core_pb2.AlgebraicSubjectSet.OPERATION_UNSPECIFIED: TreeOperation.UNSPECIFIED,
+    core_pb2.AlgebraicSubjectSet.OPERATION_UNION: TreeOperation.UNION,
+    core_pb2.AlgebraicSubjectSet.OPERATION_INTERSECTION: TreeOperation.INTERSECTION,
+    core_pb2.AlgebraicSubjectSet.OPERATION_EXCLUSION: TreeOperation.EXCLUSION,
+}
+
+
+def _permission_tree_from_proto(
+    t: core_pb2.PermissionRelationshipTree,
+) -> PermissionTree:
+    """Recursively map a proto PermissionRelationshipTree to its native
+    representation. Mirrors spicedb-go's `toPermissionTree` (client/expand_tree.go).
+    """
+    intermediate = None
+    if t.HasField("intermediate"):
+        intermediate = IntermediateNode(
+            operation=_TREE_OPERATION_MAP.get(
+                t.intermediate.operation, TreeOperation.UNSPECIFIED
+            ),
+            children=[
+                _permission_tree_from_proto(child) for child in t.intermediate.children
+            ],
+        )
+
+    leaf = None
+    if t.HasField("leaf"):
+        leaf = LeafNode(
+            subjects=[
+                SubjectRef(
+                    subject_type=s.object.object_type,
+                    subject_id=s.object.object_id,
+                    optional_relation=s.optional_relation,
+                )
+                for s in t.leaf.subjects
+            ]
+        )
+
+    return PermissionTree(
+        expanded_object=ObjectRef(
+            object_type=t.expanded_object.object_type,
+            object_id=t.expanded_object.object_id,
+        ),
+        expanded_relation=t.expanded_relation,
+        intermediate=intermediate,
+        leaf=leaf,
+    )
+
+
+# ── Schema reflection / diff ──────────────────────────────────────────
+#
+# Mirrors spicedb-go's native schema types and mappers
+# (spicedb-go/client/schema.go): ReflectSchemaResult, SchemaDefinition,
+# SchemaRelation, SchemaPermission, SchemaCaveat, SchemaCaveatParameter,
+# SchemaDiff, and RelationReference.
+
+
+@dataclass(frozen=True)
+class SchemaRelation:
+    """A relation within a schema definition."""
+
+    name: str
+    comment: str
+    parent_definition_name: str
+
+    @classmethod
+    def _from_proto(
+        cls, proto: schema_service_pb2.ReflectionRelation
+    ) -> "SchemaRelation":
+        """Create from a proto ReflectionRelation."""
+        return cls(
+            name=proto.name,
+            comment=proto.comment,
+            parent_definition_name=proto.parent_definition_name,
+        )
+
+
+@dataclass(frozen=True)
+class SchemaPermission:
+    """A permission within a schema definition."""
+
+    name: str
+    comment: str
+    parent_definition_name: str
+
+    @classmethod
+    def _from_proto(
+        cls, proto: schema_service_pb2.ReflectionPermission
+    ) -> "SchemaPermission":
+        """Create from a proto ReflectionPermission."""
+        return cls(
+            name=proto.name,
+            comment=proto.comment,
+            parent_definition_name=proto.parent_definition_name,
+        )
+
+
+@dataclass(frozen=True)
+class SchemaCaveatParameter:
+    """A parameter of a caveat."""
+
+    name: str
+    type: str
+    parent_caveat_name: str
+
+    @classmethod
+    def _from_proto(
+        cls, proto: schema_service_pb2.ReflectionCaveatParameter
+    ) -> "SchemaCaveatParameter":
+        """Create from a proto ReflectionCaveatParameter."""
+        return cls(
+            name=proto.name,
+            type=proto.type,
+            parent_caveat_name=proto.parent_caveat_name,
+        )
+
+
+@dataclass(frozen=True)
+class SchemaDefinition:
+    """A definition in a SpiceDB schema, including its relations and
+    permissions."""
+
+    name: str
+    comment: str
+    relations: list[SchemaRelation]
+    permissions: list[SchemaPermission]
+
+    @classmethod
+    def _from_proto(
+        cls, proto: schema_service_pb2.ReflectionDefinition
+    ) -> "SchemaDefinition":
+        """Create from a proto ReflectionDefinition."""
+        return cls(
+            name=proto.name,
+            comment=proto.comment,
+            relations=[SchemaRelation._from_proto(r) for r in proto.relations],
+            permissions=[SchemaPermission._from_proto(p) for p in proto.permissions],
+        )
+
+
+@dataclass(frozen=True)
+class SchemaCaveat:
+    """A caveat defined in a SpiceDB schema."""
+
+    name: str
+    comment: str
+    expression: str
+    parameters: list[SchemaCaveatParameter]
+
+    @classmethod
+    def _from_proto(cls, proto: schema_service_pb2.ReflectionCaveat) -> "SchemaCaveat":
+        """Create from a proto ReflectionCaveat."""
+        return cls(
+            name=proto.name,
+            comment=proto.comment,
+            expression=proto.expression,
+            parameters=[SchemaCaveatParameter._from_proto(p) for p in proto.parameters],
+        )
+
+
+@dataclass(frozen=True)
+class ReflectSchemaResult:
+    """The result of a schema reflection call."""
+
+    definitions: list[SchemaDefinition]
+    caveats: list[SchemaCaveat]
+    revision: str
+
+    @classmethod
+    def _from_proto(
+        cls, proto: schema_service_pb2.ReflectSchemaResponse
+    ) -> "ReflectSchemaResult":
+        """Create from a proto ReflectSchemaResponse."""
+        return cls(
+            definitions=[SchemaDefinition._from_proto(d) for d in proto.definitions],
+            caveats=[SchemaCaveat._from_proto(c) for c in proto.caveats],
+            revision=proto.read_at.token,
+        )
+
+
+@dataclass(frozen=True)
+class RelationReference:
+    """Identifies a relation or permission on a definition.
+
+    Returned by `computable_permissions()`/`dependent_relations()`; mirrors
+    spicedb-go's `RelationReference` (client/schema.go).
+    """
+
+    definition_name: str
+    relation_name: str
+    is_permission: bool
+
+    @classmethod
+    def _from_proto(
+        cls, proto: schema_service_pb2.ReflectionRelationReference
+    ) -> "RelationReference":
+        """Create from a proto ReflectionRelationReference."""
+        return cls(
+            definition_name=proto.definition_name,
+            relation_name=proto.relation_name,
+            is_permission=proto.is_permission,
+        )
+
+
+@dataclass(frozen=True)
+class SchemaDiff:
+    """A single difference between two schemas.
+
+    ``kind`` is a human-readable description of the diff type (e.g.
+    "definition_added", "relation_removed", "permission_expr_changed") and
+    the associated fields contain the details:
+    - ``definition_name`` is set for definition and relation/permission-level
+      diffs.
+    - ``relation_name`` is set for relation-level diffs.
+    - ``permission_name`` is set for permission-level diffs.
+    - ``caveat_name`` is set for caveat-level diffs.
+    """
+
+    kind: str
+    definition_name: str = ""
+    relation_name: str = ""
+    permission_name: str = ""
+    caveat_name: str = ""
+
+
+def _schema_diff_from_proto(
+    proto: schema_service_pb2.ReflectionSchemaDiff,
+) -> SchemaDiff:
+    """Map a single proto ReflectionSchemaDiff to its native representation.
+    Mirrors spicedb-go's `schemaDiffFromProto` (client/schema.go).
+    """
+    kind = proto.WhichOneof("diff")
+    if kind == "definition_added":
+        return SchemaDiff(kind=kind, definition_name=proto.definition_added.name)
+    if kind == "definition_removed":
+        return SchemaDiff(kind=kind, definition_name=proto.definition_removed.name)
+    if kind == "definition_doc_comment_changed":
+        return SchemaDiff(
+            kind=kind, definition_name=proto.definition_doc_comment_changed.name
+        )
+    if kind == "relation_added":
+        return SchemaDiff(
+            kind=kind,
+            definition_name=proto.relation_added.parent_definition_name,
+            relation_name=proto.relation_added.name,
+        )
+    if kind == "relation_removed":
+        return SchemaDiff(
+            kind=kind,
+            definition_name=proto.relation_removed.parent_definition_name,
+            relation_name=proto.relation_removed.name,
+        )
+    if kind == "relation_doc_comment_changed":
+        return SchemaDiff(
+            kind=kind,
+            definition_name=proto.relation_doc_comment_changed.parent_definition_name,
+            relation_name=proto.relation_doc_comment_changed.name,
+        )
+    if kind == "relation_subject_type_added":
+        rel = proto.relation_subject_type_added.relation
+        return SchemaDiff(
+            kind=kind,
+            definition_name=rel.parent_definition_name,
+            relation_name=rel.name,
+        )
+    if kind == "relation_subject_type_removed":
+        rel = proto.relation_subject_type_removed.relation
+        return SchemaDiff(
+            kind=kind,
+            definition_name=rel.parent_definition_name,
+            relation_name=rel.name,
+        )
+    if kind == "permission_added":
+        return SchemaDiff(
+            kind=kind,
+            definition_name=proto.permission_added.parent_definition_name,
+            permission_name=proto.permission_added.name,
+        )
+    if kind == "permission_removed":
+        return SchemaDiff(
+            kind=kind,
+            definition_name=proto.permission_removed.parent_definition_name,
+            permission_name=proto.permission_removed.name,
+        )
+    if kind == "permission_doc_comment_changed":
+        return SchemaDiff(
+            kind=kind,
+            definition_name=proto.permission_doc_comment_changed.parent_definition_name,
+            permission_name=proto.permission_doc_comment_changed.name,
+        )
+    if kind == "permission_expr_changed":
+        return SchemaDiff(
+            kind=kind,
+            definition_name=proto.permission_expr_changed.parent_definition_name,
+            permission_name=proto.permission_expr_changed.name,
+        )
+    if kind == "caveat_added":
+        return SchemaDiff(kind=kind, caveat_name=proto.caveat_added.name)
+    if kind == "caveat_removed":
+        return SchemaDiff(kind=kind, caveat_name=proto.caveat_removed.name)
+    if kind == "caveat_doc_comment_changed":
+        return SchemaDiff(kind=kind, caveat_name=proto.caveat_doc_comment_changed.name)
+    if kind == "caveat_expr_changed":
+        return SchemaDiff(kind=kind, caveat_name=proto.caveat_expr_changed.name)
+    if kind == "caveat_parameter_added":
+        return SchemaDiff(
+            kind=kind, caveat_name=proto.caveat_parameter_added.parent_caveat_name
+        )
+    if kind == "caveat_parameter_removed":
+        return SchemaDiff(
+            kind=kind, caveat_name=proto.caveat_parameter_removed.parent_caveat_name
+        )
+    if kind == "caveat_parameter_type_changed":
+        return SchemaDiff(
+            kind=kind,
+            caveat_name=proto.caveat_parameter_type_changed.parameter.parent_caveat_name,
+        )
+    return SchemaDiff(kind="unknown")
+
+
+# ── Lookup results ─────────────────────────────────────────────────────
+#
+# Mirrors spicedb-go's native lookup types and mappers
+# (spicedb-go/client/lookup_types.go): Permissionship, PartialCaveatInfo,
+# LookupResource, ResolvedSubject, LookupSubject.
+#
+# Note on the nil-handling difference from Go: Go's mappers take nilable
+# pointers (`*v1.PartialCaveatInfo`) and return nil for a nil input. Python
+# protobuf message fields are never `None` on attribute access — an unset
+# submessage returns a default (zero-value) instance — so
+# `_partial_caveat_from_proto` instead takes the *containing* message and
+# uses `HasField` to detect presence.
+
+
+class Permissionship(Enum):
+    """Whether a lookup result reflects a full grant or is conditional on
+    caveat context that was not fully evaluated by the server. Callers MUST
+    check this before treating a result as a full grant — a
+    CONDITIONAL_PERMISSION result may resolve to false once the missing
+    caveat context is supplied.
+    """
+
+    UNSPECIFIED = 0
+    HAS_PERMISSION = 1
+    CONDITIONAL_PERMISSION = 2
+
+
+_PERMISSIONSHIP_MAP = {
+    permission_service_pb2.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION: Permissionship.HAS_PERMISSION,
+    permission_service_pb2.LOOKUP_PERMISSIONSHIP_CONDITIONAL_PERMISSION: (
+        Permissionship.CONDITIONAL_PERMISSION
+    ),
+}
+
+
+def _permissionship_from_proto(v: int) -> Permissionship:
+    """Map the proto LookupPermissionship enum to its native equivalent.
+    Unrecognized values map to Permissionship.UNSPECIFIED. Mirrors
+    spicedb-go's `permissionshipFromProto` (client/lookup_types.go)."""
+    return _PERMISSIONSHIP_MAP.get(v, Permissionship.UNSPECIFIED)
+
+
+@dataclass(frozen=True)
+class PartialCaveatInfo:
+    """Caveat context that was missing to fully evaluate a conditional
+    result."""
+
+    missing_required_context: list[str]
+
+
+def _partial_caveat_from_proto(parent: Message) -> PartialCaveatInfo | None:
+    """Map a proto message's `partial_caveat_info` field to its native
+    equivalent. An unset field maps to None. Mirrors spicedb-go's
+    `partialCaveatFromProto` (client/lookup_types.go); see the module-level
+    note above for why this takes the containing message rather than the
+    submessage directly."""
+    if not parent.HasField("partial_caveat_info"):
+        return None
+    return PartialCaveatInfo(
+        missing_required_context=list(
+            parent.partial_caveat_info.missing_required_context
+        )
+    )
+
+
+@dataclass(frozen=True)
+class LookupResource:
+    """One result from `SpiceDBClient.lookup_resources()`."""
+
+    resource_id: str
+    permissionship: Permissionship
+    partial_caveat: PartialCaveatInfo | None = (
+        None  # non-None when Permissionship is Conditional
+    )
+
+
+@dataclass(frozen=True)
+class ResolvedSubject:
+    """A subject resolved by `SpiceDBClient.lookup_subjects()` — either the
+    matched subject, or (when found in `LookupSubject.excluded_subjects`) a
+    subject excluded from a wildcard match."""
+
+    subject_id: str
+    permissionship: Permissionship
+    partial_caveat: PartialCaveatInfo | None = None
+
+
+@dataclass(frozen=True)
+class LookupSubject:
+    """One result from `SpiceDBClient.lookup_subjects()`. When
+    `subject.subject_id` is the wildcard "*", `excluded_subjects` lists
+    subjects excluded from that wildcard grant — callers MUST treat those
+    subjects as NOT having the permission, even though the wildcard would
+    otherwise suggest they do."""
+
+    subject: ResolvedSubject
+    excluded_subjects: list[ResolvedSubject]
+
+
+def _resolved_subject_from_proto(
+    v: permission_service_pb2.ResolvedSubject,
+) -> ResolvedSubject:
+    """Map a proto ResolvedSubject to its native equivalent. Mirrors
+    spicedb-go's `resolvedSubjectFromProto` (client/lookup_types.go)."""
+    return ResolvedSubject(
+        subject_id=v.subject_object_id,
+        permissionship=_permissionship_from_proto(v.permissionship),
+        partial_caveat=_partial_caveat_from_proto(v),
+    )

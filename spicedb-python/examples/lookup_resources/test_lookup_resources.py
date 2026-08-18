@@ -1,11 +1,14 @@
 """Example: Resource lookup.
 
-Demonstrates finding resources a subject can access.
+Demonstrates finding resources a subject can access, including how to read
+the ``permissionship`` of each result. A ``Permissionship.CONDITIONAL_PERMISSION``
+result means the match depends on caveat context that wasn't supplied —
+callers must not treat it as an unconditional grant.
 """
 
 import pytest
 
-from spicedb import Relationship, SpiceDBClient, full
+from spicedb import Filter, Permissionship, Relationship, SpiceDBClient, full
 from spicedb.types import Transaction
 
 
@@ -22,11 +25,28 @@ async def test_lookup_resources(client: SpiceDBClient):
 
     # Find all documents alice can view
     resource_ids = []
-    async for resource_id in client.lookup_resources(
+    async for resource in client.lookup_resources(
         "document", "view", ("user:alice", ""), full()
     ):
-        print(f"alice can view document:{resource_id}")
-        resource_ids.append(resource_id)
+        print(
+            f"alice can view document:{resource.resource_id} "
+            f"(permissionship={resource.permissionship})"
+        )
+        # A conditional result means caveat context is missing;
+        # resource.partial_caveat lists which context. Never treat a
+        # conditional result as a full grant.
+        assert resource.permissionship == Permissionship.HAS_PERMISSION, (
+            f"unexpected permissionship for document:{resource.resource_id}: "
+            f"{resource.permissionship} (missing context: {resource.partial_caveat})"
+        )
+        resource_ids.append(resource.resource_id)
 
     assert "readme" in resource_ids
     assert "design" in resource_ids
+
+    # Clean up so later examples that write a narrower schema aren't blocked
+    # by leftover relationships.
+    for resource_id in ("readme", "design", "secret"):
+        await client.delete_relationships(
+            Filter(resource_type="document", resource_id=resource_id)
+        )

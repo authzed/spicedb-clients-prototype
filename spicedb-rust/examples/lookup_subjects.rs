@@ -2,6 +2,7 @@
 //!
 //! Run with: `cargo run --example lookup_subjects`
 
+use futures::StreamExt;
 use spicedb::client::SpiceDBClient;
 use spicedb::consistency;
 use spicedb::types::{Relationship, Transaction};
@@ -44,13 +45,33 @@ async fn main() {
         .expect("write relationships failed");
 
     // Lookup all users who can view firstdoc
-    let subject_ids = client
-        .lookup_subjects(&consistency::full(), "document", "firstdoc", "view", "user")
-        .await
-        .expect("lookup failed");
+    let stream =
+        client.lookup_subjects(&consistency::full(), "document", "firstdoc", "view", "user");
+    tokio::pin!(stream);
 
-    for id in &subject_ids {
-        println!("user:{id} can view document:firstdoc");
+    let mut subject_ids = Vec::new();
+    while let Some(result) = stream.next().await {
+        let result = result.expect("lookup failed");
+        let subject_id = result.subject.subject_id;
+
+        // If the subject is the wildcard "*", the permission was granted to
+        // every subject of the requested type EXCEPT those explicitly listed
+        // in `excluded_subjects` — callers MUST check this list before
+        // treating a wildcard match as a blanket grant.
+        if subject_id == "*" {
+            for excluded in &result.excluded_subjects {
+                println!(
+                    "user:{} is explicitly excluded from the wildcard grant",
+                    excluded.subject_id
+                );
+            }
+        }
+
+        println!(
+            "user:{subject_id} can view document:firstdoc ({:?})",
+            result.subject.permissionship
+        );
+        subject_ids.push(subject_id);
     }
 
     assert!(

@@ -2,6 +2,7 @@
 
 from spicedb.client import SpiceDBClient
 from spicedb.consistency import (
+    Consistency,
     at_least,
     at_least_or_full,
     at_least_or_min_latency,
@@ -16,11 +17,37 @@ from spicedb.errors import (
     PermissionDeniedError,
     SpiceDBError,
 )
-from spicedb.types import Filter, Relationship, Transaction
+from spicedb.types import (
+    Filter,
+    IntermediateNode,
+    LeafNode,
+    LookupResource,
+    LookupSubject,
+    ObjectRef,
+    PartialCaveatInfo,
+    Permissionship,
+    PermissionTree,
+    ReflectSchemaResult,
+    RelationReference,
+    Relationship,
+    ResolvedSubject,
+    SchemaCaveat,
+    SchemaCaveatParameter,
+    SchemaDefinition,
+    SchemaDiff,
+    SchemaPermission,
+    SchemaRelation,
+    SubjectRef,
+    Transaction,
+    TreeOperation,
+    Update,
+    UpdateOperation,
+)
 
 __all__ = [
     "SpiceDBClient",
     # Consistency
+    "Consistency",
     "full",
     "min_latency",
     "at_least",
@@ -31,6 +58,29 @@ __all__ = [
     "Relationship",
     "Filter",
     "Transaction",
+    "Update",
+    "UpdateOperation",
+    "PermissionTree",
+    "IntermediateNode",
+    "LeafNode",
+    "SubjectRef",
+    "ObjectRef",
+    "TreeOperation",
+    # Lookup results
+    "LookupResource",
+    "LookupSubject",
+    "ResolvedSubject",
+    "Permissionship",
+    "PartialCaveatInfo",
+    # Schema reflection / diff
+    "ReflectSchemaResult",
+    "SchemaDefinition",
+    "SchemaRelation",
+    "SchemaPermission",
+    "SchemaCaveat",
+    "SchemaCaveatParameter",
+    "SchemaDiff",
+    "RelationReference",
     # Errors
     "SpiceDBError",
     "PermissionDeniedError",

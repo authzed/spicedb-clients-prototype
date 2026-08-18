@@ -80,6 +80,14 @@ RSpec.describe 'SpiceDB::Errors' do
       expect(err).to be_a(SpiceDB::Error)
       expect(err.message).to eq('plain error')
     end
+
+    it 'falls back to .message when .details responds but is not a usable string ' \
+       '(e.g. google.rpc.Status, whose #details is a repeated Any field, not the message)' do
+      rich_status = double('rich_status', code: 3, details: [], message: 'invalid argument: bad caveat context')
+      err = SpiceDB.to_spicedb_error(rich_status)
+      expect(err).to be_a(SpiceDB::InvalidArgumentError)
+      expect(err.message).to eq('invalid argument: bad caveat context')
+    end
   end
 
   describe '.transient?' do

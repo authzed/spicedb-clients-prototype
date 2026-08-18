@@ -4,6 +4,7 @@ import static com.authzed.spicedb.Consistency.*;
 import static org.assertj.core.api.Assertions.*;
 
 import com.authzed.spicedb.Filter;
+import com.authzed.spicedb.LookupResult;
 import com.authzed.spicedb.Relationship;
 import com.authzed.spicedb.Transaction;
 import java.util.List;
@@ -29,11 +30,20 @@ class LookupResourcesTest extends SpiceDBIntegrationTest {
 
   @Test
   void alice_can_view_two_documents() {
-    List<String> resourceIDs;
+    List<LookupResult.LookupResource> results;
     try (var stream = client.lookupResources(full(), "document", "view", "user", "alice")) {
-      resourceIDs = stream.toList();
+      results = stream.toList();
     }
 
+    // Every result carries a permissionship — callers must check it before treating a
+    // CONDITIONAL_PERMISSION result as a full grant (see wildcard/caveat-aware examples).
+    assertThat(results)
+        .allSatisfy(
+            r ->
+                assertThat(r.permissionship())
+                    .isEqualTo(LookupResult.Permissionship.HAS_PERMISSION));
+    List<String> resourceIDs =
+        results.stream().map(LookupResult.LookupResource::resourceId).toList();
     assertThat(resourceIDs).containsExactlyInAnyOrder("firstdoc", "seconddoc");
   }
 
@@ -41,7 +51,7 @@ class LookupResourcesTest extends SpiceDBIntegrationTest {
   void alice_can_edit_only_seconddoc() {
     List<String> resourceIDs;
     try (var stream = client.lookupResources(full(), "document", "edit", "user", "alice")) {
-      resourceIDs = stream.toList();
+      resourceIDs = stream.map(LookupResult.LookupResource::resourceId).toList();
     }
 
     assertThat(resourceIDs).containsExactly("seconddoc");
@@ -51,7 +61,7 @@ class LookupResourcesTest extends SpiceDBIntegrationTest {
   void bob_can_delete_thirddoc() {
     List<String> resourceIDs;
     try (var stream = client.lookupResources(full(), "document", "delete", "user", "bob")) {
-      resourceIDs = stream.toList();
+      resourceIDs = stream.map(LookupResult.LookupResource::resourceId).toList();
     }
 
     assertThat(resourceIDs).containsExactly("thirddoc");

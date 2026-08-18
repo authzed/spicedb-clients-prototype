@@ -1,7 +1,8 @@
 /**
- * Example: Bulk checks and exports
+ * Example: Bulk checks, bulk import, and bulk export
  *
- * Demonstrates bulk permission checks and bulk relationship exports.
+ * Demonstrates bulk permission checks, bulk relationship import via
+ * importBulkRelationships, and bulk relationship export.
  */
 import {
   createSpiceDBClient,
@@ -69,7 +70,21 @@ for (let i = 0; i < checks.length; i++) {
   assert(results[i] === true, `expected check ${i} to be true`);
 }
 
-// Export all document relationships
+// Bulk import: load many relationships in a single streaming call
+const bulkRels = [
+  relationship("document:readme", "owner", "user:admin"),
+  relationship("document:design", "owner", "user:admin"),
+  relationship("document:notes", "viewer", "user:jimmy"),
+];
+const numLoaded = await client.importBulkRelationships(bulkRels);
+console.log(`\nBulk-imported ${numLoaded} relationships`);
+assert(
+  numLoaded === BigInt(bulkRels.length),
+  `expected ${bulkRels.length} relationships imported, got ${numLoaded}`,
+);
+
+// Export all document relationships (includes both the initial write and
+// the bulk import above)
 console.log("\nExporting all document relationships:");
 let exportCount = 0;
 for await (const rel of client.exportBulkRelationships(full(), {
@@ -80,7 +95,11 @@ for await (const rel of client.exportBulkRelationships(full(), {
   );
   exportCount++;
 }
-assert(exportCount >= 2, `expected at least 2 exported relationships, got ${exportCount}`);
+const expectedExportCount = 2 + bulkRels.length;
+assert(
+  exportCount >= expectedExportCount,
+  `expected at least ${expectedExportCount} exported relationships, got ${exportCount}`,
+);
 
 // checkAny / checkAll
 const anyAllowed = await client.checkAny(atLeast(setupRevision), ...checks);
@@ -90,5 +109,10 @@ assert(anyAllowed, "expected at least one permission granted");
 const allAllowed = await client.checkAll(atLeast(setupRevision), ...checks);
 console.log(`All permissions granted: ${allAllowed}`);
 assert(allAllowed, "expected all permissions granted");
+
+// Clean up so later examples that write a narrower schema aren't blocked by
+// leftover relationships (examples run in sequence against one shared
+// SpiceDB instance).
+await client.deleteRelationships({ resourceType: "document" });
 
 console.log("bulk_operations: PASS");

@@ -3,9 +3,11 @@ package com.authzed.spicedb;
 import build.buf.gen.authzed.api.v1.*;
 import com.authzed.spicedb.errors.ErrorMapper;
 import com.authzed.spicedb.errors.SpiceDBException;
+import io.grpc.Context;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import io.grpc.Metadata;
+import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.stub.MetadataUtils;
 import io.grpc.stub.StreamObserver;
@@ -38,9 +40,8 @@ public final class SpiceDBClient implements AutoCloseable {
   private static final int DEFAULT_DELETE_PAGE_SIZE = 1_000;
   private static final int DEFAULT_IMPORT_BATCH_SIZE = 1_000;
   private static final int DEFAULT_EXPORT_PAGE_SIZE = 512;
-  private static final int DEFAULT_CHECK_BATCH_SIZE = 1_000;
 
-  private static final int MAX_RETRIES = 3;
+  private static final int MAX_RETRIES = 4;
   private static final long INITIAL_BACKOFF_MS = 100;
 
   private final ManagedChannel channel;
@@ -90,6 +91,10 @@ public final class SpiceDBClient implements AutoCloseable {
   /**
    * Creates a client with custom options.
    *
+   * <p>{@link ClientOption}s may include advanced escape-hatch options that expose the underlying
+   * gRPC channel builder for configuration not covered by the primary API. Most users should prefer
+   * {@link #createPlaintext} or {@link #createSystemTls}.
+   *
    * @param endpoint the SpiceDB endpoint
    * @param presharedKey the bearer token
    * @param options additional configuration options
@@ -103,9 +108,26 @@ public final class SpiceDBClient implements AutoCloseable {
     return new SpiceDBClient(builder.build(), bearerMetadata(presharedKey));
   }
 
+  /**
+   * Test-only factory that wires a client directly to a pre-built {@link ManagedChannel} (e.g. an
+   * in-process transport for tests). Package-private: not part of the public API surface.
+   */
+  static SpiceDBClient forChannel(ManagedChannel channel) {
+    return new SpiceDBClient(channel, new Metadata());
+  }
+
   /** Functional option for customizing the client. */
   @FunctionalInterface
   public interface ClientOption {
+    /**
+     * Applies this option to the underlying gRPC {@link ManagedChannelBuilder}.
+     *
+     * <p><b>Advanced escape hatch:</b> this method exposes {@code io.grpc.ManagedChannelBuilder}
+     * directly for configuration not covered by the primary API. Most users should prefer {@link
+     * #createPlaintext} or {@link #createSystemTls} and the standard {@code withInsecure()} option.
+     *
+     * @param builder the channel builder to configure
+     */
     void apply(ManagedChannelBuilder<?> builder);
   }
 
@@ -223,14 +245,98 @@ public final class SpiceDBClient implements AutoCloseable {
   }
 
   // -----------------------------------------------------------------------
-  // Delete Relationships — auto-paging 10,000-item batches
+  // Delete Relationships — auto-paging 1,000-item batches
   // -----------------------------------------------------------------------
 
   /**
-   * Deletes all relationships matching the given filter. Large result sets are automatically paged
-   * in batches of 10,000. Returns the revision of the final deletion.
+   * Optional preconditions and page-size override for {@link #deleteRelationships(Filter,
+   * DeleteOptions)}.
+   *
+   * <p>Immutable — {@code withMustMatch}/{@code withMustNotMatch}/{@code withLimit} each return a
+   * new instance, mirroring {@link Filter}'s builder style. Start from {@link #none()}, which is
+   * exactly the behavior of the single-argument {@link #deleteRelationships(Filter)} overload.
+   *
+   * <p>Preconditions are a per-request proto field, so when a delete spans multiple pages (i.e.
+   * more matches than the page size), they are re-evaluated by the server on every page — there is
+   * no "check-once, apply-to-all-pages" semantics. This means a delete that starts successfully can
+   * still fail partway through if the guarded state changes between pages, after earlier pages have
+   * already been deleted. For a single-shot, all-or-nothing guarded delete, pair the precondition
+   * with a {@link #withLimit} large enough to cover every matching relationship in one call.
+   * Mirrors {@code spicedb-go}'s {@code WithDeleteMustMatch}/{@code WithDeleteMustNotMatch}/{@code
+   * WithDeleteLimit} (client/relationships.go).
+   *
+   * <pre>{@code
+   * var options = SpiceDBClient.DeleteOptions.none()
+   *     .withMustMatch(existsFilter)
+   *     .withLimit(500);
+   * client.deleteRelationships(filter, options);
+   * }</pre>
    */
-  public String deleteRelationships(Filter filter) {
+  public record DeleteOptions(List<Filter> mustMatch, List<Filter> mustNotMatch, Integer limit) {
+
+    public DeleteOptions {
+      mustMatch = mustMatch == null ? List.of() : List.copyOf(mustMatch);
+      mustNotMatch = mustNotMatch == null ? List.of() : List.copyOf(mustNotMatch);
+      if (limit != null && limit <= 0) {
+        throw new IllegalArgumentException("limit must be positive");
+      }
+    }
+
+    /**
+     * No preconditions, default page size (1,000) — identical behavior to {@link
+     * #deleteRelationships(Filter)}.
+     */
+    public static DeleteOptions none() {
+      return new DeleteOptions(List.of(), List.of(), null);
+    }
+
+    /**
+     * Adds a MUST_MATCH precondition: the server rejects the delete (and deletes nothing) unless at
+     * least one relationship matching {@code filter} exists at evaluation time. Multiple calls
+     * accumulate; all are sent with every page of the delete.
+     */
+    public DeleteOptions withMustMatch(Filter filter) {
+      var updated = new ArrayList<>(mustMatch);
+      updated.add(filter);
+      return new DeleteOptions(updated, mustNotMatch, limit);
+    }
+
+    /**
+     * Adds a MUST_NOT_MATCH precondition: the server rejects the delete (and deletes nothing) if
+     * any relationship matching {@code filter} exists at evaluation time. Multiple calls
+     * accumulate; all are sent with every page of the delete.
+     */
+    public DeleteOptions withMustNotMatch(Filter filter) {
+      var updated = new ArrayList<>(mustNotMatch);
+      updated.add(filter);
+      return new DeleteOptions(mustMatch, updated, limit);
+    }
+
+    /** Overrides the per-request page size used by the auto-paging delete loop (default 1,000). */
+    public DeleteOptions withLimit(int limit) {
+      return new DeleteOptions(mustMatch, mustNotMatch, limit);
+    }
+  }
+
+  /**
+   * Deletes all relationships matching the given filter, guarded by optional preconditions and with
+   * an optional page-size override supplied via {@code options}. Returns the revision of the final
+   * deletion. See {@link DeleteOptions} for precondition/paging semantics.
+   */
+  public String deleteRelationships(Filter filter, DeleteOptions options) {
+    var preconditions = new ArrayList<Precondition>();
+    for (Filter f : options.mustMatch()) {
+      preconditions.add(
+          toPrecondition(
+              new Transaction.Precondition(Transaction.PreconditionOperation.MUST_MATCH, f)));
+    }
+    for (Filter f : options.mustNotMatch()) {
+      preconditions.add(
+          toPrecondition(
+              new Transaction.Precondition(Transaction.PreconditionOperation.MUST_NOT_MATCH, f)));
+    }
+    int pageSize = options.limit() != null ? options.limit() : DEFAULT_DELETE_PAGE_SIZE;
+
     String revision = "";
     while (true) {
       DeleteRelationshipsResponse resp =
@@ -239,7 +345,8 @@ public final class SpiceDBClient implements AutoCloseable {
                   permissionsStub.deleteRelationships(
                       DeleteRelationshipsRequest.newBuilder()
                           .setRelationshipFilter(toRelationshipFilter(filter))
-                          .setOptionalLimit(DEFAULT_DELETE_PAGE_SIZE)
+                          .addAllOptionalPreconditions(preconditions)
+                          .setOptionalLimit(pageSize)
                           .setOptionalAllowPartialDeletions(true)
                           .build()));
       revision = resp.getDeletedAt().getToken();
@@ -250,23 +357,33 @@ public final class SpiceDBClient implements AutoCloseable {
     }
   }
 
+  /**
+   * Deletes all relationships matching the given filter. Large result sets are automatically paged
+   * in batches of 1,000. Returns the revision of the final deletion.
+   */
+  public String deleteRelationships(Filter filter) {
+    return deleteRelationships(filter, DeleteOptions.none());
+  }
+
   // -----------------------------------------------------------------------
   // Lookups — cursor-based auto-pagination (512-item pages)
   // -----------------------------------------------------------------------
 
   /**
-   * Returns a stream over resource IDs of the given type that the subject has the specified
-   * permission on. Cursors are handled transparently.
+   * Returns a stream over resources of the given type that the subject has the specified permission
+   * on. Each result carries the permissionship (full grant vs conditional on caveat context) and,
+   * for conditional results, which caveat context was missing. Cursors are handled transparently.
    *
    * <p>The returned stream should be closed when done.
    */
-  public Stream<String> lookupResources(
+  public Stream<LookupResult.LookupResource> lookupResources(
       Consistency consistency,
       String resourceType,
       String permission,
       String subjectType,
       String subjectID) {
-    Iterator<String> iterator =
+    Context.CancellableContext cancelCtx = Context.current().withCancellation();
+    Iterator<LookupResult.LookupResource> iterator =
         new Iterator<>() {
           private Cursor cursor = null;
           private Iterator<LookupResourcesResponse> currentPage = Collections.emptyIterator();
@@ -282,12 +399,12 @@ public final class SpiceDBClient implements AutoCloseable {
           }
 
           @Override
-          public String next() {
+          public LookupResult.LookupResource next() {
             if (!hasNext()) throw new NoSuchElementException();
             LookupResourcesResponse resp = currentPage.next();
             pageCount++;
             cursor = resp.getAfterResultCursor();
-            return resp.getResourceObjectId();
+            return lookupResourceFromProto(resp);
           }
 
           private void fetchNextPage() {
@@ -311,8 +428,20 @@ public final class SpiceDBClient implements AutoCloseable {
             }
 
             var responses = new ArrayList<LookupResourcesResponse>();
-            var serverStream = withRetry(() -> permissionsStub.lookupResources(reqBuilder.build()));
-            serverStream.forEachRemaining(responses::add);
+            Iterator<LookupResourcesResponse> serverStream;
+            Context previous = cancelCtx.attach();
+            try {
+              serverStream =
+                  openStreamWithRetry(() -> permissionsStub.lookupResources(reqBuilder.build()));
+            } finally {
+              cancelCtx.detach(previous);
+            }
+            // The first hasNext() is already primed by openStreamWithRetry (retried above); every
+            // poll from here on is mapped-but-not-retried, since an item may already have been
+            // appended to `responses` by the time a later one fails.
+            while (mapStreamErrors(serverStream::hasNext)) {
+              responses.add(mapStreamErrors(serverStream::next));
+            }
 
             currentPage = responses.iterator();
             if (responses.size() < DEFAULT_LOOKUP_PAGE_SIZE) {
@@ -325,26 +454,33 @@ public final class SpiceDBClient implements AutoCloseable {
           }
         };
 
-    return StreamSupport.stream(
-        Spliterators.spliteratorUnknownSize(iterator, Spliterator.ORDERED), false);
+    return cancelOnClose(
+        StreamSupport.stream(
+            Spliterators.spliteratorUnknownSize(iterator, Spliterator.ORDERED), false),
+        cancelCtx);
   }
 
   /**
-   * Returns a stream over subject IDs of the given type that have the specified permission on the
+   * Returns a stream over subjects of the given type that have the specified permission on the
    * resource. Unlike lookupResources, this does not use cursor-based pagination (not supported in
    * SpiceDB yet) and streams all results in a single call.
    *
+   * <p>When a yielded {@link LookupResult.LookupSubject#subject} is the wildcard {@code "*"}, the
+   * server has granted the permission to every subject of the requested subject type EXCEPT those
+   * listed in {@link LookupResult.LookupSubject#excludedSubjects}. Callers MUST check {@code
+   * excludedSubjects} before treating a wildcard match as a blanket grant, or they risk granting
+   * access to subjects the server explicitly excluded.
+   *
    * <p>The returned stream should be closed when done.
    */
-  public Stream<String> lookupSubjects(
+  public Stream<LookupResult.LookupSubject> lookupSubjects(
       Consistency consistency,
       String resourceType,
       String resourceID,
       String permission,
       String subjectType) {
-    var responses = new ArrayList<LookupSubjectsResponse>();
-    var serverStream =
-        withRetry(
+    Iterator<LookupSubjectsResponse> serverStream =
+        openStreamWithRetry(
             () ->
                 permissionsStub.lookupSubjects(
                     LookupSubjectsRequest.newBuilder()
@@ -357,18 +493,15 @@ public final class SpiceDBClient implements AutoCloseable {
                         .setPermission(permission)
                         .setSubjectObjectType(subjectType)
                         .build()));
-    serverStream.forEachRemaining(responses::add);
+    // The first hasNext() is already primed by openStreamWithRetry (retried above); every poll
+    // from here on is mapped-but-not-retried, since an item may already have been added to
+    // `responses` by the time a later one fails.
+    var responses = new ArrayList<LookupSubjectsResponse>();
+    while (mapStreamErrors(serverStream::hasNext)) {
+      responses.add(mapStreamErrors(serverStream::next));
+    }
 
-    return responses.stream()
-        .map(
-            resp -> {
-              String id = resp.getSubject().getSubjectObjectId();
-              if (id == null || id.isEmpty()) {
-                // Fall back to deprecated field
-                id = resp.getSubjectObjectId();
-              }
-              return id;
-            });
+    return responses.stream().map(SpiceDBClient::lookupSubjectFromProto);
   }
 
   // -----------------------------------------------------------------------
@@ -551,7 +684,7 @@ public final class SpiceDBClient implements AutoCloseable {
   // -----------------------------------------------------------------------
 
   /** Result of an {@link #expandPermissionTree} call. */
-  public record ExpandResult(PermissionRelationshipTree treeRoot, String revision) {}
+  public record ExpandResult(PermissionTree tree, String revision) {}
 
   /**
    * Expands the permission tree for the given resource and permission, returning the full tree of
@@ -572,7 +705,7 @@ public final class SpiceDBClient implements AutoCloseable {
                                 .build())
                         .setPermission(permission)
                         .build()));
-    return new ExpandResult(resp.getTreeRoot(), resp.getExpandedAt().getToken());
+    return new ExpandResult(toPermissionTree(resp.getTreeRoot()), resp.getExpandedAt().getToken());
   }
 
   // -----------------------------------------------------------------------
@@ -651,6 +784,7 @@ public final class SpiceDBClient implements AutoCloseable {
    * <p>The returned stream should be closed when done.
    */
   public Stream<Relationship> exportRelationships(Consistency consistency, Filter filter) {
+    Context.CancellableContext cancelCtx = Context.current().withCancellation();
     Iterator<Relationship> iterator =
         new Iterator<>() {
           private Cursor cursor = null;
@@ -688,12 +822,19 @@ public final class SpiceDBClient implements AutoCloseable {
               reqBuilder.setOptionalCursor(cursor);
             }
 
-            var serverStream =
-                withRetry(() -> permissionsStub.exportBulkRelationships(reqBuilder.build()));
+            Iterator<ExportBulkRelationshipsResponse> serverStream;
+            Context previous = cancelCtx.attach();
+            try {
+              serverStream =
+                  openStreamWithRetry(
+                      () -> permissionsStub.exportBulkRelationships(reqBuilder.build()));
+            } finally {
+              cancelCtx.detach(previous);
+            }
 
             int pageCount = 0;
-            while (serverStream.hasNext()) {
-              ExportBulkRelationshipsResponse resp = serverStream.next();
+            while (mapStreamErrors(serverStream::hasNext)) {
+              ExportBulkRelationshipsResponse resp = mapStreamErrors(serverStream::next);
               cursor = resp.getAfterResultCursor();
               for (var r : resp.getRelationshipsList()) {
                 buffer.add(fromProtoRelationship(r));
@@ -707,8 +848,10 @@ public final class SpiceDBClient implements AutoCloseable {
           }
         };
 
-    return StreamSupport.stream(
-        Spliterators.spliteratorUnknownSize(iterator, Spliterator.ORDERED), false);
+    return cancelOnClose(
+        StreamSupport.stream(
+            Spliterators.spliteratorUnknownSize(iterator, Spliterator.ORDERED), false),
+        cancelCtx);
   }
 
   // -----------------------------------------------------------------------
@@ -740,17 +883,42 @@ public final class SpiceDBClient implements AutoCloseable {
       reqBuilder.setOptionalStartCursor(ZedToken.newBuilder().setToken(startRevision).build());
     }
 
-    var serverStream = withRetry(() -> watchStub.watch(reqBuilder.build()));
+    Context.CancellableContext cancelCtx = Context.current().withCancellation();
 
     Iterator<Update> iterator =
         new Iterator<>() {
           private final Queue<Update> buffer = new ArrayDeque<>();
+          // Opened lazily, on the first hasNext() call below — not eagerly here in updates()
+          // itself. This matters for correctness, not just style: grpc-java's blocking-stub
+          // priming call (which openStreamWithRetry needs, to make retry effective — see its
+          // Javadoc) blocks until the first message OR the call terminates. For watch, "the first
+          // message" can be arbitrarily far in the future (it's an indefinite live feed), so
+          // priming eagerly would turn updates() into a call that can hang for however long
+          // there's no relationship change — a real behavioral regression for a method whose
+          // whole contract is "return a stream promptly, block only when the caller pulls from
+          // it". Deferring the open (and its retry) to the caller's first pull preserves that
+          // contract while still making establishment retry effective once the caller does pull.
+          private Iterator<WatchResponse> serverStream;
 
           @Override
           public boolean hasNext() {
             if (!buffer.isEmpty()) return true;
-            if (!serverStream.hasNext()) return false;
-            WatchResponse resp = serverStream.next();
+
+            if (serverStream == null) {
+              // Establishment retry: applies ONLY to this first open. Once serverStream is set,
+              // every later call skips straight to mapStreamErrors below (no retry) — so a
+              // transient error after the watch has connected (mid-watch) is mapped and rethrown,
+              // never retried, since retrying would replay/duplicate already-delivered updates.
+              Context previous = cancelCtx.attach();
+              try {
+                serverStream = openStreamWithRetry(() -> watchStub.watch(reqBuilder.build()));
+              } finally {
+                cancelCtx.detach(previous);
+              }
+            }
+
+            if (!mapStreamErrors(serverStream::hasNext)) return false;
+            WatchResponse resp = mapStreamErrors(serverStream::next);
             for (var u : resp.getUpdatesList()) {
               buffer.add(updateFromProto(u));
             }
@@ -764,8 +932,10 @@ public final class SpiceDBClient implements AutoCloseable {
           }
         };
 
-    return StreamSupport.stream(
-        Spliterators.spliteratorUnknownSize(iterator, Spliterator.ORDERED), false);
+    return cancelOnClose(
+        StreamSupport.stream(
+            Spliterators.spliteratorUnknownSize(iterator, Spliterator.ORDERED), false),
+        cancelCtx);
   }
 
   // -----------------------------------------------------------------------
@@ -861,6 +1031,36 @@ public final class SpiceDBClient implements AutoCloseable {
     T call();
   }
 
+  /**
+   * Runs a blocking mid-stream operation (e.g. {@code serverStream.hasNext()}/{@code next()}),
+   * mapping any {@link StatusRuntimeException} it throws to a typed {@link SpiceDBException}.
+   *
+   * <p>Unlike {@link #withRetry}, this does NOT retry — mid-stream errors (including transient
+   * ones) are not safely retryable without re-issuing the whole call, since some results may have
+   * already been delivered to the consumer.
+   */
+  private static <T> T mapStreamErrors(java.util.function.Supplier<T> op) {
+    try {
+      return op.get();
+    } catch (StatusRuntimeException e) {
+      throw ErrorMapper.toSpiceDBException(e);
+    }
+  }
+
+  /**
+   * Registers an {@code onClose} handler that cancels {@code cancelCtx} (and, transitively, any
+   * gRPC call bound to it) when the returned stream is closed. Used by the lazy streaming methods
+   * to make {@code close()} actually cancel the underlying server-streaming call, rather than
+   * leaving it open server-side.
+   */
+  private static <T> Stream<T> cancelOnClose(
+      Stream<T> stream, Context.CancellableContext cancelCtx) {
+    return stream.onClose(
+        () ->
+            cancelCtx.cancel(
+                Status.CANCELLED.withDescription("stream closed by caller").asRuntimeException()));
+  }
+
   private <T> T withRetry(RetryableCall<T> call) {
     long backoff = INITIAL_BACKOFF_MS;
     for (int attempt = 0; attempt < MAX_RETRIES; attempt++) {
@@ -882,8 +1082,41 @@ public final class SpiceDBClient implements AutoCloseable {
     throw new SpiceDBException("unreachable");
   }
 
+  /**
+   * Opens a server-streaming RPC and makes stream/page ESTABLISHMENT effectively retryable on
+   * transient errors, reusing {@link #withRetry}'s transient predicate, {@code MAX_RETRIES}, and
+   * backoff verbatim (no divergent retry policy).
+   *
+   * <p>For grpc-java's blocking stub, {@code stub.someStreamingMethod(request)} never throws — it
+   * only enqueues the call and returns an {@link Iterator}; the RPC's actual outcome (including a
+   * transient {@code UNAVAILABLE}/{@code RESOURCE_EXHAUSTED}/{@code ABORTED}) only surfaces on the
+   * iterator's first {@code hasNext()}/{@code next()} call. Wrapping only the stub call in {@link
+   * #withRetry} (the old code) therefore never actually retries anything — the exception always
+   * escapes on the caller's first poll, past the retry loop. This method fixes that by folding the
+   * priming {@code hasNext()} call INTO the retried unit of work: if it throws a transient error,
+   * {@link #withRetry} re-issues {@code openCall} (a fresh RPC, e.g. from the same page cursor)
+   * after backoff, exactly as it would for a unary call.
+   *
+   * <p><b>No-replay guarantee:</b> this method must only ever be used to open a stream/page BEFORE
+   * any item has been handed to the caller. Once it returns, the returned iterator is primed (its
+   * first {@code hasNext()} result is already cached), and every subsequent poll MUST go through
+   * {@link #mapStreamErrors} — not this method — since re-opening after an item has already been
+   * yielded would replay/duplicate it.
+   */
+  private <T> Iterator<T> openStreamWithRetry(RetryableCall<Iterator<T>> openCall) {
+    return withRetry(
+        () -> {
+          Iterator<T> serverStream = openCall.call();
+          // Force establishment now, inside the retried unit of work, instead of leaving it to
+          // whatever unretried call the caller makes next.
+          serverStream.hasNext();
+          return serverStream;
+        });
+  }
+
   private Stream<Relationship> paginatedRelationshipStream(
       Consistency consistency, Filter filter, int pageSize) {
+    Context.CancellableContext cancelCtx = Context.current().withCancellation();
     Iterator<Relationship> iterator =
         new Iterator<>() {
           private Cursor cursor = null;
@@ -919,11 +1152,17 @@ public final class SpiceDBClient implements AutoCloseable {
               reqBuilder.setOptionalCursor(cursor);
             }
 
-            var serverStream =
-                withRetry(() -> permissionsStub.readRelationships(reqBuilder.build()));
+            Iterator<ReadRelationshipsResponse> serverStream;
+            Context previous = cancelCtx.attach();
+            try {
+              serverStream =
+                  openStreamWithRetry(() -> permissionsStub.readRelationships(reqBuilder.build()));
+            } finally {
+              cancelCtx.detach(previous);
+            }
 
-            while (serverStream.hasNext()) {
-              ReadRelationshipsResponse resp = serverStream.next();
+            while (mapStreamErrors(serverStream::hasNext)) {
+              ReadRelationshipsResponse resp = mapStreamErrors(serverStream::next);
               cursor = resp.getAfterResultCursor();
               buffer.add(fromProtoRelationship(resp.getRelationship()));
             }
@@ -934,8 +1173,10 @@ public final class SpiceDBClient implements AutoCloseable {
           }
         };
 
-    return StreamSupport.stream(
-        Spliterators.spliteratorUnknownSize(iterator, Spliterator.ORDERED), false);
+    return cancelOnClose(
+        StreamSupport.stream(
+            Spliterators.spliteratorUnknownSize(iterator, Spliterator.ORDERED), false),
+        cancelCtx);
   }
 
   private static CheckBulkPermissionsRequestItem checkItemFromRel(
@@ -1056,6 +1297,152 @@ public final class SpiceDBClient implements AutoCloseable {
         caveatName,
         caveatContext,
         expiration);
+  }
+
+  /**
+   * Maps the proto {@code LookupPermissionship} enum to its native equivalent. Unrecognized values
+   * map to {@code UNSPECIFIED}.
+   */
+  private static LookupResult.Permissionship permissionshipFromProto(LookupPermissionship v) {
+    return switch (v) {
+      case LOOKUP_PERMISSIONSHIP_HAS_PERMISSION -> LookupResult.Permissionship.HAS_PERMISSION;
+      case LOOKUP_PERMISSIONSHIP_CONDITIONAL_PERMISSION ->
+          LookupResult.Permissionship.CONDITIONAL_PERMISSION;
+      default -> LookupResult.Permissionship.UNSPECIFIED;
+    };
+  }
+
+  /** Maps a proto {@code PartialCaveatInfo} to its native equivalent. A null input maps to null. */
+  private static LookupResult.PartialCaveatInfo partialCaveatFromProto(
+      build.buf.gen.authzed.api.v1.PartialCaveatInfo v) {
+    if (v == null) {
+      return null;
+    }
+    return new LookupResult.PartialCaveatInfo(List.copyOf(v.getMissingRequiredContextList()));
+  }
+
+  /**
+   * Maps a proto {@code LookupResourcesResponse} to a native {@link LookupResult.LookupResource}.
+   */
+  private static LookupResult.LookupResource lookupResourceFromProto(LookupResourcesResponse resp) {
+    return new LookupResult.LookupResource(
+        resp.getResourceObjectId(),
+        permissionshipFromProto(resp.getPermissionship()),
+        partialCaveatFromProto(resp.hasPartialCaveatInfo() ? resp.getPartialCaveatInfo() : null));
+  }
+
+  /**
+   * Maps a proto {@code ResolvedSubject} to its native equivalent. A null input maps to a
+   * zero-value {@link LookupResult.ResolvedSubject} (empty {@code subjectId}), which callers use as
+   * the trigger for falling back to deprecated response-level fields.
+   */
+  private static LookupResult.ResolvedSubject resolvedSubjectFromProto(
+      build.buf.gen.authzed.api.v1.ResolvedSubject v) {
+    if (v == null) {
+      return new LookupResult.ResolvedSubject("", LookupResult.Permissionship.UNSPECIFIED, null);
+    }
+    return new LookupResult.ResolvedSubject(
+        v.getSubjectObjectId(),
+        permissionshipFromProto(v.getPermissionship()),
+        partialCaveatFromProto(v.hasPartialCaveatInfo() ? v.getPartialCaveatInfo() : null));
+  }
+
+  /**
+   * Maps a proto {@code LookupSubjectsResponse} to a native {@link LookupResult.LookupSubject},
+   * falling back to the deprecated {@code subject_object_id}/{@code permissionship}/{@code
+   * partial_caveat_info} fields when {@code subject} isn't populated (older servers), and to the
+   * deprecated {@code excluded_subject_ids} (IDs only, no permissionship/caveat info) when {@code
+   * excluded_subjects} isn't populated. Mirrors {@code spicedb-go}'s {@code lookup.go}.
+   */
+  @SuppressWarnings("deprecation") // intentional fallback to deprecated fields, see below
+  private static LookupResult.LookupSubject lookupSubjectFromProto(LookupSubjectsResponse resp) {
+    LookupResult.ResolvedSubject subject =
+        resp.hasSubject() ? resolvedSubjectFromProto(resp.getSubject()) : null;
+    if (subject == null || subject.subjectId().isEmpty()) {
+      // Fall back to the deprecated top-level fields for servers that don't yet populate the
+      // non-deprecated `subject` field.
+      subject =
+          new LookupResult.ResolvedSubject(
+              resp.getSubjectObjectId(),
+              permissionshipFromProto(resp.getPermissionship()),
+              partialCaveatFromProto(
+                  resp.hasPartialCaveatInfo() ? resp.getPartialCaveatInfo() : null));
+    }
+
+    List<LookupResult.ResolvedSubject> excluded;
+    if (!resp.getExcludedSubjectsList().isEmpty()) {
+      excluded =
+          resp.getExcludedSubjectsList().stream()
+              .map(SpiceDBClient::resolvedSubjectFromProto)
+              .toList();
+    } else if (!resp.getExcludedSubjectIdsList().isEmpty()) {
+      // Fall back to the deprecated excluded_subject_ids field, which carries only IDs (no
+      // permissionship/caveat info).
+      excluded =
+          resp.getExcludedSubjectIdsList().stream()
+              .map(
+                  id ->
+                      new LookupResult.ResolvedSubject(
+                          id, LookupResult.Permissionship.UNSPECIFIED, null))
+              .toList();
+    } else {
+      excluded = List.of();
+    }
+
+    return new LookupResult.LookupSubject(subject, excluded);
+  }
+
+  /**
+   * Recursively maps a proto {@code PermissionRelationshipTree} to its native {@link
+   * PermissionTree} representation. A null input maps to a zero-value tree.
+   */
+  static PermissionTree toPermissionTree(PermissionRelationshipTree t) {
+    if (t == null) {
+      return new PermissionTree(new PermissionTree.ObjectRef("", ""), "", null, null);
+    }
+
+    PermissionTree.IntermediateNode intermediate = null;
+    if (t.hasIntermediate()) {
+      AlgebraicSubjectSet algebraic = t.getIntermediate();
+      var children = new ArrayList<PermissionTree>(algebraic.getChildrenCount());
+      for (var child : algebraic.getChildrenList()) {
+        children.add(toPermissionTree(child));
+      }
+      intermediate =
+          new PermissionTree.IntermediateNode(
+              toTreeOperation(algebraic.getOperation()), List.copyOf(children));
+    }
+
+    PermissionTree.LeafNode leaf = null;
+    if (t.hasLeaf()) {
+      DirectSubjectSet direct = t.getLeaf();
+      var subjects = new ArrayList<PermissionTree.SubjectRef>(direct.getSubjectsCount());
+      for (var subject : direct.getSubjectsList()) {
+        subjects.add(
+            new PermissionTree.SubjectRef(
+                subject.getObject().getObjectType(),
+                subject.getObject().getObjectId(),
+                subject.getOptionalRelation()));
+      }
+      leaf = new PermissionTree.LeafNode(List.copyOf(subjects));
+    }
+
+    return new PermissionTree(
+        new PermissionTree.ObjectRef(
+            t.getExpandedObject().getObjectType(), t.getExpandedObject().getObjectId()),
+        t.getExpandedRelation(),
+        intermediate,
+        leaf);
+  }
+
+  /** Maps the proto algebraic set operation to its native equivalent. */
+  private static PermissionTree.Operation toTreeOperation(AlgebraicSubjectSet.Operation op) {
+    return switch (op) {
+      case OPERATION_UNION -> PermissionTree.Operation.UNION;
+      case OPERATION_INTERSECTION -> PermissionTree.Operation.INTERSECTION;
+      case OPERATION_EXCLUSION -> PermissionTree.Operation.EXCLUSION;
+      default -> PermissionTree.Operation.UNSPECIFIED;
+    };
   }
 
   private static RelationshipFilter toRelationshipFilter(Filter f) {

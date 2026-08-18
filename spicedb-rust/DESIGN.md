@@ -109,8 +109,15 @@ response. Default page sizes use sensible defaults:
 | `lookup_resources` | 512 | cursor-based auto-pagination |
 | `lookup_subjects` | -- | no cursor support in SpiceDB yet; single streaming call |
 | `export_relationships` | 512 | cursor-based auto-pagination |
-| `delete_relationships` | 10,000 | auto-repeats until all matched rels deleted |
+| `delete_relationships` | 1,000 | auto-repeats until all matched rels deleted; matches SpiceDB's default `--max-delete-relationships-limit` |
 | `import_relationships` | 1,000 | batches into client-streaming sends |
+
+`lookup_resources` and `lookup_subjects` yield native result structs (`LookupResource` /
+`LookupSubject`), not bare IDs -- each carries `permissionship` (full grant vs. conditional
+on caveat context) and, where applicable, `partial_caveat`. `LookupSubject` additionally
+carries `excluded_subjects`: when `subject.subject_id` is the wildcard `"*"`, those excluded
+subjects MUST be treated as NOT holding the permission even though the wildcard would
+otherwise suggest a blanket grant.
 
 ### Writes
 
@@ -128,8 +135,30 @@ let revision = client.write(&txn).await?;
 ### Deletions
 
 `delete_relationships` automatically pages through large result sets using a
-limit of 10,000 per RPC call. It repeats until the server reports all matching
-relationships are deleted. Returns the final revision.
+limit of 1,000 per RPC call (matches SpiceDB's default
+`--max-delete-relationships-limit`, so the default works against a stock
+server). It repeats until the server reports all matching relationships are
+deleted. Returns the final revision.
+
+`delete_relationships_with(filter, &options)` adds optional preconditions and
+a page-size override via a `DeleteOptions` builder:
+
+```rust
+let options = DeleteOptions::new()
+    .with_must_match(filter_that_must_exist)
+    .with_must_not_match(filter_that_must_not_exist)
+    .with_limit(500);
+let revision = client.delete_relationships_with(&filter, &options).await?;
+```
+
+`DeleteOptions::must_match`/`must_not_match` add `Precondition`s that guard the
+delete: if a precondition fails, the server rejects that call and deletes
+nothing for it. Preconditions are a per-request proto field, so when a delete
+spans multiple pages, they are re-evaluated by the server on every page — pair
+a precondition with a `DeleteOptions::with_limit` large enough to cover every
+matching relationship in one call for single-shot, all-or-nothing semantics.
+`delete_relationships(filter)` remains the ergonomic no-options path
+(equivalent to `delete_relationships_with(filter, &DeleteOptions::default())`).
 
 ### Error Handling
 
@@ -143,14 +172,14 @@ relationships are deleted. Returns the final revision.
 
 ### Auto-Retry
 
-Exponential backoff for transient gRPC errors (UNAVAILABLE, DEADLINE_EXCEEDED,
-RESOURCE_EXHAUSTED).
+Exponential backoff for transient gRPC errors (UNAVAILABLE, RESOURCE_EXHAUSTED,
+ABORTED).
 
 ### Performance
 
 - BulkCheck for all check operations (even single)
 - Transparent cursor-based pagination with sensible default page sizes
-- Batched deletions (10,000-item limit) to avoid server-side timeouts
+- Batched deletions (1,000-item limit, matching SpiceDB's default `--max-delete-relationships-limit`) to avoid server-side timeouts
 - 1,000-item batching for import operations
 
 ### Dependencies
@@ -183,10 +212,13 @@ RESOURCE_EXHAUSTED).
 - `write(&self, &txn) -> Result<String, SpiceDBError>`
 - `read_relationships(&self, cs, &filter) -> impl Stream<Item = Result<Relationship, SpiceDBError>>`
 - `delete_relationships(&self, &filter) -> Result<String, SpiceDBError>`
+- `delete_relationships_with(&self, &filter, &DeleteOptions) -> Result<String, SpiceDBError>`
 
 **Lookups:**
-- `lookup_resources(&self, cs, resource_type, permission, subject_type, subject_id) -> impl Stream`
-- `lookup_subjects(&self, cs, resource_type, resource_id, permission, subject_type) -> impl Stream`
+- `lookup_resources(&self, cs, resource_type, permission, subject_type, subject_id) -> impl Stream<Item = Result<LookupResource, SpiceDBError>>`
+- `lookup_subjects(&self, cs, resource_type, resource_id, permission, subject_type) -> impl Stream<Item = Result<LookupSubject, SpiceDBError>>`
+  -- `LookupSubject.excluded_subjects` MUST be checked whenever `LookupSubject.subject.subject_id`
+  is the wildcard `"*"`: those subjects are explicitly excluded from the wildcard grant
 
 **Schema:**
 - `read_schema(&self) -> Result<(String, String), SpiceDBError>`
@@ -198,6 +230,9 @@ RESOURCE_EXHAUSTED).
 
 **Expand:**
 - `expand_permission_tree(&self, cs, resource_type, resource_id, permission) -> Result<ExpandResult, SpiceDBError>`
+  -- `ExpandResult.tree` is the native `PermissionTree` root (no proto types leaked); walk
+  `PermissionTree.intermediate`/`PermissionTree.leaf` (exactly one is `Some`) to reach the
+  resolved `SubjectRef`s
 
 **Bulk:**
 - `import_relationships(&self, rels) -> Result<u64, SpiceDBError>`
@@ -227,12 +262,21 @@ RESOURCE_EXHAUSTED).
 - `Filter` struct + builder methods
 - `Transaction` struct + `create`/`touch`/`delete`/`must_not_match`/`must_match`
 - `Precondition`, `PreconditionOperation`
+- `DeleteOptions` struct (`must_match`, `must_not_match`, `limit`) + `with_must_match`/`with_must_not_match`/`with_limit` builder methods -- used by `delete_relationships_with`
 - `Update`, `UpdateOperation`
 - `CheckResult` (`#[must_use]`)
+- `Permissionship` (`Unspecified` / `HasPermission` / `ConditionalPermission`), `PartialCaveatInfo`
+- `LookupResource` (result of `lookup_resources`)
+- `ResolvedSubject`, `LookupSubject` (results of `lookup_subjects`; `LookupSubject.excluded_subjects`
+  carries wildcard exclusions -- see Lookups above)
 - `SchemaDefinition`, `SchemaRelation`, `SchemaPermission`
 - `SchemaCaveat`, `SchemaCaveatParameter`
 - `ReflectSchemaResult`, `RelationReference`, `SchemaDiff`
-- `ExpandResult`, `CountResult`
+- `ExpandResult` (`tree: PermissionTree`, `revision`), `PermissionTree` (`expanded_object: ObjectRef`,
+  `expanded_relation`, `intermediate: Option<IntermediateNode>`, `leaf: Option<LeafNode>`),
+  `IntermediateNode` (`operation: TreeOperation`, `children: Vec<PermissionTree>`), `LeafNode`
+  (`subjects: Vec<SubjectRef>`), `TreeOperation`, `ObjectRef`, `SubjectRef`
+- `CountResult`
 
 ### `error` module
 
@@ -255,6 +299,7 @@ RESOURCE_EXHAUSTED).
 | `schema_management/` | Reading and writing schema |
 | `bulk_operations/` | Bulk checks and imports |
 | `schema_reflection/` | Schema reflection, computable permissions, dependent relations, diff |
+| `expand_permission_tree/` | Expanding a permission tree and walking the native `PermissionTree` |
 | `relationship_counters/` | Registering, reading, and unregistering relationship counters |
 
 ## Changelog

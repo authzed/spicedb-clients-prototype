@@ -2,6 +2,7 @@
 //!
 //! Run with: `cargo run --example lookup_resources`
 
+use futures::StreamExt;
 use spicedb::client::SpiceDBClient;
 use spicedb::consistency;
 use spicedb::types::{Relationship, Transaction};
@@ -44,13 +45,17 @@ async fn main() {
         .expect("write relationships failed");
 
     // Lookup all documents alice can view
-    let resource_ids = client
-        .lookup_resources(&consistency::full(), "document", "view", "user", "alice")
-        .await
-        .expect("lookup failed");
+    let stream = client.lookup_resources(&consistency::full(), "document", "view", "user", "alice");
+    tokio::pin!(stream);
 
-    for id in &resource_ids {
-        println!("alice can view document:{id}");
+    let mut resource_ids = Vec::new();
+    while let Some(result) = stream.next().await {
+        let result = result.expect("lookup failed");
+        println!(
+            "alice can view document:{} ({:?})",
+            result.resource_id, result.permissionship
+        );
+        resource_ids.push(result.resource_id);
     }
 
     assert!(

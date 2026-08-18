@@ -408,6 +408,97 @@ pub enum PreconditionOperation {
     MustMatch,
 }
 
+/// Optional preconditions and a page-size override for
+/// [`SpiceDBClient::delete_relationships_with`](crate::client::SpiceDBClient::delete_relationships_with).
+///
+/// Use [`DeleteOptions::default`] (or [`DeleteOptions::new`]) for no
+/// preconditions and the default page size (1,000), and the builder methods
+/// to add guards:
+///
+/// ```
+/// use spicedb::types::{DeleteOptions, Filter};
+///
+/// let options = DeleteOptions::new()
+///     .with_must_match(Filter::new("document").with_resource_id("doc1"))
+///     .with_must_not_match(Filter::new("document").with_resource_id("doc2"))
+///     .with_limit(100);
+/// ```
+///
+/// # Preconditions and paging
+///
+/// Preconditions are a per-request proto field, so when a delete spans
+/// multiple pages (more matches than the limit), they are re-evaluated by the
+/// server on every page — there is no "check-once, apply-to-all-pages"
+/// semantics. This means a delete that starts successfully can still fail
+/// partway through if the guarded state changes between pages, after earlier
+/// pages have already been deleted. For a single-shot, all-or-nothing guarded
+/// delete, pair the precondition with [`DeleteOptions::with_limit`] set large
+/// enough to cover every matching relationship in one call.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DeleteOptions {
+    /// Filters that must each match at least one existing relationship for
+    /// the delete to proceed.
+    pub must_match: Vec<Filter>,
+    /// Filters that must each match no existing relationship for the delete
+    /// to proceed.
+    pub must_not_match: Vec<Filter>,
+    /// Overrides the default per-request page size (1,000) used by
+    /// `delete_relationships`'/`delete_relationships_with`'s auto-paging loop.
+    pub limit: Option<u32>,
+}
+
+impl DeleteOptions {
+    /// Creates an empty `DeleteOptions`: no preconditions, default page size.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Adds a precondition that at least one relationship must match
+    /// `filter`. Multiple calls accumulate; all are sent with every request.
+    pub fn with_must_match(mut self, filter: Filter) -> Self {
+        self.must_match.push(filter);
+        self
+    }
+
+    /// Adds a precondition that no relationship may match `filter`. Multiple
+    /// calls accumulate; all are sent with every request.
+    pub fn with_must_not_match(mut self, filter: Filter) -> Self {
+        self.must_not_match.push(filter);
+        self
+    }
+
+    /// Overrides the default per-request page size (1,000).
+    pub fn with_limit(mut self, limit: u32) -> Self {
+        self.limit = Some(limit);
+        self
+    }
+
+    /// Converts the accumulated must-match/must-not-match filters into
+    /// [`Precondition`]s (must-match filters first, then must-not-match).
+    ///
+    /// This mirrors [`Transaction::preconditions`]'s shape so both delete and
+    /// write preconditions flow through the same proto conversion in
+    /// `client.rs`.
+    pub(crate) fn preconditions(&self) -> Vec<Precondition> {
+        let mut preconditions =
+            Vec::with_capacity(self.must_match.len() + self.must_not_match.len());
+        preconditions.extend(self.must_match.iter().cloned().map(|filter| Precondition {
+            operation: PreconditionOperation::MustMatch,
+            filter,
+        }));
+        preconditions.extend(
+            self.must_not_match
+                .iter()
+                .cloned()
+                .map(|filter| Precondition {
+                    operation: PreconditionOperation::MustNotMatch,
+                    filter,
+                }),
+        );
+        preconditions
+    }
+}
+
 impl Transaction {
     /// Creates an empty transaction.
     pub fn new() -> Self {
@@ -551,13 +642,144 @@ pub struct SchemaDiff {
     pub caveat_name: String,
 }
 
+/// Identifies an object (resource or subject) by type and ID.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ObjectRef {
+    pub object_type: String,
+    pub object_id: String,
+}
+
+/// The algebraic set operation combining an [`IntermediateNode`]'s children.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TreeOperation {
+    Unspecified,
+    Union,
+    Intersection,
+    Exclusion,
+}
+
+/// A subject with access at a leaf of the permission tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubjectRef {
+    pub subject_type: String,
+    pub subject_id: String,
+    /// Empty if the subject reference has no sub-relation.
+    pub subject_relation: String,
+}
+
+/// Combines child subtrees with a [`TreeOperation`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IntermediateNode {
+    pub operation: TreeOperation,
+    pub children: Vec<PermissionTree>,
+}
+
+/// Holds the concrete subjects at a leaf of the permission tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeafNode {
+    pub subjects: Vec<SubjectRef>,
+}
+
+/// A native node of an expanded permission tree, as returned by
+/// [`SpiceDBClient::expand_permission_tree`](crate::client::SpiceDBClient::expand_permission_tree).
+///
+/// Exactly one of `intermediate` or `leaf` is `Some`: `intermediate` nodes
+/// represent a set operation (union, intersection, exclusion) over child
+/// subtrees, while `leaf` nodes hold the concrete resolved subjects.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PermissionTree {
+    pub expanded_object: ObjectRef,
+    pub expanded_relation: String,
+    pub intermediate: Option<IntermediateNode>,
+    pub leaf: Option<LeafNode>,
+}
+
+/// Maps the proto `AlgebraicSubjectSet.Operation` enum (represented as `i32`
+/// by prost) to its native equivalent. Unrecognized values map to
+/// `TreeOperation::Unspecified`.
+pub(crate) fn tree_operation_from_proto(v: i32) -> TreeOperation {
+    match v {
+        x if x == proto::algebraic_subject_set::Operation::Union as i32 => TreeOperation::Union,
+        x if x == proto::algebraic_subject_set::Operation::Intersection as i32 => {
+            TreeOperation::Intersection
+        }
+        x if x == proto::algebraic_subject_set::Operation::Exclusion as i32 => {
+            TreeOperation::Exclusion
+        }
+        _ => TreeOperation::Unspecified,
+    }
+}
+
+/// Recursively maps a proto `PermissionRelationshipTree` to its native
+/// representation. `None` maps to a zero-value `PermissionTree`.
+pub(crate) fn permission_tree_from_proto(
+    t: Option<&proto::PermissionRelationshipTree>,
+) -> PermissionTree {
+    let Some(t) = t else {
+        return PermissionTree::default();
+    };
+
+    let expanded_object = t
+        .expanded_object
+        .as_ref()
+        .map(|o| ObjectRef {
+            object_type: o.object_type.clone(),
+            object_id: o.object_id.clone(),
+        })
+        .unwrap_or_default();
+
+    let mut tree = PermissionTree {
+        expanded_object,
+        expanded_relation: t.expanded_relation.clone(),
+        intermediate: None,
+        leaf: None,
+    };
+
+    match &t.tree_type {
+        Some(proto::permission_relationship_tree::TreeType::Intermediate(intermediate)) => {
+            let children = intermediate
+                .children
+                .iter()
+                .map(|child| permission_tree_from_proto(Some(child)))
+                .collect();
+            tree.intermediate = Some(IntermediateNode {
+                operation: tree_operation_from_proto(intermediate.operation),
+                children,
+            });
+        }
+        Some(proto::permission_relationship_tree::TreeType::Leaf(leaf)) => {
+            let subjects = leaf
+                .subjects
+                .iter()
+                .map(|subject| SubjectRef {
+                    subject_type: subject
+                        .object
+                        .as_ref()
+                        .map(|o| o.object_type.clone())
+                        .unwrap_or_default(),
+                    subject_id: subject
+                        .object
+                        .as_ref()
+                        .map(|o| o.object_id.clone())
+                        .unwrap_or_default(),
+                    subject_relation: subject.optional_relation.clone(),
+                })
+                .collect();
+            tree.leaf = Some(LeafNode { subjects });
+        }
+        None => {}
+    }
+
+    tree
+}
+
 /// The result of an expand permission tree call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExpandResult {
+    /// The root of the expanded permission tree.
+    pub tree: PermissionTree,
     /// The revision at which the tree was expanded.
     pub revision: String,
-    // TODO: When spicedb-proto types are available, add:
-    // pub tree_root: proto::PermissionRelationshipTree,
 }
 
 /// The result of a relationship count operation.
@@ -575,6 +797,98 @@ pub struct CountResult {
 pub struct CheckResult {
     /// Whether the permission is granted.
     pub has_permission: bool,
+}
+
+/// Indicates whether a lookup result reflects a full grant or is conditional
+/// on caveat context that was not fully evaluated by the server. Callers
+/// MUST check this before treating a result as a full grant — a
+/// `ConditionalPermission` result may resolve to `false` once the missing
+/// caveat context is supplied.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Permissionship {
+    Unspecified,
+    HasPermission,
+    ConditionalPermission,
+}
+
+/// Caveat context that was missing to fully evaluate a conditional result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PartialCaveatInfo {
+    pub missing_required_context: Vec<String>,
+}
+
+/// One result from `lookup_resources`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LookupResource {
+    pub resource_id: String,
+    pub permissionship: Permissionship,
+    /// Non-`None` when `permissionship` is `ConditionalPermission`.
+    pub partial_caveat: Option<PartialCaveatInfo>,
+}
+
+/// A subject resolved by `lookup_subjects` — either the matched subject, or
+/// (when found in [`LookupSubject::excluded_subjects`]) a subject excluded
+/// from a wildcard match.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedSubject {
+    pub subject_id: String,
+    pub permissionship: Permissionship,
+    pub partial_caveat: Option<PartialCaveatInfo>,
+}
+
+/// One result from `lookup_subjects`. When `subject.subject_id` is the
+/// wildcard `"*"`, the server has granted the permission to every subject of
+/// the requested subject type EXCEPT those listed in `excluded_subjects`.
+/// Callers MUST check `excluded_subjects` before treating a wildcard match as
+/// a blanket grant, or they risk granting access to subjects the server
+/// explicitly excluded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LookupSubject {
+    pub subject: ResolvedSubject,
+    pub excluded_subjects: Vec<ResolvedSubject>,
+}
+
+/// Maps the proto `LookupPermissionship` enum (represented as `i32` by
+/// prost) to its native equivalent. Unrecognized values map to
+/// `Permissionship::Unspecified`.
+pub(crate) fn permissionship_from_proto(v: i32) -> Permissionship {
+    match v {
+        x if x == proto::LookupPermissionship::HasPermission as i32 => {
+            Permissionship::HasPermission
+        }
+        x if x == proto::LookupPermissionship::ConditionalPermission as i32 => {
+            Permissionship::ConditionalPermission
+        }
+        _ => Permissionship::Unspecified,
+    }
+}
+
+/// Maps a proto `PartialCaveatInfo` to its native equivalent. `None` maps to
+/// `None`.
+pub(crate) fn partial_caveat_from_proto(
+    v: Option<&proto::PartialCaveatInfo>,
+) -> Option<PartialCaveatInfo> {
+    v.map(|c| PartialCaveatInfo {
+        missing_required_context: c.missing_required_context.clone(),
+    })
+}
+
+/// Maps a proto `ResolvedSubject` to its native equivalent. `None` maps to a
+/// zero-value `ResolvedSubject` (empty `subject_id`), which callers use as
+/// the trigger for falling back to deprecated response-level fields.
+pub(crate) fn resolved_subject_from_proto(v: Option<&proto::ResolvedSubject>) -> ResolvedSubject {
+    match v {
+        Some(v) => ResolvedSubject {
+            subject_id: v.subject_object_id.clone(),
+            permissionship: permissionship_from_proto(v.permissionship),
+            partial_caveat: partial_caveat_from_proto(v.partial_caveat_info.as_ref()),
+        },
+        None => ResolvedSubject {
+            subject_id: String::new(),
+            permissionship: Permissionship::Unspecified,
+            partial_caveat: None,
+        },
+    }
 }
 
 /// Convert a `serde_json::Value` to a `prost_types::Value`.
@@ -805,6 +1119,60 @@ mod tests {
     }
 
     #[test]
+    fn test_delete_options_default_is_empty() {
+        let options = DeleteOptions::default();
+        assert!(options.must_match.is_empty());
+        assert!(options.must_not_match.is_empty());
+        assert_eq!(options.limit, None);
+        assert!(options.preconditions().is_empty());
+    }
+
+    #[test]
+    fn test_delete_options_builder() {
+        let must_match_filter = Filter::new("document").with_resource_id("doc1");
+        let must_not_match_filter = Filter::new("document").with_resource_id("doc2");
+        let options = DeleteOptions::new()
+            .with_must_match(must_match_filter.clone())
+            .with_must_not_match(must_not_match_filter.clone())
+            .with_limit(100);
+
+        assert_eq!(options.must_match, vec![must_match_filter]);
+        assert_eq!(options.must_not_match, vec![must_not_match_filter]);
+        assert_eq!(options.limit, Some(100));
+    }
+
+    #[test]
+    fn test_delete_options_preconditions_must_match_before_must_not_match() {
+        let must_match_filter = Filter::new("document").with_resource_id("doc1");
+        let must_not_match_filter = Filter::new("document").with_resource_id("doc2");
+        let options = DeleteOptions::new()
+            .with_must_not_match(must_not_match_filter.clone())
+            .with_must_match(must_match_filter.clone());
+
+        let preconditions = options.preconditions();
+        assert_eq!(preconditions.len(), 2);
+        assert_eq!(preconditions[0].operation, PreconditionOperation::MustMatch);
+        assert_eq!(preconditions[0].filter, must_match_filter);
+        assert_eq!(
+            preconditions[1].operation,
+            PreconditionOperation::MustNotMatch
+        );
+        assert_eq!(preconditions[1].filter, must_not_match_filter);
+    }
+
+    #[test]
+    fn test_delete_options_multiple_must_match_accumulate() {
+        let f1 = Filter::new("document").with_resource_id("doc1");
+        let f2 = Filter::new("document").with_resource_id("doc2");
+        let options = DeleteOptions::new()
+            .with_must_match(f1.clone())
+            .with_must_match(f2.clone());
+
+        assert_eq!(options.must_match, vec![f1, f2]);
+        assert_eq!(options.preconditions().len(), 2);
+    }
+
+    #[test]
     fn test_transaction_empty() {
         let txn = Transaction::new();
         assert!(txn.is_empty());
@@ -865,5 +1233,174 @@ mod tests {
         };
         assert_eq!(cr.relationship_count, 42);
         assert_eq!(cr.revision, "rev-1");
+    }
+
+    #[test]
+    fn test_permissionship_from_proto() {
+        assert_eq!(
+            permissionship_from_proto(proto::LookupPermissionship::Unspecified as i32),
+            Permissionship::Unspecified
+        );
+        assert_eq!(
+            permissionship_from_proto(proto::LookupPermissionship::HasPermission as i32),
+            Permissionship::HasPermission
+        );
+        assert_eq!(
+            permissionship_from_proto(proto::LookupPermissionship::ConditionalPermission as i32),
+            Permissionship::ConditionalPermission
+        );
+        // Unrecognized values fail safe to Unspecified rather than panicking.
+        assert_eq!(permissionship_from_proto(99), Permissionship::Unspecified);
+    }
+
+    #[test]
+    fn test_partial_caveat_from_proto_none() {
+        assert_eq!(partial_caveat_from_proto(None), None);
+    }
+
+    #[test]
+    fn test_partial_caveat_from_proto_some() {
+        let proto_caveat = proto::PartialCaveatInfo {
+            missing_required_context: vec!["ip_address".to_string()],
+        };
+        assert_eq!(
+            partial_caveat_from_proto(Some(&proto_caveat)),
+            Some(PartialCaveatInfo {
+                missing_required_context: vec!["ip_address".to_string()],
+            })
+        );
+    }
+
+    #[test]
+    fn test_resolved_subject_from_proto_none_yields_zero_value() {
+        let subject = resolved_subject_from_proto(None);
+        assert_eq!(subject.subject_id, "");
+        assert_eq!(subject.permissionship, Permissionship::Unspecified);
+        assert_eq!(subject.partial_caveat, None);
+    }
+
+    #[test]
+    fn test_resolved_subject_from_proto_some() {
+        let proto_subject = proto::ResolvedSubject {
+            subject_object_id: "alice".to_string(),
+            permissionship: proto::LookupPermissionship::HasPermission as i32,
+            partial_caveat_info: None,
+        };
+        let subject = resolved_subject_from_proto(Some(&proto_subject));
+        assert_eq!(subject.subject_id, "alice");
+        assert_eq!(subject.permissionship, Permissionship::HasPermission);
+        assert_eq!(subject.partial_caveat, None);
+    }
+
+    #[test]
+    fn test_tree_operation_from_proto() {
+        assert_eq!(
+            tree_operation_from_proto(proto::algebraic_subject_set::Operation::Unspecified as i32),
+            TreeOperation::Unspecified
+        );
+        assert_eq!(
+            tree_operation_from_proto(proto::algebraic_subject_set::Operation::Union as i32),
+            TreeOperation::Union
+        );
+        assert_eq!(
+            tree_operation_from_proto(proto::algebraic_subject_set::Operation::Intersection as i32),
+            TreeOperation::Intersection
+        );
+        assert_eq!(
+            tree_operation_from_proto(proto::algebraic_subject_set::Operation::Exclusion as i32),
+            TreeOperation::Exclusion
+        );
+        // Unrecognized values fail safe to Unspecified rather than panicking.
+        assert_eq!(tree_operation_from_proto(99), TreeOperation::Unspecified);
+    }
+
+    #[test]
+    fn test_permission_tree_from_proto_none_yields_zero_value() {
+        let tree = permission_tree_from_proto(None);
+        assert_eq!(tree.expanded_object, ObjectRef::default());
+        assert_eq!(tree.expanded_relation, "");
+        assert!(tree.intermediate.is_none());
+        assert!(tree.leaf.is_none());
+    }
+
+    #[test]
+    fn test_permission_tree_from_proto_leaf() {
+        let proto_tree = proto::PermissionRelationshipTree {
+            expanded_object: Some(proto::ObjectReference {
+                object_type: "document".to_string(),
+                object_id: "firstdoc".to_string(),
+            }),
+            expanded_relation: "viewer".to_string(),
+            tree_type: Some(proto::permission_relationship_tree::TreeType::Leaf(
+                proto::DirectSubjectSet {
+                    subjects: vec![proto::SubjectReference {
+                        object: Some(proto::ObjectReference {
+                            object_type: "user".to_string(),
+                            object_id: "alice".to_string(),
+                        }),
+                        optional_relation: String::new(),
+                    }],
+                },
+            )),
+        };
+
+        let tree = permission_tree_from_proto(Some(&proto_tree));
+        assert_eq!(tree.expanded_object.object_type, "document");
+        assert_eq!(tree.expanded_object.object_id, "firstdoc");
+        assert_eq!(tree.expanded_relation, "viewer");
+        assert!(tree.intermediate.is_none());
+        let leaf = tree.leaf.expect("expected a leaf node");
+        assert_eq!(leaf.subjects.len(), 1);
+        assert_eq!(leaf.subjects[0].subject_type, "user");
+        assert_eq!(leaf.subjects[0].subject_id, "alice");
+        assert_eq!(leaf.subjects[0].subject_relation, "");
+    }
+
+    #[test]
+    fn test_permission_tree_from_proto_intermediate_recurses() {
+        let leaf_tree = proto::PermissionRelationshipTree {
+            expanded_object: Some(proto::ObjectReference {
+                object_type: "document".to_string(),
+                object_id: "firstdoc".to_string(),
+            }),
+            expanded_relation: "editor".to_string(),
+            tree_type: Some(proto::permission_relationship_tree::TreeType::Leaf(
+                proto::DirectSubjectSet {
+                    subjects: vec![proto::SubjectReference {
+                        object: Some(proto::ObjectReference {
+                            object_type: "user".to_string(),
+                            object_id: "bob".to_string(),
+                        }),
+                        optional_relation: String::new(),
+                    }],
+                },
+            )),
+        };
+
+        let proto_tree = proto::PermissionRelationshipTree {
+            expanded_object: Some(proto::ObjectReference {
+                object_type: "document".to_string(),
+                object_id: "firstdoc".to_string(),
+            }),
+            expanded_relation: "view".to_string(),
+            tree_type: Some(proto::permission_relationship_tree::TreeType::Intermediate(
+                proto::AlgebraicSubjectSet {
+                    operation: proto::algebraic_subject_set::Operation::Union as i32,
+                    children: vec![leaf_tree],
+                },
+            )),
+        };
+
+        let tree = permission_tree_from_proto(Some(&proto_tree));
+        assert_eq!(tree.expanded_relation, "view");
+        assert!(tree.leaf.is_none());
+        let intermediate = tree.intermediate.expect("expected an intermediate node");
+        assert_eq!(intermediate.operation, TreeOperation::Union);
+        assert_eq!(intermediate.children.len(), 1);
+        let child_leaf = intermediate.children[0]
+            .leaf
+            .as_ref()
+            .expect("expected child to be a leaf");
+        assert_eq!(child_leaf.subjects[0].subject_id, "bob");
     }
 }

@@ -2,7 +2,6 @@ package client
 
 import (
 	"context"
-	"fmt"
 
 	v1 "github.com/authzed/spicedb-clients/proto-clients/spicedb-go-proto/gen/authzed/api/v1"
 	"github.com/authzed/spicedb-clients/spicedb-go/rel"
@@ -14,6 +13,7 @@ type CountResult struct {
 	Revision          string
 }
 
+// Experimental: this API wraps SpiceDB's ExperimentalService and may change without notice.
 // RegisterRelationshipCounter registers a named counter that tracks
 // relationships matching the given filter. The counter is computed
 // asynchronously by SpiceDB.
@@ -23,11 +23,12 @@ func (c *Client) RegisterRelationshipCounter(ctx context.Context, name string, f
 		RelationshipFilter: f.ToProto(),
 	})
 	if err != nil {
-		return fmt.Errorf("spicedb: register relationship counter: %w", err)
+		return mapGRPCError("register relationship counter", err)
 	}
 	return nil
 }
 
+// Experimental: this API wraps SpiceDB's ExperimentalService and may change without notice.
 // CountRelationships reads the value of a previously registered relationship
 // counter. Returns the count and revision, or a boolean indicating the counter
 // is still being calculated (in which case count and revision are zero values).
@@ -36,7 +37,7 @@ func (c *Client) CountRelationships(ctx context.Context, name string) (result *C
 		Name: name,
 	})
 	if err != nil {
-		return nil, false, fmt.Errorf("spicedb: count relationships: %w", err)
+		return nil, false, mapGRPCError("count relationships", err)
 	}
 
 	if resp.GetCounterStillCalculating() {
@@ -50,6 +51,7 @@ func (c *Client) CountRelationships(ctx context.Context, name string) (result *C
 	}, false, nil
 }
 
+// Experimental: this API wraps SpiceDB's ExperimentalService and may change without notice.
 // UnregisterRelationshipCounter removes a previously registered relationship
 // counter.
 func (c *Client) UnregisterRelationshipCounter(ctx context.Context, name string) error {
@@ -57,7 +59,7 @@ func (c *Client) UnregisterRelationshipCounter(ctx context.Context, name string)
 		Name: name,
 	})
 	if err != nil {
-		return fmt.Errorf("spicedb: unregister relationship counter: %w", err)
+		return mapGRPCError("unregister relationship counter", err)
 	}
 	return nil
 }

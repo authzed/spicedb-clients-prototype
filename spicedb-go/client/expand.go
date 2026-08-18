@@ -2,7 +2,6 @@ package client
 
 import (
 	"context"
-	"fmt"
 
 	v1 "github.com/authzed/spicedb-clients/proto-clients/spicedb-go-proto/gen/authzed/api/v1"
 	"github.com/authzed/spicedb-clients/spicedb-go/consistency"
@@ -10,10 +9,9 @@ import (
 
 // ExpandResult holds the result of a permission tree expansion.
 type ExpandResult struct {
-	// TreeRoot is the root of the expanded permission tree. This is the
-	// underlying proto type since the tree structure is complex and deeply
-	// nested.
-	TreeRoot *v1.PermissionRelationshipTree
+	// Tree is the root of the expanded permission tree, as a native
+	// PermissionTree (see expand_tree.go).
+	Tree     PermissionTree
 	Revision string
 }
 
@@ -29,11 +27,11 @@ func (c *Client) ExpandPermissionTree(ctx context.Context, cs consistency.Strate
 		Permission: permission,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("spicedb: expand permission tree: %w", err)
+		return nil, mapGRPCError("expand permission tree", err)
 	}
 
 	return &ExpandResult{
-		TreeRoot: resp.GetTreeRoot(),
+		Tree:     toPermissionTree(resp.GetTreeRoot()),
 		Revision: resp.GetExpandedAt().GetToken(),
 	}, nil
 }

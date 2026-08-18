@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, ClassVar, TypeAlias, overload
 
-from spicedb import SpiceDBClient, Transaction, Relationship, Filter
+from spicedb import SpiceDBClient, Transaction, Relationship, Filter, LookupResource, LookupSubject
 from spicedb.consistency import Consistency
 
 
@@ -287,9 +287,9 @@ class TypedClient:
     # ── lookup_resources ──────────────────────────────────────────────
 {{range $o := .LookupResOverloads}}
     @overload
-    def lookup_resources(self, c: Consistency, p: {{$o.RefClassName}}, s: {{$o.SubjectUnion}}) -> AsyncIterator[str]: ...
+    def lookup_resources(self, c: Consistency, p: {{$o.RefClassName}}, s: {{$o.SubjectUnion}}) -> AsyncIterator[LookupResource]: ...
 {{end}}
-    def lookup_resources(self, c: Consistency, p: Any, s: Any) -> AsyncIterator[str]:
+    def lookup_resources(self, c: Consistency, p: Any, s: Any) -> AsyncIterator[LookupResource]:
         sub_type, sub_id, sub_rel = s._subject_ref()
         return self.client.lookup_resources(
             p._resource_type, p._permission, (f"{sub_type}:{sub_id}", sub_rel), c
@@ -298,9 +298,9 @@ class TypedClient:
     # ── lookup_subjects ───────────────────────────────────────────────
 {{range $lst := .LookupSubjectTypes}}
     @overload
-    def lookup_subjects(self, c: Consistency, p: {{$lst.PermClassName}}, t: {{range $i, $m := $lst.Members}}{{if $i}} | {{end}}type[{{$m}}]{{end}}) -> AsyncIterator[str]: ...
+    def lookup_subjects(self, c: Consistency, p: {{$lst.PermClassName}}, t: {{range $i, $m := $lst.Members}}{{if $i}} | {{end}}type[{{$m}}]{{end}}) -> AsyncIterator[LookupSubject]: ...
 {{end}}
-    def lookup_subjects(self, c: Consistency, p: Any, t: Any) -> AsyncIterator[str]:
+    def lookup_subjects(self, c: Consistency, p: Any, t: Any) -> AsyncIterator[LookupSubject]:
         sub_type = t._type
         sub_rel = getattr(t, "_relation", "")
         return self.client.lookup_subjects(

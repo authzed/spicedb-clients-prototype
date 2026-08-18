@@ -102,9 +102,9 @@ func TestLookupResources(t *testing.T) {
 	cs := consistency.Full()
 
 	var ids []string
-	for id, err := range LookupResources(ctx, tc, cs, Document_View, User("alice")) {
+	for res, err := range LookupResources(ctx, tc, cs, Document_View, User("alice")) {
 		require.NoError(t, err)
-		ids = append(ids, id)
+		ids = append(ids, res.ResourceID)
 	}
 	assert.Contains(t, ids, "readme")
 }
@@ -116,9 +116,9 @@ func TestLookupSubjects(t *testing.T) {
 	cs := consistency.Full()
 
 	var ids []string
-	for id, err := range LookupSubjects(ctx, tc, cs, Document("readme").View(), UserType) {
+	for sub, err := range LookupSubjects(ctx, tc, cs, Document("readme").View(), UserType) {
 		require.NoError(t, err)
-		ids = append(ids, id)
+		ids = append(ids, sub.Subject.SubjectID)
 	}
 	assert.Contains(t, ids, "alice")
 	assert.Contains(t, ids, "bob")

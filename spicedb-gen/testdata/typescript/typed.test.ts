@@ -45,8 +45,8 @@ describe("TypedClient", () => {
     describe("lookupResources", () => {
         it("finds resources a user can view", async () => {
             const ids: string[] = [];
-            for await (const id of await tc.lookupResources(full(), Document.view, User("alice"))) {
-                ids.push(id);
+            for await (const res of await tc.lookupResources(full(), Document.view, User("alice"))) {
+                ids.push(res.resourceId);
             }
             expect(ids).toContain("readme");
         });
@@ -55,8 +55,8 @@ describe("TypedClient", () => {
     describe("lookupSubjects", () => {
         it("finds users who can view a document", async () => {
             const ids: string[] = [];
-            for await (const id of await tc.lookupSubjects(full(), Document("readme").view, User)) {
-                ids.push(id);
+            for await (const sub of await tc.lookupSubjects(full(), Document("readme").view, User)) {
+                ids.push(sub.subject.subjectId);
             }
             expect(ids).toContain("alice");
             expect(ids).toContain("bob");

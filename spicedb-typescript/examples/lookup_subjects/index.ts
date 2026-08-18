@@ -1,7 +1,11 @@
 /**
  * Example: Subject lookup
  *
- * Demonstrates looking up all subjects that have access to a resource.
+ * Demonstrates looking up all subjects that have access to a resource,
+ * including the wildcard/excluded-subjects case: when the server resolves a
+ * wildcard "*" subject, `excludedSubjects` lists the subjects carved out of
+ * that wildcard grant. Treating a wildcard match as "everyone has access"
+ * without checking `excludedSubjects` is a real over-grant risk.
  */
 import {
   createSpiceDBClient,
@@ -21,29 +25,34 @@ const client = createSpiceDBClient("localhost:50051", "testtoken", {
   insecure: true,
 });
 
-// Setup: write schema and data
+// Setup: write schema and data. `banned` carves subjects out of the
+// public/wildcard viewer grant below.
 await client.writeSchema(`
 definition user {}
 
 definition document {
-  relation viewer: user
+  relation viewer: user | user:*
   relation editor: user
   relation owner: user
-  permission view = viewer + editor + owner
+  relation banned: user
+  permission view = (viewer + editor + owner) - banned
   permission edit = editor + owner
   permission delete = owner
 }
 `);
 
 const txn = new Transaction();
-txn.touch(relationship("document:readme", "viewer", "user:jimmy"));
-txn.touch(relationship("document:readme", "editor", "user:sally"));
+txn.touch(relationship("document:readme", "editor", "user:bob"));
+// Grant view to every user (wildcard), except those in `banned`.
+txn.touch(relationship("document:readme", "viewer", "user:*"));
+txn.touch(relationship("document:readme", "banned", "user:eve"));
 await client.write(txn);
 
 // Find all users who can view a document
 console.log("Users who can view document:readme:");
-const found = new Set<string>();
-for await (const subjectId of client.lookupSubjects(
+let sawWildcard = false;
+const excludedIds = new Set<string>();
+for await (const result of client.lookupSubjects(
   {
     resourceType: "document",
     resourceId: "readme",
@@ -52,11 +61,43 @@ for await (const subjectId of client.lookupSubjects(
   },
   full(),
 )) {
-  console.log(`  user:${subjectId}`);
-  found.add(subjectId);
+  console.log(
+    `  user:${result.subject.subjectId} (permissionship=${result.subject.permissionship})`,
+  );
+
+  if (result.subject.subjectId === "*") {
+    sawWildcard = true;
+    // This is the over-grant-risk case: "*" alone would mean "every user",
+    // but excludedSubjects carves specific subjects back out. Never grant
+    // access based on the wildcard match alone.
+    for (const excluded of result.excludedSubjects) {
+      console.log(`    excluded from wildcard: user:${excluded.subjectId}`);
+      excludedIds.add(excluded.subjectId);
+    }
+  }
 }
 
-assert(found.has("jimmy"), "expected jimmy in results");
-assert(found.has("sally"), "expected sally in results (editor implies view)");
+assert(sawWildcard, "expected a wildcard (*) subject in results");
+assert(excludedIds.has("eve"), "expected eve to be excluded from the wildcard grant");
+
+// bob has view via `editor`, independent of the wildcard/banned rule.
+const found = new Set<string>();
+for await (const result of client.lookupSubjects(
+  {
+    resourceType: "document",
+    resourceId: "readme",
+    permission: "edit",
+    subjectType: "user",
+  },
+  full(),
+)) {
+  found.add(result.subject.subjectId);
+}
+assert(found.has("bob"), "expected bob in edit results");
+
+// Clean up so later examples that write a narrower schema (e.g. one without
+// a `banned` relation) aren't blocked by leftover relationships (examples
+// run in sequence against one shared SpiceDB instance).
+await client.deleteRelationships({ resourceType: "document" });
 
 console.log("lookup_subjects: PASS");

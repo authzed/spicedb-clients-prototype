@@ -8,7 +8,6 @@ import {
   CheckPermissionRequestSchema,
   ReadRelationshipsRequestSchema,
   WriteRelationshipsRequestSchema,
-  DeleteRelationshipsRequestSchema,
   LookupResourcesRequestSchema,
   LookupSubjectsRequestSchema,
   ExpandPermissionTreeRequestSchema,
@@ -30,14 +29,17 @@ import {
   RelationshipSchema,
   ZedTokenSchema,
   RelationshipUpdate_Operation,
-  type Consistency,
 } from "@spicedb/proto";
+
+import { Consistency } from "./consistency.js";
 
 import {
   type Relationship,
   type RelationshipFilterOptions,
   type LookupResourcesParams,
   type LookupSubjectsParams,
+  type LookupResource,
+  type LookupSubject,
   type CheckRequest,
   type WatchChange,
   type WatchEvent,
@@ -49,9 +51,22 @@ import {
   type RelationReference,
   type RelationshipCountResult,
   type Transaction,
+  type DeleteOptions,
+  type PermissionTree,
+  type SchemaDefinition,
+  type SchemaCaveat,
+  type SchemaDiff,
   toProtoRelationship,
   fromProtoRelationship,
   toProtoRelationshipFilter,
+  toProtoDeleteRelationshipsRequest,
+  fromProtoPermissionTree,
+  fromProtoSchemaDefinition,
+  fromProtoSchemaCaveat,
+  fromProtoRelationReference,
+  fromProtoSchemaDiff,
+  fromProtoLookupResource,
+  fromProtoLookupSubject,
 } from "./types.js";
 
 import {
@@ -107,7 +122,7 @@ export class SpiceDBClient {
     return this.withRetry(async () => {
       const resp = await this.proto.permissions.checkPermission(
         create(CheckPermissionRequestSchema, {
-          consistency,
+          consistency: consistency._toProto(),
           resource: create(ObjectReferenceSchema, {
             objectType: check.resourceType,
             objectId: check.resourceId,
@@ -144,7 +159,7 @@ export class SpiceDBClient {
     return this.withRetry(async () => {
       const resp = await this.proto.permissions.checkBulkPermissions(
         create(CheckBulkPermissionsRequestSchema, {
-          consistency,
+          consistency: consistency._toProto(),
           items: checks.map((check) =>
             create(CheckBulkPermissionsRequestItemSchema, {
               resource: create(ObjectReferenceSchema, {
@@ -159,7 +174,7 @@ export class SpiceDBClient {
                 }),
                 optionalRelation: check.subjectRelation ?? "",
               }),
-              context: check.context,
+              context: check.context as JsonObject | undefined,
             }),
           ),
         }),
@@ -216,20 +231,32 @@ export class SpiceDBClient {
     filter: RelationshipFilterOptions,
     consistency: Consistency,
   ): AsyncIterableIterator<Relationship> {
-    const stream = this.proto.permissions.readRelationships(
-      create(ReadRelationshipsRequestSchema, {
-        consistency,
-        relationshipFilter: toProtoRelationshipFilter(filter),
-      }),
-    );
-    try {
-      for await (const resp of stream) {
-        if (resp.relationship) {
-          yield fromProtoRelationship(resp.relationship);
+    const request = create(ReadRelationshipsRequestSchema, {
+      consistency: consistency._toProto(),
+      relationshipFilter: toProtoRelationshipFilter(filter),
+    });
+    let attempt = 0;
+    for (;;) {
+      let yielded = 0;
+      try {
+        const stream = this.proto.permissions.readRelationships(request);
+        for await (const resp of stream) {
+          if (resp.relationship) {
+            yield fromProtoRelationship(resp.relationship);
+            yielded++;
+          }
         }
+        return;
+      } catch (err) {
+        if (
+          yielded === 0 &&
+          (await this.shouldRetryEstablishment(attempt, err))
+        ) {
+          attempt++;
+          continue;
+        }
+        throw toSpiceDBError(err);
       }
-    } catch (err) {
-      throw toSpiceDBError(err);
     }
   }
 
@@ -248,7 +275,7 @@ export class SpiceDBClient {
         create(WriteRelationshipsRequestSchema, {
           updates: txn.updates,
           optionalPreconditions: txn.preconditions,
-          optionalTransactionMetadata: txn.metadata,
+          optionalTransactionMetadata: txn.metadata as JsonObject | undefined,
         }),
       );
       return resp.writtenAt?.token ?? "";
@@ -258,16 +285,29 @@ export class SpiceDBClient {
   /**
    * Deletes all relationships matching the given filter.
    *
+   * `options.mustMatch`/`options.mustNotMatch` add preconditions that guard
+   * the delete: if a precondition fails, the server rejects the call and
+   * deletes nothing. Mirrors spicedb-go's `WithDeleteMustMatch`/
+   * `WithDeleteMustNotMatch` (client/relationships.go).
+   *
+   * `options.limit` bounds how many relationships this call deletes. If
+   * more relationships match the filter than `limit`, only `limit` of them
+   * are deleted by this call (the server requires
+   * `optionalAllowPartialDeletions`, which this sets automatically whenever
+   * `limit` is given, to permit that). Unlike spicedb-go's
+   * `WithDeleteLimit`, this does not auto-page — it does not loop to delete
+   * every match when the match count exceeds `limit`; call again with the
+   * same filter to continue deleting what remains.
+   *
    * @returns The revision at which the deletion was committed.
    */
   async deleteRelationships(
     filter: RelationshipFilterOptions,
+    options?: DeleteOptions,
   ): Promise<string> {
     return this.withRetry(async () => {
       const resp = await this.proto.permissions.deleteRelationships(
-        create(DeleteRelationshipsRequestSchema, {
-          relationshipFilter: toProtoRelationshipFilter(filter),
-        }),
+        toProtoDeleteRelationshipsRequest(filter, options),
       );
       return resp.deletedAt?.token ?? "";
     });
@@ -278,72 +318,103 @@ export class SpiceDBClient {
   // ---------------------------------------------------------------------------
 
   /**
-   * Looks up all resource IDs of the given type that the subject has
-   * the specified permission on.
+   * Looks up all resources of the given type that the subject has the
+   * specified permission on. Each result carries the permissionship (full
+   * grant vs conditional on caveat context) and, for conditional results,
+   * which caveat context was missing. Callers MUST check `permissionship`
+   * before treating a result as a full grant.
    *
-   * @returns An async iterable of resource object IDs.
+   * @returns An async iterable of {@link LookupResource}.
    */
   async *lookupResources(
     params: LookupResourcesParams,
     consistency: Consistency,
-  ): AsyncIterableIterator<string> {
-    const stream = this.proto.permissions.lookupResources(
-      create(LookupResourcesRequestSchema, {
-        consistency,
-        resourceObjectType: params.resourceType,
-        permission: params.permission,
-        subject: create(SubjectReferenceSchema, {
-          object: create(ObjectReferenceSchema, {
-            objectType: params.subjectType,
-            objectId: params.subjectId,
-          }),
-          optionalRelation: params.subjectRelation ?? "",
+  ): AsyncIterableIterator<LookupResource> {
+    const request = create(LookupResourcesRequestSchema, {
+      consistency: consistency._toProto(),
+      resourceObjectType: params.resourceType,
+      permission: params.permission,
+      subject: create(SubjectReferenceSchema, {
+        object: create(ObjectReferenceSchema, {
+          objectType: params.subjectType,
+          objectId: params.subjectId,
         }),
-        context: params.context as JsonObject | undefined,
-        optionalLimit: params.limit ?? 0,
+        optionalRelation: params.subjectRelation ?? "",
       }),
-    );
-    try {
-      for await (const resp of stream) {
-        yield resp.resourceObjectId;
+      context: params.context as JsonObject | undefined,
+      optionalLimit: params.limit ?? 0,
+    });
+    let attempt = 0;
+    for (;;) {
+      let yielded = 0;
+      try {
+        const stream = this.proto.permissions.lookupResources(request);
+        for await (const resp of stream) {
+          yield fromProtoLookupResource(resp);
+          yielded++;
+        }
+        return;
+      } catch (err) {
+        if (
+          yielded === 0 &&
+          (await this.shouldRetryEstablishment(attempt, err))
+        ) {
+          attempt++;
+          continue;
+        }
+        throw toSpiceDBError(err);
       }
-    } catch (err) {
-      throw toSpiceDBError(err);
     }
   }
 
   /**
-   * Looks up all subject IDs of the given type that have the specified
+   * Looks up all subjects of the given type that have the specified
    * permission on the resource.
    *
-   * @returns An async iterable of subject object IDs.
+   * When a yielded `LookupSubject.subject` is the wildcard `"*"`, the server
+   * has granted the permission to every subject of `subjectType` EXCEPT
+   * those listed in `LookupSubject.excludedSubjects`. Callers MUST check
+   * `excludedSubjects` before treating a wildcard match as a blanket grant,
+   * or they risk granting access to subjects the server explicitly excluded.
+   *
+   * @returns An async iterable of {@link LookupSubject}.
    */
   async *lookupSubjects(
     params: LookupSubjectsParams,
     consistency: Consistency,
-  ): AsyncIterableIterator<string> {
-    const stream = this.proto.permissions.lookupSubjects(
-      create(LookupSubjectsRequestSchema, {
-        consistency,
-        resource: create(ObjectReferenceSchema, {
-          objectType: params.resourceType,
-          objectId: params.resourceId,
-        }),
-        permission: params.permission,
-        subjectObjectType: params.subjectType,
-        optionalSubjectRelation: params.subjectRelation ?? "",
-        context: params.context as JsonObject | undefined,
-        optionalConcreteLimit: params.limit ?? 0,
+  ): AsyncIterableIterator<LookupSubject> {
+    const request = create(LookupSubjectsRequestSchema, {
+      consistency: consistency._toProto(),
+      resource: create(ObjectReferenceSchema, {
+        objectType: params.resourceType,
+        objectId: params.resourceId,
       }),
-    );
-    try {
-      for await (const resp of stream) {
-        if (resp.subject) {
-          yield resp.subject.subjectObjectId;
+      permission: params.permission,
+      subjectObjectType: params.subjectType,
+      optionalSubjectRelation: params.subjectRelation ?? "",
+      context: params.context as JsonObject | undefined,
+      optionalConcreteLimit: params.limit ?? 0,
+    });
+    let attempt = 0;
+    for (;;) {
+      let yielded = 0;
+      try {
+        const stream = this.proto.permissions.lookupSubjects(request);
+        for await (const resp of stream) {
+          yield fromProtoLookupSubject(resp);
+          yielded++;
         }
+        return;
+      } catch (err) {
+        if (
+          yielded === 0 &&
+          (await this.shouldRetryEstablishment(attempt, err))
+        ) {
+          attempt++;
+          continue;
+        }
+        throw toSpiceDBError(err);
       }
-    } catch (err) {
-      throw toSpiceDBError(err);
     }
   }
 
@@ -352,17 +423,16 @@ export class SpiceDBClient {
   // ---------------------------------------------------------------------------
 
   /**
-   * Expands a permission tree for the given resource and permission,
-   * returning the raw proto tree structure.
+   * Expands a permission tree for the given resource and permission.
    */
   async expandPermissionTree(
     consistency: Consistency,
     params: ExpandPermissionTreeParams,
-  ): Promise<{ expandedAt: string; treeRoot: unknown }> {
+  ): Promise<{ expandedAt: string; treeRoot: PermissionTree }> {
     return this.withRetry(async () => {
       const resp = await this.proto.permissions.expandPermissionTree(
         create(ExpandPermissionTreeRequestSchema, {
-          consistency,
+          consistency: consistency._toProto(),
           resource: create(ObjectReferenceSchema, {
             objectType: params.resourceType,
             objectId: params.resourceId,
@@ -372,7 +442,7 @@ export class SpiceDBClient {
       );
       return {
         expandedAt: resp.expandedAt?.token ?? "",
-        treeRoot: resp.treeRoot,
+        treeRoot: fromProtoPermissionTree(resp.treeRoot),
       };
     });
   }
@@ -417,22 +487,34 @@ export class SpiceDBClient {
     consistency: Consistency,
     filter?: RelationshipFilterOptions,
   ): AsyncIterableIterator<Relationship> {
-    const stream = this.proto.permissions.exportBulkRelationships(
-      create(ExportBulkRelationshipsRequestSchema, {
-        consistency,
-        optionalRelationshipFilter: filter
-          ? toProtoRelationshipFilter(filter)
-          : undefined,
-      }),
-    );
-    try {
-      for await (const resp of stream) {
-        for (const protoRel of resp.relationships) {
-          yield fromProtoRelationship(protoRel);
+    const request = create(ExportBulkRelationshipsRequestSchema, {
+      consistency: consistency._toProto(),
+      optionalRelationshipFilter: filter
+        ? toProtoRelationshipFilter(filter)
+        : undefined,
+    });
+    let attempt = 0;
+    for (;;) {
+      let yielded = 0;
+      try {
+        const stream = this.proto.permissions.exportBulkRelationships(request);
+        for await (const resp of stream) {
+          for (const protoRel of resp.relationships) {
+            yield fromProtoRelationship(protoRel);
+            yielded++;
+          }
         }
+        return;
+      } catch (err) {
+        if (
+          yielded === 0 &&
+          (await this.shouldRetryEstablishment(attempt, err))
+        ) {
+          attempt++;
+          continue;
+        }
+        throw toSpiceDBError(err);
       }
-    } catch (err) {
-      throw toSpiceDBError(err);
     }
   }
 
@@ -477,7 +559,11 @@ export class SpiceDBClient {
   async reflectSchema(
     consistency: Consistency,
     options?: ReflectSchemaOptions,
-  ): Promise<{ definitions: unknown[]; caveats: unknown[]; revision: string }> {
+  ): Promise<{
+    definitions: SchemaDefinition[];
+    caveats: SchemaCaveat[];
+    revision: string;
+  }> {
     return this.withRetry(async () => {
       const filters = options
         ? [
@@ -495,13 +581,13 @@ export class SpiceDBClient {
 
       const resp = await this.proto.schema.reflectSchema(
         create(ReflectSchemaRequestSchema, {
-          consistency,
+          consistency: consistency._toProto(),
           optionalFilters: filters,
         }),
       );
       return {
-        definitions: resp.definitions as unknown[],
-        caveats: resp.caveats as unknown[],
+        definitions: resp.definitions.map((def) => fromProtoSchemaDefinition(def)),
+        caveats: resp.caveats.map((cav) => fromProtoSchemaCaveat(cav)),
         revision: resp.readAt?.token ?? "",
       };
     });
@@ -517,18 +603,14 @@ export class SpiceDBClient {
     return this.withRetry(async () => {
       const resp = await this.proto.schema.computablePermissions(
         create(ComputablePermissionsRequestSchema, {
-          consistency,
+          consistency: consistency._toProto(),
           definitionName: params.definitionName,
           relationName: params.relationName,
           optionalDefinitionNameFilter: params.definitionNameFilter ?? "",
         }),
       );
       return {
-        permissions: resp.permissions.map((p) => ({
-          definitionName: p.definitionName,
-          relationName: p.relationName,
-          isPermission: p.isPermission,
-        })),
+        permissions: resp.permissions.map((p) => fromProtoRelationReference(p)),
         revision: resp.readAt?.token ?? "",
       };
     });
@@ -544,17 +626,13 @@ export class SpiceDBClient {
     return this.withRetry(async () => {
       const resp = await this.proto.schema.dependentRelations(
         create(DependentRelationsRequestSchema, {
-          consistency,
+          consistency: consistency._toProto(),
           definitionName: params.definitionName,
           permissionName: params.permissionName,
         }),
       );
       return {
-        relations: resp.relations.map((r) => ({
-          definitionName: r.definitionName,
-          relationName: r.relationName,
-          isPermission: r.isPermission,
-        })),
+        relations: resp.relations.map((r) => fromProtoRelationReference(r)),
         revision: resp.readAt?.token ?? "",
       };
     });
@@ -566,16 +644,16 @@ export class SpiceDBClient {
   async diffSchema(
     consistency: Consistency,
     comparisonSchema: string,
-  ): Promise<{ diffs: unknown[]; revision: string }> {
+  ): Promise<{ diffs: SchemaDiff[]; revision: string }> {
     return this.withRetry(async () => {
       const resp = await this.proto.schema.diffSchema(
         create(DiffSchemaRequestSchema, {
-          consistency,
+          consistency: consistency._toProto(),
           comparisonSchema,
         }),
       );
       return {
-        diffs: resp.diffs as unknown[],
+        diffs: resp.diffs.map((d) => fromProtoSchemaDiff(d)),
         revision: resp.readAt?.token ?? "",
       };
     });
@@ -662,54 +740,90 @@ export class SpiceDBClient {
       });
     }
 
-    const stream = this.proto.watch.watch(req);
-    try {
-      for await (const resp of stream) {
-        const changes: WatchChange[] = resp.updates.map((update) => {
-          let operation: WatchChange["operation"];
-          switch (update.operation) {
-            case RelationshipUpdate_Operation.CREATE:
-              operation = "create";
-              break;
-            case RelationshipUpdate_Operation.DELETE:
-              operation = "delete";
-              break;
-            default:
-              operation = "touch";
-              break;
-          }
-          return {
-            operation,
-            relationship: update.relationship
-              ? fromProtoRelationship(update.relationship)
-              : {
-                  resourceType: "",
-                  resourceId: "",
-                  resourceRelation: "",
-                  subjectType: "",
-                  subjectId: "",
-                },
-          };
-        });
+    let attempt = 0;
+    for (;;) {
+      let yielded = 0;
+      try {
+        const stream = this.proto.watch.watch(req);
+        for await (const resp of stream) {
+          const changes: WatchChange[] = resp.updates.map((update) => {
+            let operation: WatchChange["operation"];
+            switch (update.operation) {
+              case RelationshipUpdate_Operation.CREATE:
+                operation = "create";
+                break;
+              case RelationshipUpdate_Operation.DELETE:
+                operation = "delete";
+                break;
+              default:
+                operation = "touch";
+                break;
+            }
+            return {
+              operation,
+              relationship: update.relationship
+                ? fromProtoRelationship(update.relationship)
+                : {
+                    resourceType: "",
+                    resourceId: "",
+                    resourceRelation: "",
+                    subjectType: "",
+                    subjectId: "",
+                  },
+            };
+          });
 
-        yield {
-          changes,
-          revision: resp.changesThrough?.token ?? "",
-          metadata: resp.optionalTransactionMetadata as
-            | JsonObject
-            | undefined,
-          schemaUpdated: resp.schemaUpdated,
-          isCheckpoint: resp.isCheckpoint,
-        };
+          yield {
+            changes,
+            revision: resp.changesThrough?.token ?? "",
+            metadata: resp.optionalTransactionMetadata,
+            schemaUpdated: resp.schemaUpdated,
+            isCheckpoint: resp.isCheckpoint,
+          };
+          yielded++;
+        }
+        return;
+      } catch (err) {
+        // Retrying is only safe before any update has been yielded (stream
+        // ESTABLISHMENT) — never retry mid-watch, since that would
+        // replay/duplicate already-delivered updates.
+        if (
+          yielded === 0 &&
+          (await this.shouldRetryEstablishment(attempt, err))
+        ) {
+          attempt++;
+          continue;
+        }
+        throw toSpiceDBError(err);
       }
-    } catch (err) {
-      throw toSpiceDBError(err);
     }
   }
 
   // ---------------------------------------------------------------------------
   // Retry Logic
   // ---------------------------------------------------------------------------
+
+  /**
+   * Decides whether to retry a streaming RPC's ESTABLISHMENT after a
+   * transient error, sleeping with the same backoff as `withRetry`.
+   *
+   * Callers MUST only invoke this when zero items have been yielded from
+   * the current stream — retrying after any item has been yielded would
+   * replay/duplicate it for the caller. This method only makes the
+   * transient/attempt-budget decision; the zero-yielded guard is the
+   * caller's responsibility.
+   */
+  private async shouldRetryEstablishment(
+    attempt: number,
+    err: unknown,
+  ): Promise<boolean> {
+    if (!isTransientError(err) || attempt === this.maxRetries) {
+      return false;
+    }
+    const delay = Math.min(100 * 2 ** attempt, 5000);
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    return true;
+  }
 
   private async withRetry<T>(fn: () => Promise<T>): Promise<T> {
     let lastErr: unknown;

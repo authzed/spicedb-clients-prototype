@@ -2,12 +2,13 @@
 export { SpiceDBClient, createSpiceDBClient, type SpiceDBClientOptions } from "./client.js";
 
 // Consistency
-export { full, minLatency, atLeast, atLeastOrFull, atLeastOrMinLatency, snapshot } from "./consistency.js";
+export { Consistency, full, minLatency, atLeast, atLeastOrFull, atLeastOrMinLatency, snapshot } from "./consistency.js";
 
 // Types
 export {
   type Relationship,
   type RelationshipFilterOptions,
+  type DeleteOptions,
   type LookupResourcesParams,
   type LookupSubjectsParams,
   type CheckRequest,
@@ -20,6 +21,24 @@ export {
   type DependentRelationsParams,
   type RelationReference,
   type RelationshipCountResult,
+  type TreeOperation,
+  type ObjectRef,
+  type SubjectRef,
+  type IntermediateNode,
+  type LeafNode,
+  type PermissionTree,
+  type SchemaCaveatParameter,
+  type SchemaCaveat,
+  type SchemaRelation,
+  type SchemaPermission,
+  type SchemaDefinition,
+  type ReflectSchemaResult,
+  type SchemaDiff,
+  type Permissionship,
+  type PartialCaveatInfo,
+  type LookupResource,
+  type ResolvedSubject,
+  type LookupSubject,
   Transaction,
   relationship,
   relationshipFromTuple,

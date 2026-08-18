@@ -6,6 +6,7 @@ require (
 	github.com/authzed/spicedb-clients/proto-clients/spicedb-go-proto v0.0.0
 	github.com/magefile/mage v1.15.0
 	github.com/stretchr/testify v1.11.1
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260209200024-4cfbd4190f57
 	google.golang.org/grpc v1.79.1
 	google.golang.org/protobuf v1.36.11
 )
@@ -21,7 +22,6 @@ require (
 	golang.org/x/sys v0.39.0 // indirect
 	golang.org/x/text v0.34.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260209200024-4cfbd4190f57 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260209200024-4cfbd4190f57 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 

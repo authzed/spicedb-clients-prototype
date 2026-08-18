@@ -25,7 +25,7 @@ cargo run --example check_permission
 | Example | Description |
 |---------|-------------|
 | `check_permission` | Basic permission check |
-| `write_relationships` | Writing relationships with preconditions |
+| `write_relationships` | Writing relationships with preconditions, and a guarded delete with `DeleteOptions` |
 | `read_relationships` | Reading relationships with filters |
 | `lookup_resources` | Finding resources a subject can access |
 | `lookup_subjects` | Finding subjects with access to a resource |
@@ -33,4 +33,5 @@ cargo run --example check_permission
 | `schema_management` | Schema read/write |
 | `bulk_operations` | Bulk checks, imports, and exports |
 | `schema_reflection` | Schema reflection, computable permissions, diffs |
+| `expand_permission_tree` | Expanding a permission tree and walking the native `PermissionTree` |
 | `relationship_counters` | Experimental relationship counters |

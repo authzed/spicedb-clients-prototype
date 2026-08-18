@@ -4,11 +4,6 @@
 
 ```ts
 
-import { Consistency } from '@spicedb/proto';
-import { JsonObject } from '@bufbuild/protobuf';
-import { Precondition } from '@spicedb/proto';
-import { RelationshipUpdate } from '@spicedb/proto';
-
 // @public
 export class AlreadyExistsError extends SpiceDBError {
     constructor(message: string, options?: ErrorOptions);
@@ -31,7 +26,7 @@ export class CancelledError extends SpiceDBError {
 // @public
 export interface CheckRequest {
     // (undocumented)
-    context?: JsonObject;
+    context?: Record<string, unknown>;
     // (undocumented)
     permission: string;
     // (undocumented)
@@ -57,11 +52,22 @@ export interface ComputablePermissionsParams {
 }
 
 // @public
+export class Consistency {
+}
+
+// @public
 export function createSpiceDBClient(endpoint: string, token: string, options?: {
     insecure?: boolean;
     headers?: Record<string, string>;
     maxRetries?: number;
 }): SpiceDBClient;
+
+// @public
+export interface DeleteOptions {
+    limit?: number;
+    mustMatch?: RelationshipFilterOptions[];
+    mustNotMatch?: RelationshipFilterOptions[];
+}
 
 // @public
 export interface DependentRelationsParams {
@@ -90,14 +96,37 @@ export class FailedPreconditionError extends SpiceDBError {
 export function full(): Consistency;
 
 // @public
+export interface IntermediateNode {
+    // (undocumented)
+    children: PermissionTree[];
+    // (undocumented)
+    operation: TreeOperation;
+}
+
+// @public
 export class InvalidArgumentError extends SpiceDBError {
     constructor(message: string, options?: ErrorOptions);
 }
 
 // @public
+export interface LeafNode {
+    // (undocumented)
+    subjects: SubjectRef[];
+}
+
+// @public
+export interface LookupResource {
+    partialCaveat?: PartialCaveatInfo;
+    // (undocumented)
+    permissionship: Permissionship;
+    // (undocumented)
+    resourceId: string;
+}
+
+// @public
 export interface LookupResourcesParams {
     // (undocumented)
-    context?: JsonObject;
+    context?: Record<string, unknown>;
     // (undocumented)
     limit?: number;
     // (undocumented)
@@ -113,9 +142,17 @@ export interface LookupResourcesParams {
 }
 
 // @public
+export interface LookupSubject {
+    // (undocumented)
+    excludedSubjects: ResolvedSubject[];
+    // (undocumented)
+    subject: ResolvedSubject;
+}
+
+// @public
 export interface LookupSubjectsParams {
     // (undocumented)
-    context?: JsonObject;
+    context?: Record<string, unknown>;
     // (undocumented)
     limit?: number;
     // (undocumented)
@@ -139,8 +176,37 @@ export class NotFoundError extends SpiceDBError {
 }
 
 // @public
+export interface ObjectRef {
+    // (undocumented)
+    objectId: string;
+    // (undocumented)
+    objectType: string;
+}
+
+// @public
+export interface PartialCaveatInfo {
+    // (undocumented)
+    missingRequiredContext: string[];
+}
+
+// @public
 export class PermissionDeniedError extends SpiceDBError {
     constructor(message: string, options?: ErrorOptions);
+}
+
+// @public
+export type Permissionship = "unspecified" | "hasPermission" | "conditionalPermission";
+
+// @public
+export interface PermissionTree {
+    // (undocumented)
+    expandedObject: ObjectRef;
+    // (undocumented)
+    expandedRelation: string;
+    // (undocumented)
+    intermediate?: IntermediateNode;
+    // (undocumented)
+    leaf?: LeafNode;
 }
 
 // @public
@@ -156,6 +222,16 @@ export interface ReflectSchemaOptions {
 }
 
 // @public
+export interface ReflectSchemaResult {
+    // (undocumented)
+    caveats: SchemaCaveat[];
+    // (undocumented)
+    definitions: SchemaDefinition[];
+    // (undocumented)
+    revision: string;
+}
+
+// @public
 export interface RelationReference {
     // (undocumented)
     definitionName: string;
@@ -168,7 +244,7 @@ export interface RelationReference {
 // @public
 export interface Relationship {
     // (undocumented)
-    caveatContext?: JsonObject;
+    caveatContext?: Record<string, unknown>;
     // (undocumented)
     caveatName?: string;
     // (undocumented)
@@ -222,6 +298,84 @@ export interface RelationshipFilterOptions {
 export function relationshipFromTuple(resourceTuple: string, subject: string): Relationship;
 
 // @public
+export interface ResolvedSubject {
+    // (undocumented)
+    partialCaveat?: PartialCaveatInfo;
+    // (undocumented)
+    permissionship: Permissionship;
+    // (undocumented)
+    subjectId: string;
+}
+
+// @public
+export interface SchemaCaveat {
+    // (undocumented)
+    comment: string;
+    // (undocumented)
+    expression: string;
+    // (undocumented)
+    name: string;
+    // (undocumented)
+    parameters: SchemaCaveatParameter[];
+}
+
+// @public
+export interface SchemaCaveatParameter {
+    // (undocumented)
+    name: string;
+    // (undocumented)
+    parentCaveatName: string;
+    // (undocumented)
+    type: string;
+}
+
+// @public
+export interface SchemaDefinition {
+    // (undocumented)
+    comment: string;
+    // (undocumented)
+    name: string;
+    // (undocumented)
+    permissions: SchemaPermission[];
+    // (undocumented)
+    relations: SchemaRelation[];
+}
+
+// @public
+export interface SchemaDiff {
+    // (undocumented)
+    caveatName: string;
+    // (undocumented)
+    definitionName: string;
+    // (undocumented)
+    kind: string;
+    // (undocumented)
+    permissionName: string;
+    // (undocumented)
+    relationName: string;
+}
+
+// @public
+export interface SchemaPermission {
+    // (undocumented)
+    comment: string;
+    // (undocumented)
+    name: string;
+    // (undocumented)
+    parentDefinitionName: string;
+}
+
+// @public
+export interface SchemaRelation {
+    // (undocumented)
+    comment: string;
+    // (undocumented)
+    name: string;
+    // (undocumented)
+    parentDefinitionName: string;
+}
+
+// @public
 export function snapshot(revision: string): Consistency;
 
 // @public
@@ -235,34 +389,34 @@ export class SpiceDBClient {
         permissions: RelationReference[];
         revision: string;
     }>;
-    deleteRelationships(filter: RelationshipFilterOptions): Promise<string>;
+    deleteRelationships(filter: RelationshipFilterOptions, options?: DeleteOptions): Promise<string>;
     dependentRelations(consistency: Consistency, params: DependentRelationsParams): Promise<{
         relations: RelationReference[];
         revision: string;
     }>;
     diffSchema(consistency: Consistency, comparisonSchema: string): Promise<{
-        diffs: unknown[];
+        diffs: SchemaDiff[];
         revision: string;
     }>;
     expandPermissionTree(consistency: Consistency, params: ExpandPermissionTreeParams): Promise<{
         expandedAt: string;
-        treeRoot: unknown;
+        treeRoot: PermissionTree;
     }>;
     experimentalCountRelationships(name: string): Promise<RelationshipCountResult>;
     experimentalRegisterRelationshipCounter(name: string, filter: RelationshipFilterOptions): Promise<void>;
     experimentalUnregisterRelationshipCounter(name: string): Promise<void>;
     exportBulkRelationships(consistency: Consistency, filter?: RelationshipFilterOptions): AsyncIterableIterator<Relationship>;
     importBulkRelationships(relationships: Relationship[]): Promise<bigint>;
-    lookupResources(params: LookupResourcesParams, consistency: Consistency): AsyncIterableIterator<string>;
-    lookupSubjects(params: LookupSubjectsParams, consistency: Consistency): AsyncIterableIterator<string>;
+    lookupResources(params: LookupResourcesParams, consistency: Consistency): AsyncIterableIterator<LookupResource>;
+    lookupSubjects(params: LookupSubjectsParams, consistency: Consistency): AsyncIterableIterator<LookupSubject>;
     readRelationships(filter: RelationshipFilterOptions, consistency: Consistency): AsyncIterableIterator<Relationship>;
     readSchema(): Promise<{
         schema: string;
         revision: string;
     }>;
     reflectSchema(consistency: Consistency, options?: ReflectSchemaOptions): Promise<{
-        definitions: unknown[];
-        caveats: unknown[];
+        definitions: SchemaDefinition[];
+        caveats: SchemaCaveat[];
         revision: string;
     }>;
     watch(options?: WatchOptions): AsyncIterableIterator<WatchEvent>;
@@ -290,20 +444,27 @@ export class SpiceDBError extends Error {
 }
 
 // @public
+export interface SubjectRef {
+    // (undocumented)
+    optionalRelation: string;
+    // (undocumented)
+    subjectId: string;
+    // (undocumented)
+    subjectType: string;
+}
+
+// @public
 export class Transaction {
     create(rel: Relationship): this;
     delete(rel: Relationship): this;
-    // @internal (undocumented)
-    metadata?: JsonObject;
     mustMatch(filter: RelationshipFilterOptions): this;
     mustNotMatch(filter: RelationshipFilterOptions): this;
-    // @internal (undocumented)
-    readonly preconditions: Precondition[];
     touch(rel: Relationship): this;
-    // @internal (undocumented)
-    readonly updates: RelationshipUpdate[];
-    withMetadata(meta: JsonObject): this;
+    withMetadata(meta: Record<string, unknown>): this;
 }
+
+// @public
+export type TreeOperation = "unspecified" | "union" | "intersection" | "exclusion";
 
 // @public
 export class UnavailableError extends SpiceDBError {
@@ -325,7 +486,7 @@ export interface WatchEvent {
     // (undocumented)
     isCheckpoint: boolean;
     // (undocumented)
-    metadata?: JsonObject;
+    metadata?: Record<string, unknown>;
     // (undocumented)
     revision: string;
     // (undocumented)

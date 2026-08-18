@@ -14,7 +14,9 @@ import org.junit.jupiter.api.Test;
  * Demonstrates bulk permission checks using {@link
  * com.authzed.spicedb.SpiceDBClient#checkPermissions}, {@link
  * com.authzed.spicedb.SpiceDBClient#checkAll}, and {@link
- * com.authzed.spicedb.SpiceDBClient#checkAny}.
+ * com.authzed.spicedb.SpiceDBClient#checkAny}, as well as bulk relationship import/export using
+ * {@link com.authzed.spicedb.SpiceDBClient#importRelationships} and {@link
+ * com.authzed.spicedb.SpiceDBClient#exportRelationships}.
  */
 class BulkOperationsTest extends SpiceDBIntegrationTest {
 
@@ -84,5 +86,44 @@ class BulkOperationsTest extends SpiceDBIntegrationTest {
 
     // alice is an editor
     assertThat(anyCanEdit).isTrue();
+  }
+
+  @Test
+  void bulk_import_relationships_reports_number_loaded() {
+    // importRelationships streams relationships to the server in batches (1,000-item chunks)
+    // and returns the number loaded -- useful for large, one-shot data loads, unlike write(),
+    // which is transactional and limited in size.
+    List<Relationship> imported =
+        List.of(
+            Relationship.of("document", "bulkdoc1", "viewer", "user", "dave"),
+            Relationship.of("document", "bulkdoc2", "viewer", "user", "erin"),
+            Relationship.of("document", "bulkdoc3", "viewer", "user", "frank"));
+
+    long numLoaded = client.importRelationships(imported);
+
+    assertThat(numLoaded).isEqualTo(imported.size());
+  }
+
+  @Test
+  void bulk_export_relationships_streams_matching_relationships() {
+    List<Relationship> imported =
+        List.of(
+            Relationship.of("document", "bulkdoc1", "viewer", "user", "dave"),
+            Relationship.of("document", "bulkdoc2", "viewer", "user", "erin"),
+            Relationship.of("document", "bulkdoc3", "viewer", "user", "frank"));
+    client.importRelationships(imported);
+
+    // exportRelationships streams relationships back out, paginating transparently under the
+    // hood (512-item pages by default). The returned stream should be closed when done.
+    Filter exportFilter = Filter.of("document").withResourceIDPrefix("bulkdoc");
+    List<Relationship> exported;
+    try (var stream = client.exportRelationships(full(), exportFilter)) {
+      exported = stream.toList();
+    }
+
+    assertThat(exported).hasSize(imported.size());
+    assertThat(exported)
+        .extracting(Relationship::subjectID)
+        .containsExactlyInAnyOrder("dave", "erin", "frank");
   }
 }

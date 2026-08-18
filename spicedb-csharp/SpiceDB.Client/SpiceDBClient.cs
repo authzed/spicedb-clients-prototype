@@ -6,6 +6,10 @@ using Authzed.Api.V1;
 using Grpc.Core;
 using Grpc.Net.Client;
 
+// Exposes internal helpers (e.g. the proto -> native PermissionTree mapper)
+// to the test assembly without making them part of the public API surface.
+[assembly: InternalsVisibleTo("SpiceDB.Client.Tests")]
+
 namespace SpiceDB.Client;
 
 /// <summary>
@@ -16,15 +20,15 @@ namespace SpiceDB.Client;
 public sealed class SpiceDBClient : IAsyncDisposable
 {
     private const int DefaultReadPageSize = 512;
-    private const int DefaultDeletePageSize = 10_000;
+    private const int DefaultDeletePageSize = 1_000;
     private const int DefaultLookupPageSize = 512;
     private const int DefaultImportBatchSize = 1_000;
     private const int DefaultExportPageSize = 512;
     private const int DefaultCheckBatchSize = 1_000;
-    private const int MaxRetryAttempts = 5;
+    private const int MaxRetryAttempts = 3;
     private static readonly TimeSpan InitialBackoff = TimeSpan.FromMilliseconds(100);
 
-    private readonly SpiceDBProtoClient _protoClient;
+    private readonly SpiceDBProtoClient? _protoClient;
     private readonly PermissionsService.PermissionsServiceClient _permissions;
     private readonly SchemaService.SchemaServiceClient _schema;
     private readonly WatchService.WatchServiceClient _watch;
@@ -37,6 +41,25 @@ public sealed class SpiceDBClient : IAsyncDisposable
         _schema = protoClient.Schema;
         _watch = protoClient.Watch;
         _experimental = protoClient.Experimental;
+    }
+
+    /// <summary>
+    /// Test-only seam: constructs a client directly from (typically mocked)
+    /// service clients, bypassing channel/proto-client construction entirely.
+    /// Not part of the public API — exposed to the test assembly only via
+    /// <see cref="System.Runtime.CompilerServices.InternalsVisibleToAttribute"/>.
+    /// </summary>
+    internal SpiceDBClient(
+        PermissionsService.PermissionsServiceClient permissions,
+        SchemaService.SchemaServiceClient schema,
+        WatchService.WatchServiceClient watch,
+        ExperimentalService.ExperimentalServiceClient experimental)
+    {
+        _protoClient = null;
+        _permissions = permissions;
+        _schema = schema;
+        _watch = watch;
+        _experimental = experimental;
     }
 
     /// <summary>
@@ -88,7 +111,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
 
     public ValueTask DisposeAsync()
     {
-        _protoClient.Dispose();
+        _protoClient?.Dispose();
         return ValueTask.CompletedTask;
     }
 
@@ -207,6 +230,14 @@ public sealed class SpiceDBClient : IAsyncDisposable
     /// Returns an async enumerable of relationships matching the given filter.
     /// Cursors are handled transparently — the client automatically re-fetches
     /// pages of 512 relationships using the AfterResultCursor.
+    /// <para>
+    /// Stream/page ESTABLISHMENT is retried on transient errors (the same
+    /// {UNAVAILABLE, RESOURCE_EXHAUSTED, ABORTED} predicate and backoff/attempt
+    /// budget as unary calls), with the attempt budget reset for each new
+    /// page. Once any item has been yielded from the current page's open
+    /// stream, a transient error is mapped and rethrown instead of retried —
+    /// retrying after a yield would risk re-delivering already-yielded items.
+    /// </para>
     /// </summary>
     public async IAsyncEnumerable<Relationship> ReadRelationshipsAsync(
         ConsistencyStrategy consistency,
@@ -228,15 +259,72 @@ public sealed class SpiceDBClient : IAsyncDisposable
             if (cursor != null)
                 req.OptionalCursor = cursor;
 
-            using var stream = _permissions.ReadRelationships(req, cancellationToken: cancellationToken);
-
             uint count = 0;
-            while (await stream.ResponseStream.MoveNext(cancellationToken))
+            var attempt = 0;
+            var backoff = InitialBackoff;
+            var pageComplete = false;
+
+            while (!pageComplete)
             {
-                count++;
-                var resp = stream.ResponseStream.Current;
-                cursor = resp.AfterResultCursor;
-                yield return Relationship.FromProto(resp.Relationship);
+                AsyncServerStreamingCall<ReadRelationshipsResponse> call;
+                try
+                {
+                    call = _permissions.ReadRelationships(req, cancellationToken: cancellationToken);
+                }
+                catch (RpcException ex) when (attempt < MaxRetryAttempts && ErrorMapper.IsTransient(ex))
+                {
+                    attempt++;
+                    await Task.Delay(backoff, cancellationToken);
+                    backoff *= 2;
+                    continue;
+                }
+                catch (RpcException ex)
+                {
+                    throw ErrorMapper.ToSpiceDBException(ex);
+                }
+
+                using var stream = call;
+                uint yielded = 0;
+
+                while (true)
+                {
+                    ReadRelationshipsResponse? resp = null;
+                    bool hasNext;
+                    try
+                    {
+                        hasNext = await stream.ResponseStream.MoveNext(cancellationToken);
+                        if (hasNext)
+                            resp = stream.ResponseStream.Current;
+                    }
+                    // Establishment retry only: safe while nothing has been
+                    // yielded yet from this page's current open stream.
+                    catch (RpcException ex) when (yielded == 0 && attempt < MaxRetryAttempts && ErrorMapper.IsTransient(ex))
+                    {
+                        attempt++;
+                        break;
+                    }
+                    catch (RpcException ex)
+                    {
+                        throw ErrorMapper.ToSpiceDBException(ex);
+                    }
+
+                    if (!hasNext)
+                    {
+                        pageComplete = true;
+                        break;
+                    }
+
+                    count++;
+                    yielded++;
+                    cursor = resp!.AfterResultCursor;
+                    yield return Relationship.FromProto(resp.Relationship);
+                }
+
+                if (!pageComplete)
+                {
+                    await Task.Delay(backoff, cancellationToken);
+                    backoff *= 2;
+                }
             }
 
             if (count < DefaultReadPageSize)
@@ -246,26 +334,69 @@ public sealed class SpiceDBClient : IAsyncDisposable
 
     /// <summary>
     /// Deletes all relationships matching the given filter. Large result sets
-    /// are automatically paged in batches of 10,000. Returns the revision of
-    /// the final deletion.
+    /// are automatically paged in batches of 1,000 (override with
+    /// <paramref name="limit"/>). Returns the revision of the final deletion.
+    /// <para>
+    /// <paramref name="mustMatch"/>/<paramref name="mustNotMatch"/> add
+    /// preconditions that guard the delete: if a precondition fails, the
+    /// server rejects that call and deletes nothing for it. Preconditions are
+    /// a per-request proto field, so when a delete spans multiple pages
+    /// (i.e. more matches than the page size), they are re-evaluated by the
+    /// server on every page — there is no "check-once, apply-to-all-pages"
+    /// semantics. This means a delete that starts successfully can still fail
+    /// partway through if the guarded state changes between pages, after
+    /// earlier pages have already been deleted. For a single-shot,
+    /// all-or-nothing guarded delete, pair the precondition with a
+    /// <paramref name="limit"/> large enough to cover every matching
+    /// relationship in one call.
+    /// </para>
+    /// <para>
+    /// Mirrors spicedb-go's <c>WithDeleteMustMatch</c>/
+    /// <c>WithDeleteMustNotMatch</c>/<c>WithDeleteLimit</c>
+    /// (client/relationships.go). Additive — existing
+    /// <c>DeleteRelationshipsAsync(filter)</c> calls are unaffected: no
+    /// preconditions, 1,000-item page size, partial deletions allowed, same
+    /// as before.
+    /// </para>
     /// </summary>
     public async Task<string> DeleteRelationshipsAsync(
         Filter filter,
+        IReadOnlyList<Filter>? mustMatch = null,
+        IReadOnlyList<Filter>? mustNotMatch = null,
+        uint? limit = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(filter);
 
+        var preconditions = new List<Precondition>();
+        if (mustMatch != null)
+        {
+            foreach (var f in mustMatch)
+                preconditions.Add(Transaction.BuildPrecondition(Precondition.Types.Operation.MustMatch, f));
+        }
+        if (mustNotMatch != null)
+        {
+            foreach (var f in mustNotMatch)
+                preconditions.Add(Transaction.BuildPrecondition(Precondition.Types.Operation.MustNotMatch, f));
+        }
+
+        uint pageSize = limit ?? DefaultDeletePageSize;
+
         string revision = "";
         while (true)
         {
+            var req = new DeleteRelationshipsRequest
+            {
+                RelationshipFilter = filter.ToProto(),
+                OptionalLimit = pageSize,
+                OptionalAllowPartialDeletions = true,
+            };
+            if (preconditions.Count > 0)
+                req.OptionalPreconditions.AddRange(preconditions);
+
             var resp = await RetryAsync(async () =>
                 await _permissions.DeleteRelationshipsAsync(
-                    new DeleteRelationshipsRequest
-                    {
-                        RelationshipFilter = filter.ToProto(),
-                        OptionalLimit = DefaultDeletePageSize,
-                        OptionalAllowPartialDeletions = true,
-                    },
+                    req,
                     cancellationToken: cancellationToken),
                 cancellationToken);
 
@@ -281,11 +412,20 @@ public sealed class SpiceDBClient : IAsyncDisposable
     // ──────────────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Returns an async enumerable of resource IDs of the given type that the
-    /// subject has the specified permission on. Cursors are handled
-    /// transparently with 512-item pages.
+    /// Returns an async enumerable of resources of the given type that the
+    /// subject has the specified permission on. Each result carries the
+    /// permissionship (full grant vs conditional on caveat context) and, for
+    /// conditional results, which caveat context was missing. Cursors are
+    /// handled transparently with 512-item pages.
+    /// <para>
+    /// Stream/page ESTABLISHMENT is retried on transient errors, with the
+    /// attempt budget reset for each new page. Once any item has been
+    /// yielded from the current page's open stream, a transient error is
+    /// mapped and rethrown instead of retried — see
+    /// <see cref="ReadRelationshipsAsync"/> for the full rationale.
+    /// </para>
     /// </summary>
-    public async IAsyncEnumerable<string> LookupResourcesAsync(
+    public async IAsyncEnumerable<LookupResource> LookupResourcesAsync(
         ConsistencyStrategy consistency,
         string resourceType,
         string permission,
@@ -316,15 +456,75 @@ public sealed class SpiceDBClient : IAsyncDisposable
             if (cursor != null)
                 req.OptionalCursor = cursor;
 
-            using var stream = _permissions.LookupResources(req, cancellationToken: cancellationToken);
-
             int count = 0;
-            while (await stream.ResponseStream.MoveNext(cancellationToken))
+            var attempt = 0;
+            var backoff = InitialBackoff;
+            var pageComplete = false;
+
+            while (!pageComplete)
             {
-                count++;
-                var resp = stream.ResponseStream.Current;
-                cursor = resp.AfterResultCursor;
-                yield return resp.ResourceObjectId;
+                AsyncServerStreamingCall<LookupResourcesResponse> call;
+                try
+                {
+                    call = _permissions.LookupResources(req, cancellationToken: cancellationToken);
+                }
+                catch (RpcException ex) when (attempt < MaxRetryAttempts && ErrorMapper.IsTransient(ex))
+                {
+                    attempt++;
+                    await Task.Delay(backoff, cancellationToken);
+                    backoff *= 2;
+                    continue;
+                }
+                catch (RpcException ex)
+                {
+                    throw ErrorMapper.ToSpiceDBException(ex);
+                }
+
+                using var stream = call;
+                int yielded = 0;
+
+                while (true)
+                {
+                    LookupResourcesResponse? resp = null;
+                    bool hasNext;
+                    try
+                    {
+                        hasNext = await stream.ResponseStream.MoveNext(cancellationToken);
+                        if (hasNext)
+                            resp = stream.ResponseStream.Current;
+                    }
+                    catch (RpcException ex) when (yielded == 0 && attempt < MaxRetryAttempts && ErrorMapper.IsTransient(ex))
+                    {
+                        attempt++;
+                        break;
+                    }
+                    catch (RpcException ex)
+                    {
+                        throw ErrorMapper.ToSpiceDBException(ex);
+                    }
+
+                    if (!hasNext)
+                    {
+                        pageComplete = true;
+                        break;
+                    }
+
+                    count++;
+                    yielded++;
+                    cursor = resp!.AfterResultCursor;
+                    yield return new LookupResource
+                    {
+                        ResourceID = resp.ResourceObjectId,
+                        Permissionship = ToPermissionship(resp.Permissionship),
+                        PartialCaveat = ToPartialCaveatInfo(resp.PartialCaveatInfo),
+                    };
+                }
+
+                if (!pageComplete)
+                {
+                    await Task.Delay(backoff, cancellationToken);
+                    backoff *= 2;
+                }
             }
 
             if (count < DefaultLookupPageSize)
@@ -333,12 +533,28 @@ public sealed class SpiceDBClient : IAsyncDisposable
     }
 
     /// <summary>
-    /// Returns an async enumerable of subject IDs of the given type that have
+    /// Returns an async enumerable of subjects of the given type that have
     /// the specified permission on the resource. Unlike LookupResources,
     /// LookupSubjects does not currently support cursor-based pagination in
     /// SpiceDB and streams all results in a single server-streaming call.
+    /// <para>
+    /// When a yielded <see cref="LookupSubject.Subject"/> is the wildcard
+    /// "*", the server has granted the permission to every subject of
+    /// <paramref name="subjectType"/> EXCEPT those listed in
+    /// <see cref="LookupSubject.ExcludedSubjects"/>. Callers MUST check
+    /// <see cref="LookupSubject.ExcludedSubjects"/> before treating a
+    /// wildcard match as a blanket grant, or they risk granting access to
+    /// subjects the server explicitly excluded.
+    /// </para>
+    /// <para>
+    /// Since there is one stream (no pages), the retry-on-transient-error
+    /// behavior applies to that single ESTABLISHMENT only: once any subject
+    /// has been yielded, a transient error is mapped and rethrown instead of
+    /// retried — see <see cref="ReadRelationshipsAsync"/> for the full
+    /// rationale.
+    /// </para>
     /// </summary>
-    public async IAsyncEnumerable<string> LookupSubjectsAsync(
+    public async IAsyncEnumerable<LookupSubject> LookupSubjectsAsync(
         ConsistencyStrategy consistency,
         string resourceType,
         string resourceID,
@@ -348,27 +564,76 @@ public sealed class SpiceDBClient : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(consistency);
 
-        using var stream = _permissions.LookupSubjects(
-            new LookupSubjectsRequest
-            {
-                Consistency = consistency.V1Consistency,
-                Resource = new ObjectReference
-                {
-                    ObjectType = resourceType,
-                    ObjectId = resourceID,
-                },
-                Permission = permission,
-                SubjectObjectType = subjectType,
-            },
-            cancellationToken: cancellationToken);
-
-        while (await stream.ResponseStream.MoveNext(cancellationToken))
+        var req = new LookupSubjectsRequest
         {
-            var resp = stream.ResponseStream.Current;
-            var subjectId = resp.Subject?.SubjectObjectId;
-            if (string.IsNullOrEmpty(subjectId))
-                subjectId = resp.SubjectObjectId; // deprecated field fallback
-            yield return subjectId;
+            Consistency = consistency.V1Consistency,
+            Resource = new ObjectReference
+            {
+                ObjectType = resourceType,
+                ObjectId = resourceID,
+            },
+            Permission = permission,
+            SubjectObjectType = subjectType,
+        };
+
+        var attempt = 0;
+        var backoff = InitialBackoff;
+        var yielded = 0;
+
+        // Establishment-retry loop: LookupSubjects has no cursor support, so
+        // there's a single logical stream — retry re-opens it (not a page).
+        // Once anything has been yielded, retrying is never safe.
+        while (true)
+        {
+            AsyncServerStreamingCall<LookupSubjectsResponse> call;
+            try
+            {
+                call = _permissions.LookupSubjects(req, cancellationToken: cancellationToken);
+            }
+            catch (RpcException ex) when (yielded == 0 && attempt < MaxRetryAttempts && ErrorMapper.IsTransient(ex))
+            {
+                attempt++;
+                await Task.Delay(backoff, cancellationToken);
+                backoff *= 2;
+                continue;
+            }
+            catch (RpcException ex)
+            {
+                throw ErrorMapper.ToSpiceDBException(ex);
+            }
+
+            using var stream = call;
+
+            while (true)
+            {
+                LookupSubjectsResponse? resp = null;
+                bool hasNext;
+                try
+                {
+                    hasNext = await stream.ResponseStream.MoveNext(cancellationToken);
+                    if (hasNext)
+                        resp = stream.ResponseStream.Current;
+                }
+                catch (RpcException ex) when (yielded == 0 && attempt < MaxRetryAttempts && ErrorMapper.IsTransient(ex))
+                {
+                    attempt++;
+                    break;
+                }
+                catch (RpcException ex)
+                {
+                    throw ErrorMapper.ToSpiceDBException(ex);
+                }
+
+                if (!hasNext)
+                    yield break;
+
+                yielded++;
+                yield return ToLookupSubject(resp!);
+            }
+
+            // Reached only via the transient-retry break above.
+            await Task.Delay(backoff, cancellationToken);
+            backoff *= 2;
         }
     }
 
@@ -595,7 +860,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
 
         return new ExpandResult
         {
-            TreeRoot = resp.TreeRoot,
+            Tree = ToPermissionTree(resp.TreeRoot),
             Revision = resp.ExpandedAt?.Token ?? "",
         };
     }
@@ -615,38 +880,63 @@ public sealed class SpiceDBClient : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(relationships);
 
-        using var stream = _permissions.ImportBulkRelationships(cancellationToken: cancellationToken);
-
-        var batch = new List<Authzed.Api.V1.Relationship>(DefaultImportBatchSize);
-
-        await foreach (var rel in relationships.WithCancellation(cancellationToken))
+        AsyncClientStreamingCall<ImportBulkRelationshipsRequest, ImportBulkRelationshipsResponse> stream;
+        try
         {
-            batch.Add(rel.ToProto());
-            if (batch.Count >= DefaultImportBatchSize)
+            stream = _permissions.ImportBulkRelationships(cancellationToken: cancellationToken);
+        }
+        catch (RpcException ex)
+        {
+            throw ErrorMapper.ToSpiceDBException(ex);
+        }
+
+        using (stream)
+        {
+            try
             {
-                var req = new ImportBulkRelationshipsRequest();
-                req.Relationships.AddRange(batch);
-                await stream.RequestStream.WriteAsync(req, cancellationToken);
-                batch.Clear();
+                var batch = new List<Authzed.Api.V1.Relationship>(DefaultImportBatchSize);
+
+                await foreach (var rel in relationships.WithCancellation(cancellationToken))
+                {
+                    batch.Add(rel.ToProto());
+                    if (batch.Count >= DefaultImportBatchSize)
+                    {
+                        var req = new ImportBulkRelationshipsRequest();
+                        req.Relationships.AddRange(batch);
+                        await stream.RequestStream.WriteAsync(req, cancellationToken);
+                        batch.Clear();
+                    }
+                }
+
+                if (batch.Count > 0)
+                {
+                    var req = new ImportBulkRelationshipsRequest();
+                    req.Relationships.AddRange(batch);
+                    await stream.RequestStream.WriteAsync(req, cancellationToken);
+                }
+
+                await stream.RequestStream.CompleteAsync();
+                var resp = await stream;
+                return resp.NumLoaded;
+            }
+            catch (RpcException ex)
+            {
+                throw ErrorMapper.ToSpiceDBException(ex);
             }
         }
-
-        if (batch.Count > 0)
-        {
-            var req = new ImportBulkRelationshipsRequest();
-            req.Relationships.AddRange(batch);
-            await stream.RequestStream.WriteAsync(req, cancellationToken);
-        }
-
-        await stream.RequestStream.CompleteAsync();
-        var resp = await stream;
-        return resp.NumLoaded;
     }
 
     /// <summary>
     /// Returns an async enumerable over all relationships matching the optional
     /// filter, streamed from SpiceDB in bulk. Cursors are handled transparently
     /// with 512-item pages.
+    /// <para>
+    /// Stream/page ESTABLISHMENT is retried on transient errors, with the
+    /// attempt budget reset for each new page. Once any relationship has been
+    /// yielded from the current page's open stream, a transient error is
+    /// mapped and rethrown instead of retried — see
+    /// <see cref="ReadRelationshipsAsync"/> for the full rationale.
+    /// </para>
     /// </summary>
     public async IAsyncEnumerable<Relationship> ExportRelationshipsAsync(
         ConsistencyStrategy consistency,
@@ -668,17 +958,72 @@ public sealed class SpiceDBClient : IAsyncDisposable
             if (filter != null)
                 req.OptionalRelationshipFilter = filter.ToProto();
 
-            using var stream = _permissions.ExportBulkRelationships(req, cancellationToken: cancellationToken);
-
             int pageCount = 0;
-            while (await stream.ResponseStream.MoveNext(cancellationToken))
+            var attempt = 0;
+            var backoff = InitialBackoff;
+            var pageComplete = false;
+
+            while (!pageComplete)
             {
-                var resp = stream.ResponseStream.Current;
-                cursor = resp.AfterResultCursor;
-                foreach (var r in resp.Relationships)
+                AsyncServerStreamingCall<ExportBulkRelationshipsResponse> call;
+                try
                 {
-                    pageCount++;
-                    yield return Relationship.FromProto(r);
+                    call = _permissions.ExportBulkRelationships(req, cancellationToken: cancellationToken);
+                }
+                catch (RpcException ex) when (attempt < MaxRetryAttempts && ErrorMapper.IsTransient(ex))
+                {
+                    attempt++;
+                    await Task.Delay(backoff, cancellationToken);
+                    backoff *= 2;
+                    continue;
+                }
+                catch (RpcException ex)
+                {
+                    throw ErrorMapper.ToSpiceDBException(ex);
+                }
+
+                using var stream = call;
+                int yielded = 0;
+
+                while (true)
+                {
+                    ExportBulkRelationshipsResponse? resp = null;
+                    bool hasNext;
+                    try
+                    {
+                        hasNext = await stream.ResponseStream.MoveNext(cancellationToken);
+                        if (hasNext)
+                            resp = stream.ResponseStream.Current;
+                    }
+                    catch (RpcException ex) when (yielded == 0 && attempt < MaxRetryAttempts && ErrorMapper.IsTransient(ex))
+                    {
+                        attempt++;
+                        break;
+                    }
+                    catch (RpcException ex)
+                    {
+                        throw ErrorMapper.ToSpiceDBException(ex);
+                    }
+
+                    if (!hasNext)
+                    {
+                        pageComplete = true;
+                        break;
+                    }
+
+                    cursor = resp!.AfterResultCursor;
+                    foreach (var r in resp.Relationships)
+                    {
+                        pageCount++;
+                        yielded++;
+                        yield return Relationship.FromProto(r);
+                    }
+                }
+
+                if (!pageComplete)
+                {
+                    await Task.Delay(backoff, cancellationToken);
+                    backoff *= 2;
                 }
             }
 
@@ -694,6 +1039,15 @@ public sealed class SpiceDBClient : IAsyncDisposable
     /// <summary>
     /// Returns an async enumerable of relationship changes from SpiceDB's watch
     /// API, starting from the given revision.
+    /// <para>
+    /// Watch ESTABLISHMENT is retried on transient errors — but only up until
+    /// the first update is yielded. Once anything has been yielded from the
+    /// current watch stream, a transient error is mapped and rethrown instead
+    /// of retried; retrying mid-watch would risk re-delivering already-seen
+    /// updates (or silently skipping ones the caller never saw), and there is
+    /// no cursor to safely resume from mid-stream. See
+    /// <see cref="ReadRelationshipsAsync"/> for the full rationale.
+    /// </para>
     /// </summary>
     public async IAsyncEnumerable<RelationshipUpdate> UpdatesAsync(
         IEnumerable<string>? objectTypes = null,
@@ -706,15 +1060,66 @@ public sealed class SpiceDBClient : IAsyncDisposable
         if (!string.IsNullOrEmpty(startRevision))
             req.OptionalStartCursor = new ZedToken { Token = startRevision };
 
-        using var stream = _watch.Watch(req, cancellationToken: cancellationToken);
+        var attempt = 0;
+        var backoff = InitialBackoff;
+        var yielded = 0;
 
-        while (await stream.ResponseStream.MoveNext(cancellationToken))
+        // Establishment-retry loop: retry re-opening the watch only while
+        // nothing has been yielded yet — never mid-watch.
+        while (true)
         {
-            var resp = stream.ResponseStream.Current;
-            foreach (var update in resp.Updates)
+            AsyncServerStreamingCall<WatchResponse> call;
+            try
             {
-                yield return UpdateFromProto(update);
+                call = _watch.Watch(req, cancellationToken: cancellationToken);
             }
+            catch (RpcException ex) when (yielded == 0 && attempt < MaxRetryAttempts && ErrorMapper.IsTransient(ex))
+            {
+                attempt++;
+                await Task.Delay(backoff, cancellationToken);
+                backoff *= 2;
+                continue;
+            }
+            catch (RpcException ex)
+            {
+                throw ErrorMapper.ToSpiceDBException(ex);
+            }
+
+            using var stream = call;
+
+            while (true)
+            {
+                WatchResponse? resp = null;
+                bool hasNext;
+                try
+                {
+                    hasNext = await stream.ResponseStream.MoveNext(cancellationToken);
+                    if (hasNext)
+                        resp = stream.ResponseStream.Current;
+                }
+                catch (RpcException ex) when (yielded == 0 && attempt < MaxRetryAttempts && ErrorMapper.IsTransient(ex))
+                {
+                    attempt++;
+                    break;
+                }
+                catch (RpcException ex)
+                {
+                    throw ErrorMapper.ToSpiceDBException(ex);
+                }
+
+                if (!hasNext)
+                    yield break;
+
+                foreach (var update in resp!.Updates)
+                {
+                    yielded++;
+                    yield return UpdateFromProto(update);
+                }
+            }
+
+            // Reached only via the transient-retry break above.
+            await Task.Delay(backoff, cancellationToken);
+            backoff *= 2;
         }
     }
 
@@ -827,6 +1232,149 @@ public sealed class SpiceDBClient : IAsyncDisposable
                 OptionalRelation = r.SubjectRelation,
             },
         };
+
+    /// <summary>
+    /// Maps the proto LookupPermissionship enum to its native equivalent.
+    /// Unrecognized values map to Permissionship.Unspecified. Internal —
+    /// exposed to the test assembly via InternalsVisibleTo; not part of the
+    /// public API.
+    /// </summary>
+    internal static Permissionship ToPermissionship(Authzed.Api.V1.LookupPermissionship v) => v switch
+    {
+        Authzed.Api.V1.LookupPermissionship.HasPermission => Permissionship.HasPermission,
+        Authzed.Api.V1.LookupPermissionship.ConditionalPermission => Permissionship.ConditionalPermission,
+        _ => Permissionship.Unspecified,
+    };
+
+    /// <summary>
+    /// Maps a proto PartialCaveatInfo to its native equivalent. A null input
+    /// maps to null.
+    /// </summary>
+    internal static PartialCaveatInfo? ToPartialCaveatInfo(Authzed.Api.V1.PartialCaveatInfo? v)
+    {
+        if (v == null)
+            return null;
+        return new PartialCaveatInfo { MissingRequiredContext = v.MissingRequiredContext.ToList() };
+    }
+
+    /// <summary>
+    /// Maps a proto ResolvedSubject to its native equivalent. A null input
+    /// maps to a zero-value ResolvedSubject (empty SubjectID), which callers
+    /// use as the trigger for falling back to deprecated response-level
+    /// fields.
+    /// </summary>
+    internal static ResolvedSubject ToResolvedSubject(Authzed.Api.V1.ResolvedSubject? v)
+    {
+        if (v == null)
+            return new ResolvedSubject();
+        return new ResolvedSubject
+        {
+            SubjectID = v.SubjectObjectId,
+            Permissionship = ToPermissionship(v.Permissionship),
+            PartialCaveat = ToPartialCaveatInfo(v.PartialCaveatInfo),
+        };
+    }
+
+    /// <summary>
+    /// Maps a LookupSubjectsResponse to its native LookupSubject, including
+    /// the deprecated-field fallbacks for both the resolved subject
+    /// (`subject_object_id`/`permissionship`/`partial_caveat_info`) and the
+    /// excluded subjects (`excluded_subject_ids`) for servers that don't yet
+    /// populate the non-deprecated `subject`/`excluded_subjects` fields.
+    /// </summary>
+    internal static LookupSubject ToLookupSubject(LookupSubjectsResponse resp)
+    {
+        var subject = ToResolvedSubject(resp.Subject);
+        if (string.IsNullOrEmpty(subject.SubjectID))
+        {
+#pragma warning disable CS0612 // deprecated proto fields — explicit fallback for older servers
+            subject = new ResolvedSubject
+            {
+                SubjectID = resp.SubjectObjectId,
+                Permissionship = ToPermissionship(resp.Permissionship),
+                PartialCaveat = ToPartialCaveatInfo(resp.PartialCaveatInfo),
+            };
+#pragma warning restore CS0612
+        }
+
+        List<ResolvedSubject> excluded = [];
+        if (resp.ExcludedSubjects.Count > 0)
+        {
+            excluded = resp.ExcludedSubjects.Select(ToResolvedSubject).ToList();
+        }
+        else
+        {
+#pragma warning disable CS0612 // deprecated proto field — explicit fallback for older servers
+            if (resp.ExcludedSubjectIds.Count > 0)
+                excluded = resp.ExcludedSubjectIds.Select(id => new ResolvedSubject { SubjectID = id }).ToList();
+#pragma warning restore CS0612
+        }
+
+        return new LookupSubject { Subject = subject, ExcludedSubjects = excluded };
+    }
+
+    /// <summary>
+    /// Recursively maps a proto PermissionRelationshipTree to its native
+    /// representation. A null input maps to a zero-value PermissionTree.
+    /// Internal — exposed to the test assembly via InternalsVisibleTo for
+    /// direct field-by-field verification; not part of the public API.
+    /// </summary>
+    internal static PermissionTree ToPermissionTree(PermissionRelationshipTree? t)
+    {
+        if (t == null)
+            return new PermissionTree();
+
+        var tree = new PermissionTree
+        {
+            ExpandedObject = new ObjectRef
+            {
+                ObjectType = t.ExpandedObject?.ObjectType ?? "",
+                ObjectID = t.ExpandedObject?.ObjectId ?? "",
+            },
+            ExpandedRelation = t.ExpandedRelation ?? "",
+        };
+
+        switch (t.TreeTypeCase)
+        {
+            case PermissionRelationshipTree.TreeTypeOneofCase.Intermediate:
+                tree = tree with
+                {
+                    Intermediate = new IntermediateNode
+                    {
+                        Operation = ToTreeOperation(t.Intermediate.Operation),
+                        Children = t.Intermediate.Children.Select(ToPermissionTree).ToList(),
+                    },
+                };
+                break;
+            case PermissionRelationshipTree.TreeTypeOneofCase.Leaf:
+                tree = tree with
+                {
+                    Leaf = new LeafNode
+                    {
+                        Subjects = t.Leaf.Subjects.Select(s => new SubjectRef
+                        {
+                            SubjectType = s.Object?.ObjectType ?? "",
+                            SubjectID = s.Object?.ObjectId ?? "",
+                            OptionalRelation = s.OptionalRelation ?? "",
+                        }).ToList(),
+                    },
+                };
+                break;
+        }
+
+        return tree;
+    }
+
+    /// <summary>
+    /// Maps the proto algebraic set operation to its native equivalent.
+    /// </summary>
+    private static TreeOperation ToTreeOperation(AlgebraicSubjectSet.Types.Operation op) => op switch
+    {
+        AlgebraicSubjectSet.Types.Operation.Union => TreeOperation.Union,
+        AlgebraicSubjectSet.Types.Operation.Intersection => TreeOperation.Intersection,
+        AlgebraicSubjectSet.Types.Operation.Exclusion => TreeOperation.Exclusion,
+        _ => TreeOperation.Unspecified,
+    };
 
     private static RelationshipUpdate UpdateFromProto(Authzed.Api.V1.RelationshipUpdate pu)
     {
@@ -992,11 +1540,8 @@ public sealed record SchemaDiff
 /// <summary>Holds the result of a permission tree expansion.</summary>
 public sealed record ExpandResult
 {
-    /// <summary>
-    /// The root of the expanded permission tree. This is the underlying proto
-    /// type since the tree structure is complex and deeply nested.
-    /// </summary>
-    public PermissionRelationshipTree? TreeRoot { get; init; }
+    /// <summary>The root of the expanded permission tree.</summary>
+    public PermissionTree Tree { get; init; } = new();
     public string Revision { get; init; } = "";
 }
 

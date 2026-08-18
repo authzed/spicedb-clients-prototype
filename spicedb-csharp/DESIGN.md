@@ -148,17 +148,49 @@ re-fetches pages using the `AfterResultCursor` from each response.
 | `LookupResourcesAsync` | 512 | cursor-based auto-pagination |
 | `LookupSubjectsAsync` | — | no cursor support in SpiceDB yet; single streaming call |
 | `ExportRelationshipsAsync` | 512 | cursor-based auto-pagination |
-| `DeleteRelationshipsAsync` | 10,000 | auto-repeats until all matched rels deleted |
+| `DeleteRelationshipsAsync` | 1,000 | auto-repeats until all matched rels deleted; matches SpiceDB's default `--max-delete-relationships-limit` |
 | `ImportRelationshipsAsync` | 1,000 | batches into client-streaming sends |
 | `UpdatesAsync` | — | server-streaming, no pagination needed |
 
 Async enumerables:
 
 - `ReadRelationshipsAsync(consistency, filter)` → `IAsyncEnumerable<Relationship>`
-- `LookupResourcesAsync(consistency, resourceType, permission, subjectType, subjectID)` → `IAsyncEnumerable<string>`
-- `LookupSubjectsAsync(consistency, resourceType, resourceID, permission, subjectType)` → `IAsyncEnumerable<string>`
+- `LookupResourcesAsync(consistency, resourceType, permission, subjectType, subjectID)` → `IAsyncEnumerable<LookupResource>`
+- `LookupSubjectsAsync(consistency, resourceType, resourceID, permission, subjectType)` → `IAsyncEnumerable<LookupSubject>`
 - `ExportRelationshipsAsync(consistency, filter?)` → `IAsyncEnumerable<Relationship>`
 - `UpdatesAsync(objectTypes?, startRevision?)` → `IAsyncEnumerable<RelationshipUpdate>`
+
+### Lookups
+
+`LookupResourcesAsync`/`LookupSubjectsAsync` yield native records instead of
+bare strings — the proto `LookupPermissionship`/`PartialCaveatInfo`/
+`ResolvedSubject` types are never exposed. Mirrors `spicedb-go`'s
+`client/lookup_types.go`.
+
+```csharp
+public enum Permissionship { Unspecified, HasPermission, ConditionalPermission }
+public sealed record PartialCaveatInfo { MissingRequiredContext }
+public sealed record LookupResource { ResourceID, Permissionship, PartialCaveat }
+public sealed record ResolvedSubject { SubjectID, Permissionship, PartialCaveat }
+public sealed record LookupSubject { Subject, ExcludedSubjects }
+```
+
+- `LookupResourcesAsync(consistency, resourceType, permission, subjectType, subjectID)` → `IAsyncEnumerable<LookupResource>`
+- `LookupSubjectsAsync(consistency, resourceType, resourceID, permission, subjectType)` → `IAsyncEnumerable<LookupSubject>`
+
+`Permissionship` MUST be checked before treating a result as a full grant —
+`ConditionalPermission` results depend on caveat context (`PartialCaveat`)
+that the server did not fully evaluate.
+
+**Wildcard exclusions**: when `LookupSubject.Subject.SubjectID` is the
+wildcard `"*"`, the server has granted the permission to every subject of
+`subjectType` EXCEPT those listed in `LookupSubject.ExcludedSubjects`.
+Callers MUST check `ExcludedSubjects` before treating a wildcard match as a
+blanket grant — ignoring it risks granting access to subjects the server
+explicitly excluded. The deprecated proto fallback fields
+(`subject_object_id`/`permissionship`/`partial_caveat_info`/
+`excluded_subject_ids`) are handled transparently for servers that don't yet
+populate the non-deprecated `subject`/`excluded_subjects` fields.
 
 ### Writes
 
@@ -166,10 +198,38 @@ Async enumerables:
 
 ### Deletions
 
-- `DeleteRelationshipsAsync(filter)` → `Task<string>` (revision)
+- `DeleteRelationshipsAsync(filter, mustMatch?, mustNotMatch?, limit?)` → `Task<string>` (revision)
 
-Automatically pages through large result sets using a limit of 10,000 per RPC
-call. Repeats until the server reports all matching relationships are deleted.
+Automatically pages through large result sets using a limit of 1,000 per RPC
+call (override with `limit`; matches SpiceDB's default
+`--max-delete-relationships-limit`, so the default works against a stock
+server). Repeats until the server reports all matching relationships are
+deleted.
+
+Optional parameters reach the proto fields that were previously unreachable —
+`optional_preconditions` and `optional_limit`:
+
+```csharp
+var revision = await client.DeleteRelationshipsAsync(
+    filter,
+    mustMatch: [guardFilter],       // MUST_MATCH precondition
+    mustNotMatch: [otherFilter],    // MUST_NOT_MATCH precondition
+    limit: 500);                    // override the 1,000 default page size
+```
+
+`mustMatch`/`mustNotMatch` build a `Precondition` from a `Filter` via the
+same internal helper `Transaction.MustMatch`/`MustNotMatch` use
+(`Transaction.BuildPrecondition`); the server rejects the whole call
+(deleting nothing for that call) if a precondition isn't satisfied.
+Preconditions are a per-request proto field, so when a delete spans multiple
+pages, they're re-evaluated by the server on every page — there's no "check
+once, apply to every page" semantics. A delete that starts successfully can
+still fail partway through if the guarded state changes between pages, after
+earlier pages were already deleted. For a single-shot, all-or-nothing guarded
+delete, pair a precondition with `limit` set high enough to cover every
+matching relationship in one call. No optional parameters given means
+unchanged default behavior: no preconditions, 1,000-item page size, partial
+deletions allowed (so auto-paging keeps working).
 
 ### Schema
 
@@ -183,6 +243,11 @@ call. Repeats until the server reports all matching relationships are deleted.
 ### Expand
 
 - `ExpandPermissionTreeAsync(consistency, resourceType, resourceID, permission)` → `Task<ExpandResult>`
+
+`ExpandResult.Tree` is a native `PermissionTree` record — the proto
+`PermissionRelationshipTree` is never exposed. Exactly one of
+`Intermediate`/`Leaf` is non-null on each node, mapped recursively from the
+proto `tree_type` oneof.
 
 ### Bulk Import / Export
 
@@ -214,17 +279,18 @@ Exception hierarchy rooted at `SpiceDBException`:
 - `CancelledException`
 - `ResourceExhaustedException`
 - `DeadlineExceededException`
+- `AbortedException`
 
 `ErrorMapper` static class:
 
 - `ToSpiceDBException(RpcException)` — maps gRPC status codes to typed exceptions
-- `IsTransient(Exception)` — returns true for UNAVAILABLE, DEADLINE_EXCEEDED, RESOURCE_EXHAUSTED
+- `IsTransient(Exception)` — returns true for UNAVAILABLE, RESOURCE_EXHAUSTED, ABORTED
 
 ### Auto-Retry
 
 Automatic retry with exponential backoff for transient gRPC errors (UNAVAILABLE,
-DEADLINE_EXCEEDED, RESOURCE_EXHAUSTED). Max 5 attempts with 100ms initial
-backoff, doubling each retry.
+RESOURCE_EXHAUSTED, ABORTED). Max 3 retries (4 attempts total) with 100ms
+initial backoff, doubling each retry.
 
 ### Supporting Types
 
@@ -237,10 +303,21 @@ public sealed record SchemaCaveatParameter { Name, Type, ParentCaveatName }
 public sealed record ReflectSchemaResult { Definitions, Caveats, Revision }
 public sealed record RelationReference { DefinitionName, RelationName, IsPermission }
 public sealed record SchemaDiff { Kind, DefinitionName, RelationName, PermissionName, CaveatName }
-public sealed record ExpandResult { TreeRoot, Revision }
+public sealed record ExpandResult { Tree, Revision }
 public sealed record CountResult { RelationshipCount, Revision }
 public sealed record RelationshipUpdate { Operation, Relationship }
 public enum UpdateOperation { Create = 1, Touch = 2, Delete = 3 }
+public sealed record PermissionTree { ExpandedObject, ExpandedRelation, Intermediate, Leaf }
+public sealed record ObjectRef { ObjectType, ObjectID }
+public sealed record SubjectRef { SubjectType, SubjectID, OptionalRelation }
+public sealed record IntermediateNode { Operation, Children }
+public sealed record LeafNode { Subjects }
+public enum TreeOperation { Unspecified, Union, Intersection, Exclusion }
+public enum Permissionship { Unspecified, HasPermission, ConditionalPermission }
+public sealed record PartialCaveatInfo { MissingRequiredContext }
+public sealed record LookupResource { ResourceID, Permissionship, PartialCaveat }
+public sealed record ResolvedSubject { SubjectID, Permissionship, PartialCaveat }
+public sealed record LookupSubject { Subject, ExcludedSubjects }
 ```
 
 ### Escape Hatches

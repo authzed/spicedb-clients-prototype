@@ -53,4 +53,11 @@ definition document {
 	if !allowed {
 		log.Fatalf("expected alice to have view permission")
 	}
+
+	// Clean up so later examples that write a narrower schema aren't blocked
+	// by leftover relationships (examples run in sequence against one shared
+	// SpiceDB instance).
+	if _, err := c.DeleteRelationships(ctx, rel.NewFilter("document")); err != nil {
+		log.Fatalf("cleanup failed: %v", err)
+	}
 }

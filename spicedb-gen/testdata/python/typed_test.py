@@ -79,7 +79,10 @@ async def test_lookup_resources(tc: TypedClient) -> None:
     """Test lookup_resources returns resources a user can access."""
     await tc.touch(Document("readme").viewer(User("alice")))
 
-    ids = [rid async for rid in tc.lookup_resources(full(), DocumentView, User("alice"))]
+    ids = [
+        r.resource_id
+        async for r in tc.lookup_resources(full(), DocumentView, User("alice"))
+    ]
     assert "readme" in ids
 
 
@@ -92,7 +95,10 @@ async def test_lookup_subjects(tc: TypedClient) -> None:
         Document("readme").owner(User("charlie")),
     )
 
-    ids = [sid async for sid in tc.lookup_subjects(full(), Document("readme").view, User)]
+    ids = [
+        s.subject.subject_id
+        async for s in tc.lookup_subjects(full(), Document("readme").view, User)
+    ]
     assert "alice" in ids
     assert "bob" in ids
     assert "charlie" in ids
@@ -225,8 +231,8 @@ async def test_team_member_subject(tc: TypedClient) -> None:
 
     # Lookup subjects of type team#member
     team_members = [
-        sid
-        async for sid in tc.lookup_subjects(
+        s.subject.subject_id
+        async for s in tc.lookup_subjects(
             full(), Document("teamdoc").view, TeamMember
         )
     ]

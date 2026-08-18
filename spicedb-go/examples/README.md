@@ -21,8 +21,10 @@ Or use `mage test` which starts a SpiceDB container automatically.
 | `check_permission/` | Basic permission check |
 | `write_relationships/` | Writing relationships |
 | `read_relationships/` | Reading relationships with iterators |
+| `delete_relationships/` | Deleting relationships, including precondition-guarded deletes |
 | `lookup_resources/` | Resource lookup |
 | `lookup_subjects/` | Subject lookup |
 | `watch_changes/` | Watching for changes |
 | `schema_management/` | Schema read/write |
-| `bulk_operations/` | Bulk checks and imports |
+| `bulk_operations/` | Bulk checks, batch writes, and bulk import/export |
+| `expand_permission_tree/` | Expanding a permission into its tree of subjects |

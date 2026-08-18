@@ -2,6 +2,7 @@
 //!
 //! Run with: `cargo run --example bulk_operations`
 
+use futures::StreamExt;
 use spicedb::client::SpiceDBClient;
 use spicedb::consistency;
 use spicedb::types::{Relationship, Transaction};
@@ -96,7 +97,7 @@ async fn main() {
         .map(|i| {
             Relationship::new(
                 "document",
-                &format!("bulk-doc-{i}"),
+                format!("bulk-doc-{i}"),
                 "viewer",
                 "user",
                 "alice",
@@ -115,10 +116,13 @@ async fn main() {
     assert!(count > 0, "expected at least one imported relationship");
 
     // Bulk export relationships
-    let exported = client
-        .export_relationships(&consistency::full(), None)
-        .await
-        .expect("export failed");
+    let stream = client.export_relationships(&consistency::full(), None);
+    tokio::pin!(stream);
+
+    let mut exported = Vec::new();
+    while let Some(rel) = stream.next().await {
+        exported.push(rel.expect("export failed"));
+    }
 
     println!("exported {} relationships", exported.len());
 }

@@ -184,6 +184,65 @@ func TestCaveatOnSubjectType(t *testing.T) {
 	assert.Empty(t, bareUser.CaveatName)
 }
 
+func TestSelfReferentialPermissionDoesNotStackOverflow(t *testing.T) {
+	// Regression test: a permission that arrows back to itself through a
+	// self-referential relation (folder-in-folder) must not cause infinite
+	// recursion / stack overflow when computing reachable subjects.
+	s, err := schema.ParseString(`
+definition user {}
+
+definition folder {
+	relation parent: folder
+	relation viewer: user
+	permission view = viewer + parent->view
+}
+`)
+	require.NoError(t, err)
+	require.Len(t, s.Definitions, 2)
+
+	folder := s.Definitions[1]
+	require.Equal(t, "folder", folder.Name)
+	require.Len(t, folder.Permissions, 1)
+
+	viewPerm := folder.Permissions[0]
+	assert.Equal(t, "view", viewPerm.Name)
+
+	// view = viewer + parent->view
+	// viewer allows: user
+	// parent->view re-enters view on folder; the cycle guard cuts it, so it
+	// contributes nothing new.
+	require.Len(t, viewPerm.ReachableSubjects, 1)
+	assert.Equal(t, schema.SubjectType{Definition: "user"}, viewPerm.ReachableSubjects[0])
+}
+
+func TestMutualRecursionDoesNotStackOverflow(t *testing.T) {
+	// Regression test: a permission that references itself via a computed
+	// userset on its own relation (group#member self-reference) must
+	// terminate rather than recurse forever.
+	s, err := schema.ParseString(`
+definition user {}
+
+definition group {
+	relation member: user | group#member
+	permission members = member
+}
+`)
+	require.NoError(t, err)
+	require.Len(t, s.Definitions, 2)
+
+	group := s.Definitions[1]
+	require.Equal(t, "group", group.Name)
+	require.Len(t, group.Permissions, 1)
+
+	membersPerm := group.Permissions[0]
+	assert.Equal(t, "members", membersPerm.Name)
+
+	// members = member, which allows: user, group#member
+	require.Len(t, membersPerm.ReachableSubjects, 2)
+	assert.Contains(t, membersPerm.ReachableSubjects, schema.SubjectType{Definition: "user"})
+	assert.Contains(t, membersPerm.ReachableSubjects, schema.SubjectType{Definition: "group", Relation: "member"})
+}
+
 func TestViewPermissionReachableSubjectsWithCaveats(t *testing.T) {
 	s, err := schema.ParseFile(testdataPath("sample.zed"))
 	require.NoError(t, err)

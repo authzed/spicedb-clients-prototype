@@ -2,7 +2,6 @@ package client
 
 import (
 	"context"
-	"fmt"
 
 	v1 "github.com/authzed/spicedb-clients/proto-clients/spicedb-go-proto/gen/authzed/api/v1"
 	"github.com/authzed/spicedb-clients/spicedb-go/consistency"
@@ -12,7 +11,7 @@ import (
 func (c *Client) ReadSchema(ctx context.Context) (schema string, revision string, err error) {
 	resp, err := c.ssc.ReadSchema(ctx, &v1.ReadSchemaRequest{})
 	if err != nil {
-		return "", "", fmt.Errorf("spicedb: read schema: %w", err)
+		return "", "", mapGRPCError("read schema", err)
 	}
 	return resp.GetSchemaText(), resp.GetReadAt().GetToken(), nil
 }
@@ -21,7 +20,7 @@ func (c *Client) ReadSchema(ctx context.Context) (schema string, revision string
 func (c *Client) WriteSchema(ctx context.Context, schema string) (revision string, err error) {
 	resp, err := c.ssc.WriteSchema(ctx, &v1.WriteSchemaRequest{Schema: schema})
 	if err != nil {
-		return "", fmt.Errorf("spicedb: write schema: %w", err)
+		return "", mapGRPCError("write schema", err)
 	}
 	return resp.GetWrittenAt().GetToken(), nil
 }
@@ -77,7 +76,7 @@ func (c *Client) ReflectSchema(ctx context.Context, cs consistency.Strategy) (*R
 		Consistency: cs.V1Consistency,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("spicedb: reflect schema: %w", err)
+		return nil, mapGRPCError("reflect schema", err)
 	}
 
 	result := &ReflectSchemaResult{
@@ -141,7 +140,7 @@ func (c *Client) ComputablePermissions(ctx context.Context, cs consistency.Strat
 		RelationName:   relationName,
 	})
 	if err != nil {
-		return nil, "", fmt.Errorf("spicedb: computable permissions: %w", err)
+		return nil, "", mapGRPCError("computable permissions", err)
 	}
 
 	refs := make([]RelationReference, len(resp.GetPermissions()))
@@ -163,7 +162,7 @@ func (c *Client) DependentRelations(ctx context.Context, cs consistency.Strategy
 		PermissionName: permissionName,
 	})
 	if err != nil {
-		return nil, "", fmt.Errorf("spicedb: dependent relations: %w", err)
+		return nil, "", mapGRPCError("dependent relations", err)
 	}
 
 	refs := make([]RelationReference, len(resp.GetRelations()))
@@ -201,7 +200,7 @@ func (c *Client) DiffSchema(ctx context.Context, cs consistency.Strategy, compar
 		ComparisonSchema: comparisonSchema,
 	})
 	if err != nil {
-		return nil, "", fmt.Errorf("spicedb: diff schema: %w", err)
+		return nil, "", mapGRPCError("diff schema", err)
 	}
 
 	var diffs []SchemaDiff

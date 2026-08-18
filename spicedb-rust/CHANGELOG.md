@@ -1,5 +1,170 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+- **`delete_relationships_with(filter, &DeleteOptions)`**: guarded deletes.
+  Previously `delete_relationships` took only a filter, so the proto
+  `optional_preconditions`/`optional_limit` fields were unreachable — there
+  was no way to guard a delete on other relationship state, or to override the
+  1,000-item auto-paging page size. `DeleteOptions` is a `Default`-derived
+  builder:
+
+  ```rust
+  use spicedb::types::DeleteOptions;
+
+  let options = DeleteOptions::new()
+      .with_must_match(filter_that_must_exist)
+      .with_must_not_match(filter_that_must_not_exist)
+      .with_limit(1_000);
+  let revision = client.delete_relationships_with(&filter, &options).await?;
+  ```
+
+  `delete_relationships(filter)` is unchanged and remains the ergonomic
+  no-options path (it now delegates to `delete_relationships_with` with
+  `DeleteOptions::default()`). As with write preconditions, delete
+  preconditions are a per-request proto field: on a multi-page delete they are
+  re-evaluated by the server on every page, so pair a precondition with
+  `DeleteOptions::with_limit` set large enough to cover every matching
+  relationship in one call for single-shot, all-or-nothing semantics.
+
+### Fixes
+
+- **Delete page size correction**: `DEFAULT_DELETE_PAGE_SIZE` is now 1,000 (matching SpiceDB's default `--max-delete-relationships-limit`, so the default `delete_relationships` call works against a stock server), not 10,000 — the earlier "10,000" correction in this file was itself wrong
+- **Standardized the retryable gRPC code set to `{UNAVAILABLE, RESOURCE_EXHAUSTED,
+  ABORTED}`**, aligning with the other idiomatic clients. `DEADLINE_EXCEEDED` is no
+  longer treated as transient/retried — a deadline is a caller-set budget, and
+  retrying past it silently extends an operation beyond the time the caller
+  asked for. `ABORTED` (e.g. optimistic-concurrency/transaction conflicts) is
+  now retried, since a retry is usually exactly the right response.
+- **Lowered `MAX_RETRIES` from 5 to 3** (4 total attempts) and **capped the
+  exponential backoff delay at 5s** per retry, so a long run of transient
+  failures no longer produces unbounded per-attempt waits.
+- **`updates()` (watch) now retries transient failures during stream
+  *establishment***, not just during in-stream reads. Previously, if the
+  initial `Watch` call failed with a transient error (e.g. `UNAVAILABLE`),
+  the returned stream immediately yielded that error with no retry. It now
+  retries establishment the same way other RPCs do. (Note:
+  `import_relationships`, a client-streaming RPC, intentionally does not gain
+  retry — retrying after a partial send would risk re-sending data.)
+
+### Breaking changes
+
+- **`lookup_resources` and `lookup_subjects` now yield native result structs
+  instead of bare `String`s.** Previously, `lookup_subjects` silently dropped
+  `excluded_subjects` — the list of subjects explicitly excluded from a
+  wildcard (`"*"`) grant. A caller treating a wildcard-subject result as a
+  blanket grant (the natural reading of a bare ID stream) could therefore
+  grant access to a subject the server had explicitly excluded. Both methods
+  now surface `permissionship` (full grant vs. conditional on caveat context)
+  and, for `lookup_subjects`, `excluded_subjects`:
+
+  ```rust
+  // Before:
+  // fn lookup_resources(...) -> impl Stream<Item = Result<String, SpiceDBError>>;
+  // fn lookup_subjects(...) -> impl Stream<Item = Result<String, SpiceDBError>>;
+
+  // After:
+  // fn lookup_resources(...) -> impl Stream<Item = Result<LookupResource, SpiceDBError>>;
+  // fn lookup_subjects(...) -> impl Stream<Item = Result<LookupSubject, SpiceDBError>>;
+
+  use futures::StreamExt;
+
+  let stream = client.lookup_resources(&consistency, "document", "view", "user", "alice");
+  tokio::pin!(stream);
+  while let Some(result) = stream.next().await {
+      let result = result?;
+      println!("{} ({:?})", result.resource_id, result.permissionship);
+  }
+
+  let stream = client.lookup_subjects(&consistency, "document", "doc1", "view", "user");
+  tokio::pin!(stream);
+  while let Some(result) = stream.next().await {
+      let result = result?;
+      if result.subject.subject_id == "*" {
+          // MUST check excluded_subjects before treating "*" as a blanket grant.
+          for excluded in &result.excluded_subjects {
+              // excluded.subject_id does NOT have the permission.
+          }
+      }
+  }
+  ```
+
+- **`updates()` (watch) is now a real `Stream`.** It changed from
+  `async fn updates(...) -> Result<Vec<Update>, SpiceDBError>` to
+  `fn updates(...) -> impl Stream<Item = Result<Update, SpiceDBError>>`. The old
+  signature collected the entire server stream into a `Vec` and only returned
+  once the stream ended — but watch is open-ended, so on a live watch it hung
+  forever. Updates are now yielded incrementally as they occur. Consume the
+  stream with `futures::StreamExt::next` (pin it first, e.g. `tokio::pin!`):
+
+  ```rust
+  use futures::StreamExt;
+  let stream = client.updates(&object_types, None);
+  tokio::pin!(stream);
+  while let Some(update) = stream.next().await {
+      let update = update?;
+      // ...
+  }
+  ```
+
+- **`read_relationships`, `lookup_resources`, `lookup_subjects`, and
+  `export_relationships` are now real `Stream`s.** Each changed from an
+  `async fn ... -> Result<Vec<T>, SpiceDBError>` that buffered the entire
+  (auto-paginated) result set into a `Vec` before returning, to a
+  `fn ... -> impl Stream<Item = Result<T, SpiceDBError>>` that yields items
+  incrementally as they arrive. For the three that auto-paginate
+  (`read_relationships`, `lookup_resources`, `export_relationships`), the next
+  page is now fetched lazily — only once the current page has been fully
+  drained by the caller — instead of the whole result set being pulled into
+  memory up front. Consume with `futures::StreamExt::next` (pin it first,
+  e.g. `tokio::pin!`):
+
+  ```rust
+  use futures::StreamExt;
+  let stream = client.read_relationships(&consistency, &filter);
+  tokio::pin!(stream);
+  while let Some(rel) = stream.next().await {
+      let rel = rel?;
+      // ...
+  }
+  ```
+
+- **`expand_permission_tree` now returns the full native `PermissionTree`,
+  not just a revision.** Previously `ExpandResult` had only a `revision`
+  field — the server's tree of intermediate (union/intersection/exclusion)
+  and leaf (subject) nodes was discarded (a `// TODO: When spicedb-proto
+  types are available` stub from the initial release). `ExpandResult` gained
+  a `tree: PermissionTree` field; `PermissionTree` is a recursive, proto-free
+  native type:
+
+  ```rust
+  // Before:
+  // struct ExpandResult { revision: String }
+
+  // After:
+  // struct ExpandResult { tree: PermissionTree, revision: String }
+
+  let result = client
+      .expand_permission_tree(&consistency, "document", "doc1", "view")
+      .await?;
+
+  fn walk(tree: &spicedb::types::PermissionTree) {
+      if let Some(leaf) = &tree.leaf {
+          for subject in &leaf.subjects {
+              println!("{}:{}", subject.subject_type, subject.subject_id);
+          }
+      }
+      if let Some(intermediate) = &tree.intermediate {
+          for child in &intermediate.children {
+              walk(child);
+          }
+      }
+  }
+  walk(&result.tree);
+  ```
+
 ## 0.1.0 (2026-03-18)
 
 Initial release of the idiomatic Rust SpiceDB client.

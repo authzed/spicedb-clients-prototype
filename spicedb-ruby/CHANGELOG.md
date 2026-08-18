@@ -95,6 +95,15 @@
 - `updates` now maps errors raised mid-stream (e.g. a garbage-collected watch revision) to native `SpiceDB::*Error` types instead of leaking the raw `GRPC::BadStatus`. The watch stream is intentionally not retried on error — only mapped — since retrying a live server-stream mid-flight risks replaying updates.
 - Per-item errors from `check_permission`/`check_permissions`/`check_any`/`check_all` (via `BulkCheckPermissions`) now raise the specific `SpiceDB::*Error` subclass (e.g. `SpiceDB::InvalidArgumentError`) instead of the generic base `SpiceDB::Error`.
 - `SpiceDB.to_spicedb_error` no longer misreads `Google::Rpc::Status#details` (a repeated `Any` field, unrelated to the error message) as the exception message; it now falls back to `#message` whenever `#details` isn't a usable string, fixing the message text for the per-item `BulkCheckPermissions` fix above.
+- **`with_expiration` was non-functional in both directions.** The client wrote and
+  read `optional_expiration`; the field on `authzed.api.v1.Relationship` is
+  `optional_expires_at`. Writing an expiring relationship raised a bare
+  `ArgumentError: Unknown field name 'optional_expiration'` (not translated into a
+  `SpiceDB::Error`, since `with_retry` only rescues errors responding to `#code`), and
+  reading one silently returned `nil` — so an expiring relationship read back as
+  permanent. No TTL-based grant could be built. The read path's `respond_to?` guard,
+  which is what made the failure silent, has been removed so a future rename fails
+  loudly.
 
 ### Documentation
 

@@ -242,3 +242,40 @@ RSpec.describe SpiceDB::Relationship do
     end
   end
 end
+
+# Wire-level coverage for Relationship#expiration.
+#
+# The pre-existing expiration specs asserted only against the value object, never
+# crossing the proto boundary -- which is why a wrong field name
+# (`optional_expiration`, a field that does not exist; the real one is
+# `optional_expires_at`) shipped undetected in BOTH directions: the write path raised
+# a bare ArgumentError, and the read path silently returned nil forever, so an
+# expiring relationship read back as permanent.
+RSpec.describe 'SpiceDB::Relationship expiration wire round-trip' do
+  let(:client) { SpiceDB::Client.new_plaintext('localhost:50051', 'testtoken') }
+
+  it 'writes expiration to optional_expires_at and reads it back with nanosecond precision' do
+    expires = Time.at(1_764_547_200, 123_456_789, :nsec)
+    rel = SpiceDB::Relationship
+          .from_triple('document', 'doc1', 'viewer', 'user', 'alice')
+          .with_expiration(expires)
+
+    proto = client.send(:relationship_to_proto, rel)
+
+    expect(proto.optional_expires_at.seconds).to eq(1_764_547_200)
+    expect(proto.optional_expires_at.nanos).to eq(123_456_789)
+
+    round_tripped = client.send(:relationship_from_proto, proto)
+
+    expect(round_tripped.expiration.to_i).to eq(expires.to_i)
+    expect(round_tripped.expiration.nsec).to eq(expires.nsec)
+  end
+
+  it 'leaves expiration nil when none was set' do
+    rel = SpiceDB::Relationship.from_triple('document', 'doc1', 'viewer', 'user', 'alice')
+
+    proto = client.send(:relationship_to_proto, rel)
+
+    expect(client.send(:relationship_from_proto, proto).expiration).to be_nil
+  end
+end

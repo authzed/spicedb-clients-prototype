@@ -705,7 +705,7 @@ module SpiceDB
       end
 
       if rel.expiration
-        args[:optional_expiration] = Google::Protobuf::Timestamp.new(
+        args[:optional_expires_at] = Google::Protobuf::Timestamp.new(
           seconds: rel.expiration.to_i,
           nanos: rel.expiration.nsec
         )
@@ -726,8 +726,9 @@ module SpiceDB
       end
 
       expiration = nil
-      if proto_rel.respond_to?(:optional_expiration) && proto_rel.optional_expiration&.seconds&.positive?
-        expiration = Time.at(proto_rel.optional_expiration.seconds, proto_rel.optional_expiration.nanos, :nsec)
+      if proto_rel.optional_expires_at&.seconds&.positive?
+        expiration = Time.at(proto_rel.optional_expires_at.seconds,
+                             proto_rel.optional_expires_at.nanos, :nsec)
       end
 
       SpiceDB::Relationship.new(

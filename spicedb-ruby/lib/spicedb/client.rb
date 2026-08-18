@@ -628,6 +628,16 @@ module SpiceDB
     end
 
     # Builds an Authzed::Api::V1::RelationshipFilter from a SpiceDB::Filter.
+    #
+    # @raise [SpiceDB::InvalidArgumentError] if +subject_id+ or +subject_relation+ is set without
+    #   +subject_type+. The wire's SubjectFilter.subject_type is a required field, so there is no
+    #   way to express a subject ID/relation constraint without it, which makes silently dropping
+    #   the constraint the one unsafe resolution: a caller who wrote
+    #   +Filter.new(resource_type: 'document', subject_id: 'alice')+, expecting to narrow to
+    #   alice's relationships, would instead match every subject on every document -- e.g.
+    #   +delete_relationships+ would delete every relationship on every document, not just
+    #   alice's. See root DESIGN.md, "RULE: A conversion that cannot preserve meaning must fail",
+    #   clause 1.
     def filter_to_proto(filter)
       args = { resource_type: filter.resource_type }
       args[:optional_resource_id] = filter.resource_id if filter.resource_id
@@ -635,9 +645,7 @@ module SpiceDB
       args[:optional_relation] = filter.relation if filter.relation
 
       if filter.subject_type
-        subject_filter = {
-          subject_type: filter.subject_type
-        }
+        subject_filter = { subject_type: filter.subject_type }
         subject_filter[:optional_subject_id] = filter.subject_id if filter.subject_id
         if filter.subject_relation
           subject_filter[:optional_relation] = Authzed::Api::V1::SubjectFilter::RelationFilter.new(
@@ -645,6 +653,9 @@ module SpiceDB
           )
         end
         args[:optional_subject_filter] = Authzed::Api::V1::SubjectFilter.new(**subject_filter)
+      elsif filter.subject_id || filter.subject_relation
+        missing = filter.subject_id ? 'subject_id' : 'subject_relation'
+        raise SpiceDB::InvalidArgumentError, "Filter has #{missing} set without subject_type -- call with_subject_type before with_#{missing}."
       end
 
       Authzed::Api::V1::RelationshipFilter.new(**args)

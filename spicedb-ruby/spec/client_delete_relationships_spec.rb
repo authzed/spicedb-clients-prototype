@@ -46,6 +46,83 @@ RSpec.describe 'SpiceDB::Client#delete_relationships preconditions and limit' do
     end
   end
 
+  # Regression tests for the offboarding hazard this finding describes:
+  # filter_to_proto used to build optional_subject_filter only inside
+  # `if filter.subject_type`, so a filter with subject_id but no
+  # subject_type produced a proto RelationshipFilter with NO subject
+  # constraint at all -- delete_relationships called with that filter would
+  # delete every relationship on every document, not just the intended
+  # subject's. It must now raise before any RPC is attempted, instead of
+  # silently widening.
+  describe 'filter with subject_id but no subject_type' do
+    it 'raises InvalidArgumentError naming subject_id and subject_type, and sends no request' do
+      requests = []
+      stub_delete_relationships(requests)
+      bad_filter = SpiceDB::Filter.new(resource_type: 'document', subject_id: 'alice')
+
+      expect { client.delete_relationships(bad_filter) }.to raise_error(SpiceDB::InvalidArgumentError) do |e|
+        expect(e.message).to include('subject_id')
+        expect(e.message).to include('subject_type')
+      end
+      expect(requests).to be_empty
+    end
+  end
+
+  describe 'filter with subject_relation but no subject_type' do
+    it 'raises InvalidArgumentError naming subject_relation and subject_type' do
+      requests = []
+      stub_delete_relationships(requests)
+      bad_filter = SpiceDB::Filter.new(resource_type: 'document', subject_relation: 'member')
+
+      expect { client.delete_relationships(bad_filter) }.to raise_error(SpiceDB::InvalidArgumentError) do |e|
+        expect(e.message).to include('subject_relation')
+        expect(e.message).to include('subject_type')
+      end
+      expect(requests).to be_empty
+    end
+  end
+
+  describe 'must_match: filter with subject_id but no subject_type' do
+    it 'raises InvalidArgumentError and sends no request' do
+      requests = []
+      stub_delete_relationships(requests)
+      bad_guard = SpiceDB::Filter.new(resource_type: 'document', subject_id: 'alice')
+
+      expect do
+        client.delete_relationships(filter, must_match: [bad_guard])
+      end.to raise_error(SpiceDB::InvalidArgumentError)
+      expect(requests).to be_empty
+    end
+  end
+
+  describe 'subject_type alone (no subject_id)' do
+    it 'does not raise, and sends a subject filter with an empty optional_subject_id' do
+      requests = []
+      stub_delete_relationships(requests)
+      type_only_filter = SpiceDB::Filter.new(resource_type: 'document', subject_type: 'user')
+
+      client.delete_relationships(type_only_filter)
+
+      req = requests.first
+      expect(req.relationship_filter.optional_subject_filter.subject_type).to eq('user')
+      expect(req.relationship_filter.optional_subject_filter.optional_subject_id).to eq('')
+    end
+  end
+
+  describe 'subject_type and subject_id together' do
+    it 'does not raise, and sends the full subject filter' do
+      requests = []
+      stub_delete_relationships(requests)
+      full_filter = SpiceDB::Filter.new(resource_type: 'document', subject_type: 'user', subject_id: 'alice')
+
+      client.delete_relationships(full_filter)
+
+      req = requests.first
+      expect(req.relationship_filter.optional_subject_filter.subject_type).to eq('user')
+      expect(req.relationship_filter.optional_subject_filter.optional_subject_id).to eq('alice')
+    end
+  end
+
   describe 'must_match:' do
     it 'adds a MUST_MATCH precondition built from the filter' do
       requests = []

@@ -91,6 +91,20 @@
 
 ### Fixed
 
+- **`filter_to_proto` silently dropped `subject_id`/`subject_relation` when `subject_type` was
+  not set, instead of raising.** `optional_subject_filter` was only built inside
+  `if filter.subject_type`, so `SpiceDB::Filter.new(resource_type: 'document',
+  subject_id: 'alice')` produced a proto `RelationshipFilter` with **no subject constraint at
+  all**, while the `Filter` object itself still reported `subject_id == 'alice'` — a caller
+  reading the object back would see the constraint they set; the server would not.
+  `client.delete_relationships(f)` called with that filter deleted every relationship on every
+  document, not just alice's — a correct-looking user-offboarding call that wipes the whole
+  system. The wire's `SubjectFilter.subject_type` is a required field, so there is no way to
+  express a subject ID/relation constraint without it, which makes silent widening the one unsafe
+  resolution — `filter_to_proto` now raises `SpiceDB::InvalidArgumentError` naming the field that
+  was set without `subject_type`, per root `DESIGN.md` "RULE: A conversion that cannot preserve
+  meaning must fail", clause 1 (caller-supplied data the client cannot represent MUST raise a
+  typed error). No pre-existing test asserted the silent-drop behavior, so none needed replacing.
 - **`call_bulk_check` did not verify that `check_bulk_permissions` returned as many pairs
   as were requested.** The result `Array` was built by mapping `resp.pairs` directly, with
   nothing comparing its length to the number of items sent. The proto guarantees pairs are

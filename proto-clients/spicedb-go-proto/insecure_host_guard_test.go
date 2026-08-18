@@ -45,6 +45,13 @@ func TestIsLoopbackEndpoint(t *testing.T) {
 		"0.0.0.0:50051", // unspecified address, not loopback
 		"passthrough:///evil.example.com:1234",
 		"dns:///spicedb.prod.example.com:443",
+		// Typosquats/lookalikes: a future refactor toward strings.Contains or
+		// strings.HasSuffix on "localhost"/"127.0.0.1" would wrongly treat
+		// these as loopback and reopen a credential leak. These must stay
+		// non-loopback under exact-match host comparison.
+		"localhost.evil.com:443",
+		"127.0.0.1.evil.com:443",
+		"evil-localhost:443",
 	}
 	for _, endpoint := range notLoopback {
 		require.False(t, isLoopbackEndpoint(endpoint), "expected %q to NOT be loopback", endpoint)

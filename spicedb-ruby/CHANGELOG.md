@@ -91,6 +91,44 @@
 
 ### Fixed
 
+- **2026-08-18**: Call deadlines, per root `DESIGN.md` "RULE: A unary call must have a
+  deadline". Previously no method accepted a timeout and no client-level default existed, so a
+  SpiceDB instance that accepted a connection but never answered hung every caller forever — the
+  connection looks fine at the transport level, so no error is produced and there is nothing for
+  retry logic to act on.
+  - Every unary method (`check_permission`/`check_permissions`/`check_any`/`check_all`, `write`,
+    `delete_relationships`, `read_schema`, `write_schema`, `import_relationships`,
+    `expand_permission_tree`, `experimental_register_relationship_counter`/
+    `experimental_count_relationships`/`experimental_unregister_relationship_counter`,
+    `reflect_schema`, `diff_schema`, `computable_permissions`, `dependent_relations`) now takes
+    a `timeout:` keyword (seconds), passed through as grpc-ruby's `deadline:` call option (an
+    absolute `Time`, computed fresh on each individual RPC attempt). Additive — omitting it is
+    unaffected.
+  - `Client.new`/`.new_plaintext`/`.new_system_tls` gained `default_timeout:` (seconds, default
+    `SpiceDB::Client::DEFAULT_TIMEOUT_SECONDS = 30`), applied to any unary call that doesn't pass
+    its own `timeout:`. 30s mirrors `authzed-node`'s `DEFAULT_DEADLINE_MS = 30_000` (its comment
+    cites `grpc/grpc-node#541`). There is deliberately no way to construct a client whose unary
+    calls have no bound at all.
+  - Streaming calls (`read_relationships`, `lookup_resources`, `lookup_subjects`, `updates`,
+    `export_relationships`) do **not** accept `timeout:` and are **not** bound by
+    `default_timeout` — DESIGN.md's "Streaming calls MUST NOT inherit the unary default": these
+    are long-lived by design (`updates` may legitimately run for the life of the process), and a
+    30s cutoff would end a legitimate stream, which is a worse defect than the one this change
+    fixes.
+  - `SpiceDB::DeadlineExceededError` (added earlier, but never actually produced by this client
+    since nothing enforced a deadline) is now reachable: a timed-out call raises it, not a
+    generic `SpiceDB::Error`. gRPC code `4` (`DEADLINE_EXCEEDED`) is not in `TRANSIENT_CODES`, so
+    a timeout is never auto-retried.
+  - `effective_timeout`/`deadline_for` (resolving a per-call `timeout:` against the client
+    default, and converting seconds into the absolute `Time` grpc-ruby's stubs expect) moved into
+    `SpiceDB::Retrying`, alongside the existing retry helpers.
+  - New `spec/client_deadlines_spec.rb`, against a real `GRPC::RpcServer` whose handlers
+    deliberately stall (a mocked `double`, used elsewhere in this suite, can't prove a deadline
+    is actually enforced — grpc's deadline machinery lives below the mock): a unary call against
+    a stub that never responds raises `DeadlineExceededError` well before the server's stall
+    completes (not a hang), a per-call `timeout:` overrides a much larger client default, and a
+    streaming call outlives a tiny unary default instead of inheriting it. Every spec is wrapped
+    in its own watchdog so a regression fails the suite instead of hanging CI.
 - **2026-08-18**: Retry safety, per root `DESIGN.md` "RULE: Automatic retry is for idempotent
   operations only". Three changes:
   - `RESOURCE_EXHAUSTED` (gRPC code 8) is no longer retried. In SpiceDB it signals memory

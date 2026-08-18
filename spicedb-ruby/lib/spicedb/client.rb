@@ -105,6 +105,24 @@ module SpiceDB
     DEFAULT_IMPORT_BATCH_SIZE = 1_000
     DEFAULT_CHECK_BATCH_SIZE = 1_000
 
+    # Applied to every unary call that does not pass its own `timeout:`.
+    #
+    # Mirrors authzed-node's `DEFAULT_DEADLINE_MS = 30_000` (its comment cites
+    # grpc/grpc-node#541, a known gRPC failure mode where a channel that
+    # accepts a connection but never answers produces no error at all).
+    # Without a finite default, a wedged SpiceDB hangs every caller that
+    # didn't opt in to a timeout -- in practice, most callers -- forever: the
+    # connection looks fine at the transport level, so nothing ever times out
+    # and nothing is ever produced to retry. See root DESIGN.md, "RULE: A
+    # unary call must have a deadline".
+    #
+    # Deliberately NOT applied to streaming calls (#read_relationships,
+    # #lookup_resources, #lookup_subjects, #updates, #export_relationships)
+    # -- those are long-lived by design, and applying this default to them
+    # would make the stream itself the outage (DESIGN.md, "Streaming calls
+    # MUST NOT inherit the unary default").
+    DEFAULT_TIMEOUT_SECONDS = 30
+
     # @return [Object] the underlying proto client for advanced use cases
     attr_reader :proto_client
 
@@ -115,10 +133,13 @@ module SpiceDB
     #
     # @param endpoint [String] the SpiceDB server address (e.g., "localhost:50051")
     # @param token [String] the preshared key for authentication
+    # @param default_timeout [Numeric] seconds applied to every unary call that
+    #   does not pass its own `timeout:` (see {DEFAULT_TIMEOUT_SECONDS}). NOT
+    #   applied to streaming calls.
     # @yield [client] optionally yields the client for block-scoped usage
     # @return [Client]
-    def self.new_plaintext(endpoint, token, &block)
-      client = new(endpoint: endpoint, token: token, insecure: true)
+    def self.new_plaintext(endpoint, token, default_timeout: DEFAULT_TIMEOUT_SECONDS, &block)
+      client = new(endpoint: endpoint, token: token, insecure: true, default_timeout: default_timeout)
       if block
         begin
           yield client
@@ -137,10 +158,13 @@ module SpiceDB
     #
     # @param endpoint [String] the SpiceDB server address (e.g., "grpc.example.com:443")
     # @param token [String] the preshared key for authentication
+    # @param default_timeout [Numeric] seconds applied to every unary call that
+    #   does not pass its own `timeout:` (see {DEFAULT_TIMEOUT_SECONDS}). NOT
+    #   applied to streaming calls.
     # @yield [client] optionally yields the client for block-scoped usage
     # @return [Client]
-    def self.new_system_tls(endpoint, token, &block)
-      client = new(endpoint: endpoint, token: token, insecure: false)
+    def self.new_system_tls(endpoint, token, default_timeout: DEFAULT_TIMEOUT_SECONDS, &block)
+      client = new(endpoint: endpoint, token: token, insecure: false, default_timeout: default_timeout)
       if block
         begin
           yield client
@@ -154,10 +178,11 @@ module SpiceDB
 
     # @api private
     # Use {.new_plaintext} or {.new_system_tls} instead.
-    def initialize(endpoint:, token:, insecure: false)
+    def initialize(endpoint:, token:, insecure: false, default_timeout: DEFAULT_TIMEOUT_SECONDS)
       @endpoint = endpoint
       @token = token
       @insecure = insecure
+      @default_timeout = default_timeout
 
       begin
         require 'spicedb_proto'
@@ -195,9 +220,11 @@ module SpiceDB
     # @param permission [String] the permission to check
     # @param relationship [SpiceDB::Relationship]
     # @param context [Hash, nil] call-level caveat context for this check
+    # @param timeout [Numeric, nil] seconds bounding this call, overriding
+    #   the client's default_timeout
     # @return [SpiceDB::CheckResult]
-    def check_permission(consistency, permission, relationship, context: nil)
-      check_permissions(consistency, permission, relationship, context: context).first
+    def check_permission(consistency, permission, relationship, context: nil, timeout: nil)
+      check_permissions(consistency, permission, relationship, context: context, timeout: timeout).first
     end
 
     # Performs a bulk permission check on the given relationships.
@@ -219,8 +246,10 @@ module SpiceDB
     # @param permission [String] the permission to check
     # @param relationships [Array<SpiceDB::Relationship>]
     # @param context [Hash, nil] call-level caveat context, applied to every item
+    # @param timeout [Numeric, nil] seconds bounding this call, overriding
+    #   the client's default_timeout
     # @return [Array<SpiceDB::CheckResult>]
-    def check_permissions(consistency, permission, *relationships, context: nil)
+    def check_permissions(consistency, permission, *relationships, context: nil, timeout: nil)
       relationships = relationships.flatten
       return [] if relationships.empty?
 
@@ -229,7 +258,7 @@ module SpiceDB
         # Each relationship becomes a CheckBulkPermissionsRequestItem
         items = relationships.map { |r| check_item_from_rel(r, permission) }
 
-        call_bulk_check(consistency, items, context)
+        call_bulk_check(consistency, items, context, effective_timeout(timeout))
       end
     end
 
@@ -243,9 +272,11 @@ module SpiceDB
     # @param permission [String]
     # @param relationships [Array<SpiceDB::Relationship>]
     # @param context [Hash, nil] call-level caveat context, applied to every item — see {#check_permissions}
+    # @param timeout [Numeric, nil] seconds bounding this call, overriding
+    #   the client's default_timeout
     # @return [Boolean]
-    def check_any(consistency, permission, *relationships, context: nil)
-      check_permissions(consistency, permission, *relationships, context: context).any?(&:has_permission?)
+    def check_any(consistency, permission, *relationships, context: nil, timeout: nil)
+      check_permissions(consistency, permission, *relationships, context: context, timeout: timeout).any?(&:has_permission?)
     end
 
     # Returns true if all of the given relationships have the permission.
@@ -259,16 +290,18 @@ module SpiceDB
     # @param permission [String]
     # @param relationships [Array<SpiceDB::Relationship>]
     # @param context [Hash, nil] call-level caveat context, applied to every item — see {#check_permissions}
+    # @param timeout [Numeric, nil] seconds bounding this call, overriding
+    #   the client's default_timeout
     # @return [Boolean]
     #
     # Returns false, not the vacuous true Enumerable#all? yields on an empty
     # collection, when +relationships+ is empty -- "no checks to run" is not
     # "all checks passed".
-    def check_all(consistency, permission, *relationships, context: nil)
+    def check_all(consistency, permission, *relationships, context: nil, timeout: nil)
       relationships = relationships.flatten
       return false if relationships.empty?
 
-      check_permissions(consistency, permission, *relationships, context: context).all?(&:has_permission?)
+      check_permissions(consistency, permission, *relationships, context: context, timeout: timeout).all?(&:has_permission?)
     end
 
     # --- Relationships ---
@@ -276,10 +309,12 @@ module SpiceDB
     # Commits a transaction of relationship mutations to SpiceDB.
     #
     # @param transaction [SpiceDB::Transaction]
+    # @param timeout [Numeric, nil] seconds bounding this call, overriding
+    #   the client's default_timeout
     # @return [String] the revision at which the write occurred
-    def write(transaction)
+    def write(transaction, timeout: nil)
       call_once do
-        call_write_relationships(transaction)
+        call_write_relationships(transaction, effective_timeout(timeout))
       end
     end
 
@@ -326,16 +361,19 @@ module SpiceDB
     # @param must_match [Array<SpiceDB::Filter>] preconditions that must each match at least one relationship
     # @param must_not_match [Array<SpiceDB::Filter>] preconditions that must each match no relationships
     # @param limit [Integer, nil] overrides the default per-request page size (1,000)
+    # @param timeout [Numeric, nil] seconds bounding EACH page's call,
+    #   overriding the client's default_timeout
     # @return [String] the revision of the final deletion
-    def delete_relationships(filter, must_match: [], must_not_match: [], limit: nil)
+    def delete_relationships(filter, must_match: [], must_not_match: [], limit: nil, timeout: nil)
       preconditions = must_match.map { |f| { operation: :must_match, filter: f } } +
                       must_not_match.map { |f| { operation: :must_not_match, filter: f } }
       page_size = limit || DEFAULT_DELETE_PAGE_SIZE
+      t = effective_timeout(timeout)
 
       revision = nil
       loop do
         rev, complete = call_once do
-          call_delete_relationships(filter, page_size, preconditions)
+          call_delete_relationships(filter, page_size, preconditions, t)
         end
         revision = rev
         break if complete
@@ -405,25 +443,31 @@ module SpiceDB
 
     # Returns the current SpiceDB schema.
     #
+    # @param timeout [Numeric, nil] seconds bounding this call, overriding
+    #   the client's default_timeout
     # @return [Array(String, String)] the schema text and revision
-    def read_schema
-      with_retry { call_read_schema }
+    def read_schema(timeout: nil)
+      with_retry { call_read_schema(effective_timeout(timeout)) }
     end
 
     # Writes a new schema to SpiceDB.
     #
     # @param schema [String] the schema text
+    # @param timeout [Numeric, nil] seconds bounding this call, overriding
+    #   the client's default_timeout
     # @return [String] the revision
-    def write_schema(schema)
-      call_once { call_write_schema(schema) }
+    def write_schema(schema, timeout: nil)
+      call_once { call_write_schema(schema, effective_timeout(timeout)) }
     end
 
     # Returns the definitions and caveats in the current schema.
     #
     # @param consistency [SpiceDB::Consistency::Strategy]
+    # @param timeout [Numeric, nil] seconds bounding this call, overriding
+    #   the client's default_timeout
     # @return [SpiceDB::ReflectSchemaResult]
-    def reflect_schema(consistency)
-      with_retry { call_reflect_schema(consistency) }
+    def reflect_schema(consistency, timeout: nil)
+      with_retry { call_reflect_schema(consistency, effective_timeout(timeout)) }
     end
 
     # Returns the permissions that are computable for the given relation.
@@ -431,9 +475,11 @@ module SpiceDB
     # @param consistency [SpiceDB::Consistency::Strategy]
     # @param definition_name [String]
     # @param relation_name [String]
+    # @param timeout [Numeric, nil] seconds bounding this call, overriding
+    #   the client's default_timeout
     # @return [Array(Array<SpiceDB::RelationReference>, String)] references and revision
-    def computable_permissions(consistency, definition_name, relation_name)
-      with_retry { call_computable_permissions(consistency, definition_name, relation_name) }
+    def computable_permissions(consistency, definition_name, relation_name, timeout: nil)
+      with_retry { call_computable_permissions(consistency, definition_name, relation_name, effective_timeout(timeout)) }
     end
 
     # Returns the relations that the given permission depends on.
@@ -441,18 +487,22 @@ module SpiceDB
     # @param consistency [SpiceDB::Consistency::Strategy]
     # @param definition_name [String]
     # @param permission_name [String]
+    # @param timeout [Numeric, nil] seconds bounding this call, overriding
+    #   the client's default_timeout
     # @return [Array(Array<SpiceDB::RelationReference>, String)] references and revision
-    def dependent_relations(consistency, definition_name, permission_name)
-      with_retry { call_dependent_relations(consistency, definition_name, permission_name) }
+    def dependent_relations(consistency, definition_name, permission_name, timeout: nil)
+      with_retry { call_dependent_relations(consistency, definition_name, permission_name, effective_timeout(timeout)) }
     end
 
     # Compares the current schema against the given comparison schema.
     #
     # @param consistency [SpiceDB::Consistency::Strategy]
     # @param comparison_schema [String]
+    # @param timeout [Numeric, nil] seconds bounding this call, overriding
+    #   the client's default_timeout
     # @return [Array(Array<SpiceDB::SchemaDiff>, String)] diffs and revision
-    def diff_schema(consistency, comparison_schema)
-      with_retry { call_diff_schema(consistency, comparison_schema) }
+    def diff_schema(consistency, comparison_schema, timeout: nil)
+      with_retry { call_diff_schema(consistency, comparison_schema, effective_timeout(timeout)) }
     end
 
     # --- Expand ---
@@ -463,9 +513,11 @@ module SpiceDB
     # @param resource_type [String]
     # @param resource_id [String]
     # @param permission [String]
+    # @param timeout [Numeric, nil] seconds bounding this call, overriding
+    #   the client's default_timeout
     # @return [SpiceDB::ExpandResult]
-    def expand_permission_tree(consistency, resource_type, resource_id, permission)
-      with_retry { call_expand_permission_tree(consistency, resource_type, resource_id, permission) }
+    def expand_permission_tree(consistency, resource_type, resource_id, permission, timeout: nil)
+      with_retry { call_expand_permission_tree(consistency, resource_type, resource_id, permission, effective_timeout(timeout)) }
     end
 
     # --- Bulk ---
@@ -474,9 +526,11 @@ module SpiceDB
     # automatically batched into chunks of 1,000.
     #
     # @param relationships [Enumerable<SpiceDB::Relationship>]
+    # @param timeout [Numeric, nil] seconds bounding this call, overriding
+    #   the client's default_timeout
     # @return [Integer] the number of relationships loaded
-    def import_relationships(relationships)
-      call_once { call_import_relationships(relationships) }
+    def import_relationships(relationships, timeout: nil)
+      call_once { call_import_relationships(relationships, effective_timeout(timeout)) }
     end
 
     # Returns an Enumerator over all relationships matching the optional filter,
@@ -536,9 +590,11 @@ module SpiceDB
     #
     # @param name [String] counter name
     # @param filter [SpiceDB::Filter]
+    # @param timeout [Numeric, nil] seconds bounding this call, overriding
+    #   the client's default_timeout
     # @return [nil]
-    def experimental_register_relationship_counter(name, filter)
-      call_once { call_register_relationship_counter(name, filter) }
+    def experimental_register_relationship_counter(name, filter, timeout: nil)
+      call_once { call_register_relationship_counter(name, filter, effective_timeout(timeout)) }
       nil
     end
 
@@ -547,9 +603,11 @@ module SpiceDB
     # @note Experimental: wraps SpiceDB's ExperimentalService and may change without following the backwards-compatibility mandate.
     #
     # @param name [String] counter name
+    # @param timeout [Numeric, nil] seconds bounding this call, overriding
+    #   the client's default_timeout
     # @return [SpiceDB::CountResult]
-    def experimental_count_relationships(name)
-      with_retry { call_count_relationships(name) }
+    def experimental_count_relationships(name, timeout: nil)
+      with_retry { call_count_relationships(name, effective_timeout(timeout)) }
     end
 
     # Removes a previously registered relationship counter.
@@ -557,9 +615,11 @@ module SpiceDB
     # @note Experimental: wraps SpiceDB's ExperimentalService and may change without following the backwards-compatibility mandate.
     #
     # @param name [String] counter name
+    # @param timeout [Numeric, nil] seconds bounding this call, overriding
+    #   the client's default_timeout
     # @return [nil]
-    def experimental_unregister_relationship_counter(name)
-      call_once { call_unregister_relationship_counter(name) }
+    def experimental_unregister_relationship_counter(name, timeout: nil)
+      call_once { call_unregister_relationship_counter(name, effective_timeout(timeout)) }
       nil
     end
 
@@ -750,7 +810,7 @@ module SpiceDB
     # ground truth: only CheckBulkPermissionsRequestItem#context, field 4,
     # carries context on the wire), so the merged context must be built and
     # attached per item here.
-    def call_bulk_check(consistency, items, call_level_context = nil)
+    def call_bulk_check(consistency, items, call_level_context, timeout_seconds)
       proto_items = items.map do |item|
         item_args = {
           resource: Authzed::Api::V1::ObjectReference.new(
@@ -778,7 +838,8 @@ module SpiceDB
         Authzed::Api::V1::CheckBulkPermissionsRequest.new(
           consistency: build_consistency(consistency),
           items: proto_items
-        )
+        ),
+        deadline: deadline_for(timeout_seconds)
       )
 
       # The proto guarantees pairs are returned in request order but says
@@ -820,7 +881,7 @@ module SpiceDB
       end
     end
 
-    def call_write_relationships(transaction)
+    def call_write_relationships(transaction, timeout_seconds)
       updates = transaction.updates.map do |update|
         op = Authzed::Api::V1::RelationshipUpdate::Operation.const_get(OPERATION_MAP[update[:operation]])
         Authzed::Api::V1::RelationshipUpdate.new(
@@ -835,7 +896,8 @@ module SpiceDB
       req_args[:optional_preconditions] = preconditions unless preconditions.empty?
 
       resp = @proto_client.permissions.write_relationships(
-        Authzed::Api::V1::WriteRelationshipsRequest.new(**req_args)
+        Authzed::Api::V1::WriteRelationshipsRequest.new(**req_args),
+        deadline: deadline_for(timeout_seconds)
       )
 
       resp.written_at.token
@@ -864,14 +926,15 @@ module SpiceDB
       [relationships, new_cursor, count]
     end
 
-    def call_delete_relationships(filter, page_size, preconditions = [])
+    def call_delete_relationships(filter, page_size, preconditions, timeout_seconds)
       resp = @proto_client.permissions.delete_relationships(
         Authzed::Api::V1::DeleteRelationshipsRequest.new(
           relationship_filter: filter_to_proto(filter),
           optional_preconditions: build_preconditions(preconditions),
           optional_limit: page_size,
           optional_allow_partial_deletions: true
-        )
+        ),
+        deadline: deadline_for(timeout_seconds)
       )
 
       revision = resp.deleted_at.token
@@ -925,25 +988,28 @@ module SpiceDB
       end
     end
 
-    def call_read_schema
+    def call_read_schema(timeout_seconds)
       resp = @proto_client.schema.read_schema(
-        Authzed::Api::V1::ReadSchemaRequest.new
+        Authzed::Api::V1::ReadSchemaRequest.new,
+        deadline: deadline_for(timeout_seconds)
       )
       [resp.schema_text, resp.read_at.token]
     end
 
-    def call_write_schema(schema)
+    def call_write_schema(schema, timeout_seconds)
       resp = @proto_client.schema.write_schema(
-        Authzed::Api::V1::WriteSchemaRequest.new(schema: schema)
+        Authzed::Api::V1::WriteSchemaRequest.new(schema: schema),
+        deadline: deadline_for(timeout_seconds)
       )
       resp.written_at.token
     end
 
-    def call_reflect_schema(consistency)
+    def call_reflect_schema(consistency, timeout_seconds)
       resp = @proto_client.schema.reflect_schema(
         Authzed::Api::V1::ReflectSchemaRequest.new(
           consistency: build_consistency(consistency)
-        )
+        ),
+        deadline: deadline_for(timeout_seconds)
       )
 
       definitions = resp.definitions.map do |defn|
@@ -992,13 +1058,14 @@ module SpiceDB
       )
     end
 
-    def call_computable_permissions(consistency, definition_name, relation_name)
+    def call_computable_permissions(consistency, definition_name, relation_name, timeout_seconds)
       resp = @proto_client.schema.computable_permissions(
         Authzed::Api::V1::ComputablePermissionsRequest.new(
           consistency: build_consistency(consistency),
           definition_name: definition_name,
           relation_name: relation_name
-        )
+        ),
+        deadline: deadline_for(timeout_seconds)
       )
 
       refs = resp.permissions.map do |perm|
@@ -1012,13 +1079,14 @@ module SpiceDB
       [refs, resp.read_at.token]
     end
 
-    def call_dependent_relations(consistency, definition_name, permission_name)
+    def call_dependent_relations(consistency, definition_name, permission_name, timeout_seconds)
       resp = @proto_client.schema.dependent_relations(
         Authzed::Api::V1::DependentRelationsRequest.new(
           consistency: build_consistency(consistency),
           definition_name: definition_name,
           permission_name: permission_name
-        )
+        ),
+        deadline: deadline_for(timeout_seconds)
       )
 
       refs = resp.relations.map do |rel|
@@ -1032,19 +1100,20 @@ module SpiceDB
       [refs, resp.read_at.token]
     end
 
-    def call_diff_schema(consistency, comparison_schema)
+    def call_diff_schema(consistency, comparison_schema, timeout_seconds)
       resp = @proto_client.schema.diff_schema(
         Authzed::Api::V1::DiffSchemaRequest.new(
           consistency: build_consistency(consistency),
           comparison_schema: comparison_schema
-        )
+        ),
+        deadline: deadline_for(timeout_seconds)
       )
 
       diffs = resp.diffs.map { |d| schema_diff_from_proto(d) }
       [diffs, resp.read_at.token]
     end
 
-    def call_expand_permission_tree(consistency, resource_type, resource_id, permission)
+    def call_expand_permission_tree(consistency, resource_type, resource_id, permission, timeout_seconds)
       resp = @proto_client.permissions.expand_permission_tree(
         Authzed::Api::V1::ExpandPermissionTreeRequest.new(
           consistency: build_consistency(consistency),
@@ -1053,7 +1122,8 @@ module SpiceDB
             object_id: resource_id
           ),
           permission: permission
-        )
+        ),
+        deadline: deadline_for(timeout_seconds)
       )
 
       ExpandResult.new(
@@ -1062,7 +1132,7 @@ module SpiceDB
       )
     end
 
-    def call_import_relationships(relationships)
+    def call_import_relationships(relationships, timeout_seconds)
       batch = []
 
       # Ruby gRPC client streaming uses an Enumerable of requests
@@ -1084,7 +1154,7 @@ module SpiceDB
         end
       end
 
-      resp = @proto_client.permissions.import_bulk_relationships(requests)
+      resp = @proto_client.permissions.import_bulk_relationships(requests, deadline: deadline_for(timeout_seconds))
       resp.num_loaded
     end
 
@@ -1141,20 +1211,22 @@ module SpiceDB
       end
     end
 
-    def call_register_relationship_counter(name, filter)
+    def call_register_relationship_counter(name, filter, timeout_seconds)
       @proto_client.experimental.experimental_register_relationship_counter(
         Authzed::Api::V1::ExperimentalRegisterRelationshipCounterRequest.new(
           name: name,
           relationship_filter: filter_to_proto(filter)
-        )
+        ),
+        deadline: deadline_for(timeout_seconds)
       )
     end
 
-    def call_count_relationships(name)
+    def call_count_relationships(name, timeout_seconds)
       resp = @proto_client.experimental.experimental_count_relationships(
         Authzed::Api::V1::ExperimentalCountRelationshipsRequest.new(
           name: name
-        )
+        ),
+        deadline: deadline_for(timeout_seconds)
       )
 
       if resp.counter_still_calculating
@@ -1173,11 +1245,12 @@ module SpiceDB
       )
     end
 
-    def call_unregister_relationship_counter(name)
+    def call_unregister_relationship_counter(name, timeout_seconds)
       @proto_client.experimental.experimental_unregister_relationship_counter(
         Authzed::Api::V1::ExperimentalUnregisterRelationshipCounterRequest.new(
           name: name
-        )
+        ),
+        deadline: deadline_for(timeout_seconds)
       )
     end
 

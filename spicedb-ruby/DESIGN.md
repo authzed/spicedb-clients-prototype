@@ -350,6 +350,33 @@ Exception hierarchy under `SpiceDB::Error`:
 Automatic retry with exponential backoff for transient gRPC errors
 (UNAVAILABLE, RESOURCE_EXHAUSTED, ABORTED).
 
+### Deadlines
+
+Every unary method takes a `timeout:` keyword (seconds), passed straight
+through as grpc-ruby's `deadline:` call option (an absolute `Time`, computed
+fresh — `Time.now + timeout` — on each individual RPC attempt, so a retried
+call gets a full new window per attempt rather than a shrinking one).
+`Client.new`/`.new_plaintext`/`.new_system_tls` all take a `default_timeout:`
+(seconds, default 30) applied whenever a call omits its own `timeout:` —
+mirroring `authzed-node`'s `DEFAULT_DEADLINE_MS = 30_000` (its comment cites
+`grpc/grpc-node#541`). See root DESIGN.md, "RULE: A unary call must have a
+deadline" — without a finite default, a SpiceDB instance that accepts a
+connection but never answers hangs every caller that didn't opt in to a
+timeout forever, since the connection looks fine at the transport level and
+nothing is ever produced to retry.
+
+```ruby
+client = SpiceDB::Client.new_plaintext('localhost:50051', 'token', default_timeout: 5)
+result = client.check_permission(cs, 'view', rel)             # bound by the 5s default
+result = client.check_permission(cs, 'view', rel, timeout: 1) # overrides it for this call
+```
+
+Streaming calls (`read_relationships`, `lookup_resources`, `lookup_subjects`,
+`updates`, `export_relationships`) do NOT take a `timeout:` and are NOT
+bound by `default_timeout` — they are long-lived by design (`updates` may
+run for the life of the process), and applying the unary default to them
+would make the stream itself the outage.
+
 ### Complete Method List
 
 **Checks:**

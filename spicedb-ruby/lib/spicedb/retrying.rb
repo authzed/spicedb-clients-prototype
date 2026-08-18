@@ -20,6 +20,24 @@ module SpiceDB
 
     private
 
+    # Resolves a per-call `timeout:` (seconds, or nil) against the client's
+    # `@default_timeout`. `nil` (the default on every unary method) means
+    # "use @default_timeout" -- there is deliberately no way to request an
+    # unbounded unary call. See root DESIGN.md, "RULE: A unary call must have
+    # a deadline".
+    def effective_timeout(timeout)
+      timeout || @default_timeout
+    end
+
+    # Converts a relative timeout (seconds) into the absolute `Time` grpc-ruby's
+    # generated stubs expect for their `deadline:` call option. Computed fresh
+    # at the point of each individual RPC attempt (not once per public method
+    # call) so a retried call gets a full new window per attempt, matching
+    # grpc-python's per-attempt `timeout=` semantics.
+    def deadline_for(timeout_seconds)
+      Time.now + timeout_seconds
+    end
+
     # Full-jitter backoff delay in seconds for retry attempt `attempt`
     # (1-indexed, matching `with_retry`'s `attempts`): `uniform(0, cap)`
     # rather than the fixed `cap`. Without jitter, every client in a fleet

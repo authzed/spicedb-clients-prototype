@@ -996,6 +996,14 @@ public final class SpiceDBClient implements AutoCloseable {
 
   /** The type of mutation in an Update. */
   public enum UpdateOperation {
+    /**
+     * The server sent an operation this client does not recognize -- either {@code
+     * OPERATION_UNSPECIFIED} on the wire, or a future operation value added after this client
+     * shipped. Never treat this as a write: a cache or index mirror consuming the watch stream
+     * that upserts on an unrecognized operation could turn a delete it doesn't understand into a
+     * silent write.
+     */
+    UNSPECIFIED,
     CREATE,
     TOUCH,
     DELETE
@@ -1689,12 +1697,20 @@ public final class SpiceDBClient implements AutoCloseable {
   }
 
   private Update updateFromProto(RelationshipUpdate pu) {
+    // Server-supplied data: an unrecognized operation (OPERATION_UNSPECIFIED, or a future wire
+    // value added after this client shipped) MUST NOT map to a write. Mirrors toTreeOperation and
+    // both permissionship mappers in this file, which already map an unrecognized server enum to
+    // their safe UNSPECIFIED value rather than raising or guessing. Root DESIGN.md, "RULE: A
+    // conversion that cannot preserve meaning must fail", clause 2: server-supplied values the
+    // client does not recognise MUST NOT raise, and MUST map to the safe, non-permissive default
+    // -- never a grant, and never a write. Mapping to TOUCH here would let a cache or index mirror
+    // consuming the watch stream upsert a relationship that may in fact have been deleted.
     UpdateOperation op =
         switch (pu.getOperation()) {
           case OPERATION_CREATE -> UpdateOperation.CREATE;
           case OPERATION_TOUCH -> UpdateOperation.TOUCH;
           case OPERATION_DELETE -> UpdateOperation.DELETE;
-          default -> UpdateOperation.TOUCH;
+          default -> UpdateOperation.UNSPECIFIED;
         };
     return new Update(op, fromProtoRelationship(pu.getRelationship()));
   }

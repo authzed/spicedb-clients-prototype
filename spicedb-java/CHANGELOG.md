@@ -150,6 +150,15 @@
 
 ### Fixes
 
+- **2026-08-18**: **`updateFromProto` mapped any unrecognized watch operation — including
+  `OPERATION_UNSPECIFIED` and any future wire value — to `UpdateOperation.TOUCH`.** A cache or
+  index mirror consuming the watch stream would upsert a relationship on an update it could not
+  actually interpret, which may in fact have been a delete. `UpdateOperation` gains a new
+  `UNSPECIFIED` value (purely additive), and the mapper's `default` arm now returns it instead of
+  `TOUCH`, matching what every other server-enum mapper in this file already does
+  (`toTreeOperation`, both `permissionship` mappers) — server-supplied data the client does not
+  recognise must degrade to a safe, non-permissive default, never a write. Root `DESIGN.md`,
+  "RULE: A conversion that cannot preserve meaning must fail", clause 2.
 - **2026-08-18**: **`checkPermissions` did not verify that `checkBulkPermissions` returned as
   many pairs as were requested.** The result `List<CheckResult>` was sized off
   `resp.getPairsCount()` instead of the request's item count, and nothing compared the two. The

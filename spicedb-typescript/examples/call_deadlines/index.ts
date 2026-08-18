@@ -118,4 +118,7 @@ assert(numLoadedBounded === 50n, "expected 50 relationships imported");
 // SpiceDB instance).
 await client.deleteRelationships({ resourceType: "document" });
 
+// Release the underlying transport now that this example is done with it.
+client.close();
+
 console.log("call_deadlines: PASS");

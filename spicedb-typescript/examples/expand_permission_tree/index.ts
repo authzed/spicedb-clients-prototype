@@ -94,4 +94,7 @@ assert(
 // SpiceDB instance).
 await client.deleteRelationships({ resourceType: "document" });
 
+// Release the underlying transport now that this example is done with it.
+client.close();
+
 console.log("\nexpand_permission_tree: PASS");

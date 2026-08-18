@@ -103,4 +103,7 @@ assert(found.has("bob"), "expected bob in edit results");
 // run in sequence against one shared SpiceDB instance).
 await client.deleteRelationships({ resourceType: "document" });
 
+// Release the underlying transport now that this example is done with it.
+client.close();
+
 console.log("lookup_subjects: PASS");

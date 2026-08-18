@@ -43,4 +43,7 @@ console.log(updated);
 assert(updated.includes("definition user"), "expected schema to contain 'definition user'");
 assert(updated.includes("definition document"), "expected schema to contain 'definition document'");
 
+// Release the underlying transport now that this example is done with it.
+client.close();
+
 console.log("schema_management: PASS");

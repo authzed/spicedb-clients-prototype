@@ -162,6 +162,7 @@ export interface LookupResourcesParams {
     permission: string;
     // (undocumented)
     resourceType: string;
+    signal?: AbortSignal;
     // (undocumented)
     subjectId: string;
     // (undocumented)
@@ -191,6 +192,7 @@ export interface LookupSubjectsParams {
     resourceId: string;
     // (undocumented)
     resourceType: string;
+    signal?: AbortSignal;
     // (undocumented)
     subjectRelation?: string;
     // (undocumented)
@@ -427,6 +429,7 @@ export class SpiceDBClient {
     checkPermissions(consistency: Consistency, ...checks: CheckRequest[]): Promise<CheckResult[]>;
     // (undocumented)
     checkPermissions(consistency: Consistency, checks: CheckRequest[], options?: CheckOptions): Promise<CheckResult[]>;
+    close(): void;
     computablePermissions(consistency: Consistency, params: ComputablePermissionsParams): Promise<{
         permissions: RelationReference[];
         revision: string;
@@ -455,13 +458,17 @@ export class SpiceDBClient {
     experimentalUnregisterRelationshipCounter(name: string, options?: {
         timeoutMs?: number;
     }): Promise<void>;
-    exportBulkRelationships(consistency: Consistency, filter?: RelationshipFilterOptions): AsyncIterableIterator<Relationship>;
+    exportBulkRelationships(consistency: Consistency, filter?: RelationshipFilterOptions, options?: {
+        signal?: AbortSignal;
+    }): AsyncIterableIterator<Relationship>;
     importBulkRelationships(relationships: Relationship[], options?: {
         timeoutMs?: number;
     }): Promise<bigint>;
     lookupResources(params: LookupResourcesParams, consistency: Consistency): AsyncIterableIterator<LookupResource>;
     lookupSubjects(params: LookupSubjectsParams, consistency: Consistency): AsyncIterableIterator<LookupSubject>;
-    readRelationships(filter: RelationshipFilterOptions, consistency: Consistency): AsyncIterableIterator<Relationship>;
+    readRelationships(filter: RelationshipFilterOptions, consistency: Consistency, options?: {
+        signal?: AbortSignal;
+    }): AsyncIterableIterator<Relationship>;
     readSchema(options?: {
         timeoutMs?: number;
     }): Promise<{
@@ -554,6 +561,7 @@ export interface WatchOptions {
     includeCheckpoints?: boolean;
     // (undocumented)
     objectTypes?: string[];
+    signal?: AbortSignal;
     // (undocumented)
     startRevision?: string;
 }

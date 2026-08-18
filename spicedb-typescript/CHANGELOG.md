@@ -98,6 +98,27 @@
 
 ### Fixed
 
+- **2026-08-18**: Every streaming call (`readRelationships`, `lookupResources`, `lookupSubjects`,
+  `watch`, `exportBulkRelationships`) leaked one HTTP/2 stream and one server-side SpiceDB
+  dispatch, permanently, whenever a caller stopped consuming before the stream was exhausted --
+  the single most common streaming idiom ("take the first N results, stop"). Connect-ES's
+  server-streaming iterator deliberately omits `return()`/`throw()` (see its `run-call.js`, "We
+  deliberately omit throw/return"), so a `for await` `break` never reached the transport, and the
+  client never passed `CallOptions.signal` at all. Each streaming method now accepts an optional
+  `signal?: AbortSignal` (a new `options` parameter for `readRelationships`/
+  `exportBulkRelationships`, a new field on `LookupResourcesParams`/`LookupSubjectsParams`/
+  `WatchOptions`) and internally links its own `AbortController` through `CallOptions.signal` on
+  every attempt, aborting it in a `finally` block that runs on normal completion, a thrown error,
+  AND a caller `break` (which resumes the generator via `.return()`, unwinding through the same
+  `finally`) -- so the underlying HTTP/2 stream is released on abandonment regardless of whether
+  the caller passes its own signal. See root DESIGN.md, "RULE: Abandoning a stream must release
+  it".
+- **2026-08-18**: Added `SpiceDBClient.close(): void` (and `SpiceDBProtoClient.close(): void` in
+  `@spicedb/proto`) to release the underlying HTTP/2 connection deterministically. Idempotent --
+  safe to call more than once. Previously there was no way to release the transport at all short
+  of process exit; every streaming call shares one connection via `Http2SessionManager`, which
+  `createGrpcTransport` now receives pre-built (rather than building one internally) specifically
+  so `close()` has a handle to abort.
 - **2026-08-18**: Watch resumability. `WatchOptions` gains
   `includeCheckpoints?: boolean`, which requests
   `WATCH_KIND_INCLUDE_CHECKPOINTS` (alongside

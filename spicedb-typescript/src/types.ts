@@ -113,6 +113,12 @@ export interface LookupResourcesParams {
   subjectRelation?: string;
   context?: Record<string, unknown>;
   limit?: number;
+  /**
+   * Aborting this releases the underlying stream -- see
+   * {@link SpiceDBClient.lookupResources} and root DESIGN.md, "RULE:
+   * Abandoning a stream must release it".
+   */
+  signal?: AbortSignal;
 }
 
 /**
@@ -126,6 +132,12 @@ export interface LookupSubjectsParams {
   subjectRelation?: string;
   context?: Record<string, unknown>;
   limit?: number;
+  /**
+   * Aborting this releases the underlying stream -- see
+   * {@link SpiceDBClient.lookupSubjects} and root DESIGN.md, "RULE:
+   * Abandoning a stream must release it".
+   */
+  signal?: AbortSignal;
 }
 
 /**
@@ -233,6 +245,12 @@ export interface WatchOptions {
    * alive even when there are no changes to report.
    */
   includeCheckpoints?: boolean;
+  /**
+   * Aborting this releases the underlying stream -- see
+   * {@link SpiceDBClient.watch} and root DESIGN.md, "RULE: Abandoning a
+   * stream must release it".
+   */
+  signal?: AbortSignal;
 }
 
 /**

@@ -182,6 +182,62 @@ export class SpiceDBClient {
     return timeoutMs ?? this.defaultTimeoutMs;
   }
 
+  /**
+   * Creates an `AbortController` for one streaming attempt, linked to an
+   * optional caller-supplied `AbortSignal` so external cancellation
+   * propagates too. Returns `[controller, cleanup]` -- every streaming
+   * method MUST call `cleanup()` from a `finally` block wrapping the
+   * attempt, whether it succeeded, threw, or was abandoned via the
+   * caller's `for await` `break` (which resumes the generator through
+   * `.return()`, unwinding through the same `finally` as any other exit
+   * path).
+   *
+   * `cleanup()` unconditionally aborts `controller`. This is what actually
+   * releases the underlying HTTP/2 stream on abandonment: Connect-ES's own
+   * server-streaming iterator deliberately omits `return()`/`throw()` (see
+   * its `run-call.js`, "We deliberately omit throw/return"), so a bare
+   * `break` in consuming code never reaches the transport by itself.
+   * Passing `controller.signal` as `CallOptions.signal` on the underlying
+   * call gives Connect-ES an explicit cancellation path instead -- root
+   * DESIGN.md, "RULE: Abandoning a stream must release it", clause 3,
+   * names this exact trap. See also `close()`, which releases the whole
+   * connection rather than one stream.
+   */
+  private linkedAbortController(external?: AbortSignal): [AbortController, () => void] {
+    const controller = new AbortController();
+    if (!external) {
+      return [controller, () => controller.abort()];
+    }
+    if (external.aborted) {
+      controller.abort(external.reason);
+      return [controller, () => controller.abort()];
+    }
+    const onAbort = () => controller.abort(external.reason);
+    external.addEventListener("abort", onAbort, { once: true });
+    return [
+      controller,
+      () => {
+        external.removeEventListener("abort", onAbort);
+        controller.abort();
+      },
+    ];
+  }
+
+  /**
+   * Releases the underlying transport. Idempotent -- safe to call more than
+   * once, including concurrently with itself (delegates to
+   * `SpiceDBProtoClient.close`, which guards with a boolean flag).
+   *
+   * Every streaming call on this client (`readRelationships`,
+   * `lookupResources`, `lookupSubjects`, `watch`, `exportBulkRelationships`)
+   * shares this one transport, and there was previously no way to release
+   * it deterministically. See root DESIGN.md, "RULE: Abandoning a stream
+   * must release it".
+   */
+  close(): void {
+    this.proto.close();
+  }
+
   // ---------------------------------------------------------------------------
   // Permission Checks
   // ---------------------------------------------------------------------------
@@ -446,11 +502,16 @@ export class SpiceDBClient {
   /**
    * Reads relationships matching the given filter.
    *
+   * Pass `options.signal` to release the underlying stream before it is
+   * exhausted -- a bare `for await` `break` alone does not (see root
+   * DESIGN.md, "RULE: Abandoning a stream must release it").
+   *
    * @returns An async iterable of matching relationships.
    */
   async *readRelationships(
     filter: RelationshipFilterOptions,
     consistency: Consistency,
+    options?: { signal?: AbortSignal },
   ): AsyncIterableIterator<Relationship> {
     const request = create(ReadRelationshipsRequestSchema, {
       consistency: consistency._toProto(),
@@ -459,8 +520,11 @@ export class SpiceDBClient {
     let attempt = 0;
     for (;;) {
       let yielded = 0;
+      const [controller, cleanup] = this.linkedAbortController(options?.signal);
       try {
-        const stream = this.proto.permissions.readRelationships(request);
+        const stream = this.proto.permissions.readRelationships(request, {
+          signal: controller.signal,
+        });
         for await (const resp of stream) {
           if (resp.relationship) {
             yield fromProtoRelationship(resp.relationship);
@@ -477,6 +541,8 @@ export class SpiceDBClient {
           continue;
         }
         throw toSpiceDBError(err);
+      } finally {
+        cleanup();
       }
     }
   }
@@ -550,6 +616,10 @@ export class SpiceDBClient {
    * result was computed at. Callers MUST check `permissionship` before
    * treating a result as a full grant.
    *
+   * Pass `params.signal` to release the underlying stream before it is
+   * exhausted -- a bare `for await` `break` alone does not (see root
+   * DESIGN.md, "RULE: Abandoning a stream must release it").
+   *
    * @returns An async iterable of {@link LookupResource}.
    */
   async *lookupResources(
@@ -573,8 +643,11 @@ export class SpiceDBClient {
     let attempt = 0;
     for (;;) {
       let yielded = 0;
+      const [controller, cleanup] = this.linkedAbortController(params.signal);
       try {
-        const stream = this.proto.permissions.lookupResources(request);
+        const stream = this.proto.permissions.lookupResources(request, {
+          signal: controller.signal,
+        });
         for await (const resp of stream) {
           yield fromProtoLookupResource(resp);
           yielded++;
@@ -589,6 +662,8 @@ export class SpiceDBClient {
           continue;
         }
         throw toSpiceDBError(err);
+      } finally {
+        cleanup();
       }
     }
   }
@@ -603,6 +678,10 @@ export class SpiceDBClient {
    * `excludedSubjects` before treating a wildcard match as a blanket grant,
    * or they risk granting access to subjects the server explicitly excluded.
    * `lookedUpAt` carries the revision the result was computed at.
+   *
+   * Pass `params.signal` to release the underlying stream before it is
+   * exhausted -- a bare `for await` `break` alone does not (see root
+   * DESIGN.md, "RULE: Abandoning a stream must release it").
    *
    * @returns An async iterable of {@link LookupSubject}.
    */
@@ -625,8 +704,11 @@ export class SpiceDBClient {
     let attempt = 0;
     for (;;) {
       let yielded = 0;
+      const [controller, cleanup] = this.linkedAbortController(params.signal);
       try {
-        const stream = this.proto.permissions.lookupSubjects(request);
+        const stream = this.proto.permissions.lookupSubjects(request, {
+          signal: controller.signal,
+        });
         for await (const resp of stream) {
           yield fromProtoLookupSubject(resp);
           yielded++;
@@ -641,6 +723,8 @@ export class SpiceDBClient {
           continue;
         }
         throw toSpiceDBError(err);
+      } finally {
+        cleanup();
       }
     }
   }
@@ -720,11 +804,16 @@ export class SpiceDBClient {
   /**
    * Exports all relationships, optionally filtered, as an async iterable.
    *
+   * Pass `options.signal` to release the underlying stream before it is
+   * exhausted -- a bare `for await` `break` alone does not (see root
+   * DESIGN.md, "RULE: Abandoning a stream must release it").
+   *
    * @returns An async iterable of relationships.
    */
   async *exportBulkRelationships(
     consistency: Consistency,
     filter?: RelationshipFilterOptions,
+    options?: { signal?: AbortSignal },
   ): AsyncIterableIterator<Relationship> {
     const request = create(ExportBulkRelationshipsRequestSchema, {
       consistency: consistency._toProto(),
@@ -735,8 +824,11 @@ export class SpiceDBClient {
     let attempt = 0;
     for (;;) {
       let yielded = 0;
+      const [controller, cleanup] = this.linkedAbortController(options?.signal);
       try {
-        const stream = this.proto.permissions.exportBulkRelationships(request);
+        const stream = this.proto.permissions.exportBulkRelationships(request, {
+          signal: controller.signal,
+        });
         for await (const resp of stream) {
           for (const protoRel of resp.relationships) {
             yield fromProtoRelationship(protoRel);
@@ -753,6 +845,8 @@ export class SpiceDBClient {
           continue;
         }
         throw toSpiceDBError(err);
+      } finally {
+        cleanup();
       }
     }
   }
@@ -990,6 +1084,10 @@ export class SpiceDBClient {
 
   /**
    * Watches for changes to relationships, returning an async iterable of events.
+   *
+   * Pass `options.signal` to release the underlying stream before it is
+   * exhausted -- a bare `for await` `break` alone does not (see root
+   * DESIGN.md, "RULE: Abandoning a stream must release it").
    */
   async *watch(
     options?: WatchOptions,
@@ -1016,8 +1114,9 @@ export class SpiceDBClient {
     let attempt = 0;
     for (;;) {
       let yielded = 0;
+      const [controller, cleanup] = this.linkedAbortController(options?.signal);
       try {
-        const stream = this.proto.watch.watch(req);
+        const stream = this.proto.watch.watch(req, { signal: controller.signal });
         for await (const resp of stream) {
           const changes: WatchChange[] = resp.updates.map((update) => {
             // Server-supplied data: an unrecognized operation
@@ -1081,6 +1180,8 @@ export class SpiceDBClient {
           continue;
         }
         throw toSpiceDBError(err);
+      } finally {
+        cleanup();
       }
     }
   }

@@ -25,6 +25,16 @@
     are long-lived by design (`updates` may legitimately run for the life of the process), and a
     30s cutoff would end a legitimate stream, which is a worse defect than the one this change
     fixes.
+  - **Fix round 1 correction:** `import_relationships` (`ImportBulkRelationships`) also has an
+    `import_relationships_with_timeout` sibling, but — unlike the unary methods above — it is
+    client-streaming, not unary, and is now explicitly **excluded** from `default_timeout`: its
+    duration scales with the size of the caller's dataset, not with server latency, so no fixed
+    default is correct for it (root DESIGN.md, "RULE: A unary call must have a deadline",
+    clause 3, amended to cover client-streaming and bidirectional RPCs, not only
+    server-streaming). `import_relationships` is now unbounded;
+    `import_relationships_with_timeout` still bounds the call explicitly. An earlier version of
+    this fix incorrectly resolved `import_relationships` against `default_timeout`, which would
+    have silently aborted large, legitimate multi-minute loads at 30 seconds.
   - **Behavioral finding:** tonic's own client-side timeout enforcement (its
     `transport::Channel`'s `GrpcTimeout` middleware, triggered by the `grpc-timeout` header
     `Request::set_timeout` sets) surfaces a purely local timeout as
@@ -38,12 +48,25 @@
     from `is_transient`, so a timeout is never auto-retried.
   - New `tests/deadline_test.rs`, against a real in-process gRPC server
     (`support::MockPermissionsService`, extended with `stall_check_bulk_permissions`/
-    `stall_read_relationships`) whose handlers deliberately stall: a unary call against a stub
-    that never responds fails with `SpiceDBError::DeadlineExceeded` well before the server's
-    stall completes (not a hang), a per-call `_with_timeout` overrides a much larger client
-    default, and a streaming call outlives a tiny unary default instead of inheriting it. Every
-    test is wrapped in `tokio::time::timeout` as a watchdog so a regression fails the suite
-    instead of hanging CI.
+    `stall_read_relationships`/`stall_import_bulk_relationships`) whose handlers deliberately
+    stall: a unary call against a stub that never responds fails with
+    `SpiceDBError::DeadlineExceeded` well before the server's stall completes (not a hang), a
+    per-call `_with_timeout` overrides a much larger client default, a streaming call outlives a
+    tiny unary default instead of inheriting it, and `import_relationships` both outlives the
+    tiny unary default (proving the exclusion) and still fails promptly through
+    `import_relationships_with_timeout` (proving the exclusion is from the default, not from the
+    ability to bound the call). Every test is wrapped in `tokio::time::timeout` as a watchdog so
+    a regression fails the suite instead of hanging CI.
+  - **Fix round 1 correction (comment accuracy):** the remap comment in `error::from_grpc_status`
+    previously claimed tonic gives no way to recover `TimeoutExpired`'s original type at the
+    remap site. That's not quite right — `tonic::Status` implements `Error::source()` and
+    `TimeoutExpired` is publicly exported, so a structural downcast is possible upstream of this
+    function. What actually discards the type is this function's own `(code: i32, message:
+    String)` signature. Corrected the comment; the string-match fix itself was already correct
+    and unchanged.
+  - New `examples/call_deadlines.rs`, run against a real SpiceDB rather than a mock: constructs a
+    client via the documented `default_timeout` builder option, overrides it per-call, and
+    confirms bulk import is unbounded by default.
 - **Retry safety, per root `DESIGN.md` "RULE: Automatic retry is for idempotent operations
   only".** Three changes:
   - `RESOURCE_EXHAUSTED` is no longer retried. In SpiceDB it signals memory load-shed (retrying

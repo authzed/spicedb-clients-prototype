@@ -1380,6 +1380,14 @@ impl SpiceDBClient {
     /// Accepts a `Vec<Relationship>` and automatically batches
     /// into chunks of 1,000.
     ///
+    /// `ImportBulkRelationships` is client-streaming: its duration scales
+    /// with the size of `relationships`, not with server latency, so unlike
+    /// every other method on this client, this call is NOT bounded by
+    /// `default_timeout` (root DESIGN.md, "RULE: A unary call must have a
+    /// deadline", clause 3). It is unbounded; use
+    /// [`import_relationships_with_timeout`](Self::import_relationships_with_timeout)
+    /// to bound it explicitly.
+    ///
     /// Returns the number of relationships loaded.
     pub async fn import_relationships(
         &self,
@@ -1388,8 +1396,10 @@ impl SpiceDBClient {
         self.import_relationships_impl(relationships, None).await
     }
 
-    /// [`import_relationships`](Self::import_relationships) with a per-call
-    /// timeout that overrides the client's `default_timeout`.
+    /// [`import_relationships`](Self::import_relationships) with an explicit
+    /// per-call timeout. There is no client default to override here (see
+    /// [`import_relationships`](Self::import_relationships)) -- this is the
+    /// only way to bound this call at all.
     pub async fn import_relationships_with_timeout(
         &self,
         relationships: Vec<Relationship>,
@@ -1404,7 +1414,8 @@ impl SpiceDBClient {
         relationships: Vec<Relationship>,
         timeout: Option<Duration>,
     ) -> Result<u64, SpiceDBError> {
-        let timeout = self.effective_timeout(timeout);
+        // Deliberately NOT `self.effective_timeout(timeout)` -- no client
+        // default applies here, only an explicit per-call `timeout`.
         let (tx, rx) = tokio::sync::mpsc::channel(4);
 
         // Spawn a task to batch and send relationships
@@ -1426,7 +1437,9 @@ impl SpiceDBClient {
 
         let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
         let mut request = tonic::Request::new(stream);
-        request.set_timeout(timeout);
+        if let Some(t) = timeout {
+            request.set_timeout(t);
+        }
         let resp = self
             .proto
             .permissions

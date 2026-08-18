@@ -35,3 +35,4 @@ cargo run --example check_permission
 | `schema_reflection` | Schema reflection, computable permissions, diffs |
 | `expand_permission_tree` | Expanding a permission tree and walking the native `PermissionTree` |
 | `relationship_counters` | Experimental relationship counters |
+| `call_deadlines` | Constructing a client with `default_timeout`, a per-call `_with_timeout` override, and confirming bulk import isn't bounded by the unary default |

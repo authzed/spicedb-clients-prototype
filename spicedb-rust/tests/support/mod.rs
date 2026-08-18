@@ -218,6 +218,14 @@ pub struct MockPermissionsService {
     /// `default_timeout` instead of inheriting it. Used by
     /// `tests/deadline_test.rs`.
     read_relationships_stall: Mutex<Option<std::time::Duration>>,
+
+    import_bulk_relationships_calls: Arc<AtomicUsize>,
+    /// If set, `import_bulk_relationships` sleeps this long -- after fully
+    /// draining the client-streaming request -- before responding. Proves
+    /// `import_relationships` (client-streaming) is neither bound by the
+    /// tiny unary `default_timeout` nor unresponsive to an explicit
+    /// `import_relationships_with_timeout`. Used by `tests/deadline_test.rs`.
+    import_bulk_relationships_stall: Mutex<Option<std::time::Duration>>,
 }
 
 impl MockPermissionsService {
@@ -254,6 +262,9 @@ impl MockPermissionsService {
             write_relationships_fail: Mutex::new(VecDeque::new()),
 
             read_relationships_stall: Mutex::new(None),
+
+            import_bulk_relationships_calls: Arc::new(AtomicUsize::new(0)),
+            import_bulk_relationships_stall: Mutex::new(None),
         }
     }
 
@@ -402,6 +413,19 @@ impl MockPermissionsService {
     /// the tiny unary default used to prove the unary case times out.
     pub fn stall_read_relationships(&self, duration: std::time::Duration) {
         *self.read_relationships_stall.lock().unwrap() = Some(duration);
+    }
+
+    /// Makes the next `ImportBulkRelationships` call sleep `duration` --
+    /// after fully draining the client-streaming request -- before
+    /// responding. Simulates a wedged server on the bulk-import path.
+    pub fn stall_import_bulk_relationships(&self, duration: std::time::Duration) {
+        *self.import_bulk_relationships_stall.lock().unwrap() = Some(duration);
+    }
+
+    /// Returns a live handle to the `ImportBulkRelationships` call counter.
+    /// Grab this *before* moving the mock into [`spawn_permissions_server`].
+    pub fn import_bulk_relationships_calls(&self) -> Arc<AtomicUsize> {
+        self.import_bulk_relationships_calls.clone()
     }
 
     /// Returns a live handle to the `WriteRelationships` call counter. Grab
@@ -583,9 +607,28 @@ impl PermissionsService for MockPermissionsService {
 
     async fn import_bulk_relationships(
         &self,
-        _request: Request<tonic::Streaming<proto::ImportBulkRelationshipsRequest>>,
+        request: Request<tonic::Streaming<proto::ImportBulkRelationshipsRequest>>,
     ) -> Result<Response<proto::ImportBulkRelationshipsResponse>, Status> {
-        unimplemented!("not exercised by the read-stream behavioral tests")
+        self.import_bulk_relationships_calls
+            .fetch_add(1, Ordering::SeqCst);
+
+        // Drain the client-streaming request fully before ever consulting
+        // the stall -- a real server can't respond mid-stream, so a stall
+        // here must be *after* the last chunk, not instead of reading it.
+        let mut stream = request.into_inner();
+        let mut num_loaded: u64 = 0;
+        while let Some(chunk) = stream.message().await? {
+            num_loaded += chunk.relationships.len() as u64;
+        }
+
+        let stall = *self.import_bulk_relationships_stall.lock().unwrap();
+        if let Some(d) = stall {
+            tokio::time::sleep(d).await;
+        }
+
+        Ok(Response::new(proto::ImportBulkRelationshipsResponse {
+            num_loaded,
+        }))
     }
 
     type ExportBulkRelationshipsStream =

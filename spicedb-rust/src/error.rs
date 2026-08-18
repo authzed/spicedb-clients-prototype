@@ -95,9 +95,21 @@ pub fn from_grpc_status(code: i32, message: String) -> SpiceDBError {
     // handling). Left unmapped, that would make `DeadlineExceeded`
     // unreachable for exactly the case a deadline exists to guard against:
     // a server that never responds at all. "Timeout expired" is
-    // `TimeoutExpired`'s exact, stable `Display` text -- the only signal
-    // tonic gives for this specific path, since by the time a `Status`
-    // reaches here it no longer carries the original error's type.
+    // `TimeoutExpired`'s exact, stable `Display` text.
+    //
+    // A structural alternative DOES exist upstream of this function:
+    // `tonic::Status` implements `std::error::Error`, whose `source()` would
+    // return the original `TimeoutExpired` (also publicly exported by
+    // tonic), so a caller holding the `Status` itself could downcast rather
+    // than string-match. What actually forecloses that here is this
+    // function's own signature -- `from_grpc_status(code: i32, message:
+    // String)` deliberately takes only the code and message (so this module
+    // stays usable without a live `tonic::Status`, e.g. from tests), and
+    // that reduction is what discards the original error's type before this
+    // match ever runs. The string match below is the price of that
+    // decoupling, not a tonic limitation -- and it fails loudly (a
+    // `Cancelled`, not a silently-wrong `DeadlineExceeded`) if tonic ever
+    // changes `TimeoutExpired`'s `Display` text.
     if code == codes::CANCELLED && message == "Timeout expired" {
         return SpiceDBError::DeadlineExceeded(message);
     }

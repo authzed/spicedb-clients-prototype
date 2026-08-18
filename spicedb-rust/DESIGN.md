@@ -373,11 +373,26 @@ let result = client.check_permission(&full(), "view", &rel).await?;             
 let result = client.check_permission_with_timeout(&full(), "view", &rel, Duration::from_secs(1)).await?; // overrides it
 ```
 
-Streaming methods (`read_relationships`, `lookup_resources`,
+Server-streaming methods (`read_relationships`, `lookup_resources`,
 `lookup_subjects`, `updates`, `export_relationships`) have no `_with_timeout`
 variant and are NOT bound by `default_timeout` — they are long-lived by
 design (`updates` may run for the life of the process), and applying the
 unary default to them would make the stream itself the outage.
+
+`import_relationships` (`ImportBulkRelationships`) is client-streaming, not
+server-streaming, but the same exclusion applies for the mirror-image
+reason: its duration scales with the size of the caller's dataset, not with
+server latency, so no fixed default is correct for it either. Unlike the
+server-streaming methods above, it DOES have a `_with_timeout` sibling
+(`import_relationships_with_timeout`) — there is simply no default to
+override, so `import_relationships` itself is unbounded and
+`import_relationships_with_timeout` is the only way to bound it.
+
+Note for callers reasoning about worst-case latency: the timeout is a
+per-*attempt* budget, applied fresh on each retry, so a call that retries
+can take up to `timeout × (retries + 1)` plus backoff, and an auto-paging
+call (e.g. `delete_relationships_with`) applies the same timeout fresh to
+each page.
 
 tonic's own client-side timeout enforcement (`tonic::transport::Channel`'s
 `GrpcTimeout` middleware, triggered by the `grpc-timeout` header

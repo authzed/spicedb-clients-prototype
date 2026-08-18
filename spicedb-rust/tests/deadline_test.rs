@@ -196,3 +196,84 @@ async fn streaming_call_does_not_inherit_the_unary_default() {
          server's {STALL:?} stall (elapsed={elapsed:?})"
     );
 }
+
+#[tokio::test]
+async fn import_relationships_does_not_inherit_the_unary_default() {
+    // import_relationships (ImportBulkRelationships) is client-streaming:
+    // its duration scales with the size of the caller's dataset, not with
+    // server latency, so root DESIGN.md's "RULE: A unary call must have a
+    // deadline" (clause 3, amended to cover client-streaming and
+    // bidirectional RPCs) excludes it from `default_timeout`. default_timeout
+    // here is far smaller than the server's stall -- if import_relationships
+    // inherited it, this call would fail with DeadlineExceeded instead of
+    // completing.
+    let mock = MockPermissionsService::new();
+    mock.stall_import_bulk_relationships(STALL);
+
+    let addr = spawn_permissions_server(mock).await;
+    let client = SpiceDBClient::builder(addr.to_string(), "token")
+        .plaintext()
+        .default_timeout(Duration::from_millis(100))
+        .build()
+        .await
+        .expect("client should connect to mock server");
+
+    let rel = Relationship::new("document", "doc1", "viewer", "user", "alice", "")
+        .expect("valid relationship");
+
+    let start = std::time::Instant::now();
+    let result = tokio::time::timeout(WATCHDOG, client.import_relationships(vec![rel]))
+        .await
+        .expect(
+            "call did not return within the watchdog -- import_relationships must not inherit \
+             the unary default",
+        );
+    let elapsed = start.elapsed();
+
+    let num_loaded = result.expect("a stalling server must still eventually respond");
+    assert_eq!(num_loaded, 1);
+    assert!(
+        elapsed >= STALL,
+        "import_relationships must outlive the tiny unary default -- it should have waited out \
+         the server's {STALL:?} stall (elapsed={elapsed:?})"
+    );
+}
+
+#[tokio::test]
+async fn import_relationships_with_timeout_still_bounds_the_call() {
+    // The exclusion above is from the *default*, not from the ability to
+    // bound the call at all -- import_relationships_with_timeout must still
+    // fail quickly against a stalling server.
+    let mock = MockPermissionsService::new();
+    mock.stall_import_bulk_relationships(STALL);
+
+    let addr = spawn_permissions_server(mock).await;
+    let client = SpiceDBClient::builder(addr.to_string(), "token")
+        .plaintext()
+        .build()
+        .await
+        .expect("client should connect to mock server");
+
+    let rel = Relationship::new("document", "doc1", "viewer", "user", "alice", "")
+        .expect("valid relationship");
+
+    let start = std::time::Instant::now();
+    let result = tokio::time::timeout(
+        WATCHDOG,
+        client.import_relationships_with_timeout(vec![rel], Duration::from_millis(200)),
+    )
+    .await
+    .expect("call did not return within the watchdog -- deadline enforcement regressed");
+    let elapsed = start.elapsed();
+
+    let err = result.expect_err("a stalling server must not let the call succeed");
+    assert!(
+        matches!(err, SpiceDBError::DeadlineExceeded(_)),
+        "expected SpiceDBError::DeadlineExceeded, got {err:?}"
+    );
+    assert!(
+        elapsed < STALL,
+        "an explicit 200ms timeout on import_relationships_with_timeout must still fire \
+         (elapsed={elapsed:?})"
+    );
+}

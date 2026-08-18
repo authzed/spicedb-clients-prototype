@@ -90,3 +90,94 @@ func TestNewClient_RetriesTransientErrors(t *testing.T) {
 
 	require.EqualValues(t, 3, srv.attempts.Load(), "expected the server to observe 3 attempts (1 initial + 2 retries)")
 }
+
+// alwaysFailPermissionsServer fails every WriteRelationships/CheckPermission
+// call with the given status, counting attempts of each.
+type alwaysFailPermissionsServer struct {
+	v1.UnimplementedPermissionsServiceServer
+
+	failWith error
+
+	writeAttempts atomic.Int32
+	checkAttempts atomic.Int32
+}
+
+func (s *alwaysFailPermissionsServer) WriteRelationships(_ context.Context, _ *v1.WriteRelationshipsRequest) (*v1.WriteRelationshipsResponse, error) {
+	s.writeAttempts.Add(1)
+	return nil, s.failWith
+}
+
+func (s *alwaysFailPermissionsServer) CheckPermission(_ context.Context, _ *v1.CheckPermissionRequest) (*v1.CheckPermissionResponse, error) {
+	s.checkAttempts.Add(1)
+	return nil, s.failWith
+}
+
+// startAlwaysFailServer starts an in-process gRPC server backed by bufconn,
+// serving srv, and returns a dialer for it.
+func startAlwaysFailServer(t *testing.T, srv *alwaysFailPermissionsServer) func(context.Context, string) (net.Conn, error) {
+	t.Helper()
+
+	const bufSize = 1024 * 1024
+	lis := bufconn.Listen(bufSize)
+
+	grpcServer := grpc.NewServer()
+	v1.RegisterPermissionsServiceServer(grpcServer, srv)
+
+	go func() {
+		_ = grpcServer.Serve(lis)
+	}()
+	t.Cleanup(grpcServer.Stop)
+
+	return func(ctx context.Context, _ string) (net.Conn, error) {
+		return lis.DialContext(ctx)
+	}
+}
+
+// TestNewClient_MutationIsAttemptedExactlyOnceOnRetryableError proves the
+// per-method service-config split: WriteRelationships is method-overridden
+// to carry no retryPolicy, so a retryable (UNAVAILABLE) failure is NOT
+// retried, even though the same code on CheckPermission is (see
+// TestNewClient_RetriesTransientErrors above). A WriteRelationships
+// containing OPERATION_CREATE or preconditions is not idempotent -- if it
+// commits and the response is lost, a retry would surface
+// ALREADY_EXISTS/FAILED_PRECONDITION for a write that in fact succeeded.
+func TestNewClient_MutationIsAttemptedExactlyOnceOnRetryableError(t *testing.T) {
+	srv := &alwaysFailPermissionsServer{failWith: status.Error(codes.Unavailable, "transiently unavailable")}
+	dialer := startAlwaysFailServer(t, srv)
+
+	client, err := NewClient("passthrough:///bufnet", "test-token",
+		WithInsecure(),
+		WithDialOptions(grpc.WithContextDialer(dialer)),
+	)
+	require.NoError(t, err)
+
+	_, err = client.PermissionsServiceClient.WriteRelationships(context.Background(), &v1.WriteRelationshipsRequest{})
+	require.Error(t, err)
+	require.Equal(t, codes.Unavailable, status.Code(err))
+	require.EqualValues(t, 1, srv.writeAttempts.Load(), "a mutation must be attempted exactly once, even on a retryable error")
+}
+
+// TestNewClient_ResourceExhaustedIsNeverRetried proves RESOURCE_EXHAUSTED is
+// absent from retryableStatusCodes: unlike UNAVAILABLE, a RESOURCE_EXHAUSTED
+// CheckPermission (a read, which otherwise retries freely) is attempted only
+// once. In SpiceDB RESOURCE_EXHAUSTED signals memory load-shed or a
+// deterministic MaxDepthExceeded, never a transient hiccup.
+func TestNewClient_ResourceExhaustedIsNeverRetried(t *testing.T) {
+	srv := &alwaysFailPermissionsServer{failWith: status.Error(codes.ResourceExhausted, "quota")}
+	dialer := startAlwaysFailServer(t, srv)
+
+	client, err := NewClient("passthrough:///bufnet", "test-token",
+		WithInsecure(),
+		WithDialOptions(grpc.WithContextDialer(dialer)),
+	)
+	require.NoError(t, err)
+
+	_, err = client.PermissionsServiceClient.CheckPermission(context.Background(), &v1.CheckPermissionRequest{
+		Resource:   &v1.ObjectReference{ObjectType: "document", ObjectId: "1"},
+		Permission: "view",
+		Subject:    &v1.SubjectReference{Object: &v1.ObjectReference{ObjectType: "user", ObjectId: "alice"}},
+	})
+	require.Error(t, err)
+	require.Equal(t, codes.ResourceExhausted, status.Code(err))
+	require.EqualValues(t, 1, srv.checkAttempts.Load(), "RESOURCE_EXHAUSTED must never be retried, even on a read")
+}

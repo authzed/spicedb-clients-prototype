@@ -1,6 +1,7 @@
 package spicedbgoproto
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -28,4 +29,86 @@ func TestWithDialOptions(t *testing.T) {
 	opt := grpc.WithAuthority("custom-authority")
 	WithDialOptions(opt)(cfg)
 	require.Len(t, cfg.dialOptions, 1)
+}
+
+// jsonName / jsonRetryPolicy / jsonMethodConfig / jsonServiceConfig mirror
+// (a minimal subset of) the shape grpc-go's own service_config.go parses,
+// so this test asserts on retryServiceConfig's actual structure rather than
+// string-matching the raw JSON.
+type jsonName struct {
+	Service string `json:"service"`
+	Method  string `json:"method"`
+}
+
+type jsonRetryPolicy struct {
+	MaxAttempts          int      `json:"maxAttempts"`
+	RetryableStatusCodes []string `json:"retryableStatusCodes"`
+}
+
+type jsonMethodConfig struct {
+	Name        []jsonName       `json:"name"`
+	RetryPolicy *jsonRetryPolicy `json:"retryPolicy"`
+}
+
+type jsonServiceConfig struct {
+	MethodConfig []jsonMethodConfig `json:"methodConfig"`
+}
+
+// nonIdempotentMethods must exactly match the six method-level "name"
+// entries in retryServiceConfig's second methodConfig entry -- the RPCs
+// DESIGN.md's "Automatic retry is for idempotent operations only" forbids
+// retrying: WriteRelationships/DeleteRelationships/ImportBulkRelationships
+// (proto's OPERATION_CREATE/preconditions hazard), WriteSchema, and the two
+// relationship-counter register/unregister calls.
+var nonIdempotentMethods = []jsonName{
+	{Service: "authzed.api.v1.PermissionsService", Method: "WriteRelationships"},
+	{Service: "authzed.api.v1.PermissionsService", Method: "DeleteRelationships"},
+	{Service: "authzed.api.v1.PermissionsService", Method: "ImportBulkRelationships"},
+	{Service: "authzed.api.v1.SchemaService", Method: "WriteSchema"},
+	{Service: "authzed.api.v1.ExperimentalService", Method: "ExperimentalRegisterRelationshipCounter"},
+	{Service: "authzed.api.v1.ExperimentalService", Method: "ExperimentalUnregisterRelationshipCounter"},
+}
+
+// TestRetryServiceConfig_MutationsHaveNoRetryPolicy proves the per-method
+// split: the six non-idempotent RPCs above have a "name" entry with no
+// "retryPolicy" at all, and (per grpc-go's own getMethodConfig -- an exact
+// "/service/method" match always wins over a "/service/" wildcard match)
+// this overrides the broader per-service entry that DOES retry. Regression
+// guard for finding 12 ("Unsafe retry"): every method here used to inherit
+// the service-wide retryPolicy, so a WriteRelationships whose response was
+// lost after it committed would be silently retried and surface
+// ALREADY_EXISTS to a caller who in fact succeeded.
+func TestRetryServiceConfig_MutationsHaveNoRetryPolicy(t *testing.T) {
+	var cfg jsonServiceConfig
+	require.NoError(t, json.Unmarshal([]byte(retryServiceConfig), &cfg))
+	require.Len(t, cfg.MethodConfig, 2, "expected exactly two methodConfig entries")
+
+	mutationEntry := cfg.MethodConfig[1]
+	require.Nil(t, mutationEntry.RetryPolicy, "the mutation methodConfig entry must carry no retryPolicy")
+	require.ElementsMatch(t, nonIdempotentMethods, mutationEntry.Name)
+
+	for _, n := range mutationEntry.Name {
+		require.NotEmpty(t, n.Method, "every name in the mutation entry must be method-specific, not a service wildcard")
+	}
+}
+
+// TestRetryServiceConfig_ReadsRetryButNotResourceExhausted proves the
+// service-wide entry (methodConfig[0], matched by every RPC not
+// method-overridden above) retries UNAVAILABLE and ABORTED, but no longer
+// RESOURCE_EXHAUSTED -- which SpiceDB uses for memory load-shed or a
+// deterministic MaxDepthExceeded, neither of which retrying helps.
+func TestRetryServiceConfig_ReadsRetryButNotResourceExhausted(t *testing.T) {
+	var cfg jsonServiceConfig
+	require.NoError(t, json.Unmarshal([]byte(retryServiceConfig), &cfg))
+	require.Len(t, cfg.MethodConfig, 2)
+
+	readEntry := cfg.MethodConfig[0]
+	require.NotNil(t, readEntry.RetryPolicy)
+	require.Contains(t, readEntry.RetryPolicy.RetryableStatusCodes, "UNAVAILABLE")
+	require.Contains(t, readEntry.RetryPolicy.RetryableStatusCodes, "ABORTED")
+	require.NotContains(t, readEntry.RetryPolicy.RetryableStatusCodes, "RESOURCE_EXHAUSTED")
+
+	for _, n := range readEntry.Name {
+		require.Empty(t, n.Method, "the read entry must be a service-level wildcard, not method-specific")
+	}
 }

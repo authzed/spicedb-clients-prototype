@@ -26,9 +26,29 @@ class TypedClient:
         self.client = client
 
     @classmethod
-    def connect(cls, endpoint: str, token: str, *, insecure: bool = False) -> "TypedClient":
-        """Convenience factory: build the underlying SpiceDBClient and wrap it."""
-        return cls(SpiceDBClient(endpoint, token, insecure=insecure))
+    def connect(
+        cls,
+        endpoint: str,
+        token: str,
+        *,
+        insecure: bool = False,
+        allow_insecure_remote_credentials: bool = False,
+    ) -> "TypedClient":
+        """Convenience factory: build the underlying SpiceDBClient and wrap it.
+
+        By itself, insecure=True only permits a plaintext connection to a
+        loopback endpoint (localhost, 127.0.0.0/8, ::1, or a unix socket
+        target). See root DESIGN.md, "RULE: Credentials over insecure
+        transport require an explicit opt-in".
+        """
+        return cls(
+            SpiceDBClient(
+                endpoint,
+                token,
+                insecure=insecure,
+                allow_insecure_remote_credentials=allow_insecure_remote_credentials,
+            )
+        )
 
     async def __aenter__(self) -> "TypedClient":
         return self

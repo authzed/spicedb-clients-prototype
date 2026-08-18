@@ -333,6 +333,19 @@
 
 ### Breaking
 
+- **2026-08-18** (behavioral; new keyword-only parameter): per root DESIGN.md, "RULE: Credentials
+  over insecure transport require an explicit opt-in" -- `SpiceDBClient(..., insecure=True)` (both
+  `spicedb.sync` and `spicedb.aio`) now refuses to construct a client for a non-loopback endpoint
+  (loopback means `localhost`, `127.0.0.0/8`, `::1`, or a `unix:` socket target). Previously an
+  insecure connection would send its bearer token in cleartext to any host -- neither flavor uses a
+  gRPC interceptor or composes call credentials; the token is passed as plain per-call metadata
+  regardless of transport, so nothing ever checked where it was going. A new keyword-only
+  parameter, `allow_insecure_remote_credentials=True`, opts in explicitly when a caller genuinely
+  means to send credentials in cleartext to a remote host; it must be passed alongside
+  `insecure=True`, since neither alone is sufficient for a non-loopback endpoint anymore.
+  `insecure=True` against `localhost` is unaffected -- no code change needed for local development.
+  Raised as `spicedb.errors.InvalidArgumentError`, before any channel is created.
+
 - **2026-08-18** (behavioral; no signature change): the two entries below change what existing,
   unmodified call sites do. They are listed here because neither announces itself -- nothing
   fails to compile, and the difference only shows up under load or against a slow query.

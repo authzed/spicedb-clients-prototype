@@ -1,3 +1,5 @@
+import ipaddress
+
 import grpc
 import grpc.aio
 
@@ -7,10 +9,66 @@ from authzed.api.v1 import schema_service_pb2_grpc
 from authzed.api.v1 import watch_service_pb2_grpc
 
 
+def _is_loopback_endpoint(endpoint: str) -> bool:
+    """Report whether a gRPC target string names a loopback destination.
+
+    True for the literal hostname "localhost", an IP in 127.0.0.0/8, the
+    IPv6 loopback ::1, or a unix domain socket target (a "unix:" prefix).
+    See root DESIGN.md, "RULE: Credentials over insecure transport require
+    an explicit opt-in" -- loopback is the exemption from the opt-in this
+    rule otherwise requires.
+    """
+    if endpoint.startswith("unix:"):
+        return True
+
+    host = endpoint
+    if endpoint.startswith("["):
+        end = endpoint.find("]")
+        if end != -1:
+            host = endpoint[1:end]
+    elif endpoint.count(":") > 1:
+        # A bare IPv6 literal (e.g. "::1") -- no port is possible without
+        # brackets, so the whole string is the host.
+        host = endpoint
+    elif ":" in endpoint:
+        host = endpoint.rsplit(":", 1)[0]
+
+    if host.lower() == "localhost":
+        return True
+
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 class Client:
     """Wraps all generated gRPC service stubs for SpiceDB."""
 
-    def __init__(self, endpoint: str, token: str, *, insecure: bool = False):
+    def __init__(
+        self,
+        endpoint: str,
+        token: str,
+        *,
+        insecure: bool = False,
+        allow_insecure_remote_credentials: bool = False,
+    ):
+        # See root DESIGN.md, "RULE: Credentials over insecure transport
+        # require an explicit opt-in". This is the guard for
+        # _BearerTokenInterceptor below -- the only reason it exists is that
+        # channel credentials can't carry call credentials over a plaintext
+        # channel, so nothing else here stops a bearer token from reaching
+        # an arbitrary insecure host. Refuse before any channel or
+        # interceptor is created, so a rejected combination can never put
+        # the token on the wire.
+        if insecure and not allow_insecure_remote_credentials and not _is_loopback_endpoint(endpoint):
+            raise ValueError(
+                f"spicedb: refusing to send credentials over an insecure (plaintext) connection "
+                f"to non-loopback endpoint {endpoint!r}: use TLS (insecure=False), or pass "
+                f"allow_insecure_remote_credentials=True if you intend to send a bearer token in "
+                f"cleartext to a remote host"
+            )
+
         if insecure:
             self._channel = grpc.aio.insecure_channel(
                 endpoint,

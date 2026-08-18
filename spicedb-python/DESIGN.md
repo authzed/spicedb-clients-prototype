@@ -69,6 +69,13 @@ client = SpiceDBClient("grpc.example.com:443", token="my-token")
 client = SpiceDBClient("localhost:50051", token="testtoken", insecure=True)
 ```
 
+Per root DESIGN.md, "RULE: Credentials over insecure transport require an
+explicit opt-in": `insecure=True` only permits plaintext to a loopback
+endpoint (`localhost`, `127.0.0.0/8`, `::1`, or a `unix:` socket target) — the
+local-development case that is the entire reason it exists. Anything else
+needs `allow_insecure_remote_credentials=True` passed explicitly, or the
+constructor raises `InvalidArgumentError` before any channel is created.
+
 Context manager — `async with` on `spicedb.aio`, `with` on `spicedb.sync`:
 
 ```python

@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     )
 
 from spicedb import _mapping, _requests
-from spicedb._auth import bearer_metadata
+from spicedb._auth import bearer_metadata, require_insecure_transport_allowed
 from spicedb._requests import DEFAULT_PAGE_SIZE as _DEFAULT_PAGE_SIZE
 from spicedb._requests import IMPORT_BATCH_SIZE as _IMPORT_BATCH_SIZE
 from spicedb.consistency import Consistency
@@ -89,6 +89,12 @@ class SpiceDBClient:
 
         async with SpiceDBClient("localhost:50051", token="test", insecure=True) as client:
             ...
+
+    By itself, ``insecure=True`` only permits a plaintext connection to a
+    loopback endpoint (localhost, 127.0.0.0/8, ::1, or a unix socket target)
+    -- the local-development case that is the entire reason it exists. See
+    root DESIGN.md, "RULE: Credentials over insecure transport require an
+    explicit opt-in".
     """
 
     def __init__(
@@ -97,6 +103,7 @@ class SpiceDBClient:
         token: str,
         *,
         insecure: bool = False,
+        allow_insecure_remote_credentials: bool = False,
         max_retries: int = _DEFAULT_MAX_RETRIES,
         default_timeout: float = _DEFAULT_TIMEOUT_SECONDS,
     ):
@@ -104,7 +111,24 @@ class SpiceDBClient:
         pass its own ``timeout=``. It is NOT applied to streaming calls
         (``read_relationships``, ``lookup_resources``, ``lookup_subjects``,
         ``watch``, ``export_relationships``), which are long-lived by design.
+
+        ``allow_insecure_remote_credentials`` is the explicit, separately
+        named opt-in required by root DESIGN.md, "RULE: Credentials over
+        insecure transport require an explicit opt-in" before ``insecure=True``
+        may be combined with a non-loopback ``endpoint``. A loopback endpoint
+        (localhost, 127.0.0.0/8, ::1, or a unix socket target) needs no such
+        opt-in -- that is the ordinary local-development case.
+
+        :raises spicedb.errors.InvalidArgumentError: if ``insecure`` is True,
+            ``endpoint`` is not loopback, and
+            ``allow_insecure_remote_credentials`` is False. Raised before any
+            channel or credential is created.
         """
+        require_insecure_transport_allowed(
+            endpoint,
+            insecure=insecure,
+            allow_insecure_remote_credentials=allow_insecure_remote_credentials,
+        )
         self._endpoint = endpoint
         self._insecure = insecure
         self._max_retries = max_retries

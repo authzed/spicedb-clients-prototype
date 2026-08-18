@@ -70,11 +70,41 @@ func (c *Client) CheckWithContext(ctx context.Context, cs consistency.Strategy, 
 		return nil, mapGRPCError("check", err)
 	}
 
+	// The proto guarantees pairs are returned in request order but says
+	// nothing about count. A short response would otherwise silently desync
+	// results[i] from rs[i] for every item after the gap -- one resource's
+	// answer attributed to another -- and CheckOneWithContext's results[0]
+	// would panic with index-out-of-range on a zero-pair response. Fail
+	// loudly instead of returning a misaligned-but-"successful" slice.
+	if len(resp.GetPairs()) != len(items) {
+		return nil, &Error{
+			Code: CodeInternal,
+			Message: fmt.Sprintf(
+				"spicedb: check: CheckBulkPermissions returned %d pair(s) for %d request item(s)",
+				len(resp.GetPairs()), len(items),
+			),
+		}
+	}
+
 	checkedAt := resp.GetCheckedAt().GetToken()
 	results := make([]CheckResult, len(resp.GetPairs()))
 	for i, pair := range resp.GetPairs() {
 		if errResp := pair.GetError(); errResp != nil {
 			return nil, mapGRPCError(fmt.Sprintf("check item %d", i), status.FromProto(errResp).Err())
+		}
+		if pair.GetItem() == nil {
+			// pair.Response is a oneof -- a well-behaved server always sets
+			// it to Item or Error, so this should be unreachable in
+			// practice. Mirrors spicedb-rust's malformed-oneof guard: fail
+			// loudly instead of falling through to the item's zero value,
+			// which reads as PERMISSIONSHIP_UNSPECIFIED.
+			return nil, &Error{
+				Code: CodeInternal,
+				Message: fmt.Sprintf(
+					"spicedb: check item %d: malformed CheckBulkPermissionsPair (neither item nor error set)",
+					i,
+				),
+			}
 		}
 		results[i] = checkResultFromBulkItem(pair.GetItem(), checkedAt)
 	}
@@ -93,6 +123,10 @@ func (c *Client) CheckOneWithContext(ctx context.Context, cs consistency.Strateg
 	if err != nil {
 		return CheckResult{}, err
 	}
+	// Safe to index: CheckWithContext is called with exactly one
+	// relationship, and it now guarantees one result per request item or an
+	// error. Before that guard a zero-pair response reached this line and
+	// panicked with index-out-of-range.
 	return results[0], nil
 }
 

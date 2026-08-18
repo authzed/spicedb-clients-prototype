@@ -74,6 +74,7 @@ import {
 } from "./types.js";
 
 import {
+  SpiceDBError,
   toSpiceDBError,
   toSpiceDBErrorFromStatus,
   isTransientError,
@@ -283,8 +284,24 @@ export class SpiceDBClient {
           ),
         }),
       );
+      // The proto guarantees pairs are returned in request order but says
+      // nothing about count. A short response would otherwise silently
+      // desync results[i] from checks[i] for every item after the gap — one
+      // resource's answer attributed to another — and `checkAll`'s
+      // `.every()` would return `true` over an array missing the checks that
+      // would have denied. Fail loudly instead of returning a
+      // misaligned-but-"successful" array. The doc comment on
+      // `checkPermissions` promises "one per check request, in the same
+      // order"; this is what enforces it.
+      if (resp.pairs.length !== checks.length) {
+        throw new SpiceDBError(
+          `checkBulkPermissions returned ${resp.pairs.length} pair(s) for ` +
+            `${checks.length} request item(s)`,
+        );
+      }
+
       const checkedAt = resp.checkedAt?.token ?? "";
-      return resp.pairs.map((pair) => {
+      return resp.pairs.map((pair, i) => {
         if (pair.response.case === "error") {
           // A per-item error MUST reach the caller as a typed error, not as
           // a falsy/failing CheckResult — see the doc comment above.
@@ -293,10 +310,18 @@ export class SpiceDBClient {
         if (pair.response.case === "item") {
           return checkResultFromBulkItem(pair.response.value, checkedAt);
         }
-        // Malformed pair: the oneof has neither `item` nor `error` set.
-        // Fail closed with an unspecified (non-granting) result rather than
-        // throwing on what should never happen from a well-behaved server.
-        return new CheckResult("unspecified", [], checkedAt);
+        // Malformed pair: the oneof has neither `item` nor `error` set. A
+        // well-behaved server always sets one, so this should be unreachable
+        // in practice. Throw, matching the other six clients' guard, rather
+        // than degrading to an `unspecified` result: `unspecified` is
+        // non-granting and `.map()` does preserve index alignment, so the
+        // desync rationale above doesn't apply here — but it is
+        // indistinguishable from a real server answer of "no permission",
+        // which hides a broken server behind a plausible-looking denial.
+        throw new SpiceDBError(
+          `check item ${i}: malformed CheckBulkPermissionsPair ` +
+            `(neither item nor error set)`,
+        );
       });
     });
   }

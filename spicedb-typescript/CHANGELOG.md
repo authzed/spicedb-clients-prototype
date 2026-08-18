@@ -98,6 +98,22 @@
 
 ### Fixed
 
+- **2026-08-18**: `checkPermissions`/`checkAny`/`checkAll` did not verify that `checkBulkPermissions`
+  returned as many pairs as were requested — the result array came straight from `resp.pairs.map(...)`,
+  and nothing compared its length to the request's. The proto guarantees pairs are returned in
+  request order but says nothing about count, so a short response silently desynced `results[i]`
+  from `checks[i]` for every item after the gap: one resource's answer attributed to another.
+  `checkAll` then ran `.every()` over that short array and returned `true` where the dropped checks
+  would have denied. The `checkPermissions` doc already promised "one per check request, in the same
+  order" — a claim nothing enforced. A length mismatch in either direction now throws a
+  `SpiceDBError` naming both counts. This is the same guard the other six clients received.
+- **2026-08-18**: a malformed `CheckBulkPermissionsPair` — the `response` oneof set to neither `item`
+  nor `error` — now throws a `SpiceDBError` instead of degrading to an `unspecified` `CheckResult`.
+  `.map()` preserves index alignment so this case never caused the desync above, and `unspecified`
+  is non-granting, so the old behavior was fail-closed rather than unsafe. It was changed anyway
+  because an `unspecified` result is indistinguishable from a genuine "no permission" answer from
+  the server, which hid a broken server behind a plausible-looking denial — and because it was the
+  one remaining client out of seven that did not throw here.
 - **2026-08-18**: **`watch()` mapped any unrecognized relationship-update operation — including
   `OPERATION_UNSPECIFIED` and any future wire value — to `"touch"`.** `"touch"` was the `switch`
   statement's `default` arm rather than a `case`, so an operation the client could not interpret

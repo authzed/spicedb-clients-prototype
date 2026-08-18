@@ -86,6 +86,10 @@ class _StallingHandlers:
     test's deadline). `read_relationships` backs the streaming
     non-inheritance test: it stalls past the client's tiny unary default
     before finally yielding, proving the stream was never bound by it.
+    `import_bulk_relationships` backs the bulk-import tests: it drains the
+    client-streaming request before stalling, proving `import_relationships`
+    is neither bound by the unary default nor unresponsive to an explicit
+    per-call timeout.
     """
 
     def check_bulk(self, request: bytes, context: grpc.ServicerContext) -> bytes:
@@ -104,6 +108,19 @@ class _StallingHandlers:
             )._to_proto()
         ).SerializeToString()
 
+    def import_bulk_relationships(
+        self, request_iterator: Any, context: grpc.ServicerContext
+    ) -> bytes:
+        num_loaded = 0
+        for raw in request_iterator:
+            req = psp.ImportBulkRelationshipsRequest()
+            req.ParseFromString(raw)
+            num_loaded += len(req.relationships)
+        time.sleep(_STALL_SECONDS)
+        return psp.ImportBulkRelationshipsResponse(
+            num_loaded=num_loaded
+        ).SerializeToString()
+
 
 def _serve(handlers: _StallingHandlers) -> tuple[grpc.Server, int]:
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=4))
@@ -120,6 +137,9 @@ def _serve(handlers: _StallingHandlers) -> tuple[grpc.Server, int]:
                     ),
                     "ReadRelationships": grpc.unary_stream_rpc_method_handler(
                         handlers.read_relationships, lambda b: b, lambda b: b
+                    ),
+                    "ImportBulkRelationships": grpc.stream_unary_rpc_method_handler(
+                        handlers.import_bulk_relationships, lambda b: b, lambda b: b
                     ),
                 },
             ),
@@ -210,6 +230,56 @@ def test_sync_streaming_call_does_not_inherit_unary_default():
     )
 
 
+def test_sync_import_relationships_does_not_inherit_unary_default():
+    """import_relationships (ImportBulkRelationships) is client-streaming: its
+    duration scales with the size of the caller's dataset, not with server
+    latency, so it must NOT be bound by default_timeout. default_timeout
+    here is far smaller than the server's stall -- if import_relationships
+    inherited it, this call would raise DeadlineExceededError instead of
+    completing."""
+    server, port = _serve(_StallingHandlers())
+    try:
+        client = SyncSpiceDBClient(
+            f"localhost:{port}", token=TOKEN, insecure=True, default_timeout=0.1
+        )
+        rel = Relationship.from_triple("document:bulk", "viewer", "user:alice")
+        start = time.monotonic()
+        num_loaded = _run_with_watchdog(lambda: client.import_relationships([rel]))
+        elapsed = time.monotonic() - start
+        client.close()
+    finally:
+        server.stop(0)
+    assert num_loaded == 1
+    assert elapsed >= _STALL_SECONDS, (
+        "import_relationships must outlive the tiny unary default -- it "
+        f"should have waited out the server's {_STALL_SECONDS}s stall "
+        f"(elapsed={elapsed:.2f}s)"
+    )
+
+
+def test_sync_import_relationships_with_explicit_timeout_still_fires():
+    """The exclusion above is from the *default*, not from the ability to
+    bound the call at all -- an explicit timeout= must still fire against a
+    stalling server."""
+    server, port = _serve(_StallingHandlers())
+    try:
+        client = SyncSpiceDBClient(f"localhost:{port}", token=TOKEN, insecure=True)
+        rel = Relationship.from_triple("document:bulk", "viewer", "user:alice")
+        start = time.monotonic()
+        with pytest.raises(DeadlineExceededError):
+            _run_with_watchdog(
+                lambda: client.import_relationships([rel], timeout=0.2)
+            )
+        elapsed = time.monotonic() - start
+        client.close()
+    finally:
+        server.stop(0)
+    assert elapsed < _STALL_SECONDS, (
+        "an explicit timeout=0.2 on import_relationships must still fire "
+        f"(elapsed={elapsed:.2f}s)"
+    )
+
+
 # ── aio ─────────────────────────────────────────────────────────────────
 
 
@@ -276,6 +346,54 @@ async def test_aio_streaming_call_does_not_inherit_unary_default():
         server.stop(0)
     assert [r.resource_id for r in got] == ["a"]
     assert elapsed >= _STALL_SECONDS
+
+
+async def test_aio_import_relationships_does_not_inherit_unary_default():
+    """aio counterpart of test_sync_import_relationships_does_not_inherit_unary_default
+    -- sync and aio are separate implementations (tests/test_parity.py
+    enforces lockstep signatures but not behavior), so this is exercised
+    independently rather than assumed from the sync result."""
+    server, port = _serve(_StallingHandlers())
+    try:
+        client = AioSpiceDBClient(
+            f"localhost:{port}", token=TOKEN, insecure=True, default_timeout=0.1
+        )
+        rel = Relationship.from_triple("document:bulk", "viewer", "user:alice")
+        start = time.monotonic()
+        num_loaded = await asyncio.wait_for(
+            client.import_relationships([rel]), timeout=_WATCHDOG_SECONDS
+        )
+        elapsed = time.monotonic() - start
+        await client.close()
+    finally:
+        server.stop(0)
+    assert num_loaded == 1
+    assert elapsed >= _STALL_SECONDS, (
+        "import_relationships must outlive the tiny unary default -- it "
+        f"should have waited out the server's {_STALL_SECONDS}s stall "
+        f"(elapsed={elapsed:.2f}s)"
+    )
+
+
+async def test_aio_import_relationships_with_explicit_timeout_still_fires():
+    server, port = _serve(_StallingHandlers())
+    try:
+        client = AioSpiceDBClient(f"localhost:{port}", token=TOKEN, insecure=True)
+        rel = Relationship.from_triple("document:bulk", "viewer", "user:alice")
+        start = time.monotonic()
+        with pytest.raises(DeadlineExceededError):
+            await asyncio.wait_for(
+                client.import_relationships([rel], timeout=0.2),
+                timeout=_WATCHDOG_SECONDS,
+            )
+        elapsed = time.monotonic() - start
+        await client.close()
+    finally:
+        server.stop(0)
+    assert elapsed < _STALL_SECONDS, (
+        "an explicit timeout=0.2 on import_relationships must still fire "
+        f"(elapsed={elapsed:.2f}s)"
+    )
 
 
 # ── default value / resolution (no server needed) ─────────────────────────

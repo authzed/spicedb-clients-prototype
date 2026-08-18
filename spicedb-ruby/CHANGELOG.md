@@ -91,6 +91,21 @@
 
 ### Fixed
 
+- **2026-08-18**: `lookup_subjects` wrapped the ENTIRE streaming call in `with_retry`, so a
+  mid-stream failure after some results had already been yielded to the caller retried the whole
+  call from scratch and re-yielded results the caller had already seen. `LookupSubjects`' proto
+  marks its cursor unimplemented, so unlike `lookup_resources`/`export_relationships` there is no
+  resume mechanism at all -- retry here was structurally wrong, not merely unsafe in the usual
+  "retry after first yield" sense. `lookup_subjects` no longer retries at all, mirroring `updates`'
+  documented reasoning for the same defect shape: the error is still mapped to a native `SpiceDB::*`
+  type rather than leaking a raw `GRPC::BadStatus`, but retry is left to the caller.
+- **2026-08-18**: Verified `import_relationships`'s move onto the non-retrying `call_once` path
+  (Group C Task 2) fully resolves the "retry re-iterates an exhausted one-shot enumerable" defect
+  (Task 8(b)): a `File.foreach(...).lazy`/DB-cursor-style source that can only be iterated once is
+  now consumed exactly once and fully delivered, and a failure on that single attempt raises
+  rather than silently reporting `num_loaded == 0` as success. No further code change was needed;
+  added regression coverage (`spec/client_import_relationships_one_shot_spec.rb`) proving both
+  halves, verified discriminating against a reintroduced `with_retry` wrapping.
 - **2026-08-18**: `export_relationships` drained an entire page's server stream into a Ruby Array
   before yielding a single relationship. `ExportBulkRelationships`' page-size field
   (`optional_limit`) bounds only the number of relationships in a SINGLE response message, unlike

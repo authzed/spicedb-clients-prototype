@@ -448,12 +448,22 @@ module SpiceDB
     # @param subject_type [String]
     # @return [Enumerator<SpiceDB::LookupSubject>]
     def lookup_subjects(consistency, resource_type, resource_id, permission, subject_type)
+      require_proto_client!
       Enumerator.new do |yielder|
-        with_retry do
-          call_lookup_subjects(consistency, resource_type, resource_id, permission, subject_type) do |lookup_subject|
-            yielder << lookup_subject
-          end
+        call_lookup_subjects(consistency, resource_type, resource_id, permission, subject_type) do |lookup_subject|
+          yielder << lookup_subject
         end
+      rescue StandardError => e
+        # We intentionally do NOT retry LookupSubjects here (mirrors #updates
+        # below) -- the proto marks its cursor unimplemented, so unlike
+        # #lookup_resources/#export_relationships there is no resume
+        # mechanism, and retrying a mid-stream failure would re-yield
+        # results the caller has already seen. Mapping the error to a
+        # native SpiceDB::* type (instead of leaking a raw GRPC::BadStatus)
+        # is the correctness fix; retry is left to the caller.
+        raise SpiceDB.to_spicedb_error(e) if e.respond_to?(:code)
+
+        raise
       end
     end
 

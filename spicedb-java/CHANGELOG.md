@@ -87,10 +87,10 @@
     release. A call that legitimately takes longer than 30 s (most plausibly a deep
     `expandPermissionTree` on a large graph, or a filtered delete sweeping many pages) now fails
     with a deadline error where it previously ran to completion. Raise it with
-    `SpiceDBClient.builder(...).defaultTimeout(Duration)`, or pass `Duration timeout` on the
+    `createPlaintext(endpoint, key, Duration)` / `createSystemTls(...)`, or pass `Duration timeout` on the
     individual call. There is deliberately no way to ask for no bound at all on a unary call.
   - **Mutations are no longer retried automatically** -- see "Retry safety" in this release.
-    `writeRelationships`, `deleteRelationships`, `writeSchema`, `importRelationships`, and the
+    `write`, `deleteRelationships`, `writeSchema`, `importRelationships`, and the
     experimental counter register/unregister calls now surface a transient `UNAVAILABLE` to the
     caller on the first attempt rather than retrying. This is the correct default (replaying a
     non-idempotent write can report failure for a write that in fact committed), but a caller who

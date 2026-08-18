@@ -10,7 +10,7 @@
   this one gained no default deadline: a caller's `context.Context` has always been the bound,
   so no existing call's timing changed.)
   - **Mutations are no longer retried automatically** -- see "Retry safety" in this release.
-    `WriteRelationships`, `DeleteRelationships`, `WriteSchema`, `ImportRelationships`, and the
+    `Write`, `DeleteRelationships`, `WriteSchema`, `ImportRelationships`, and the
     experimental counter register/unregister calls now surface a transient `UNAVAILABLE` to the
     caller on the first attempt rather than retrying. This is the correct default (replaying a
     non-idempotent write can report failure for a write that in fact committed), but a caller who

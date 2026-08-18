@@ -551,6 +551,24 @@ class TestDeleteRelationships:
         assert request.optional_limit == 0
         assert request.optional_allow_partial_deletions is False
 
+    async def test_filter_subject_id_without_subject_type_raises_before_rpc(
+        self, make_client
+    ):
+        """Regression test for the offboarding hazard this finding
+        describes: a filter carrying a subject ID but no subject type must
+        be rejected before it ever reaches the server, not silently sent as
+        an unconstrained-subject delete that would remove every
+        relationship on every document."""
+        client = self._client(make_client)
+        f = Filter(resource_type="document", subject_id="alice")
+
+        with pytest.raises(InvalidArgumentError) as exc_info:
+            await client.delete_relationships(f)
+
+        assert "subject_id" in str(exc_info.value)
+        assert "subject_type" in str(exc_info.value)
+        client._permissions.DeleteRelationships.assert_not_awaited()
+
     async def test_must_match_sets_precondition(self, make_client):
         client = self._client(make_client)
         f = Filter(resource_type="document", resource_id="1")

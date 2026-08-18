@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import pytest
 from authzed.api.v1 import core_pb2, permission_service_pb2
 
+from spicedb.errors import InvalidArgumentError
 from spicedb.types import (
     CheckResult,
     Filter,
@@ -193,6 +194,51 @@ class TestFilter:
         )
         proto = f._to_proto()
         assert proto.optional_subject_filter.optional_relation.relation == "member"
+
+    def test_subject_id_without_subject_type_raises(self):
+        """Regression test for the offboarding hazard this finding
+        describes: _to_proto used to build a subject filter only inside the
+        `if self.subject_type:` branch, so `Filter("document",
+        subject_id="alice")` silently produced a proto filter with NO
+        subject constraint at all -- delete_relationships called with that
+        filter would delete every relationship on every document, not just
+        alice's. _to_proto must now raise instead of silently widening.
+        """
+        f = Filter(resource_type="document", subject_id="alice")
+
+        with pytest.raises(InvalidArgumentError) as exc_info:
+            f._to_proto()
+
+        assert "subject_id" in str(exc_info.value)
+        assert "subject_type" in str(exc_info.value)
+
+    def test_subject_relation_without_subject_type_raises(self):
+        f = Filter(resource_type="document", subject_relation="member")
+
+        with pytest.raises(InvalidArgumentError) as exc_info:
+            f._to_proto()
+
+        assert "subject_relation" in str(exc_info.value)
+        assert "subject_type" in str(exc_info.value)
+
+    def test_subject_type_alone_does_not_raise(self):
+        """Companion to the two raise cases above -- proves SubjectType
+        alone (no subject_id) still builds a valid subject filter and is
+        not accidentally caught by the new guard."""
+        f = Filter(resource_type="document", subject_type="user")
+        proto = f._to_proto()
+        assert proto.optional_subject_filter.subject_type == "user"
+        assert proto.optional_subject_filter.optional_subject_id == ""
+
+    def test_subject_type_and_id_does_not_raise(self):
+        """Companion proving the valid combination (subject_type supplied
+        alongside subject_id) still works correctly."""
+        f = Filter(
+            resource_type="document", subject_type="user", subject_id="alice"
+        )
+        proto = f._to_proto()
+        assert proto.optional_subject_filter.subject_type == "user"
+        assert proto.optional_subject_filter.optional_subject_id == "alice"
 
 
 class TestTransaction:

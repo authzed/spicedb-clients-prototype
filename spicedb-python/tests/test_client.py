@@ -47,6 +47,31 @@ async def make_client():
         await c.close()
 
 
+class _FakeAioCall:
+    """Stand-in for the call object a ``grpc.aio`` streaming stub returns.
+
+    A real stub hands back one object that is both the response iterator and
+    the RPC handle, and the client now cancels that handle on the way out of
+    every stream (root DESIGN.md, "RULE: Abandoning a stream must release
+    it"). A bare async generator has no ``cancel()``, so a stub returning one
+    is not the shape the client sees in production -- and a test built on
+    that shape would go green while the shipped code raised
+    ``AttributeError``. ``cancelled`` additionally lets a test assert the
+    client released the stream.
+    """
+
+    def __init__(self, gen):
+        self._gen = gen
+        self.cancelled = False
+
+    def __aiter__(self):
+        return self._gen.__aiter__()
+
+    def cancel(self) -> bool:
+        self.cancelled = True
+        return True
+
+
 def _async_stream(*responses):
     """Build a stub for a grpc.aio server-streaming call.
 
@@ -65,7 +90,7 @@ def _async_stream(*responses):
 
     def _call(*args, **kwargs):
         _call.calls.append((args, kwargs))
-        return _gen()
+        return _FakeAioCall(_gen())
 
     _call.calls = []
     return _call
@@ -98,7 +123,7 @@ def _stream_open_fails_then_succeeds(*responses, fail_times: int = 1):
 
     def _call(*args, **kwargs):
         _call.calls.append((args, kwargs))
-        return _gen()
+        return _FakeAioCall(_gen())
 
     _call.calls = []
     return _call
@@ -118,7 +143,7 @@ def _stream_fails_after_yielding(*responses):
 
     def _call(*args, **kwargs):
         _call.calls.append((args, kwargs))
-        return _gen()
+        return _FakeAioCall(_gen())
 
     _call.calls = []
     return _call

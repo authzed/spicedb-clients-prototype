@@ -126,6 +126,36 @@
 
 ### Fixed
 
+- **2026-08-18**: Abandoning a stream did not release it. Every streaming method on both
+  surfaces (`read_relationships`, `lookup_resources`, `lookup_subjects`, `watch`,
+  `export_relationships`) iterated the gRPC call inline -- `async for resp in
+  self._permissions.LookupSubjects(...)` -- with no `finally` anywhere, so closing the generator
+  unwound the loop and left the RPC alone. SpiceDB kept a dispatch open per abandoned stream for
+  the life of the channel. Each method now holds the call object and cancels it in a `finally`,
+  which runs when `GeneratorExit` lands on the suspended `yield`, so `break` releases the stream
+  on both surfaces. Root DESIGN.md, "RULE: Abandoning a stream must release it", clause 2.
+
+  The impact differed by surface, and the fix matters for a different reason on each:
+
+  - `spicedb.aio` genuinely leaked. An async generator's `aclose()` is a coroutine, so nothing
+    ran at refcount-zero and the call was released only when the channel closed or the process
+    exited. Now a bare `break` releases it (via the loop's async-generator finalizer), and
+    `contextlib.aclosing()` releases it deterministically -- reach for `aclosing` when the
+    release must happen before the next line.
+  - `spicedb.sync` mostly got away with it: CPython closes a plain generator at refcount-zero
+    and the call object's own finalizer usually cancelled from there. "Usually" is the problem
+    -- a reference cycle defers that to a gc pass. The explicit cancel makes it deterministic
+    instead of a property of the garbage collector.
+
+  New `tests/test_stream_release.py` covers all five streams on both surfaces against a real
+  in-process gRPC server whose handlers park until their own RPC terminates. It asserts the
+  server observed the stream end, not that the consuming loop exited -- the latter is true with
+  or without the leak. Note for anyone writing new streaming tests: a stub that returns a bare
+  generator no longer matches what the client sees, since the client calls `cancel()` on what
+  the stub returns. `tests/test_client.py` and `tests/test_client_sync.py` now wrap their
+  streaming stubs in `_FakeAioCall` / `_FakeSyncCall`, which model the real shape (iterator +
+  RPC handle) and record whether the client cancelled.
+
 - **2026-08-18**: `import_relationships` (sync and aio) required a materialized `list`, forcing a
   caller streaming in a large import from a generator or a DB cursor to hold every relationship
   in memory at once before calling this method at all. Both now accept `Iterable[Relationship]`

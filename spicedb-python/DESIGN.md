@@ -328,6 +328,65 @@ not of the individual result — and, like `CheckResult.checked_at`, can be
 threaded into `at_least()` to make a later call observe this lookup
 (read-your-writes for lookups).
 
+#### Stream lifecycle: abandoning a stream releases it
+
+Root `DESIGN.md`, "RULE: Abandoning a stream must release it": taking the
+first N results and stopping is the natural idiom, and it must tell the
+server to stop. Every streaming method holds the gRPC call object and cancels
+it in a `finally`:
+
+```python
+call = self._permissions.ReadRelationships(request, metadata=self._metadata)
+try:
+    for resp in call:          # `async for` in spicedb.aio
+        ...
+        yield ...
+finally:
+    call.cancel()
+```
+
+The `finally` is the load-bearing part. Both surfaces are generators, so
+closing the generator throws `GeneratorExit` in at the suspended `yield` —
+which runs the `finally` and cancels the call. Without it, closing the
+generator would unwind the loop and leave the RPC entirely alone, and SpiceDB
+would hold a dispatch open per abandoned stream for the life of the channel.
+Cancelling an already-finished call is a no-op, so the same `finally` covers
+normal exhaustion and mid-stream errors without a special case.
+
+How the generator gets closed differs between the two surfaces, and this is
+worth knowing:
+
+- **`spicedb.sync`** returns a plain generator. `break` drops the last
+  reference, CPython closes it immediately, and the cancel happens
+  synchronously before the next statement. (Even before the `finally`
+  existed, the call object's own finalizer usually got there eventually —
+  but "usually", via refcounting, is not a guarantee: a reference cycle
+  defers it to a gc pass. The explicit cancel makes it deterministic.)
+- **`spicedb.aio`** returns an async generator, whose `aclose()` is a
+  coroutine and therefore cannot run at refcount-zero. A bare `break` still
+  releases the stream — the event loop's async-generator finalization hook
+  schedules `aclose()` — but on the loop's schedule, not yours.
+  `contextlib.aclosing()` is the deterministic form and the one to reach for
+  when the release must happen before the next line:
+
+  ```python
+  from contextlib import aclosing
+
+  async with aclosing(client.watch()) as events:
+      async for event in events:
+          if done(event):
+              break        # stream released here, not whenever the loop gets to it
+  ```
+
+This is deliberately *not* a per-call `timeout=` on streaming methods. A
+deadline is the wrong bound for a long-lived stream — see "Deadlines" below;
+cancellation is the right one, and it is what these methods offer.
+
+`tests/test_stream_release.py` covers all five streams on both surfaces. It
+asserts against a real in-process gRPC server whose handlers park until their
+own RPC terminates, because a test that only checked the consuming loop
+exited would pass whether or not anything was released.
+
 ### Watch
 
 `watch()` yields one `WatchEvent` per `WatchResponse` from the server — not a

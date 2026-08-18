@@ -233,6 +233,31 @@ def test_no_event_loop_is_required_anywhere():
     assert SpiceDBClient("localhost:50051", token="t", insecure=True)._channel is None
 
 
+class _FakeSyncCall:
+    """Stand-in for the call object a ``grpc`` streaming stub returns.
+
+    A real stub hands back one object that is both the response iterator and
+    the RPC handle, and the client now cancels that handle on the way out of
+    every stream (root DESIGN.md, "RULE: Abandoning a stream must release
+    it"). A bare ``iter([...])`` has no ``cancel()``, so a stub returning one
+    is not the shape the client sees in production -- and a test built on
+    that shape would go green while the shipped code raised
+    ``AttributeError``. ``cancelled`` additionally lets a test assert the
+    client released the stream.
+    """
+
+    def __init__(self, iterable):
+        self._it = iter(iterable)
+        self.cancelled = False
+
+    def __iter__(self):
+        return self._it
+
+    def cancel(self) -> bool:
+        self.cancelled = True
+        return True
+
+
 def test_read_relationships_returns_a_plain_iterator(make_client):
     from authzed.api.v1 import permission_service_pb2 as psp
 
@@ -245,7 +270,9 @@ def test_read_relationships_returns_a_plain_iterator(make_client):
         )
         for i in range(3)
     ]
-    with mock.patch.object(c._permissions, "ReadRelationships", return_value=iter(page)):
+    with mock.patch.object(
+        c._permissions, "ReadRelationships", return_value=_FakeSyncCall(page)
+    ):
         got = list(c.read_relationships(Filter(resource_type="document"), full()))
     assert [r.resource_id for r in got] == ["0", "1", "2"]
 
@@ -256,7 +283,7 @@ def test_read_relationships_stops_when_page_is_short(make_client):
 
     c = make_client()
     stub = mock.Mock(
-        return_value=iter(
+        return_value=_FakeSyncCall(
             [
                 psp.ReadRelationshipsResponse(
                     relationship=Relationship.from_triple(
@@ -285,7 +312,7 @@ def test_streaming_retries_establishment_only_before_first_yield(make_client):
         )
         raise _SyncRpcError(grpc.StatusCode.UNAVAILABLE)
 
-    stub = mock.Mock(return_value=_one_then_fail())
+    stub = mock.Mock(return_value=_FakeSyncCall(_one_then_fail()))
     with mock.patch.object(c._permissions, "ReadRelationships", stub):
         it = c.read_relationships(Filter(resource_type="document"), full())
         assert next(it).resource_id == "a"

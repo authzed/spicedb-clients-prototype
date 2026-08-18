@@ -6,6 +6,7 @@ require_relative 'spicedb/filter'
 require_relative 'spicedb/transaction'
 require_relative 'spicedb/errors'
 require_relative 'spicedb/caveat_context'
+require_relative 'spicedb/retrying'
 require_relative 'spicedb/client'
 
 # SpiceDB is the idiomatic Ruby client for SpiceDB, a database for

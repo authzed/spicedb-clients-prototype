@@ -92,6 +92,11 @@ module SpiceDB
     # methods here, matching their visibility before the extraction.
     include SpiceDB::CaveatContext
 
+    # with_retry, call_once, backoff_delay, MAX_RETRIES, and
+    # BASE_RETRY_DELAY all come from here -- see {SpiceDB::Retrying}'s
+    # module doc for the retry-safety rule they implement.
+    include SpiceDB::Retrying
+
     # Default page sizes for transparent cursor pagination.
     DEFAULT_READ_PAGE_SIZE   = 512
     DEFAULT_LOOKUP_PAGE_SIZE = 512
@@ -99,10 +104,6 @@ module SpiceDB
     DEFAULT_DELETE_PAGE_SIZE = 1_000
     DEFAULT_IMPORT_BATCH_SIZE = 1_000
     DEFAULT_CHECK_BATCH_SIZE = 1_000
-
-    # Retry configuration for transient gRPC errors.
-    MAX_RETRIES = 3
-    BASE_RETRY_DELAY = 0.1 # seconds
 
     # @return [Object] the underlying proto client for advanced use cases
     attr_reader :proto_client
@@ -277,7 +278,7 @@ module SpiceDB
     # @param transaction [SpiceDB::Transaction]
     # @return [String] the revision at which the write occurred
     def write(transaction)
-      with_retry do
+      call_once do
         call_write_relationships(transaction)
       end
     end
@@ -333,7 +334,7 @@ module SpiceDB
 
       revision = nil
       loop do
-        rev, complete = with_retry do
+        rev, complete = call_once do
           call_delete_relationships(filter, page_size, preconditions)
         end
         revision = rev
@@ -414,7 +415,7 @@ module SpiceDB
     # @param schema [String] the schema text
     # @return [String] the revision
     def write_schema(schema)
-      with_retry { call_write_schema(schema) }
+      call_once { call_write_schema(schema) }
     end
 
     # Returns the definitions and caveats in the current schema.
@@ -475,7 +476,7 @@ module SpiceDB
     # @param relationships [Enumerable<SpiceDB::Relationship>]
     # @return [Integer] the number of relationships loaded
     def import_relationships(relationships)
-      with_retry { call_import_relationships(relationships) }
+      call_once { call_import_relationships(relationships) }
     end
 
     # Returns an Enumerator over all relationships matching the optional filter,
@@ -537,7 +538,7 @@ module SpiceDB
     # @param filter [SpiceDB::Filter]
     # @return [nil]
     def experimental_register_relationship_counter(name, filter)
-      with_retry { call_register_relationship_counter(name, filter) }
+      call_once { call_register_relationship_counter(name, filter) }
       nil
     end
 
@@ -558,29 +559,11 @@ module SpiceDB
     # @param name [String] counter name
     # @return [nil]
     def experimental_unregister_relationship_counter(name)
-      with_retry { call_unregister_relationship_counter(name) }
+      call_once { call_unregister_relationship_counter(name) }
       nil
     end
 
     private
-
-    # Retries the block with exponential backoff for transient gRPC errors.
-    def with_retry(max_retries: MAX_RETRIES)
-      require_proto_client!
-      attempts = 0
-      begin
-        yield
-      rescue StandardError => e
-        attempts += 1
-        if SpiceDB.transient?(e) && attempts <= max_retries
-          sleep(BASE_RETRY_DELAY * (2**(attempts - 1)))
-          retry
-        end
-        raise SpiceDB.to_spicedb_error(e) if e.respond_to?(:code)
-
-        raise
-      end
-    end
 
     # Builds a check item hash from a relationship and permission.
     # `check_context` carries the relationship's check-time-only per-item

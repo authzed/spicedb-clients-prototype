@@ -48,8 +48,14 @@ module SpiceDB
   }.freeze
 
   # gRPC status codes that are transient and worth retrying.
+  #
+  # RESOURCE_EXHAUSTED (8) is deliberately excluded. In SpiceDB it signals
+  # either memory load-shed (retrying adds load to an already-overloaded
+  # server) or a deterministic MaxDepthExceeded (retrying can never succeed
+  # -- it just re-runs the most expensive class of check several times
+  # before surfacing the same error). See DESIGN.md, "Automatic retry is
+  # for idempotent operations only".
   TRANSIENT_CODES = [
-    8,  # RESOURCE_EXHAUSTED
     10, # ABORTED
     14 # UNAVAILABLE
   ].freeze
@@ -88,8 +94,7 @@ module SpiceDB
     if err.respond_to?(:code)
       TRANSIENT_CODES.include?(err.code)
     else
-      err.is_a?(UnavailableError) ||
-        err.is_a?(ResourceExhaustedError)
+      err.is_a?(UnavailableError)
     end
   end
 end

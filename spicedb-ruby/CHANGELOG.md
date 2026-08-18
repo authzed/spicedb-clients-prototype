@@ -91,6 +91,40 @@
 
 ### Fixed
 
+- **2026-08-18**: Retry safety, per root `DESIGN.md` "RULE: Automatic retry is for idempotent
+  operations only". Three changes:
+  - `RESOURCE_EXHAUSTED` (gRPC code 8) is no longer retried. In SpiceDB it signals memory
+    load-shed (retrying adds load to an already-overloaded server) or a deterministic
+    `MaxDepthExceeded` (retrying can never succeed — it re-runs the most expensive class of
+    check several times before surfacing the same error). Previously `SpiceDB::TRANSIENT_CODES`
+    included `8` and `SpiceDB.transient?` treated `ResourceExhaustedError` as transient.
+  - Mutations (`#write`, `#delete_relationships`, `#write_schema`, `#import_relationships`, and
+    the `#experimental_register_relationship_counter`/`#experimental_unregister_relationship_counter`
+    calls) are no longer retried on a transient error, even though the underlying gRPC code is
+    retryable. A `WriteRelationships` carrying `OPERATION_CREATE` or preconditions is not
+    idempotent: if it commits and the response is lost (a rolling restart, a proxy dropping the
+    connection), a retry would surface `ALREADY_EXISTS`/`FAILED_PRECONDITION` for a write that in
+    fact succeeded, and the caller would wrongly conclude it had failed. Reads still retry
+    automatically. All six mutation call sites previously went through `with_retry`; they now go
+    through a new `call_once`, implemented as `with_retry(max_retries: 0)` so error-conversion
+    stays in one place.
+  - Backoff is now full-jitter (`rand * cap`) instead of plain exponential doubling. Without
+    jitter, every client in a fleet retries on the same schedule after a server restart, turning
+    the recovery into a thundering herd.
+
+  `with_retry`/`call_once`/`backoff_delay` and the retry constants moved out of `Client` into a
+  new `SpiceDB::Retrying` module (`lib/spicedb/retrying.rb`), included the same way
+  `SpiceDB::CaveatContext` already is — the growth pushed `Client` over rubocop's
+  `Metrics/ClassLength` limit, and this is the same pattern the class already uses. Public access
+  (`SpiceDB::Client::MAX_RETRIES`, `SpiceDB::Client::BASE_RETRY_DELAY`) is unchanged, since Ruby
+  resolves a class's constants through its included modules.
+
+  `spec/errors_spec.rb` had two assertions that `RESOURCE_EXHAUSTED` was transient
+  (`TRANSIENT_CODES` inclusion and `.transient?(ResourceExhaustedError.new)`); both are inverted,
+  since the old assertions were exactly the defect this fixes. New coverage in
+  `spec/client_retry_safety_spec.rb` (a mutation is attempted exactly once on a retryable error
+  and on `RESOURCE_EXHAUSTED`; a read is retried; `RESOURCE_EXHAUSTED` is never retried on a
+  read; backoff varies between calls).
 - **2026-08-18**: `SpiceDB::CaveatContext#check_context_to_struct` and `#caveat_context_to_struct` had byte-identical bodies — two separately maintained copies of the same conversion, one per surface. That is exactly the place a future edit drifts the write path from the check path again, which is the divergence the converter convergence existed to close (the original defect was the write path stringifying while the check path did not). `#caveat_context_to_struct` is now an `alias` of `#check_context_to_struct`, re-exported with `module_function`, so the two are provably the same method rather than merely equal today. Both public names are kept — the call sites read correctly and confusing them would be a real bug — and behavior is unchanged. A spec asserts the alias relationship via `UnboundMethod#original_name`, so re-splitting them into two bodies fails CI.
 - **2026-08-18**: `#updates` mapped an unrecognized watch operation to `:unknown`, a symbol used nowhere else in this client. The behavior was already safe — it was never `:touch`, unlike C#, TypeScript and Java, which mapped it to a write — but the name was unique to this one mapper, so a caller handling `:unspecified` everywhere else (the symbol this client already uses for an unrecognized `permissionship`) would miss it. The fallthrough arm now yields `:unspecified`, and `Update` documents the four possible `operation` symbols and why an unrecognized one must never be treated as a write. Root `DESIGN.md`, "RULE: A conversion that cannot preserve meaning must fail", clause 2. Breaking only for a caller matching on `:unknown`, which was undocumented; this client is unreleased.
 - **`filter_to_proto` silently dropped `subject_id`/`subject_relation` when `subject_type` was

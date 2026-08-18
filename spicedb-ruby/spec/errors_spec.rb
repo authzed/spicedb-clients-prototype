@@ -52,8 +52,11 @@ RSpec.describe 'SpiceDB::Errors' do
   end
 
   describe 'TRANSIENT_CODES' do
-    it 'includes RESOURCE_EXHAUSTED, ABORTED, and UNAVAILABLE' do
-      expect(SpiceDB::TRANSIENT_CODES).to include(8)  # RESOURCE_EXHAUSTED
+    it 'includes ABORTED and UNAVAILABLE, but NOT RESOURCE_EXHAUSTED' do
+      # RESOURCE_EXHAUSTED must NOT be retried -- inverted from an earlier
+      # assertion that it was included. See DESIGN.md, "Automatic retry is
+      # for idempotent operations only".
+      expect(SpiceDB::TRANSIENT_CODES).not_to include(8) # RESOURCE_EXHAUSTED
       expect(SpiceDB::TRANSIENT_CODES).to include(10) # ABORTED
       expect(SpiceDB::TRANSIENT_CODES).to include(14) # UNAVAILABLE
     end
@@ -95,8 +98,16 @@ RSpec.describe 'SpiceDB::Errors' do
       expect(SpiceDB.transient?(SpiceDB::UnavailableError.new)).to be true
     end
 
-    it 'returns true for resource exhausted errors' do
-      expect(SpiceDB.transient?(SpiceDB::ResourceExhaustedError.new)).to be true
+    it 'returns false for resource exhausted errors' do
+      # Inverted from "returns true" -- RESOURCE_EXHAUSTED must NOT be
+      # retried. In SpiceDB it signals memory load-shed or a deterministic
+      # MaxDepthExceeded, never a transient hiccup.
+      expect(SpiceDB.transient?(SpiceDB::ResourceExhaustedError.new)).to be false
+    end
+
+    it 'returns false for gRPC-like errors with RESOURCE_EXHAUSTED code' do
+      grpc_err = double('grpc_error', code: 8)
+      expect(SpiceDB.transient?(grpc_err)).to be false
     end
 
     it 'returns false for permission denied errors' do

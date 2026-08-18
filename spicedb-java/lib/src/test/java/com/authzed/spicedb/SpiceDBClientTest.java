@@ -7,7 +7,11 @@ import build.buf.gen.authzed.api.v1.DirectSubjectSet;
 import build.buf.gen.authzed.api.v1.ObjectReference;
 import build.buf.gen.authzed.api.v1.PermissionRelationshipTree;
 import build.buf.gen.authzed.api.v1.SubjectReference;
+import com.google.protobuf.Value;
 import java.time.Instant;
+import java.util.Arrays;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 
@@ -78,6 +82,99 @@ class SpiceDBClientTest {
     Relationship restored = SpiceDBClient.fromProtoRelationship(proto);
     assertEquals("test_caveat", restored.caveatName());
     assertEquals("value", restored.caveatContext().get("key"));
+  }
+
+  // toProtoRelationshipPreservesCaveatContextTypes is the regression test for the write-time
+  // defect: toProtoRelationship used to stringify every caveatContext value via
+  // Object#toString(), including numbers, booleans, null, and nested maps/lists. A caveat like
+  // `now < 100` stored against a stringified "50" fails to evaluate, and fails *silently* -- as a
+  // conditional result rather than an error. Unlike a bad check-time context (which fails one
+  // call), a bad write-time context is persisted: every future check against the relationship
+  // mis-evaluates, and re-checking with correct context never repairs it, only rewriting the
+  // relationship does. toProtoRelationship must dispatch on type instead, via the same
+  // toProtoValue converter the check path already used correctly.
+  @Test
+  void toProtoRelationshipPreservesCaveatContextTypes() {
+    Map<String, Object> context = new LinkedHashMap<>();
+    context.put("a_string", "hello");
+    context.put("an_int", 42);
+    context.put("a_float", 3.5);
+    context.put("a_bool", true);
+    context.put("a_null", null);
+    Map<String, Object> nestedMap = new LinkedHashMap<>();
+    nestedMap.put("nested", "value");
+    context.put("a_map", nestedMap);
+    context.put("a_list", Arrays.asList("one", 2, false));
+
+    Relationship r =
+        Relationship.of("document", "doc1", "viewer", "user", "alice")
+            .withCaveat("some_caveat", context);
+    var proto = SpiceDBClient.toProtoRelationship(r);
+    var fields = proto.getOptionalCaveat().getContext().getFieldsMap();
+
+    assertEquals(Value.KindCase.STRING_VALUE, fields.get("a_string").getKindCase());
+    assertEquals("hello", fields.get("a_string").getStringValue());
+
+    // google.protobuf.Value.number_value is a double, so an integer legitimately round-trips as
+    // a float (42 -> 42.0). That is inherent to the proto, not a defect in this conversion.
+    assertEquals(Value.KindCase.NUMBER_VALUE, fields.get("an_int").getKindCase());
+    assertEquals(42.0, fields.get("an_int").getNumberValue());
+
+    assertEquals(Value.KindCase.NUMBER_VALUE, fields.get("a_float").getKindCase());
+    assertEquals(3.5, fields.get("a_float").getNumberValue());
+
+    assertEquals(Value.KindCase.BOOL_VALUE, fields.get("a_bool").getKindCase());
+    assertTrue(fields.get("a_bool").getBoolValue());
+
+    assertEquals(Value.KindCase.NULL_VALUE, fields.get("a_null").getKindCase());
+
+    assertEquals(Value.KindCase.STRUCT_VALUE, fields.get("a_map").getKindCase());
+    assertEquals(
+        "value", fields.get("a_map").getStructValue().getFieldsMap().get("nested").getStringValue());
+
+    assertEquals(Value.KindCase.LIST_VALUE, fields.get("a_list").getKindCase());
+    var listValues = fields.get("a_list").getListValue().getValuesList();
+    assertEquals(3, listValues.size());
+    assertEquals(Value.KindCase.STRING_VALUE, listValues.get(0).getKindCase());
+    assertEquals(Value.KindCase.NUMBER_VALUE, listValues.get(1).getKindCase());
+    assertEquals(Value.KindCase.BOOL_VALUE, listValues.get(2).getKindCase());
+  }
+
+  // fromProtoRelationshipPreservesCaveatContextTypes covers the read side, which shares the same
+  // toProtoValue/fromProtoValue converters -- a relationship written with a typed caveat context
+  // must read back with the same types, not everything collapsed to a String.
+  @Test
+  void fromProtoRelationshipPreservesCaveatContextTypes() {
+    Map<String, Object> context = new LinkedHashMap<>();
+    context.put("a_string", "hello");
+    context.put("an_int", 42);
+    context.put("a_float", 3.5);
+    context.put("a_bool", true);
+    context.put("a_null", null);
+    Map<String, Object> nestedMap = new LinkedHashMap<>();
+    nestedMap.put("nested", "value");
+    context.put("a_map", nestedMap);
+    context.put("a_list", Arrays.asList("one", 2, false));
+
+    Relationship original =
+        Relationship.of("document", "doc1", "viewer", "user", "alice")
+            .withCaveat("some_caveat", context);
+    Relationship restored =
+        SpiceDBClient.fromProtoRelationship(SpiceDBClient.toProtoRelationship(original));
+    Map<String, Object> rt = restored.caveatContext();
+
+    assertEquals("hello", rt.get("a_string"));
+    // 42 -> 42.0: inherent to google.protobuf.Value.number_value being a double, not a defect.
+    assertEquals(42.0, rt.get("an_int"));
+    assertEquals(3.5, rt.get("a_float"));
+    assertEquals(true, rt.get("a_bool"));
+    assertTrue(rt.containsKey("a_null"));
+    assertNull(rt.get("a_null"));
+    assertInstanceOf(Map.class, rt.get("a_map"));
+    assertEquals("value", ((Map<?, ?>) rt.get("a_map")).get("nested"));
+    assertInstanceOf(List.class, rt.get("a_list"));
+    List<?> list = (List<?>) rt.get("a_list");
+    assertEquals(List.of("one", 2.0, false), list);
   }
 
   @Test

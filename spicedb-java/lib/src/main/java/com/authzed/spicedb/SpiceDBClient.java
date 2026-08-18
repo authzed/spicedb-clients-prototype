@@ -1346,53 +1346,14 @@ public final class SpiceDBClient implements AutoCloseable {
   }
 
   /**
-   * Converts a check-time context map to a proto {@code Struct}, reusing {@link
-   * #checkContextToProtoValue}.
+   * Converts a check-time context map to a proto {@code Struct}, reusing {@link #toProtoValue}.
    */
   private static com.google.protobuf.Struct toProtoStruct(Map<String, Object> context) {
     var builder = com.google.protobuf.Struct.newBuilder();
     for (var entry : context.entrySet()) {
-      builder.putFields(entry.getKey(), checkContextToProtoValue(entry.getValue()));
+      builder.putFields(entry.getKey(), toProtoValue(entry.getValue()));
     }
     return builder.build();
-  }
-
-  /**
-   * Converts a native Java value into a protobuf {@code Value} for CHECK-TIME caveat context.
-   * Unlike {@link #toProtoValue} (used by the write-time relationship caveat-context path, which
-   * intentionally stringifies anything it doesn't recognize, including nested {@link Map}/{@link
-   * List} values), this recurses into nested maps and lists so a caveat expecting a nested object
-   * or list receives a proper {@code Struct}/{@code ListValue} instead of a string the caveat
-   * evaluator can't use. Do not reuse this for the write-time path -- write-time stringification is
-   * intentional there and out of scope for this conversion.
-   */
-  private static com.google.protobuf.Value checkContextToProtoValue(Object value) {
-    if (value == null) {
-      return com.google.protobuf.Value.newBuilder()
-          .setNullValue(com.google.protobuf.NullValue.NULL_VALUE)
-          .build();
-    } else if (value instanceof Boolean b) {
-      return com.google.protobuf.Value.newBuilder().setBoolValue(b).build();
-    } else if (value instanceof Number n) {
-      return com.google.protobuf.Value.newBuilder().setNumberValue(n.doubleValue()).build();
-    } else if (value instanceof String s) {
-      return com.google.protobuf.Value.newBuilder().setStringValue(s).build();
-    } else if (value instanceof Map<?, ?> m) {
-      var structBuilder = com.google.protobuf.Struct.newBuilder();
-      for (var entry : m.entrySet()) {
-        structBuilder.putFields(
-            String.valueOf(entry.getKey()), checkContextToProtoValue(entry.getValue()));
-      }
-      return com.google.protobuf.Value.newBuilder().setStructValue(structBuilder.build()).build();
-    } else if (value instanceof List<?> l) {
-      var listBuilder = com.google.protobuf.ListValue.newBuilder();
-      for (var item : l) {
-        listBuilder.addValues(checkContextToProtoValue(item));
-      }
-      return com.google.protobuf.Value.newBuilder().setListValue(listBuilder.build()).build();
-    } else {
-      return com.google.protobuf.Value.newBuilder().setStringValue(value.toString()).build();
-    }
   }
 
   private static RelationshipUpdate toRelationshipUpdate(Transaction.Mutation m) {
@@ -1821,6 +1782,17 @@ public final class SpiceDBClient implements AutoCloseable {
     return new SchemaDiff("unknown", "", "", "", "");
   }
 
+  /**
+   * Converts a native Java value into a protobuf {@code Value} by dispatching on type, recursing
+   * into nested {@link Map}/{@link List} values. This is the single converter for caveat context
+   * on both surfaces: check-time (merged in {@link #mergeCheckContext}, sent via {@link
+   * #toProtoStruct}) and write-time (a relationship's stored {@code caveatContext}, in {@link
+   * #toProtoRelationship}). A numeric/boolean/null/nested value lands on its matching {@code
+   * kind} oneof case instead of being stringified, so a caveat comparing a typed parameter (e.g.
+   * a schema's {@code now < 100} against an {@code int}) evaluates correctly on either surface --
+   * and on the write path, evaluates correctly on every future check against the stored
+   * relationship, since a bad write-time context is persisted rather than failing just once.
+   */
   private static com.google.protobuf.Value toProtoValue(Object value) {
     if (value == null) {
       return com.google.protobuf.Value.newBuilder()
@@ -1832,18 +1804,51 @@ public final class SpiceDBClient implements AutoCloseable {
       return com.google.protobuf.Value.newBuilder().setNumberValue(n.doubleValue()).build();
     } else if (value instanceof String s) {
       return com.google.protobuf.Value.newBuilder().setStringValue(s).build();
+    } else if (value instanceof Map<?, ?> m) {
+      var structBuilder = com.google.protobuf.Struct.newBuilder();
+      for (var entry : m.entrySet()) {
+        structBuilder.putFields(String.valueOf(entry.getKey()), toProtoValue(entry.getValue()));
+      }
+      return com.google.protobuf.Value.newBuilder().setStructValue(structBuilder.build()).build();
+    } else if (value instanceof List<?> l) {
+      var listBuilder = com.google.protobuf.ListValue.newBuilder();
+      for (var item : l) {
+        listBuilder.addValues(toProtoValue(item));
+      }
+      return com.google.protobuf.Value.newBuilder().setListValue(listBuilder.build()).build();
     } else {
       return com.google.protobuf.Value.newBuilder().setStringValue(value.toString()).build();
     }
   }
 
+  /**
+   * Converts a protobuf {@code Value} into a native Java value by dispatching on its {@code kind}
+   * oneof -- the read-side inverse of {@link #toProtoValue}, recursing into nested {@code
+   * Struct}/{@code ListValue} values so a relationship read back via {@link
+   * #fromProtoRelationship} doesn't lose the shape of a caveat context it wrote with {@link
+   * #toProtoValue}.
+   */
   private static Object fromProtoValue(com.google.protobuf.Value value) {
     return switch (value.getKindCase()) {
       case NULL_VALUE -> null;
       case BOOL_VALUE -> value.getBoolValue();
       case NUMBER_VALUE -> value.getNumberValue();
       case STRING_VALUE -> value.getStringValue();
-      default -> value.toString();
+      case STRUCT_VALUE -> {
+        Map<String, Object> m = new LinkedHashMap<>();
+        for (var entry : value.getStructValue().getFieldsMap().entrySet()) {
+          m.put(entry.getKey(), fromProtoValue(entry.getValue()));
+        }
+        yield m;
+      }
+      case LIST_VALUE -> {
+        List<Object> l = new ArrayList<>();
+        for (var item : value.getListValue().getValuesList()) {
+          l.add(fromProtoValue(item));
+        }
+        yield l;
+      }
+      default -> null;
     };
   }
 }

@@ -22,7 +22,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("watch failed: %v", err)
 		}
-		opName := "unknown"
+		var opName string
 		switch update.Operation {
 		case rel.UpdateOperationCreate:
 			opName = "CREATE"
@@ -30,6 +30,11 @@ func main() {
 			opName = "TOUCH"
 		case rel.UpdateOperationDelete:
 			opName = "DELETE"
+		case rel.UpdateOperationUnspecified:
+			// The server sent an operation this client doesn't recognize. A
+			// real consumer must NOT treat this as a write -- re-read the
+			// relationship, or fail the mirror closed.
+			opName = "UNSPECIFIED (unrecognized by this client)"
 		}
 		fmt.Printf("%s: %s\n", opName, update.Relationship.String())
 	}

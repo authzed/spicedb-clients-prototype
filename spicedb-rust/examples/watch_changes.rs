@@ -26,6 +26,11 @@ async fn main() {
             UpdateOperation::Create => "CREATE",
             UpdateOperation::Touch => "TOUCH",
             UpdateOperation::Delete => "DELETE",
+            // The server sent an operation this client does not recognize. A
+            // real consumer must NOT treat this as a write -- re-read the
+            // relationship, or fail the mirror closed. The update is still
+            // delivered rather than dropped, so you can see it happened.
+            UpdateOperation::Unspecified => "UNSPECIFIED (unrecognized by this client)",
         };
         println!("{}: {}", op_name, update.relationship);
     }

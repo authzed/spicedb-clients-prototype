@@ -98,6 +98,18 @@
 
 ### Fixed
 
+- **2026-08-18**: **`watch()` mapped any unrecognized relationship-update operation — including
+  `OPERATION_UNSPECIFIED` and any future wire value — to `"touch"`.** `"touch"` was the `switch`
+  statement's `default` arm rather than a `case`, so an operation the client could not interpret
+  was reported to the caller as a write. A cache or index mirror consuming the watch stream would
+  upsert a relationship on an update it did not understand — one that may in fact have been a
+  delete. `WatchChange["operation"]` gains a fourth member, `"unspecified"` (a type change, but
+  this client is unreleased), `TOUCH` becomes an explicit `case`, and the `default` arm now yields
+  `"unspecified"`. Root `DESIGN.md`, "RULE: A conversion that cannot preserve meaning must fail",
+  clause 2: server-supplied values the client does not recognise MUST NOT raise, and MUST map to
+  the safe, non-permissive default — never a grant, and never a write. Callers switching on
+  `operation` must now handle `"unspecified"`; treat it as "re-read the relationship" or fail the
+  mirror closed, never as a write.
 - **2026-08-18**: `toProtoRelationshipFilter()` (used by `readRelationships`, `deleteRelationships`,
   `exportBulkRelationships`, `Transaction.mustMatch`/`mustNotMatch`, and
   `experimentalRegisterRelationshipCounter`) silently dropped `subjectId`/`subjectRelation` when

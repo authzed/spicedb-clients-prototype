@@ -375,12 +375,29 @@ type Update struct {
 type UpdateOperation int
 
 const (
-	UpdateOperationCreate UpdateOperation = iota + 1
+	// UpdateOperationUnspecified means the server sent an operation this
+	// client does not recognize — either OPERATION_UNSPECIFIED on the wire,
+	// or a future operation value added after this client shipped. It is the
+	// zero value, so it is also what an unset Update.Operation reads as.
+	//
+	// Never treat it as a write: a cache or index mirror consuming the watch
+	// stream that upserts on an unrecognized operation could turn a delete it
+	// doesn't understand into a silent write. Handle it explicitly (re-read
+	// the relationship, or fail the mirror closed) rather than letting it
+	// fall through a default branch.
+	UpdateOperationUnspecified UpdateOperation = iota
+	UpdateOperationCreate
 	UpdateOperationTouch
 	UpdateOperationDelete
 )
 
 // UpdateFromProto converts a proto RelationshipUpdate to an idiomatic Update.
+//
+// An operation this client does not recognize maps to
+// UpdateOperationUnspecified — never to a write. This is server-supplied
+// data, so it degrades to the safe, non-permissive default rather than
+// raising; see root DESIGN.md, "RULE: A conversion that cannot preserve
+// meaning must fail", clause 2.
 func UpdateFromProto(pu *v1.RelationshipUpdate) Update {
 	var op UpdateOperation
 	switch pu.GetOperation() {
@@ -390,6 +407,8 @@ func UpdateFromProto(pu *v1.RelationshipUpdate) Update {
 		op = UpdateOperationTouch
 	case v1.RelationshipUpdate_OPERATION_DELETE:
 		op = UpdateOperationDelete
+	default:
+		op = UpdateOperationUnspecified
 	}
 	return Update{
 		Operation:    op,

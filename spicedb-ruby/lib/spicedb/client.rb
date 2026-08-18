@@ -23,6 +23,13 @@ module SpiceDB
   PermissionTree = Data.define(:expanded_object, :expanded_relation, :intermediate, :leaf)
   ExpandResult = Data.define(:tree, :revision)
   CountResult = Data.define(:relationship_count, :revision, :still_calculating)
+  # A relationship mutation observed via #watch. `operation` is one of
+  # :create, :touch, :delete, or :unspecified. :unspecified means the server
+  # sent an operation this client does not recognize — either
+  # OPERATION_UNSPECIFIED on the wire, or a future operation value added after
+  # this client shipped. Never treat it as a write: a cache or index mirror
+  # that upserts on an unrecognized operation could turn a delete it doesn't
+  # understand into a silent write.
   Update = Data.define(:operation, :relationship)
 
   # Lookup result types — mirror spicedb-go's client/lookup_types.go.
@@ -1132,11 +1139,16 @@ module SpiceDB
         Authzed::Api::V1::WatchRequest.new(**req_args)
       ).each do |resp|
         resp.updates.each do |update|
+          # Server-supplied data: an unrecognized operation (OPERATION_UNSPECIFIED, or a future
+          # wire value added after this client shipped) must not map to a write, and must not
+          # raise. Root DESIGN.md, "RULE: A conversion that cannot preserve meaning must fail",
+          # clause 2. :unspecified is the same safe symbol this client already uses for an
+          # unrecognized permissionship, rather than a name unique to this one mapper.
           op = case update.operation
                when :OPERATION_CREATE then :create
                when :OPERATION_TOUCH then :touch
                when :OPERATION_DELETE then :delete
-               else :unknown
+               else :unspecified
                end
           yield Update.new(
             operation: op,

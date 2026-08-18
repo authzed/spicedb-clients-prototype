@@ -396,6 +396,14 @@ impl SpiceDBClient {
                     UpdateOperation::Create => proto::relationship_update::Operation::Create as i32,
                     UpdateOperation::Touch => proto::relationship_update::Operation::Touch as i32,
                     UpdateOperation::Delete => proto::relationship_update::Operation::Delete as i32,
+                    // Transaction's builder never produces Unspecified -- it is only ever
+                    // produced by the watch stream for an operation this client does not
+                    // recognize. Send it through as OPERATION_UNSPECIFIED so the server
+                    // rejects the write, rather than guessing at a mutation the caller
+                    // never asked for.
+                    UpdateOperation::Unspecified => {
+                        proto::relationship_update::Operation::Unspecified as i32
+                    }
                 };
                 proto::RelationshipUpdate {
                     operation,
@@ -1201,6 +1209,15 @@ impl SpiceDBClient {
                 .map_err(|s| error::from_grpc_status(s.code() as i32, s.message().to_string()))?
             {
                 for update in &resp.updates {
+                    // Server-supplied data: an unrecognized operation
+                    // (OPERATION_UNSPECIFIED, or a future wire value added after this
+                    // client shipped) MUST NOT map to a write, and MUST NOT be dropped.
+                    // Root DESIGN.md, "RULE: A conversion that cannot preserve meaning
+                    // must fail", clause 2: server-supplied values the client does not
+                    // recognise MUST NOT raise, and MUST map to the safe, non-permissive
+                    // default. `continue` here silently swallowed the whole event, so a
+                    // consumer mirroring the stream would miss a change it had no way to
+                    // learn about -- worse than a mapping it can inspect and act on.
                     let operation = match update.operation {
                         x if x == proto::relationship_update::Operation::Create as i32 => {
                             UpdateOperation::Create
@@ -1211,7 +1228,7 @@ impl SpiceDBClient {
                         x if x == proto::relationship_update::Operation::Delete as i32 => {
                             UpdateOperation::Delete
                         }
-                        _ => continue,
+                        _ => UpdateOperation::Unspecified,
                     };
                     if let Some(rel) = &update.relationship {
                         yield Update {

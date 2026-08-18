@@ -1736,12 +1736,21 @@ public sealed class SpiceDBClient : IAsyncDisposable
 
     private static RelationshipUpdate UpdateFromProto(Authzed.Api.V1.RelationshipUpdate pu)
     {
+        // Server-supplied data: an unrecognized operation (OPERATION_UNSPECIFIED, or a future
+        // wire value added after this client shipped) MUST NOT map to a write. Mirrors
+        // ToTreeOperation directly above and both permissionship mappers in this file, which
+        // already map an unrecognized server enum to their safe Unspecified value rather than
+        // raising or guessing. Root DESIGN.md, "RULE: A conversion that cannot preserve meaning
+        // must fail", clause 2: server-supplied values the client does not recognise MUST NOT
+        // raise, and MUST map to the safe, non-permissive default -- never a grant, and never a
+        // write. Mapping to Touch here would let a cache or index mirror consuming the watch
+        // stream upsert a relationship that may in fact have been deleted.
         var op = pu.Operation switch
         {
             Authzed.Api.V1.RelationshipUpdate.Types.Operation.Create => UpdateOperation.Create,
             Authzed.Api.V1.RelationshipUpdate.Types.Operation.Touch => UpdateOperation.Touch,
             Authzed.Api.V1.RelationshipUpdate.Types.Operation.Delete => UpdateOperation.Delete,
-            _ => UpdateOperation.Touch,
+            _ => UpdateOperation.Unspecified,
         };
         return new RelationshipUpdate
         {

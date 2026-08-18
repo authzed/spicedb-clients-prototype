@@ -91,6 +91,7 @@
 
 ### Fixed
 
+- **2026-08-18**: `#updates` mapped an unrecognized watch operation to `:unknown`, a symbol used nowhere else in this client. The behavior was already safe — it was never `:touch`, unlike C#, TypeScript and Java, which mapped it to a write — but the name was unique to this one mapper, so a caller handling `:unspecified` everywhere else (the symbol this client already uses for an unrecognized `permissionship`) would miss it. The fallthrough arm now yields `:unspecified`, and `Update` documents the four possible `operation` symbols and why an unrecognized one must never be treated as a write. Root `DESIGN.md`, "RULE: A conversion that cannot preserve meaning must fail", clause 2. Breaking only for a caller matching on `:unknown`, which was undocumented; this client is unreleased.
 - **`filter_to_proto` silently dropped `subject_id`/`subject_relation` when `subject_type` was
   not set, instead of raising.** `optional_subject_filter` was only built inside
   `if filter.subject_type`, so `SpiceDB::Filter.new(resource_type: 'document',

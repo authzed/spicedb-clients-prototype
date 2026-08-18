@@ -261,6 +261,14 @@ public sealed record RelationshipUpdate
 /// </summary>
 public enum UpdateOperation
 {
+    /// <summary>
+    /// The server sent an operation this client does not recognize — either
+    /// <c>OPERATION_UNSPECIFIED</c> on the wire, or a future operation value added after this
+    /// client shipped. Never treat this as a write: a cache or index mirror consuming the watch
+    /// stream that upserts on an unrecognized operation could turn a delete it doesn't
+    /// understand into a silent write.
+    /// </summary>
+    Unspecified = 0,
     Create = 1,
     Touch = 2,
     Delete = 3,

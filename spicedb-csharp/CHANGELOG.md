@@ -209,6 +209,16 @@
 
 ### Fixed
 
+- **2026-08-18**: **`UpdateFromProto` mapped any unrecognized watch operation — including
+  `OPERATION_UNSPECIFIED` and any future wire value — to `UpdateOperation.Touch`.** A cache or
+  index mirror consuming the watch stream would upsert a relationship on an update it could not
+  actually interpret, which may in fact have been a delete. `UpdateOperation` gains a new
+  `Unspecified = 0` value (purely additive — the existing members keep their explicit numeric
+  values), and the mapper's `_ =>` arm now returns it instead of `Touch`, matching what
+  `ToTreeOperation` ten lines above and both `permissionship` mappers in this file already do:
+  server-supplied data the client does not recognise must degrade to a safe, non-permissive
+  default, never a write. Root `DESIGN.md`, "RULE: A conversion that cannot preserve meaning must
+  fail", clause 2.
 - **2026-08-18**: `Filter.ToProto()` silently dropped `SubjectID`/`SubjectRelation` when
   `SubjectType` was not set, instead of raising. `OptionalSubjectId`/`OptionalRelation` were
   nested inside `if (!string.IsNullOrEmpty(SubjectType))`, so

@@ -60,6 +60,91 @@ fn watch_response(
     }
 }
 
+/// Builds a `WatchResponse` carrying a raw operation discriminant, so a test
+/// can emit a value this client has no enum variant for.
+fn watch_response_raw_op(op: i32, rel: proto::Relationship) -> proto::WatchResponse {
+    proto::WatchResponse {
+        updates: vec![proto::RelationshipUpdate {
+            operation: op,
+            relationship: Some(rel),
+        }],
+        ..Default::default()
+    }
+}
+
+/// An unrecognized watch operation — `OPERATION_UNSPECIFIED`, or a future wire
+/// value added after this client shipped — must still be yielded, mapped to
+/// `UpdateOperation::Unspecified`.
+///
+/// Before this fix the mapper's fallthrough arm was `_ => continue`, which
+/// silently dropped the entire update: a consumer mirroring the stream into a
+/// cache or index would never learn that the relationship had changed at all,
+/// with no error and no gap it could detect. Root `DESIGN.md`, "RULE: A
+/// conversion that cannot preserve meaning must fail", clause 2 —
+/// server-supplied values the client does not recognise MUST NOT raise, and
+/// MUST map to the safe, non-permissive default. Dropping is not that default:
+/// `Unspecified` is inspectable, a missing event is not.
+#[tokio::test]
+async fn updates_yields_unrecognized_operation_as_unspecified_rather_than_dropping_it() {
+    let responses = vec![
+        // OPERATION_UNSPECIFIED, explicitly on the wire.
+        watch_response_raw_op(
+            proto::relationship_update::Operation::Unspecified as i32,
+            rel_proto("document", "readme", "viewer", "user", "alice"),
+        ),
+        // A discriminant no version of this client knows about, standing in
+        // for an operation added to the proto after this client shipped.
+        watch_response_raw_op(
+            9999,
+            rel_proto("document", "readme", "viewer", "user", "bob"),
+        ),
+        // A recognized operation after the unrecognized ones, proving the
+        // stream keeps working rather than stalling.
+        watch_response(
+            proto::relationship_update::Operation::Delete,
+            rel_proto("document", "readme", "viewer", "user", "carol"),
+        ),
+    ];
+    let addr = spawn_watch_server(MockWatchService::new(responses, /* keep_open */ true)).await;
+
+    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
+        .await
+        .expect("client should connect to mock server");
+
+    let object_types: Vec<String> = Vec::new();
+    let stream = client.updates(&object_types, None);
+    tokio::pin!(stream);
+
+    let first = tokio::time::timeout(Duration::from_secs(2), stream.next())
+        .await
+        .expect("OPERATION_UNSPECIFIED update must be yielded, not dropped")
+        .expect("stream should yield a first item")
+        .expect("first item should be Ok(Update)");
+    assert_eq!(first.operation, UpdateOperation::Unspecified);
+    assert_ne!(
+        first.operation,
+        UpdateOperation::Touch,
+        "an unrecognized operation must never be reported as a write"
+    );
+    assert_eq!(first.relationship.subject_id, "alice");
+
+    let second = tokio::time::timeout(Duration::from_secs(2), stream.next())
+        .await
+        .expect("unknown future operation must be yielded, not dropped")
+        .expect("stream should yield a second item")
+        .expect("second item should be Ok(Update)");
+    assert_eq!(second.operation, UpdateOperation::Unspecified);
+    assert_eq!(second.relationship.subject_id, "bob");
+
+    let third = tokio::time::timeout(Duration::from_secs(2), stream.next())
+        .await
+        .expect("recognized operation should still arrive")
+        .expect("stream should yield a third item")
+        .expect("third item should be Ok(Update)");
+    assert_eq!(third.operation, UpdateOperation::Delete);
+    assert_eq!(third.relationship.subject_id, "carol");
+}
+
 #[tokio::test]
 async fn updates_yields_incrementally_while_stream_stays_open() {
     // The mock emits two updates and then KEEPS THE STREAM OPEN forever.

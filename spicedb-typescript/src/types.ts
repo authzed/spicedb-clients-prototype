@@ -168,7 +168,18 @@ export interface CheckOptions {
  * A change event from the Watch API.
  */
 export interface WatchChange {
-  operation: "create" | "touch" | "delete";
+  /**
+   * The kind of mutation this change represents.
+   *
+   * `"unspecified"` means the server sent an operation this client does not
+   * recognize — either `OPERATION_UNSPECIFIED` on the wire, or a future
+   * operation value added after this client shipped. Never treat it as a
+   * write: a cache or index mirror consuming the watch stream that upserts on
+   * an unrecognized operation could turn a delete it doesn't understand into a
+   * silent write. Handle it explicitly (re-read the relationship, or fail the
+   * mirror closed) rather than falling through to a default branch.
+   */
+  operation: "create" | "touch" | "delete" | "unspecified";
   relationship: Relationship;
 }
 

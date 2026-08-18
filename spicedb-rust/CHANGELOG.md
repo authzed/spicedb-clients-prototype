@@ -4,6 +4,19 @@
 
 ### Fixes
 
+- **`updates()` silently dropped every watch update whose operation it did not recognize.** The
+  mapper's fallthrough arm was `_ => continue`, so an `OPERATION_UNSPECIFIED` — or any future
+  operation value added to the proto after this client shipped — made the whole update vanish from
+  the stream: a consumer mirroring the stream into a cache or index never learned the relationship
+  had changed at all, with no error and no gap it could detect. That is worse than the wrong-write
+  defect the other clients had, because there is nothing for the caller to inspect. `UpdateOperation`
+  gains an `Unspecified` variant and the fallthrough arm now yields it, so the update is delivered
+  and the caller can decide (re-read the relationship, or fail the mirror closed). Root `DESIGN.md`,
+  "RULE: A conversion that cannot preserve meaning must fail", clause 2: server-supplied values the
+  client does not recognise MUST NOT raise, and MUST map to the safe, non-permissive default —
+  dropping is not that default. `Transaction`'s builder never produces `Unspecified`; if one is fed
+  back into `write()` it is sent as `OPERATION_UNSPECIFIED` for the server to reject, rather than
+  guessing at a mutation the caller never asked for.
 - **`Filter::to_proto` built a `SubjectFilter` with `subject_type` defaulted to an empty string
   whenever only `subject_id`/`subject_relation` was set, instead of raising.** Unlike the other six
   clients, this was not silent: the condition included `|| self.subject_id.is_some()`, so

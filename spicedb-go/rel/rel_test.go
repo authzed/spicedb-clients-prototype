@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/structpb"
 
+	v1 "github.com/authzed/spicedb-clients/proto-clients/spicedb-go-proto/gen/authzed/api/v1"
 	"github.com/authzed/spicedb-clients/spicedb-go/rel"
 )
 
@@ -274,4 +275,64 @@ func TestFilterToProtoSubjectTypeAndIDSucceeds(t *testing.T) {
 	require.NotNil(t, proto.GetOptionalSubjectFilter())
 	require.Equal(t, "user", proto.GetOptionalSubjectFilter().GetSubjectType())
 	require.Equal(t, "alice", proto.GetOptionalSubjectFilter().GetOptionalSubjectId())
+}
+
+// TestUpdateFromProtoUnrecognizedOperationIsUnspecified proves that a watch
+// operation this client does not recognize -- OPERATION_UNSPECIFIED, or a
+// future operation value added after this client shipped -- maps to the named
+// UpdateOperationUnspecified, never to a write.
+//
+// Root DESIGN.md, "RULE: A conversion that cannot preserve meaning must fail",
+// clause 2: server-supplied values the client does not recognise MUST NOT
+// raise, and MUST map to the safe, non-permissive default -- never a grant,
+// and never a write. A cache or index mirror consuming the watch stream that
+// upserted on an unrecognized operation could turn a delete it doesn't
+// understand into a silent write.
+func TestUpdateFromProtoUnrecognizedOperationIsUnspecified(t *testing.T) {
+	relProto := &v1.Relationship{
+		Resource: &v1.ObjectReference{ObjectType: "document", ObjectId: "doc1"},
+		Relation: "viewer",
+		Subject: &v1.SubjectReference{
+			Object: &v1.ObjectReference{ObjectType: "user", ObjectId: "alice"},
+		},
+	}
+
+	for name, op := range map[string]v1.RelationshipUpdate_Operation{
+		"explicit OPERATION_UNSPECIFIED": v1.RelationshipUpdate_OPERATION_UNSPECIFIED,
+		"unknown future operation":       v1.RelationshipUpdate_Operation(9999),
+	} {
+		t.Run(name, func(t *testing.T) {
+			u := rel.UpdateFromProto(&v1.RelationshipUpdate{
+				Operation:    op,
+				Relationship: relProto,
+			})
+
+			require.Equal(t, rel.UpdateOperationUnspecified, u.Operation)
+			require.NotEqual(t, rel.UpdateOperationTouch, u.Operation,
+				"an operation the client cannot interpret must never be reported as a write")
+			require.Equal(t, "doc1", u.Relationship.ResourceID)
+		})
+	}
+}
+
+// TestUpdateFromProtoRecognizedOperations is the companion to the case above:
+// the three operations this client does understand still map to themselves.
+func TestUpdateFromProtoRecognizedOperations(t *testing.T) {
+	for proto, want := range map[v1.RelationshipUpdate_Operation]rel.UpdateOperation{
+		v1.RelationshipUpdate_OPERATION_CREATE: rel.UpdateOperationCreate,
+		v1.RelationshipUpdate_OPERATION_TOUCH:  rel.UpdateOperationTouch,
+		v1.RelationshipUpdate_OPERATION_DELETE: rel.UpdateOperationDelete,
+	} {
+		u := rel.UpdateFromProto(&v1.RelationshipUpdate{
+			Operation: proto,
+			Relationship: &v1.Relationship{
+				Resource: &v1.ObjectReference{ObjectType: "document", ObjectId: "doc1"},
+				Relation: "viewer",
+				Subject: &v1.SubjectReference{
+					Object: &v1.ObjectReference{ObjectType: "user", ObjectId: "alice"},
+				},
+			},
+		})
+		require.Equal(t, want, u.Operation, "operation %v", proto)
+	}
 }

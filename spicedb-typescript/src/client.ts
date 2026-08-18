@@ -907,16 +907,29 @@ export class SpiceDBClient {
         const stream = this.proto.watch.watch(req);
         for await (const resp of stream) {
           const changes: WatchChange[] = resp.updates.map((update) => {
+            // Server-supplied data: an unrecognized operation
+            // (OPERATION_UNSPECIFIED, or a future wire value added after this
+            // client shipped) MUST NOT map to a write. Root DESIGN.md, "RULE:
+            // A conversion that cannot preserve meaning must fail", clause 2:
+            // server-supplied values the client does not recognise MUST NOT
+            // raise, and MUST map to the safe, non-permissive default -- never
+            // a grant, and never a write. TOUCH is a write, so it can only be
+            // the mapping for an explicit OPERATION_TOUCH, never the default:
+            // a cache or index mirror consuming this stream would otherwise
+            // upsert a relationship that may in fact have been deleted.
             let operation: WatchChange["operation"];
             switch (update.operation) {
               case RelationshipUpdate_Operation.CREATE:
                 operation = "create";
                 break;
+              case RelationshipUpdate_Operation.TOUCH:
+                operation = "touch";
+                break;
               case RelationshipUpdate_Operation.DELETE:
                 operation = "delete";
                 break;
               default:
-                operation = "touch";
+                operation = "unspecified";
                 break;
             }
             return {

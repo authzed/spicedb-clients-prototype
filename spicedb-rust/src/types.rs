@@ -423,6 +423,18 @@ impl Filter {
 /// The type of mutation in a relationship update.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpdateOperation {
+    /// The server sent an operation this client does not recognize -- either
+    /// `OPERATION_UNSPECIFIED` on the wire, or a future operation value added
+    /// after this client shipped. Only ever produced by the watch stream;
+    /// never construct it for a write.
+    ///
+    /// Never treat this as a write: a cache or index mirror consuming the
+    /// watch stream that upserts on an unrecognized operation could turn a
+    /// delete it doesn't understand into a silent write. Handle it explicitly
+    /// (re-read the relationship, or fail the mirror closed) -- and note the
+    /// update is still yielded, because dropping it silently would make the
+    /// consumer miss a change it has no way to learn about.
+    Unspecified,
     /// Create the relationship. Fails if it already exists.
     Create,
     /// Create or update the relationship.

@@ -370,10 +370,11 @@ class SpiceDBClient:
             count = 0
             while True:
                 yielded = 0
-                call = self._permissions.ReadRelationships(
-                    request, metadata=self._metadata
-                )
+                call = None
                 try:
+                    call = self._permissions.ReadRelationships(
+                        request, metadata=self._metadata
+                    )
                     async for resp in call:
                         yielded += 1
                         count += 1
@@ -391,8 +392,10 @@ class SpiceDBClient:
                     # Release the stream on every exit path -- abandonment
                     # included, where the generator is closed at the yield
                     # and this is the only thing that tells the server to
-                    # stop. A no-op once the stream is already finished.
-                    call.cancel()
+                    # stop. A no-op once the stream is already finished,
+                    # and skipped entirely if opening it never returned.
+                    if call is not None:
+                        call.cancel()
             if count < _DEFAULT_PAGE_SIZE:
                 return
 
@@ -435,10 +438,11 @@ class SpiceDBClient:
             count = 0
             while True:
                 yielded = 0
-                call = self._permissions.LookupResources(
-                    request, metadata=self._metadata
-                )
+                call = None
                 try:
+                    call = self._permissions.LookupResources(
+                        request, metadata=self._metadata
+                    )
                     async for resp in call:
                         yielded += 1
                         count += 1
@@ -456,8 +460,10 @@ class SpiceDBClient:
                     # Release the stream on every exit path -- abandonment
                     # included, where the generator is closed at the yield
                     # and this is the only thing that tells the server to
-                    # stop. A no-op once the stream is already finished.
-                    call.cancel()
+                    # stop. A no-op once the stream is already finished,
+                    # and skipped entirely if opening it never returned.
+                    if call is not None:
+                        call.cancel()
             if count < _DEFAULT_PAGE_SIZE:
                 return
 
@@ -495,8 +501,9 @@ class SpiceDBClient:
         attempt = 0
         while True:
             yielded = 0
-            call = self._permissions.LookupSubjects(request, metadata=self._metadata)
+            call = None
             try:
+                call = self._permissions.LookupSubjects(request, metadata=self._metadata)
                 async for resp in call:
                     yielded += 1
                     yield _mapping.lookup_subject(resp)
@@ -510,8 +517,10 @@ class SpiceDBClient:
                 # Release the stream on every exit path -- abandonment
                 # included, where the generator is closed at the yield
                 # and this is the only thing that tells the server to
-                # stop. A no-op once the stream is already finished.
-                call.cancel()
+                # stop. A no-op once the stream is already finished,
+                # and skipped entirely if opening it never returned.
+                if call is not None:
+                    call.cancel()
 
     # ── Writes ──────────────────────────────────────────────────────
 
@@ -637,8 +646,9 @@ class SpiceDBClient:
         attempt = 0
         while True:
             yielded = 0
-            call = self._watch.Watch(request, metadata=self._metadata)
+            call = None
             try:
+                call = self._watch.Watch(request, metadata=self._metadata)
                 async for resp in call:
                     yielded += 1
                     yield _mapping.watch_event(resp)
@@ -655,8 +665,10 @@ class SpiceDBClient:
                 # Release the stream on every exit path -- abandonment
                 # included, where the generator is closed at the yield
                 # and this is the only thing that tells the server to
-                # stop. A no-op once the stream is already finished.
-                call.cancel()
+                # stop. A no-op once the stream is already finished,
+                # and skipped entirely if opening it never returned.
+                if call is not None:
+                    call.cancel()
 
     # ── Bulk operations ─────────────────────────────────────────────
 
@@ -705,10 +717,11 @@ class SpiceDBClient:
             count = 0
             while True:
                 yielded = 0
-                call = self._permissions.ExportBulkRelationships(
-                    request, metadata=self._metadata
-                )
+                call = None
                 try:
+                    call = self._permissions.ExportBulkRelationships(
+                        request, metadata=self._metadata
+                    )
                     async for resp in call:
                         for proto_rel in resp.relationships:
                             yield Relationship._from_proto(proto_rel)
@@ -727,8 +740,10 @@ class SpiceDBClient:
                     # Release the stream on every exit path -- abandonment
                     # included, where the generator is closed at the yield
                     # and this is the only thing that tells the server to
-                    # stop. A no-op once the stream is already finished.
-                    call.cancel()
+                    # stop. A no-op once the stream is already finished,
+                    # and skipped entirely if opening it never returned.
+                    if call is not None:
+                        call.cancel()
             if count < _DEFAULT_PAGE_SIZE:
                 return
 

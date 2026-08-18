@@ -315,6 +315,60 @@ never succeed.
 Backoff MUST be jittered. Without jitter every client in a fleet retries on the same schedule
 after a restart, converting a recovery into a thundering herd.
 
+## RULE: A unary call must have a deadline
+
+A wedged SpiceDB — one that accepts the connection but never answers — hangs every caller that
+has no bound on the call. It hangs them silently: the connection is open and nothing looks wrong
+at the transport level, so no error is ever produced, and automatic retry cannot help because
+there is nothing to retry against. Callers queue up behind the wedged call until the connection
+pool is exhausted, and an outage that started with one bad call spreads to requests that have
+nothing to do with it.
+
+1. **A client MUST let a caller bound a unary call.** Every unary RPC — `CheckPermission`,
+   `WriteRelationships`, `ReadSchema`, and the rest — must accept a deadline or timeout from the
+   caller, expressed in the language's idiomatic form: a context deadline in Go, a timeout
+   parameter or cancellation token elsewhere.
+2. **A client SHOULD apply a default when the caller supplies none.** An opt-in-only parameter
+   leaves the defect intact for everyone who does not opt in — in practice, most callers. The
+   default must be finite; treating "no timeout" as the default reproduces the defect this rule
+   exists to close. `authzed-node` sets the precedent: it ships a `DEFAULT_DEADLINE_MS`, with a
+   comment citing `grpc/grpc-node#541`, a known gRPC failure mode the default exists to guard
+   against.
+3. **Streaming calls MUST NOT inherit the unary default.** `watch`, `export`, and the lookup
+   streams (`LookupResources`, `LookupSubjects`, and their variants) are long-lived by design — a
+   `watch` may legitimately run for the life of the process, far past any sensible unary timeout.
+   Applying the unary default to a stream would make the stream itself the outage. Streams get
+   their own release mechanism instead — see **RULE: Abandoning a stream must release it**, below.
+
+A client with no deadline anywhere is one wedged server away from an outage that looks, from the
+caller's side, exactly like a hang with no cause.
+
+## RULE: Abandoning a stream must release it
+
+Streaming RPCs invite a common idiom: take the first N results and stop. If stopping early does
+not tell the server to stop, the client has traded a fast return for a leak — the server keeps a
+dispatch open per abandoned stream, for as long as the underlying connection lives, because
+nothing ever told it the caller walked away.
+
+1. **A client MUST expose cancellation for every streaming call.** The caller-facing surface — an
+   async iterator, a generator, a channel — must offer an explicit, working way to stop consuming
+   before the stream is exhausted.
+2. **The transport MUST actually release the stream on abandonment.** Exposing a cancel method
+   that the transport underneath ignores does not satisfy this rule; the caller believes the
+   stream is closed and it is not. Verify this against the transport the client actually ships,
+   not the one implied by its API.
+3. **A `for`-loop `break` calling a generator's `return()` is not sufficient on its own.** Where a
+   language's iteration protocol closes a generator by calling `return()` on `break`, that
+   mechanism only releases the stream if the transport underneath honors it — and this is a trap
+   precisely because the call site looks identical whether it does or not. Connect-ES is a
+   concrete instance: it deliberately omits `return()` on its iterator, so a `break` in consuming
+   code never releases the underlying HTTP/2 stream. A client built on a transport with this
+   property must wire cancellation through an explicit path and must not rely on the loop idiom
+   alone.
+
+A client that cannot cancel an in-flight stream leaks a server-side dispatch per abandoned call —
+silently, since the leak is invisible from the caller's side of a `break`.
+
 ## What NOT To Do
 
 - No auto-generated feeling — the API should read like hand-written code

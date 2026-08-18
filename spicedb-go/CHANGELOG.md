@@ -157,6 +157,46 @@
 
 ### Bug Fixes
 
+- **2026-08-18**: Watch resumability. `Updates` previously dropped
+  `WatchResponse.changes_through` entirely and had no way to request
+  `WATCH_KIND_INCLUDE_CHECKPOINTS`.
+  - **Breaking**: `Updates(ctx, objectTypes, startRevision, ...)` now returns
+    `iter.Seq2[client.WatchEvent, error]` instead of
+    `iter.Seq2[rel.Update, error]`, and accepts variadic `WatchOption`s. It
+    also now yields once per server response (batch of updates) rather than
+    flattening to one yield per relationship update — a checkpoint response
+    carries zero updates, so a per-update-only iterator has no way to
+    surface it at all.
+
+    ```go
+    type WatchEvent struct {
+        Updates        []rel.Update
+        ChangesThrough string // resume token; pass as startRevision to resume after a dropped stream
+        IsCheckpoint   bool   // true for a checkpoint event, which carries no Updates
+    }
+    ```
+  - `WatchEvent.ChangesThrough` is the proto's `changes_through` --
+    "This token can be used in a subsequent WatchRequest to resume watching
+    from this point." Without it, a consumer whose stream dropped could
+    only restart from its original `startRevision` (reprocessing
+    everything since, possibly past the GC window) or from head (silently
+    losing every change in the gap).
+  - New `client.WithIncludeCheckpoints()` `WatchOption` requests
+    `WATCH_KIND_INCLUDE_CHECKPOINTS` (plus
+    `WATCH_KIND_INCLUDE_RELATIONSHIP_UPDATES`, since `OptionalUpdateKinds`
+    is empty-means-default and a non-empty list replaces rather than
+    extends it) -- no prior way existed to ask for this at all.
+    `WatchEvent.IsCheckpoint` lets a caller tell "nothing changed, here is a
+    fresh resume point" from "here are changes". Recommended if this
+    SpiceDB instance is running behind a proxy that aborts idle
+    connections, since a checkpoint keeps the stream alive even when there
+    are no changes.
+  - `examples/watch_changes/` updated for the new `WatchEvent` shape and to
+    request checkpoints. New `client/watch_test.go` (no prior test coverage
+    existed for `Updates` at all): a watch event exposes a usable resume
+    token, `WithIncludeCheckpoints` reaches the built `WatchRequest`, a
+    checkpoint event is distinguishable from one carrying updates, and a
+    mid-stream error yields a zero-value `WatchEvent` with a mapped error.
 - **2026-08-18**: Retry safety, per root `DESIGN.md` "RULE: Automatic retry is for idempotent
   operations only". The fix lives entirely in `proto-clients/spicedb-go-proto/client.go`'s
   `NewClient` — Go's retry is a gRPC service-config `retryPolicy` shared by every RPC on a service,

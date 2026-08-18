@@ -206,7 +206,7 @@ Iterators:
 - `LookupResources(...)` → `iter.Seq2[client.LookupResource, error]`
 - `LookupSubjects(...)` → `iter.Seq2[client.LookupSubject, error]`
 - `ExportRelationships(...)` → `iter.Seq2[rel.Relationship, error]`
-- `Updates(...)` → `iter.Seq2[rel.Update, error]`
+- `Updates(...)` → `iter.Seq2[client.WatchEvent, error]`
 
 `LookupResource` and `LookupSubject` (see `client/lookup_types.go`) are native
 result structs, not bare ID strings — they carry the data a caller needs to
@@ -241,6 +241,26 @@ resource/subject lacking the permission is simply absent from the stream
 rather than yielded with that value. `NoPermission` only appears on
 `CheckResult`, from the check surface, where the server is answering a
 question about one specific pair and "no" is itself the answer.
+
+`WatchEvent` (see `client/watch.go`) is one event per `WatchResponse`,
+carrying the resume token and checkpoint flag the raw proto does not surface
+on its own:
+
+```go
+type WatchEvent struct {
+    Updates        []rel.Update
+    ChangesThrough string // resume token; pass as startRevision to resume after a dropped stream
+    IsCheckpoint   bool   // true for a checkpoint event, which carries no Updates
+}
+```
+
+`ChangesThrough` is always populated. Without it, a consumer whose stream
+dies can only restart from its original `startRevision` (reprocessing
+everything since, possibly past the GC window) or from head (silently
+losing every change in the gap). `WithIncludeCheckpoints()` (a `WatchOption`
+to `Updates`) requests periodic checkpoint events — recommended behind a
+proxy that aborts idle connections — and `IsCheckpoint` lets a caller tell
+"nothing changed, here is a fresh resume point" from "here are changes".
 
 `Permissionship` is `PermissionshipHasPermission` for a full grant, or
 `PermissionshipConditionalPermission` when the match depends on caveat

@@ -207,6 +207,34 @@ func TestCheckForwardsSubjectCaveatContext(t *testing.T) {
 		"expected caveatInfo() extraction in both Check and CheckWithContext, got:\n%s", output)
 }
 
+// TestWriteMethodsPropagateTxnErrors verifies the generated TypedClient write
+// methods propagate the error rel.Txn.Create/Touch/Delete return when a
+// relationship's caveat context cannot be converted to protobuf, rather than
+// discarding it in statement position. Go permits dropping a return value in a
+// statement, so the generated code compiles either way -- which is exactly why
+// this regression is invisible without an explicit assertion. Dropping the
+// error would write the relationship with its caveat context silently missing,
+// mis-evaluating every future check against it, and re-checking would never
+// repair it.
+func TestWriteMethodsPropagateTxnErrors(t *testing.T) {
+	s, err := schema.ParseFile("../testdata/sample.zed")
+	require.NoError(t, err)
+
+	g := &Generator{}
+	files, err := g.Generate(s, nil)
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+
+	output := string(files[0].Content)
+
+	for _, op := range []string{"Touch", "Create", "Delete"} {
+		assert.Contains(t, output, "if err := txn."+op+"(r.r); err != nil {",
+			"generated %s must check the error rel.Txn.%s returns", op, op)
+		assert.NotContains(t, output, "\t\ttxn."+op+"(r.r)\n",
+			"generated %s must not discard the error rel.Txn.%s returns", op, op)
+	}
+}
+
 func TestGenerateEmptySchema(t *testing.T) {
 	s := &schema.Schema{
 		Definitions: []schema.Definition{},

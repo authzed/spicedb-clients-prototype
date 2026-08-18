@@ -11,6 +11,7 @@ mod support;
 use std::sync::atomic::Ordering;
 
 use spicedb::client::SpiceDBClient;
+use spicedb::error::SpiceDBError;
 use spicedb::types::{DeleteOptions, Filter};
 use spicedb_proto::authzed::api::v1 as proto;
 
@@ -117,6 +118,163 @@ async fn delete_relationships_sends_no_preconditions_and_default_limit() {
     );
     assert_eq!(req.optional_limit, DEFAULT_DELETE_PAGE_SIZE);
     assert!(req.optional_allow_partial_deletions);
+}
+
+// ---------------------------------------------------------------------------
+// delete_relationships — filter with subject_id but no subject_type
+// ---------------------------------------------------------------------------
+
+/// Regression test for the offboarding hazard this finding describes: before
+/// the fix, `Filter::to_proto` built a `SubjectFilter` with `subject_type`
+/// defaulted to an empty string whenever only `subject_id` was set. That
+/// request reached the server and was rejected there (the server validates
+/// `subject_type` as a required, pattern-matched field) rather than being
+/// caught client-side -- a real gRPC round-trip for a mistake the client
+/// could see up front. `delete_relationships` must now return
+/// `SpiceDBError::InvalidArgument`, naming the missing field, before any
+/// request is sent.
+#[tokio::test]
+async fn delete_relationships_errors_when_filter_subject_id_has_no_subject_type() {
+    let mock = MockPermissionsService::new();
+    let calls = mock.delete_relationships_calls();
+
+    let addr = spawn_permissions_server(mock).await;
+    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
+        .await
+        .expect("client should connect to mock server");
+
+    let bad_filter = Filter::new("document").with_subject_id("alice");
+
+    let err = client
+        .delete_relationships(&bad_filter)
+        .await
+        .expect_err("filter with subject_id but no subject_type must be rejected");
+
+    assert!(matches!(err, SpiceDBError::InvalidArgument(_)));
+    let msg = err.to_string();
+    assert!(msg.contains("subject_id"), "message was: {msg}");
+    assert!(msg.contains("subject_type"), "message was: {msg}");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "no request should reach the server for an unconvertible filter"
+    );
+}
+
+/// `subject_relation` counterpart of the above.
+#[tokio::test]
+async fn delete_relationships_errors_when_filter_subject_relation_has_no_subject_type() {
+    let mock = MockPermissionsService::new();
+    let calls = mock.delete_relationships_calls();
+
+    let addr = spawn_permissions_server(mock).await;
+    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
+        .await
+        .expect("client should connect to mock server");
+
+    let bad_filter = Filter::new("document").with_subject_relation("member");
+
+    let err = client
+        .delete_relationships(&bad_filter)
+        .await
+        .expect_err("filter with subject_relation but no subject_type must be rejected");
+
+    assert!(matches!(err, SpiceDBError::InvalidArgument(_)));
+    let msg = err.to_string();
+    assert!(msg.contains("subject_relation"), "message was: {msg}");
+    assert!(msg.contains("subject_type"), "message was: {msg}");
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+/// Same rejection, but for a `with_must_match` precondition filter rather
+/// than the primary filter -- preconditions are converted before any RPC is
+/// attempted, so this must also fail closed with no request sent.
+#[tokio::test]
+async fn delete_relationships_with_errors_when_must_match_filter_subject_id_has_no_subject_type() {
+    let mock = MockPermissionsService::new();
+    let calls = mock.delete_relationships_calls();
+
+    let addr = spawn_permissions_server(mock).await;
+    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
+        .await
+        .expect("client should connect to mock server");
+
+    let filter = Filter::new("document").with_resource_id("doc1");
+    let bad_guard = Filter::new("document").with_subject_id("alice");
+    let options = DeleteOptions::new().with_must_match(bad_guard);
+
+    let err = client
+        .delete_relationships_with(&filter, &options)
+        .await
+        .expect_err("must_match filter with subject_id but no subject_type must be rejected");
+
+    assert!(matches!(err, SpiceDBError::InvalidArgument(_)));
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+/// Companion to the error cases above -- proves a filter with subject_type
+/// alone (no subject_id) still builds a valid subject filter and is not
+/// accidentally caught by the new guard.
+#[tokio::test]
+async fn delete_relationships_sends_subject_type_alone_without_erroring() {
+    let mock = MockPermissionsService::new();
+    mock.push_delete_relationships_response(complete_response("rev-4"));
+    let requests = mock.delete_relationships_requests();
+
+    let addr = spawn_permissions_server(mock).await;
+    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
+        .await
+        .expect("client should connect to mock server");
+
+    let filter = Filter::new("document").with_subject_type("user");
+    client
+        .delete_relationships(&filter)
+        .await
+        .expect("delete should succeed");
+
+    let seen = requests.lock().unwrap().clone();
+    let subject_filter = seen[0]
+        .relationship_filter
+        .as_ref()
+        .unwrap()
+        .optional_subject_filter
+        .as_ref()
+        .unwrap();
+    assert_eq!(subject_filter.subject_type, "user");
+    assert_eq!(subject_filter.optional_subject_id, "");
+}
+
+/// Companion proving the valid combination (subject_type alongside
+/// subject_id) still works.
+#[tokio::test]
+async fn delete_relationships_sends_subject_type_and_id_without_erroring() {
+    let mock = MockPermissionsService::new();
+    mock.push_delete_relationships_response(complete_response("rev-5"));
+    let requests = mock.delete_relationships_requests();
+
+    let addr = spawn_permissions_server(mock).await;
+    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
+        .await
+        .expect("client should connect to mock server");
+
+    let filter = Filter::new("document")
+        .with_subject_type("user")
+        .with_subject_id("alice");
+    client
+        .delete_relationships(&filter)
+        .await
+        .expect("delete should succeed");
+
+    let seen = requests.lock().unwrap().clone();
+    let subject_filter = seen[0]
+        .relationship_filter
+        .as_ref()
+        .unwrap()
+        .optional_subject_filter
+        .as_ref()
+        .unwrap();
+    assert_eq!(subject_filter.subject_type, "user");
+    assert_eq!(subject_filter.optional_subject_id, "alice");
 }
 
 // ---------------------------------------------------------------------------

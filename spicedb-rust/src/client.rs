@@ -404,7 +404,7 @@ impl SpiceDBClient {
             })
             .collect();
 
-        let preconditions = preconditions_to_proto(txn.preconditions());
+        let preconditions = preconditions_to_proto(txn.preconditions())?;
 
         let resp = self
             .retry(|| async {
@@ -459,10 +459,11 @@ impl SpiceDBClient {
         filter: &Filter,
     ) -> impl Stream<Item = Result<Relationship, SpiceDBError>> + 'static {
         let consistency = consistency.to_proto();
-        let filter = filter.to_proto();
+        let filter = filter.clone();
         let perms = self.proto.permissions.clone();
 
         async_stream::try_stream! {
+            let filter = filter.to_proto()?;
             let mut cursor: Option<proto::Cursor> = None;
 
             loop {
@@ -538,7 +539,8 @@ impl SpiceDBClient {
         filter: &Filter,
         options: &DeleteOptions,
     ) -> Result<String, SpiceDBError> {
-        let preconditions = preconditions_to_proto(&options.preconditions());
+        let preconditions = preconditions_to_proto(&options.preconditions())?;
+        let filter = filter.to_proto()?;
         let limit = options.limit.unwrap_or(DEFAULT_DELETE_PAGE_SIZE);
 
         loop {
@@ -548,7 +550,7 @@ impl SpiceDBClient {
                         .permissions
                         .clone()
                         .delete_relationships(proto::DeleteRelationshipsRequest {
-                            relationship_filter: Some(filter.to_proto()),
+                            relationship_filter: Some(filter.clone()),
                             optional_limit: limit,
                             optional_allow_partial_deletions: true,
                             optional_preconditions: preconditions.clone(),
@@ -1095,10 +1097,11 @@ impl SpiceDBClient {
         filter: Option<&Filter>,
     ) -> impl Stream<Item = Result<Relationship, SpiceDBError>> + 'static {
         let consistency = consistency.to_proto();
-        let filter = filter.map(|f| f.to_proto());
+        let filter = filter.cloned();
         let perms = self.proto.permissions.clone();
 
         async_stream::try_stream! {
+            let filter = filter.map(|f| f.to_proto()).transpose()?;
             let mut cursor: Option<proto::Cursor> = None;
 
             loop {
@@ -1237,6 +1240,7 @@ impl SpiceDBClient {
         name: &str,
         filter: &Filter,
     ) -> Result<(), SpiceDBError> {
+        let filter = filter.to_proto()?;
         self.retry(|| async {
             self.proto
                 .experimental
@@ -1244,7 +1248,7 @@ impl SpiceDBClient {
                 .experimental_register_relationship_counter(
                     proto::ExperimentalRegisterRelationshipCounterRequest {
                         name: name.to_string(),
-                        relationship_filter: Some(filter.to_proto()),
+                        relationship_filter: Some(filter.clone()),
                     },
                 )
                 .await
@@ -1415,7 +1419,12 @@ fn build_check_items(
 
 /// Converts idiomatic [`Precondition`]s (shared by [`Transaction`] and
 /// [`DeleteOptions`]) into their proto representation.
-fn preconditions_to_proto(preconditions: &[Precondition]) -> Vec<proto::Precondition> {
+///
+/// Returns an error if any precondition's filter cannot be converted -- see
+/// [`Filter::to_proto`].
+fn preconditions_to_proto(
+    preconditions: &[Precondition],
+) -> Result<Vec<proto::Precondition>, SpiceDBError> {
     preconditions
         .iter()
         .map(|pc| {
@@ -1427,10 +1436,10 @@ fn preconditions_to_proto(preconditions: &[Precondition]) -> Vec<proto::Precondi
                     proto::precondition::Operation::MustMatch as i32
                 }
             };
-            proto::Precondition {
+            Ok(proto::Precondition {
                 operation,
-                filter: Some(pc.filter.to_proto()),
-            }
+                filter: Some(pc.filter.to_proto()?),
+            })
         })
         .collect()
 }

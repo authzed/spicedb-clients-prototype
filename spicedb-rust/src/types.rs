@@ -9,6 +9,8 @@ use std::fmt;
 use chrono::{DateTime, Utc};
 use spicedb_proto::authzed::api::v1 as proto;
 
+use crate::error::SpiceDBError;
+
 /// A flat representation of a SpiceDB relationship.
 ///
 /// Avoids nested proto types in favor of plain Rust fields. All fields use
@@ -369,31 +371,52 @@ impl Filter {
         self
     }
 
-    pub(crate) fn to_proto(&self) -> proto::RelationshipFilter {
-        let optional_subject_filter = if self.subject_type.is_some()
-            || self.subject_id.is_some()
-            || self.subject_relation.is_some()
-        {
-            Some(proto::SubjectFilter {
-                subject_type: self.subject_type.clone().unwrap_or_default(),
+    /// Converts this filter to its proto representation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpiceDBError::InvalidArgument`] if `subject_id` or `subject_relation` is set
+    /// without `subject_type`. The wire's `SubjectFilter.subject_type` is a required field, so
+    /// there is no way to express a subject ID/relation constraint without it, which makes
+    /// silently dropping the constraint the one unsafe resolution: a caller who wrote
+    /// `Filter::new("document").with_subject_id("alice")`, expecting to narrow to alice's
+    /// relationships, would instead match every subject on every document -- e.g.
+    /// `delete_relationships` would delete every relationship on every document, not just
+    /// alice's. See root DESIGN.md, "RULE: A conversion that cannot preserve meaning must fail",
+    /// clause 1.
+    pub(crate) fn to_proto(&self) -> Result<proto::RelationshipFilter, SpiceDBError> {
+        let optional_subject_filter = match &self.subject_type {
+            Some(subject_type) => Some(proto::SubjectFilter {
+                subject_type: subject_type.clone(),
                 optional_subject_id: self.subject_id.clone().unwrap_or_default(),
                 optional_relation: self.subject_relation.as_ref().map(|r| {
                     proto::subject_filter::RelationFilter {
                         relation: r.clone(),
                     }
                 }),
-            })
-        } else {
-            None
+            }),
+            None if self.subject_id.is_some() || self.subject_relation.is_some() => {
+                let missing = if self.subject_id.is_some() {
+                    "subject_id"
+                } else {
+                    "subject_relation"
+                };
+                return Err(SpiceDBError::InvalidArgument(format!(
+                    "Filter has {missing} set without subject_type. The wire format requires \
+                     subject_type whenever a subject constraint is present -- call \
+                     with_subject_type(...) before with_{missing}(...)."
+                )));
+            }
+            None => None,
         };
 
-        proto::RelationshipFilter {
+        Ok(proto::RelationshipFilter {
             resource_type: self.resource_type.clone(),
             optional_resource_id: self.resource_id.clone().unwrap_or_default(),
             optional_resource_id_prefix: self.resource_id_prefix.clone().unwrap_or_default(),
             optional_relation: self.relation.clone().unwrap_or_default(),
             optional_subject_filter,
-        }
+        })
     }
 }
 
@@ -1252,6 +1275,68 @@ mod tests {
     fn test_filter_with_prefix() {
         let f = Filter::new("document").with_resource_id_prefix("doc-");
         assert_eq!(f.resource_id_prefix, Some("doc-".to_string()));
+    }
+
+    /// Regression test for the offboarding hazard this finding describes:
+    /// `to_proto` used to build a `SubjectFilter` with `subject_type` defaulted to
+    /// an empty string whenever only `subject_id`/`subject_relation` was set --
+    /// unlike the other clients, this wasn't silent (the server rejects an empty
+    /// `subject_type`, since it's a required, pattern-validated field), but it
+    /// still let a caller build and send a filter the wire can never accept,
+    /// instead of failing client-side with a message naming the problem.
+    /// `to_proto` must now return `Err` instead.
+    #[test]
+    fn test_filter_to_proto_subject_id_without_subject_type_errors() {
+        let f = Filter::new("document").with_subject_id("alice");
+
+        let err = f.to_proto().unwrap_err();
+
+        let msg = err.to_string();
+        assert!(msg.contains("subject_id"), "message was: {msg}");
+        assert!(msg.contains("subject_type"), "message was: {msg}");
+        assert!(matches!(err, SpiceDBError::InvalidArgument(_)));
+    }
+
+    /// `subject_relation` counterpart of the above.
+    #[test]
+    fn test_filter_to_proto_subject_relation_without_subject_type_errors() {
+        let f = Filter::new("document").with_subject_relation("member");
+
+        let err = f.to_proto().unwrap_err();
+
+        let msg = err.to_string();
+        assert!(msg.contains("subject_relation"), "message was: {msg}");
+        assert!(msg.contains("subject_type"), "message was: {msg}");
+        assert!(matches!(err, SpiceDBError::InvalidArgument(_)));
+    }
+
+    /// Companion to the two error cases above -- proves `subject_type` alone (no
+    /// `subject_id`) still builds a valid subject filter and is not accidentally
+    /// caught by the new guard.
+    #[test]
+    fn test_filter_to_proto_subject_type_alone_does_not_error() {
+        let f = Filter::new("document").with_subject_type("user");
+
+        let proto = f.to_proto().unwrap();
+
+        let subject_filter = proto.optional_subject_filter.unwrap();
+        assert_eq!(subject_filter.subject_type, "user");
+        assert_eq!(subject_filter.optional_subject_id, "");
+    }
+
+    /// Companion proving the valid combination (`subject_type` supplied
+    /// alongside `subject_id`) still works correctly.
+    #[test]
+    fn test_filter_to_proto_subject_type_and_id_does_not_error() {
+        let f = Filter::new("document")
+            .with_subject_type("user")
+            .with_subject_id("alice");
+
+        let proto = f.to_proto().unwrap();
+
+        let subject_filter = proto.optional_subject_filter.unwrap();
+        assert_eq!(subject_filter.subject_type, "user");
+        assert_eq!(subject_filter.optional_subject_id, "alice");
     }
 
     #[test]

@@ -4,6 +4,28 @@
 
 ### Fixes
 
+- **`Filter::to_proto` built a `SubjectFilter` with `subject_type` defaulted to an empty string
+  whenever only `subject_id`/`subject_relation` was set, instead of raising.** Unlike the other six
+  clients, this was not silent: the condition included `|| self.subject_id.is_some()`, so
+  `Filter::new("document").with_subject_id("alice")` still produced a `SubjectFilter` (with
+  `subject_type: ""`), and the wire's `SubjectFilter.subject_type` is a required, pattern-validated
+  field (`^([a-z][a-z0-9_]{1,61}[a-z0-9]/)*[a-z][a-z0-9_]{1,62}[a-z0-9]$`, which an empty string
+  cannot match), so `delete_relationships`/`read_relationships`/etc. sent a request the server was
+  guaranteed to reject with `InvalidArgument` — confirmed against a live SpiceDB instance: the
+  server returns a `buf.validate` violation on `relationship_filter.optional_subject_filter.subject_type`
+  and deletes nothing. That is better than the silent-wrong-answer defect in the other clients (no
+  data was ever at risk), but still worse than a clear client-side error: every such call paid for
+  a network round-trip only to fail with a raw server-side regex-validation message, rather than
+  being rejected immediately with a message naming the problem. `to_proto` now returns
+  `Err(SpiceDBError::InvalidArgument(..))` naming the field that was set without `subject_type`,
+  matching the other clients' message shape, per root `DESIGN.md` "RULE: A conversion that cannot
+  preserve meaning must fail", clause 1. `to_proto` is `pub(crate)`, so this ripples only within
+  the crate: `preconditions_to_proto` (shared by `write` and `delete_relationships_with`),
+  `delete_relationships_with`, `experimental_register_relationship_counter`, `read_relationships`,
+  and `export_relationships` all now surface the conversion error before any RPC is attempted
+  (the last two, being `Stream`-returning rather than `Result`-returning, surface it as the
+  stream's first yielded `Err` instead of changing their signature). No pre-existing test asserted
+  the old behavior, so none needed replacing.
 - **`check_permissions`/`check_permissions_with_context` did not verify that
   the server returned as many pairs as were requested.** This closes the gap
   the malformed-pair fix below explicitly documented as still open: nothing

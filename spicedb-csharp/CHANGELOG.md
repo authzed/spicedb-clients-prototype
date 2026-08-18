@@ -481,7 +481,7 @@
 - **2026-08-14**: Standardized the retryable (transient) status code set,
   aligning with the other SpiceDB clients. This entry set it to
   `{UNAVAILABLE, RESOURCE_EXHAUSTED, ABORTED}`; the shipped set is
-  `{UNAVAILABLE, ABORTED}`, since the 2026-08-18 retry-safety entry below
+  `{UNAVAILABLE, ABORTED}`, since the 2026-08-18 retry-safety entry above
   removed `RESOURCE_EXHAUSTED`. `DEADLINE_EXCEEDED` is no longer treated as transient and
   is no longer retried (the `Grpc.Core.StatusCode.DeadlineExceeded` →
   `DeadlineExceededException` mapping is unchanged; it just no longer counts

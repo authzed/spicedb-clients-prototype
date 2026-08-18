@@ -33,11 +33,34 @@ export interface ClientOptions {
 }
 
 /**
- * Reports whether a gRPC target string names a loopback destination: the
- * literal hostname "localhost", an IP in 127.0.0.0/8, the IPv6 loopback
- * ::1, or a unix domain socket target (a "unix:" prefix). A unix socket
- * never leaves the host's kernel, so it is loopback for this check even
- * though it has no IP at all.
+ * Reports whether the connection this client would actually open for
+ * `endpoint` terminates on a loopback destination: the literal hostname
+ * "localhost", an IP in 127.0.0.0/8, the IPv6 loopback ::1, or a unix
+ * domain socket target (a "unix:" prefix). A unix socket never leaves the
+ * host's kernel, so it is loopback for this check even though it has no IP
+ * at all.
+ *
+ * That wording is deliberate. This function does not answer "does this
+ * string look like it names a loopback host"; it answers "will the
+ * transport dial loopback". Those are the same question only if this
+ * function and the transport agree on where the host ends and the rest of
+ * the target begins -- and a hand-rolled string split will always disagree
+ * with a URI parser somewhere. It used to: given
+ * `"127.0.0.1:443@evil.com"` a last-colon split yields host "127.0.0.1"
+ * and reports loopback, while createSpiceDBClient below hands
+ * `` `http://${endpoint}` `` to `Http2SessionManager`, which does
+ * `new URL(url).origin` -- reading "127.0.0.1:443" as URI *userinfo* and
+ * yielding `"http://evil.com"`, the authority it then passes straight to
+ * `http2.connect`. So the bearer token went to evil.com in cleartext with
+ * this function reporting "loopback".
+ *
+ * So the host is derived by building the exact URL createSpiceDBClient
+ * dials and asking `URL` -- the same parser `Http2SessionManager` uses --
+ * for its hostname. There is one parse, so guard and transport cannot
+ * disagree. Before that, anything that could move the authority under URI
+ * parsing (`@`, `/`, `?`, `#`, whitespace) is refused outright: a
+ * legitimate SpiceDB target contains none of those, and failing closed on a
+ * weird endpoint is the correct trade for a credential leak.
  *
  * This is the exemption in root DESIGN.md, "RULE: Credentials over
  * insecure transport require an explicit opt-in": loopback is the reason
@@ -49,21 +72,49 @@ export interface ClientOptions {
  * directly; not part of the package's public API surface.
  */
 export function isLoopbackEndpoint(endpoint: string): boolean {
+  // Checked first, and only on the raw string: a unix target is not a URI
+  // authority at all (it carries a filesystem path, so it legitimately
+  // contains the "/" the reserved-character check below refuses), and it
+  // never leaves the host's kernel regardless of what the path says.
   if (endpoint.startsWith("unix:")) {
     return true;
   }
 
-  let host: string;
-  const bracketMatch = endpoint.match(/^\[(.+)]:\d+$/) ?? endpoint.match(/^\[(.+)]$/);
-  if (bracketMatch) {
-    host = bracketMatch[1];
-  } else if ((endpoint.match(/:/g) ?? []).length > 1) {
-    // A bare IPv6 literal (e.g. "::1") -- no port is possible without
-    // brackets, so the whole string is the host.
-    host = endpoint;
-  } else {
-    const lastColon = endpoint.lastIndexOf(":");
-    host = lastColon >= 0 ? endpoint.slice(0, lastColon) : endpoint;
+  // Fail closed on any character that can shift which part of the string
+  // the URL parser treats as the authority: "@" (userinfo), "/" (path),
+  // "?" (query), "#" (fragment), whitespace. Redundant with the URL parse
+  // below -- deliberately so. The parse is what makes this function
+  // correct; this is what keeps it correct if some future edit ever
+  // reaches for a manual split again.
+  if (/[@/?#]|\s/.test(endpoint)) {
+    return false;
+  }
+
+  // A bare IPv6 literal ("::1") is not a legal URL authority -- brackets
+  // are the only form the transport can dial -- so bracket it (recognized
+  // by holding more than one ":", which no host:port form and no real
+  // hostname ever does) and let the one parser below judge it, rather than
+  // special-casing it out of the parse entirely.
+  const authority =
+    !endpoint.startsWith("[") && (endpoint.match(/:/g) ?? []).length > 1
+      ? `[${endpoint}]`
+      : endpoint;
+
+  // The scheme is "http" because this guard only ever gates the insecure
+  // path; either way, scheme does not affect how the authority is parsed.
+  let url: URL;
+  try {
+    url = new URL(`http://${authority}`);
+  } catch {
+    return false;
+  }
+
+  // URL.hostname keeps the brackets on an IPv6 literal, and has already
+  // lower-cased and normalized the host (e.g. "127.1" -> "127.0.0.1")
+  // exactly as the transport sees it.
+  let host = url.hostname;
+  if (host.startsWith("[") && host.endsWith("]")) {
+    host = host.slice(1, -1);
   }
 
   if (host.toLowerCase() === "localhost") {

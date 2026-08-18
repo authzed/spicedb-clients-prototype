@@ -102,6 +102,22 @@
 
 ### Fixed
 
+- **2026-08-18**: **Security — a bypass in the guard that refuses to send credentials over
+  plaintext to a non-loopback host was fixed.** Creating an insecure client for
+  `"127.0.0.1:443@evil.com"` was accepted as loopback and sent the bearer token to `evil.com`
+  in cleartext, with no opt-in and nothing reported. `isLoopbackEndpoint` split the endpoint on
+  its last colon and read the host as `127.0.0.1`; `Http2SessionManager` computes
+  `new URL("http://127.0.0.1:443@evil.com").origin`, which reads `127.0.0.1:443` as *userinfo*
+  and yields `"http://evil.com"` — the authority it then hands straight to `http2.connect`.
+
+  The root cause was that the guard parsed the endpoint differently than the transport did, so
+  the fix is not a tighter split: `isLoopbackEndpoint` now builds the exact URL the client
+  dials and asks `URL` — the same parser `Http2SessionManager` uses — for its `hostname`.
+  Guard and transport can no longer disagree. Endpoints containing `@`, `/`, `?`, `#`, or
+  whitespace are additionally refused outright, since a legitimate SpiceDB target contains none
+  of them. A bare IPv6 literal (`"::1"`) is bracketed before parsing and keeps working, as do
+  `unix:` targets, `localhost`, and 127.0.0.0/8.
+
 - **2026-08-18**: `importBulkRelationships` required a materialized array, and then held the
   dataset twice. The signature was `relationships: Relationship[]`, and the body ran
   `relationships.map(toProtoRelationship)` before streaming, so the caller's array and a full

@@ -51,6 +51,16 @@ vi.mock("@connectrpc/connect-node", async (importOriginal) => {
   };
 });
 
+/**
+ * Endpoints whose URI authority is not what a naive host:port split reads out
+ * of them. `new URL("http://127.0.0.1:443@evil.com").origin` is
+ * `"http://evil.com"` -- and that origin is exactly what `Http2SessionManager`
+ * computes and hands to `http2.connect`. Before the fix, `isLoopbackEndpoint`
+ * returned true for this, so an insecure client was built with no opt-in and
+ * shipped its bearer token to the attacker-controlled host in cleartext.
+ */
+const AUTHORITY_SHIFTING_ENDPOINTS = ["127.0.0.1:443@evil.com", "[::1]:443@evil.com"];
+
 describe("isLoopbackEndpoint", () => {
   it.each([
     "localhost:50051", "LOCALHOST:50051", "localhost",
@@ -69,6 +79,15 @@ describe("isLoopbackEndpoint", () => {
     // as loopback and reopen a credential leak. Must stay non-loopback
     // under exact-match host comparison.
     "localhost.evil.com:443", "127.0.0.1.evil.com:443", "evil-localhost:443",
+    // Authority-shifting targets -- see AUTHORITY_SHIFTING_ENDPOINTS below.
+    ...AUTHORITY_SHIFTING_ENDPOINTS,
+    "localhost@evil.com",
+    "localhost/../evil.com",
+    "localhost#@evil.com",
+    "localhost?@evil.com",
+    "localhost.",
+    "localhost :50051",
+    "127.0.0.1 :50051",
   ])("does not treat %s as loopback", (endpoint) => {
     expect(isLoopbackEndpoint(endpoint)).toBe(false);
   });
@@ -93,6 +112,33 @@ describe("createSpiceDBClient insecure host guard", () => {
     expect(http2SessionManagerCtor).not.toHaveBeenCalled();
     expect(capturedAuth).toEqual([]);
   });
+
+  /**
+   * The regression test for the loopback-guard bypass. Asserting only that
+   * the call throws would be satisfied by an implementation that opens the
+   * session, sends the token, and throws afterwards -- so this asserts on the
+   * transport instead: `http2SessionManagerCtor` proves the session manager
+   * that would compute `new URL(...).origin` and hand it to `http2.connect`
+   * was never constructed, and `capturedAuth` proves no authorization header
+   * ever reached a service. Same bar as the refusal test above, applied to
+   * the inputs that used to slip past the guard entirely.
+   */
+  it.each(AUTHORITY_SHIFTING_ENDPOINTS)(
+    "refuses %s, whose URI authority is a different host than a host:port split reads",
+    async (endpoint) => {
+      const { createSpiceDBClient } = await import("../client.js");
+
+      // Guard rail on the premise: this endpoint really does dial elsewhere.
+      expect(new URL(`http://${endpoint}`).hostname).toBe("evil.com");
+
+      expect(() =>
+        createSpiceDBClient(endpoint, "super-secret-token", { insecure: true }),
+      ).toThrowError(/allowInsecureRemoteCredentials/);
+
+      expect(http2SessionManagerCtor).not.toHaveBeenCalled();
+      expect(capturedAuth).toEqual([]);
+    },
+  );
 
   it("allows a loopback endpoint with no opt-in, and actually sends the token", async () => {
     const { createSpiceDBClient } = await import("../client.js");

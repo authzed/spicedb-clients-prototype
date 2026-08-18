@@ -4,6 +4,46 @@
 
 ### Fixes
 
+- **Call deadlines, per root `DESIGN.md` "RULE: A unary call must have a deadline".**
+  Previously no method accepted a timeout and no client-level default existed, so a SpiceDB
+  instance that accepted a connection but never answered hung every caller forever — the
+  connection looks fine at the transport level, so no error is produced and there is nothing
+  for retry logic to act on.
+  - Every unary method gained a `_with_timeout(..., timeout: Duration)` sibling (e.g.
+    `check_permission_with_timeout`, `write_with_timeout`, `read_schema_with_timeout`),
+    mirroring the existing `_with_context` convention — fully additive, zero existing call
+    sites changed. `delete_relationships_with` instead reads a new `DeleteOptions::with_timeout`
+    field. Each `_with_timeout` variant sets `tonic::Request::set_timeout` on the request.
+  - `SpiceDBClient::builder(...)` gained `.default_timeout(Duration)` (default 30s,
+    `client::DEFAULT_TIMEOUT`), applied to any unary call that doesn't use a `_with_timeout`
+    variant. 30s mirrors `authzed-node`'s `DEFAULT_DEADLINE_MS = 30_000` (its comment cites
+    `grpc/grpc-node#541`). There is deliberately no way to construct a client whose unary calls
+    have no bound at all.
+  - Streaming methods (`read_relationships`, `lookup_resources`, `lookup_subjects`, `updates`,
+    `export_relationships`) have no `_with_timeout` variant and are **not** bound by
+    `default_timeout` — DESIGN.md's "Streaming calls MUST NOT inherit the unary default": these
+    are long-lived by design (`updates` may legitimately run for the life of the process), and a
+    30s cutoff would end a legitimate stream, which is a worse defect than the one this change
+    fixes.
+  - **Behavioral finding:** tonic's own client-side timeout enforcement (its
+    `transport::Channel`'s `GrpcTimeout` middleware, triggered by the `grpc-timeout` header
+    `Request::set_timeout` sets) surfaces a purely local timeout as
+    `Status::cancelled("Timeout expired")`, **not** `Status::deadline_exceeded` — confirmed
+    against tonic 0.12.3's source (`TimeoutExpired`'s `Display` impl, matched via
+    `Status::from_error`'s downcast handling). Left unmapped, that would make
+    `SpiceDBError::DeadlineExceeded` (added earlier, but never actually producible) unreachable
+    for exactly the case a deadline exists to guard against: a server that never responds at
+    all. `error::from_grpc_status` now special-cases that exact `(code, message)` pair and maps
+    it to `SpiceDBError::DeadlineExceeded` instead. `DEADLINE_EXCEEDED` was already excluded
+    from `is_transient`, so a timeout is never auto-retried.
+  - New `tests/deadline_test.rs`, against a real in-process gRPC server
+    (`support::MockPermissionsService`, extended with `stall_check_bulk_permissions`/
+    `stall_read_relationships`) whose handlers deliberately stall: a unary call against a stub
+    that never responds fails with `SpiceDBError::DeadlineExceeded` well before the server's
+    stall completes (not a hang), a per-call `_with_timeout` overrides a much larger client
+    default, and a streaming call outlives a tiny unary default instead of inheriting it. Every
+    test is wrapped in `tokio::time::timeout` as a watchdog so a regression fails the suite
+    instead of hanging CI.
 - **Retry safety, per root `DESIGN.md` "RULE: Automatic retry is for idempotent operations
   only".** Three changes:
   - `RESOURCE_EXHAUSTED` is no longer retried. In SpiceDB it signals memory load-shed (retrying

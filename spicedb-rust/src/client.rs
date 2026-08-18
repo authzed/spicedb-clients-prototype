@@ -12,6 +12,7 @@
 //! - **Builder** — full control over TLS configuration and other options.
 
 use std::collections::HashMap;
+use std::time::Duration;
 
 use crate::consistency::Strategy;
 use crate::error::{self, SpiceDBError};
@@ -44,6 +45,26 @@ const MAX_RETRIES: u32 = 3;
 /// Base delay for exponential backoff (in milliseconds).
 const BASE_RETRY_DELAY_MS: u64 = 100;
 
+/// Applied to every unary call that does not pass its own timeout (via a
+/// `_with_timeout` method, or [`DeleteOptions::with_timeout`] for
+/// `delete_relationships_with`).
+///
+/// Mirrors `authzed-node`'s `DEFAULT_DEADLINE_MS = 30_000` (its comment
+/// cites `grpc/grpc-node#541`, a known gRPC failure mode where a channel
+/// that accepts a connection but never answers produces no error at all).
+/// Without a finite default, a wedged SpiceDB hangs every caller that
+/// didn't opt in to a timeout -- in practice, most callers -- forever: the
+/// connection looks fine at the transport level, so nothing ever times out
+/// and nothing is ever produced to retry. See root DESIGN.md, "RULE: A
+/// unary call must have a deadline".
+///
+/// Deliberately NOT applied to streaming calls (`read_relationships`,
+/// `lookup_resources`, `lookup_subjects`, `updates`, `export_relationships`)
+/// -- those are long-lived by design, and applying this default to them
+/// would make the stream itself the outage (see DESIGN.md, "Streaming
+/// calls MUST NOT inherit the unary default").
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// The idiomatic SpiceDB client.
 ///
 /// All methods are async and require a tokio runtime. Read operations take an
@@ -61,6 +82,9 @@ const BASE_RETRY_DELAY_MS: u64 = 100;
 pub struct SpiceDBClient {
     // The proto client holds the gRPC channel and bearer-token interceptor.
     proto: SpiceDBProtoClient,
+    // Applied to any unary call that doesn't specify its own timeout. See
+    // [`DEFAULT_TIMEOUT`].
+    default_timeout: Duration,
 }
 
 /// Builder for configuring a [`SpiceDBClient`] with custom TLS and connection
@@ -69,6 +93,7 @@ pub struct SpiceDBClientBuilder {
     endpoint: String,
     token: String,
     plaintext: bool,
+    default_timeout: Duration,
 }
 
 impl SpiceDBClientBuilder {
@@ -78,13 +103,24 @@ impl SpiceDBClientBuilder {
         self
     }
 
+    /// Overrides the default applied to every unary call that doesn't
+    /// specify its own timeout (see [`DEFAULT_TIMEOUT`], 30s). NOT applied
+    /// to streaming calls, which are long-lived by design.
+    pub fn default_timeout(mut self, timeout: Duration) -> Self {
+        self.default_timeout = timeout;
+        self
+    }
+
     /// Builds the client, establishing the gRPC connection.
     pub async fn build(self) -> Result<SpiceDBClient, SpiceDBError> {
         let proto = SpiceDBProtoClient::new(&self.endpoint, &self.token, self.plaintext)
             .await
             .map_err(|e| SpiceDBError::Transport(e.to_string()))?;
 
-        Ok(SpiceDBClient { proto })
+        Ok(SpiceDBClient {
+            proto,
+            default_timeout: self.default_timeout,
+        })
     }
 }
 
@@ -115,7 +151,16 @@ impl SpiceDBClient {
             endpoint: endpoint.into(),
             token: token.into(),
             plaintext: false,
+            default_timeout: DEFAULT_TIMEOUT,
         }
+    }
+
+    /// Resolves a per-call timeout override against [`Self`]'s
+    /// `default_timeout`. `None` means "use the client default" -- there is
+    /// deliberately no way to make an unbounded unary call. See root
+    /// DESIGN.md, "RULE: A unary call must have a deadline".
+    fn effective_timeout(&self, timeout: Option<Duration>) -> Duration {
+        timeout.unwrap_or(self.default_timeout)
     }
 
     // -----------------------------------------------------------------------
@@ -178,11 +223,36 @@ impl SpiceDBClient {
         context: Option<&HashMap<String, serde_json::Value>>,
     ) -> Result<CheckResult, SpiceDBError> {
         let mut results = self
-            .check_permissions_with_context(
+            .check_permissions_impl(
                 consistency,
                 permission,
                 std::slice::from_ref(relationship),
                 context,
+                None,
+            )
+            .await?;
+        Ok(results.remove(0))
+    }
+
+    /// [`check_permission`](Self::check_permission) with a per-call timeout
+    /// that overrides the client's `default_timeout` (seconds bounding this
+    /// call). See root DESIGN.md, "RULE: A unary call must have a
+    /// deadline".
+    #[must_use = "check results should not be silently discarded"]
+    pub async fn check_permission_with_timeout(
+        &self,
+        consistency: &Strategy,
+        permission: &str,
+        relationship: &Relationship,
+        timeout: Duration,
+    ) -> Result<CheckResult, SpiceDBError> {
+        let mut results = self
+            .check_permissions_impl(
+                consistency,
+                permission,
+                std::slice::from_ref(relationship),
+                None,
+                Some(timeout),
             )
             .await?;
         Ok(results.remove(0))
@@ -239,10 +309,40 @@ impl SpiceDBClient {
         relationships: &[Relationship],
         context: Option<&HashMap<String, serde_json::Value>>,
     ) -> Result<Vec<CheckResult>, SpiceDBError> {
+        self.check_permissions_impl(consistency, permission, relationships, context, None)
+            .await
+    }
+
+    /// [`check_permissions`](Self::check_permissions) with a per-call
+    /// timeout that overrides the client's `default_timeout` (seconds
+    /// bounding this call). See root DESIGN.md, "RULE: A unary call must
+    /// have a deadline".
+    pub async fn check_permissions_with_timeout(
+        &self,
+        consistency: &Strategy,
+        permission: &str,
+        relationships: &[Relationship],
+        timeout: Duration,
+    ) -> Result<Vec<CheckResult>, SpiceDBError> {
+        self.check_permissions_impl(consistency, permission, relationships, None, Some(timeout))
+            .await
+    }
+
+    /// Shared implementation behind [`check_permissions_with_context`](Self::check_permissions_with_context)
+    /// and [`check_permissions_with_timeout`](Self::check_permissions_with_timeout).
+    async fn check_permissions_impl(
+        &self,
+        consistency: &Strategy,
+        permission: &str,
+        relationships: &[Relationship],
+        context: Option<&HashMap<String, serde_json::Value>>,
+        timeout: Option<Duration>,
+    ) -> Result<Vec<CheckResult>, SpiceDBError> {
         if relationships.is_empty() {
             return Ok(Vec::new());
         }
 
+        let timeout = self.effective_timeout(timeout);
         let mut all_results = Vec::with_capacity(relationships.len());
 
         for chunk in relationships.chunks(DEFAULT_CHECK_BATCH_SIZE) {
@@ -250,14 +350,16 @@ impl SpiceDBClient {
 
             let resp = self
                 .retry(|| async {
+                    let mut request = tonic::Request::new(proto::CheckBulkPermissionsRequest {
+                        consistency: Some(consistency.to_proto()),
+                        items: items.clone(),
+                        with_tracing: false,
+                    });
+                    request.set_timeout(timeout);
                     self.proto
                         .permissions
                         .clone()
-                        .check_bulk_permissions(proto::CheckBulkPermissionsRequest {
-                            consistency: Some(consistency.to_proto()),
-                            items: items.clone(),
-                            with_tracing: false,
-                        })
+                        .check_bulk_permissions(request)
                         .await
                 })
                 .await?;
@@ -340,7 +442,22 @@ impl SpiceDBClient {
         context: Option<&HashMap<String, serde_json::Value>>,
     ) -> Result<bool, SpiceDBError> {
         let results = self
-            .check_permissions_with_context(consistency, permission, relationships, context)
+            .check_permissions_impl(consistency, permission, relationships, context, None)
+            .await?;
+        Ok(results.iter().any(CheckResult::has_permission))
+    }
+
+    /// [`check_any`](Self::check_any) with a per-call timeout that
+    /// overrides the client's `default_timeout`.
+    pub async fn check_any_with_timeout(
+        &self,
+        consistency: &Strategy,
+        permission: &str,
+        relationships: &[Relationship],
+        timeout: Duration,
+    ) -> Result<bool, SpiceDBError> {
+        let results = self
+            .check_permissions_impl(consistency, permission, relationships, None, Some(timeout))
             .await?;
         Ok(results.iter().any(CheckResult::has_permission))
     }
@@ -379,7 +496,29 @@ impl SpiceDBClient {
         }
 
         let results = self
-            .check_permissions_with_context(consistency, permission, relationships, context)
+            .check_permissions_impl(consistency, permission, relationships, context, None)
+            .await?;
+        Ok(results.iter().all(CheckResult::has_permission))
+    }
+
+    /// [`check_all`](Self::check_all) with a per-call timeout that
+    /// overrides the client's `default_timeout`.
+    ///
+    /// Returns `false`, not the vacuous `true` an empty sequence would
+    /// otherwise yield, when `relationships` is empty.
+    pub async fn check_all_with_timeout(
+        &self,
+        consistency: &Strategy,
+        permission: &str,
+        relationships: &[Relationship],
+        timeout: Duration,
+    ) -> Result<bool, SpiceDBError> {
+        if relationships.is_empty() {
+            return Ok(false);
+        }
+
+        let results = self
+            .check_permissions_impl(consistency, permission, relationships, None, Some(timeout))
             .await?;
         Ok(results.iter().all(CheckResult::has_permission))
     }
@@ -392,6 +531,25 @@ impl SpiceDBClient {
     ///
     /// Returns the revision (ZedToken) at which the write occurred.
     pub async fn write(&self, txn: &Transaction) -> Result<String, SpiceDBError> {
+        self.write_impl(txn, None).await
+    }
+
+    /// [`write`](Self::write) with a per-call timeout that overrides the
+    /// client's `default_timeout`.
+    pub async fn write_with_timeout(
+        &self,
+        txn: &Transaction,
+        timeout: Duration,
+    ) -> Result<String, SpiceDBError> {
+        self.write_impl(txn, Some(timeout)).await
+    }
+
+    async fn write_impl(
+        &self,
+        txn: &Transaction,
+        timeout: Option<Duration>,
+    ) -> Result<String, SpiceDBError> {
+        let timeout = self.effective_timeout(timeout);
         let updates: Vec<proto::RelationshipUpdate> = txn
             .updates()
             .iter()
@@ -420,14 +578,16 @@ impl SpiceDBClient {
 
         let resp = self
             .call_once(|| async {
+                let mut request = tonic::Request::new(proto::WriteRelationshipsRequest {
+                    updates: updates.clone(),
+                    optional_preconditions: preconditions.clone(),
+                    optional_transaction_metadata: None,
+                });
+                request.set_timeout(timeout);
                 self.proto
                     .permissions
                     .clone()
-                    .write_relationships(proto::WriteRelationshipsRequest {
-                        updates: updates.clone(),
-                        optional_preconditions: preconditions.clone(),
-                        optional_transaction_metadata: None,
-                    })
+                    .write_relationships(request)
                     .await
             })
             .await?;
@@ -554,20 +714,23 @@ impl SpiceDBClient {
         let preconditions = preconditions_to_proto(&options.preconditions())?;
         let filter = filter.to_proto()?;
         let limit = options.limit.unwrap_or(DEFAULT_DELETE_PAGE_SIZE);
+        let timeout = self.effective_timeout(options.timeout);
 
         loop {
             let resp = self
                 .call_once(|| async {
+                    let mut request = tonic::Request::new(proto::DeleteRelationshipsRequest {
+                        relationship_filter: Some(filter.clone()),
+                        optional_limit: limit,
+                        optional_allow_partial_deletions: true,
+                        optional_preconditions: preconditions.clone(),
+                        optional_transaction_metadata: None,
+                    });
+                    request.set_timeout(timeout);
                     self.proto
                         .permissions
                         .clone()
-                        .delete_relationships(proto::DeleteRelationshipsRequest {
-                            relationship_filter: Some(filter.clone()),
-                            optional_limit: limit,
-                            optional_allow_partial_deletions: true,
-                            optional_preconditions: preconditions.clone(),
-                            optional_transaction_metadata: None,
-                        })
+                        .delete_relationships(request)
                         .await
                 })
                 .await?;
@@ -791,13 +954,28 @@ impl SpiceDBClient {
 
     /// Returns the current SpiceDB schema and the revision at which it was read.
     pub async fn read_schema(&self) -> Result<(String, String), SpiceDBError> {
+        self.read_schema_impl(None).await
+    }
+
+    /// [`read_schema`](Self::read_schema) with a per-call timeout that
+    /// overrides the client's `default_timeout`.
+    pub async fn read_schema_with_timeout(
+        &self,
+        timeout: Duration,
+    ) -> Result<(String, String), SpiceDBError> {
+        self.read_schema_impl(Some(timeout)).await
+    }
+
+    async fn read_schema_impl(
+        &self,
+        timeout: Option<Duration>,
+    ) -> Result<(String, String), SpiceDBError> {
+        let timeout = self.effective_timeout(timeout);
         let resp = self
             .retry(|| async {
-                self.proto
-                    .schema
-                    .clone()
-                    .read_schema(proto::ReadSchemaRequest {})
-                    .await
+                let mut request = tonic::Request::new(proto::ReadSchemaRequest {});
+                request.set_timeout(timeout);
+                self.proto.schema.clone().read_schema(request).await
             })
             .await?;
 
@@ -810,15 +988,32 @@ impl SpiceDBClient {
     ///
     /// Returns the revision at which the schema was written.
     pub async fn write_schema(&self, schema: &str) -> Result<String, SpiceDBError> {
+        self.write_schema_impl(schema, None).await
+    }
+
+    /// [`write_schema`](Self::write_schema) with a per-call timeout that
+    /// overrides the client's `default_timeout`.
+    pub async fn write_schema_with_timeout(
+        &self,
+        schema: &str,
+        timeout: Duration,
+    ) -> Result<String, SpiceDBError> {
+        self.write_schema_impl(schema, Some(timeout)).await
+    }
+
+    async fn write_schema_impl(
+        &self,
+        schema: &str,
+        timeout: Option<Duration>,
+    ) -> Result<String, SpiceDBError> {
+        let timeout = self.effective_timeout(timeout);
         let resp = self
             .call_once(|| async {
-                self.proto
-                    .schema
-                    .clone()
-                    .write_schema(proto::WriteSchemaRequest {
-                        schema: schema.to_string(),
-                    })
-                    .await
+                let mut request = tonic::Request::new(proto::WriteSchemaRequest {
+                    schema: schema.to_string(),
+                });
+                request.set_timeout(timeout);
+                self.proto.schema.clone().write_schema(request).await
             })
             .await?;
 
@@ -834,16 +1029,33 @@ impl SpiceDBClient {
         &self,
         consistency: &Strategy,
     ) -> Result<ReflectSchemaResult, SpiceDBError> {
+        self.reflect_schema_impl(consistency, None).await
+    }
+
+    /// [`reflect_schema`](Self::reflect_schema) with a per-call timeout
+    /// that overrides the client's `default_timeout`.
+    pub async fn reflect_schema_with_timeout(
+        &self,
+        consistency: &Strategy,
+        timeout: Duration,
+    ) -> Result<ReflectSchemaResult, SpiceDBError> {
+        self.reflect_schema_impl(consistency, Some(timeout)).await
+    }
+
+    async fn reflect_schema_impl(
+        &self,
+        consistency: &Strategy,
+        timeout: Option<Duration>,
+    ) -> Result<ReflectSchemaResult, SpiceDBError> {
+        let timeout = self.effective_timeout(timeout);
         let resp = self
             .retry(|| async {
-                self.proto
-                    .schema
-                    .clone()
-                    .reflect_schema(proto::ReflectSchemaRequest {
-                        consistency: Some(consistency.to_proto()),
-                        optional_filters: Vec::new(),
-                    })
-                    .await
+                let mut request = tonic::Request::new(proto::ReflectSchemaRequest {
+                    consistency: Some(consistency.to_proto()),
+                    optional_filters: Vec::new(),
+                });
+                request.set_timeout(timeout);
+                self.proto.schema.clone().reflect_schema(request).await
             })
             .await?;
 
@@ -911,17 +1123,49 @@ impl SpiceDBClient {
         definition_name: &str,
         relation_name: &str,
     ) -> Result<(Vec<RelationReference>, String), SpiceDBError> {
+        self.computable_permissions_impl(consistency, definition_name, relation_name, None)
+            .await
+    }
+
+    /// [`computable_permissions`](Self::computable_permissions) with a
+    /// per-call timeout that overrides the client's `default_timeout`.
+    pub async fn computable_permissions_with_timeout(
+        &self,
+        consistency: &Strategy,
+        definition_name: &str,
+        relation_name: &str,
+        timeout: Duration,
+    ) -> Result<(Vec<RelationReference>, String), SpiceDBError> {
+        self.computable_permissions_impl(
+            consistency,
+            definition_name,
+            relation_name,
+            Some(timeout),
+        )
+        .await
+    }
+
+    async fn computable_permissions_impl(
+        &self,
+        consistency: &Strategy,
+        definition_name: &str,
+        relation_name: &str,
+        timeout: Option<Duration>,
+    ) -> Result<(Vec<RelationReference>, String), SpiceDBError> {
+        let timeout = self.effective_timeout(timeout);
         let resp = self
             .retry(|| async {
+                let mut request = tonic::Request::new(proto::ComputablePermissionsRequest {
+                    consistency: Some(consistency.to_proto()),
+                    definition_name: definition_name.to_string(),
+                    relation_name: relation_name.to_string(),
+                    optional_definition_name_filter: String::new(),
+                });
+                request.set_timeout(timeout);
                 self.proto
                     .schema
                     .clone()
-                    .computable_permissions(proto::ComputablePermissionsRequest {
-                        consistency: Some(consistency.to_proto()),
-                        definition_name: definition_name.to_string(),
-                        relation_name: relation_name.to_string(),
-                        optional_definition_name_filter: String::new(),
-                    })
+                    .computable_permissions(request)
                     .await
             })
             .await?;
@@ -949,16 +1193,43 @@ impl SpiceDBClient {
         definition_name: &str,
         permission_name: &str,
     ) -> Result<(Vec<RelationReference>, String), SpiceDBError> {
+        self.dependent_relations_impl(consistency, definition_name, permission_name, None)
+            .await
+    }
+
+    /// [`dependent_relations`](Self::dependent_relations) with a per-call
+    /// timeout that overrides the client's `default_timeout`.
+    pub async fn dependent_relations_with_timeout(
+        &self,
+        consistency: &Strategy,
+        definition_name: &str,
+        permission_name: &str,
+        timeout: Duration,
+    ) -> Result<(Vec<RelationReference>, String), SpiceDBError> {
+        self.dependent_relations_impl(consistency, definition_name, permission_name, Some(timeout))
+            .await
+    }
+
+    async fn dependent_relations_impl(
+        &self,
+        consistency: &Strategy,
+        definition_name: &str,
+        permission_name: &str,
+        timeout: Option<Duration>,
+    ) -> Result<(Vec<RelationReference>, String), SpiceDBError> {
+        let timeout = self.effective_timeout(timeout);
         let resp = self
             .retry(|| async {
+                let mut request = tonic::Request::new(proto::DependentRelationsRequest {
+                    consistency: Some(consistency.to_proto()),
+                    definition_name: definition_name.to_string(),
+                    permission_name: permission_name.to_string(),
+                });
+                request.set_timeout(timeout);
                 self.proto
                     .schema
                     .clone()
-                    .dependent_relations(proto::DependentRelationsRequest {
-                        consistency: Some(consistency.to_proto()),
-                        definition_name: definition_name.to_string(),
-                        permission_name: permission_name.to_string(),
-                    })
+                    .dependent_relations(request)
                     .await
             })
             .await?;
@@ -986,16 +1257,37 @@ impl SpiceDBClient {
         consistency: &Strategy,
         comparison_schema: &str,
     ) -> Result<(Vec<SchemaDiff>, String), SpiceDBError> {
+        self.diff_schema_impl(consistency, comparison_schema, None)
+            .await
+    }
+
+    /// [`diff_schema`](Self::diff_schema) with a per-call timeout that
+    /// overrides the client's `default_timeout`.
+    pub async fn diff_schema_with_timeout(
+        &self,
+        consistency: &Strategy,
+        comparison_schema: &str,
+        timeout: Duration,
+    ) -> Result<(Vec<SchemaDiff>, String), SpiceDBError> {
+        self.diff_schema_impl(consistency, comparison_schema, Some(timeout))
+            .await
+    }
+
+    async fn diff_schema_impl(
+        &self,
+        consistency: &Strategy,
+        comparison_schema: &str,
+        timeout: Option<Duration>,
+    ) -> Result<(Vec<SchemaDiff>, String), SpiceDBError> {
+        let timeout = self.effective_timeout(timeout);
         let resp = self
             .retry(|| async {
-                self.proto
-                    .schema
-                    .clone()
-                    .diff_schema(proto::DiffSchemaRequest {
-                        consistency: Some(consistency.to_proto()),
-                        comparison_schema: comparison_schema.to_string(),
-                    })
-                    .await
+                let mut request = tonic::Request::new(proto::DiffSchemaRequest {
+                    consistency: Some(consistency.to_proto()),
+                    comparison_schema: comparison_schema.to_string(),
+                });
+                request.set_timeout(timeout);
+                self.proto.schema.clone().diff_schema(request).await
             })
             .await?;
 
@@ -1020,19 +1312,54 @@ impl SpiceDBClient {
         resource_id: &str,
         permission: &str,
     ) -> Result<ExpandResult, SpiceDBError> {
+        self.expand_permission_tree_impl(consistency, resource_type, resource_id, permission, None)
+            .await
+    }
+
+    /// [`expand_permission_tree`](Self::expand_permission_tree) with a
+    /// per-call timeout that overrides the client's `default_timeout`.
+    pub async fn expand_permission_tree_with_timeout(
+        &self,
+        consistency: &Strategy,
+        resource_type: &str,
+        resource_id: &str,
+        permission: &str,
+        timeout: Duration,
+    ) -> Result<ExpandResult, SpiceDBError> {
+        self.expand_permission_tree_impl(
+            consistency,
+            resource_type,
+            resource_id,
+            permission,
+            Some(timeout),
+        )
+        .await
+    }
+
+    async fn expand_permission_tree_impl(
+        &self,
+        consistency: &Strategy,
+        resource_type: &str,
+        resource_id: &str,
+        permission: &str,
+        timeout: Option<Duration>,
+    ) -> Result<ExpandResult, SpiceDBError> {
+        let timeout = self.effective_timeout(timeout);
         let resp = self
             .retry(|| async {
+                let mut request = tonic::Request::new(proto::ExpandPermissionTreeRequest {
+                    consistency: Some(consistency.to_proto()),
+                    resource: Some(proto::ObjectReference {
+                        object_type: resource_type.to_string(),
+                        object_id: resource_id.to_string(),
+                    }),
+                    permission: permission.to_string(),
+                });
+                request.set_timeout(timeout);
                 self.proto
                     .permissions
                     .clone()
-                    .expand_permission_tree(proto::ExpandPermissionTreeRequest {
-                        consistency: Some(consistency.to_proto()),
-                        resource: Some(proto::ObjectReference {
-                            object_type: resource_type.to_string(),
-                            object_id: resource_id.to_string(),
-                        }),
-                        permission: permission.to_string(),
-                    })
+                    .expand_permission_tree(request)
                     .await
             })
             .await?;
@@ -1058,6 +1385,26 @@ impl SpiceDBClient {
         &self,
         relationships: Vec<Relationship>,
     ) -> Result<u64, SpiceDBError> {
+        self.import_relationships_impl(relationships, None).await
+    }
+
+    /// [`import_relationships`](Self::import_relationships) with a per-call
+    /// timeout that overrides the client's `default_timeout`.
+    pub async fn import_relationships_with_timeout(
+        &self,
+        relationships: Vec<Relationship>,
+        timeout: Duration,
+    ) -> Result<u64, SpiceDBError> {
+        self.import_relationships_impl(relationships, Some(timeout))
+            .await
+    }
+
+    async fn import_relationships_impl(
+        &self,
+        relationships: Vec<Relationship>,
+        timeout: Option<Duration>,
+    ) -> Result<u64, SpiceDBError> {
+        let timeout = self.effective_timeout(timeout);
         let (tx, rx) = tokio::sync::mpsc::channel(4);
 
         // Spawn a task to batch and send relationships
@@ -1078,11 +1425,13 @@ impl SpiceDBClient {
         });
 
         let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+        let mut request = tonic::Request::new(stream);
+        request.set_timeout(timeout);
         let resp = self
             .proto
             .permissions
             .clone()
-            .import_bulk_relationships(stream)
+            .import_bulk_relationships(request)
             .await
             .map_err(|s| error::from_grpc_status(s.code() as i32, s.message().to_string()))?;
 
@@ -1261,17 +1610,42 @@ impl SpiceDBClient {
         name: &str,
         filter: &Filter,
     ) -> Result<(), SpiceDBError> {
+        self.experimental_register_relationship_counter_impl(name, filter, None)
+            .await
+    }
+
+    /// [`experimental_register_relationship_counter`](Self::experimental_register_relationship_counter)
+    /// with a per-call timeout that overrides the client's `default_timeout`.
+    pub async fn experimental_register_relationship_counter_with_timeout(
+        &self,
+        name: &str,
+        filter: &Filter,
+        timeout: Duration,
+    ) -> Result<(), SpiceDBError> {
+        self.experimental_register_relationship_counter_impl(name, filter, Some(timeout))
+            .await
+    }
+
+    async fn experimental_register_relationship_counter_impl(
+        &self,
+        name: &str,
+        filter: &Filter,
+        timeout: Option<Duration>,
+    ) -> Result<(), SpiceDBError> {
+        let timeout = self.effective_timeout(timeout);
         let filter = filter.to_proto()?;
         self.call_once(|| async {
+            let mut request = tonic::Request::new(
+                proto::ExperimentalRegisterRelationshipCounterRequest {
+                    name: name.to_string(),
+                    relationship_filter: Some(filter.clone()),
+                },
+            );
+            request.set_timeout(timeout);
             self.proto
                 .experimental
                 .clone()
-                .experimental_register_relationship_counter(
-                    proto::ExperimentalRegisterRelationshipCounterRequest {
-                        name: name.to_string(),
-                        relationship_filter: Some(filter.clone()),
-                    },
-                )
+                .experimental_register_relationship_counter(request)
                 .await
         })
         .await?;
@@ -1292,16 +1666,39 @@ impl SpiceDBClient {
         &self,
         name: &str,
     ) -> Result<Option<CountResult>, SpiceDBError> {
+        self.experimental_count_relationships_impl(name, None)
+            .await
+    }
+
+    /// [`experimental_count_relationships`](Self::experimental_count_relationships)
+    /// with a per-call timeout that overrides the client's `default_timeout`.
+    pub async fn experimental_count_relationships_with_timeout(
+        &self,
+        name: &str,
+        timeout: Duration,
+    ) -> Result<Option<CountResult>, SpiceDBError> {
+        self.experimental_count_relationships_impl(name, Some(timeout))
+            .await
+    }
+
+    async fn experimental_count_relationships_impl(
+        &self,
+        name: &str,
+        timeout: Option<Duration>,
+    ) -> Result<Option<CountResult>, SpiceDBError> {
+        let timeout = self.effective_timeout(timeout);
         let resp = self
             .retry(|| async {
+                let mut request = tonic::Request::new(
+                    proto::ExperimentalCountRelationshipsRequest {
+                        name: name.to_string(),
+                    },
+                );
+                request.set_timeout(timeout);
                 self.proto
                     .experimental
                     .clone()
-                    .experimental_count_relationships(
-                        proto::ExperimentalCountRelationshipsRequest {
-                            name: name.to_string(),
-                        },
-                    )
+                    .experimental_count_relationships(request)
                     .await
             })
             .await?;
@@ -1339,15 +1736,38 @@ impl SpiceDBClient {
         &self,
         name: &str,
     ) -> Result<(), SpiceDBError> {
+        self.experimental_unregister_relationship_counter_impl(name, None)
+            .await
+    }
+
+    /// [`experimental_unregister_relationship_counter`](Self::experimental_unregister_relationship_counter)
+    /// with a per-call timeout that overrides the client's `default_timeout`.
+    pub async fn experimental_unregister_relationship_counter_with_timeout(
+        &self,
+        name: &str,
+        timeout: Duration,
+    ) -> Result<(), SpiceDBError> {
+        self.experimental_unregister_relationship_counter_impl(name, Some(timeout))
+            .await
+    }
+
+    async fn experimental_unregister_relationship_counter_impl(
+        &self,
+        name: &str,
+        timeout: Option<Duration>,
+    ) -> Result<(), SpiceDBError> {
+        let timeout = self.effective_timeout(timeout);
         self.call_once(|| async {
+            let mut request = tonic::Request::new(
+                proto::ExperimentalUnregisterRelationshipCounterRequest {
+                    name: name.to_string(),
+                },
+            );
+            request.set_timeout(timeout);
             self.proto
                 .experimental
                 .clone()
-                .experimental_unregister_relationship_counter(
-                    proto::ExperimentalUnregisterRelationshipCounterRequest {
-                        name: name.to_string(),
-                    },
-                )
+                .experimental_unregister_relationship_counter(request)
                 .await
         })
         .await?;

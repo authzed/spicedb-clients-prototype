@@ -514,6 +514,10 @@ pub struct DeleteOptions {
     /// Overrides the default per-request page size (1,000) used by
     /// `delete_relationships`'/`delete_relationships_with`'s auto-paging loop.
     pub limit: Option<u32>,
+    /// Overrides the client's `default_timeout` (seconds bounding EACH
+    /// page's call). `None` uses the client default. See root DESIGN.md,
+    /// "RULE: A unary call must have a deadline".
+    pub timeout: Option<std::time::Duration>,
 }
 
 impl DeleteOptions {
@@ -539,6 +543,12 @@ impl DeleteOptions {
     /// Overrides the default per-request page size (1,000).
     pub fn with_limit(mut self, limit: u32) -> Self {
         self.limit = Some(limit);
+        self
+    }
+
+    /// Overrides the client's `default_timeout` for each page's call.
+    pub fn with_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.timeout = Some(timeout);
         self
     }
 

@@ -205,9 +205,19 @@ pub struct MockPermissionsService {
     check_bulk_permissions_calls: Arc<AtomicUsize>,
     check_bulk_permissions_requests: Arc<Mutex<Vec<proto::CheckBulkPermissionsRequest>>>,
     check_bulk_permissions_fail: Mutex<VecDeque<Status>>,
+    /// If set, `check_bulk_permissions` sleeps this long before responding --
+    /// simulates a wedged server that accepts the call but never answers
+    /// within any sensible deadline. Used by `tests/deadline_test.rs`.
+    check_bulk_permissions_stall: Mutex<Option<std::time::Duration>>,
 
     write_relationships_calls: Arc<AtomicUsize>,
     write_relationships_fail: Mutex<VecDeque<Status>>,
+
+    /// If set, `read_relationships` sleeps this long before streaming its
+    /// page -- proves a streaming call outlives a tiny unary
+    /// `default_timeout` instead of inheriting it. Used by
+    /// `tests/deadline_test.rs`.
+    read_relationships_stall: Mutex<Option<std::time::Duration>>,
 }
 
 impl MockPermissionsService {
@@ -238,9 +248,12 @@ impl MockPermissionsService {
             check_bulk_permissions_calls: Arc::new(AtomicUsize::new(0)),
             check_bulk_permissions_requests: Arc::new(Mutex::new(Vec::new())),
             check_bulk_permissions_fail: Mutex::new(VecDeque::new()),
+            check_bulk_permissions_stall: Mutex::new(None),
 
             write_relationships_calls: Arc::new(AtomicUsize::new(0)),
             write_relationships_fail: Mutex::new(VecDeque::new()),
+
+            read_relationships_stall: Mutex::new(None),
         }
     }
 
@@ -377,6 +390,20 @@ impl MockPermissionsService {
             .push_back(status);
     }
 
+    /// Makes every subsequent `CheckBulkPermissions` call sleep `duration`
+    /// before responding -- simulates a wedged server. Used to prove a
+    /// unary call actually times out instead of hanging.
+    pub fn stall_check_bulk_permissions(&self, duration: std::time::Duration) {
+        *self.check_bulk_permissions_stall.lock().unwrap() = Some(duration);
+    }
+
+    /// Makes every subsequent `ReadRelationships` call sleep `duration`
+    /// before streaming its page -- proves a streaming call is not bound by
+    /// the tiny unary default used to prove the unary case times out.
+    pub fn stall_read_relationships(&self, duration: std::time::Duration) {
+        *self.read_relationships_stall.lock().unwrap() = Some(duration);
+    }
+
     /// Returns a live handle to the `WriteRelationships` call counter. Grab
     /// this *before* moving the mock into [`spawn_permissions_server`].
     pub fn write_relationships_calls(&self) -> Arc<AtomicUsize> {
@@ -419,7 +446,11 @@ impl PermissionsService for MockPermissionsService {
             .unwrap()
             .pop_front()
             .unwrap_or_default();
+        let stall = *self.read_relationships_stall.lock().unwrap();
         let stream = async_stream::stream! {
+            if let Some(d) = stall {
+                tokio::time::sleep(d).await;
+            }
             for resp in page {
                 yield Ok(resp);
             }
@@ -486,6 +517,10 @@ impl PermissionsService for MockPermissionsService {
             .lock()
             .unwrap()
             .push(request.into_inner());
+        let stall = *self.check_bulk_permissions_stall.lock().unwrap();
+        if let Some(d) = stall {
+            tokio::time::sleep(d).await;
+        }
         if let Some(status) = self.check_bulk_permissions_fail.lock().unwrap().pop_front() {
             return Err(status);
         }

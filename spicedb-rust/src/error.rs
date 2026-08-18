@@ -85,6 +85,22 @@ mod codes {
 /// idiomatic error types. When the proto crate is available, this will
 /// accept `tonic::Status` directly.
 pub fn from_grpc_status(code: i32, message: String) -> SpiceDBError {
+    // tonic's own per-call timeout enforcement -- driven by the
+    // `grpc-timeout` header set via `tonic::Request::set_timeout`, and
+    // enforced client-side by `tonic::transport::Channel`'s built-in
+    // `GrpcTimeout` middleware racing a local `tokio::time::sleep` against
+    // the call -- surfaces as `Status::cancelled("Timeout expired")`, NOT
+    // `Status::deadline_exceeded` (tonic 0.12: `TimeoutExpired`'s `Display`
+    // impl in src/status.rs, matched via `Status::from_error`'s downcast
+    // handling). Left unmapped, that would make `DeadlineExceeded`
+    // unreachable for exactly the case a deadline exists to guard against:
+    // a server that never responds at all. "Timeout expired" is
+    // `TimeoutExpired`'s exact, stable `Display` text -- the only signal
+    // tonic gives for this specific path, since by the time a `Status`
+    // reaches here it no longer carries the original error's type.
+    if code == codes::CANCELLED && message == "Timeout expired" {
+        return SpiceDBError::DeadlineExceeded(message);
+    }
     match code {
         codes::PERMISSION_DENIED => SpiceDBError::PermissionDenied(message),
         codes::NOT_FOUND => SpiceDBError::NotFound(message),

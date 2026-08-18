@@ -352,6 +352,40 @@ matching relationship in one call for single-shot, all-or-nothing semantics.
 Exponential backoff for transient gRPC errors (UNAVAILABLE, RESOURCE_EXHAUSTED,
 ABORTED).
 
+### Deadlines
+
+Every unary method has a `_with_timeout(..., timeout: Duration)` sibling
+(`delete_relationships_with` instead takes `DeleteOptions::with_timeout`),
+mirroring the existing `_with_context` convention. The timeout is set on the
+request via `tonic::Request::set_timeout`. `SpiceDBClient::builder(...)
+.default_timeout(Duration)` overrides the default (30s, see
+`client::DEFAULT_TIMEOUT`) applied to any unary call that doesn't use a
+`_with_timeout` variant — mirroring `authzed-node`'s
+`DEFAULT_DEADLINE_MS = 30_000` (its comment cites `grpc/grpc-node#541`). See
+root DESIGN.md, "RULE: A unary call must have a deadline".
+
+```rust
+let client = SpiceDBClient::builder(endpoint, token)
+    .default_timeout(Duration::from_secs(5))
+    .build()
+    .await?;
+let result = client.check_permission(&full(), "view", &rel).await?;             // bound by the 5s default
+let result = client.check_permission_with_timeout(&full(), "view", &rel, Duration::from_secs(1)).await?; // overrides it
+```
+
+Streaming methods (`read_relationships`, `lookup_resources`,
+`lookup_subjects`, `updates`, `export_relationships`) have no `_with_timeout`
+variant and are NOT bound by `default_timeout` — they are long-lived by
+design (`updates` may run for the life of the process), and applying the
+unary default to them would make the stream itself the outage.
+
+tonic's own client-side timeout enforcement (`tonic::transport::Channel`'s
+`GrpcTimeout` middleware, triggered by the `grpc-timeout` header
+`set_timeout` sets) surfaces a purely local timeout as
+`Status::cancelled("Timeout expired")`, not `Status::deadline_exceeded` --
+`error::from_grpc_status` special-cases that exact `(code, message)` pair so
+`SpiceDBError::DeadlineExceeded` is what callers actually see.
+
 ### Performance
 
 - BulkCheck for all check operations (even single)

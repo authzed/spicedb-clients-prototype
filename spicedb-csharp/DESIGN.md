@@ -440,13 +440,41 @@ Exception hierarchy rooted at `SpiceDBException`:
 `ErrorMapper` static class:
 
 - `ToSpiceDBException(RpcException)` — maps gRPC status codes to typed exceptions
-- `IsTransient(Exception)` — returns true for UNAVAILABLE, RESOURCE_EXHAUSTED, ABORTED
+- `IsTransient(Exception)` — returns true for UNAVAILABLE and ABORTED
 
 ### Auto-Retry
 
-Automatic retry with exponential backoff for transient gRPC errors (UNAVAILABLE,
-RESOURCE_EXHAUSTED, ABORTED). Max 3 retries (4 attempts total) with 100ms
-initial backoff, doubling each retry.
+Automatic retry with jittered exponential backoff, for **reads only**, on
+**`UNAVAILABLE` and `ABORTED`**.
+
+`RESOURCE_EXHAUSTED` is deliberately NOT retryable. In SpiceDB it means
+either memory load-shed — where retrying adds load to an already-overloaded
+server — or a deterministic `MaxDepthExceeded`, which can never succeed and
+whose retries re-run the most expensive class of check several times before
+surfacing the same error. See root `DESIGN.md`, "RULE: Automatic retry is
+for idempotent operations only".
+
+**Mutations are never auto-retried.** `WriteRelationships` carrying
+`OPERATION_CREATE`, or any request with preconditions, is not idempotent: if
+it commits and the response is lost — a rolling restart, a proxy dropping the
+connection — the retry returns `ALREADY_EXISTS`/`FAILED_PRECONDITION` and the
+caller concludes a write failed that in fact succeeded. Writes, deletes,
+schema writes, bulk import, and the counter registration calls therefore go
+down a call-once path that maps errors but never retries. A caller who wants
+a mutation retried must decide that themselves, knowing their own
+idempotency.
+
+**Timeout shape**: the per-call timeout is a per-*attempt* budget, applied
+fresh to each retry rather than shrinking across them, so a call that
+legitimately needs several retries is not made more likely to fail than one
+that needs none. Worst-case latency for a timeout `t` is therefore
+`t × (retries + 1)` plus backoff, and an auto-paging call spends a fresh `t`
+per page. Root `DESIGN.md`, "On worst-case latency", covers why this differs
+from Go's; a caller needing a true end-to-end bound must impose it above this
+client.
+
+Max 3 retries (4 attempts total), 100ms initial backoff, doubling each retry,
+sampled with full jitter.
 
 ### Deadlines
 

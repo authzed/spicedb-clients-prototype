@@ -2,6 +2,61 @@
 
 ## Unreleased
 
+### Breaking
+
+- **2026-08-18** (behavioral; no signature change): the two entries below change what existing,
+  unmodified call sites do. They are listed here because neither announces itself -- nothing
+  fails to compile, and the difference only shows up under load or against a slow query.
+  - **Unary calls are now bounded by a 30-second default** -- see "Call deadlines" in this
+    release. A call that legitimately takes longer than 30 s (most plausibly a deep
+    `expand_permission_tree` on a large graph, or a filtered delete sweeping many pages) now fails
+    with a deadline error where it previously ran to completion. Raise it with
+    `Client.new_plaintext(..., default_timeout:)`, or pass `timeout:` on the individual call.
+    There is deliberately no way to ask for no bound at all on a unary call.
+  - **Mutations are no longer retried automatically** -- see "Retry safety" in this release.
+    `write`, `delete_relationships`, `write_schema`, `import_relationships`, and the experimental
+    counter register/unregister calls now surface a transient `UNAVAILABLE` to the caller on the
+    first attempt rather than retrying. This is the correct default (replaying a non-idempotent
+    write can report failure for a write that in fact committed), but a caller who was relying on
+    the client to ride out a rolling restart must now retry themselves, knowing their own
+    idempotency. Reads are unaffected. `RESOURCE_EXHAUSTED` is no longer retried either, on reads
+    or mutations.
+
+- **2026-08-18**: Watch resumability. `updates` previously dropped
+  `WatchResponse.changes_through` entirely and had no way to request
+  `WATCH_KIND_INCLUDE_CHECKPOINTS`.
+  - **Breaking**: `updates(object_types, start_revision: nil, include_checkpoints: false)` now
+    returns `Enumerator<SpiceDB::WatchEvent>` instead of `Enumerator<SpiceDB::Update>`, and
+    yields once per server response (a batch of updates) rather than flattening to one item per
+    relationship update — a checkpoint response carries zero updates, so a per-update-only
+    enumerator has no way to surface one at all.
+
+    ```ruby
+    WatchEvent = Data.define(:updates, :changes_through, :is_checkpoint)
+    ```
+  - `WatchEvent#changes_through` is the proto's `changes_through` -- "This token can be used
+    in a subsequent WatchRequest to resume watching from this point." Without it, a consumer
+    whose stream dropped could only restart from its original `start_revision` (reprocessing
+    everything since, possibly past the GC window) or from head (silently losing every change
+    in the gap).
+  - New `include_checkpoints:` keyword (default `false`) requests
+    `WATCH_KIND_INCLUDE_CHECKPOINTS` (plus `WATCH_KIND_INCLUDE_RELATIONSHIP_UPDATES`, since
+    `optional_update_kinds` is empty-means-default and a non-empty list replaces rather than
+    extends it) -- no prior way existed to ask for this at all. `WatchEvent#is_checkpoint` lets
+    a caller tell "nothing changed, here is a fresh resume point" from "here are changes".
+    Recommended if this SpiceDB instance is running behind a proxy that aborts idle
+    connections.
+  - `examples/watch_changes/` updated for the new `WatchEvent` shape and extended with a
+    checkpoint-request example. New `spec/client_watch_resumability_spec.rb`: a watch event
+    exposes a usable resume token, `include_checkpoints:` reaches the built `WatchRequest`,
+    and a checkpoint event is distinguishable from one carrying updates.
+    `client_watch_operation_mapping_spec.rb`'s cases updated for the new return type without
+    weakening any existing assertion.
+  - New `SpiceDB::WatchMapping` (`lib/spicedb/watch_mapping.rb`), included into `Client`
+    alongside `CaveatContext`/`Retrying`: request-building and response-mapping for `#updates`
+    moved out of `Client` the same way the caveat-context codec did, keeping `Client` under
+    the `Metrics/ClassLength` ceiling `.rubocop.yml` deliberately does not raise.
+
 ### Added
 
 - **Caveat context on the check surface**: `check_permission`/`check_permissions`/`check_any`/`check_all` gain an optional `context:` keyword, and `SpiceDB::Relationship` gains a `check_context` field (with a matching `with_check_context(context)` builder). Previously a `CheckResult` with `permissionship == :conditional_permission` told you `missing_context` — the caveat parameter names SpiceDB couldn't evaluate — but there was no way to actually supply them, leaving the caller stuck. `context:` is a call-level default fanned out onto every relationship in the call (all checks go through `BulkCheckPermissions`, whose wire format attaches context per item — `CheckBulkPermissionsRequestItem#context`, proto field 4 — since `CheckBulkPermissionsRequest` itself has no context field); `relationship.with_check_context({...})` overrides that default for one relationship only, merged **key-by-key** with the call-level context (the item's keys win on conflict, but call-level keys the item doesn't mention are retained — NOT a wholesale replacement, which would silently drop shared keys and land the caller right back in `CONDITIONAL_PERMISSION`). An item with no `check_context` inherits `context:` unchanged; if neither is supplied, no `context` field is set on the wire at all (`nil`, not an empty `Struct`). Purely additive: `context:` defaults to `nil` on every check method and `check_context` defaults to `nil` on `Relationship`, so no existing call site changes.
@@ -138,40 +193,6 @@
   whichever channel `@channel` currently referenced, so the first channel (and its connection)
   was never released. Credentials are now composed BEFORE the one-and-only channel is
   constructed, so exactly one `GRPC::Core::Channel` is created regardless of `insecure:`.
-- **2026-08-18**: Watch resumability. `updates` previously dropped
-  `WatchResponse.changes_through` entirely and had no way to request
-  `WATCH_KIND_INCLUDE_CHECKPOINTS`.
-  - **Breaking**: `updates(object_types, start_revision: nil, include_checkpoints: false)` now
-    returns `Enumerator<SpiceDB::WatchEvent>` instead of `Enumerator<SpiceDB::Update>`, and
-    yields once per server response (a batch of updates) rather than flattening to one item per
-    relationship update — a checkpoint response carries zero updates, so a per-update-only
-    enumerator has no way to surface one at all.
-
-    ```ruby
-    WatchEvent = Data.define(:updates, :changes_through, :is_checkpoint)
-    ```
-  - `WatchEvent#changes_through` is the proto's `changes_through` -- "This token can be used
-    in a subsequent WatchRequest to resume watching from this point." Without it, a consumer
-    whose stream dropped could only restart from its original `start_revision` (reprocessing
-    everything since, possibly past the GC window) or from head (silently losing every change
-    in the gap).
-  - New `include_checkpoints:` keyword (default `false`) requests
-    `WATCH_KIND_INCLUDE_CHECKPOINTS` (plus `WATCH_KIND_INCLUDE_RELATIONSHIP_UPDATES`, since
-    `optional_update_kinds` is empty-means-default and a non-empty list replaces rather than
-    extends it) -- no prior way existed to ask for this at all. `WatchEvent#is_checkpoint` lets
-    a caller tell "nothing changed, here is a fresh resume point" from "here are changes".
-    Recommended if this SpiceDB instance is running behind a proxy that aborts idle
-    connections.
-  - `examples/watch_changes/` updated for the new `WatchEvent` shape and extended with a
-    checkpoint-request example. New `spec/client_watch_resumability_spec.rb`: a watch event
-    exposes a usable resume token, `include_checkpoints:` reaches the built `WatchRequest`,
-    and a checkpoint event is distinguishable from one carrying updates.
-    `client_watch_operation_mapping_spec.rb`'s cases updated for the new return type without
-    weakening any existing assertion.
-  - New `SpiceDB::WatchMapping` (`lib/spicedb/watch_mapping.rb`), included into `Client`
-    alongside `CaveatContext`/`Retrying`: request-building and response-mapping for `#updates`
-    moved out of `Client` the same way the caveat-context codec did, keeping `Client` under
-    the `Metrics/ClassLength` ceiling `.rubocop.yml` deliberately does not raise.
 - **2026-08-18**: Call deadlines, per root `DESIGN.md` "RULE: A unary call must have a
   deadline". Previously no method accepted a timeout and no client-level default existed, so a
   SpiceDB instance that accepted a connection but never answered hung every caller forever — the

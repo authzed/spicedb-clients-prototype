@@ -54,15 +54,19 @@
   limit) to map to the new `ResourceExhaustedError` instead of being folded
   into `UnavailableError`. This brings TypeScript's error hierarchy in line
   with the canonical nine-type set already present in Go, Java, Python,
-  Rust, Ruby, and C#. `isTransientError()`'s behavior is unchanged —
-  `RESOURCE_EXHAUSTED` was already, and remains, treated as transient; only
-  which typed class it maps to changed. Both new error classes are exported
-  from the package root.
+  Rust, Ruby, and C#. Only which typed class the code maps to changed here;
+  both new error classes are exported from the package root.
+  **`RESOURCE_EXHAUSTED` was subsequently removed from the retryable set** --
+  see the 2026-08-18 retry-safety entry below, which is the shipped behavior.
+  (This entry originally read "was already, and remains, treated as
+  transient".)
 
 - **2026-08-15**: `readRelationships()`, `lookupResources()`,
   `lookupSubjects()`, `exportBulkRelationships()`, and `watch()` now retry
-  stream ESTABLISHMENT on transient errors (`UNAVAILABLE`,
-  `RESOURCE_EXHAUSTED`, `ABORTED`), reusing the same `isTransientError`
+  stream ESTABLISHMENT on transient errors -- as shipped, `UNAVAILABLE` and
+  `ABORTED`; `RESOURCE_EXHAUSTED` was in that set when this landed and was
+  removed by the 2026-08-18 retry-safety entry below -- reusing the same
+  `isTransientError`
   predicate and exponential backoff as `withRetry`. Retry is scoped strictly
   to (re-)opening the stream: once any item has been yielded to the caller
   from the current stream, a later transient error is never retried — it is
@@ -360,6 +364,24 @@
   intended to be public.
 
 ### Breaking Changes
+
+- **2026-08-18** (behavioral; no signature change): the two entries below change what existing,
+  unmodified call sites do. They are listed here because neither announces itself -- nothing
+  fails to compile, and the difference only shows up under load or against a slow query.
+  - **Unary calls are now bounded by a 30-second default** -- see "Call deadlines" in this
+    release. A call that legitimately takes longer than 30 s (most plausibly a deep
+    `expandPermissionTree` on a large graph, or a filtered delete sweeping many pages) now fails
+    with a deadline error where it previously ran to completion. Raise it with
+    `createSpiceDBClient(..., { defaultTimeoutMs })`, or pass `timeoutMs` on the individual call.
+    There is deliberately no way to ask for no bound at all on a unary call.
+  - **Mutations are no longer retried automatically** -- see "Retry safety" in this release.
+    `write`, `deleteRelationships`, `writeSchema`, `importBulkRelationships`, and the experimental
+    counter register/unregister calls now surface a transient `UNAVAILABLE` to the caller on the
+    first attempt rather than retrying. This is the correct default (replaying a non-idempotent
+    write can report failure for a write that in fact committed), but a caller who was relying on
+    the client to ride out a rolling restart must now retry themselves, knowing their own
+    idempotency. Reads are unaffected. `RESOURCE_EXHAUSTED` is no longer retried either, on reads
+    or mutations.
 
 - **2026-08-17**: `checkPermission()` now returns `CheckResult` instead of
   `boolean`, and `checkPermissions()` now returns `CheckResult[]` instead of

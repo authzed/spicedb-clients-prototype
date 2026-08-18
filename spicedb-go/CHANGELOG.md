@@ -4,6 +4,61 @@
 
 ### Breaking Changes
 
+- **2026-08-18** (behavioral; no signature change): the entry below changes what existing,
+  unmodified call sites do. It is listed here because it does not announce itself -- nothing
+  fails to compile, and the difference only shows up under load. (Unlike the other six clients,
+  this one gained no default deadline: a caller's `context.Context` has always been the bound,
+  so no existing call's timing changed.)
+  - **Mutations are no longer retried automatically** -- see "Retry safety" in this release.
+    `WriteRelationships`, `DeleteRelationships`, `WriteSchema`, `ImportRelationships`, and the
+    experimental counter register/unregister calls now surface a transient `UNAVAILABLE` to the
+    caller on the first attempt rather than retrying. This is the correct default (replaying a
+    non-idempotent write can report failure for a write that in fact committed), but a caller who
+    was relying on the client to ride out a rolling restart must now retry themselves, knowing
+    their own idempotency. Reads are unaffected. `RESOURCE_EXHAUSTED` is no longer retried either,
+    on reads or mutations.
+
+- **2026-08-18**: Watch resumability. `Updates` previously dropped
+  `WatchResponse.changes_through` entirely and had no way to request
+  `WATCH_KIND_INCLUDE_CHECKPOINTS`.
+  - **Breaking**: `Updates(ctx, objectTypes, startRevision, ...)` now returns
+    `iter.Seq2[client.WatchEvent, error]` instead of
+    `iter.Seq2[rel.Update, error]`, and accepts variadic `WatchOption`s. It
+    also now yields once per server response (batch of updates) rather than
+    flattening to one yield per relationship update — a checkpoint response
+    carries zero updates, so a per-update-only iterator has no way to
+    surface it at all.
+
+    ```go
+    type WatchEvent struct {
+        Updates        []rel.Update
+        ChangesThrough string // resume token; pass as startRevision to resume after a dropped stream
+        IsCheckpoint   bool   // true for a checkpoint event, which carries no Updates
+    }
+    ```
+  - `WatchEvent.ChangesThrough` is the proto's `changes_through` --
+    "This token can be used in a subsequent WatchRequest to resume watching
+    from this point." Without it, a consumer whose stream dropped could
+    only restart from its original `startRevision` (reprocessing
+    everything since, possibly past the GC window) or from head (silently
+    losing every change in the gap).
+  - New `client.WithIncludeCheckpoints()` `WatchOption` requests
+    `WATCH_KIND_INCLUDE_CHECKPOINTS` (plus
+    `WATCH_KIND_INCLUDE_RELATIONSHIP_UPDATES`, since `OptionalUpdateKinds`
+    is empty-means-default and a non-empty list replaces rather than
+    extends it) -- no prior way existed to ask for this at all.
+    `WatchEvent.IsCheckpoint` lets a caller tell "nothing changed, here is a
+    fresh resume point" from "here are changes". Recommended if this
+    SpiceDB instance is running behind a proxy that aborts idle
+    connections, since a checkpoint keeps the stream alive even when there
+    are no changes.
+  - `examples/watch_changes/` updated for the new `WatchEvent` shape and to
+    request checkpoints. New `client/watch_test.go` (no prior test coverage
+    existed for `Updates` at all): a watch event exposes a usable resume
+    token, `WithIncludeCheckpoints` reaches the built `WatchRequest`, a
+    checkpoint event is distinguishable from one carrying updates, and a
+    mid-stream error yields a zero-value `WatchEvent` with a mapped error.
+
 - **2026-08-18**: `rel.Filter.ToProto()` now returns `(*v1.RelationshipFilter, error)` instead of
   a bare `*v1.RelationshipFilter`. Previously, `ToProto` nested `OptionalSubjectId`/
   `OptionalRelation` inside the `SubjectType != ""` check, so
@@ -199,46 +254,6 @@
   subsequent element -- an unbounded, monotonically growing batch until it crossed SpiceDB's
   `maxBulkCheckCount` and the transient error became a permanent `InvalidArgument`. `flush` now
   clears the batch unconditionally before invoking `yield`, on both paths.
-- **2026-08-18**: Watch resumability. `Updates` previously dropped
-  `WatchResponse.changes_through` entirely and had no way to request
-  `WATCH_KIND_INCLUDE_CHECKPOINTS`.
-  - **Breaking**: `Updates(ctx, objectTypes, startRevision, ...)` now returns
-    `iter.Seq2[client.WatchEvent, error]` instead of
-    `iter.Seq2[rel.Update, error]`, and accepts variadic `WatchOption`s. It
-    also now yields once per server response (batch of updates) rather than
-    flattening to one yield per relationship update — a checkpoint response
-    carries zero updates, so a per-update-only iterator has no way to
-    surface it at all.
-
-    ```go
-    type WatchEvent struct {
-        Updates        []rel.Update
-        ChangesThrough string // resume token; pass as startRevision to resume after a dropped stream
-        IsCheckpoint   bool   // true for a checkpoint event, which carries no Updates
-    }
-    ```
-  - `WatchEvent.ChangesThrough` is the proto's `changes_through` --
-    "This token can be used in a subsequent WatchRequest to resume watching
-    from this point." Without it, a consumer whose stream dropped could
-    only restart from its original `startRevision` (reprocessing
-    everything since, possibly past the GC window) or from head (silently
-    losing every change in the gap).
-  - New `client.WithIncludeCheckpoints()` `WatchOption` requests
-    `WATCH_KIND_INCLUDE_CHECKPOINTS` (plus
-    `WATCH_KIND_INCLUDE_RELATIONSHIP_UPDATES`, since `OptionalUpdateKinds`
-    is empty-means-default and a non-empty list replaces rather than
-    extends it) -- no prior way existed to ask for this at all.
-    `WatchEvent.IsCheckpoint` lets a caller tell "nothing changed, here is a
-    fresh resume point" from "here are changes". Recommended if this
-    SpiceDB instance is running behind a proxy that aborts idle
-    connections, since a checkpoint keeps the stream alive even when there
-    are no changes.
-  - `examples/watch_changes/` updated for the new `WatchEvent` shape and to
-    request checkpoints. New `client/watch_test.go` (no prior test coverage
-    existed for `Updates` at all): a watch event exposes a usable resume
-    token, `WithIncludeCheckpoints` reaches the built `WatchRequest`, a
-    checkpoint event is distinguishable from one carrying updates, and a
-    mid-stream error yields a zero-value `WatchEvent` with a mapped error.
 - **2026-08-18**: Retry safety, per root `DESIGN.md` "RULE: Automatic retry is for idempotent
   operations only". The fix lives entirely in `proto-clients/spicedb-go-proto/client.go`'s
   `NewClient` — Go's retry is a gRPC service-config `retryPolicy` shared by every RPC on a service,
@@ -354,7 +369,7 @@
       client.WithDeleteLimit(1000),
   )
   ```
-- **2026-08-14**: Added automatic retry with exponential backoff for transient gRPC errors (`UNAVAILABLE`, `RESOURCE_EXHAUSTED`, `ABORTED`), configured via gRPC's built-in service-config `retryPolicy` in `NewClient`'s dial options (proto-client tier). Up to 3 retries (4 total attempts), 100ms initial backoff, 2x multiplier, 5s max backoff. No public API change; callers can still override via `WithDialOptions`.
+- **2026-08-14**: Added automatic retry with exponential backoff for transient gRPC errors, configured via gRPC's built-in service-config `retryPolicy` in `NewClient`'s dial options (proto-client tier). This entry set `retryableStatusCodes` to `UNAVAILABLE`, `RESOURCE_EXHAUSTED`, `ABORTED`; the shipped set is `UNAVAILABLE`, `ABORTED`, since the 2026-08-18 retry-safety entry above removed `RESOURCE_EXHAUSTED` and gave the seven mutation RPCs a `retryPolicy`-less `methodConfig` entry of their own. Up to 3 retries (4 total attempts), 100ms initial backoff, 2x multiplier, 5s max backoff. No public API change; callers can still override via `WithDialOptions`.
 - **2026-08-14**: RPC and stream errors are now mapped to native `*client.Error` values inspectable via `errors.Is`/`errors.As`, instead of raw `%w`-wrapped gRPC status errors. New sentinels: `client.ErrNotFound`, `client.ErrAlreadyExists`, `client.ErrInvalidArgument`, `client.ErrFailedPrecondition`, `client.ErrPermissionDenied`, `client.ErrUnauthenticated`. Applies to every RPC call and every `iter.Seq2` streaming iterator (`ReadRelationships`, `LookupResources`, `LookupSubjects`, `ExportRelationships`, `Updates`), so mid-stream errors are native too. `errors.Unwrap` still exposes the underlying gRPC status error for advanced inspection.
 - **2026-08-14**: Per-item errors from `Check`/`CheckOne`/`CheckAny`/`CheckAll`/`CheckIter` (surfaced via `BulkCheckPermissions` response pairs) are now mapped to native `*client.Error` values through the same `mapGRPCError` path as top-level RPC errors, instead of being string-formatted. `errors.Is(err, client.ErrInvalidArgument)` (and the other sentinels) now works for per-item bulk-check failures, not just top-level RPC failures.
 

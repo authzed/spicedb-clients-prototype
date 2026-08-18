@@ -433,7 +433,43 @@ examples.
   passed through the client. An error returned directly by a `rel` builder
   (e.g. `Txn.Create`) carries the `rel` sentinel only.
 - `Must*` variants that panic (for tests/initialization)
-- Automatic retry with exponential backoff for transient gRPC errors
+- Automatic retry with jittered exponential backoff for transient gRPC
+  errors — see "Retry and timeout semantics" below
+
+#### Retry and timeout semantics
+
+Automatic retry with jittered exponential backoff, for **reads only**, on
+**`UNAVAILABLE` and `ABORTED`**.
+
+`RESOURCE_EXHAUSTED` is deliberately NOT retryable. In SpiceDB it means
+either memory load-shed — where retrying adds load to an already-overloaded
+server — or a deterministic `MaxDepthExceeded`, which can never succeed and
+whose retries re-run the most expensive class of check several times before
+surfacing the same error. See root `DESIGN.md`, "RULE: Automatic retry is
+for idempotent operations only".
+
+**Mutations are never auto-retried.** `WriteRelationships` carrying
+`OPERATION_CREATE`, or any request with preconditions, is not idempotent: if
+it commits and the response is lost — a rolling restart, a proxy dropping the
+connection — the retry returns `ALREADY_EXISTS`/`FAILED_PRECONDITION` and the
+caller concludes a write failed that in fact succeeded. This client expresses
+that in the service config rather than in a call-once wrapper: one
+SERVICE-level `methodConfig` entry carries the `retryPolicy` for all four
+services, and a second METHOD-level entry naming the seven mutation RPCs
+carries none. grpc-go's `getMethodConfig` prefers an exact
+`/service/method` match over a `/service/` wildcard, so those seven get no
+retry while every other RPC on the same service does. A caller who wants a
+mutation retried must decide that themselves, knowing their own idempotency.
+
+**Timeout shape**: unlike the other six clients, this one has no per-call
+timeout of its own — the caller's `context.Context` is the bound, and retry is
+grpc-go's service-config `retryPolicy`, which reuses that same context across
+every attempt. A context deadline is a point in time, not a duration, so it
+bounds the whole operation: attempts, backoff between them, and auto-pagination
+all draw down one budget, and a retry that would start after the deadline fails
+immediately instead. `context.WithTimeout(ctx, 30*time.Second)` therefore means
+at most 30 s here, where the same nominal 30 s in the hand-rolled clients can
+reach ~120 s plus backoff. Root `DESIGN.md`, "On worst-case latency".
 
 ### Performance
 

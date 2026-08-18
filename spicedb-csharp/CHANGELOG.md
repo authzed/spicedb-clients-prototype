@@ -69,7 +69,9 @@
 - **2026-08-15**: The 5 streaming methods (`ReadRelationshipsAsync`,
   `LookupResourcesAsync`, `LookupSubjectsAsync`, `ExportRelationshipsAsync`,
   `UpdatesAsync`) now retry stream/page **ESTABLISHMENT** on transient errors
-  (`{UNAVAILABLE, RESOURCE_EXHAUSTED, ABORTED}`), reusing the same backoff and
+  (as shipped, `{UNAVAILABLE, ABORTED}`; `RESOURCE_EXHAUSTED` was in that set
+  when this landed and was removed by the 2026-08-18 retry-safety entry
+  below), reusing the same backoff and
   `MaxRetryAttempts` budget as unary calls (reset per page for the paginated
   methods; per-stream for `LookupSubjectsAsync`/`UpdatesAsync`, which have no
   cursor). A transient error is retried ONLY while nothing has been yielded
@@ -107,6 +109,60 @@
   ```
 
 ### Breaking Changes
+
+- **2026-08-18** (behavioral; no signature change): the two entries below change what existing,
+  unmodified call sites do. They are listed here because neither announces itself -- nothing
+  fails to compile, and the difference only shows up under load or against a slow query.
+  - **Unary calls are now bounded by a 30-second default** -- see "Call deadlines" in this
+    release. A call that legitimately takes longer than 30 s (most plausibly a deep
+    `ExpandPermissionTreeAsync` on a large graph, or a filtered delete sweeping many pages) now
+    fails with a deadline error where it previously ran to completion. Raise it with
+    `CreatePlaintext/CreateSystemTls(..., defaultTimeout:)`, or pass `timeout:` on the individual
+    call. There is deliberately no way to ask for no bound at all on a unary call.
+  - **Mutations are no longer retried automatically** -- see "Retry safety" in this release.
+    `WriteAsync`, `DeleteRelationshipsAsync`, `WriteSchemaAsync`, `ImportRelationshipsAsync`, and
+    the experimental counter register/unregister calls now surface a transient `UNAVAILABLE` to
+    the caller on the first attempt rather than retrying. This is the correct default (replaying a
+    non-idempotent write can report failure for a write that in fact committed), but a caller who
+    was relying on the client to ride out a rolling restart must now retry themselves, knowing
+    their own idempotency. Reads are unaffected. `RESOURCE_EXHAUSTED` is no longer retried either,
+    on reads or mutations.
+
+- **2026-08-18**: Watch resumability. `UpdatesAsync` previously dropped
+  `WatchResponse.ChangesThrough` entirely and had no way to request
+  `WATCH_KIND_INCLUDE_CHECKPOINTS`.
+  - **Breaking**: `UpdatesAsync(objectTypes?, startRevision?, ...)` now returns
+    `IAsyncEnumerable<WatchEvent>` instead of `IAsyncEnumerable<RelationshipUpdate>`, and yields
+    once per server response (a batch of updates) rather than flattening to one item per
+    relationship update — a checkpoint response carries zero updates, so a per-update-only
+    enumerable has no way to surface one at all.
+
+    ```csharp
+    public sealed record WatchEvent
+    {
+        public IReadOnlyList<RelationshipUpdate> Updates { get; init; }
+        public string ChangesThrough { get; init; } // resume token; pass as startRevision to resume after a dropped stream
+        public bool IsCheckpoint { get; init; }      // true for a checkpoint event, which carries no Updates
+    }
+    ```
+  - `WatchEvent.ChangesThrough` is the proto's `changes_through` -- "This token can be used in
+    a subsequent WatchRequest to resume watching from this point." Without it, a consumer
+    whose stream dropped could only restart from its original `startRevision` (reprocessing
+    everything since, possibly past the GC window) or from head (silently losing every change
+    in the gap).
+  - New `includeCheckpoints` parameter (default `false`) requests
+    `WATCH_KIND_INCLUDE_CHECKPOINTS` (plus `WATCH_KIND_INCLUDE_RELATIONSHIP_UPDATES`, since
+    `OptionalUpdateKinds` is empty-means-default and a non-empty list replaces rather than
+    extends it) -- no prior way existed to ask for this at all. `WatchEvent.IsCheckpoint` lets
+    a caller tell "nothing changed, here is a fresh resume point" from "here are changes".
+    Recommended if this SpiceDB instance is running behind a proxy that aborts idle
+    connections.
+  - `examples/WatchChanges/` updated for the new `WatchEvent` shape and extended with a
+    checkpoint-request test. New `SpiceDB.Client.Tests/WatchResumabilityTests.cs`: a watch
+    event exposes a usable resume token, `includeCheckpoints` reaches the built
+    `WatchRequest`, and a checkpoint event is distinguishable from one carrying updates.
+    `WatchUpdateMappingTests`, `StreamingEstablishmentRetryTests`'s watch cases updated for the
+    new return type without weakening any existing assertion.
 
 - **2026-08-16**: `CheckPermissionAsync` now returns `Task<CheckResult>`
   (was `Task<bool>`) and `CheckPermissionsAsync` now returns
@@ -209,41 +265,6 @@
 
 ### Fixed
 
-- **2026-08-18**: Watch resumability. `UpdatesAsync` previously dropped
-  `WatchResponse.ChangesThrough` entirely and had no way to request
-  `WATCH_KIND_INCLUDE_CHECKPOINTS`.
-  - **Breaking**: `UpdatesAsync(objectTypes?, startRevision?, ...)` now returns
-    `IAsyncEnumerable<WatchEvent>` instead of `IAsyncEnumerable<RelationshipUpdate>`, and yields
-    once per server response (a batch of updates) rather than flattening to one item per
-    relationship update — a checkpoint response carries zero updates, so a per-update-only
-    enumerable has no way to surface one at all.
-
-    ```csharp
-    public sealed record WatchEvent
-    {
-        public IReadOnlyList<RelationshipUpdate> Updates { get; init; }
-        public string ChangesThrough { get; init; } // resume token; pass as startRevision to resume after a dropped stream
-        public bool IsCheckpoint { get; init; }      // true for a checkpoint event, which carries no Updates
-    }
-    ```
-  - `WatchEvent.ChangesThrough` is the proto's `changes_through` -- "This token can be used in
-    a subsequent WatchRequest to resume watching from this point." Without it, a consumer
-    whose stream dropped could only restart from its original `startRevision` (reprocessing
-    everything since, possibly past the GC window) or from head (silently losing every change
-    in the gap).
-  - New `includeCheckpoints` parameter (default `false`) requests
-    `WATCH_KIND_INCLUDE_CHECKPOINTS` (plus `WATCH_KIND_INCLUDE_RELATIONSHIP_UPDATES`, since
-    `OptionalUpdateKinds` is empty-means-default and a non-empty list replaces rather than
-    extends it) -- no prior way existed to ask for this at all. `WatchEvent.IsCheckpoint` lets
-    a caller tell "nothing changed, here is a fresh resume point" from "here are changes".
-    Recommended if this SpiceDB instance is running behind a proxy that aborts idle
-    connections.
-  - `examples/WatchChanges/` updated for the new `WatchEvent` shape and extended with a
-    checkpoint-request test. New `SpiceDB.Client.Tests/WatchResumabilityTests.cs`: a watch
-    event exposes a usable resume token, `includeCheckpoints` reaches the built
-    `WatchRequest`, and a checkpoint event is distinguishable from one carrying updates.
-    `WatchUpdateMappingTests`, `StreamingEstablishmentRetryTests`'s watch cases updated for the
-    new return type without weakening any existing assertion.
 - **2026-08-18**: Call deadlines, per root `DESIGN.md` "RULE: A unary call must have a
   deadline". Previously the client had `CancellationToken` throughout (real caller-side
   cancellation — stops the client from waiting) but no server-enforced deadline: a cancelled
@@ -442,9 +463,11 @@
   `NotFoundException`. No API shape change — only the exception type thrown
   from these `IAsyncEnumerable<T>`/`Task` methods on stream failure.
 
-- **2026-08-14**: Standardized the retryable (transient) status code set to
-  `{UNAVAILABLE, RESOURCE_EXHAUSTED, ABORTED}`, aligning with the other
-  SpiceDB clients. `DEADLINE_EXCEEDED` is no longer treated as transient and
+- **2026-08-14**: Standardized the retryable (transient) status code set,
+  aligning with the other SpiceDB clients. This entry set it to
+  `{UNAVAILABLE, RESOURCE_EXHAUSTED, ABORTED}`; the shipped set is
+  `{UNAVAILABLE, ABORTED}`, since the 2026-08-18 retry-safety entry below
+  removed `RESOURCE_EXHAUSTED`. `DEADLINE_EXCEEDED` is no longer treated as transient and
   is no longer retried (the `Grpc.Core.StatusCode.DeadlineExceeded` →
   `DeadlineExceededException` mapping is unchanged; it just no longer counts
   as transient for `ErrorMapper.IsTransient`/`RetryAsync`). Added

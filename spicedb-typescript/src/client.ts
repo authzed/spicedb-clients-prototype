@@ -541,9 +541,12 @@ export class SpiceDBClient {
   /**
    * Reads relationships matching the given filter.
    *
-   * Pass `options.signal` to release the underlying stream before it is
-   * exhausted -- a bare `for await` `break` alone does not (see root
-   * DESIGN.md, "RULE: Abandoning a stream must release it").
+   * Stopping early releases the underlying stream: a `for await` `break`
+   * resumes this generator through `.return()`, whose `finally` aborts the
+   * call's internal controller. Pass `options.signal` when the release has
+   * to be driven from outside the loop instead -- a timeout, a request
+   * cancellation, tearing down a component. See root DESIGN.md, "RULE:
+   * Abandoning a stream must release it".
    *
    * @returns An async iterable of matching relationships.
    */
@@ -655,9 +658,12 @@ export class SpiceDBClient {
    * result was computed at. Callers MUST check `permissionship` before
    * treating a result as a full grant.
    *
-   * Pass `params.signal` to release the underlying stream before it is
-   * exhausted -- a bare `for await` `break` alone does not (see root
-   * DESIGN.md, "RULE: Abandoning a stream must release it").
+   * Stopping early releases the underlying stream: a `for await` `break`
+   * resumes this generator through `.return()`, whose `finally` aborts the
+   * call's internal controller. Pass `params.signal` when the release has
+   * to be driven from outside the loop instead -- a timeout, a request
+   * cancellation, tearing down a component. See root DESIGN.md, "RULE:
+   * Abandoning a stream must release it".
    *
    * @returns An async iterable of {@link LookupResource}.
    */
@@ -718,9 +724,12 @@ export class SpiceDBClient {
    * or they risk granting access to subjects the server explicitly excluded.
    * `lookedUpAt` carries the revision the result was computed at.
    *
-   * Pass `params.signal` to release the underlying stream before it is
-   * exhausted -- a bare `for await` `break` alone does not (see root
-   * DESIGN.md, "RULE: Abandoning a stream must release it").
+   * Stopping early releases the underlying stream: a `for await` `break`
+   * resumes this generator through `.return()`, whose `finally` aborts the
+   * call's internal controller. Pass `params.signal` when the release has
+   * to be driven from outside the loop instead -- a timeout, a request
+   * cancellation, tearing down a component. See root DESIGN.md, "RULE:
+   * Abandoning a stream must release it".
    *
    * @returns An async iterable of {@link LookupSubject}.
    */
@@ -856,9 +865,12 @@ export class SpiceDBClient {
   /**
    * Exports all relationships, optionally filtered, as an async iterable.
    *
-   * Pass `options.signal` to release the underlying stream before it is
-   * exhausted -- a bare `for await` `break` alone does not (see root
-   * DESIGN.md, "RULE: Abandoning a stream must release it").
+   * Stopping early releases the underlying stream: a `for await` `break`
+   * resumes this generator through `.return()`, whose `finally` aborts the
+   * call's internal controller. Pass `options.signal` when the release has
+   * to be driven from outside the loop instead -- a timeout, a request
+   * cancellation, tearing down a component. See root DESIGN.md, "RULE:
+   * Abandoning a stream must release it".
    *
    * @returns An async iterable of relationships.
    */
@@ -1137,9 +1149,12 @@ export class SpiceDBClient {
   /**
    * Watches for changes to relationships, returning an async iterable of events.
    *
-   * Pass `options.signal` to release the underlying stream before it is
-   * exhausted -- a bare `for await` `break` alone does not (see root
-   * DESIGN.md, "RULE: Abandoning a stream must release it").
+   * Stopping early releases the underlying stream: a `for await` `break`
+   * resumes this generator through `.return()`, whose `finally` aborts the
+   * call's internal controller. Pass `options.signal` when the release has
+   * to be driven from outside the loop instead -- a timeout, a request
+   * cancellation, tearing down a component. See root DESIGN.md, "RULE:
+   * Abandoning a stream must release it".
    */
   async *watch(
     options?: WatchOptions,

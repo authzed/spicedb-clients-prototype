@@ -50,7 +50,9 @@
 
 - **2026-08-15**: The 5 streaming methods (`readRelationships`, `lookupResources`,
   `lookupSubjects`, `exportRelationships`, `updates`) now retry stream/page
-  **ESTABLISHMENT** on transient errors (`{UNAVAILABLE, RESOURCE_EXHAUSTED, ABORTED}`),
+  **ESTABLISHMENT** on transient errors (as shipped, `{UNAVAILABLE, ABORTED}`;
+  `RESOURCE_EXHAUSTED` was in that set when this landed and was removed by the
+  2026-08-18 retry-safety entry below),
   reusing the same backoff and `MAX_RETRIES` budget as unary calls (reset per page for
   the paginated methods; per-stream for `lookupSubjects`/`updates`, which have no
   cursor). A transient error is retried ONLY while nothing has been read yet from the
@@ -77,6 +79,56 @@
   ```
 
 ### Breaking Changes
+
+- **2026-08-18** (behavioral; no signature change): the two entries below change what existing,
+  unmodified call sites do. They are listed here because neither announces itself -- nothing
+  fails to compile, and the difference only shows up under load or against a slow query.
+  - **Unary calls are now bounded by a 30-second default** -- see "Call deadlines" in this
+    release. A call that legitimately takes longer than 30 s (most plausibly a deep
+    `expandPermissionTree` on a large graph, or a filtered delete sweeping many pages) now fails
+    with a deadline error where it previously ran to completion. Raise it with
+    `SpiceDBClient.builder(...).defaultTimeout(Duration)`, or pass `Duration timeout` on the
+    individual call. There is deliberately no way to ask for no bound at all on a unary call.
+  - **Mutations are no longer retried automatically** -- see "Retry safety" in this release.
+    `writeRelationships`, `deleteRelationships`, `writeSchema`, `importRelationships`, and the
+    experimental counter register/unregister calls now surface a transient `UNAVAILABLE` to the
+    caller on the first attempt rather than retrying. This is the correct default (replaying a
+    non-idempotent write can report failure for a write that in fact committed), but a caller who
+    was relying on the client to ride out a rolling restart must now retry themselves, knowing
+    their own idempotency. Reads are unaffected. `RESOURCE_EXHAUSTED` is no longer retried either,
+    on reads or mutations.
+
+- **2026-08-18**: Watch resumability. `updates` previously dropped
+  `WatchResponse.changes_through` entirely and had no way to request
+  `WATCH_KIND_INCLUDE_CHECKPOINTS`.
+  - **Breaking**: `updates(List<String> objectTypes, String startRevision)` now returns
+    `Stream<SpiceDBClient.WatchEvent>` instead of `Stream<SpiceDBClient.Update>`, and yields
+    once per server response (a batch of updates) rather than flattening to one item per
+    relationship update — a checkpoint response carries zero updates, so a per-update-only
+    stream has no way to surface one at all.
+
+    ```java
+    public record WatchEvent(List<Update> updates, String changesThrough, boolean isCheckpoint) {}
+    ```
+  - `WatchEvent.changesThrough` is the proto's `changes_through` -- "This token can be used in
+    a subsequent WatchRequest to resume watching from this point." Without it, a consumer whose
+    stream dropped could only restart from its original `startRevision` (reprocessing
+    everything since, possibly past the GC window) or from head (silently losing every change
+    in the gap).
+  - New overload `updates(List<String> objectTypes, String startRevision, boolean
+    includeCheckpoints)` requests `WATCH_KIND_INCLUDE_CHECKPOINTS` (plus
+    `WATCH_KIND_INCLUDE_RELATIONSHIP_UPDATES`, since `optionalUpdateKinds` is
+    empty-means-default and a non-empty list replaces rather than extends it) -- no prior way
+    existed to ask for this at all. `WatchEvent.isCheckpoint` lets a caller tell "nothing
+    changed, here is a fresh resume point" from "here are changes". Recommended if this
+    SpiceDB instance is running behind a proxy that aborts idle connections.
+  - `examples/watch_changes/` (`WatchChangesTest`) updated for the new `WatchEvent` shape and
+    extended with a checkpoint-request test. New `lib/src/test/.../WatchResumabilityTest.java`:
+    a watch event exposes a usable resume token, `includeCheckpoints` reaches the built
+    `WatchRequest`, and a checkpoint event is distinguishable from one carrying updates.
+    `WatchUpdateMappingTest`, `StreamCancellationTest`, `StreamingErrorMappingTest`, and
+    `StreamEstablishmentRetryTest`'s watch cases updated for the new return type without
+    weakening any existing assertion.
 
 - **2026-08-17**: `checkPermission` now returns `CheckResult` instead of `boolean`, and `checkPermissions` now returns `List<CheckResult>` instead of `List<Boolean>`. This client is unreleased, so there is no deprecated boolean-returning overload — callers must migrate to `hasPermission()`. `checkAny`/`checkAll` are unchanged in shape.
 
@@ -162,37 +214,6 @@
   page" meant "drain the entire export." `exportRelationships` now pulls exactly one response
   message per internal refill, mirroring `updates`' single-message-at-a-time model, so the first
   relationship is available as soon as the first response message arrives.
-- **2026-08-18**: Watch resumability. `updates` previously dropped
-  `WatchResponse.changes_through` entirely and had no way to request
-  `WATCH_KIND_INCLUDE_CHECKPOINTS`.
-  - **Breaking**: `updates(List<String> objectTypes, String startRevision)` now returns
-    `Stream<SpiceDBClient.WatchEvent>` instead of `Stream<SpiceDBClient.Update>`, and yields
-    once per server response (a batch of updates) rather than flattening to one item per
-    relationship update — a checkpoint response carries zero updates, so a per-update-only
-    stream has no way to surface one at all.
-
-    ```java
-    public record WatchEvent(List<Update> updates, String changesThrough, boolean isCheckpoint) {}
-    ```
-  - `WatchEvent.changesThrough` is the proto's `changes_through` -- "This token can be used in
-    a subsequent WatchRequest to resume watching from this point." Without it, a consumer whose
-    stream dropped could only restart from its original `startRevision` (reprocessing
-    everything since, possibly past the GC window) or from head (silently losing every change
-    in the gap).
-  - New overload `updates(List<String> objectTypes, String startRevision, boolean
-    includeCheckpoints)` requests `WATCH_KIND_INCLUDE_CHECKPOINTS` (plus
-    `WATCH_KIND_INCLUDE_RELATIONSHIP_UPDATES`, since `optionalUpdateKinds` is
-    empty-means-default and a non-empty list replaces rather than extends it) -- no prior way
-    existed to ask for this at all. `WatchEvent.isCheckpoint` lets a caller tell "nothing
-    changed, here is a fresh resume point" from "here are changes". Recommended if this
-    SpiceDB instance is running behind a proxy that aborts idle connections.
-  - `examples/watch_changes/` (`WatchChangesTest`) updated for the new `WatchEvent` shape and
-    extended with a checkpoint-request test. New `lib/src/test/.../WatchResumabilityTest.java`:
-    a watch event exposes a usable resume token, `includeCheckpoints` reaches the built
-    `WatchRequest`, and a checkpoint event is distinguishable from one carrying updates.
-    `WatchUpdateMappingTest`, `StreamCancellationTest`, `StreamingErrorMappingTest`, and
-    `StreamEstablishmentRetryTest`'s watch cases updated for the new return type without
-    weakening any existing assertion.
 - **2026-08-18**: Call deadlines, per root `DESIGN.md` "RULE: A unary call must have a
   deadline". Previously no method accepted a timeout and no client-level default existed, so a
   SpiceDB instance that accepted a connection but never answered hung every caller forever — the

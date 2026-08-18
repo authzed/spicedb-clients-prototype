@@ -17,41 +17,6 @@
     iterator manually (`Iterator::take`/`by_ref`) instead of `Vec::chunks`, so only one batch
     (1,000 relationships) is ever held in memory at a time regardless of how the source is
     produced.
-- **Watch resumability.** `updates` previously dropped `WatchResponse.changes_through`
-  entirely and had no way to request `WATCH_KIND_INCLUDE_CHECKPOINTS` -- a prior audit's grep
-  hit on `optional_update_kinds: Vec::new()` was a false positive: that's a required
-  struct-literal field being zeroed, not a feature.
-  - **Breaking:** `updates(&self, object_types, start_revision, include_checkpoints)` now
-    returns `impl Stream<Item = Result<WatchEvent, SpiceDBError>>` instead of
-    `impl Stream<Item = Result<Update, SpiceDBError>>`, gains a new `include_checkpoints: bool`
-    parameter, and yields once per server response (a batch of updates) rather than flattening
-    to one item per relationship update — a checkpoint response carries zero updates, so a
-    per-update-only stream has no way to surface one at all.
-
-    ```rust
-    pub struct WatchEvent {
-        pub updates: Vec<Update>,
-        pub changes_through: String, // resume token; pass as start_revision to resume after a dropped stream
-        pub is_checkpoint: bool,     // true for a checkpoint event, which carries no updates
-    }
-    ```
-  - `WatchEvent::changes_through` is the proto's `changes_through` -- "This token can be used
-    in a subsequent WatchRequest to resume watching from this point." Without it, a consumer
-    whose stream dropped could only restart from its original `start_revision` (reprocessing
-    everything since, possibly past the GC window) or from head (silently losing every change
-    in the gap).
-  - `include_checkpoints: true` requests `WATCH_KIND_INCLUDE_CHECKPOINTS` (plus
-    `WATCH_KIND_INCLUDE_RELATIONSHIP_UPDATES`, since `optional_update_kinds` is
-    empty-means-default and a non-empty list replaces rather than extends it) -- no prior way
-    existed to ask for this at all. `WatchEvent::is_checkpoint` lets a caller tell "nothing
-    changed, here is a fresh resume point" from "here are changes".
-  - `examples/watch_changes.rs` updated for the new `WatchEvent` shape and to request
-    checkpoints. `tests/support/mod.rs`'s `MockWatchService` gained a `requests()` accessor so
-    tests can assert on the `WatchRequest` actually received, not just that the call
-    succeeded. New tests in `tests/watch_test.rs`: a watch event exposes a usable resume
-    token, `include_checkpoints` reaches the built `WatchRequest`, and a checkpoint event is
-    distinguishable from one carrying updates. The three pre-existing behavioral tests updated
-    for the new `WatchEvent` return type without weakening any existing assertion.
 - **Call deadlines, per root `DESIGN.md` "RULE: A unary call must have a deadline".**
   Previously no method accepted a timeout and no client-level default existed, so a SpiceDB
   instance that accepted a connection but never answered hung every caller forever — the
@@ -299,12 +264,17 @@
   was only recognized via the `Status { code, .. }` match arm, which stopped
   matching once `from_grpc_status` started returning the dedicated
   `ResourceExhausted` variant for that code; without the fix, rate-limited
-  calls would have silently stopped retrying.
+  calls would have silently stopped retrying. As shipped they do not retry at
+  all -- the 2026-08-18 retry-safety entry above removed `RESOURCE_EXHAUSTED`
+  from the retryable set on purpose, which supersedes this paragraph's
+  reasoning.
 
 
 - **Delete page size correction**: `DEFAULT_DELETE_PAGE_SIZE` is now 1,000 (matching SpiceDB's default `--max-delete-relationships-limit`, so the default `delete_relationships` call works against a stock server), not 10,000 — the earlier "10,000" correction in this file was itself wrong
 - **Standardized the retryable gRPC code set to `{UNAVAILABLE, RESOURCE_EXHAUSTED,
-  ABORTED}`**, aligning with the other idiomatic clients. `DEADLINE_EXCEEDED` is no
+  ABORTED}`**, aligning with the other idiomatic clients. The shipped set is
+  `{UNAVAILABLE, ABORTED}`: the 2026-08-18 retry-safety entry above removed
+  `RESOURCE_EXHAUSTED` from it, across every client. `DEADLINE_EXCEEDED` is no
   longer treated as transient/retried — a deadline is a caller-set budget, and
   retrying past it silently extends an operation beyond the time the caller
   asked for. `ABORTED` (e.g. optimistic-concurrency/transaction conflicts) is
@@ -403,6 +373,60 @@
   relationship in one call for single-shot, all-or-nothing semantics.
 
 ### Breaking changes
+
+- **2026-08-18** (behavioral; no signature change): the two entries below change what existing,
+  unmodified call sites do. They are listed here because neither announces itself -- nothing
+  fails to compile, and the difference only shows up under load or against a slow query.
+  - **Unary calls are now bounded by a 30-second default** -- see "Call deadlines" in this
+    release. A call that legitimately takes longer than 30 s (most plausibly a deep
+    `expand_permission_tree` on a large graph, or a filtered delete sweeping many pages) now fails
+    with a deadline error where it previously ran to completion. Raise it with
+    `SpiceDBClient::builder(...).default_timeout(Duration)`, or pass `_with_timeout` on the
+    individual call. There is deliberately no way to ask for no bound at all on a unary call.
+  - **Mutations are no longer retried automatically** -- see "Retry safety" in this release.
+    `write`, `delete_relationships`, `write_schema`, `import_relationships`, and the experimental
+    counter register/unregister calls now surface a transient `UNAVAILABLE` to the caller on the
+    first attempt rather than retrying. This is the correct default (replaying a non-idempotent
+    write can report failure for a write that in fact committed), but a caller who was relying on
+    the client to ride out a rolling restart must now retry themselves, knowing their own
+    idempotency. Reads are unaffected. `RESOURCE_EXHAUSTED` is no longer retried either, on reads
+    or mutations.
+
+- **Watch resumability.** `updates` previously dropped `WatchResponse.changes_through`
+  entirely and had no way to request `WATCH_KIND_INCLUDE_CHECKPOINTS` -- a prior audit's grep
+  hit on `optional_update_kinds: Vec::new()` was a false positive: that's a required
+  struct-literal field being zeroed, not a feature.
+  - **Breaking:** `updates(&self, object_types, start_revision, include_checkpoints)` now
+    returns `impl Stream<Item = Result<WatchEvent, SpiceDBError>>` instead of
+    `impl Stream<Item = Result<Update, SpiceDBError>>`, gains a new `include_checkpoints: bool`
+    parameter, and yields once per server response (a batch of updates) rather than flattening
+    to one item per relationship update — a checkpoint response carries zero updates, so a
+    per-update-only stream has no way to surface one at all.
+
+    ```rust
+    pub struct WatchEvent {
+        pub updates: Vec<Update>,
+        pub changes_through: String, // resume token; pass as start_revision to resume after a dropped stream
+        pub is_checkpoint: bool,     // true for a checkpoint event, which carries no updates
+    }
+    ```
+  - `WatchEvent::changes_through` is the proto's `changes_through` -- "This token can be used
+    in a subsequent WatchRequest to resume watching from this point." Without it, a consumer
+    whose stream dropped could only restart from its original `start_revision` (reprocessing
+    everything since, possibly past the GC window) or from head (silently losing every change
+    in the gap).
+  - `include_checkpoints: true` requests `WATCH_KIND_INCLUDE_CHECKPOINTS` (plus
+    `WATCH_KIND_INCLUDE_RELATIONSHIP_UPDATES`, since `optional_update_kinds` is
+    empty-means-default and a non-empty list replaces rather than extends it) -- no prior way
+    existed to ask for this at all. `WatchEvent::is_checkpoint` lets a caller tell "nothing
+    changed, here is a fresh resume point" from "here are changes".
+  - `examples/watch_changes.rs` updated for the new `WatchEvent` shape and to request
+    checkpoints. `tests/support/mod.rs`'s `MockWatchService` gained a `requests()` accessor so
+    tests can assert on the `WatchRequest` actually received, not just that the call
+    succeeded. New tests in `tests/watch_test.rs`: a watch event exposes a usable resume
+    token, `include_checkpoints` reaches the built `WatchRequest`, and a checkpoint event is
+    distinguishable from one carrying updates. The three pre-existing behavioral tests updated
+    for the new `WatchEvent` return type without weakening any existing assertion.
 
 - **`check_permission` and `check_permissions` now return `CheckResult`/`Vec<CheckResult>`
   instead of `bool`/`Vec<bool>`.** `CheckPermissionResponse.permissionship` is

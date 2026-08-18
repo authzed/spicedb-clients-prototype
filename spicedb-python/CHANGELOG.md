@@ -70,10 +70,11 @@
   only seven of nine gRPC status codes, falling through to the generic
   `SpiceDBError` for `DEADLINE_EXCEEDED`/`RESOURCE_EXHAUSTED`). Both are
   exported from `spicedb` and included in `spicedb.__all__`.
-  `is_transient()`'s typed-instance fallback (used when checking whether an
-  already-converted error is worth retrying, as opposed to a raw
-  `grpc.RpcError`) now also recognizes `ResourceExhaustedError`, matching
-  this client's other typed-error retry behavior.
+  This entry also made `is_transient()`'s typed-instance fallback recognize
+  `ResourceExhaustedError`; the 2026-08-18 retry-safety entry below reversed
+  that, and the shipped `is_transient()` does not treat `RESOURCE_EXHAUSTED`
+  as retryable in either form. The error *type* remains, and is still what a
+  rate-limited call raises -- only its retryability changed.
 - `LookupResource`/`LookupSubject` gained `looked_up_at: str` — the revision
   a `lookup_resources()`/`lookup_subjects()` result was computed at
   (`LookupResourcesResponse`/`LookupSubjectsResponse.looked_up_at`),
@@ -298,7 +299,9 @@
   explains the constraint, instead of an opaque low-level gRPC failure.
 - `read_relationships()`, `lookup_resources()`, `lookup_subjects()`,
   `watch()`, and `export_relationships()` now retry a transient gRPC error
-  (`UNAVAILABLE`/`RESOURCE_EXHAUSTED`/`ABORTED`) that occurs while
+  (as shipped, `UNAVAILABLE`/`ABORTED`; `RESOURCE_EXHAUSTED` was in that set
+  when this landed and was removed by the 2026-08-18 retry-safety entry
+  below) that occurs while
   ESTABLISHING the stream (or, for the paginated methods, a page), using the
   same exponential backoff as `_with_retry`. Previously these streaming RPCs
   re-raised immediately on any transient error, even when it happened before
@@ -326,6 +329,24 @@
   functions which were already exported.
 
 ### Breaking
+
+- **2026-08-18** (behavioral; no signature change): the two entries below change what existing,
+  unmodified call sites do. They are listed here because neither announces itself -- nothing
+  fails to compile, and the difference only shows up under load or against a slow query.
+  - **Unary calls are now bounded by a 30-second default** -- see "Call deadlines" in this
+    release. A call that legitimately takes longer than 30 s (most plausibly a deep
+    `expand_permission_tree` on a large graph, or a filtered delete sweeping many pages) now fails
+    with a deadline error where it previously ran to completion. Raise it with `SpiceDBClient(...,
+    default_timeout=)`, or pass `timeout=` on the individual call. There is deliberately no way to
+    ask for no bound at all on a unary call.
+  - **Mutations are no longer retried automatically** -- see "Retry safety" in this release.
+    `write`, `delete_relationships`, `write_schema`, `import_relationships`, and the experimental
+    counter register/unregister calls (both flavors) now surface a transient `UNAVAILABLE` to the
+    caller on the first attempt rather than retrying. This is the correct default (replaying a
+    non-idempotent write can report failure for a write that in fact committed), but a caller who
+    was relying on the client to ride out a rolling restart must now retry themselves, knowing
+    their own idempotency. Reads are unaffected. `RESOURCE_EXHAUSTED` is no longer retried either,
+    on reads or mutations.
 
 - **2026-08-18**: Watch resumability. `watch()` (both flavors) now yields a
   `WatchEvent` dataclass instead of a bare `(updates, revision)` tuple, and

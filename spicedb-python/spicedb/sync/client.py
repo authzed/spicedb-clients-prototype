@@ -72,8 +72,21 @@ those are long-lived by design, and applying this default to them would make
 the stream itself the outage -- NOR to the client-streaming
 `import_relationships`, whose duration scales with the size of the caller's
 dataset rather than server latency, so no fixed default is correct for it
-either (see DESIGN.md, "Streaming calls MUST NOT inherit the unary
-default"). All of these still accept their own per-call `timeout=`.
+either. See root DESIGN.md, "RULE: A unary call must have a deadline",
+clause 3.
+
+What those two shapes get instead differs, and only one of them takes a
+`timeout=`:
+
+- The server-streaming calls take NO `timeout=` at all. A deadline is the
+  wrong bound for a stream whose correct duration is "as long as the caller
+  keeps consuming" -- any value would eventually fire mid-stream and look
+  like a server fault. They are bounded by cancellation instead: stop
+  consuming, and the generator's `finally` cancels the call (see DESIGN.md,
+  "Stream lifecycle").
+- `import_relationships` DOES take `timeout=`, since it is the caller's own
+  upload and the caller is the one who knows the volume. It is opt-in and
+  unbounded by default.
 """
 
 

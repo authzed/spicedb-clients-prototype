@@ -93,6 +93,7 @@ pub struct MockWatchService {
     fail_establish_times: usize,
     fail_establish_status: Status,
     establish_calls: Arc<AtomicUsize>,
+    requests: Arc<Mutex<Vec<proto::WatchRequest>>>,
 }
 
 impl MockWatchService {
@@ -107,7 +108,17 @@ impl MockWatchService {
             fail_establish_times: 0,
             fail_establish_status: Status::unavailable("unused"),
             establish_calls: Arc::new(AtomicUsize::new(0)),
+            requests: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    /// Returns a live handle to the full `WatchRequest` received on each
+    /// `Watch` call, in call order -- lets tests assert on what the client
+    /// actually put on the wire (e.g. `optional_update_kinds`), not just
+    /// that the call succeeded. Grab this *before* moving the mock into
+    /// [`spawn_watch_server`].
+    pub fn requests(&self) -> Arc<Mutex<Vec<proto::WatchRequest>>> {
+        self.requests.clone()
     }
 
     /// Makes the first `times` `Watch` calls fail immediately with `status`
@@ -133,8 +144,9 @@ impl WatchService for MockWatchService {
 
     async fn watch(
         &self,
-        _request: Request<proto::WatchRequest>,
+        request: Request<proto::WatchRequest>,
     ) -> Result<Response<Self::WatchStream>, Status> {
+        self.requests.lock().unwrap().push(request.into_inner());
         let call_index = self.establish_calls.fetch_add(1, Ordering::SeqCst);
         if call_index < self.fail_establish_times {
             return Err(self.fail_establish_status.clone());

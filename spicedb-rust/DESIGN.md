@@ -469,7 +469,18 @@ tonic's own client-side timeout enforcement (`tonic::transport::Channel`'s
 - `export_relationships(&self, cs, filter) -> impl Stream<Item = Result<Relationship, SpiceDBError>>`
 
 **Watch:**
-- `updates(&self, object_types, start_revision) -> impl Stream<Item = Result<Update, SpiceDBError>>`
+- `updates(&self, object_types, start_revision, include_checkpoints) -> impl Stream<Item = Result<WatchEvent, SpiceDBError>>`
+  — `include_checkpoints` requests `WATCH_KIND_INCLUDE_CHECKPOINTS` (recommended behind a
+  proxy that aborts idle connections, since a checkpoint keeps the stream alive with no
+  changes to report)
+
+`WatchEvent { updates: Vec<Update>, changes_through: String, is_checkpoint: bool }` is one
+event per `WatchResponse`. `changes_through` is always populated -- proto: "This token can be
+used in a subsequent WatchRequest to resume watching from this point" -- pass it as
+`start_revision` to resume after a dropped stream instead of restarting from the original
+`start_revision` (reprocessing, possibly past the GC window) or from head (silently losing
+every change in the gap). `is_checkpoint` is true for a checkpoint event, which carries no
+`updates`.
 
 **Experimental:**
 - `experimental_register_relationship_counter(&self, name, &filter) -> Result<(), SpiceDBError>`

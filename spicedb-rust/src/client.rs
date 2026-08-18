@@ -23,7 +23,7 @@ use crate::types::{
     LookupResource, LookupSubject, Permissionship, Precondition, PreconditionOperation,
     ReflectSchemaResult, RelationReference, Relationship, ResolvedSubject, SchemaCaveat,
     SchemaCaveatParameter, SchemaDefinition, SchemaDiff, SchemaPermission, SchemaRelation,
-    Transaction, Update, UpdateOperation,
+    Transaction, Update, UpdateOperation, WatchEvent,
 };
 
 use futures::Stream;
@@ -1519,10 +1519,12 @@ impl SpiceDBClient {
     // Watch
     // -----------------------------------------------------------------------
 
-    /// Returns a stream of relationship changes from SpiceDB's watch API,
-    /// starting from the given revision.
+    /// Returns a stream of watch events from SpiceDB's watch API, starting
+    /// from the given revision. Each yielded [`WatchEvent`] corresponds to
+    /// one server response: zero or more relationship updates, all current
+    /// through [`WatchEvent::changes_through`].
     ///
-    /// Watch is an open-ended server stream: updates are yielded incrementally,
+    /// Watch is an open-ended server stream: events are yielded incrementally,
     /// as they occur, and the stream stays open indefinitely (until the caller
     /// drops it or the connection fails). Consume it with
     /// [`StreamExt::next`](futures::StreamExt::next):
@@ -1531,23 +1533,35 @@ impl SpiceDBClient {
     /// # use futures::StreamExt;
     /// # async fn demo(client: spicedb::client::SpiceDBClient) -> Result<(), spicedb::error::SpiceDBError> {
     /// let object_types = vec!["document".to_string()];
-    /// let stream = client.updates(&object_types, None);
+    /// let stream = client.updates(&object_types, None, false);
     /// tokio::pin!(stream);
-    /// while let Some(update) = stream.next().await {
-    ///     let update = update?;
-    ///     // handle update.operation / update.relationship
+    /// while let Some(event) = stream.next().await {
+    ///     let event = event?;
+    ///     for update in &event.updates {
+    ///         // handle update.operation / update.relationship
+    ///     }
     /// }
     /// # Ok(())
     /// # }
     /// ```
     ///
-    /// Each yielded [`Update`] contains the operation (create/touch/delete)
-    /// and the affected relationship.
+    /// [`WatchEvent::changes_through`] is always populated -- pass it as
+    /// `start_revision` on a later call to resume after a dropped stream,
+    /// instead of restarting from the original `start_revision`
+    /// (reprocessing everything since, possibly past the GC window) or from
+    /// head (silently losing every change in the gap).
+    ///
+    /// `include_checkpoints` requests periodic checkpoint events
+    /// ([`WatchEvent::is_checkpoint`], no updates) in addition to
+    /// relationship updates. Recommended if this SpiceDB instance is
+    /// running behind a proxy that aborts idle connections, since a
+    /// checkpoint keeps the stream alive even when there are no changes.
     pub fn updates(
         &self,
         object_types: &[String],
         start_revision: Option<&str>,
-    ) -> impl Stream<Item = Result<Update, SpiceDBError>> + 'static {
+        include_checkpoints: bool,
+    ) -> impl Stream<Item = Result<WatchEvent, SpiceDBError>> + 'static {
         // Build the request and clone the watch client up front so the returned
         // stream owns everything it needs and borrows nothing from `self` or the
         // arguments (it is therefore `'static`).
@@ -1562,6 +1576,16 @@ impl SpiceDBClient {
                 token: rev.to_string(),
             });
         }
+        if include_checkpoints {
+            // optional_update_kinds is empty-means-default (relationship updates only, for
+            // backwards compatibility) -- a non-empty list is the exact set requested, so
+            // asking for checkpoints must also spell out relationship updates or the server
+            // would stop sending them.
+            req.optional_update_kinds = vec![
+                proto::WatchKind::IncludeRelationshipUpdates as i32,
+                proto::WatchKind::IncludeCheckpoints as i32,
+            ];
+        }
         let watch = self.proto.watch.clone();
 
         async_stream::try_stream! {
@@ -1574,6 +1598,7 @@ impl SpiceDBClient {
                 .await
                 .map_err(|s| error::from_grpc_status(s.code() as i32, s.message().to_string()))?
             {
+                let mut updates = Vec::with_capacity(resp.updates.len());
                 for update in &resp.updates {
                     // Server-supplied data: an unrecognized operation
                     // (OPERATION_UNSPECIFIED, or a future wire value added after this
@@ -1581,9 +1606,10 @@ impl SpiceDBClient {
                     // Root DESIGN.md, "RULE: A conversion that cannot preserve meaning
                     // must fail", clause 2: server-supplied values the client does not
                     // recognise MUST NOT raise, and MUST map to the safe, non-permissive
-                    // default. `continue` here silently swallowed the whole event, so a
-                    // consumer mirroring the stream would miss a change it had no way to
-                    // learn about -- worse than a mapping it can inspect and act on.
+                    // default. Dropping the update here would silently swallow the whole
+                    // event, so a consumer mirroring the stream would miss a change it had
+                    // no way to learn about -- worse than a mapping it can inspect and act
+                    // on.
                     let operation = match update.operation {
                         x if x == proto::relationship_update::Operation::Create as i32 => {
                             UpdateOperation::Create
@@ -1597,12 +1623,17 @@ impl SpiceDBClient {
                         _ => UpdateOperation::Unspecified,
                     };
                     if let Some(rel) = &update.relationship {
-                        yield Update {
+                        updates.push(Update {
                             operation,
                             relationship: Relationship::from_proto(rel),
-                        };
+                        });
                     }
                 }
+                yield WatchEvent {
+                    updates,
+                    changes_through: resp.changes_through.map(|z| z.token).unwrap_or_default(),
+                    is_checkpoint: resp.is_checkpoint,
+                };
             }
         }
     }

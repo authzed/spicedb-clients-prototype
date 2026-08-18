@@ -451,6 +451,28 @@ pub struct Update {
     pub relationship: Relationship,
 }
 
+/// A single event from [`SpiceDBClient::updates`](crate::client::SpiceDBClient::updates),
+/// corresponding to one `WatchResponse` from the server.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct WatchEvent {
+    pub updates: Vec<Update>,
+    /// The point in time this event is current through. Always populated.
+    /// Proto: "the ZedToken that represents the point in time that the
+    /// watch response is current through. This token can be used in a
+    /// subsequent WatchRequest to resume watching from this point." Pass it
+    /// as `start_revision` to a later `updates` call to resume after a
+    /// dropped stream, instead of restarting from the original
+    /// `start_revision` (reprocessing everything since, possibly past the
+    /// GC window) or from head (silently losing every change in the gap).
+    pub changes_through: String,
+    /// True for a checkpoint event, which carries no [`updates`](Self::updates) -- it
+    /// exists only to advertise a fresh [`changes_through`](Self::changes_through) and,
+    /// behind a proxy that aborts idle connections, to keep the stream
+    /// alive. Checkpoints are only sent when `include_checkpoints` is
+    /// passed to `updates`.
+    pub is_checkpoint: bool,
+}
+
 /// A transaction builder for batching relationship writes.
 ///
 /// Transactions take `&Relationship` (borrow) rather than moving the

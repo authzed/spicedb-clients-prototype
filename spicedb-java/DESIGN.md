@@ -227,6 +227,34 @@ Unchecked exceptions extending `RuntimeException`:
 to typed exceptions. Transient errors (UNAVAILABLE, RESOURCE_EXHAUSTED, ABORTED)
 are retried with exponential backoff.
 
+### Deadlines
+
+Every unary method has an overload taking a trailing `Duration timeout`
+(`deleteRelationships` instead reads `DeleteOptions.withTimeout(Duration)`),
+mirroring the existing `checkPermission(..., Map<String, Object> context)`
+overload convention. The timeout is applied via grpc-java's
+`stub.withDeadlineAfter(millis, TimeUnit.MILLISECONDS)`, called fresh on
+each retry attempt so a retried call gets a full new window per attempt.
+`SpiceDBClient.createPlaintext`/`createSystemTls`/`create` all gained a
+`Duration defaultTimeout` overload, applied to any unary call that doesn't
+pass its own `timeout` — both default to `SpiceDBClient.DEFAULT_TIMEOUT`
+(30s), mirroring `authzed-node`'s `DEFAULT_DEADLINE_MS = 30_000` (its
+comment cites `grpc/grpc-node#541`). See root DESIGN.md, "RULE: A unary
+call must have a deadline".
+
+```java
+try (var client = SpiceDBClient.createPlaintext("localhost:50051", "token", Duration.ofSeconds(5))) {
+    CheckResult r = client.checkPermission(Consistency.full(), "view", rel);                         // bound by the 5s default
+    CheckResult r2 = client.checkPermission(Consistency.full(), "view", rel, Duration.ofSeconds(1));  // overrides it
+}
+```
+
+Streaming methods (`readRelationships`, `lookupResources`, `lookupSubjects`,
+`updates`, `exportRelationships`) take no `timeout` overload and are NOT
+bound by `defaultTimeout` — they are long-lived by design (`updates` may
+run for the life of the process), and applying the unary default to them
+would make the stream itself the outage.
+
 ### Performance
 
 - BulkCheck for all check operations (even single)

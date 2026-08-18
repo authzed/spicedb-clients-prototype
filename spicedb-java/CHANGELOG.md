@@ -150,6 +150,44 @@
 
 ### Fixes
 
+- **2026-08-18**: Call deadlines, per root `DESIGN.md` "RULE: A unary call must have a
+  deadline". Previously no method accepted a timeout and no client-level default existed, so a
+  SpiceDB instance that accepted a connection but never answered hung every caller forever — the
+  connection looks fine at the transport level, so no error is produced and there is nothing for
+  retry logic to act on.
+  - Every unary method gained an overload taking a trailing `Duration timeout` (e.g.
+    `checkPermission(consistency, permission, r, timeout)`, `write(txn, timeout)`,
+    `readSchema(timeout)`), mirroring the existing `checkPermission(..., Map<String, Object>
+    context)` overload convention. `deleteRelationships` instead reads a new
+    `DeleteOptions.withTimeout(Duration)`. Additive — existing call sites are unaffected. Applied
+    via grpc-java's `stub.withDeadlineAfter(millis, TimeUnit.MILLISECONDS)`, called fresh on each
+    retry attempt.
+  - `SpiceDBClient.createPlaintext`/`createSystemTls`/`create` all gained a `Duration
+    defaultTimeout` overload, applied to any unary call that doesn't pass its own `timeout`. New
+    public `SpiceDBClient.DEFAULT_TIMEOUT = Duration.ofSeconds(30)` mirrors `authzed-node`'s
+    `DEFAULT_DEADLINE_MS = 30_000` (its comment cites `grpc/grpc-node#541`). There is deliberately
+    no way to construct a client whose unary calls have no bound at all.
+  - Streaming methods (`readRelationships`, `lookupResources`, `lookupSubjects`, `updates`,
+    `exportRelationships`) gained **no** `timeout` overload and are **not** bound by
+    `defaultTimeout` — DESIGN.md's "Streaming calls MUST NOT inherit the unary default": these
+    are long-lived by design (`updates` may legitimately run for the life of the process), and a
+    30s cutoff would end a legitimate stream, which is a worse defect than the one this change
+    fixes.
+  - `DeadlineExceededException` (added earlier, but never actually produced by this client since
+    nothing enforced a deadline) is now reachable: a timed-out call throws it, not a generic
+    `SpiceDBException`. `Status.Code.DEADLINE_EXCEEDED` was already excluded from
+    `ErrorMapper.TRANSIENT_CODES`, so a timeout is never auto-retried.
+  - New `DeadlineTest`, against a real in-process gRPC server (grpc-java's in-process transport,
+    same style as the existing `TestServers` harness) whose handlers deliberately stall: a unary
+    call against a stub that never responds throws `DeadlineExceededException` well before the
+    stall completes (not a hang), a per-call `timeout` overrides a much larger client default,
+    and a streaming call outlives a tiny unary default instead of inheriting it. Every call is
+    run on a background thread and joined with a bounded `Future.get(...)`, so a regression fails
+    the suite instead of hanging CI.
+  - `spicedb-gen`'s Java typed-client template needed no change: its generated `check()`/
+    `touch()`/`create()`/`delete()` already call the pre-existing (unchanged) overloads, so
+    generated clients continue to compile unmodified and inherit the new client-level default
+    automatically.
 - **2026-08-18**: Retry safety, per root `DESIGN.md` "RULE: Automatic retry is for idempotent
   operations only". Three changes:
   - `RESOURCE_EXHAUSTED` is no longer retried. In SpiceDB it signals memory load-shed (retrying

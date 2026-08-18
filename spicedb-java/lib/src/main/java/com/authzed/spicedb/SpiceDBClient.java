@@ -12,6 +12,7 @@ import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.stub.MetadataUtils;
 import io.grpc.stub.StreamObserver;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ThreadLocalRandom;
@@ -47,15 +48,39 @@ public final class SpiceDBClient implements AutoCloseable {
   private static final int MAX_RETRIES = 4;
   private static final long INITIAL_BACKOFF_MS = 100;
 
+  /**
+   * Applied to every unary call that does not pass its own {@code timeout} override.
+   *
+   * <p>Mirrors {@code authzed-node}'s {@code DEFAULT_DEADLINE_MS = 30_000} (its comment cites
+   * {@code grpc/grpc-node#541}, a known gRPC failure mode where a channel that accepts a
+   * connection but never answers produces no error at all). Without a finite default, a wedged
+   * SpiceDB hangs every caller that didn't opt in to a timeout -- in practice, most callers --
+   * forever: the connection looks fine at the transport level, so nothing ever times out and
+   * nothing is ever produced to retry. See root DESIGN.md, "RULE: A unary call must have a
+   * deadline".
+   *
+   * <p>Deliberately NOT applied to streaming calls ({@link #readRelationships}, {@link
+   * #lookupResources}, {@link #lookupSubjects}, {@link #updates}, {@link #exportRelationships}) --
+   * those are long-lived by design, and applying this default to them would make the stream
+   * itself the outage (see DESIGN.md, "Streaming calls MUST NOT inherit the unary default").
+   */
+  public static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(30);
+
   private final ManagedChannel channel;
   private final PermissionsServiceGrpc.PermissionsServiceBlockingStub permissionsStub;
   private final SchemaServiceGrpc.SchemaServiceBlockingStub schemaStub;
   private final WatchServiceGrpc.WatchServiceBlockingStub watchStub;
   private final ExperimentalServiceGrpc.ExperimentalServiceBlockingStub experimentalStub;
   private final PermissionsServiceGrpc.PermissionsServiceStub permissionsAsyncStub;
+  private final Duration defaultTimeout;
 
   private SpiceDBClient(ManagedChannel channel, Metadata metadata) {
+    this(channel, metadata, DEFAULT_TIMEOUT);
+  }
+
+  private SpiceDBClient(ManagedChannel channel, Metadata metadata, Duration defaultTimeout) {
     this.channel = channel;
+    this.defaultTimeout = defaultTimeout;
     this.permissionsStub =
         PermissionsServiceGrpc.newBlockingStub(channel)
             .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata));
@@ -78,17 +103,38 @@ public final class SpiceDBClient implements AutoCloseable {
    * of TLS is made obvious by the name.
    */
   public static SpiceDBClient createPlaintext(String endpoint, String presharedKey) {
+    return createPlaintext(endpoint, presharedKey, DEFAULT_TIMEOUT);
+  }
+
+  /**
+   * Creates a client with an insecure (plaintext) connection and a client-wide {@code
+   * defaultTimeout} applied to every unary call that doesn't pass its own {@code timeout}
+   * override (see {@link #DEFAULT_TIMEOUT}). Use this for testing only — the lack of TLS is made
+   * obvious by the name.
+   */
+  public static SpiceDBClient createPlaintext(
+      String endpoint, String presharedKey, Duration defaultTimeout) {
     ManagedChannel channel = ManagedChannelBuilder.forTarget(endpoint).usePlaintext().build();
-    return new SpiceDBClient(channel, bearerMetadata(presharedKey));
+    return new SpiceDBClient(channel, bearerMetadata(presharedKey), defaultTimeout);
   }
 
   /**
    * Creates a client using the system's TLS certificate pool. Use this for production connections.
    */
   public static SpiceDBClient createSystemTls(String endpoint, String presharedKey) {
+    return createSystemTls(endpoint, presharedKey, DEFAULT_TIMEOUT);
+  }
+
+  /**
+   * Creates a client using the system's TLS certificate pool and a client-wide {@code
+   * defaultTimeout} applied to every unary call that doesn't pass its own {@code timeout}
+   * override (see {@link #DEFAULT_TIMEOUT}). Use this for production connections.
+   */
+  public static SpiceDBClient createSystemTls(
+      String endpoint, String presharedKey, Duration defaultTimeout) {
     ManagedChannel channel =
         ManagedChannelBuilder.forTarget(endpoint).useTransportSecurity().build();
-    return new SpiceDBClient(channel, bearerMetadata(presharedKey));
+    return new SpiceDBClient(channel, bearerMetadata(presharedKey), defaultTimeout);
   }
 
   /**
@@ -104,11 +150,26 @@ public final class SpiceDBClient implements AutoCloseable {
    */
   public static SpiceDBClient create(
       String endpoint, String presharedKey, ClientOption... options) {
+    return create(endpoint, presharedKey, DEFAULT_TIMEOUT, options);
+  }
+
+  /**
+   * Creates a client with custom options and a client-wide {@code defaultTimeout} applied to
+   * every unary call that doesn't pass its own {@code timeout} override (see {@link
+   * #DEFAULT_TIMEOUT}).
+   *
+   * @param endpoint the SpiceDB endpoint
+   * @param presharedKey the bearer token
+   * @param defaultTimeout the client-wide default unary-call timeout
+   * @param options additional configuration options
+   */
+  public static SpiceDBClient create(
+      String endpoint, String presharedKey, Duration defaultTimeout, ClientOption... options) {
     var builder = ManagedChannelBuilder.forTarget(endpoint);
     for (ClientOption option : options) {
       option.apply(builder);
     }
-    return new SpiceDBClient(builder.build(), bearerMetadata(presharedKey));
+    return new SpiceDBClient(builder.build(), bearerMetadata(presharedKey), defaultTimeout);
   }
 
   /**
@@ -117,6 +178,14 @@ public final class SpiceDBClient implements AutoCloseable {
    */
   static SpiceDBClient forChannel(ManagedChannel channel) {
     return new SpiceDBClient(channel, new Metadata());
+  }
+
+  /**
+   * Test-only factory: as {@link #forChannel(ManagedChannel)}, with an explicit {@code
+   * defaultTimeout}. Package-private: not part of the public API surface.
+   */
+  static SpiceDBClient forChannel(ManagedChannel channel, Duration defaultTimeout) {
+    return new SpiceDBClient(channel, new Metadata(), defaultTimeout);
   }
 
   /** Functional option for customizing the client. */
@@ -159,6 +228,17 @@ public final class SpiceDBClient implements AutoCloseable {
   }
 
   /**
+   * As {@link #checkPermission(Consistency, String, Relationship)}, with a per-call {@code
+   * timeout} overriding the client's default (see {@link #DEFAULT_TIMEOUT}).
+   */
+  public CheckResult checkPermission(
+      Consistency consistency, String permission, Relationship r, Duration timeout) {
+    List<CheckResult> results =
+        checkPermissionsImpl(consistency, permission, null, timeout, r);
+    return results.get(0);
+  }
+
+  /**
    * Checks a single permission with a caveat CHECK-TIME {@code context}, in addition to any
    * per-item context set via {@link Relationship#withCheckContext} on {@code r} itself (item wins
    * per-key over this call-level default; see {@link #checkPermissions(Consistency, String, Map,
@@ -187,6 +267,15 @@ public final class SpiceDBClient implements AutoCloseable {
   }
 
   /**
+   * As {@link #checkPermissions(Consistency, String, Relationship...)}, with a per-call {@code
+   * timeout} overriding the client's default (see {@link #DEFAULT_TIMEOUT}).
+   */
+  public List<CheckResult> checkPermissions(
+      Consistency consistency, String permission, Duration timeout, Relationship... relationships) {
+    return checkPermissionsImpl(consistency, permission, null, timeout, relationships);
+  }
+
+  /**
    * Checks permissions for multiple relationships with a caveat CHECK-TIME {@code context} applied,
    * by default, to every relationship — plus any per-item context set via {@link
    * Relationship#withCheckContext} on individual relationships.
@@ -210,6 +299,19 @@ public final class SpiceDBClient implements AutoCloseable {
       String permission,
       Map<String, Object> context,
       Relationship... relationships) {
+    return checkPermissionsImpl(consistency, permission, context, null, relationships);
+  }
+
+  /**
+   * Shared implementation behind every {@code checkPermission(s)} overload -- request-building
+   * and response-mapping, including the call-level {@code context} merge, live here once.
+   */
+  private List<CheckResult> checkPermissionsImpl(
+      Consistency consistency,
+      String permission,
+      Map<String, Object> context,
+      Duration timeout,
+      Relationship... relationships) {
     if (relationships.length == 0) {
       return List.of();
     }
@@ -219,14 +321,17 @@ public final class SpiceDBClient implements AutoCloseable {
       items.add(checkItemFromRel(r, permission, context));
     }
 
+    long timeoutMs = effectiveTimeout(timeout).toMillis();
     CheckBulkPermissionsResponse resp =
         withRetry(
             () ->
-                permissionsStub.checkBulkPermissions(
-                    CheckBulkPermissionsRequest.newBuilder()
-                        .setConsistency(consistency.toProto())
-                        .addAllItems(items)
-                        .build()));
+                permissionsStub
+                    .withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS)
+                    .checkBulkPermissions(
+                        CheckBulkPermissionsRequest.newBuilder()
+                            .setConsistency(consistency.toProto())
+                            .addAllItems(items)
+                            .build()));
 
     // CheckBulkPermissionsResponseItem carries no per-item checked_at of its own — the token lives
     // once on the enclosing response and applies to every pair in it.
@@ -283,7 +388,21 @@ public final class SpiceDBClient implements AutoCloseable {
    */
   public boolean checkAny(
       Consistency consistency, String permission, Relationship... relationships) {
-    return checkAny(consistency, permission, null, relationships);
+    return checkAny(consistency, permission, (Map<String, Object>) null, relationships);
+  }
+
+  /**
+   * As {@link #checkAny(Consistency, String, Relationship...)}, with a per-call {@code timeout}
+   * overriding the client's default (see {@link #DEFAULT_TIMEOUT}).
+   */
+  public boolean checkAny(
+      Consistency consistency, String permission, Duration timeout, Relationship... relationships) {
+    List<CheckResult> results =
+        checkPermissionsImpl(consistency, permission, null, timeout, relationships);
+    for (CheckResult r : results) {
+      if (r.hasPermission()) return true;
+    }
+    return false;
   }
 
   /**
@@ -312,7 +431,28 @@ public final class SpiceDBClient implements AutoCloseable {
    */
   public boolean checkAll(
       Consistency consistency, String permission, Relationship... relationships) {
-    return checkAll(consistency, permission, null, relationships);
+    return checkAll(consistency, permission, (Map<String, Object>) null, relationships);
+  }
+
+  /**
+   * As {@link #checkAll(Consistency, String, Relationship...)}, with a per-call {@code timeout}
+   * overriding the client's default (see {@link #DEFAULT_TIMEOUT}).
+   *
+   * <p>Returns false, not the vacuous true a for-loop over zero relationships would fall through
+   * to, when {@code relationships} is empty (RULE: "An aggregate over zero checks is not a
+   * grant").
+   */
+  public boolean checkAll(
+      Consistency consistency, String permission, Duration timeout, Relationship... relationships) {
+    if (relationships.length == 0) {
+      return false;
+    }
+    List<CheckResult> results =
+        checkPermissionsImpl(consistency, permission, null, timeout, relationships);
+    for (CheckResult r : results) {
+      if (!r.hasPermission()) return false;
+    }
+    return true;
   }
 
   /**
@@ -350,6 +490,14 @@ public final class SpiceDBClient implements AutoCloseable {
    * write occurred.
    */
   public String write(Transaction txn) {
+    return write(txn, null);
+  }
+
+  /**
+   * As {@link #write(Transaction)}, with a per-call {@code timeout} overriding the client's
+   * default (see {@link #DEFAULT_TIMEOUT}).
+   */
+  public String write(Transaction txn, Duration timeout) {
     var reqBuilder = WriteRelationshipsRequest.newBuilder();
 
     for (Transaction.Mutation m : txn.mutations()) {
@@ -360,8 +508,13 @@ public final class SpiceDBClient implements AutoCloseable {
       reqBuilder.addOptionalPreconditions(toPrecondition(p));
     }
 
+    long timeoutMs = effectiveTimeout(timeout).toMillis();
     WriteRelationshipsResponse resp =
-        callOnce(() -> permissionsStub.writeRelationships(reqBuilder.build()));
+        callOnce(
+            () ->
+                permissionsStub
+                    .withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS)
+                    .writeRelationships(reqBuilder.build()));
     return resp.getWrittenAt().getToken();
   }
 
@@ -407,7 +560,8 @@ public final class SpiceDBClient implements AutoCloseable {
    * client.deleteRelationships(filter, options);
    * }</pre>
    */
-  public record DeleteOptions(List<Filter> mustMatch, List<Filter> mustNotMatch, Integer limit) {
+  public record DeleteOptions(
+      List<Filter> mustMatch, List<Filter> mustNotMatch, Integer limit, Duration timeout) {
 
     public DeleteOptions {
       mustMatch = mustMatch == null ? List.of() : List.copyOf(mustMatch);
@@ -422,7 +576,7 @@ public final class SpiceDBClient implements AutoCloseable {
      * #deleteRelationships(Filter)}.
      */
     public static DeleteOptions none() {
-      return new DeleteOptions(List.of(), List.of(), null);
+      return new DeleteOptions(List.of(), List.of(), null, null);
     }
 
     /**
@@ -433,7 +587,7 @@ public final class SpiceDBClient implements AutoCloseable {
     public DeleteOptions withMustMatch(Filter filter) {
       var updated = new ArrayList<>(mustMatch);
       updated.add(filter);
-      return new DeleteOptions(updated, mustNotMatch, limit);
+      return new DeleteOptions(updated, mustNotMatch, limit, timeout);
     }
 
     /**
@@ -444,12 +598,20 @@ public final class SpiceDBClient implements AutoCloseable {
     public DeleteOptions withMustNotMatch(Filter filter) {
       var updated = new ArrayList<>(mustNotMatch);
       updated.add(filter);
-      return new DeleteOptions(mustMatch, updated, limit);
+      return new DeleteOptions(mustMatch, updated, limit, timeout);
     }
 
     /** Overrides the per-request page size used by the auto-paging delete loop (default 1,000). */
     public DeleteOptions withLimit(int limit) {
-      return new DeleteOptions(mustMatch, mustNotMatch, limit);
+      return new DeleteOptions(mustMatch, mustNotMatch, limit, timeout);
+    }
+
+    /**
+     * Overrides the client's default unary-call timeout (see {@link SpiceDBClient#DEFAULT_TIMEOUT})
+     * for EACH page's call.
+     */
+    public DeleteOptions withTimeout(Duration timeout) {
+      return new DeleteOptions(mustMatch, mustNotMatch, limit, timeout);
     }
   }
 
@@ -471,19 +633,22 @@ public final class SpiceDBClient implements AutoCloseable {
               new Transaction.Precondition(Transaction.PreconditionOperation.MUST_NOT_MATCH, f)));
     }
     int pageSize = options.limit() != null ? options.limit() : DEFAULT_DELETE_PAGE_SIZE;
+    long timeoutMs = effectiveTimeout(options.timeout()).toMillis();
 
     String revision = "";
     while (true) {
       DeleteRelationshipsResponse resp =
           callOnce(
               () ->
-                  permissionsStub.deleteRelationships(
-                      DeleteRelationshipsRequest.newBuilder()
-                          .setRelationshipFilter(toRelationshipFilter(filter))
-                          .addAllOptionalPreconditions(preconditions)
-                          .setOptionalLimit(pageSize)
-                          .setOptionalAllowPartialDeletions(true)
-                          .build()));
+                  permissionsStub
+                      .withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS)
+                      .deleteRelationships(
+                          DeleteRelationshipsRequest.newBuilder()
+                              .setRelationshipFilter(toRelationshipFilter(filter))
+                              .addAllOptionalPreconditions(preconditions)
+                              .setOptionalLimit(pageSize)
+                              .setOptionalAllowPartialDeletions(true)
+                              .build()));
       revision = resp.getDeletedAt().getToken();
       if (resp.getDeletionProgress()
           == DeleteRelationshipsResponse.DeletionProgress.DELETION_PROGRESS_COMPLETE) {
@@ -648,17 +813,41 @@ public final class SpiceDBClient implements AutoCloseable {
 
   /** Returns the current SpiceDB schema. */
   public SchemaResult readSchema() {
+    return readSchema(null);
+  }
+
+  /**
+   * As {@link #readSchema()}, with a per-call {@code timeout} overriding the client's default
+   * (see {@link #DEFAULT_TIMEOUT}).
+   */
+  public SchemaResult readSchema(Duration timeout) {
+    long timeoutMs = effectiveTimeout(timeout).toMillis();
     ReadSchemaResponse resp =
-        withRetry(() -> schemaStub.readSchema(ReadSchemaRequest.getDefaultInstance()));
+        withRetry(
+            () ->
+                schemaStub
+                    .withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS)
+                    .readSchema(ReadSchemaRequest.getDefaultInstance()));
     return new SchemaResult(resp.getSchemaText(), resp.getReadAt().getToken());
   }
 
   /** Writes a new schema to SpiceDB, returning the revision. */
   public String writeSchema(String schema) {
+    return writeSchema(schema, null);
+  }
+
+  /**
+   * As {@link #writeSchema(String)}, with a per-call {@code timeout} overriding the client's
+   * default (see {@link #DEFAULT_TIMEOUT}).
+   */
+  public String writeSchema(String schema, Duration timeout) {
+    long timeoutMs = effectiveTimeout(timeout).toMillis();
     WriteSchemaResponse resp =
         callOnce(
             () ->
-                schemaStub.writeSchema(WriteSchemaRequest.newBuilder().setSchema(schema).build()));
+                schemaStub
+                    .withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS)
+                    .writeSchema(WriteSchemaRequest.newBuilder().setSchema(schema).build()));
     return resp.getWrittenAt().getToken();
   }
 
@@ -688,13 +877,24 @@ public final class SpiceDBClient implements AutoCloseable {
 
   /** Returns the definitions and caveats in the current schema. */
   public ReflectSchemaResult reflectSchema(Consistency consistency) {
+    return reflectSchema(consistency, null);
+  }
+
+  /**
+   * As {@link #reflectSchema(Consistency)}, with a per-call {@code timeout} overriding the
+   * client's default (see {@link #DEFAULT_TIMEOUT}).
+   */
+  public ReflectSchemaResult reflectSchema(Consistency consistency, Duration timeout) {
+    long timeoutMs = effectiveTimeout(timeout).toMillis();
     ReflectSchemaResponse resp =
         withRetry(
             () ->
-                schemaStub.reflectSchema(
-                    ReflectSchemaRequest.newBuilder()
-                        .setConsistency(consistency.toProto())
-                        .build()));
+                schemaStub
+                    .withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS)
+                    .reflectSchema(
+                        ReflectSchemaRequest.newBuilder()
+                            .setConsistency(consistency.toProto())
+                            .build()));
 
     var definitions = new ArrayList<SchemaDefinition>();
     for (var def : resp.getDefinitionsList()) {
@@ -741,15 +941,27 @@ public final class SpiceDBClient implements AutoCloseable {
   /** Returns the permissions that are computable for the given relation. */
   public ComputablePermissionsResult computablePermissions(
       Consistency consistency, String definitionName, String relationName) {
+    return computablePermissions(consistency, definitionName, relationName, null);
+  }
+
+  /**
+   * As {@link #computablePermissions(Consistency, String, String)}, with a per-call {@code
+   * timeout} overriding the client's default (see {@link #DEFAULT_TIMEOUT}).
+   */
+  public ComputablePermissionsResult computablePermissions(
+      Consistency consistency, String definitionName, String relationName, Duration timeout) {
+    long timeoutMs = effectiveTimeout(timeout).toMillis();
     ComputablePermissionsResponse resp =
         withRetry(
             () ->
-                schemaStub.computablePermissions(
-                    ComputablePermissionsRequest.newBuilder()
-                        .setConsistency(consistency.toProto())
-                        .setDefinitionName(definitionName)
-                        .setRelationName(relationName)
-                        .build()));
+                schemaStub
+                    .withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS)
+                    .computablePermissions(
+                        ComputablePermissionsRequest.newBuilder()
+                            .setConsistency(consistency.toProto())
+                            .setDefinitionName(definitionName)
+                            .setRelationName(relationName)
+                            .build()));
 
     var refs = new ArrayList<RelationReference>();
     for (var perm : resp.getPermissionsList()) {
@@ -766,15 +978,27 @@ public final class SpiceDBClient implements AutoCloseable {
   /** Returns the relations that the given permission depends on. */
   public DependentRelationsResult dependentRelations(
       Consistency consistency, String definitionName, String permissionName) {
+    return dependentRelations(consistency, definitionName, permissionName, null);
+  }
+
+  /**
+   * As {@link #dependentRelations(Consistency, String, String)}, with a per-call {@code timeout}
+   * overriding the client's default (see {@link #DEFAULT_TIMEOUT}).
+   */
+  public DependentRelationsResult dependentRelations(
+      Consistency consistency, String definitionName, String permissionName, Duration timeout) {
+    long timeoutMs = effectiveTimeout(timeout).toMillis();
     DependentRelationsResponse resp =
         withRetry(
             () ->
-                schemaStub.dependentRelations(
-                    DependentRelationsRequest.newBuilder()
-                        .setConsistency(consistency.toProto())
-                        .setDefinitionName(definitionName)
-                        .setPermissionName(permissionName)
-                        .build()));
+                schemaStub
+                    .withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS)
+                    .dependentRelations(
+                        DependentRelationsRequest.newBuilder()
+                            .setConsistency(consistency.toProto())
+                            .setDefinitionName(definitionName)
+                            .setPermissionName(permissionName)
+                            .build()));
 
     var refs = new ArrayList<RelationReference>();
     for (var rel : resp.getRelationsList()) {
@@ -798,14 +1022,26 @@ public final class SpiceDBClient implements AutoCloseable {
 
   /** Compares the current schema against the given comparison schema. */
   public DiffSchemaResult diffSchema(Consistency consistency, String comparisonSchema) {
+    return diffSchema(consistency, comparisonSchema, null);
+  }
+
+  /**
+   * As {@link #diffSchema(Consistency, String)}, with a per-call {@code timeout} overriding the
+   * client's default (see {@link #DEFAULT_TIMEOUT}).
+   */
+  public DiffSchemaResult diffSchema(
+      Consistency consistency, String comparisonSchema, Duration timeout) {
+    long timeoutMs = effectiveTimeout(timeout).toMillis();
     DiffSchemaResponse resp =
         withRetry(
             () ->
-                schemaStub.diffSchema(
-                    DiffSchemaRequest.newBuilder()
-                        .setConsistency(consistency.toProto())
-                        .setComparisonSchema(comparisonSchema)
-                        .build()));
+                schemaStub
+                    .withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS)
+                    .diffSchema(
+                        DiffSchemaRequest.newBuilder()
+                            .setConsistency(consistency.toProto())
+                            .setComparisonSchema(comparisonSchema)
+                            .build()));
 
     var diffs = new ArrayList<SchemaDiff>();
     for (var d : resp.getDiffsList()) {
@@ -827,19 +1063,35 @@ public final class SpiceDBClient implements AutoCloseable {
    */
   public ExpandResult expandPermissionTree(
       Consistency consistency, String resourceType, String resourceID, String permission) {
+    return expandPermissionTree(consistency, resourceType, resourceID, permission, null);
+  }
+
+  /**
+   * As {@link #expandPermissionTree(Consistency, String, String, String)}, with a per-call {@code
+   * timeout} overriding the client's default (see {@link #DEFAULT_TIMEOUT}).
+   */
+  public ExpandResult expandPermissionTree(
+      Consistency consistency,
+      String resourceType,
+      String resourceID,
+      String permission,
+      Duration timeout) {
+    long timeoutMs = effectiveTimeout(timeout).toMillis();
     ExpandPermissionTreeResponse resp =
         withRetry(
             () ->
-                permissionsStub.expandPermissionTree(
-                    ExpandPermissionTreeRequest.newBuilder()
-                        .setConsistency(consistency.toProto())
-                        .setResource(
-                            ObjectReference.newBuilder()
-                                .setObjectType(resourceType)
-                                .setObjectId(resourceID)
-                                .build())
-                        .setPermission(permission)
-                        .build()));
+                permissionsStub
+                    .withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS)
+                    .expandPermissionTree(
+                        ExpandPermissionTreeRequest.newBuilder()
+                            .setConsistency(consistency.toProto())
+                            .setResource(
+                                ObjectReference.newBuilder()
+                                    .setObjectType(resourceType)
+                                    .setObjectId(resourceID)
+                                    .build())
+                            .setPermission(permission)
+                            .build()));
     return new ExpandResult(toPermissionTree(resp.getTreeRoot()), resp.getExpandedAt().getToken());
   }
 
@@ -852,6 +1104,15 @@ public final class SpiceDBClient implements AutoCloseable {
    * Relationships are automatically batched into chunks of 1,000.
    */
   public long importRelationships(Iterable<Relationship> relationships) {
+    return importRelationships(relationships, null);
+  }
+
+  /**
+   * As {@link #importRelationships(Iterable)}, with a per-call {@code timeout} overriding the
+   * client's default (see {@link #DEFAULT_TIMEOUT}).
+   */
+  public long importRelationships(Iterable<Relationship> relationships, Duration timeout) {
+    long timeoutMs = effectiveTimeout(timeout).toMillis();
     var resultHolder = new long[1];
     var errorHolder = new Throwable[1];
     var latch = new java.util.concurrent.CountDownLatch(1);
@@ -876,7 +1137,9 @@ public final class SpiceDBClient implements AutoCloseable {
         };
 
     StreamObserver<ImportBulkRelationshipsRequest> requestObserver =
-        permissionsAsyncStub.importBulkRelationships(responseObserver);
+        permissionsAsyncStub
+            .withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS)
+            .importBulkRelationships(responseObserver);
 
     var batch = new ArrayList<build.buf.gen.authzed.api.v1.Relationship>(DEFAULT_IMPORT_BATCH_SIZE);
     for (Relationship r : relationships) {
@@ -1093,13 +1356,27 @@ public final class SpiceDBClient implements AutoCloseable {
    * <p><b>Experimental:</b> this API may change without notice.
    */
   public void experimentalRegisterRelationshipCounter(String name, Filter filter) {
+    experimentalRegisterRelationshipCounter(name, filter, null);
+  }
+
+  /**
+   * As {@link #experimentalRegisterRelationshipCounter(String, Filter)}, with a per-call {@code
+   * timeout} overriding the client's default (see {@link #DEFAULT_TIMEOUT}).
+   *
+   * <p><b>Experimental:</b> this API may change without notice.
+   */
+  public void experimentalRegisterRelationshipCounter(
+      String name, Filter filter, Duration timeout) {
+    long timeoutMs = effectiveTimeout(timeout).toMillis();
     callOnce(
         () ->
-            experimentalStub.experimentalRegisterRelationshipCounter(
-                ExperimentalRegisterRelationshipCounterRequest.newBuilder()
-                    .setName(name)
-                    .setRelationshipFilter(toRelationshipFilter(filter))
-                    .build()));
+            experimentalStub
+                .withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS)
+                .experimentalRegisterRelationshipCounter(
+                    ExperimentalRegisterRelationshipCounterRequest.newBuilder()
+                        .setName(name)
+                        .setRelationshipFilter(toRelationshipFilter(filter))
+                        .build()));
   }
 
   /** Result of an {@link #experimentalCountRelationships} call. */
@@ -1111,11 +1388,26 @@ public final class SpiceDBClient implements AutoCloseable {
    * <p><b>Experimental:</b> this API may change without notice.
    */
   public CountResult experimentalCountRelationships(String name) {
+    return experimentalCountRelationships(name, null);
+  }
+
+  /**
+   * As {@link #experimentalCountRelationships(String)}, with a per-call {@code timeout}
+   * overriding the client's default (see {@link #DEFAULT_TIMEOUT}).
+   *
+   * <p><b>Experimental:</b> this API may change without notice.
+   */
+  public CountResult experimentalCountRelationships(String name, Duration timeout) {
+    long timeoutMs = effectiveTimeout(timeout).toMillis();
     ExperimentalCountRelationshipsResponse resp =
         withRetry(
             () ->
-                experimentalStub.experimentalCountRelationships(
-                    ExperimentalCountRelationshipsRequest.newBuilder().setName(name).build()));
+                experimentalStub
+                    .withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS)
+                    .experimentalCountRelationships(
+                        ExperimentalCountRelationshipsRequest.newBuilder()
+                            .setName(name)
+                            .build()));
 
     if (resp.getCounterStillCalculating()) {
       return new CountResult(0, "", true);
@@ -1131,12 +1423,25 @@ public final class SpiceDBClient implements AutoCloseable {
    * <p><b>Experimental:</b> this API may change without notice.
    */
   public void experimentalUnregisterRelationshipCounter(String name) {
+    experimentalUnregisterRelationshipCounter(name, null);
+  }
+
+  /**
+   * As {@link #experimentalUnregisterRelationshipCounter(String)}, with a per-call {@code
+   * timeout} overriding the client's default (see {@link #DEFAULT_TIMEOUT}).
+   *
+   * <p><b>Experimental:</b> this API may change without notice.
+   */
+  public void experimentalUnregisterRelationshipCounter(String name, Duration timeout) {
+    long timeoutMs = effectiveTimeout(timeout).toMillis();
     callOnce(
         () ->
-            experimentalStub.experimentalUnregisterRelationshipCounter(
-                ExperimentalUnregisterRelationshipCounterRequest.newBuilder()
-                    .setName(name)
-                    .build()));
+            experimentalStub
+                .withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS)
+                .experimentalUnregisterRelationshipCounter(
+                    ExperimentalUnregisterRelationshipCounterRequest.newBuilder()
+                        .setName(name)
+                        .build()));
   }
 
   // -----------------------------------------------------------------------
@@ -1159,6 +1464,15 @@ public final class SpiceDBClient implements AutoCloseable {
   // -----------------------------------------------------------------------
   // Internal helpers
   // -----------------------------------------------------------------------
+
+  /**
+   * Resolves a per-call {@code timeout} override against {@link #defaultTimeout}. {@code null}
+   * means "use the client default" -- there is deliberately no way to make an unbounded unary
+   * call. See root DESIGN.md, "RULE: A unary call must have a deadline".
+   */
+  private Duration effectiveTimeout(Duration timeout) {
+    return timeout != null ? timeout : defaultTimeout;
+  }
 
   private static Metadata bearerMetadata(String presharedKey) {
     Metadata metadata = new Metadata();

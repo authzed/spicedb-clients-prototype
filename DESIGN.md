@@ -333,21 +333,53 @@ nothing to do with it.
    with the size of the dataset the *caller* is feeding it, and a caller legitimately streaming in
    millions of relationships can take minutes to do so. No fixed default is correct for either
    shape, and applying one would make the transfer itself the outage — the caller's data volume,
-   not a wedged server, would be what trips it. A per-call override MUST remain available for
-   these calls; what they must not get is the *default*. Streams additionally get their own
-   release mechanism — see **RULE: Abandoning a stream must release it**, below.
+   not a wedged server, would be what trips it.
+
+   What replaces the default differs by which end is streaming, and the difference is not
+   cosmetic:
+
+   - **Server-streaming calls MUST offer cancellation, not a deadline.** A deadline answers "how
+     long may this take?", and for `watch` the honest answer is "as long as the process cares to
+     keep watching" — there is no duration that is wrong to allow and no duration whose expiry
+     means something went wrong. The question a caller of a long-lived stream actually needs to
+     answer is "I am done with this, stop" — which is cancellation, and which is a *caller*
+     decision made at an arbitrary later moment rather than a bound guessed up front. So these
+     calls take no per-call timeout, and instead satisfy **RULE: Abandoning a stream must release
+     it**, below. Offering a deadline here instead would be worse than offering nothing: whatever
+     value a caller picked would eventually fire mid-stream and look like a server fault.
+   - **Client-streaming calls SHOULD keep an explicit per-call override.**
+     `ImportBulkRelationships` is the caller's own upload, so the caller *does* know roughly how
+     long their dataset should take and may legitimately want to cap it. That override must be
+     opt-in and default to unbounded, since only the caller knows the volume.
+
+   A caller who needs a hard wall-clock bound on a server stream still has one — cancel it from a
+   timer. The point is that the client must not pick that timer's value for them.
 
 A client with no deadline anywhere is one wedged server away from an outage that looks, from the
 caller's side, exactly like a hang with no cause.
 
-**On worst-case latency**: the timeout described above is a per-*attempt* budget, applied fresh to
-each retry, not a per-operation budget that shrinks across attempts (a shrinking budget would make
-a call that legitimately needs several retries more likely to fail than one that needs none). A
-caller-set timeout of `t` on a call that retries therefore bounds each attempt at `t`, not the
-call as a whole — worst-case latency is `t × (retries + 1)` plus backoff between attempts, and for
-an auto-paging call (e.g. a filtered delete), the same `t` applies fresh to each page. This is the
-correct design, but it means callers reasoning about an end-to-end latency budget must account for
-retries and pagination themselves, not just the timeout value they passed in.
+**On worst-case latency**: what a timeout of `t` bounds depends on where the retry loop lives, and
+the two shapes in this repo differ by more than 4x on the same nominal value. A client MUST
+document which shape it has; a caller reasoning about an end-to-end budget cannot infer it from the
+parameter name.
+
+- **Per-attempt budget** (six clients: Python, TypeScript, Java, C#, Ruby, Rust). The client hand-
+  rolls its retry loop and applies `t` fresh to each attempt, deliberately: a budget that shrank
+  across attempts would make a call that legitimately needs several retries *more* likely to fail
+  than one that needs none. So `t` bounds each attempt, not the call — worst-case latency is
+  `t × (retries + 1)` plus backoff between them, and for an auto-paging call (e.g. a filtered
+  delete) the same `t` applies fresh to each page.
+- **Absolute deadline** (Go). Retry is grpc-go's own service-config `retryPolicy`, which reuses the
+  caller's `context.Context` across every attempt. A context deadline is a point in time, not a
+  duration, so it bounds the whole operation: attempts, backoff, and pagination all draw down the
+  same budget, and a retry that starts after the deadline has passed fails immediately.
+
+Concretely, `t = 30s` on a read that exhausts its retries means up to ~120 s plus backoff in the
+six, and at most 30 s in Go. Neither is wrong — Go's is what a `context.Context` *means*, and
+reimplementing per-attempt budgets on top of it would fight the language's central convention —
+but a caller porting a timeout value between clients is not carrying its meaning with it. In the
+per-attempt clients, a caller who needs a true end-to-end bound must impose it themselves, above
+the client.
 
 ## RULE: Abandoning a stream must release it
 

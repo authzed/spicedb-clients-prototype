@@ -95,6 +95,33 @@ RSpec.describe SpiceDBProto::Client do
   end
 end
 
+# Authority-shifting targets: endpoints whose URI authority is not what a naive
+# host:port split reads out of them. This exact set defeated the equivalent guard in
+# this repo's C#, Rust, TypeScript and Java clients -- a last-colon (or first-"]") split
+# reads a loopback host out of them, while those transports parsed the same string as a
+# URI, took "127.0.0.1:443" for userinfo, and connected to evil.com, shipping the bearer
+# token there in cleartext. grpc-ruby was not exploitable by them (C-core rejects
+# "127.0.0.1:443@evil.com" outright with "Failed to parse port in name"), but the guard
+# must fail closed on a target it cannot vouch for, and this fixture is what would catch
+# a future edit that loosened the split here the way the C# one was loosened.
+AUTHORITY_SHIFTING_ENDPOINTS = [
+  "127.0.0.1:443@evil.com",
+  "[::1]:443@evil.com",
+  "[::1]:0@127.0.0.1:19999",
+  "[localhost]:1@127.0.0.1:19999",
+  "localhost@evil.com",
+  "localhost/../evil.com",
+  # Single-quoted: in a double-quoted Ruby string "#@evil" is instance-variable
+  # interpolation, which would silently turn this fixture into "localhost.com".
+  'localhost#@evil.com',
+  "localhost?@evil.com",
+  "localhost.",
+  "localhost :50051",
+  "127.0.0.1 :50051",
+  # The port validation whose removal from the C# guard opened the bypass.
+  "127.0.0.1:notaport"
+].freeze
+
 RSpec.describe "SpiceDBProto::Client.loopback_endpoint?" do
   loopback = %w[
     localhost:50051 LOCALHOST:50051 localhost
@@ -114,6 +141,12 @@ RSpec.describe "SpiceDBProto::Client.loopback_endpoint?" do
   ]
   not_loopback.each do |endpoint|
     it "does not treat #{endpoint.inspect} as loopback" do
+      expect(SpiceDBProto::Client.loopback_endpoint?(endpoint)).to be false
+    end
+  end
+
+  AUTHORITY_SHIFTING_ENDPOINTS.each do |endpoint|
+    it "does not treat authority-shifting #{endpoint.inspect} as loopback" do
       expect(SpiceDBProto::Client.loopback_endpoint?(endpoint)).to be false
     end
   end
@@ -163,6 +196,25 @@ RSpec.describe "SpiceDBProto::Client insecure host guard" do
     interceptor.request_response(request: nil, call: nil, method: nil, metadata: metadata) { nil }
 
     expect(metadata["authorization"]).to eq("Bearer remote-token")
+  end
+end
+
+# The regression test for the loopback-guard bypass. Asserting only that an error is
+# raised would be satisfied by an implementation that builds the channel, sends the
+# token, and raises afterwards -- so these assert on the transport instead, exactly as
+# the "insecure host guard" specs above do: GRPC::Core::Channel is what the token would
+# ride on and BearerTokenInterceptor is what would attach it, and neither may be
+# constructed at all for a refused endpoint.
+RSpec.describe "SpiceDBProto::Client authority-shifting endpoint guard" do
+  AUTHORITY_SHIFTING_ENDPOINTS.each do |endpoint|
+    it "refuses #{endpoint.inspect} before any channel or interceptor is created" do
+      expect(GRPC::Core::Channel).not_to receive(:new)
+      expect(SpiceDBProto::BearerTokenInterceptor).not_to receive(:new)
+
+      expect do
+        SpiceDBProto::Client.new(endpoint, "super-secret-token", insecure: true)
+      end.to raise_error(ArgumentError, /allow_insecure_remote_credentials/)
+    end
   end
 end
 

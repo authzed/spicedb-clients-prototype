@@ -160,6 +160,28 @@
 
 ### Fixed
 
+- **2026-08-18**: **Security hardening — the guard that refuses to send credentials over
+  plaintext to a non-loopback host now fails closed on targets it cannot vouch for.** The
+  equivalent guard in this repo's C#, Rust, TypeScript and Java clients had a bypass:
+  `"127.0.0.1:443@evil.com"` was read as loopback by a last-colon split while their transports
+  parsed the same string as a URI, took `127.0.0.1:443` for *userinfo*, and connected to
+  `evil.com` — sending the bearer token there in cleartext. **Ruby was not exploitable through
+  that class**: grpc's C-core rejects that target outright ("Failed to parse port in name") and
+  never contacts `evil.com`. But the guard was doing its own string split, and depending on
+  C-core happening not to be fooled by one input is not a property worth relying on.
+
+  Unlike most of the other clients, `.loopback_endpoint?` cannot be made to call the
+  transport's own parser — the target goes to grpc's C-core, which parses it in C++ and exposes
+  no Ruby-callable equivalent. So it now (1) refuses outright any endpoint containing `@`, `/`,
+  `?`, `#`, or whitespace, the characters that can move the authority under URI parsing, and
+  (2) splits what remains the way C-core's `SplitHostPort` does — a `[...]`-prefixed endpoint
+  must be exactly `[host]` or `[host]:<digits>`, and a single-colon `host:port` is split only
+  when the port is numeric. That numeric-port check is the one whose removal opened the C#
+  bypass. `"127.0.0.1:443@evil.com"` and `"127.0.0.1:notaport"` now require
+  `allow_insecure_remote_credentials: true` instead of being accepted as loopback. Every
+  ordinary local target keeps working with no opt-in: `localhost:50051`, `127.0.0.1:50051`,
+  `[::1]:50051`, `::1`, and `unix:` targets.
+
 - **2026-08-18**: `lookup_subjects` wrapped the ENTIRE streaming call in `with_retry`, so a
   mid-stream failure after some results had already been yielded to the caller retried the whole
   call from scratch and re-yielded results the caller had already seen. `LookupSubjects`' proto

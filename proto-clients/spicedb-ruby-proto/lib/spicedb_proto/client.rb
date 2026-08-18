@@ -15,6 +15,13 @@ module SpiceDBProto
   #   client = SpiceDBProto::Client.new("localhost:50051", "my-token", insecure: true)
   #
   class Client
+    # Characters that can move which part of a target string a URI parser treats as the
+    # authority: "@" (userinfo), "/" (path), "?" (query), "#" (fragment), and whitespace.
+    # See .loopback_endpoint? below for why an endpoint holding any of them is refused
+    # outright rather than parsed.
+    AUTHORITY_SHIFTING = %r{[@/?\#]|\s}
+    private_constant :AUTHORITY_SHIFTING
+
     # @return [Authzed::Api::V1::PermissionsService::Stub]
     attr_reader :permissions
 
@@ -105,10 +112,44 @@ module SpiceDBProto
       @channel&.close
     end
 
-    # Reports whether a gRPC target string names a loopback destination: the literal
-    # hostname "localhost", an IP in 127.0.0.0/8, the IPv6 loopback ::1, or a unix
-    # domain socket target (a "unix:" prefix). A unix socket never leaves the host's
-    # kernel, so it is loopback for this check even though it has no IP at all.
+    # Reports whether the connection this client would open for +endpoint+ terminates
+    # on a loopback destination: the literal hostname "localhost", an IP in
+    # 127.0.0.0/8, the IPv6 loopback ::1, or a unix domain socket target (a "unix:"
+    # prefix). A unix socket never leaves the host's kernel, so it is loopback for this
+    # check even though it has no IP at all.
+    #
+    # That wording is deliberate. This does not answer "does this string look like it
+    # names a loopback host"; it answers "will the transport dial loopback". Those are
+    # the same question only if this method and the transport agree on where the host
+    # ends and the rest of the target begins, and a hand-rolled split can always
+    # diverge from the transport's own parse. The equivalent guard in this repo's C#,
+    # Rust, TypeScript and Java clients diverged exactly that way: given
+    # "127.0.0.1:443@evil.com" a last-colon split yields host "127.0.0.1" and reports
+    # loopback, while their transports parsed the same string as a URI, read
+    # "127.0.0.1:443" as userinfo, and connected to evil.com -- shipping the bearer
+    # token there in cleartext.
+    #
+    # *grpc-ruby cannot reach its transport's parse.* The target is handed to grpc's
+    # C-core, which parses it in C++ (grpc_core::URI::Parse plus SplitHostPort) and
+    # exposes no Ruby-callable equivalent -- unlike Go, C#, Rust, TypeScript and Java,
+    # where this guard now derives its host from the very parser the transport dials
+    # with. So this method does the next best thing, in two parts:
+    #
+    # 1. Refuse outright any endpoint containing a character that could move the
+    #    authority under URI parsing -- "@", "/", "?", "#", or whitespace. A legitimate
+    #    SpiceDB target contains none of those, and failing closed on a weird endpoint
+    #    is the correct trade for a credential leak. This is what actually closes the
+    #    class here.
+    # 2. Split what remains the way C-core's SplitHostPort does: a bracketed host must
+    #    be followed by end-of-string or ":" + a numeric port, a string with two or more
+    #    colons is a bare IPv6 literal, and only a single-colon "host:port" with a
+    #    numeric port is split. Requiring a numeric port is what C-core does and is not
+    #    decoration: dropping exactly that check from the C# guard is what opened the
+    #    bypass above.
+    #
+    # (For the record, grpc-ruby was *not* exploitable by "127.0.0.1:443@evil.com":
+    # C-core rejects it outright with "Failed to parse port in name" and never contacts
+    # evil.com. The point of the above is to stop depending on that.)
     #
     # This is the exemption in root DESIGN.md, "RULE: Credentials over insecure
     # transport require an explicit opt-in": loopback is the reason insecure: true
@@ -118,19 +159,28 @@ module SpiceDBProto
     #
     # @api private
     def self.loopback_endpoint?(endpoint)
+      # Checked first, and only on the raw string: a unix target is not a URI authority
+      # at all (it carries a filesystem path, so it legitimately contains the "/" the
+      # reserved-character check below refuses), and it never leaves the host's kernel
+      # regardless of what the path says.
       return true if endpoint.start_with?("unix:")
+      return false if endpoint.match?(AUTHORITY_SHIFTING)
 
       host =
         if (m = endpoint.match(/\A\[(.+)\]:\d+\z/))
           m[1] # "[::1]:50051" -> "::1"
         elsif (m = endpoint.match(/\A\[(.+)\]\z/))
           m[1] # "[::1]" -> "::1"
+        elsif endpoint.start_with?("[")
+          # A "[...]" prefix followed by anything else is not a form C-core would
+          # accept as a bracketed host at all -- fail closed rather than guess.
+          return false
         elsif endpoint.count(":") > 1
           endpoint # bare IPv6 (e.g. "::1") -- no port is possible without brackets
-        elsif (idx = endpoint.rindex(":"))
-          endpoint[0...idx] # "host:port"
+        elsif (idx = endpoint.rindex(":")) && endpoint[(idx + 1)..].match?(/\A\d+\z/)
+          endpoint[0...idx] # "host:port", port numeric as C-core requires
         else
-          endpoint # bare host, no port
+          endpoint # bare host, no port (or a colon C-core would not split on)
         end
 
       return true if host.casecmp("localhost").zero?

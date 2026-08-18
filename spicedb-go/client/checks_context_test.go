@@ -302,6 +302,32 @@ func TestWithContextVariants_ForwardCallLevelContextToWire(t *testing.T) {
 	})
 }
 
+// CheckAll's aggregate is a bare `for` loop that falls through to `return
+// true, nil` once it runs out of results — exactly what happens on a
+// zero-length slice, since the loop body never executes. That is Go's
+// version of "all/every is vacuously true on empty", and it turns CheckAll
+// into a fail-open gate for any derived collection (a filter that matched
+// nothing, an upstream returning nil) that happens to come up empty.
+// CheckAll/CheckAllWithContext must guard the empty case and return false
+// without ever reaching the server.
+func TestCheckAll_EmptyRelationshipsReturnsFalse(t *testing.T) {
+	t.Run("CheckAll", func(t *testing.T) {
+		c, srv := newCapturingTestClient(t)
+		got, err := c.CheckAll(context.Background(), consistency.MinLatency(), "view")
+		require.NoError(t, err)
+		require.False(t, got, "CheckAll must return false, not vacuously true, for zero relationships")
+		require.Empty(t, srv.requests, "CheckAll must not consult the server for zero relationships")
+	})
+
+	t.Run("CheckAllWithContext", func(t *testing.T) {
+		c, srv := newCapturingTestClient(t)
+		got, err := c.CheckAllWithContext(context.Background(), consistency.MinLatency(), "view", nil)
+		require.NoError(t, err)
+		require.False(t, got, "CheckAllWithContext must return false, not vacuously true, for zero relationships")
+		require.Empty(t, srv.requests, "CheckAllWithContext must not consult the server for zero relationships")
+	})
+}
+
 // unconvertibleContext is a caveat context value that structpb.NewStruct
 // cannot represent (channels have no protobuf Value encoding), used to prove
 // that a conversion failure is surfaced as an error rather than silently

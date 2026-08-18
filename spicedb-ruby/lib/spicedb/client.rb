@@ -245,7 +245,14 @@ module SpiceDB
     # @param relationships [Array<SpiceDB::Relationship>]
     # @param context [Hash, nil] call-level caveat context, applied to every item — see {#check_permissions}
     # @return [Boolean]
+    #
+    # Returns false, not the vacuous true Enumerable#all? yields on an empty
+    # collection, when +relationships+ is empty -- "no checks to run" is not
+    # "all checks passed".
     def check_all(consistency, permission, *relationships, context: nil)
+      relationships = relationships.flatten
+      return false if relationships.empty?
+
       check_permissions(consistency, permission, *relationships, context: context).all?(&:has_permission?)
     end
 

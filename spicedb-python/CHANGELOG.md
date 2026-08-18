@@ -126,6 +126,16 @@
 
 ### Fixed
 
+- `check_all`/`await check_all` (both `spicedb.sync` and `spicedb.aio`)
+  returned `True` for zero relationships — Python's builtin `all()` is
+  vacuously `True` over an empty iterable. Root `DESIGN.md`'s "An aggregate
+  over zero checks is not a grant" names the hazard directly: a gate like
+  `check_all(cs, "edit", *docs_to_rels(docs))` was silently granted whenever
+  the derived relationship collection came up empty — a filter that matched
+  nothing, an upstream returning `[]`. Both flavors now guard the empty case
+  before the aggregate and return `False` without calling
+  `BulkCheckPermissions`. `check_any` is unchanged — it was already correctly
+  `False` on empty.
 - The secure (TLS) path sent the `authorization` header twice on every
   call — once from a gRPC call-credentials layer, once from an interceptor —
   while the insecure path sent it once. A server that logged or rate-limited

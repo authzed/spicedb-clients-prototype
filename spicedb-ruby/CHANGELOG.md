@@ -91,6 +91,17 @@
 
 ### Fixed
 
+- **`check_all` returned `true` for zero relationships.** Ruby's
+  `Enumerable#all?` is vacuously `true` over an empty collection. Root
+  `DESIGN.md`'s "An aggregate over zero checks is not a grant" clause names
+  the hazard: a gate like `check_all(cs, "edit", *docs.map(&:to_rel))` was
+  silently granted whenever the derived relationships array came up empty —
+  a filter that matched nothing, an upstream returning `[]`. `check_all` now
+  guards the empty case before the aggregate and returns `false` — it never
+  reached the server for this case even before the fix, since
+  `check_permissions` already short-circuits on an empty relationships
+  array. `check_any` is unchanged — it was already correctly `false` on
+  empty (`Enumerable#any?`).
 - **Delete page size correction**: `DEFAULT_DELETE_PAGE_SIZE` is now 1,000 (matching SpiceDB's default `--max-delete-relationships-limit`, so the default `delete_relationships` call works against a stock server), not 10,000 — the earlier "10,000" correction in this file was itself wrong
 - `updates` now maps errors raised mid-stream (e.g. a garbage-collected watch revision) to native `SpiceDB::*Error` types instead of leaking the raw `GRPC::BadStatus`. The watch stream is intentionally not retried on error — only mapped — since retrying a live server-stream mid-flight risks replaying updates.
 - Per-item errors from `check_permission`/`check_permissions`/`check_any`/`check_all` (via `BulkCheckPermissions`) now raise the specific `SpiceDB::*Error` subclass (e.g. `SpiceDB::InvalidArgumentError`) instead of the generic base `SpiceDB::Error`.

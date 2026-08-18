@@ -332,6 +332,29 @@ class TestCheckPermissionReturnsCheckResult:
         assert await client.check_any(full(), rel) is False
         assert await client.check_all(full(), rel) is False
 
+    async def test_check_all_with_zero_relationships_returns_false(self, make_client):
+        """Python's builtin all() is vacuously True over an empty iterable,
+        so check_all(cs, "edit") with no relationships would otherwise return
+        True -- a fail-open authorization gate. This matters because the
+        idiomatic call site is a gate over a *derived* collection
+        (check_all(cs, "edit", *docs_to_rels(docs))), and any ordinary way
+        that collection comes up empty (a filter matching nothing, an
+        upstream returning []) must not silently open the gate. Root
+        DESIGN.md: "An aggregate over zero checks is not a grant."
+
+        check_any/check_all are implemented independently in each flavor's
+        client.py, so this must stay in lockstep with the sync-flavor
+        counterpart, tests/test_client_sync.py::
+        test_check_all_with_zero_relationships_returns_false."""
+        client = make_client()
+        response = permission_service_pb2.CheckBulkPermissionsResponse(
+            checked_at=core_pb2.ZedToken(token="deadbeef"),
+            pairs=[],
+        )
+        client._permissions.CheckBulkPermissions = AsyncMock(return_value=response)
+
+        assert await client.check_all(full()) is False
+
 
 class TestBulkCheckPerItemErrorFidelity:
     """check_permissions must surface the real per-item google.rpc.Status

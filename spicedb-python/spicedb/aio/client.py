@@ -238,8 +238,14 @@ class SpiceDBClient:
     ) -> bool:
         """Return True if all of the permission checks pass outright. Only
         `CheckResult.has_permission` results count -- a CONDITIONAL_PERMISSION
-        result is not a grant, so it makes this False."""
+        result is not a grant, so it makes this False.
+
+        Returns False, not the vacuous True `all()` yields on an empty
+        iterable, if `rels` is empty -- "no checks to run" is not "all
+        checks passed"."""
         self._ensure_channel()
+        if not rels:
+            return False
         results = await self.check_permissions(consistency, *rels, context=context)
         return all(r.has_permission for r in results)
 

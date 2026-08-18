@@ -345,6 +345,10 @@ impl SpiceDBClient {
     /// context (see
     /// [`check_permissions_with_context`](Self::check_permissions_with_context)
     /// for the merge rule with any per-item context).
+    ///
+    /// Returns `false`, not the vacuous `true` that `Iterator::all` yields
+    /// on an empty sequence, when `relationships` is empty -- "no checks to
+    /// run" is not "all checks passed".
     pub async fn check_all_with_context(
         &self,
         consistency: &Strategy,
@@ -352,6 +356,10 @@ impl SpiceDBClient {
         relationships: &[Relationship],
         context: Option<&HashMap<String, serde_json::Value>>,
     ) -> Result<bool, SpiceDBError> {
+        if relationships.is_empty() {
+            return Ok(false);
+        }
+
         let results = self
             .check_permissions_with_context(consistency, permission, relationships, context)
             .await?;

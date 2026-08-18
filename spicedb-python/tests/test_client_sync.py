@@ -118,7 +118,33 @@ def test_check_any_and_check_all_do_not_count_conditional(make_client):
             "document:readme", "conditional_view", "user:jimmy"
         )
         assert c.check_any(full(), rel) is False
-        assert c.check_all(full(), rel) is False
+
+
+def test_check_all_with_zero_relationships_returns_false(make_client):
+    """Sync-flavor counterpart of
+    tests/test_client.py::TestCheckPermissionReturnsCheckResult::
+    test_check_all_with_zero_relationships_returns_false.
+
+    Python's builtin all() is vacuously True over an empty iterable, so
+    check_all(cs, "edit") with no relationships would otherwise return True
+    -- a fail-open authorization gate for a call site like
+    check_all(cs, "edit", *docs_to_rels(docs)) whenever the derived
+    relationship collection comes up empty. Root DESIGN.md: "An aggregate
+    over zero checks is not a grant." check_any/check_all are implemented
+    independently in each flavor's client.py and test_parity.py only
+    compares signatures, so this must stay in lockstep with the aio-flavor
+    test above.
+    """
+    from authzed.api.v1 import core_pb2
+    from authzed.api.v1 import permission_service_pb2 as psp
+
+    c = make_client()
+    resp = psp.CheckBulkPermissionsResponse(
+        checked_at=core_pb2.ZedToken(token="deadbeef"),
+        pairs=[],
+    )
+    with mock.patch.object(c._permissions, "CheckBulkPermissions", return_value=resp):
+        assert c.check_all(full()) is False
 
 
 def test_transient_error_is_retried_then_succeeds(make_client):

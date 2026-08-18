@@ -308,6 +308,13 @@ public sealed class SpiceDBClient : IAsyncDisposable
         CancellationToken cancellationToken = default,
         params Relationship[] relationships)
     {
+        // Enumerable.All is vacuously true over an empty sequence, so without this guard an empty
+        // relationships array — reached via CheckPermissionsCoreAsync's own early return of []  —
+        // would silently produce "all checks passed" for zero checks. Guard explicitly instead of
+        // relying on that shared early return (RULE: "An aggregate over zero checks is not a grant").
+        if (relationships.Length == 0)
+            return false;
+
         var results = await CheckPermissionsCoreAsync(consistency, permission, null, cancellationToken, relationships);
         return results.All(r => r.HasPermission);
     }
@@ -324,6 +331,12 @@ public sealed class SpiceDBClient : IAsyncDisposable
         CancellationToken cancellationToken = default,
         params Relationship[] relationships)
     {
+        // See CheckAllAsync: guard the empty case explicitly rather than relying on
+        // CheckPermissionsCoreAsync's early return of [], which would otherwise feed
+        // Enumerable.All an empty sequence and vacuously return true.
+        if (relationships.Length == 0)
+            return false;
+
         var results = await CheckPermissionsCoreAsync(consistency, permission, context, cancellationToken, relationships);
         return results.All(r => r.HasPermission);
     }

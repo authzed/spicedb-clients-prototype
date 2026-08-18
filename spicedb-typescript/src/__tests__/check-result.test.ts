@@ -423,6 +423,29 @@ describe("checkAny / checkAll — conditional does not count as granted (fail-cl
 });
 
 // ---------------------------------------------------------------------------
+// checkAll must not be vacuously true on zero checks. Array.prototype.every
+// is vacuously true over an empty array, so a caller gating on
+// checkAll(cs, "edit", ...docs.map(toCheck)) would have been silently
+// granted whenever the derived checks array came up empty (a filter that
+// matched nothing, an upstream returning []). Root DESIGN.md: "An aggregate
+// over zero checks is not a grant." checkAny is deliberately left alone —
+// Array.prototype.some is already correctly false on empty.
+// ---------------------------------------------------------------------------
+describe("checkAll — zero checks is not a grant (fail-closed)", () => {
+  it("returns false for zero checks, even if the bulk-check call would have returned zero pairs", async () => {
+    const fn = vi.fn().mockResolvedValue({
+      checkedAt: create(ZedTokenSchema, { token: "r" }),
+      pairs: [],
+    });
+    const client = clientWithFakeProto({
+      permissions: { checkBulkPermissions: fn },
+    });
+
+    expect(await client.checkAll(full())).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Task 16 — call-level caveat context default (`CheckOptions`), and its
 // merge with the pre-existing per-item context (`CheckRequest.context`).
 //

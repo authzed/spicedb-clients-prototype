@@ -319,6 +319,40 @@ class CheckResultsTest {
   }
 
   // ---------------------------------------------------------------------
+  // checkAll must not be vacuously true on zero relationships: Java's
+  // for-loop aggregate (like every language's all/every primitive) never
+  // executes its body on an empty array and falls through to `return
+  // true`, turning checkAll into a fail-open gate whenever a caller passes
+  // a derived relationship array that happens to be empty (a filter that
+  // matched nothing, an upstream returning an empty array). RULE: "An
+  // aggregate over zero checks is not a grant." checkPermissions already
+  // returns List.of() for zero relationships without calling the server, so
+  // this never reaches checkBulkPermissions either — the service below
+  // fails the test if that assumption ever changes.
+  // ---------------------------------------------------------------------
+
+  @Test
+  void checkAllReturnsFalseForZeroRelationships() throws IOException {
+    var service =
+        new PermissionsServiceGrpc.PermissionsServiceImplBase() {
+          @Override
+          public void checkBulkPermissions(
+              CheckBulkPermissionsRequest request,
+              StreamObserver<CheckBulkPermissionsResponse> responseObserver) {
+            throw new AssertionError(
+                "checkAll with zero relationships must not consult the server");
+          }
+        };
+
+    try (TestServers servers = TestServers.start(service)) {
+      SpiceDBClient client = servers.client();
+      boolean allGranted = client.checkAll(Consistency.full(), "view");
+
+      assertFalse(allGranted, "checkAll must return false, not vacuously true, for zero relationships");
+    }
+  }
+
+  // ---------------------------------------------------------------------
   // Helper
   // ---------------------------------------------------------------------
 

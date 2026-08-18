@@ -302,6 +302,13 @@ public final class SpiceDBClient implements AutoCloseable {
       String permission,
       Map<String, Object> context,
       Relationship... relationships) {
+    // A for-loop over zero relationships never executes its body and falls through to `true` —
+    // vacuously true, like every language's all/every primitive on an empty sequence. Guard the
+    // empty case explicitly so "no checks to run" is never treated as "all checks passed" (RULE:
+    // "An aggregate over zero checks is not a grant").
+    if (relationships.length == 0) {
+      return false;
+    }
     List<CheckResult> results = checkPermissions(consistency, permission, context, relationships);
     for (CheckResult r : results) {
       if (!r.hasPermission()) return false;

@@ -150,6 +150,19 @@
 
 ### Fixes
 
+- **`checkAll` returned `true` for zero relationships**: Java's `for`-loop
+  aggregate never executes its body on an empty array and falls through to
+  `return true` — the same vacuous-truth trap every language's `all`/`every`
+  primitive has on an empty sequence. Root `DESIGN.md`'s "An aggregate over
+  zero checks is not a grant" clause names the hazard: a gate like
+  `checkAll(cs, "edit", docs.stream().map(Doc::toRel).toArray(Relationship[]::new))`
+  was silently granted whenever the derived relationships array came up
+  empty — a filter that matched nothing, an upstream returning an empty
+  array. `checkAll` now guards the empty case before the aggregate and
+  returns `false` — it never reached the server for this case even before
+  the fix, since `checkPermissions` already short-circuits (`return
+  List.of();`) on an empty relationships array. `checkAny` is unchanged — it
+  was already correctly `false` on empty.
 - **Check-time caveat context: nested `Map`/`List` values no longer stringified**: `toProtoStruct`'s per-value conversion (used to build the `context` field on `CheckBulkPermissionsRequestItem`) previously delegated every value, including nested `Map`/`List`, to `toProtoValue`, whose fallback `value.toString()` case handled anything it didn't recognize -- correct for scalars, but a nested map's `toString()` is Java's `{key=value, ...}` debug format, and a caveat expecting a proper nested object or list received that string instead, so evaluation failed or misbehaved in a way the caller couldn't diagnose. A new check-time-only `checkContextToProtoValue` recurses into `Map`/`List`, converting them to a proper protobuf `Struct`/`ListValue`. `toProtoValue` itself is untouched and continues to stringify nested values for the **write-time** relationship caveat-context path (`toProtoRelationship`) -- that stringification is intentional there and out of scope for this fix.
 - **Per-item bulk-check error mapping**: a `CheckBulkPermissionsPair` error (`pair.hasError()`) is now routed through `ErrorMapper`, so callers get the SPECIFIC typed exception (e.g. `PermissionDeniedException`, `FailedPreconditionException`) instead of the untyped base `SpiceDBException`. The per-item gRPC code was previously discarded — only the message was used, forcing callers to string-match it to tell a schema mismatch from a permission denial, the exact problem the typed exception hierarchy exists to solve. The item's index is still preserved in the exception message (`"check item %d: ..."`), matching `spicedb-go`'s `fmt.Sprintf("check item %d", i)`.
 

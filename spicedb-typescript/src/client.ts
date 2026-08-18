@@ -344,6 +344,10 @@ export class SpiceDBClient {
    * Accepts the same two calling conventions as `checkPermissions`,
    * including the explicit-array form with a call-level {@link CheckOptions}
    * default.
+   *
+   * Returns `false`, not the vacuous `true` that `Array.prototype.every`
+   * yields on an empty array, when zero checks are given — "no checks to
+   * run" is not "all checks passed".
    */
   async checkAll(
     consistency: Consistency,
@@ -365,6 +369,9 @@ export class SpiceDBClient {
       optionsOrSecond,
       rest,
     );
+    if (checks.length === 0) {
+      return false;
+    }
     const results = await this.runBulkCheck(consistency, checks, options);
     return results.every((r) => r.hasPermission());
   }

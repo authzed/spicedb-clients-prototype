@@ -4,6 +4,18 @@
 
 ### Fixes
 
+- **`check_all`/`check_all_with_context` returned `true` for zero
+  relationships.** Rust's `Iterator::all` is vacuously `true` over an empty
+  sequence. Root `DESIGN.md`'s "An aggregate over zero checks is not a
+  grant" clause names the hazard: a gate like
+  `check_all(cs, "edit", &docs_to_rels(&docs))` was silently granted
+  whenever the derived relationships slice came up empty — a filter that
+  matched nothing, an upstream returning an empty `Vec`. Both methods now
+  guard the empty case before the aggregate and return `false` — neither
+  reached the server for this case even before the fix, since
+  `check_permissions_with_context` already short-circuits on an empty
+  relationships slice. `check_any`/`check_any_with_context` are unchanged —
+  already correctly `false` on empty (`Iterator::any`).
 - **`new_system_tls` could not connect to any TLS server.** The client enabled tonic's
   `tls` feature but neither `tls-native-roots` nor `tls-webpki-roots`, and built its
   config with a bare `ClientTlsConfig::new()`. In tonic 0.12 that carries an empty

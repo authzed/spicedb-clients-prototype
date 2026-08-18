@@ -98,6 +98,16 @@
 
 ### Fixed
 
+- **2026-08-18**: `checkAll()` returned `true` for zero checks —
+  `Array.prototype.every` is vacuously `true` over an empty array. Root
+  `DESIGN.md`'s "An aggregate over zero checks is not a grant" clause names
+  the hazard: a gate like `checkAll(cs, "edit", ...docs.map(toCheck))` was
+  silently granted whenever the derived checks array came up empty — a
+  filter that matched nothing, an upstream returning `[]`. `checkAll` now
+  guards the empty case before the aggregate and returns `false` without
+  calling `checkBulkPermissions`. `checkAny` is unchanged — it was already
+  correctly `false` on empty (`Array.prototype.some`).
+
 - **2026-08-17**: A per-item error from `checkPermissions()`'s underlying
   `CheckBulkPermissions` call (a permission-denied, an invalid-argument, an
   internal server error, etc. scoped to one specific check) is now thrown as

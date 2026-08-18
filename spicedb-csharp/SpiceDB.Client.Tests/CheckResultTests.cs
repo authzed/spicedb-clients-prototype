@@ -262,6 +262,38 @@ public class CheckResultTests
         all.Should().BeFalse();
     }
 
+    // ── CheckAll must not be vacuously true on zero relationships: LINQ's
+    //    Enumerable.All is vacuously true over an empty sequence, so a caller
+    //    gating on CheckAllAsync(cs, "edit", ct, docs.Select(ToRel).ToArray())
+    //    would have been silently granted whenever the derived relationships
+    //    array came up empty (a filter that matched nothing, an upstream
+    //    returning []). Root DESIGN.md: "An aggregate over zero checks is not
+    //    a grant." No mock setup on CheckBulkPermissionsAsync is configured
+    //    below — CheckAllAsync must never reach the server for zero
+    //    relationships (the pre-existing `relationships.Length == 0` early
+    //    return in CheckPermissionsCoreAsync already guarantees that; this
+    //    guards the boolean CheckAllAsync/CheckAllWithContextAsync return). ──
+
+    [Fact]
+    public async Task CheckAllAsync_ZeroRelationships_ReturnsFalse()
+    {
+        var mockPermissions = new Mock<PermissionsService.PermissionsServiceClient>();
+        await using var client = NewClient(mockPermissions.Object);
+
+        var all = await client.CheckAllAsync(Consistency.Full(), "view");
+        all.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task CheckAllWithContextAsync_ZeroRelationships_ReturnsFalse()
+    {
+        var mockPermissions = new Mock<PermissionsService.PermissionsServiceClient>();
+        await using var client = NewClient(mockPermissions.Object);
+
+        var all = await client.CheckAllWithContextAsync(Consistency.Full(), "view", null);
+        all.Should().BeFalse();
+    }
+
     // ── HARD REQUIREMENT: per-item CheckBulkPermissions error surfaces as
     //    its specific typed exception, not the base SpiceDBException ───────
 

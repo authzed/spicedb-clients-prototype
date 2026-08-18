@@ -127,7 +127,15 @@ func (c *Client) CheckAll(ctx context.Context, cs consistency.Strategy, permissi
 
 // CheckAllWithContext is CheckAll with a call-level default caveat context
 // (see CheckWithContext for the merge rule with any per-item context).
+//
+// An empty rs returns false, not true: Go's bare for-loop aggregate below is
+// vacuously true on zero relationships, and CheckAll must never treat "no
+// checks to run" as "all checks passed".
 func (c *Client) CheckAllWithContext(ctx context.Context, cs consistency.Strategy, permission string, checkContext map[string]any, rs ...rel.Relationship) (bool, error) {
+	if len(rs) == 0 {
+		return false, nil
+	}
+
 	results, err := c.CheckWithContext(ctx, cs, permission, checkContext, rs...)
 	if err != nil {
 		return false, err

@@ -209,6 +209,21 @@
 
 ### Fixed
 
+- **2026-08-18**: `CheckAllAsync`/`CheckAllWithContextAsync` returned `true`
+  for zero relationships — LINQ's `Enumerable.All` is vacuously `true` over
+  an empty sequence. Root `DESIGN.md`'s "An aggregate over zero checks is not
+  a grant" clause names the hazard: a gate like
+  `CheckAllAsync(cs, "edit", ct, docs.Select(ToRel).ToArray())` was silently
+  granted whenever the derived relationships array came up empty — a filter
+  that matched nothing, an upstream returning `[]`. The pre-existing
+  `relationships.Length == 0` early return inside the shared
+  `CheckPermissionsCoreAsync` (which produces an empty result array, feeding
+  the vacuous `All()`) is why neither method ever consulted the server for
+  this case; both now guard the empty case explicitly before delegating to
+  that shared core and return `false` directly. `CheckAnyAsync`/
+  `CheckAnyWithContextAsync` are unchanged — already correctly `false` on
+  empty via `Enumerable.Any`.
+
 - **2026-08-16**: A per-item error from `CheckBulkPermissions` (surfaced via
   `CheckPermissionAsync`/`CheckPermissionsAsync`) now maps through
   `ErrorMapper.ToSpiceDBException` like every other RPC in this client,

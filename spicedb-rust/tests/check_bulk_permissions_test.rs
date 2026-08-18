@@ -253,6 +253,43 @@ async fn check_all_does_not_count_conditional_as_granted() {
 }
 
 // ---------------------------------------------------------------------------
+// check_all must not be vacuously true on zero relationships:
+// Iterator::all is vacuously true over an empty sequence, so a caller
+// gating on check_all(cs, "edit", &docs_to_rels(&docs)) would have been
+// silently granted whenever the derived relationships slice came up empty
+// -- a filter that matched nothing, an upstream returning an empty Vec.
+// Root DESIGN.md: "An aggregate over zero checks is not a grant."
+// check_any is deliberately left alone -- Iterator::any is already
+// correctly false on an empty sequence.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn check_all_returns_false_for_zero_relationships() {
+    let mock = MockPermissionsService::new();
+    let calls = mock.check_bulk_permissions_calls();
+
+    let addr = spawn_permissions_server(mock).await;
+    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
+        .await
+        .expect("client should connect to mock server");
+
+    let all = client
+        .check_all(&consistency::full(), "view", &[])
+        .await
+        .expect("check_all should succeed");
+
+    assert!(
+        !all,
+        "check_all must return false, not vacuously true, for zero relationships"
+    );
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "check_all must not consult the server for zero relationships"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // HARD REQUIREMENT: a malformed pair (response oneof unset — neither Item
 // nor Error) must fail loudly, not silently vanish from the results.
 //

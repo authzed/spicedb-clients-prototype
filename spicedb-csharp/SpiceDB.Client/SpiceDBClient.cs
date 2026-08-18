@@ -30,6 +30,29 @@ public sealed class SpiceDBClient : IAsyncDisposable
     private static readonly TimeSpan InitialBackoff = TimeSpan.FromMilliseconds(100);
 
     /// <summary>
+    /// Applied to every unary call that does not pass its own <c>timeout</c>.
+    /// <para>
+    /// Mirrors <c>authzed-node</c>'s <c>DEFAULT_DEADLINE_MS = 30_000</c> (its
+    /// comment cites <c>grpc/grpc-node#541</c>, a known gRPC failure mode
+    /// where a channel that accepts a connection but never answers produces
+    /// no error at all). Without a finite default, a wedged SpiceDB hangs
+    /// every caller that didn't opt in to a timeout — in practice, most
+    /// callers — forever: the connection looks fine at the transport level,
+    /// so nothing ever times out and nothing is ever produced to retry. See
+    /// root DESIGN.md, "RULE: A unary call must have a deadline".
+    /// </para>
+    /// <para>
+    /// Deliberately NOT applied to streaming calls (<see cref="ReadRelationshipsAsync"/>,
+    /// <see cref="LookupResourcesAsync"/>, <see cref="LookupSubjectsAsync"/>,
+    /// <see cref="UpdatesAsync"/>, <see cref="ExportRelationshipsAsync"/>) —
+    /// those are long-lived by design, and applying this default to them
+    /// would make the stream itself the outage (see DESIGN.md, "Streaming
+    /// calls MUST NOT inherit the unary default").
+    /// </para>
+    /// </summary>
+    public static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(30);
+
+    /// <summary>
     /// Full-jitter backoff delay: <c>uniform(0, cap)</c> rather than the
     /// fixed <paramref name="cap"/>. Without jitter, every client in a
     /// fleet retries on the same schedule after a server restart, turning
@@ -39,19 +62,37 @@ public sealed class SpiceDBClient : IAsyncDisposable
     private static TimeSpan JitteredDelay(TimeSpan cap) =>
         TimeSpan.FromMilliseconds(Random.Shared.NextDouble() * cap.TotalMilliseconds);
 
+    /// <summary>
+    /// Resolves a per-call <paramref name="timeout"/> override against
+    /// <see cref="_defaultTimeout"/>. <c>null</c> means "use the client
+    /// default" — there is deliberately no way to make an unbounded unary
+    /// call. See root DESIGN.md, "RULE: A unary call must have a deadline".
+    /// </summary>
+    private TimeSpan EffectiveTimeout(TimeSpan? timeout) => timeout ?? _defaultTimeout;
+
+    /// <summary>
+    /// Computes an absolute UTC deadline from a per-call <paramref name="timeout"/>
+    /// override (or the client default). Call this fresh at each individual
+    /// RPC attempt — including inside a retry loop's lambda — so a retried
+    /// call gets a full new window per attempt rather than a shrinking one.
+    /// </summary>
+    private DateTime EffectiveDeadline(TimeSpan? timeout) => DateTime.UtcNow + EffectiveTimeout(timeout);
+
     private readonly SpiceDBProtoClient? _protoClient;
     private readonly PermissionsService.PermissionsServiceClient _permissions;
     private readonly SchemaService.SchemaServiceClient _schema;
     private readonly WatchService.WatchServiceClient _watch;
     private readonly ExperimentalService.ExperimentalServiceClient _experimental;
+    private readonly TimeSpan _defaultTimeout;
 
-    private SpiceDBClient(SpiceDBProtoClient protoClient)
+    private SpiceDBClient(SpiceDBProtoClient protoClient, TimeSpan defaultTimeout)
     {
         _protoClient = protoClient;
         _permissions = protoClient.Permissions;
         _schema = protoClient.Schema;
         _watch = protoClient.Watch;
         _experimental = protoClient.Experimental;
+        _defaultTimeout = defaultTimeout;
     }
 
     /// <summary>
@@ -64,44 +105,57 @@ public sealed class SpiceDBClient : IAsyncDisposable
         PermissionsService.PermissionsServiceClient permissions,
         SchemaService.SchemaServiceClient schema,
         WatchService.WatchServiceClient watch,
-        ExperimentalService.ExperimentalServiceClient experimental)
+        ExperimentalService.ExperimentalServiceClient experimental,
+        TimeSpan? defaultTimeout = null)
     {
         _protoClient = null;
         _permissions = permissions;
         _schema = schema;
         _watch = watch;
         _experimental = experimental;
+        _defaultTimeout = defaultTimeout ?? DefaultTimeout;
     }
 
     /// <summary>
     /// Creates a client with a plaintext (insecure) connection. Use this for
     /// testing only — the lack of TLS is made obvious by the name.
+    /// <paramref name="defaultTimeout"/>, if supplied, overrides the default
+    /// applied to every unary call that doesn't pass its own <c>timeout</c>
+    /// (see <see cref="DefaultTimeout"/>).
     /// </summary>
     /// <exception cref="ArgumentException">Thrown when endpoint or presharedKey is empty.</exception>
-    public static SpiceDBClient CreatePlaintext(string endpoint, string presharedKey)
+    public static SpiceDBClient CreatePlaintext(
+        string endpoint, string presharedKey, TimeSpan? defaultTimeout = null)
     {
         ValidateArgs(endpoint, presharedKey);
         var protoClient = new SpiceDBProtoClient(endpoint, presharedKey, insecure: true);
-        return new SpiceDBClient(protoClient);
+        return new SpiceDBClient(protoClient, defaultTimeout ?? DefaultTimeout);
     }
 
     /// <summary>
     /// Creates a client using the system's TLS certificate pool. Use this
-    /// for production connections.
+    /// for production connections. <paramref name="defaultTimeout"/>, if
+    /// supplied, overrides the default applied to every unary call that
+    /// doesn't pass its own <c>timeout</c> (see <see cref="DefaultTimeout"/>).
     /// </summary>
     /// <exception cref="ArgumentException">Thrown when endpoint or presharedKey is empty.</exception>
-    public static SpiceDBClient CreateSystemTls(string endpoint, string presharedKey)
+    public static SpiceDBClient CreateSystemTls(
+        string endpoint, string presharedKey, TimeSpan? defaultTimeout = null)
     {
         ValidateArgs(endpoint, presharedKey);
         var protoClient = new SpiceDBProtoClient(endpoint, presharedKey, insecure: false);
-        return new SpiceDBClient(protoClient);
+        return new SpiceDBClient(protoClient, defaultTimeout ?? DefaultTimeout);
     }
 
     /// <summary>
     /// Creates a client from an existing <see cref="GrpcChannel"/>.
     /// This is the escape hatch for advanced configuration.
+    /// <paramref name="defaultTimeout"/>, if supplied, overrides the default
+    /// applied to every unary call that doesn't pass its own <c>timeout</c>
+    /// (see <see cref="DefaultTimeout"/>).
     /// </summary>
-    public static SpiceDBClient CreateFromChannel(GrpcChannel channel, string presharedKey)
+    public static SpiceDBClient CreateFromChannel(
+        GrpcChannel channel, string presharedKey, TimeSpan? defaultTimeout = null)
     {
         ArgumentNullException.ThrowIfNull(channel);
         if (string.IsNullOrEmpty(presharedKey))
@@ -109,7 +163,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
         // Create a proto client wrapping the provided channel by using
         // a dummy endpoint — the channel is already configured.
         var protoClient = new SpiceDBProtoClient(channel, presharedKey);
-        return new SpiceDBClient(protoClient);
+        return new SpiceDBClient(protoClient, defaultTimeout ?? DefaultTimeout);
     }
 
     private static void ValidateArgs(string endpoint, string presharedKey)
@@ -150,12 +204,21 @@ public sealed class SpiceDBClient : IAsyncDisposable
     /// default and the exact per-key merge rule with per-item context.
     /// </para>
     /// </summary>
+    /// <remarks>
+    /// This variadic overload does not accept a per-call <c>timeout</c> —
+    /// inserting one ahead of <c>params relationships</c> would silently
+    /// break any existing positional call site passing relationships right
+    /// after <paramref name="cancellationToken"/> (e.g.
+    /// <c>CheckPermissionsAsync(cs, "view", default, rel1, rel2)</c>). It is
+    /// still bounded by the client's <see cref="DefaultTimeout"/>; use
+    /// <see cref="CheckPermissionAsync"/> for a per-call override on checks.
+    /// </remarks>
     public async Task<CheckResult[]> CheckPermissionsAsync(
         ConsistencyStrategy consistency,
         string permission,
         CancellationToken cancellationToken = default,
         params Relationship[] relationships) =>
-        await CheckPermissionsCoreAsync(consistency, permission, null, cancellationToken, relationships);
+        await CheckPermissionsCoreAsync(consistency, permission, null, cancellationToken, null, relationships);
 
     /// <summary>
     /// <see cref="CheckPermissionsAsync"/> with a call-level default caveat
@@ -193,7 +256,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
         IReadOnlyDictionary<string, object>? context,
         CancellationToken cancellationToken = default,
         params Relationship[] relationships) =>
-        await CheckPermissionsCoreAsync(consistency, permission, context, cancellationToken, relationships);
+        await CheckPermissionsCoreAsync(consistency, permission, context, cancellationToken, null, relationships);
 
     /// <summary>
     /// Shared implementation behind <see cref="CheckPermissionsAsync"/>,
@@ -210,6 +273,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
         string permission,
         IReadOnlyDictionary<string, object>? context,
         CancellationToken cancellationToken,
+        TimeSpan? timeout,
         Relationship[] relationships)
     {
         ArgumentNullException.ThrowIfNull(consistency);
@@ -227,6 +291,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
                     Consistency = consistency.V1Consistency,
                     Items = { items },
                 },
+                deadline: EffectiveDeadline(timeout),
                 cancellationToken: cancellationToken),
             cancellationToken);
 
@@ -293,9 +358,10 @@ public sealed class SpiceDBClient : IAsyncDisposable
         string permission,
         Relationship relationship,
         CancellationToken cancellationToken = default,
-        IReadOnlyDictionary<string, object>? context = null)
+        IReadOnlyDictionary<string, object>? context = null,
+        TimeSpan? timeout = null)
     {
-        var results = await CheckPermissionsCoreAsync(consistency, permission, context, cancellationToken, [relationship]);
+        var results = await CheckPermissionsCoreAsync(consistency, permission, context, cancellationToken, timeout, [relationship]);
         return results[0];
     }
 
@@ -311,7 +377,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
         CancellationToken cancellationToken = default,
         params Relationship[] relationships)
     {
-        var results = await CheckPermissionsCoreAsync(consistency, permission, null, cancellationToken, relationships);
+        var results = await CheckPermissionsCoreAsync(consistency, permission, null, cancellationToken, null, relationships);
         return results.Any(r => r.HasPermission);
     }
 
@@ -327,7 +393,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
         CancellationToken cancellationToken = default,
         params Relationship[] relationships)
     {
-        var results = await CheckPermissionsCoreAsync(consistency, permission, context, cancellationToken, relationships);
+        var results = await CheckPermissionsCoreAsync(consistency, permission, context, cancellationToken, null, relationships);
         return results.Any(r => r.HasPermission);
     }
 
@@ -350,7 +416,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
         if (relationships.Length == 0)
             return false;
 
-        var results = await CheckPermissionsCoreAsync(consistency, permission, null, cancellationToken, relationships);
+        var results = await CheckPermissionsCoreAsync(consistency, permission, null, cancellationToken, null, relationships);
         return results.All(r => r.HasPermission);
     }
 
@@ -372,7 +438,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
         if (relationships.Length == 0)
             return false;
 
-        var results = await CheckPermissionsCoreAsync(consistency, permission, context, cancellationToken, relationships);
+        var results = await CheckPermissionsCoreAsync(consistency, permission, context, cancellationToken, null, relationships);
         return results.All(r => r.HasPermission);
     }
 
@@ -386,7 +452,8 @@ public sealed class SpiceDBClient : IAsyncDisposable
     /// </summary>
     public async Task<string> WriteAsync(
         Transaction transaction,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        TimeSpan? timeout = null)
     {
         ArgumentNullException.ThrowIfNull(transaction);
 
@@ -398,6 +465,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
         var resp = await CallOnceAsync(async () =>
             await _permissions.WriteRelationshipsAsync(
                 req,
+                deadline: EffectiveDeadline(timeout),
                 cancellationToken: cancellationToken));
 
         return resp.WrittenAt?.Token ?? "";
@@ -541,7 +609,8 @@ public sealed class SpiceDBClient : IAsyncDisposable
         IReadOnlyList<Filter>? mustMatch = null,
         IReadOnlyList<Filter>? mustNotMatch = null,
         uint? limit = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        TimeSpan? timeout = null)
     {
         ArgumentNullException.ThrowIfNull(filter);
 
@@ -574,6 +643,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
             var resp = await CallOnceAsync(async () =>
                 await _permissions.DeleteRelationshipsAsync(
                     req,
+                    deadline: EffectiveDeadline(timeout),
                     cancellationToken: cancellationToken));
 
             revision = resp.DeletedAt?.Token ?? "";
@@ -822,11 +892,13 @@ public sealed class SpiceDBClient : IAsyncDisposable
     /// Returns the current SpiceDB schema and the revision it was read at.
     /// </summary>
     public async Task<(string Schema, string Revision)> ReadSchemaAsync(
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        TimeSpan? timeout = null)
     {
         var resp = await RetryAsync(async () =>
             await _schema.ReadSchemaAsync(
                 new ReadSchemaRequest(),
+                deadline: EffectiveDeadline(timeout),
                 cancellationToken: cancellationToken),
             cancellationToken);
 
@@ -838,7 +910,8 @@ public sealed class SpiceDBClient : IAsyncDisposable
     /// </summary>
     public async Task<string> WriteSchemaAsync(
         string schema,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        TimeSpan? timeout = null)
     {
         if (string.IsNullOrEmpty(schema))
             throw new ArgumentException("Schema must not be empty.", nameof(schema));
@@ -846,6 +919,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
         var resp = await CallOnceAsync(async () =>
             await _schema.WriteSchemaAsync(
                 new WriteSchemaRequest { Schema = schema },
+                deadline: EffectiveDeadline(timeout),
                 cancellationToken: cancellationToken));
 
         return resp.WrittenAt?.Token ?? "";
@@ -856,13 +930,15 @@ public sealed class SpiceDBClient : IAsyncDisposable
     /// </summary>
     public async Task<ReflectSchemaResult> ReflectSchemaAsync(
         ConsistencyStrategy consistency,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        TimeSpan? timeout = null)
     {
         ArgumentNullException.ThrowIfNull(consistency);
 
         var resp = await RetryAsync(async () =>
             await _schema.ReflectSchemaAsync(
                 new ReflectSchemaRequest { Consistency = consistency.V1Consistency },
+                deadline: EffectiveDeadline(timeout),
                 cancellationToken: cancellationToken),
             cancellationToken);
 
@@ -920,7 +996,8 @@ public sealed class SpiceDBClient : IAsyncDisposable
         ConsistencyStrategy consistency,
         string definitionName,
         string relationName,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        TimeSpan? timeout = null)
     {
         ArgumentNullException.ThrowIfNull(consistency);
 
@@ -932,6 +1009,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
                     DefinitionName = definitionName,
                     RelationName = relationName,
                 },
+                deadline: EffectiveDeadline(timeout),
                 cancellationToken: cancellationToken),
             cancellationToken);
 
@@ -952,7 +1030,8 @@ public sealed class SpiceDBClient : IAsyncDisposable
         ConsistencyStrategy consistency,
         string definitionName,
         string permissionName,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        TimeSpan? timeout = null)
     {
         ArgumentNullException.ThrowIfNull(consistency);
 
@@ -964,6 +1043,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
                     DefinitionName = definitionName,
                     PermissionName = permissionName,
                 },
+                deadline: EffectiveDeadline(timeout),
                 cancellationToken: cancellationToken),
             cancellationToken);
 
@@ -984,7 +1064,8 @@ public sealed class SpiceDBClient : IAsyncDisposable
     public async Task<(IReadOnlyList<SchemaDiff> Diffs, string Revision)> DiffSchemaAsync(
         ConsistencyStrategy consistency,
         string comparisonSchema,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        TimeSpan? timeout = null)
     {
         ArgumentNullException.ThrowIfNull(consistency);
 
@@ -995,6 +1076,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
                     Consistency = consistency.V1Consistency,
                     ComparisonSchema = comparisonSchema,
                 },
+                deadline: EffectiveDeadline(timeout),
                 cancellationToken: cancellationToken),
             cancellationToken);
 
@@ -1015,7 +1097,8 @@ public sealed class SpiceDBClient : IAsyncDisposable
         string resourceType,
         string resourceID,
         string permission,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        TimeSpan? timeout = null)
     {
         ArgumentNullException.ThrowIfNull(consistency);
 
@@ -1031,6 +1114,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
                     },
                     Permission = permission,
                 },
+                deadline: EffectiveDeadline(timeout),
                 cancellationToken: cancellationToken),
             cancellationToken);
 
@@ -1052,14 +1136,17 @@ public sealed class SpiceDBClient : IAsyncDisposable
     /// </summary>
     public async Task<ulong> ImportRelationshipsAsync(
         IAsyncEnumerable<Relationship> relationships,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        TimeSpan? timeout = null)
     {
         ArgumentNullException.ThrowIfNull(relationships);
 
         AsyncClientStreamingCall<ImportBulkRelationshipsRequest, ImportBulkRelationshipsResponse> stream;
         try
         {
-            stream = _permissions.ImportBulkRelationships(cancellationToken: cancellationToken);
+            stream = _permissions.ImportBulkRelationships(
+                deadline: EffectiveDeadline(timeout),
+                cancellationToken: cancellationToken);
         }
         catch (RpcException ex)
         {
@@ -1314,7 +1401,8 @@ public sealed class SpiceDBClient : IAsyncDisposable
     public async Task ExperimentalRegisterRelationshipCounterAsync(
         string name,
         Filter filter,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        TimeSpan? timeout = null)
     {
         if (string.IsNullOrEmpty(name))
             throw new ArgumentException("Name must not be empty.", nameof(name));
@@ -1327,6 +1415,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
                     Name = name,
                     RelationshipFilter = filter.ToProto(),
                 },
+                deadline: EffectiveDeadline(timeout),
                 cancellationToken: cancellationToken));
     }
 
@@ -1341,7 +1430,8 @@ public sealed class SpiceDBClient : IAsyncDisposable
     /// </summary>
     public async Task<(CountResult? Result, bool StillCalculating)> ExperimentalCountRelationshipsAsync(
         string name,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        TimeSpan? timeout = null)
     {
         if (string.IsNullOrEmpty(name))
             throw new ArgumentException("Name must not be empty.", nameof(name));
@@ -1349,6 +1439,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
         var resp = await RetryAsync(async () =>
             await _experimental.ExperimentalCountRelationshipsAsync(
                 new ExperimentalCountRelationshipsRequest { Name = name },
+                deadline: EffectiveDeadline(timeout),
                 cancellationToken: cancellationToken),
             cancellationToken);
 
@@ -1372,7 +1463,8 @@ public sealed class SpiceDBClient : IAsyncDisposable
     /// </summary>
     public async Task ExperimentalUnregisterRelationshipCounterAsync(
         string name,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        TimeSpan? timeout = null)
     {
         if (string.IsNullOrEmpty(name))
             throw new ArgumentException("Name must not be empty.", nameof(name));
@@ -1380,6 +1472,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
         await CallOnceAsync(async () =>
             await _experimental.ExperimentalUnregisterRelationshipCounterAsync(
                 new ExperimentalUnregisterRelationshipCounterRequest { Name = name },
+                deadline: EffectiveDeadline(timeout),
                 cancellationToken: cancellationToken));
     }
 

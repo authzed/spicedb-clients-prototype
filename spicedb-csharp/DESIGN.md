@@ -437,6 +437,43 @@ Automatic retry with exponential backoff for transient gRPC errors (UNAVAILABLE,
 RESOURCE_EXHAUSTED, ABORTED). Max 3 retries (4 attempts total) with 100ms
 initial backoff, doubling each retry.
 
+### Deadlines
+
+Every unary method (`CheckPermissionAsync`, `WriteAsync`, `ReadSchemaAsync`,
+etc.) takes an optional `TimeSpan? timeout = null`, applied via
+`CallOptions.Deadline` — **alongside**, not instead of, the pre-existing
+`CancellationToken`: a cancelled token stops the client from waiting, but
+only a server-enforced deadline tells the server itself to stop working.
+`CreatePlaintext`/`CreateSystemTls`/`CreateFromChannel` all take an optional
+`TimeSpan? defaultTimeout = null`, applied to any unary call that doesn't
+pass its own `timeout` — both default to `SpiceDBClient.DefaultTimeout`
+(30s), mirroring `authzed-node`'s `DEFAULT_DEADLINE_MS = 30_000` (its
+comment cites `grpc/grpc-node#541`). See root DESIGN.md, "RULE: A unary
+call must have a deadline".
+
+The four `params Relationship[]` check overloads (`CheckPermissionsAsync`,
+`CheckAnyAsync`, `CheckAllAsync`, and their `*WithContextAsync` siblings)
+deliberately do **not** take a `timeout` parameter: inserting one ahead of
+the `params` array would silently break any existing positional call site
+passing relationships right after `cancellationToken` (e.g.
+`CheckPermissionsAsync(cs, "view", default, rel1, rel2)` — `rel1` would try
+to bind to the new parameter instead of the params array). They are still
+bounded by the client's `DefaultTimeout`; use the singular
+`CheckPermissionAsync` for a per-call override on checks.
+
+```csharp
+await using var client = SpiceDBClient.CreatePlaintext(endpoint, token, defaultTimeout: TimeSpan.FromSeconds(5));
+var result = await client.CheckPermissionAsync(Consistency.Full(), "view", rel);                                    // bound by the 5s default
+var result2 = await client.CheckPermissionAsync(Consistency.Full(), "view", rel, timeout: TimeSpan.FromSeconds(1)); // overrides it
+```
+
+Streaming methods (`ReadRelationshipsAsync`, `LookupResourcesAsync`,
+`LookupSubjectsAsync`, `UpdatesAsync`, `ExportRelationshipsAsync`) take no
+`timeout` parameter and are NOT bound by `DefaultTimeout` — they are
+long-lived by design (`UpdatesAsync` may run for the life of the process),
+and applying the unary default to them would make the stream itself the
+outage.
+
 ### Supporting Types
 
 ```csharp

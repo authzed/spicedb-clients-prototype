@@ -209,6 +209,44 @@
 
 ### Fixed
 
+- **2026-08-18**: Call deadlines, per root `DESIGN.md` "RULE: A unary call must have a
+  deadline". Previously the client had `CancellationToken` throughout (real caller-side
+  cancellation — stops the client from waiting) but no server-enforced deadline: a cancelled
+  token never told the server to stop working, and a SpiceDB instance that accepted a connection
+  but never answered hung every caller that didn't cancel forever.
+  - Every unary method gained an optional `TimeSpan? timeout = null`, applied via
+    `CallOptions.Deadline` — **alongside**, not instead of, the pre-existing `CancellationToken`.
+    Additive; existing call sites are unaffected. The four `params Relationship[]` check overloads
+    (`CheckPermissionsAsync`, `CheckAnyAsync`, `CheckAllAsync`, and their `*WithContextAsync`
+    siblings) deliberately do **not** gain a `timeout` parameter — inserting one ahead of the
+    `params` array would silently break an existing positional call site like
+    `CheckPermissionsAsync(cs, "view", default, rel1, rel2)` (`rel1` would try to bind to the new
+    parameter instead of the params array). They're still bounded by the client default; use the
+    singular `CheckPermissionAsync` for a per-call override on checks.
+  - `CreatePlaintext`/`CreateSystemTls`/`CreateFromChannel` all gained an optional `TimeSpan?
+    defaultTimeout = null`, applied to any unary call that doesn't pass its own `timeout`. New
+    public `SpiceDBClient.DefaultTimeout = TimeSpan.FromSeconds(30)` mirrors `authzed-node`'s
+    `DEFAULT_DEADLINE_MS = 30_000` (its comment cites `grpc/grpc-node#541`). There is deliberately
+    no way to construct a client whose unary calls have no bound at all.
+  - Streaming methods (`ReadRelationshipsAsync`, `LookupResourcesAsync`, `LookupSubjectsAsync`,
+    `UpdatesAsync`, `ExportRelationshipsAsync`) gained **no** `timeout` parameter and are **not**
+    bound by `DefaultTimeout` — DESIGN.md's "Streaming calls MUST NOT inherit the unary default":
+    these are long-lived by design (`UpdatesAsync` may legitimately run for the life of the
+    process), and a 30s cutoff would end a legitimate stream, which is a worse defect than the
+    one this change fixes.
+  - `DeadlineExceededException` (added earlier, but never actually produced by this client since
+    nothing enforced a server-side deadline) is now reachable: a timed-out call throws it, not a
+    generic exception. `StatusCode.DeadlineExceeded` was already excluded from
+    `ErrorMapper.TransientCodes`, so a timeout is never auto-retried.
+  - New `SpiceDB.Client.Tests/DeadlineTests.cs`, against a real Kestrel-hosted gRPC server
+    (`Grpc.AspNetCore.Server`, added as a test-only dependency) whose handlers deliberately
+    stall: a unary call against a stub that never responds throws `DeadlineExceededException`
+    well before the stall completes (not a hang), a per-call `timeout` overrides a much larger
+    client default, and a streaming call outlives a tiny unary default instead of inheriting it.
+    Every call is wrapped in a watchdog (`Task.WhenAny` against a timeout) so a regression fails
+    the test instead of hanging CI. A Moq-mocked service client (as used elsewhere in this suite)
+    can't prove a deadline is actually enforced, since grpc's deadline machinery lives below the
+    mock, inside `Grpc.Net.Client`'s HTTP/2 pipeline.
 - **2026-08-18**: Retry safety, per root `DESIGN.md` "RULE: Automatic retry is for idempotent
   operations only". Three changes:
   - `RESOURCE_EXHAUSTED` is no longer retried. In SpiceDB it signals memory load-shed (retrying

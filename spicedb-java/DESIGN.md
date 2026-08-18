@@ -35,6 +35,14 @@ Security-obvious static factory methods:
 - `SpiceDBClient.createSystemTls(endpoint, presharedKey)` — for production
 - `SpiceDBClient.create(endpoint, presharedKey, options...)` — escape hatch
 
+Per root DESIGN.md, "RULE: Credentials over insecure transport require an
+explicit opt-in": `createPlaintext`/`withInsecure()` only permit plaintext to
+a loopback endpoint (`localhost`, `127.0.0.0/8`, `::1`, or a `unix:` socket
+target) — the local-development case that is the entire reason they exist.
+Anything else needs the separately-named `allowInsecureRemoteCredentials`
+overload/`ClientOption` passed explicitly, or the constructor throws
+`IllegalArgumentException` before any channel is created.
+
 The client implements `AutoCloseable` for use with try-with-resources:
 ```java
 try (var client = SpiceDBClient.createPlaintext("localhost:50051", "test")) {
@@ -322,8 +330,10 @@ These may change without following the backwards compatibility mandate.
 
 **Constructors:**
 - `createPlaintext(String endpoint, String presharedKey)`
+- `createPlaintext(String endpoint, String presharedKey, boolean allowInsecureRemoteCredentials)`
 - `createSystemTls(String endpoint, String presharedKey)`
-- `create(String endpoint, String presharedKey, ClientOption... options)`
+- `create(String endpoint, String presharedKey, ClientOption... options)` — recognizes
+  `withInsecure()` and `allowInsecureRemoteCredentials()` among `options`
 
 **Checks:**
 - `checkPermission(Consistency, String permission, Relationship)` → `CheckResult`

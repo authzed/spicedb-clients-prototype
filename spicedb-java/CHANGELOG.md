@@ -80,6 +80,24 @@
 
 ### Breaking Changes
 
+- **2026-08-18** (behavioral; new overloads): per root DESIGN.md, "RULE: Credentials over
+  insecure transport require an explicit opt-in" -- `createPlaintext` and `create(..., withInsecure())`
+  now refuse to construct a client for a non-loopback endpoint (loopback means `localhost`,
+  `127.0.0.0/8`, `::1`, or a `unix:` socket target). Previously an insecure connection would send
+  its bearer token in cleartext to any host -- grpc-java's `CallCredentials` contract has no
+  built-in "refuse over an insecure channel" check the way some other language bindings do, so
+  nothing checked where the connection actually went. New overloads,
+  `createPlaintext(endpoint, key, allowInsecureRemoteCredentials)` / `createPlaintext(endpoint,
+  key, defaultTimeout, allowInsecureRemoteCredentials)`, and a new `ClientOption`,
+  `SpiceDBClient.allowInsecureRemoteCredentials()` (for use with `create(..., withInsecure(),
+  allowInsecureRemoteCredentials())`), opt in explicitly when a caller genuinely means to send
+  credentials in cleartext to a remote host. `createPlaintext`/`withInsecure()` against `localhost`
+  are unaffected -- no code change needed for local development. Thrown as
+  `IllegalArgumentException`, before any channel is created. `create(...)` only recognizes the
+  named `withInsecure()`/`allowInsecureRemoteCredentials()` options by reference; a fully custom
+  `ClientOption` lambda that calls `usePlaintext()` directly on the raw `ManagedChannelBuilder`
+  escape hatch is outside what this guard can see.
+
 - **2026-08-18** (behavioral; no signature change): the two entries below change what existing,
   unmodified call sites do. They are listed here because neither announces itself -- nothing
   fails to compile, and the difference only shows up under load or against a slow query.

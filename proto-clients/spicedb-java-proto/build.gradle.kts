@@ -42,6 +42,14 @@ dependencies {
     testImplementation(platform("org.junit:junit-bom:5.11.4"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+
+    // In-process transport for insecure-host-guard tests: lets a test wire the
+    // client to a real in-process server without opening a real socket, while
+    // the "endpoint" string handed to the constructor -- what the guard
+    // actually evaluates -- stays independent and can be a non-loopback
+    // literal for the refusal/opt-in cases.
+    testImplementation("io.grpc:grpc-inprocess:1.72.0")
+    testImplementation("io.grpc:grpc-testing:1.72.0")
 }
 
 tasks.test {

@@ -20,6 +20,15 @@
   result. This also makes the singular `check_permission`'s
   `results.remove(0)` unreachable for a zero-pair response — see the
   dedicated fix and regression test below.
+- **`check_permission` could panic on the authorization hot path.** `Ok(results.remove(0))`
+  panicked (`removal index (is 0) should be < len (is 0)`) inside the caller's task whenever the
+  server returned zero pairs for a one-item request — this was the gap the length-guard fix above
+  closes. `check_permission` now goes through `check_permissions_with_context`'s new
+  `inner.pairs.len() != items.len()` guard before it ever reaches `results.remove(0)`: a
+  zero-pair response is rejected with `Err(error::internal(..))` before `results` is returned, so
+  the singular path can no longer observe an empty `Vec` there. Added
+  `check_permission_errors_instead_of_panicking_on_zero_pairs` as a dedicated regression test
+  proving the typed-error behavior directly on `check_permission` (not just the shared bulk path).
 - **`check_all`/`check_all_with_context` returned `true` for zero
   relationships.** Rust's `Iterator::all` is vacuously `true` over an empty
   sequence. Root `DESIGN.md`'s "An aggregate over zero checks is not a

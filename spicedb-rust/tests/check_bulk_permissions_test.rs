@@ -429,3 +429,49 @@ async fn check_permissions_errors_when_response_has_fewer_pairs_than_request_ite
          mismatch, got {err:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Regression test for spicedb-rust CHANGELOG's documented "known residual
+// gap": the singular check_permission called `results.remove(0)`
+// unconditionally, which panics ("removal index (is 0) should be < len (is
+// 0)") -- inside the caller's task, on the authorization hot path -- when
+// the server returns zero pairs for a one-item request. The length guard
+// added to check_permissions_with_context above (proven by the previous
+// test) now rejects a zero-pair response before check_permission ever
+// reaches `results.remove(0)`, making the panic unreachable. This test
+// proves that path returns a typed error instead of panicking the caller's
+// task.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn check_permission_errors_instead_of_panicking_on_zero_pairs() {
+    let mock = MockPermissionsService::new();
+    mock.push_check_bulk_permissions_response(proto::CheckBulkPermissionsResponse {
+        checked_at: Some(proto::ZedToken {
+            token: "rev-1".to_string(),
+        }),
+        pairs: vec![],
+    });
+
+    let addr = spawn_permissions_server(mock).await;
+    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
+        .await
+        .expect("client should connect to mock server");
+
+    let rel =
+        Relationship::new("document", "doc1", "view", "user", "alice", "").expect("valid rel");
+
+    let err = client
+        .check_permission(&consistency::full(), "view", &rel)
+        .await
+        .expect_err(
+            "check_permission must return a typed error, not panic, when the server returns \
+             zero pairs for a one-item request",
+        );
+
+    assert!(
+        matches!(err, SpiceDBError::Status { code: 13, .. }),
+        "expected SpiceDBError::Status{{code: 13 (INTERNAL), ..}} for a pairs/items length \
+         mismatch, got {err:?}"
+    );
+}

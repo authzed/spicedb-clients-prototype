@@ -157,12 +157,13 @@ Therefore:
    bare boolean is forbidden, because it makes "denied" indistinguishable from
    "you did not supply the caveat context." Callers must be able to tell those
    apart, and to learn which context was missing.
-7. **An aggregate over zero checks is not a grant.** `check_all` and its siblings MUST return
-   false for an empty input set. Every language's `all`/`every` primitive is vacuously true on
-   an empty sequence, so the idiomatic implementation is the bug: all seven clients had this
-   defect independently. Guard the empty case explicitly, before the aggregate, and test it.
-   `check_any` is already correctly false on empty — that asymmetry is intentional and must not
-   be "made consistent."
+7. **An aggregate over zero checks is not a grant.** `check_all` (Python, Ruby, Rust),
+   `CheckAll`/`CheckAllWithContext` (Go), `checkAll` (TypeScript, Java), and
+   `CheckAllAsync`/`CheckAllWithContextAsync` (C#) MUST return false for an empty input set.
+   Every language's `all`/`every` primitive is vacuously true on an empty sequence, so the
+   idiomatic implementation is the bug: all seven clients had this defect independently. Guard
+   the empty case explicitly, before the aggregate, and test it. `check_any` is already correctly
+   false on empty — that asymmetry is intentional and must not be "made consistent."
 
 The failure this rule exists to prevent is real and shipped: one client previously
 returned `true` for `CONDITIONAL_PERMISSION` by design, granting access on a caveat
@@ -170,9 +171,9 @@ that was never evaluated.
 
 ## The Check Surface: a three-valued result, not a boolean
 
-**Binding on every client.** The RULE above says what a check *means*; this section
-says what a check *returns*. Per-client `DESIGN.md`s inherit from here — they name
-the fields in their own idiom, they do not redefine the contract.
+**Binding on every client.** The **RULE: Only an unconditional grant is true**, above, says what
+a check *means*; this section says what a check *returns*. Per-client `DESIGN.md`s inherit from
+here — they name the fields in their own idiom, they do not redefine the contract.
 
 Both check methods — the singular (`check_permission`) and the plural
 (`check_permissions`) — return a `CheckResult`, never a bare `bool`. `CheckResult`
@@ -210,7 +211,7 @@ Invariants that hold in all seven clients:
    of the call, not the item). Bulk import is the one exception, because
    `ImportBulkRelationshipsResponse` has no token on the wire at all.
 
-## Caveat Context on the Check Surface
+## Caveat Context on the Check and Write Surfaces
 
 **Binding on every client.** `missing_context` names the keys the server needed;
 this is the API that supplies them. Without it the diagnostic would not be
@@ -263,14 +264,31 @@ aggregate over the same request and must be able to evaluate caveats.
 
 ## RULE: A conversion that cannot preserve meaning must fail
 
-Dropping a value, stringifying it, or widening a filter are all silent-wrong-answer machines:
-the call succeeds, the caller proceeds, and the damage surfaces later somewhere else. Where a
-client cannot represent what the caller asked for, it raises a typed error naming what could not
-be converted. It does not approximate, and it does not discard.
+Dropping a value, stringifying it, or widening a filter are all silent-wrong-answer machines: the
+call succeeds, the caller proceeds, and the damage surfaces later somewhere else. But the correct
+response to an unrepresentable value is not one behavior — it depends on **who supplied it**:
 
-This applies to caveat context that will not convert, to a filter whose constraint the wire
-format cannot express, and to any enum value the client does not recognise. An unrecognised
-value is never mapped to a permissive default — never to a grant, and never to a write.
+1. **Caller-supplied data the client cannot represent MUST raise a typed error naming what could
+   not be converted.** Caveat context that will not convert, and a filter whose constraint the
+   wire format cannot express, are both requests the caller made. The caller can see the failure
+   and fix their input, so the client does not approximate the value and does not discard it — it
+   fails loudly instead of guessing.
+2. **Server-supplied values the client does not recognise MUST NOT raise, and MUST map to the
+   safe, non-permissive default — never a grant, and never a write.** A `permissionship` value
+   added to the wire after a client shipped is not the caller's mistake, and the caller has no
+   input to correct. Raising here would break forward compatibility: a server rolling out a new
+   enum value would make every deployed client throw on every check. This is the same posture
+   already stated for the grant path — *RULE: Only an unconditional grant is true*, clause 1
+   ("An unrecognized future enum value is also not-a-grant") and the `permissionship` row of the
+   Check Surface table ("Unrecognized future wire values map to *unspecified*, which is not a
+   grant") — restated here as the general rule for any server-originated enum, not only
+   `permissionship`.
+
+The two clauses are not in tension: one governs data the caller can fix by raising loudly, the
+other governs data the caller cannot fix by degrading safely. Confusing the two directions is the
+failure mode either way — raising on an unrecognised server enum turns a routine server upgrade
+into a client-side outage, and silently discarding unrepresentable caller data turns a caller's
+mistake into a silent wrong answer.
 
 ## RULE: Automatic retry is for idempotent operations only
 
@@ -295,7 +313,8 @@ after a restart, converting a recovery into a thundering herd.
 - No silent defaults for consistency — make users choose explicitly
 - No exposing gRPC internals (channels, stubs, metadata) in the primary API
   (escape hatches for advanced use are acceptable as clearly marked secondary API)
-- **No treating a conditional permission as a grant** — see the RULE above
+- **No treating a conditional permission as a grant** — see **RULE: Only an unconditional grant
+  is true**
 
 ## CI Workflow Conventions
 

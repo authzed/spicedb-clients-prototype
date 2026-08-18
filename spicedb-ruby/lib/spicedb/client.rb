@@ -450,20 +450,19 @@ module SpiceDB
     def lookup_subjects(consistency, resource_type, resource_id, permission, subject_type)
       require_proto_client!
       Enumerator.new do |yielder|
-        call_lookup_subjects(consistency, resource_type, resource_id, permission, subject_type) do |lookup_subject|
-          yielder << lookup_subject
+        # Establishment retry only -- see {SpiceDB::Retrying#with_establishment_retry}.
+        # LookupSubjects' cursor is marked unimplemented in the proto, so
+        # there is no resume point and a mid-stream retry would replay
+        # results the caller has already seen; the zero-produced guard is
+        # what rules that out. Dropping retry altogether over-corrects,
+        # since a transient failure while OPENING the stream has delivered
+        # nothing to replay -- and the other six clients all retry it.
+        with_establishment_retry do |progress|
+          call_lookup_subjects(consistency, resource_type, resource_id, permission, subject_type) do |subject|
+            yielder << subject
+            progress.call
+          end
         end
-      rescue StandardError => e
-        # We intentionally do NOT retry LookupSubjects here (mirrors #updates
-        # below) -- the proto marks its cursor unimplemented, so unlike
-        # #lookup_resources/#export_relationships there is no resume
-        # mechanism, and retrying a mid-stream failure would re-yield
-        # results the caller has already seen. Mapping the error to a
-        # native SpiceDB::* type (instead of leaking a raw GRPC::BadStatus)
-        # is the correctness fix; retry is left to the caller.
-        raise SpiceDB.to_spicedb_error(e) if e.respond_to?(:code)
-
-        raise
       end
     end
 
@@ -601,22 +600,12 @@ module SpiceDB
       Enumerator.new do |yielder|
         cursor = nil
         loop do
-          count = 0
-          attempt = 0
-          begin
+          count = with_establishment_retry do |progress|
             call_export_relationships(consistency, filter, cursor, DEFAULT_EXPORT_PAGE_SIZE) do |rel, new_cursor|
               yielder << rel
-              count += 1
+              progress.call
               cursor = new_cursor
             end
-          rescue StandardError => e
-            if count.zero? && should_retry_establishment?(attempt, e)
-              attempt += 1
-              retry
-            end
-            raise SpiceDB.to_spicedb_error(e) if e.respond_to?(:code)
-
-            raise
           end
 
           break if count < DEFAULT_EXPORT_PAGE_SIZE

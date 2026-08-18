@@ -100,5 +100,44 @@ module SpiceDB
       sleep(backoff_delay(attempt + 1))
       true
     end
+
+    # Runs a streaming block, retrying it only while it has produced
+    # nothing, and returns how many items it produced.
+    #
+    # Establishment is the one point at which retrying a server stream is
+    # safe: nothing has reached the caller, so nothing can be replayed. Once
+    # an item has been yielded downstream, re-running the block would
+    # duplicate it -- {#should_retry_establishment?} makes only the
+    # transient/budget decision, and this is where the zero-produced guard
+    # that makes it safe actually lives.
+    #
+    # The block is handed a `progress` callable and must invoke it once per
+    # item it yields downstream. That call is what distinguishes "the stream
+    # never opened" from "the stream broke after delivering results", so a
+    # block that forgets it turns a duplicate-suppressing guard into a
+    # duplicate-producing one.
+    #
+    # Errors that survive the retry budget are mapped to native SpiceDB
+    # types rather than leaking a raw GRPC::BadStatus.
+    #
+    # @yieldparam progress [Proc] call once per item yielded downstream
+    # @return [Integer] number of items produced by the successful attempt
+    def with_establishment_retry
+      attempt = 0
+      produced = 0
+      progress = -> { produced += 1 }
+      begin
+        yield progress
+      rescue StandardError => e
+        if produced.zero? && should_retry_establishment?(attempt, e)
+          attempt += 1
+          retry
+        end
+        raise SpiceDB.to_spicedb_error(e) if e.respond_to?(:code)
+
+        raise
+      end
+      produced
+    end
   end
 end

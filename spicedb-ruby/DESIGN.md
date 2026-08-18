@@ -398,6 +398,45 @@ Exception hierarchy under `SpiceDB::Error`:
 Automatic retry with exponential backoff for transient gRPC errors
 (UNAVAILABLE, RESOURCE_EXHAUSTED, ABORTED).
 
+#### Retrying a stream: establishment only
+
+A server stream cannot be resumed, so retrying one means re-running the
+block that feeds the caller's `Enumerator` — `yielder <<` side effects and
+all. That is safe in exactly one window: before anything has been produced.
+`SpiceDB::Retrying#with_establishment_retry` is that window, and every
+streaming method that retries goes through it:
+
+```ruby
+count = with_establishment_retry do |progress|
+  call_export_relationships(...) do |rel, new_cursor|
+    yielder << rel
+    progress.call        # <- what tells the guard something was delivered
+    cursor = new_cursor
+  end
+end
+```
+
+`should_retry_establishment?` decides only whether the error is transient
+and whether budget remains; the zero-produced guard lives in
+`with_establishment_retry`, which is why a block that forgets `progress.call`
+turns a duplicate-suppressing guard into a duplicate-producing one.
+
+`lookup_subjects` is the method this shape most needs stating for, because
+it has been wrong in both directions. It once wrapped the whole call in
+`with_retry`, so a mid-stream failure replayed results the caller had
+already seen — `LookupSubjects`' cursor is marked unimplemented in the
+proto, so unlike `lookup_resources`/`export_relationships` there is no
+resume point at all. The correction removed retry entirely, which
+over-corrected: a transient failure while *opening* the stream has delivered
+nothing to replay, and dropping retry there made this the only client of the
+seven that failed such a caller outright. The zero-produced guard covers
+both — retry the open, never the middle.
+
+`updates` is the deliberate exception: it retries neither, since a watch
+stream's whole purpose is to run indefinitely and a caller that wants one
+re-established should decide that itself, with a resume token
+(`WatchEvent#changes_through`) the client has already handed it.
+
 ### Deadlines
 
 Every unary method takes a `timeout:` keyword (seconds), passed straight

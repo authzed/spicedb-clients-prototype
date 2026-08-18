@@ -95,10 +95,25 @@
   mid-stream failure after some results had already been yielded to the caller retried the whole
   call from scratch and re-yielded results the caller had already seen. `LookupSubjects`' proto
   marks its cursor unimplemented, so unlike `lookup_resources`/`export_relationships` there is no
-  resume mechanism at all -- retry here was structurally wrong, not merely unsafe in the usual
-  "retry after first yield" sense. `lookup_subjects` no longer retries at all, mirroring `updates`'
-  documented reasoning for the same defect shape: the error is still mapped to a native `SpiceDB::*`
-  type rather than leaking a raw `GRPC::BadStatus`, but retry is left to the caller.
+  resume mechanism at all -- retry there was structurally wrong, not merely unsafe in the usual
+  "retry after first yield" sense. It now retries stream ESTABLISHMENT only, guarded by "zero
+  results produced" -- the same guard `export_relationships` uses, and the same behavior as the
+  other six clients. A transient `UNAVAILABLE` while opening the stream has delivered nothing and
+  so has nothing to replay; failing the caller outright there (an earlier correction removed retry
+  entirely) traded one defect for another, and left this the only client where opening a
+  `LookupSubjects` stream during a rolling restart failed instead of retrying. Errors that survive
+  the retry budget are still mapped to a native `SpiceDB::*` type rather than leaking a raw
+  `GRPC::BadStatus`.
+
+  `updates` remains deliberately un-retried in both windows: a watch stream is meant to run
+  indefinitely, and a caller that wants one re-established should decide that itself using the
+  resume token (`WatchEvent#changes_through`) the client already hands it.
+
+  The shape shared by `lookup_subjects` and `export_relationships` moved into
+  `SpiceDB::Retrying#with_establishment_retry`, which owns the zero-produced guard rather than
+  leaving each call site to reimplement it (`should_retry_establishment?` only ever made the
+  transient/budget decision). `SpiceDB::Client`'s own body shrank in the process, keeping it under
+  the `Metrics/ClassLength` ceiling without raising it.
 - **2026-08-18**: Verified `import_relationships`'s move onto the non-retrying `call_once` path
   (Group C Task 2) fully resolves the "retry re-iterates an exhausted one-shot enumerable" defect
   (Task 8(b)): a `File.foreach(...).lazy`/DB-cursor-style source that can only be iterated once is

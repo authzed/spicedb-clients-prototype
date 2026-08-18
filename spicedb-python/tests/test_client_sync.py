@@ -118,6 +118,7 @@ def test_check_any_and_check_all_do_not_count_conditional(make_client):
             "document:readme", "conditional_view", "user:jimmy"
         )
         assert c.check_any(full(), rel) is False
+        assert c.check_all(full(), rel) is False
 
 
 def test_check_all_with_zero_relationships_returns_false(make_client):

@@ -384,13 +384,14 @@ class StreamEstablishmentRetryTest {
 
     try (TestServers servers = TestServers.start(service)) {
       SpiceDBClient client = servers.client();
-      List<SpiceDBClient.Update> results;
-      try (Stream<SpiceDBClient.Update> stream = client.updates(List.of("document"), null)) {
+      List<SpiceDBClient.WatchEvent> results;
+      try (Stream<SpiceDBClient.WatchEvent> stream = client.updates(List.of("document"), null)) {
         results = stream.toList();
       }
 
       assertEquals(1, results.size());
-      assertEquals("doc1", results.get(0).relationship().resourceID());
+      assertEquals(1, results.get(0).updates().size());
+      assertEquals("doc1", results.get(0).updates().get(0).relationship().resourceID());
       assertEquals(2, attempts.get(), "establishment retry should have made a 2nd attempt");
     }
   }
@@ -418,12 +419,12 @@ class StreamEstablishmentRetryTest {
 
     try (TestServers servers = TestServers.start(service)) {
       SpiceDBClient client = servers.client();
-      try (Stream<SpiceDBClient.Update> stream = client.updates(List.of("document"), null)) {
-        Iterator<SpiceDBClient.Update> iterator = stream.iterator();
+      try (Stream<SpiceDBClient.WatchEvent> stream = client.updates(List.of("document"), null)) {
+        Iterator<SpiceDBClient.WatchEvent> iterator = stream.iterator();
 
         assertTrue(iterator.hasNext());
-        SpiceDBClient.Update first = iterator.next();
-        assertEquals("doc1", first.relationship().resourceID());
+        SpiceDBClient.WatchEvent first = iterator.next();
+        assertEquals("doc1", first.updates().get(0).relationship().resourceID());
 
         assertThrows(SpiceDBException.class, iterator::hasNext);
       }

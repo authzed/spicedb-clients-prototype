@@ -1289,12 +1289,49 @@ public final class SpiceDBClient implements AutoCloseable {
   }
 
   /**
-   * Returns a stream over relationship changes from SpiceDB's watch API, starting from the given
-   * revision.
+   * A single event from the watch API, corresponding to one {@code WatchResponse} from the
+   * server.
+   *
+   * <p>{@code changesThrough} is always populated -- proto: "the ZedToken that represents the
+   * point in time that the watch response is current through. This token can be used in a
+   * subsequent WatchRequest to resume watching from this point." Pass it as {@code
+   * startRevision} to a later {@link #updates(List, String)} call to resume after a dropped
+   * stream, instead of restarting from the original {@code startRevision} (reprocessing
+   * everything since, possibly past the GC window) or from head (silently losing every change
+   * in the gap).
+   *
+   * <p>{@code isCheckpoint} is true for a checkpoint event, which carries no {@code updates} --
+   * it exists only to advertise a fresh {@code changesThrough} and, behind a proxy that aborts
+   * idle connections, to keep the stream alive. Checkpoints are only sent when {@code
+   * includeCheckpoints} is passed to {@link #updates(List, String, boolean)}.
+   */
+  public record WatchEvent(List<Update> updates, String changesThrough, boolean isCheckpoint) {
+    public WatchEvent {
+      updates = updates == null ? List.of() : List.copyOf(updates);
+    }
+  }
+
+  /**
+   * Returns a stream over watch events from SpiceDB's watch API, starting from the given
+   * revision. Equivalent to {@code updates(objectTypes, startRevision, false)} -- does not
+   * request checkpoints.
    *
    * <p>The returned stream should be closed when done.
    */
-  public Stream<Update> updates(List<String> objectTypes, String startRevision) {
+  public Stream<WatchEvent> updates(List<String> objectTypes, String startRevision) {
+    return updates(objectTypes, startRevision, false);
+  }
+
+  /**
+   * As {@link #updates(List, String)}, but with {@code includeCheckpoints} to also request
+   * periodic checkpoint events ({@link WatchEvent#isCheckpoint()}, no updates). Recommended if
+   * this SpiceDB instance is running behind a proxy that aborts idle connections, since a
+   * checkpoint keeps the stream alive even when there are no changes.
+   *
+   * <p>The returned stream should be closed when done.
+   */
+  public Stream<WatchEvent> updates(
+      List<String> objectTypes, String startRevision, boolean includeCheckpoints) {
     var reqBuilder = WatchRequest.newBuilder();
     if (objectTypes != null) {
       reqBuilder.addAllOptionalObjectTypes(objectTypes);
@@ -1302,12 +1339,18 @@ public final class SpiceDBClient implements AutoCloseable {
     if (startRevision != null && !startRevision.isEmpty()) {
       reqBuilder.setOptionalStartCursor(ZedToken.newBuilder().setToken(startRevision).build());
     }
+    if (includeCheckpoints) {
+      // optionalUpdateKinds is empty-means-default (relationship updates only, for backwards
+      // compatibility) -- a non-empty list is the exact set requested, so asking for checkpoints
+      // must also spell out relationship updates or the server would stop sending them.
+      reqBuilder.addOptionalUpdateKinds(WatchKind.WATCH_KIND_INCLUDE_RELATIONSHIP_UPDATES);
+      reqBuilder.addOptionalUpdateKinds(WatchKind.WATCH_KIND_INCLUDE_CHECKPOINTS);
+    }
 
     Context.CancellableContext cancelCtx = Context.current().withCancellation();
 
-    Iterator<Update> iterator =
+    Iterator<WatchEvent> iterator =
         new Iterator<>() {
-          private final Queue<Update> buffer = new ArrayDeque<>();
           // Opened lazily, on the first hasNext() call below — not eagerly here in updates()
           // itself. This matters for correctness, not just style: grpc-java's blocking-stub
           // priming call (which openStreamWithRetry needs, to make retry effective — see its
@@ -1322,8 +1365,6 @@ public final class SpiceDBClient implements AutoCloseable {
 
           @Override
           public boolean hasNext() {
-            if (!buffer.isEmpty()) return true;
-
             if (serverStream == null) {
               // Establishment retry: applies ONLY to this first open. Once serverStream is set,
               // every later call skips straight to mapStreamErrors below (no retry) — so a
@@ -1336,19 +1377,19 @@ public final class SpiceDBClient implements AutoCloseable {
                 cancelCtx.detach(previous);
               }
             }
-
-            if (!mapStreamErrors(serverStream::hasNext)) return false;
-            WatchResponse resp = mapStreamErrors(serverStream::next);
-            for (var u : resp.getUpdatesList()) {
-              buffer.add(updateFromProto(u));
-            }
-            return !buffer.isEmpty();
+            return mapStreamErrors(serverStream::hasNext);
           }
 
           @Override
-          public Update next() {
+          public WatchEvent next() {
             if (!hasNext()) throw new NoSuchElementException();
-            return buffer.poll();
+            WatchResponse resp = mapStreamErrors(serverStream::next);
+            List<Update> batch = new ArrayList<>(resp.getUpdatesCount());
+            for (var u : resp.getUpdatesList()) {
+              batch.add(updateFromProto(u));
+            }
+            return new WatchEvent(
+                batch, resp.getChangesThrough().getToken(), resp.getIsCheckpoint());
           }
         };
 

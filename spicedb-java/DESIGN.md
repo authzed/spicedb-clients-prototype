@@ -333,7 +333,18 @@ These may change without following the backwards compatibility mandate.
 - `exportRelationships(Consistency, Filter)` → `Stream<Relationship>`
 
 **Watch:**
-- `updates(List<String> objectTypes, String startRevision)` → `Stream<Update>`
+- `updates(List<String> objectTypes, String startRevision)` → `Stream<WatchEvent>`
+- `updates(List<String> objectTypes, String startRevision, boolean includeCheckpoints)` →
+  `Stream<WatchEvent>` — `includeCheckpoints` requests `WATCH_KIND_INCLUDE_CHECKPOINTS`
+  (recommended behind a proxy that aborts idle connections, since a checkpoint keeps the
+  stream alive with no changes to report)
+
+`WatchEvent(List<Update> updates, String changesThrough, boolean isCheckpoint)` is one event
+per `WatchResponse`. `changesThrough` is always populated -- proto: "This token can be used in
+a subsequent WatchRequest to resume watching from this point" -- pass it as `startRevision` to
+resume after a dropped stream instead of restarting from the original `startRevision`
+(reprocessing, possibly past the GC window) or from head (silently losing every change in the
+gap). `isCheckpoint` is true for a checkpoint event, which carries no `updates`.
 
 **Experimental:**
 - `experimentalRegisterRelationshipCounter(String name, Filter)`

@@ -62,11 +62,11 @@ class StreamCancellationTest {
 
     try (TestServers servers = TestServers.start(service)) {
       SpiceDBClient client = servers.client();
-      try (Stream<SpiceDBClient.Update> stream = client.updates(List.of("document"), null)) {
-        Iterator<SpiceDBClient.Update> iterator = stream.iterator();
+      try (Stream<SpiceDBClient.WatchEvent> stream = client.updates(List.of("document"), null)) {
+        Iterator<SpiceDBClient.WatchEvent> iterator = stream.iterator();
         assertTrue(iterator.hasNext());
-        SpiceDBClient.Update first = iterator.next();
-        assertEquals("doc1", first.relationship().resourceID());
+        SpiceDBClient.WatchEvent first = iterator.next();
+        assertEquals("doc1", first.updates().get(0).relationship().resourceID());
 
         // Stream is still open here (server never completed it). Closing must cancel the call.
       }

@@ -49,10 +49,11 @@ class WatchUpdateMappingTest {
 
     try (TestServers servers = TestServers.start(service)) {
       SpiceDBClient client = servers.client();
-      try (Stream<SpiceDBClient.Update> stream = client.updates(List.of("document"), null)) {
-        Iterator<SpiceDBClient.Update> iterator = stream.iterator();
+      try (Stream<SpiceDBClient.WatchEvent> stream = client.updates(List.of("document"), null)) {
+        Iterator<SpiceDBClient.WatchEvent> iterator = stream.iterator();
         assertTrue(iterator.hasNext());
-        SpiceDBClient.Update update = iterator.next();
+        SpiceDBClient.WatchEvent event = iterator.next();
+        SpiceDBClient.Update update = event.updates().get(0);
 
         assertEquals(SpiceDBClient.UpdateOperation.UNSPECIFIED, update.operation());
         assertNotEquals(SpiceDBClient.UpdateOperation.TOUCH, update.operation());

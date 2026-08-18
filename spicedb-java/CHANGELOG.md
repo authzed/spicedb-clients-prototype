@@ -150,6 +150,37 @@
 
 ### Fixes
 
+- **2026-08-18**: Watch resumability. `updates` previously dropped
+  `WatchResponse.changes_through` entirely and had no way to request
+  `WATCH_KIND_INCLUDE_CHECKPOINTS`.
+  - **Breaking**: `updates(List<String> objectTypes, String startRevision)` now returns
+    `Stream<SpiceDBClient.WatchEvent>` instead of `Stream<SpiceDBClient.Update>`, and yields
+    once per server response (a batch of updates) rather than flattening to one item per
+    relationship update — a checkpoint response carries zero updates, so a per-update-only
+    stream has no way to surface one at all.
+
+    ```java
+    public record WatchEvent(List<Update> updates, String changesThrough, boolean isCheckpoint) {}
+    ```
+  - `WatchEvent.changesThrough` is the proto's `changes_through` -- "This token can be used in
+    a subsequent WatchRequest to resume watching from this point." Without it, a consumer whose
+    stream dropped could only restart from its original `startRevision` (reprocessing
+    everything since, possibly past the GC window) or from head (silently losing every change
+    in the gap).
+  - New overload `updates(List<String> objectTypes, String startRevision, boolean
+    includeCheckpoints)` requests `WATCH_KIND_INCLUDE_CHECKPOINTS` (plus
+    `WATCH_KIND_INCLUDE_RELATIONSHIP_UPDATES`, since `optionalUpdateKinds` is
+    empty-means-default and a non-empty list replaces rather than extends it) -- no prior way
+    existed to ask for this at all. `WatchEvent.isCheckpoint` lets a caller tell "nothing
+    changed, here is a fresh resume point" from "here are changes". Recommended if this
+    SpiceDB instance is running behind a proxy that aborts idle connections.
+  - `examples/watch_changes/` (`WatchChangesTest`) updated for the new `WatchEvent` shape and
+    extended with a checkpoint-request test. New `lib/src/test/.../WatchResumabilityTest.java`:
+    a watch event exposes a usable resume token, `includeCheckpoints` reaches the built
+    `WatchRequest`, and a checkpoint event is distinguishable from one carrying updates.
+    `WatchUpdateMappingTest`, `StreamCancellationTest`, `StreamingErrorMappingTest`, and
+    `StreamEstablishmentRetryTest`'s watch cases updated for the new return type without
+    weakening any existing assertion.
 - **2026-08-18**: Call deadlines, per root `DESIGN.md` "RULE: A unary call must have a
   deadline". Previously no method accepted a timeout and no client-level default existed, so a
   SpiceDB instance that accepted a connection but never answered hung every caller forever — the

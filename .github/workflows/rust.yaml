@@ -75,6 +75,10 @@ jobs:
         run: mage -d proto-clients/spicedb-rust-proto test
       - name: Idiomatic client tests
         run: mage -d spicedb-rust test
+      - name: TLS handshake test (requires network)
+        env:
+          SPICEDB_TLS_INTEGRATION: "1"
+        run: cargo test --manifest-path spicedb-rust/Cargo.toml --test client_test test_system_tls_completes_real_handshake -- --nocapture
 
   integration:
     needs: paths-filter

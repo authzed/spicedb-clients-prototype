@@ -36,7 +36,9 @@ async fn test_builder_accepts_owned_strings() {
 ///
 /// A local self-signed server cannot substitute: the platform trust store under test
 /// is precisely the thing that would reject it. So this needs the network, and is
-/// gated to keep offline runs green. CI runs it with the variable set.
+/// gated to keep offline runs green. CI runs it in the `unit` job's "TLS handshake
+/// test (requires network)" step in `.github/workflows/rust.yaml`, which sets the
+/// variable and runs only this test.
 ///
 /// No credentials are exercised — `connect()` performs TCP and TLS only, so the token
 /// below is never validated and never sent.

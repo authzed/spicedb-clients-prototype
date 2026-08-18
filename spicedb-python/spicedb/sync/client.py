@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import random
 import time
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from typing import TYPE_CHECKING, Any
 
 import grpc
@@ -613,9 +613,15 @@ class SpiceDBClient:
     # ── Bulk operations ─────────────────────────────────────────────
 
     def import_relationships(
-        self, relationships: list[Relationship], *, timeout: float | None = None
+        self, relationships: Iterable[Relationship], *, timeout: float | None = None
     ) -> int:
         """Import relationships in bulk. Returns the number loaded.
+
+        `relationships` may be a `list`, a generator, or any other iterable --
+        it is consumed lazily, one batch (`_IMPORT_BATCH_SIZE` relationships)
+        at a time, so a caller streaming in millions of relationships from a
+        generator or a DB cursor is never forced to materialize the whole
+        thing into a `list` first.
 
         `ImportBulkRelationships` is client-streaming: its duration scales with
         the size of `relationships`, not with server latency, so it does NOT

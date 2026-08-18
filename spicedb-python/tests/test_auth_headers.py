@@ -199,6 +199,42 @@ def test_sync_import_relationships_sends_exactly_one_authorization_header(
     assert recorder.headers[0][1] == f"Bearer {TOKEN}"
 
 
+def test_sync_import_relationships_accepts_a_one_shot_generator(tls_pair):
+    """`import_relationships` must accept an iterator/generator without
+
+    requiring the caller to materialize it into a `list` first -- a caller
+    streaming in millions of relationships from `File.foreach`-equivalent
+    generator or a DB cursor should not be forced to hold them all in memory
+    at once just to call this method. Drives a real in-process gRPC server
+    (like the test above) with a plain generator that can only be iterated
+    ONCE: if the client (or `_requests.import_batches` underneath it)
+    materialized `relationships` into a list/tuple before streaming, this
+    would still pass, but if it re-iterated the source (e.g. under a retry)
+    it would raise on the second pass.
+    """
+    from spicedb.sync import SpiceDBClient as SyncSpiceDBClient
+
+    recorder = _Recorder()
+    server, port = _serve(recorder, None)
+    consumed_once = False
+
+    def one_shot():
+        nonlocal consumed_once
+        assert not consumed_once, "the generator must not be iterated more than once"
+        consumed_once = True
+        for i in range(5):
+            yield Relationship.from_triple(f"document:{i}", "viewer", "user:jimmy")
+
+    try:
+        client = SyncSpiceDBClient(f"localhost:{port}", token=TOKEN, insecure=True)
+        num_loaded = client.import_relationships(one_shot())
+        client.close()
+    finally:
+        server.stop(0)
+
+    assert num_loaded == 5, "the real server must see all 5 relationships from the generator"
+
+
 @pytest.mark.parametrize("secure", [False, True])
 @pytest.mark.parametrize("streaming", [False, True])
 def test_sync_sends_exactly_one_authorization_header(

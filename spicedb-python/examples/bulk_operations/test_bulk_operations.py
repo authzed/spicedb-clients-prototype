@@ -66,6 +66,21 @@ async def test_bulk_import_export(client: SpiceDBClient):
     print(f"imported {num_loaded} relationships")
     assert num_loaded == len(users)
 
+    # import_relationships also accepts a generator (or any other iterable)
+    # instead of a list -- it's consumed lazily, one batch at a time, so a
+    # caller streaming in millions of relationships from a generator or a DB
+    # cursor is never forced to materialize the whole thing into a list
+    # first.
+    more_users = ["grace", "heidi"]
+
+    def relationship_generator():
+        for user in more_users:
+            yield Relationship.from_triple("document:archive", "viewer", f"user:{user}")
+
+    num_loaded_from_generator = await client.import_relationships(relationship_generator())
+    print(f"imported {num_loaded_from_generator} relationships from a generator")
+    assert num_loaded_from_generator == len(more_users)
+
     # export_relationships streams relationships back out, paginating
     # automatically under the hood.
     filter = Filter(resource_type="document", resource_id="archive")

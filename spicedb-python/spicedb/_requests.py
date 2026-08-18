@@ -8,7 +8,8 @@ once.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+import itertools
+from collections.abc import Iterable, Iterator
 from typing import Any
 
 from authzed.api.v1 import (
@@ -227,17 +228,29 @@ def export_request(
 
 
 def import_batches(
-    relationships: list[Relationship], batch_size: int = IMPORT_BATCH_SIZE
+    relationships: Iterable[Relationship], batch_size: int = IMPORT_BATCH_SIZE
 ) -> Iterator[permission_service_pb2.ImportBulkRelationshipsRequest]:
     """Chunk relationships into ImportBulkRelationships requests.
+
+    `relationships` is consumed lazily via a plain iterator, not indexed --
+    unlike every other paginated/bulk RPC, ImportBulkRelationships is
+    client-streaming: the caller is the one producing an unbounded amount of
+    data, and a caller streaming in millions of relationships from a
+    generator (`File.foreach`-equivalent, a DB cursor) should never be forced
+    to materialize the whole thing into a `list` first just to hand it to
+    this client. Only one batch (`batch_size` relationships) is ever held in
+    memory at a time.
 
     A plain generator, so both the sync client and the async client's request
     feed can drive it.
     """
-    for i in range(0, len(relationships), batch_size):
-        batch = relationships[i : i + batch_size]
+    it = iter(relationships)
+    while True:
+        batch = [r._to_proto() for r in itertools.islice(it, batch_size)]
+        if not batch:
+            return
         yield permission_service_pb2.ImportBulkRelationshipsRequest(
-            relationships=[r._to_proto() for r in batch]
+            relationships=batch
         )
 
 

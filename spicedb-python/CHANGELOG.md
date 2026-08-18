@@ -126,6 +126,13 @@
 
 ### Fixed
 
+- **2026-08-18**: `import_relationships` (sync and aio) required a materialized `list`, forcing a
+  caller streaming in a large import from a generator or a DB cursor to hold every relationship
+  in memory at once before calling this method at all. Both now accept `Iterable[Relationship]`
+  -- a `list` still works unchanged, but a generator or any other iterable now works too, and is
+  consumed lazily: `_requests.import_batches` pulls one batch (`IMPORT_BATCH_SIZE` relationships)
+  at a time via `itertools.islice` rather than indexing/slicing the whole input up front (which
+  also required `len()`, so a plain generator raised `TypeError` immediately).
 - **2026-08-18**: Call deadlines, per root `DESIGN.md` "RULE: A unary call must have a
   deadline". Previously no method on either flavor accepted a timeout, and no client-level
   default existed, so a SpiceDB instance that accepted a connection but never answered hung

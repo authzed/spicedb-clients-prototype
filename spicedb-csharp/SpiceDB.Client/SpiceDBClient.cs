@@ -181,6 +181,16 @@ public sealed class SpiceDBClient : IAsyncDisposable
     /// <paramref name="defaultTimeout"/>, if supplied, overrides the default
     /// applied to every unary call that doesn't pass its own <c>timeout</c>
     /// (see <see cref="DefaultTimeout"/>).
+    /// <para>
+    /// <b>Security note:</b> unlike <see cref="CreatePlaintext"/>, this overload
+    /// performs no loopback check (root DESIGN.md, "RULE: Credentials over
+    /// insecure transport require an explicit opt-in") -- <paramref name="channel"/>
+    /// already exists, fully configured, by the time this runs, so there is no
+    /// endpoint string or insecure flag left to guard. The bearer token is attached
+    /// unconditionally regardless of what transport security <paramref
+    /// name="channel"/> actually has. Only pass a channel you built yourself and
+    /// know the transport security of.
+    /// </para>
     /// </summary>
     public static SpiceDBClient CreateFromChannel(
         GrpcChannel channel, string presharedKey, TimeSpan? defaultTimeout = null)

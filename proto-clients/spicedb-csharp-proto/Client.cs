@@ -150,6 +150,20 @@ public sealed class SpiceDBProtoClient : IDisposable
     /// Creates a new SpiceDB proto client from an existing <see cref="GrpcChannel"/>,
     /// injecting the bearer token via an interceptor.
     /// This is the escape hatch for advanced channel configuration.
+    /// <para>
+    /// <b>Security note:</b> this overload has no <c>insecure</c>/
+    /// <c>allowInsecureRemoteCredentials</c> parameters and performs no loopback
+    /// check (root DESIGN.md, "RULE: Credentials over insecure transport require an
+    /// explicit opt-in") -- unlike the endpoint-string constructor above, there is
+    /// no <c>ChannelCredentials.Insecure</c> branch to guard here: <paramref
+    /// name="channel"/> already exists, fully configured, by the time this runs.
+    /// The interceptor below sets the bearer token raw, unconditionally, exactly
+    /// like the guarded path above, but whether that is safe depends entirely on
+    /// how the caller built <paramref name="channel"/> (plaintext vs. TLS, and to
+    /// which host) -- something this constructor cannot see or second-guess after
+    /// the fact. Only use this with a channel you built yourself and know the
+    /// transport security of.
+    /// </para>
     /// </summary>
     /// <param name="channel">A pre-configured gRPC channel.</param>
     /// <param name="token">Bearer token for authentication.</param>
@@ -157,6 +171,8 @@ public sealed class SpiceDBProtoClient : IDisposable
     {
         _channel = channel;
 
+        // No guard here -- see the security note above: the channel already
+        // exists by the time this runs, so there is nothing left to refuse.
         var invoker = channel.CreateCallInvoker().Intercept(metadata =>
         {
             metadata.Add("authorization", $"Bearer {token}");
@@ -197,23 +213,30 @@ public sealed class SpiceDBProtoClient : IDisposable
             return true;
         }
 
-        // endpoint is "host:port" or a bare host -- strip a trailing ":port" (but not
-        // the colons inside a bracketed IPv6 literal, e.g. "[::1]:50051").
-        var host = endpoint;
+        // endpoint is "host:port", a bracketed IPv6 literal (with or without a
+        // ":port" suffix), a bare IPv6 literal (e.g. "::1", no port possible
+        // without brackets), or a bare host.
+        string host;
         var bracketEnd = endpoint.IndexOf(']');
-        var lastColon = bracketEnd >= 0 ? endpoint.IndexOf(':', bracketEnd) : endpoint.LastIndexOf(':');
-        if (lastColon >= 0 && (bracketEnd < 0 || lastColon > bracketEnd))
+        if (bracketEnd >= 0)
         {
-            // Only treat this as a "host:port" split if what follows is a numeric
-            // port -- otherwise (e.g. a bare "::1" with no brackets and no port)
-            // leave endpoint untouched so IPAddress.Parse below sees the whole thing.
-            var candidatePort = endpoint[(lastColon + 1)..];
-            if (int.TryParse(candidatePort, out _))
-            {
-                host = endpoint[..lastColon];
-            }
+            // "[::1]:50051" or "[::1]" -> "::1"
+            host = endpoint[1..bracketEnd];
         }
-        host = host.Trim('[', ']');
+        else if (endpoint.IndexOf(':') != endpoint.LastIndexOf(':'))
+        {
+            // More than one ':' with no brackets -- a bare IPv6 literal like
+            // "::1". No port is possible in this form, so the whole string is
+            // the host: a "host:port" split here would corrupt it (e.g.
+            // mistaking "::1"'s trailing "1" for a port and leaving a bare
+            // ":" as the host, which fails every check below).
+            host = endpoint;
+        }
+        else
+        {
+            var lastColon = endpoint.LastIndexOf(':');
+            host = lastColon >= 0 ? endpoint[..lastColon] : endpoint;
+        }
 
         if (string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase))
         {

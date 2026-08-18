@@ -47,6 +47,37 @@ internal sealed class AuthCapturingHandler : HttpMessageHandler
 public class InsecureHostGuardTest
 {
     /// <summary>
+    /// Table test for <see cref="SpiceDBProtoClient.IsLoopbackEndpoint"/>. Includes
+    /// typosquat/lookalike hosts that must NOT be treated as loopback -- a future
+    /// refactor toward Contains/StartsWith on "localhost" or "127.0.0.1" would
+    /// silently reopen a credential leak to any of these, and this test is what
+    /// would catch it.
+    /// </summary>
+    [Theory]
+    [InlineData("localhost:50051", true)]
+    [InlineData("LOCALHOST:50051", true)]
+    [InlineData("localhost", true)]
+    [InlineData("127.0.0.1:50051", true)]
+    [InlineData("127.0.0.1", true)]
+    [InlineData("127.55.66.77:50051", true)]
+    [InlineData("[::1]:50051", true)]
+    [InlineData("::1", true)]
+    [InlineData("unix:/var/run/spicedb.sock", true)]
+    [InlineData("unix:///var/run/spicedb.sock", true)]
+    [InlineData("example.com:443", false)]
+    [InlineData("staging.internal:443", false)]
+    [InlineData("10.0.0.5:50051", false)]
+    [InlineData("8.8.8.8:443", false)]
+    [InlineData("0.0.0.0:50051", false)]
+    [InlineData("localhost.evil.com:443", false)]
+    [InlineData("127.0.0.1.evil.com:443", false)]
+    [InlineData("evil-localhost:443", false)]
+    public void TestIsLoopbackEndpoint(string endpoint, bool expected)
+    {
+        Assert.Equal(expected, SpiceDBProtoClient.IsLoopbackEndpoint(endpoint));
+    }
+
+    /// <summary>
     /// TestRefusesInsecureNonLoopbackWithoutOptIn is the regression test for root
     /// DESIGN.md, "RULE: Credentials over insecure transport require an explicit
     /// opt-in": constructing insecurely against a non-loopback endpoint, with no

@@ -93,18 +93,23 @@ fn test_deadline_exceeded_is_not_transient() {
 
 #[test]
 fn test_is_transient_resource_exhausted() {
+    // Inverted from "assert!(is_transient(...))" -- RESOURCE_EXHAUSTED must
+    // NOT be retried. In SpiceDB it signals memory load-shed or a
+    // deterministic MaxDepthExceeded, never a transient hiccup. See
+    // DESIGN.md, "Automatic retry is for idempotent operations only".
     let err = SpiceDBError::Status {
         code: 8, // RESOURCE_EXHAUSTED
         message: "quota".into(),
     };
-    assert!(is_transient(&err));
+    assert!(!is_transient(&err));
 }
 
 #[test]
 fn test_is_transient_resource_exhausted_via_from_grpc_status() {
+    // Inverted from "assert!(is_transient(...))" -- see above.
     let err = from_grpc_status(8, "quota".into());
     assert!(matches!(err, SpiceDBError::ResourceExhausted(_)));
-    assert!(is_transient(&err));
+    assert!(!is_transient(&err));
 }
 
 #[test]

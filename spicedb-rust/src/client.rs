@@ -52,8 +52,12 @@ const BASE_RETRY_DELAY_MS: u64 = 100;
 /// Streaming operations return `impl Stream<Item = Result<T, SpiceDBError>>`.
 /// Cursor-based pagination is handled transparently within the client.
 ///
-/// Transient gRPC errors (UNAVAILABLE, RESOURCE_EXHAUSTED, ABORTED)
-/// are automatically retried with exponential backoff.
+/// Transient gRPC errors (UNAVAILABLE, ABORTED) on read operations are
+/// automatically retried with full-jitter exponential backoff. Mutations
+/// (`write`, `delete_relationships`/`delete_relationships_with`,
+/// `write_schema`, the counter register/unregister calls) are never
+/// automatically retried, even on a transient error -- see
+/// [`SpiceDBClient::call_once`].
 pub struct SpiceDBClient {
     // The proto client holds the gRPC channel and bearer-token interceptor.
     proto: SpiceDBProtoClient,
@@ -415,7 +419,7 @@ impl SpiceDBClient {
         let preconditions = preconditions_to_proto(txn.preconditions())?;
 
         let resp = self
-            .retry(|| async {
+            .call_once(|| async {
                 self.proto
                     .permissions
                     .clone()
@@ -553,7 +557,7 @@ impl SpiceDBClient {
 
         loop {
             let resp = self
-                .retry(|| async {
+                .call_once(|| async {
                     self.proto
                         .permissions
                         .clone()
@@ -807,7 +811,7 @@ impl SpiceDBClient {
     /// Returns the revision at which the schema was written.
     pub async fn write_schema(&self, schema: &str) -> Result<String, SpiceDBError> {
         let resp = self
-            .retry(|| async {
+            .call_once(|| async {
                 self.proto
                     .schema
                     .clone()
@@ -1258,7 +1262,7 @@ impl SpiceDBClient {
         filter: &Filter,
     ) -> Result<(), SpiceDBError> {
         let filter = filter.to_proto()?;
-        self.retry(|| async {
+        self.call_once(|| async {
             self.proto
                 .experimental
                 .clone()
@@ -1335,7 +1339,7 @@ impl SpiceDBClient {
         &self,
         name: &str,
     ) -> Result<(), SpiceDBError> {
-        self.retry(|| async {
+        self.call_once(|| async {
             self.proto
                 .experimental
                 .clone()
@@ -1355,11 +1359,14 @@ impl SpiceDBClient {
     // Retry with exponential backoff
     // -----------------------------------------------------------------------
 
-    /// Retries a gRPC call with exponential backoff for transient errors.
+    /// Retries a gRPC call with full-jitter exponential backoff for transient
+    /// errors.
     ///
-    /// Retries on UNAVAILABLE, RESOURCE_EXHAUSTED, and ABORTED up to
-    /// MAX_RETRIES times with exponentially increasing delays starting at
-    /// BASE_RETRY_DELAY_MS.
+    /// Only for idempotent (read) calls -- see [`SpiceDBClient::call_once`]
+    /// for mutations.
+    ///
+    /// Retries on UNAVAILABLE and ABORTED up to MAX_RETRIES times with
+    /// exponentially increasing delay caps starting at BASE_RETRY_DELAY_MS.
     async fn retry<F, Fut, T>(&self, f: F) -> Result<tonic::Response<T>, SpiceDBError>
     where
         F: Fn() -> Fut,
@@ -1367,17 +1374,48 @@ impl SpiceDBClient {
     {
         retry_call(f).await
     }
+
+    /// Calls `f` once, converting a `tonic::Status` error, but never
+    /// retrying.
+    ///
+    /// For mutations. A `WriteRelationships` containing `OPERATION_CREATE`,
+    /// or any request carrying preconditions, is not idempotent: if it
+    /// commits and the response is lost (a rolling restart, a proxy dropping
+    /// the connection), a retry would surface `ALREADY_EXISTS`/
+    /// `FAILED_PRECONDITION` for a write that in fact succeeded, and the
+    /// caller would wrongly conclude it had failed. See DESIGN.md,
+    /// "Automatic retry is for idempotent operations only".
+    async fn call_once<F, Fut, T>(&self, f: F) -> Result<tonic::Response<T>, SpiceDBError>
+    where
+        F: Fn() -> Fut,
+        Fut: std::future::Future<Output = Result<tonic::Response<T>, tonic::Status>>,
+    {
+        f().await.map_err(|status| {
+            error::from_grpc_status(status.code() as i32, status.message().to_string())
+        })
+    }
 }
 
-/// Retries a gRPC call with exponential backoff for transient errors.
+/// Full-jitter backoff delay in milliseconds for retry attempt `attempt`:
+/// `uniform(0, cap)` rather than the fixed `cap`. Plain exponential backoff
+/// has every client in a fleet retry on the same schedule after a server
+/// restart, turning the recovery into a thundering herd; sampling uniformly
+/// under the cap spreads retries out instead.
+fn jittered_backoff_ms(attempt: u32) -> u64 {
+    let cap_ms = (BASE_RETRY_DELAY_MS * 2u64.pow(attempt)).min(5000);
+    (rand::random::<f64>() * cap_ms as f64) as u64
+}
+
+/// Retries a gRPC call with full-jitter exponential backoff for transient
+/// errors.
 ///
 /// Free-function twin of [`SpiceDBClient::retry`] that does not borrow `self`,
 /// so it can be used from inside `+ 'static` streams (which own a cloned
 /// service client rather than borrowing the `SpiceDBClient`).
 ///
-/// Retries on UNAVAILABLE, RESOURCE_EXHAUSTED, and ABORTED up to
-/// MAX_RETRIES times with exponentially increasing delays starting at
-/// BASE_RETRY_DELAY_MS, capped at 5s per delay.
+/// Retries on UNAVAILABLE and ABORTED up to MAX_RETRIES times with
+/// exponentially increasing delay caps starting at BASE_RETRY_DELAY_MS,
+/// capped at 5s.
 pub(crate) async fn retry_call<F, Fut, T>(f: F) -> Result<tonic::Response<T>, SpiceDBError>
 where
     F: Fn() -> Fut,
@@ -1393,7 +1431,7 @@ where
                 if !error::is_transient(&err) || attempt >= MAX_RETRIES {
                     return Err(err);
                 }
-                let delay_ms = (BASE_RETRY_DELAY_MS * 2u64.pow(attempt)).min(5000);
+                let delay_ms = jittered_backoff_ms(attempt);
                 tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
                 attempt += 1;
             }
@@ -1616,6 +1654,20 @@ mod tests {
     fn test_retry_constants() {
         assert_eq!(MAX_RETRIES, 3);
         assert_eq!(BASE_RETRY_DELAY_MS, 100);
+    }
+
+    /// Backoff must vary between runs -- assert the jitter exists, not an
+    /// exact value. Without jitter every client in a fleet retries on the
+    /// same schedule after a server restart (thundering herd).
+    #[test]
+    fn test_jittered_backoff_ms_varies_between_calls() {
+        let cap_ms = (BASE_RETRY_DELAY_MS * 2u64.pow(2)).min(5000);
+        let seen: std::collections::HashSet<u64> =
+            (0..50).map(|_| jittered_backoff_ms(2)).collect();
+        assert!(seen.len() > 1, "backoff should vary between calls");
+        for v in seen {
+            assert!(v <= cap_ms, "backoff {v} exceeded the cap {cap_ms}");
+        }
     }
 
     // Pure-function coverage of build_check_items, complementing the

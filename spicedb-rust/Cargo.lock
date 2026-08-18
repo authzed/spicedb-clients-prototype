@@ -1137,6 +1137,7 @@ dependencies = [
  "futures",
  "prost",
  "prost-types",
+ "rand",
  "serde_json",
  "spicedb-proto",
  "thiserror",

@@ -4,6 +4,37 @@
 
 ### Fixes
 
+- **Retry safety, per root `DESIGN.md` "RULE: Automatic retry is for idempotent operations
+  only".** Three changes:
+  - `RESOURCE_EXHAUSTED` is no longer retried. In SpiceDB it signals memory load-shed (retrying
+    adds load to an already-overloaded server) or a deterministic `MaxDepthExceeded` (retrying can
+    never succeed — it re-runs the most expensive class of check several times before surfacing
+    the same error). Previously `error::is_transient` treated both `SpiceDBError::ResourceExhausted`
+    and gRPC code 8 as transient.
+  - Mutations (`write`, `delete_relationships`/`delete_relationships_with`, `write_schema`, the
+    `experimental_register_relationship_counter`/`experimental_unregister_relationship_counter`
+    calls) are no longer retried on a transient error, even though the underlying gRPC code is
+    retryable. A `write()` carrying `OPERATION_CREATE` or preconditions is not idempotent: if it
+    commits and the response is lost (a rolling restart, a proxy dropping the connection), a retry
+    would surface `ALREADY_EXISTS`/`FAILED_PRECONDITION` for a write that in fact succeeded, and the
+    caller would wrongly conclude it had failed. Reads still retry automatically. All five mutation
+    call sites previously went through `SpiceDBClient::retry`; they now go through a new
+    `SpiceDBClient::call_once`, which converts the error without retrying.
+  - Backoff is now full-jitter (`jittered_backoff_ms`, `uniform(0, cap)`) instead of plain
+    exponential doubling. Without jitter, every client in a fleet retries on the same schedule
+    after a server restart, turning the recovery into a thundering herd. Requires a new direct
+    dependency on `rand` (already present transitively).
+
+  `src/error.rs`'s `test_is_transient_resource_exhausted` and
+  `test_is_transient_resource_exhausted_via_from_grpc_status`, and their duplicates in
+  `tests/error_test.rs`, previously asserted `is_transient(...)` was `true` for `RESOURCE_EXHAUSTED`;
+  all four are inverted to assert `false`, since the old assertions were exactly the defect this
+  fixes. New coverage in `tests/retry_safety_test.rs` (a mutation is attempted exactly once on a
+  retryable error, a non-transient error, and `RESOURCE_EXHAUSTED`; a read is retried;
+  `RESOURCE_EXHAUSTED` is never retried on a read) and a `jittered_backoff_ms` unit test in
+  `src/client.rs` (backoff varies between calls). The mock `PermissionsService` harness in
+  `tests/support/mod.rs` gained a real (previously `unimplemented!()`) `write_relationships` and
+  failure-injection for both it and `check_bulk_permissions`.
 - **`updates()` silently dropped every watch update whose operation it did not recognize.** The
   mapper's fallthrough arm was `_ => continue`, so an `OPERATION_UNSPECIFIED` — or any future
   operation value added to the proto after this client shipped — made the whole update vanish from

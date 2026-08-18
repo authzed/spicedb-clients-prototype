@@ -113,15 +113,18 @@ pub fn internal(message: String) -> SpiceDBError {
 }
 
 /// Returns `true` if the error represents a transient gRPC failure that is
-/// worth retrying with exponential backoff (UNAVAILABLE, RESOURCE_EXHAUSTED,
-/// ABORTED).
+/// worth retrying with exponential backoff (UNAVAILABLE, ABORTED).
+///
+/// RESOURCE_EXHAUSTED is deliberately excluded. In SpiceDB it signals either
+/// memory load-shed (retrying adds load to an already-overloaded server) or a
+/// deterministic MaxDepthExceeded (retrying can never succeed -- it just
+/// re-runs the most expensive class of check several times before surfacing
+/// the same error). See DESIGN.md, "Automatic retry is for idempotent
+/// operations only".
 pub fn is_transient(err: &SpiceDBError) -> bool {
     match err {
         SpiceDBError::Unavailable(_) => true,
-        SpiceDBError::ResourceExhausted(_) => true,
-        SpiceDBError::Status { code, .. } => {
-            *code == codes::RESOURCE_EXHAUSTED || *code == codes::ABORTED
-        }
+        SpiceDBError::Status { code, .. } => *code == codes::ABORTED,
         _ => false,
     }
 }
@@ -209,18 +212,22 @@ mod tests {
 
     #[test]
     fn test_is_transient_resource_exhausted() {
+        // Inverted from "assert!(is_transient(...))" -- RESOURCE_EXHAUSTED
+        // must NOT be retried. See DESIGN.md, "Automatic retry is for
+        // idempotent operations only".
         let err = SpiceDBError::Status {
             code: codes::RESOURCE_EXHAUSTED,
             message: "quota".into(),
         };
-        assert!(is_transient(&err));
+        assert!(!is_transient(&err));
     }
 
     #[test]
     fn test_is_transient_resource_exhausted_via_from_grpc_status() {
+        // Inverted from "assert!(is_transient(...))" -- see above.
         let err = from_grpc_status(codes::RESOURCE_EXHAUSTED, "quota".into());
         assert!(matches!(err, SpiceDBError::ResourceExhausted(_)));
-        assert!(is_transient(&err));
+        assert!(!is_transient(&err));
     }
 
     #[test]

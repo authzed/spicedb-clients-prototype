@@ -36,8 +36,12 @@ definition document {
 	}
 
 	var txn rel.Txn
-	txn.Touch(rel.MustFromTriple("document", "firstdoc", "viewer", "user", "alice", ""))
-	txn.Touch(rel.MustFromTriple("document", "seconddoc", "viewer", "user", "bob", ""))
+	if err := txn.Touch(rel.MustFromTriple("document", "firstdoc", "viewer", "user", "alice", "")); err != nil {
+		log.Fatalf("failed to add relationship to transaction: %v", err)
+	}
+	if err := txn.Touch(rel.MustFromTriple("document", "seconddoc", "viewer", "user", "bob", "")); err != nil {
+		log.Fatalf("failed to add relationship to transaction: %v", err)
+	}
 	_, err = c.Write(ctx, txn)
 	if err != nil {
 		log.Fatalf("write relationships failed: %v", err)

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/types/known/structpb"
 
 	"github.com/authzed/spicedb-clients/spicedb-go/rel"
 )
@@ -116,9 +117,9 @@ func TestTxn(t *testing.T) {
 	r2 := rel.MustFromTriple("document", "doc2", "editor", "user", "bob", "")
 
 	var txn rel.Txn
-	txn.Create(r1)
-	txn.Touch(r2)
-	txn.Delete(r1)
+	require.NoError(t, txn.Create(r1))
+	require.NoError(t, txn.Touch(r2))
+	require.NoError(t, txn.Delete(r1))
 	txn.MustNotMatch(rel.NewFilter("document").WithResourceID("doc3"))
 
 	require.Len(t, txn.V1Updates, 3)
@@ -129,7 +130,8 @@ func TestRoundTripProto(t *testing.T) {
 	original := rel.MustFromTriple("document", "doc1", "viewer", "user", "alice", "").
 		WithCaveat("is_public", map[string]any{"public": true})
 
-	proto := original.ToProto()
+	proto, err := original.ToProto()
+	require.NoError(t, err)
 	roundTripped := rel.FromProto(proto)
 
 	require.Equal(t, original.ResourceType, roundTripped.ResourceType)
@@ -138,4 +140,75 @@ func TestRoundTripProto(t *testing.T) {
 	require.Equal(t, original.SubjectType, roundTripped.SubjectType)
 	require.Equal(t, original.SubjectID, roundTripped.SubjectID)
 	require.Equal(t, original.CaveatName, roundTripped.CaveatName)
+}
+
+// TestToProtoPreservesCaveatContextTypes asserts that ToProto dispatches
+// each caveat context value onto the correct google.protobuf.Value kind
+// (string_value, number_value, bool_value, null_value, struct_value,
+// list_value) rather than stringifying it. Go's structpb.NewStruct already
+// does this dispatch correctly — this test documents that the write path
+// keeps it — see TestToProtoInvalidCaveatContextReturnsError for the actual
+// pre-fix defect (a swallowed conversion error), which this test alone does
+// not exercise.
+func TestToProtoPreservesCaveatContextTypes(t *testing.T) {
+	r := rel.MustFromTriple("document", "doc1", "viewer", "user", "alice", "").
+		WithCaveat("some_caveat", map[string]any{
+			"a_string": "hello",
+			"an_int":   42,
+			"a_float":  3.5,
+			"a_bool":   true,
+			"a_null":   nil,
+			"a_map":    map[string]any{"nested": "value"},
+			"a_list":   []any{"one", 2, false},
+		})
+
+	proto, err := r.ToProto()
+	require.NoError(t, err)
+
+	fields := proto.GetOptionalCaveat().GetContext().GetFields()
+
+	require.IsType(t, &structpb.Value_StringValue{}, fields["a_string"].GetKind())
+	require.Equal(t, "hello", fields["a_string"].GetStringValue())
+
+	// google.protobuf.Value.number_value is a double, so an integer
+	// legitimately round-trips as a float (42 -> 42.0). That is inherent to
+	// the proto, not a defect.
+	require.IsType(t, &structpb.Value_NumberValue{}, fields["an_int"].GetKind())
+	require.Equal(t, float64(42), fields["an_int"].GetNumberValue())
+
+	require.IsType(t, &structpb.Value_NumberValue{}, fields["a_float"].GetKind())
+	require.Equal(t, 3.5, fields["a_float"].GetNumberValue())
+
+	require.IsType(t, &structpb.Value_BoolValue{}, fields["a_bool"].GetKind())
+	require.True(t, fields["a_bool"].GetBoolValue())
+
+	require.IsType(t, &structpb.Value_NullValue{}, fields["a_null"].GetKind())
+
+	require.IsType(t, &structpb.Value_StructValue{}, fields["a_map"].GetKind())
+	require.Equal(t, "value", fields["a_map"].GetStructValue().GetFields()["nested"].GetStringValue())
+
+	require.IsType(t, &structpb.Value_ListValue{}, fields["a_list"].GetKind())
+	listValues := fields["a_list"].GetListValue().GetValues()
+	require.Len(t, listValues, 3)
+	require.IsType(t, &structpb.Value_StringValue{}, listValues[0].GetKind())
+	require.IsType(t, &structpb.Value_NumberValue{}, listValues[1].GetKind())
+	require.IsType(t, &structpb.Value_BoolValue{}, listValues[2].GetKind())
+}
+
+// TestToProtoInvalidCaveatContextReturnsError is the regression test for the
+// actual write-time defect: ToProto used to call structpb.NewStruct and
+// discard the error, writing the relationship with the caveat name attached
+// and an empty context. That corrupts the write silently and permanently —
+// re-checking with correct context never repairs it, only rewriting the
+// relationship does. ToProto must now return the error instead.
+func TestToProtoInvalidCaveatContextReturnsError(t *testing.T) {
+	r := rel.MustFromTriple("document", "doc1", "viewer", "user", "alice", "").
+		WithCaveat("some_caveat", map[string]any{
+			// chan is not one of the types structpb.NewValue can represent.
+			"unrepresentable": make(chan int),
+		})
+
+	proto, err := r.ToProto()
+	require.Error(t, err)
+	require.Nil(t, proto)
 }

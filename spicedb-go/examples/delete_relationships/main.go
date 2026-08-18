@@ -36,9 +36,15 @@ definition document {
 
 	// Write relationships to delete
 	var txn rel.Txn
-	txn.Touch(rel.MustFromTriple("document", "firstdoc", "owner", "user", "alice", ""))
-	txn.Touch(rel.MustFromTriple("document", "firstdoc", "viewer", "user", "bob", ""))
-	txn.Touch(rel.MustFromTriple("document", "firstdoc", "viewer", "user", "carol", ""))
+	if err := txn.Touch(rel.MustFromTriple("document", "firstdoc", "owner", "user", "alice", "")); err != nil {
+		log.Fatalf("failed to add relationship to transaction: %v", err)
+	}
+	if err := txn.Touch(rel.MustFromTriple("document", "firstdoc", "viewer", "user", "bob", "")); err != nil {
+		log.Fatalf("failed to add relationship to transaction: %v", err)
+	}
+	if err := txn.Touch(rel.MustFromTriple("document", "firstdoc", "viewer", "user", "carol", "")); err != nil {
+		log.Fatalf("failed to add relationship to transaction: %v", err)
+	}
 	if _, err := c.Write(ctx, txn); err != nil {
 		log.Fatalf("write relationships failed: %v", err)
 	}

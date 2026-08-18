@@ -40,7 +40,9 @@ definition document {
 	var txn rel.Txn
 	users := []string{"alice", "bob", "charlie"}
 	for _, user := range users {
-		txn.Touch(rel.MustFromTriple("document", "report", "viewer", "user", user, ""))
+		if err := txn.Touch(rel.MustFromTriple("document", "report", "viewer", "user", user, "")); err != nil {
+			log.Fatalf("failed to add relationship to transaction: %v", err)
+		}
 	}
 	revision, err := c.Write(ctx, txn)
 	if err != nil {

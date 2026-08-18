@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"iter"
 
@@ -18,6 +19,12 @@ const (
 // ImportRelationships streams relationships to SpiceDB for bulk import,
 // returning the number of relationships loaded. Relationships are automatically
 // batched into chunks of 1,000.
+//
+// If any relationship's caveat context cannot be converted to protobuf, the
+// import stops immediately and returns a CodeInvalidArgument error naming
+// the offending relationship — never a partial import written with a
+// silently dropped context, which bulk import would otherwise persist at
+// scale.
 func (c *Client) ImportRelationships(ctx context.Context, rels iter.Seq[rel.Relationship]) (numLoaded uint64, err error) {
 	stream, err := c.psc.ImportBulkRelationships(ctx)
 	if err != nil {
@@ -27,7 +34,15 @@ func (c *Client) ImportRelationships(ctx context.Context, rels iter.Seq[rel.Rela
 	batch := make([]*v1.Relationship, 0, defaultImportBatchSize)
 
 	for r := range rels {
-		batch = append(batch, r.ToProto())
+		p, err := r.ToProto()
+		if err != nil {
+			return 0, &Error{
+				Code:    CodeInvalidArgument,
+				Message: fmt.Sprintf("spicedb: import relationships: %s", err),
+				err:     err,
+			}
+		}
+		batch = append(batch, p)
 		if len(batch) >= defaultImportBatchSize {
 			if err := stream.Send(&v1.ImportBulkRelationshipsRequest{
 				Relationships: batch,

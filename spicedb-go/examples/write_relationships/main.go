@@ -36,8 +36,12 @@ definition document {
 
 	// Write relationships with transaction builder
 	var txn rel.Txn
-	txn.Touch(rel.MustFromTriple("document", "firstdoc", "viewer", "user", "alice", ""))
-	txn.Touch(rel.MustFromTriple("document", "firstdoc", "editor", "user", "bob", ""))
+	if err := txn.Touch(rel.MustFromTriple("document", "firstdoc", "viewer", "user", "alice", "")); err != nil {
+		log.Fatalf("failed to add relationship to transaction: %v", err)
+	}
+	if err := txn.Touch(rel.MustFromTriple("document", "firstdoc", "editor", "user", "bob", "")); err != nil {
+		log.Fatalf("failed to add relationship to transaction: %v", err)
+	}
 	txn.MustNotMatch(rel.NewFilter("document").WithResourceID("firstdoc").WithRelation("owner").WithSubjectType("user").WithSubjectID("mallory"))
 
 	revision, err := c.Write(ctx, txn)

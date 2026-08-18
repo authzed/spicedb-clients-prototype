@@ -178,8 +178,16 @@ func (r Relationship) String() string {
 	return s
 }
 
-// ToProto converts a Relationship to its proto representation.
-func (r Relationship) ToProto() *v1.Relationship {
+// ToProto converts a Relationship to its proto representation. It returns an
+// error — instead of silently dropping the caveat context and writing the
+// relationship anyway — if CaveatContext cannot be converted to a protobuf
+// Struct (structpb.NewStruct fails on values it cannot represent). Silently
+// persisting a caveat name with no context would mis-evaluate every future
+// check against that relationship, and re-checking with correct context
+// would never repair it; only rewriting the relationship would. See
+// checkItemFromRel in client/checks.go for the identical treatment on the
+// check path.
+func (r Relationship) ToProto() (*v1.Relationship, error) {
 	rel := &v1.Relationship{
 		Resource: &v1.ObjectReference{
 			ObjectType: r.ResourceType,
@@ -201,9 +209,10 @@ func (r Relationship) ToProto() *v1.Relationship {
 		}
 		if r.CaveatContext != nil {
 			ctx, err := structpb.NewStruct(r.CaveatContext)
-			if err == nil {
-				rel.OptionalCaveat.Context = ctx
+			if err != nil {
+				return nil, fmt.Errorf("spicedb: relationship %s: invalid caveat context: %w", r, err)
 			}
+			rel.OptionalCaveat.Context = ctx
 		}
 	}
 
@@ -211,7 +220,7 @@ func (r Relationship) ToProto() *v1.Relationship {
 		rel.OptionalExpiresAt = timestamppb.New(*r.Expiration)
 	}
 
-	return rel
+	return rel, nil
 }
 
 // FromProto converts a proto Relationship to an idiomatic Relationship.
@@ -346,7 +355,6 @@ const (
 	UpdateOperationDelete
 )
 
-
 // UpdateFromProto converts a proto RelationshipUpdate to an idiomatic Update.
 func UpdateFromProto(pu *v1.RelationshipUpdate) Update {
 	var op UpdateOperation
@@ -367,8 +375,8 @@ func UpdateFromProto(pu *v1.RelationshipUpdate) Update {
 // Txn is a transaction builder for batching relationship writes.
 type Txn struct {
 	// V1Updates exposes the underlying proto updates for advanced use cases.
-	V1Updates       []*v1.RelationshipUpdate
-	preconditions   []*v1.Precondition
+	V1Updates     []*v1.RelationshipUpdate
+	preconditions []*v1.Precondition
 }
 
 // Preconditions returns the preconditions added to this transaction.
@@ -377,29 +385,52 @@ func (t *Txn) Preconditions() []*v1.Precondition {
 }
 
 // Create adds a relationship create to the transaction. Fails if the
-// relationship already exists.
-func (t *Txn) Create(r Relationship) {
+// relationship already exists. Returns an error, and adds nothing to the
+// transaction, if r's caveat context cannot be converted to protobuf — see
+// Relationship.ToProto.
+func (t *Txn) Create(r Relationship) error {
+	p, err := r.ToProto()
+	if err != nil {
+		return err
+	}
 	t.V1Updates = append(t.V1Updates, &v1.RelationshipUpdate{
 		Operation:    v1.RelationshipUpdate_OPERATION_CREATE,
-		Relationship: r.ToProto(),
+		Relationship: p,
 	})
+	return nil
 }
 
 // Touch adds a relationship touch to the transaction. Creates or updates
-// the relationship.
-func (t *Txn) Touch(r Relationship) {
+// the relationship. Returns an error, and adds nothing to the transaction,
+// if r's caveat context cannot be converted to protobuf — see
+// Relationship.ToProto.
+func (t *Txn) Touch(r Relationship) error {
+	p, err := r.ToProto()
+	if err != nil {
+		return err
+	}
 	t.V1Updates = append(t.V1Updates, &v1.RelationshipUpdate{
 		Operation:    v1.RelationshipUpdate_OPERATION_TOUCH,
-		Relationship: r.ToProto(),
+		Relationship: p,
 	})
+	return nil
 }
 
-// Delete adds a relationship delete to the transaction.
-func (t *Txn) Delete(r Relationship) {
+// Delete adds a relationship delete to the transaction. Returns an error,
+// and adds nothing to the transaction, if r's caveat context cannot be
+// converted to protobuf — see Relationship.ToProto. Deletes ordinarily
+// don't need caveat context, but Delete accepts the same Relationship type
+// as Create and Touch, so the same conversion applies.
+func (t *Txn) Delete(r Relationship) error {
+	p, err := r.ToProto()
+	if err != nil {
+		return err
+	}
 	t.V1Updates = append(t.V1Updates, &v1.RelationshipUpdate{
 		Operation:    v1.RelationshipUpdate_OPERATION_DELETE,
-		Relationship: r.ToProto(),
+		Relationship: p,
 	})
+	return nil
 }
 
 // MustNotMatch adds a precondition that no relationships match the given filter.

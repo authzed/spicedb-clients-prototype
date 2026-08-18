@@ -45,7 +45,9 @@ definition document {
 	}
 
 	var txn rel.Txn
-	txn.Touch(rel.MustFromTriple("document", "firstdoc", "viewer", "user", "alice", ""))
+	if err := txn.Touch(rel.MustFromTriple("document", "firstdoc", "viewer", "user", "alice", "")); err != nil {
+		log.Fatalf("failed to add relationship to transaction: %v", err)
+	}
 	_, err = c.Write(ctx, txn)
 	if err != nil {
 		log.Fatalf("write relationships failed: %v", err)
@@ -77,7 +79,9 @@ definition document {
 	// HasPermission() MUST be false for a Conditional result, or callers would
 	// be granting access on an unevaluated condition.
 	var caveatedTxn rel.Txn
-	caveatedTxn.Touch(rel.MustFromTriple("document", "conditionaldoc", "conditional_viewer", "user", "alice", "").WithCaveat("active", nil))
+	if err := caveatedTxn.Touch(rel.MustFromTriple("document", "conditionaldoc", "conditional_viewer", "user", "alice", "").WithCaveat("active", nil)); err != nil {
+		log.Fatalf("failed to add relationship to transaction: %v", err)
+	}
 	if _, err := c.Write(ctx, caveatedTxn); err != nil {
 		log.Fatalf("write caveated relationship failed: %v", err)
 	}

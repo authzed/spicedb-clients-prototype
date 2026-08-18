@@ -4,6 +4,26 @@
 
 ### Breaking Changes
 
+- **2026-08-18**: `rel.Relationship.ToProto()` now returns `(*v1.Relationship, error)` instead of a bare `*v1.Relationship`, and `rel.Txn.Create`/`Touch`/`Delete` now return `error` instead of nothing. Previously, if a relationship's caveat context couldn't be converted to a protobuf `Struct` (`structpb.NewStruct` fails on values it cannot represent), `ToProto` silently discarded the error and returned the relationship anyway — with the caveat name attached and an empty context. That corruption is written to SpiceDB and persists: every future check against that relationship mis-evaluates the caveat, and re-checking with correct context never repairs it, only rewriting the relationship does. `ImportRelationships` had the same defect for bulk import, corrupting an entire dataset the same way at scale. The check-path equivalent (`checkItemFromRel` in `client/checks.go`) already returned `CodeInvalidArgument` on conversion failure; this change gives the write path the same treatment instead of a second, worse behavior for the identical failure. No API shape change beyond the added error returns — the conversion itself, and everything it produces on success, is unchanged.
+
+  Before:
+  ```go
+  var txn rel.Txn
+  txn.Touch(r) // caveat context silently dropped on conversion failure
+
+  proto := r.ToProto()
+  ```
+  After:
+  ```go
+  var txn rel.Txn
+  if err := txn.Touch(r); err != nil {
+      log.Fatalf("failed to add relationship to transaction: %v", err)
+  }
+
+  proto, err := r.ToProto()
+  if err != nil { /* handle */ }
+  ```
+
 - **2026-08-17**: `Check`, `CheckOne`, and `CheckIter` now return a `CheckResult` (or `iter.Seq2[CheckResult, error]`) instead of a bare `bool`/`iter.Seq2[bool, error]`, so a caveated relationship whose context wasn't supplied at check time is distinguishable from a real denial instead of being silently collapsed to `false`. `CheckPermissionResponse.checked_at` — populated by the server on every check but never previously exposed by this client — is now reachable via `CheckResult.CheckedAt`, so read-your-writes is possible through the public API instead of requiring a raw gRPC stub. New type in `client/check_types.go`: `CheckResult{Permissionship, MissingContext, CheckedAt}` with `HasPermission() bool`, true only for `PermissionshipHasPermission`. `Permissionship` gains a fourth value, `PermissionshipNoPermission`, appended after `PermissionshipConditionalPermission` (not inserted alongside `PermissionshipUnspecified`) so the two pre-existing constants keep their `iota` values. `CheckAny`/`CheckAll` are unchanged in shape (still `(bool, error)`) but now count only `HasPermission()` results as granted — a Conditional result does not count, matching the fail-closed behavior of the new `CheckResult.HasPermission()`.
 
   `LookupResource`/`LookupSubject` also gain a `LookedUpAt string` field (from each response's `looked_up_at`), for the same read-your-writes reason — identical for every item in a single lookup stream.
@@ -88,6 +108,7 @@
 
 ### Bug Fixes
 
+- **2026-08-18**: `ImportRelationships` now stops and returns a `CodeInvalidArgument` error naming the failing conversion if any relationship's caveat context cannot be converted to protobuf, instead of silently importing it with the caveat name attached and no context (see the `ToProto`/`Txn` breaking change above for why this matters more for a write than a check).
 - **2026-08-18**: `CheckAll`/`CheckAllWithContext` now return `false` for zero relationships instead of vacuously `true`. Root `DESIGN.md`'s "An aggregate over zero checks is not a grant" clause names the hazard: Go's bare `for` loop aggregate falls through to `return true, nil` once it runs out of results, so `CheckAll(cs, "edit", docs.map(toRel)...)` was silently granted whenever the derived relationship slice came up empty — a filter that matched nothing, an upstream returning `nil`, a defensive empty slice. The guard runs before the RPC, so an empty call never reaches the server (unchanged from before: `CheckWithContext` already short-circuited on zero relationships). `CheckAny`/`CheckAnyWithContext` are unchanged — already correctly `false` on empty. No API shape change.
 - **2026-08-17**: A check-time caveat context that `structpb.NewStruct` cannot convert (e.g. an unsupported value type) now returns an error from `Check`, `CheckWithContext`, `CheckOne(WithContext)`, `CheckAny(WithContext)`, `CheckAll(WithContext)`, and `CheckIter(WithContext)`, instead of silently sending the request with no context field. Previously the conversion error was discarded and the caller got back a `CONDITIONAL_PERMISSION`/`NO_PERMISSION` result indistinguishable from "the server legitimately needed more context than you supplied" — now the two cases can't be confused. No API shape change.
 - **2026-08-15**: `defaultDeletePageSize` (the default `DeleteRelationships` page size) is now 1,000, not 10,000. SpiceDB's default `--max-delete-relationships-limit` is 1,000, so a default (no-`DeleteOption`) `DeleteRelationships` call against a stock server previously failed with `provided limit 10000 is greater than maximum allowed of 1000`. No API shape change — only the default value sent when `WithDeleteLimit` isn't used.

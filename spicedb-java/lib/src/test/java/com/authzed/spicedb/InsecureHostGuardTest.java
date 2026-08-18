@@ -42,6 +42,11 @@ class InsecureHostGuardTest {
     String[] notLoopback = {
       "example.com:443", "staging.internal:443",
       "10.0.0.5:50051", "8.8.8.8:443", "0.0.0.0:50051",
+      // Typosquats/lookalikes: a future refactor toward String#contains or
+      // String#endsWith on "localhost"/"127.0.0.1" would wrongly treat these
+      // as loopback and reopen a credential leak. Must stay non-loopback
+      // under exact-match host comparison.
+      "localhost.evil.com:443", "127.0.0.1.evil.com:443", "evil-localhost:443",
     };
     for (String endpoint : notLoopback) {
       assertFalse(SpiceDBClient.isLoopbackEndpoint(endpoint), endpoint);

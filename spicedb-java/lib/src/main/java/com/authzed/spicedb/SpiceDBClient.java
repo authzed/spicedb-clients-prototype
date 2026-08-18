@@ -189,6 +189,16 @@ public final class SpiceDBClient implements AutoCloseable {
    * gRPC channel builder for configuration not covered by the primary API. Most users should prefer
    * {@link #createPlaintext} or {@link #createSystemTls}.
    *
+   * <p><b>Security note (root DESIGN.md, "RULE: Credentials over insecure transport require an
+   * explicit opt-in"):</b> this method refuses to combine {@link #withInsecure()} with a
+   * non-loopback {@code endpoint} unless {@link #allowInsecureRemoteCredentials()} is also among
+   * {@code options} -- but it recognizes only those two named options themselves, by identity, not
+   * by inspecting what any option actually does to the builder ({@code io.grpc.ManagedChannelBuilder}
+   * exposes no way to read back whether plaintext was configured). A custom {@link ClientOption}
+   * lambda that calls {@code builder.usePlaintext()} directly bypasses this guard entirely and is
+   * not detected -- that lambda is the raw escape hatch documented on {@link ClientOption#apply};
+   * the full credential-safety burden for what it does to the builder falls on whoever writes it.
+   *
    * @param endpoint the SpiceDB endpoint
    * @param presharedKey the bearer token
    * @param options additional configuration options
@@ -202,6 +212,9 @@ public final class SpiceDBClient implements AutoCloseable {
    * Creates a client with custom options and a client-wide {@code defaultTimeout} applied to
    * every unary call that doesn't pass its own {@code timeout} override (see {@link
    * #DEFAULT_TIMEOUT}).
+   *
+   * <p>See {@link #create(String, String, ClientOption...)} for the security note on what this
+   * guard can and cannot see among custom {@code options}.
    *
    * @param endpoint the SpiceDB endpoint
    * @param presharedKey the bearer token
@@ -227,11 +240,10 @@ public final class SpiceDBClient implements AutoCloseable {
       ManagedChannelBuilder<?> testChannelBuilder,
       ClientOption... options) {
     // Detect the two well-known named options by reference -- see root DESIGN.md, "RULE:
-    // Credentials over insecure transport require an explicit opt-in". This only recognizes
-    // withInsecure()/allowInsecureRemoteCredentials() themselves; a caller who reaches past them
-    // for a fully custom ClientOption lambda that calls builder.usePlaintext() directly has
-    // already taken on the raw ManagedChannelBuilder escape hatch this method's Javadoc warns
-    // about, and is outside what this guard can see.
+    // Credentials over insecure transport require an explicit opt-in", and the public security
+    // notes on create(...) and ClientOption#apply above (not just this comment) for what this
+    // does and does not catch: a fully custom ClientOption lambda that calls
+    // builder.usePlaintext() directly is invisible to this check.
     boolean insecureRequested = false;
     boolean allowInsecureRemoteCredentials = false;
     for (ClientOption option : options) {
@@ -277,13 +289,26 @@ public final class SpiceDBClient implements AutoCloseable {
      * directly for configuration not covered by the primary API. Most users should prefer {@link
      * #createPlaintext} or {@link #createSystemTls} and the standard {@code withInsecure()} option.
      *
+     * <p><b>Security note:</b> {@link #create}'s insecure-transport guard (root DESIGN.md, "RULE:
+     * Credentials over insecure transport require an explicit opt-in") only recognizes {@code
+     * withInsecure()}/{@code allowInsecureRemoteCredentials()} by identity, because {@code
+     * ManagedChannelBuilder} has no public getter to read back whether a given option called {@code
+     * usePlaintext()}. A custom implementation of this method that calls {@code
+     * builder.usePlaintext()} is invisible to that guard -- it can send a bearer token to any host
+     * in cleartext with no refusal at all. Do not implement this method to toggle plaintext
+     * yourself; use {@code withInsecure()}/{@code allowInsecureRemoteCredentials()} instead.
+     *
      * @param builder the channel builder to configure
      */
     void apply(ManagedChannelBuilder<?> builder);
   }
 
   // Explicit singleton instances (not bare lambdas/method references) so create(...) can detect
-  // them by reference equality below -- see requireInsecureTransportAllowed's call site.
+  // them by reference equality below -- see requireInsecureTransportAllowed's call site. This is
+  // identity-based, not behavioral, because ManagedChannelBuilder (verified against grpc-java
+  // 1.79.0's public API) exposes no getter for whether usePlaintext() was called -- there is
+  // nothing to inspect after a custom ClientOption has been applied. See the security notes on
+  // ClientOption#apply and create(...) above for what this does and does not catch.
   private static final ClientOption INSECURE_OPTION = ManagedChannelBuilder::usePlaintext;
   private static final ClientOption ALLOW_INSECURE_REMOTE_CREDENTIALS_OPTION = builder -> {};
 
@@ -294,6 +319,11 @@ public final class SpiceDBClient implements AutoCloseable {
    * 127.0.0.0/8, ::1, or a unix socket target) -- see root DESIGN.md, "RULE: Credentials over
    * insecure transport require an explicit opt-in". Combine with {@link
    * #allowInsecureRemoteCredentials()} for a non-loopback endpoint.
+   *
+   * <p>This guard only fires when {@code withInsecure()} itself is passed to {@link #create}. A
+   * custom {@link ClientOption} that calls {@code builder.usePlaintext()} directly is a different,
+   * undetected path to the same insecure state -- see the security note on {@link
+   * ClientOption#apply}.
    */
   public static ClientOption withInsecure() {
     return INSECURE_OPTION;

@@ -36,3 +36,4 @@ Or use `mage test` which starts a SpiceDB container automatically.
 | `SchemaReflectionTest` | Schema reflection, computable permissions, dependent relations, schema diff |
 | `RelationshipCountersTest` | Experimental relationship counter registration and reading |
 | `ExpandPermissionTreeTest` | Expanding a permission with `expandPermissionTree` and walking the native `PermissionTree` (intermediate/leaf nodes, subjects) |
+| `CallDeadlinesTest` | The `Duration defaultTimeout` construction overload, a per-call `timeout` override, and confirming bulk import isn't bounded by the unary default |

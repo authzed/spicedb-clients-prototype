@@ -249,11 +249,27 @@ try (var client = SpiceDBClient.createPlaintext("localhost:50051", "token", Dura
 }
 ```
 
-Streaming methods (`readRelationships`, `lookupResources`, `lookupSubjects`,
-`updates`, `exportRelationships`) take no `timeout` overload and are NOT
-bound by `defaultTimeout` — they are long-lived by design (`updates` may
-run for the life of the process), and applying the unary default to them
-would make the stream itself the outage.
+Server-streaming methods (`readRelationships`, `lookupResources`,
+`lookupSubjects`, `updates`, `exportRelationships`) take no `timeout`
+overload and are NOT bound by `defaultTimeout` — they are long-lived by
+design (`updates` may run for the life of the process), and applying the
+unary default to them would make the stream itself the outage.
+
+`importRelationships` (`ImportBulkRelationships`) is client-streaming, not
+server-streaming, but the same exclusion applies for the mirror-image
+reason: its duration scales with the size of the caller's dataset, not with
+server latency, so no fixed default is correct for it either. Unlike the
+server-streaming methods above, it DOES have a `Duration timeout` overload
+— there is simply no default to override, so the no-argument
+`importRelationships(Iterable)` is unbounded and the
+`importRelationships(Iterable, Duration)` overload is the only way to
+bound it.
+
+Note for callers reasoning about worst-case latency: the timeout is a
+per-*attempt* budget, applied fresh on each retry, so a call that retries
+can take up to `timeout × (retries + 1)` plus backoff, and an auto-paging
+call (e.g. `deleteRelationships`) applies the same timeout fresh to each
+page.
 
 ### Performance
 

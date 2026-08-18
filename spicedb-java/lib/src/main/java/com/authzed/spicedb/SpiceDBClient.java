@@ -59,10 +59,13 @@ public final class SpiceDBClient implements AutoCloseable {
    * nothing is ever produced to retry. See root DESIGN.md, "RULE: A unary call must have a
    * deadline".
    *
-   * <p>Deliberately NOT applied to streaming calls ({@link #readRelationships}, {@link
+   * <p>Deliberately NOT applied to server-streaming calls ({@link #readRelationships}, {@link
    * #lookupResources}, {@link #lookupSubjects}, {@link #updates}, {@link #exportRelationships}) --
    * those are long-lived by design, and applying this default to them would make the stream
-   * itself the outage (see DESIGN.md, "Streaming calls MUST NOT inherit the unary default").
+   * itself the outage -- NOR to the client-streaming {@link #importRelationships(Iterable)},
+   * whose duration scales with the size of the caller's dataset rather than server latency, so no
+   * fixed default is correct for it either (see DESIGN.md, "Streaming calls MUST NOT inherit the
+   * unary default").
    */
   public static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(30);
 
@@ -1102,17 +1105,30 @@ public final class SpiceDBClient implements AutoCloseable {
   /**
    * Streams relationships to SpiceDB for bulk import, returning the number of relationships loaded.
    * Relationships are automatically batched into chunks of 1,000.
+   *
+   * <p>{@code ImportBulkRelationships} is client-streaming: its duration scales with the size of
+   * {@code relationships}, not with server latency, so unlike every other method on this client,
+   * this call is NOT bounded by {@link #DEFAULT_TIMEOUT} (root DESIGN.md, "RULE: A unary call
+   * must have a deadline", clause 3). It is unbounded; use {@link #importRelationships(Iterable,
+   * Duration)} to bound it explicitly.
    */
   public long importRelationships(Iterable<Relationship> relationships) {
     return importRelationships(relationships, null);
   }
 
   /**
-   * As {@link #importRelationships(Iterable)}, with a per-call {@code timeout} overriding the
-   * client's default (see {@link #DEFAULT_TIMEOUT}).
+   * As {@link #importRelationships(Iterable)}, with an explicit per-call {@code timeout}. There
+   * is no client default to override here (see {@link #importRelationships(Iterable)}) -- this
+   * is the only way to bound this call at all.
    */
   public long importRelationships(Iterable<Relationship> relationships, Duration timeout) {
-    long timeoutMs = effectiveTimeout(timeout).toMillis();
+    // Deliberately NOT effectiveTimeout(timeout) -- no client default applies here, only an
+    // explicit per-call timeout.
+    var stub =
+        timeout != null
+            ? permissionsAsyncStub.withDeadlineAfter(timeout.toMillis(), TimeUnit.MILLISECONDS)
+            : permissionsAsyncStub;
+
     var resultHolder = new long[1];
     var errorHolder = new Throwable[1];
     var latch = new java.util.concurrent.CountDownLatch(1);
@@ -1137,9 +1153,7 @@ public final class SpiceDBClient implements AutoCloseable {
         };
 
     StreamObserver<ImportBulkRelationshipsRequest> requestObserver =
-        permissionsAsyncStub
-            .withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS)
-            .importBulkRelationships(responseObserver);
+        stub.importBulkRelationships(responseObserver);
 
     var batch = new ArrayList<build.buf.gen.authzed.api.v1.Relationship>(DEFAULT_IMPORT_BATCH_SIZE);
     for (Relationship r : relationships) {

@@ -173,6 +173,16 @@
     are long-lived by design (`updates` may legitimately run for the life of the process), and a
     30s cutoff would end a legitimate stream, which is a worse defect than the one this change
     fixes.
+  - **Fix round 1 correction:** `importRelationships` also gained a `Duration timeout` overload,
+    but — unlike the unary methods above — it is client-streaming, not unary, and is now
+    explicitly **excluded** from `defaultTimeout`: its duration scales with the size of the
+    caller's dataset, not with server latency, so no fixed default is correct for it (root
+    DESIGN.md, "RULE: A unary call must have a deadline", clause 3, amended to cover
+    client-streaming and bidirectional RPCs, not only server-streaming).
+    `importRelationships(Iterable)` is now unbounded; `importRelationships(Iterable, Duration)`
+    still bounds the call explicitly. An earlier version of this fix incorrectly resolved the
+    no-argument overload against `defaultTimeout`, which would have silently aborted large,
+    legitimate multi-minute imports at 30 seconds.
   - `DeadlineExceededException` (added earlier, but never actually produced by this client since
     nothing enforced a deadline) is now reachable: a timed-out call throws it, not a generic
     `SpiceDBException`. `Status.Code.DEADLINE_EXCEEDED` was already excluded from
@@ -180,14 +190,22 @@
   - New `DeadlineTest`, against a real in-process gRPC server (grpc-java's in-process transport,
     same style as the existing `TestServers` harness) whose handlers deliberately stall: a unary
     call against a stub that never responds throws `DeadlineExceededException` well before the
-    stall completes (not a hang), a per-call `timeout` overrides a much larger client default,
-    and a streaming call outlives a tiny unary default instead of inheriting it. Every call is
-    run on a background thread and joined with a bounded `Future.get(...)`, so a regression fails
-    the suite instead of hanging CI.
+    stall completes (not a hang), a per-call `timeout` overrides a much larger client default
+    (proven in both directions -- shrinking it, and letting a slower-but-legitimate call outlive
+    a small default), a streaming call outlives a tiny unary default instead of inheriting it,
+    and bulk import is both unbounded by the default and still honors an explicit `timeout`.
+    Every call is run on a background thread and joined with a bounded `Future.get(...)`, so a
+    regression fails the suite instead of hanging CI.
+  - New `examples/.../CallDeadlinesTest`, run against a real SpiceDB rather than a mock:
+    constructs a client via the documented `Duration defaultTimeout` overload, overrides it
+    per-call, and confirms bulk import is unbounded by default.
   - `spicedb-gen`'s Java typed-client template needed no change: its generated `check()`/
     `touch()`/`create()`/`delete()` already call the pre-existing (unchanged) overloads, so
     generated clients continue to compile unmodified and inherit the new client-level default
-    automatically.
+    automatically. Verified end-to-end: regenerated `testdata/java`'s typed client via the
+    generator's composite Gradle build (which substitutes `spicedb-java:lib` for the published
+    artifact) and confirmed `compileJava`/`compileTestJava`/`compileTypeErrors` all still behave
+    as expected.
 - **2026-08-18**: Retry safety, per root `DESIGN.md` "RULE: Automatic retry is for idempotent
   operations only". Three changes:
   - `RESOURCE_EXHAUSTED` is no longer retried. In SpiceDB it signals memory load-shed (retrying

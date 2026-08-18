@@ -3,6 +3,8 @@ package com.authzed.spicedb;
 import static org.junit.jupiter.api.Assertions.*;
 
 import build.buf.gen.authzed.api.v1.CheckBulkPermissionsResponse;
+import build.buf.gen.authzed.api.v1.ImportBulkRelationshipsRequest;
+import build.buf.gen.authzed.api.v1.ImportBulkRelationshipsResponse;
 import build.buf.gen.authzed.api.v1.ObjectReference;
 import build.buf.gen.authzed.api.v1.PermissionsServiceGrpc;
 import build.buf.gen.authzed.api.v1.ReadRelationshipsRequest;
@@ -118,6 +120,164 @@ class DeadlineTest {
       assertTrue(
           elapsedMs < STALL_MS,
           "the per-call timeout=200ms must override the large client default (elapsed="
+              + elapsedMs
+              + "ms)");
+    }
+  }
+
+  @Test
+  void perCallTimeoutLetsASlowButLegitimateCallOutliveASmallClientDefault() throws Exception {
+    // The mirror image of perCallTimeoutOverridesMuchLargerClientDefault above: that test only
+    // proves an override can SHRINK the effective timeout. This proves the other direction -- a
+    // per-call timeout can also GROW it, letting a call that's slower than the client default
+    // (but still well within the per-call override) succeed rather than fail.
+    var service =
+        new PermissionsServiceGrpc.PermissionsServiceImplBase() {
+          @Override
+          public void checkBulkPermissions(
+              build.buf.gen.authzed.api.v1.CheckBulkPermissionsRequest request,
+              StreamObserver<CheckBulkPermissionsResponse> responseObserver) {
+            waitOutStallOrCancellation(STALL_MS);
+            responseObserver.onNext(
+                CheckBulkPermissionsResponse.newBuilder()
+                    .addPairs(
+                        build.buf.gen.authzed.api.v1.CheckBulkPermissionsPair.newBuilder()
+                            .setItem(
+                                build.buf.gen.authzed.api.v1.CheckBulkPermissionsResponseItem
+                                    .newBuilder()
+                                    .setPermissionship(
+                                        build.buf.gen.authzed.api.v1.CheckPermissionResponse
+                                            .Permissionship.PERMISSIONSHIP_HAS_PERMISSION)
+                                    .build())
+                            .build())
+                    .build());
+            responseObserver.onCompleted();
+          }
+        };
+
+    // Client default (200ms) is far smaller than the server's stall -- if the per-call override
+    // did not take effect, this call would fail with DeadlineExceededException instead of
+    // succeeding.
+    try (InProcessHarness harness = InProcessHarness.start(service, Duration.ofMillis(200))) {
+      SpiceDBClient client = harness.client();
+      var rel = com.authzed.spicedb.Relationship.of("document", "doc1", "view", "user", "alice");
+
+      long start = System.nanoTime();
+      CheckResult result =
+          runOrThrow(
+              () ->
+                  client.checkPermission(
+                      Consistency.full(), "view", rel, Duration.ofMillis(STALL_MS * 10)));
+      long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+
+      assertTrue(result.hasPermission(), "expected a HAS_PERMISSION grant, got: " + result);
+      assertTrue(
+          elapsedMs >= STALL_MS,
+          "the call must outlive the tiny client default -- the per-call timeout should have "
+              + "let it wait out the server's "
+              + STALL_MS
+              + "ms stall (elapsed="
+              + elapsedMs
+              + "ms)");
+    }
+  }
+
+  @Test
+  void importRelationshipsDoesNotInheritTheUnaryDefault() throws Exception {
+    // importRelationships (ImportBulkRelationships) is client-streaming: its duration scales
+    // with the size of the caller's dataset, not with server latency, so root DESIGN.md's "RULE:
+    // A unary call must have a deadline" (clause 3, amended to cover client-streaming and
+    // bidirectional RPCs) excludes it from DEFAULT_TIMEOUT.
+    var service =
+        new PermissionsServiceGrpc.PermissionsServiceImplBase() {
+          @Override
+          public StreamObserver<ImportBulkRelationshipsRequest> importBulkRelationships(
+              StreamObserver<ImportBulkRelationshipsResponse> responseObserver) {
+            return new StreamObserver<>() {
+              long count = 0;
+
+              @Override
+              public void onNext(ImportBulkRelationshipsRequest request) {
+                count += request.getRelationshipsCount();
+              }
+
+              @Override
+              public void onError(Throwable t) {}
+
+              @Override
+              public void onCompleted() {
+                waitOutStallOrCancellation(STALL_MS);
+                responseObserver.onNext(
+                    ImportBulkRelationshipsResponse.newBuilder().setNumLoaded(count).build());
+                responseObserver.onCompleted();
+              }
+            };
+          }
+        };
+
+    // The client default is far smaller than the server's stall -- if importRelationships
+    // inherited it, this call would fail with DeadlineExceededException instead of completing.
+    try (InProcessHarness harness = InProcessHarness.start(service, Duration.ofMillis(100))) {
+      SpiceDBClient client = harness.client();
+      var rel = com.authzed.spicedb.Relationship.of("document", "doc1", "viewer", "user", "alice");
+
+      long start = System.nanoTime();
+      long numLoaded = runOrThrow(() -> client.importRelationships(List.of(rel)));
+      long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+
+      assertEquals(1, numLoaded);
+      assertTrue(
+          elapsedMs >= STALL_MS,
+          "importRelationships must outlive the tiny unary default -- it should have waited out "
+              + "the server's "
+              + STALL_MS
+              + "ms stall (elapsed="
+              + elapsedMs
+              + "ms)");
+    }
+  }
+
+  @Test
+  void importRelationshipsWithTimeoutStillBoundsTheCall() throws Exception {
+    // The exclusion above is from the *default*, not from the ability to bound the call at all --
+    // an explicit per-call timeout must still fire against a stalling server.
+    var service =
+        new PermissionsServiceGrpc.PermissionsServiceImplBase() {
+          @Override
+          public StreamObserver<ImportBulkRelationshipsRequest> importBulkRelationships(
+              StreamObserver<ImportBulkRelationshipsResponse> responseObserver) {
+            return new StreamObserver<>() {
+              @Override
+              public void onNext(ImportBulkRelationshipsRequest request) {}
+
+              @Override
+              public void onError(Throwable t) {}
+
+              @Override
+              public void onCompleted() {
+                waitOutStallOrCancellation(STALL_MS);
+                responseObserver.onNext(
+                    ImportBulkRelationshipsResponse.newBuilder().setNumLoaded(0).build());
+                responseObserver.onCompleted();
+              }
+            };
+          }
+        };
+
+    try (InProcessHarness harness = InProcessHarness.start(service, Duration.ofSeconds(30))) {
+      SpiceDBClient client = harness.client();
+      var rel = com.authzed.spicedb.Relationship.of("document", "doc1", "viewer", "user", "alice");
+
+      long start = System.nanoTime();
+      Throwable thrown =
+          runWithWatchdog(
+              () -> client.importRelationships(List.of(rel), Duration.ofMillis(200)));
+      long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+
+      assertInstanceOf(DeadlineExceededException.class, thrown, "got: " + thrown);
+      assertTrue(
+          elapsedMs < STALL_MS,
+          "an explicit 200ms timeout on importRelationships must still fire (elapsed="
               + elapsedMs
               + "ms)");
     }

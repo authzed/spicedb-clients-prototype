@@ -3,7 +3,7 @@ use std::net::IpAddr;
 
 use tonic::metadata::MetadataValue;
 use tonic::service::Interceptor;
-use tonic::transport::{Channel, ClientTlsConfig, Endpoint};
+use tonic::transport::{Channel, ClientTlsConfig, Endpoint, Uri};
 
 use crate::authzed::api::v1;
 
@@ -45,11 +45,35 @@ impl From<tonic::transport::Error> for SpiceDBProtoClientError {
     }
 }
 
-/// Reports whether a gRPC target string names a loopback destination: the
-/// literal hostname "localhost", an IP in 127.0.0.0/8, the IPv6 loopback
-/// ::1, or a unix domain socket target (a "unix:" prefix). A unix socket
-/// never leaves the host's kernel, so it is loopback for this check even
-/// though it has no IP at all.
+/// Reports whether the connection this client would actually open for
+/// `endpoint` terminates on a loopback destination: the literal hostname
+/// "localhost", an IP in 127.0.0.0/8, the IPv6 loopback ::1, or a unix
+/// domain socket target (a "unix:" prefix). A unix socket never leaves the
+/// host's kernel, so it is loopback for this check even though it has no IP
+/// at all.
+///
+/// That wording is deliberate. This function does not answer "does this
+/// string look like it names a loopback host"; it answers "will the
+/// transport dial loopback". Those are the same question only if this
+/// function and the transport agree on where the host ends and the rest of
+/// the target begins -- and a hand-rolled string split will always disagree
+/// with a URI parser somewhere. It used to: given
+/// `"127.0.0.1:443@evil.com"` a last-colon split yields host "127.0.0.1"
+/// and reports loopback, while `Endpoint::from_shared("http://…")` parses
+/// the same string as a URI, reads "127.0.0.1:443" as *userinfo*, and
+/// reports `uri.host() == Some("evil.com")` -- so the bearer token went to
+/// evil.com in cleartext with this function reporting "loopback".
+/// `"[::1]:443@evil.com"` did the same through the bracketed branch, which
+/// never validated what followed the `]`.
+///
+/// So the host is derived by building the exact URI
+/// [`SpiceDBProtoClient::new_with_options`] dials (`"http://" + endpoint`),
+/// parsing it with the same [`Uri`] type tonic's [`Endpoint`] is built from,
+/// and asking IT for the host. There is one parse, so guard and transport
+/// cannot disagree. Before that, anything that could move the authority
+/// under URI parsing (`@`, `/`, `?`, `#`, whitespace) is refused outright: a
+/// legitimate SpiceDB target contains none of those, and failing closed on a
+/// weird endpoint is the correct trade for a credential leak.
 ///
 /// This is the exemption in root DESIGN.md, "RULE: Credentials over
 /// insecure transport require an explicit opt-in": loopback is the reason
@@ -62,22 +86,52 @@ impl From<tonic::transport::Error> for SpiceDBProtoClientError {
 /// I/O either way), so a real remote hostname is simply rejected as "not
 /// an IP" and treated as non-loopback.
 pub fn is_loopback_endpoint(endpoint: &str) -> bool {
+    // Checked first, and only on the raw string: a unix target is not a URI
+    // authority at all (it carries a filesystem path, so it legitimately
+    // contains the '/' the reserved-character check below refuses), and it
+    // never leaves the host's kernel regardless of what the path says.
     if endpoint.starts_with("unix:") {
         return true;
     }
 
-    let host: &str = if let Some(rest) = endpoint.strip_prefix('[') {
-        // "[::1]:50051" or "[::1]" -> "::1"
-        rest.split(']').next().unwrap_or(rest)
-    } else if endpoint.matches(':').count() > 1 {
-        // A bare IPv6 literal (e.g. "::1") -- no port is possible without
-        // brackets, so the whole string is the host.
-        endpoint
-    } else if let Some(idx) = endpoint.rfind(':') {
-        &endpoint[..idx]
-    } else {
-        endpoint
+    // Fail closed on any character that can shift which part of the string
+    // the URI parser treats as the authority: '@' (userinfo), '/' (path),
+    // '?' (query), '#' (fragment), whitespace. Redundant with the Uri parse
+    // below -- deliberately so. The parse is what makes this function
+    // correct; this is what keeps it correct if some future edit ever
+    // reaches for a manual split again.
+    if endpoint
+        .chars()
+        .any(|c| matches!(c, '@' | '/' | '?' | '#') || c.is_whitespace())
+    {
+        return false;
+    }
+
+    // A bare IPv6 literal ("::1") is not a legal URI authority -- brackets
+    // are the only form the transport can dial -- so bracket it and let the
+    // one parser below judge it, rather than special-casing it out of the
+    // parse entirely.
+    let authority = match endpoint.parse::<IpAddr>() {
+        Ok(IpAddr::V6(_)) if !endpoint.starts_with('[') => format!("[{endpoint}]"),
+        _ => endpoint.to_string(),
     };
+
+    // The scheme is "http" because this guard only ever gates the insecure
+    // path; either way, scheme does not affect how the authority is parsed.
+    let uri: Uri = match format!("http://{authority}").parse() {
+        Ok(uri) => uri,
+        Err(_) => return false,
+    };
+    let Some(host) = uri.host() else {
+        return false;
+    };
+
+    // Uri::host keeps the brackets on an IPv6 literal; IpAddr::from_str does
+    // not accept them.
+    let host = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
 
     if host.eq_ignore_ascii_case("localhost") {
         return true;

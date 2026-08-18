@@ -75,6 +75,28 @@ mod insecure_host_guard {
         "localhost.evil.com:443",
         "127.0.0.1.evil.com:443",
         "evil-localhost:443",
+        // Authority-shifting targets. Each of these was, or could become, a
+        // credential leak: the old last-colon / first-']' split read a
+        // loopback host out of them while `Endpoint::from_shared` parsed the
+        // SAME string as URI userinfo/path/query/fragment and dialed
+        // somewhere else. `"127.0.0.1:443@evil.com"` and
+        // `"[::1]:443@evil.com"` both produced `uri.host() == "evil.com"`
+        // while `is_loopback_endpoint` returned true, so the bearer token
+        // went to evil.com in cleartext with no opt-in. See
+        // `refuses_endpoint_whose_uri_authority_shifts_the_host` below for
+        // the over-the-wire proof, and the function's own doc comment for
+        // why the fix is "ask the transport's parser", not "validate the
+        // port".
+        "127.0.0.1:443@evil.com",
+        "[::1]:443@evil.com",
+        "[::1]:0@127.0.0.1:19999",
+        "localhost@evil.com",
+        "localhost/../evil.com",
+        "localhost#@evil.com",
+        "localhost?@evil.com",
+        "localhost.",
+        "localhost :50051",
+        "127.0.0.1 :50051",
     ];
 
     #[test]
@@ -248,6 +270,66 @@ mod insecure_host_guard {
             "allow_insecure_remote_credentials: true must permit constructing a client for a \
              non-loopback endpoint: {:?}",
             client.err()
+        );
+    }
+
+    /// The regression test for the loopback-guard bypass, proven over a real
+    /// socket rather than by catching an exception.
+    ///
+    /// `endpoint` is built so that the two parses disagree: the guard's old
+    /// bracketed branch took everything between `[` and the first `]` as the
+    /// host, read `"::1"`, and reported loopback -- while
+    /// `Endpoint::from_shared("http://[::1]:0@127.0.0.1:<port>")` parses
+    /// `"[::1]:0"` as URI *userinfo* and dials `127.0.0.1:<port>`, which is
+    /// the capturing server started below. It is the exact shape that sent a
+    /// bearer token to evil.com in cleartext (`"127.0.0.1:443@evil.com"`),
+    /// with the remote host swapped for a local listener so the leak can be
+    /// observed without leaving the machine.
+    ///
+    /// The final assertion is what makes this a non-transmission test rather
+    /// than an "it threw" test: the server the transport WOULD have connected
+    /// to must have observed no call at all. An implementation that dialed,
+    /// sent the token, and only then reported an error would satisfy a bare
+    /// `matches!(result, Err(_))` check but would fail here -- and against the
+    /// pre-fix guard this test does exactly that, capturing
+    /// `Some("Bearer super-secret-token")` from a server no opt-in ever
+    /// authorized.
+    #[tokio::test]
+    async fn refuses_endpoint_whose_uri_authority_shifts_the_host() {
+        let (addr, mut rx) = start_capturing_server().await;
+        let endpoint = format!("[::1]:0@{addr}");
+
+        let result =
+            SpiceDBProtoClient::new_with_options(&endpoint, "super-secret-token", true, false).await;
+
+        match result {
+            Err(SpiceDBProtoClientError::InsecureRemoteHostNotAllowed(msg)) => {
+                assert!(msg.contains(&endpoint), "{msg}");
+                assert!(msg.contains("allow_insecure_remote_credentials"), "{msg}");
+            }
+            Err(SpiceDBProtoClientError::Transport(e)) => panic!(
+                "expected InsecureRemoteHostNotAllowed (proving the guard ran before any \
+                 URI/transport work), but got a Transport error instead: {e}"
+            ),
+            Ok(client) => {
+                // The guard let it through. Drive one RPC so the leak this
+                // test exists to prevent is reported concretely, with the
+                // credential the server actually received.
+                let mut schema = client.schema.clone();
+                let _ = schema.read_schema(ReadSchemaRequest {}).await;
+                let observed =
+                    tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await;
+                panic!(
+                    "guard reported {endpoint:?} as loopback, but the transport dialed {addr}; \
+                     that server observed authorization={observed:?}"
+                );
+            }
+        }
+
+        assert!(
+            rx.try_recv().is_err(),
+            "nothing may reach {addr} for a refused endpoint -- the bearer token must never \
+             have been put on the wire"
         );
     }
 

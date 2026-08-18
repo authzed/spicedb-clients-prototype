@@ -91,6 +91,16 @@
 
 ### Fixed
 
+- **2026-08-18**: `export_relationships` drained an entire page's server stream into a Ruby Array
+  before yielding a single relationship. `ExportBulkRelationships`' page-size field
+  (`optional_limit`) bounds only the number of relationships in a SINGLE response message, unlike
+  every other paginated RPC's page-size field, which bounds the whole call -- the server keeps
+  streaming further response messages on the same call until the whole dataset has been sent. The
+  per-page loop/cursor shape is unchanged (and was already correct); `call_export_relationships`
+  now yields each relationship directly off the wire as its response message arrives instead of
+  collecting a full page into an Array first, so the first relationship is available immediately
+  regardless of export size -- an OOM risk this closes for the one API most likely to face the
+  largest dataset in the system.
 - **2026-08-18**: `SpiceDBProto::Client#initialize` leaked a `GRPC::Core::Channel` per secure
   (non-`insecure:`) construction. It built a channel with bare (uncomposed) credentials first,
   then -- for the secure path only -- built a SECOND channel with composed channel+call

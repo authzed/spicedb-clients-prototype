@@ -560,6 +560,30 @@ module SpiceDB
     # Returns an Enumerator over all relationships matching the optional filter,
     # streamed from SpiceDB in bulk. Cursors are handled transparently.
     #
+    # Unlike every other paginated call on this client (whose page-size field
+    # bounds the WHOLE server stream for that call, ending it once that many
+    # results have been returned), ExportBulkRelationships' page-size field
+    # (`optional_limit`) bounds only the number of relationships the server
+    # puts in a SINGLE response message -- the server keeps streaming further
+    # messages on the SAME call until the whole dataset has been sent (or the
+    # client stops consuming). The outer per-page loop/cursor shape below is
+    # unchanged from -- and correct for -- every other paginated method on
+    # this client; what was wrong was `call_export_relationships` collecting
+    # a full page into an Array and returning it only once fully drained,
+    # which -- given the semantics above -- meant draining the ENTIRE export
+    # into memory before this Enumerator yielded a single relationship. An
+    # OOM risk for the one API most likely to face the largest dataset in the
+    # system. `call_export_relationships` now yields each relationship
+    # directly off the wire as its response message arrives, so the first
+    # relationship is available immediately regardless of how large the
+    # export is or whether the server has finished sending it.
+    #
+    # Establishment retry applies ONLY while zero items have been yielded
+    # from the current page's open stream -- retrying after any item has
+    # been yielded would replay/duplicate it, since a retry re-runs the
+    # whole block (including its `yielder <<` side effects) rather than
+    # resuming a partially consumed stream.
+    #
     # @param consistency [SpiceDB::Consistency::Strategy]
     # @param filter [SpiceDB::Filter, nil] optional filter
     # @return [Enumerator<SpiceDB::Relationship>]
@@ -567,15 +591,25 @@ module SpiceDB
       Enumerator.new do |yielder|
         cursor = nil
         loop do
-          page, new_cursor, count = with_retry do
-            call_export_relationships(consistency, filter, cursor, DEFAULT_EXPORT_PAGE_SIZE)
+          count = 0
+          attempt = 0
+          begin
+            call_export_relationships(consistency, filter, cursor, DEFAULT_EXPORT_PAGE_SIZE) do |rel, new_cursor|
+              yielder << rel
+              count += 1
+              cursor = new_cursor
+            end
+          rescue StandardError => e
+            if count.zero? && should_retry_establishment?(attempt, e)
+              attempt += 1
+              retry
+            end
+            raise SpiceDB.to_spicedb_error(e) if e.respond_to?(:code)
+
+            raise
           end
 
-          page.each { |rel| yielder << rel }
-
           break if count < DEFAULT_EXPORT_PAGE_SIZE
-
-          cursor = new_cursor
         end
       end
     end
@@ -1190,7 +1224,12 @@ module SpiceDB
       resp.num_loaded
     end
 
+    # Yields each matching relationship (and the cursor to resume after it)
+    # directly off the wire as response messages arrive -- see the Yardoc on
+    # #export_relationships for why this must NOT collect a full response
+    # into an Array before returning.
     def call_export_relationships(consistency, filter, cursor, page_size)
+      require_proto_client!
       req_args = {
         consistency: build_consistency(consistency),
         optional_limit: page_size
@@ -1198,21 +1237,14 @@ module SpiceDB
       req_args[:optional_relationship_filter] = filter_to_proto(filter) if filter
       req_args[:optional_cursor] = Authzed::Api::V1::Cursor.new(token: cursor) if cursor
 
-      relationships = []
-      new_cursor = nil
-      count = 0
-
       @proto_client.permissions.export_bulk_relationships(
         Authzed::Api::V1::ExportBulkRelationshipsRequest.new(**req_args)
       ).each do |resp|
         new_cursor = resp.after_result_cursor.token
         resp.relationships.each do |proto_rel|
-          relationships << relationship_from_proto(proto_rel)
-          count += 1
+          yield relationship_from_proto(proto_rel), new_cursor
         end
       end
-
-      [relationships, new_cursor, count]
     end
 
     def call_watch(object_types, start_revision, include_checkpoints)

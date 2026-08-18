@@ -81,5 +81,24 @@ module SpiceDB
     def call_once(&)
       with_retry(max_retries: 0, &)
     end
+
+    # Decides whether to retry a streaming RPC's ESTABLISHMENT after a
+    # transient error, sleeping with the same full-jitter backoff as
+    # {#with_retry}. Callers MUST only treat a `true` return as permission to
+    # retry when ZERO items have been yielded to the caller from the current
+    # attempt -- retrying after any item has been yielded would
+    # replay/duplicate it, since {#with_retry}'s plain retry-the-block
+    # semantics re-run the whole block (including any side effects, like
+    # yielding, that already happened) rather than resuming a partially
+    # consumed stream. This method only makes the transient/attempt-budget
+    # decision; the zero-yielded guard is the caller's responsibility (see
+    # {SpiceDB::Client#export_relationships}).
+    def should_retry_establishment?(attempt, error)
+      return false unless SpiceDB.transient?(error)
+      return false unless attempt < MAX_RETRIES
+
+      sleep(backoff_delay(attempt + 1))
+      true
+    end
   end
 end

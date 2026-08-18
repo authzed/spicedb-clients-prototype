@@ -150,6 +150,18 @@
 
 ### Fixes
 
+- **2026-08-18**: `exportRelationships` drained the ENTIRE server stream into an in-memory buffer
+  before yielding a single `Relationship` to the caller -- an OOM risk for the one API most likely
+  to face the largest dataset in the system (a full multi-million-relationship export).
+  `ExportBulkRelationships`' `optional_limit` bounds the number of relationships in a single
+  response MESSAGE, unlike every other paginated RPC's `optional_limit`, which bounds the WHOLE
+  stream and ends the call. The loop shape that is correct for every other paginated method on
+  this client (drain the current page, check the count against the page size, reissue with a new
+  cursor if needed) is therefore wrong for export: a single `ExportBulkRelationships` call keeps
+  streaming further response messages until the whole dataset has been sent, so "drain the current
+  page" meant "drain the entire export." `exportRelationships` now pulls exactly one response
+  message per internal refill, mirroring `updates`' single-message-at-a-time model, so the first
+  relationship is available as soon as the first response message arrives.
 - **2026-08-18**: Watch resumability. `updates` previously dropped
   `WatchResponse.changes_through` entirely and had no way to request
   `WATCH_KIND_INCLUDE_CHECKPOINTS`.

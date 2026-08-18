@@ -1191,7 +1191,22 @@ public final class SpiceDBClient implements AutoCloseable {
 
   /**
    * Returns a stream over all relationships matching the optional filter, streamed from SpiceDB in
-   * bulk. Cursors are handled transparently with 512-item pages.
+   * bulk.
+   *
+   * <p>Unlike every other paginated RPC on this client (whose {@code optional_limit} bounds the
+   * WHOLE stream, ending the call once that many results have been returned), {@code
+   * ExportBulkRelationships}' {@code optional_limit} bounds only the number of relationships the
+   * server puts in a SINGLE response MESSAGE ("page") -- the server keeps streaming further
+   * messages on the SAME call until the whole dataset has been sent. The loop shape that is
+   * correct for {@link #updates}/every lookup method (drain the current page's server stream,
+   * check the count against the page size to decide whether to reissue with a new cursor) is
+   * therefore wrong here: it would drain the ENTIRE export -- however many relationships that is
+   * -- into one in-memory buffer before this method's {@code Stream} produced its first element,
+   * which is an OOM risk in the one API most likely to face the largest dataset in the system (a
+   * full 10M-relationship export). Instead, this pulls exactly ONE response message (up to {@link
+   * #DEFAULT_EXPORT_PAGE_SIZE} relationships) per underlying {@code hasNext()}/{@code next()}
+   * refill, mirroring {@link #updates}' single-message-at-a-time model, and only opens a new call
+   * -- with establishment retry, same as {@link #updates} -- lazily, on first use.
    *
    * <p>The returned stream should be closed when done.
    */
@@ -1199,16 +1214,21 @@ public final class SpiceDBClient implements AutoCloseable {
     Context.CancellableContext cancelCtx = Context.current().withCancellation();
     Iterator<Relationship> iterator =
         new Iterator<>() {
+          // Opened lazily on the first hasNext() call, then read from across
+          // many next() calls until the server closes it -- see updates()'s
+          // Iterator<WatchResponse> serverStream for why eager priming would
+          // be wrong (not applicable to export's bounded stream the same
+          // way, but kept consistent: establishment retry only applies to
+          // this one open, same reasoning as updates()).
+          private Iterator<ExportBulkRelationshipsResponse> serverStream;
           private Cursor cursor = null;
           private final List<Relationship> buffer = new ArrayList<>();
           private int bufferIndex = 0;
-          private boolean done = false;
 
           @Override
           public boolean hasNext() {
             if (bufferIndex < buffer.size()) return true;
-            if (done) return false;
-            fetchNextPage();
+            fetchNextBatch();
             return bufferIndex < buffer.size();
           }
 
@@ -1218,44 +1238,49 @@ public final class SpiceDBClient implements AutoCloseable {
             return buffer.get(bufferIndex++);
           }
 
-          private void fetchNextPage() {
+          private void fetchNextBatch() {
             buffer.clear();
             bufferIndex = 0;
 
-            var reqBuilder =
-                ExportBulkRelationshipsRequest.newBuilder()
-                    .setConsistency(consistency.toProto())
-                    .setOptionalLimit(DEFAULT_EXPORT_PAGE_SIZE);
+            if (serverStream == null) {
+              var reqBuilder =
+                  ExportBulkRelationshipsRequest.newBuilder()
+                      .setConsistency(consistency.toProto())
+                      .setOptionalLimit(DEFAULT_EXPORT_PAGE_SIZE);
 
-            if (filter != null) {
-              reqBuilder.setOptionalRelationshipFilter(toRelationshipFilter(filter));
-            }
-            if (cursor != null) {
-              reqBuilder.setOptionalCursor(cursor);
+              if (filter != null) {
+                reqBuilder.setOptionalRelationshipFilter(toRelationshipFilter(filter));
+              }
+              if (cursor != null) {
+                reqBuilder.setOptionalCursor(cursor);
+              }
+
+              Context previous = cancelCtx.attach();
+              try {
+                serverStream =
+                    openStreamWithRetry(
+                        () -> permissionsStub.exportBulkRelationships(reqBuilder.build()));
+              } finally {
+                cancelCtx.detach(previous);
+              }
             }
 
-            Iterator<ExportBulkRelationshipsResponse> serverStream;
-            Context previous = cancelCtx.attach();
-            try {
-              serverStream =
-                  openStreamWithRetry(
-                      () -> permissionsStub.exportBulkRelationships(reqBuilder.build()));
-            } finally {
-              cancelCtx.detach(previous);
-            }
-
-            int pageCount = 0;
-            while (mapStreamErrors(serverStream::hasNext)) {
+            // Pull exactly ONE response message -- see the Javadoc above for
+            // why draining serverStream::hasNext() in a loop here (the
+            // previous implementation) buffers the entire export before the
+            // caller's Stream yields anything.
+            if (mapStreamErrors(serverStream::hasNext)) {
               ExportBulkRelationshipsResponse resp = mapStreamErrors(serverStream::next);
               cursor = resp.getAfterResultCursor();
               for (var r : resp.getRelationshipsList()) {
                 buffer.add(fromProtoRelationship(r));
-                pageCount++;
               }
-            }
-
-            if (pageCount < DEFAULT_EXPORT_PAGE_SIZE) {
-              done = true;
+            } else {
+              // The server closed the stream: every matching relationship
+              // has been sent (ExportBulkRelationships' single call is
+              // exhaustive -- see the Javadoc above), so there is nothing
+              // left to fetch.
+              serverStream = null;
             }
           }
         };

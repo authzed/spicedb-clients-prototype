@@ -508,8 +508,7 @@ export class UnavailableError extends SpiceDBError {
 
 // @public
 export interface WatchChange {
-    // (undocumented)
-    operation: "create" | "touch" | "delete";
+    operation: "create" | "touch" | "delete" | "unspecified";
     // (undocumented)
     relationship: Relationship;
 }

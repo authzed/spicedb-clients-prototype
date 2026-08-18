@@ -89,10 +89,15 @@ public sealed class AbortedException : SpiceDBException
 /// </summary>
 public static class ErrorMapper
 {
+    // ResourceExhausted is deliberately excluded. In SpiceDB it signals
+    // either memory load-shed (retrying adds load to an already-overloaded
+    // server) or a deterministic MaxDepthExceeded (retrying can never
+    // succeed -- it just re-runs the most expensive class of check several
+    // times before surfacing the same error). See DESIGN.md, "Automatic
+    // retry is for idempotent operations only".
     private static readonly HashSet<StatusCode> TransientCodes =
     [
         StatusCode.Unavailable,
-        StatusCode.ResourceExhausted,
         StatusCode.Aborted,
     ];
 
@@ -122,7 +127,7 @@ public static class ErrorMapper
 
     /// <summary>
     /// Returns true if the exception is transient and worth retrying
-    /// (UNAVAILABLE, RESOURCE_EXHAUSTED, ABORTED).
+    /// (UNAVAILABLE, ABORTED).
     /// </summary>
     public static bool IsTransient(Exception exception)
     {
@@ -130,7 +135,6 @@ public static class ErrorMapper
             return TransientCodes.Contains(rpc.StatusCode);
 
         return exception is UnavailableException
-            or ResourceExhaustedException
             or AbortedException;
     }
 }

@@ -133,10 +133,14 @@ public class ErrorsTests
     }
 
     [Fact]
-    public void IsTransient_ResourceExhausted_ReturnsTrue()
+    public void IsTransient_ResourceExhausted_ReturnsFalse()
     {
+        // Inverted from "ReturnsTrue" -- RESOURCE_EXHAUSTED must NOT be
+        // retried. In SpiceDB it signals memory load-shed or a
+        // deterministic MaxDepthExceeded, never a transient hiccup. See
+        // DESIGN.md, "Automatic retry is for idempotent operations only".
         var rpc = new RpcException(new Status(StatusCode.ResourceExhausted, ""));
-        ErrorMapper.IsTransient(rpc).Should().BeTrue();
+        ErrorMapper.IsTransient(rpc).Should().BeFalse();
     }
 
     [Fact]
@@ -168,10 +172,11 @@ public class ErrorsTests
     }
 
     [Fact]
-    public void IsTransient_TypedResourceExhaustedException_ReturnsTrue()
+    public void IsTransient_TypedResourceExhaustedException_ReturnsFalse()
     {
+        // Inverted from "ReturnsTrue" -- see IsTransient_ResourceExhausted_ReturnsFalse above.
         var ex = new ResourceExhaustedException("test");
-        ErrorMapper.IsTransient(ex).Should().BeTrue();
+        ErrorMapper.IsTransient(ex).Should().BeFalse();
     }
 
     [Fact]

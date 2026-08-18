@@ -209,6 +209,35 @@
 
 ### Fixed
 
+- **2026-08-18**: Retry safety, per root `DESIGN.md` "RULE: Automatic retry is for idempotent
+  operations only". Three changes:
+  - `RESOURCE_EXHAUSTED` is no longer retried. In SpiceDB it signals memory load-shed (retrying
+    adds load to an already-overloaded server) or a deterministic `MaxDepthExceeded` (retrying can
+    never succeed — it re-runs the most expensive class of check several times before surfacing
+    the same error). Previously `ErrorMapper.TransientCodes`/`IsTransient` treated both
+    `StatusCode.ResourceExhausted` and `ResourceExhaustedException` as transient.
+  - Mutations (`WriteAsync`, `DeleteRelationshipsAsync`, `WriteSchemaAsync`, and the
+    `ExperimentalRegisterRelationshipCounterAsync`/`ExperimentalUnregisterRelationshipCounterAsync`
+    calls) are no longer retried on a transient error, even though the underlying gRPC code is
+    retryable. A `WriteRelationships` carrying `OPERATION_CREATE` or preconditions is not
+    idempotent: if it commits and the response is lost (a rolling restart, a proxy dropping the
+    connection), a retry would surface `ALREADY_EXISTS`/`FAILED_PRECONDITION` for a write that in
+    fact succeeded, and the caller would wrongly conclude it had failed. Reads still retry
+    automatically. All five mutation call sites previously went through `RetryAsync`; they now go
+    through a new `CallOnceAsync`, which converts the gRPC error without retrying.
+  - Backoff is now full-jitter (`JitteredDelay`, `uniform(0, cap)`) instead of plain exponential
+    doubling, applied everywhere a retry sleeps — the unary `RetryAsync` helper and all five
+    streaming-establishment retry loops (`ReadRelationshipsAsync`, `LookupResourcesAsync`,
+    `LookupSubjectsAsync`, `ExportRelationshipsAsync`, `UpdatesAsync`). Without jitter, every
+    client in a fleet retries on the same schedule after a server restart, turning the recovery
+    into a thundering herd.
+
+  `ErrorsTests.cs`'s `IsTransient_ResourceExhausted_ReturnsTrue` and
+  `IsTransient_TypedResourceExhaustedException_ReturnsTrue` are renamed to `...ReturnsFalse` and
+  inverted, since the old assertions were exactly the defect this fixes. New coverage in
+  `UnaryRetrySafetyTests.cs` (a mutation is attempted exactly once on a retryable error and on
+  `RESOURCE_EXHAUSTED`; a read is retried; `RESOURCE_EXHAUSTED` is never retried on a read;
+  backoff varies between calls).
 - **2026-08-18**: **`UpdateFromProto` mapped any unrecognized watch operation — including
   `OPERATION_UNSPECIFIED` and any future wire value — to `UpdateOperation.Touch`.** A cache or
   index mirror consuming the watch stream would upsert a relationship on an update it could not

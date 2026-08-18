@@ -29,6 +29,16 @@ public sealed class SpiceDBClient : IAsyncDisposable
     private const int MaxRetryAttempts = 3;
     private static readonly TimeSpan InitialBackoff = TimeSpan.FromMilliseconds(100);
 
+    /// <summary>
+    /// Full-jitter backoff delay: <c>uniform(0, cap)</c> rather than the
+    /// fixed <paramref name="cap"/>. Without jitter, every client in a
+    /// fleet retries on the same schedule after a server restart, turning
+    /// the recovery into a thundering herd; sampling uniformly under the
+    /// cap spreads retries out instead.
+    /// </summary>
+    private static TimeSpan JitteredDelay(TimeSpan cap) =>
+        TimeSpan.FromMilliseconds(Random.Shared.NextDouble() * cap.TotalMilliseconds);
+
     private readonly SpiceDBProtoClient? _protoClient;
     private readonly PermissionsService.PermissionsServiceClient _permissions;
     private readonly SchemaService.SchemaServiceClient _schema;
@@ -385,11 +395,10 @@ public sealed class SpiceDBClient : IAsyncDisposable
         if (transaction.Preconditions.Count > 0)
             req.OptionalPreconditions.AddRange(transaction.Preconditions);
 
-        var resp = await RetryAsync(async () =>
+        var resp = await CallOnceAsync(async () =>
             await _permissions.WriteRelationshipsAsync(
                 req,
-                cancellationToken: cancellationToken),
-            cancellationToken);
+                cancellationToken: cancellationToken));
 
         return resp.WrittenAt?.Token ?? "";
     }
@@ -400,8 +409,8 @@ public sealed class SpiceDBClient : IAsyncDisposable
     /// pages of 512 relationships using the AfterResultCursor.
     /// <para>
     /// Stream/page ESTABLISHMENT is retried on transient errors (the same
-    /// {UNAVAILABLE, RESOURCE_EXHAUSTED, ABORTED} predicate and backoff/attempt
-    /// budget as unary calls), with the attempt budget reset for each new
+    /// {UNAVAILABLE, ABORTED} predicate and backoff/attempt budget as
+    /// unary calls), with the attempt budget reset for each new
     /// page. Once any item has been yielded from the current page's open
     /// stream, a transient error is mapped and rethrown instead of retried —
     /// retrying after a yield would risk re-delivering already-yielded items.
@@ -442,7 +451,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
                 catch (RpcException ex) when (attempt < MaxRetryAttempts && ErrorMapper.IsTransient(ex))
                 {
                     attempt++;
-                    await Task.Delay(backoff, cancellationToken);
+                    await Task.Delay(JitteredDelay(backoff), cancellationToken);
                     backoff *= 2;
                     continue;
                 }
@@ -490,7 +499,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
 
                 if (!pageComplete)
                 {
-                    await Task.Delay(backoff, cancellationToken);
+                    await Task.Delay(JitteredDelay(backoff), cancellationToken);
                     backoff *= 2;
                 }
             }
@@ -562,11 +571,10 @@ public sealed class SpiceDBClient : IAsyncDisposable
             if (preconditions.Count > 0)
                 req.OptionalPreconditions.AddRange(preconditions);
 
-            var resp = await RetryAsync(async () =>
+            var resp = await CallOnceAsync(async () =>
                 await _permissions.DeleteRelationshipsAsync(
                     req,
-                    cancellationToken: cancellationToken),
-                cancellationToken);
+                    cancellationToken: cancellationToken));
 
             revision = resp.DeletedAt?.Token ?? "";
 
@@ -639,7 +647,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
                 catch (RpcException ex) when (attempt < MaxRetryAttempts && ErrorMapper.IsTransient(ex))
                 {
                     attempt++;
-                    await Task.Delay(backoff, cancellationToken);
+                    await Task.Delay(JitteredDelay(backoff), cancellationToken);
                     backoff *= 2;
                     continue;
                 }
@@ -691,7 +699,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
 
                 if (!pageComplete)
                 {
-                    await Task.Delay(backoff, cancellationToken);
+                    await Task.Delay(JitteredDelay(backoff), cancellationToken);
                     backoff *= 2;
                 }
             }
@@ -762,7 +770,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
             catch (RpcException ex) when (yielded == 0 && attempt < MaxRetryAttempts && ErrorMapper.IsTransient(ex))
             {
                 attempt++;
-                await Task.Delay(backoff, cancellationToken);
+                await Task.Delay(JitteredDelay(backoff), cancellationToken);
                 backoff *= 2;
                 continue;
             }
@@ -801,7 +809,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
             }
 
             // Reached only via the transient-retry break above.
-            await Task.Delay(backoff, cancellationToken);
+            await Task.Delay(JitteredDelay(backoff), cancellationToken);
             backoff *= 2;
         }
     }
@@ -835,11 +843,10 @@ public sealed class SpiceDBClient : IAsyncDisposable
         if (string.IsNullOrEmpty(schema))
             throw new ArgumentException("Schema must not be empty.", nameof(schema));
 
-        var resp = await RetryAsync(async () =>
+        var resp = await CallOnceAsync(async () =>
             await _schema.WriteSchemaAsync(
                 new WriteSchemaRequest { Schema = schema },
-                cancellationToken: cancellationToken),
-            cancellationToken);
+                cancellationToken: cancellationToken));
 
         return resp.WrittenAt?.Token ?? "";
     }
@@ -1142,7 +1149,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
                 catch (RpcException ex) when (attempt < MaxRetryAttempts && ErrorMapper.IsTransient(ex))
                 {
                     attempt++;
-                    await Task.Delay(backoff, cancellationToken);
+                    await Task.Delay(JitteredDelay(backoff), cancellationToken);
                     backoff *= 2;
                     continue;
                 }
@@ -1191,7 +1198,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
 
                 if (!pageComplete)
                 {
-                    await Task.Delay(backoff, cancellationToken);
+                    await Task.Delay(JitteredDelay(backoff), cancellationToken);
                     backoff *= 2;
                 }
             }
@@ -1245,7 +1252,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
             catch (RpcException ex) when (yielded == 0 && attempt < MaxRetryAttempts && ErrorMapper.IsTransient(ex))
             {
                 attempt++;
-                await Task.Delay(backoff, cancellationToken);
+                await Task.Delay(JitteredDelay(backoff), cancellationToken);
                 backoff *= 2;
                 continue;
             }
@@ -1287,7 +1294,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
             }
 
             // Reached only via the transient-retry break above.
-            await Task.Delay(backoff, cancellationToken);
+            await Task.Delay(JitteredDelay(backoff), cancellationToken);
             backoff *= 2;
         }
     }
@@ -1313,15 +1320,14 @@ public sealed class SpiceDBClient : IAsyncDisposable
             throw new ArgumentException("Name must not be empty.", nameof(name));
         ArgumentNullException.ThrowIfNull(filter);
 
-        await RetryAsync(async () =>
+        await CallOnceAsync(async () =>
             await _experimental.ExperimentalRegisterRelationshipCounterAsync(
                 new ExperimentalRegisterRelationshipCounterRequest
                 {
                     Name = name,
                     RelationshipFilter = filter.ToProto(),
                 },
-                cancellationToken: cancellationToken),
-            cancellationToken);
+                cancellationToken: cancellationToken));
     }
 
     /// <summary>
@@ -1371,11 +1377,10 @@ public sealed class SpiceDBClient : IAsyncDisposable
         if (string.IsNullOrEmpty(name))
             throw new ArgumentException("Name must not be empty.", nameof(name));
 
-        await RetryAsync(async () =>
+        await CallOnceAsync(async () =>
             await _experimental.ExperimentalUnregisterRelationshipCounterAsync(
                 new ExperimentalUnregisterRelationshipCounterRequest { Name = name },
-                cancellationToken: cancellationToken),
-            cancellationToken);
+                cancellationToken: cancellationToken));
     }
 
     // ──────────────────────────────────────────────────────────────────────
@@ -1760,7 +1765,9 @@ public sealed class SpiceDBClient : IAsyncDisposable
     }
 
     /// <summary>
-    /// Retries an async operation with exponential backoff for transient gRPC errors.
+    /// Retries an async operation with full-jitter exponential backoff for
+    /// transient gRPC errors. Only for idempotent (read) operations — see
+    /// <see cref="CallOnceAsync{T}"/> for mutations.
     /// </summary>
     private static async Task<T> RetryAsync<T>(
         Func<Task<T>> operation,
@@ -1775,13 +1782,39 @@ public sealed class SpiceDBClient : IAsyncDisposable
             }
             catch (RpcException ex) when (attempt < MaxRetryAttempts && ErrorMapper.IsTransient(ex))
             {
-                await Task.Delay(backoff, cancellationToken);
+                await Task.Delay(JitteredDelay(backoff), cancellationToken);
                 backoff *= 2;
             }
             catch (RpcException ex)
             {
                 throw ErrorMapper.ToSpiceDBException(ex);
             }
+        }
+    }
+
+    /// <summary>
+    /// Runs an async operation once, converting a gRPC error, but never
+    /// retrying.
+    /// <para>
+    /// For mutations. A <c>WriteRelationships</c> containing
+    /// <c>OPERATION_CREATE</c>, or any request carrying preconditions, is
+    /// not idempotent: if it commits and the response is lost (a rolling
+    /// restart, a proxy dropping the connection), a retry would surface
+    /// <c>ALREADY_EXISTS</c>/<c>FAILED_PRECONDITION</c> for a write that in
+    /// fact succeeded, and the caller would wrongly conclude it had
+    /// failed. See DESIGN.md, "Automatic retry is for idempotent
+    /// operations only".
+    /// </para>
+    /// </summary>
+    private static async Task<T> CallOnceAsync<T>(Func<Task<T>> operation)
+    {
+        try
+        {
+            return await operation();
+        }
+        catch (RpcException ex)
+        {
+            throw ErrorMapper.ToSpiceDBException(ex);
         }
     }
 }

@@ -683,13 +683,20 @@ export class SpiceDBClient {
    * Imports relationships in bulk. Pass an array of relationships to import
    * them all in a single transaction.
    *
+   * `importBulkRelationships` is client-streaming, not unary: its duration
+   * scales with the size of `relationships`, not with server latency, so
+   * unlike every other method on this client it does NOT fall back to
+   * `defaultTimeoutMs` (root DESIGN.md, "RULE: A unary call must have a
+   * deadline", clause 3). Omitting `options.timeoutMs` here means this call
+   * is unbounded; pass it explicitly to bound a bulk import.
+   *
    * @returns The number of relationships loaded.
    */
   async importBulkRelationships(
     relationships: Relationship[],
     options?: { timeoutMs?: number },
   ): Promise<bigint> {
-    const timeoutMs = this.effectiveTimeoutMs(options?.timeoutMs);
+    const timeoutMs = options?.timeoutMs;
     return this.callOnce(async () => {
       const protoRels = relationships.map((rel) => toProtoRelationship(rel));
       const resp = await this.proto.permissions.importBulkRelationships(
@@ -1154,6 +1161,7 @@ export function createSpiceDBClient(
     insecure?: boolean;
     headers?: Record<string, string>;
     maxRetries?: number;
+    defaultTimeoutMs?: number;
   },
 ): SpiceDBClient {
   return new SpiceDBClient({

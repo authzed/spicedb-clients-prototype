@@ -284,11 +284,26 @@ const result = await client.checkPermission(full(), check);                     
 const result = await client.checkPermission(full(), check, { timeoutMs: 1000 });     // overrides it for this call
 ```
 
-Streaming methods (`readRelationships`, `lookupResources`, `lookupSubjects`,
-`watch`, `exportBulkRelationships`) do NOT take `timeoutMs` and are NOT
-bound by `defaultTimeoutMs` — they are long-lived by design (`watch` may run
-for the life of the process), and applying the unary default to them would
-make the stream itself the outage.
+Server-streaming methods (`readRelationships`, `lookupResources`,
+`lookupSubjects`, `watch`, `exportBulkRelationships`) do NOT take
+`timeoutMs` and are NOT bound by `defaultTimeoutMs` — they are long-lived by
+design (`watch` may run for the life of the process), and applying the
+unary default to them would make the stream itself the outage.
+
+`importBulkRelationships` is client-streaming, not server-streaming, but the
+same exclusion applies for the mirror-image reason: its duration scales
+with the size of the caller's dataset, not with server latency, so no fixed
+default is correct for it either. Unlike the server-streaming methods
+above, it DOES still take `options?.timeoutMs` — `undefined` (the default)
+means unbounded there (Connect's `createDeadlineSignal` sets no timer at
+all when `timeoutMs` is `undefined`), not "use `defaultTimeoutMs`"; pass it
+explicitly to bound a bulk import.
+
+Note for callers reasoning about worst-case latency: `timeoutMs` is a
+per-*attempt* budget, applied fresh on each retry, so a call that retries
+can take up to `timeoutMs × (retries + 1)` plus backoff, and an auto-paging
+call (e.g. `deleteRelationships`) applies the same `timeoutMs` fresh to
+each page.
 
 ### Experimental API Naming Convention
 

@@ -125,7 +125,7 @@ export class TypedClient {
         this.client = client;
     }
 
-    static create(endpoint: string, token: string, options?: { insecure?: boolean }): TypedClient {
+    static create(endpoint: string, token: string, options?: { insecure?: boolean; headers?: Record<string, string>; maxRetries?: number; defaultTimeoutMs?: number }): TypedClient {
         return new TypedClient(createSpiceDBClient(endpoint, token, options));
     }
 

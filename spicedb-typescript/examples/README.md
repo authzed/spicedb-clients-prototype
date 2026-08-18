@@ -28,6 +28,9 @@ Or use `mage test` which starts a SpiceDB container automatically.
 - `write_relationships/` — the `Transaction` builder: create, touch, delete,
   and preconditions.
 - `schema_management/` — reading and writing the SpiceDB schema.
+- `call_deadlines/` — `defaultTimeoutMs` on `createSpiceDBClient`, a per-call
+  `timeoutMs` override, and confirming bulk import isn't bounded by the
+  unary default.
 - `watch_changes/` — watching for relationship changes via the Watch API.
   This example streams indefinitely, so it's skipped by the integration test
   runner (`mage integrationTest`).

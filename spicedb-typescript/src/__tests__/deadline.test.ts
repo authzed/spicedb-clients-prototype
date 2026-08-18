@@ -9,8 +9,13 @@ import {
   RelationshipSchema,
   ObjectReferenceSchema,
   SubjectReferenceSchema,
+  ImportBulkRelationshipsResponseSchema,
 } from "@spicedb/proto";
-import { SpiceDBClient, type SpiceDBClientOptions } from "../client.js";
+import {
+  SpiceDBClient,
+  createSpiceDBClient,
+  type SpiceDBClientOptions,
+} from "../client.js";
 import { full } from "../consistency.js";
 import { DeadlineExceededError } from "../errors.js";
 
@@ -122,6 +127,117 @@ describe("call deadlines", () => {
     await expect(
       withWatchdog(
         client.checkPermissions(full(), [check], { timeoutMs: 200 }),
+      ),
+    ).rejects.toBeInstanceOf(DeadlineExceededError);
+    const elapsed = Date.now() - start;
+
+    expect(elapsed).toBeLessThan(STALL_MS);
+  });
+
+  it("createSpiceDBClient (the documented factory) actually applies defaultTimeoutMs", async () => {
+    // Every other test in this file constructs via `new SpiceDBClient({...})`.
+    // DESIGN.md documents `createSpiceDBClient(endpoint, token, { defaultTimeoutMs })`
+    // as the primary construction path -- this test goes through that
+    // factory instead, so a regression that narrows its options type (as
+    // happened before) fails to typecheck, and a regression that drops the
+    // option on the floor at runtime fails this assertion.
+    const transport = createRouterTransport((router) => {
+      router.service(PermissionsService, {
+        checkBulkPermissions: async () => {
+          await sleep(STALL_MS);
+          return create(CheckBulkPermissionsResponseSchema, {});
+        },
+      });
+    });
+    const client = createSpiceDBClient("localhost:1", "test-token", {
+      insecure: true,
+      defaultTimeoutMs: 200,
+    });
+    (client as unknown as { proto: SpiceDBProtoClient }).proto =
+      new SpiceDBProtoClient(transport);
+
+    const start = Date.now();
+    await expect(
+      withWatchdog(client.checkPermissions(full(), [check])),
+    ).rejects.toBeInstanceOf(DeadlineExceededError);
+    const elapsed = Date.now() - start;
+
+    expect(elapsed).toBeLessThan(STALL_MS);
+  });
+
+  it("does not bound importBulkRelationships (client-streaming) by the unary default", async () => {
+    // importBulkRelationships is client-streaming: its duration scales with
+    // the size of the caller's dataset, not with server latency, so root
+    // DESIGN.md's "RULE: A unary call must have a deadline" (clause 3,
+    // amended to cover client-streaming and bidirectional RPCs) excludes it
+    // from defaultTimeoutMs. defaultTimeoutMs here is far smaller than the
+    // server's stall -- if importBulkRelationships inherited it, this call
+    // would reject with DeadlineExceededError instead of completing.
+    const transport = createRouterTransport((router) => {
+      router.service(PermissionsService, {
+        importBulkRelationships: async (reqs) => {
+          let numLoaded = 0n;
+          for await (const req of reqs) {
+            numLoaded += BigInt(req.relationships.length);
+          }
+          await sleep(STALL_MS);
+          return create(ImportBulkRelationshipsResponseSchema, { numLoaded });
+        },
+      });
+    });
+    const client = clientWithTransport(transport, { defaultTimeoutMs: 100 });
+
+    const start = Date.now();
+    const numLoaded = await withWatchdog(
+      client.importBulkRelationships([
+        {
+          resourceType: "document",
+          resourceId: "bulk",
+          resourceRelation: "viewer",
+          subjectType: "user",
+          subjectId: "alice",
+        },
+      ]),
+    );
+    const elapsed = Date.now() - start;
+
+    expect(numLoaded).toBe(1n);
+    expect(elapsed).toBeGreaterThanOrEqual(STALL_MS);
+  });
+
+  it("still honors an explicit timeoutMs on importBulkRelationships", async () => {
+    // The exclusion above is from the *default*, not from the ability to
+    // bound the call at all -- a caller-supplied timeoutMs must still work.
+    const transport = createRouterTransport((router) => {
+      router.service(PermissionsService, {
+        importBulkRelationships: async (reqs) => {
+          for await (const _req of reqs) {
+            // drain
+          }
+          await sleep(STALL_MS);
+          return create(ImportBulkRelationshipsResponseSchema, {
+            numLoaded: 0n,
+          });
+        },
+      });
+    });
+    const client = clientWithTransport(transport);
+
+    const start = Date.now();
+    await expect(
+      withWatchdog(
+        client.importBulkRelationships(
+          [
+            {
+              resourceType: "document",
+              resourceId: "bulk",
+              resourceRelation: "viewer",
+              subjectType: "user",
+              subjectId: "alice",
+            },
+          ],
+          { timeoutMs: 200 },
+        ),
       ),
     ).rejects.toBeInstanceOf(DeadlineExceededError);
     const elapsed = Date.now() - start;

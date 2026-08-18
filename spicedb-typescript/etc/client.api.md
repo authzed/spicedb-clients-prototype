@@ -79,6 +79,7 @@ export function createSpiceDBClient(endpoint: string, token: string, options?: {
     insecure?: boolean;
     headers?: Record<string, string>;
     maxRetries?: number;
+    defaultTimeoutMs?: number;
 }): SpiceDBClient;
 
 // @public

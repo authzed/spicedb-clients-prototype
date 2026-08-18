@@ -105,7 +105,7 @@
   retry logic to act on.
   - Every unary method gained an optional `timeoutMs` (milliseconds) — either a trailing
     `options?: { timeoutMs?: number }` parameter (`write`, `readSchema`, `writeSchema`,
-    `diffSchema`, `importBulkRelationships`, the three experimental counter methods), or a new
+    `diffSchema`, the three experimental counter methods), or a new
     field on an existing options type (`CheckOptions`, `DeleteOptions`,
     `ExpandPermissionTreeParams`, `ReflectSchemaOptions`, `ComputablePermissionsParams`,
     `DependentRelationsParams`) — passed straight through as Connect's `CallOptions.timeoutMs`.
@@ -126,9 +126,30 @@
     nothing enforced a deadline) is now reachable: a timed-out call rejects with it, not a
     generic `SpiceDBError`. `Code.DeadlineExceeded` is not in `TRANSIENT_CODES`, so a timeout is
     never auto-retried.
-  - `spicedb-gen`'s TypeScript typed-client template needed no change: its generated `check()`
-    already forwards a caller-supplied `options?: CheckOptions` straight through to
-    `checkPermission`, so it picks up `timeoutMs` automatically. Verified by regenerating
+  - **Fix round 1 correction:** `importBulkRelationships` also gained an `options?: {
+    timeoutMs?: number }` parameter, but — unlike the unary methods above — it is
+    client-streaming, not unary, and is now explicitly **excluded** from `defaultTimeoutMs`: its
+    duration scales with the size of the caller's dataset, not with server latency, so no fixed
+    default is correct for it (root DESIGN.md, "RULE: A unary call must have a deadline",
+    clause 3, amended to cover client-streaming and bidirectional RPCs, not only
+    server-streaming). Omitting `options.timeoutMs` now means unbounded (Connect's
+    `createDeadlineSignal` sets no timer when `timeoutMs` is `undefined`); passing it still
+    bounds the call. An earlier version of this fix incorrectly resolved `timeoutMs` against
+    `defaultTimeoutMs` for this call, which would have silently aborted large, legitimate
+    multi-minute imports at 30 seconds.
+  - **Fix round 1 correction (H1):** `createSpiceDBClient`'s inline options type — the documented
+    construction path this file's own example above uses — had NOT been widened to include
+    `defaultTimeoutMs`, so the documented `createSpiceDBClient(endpoint, token, {
+    defaultTimeoutMs: 5000 })` literally failed to type-check (`TS2353`). Nothing in the test
+    suite constructed through that factory, so the gap went uncaught. Widened the factory's
+    options type, regenerated `etc/client.api.md` (purely additive), and `spicedb-gen`'s
+    generated `TypedClient.create()` — which forwarded the same narrow `{ insecure?: boolean }`
+    type — now forwards the full options object (`headers`, `maxRetries`, `defaultTimeoutMs`)
+    too.
+  - `spicedb-gen`'s TypeScript typed-client template needed one change (see the H1 correction
+    above for `TypedClient.create()`); its generated `check()` already forwarded a
+    caller-supplied `options?: CheckOptions` straight through to `checkPermission`, so it picked
+    up `timeoutMs` automatically with no template change. Verified by regenerating
     `testdata/typescript/permissions.ts` against the updated package and type-checking clean
     (including `type_errors.ts`'s `@ts-expect-error` assertions, unaffected).
   - New `src/__tests__/deadline.test.ts`, using `createRouterTransport` (from
@@ -138,9 +159,14 @@
     `createRouterTransport` runs the real client-side transport stack against a real (in-process)
     handler that deliberately stalls: a unary call against a stub that never responds rejects
     with `DeadlineExceededError` well before the stall completes, a per-call `timeoutMs`
-    overrides a much larger client default, and a streaming call outlives a tiny unary default
-    instead of inheriting it. Every test is wrapped in a watchdog so a regression fails the suite
-    instead of hanging CI.
+    overrides a much larger client default, a streaming call outlives a tiny unary default
+    instead of inheriting it, bulk import is both unbounded by the default and still honors an
+    explicit `timeoutMs`, and constructing through `createSpiceDBClient` (not just `new
+    SpiceDBClient`) with `defaultTimeoutMs` actually applies it end-to-end. Every test is wrapped
+    in a watchdog so a regression fails the suite instead of hanging CI.
+  - New `examples/call_deadlines/`, run against a real SpiceDB rather than a mock: constructs a
+    client via the documented `defaultTimeoutMs` option on `createSpiceDBClient`, overrides it
+    per-call, and confirms bulk import is unbounded by default.
 - **2026-08-18**: Retry safety, per root `DESIGN.md` "RULE: Automatic retry is for idempotent
   operations only". Three changes:
   - `RESOURCE_EXHAUSTED` is no longer retried. In SpiceDB it signals memory load-shed (retrying

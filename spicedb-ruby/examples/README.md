@@ -38,6 +38,7 @@ bundle exec rspec check_permission/check_permission_spec.rb
 | `watch_changes/` | Watching for relationship changes |
 | `schema_management/` | Schema read/write operations |
 | `bulk_operations/` | Bulk checks, check_all, check_any, and import |
+| `call_deadlines/` | Constructing a client with `default_timeout:`, a per-call `timeout:` override, and confirming bulk import isn't bounded by the unary default |
 | `schema_reflection/` | Schema reflection, computable permissions, diffs |
 | `relationship_counters/` | Registering and reading relationship counters |
 | `expand_permission_tree/` | Expanding a permission into its native `PermissionTree` (intermediate/leaf nodes, subjects) |

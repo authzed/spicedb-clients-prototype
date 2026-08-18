@@ -97,7 +97,7 @@
   connection looks fine at the transport level, so no error is produced and there is nothing for
   retry logic to act on.
   - Every unary method (`check_permission`/`check_permissions`/`check_any`/`check_all`, `write`,
-    `delete_relationships`, `read_schema`, `write_schema`, `import_relationships`,
+    `delete_relationships`, `read_schema`, `write_schema`,
     `expand_permission_tree`, `experimental_register_relationship_counter`/
     `experimental_count_relationships`/`experimental_unregister_relationship_counter`,
     `reflect_schema`, `diff_schema`, `computable_permissions`, `dependent_relations`) now takes
@@ -115,6 +115,16 @@
     are long-lived by design (`updates` may legitimately run for the life of the process), and a
     30s cutoff would end a legitimate stream, which is a worse defect than the one this change
     fixes.
+  - **Fix round 1 correction**: `import_relationships` (`import_bulk_relationships`) also takes
+    a `timeout:` keyword, but — unlike the unary methods above — it is client-streaming, not
+    unary, and is now explicitly **excluded** from `default_timeout`: its duration scales with
+    the size of the caller's dataset, not with server latency, so no fixed default is correct
+    for it (root DESIGN.md, "RULE: A unary call must have a deadline", clause 3, amended to
+    cover client-streaming and bidirectional RPCs, not only server-streaming). `nil` (the
+    default) now means unbounded there; passing `timeout:` still bounds the call. An earlier
+    version of this fix incorrectly applied `default_timeout` to bulk imports, which would have
+    silently aborted large, legitimate multi-minute loads at 30 seconds. `deadline_for` now
+    returns `nil` for a `nil` input instead of raising.
   - `SpiceDB::DeadlineExceededError` (added earlier, but never actually produced by this client
     since nothing enforced a deadline) is now reachable: a timed-out call raises it, not a
     generic `SpiceDB::Error`. gRPC code `4` (`DEADLINE_EXCEEDED`) is not in `TRANSIENT_CODES`, so
@@ -126,9 +136,14 @@
     deliberately stall (a mocked `double`, used elsewhere in this suite, can't prove a deadline
     is actually enforced — grpc's deadline machinery lives below the mock): a unary call against
     a stub that never responds raises `DeadlineExceededError` well before the server's stall
-    completes (not a hang), a per-call `timeout:` overrides a much larger client default, and a
-    streaming call outlives a tiny unary default instead of inheriting it. Every spec is wrapped
-    in its own watchdog so a regression fails the suite instead of hanging CI.
+    completes (not a hang, and covering both the `with_retry` check path and the `call_once`
+    write/mutation path separately), a per-call `timeout:` overrides a much larger client
+    default, a streaming call outlives a tiny unary default instead of inheriting it, and bulk
+    import is both unbounded by the default and still honors an explicit `timeout:`. Every spec
+    is wrapped in its own watchdog so a regression fails the suite instead of hanging CI.
+  - New `examples/call_deadlines/`, run against a real SpiceDB rather than a mock: constructs a
+    client via the documented `default_timeout:` keyword, overrides it per-call, and confirms
+    bulk import is unbounded by default.
 - **2026-08-18**: Retry safety, per root `DESIGN.md` "RULE: Automatic retry is for idempotent
   operations only". Three changes:
   - `RESOURCE_EXHAUSTED` (gRPC code 8) is no longer retried. In SpiceDB it signals memory

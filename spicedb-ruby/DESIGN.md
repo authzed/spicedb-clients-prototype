@@ -371,51 +371,72 @@ result = client.check_permission(cs, 'view', rel)             # bound by the 5s 
 result = client.check_permission(cs, 'view', rel, timeout: 1) # overrides it for this call
 ```
 
-Streaming calls (`read_relationships`, `lookup_resources`, `lookup_subjects`,
-`updates`, `export_relationships`) do NOT take a `timeout:` and are NOT
-bound by `default_timeout` — they are long-lived by design (`updates` may
-run for the life of the process), and applying the unary default to them
-would make the stream itself the outage.
+Server-streaming calls (`read_relationships`, `lookup_resources`,
+`lookup_subjects`, `updates`, `export_relationships`) do NOT take a
+`timeout:` and are NOT bound by `default_timeout` — they are long-lived by
+design (`updates` may run for the life of the process), and applying the
+unary default to them would make the stream itself the outage.
+
+`import_relationships` (`import_bulk_relationships`) is client-streaming, not
+server-streaming, but the same exclusion applies for the mirror-image reason:
+its duration scales with the size of the caller's dataset, not with server
+latency, so no fixed default is correct for it either. Unlike the
+server-streaming calls above, it DOES still take a `timeout:` — `nil` (the
+default) means unbounded there, not "use `default_timeout`"; pass an
+explicit `timeout:` to bound a bulk import.
+
+Note for callers reasoning about worst-case latency: `timeout:` is a
+per-*attempt* budget, applied fresh on each retry, so a call that retries can
+take up to `timeout × (retries + 1)` plus backoff, and an auto-paging call
+(e.g. `delete_relationships`) applies the same `timeout:` fresh to each page.
 
 ### Complete Method List
 
+`timeout:` (seconds, default `nil` meaning "use the client's `default_timeout`")
+appears on every unary method below — see "Deadlines" above. It is omitted
+from `import_relationships` and `export_relationships`/`read_relationships`/
+`lookup_resources`/`lookup_subjects`/`updates` in the sense that those calls
+are NOT bound by `default_timeout`; `import_relationships` still accepts
+`timeout:` (default `nil` there means unbounded, not "use the default").
+
 **Checks:**
-- `check_permission(consistency, permission, relationship, context: nil)` → `CheckResult`
-- `check_permissions(consistency, permission, *relationships, context: nil)` → `Array<CheckResult>`
-- `check_any(consistency, permission, *relationships, context: nil)` → `Boolean`
-- `check_all(consistency, permission, *relationships, context: nil)` → `Boolean`
+- `check_permission(consistency, permission, relationship, context: nil, timeout: nil)` → `CheckResult`
+- `check_permissions(consistency, permission, *relationships, context: nil, timeout: nil)` → `Array<CheckResult>`
+- `check_any(consistency, permission, *relationships, context: nil, timeout: nil)` → `Boolean`
+- `check_all(consistency, permission, *relationships, context: nil, timeout: nil)` → `Boolean`
 
 **Relationships:**
-- `write(transaction)` → `String` (revision)
+- `write(transaction, timeout: nil)` → `String` (revision)
 - `read_relationships(consistency, filter)` → `Enumerator<Relationship>`
-- `delete_relationships(filter, must_match: [], must_not_match: [], limit: nil)` → `String` (revision)
+- `delete_relationships(filter, must_match: [], must_not_match: [], limit: nil, timeout: nil)` → `String` (revision)
 
 **Lookups:**
 - `lookup_resources(consistency, resource_type, permission, subject_type, subject_id)` → `Enumerator<LookupResource>`
 - `lookup_subjects(consistency, resource_type, resource_id, permission, subject_type)` → `Enumerator<LookupSubject>`
 
 **Schema:**
-- `read_schema` → `[String, String]` (schema, revision)
-- `write_schema(schema)` → `String` (revision)
-- `reflect_schema(consistency)` → `ReflectSchemaResult`
-- `computable_permissions(consistency, definition_name, relation_name)` → `[Array<RelationReference>, String]`
-- `dependent_relations(consistency, definition_name, permission_name)` → `[Array<RelationReference>, String]`
-- `diff_schema(consistency, comparison_schema)` → `[Array<SchemaDiff>, String]`
+- `read_schema(timeout: nil)` → `[String, String]` (schema, revision)
+- `write_schema(schema, timeout: nil)` → `String` (revision)
+- `reflect_schema(consistency, timeout: nil)` → `ReflectSchemaResult`
+- `computable_permissions(consistency, definition_name, relation_name, timeout: nil)` → `[Array<RelationReference>, String]`
+- `dependent_relations(consistency, definition_name, permission_name, timeout: nil)` → `[Array<RelationReference>, String]`
+- `diff_schema(consistency, comparison_schema, timeout: nil)` → `[Array<SchemaDiff>, String]`
 
 **Expand:**
-- `expand_permission_tree(consistency, resource_type, resource_id, permission)` → `ExpandResult`
+- `expand_permission_tree(consistency, resource_type, resource_id, permission, timeout: nil)` → `ExpandResult`
 
 **Bulk:**
-- `import_relationships(enum)` → `Integer` (num_loaded)
+- `import_relationships(enum, timeout: nil)` → `Integer` (num_loaded) — client-streaming;
+  NOT bound by `default_timeout` (`timeout: nil` here means unbounded, not "use the default")
 - `export_relationships(consistency, filter = nil)` → `Enumerator<Relationship>`
 
 **Watch:**
 - `updates(object_types, start_revision: nil)` → `Enumerator<Update>`
 
 **Experimental:**
-- `experimental_register_relationship_counter(name, filter)` → `nil`
-- `experimental_count_relationships(name)` → `CountResult`
-- `experimental_unregister_relationship_counter(name)` → `nil`
+- `experimental_register_relationship_counter(name, filter, timeout: nil)` → `nil`
+- `experimental_count_relationships(name, timeout: nil)` → `CountResult`
+- `experimental_unregister_relationship_counter(name, timeout: nil)` → `nil`
 
 ### Escape Hatches
 

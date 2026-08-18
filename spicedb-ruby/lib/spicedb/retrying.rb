@@ -34,7 +34,13 @@ module SpiceDB
     # at the point of each individual RPC attempt (not once per public method
     # call) so a retried call gets a full new window per attempt, matching
     # grpc-python's per-attempt `timeout=` semantics.
+    #
+    # `nil` in, `nil` out (no deadline at all) -- used by client-streaming
+    # calls like `import_relationships`, which deliberately skip
+    # `effective_timeout` and so may pass `nil` straight through here.
     def deadline_for(timeout_seconds)
+      return nil if timeout_seconds.nil?
+
       Time.now + timeout_seconds
     end
 

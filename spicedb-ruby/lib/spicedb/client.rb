@@ -525,12 +525,18 @@ module SpiceDB
     # Streams relationships to SpiceDB for bulk import. Relationships are
     # automatically batched into chunks of 1,000.
     #
+    # `import_bulk_relationships` is client-streaming, not unary: its
+    # duration scales with the size of `relationships`, not with server
+    # latency, so it does NOT inherit `default_timeout` (root DESIGN.md,
+    # "RULE: A unary call must have a deadline", clause 3). Passing no
+    # `timeout` here means this call is unbounded; pass `timeout` to bound
+    # it explicitly.
+    #
     # @param relationships [Enumerable<SpiceDB::Relationship>]
-    # @param timeout [Numeric, nil] seconds bounding this call, overriding
-    #   the client's default_timeout
+    # @param timeout [Numeric, nil] seconds bounding this call (no default)
     # @return [Integer] the number of relationships loaded
     def import_relationships(relationships, timeout: nil)
-      call_once { call_import_relationships(relationships, effective_timeout(timeout)) }
+      call_once { call_import_relationships(relationships, timeout) }
     end
 
     # Returns an Enumerator over all relationships matching the optional filter,

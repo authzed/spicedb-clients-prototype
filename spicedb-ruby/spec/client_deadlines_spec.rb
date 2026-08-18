@@ -16,10 +16,14 @@ STALL_SECONDS = 1.5
 WATCHDOG_SECONDS = 10
 
 # gRPC service handlers used to prove deadline enforcement. check_bulk_permissions
-# and write_relationships back the unary specs (never respond inside the spec's
-# deadline). read_relationships backs the streaming non-inheritance spec: it
-# stalls past the client's tiny unary default before finally yielding, proving
-# the stream was never bound by it.
+# backs the primary unary specs (never responds inside the spec's deadline).
+# write_relationships backs a second, independent unary spec covering the
+# mutation call path specifically (call_once, not with_retry). read_relationships
+# backs the streaming non-inheritance spec: it stalls past the client's tiny
+# unary default before finally yielding, proving the stream was never bound by
+# it. import_bulk_relationships backs the bulk-import specs: it drains the
+# request stream, then stalls, proving import_relationships is neither bound
+# by the unary default nor unresponsive to an explicit per-call timeout.
 class StallingPermissionsService < Authzed::Api::V1::PermissionsService::Service
   def check_bulk_permissions(_request, _call)
     sleep(STALL_SECONDS)
@@ -45,6 +49,12 @@ class StallingPermissionsService < Authzed::Api::V1::PermissionsService::Service
         after_result_cursor: Authzed::Api::V1::Cursor.new(token: 'cursor1')
       )
     ]
+  end
+
+  def import_bulk_relationships(call)
+    call.each_remote_read.to_a # drain the client-streaming request before responding
+    sleep(STALL_SECONDS)
+    Authzed::Api::V1::ImportBulkRelationshipsResponse.new(num_loaded: 0)
   end
 end
 
@@ -107,6 +117,29 @@ RSpec.describe 'SpiceDB::Client call deadlines' do
                        "#{STALL_SECONDS}s stall (elapsed=#{elapsed.round(2)}s)"
   end
 
+  it 'fails a mutation (write) against a stub that never responds with DeadlineExceededError' do
+    # write() goes through call_once, not with_retry -- a distinct code path
+    # from the check spec above -- so this exercises the deadline separately
+    # for the mutation path.
+    server, port = start_server
+    begin
+      client = SpiceDB::Client.new_plaintext("localhost:#{port}", 'testtoken', default_timeout: 0.2)
+      txn = SpiceDB::Transaction.new
+      txn.touch(rel)
+      start = Time.now
+      expect do
+        run_with_watchdog { client.write(txn) }
+      end.to raise_error(SpiceDB::DeadlineExceededError)
+      elapsed = Time.now - start
+      client.close
+    ensure
+      server.stop
+    end
+    expect(elapsed).to be < STALL_SECONDS,
+                       "write must fail at the ~0.2s client default, not wait out the server's " \
+                       "#{STALL_SECONDS}s stall (elapsed=#{elapsed.round(2)}s)"
+  end
+
   it 'lets a per-call timeout: override a much larger client default' do
     server, port = start_server
     begin
@@ -145,6 +178,49 @@ RSpec.describe 'SpiceDB::Client call deadlines' do
     expect(elapsed).to be >= STALL_SECONDS,
                        'the stream must outlive the tiny unary default -- it should have waited out the ' \
                        "server's #{STALL_SECONDS}s stall (elapsed=#{elapsed.round(2)}s)"
+  end
+
+  it 'does not bound import_relationships (client-streaming) by the unary default' do
+    # import_relationships is client-streaming: its duration scales with the
+    # size of the caller's dataset, not with server latency, so root
+    # DESIGN.md's "RULE: A unary call must have a deadline" (clause 3,
+    # amended to cover client-streaming and bidirectional RPCs) excludes it
+    # from default_timeout. default_timeout here is far smaller than the
+    # server's stall -- if import_relationships inherited it, this call
+    # would raise DeadlineExceededError instead of completing.
+    server, port = start_server
+    begin
+      client = SpiceDB::Client.new_plaintext("localhost:#{port}", 'testtoken', default_timeout: 0.1)
+      start = Time.now
+      loaded = run_with_watchdog { client.import_relationships([rel]) }
+      elapsed = Time.now - start
+      client.close
+    ensure
+      server.stop
+    end
+    expect(loaded).to eq(0)
+    expect(elapsed).to be >= STALL_SECONDS,
+                       'import_relationships must outlive the tiny unary default -- it should have ' \
+                       "waited out the server's #{STALL_SECONDS}s stall (elapsed=#{elapsed.round(2)}s)"
+  end
+
+  it 'still honors an explicit timeout: on import_relationships' do
+    # The exclusion above is from the *default*, not from the ability to
+    # bound the call at all -- a caller-supplied timeout must still work.
+    server, port = start_server
+    begin
+      client = SpiceDB::Client.new_plaintext("localhost:#{port}", 'testtoken')
+      start = Time.now
+      expect do
+        run_with_watchdog { client.import_relationships([rel], timeout: 0.2) }
+      end.to raise_error(SpiceDB::DeadlineExceededError)
+      elapsed = Time.now - start
+      client.close
+    ensure
+      server.stop
+    end
+    expect(elapsed).to be < STALL_SECONDS,
+                       "an explicit timeout: 0.2 on import_relationships must still fire (elapsed=#{elapsed.round(2)}s)"
   end
 
   describe 'default_timeout' do

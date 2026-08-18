@@ -11,9 +11,9 @@ repository = "https://github.com/authzed/spicedb-clients"
 spicedb-proto = { path = "../proto-clients/spicedb-rust-proto" }
 
 # gRPC / async
-tonic = "0.12"
-prost = "0.13"
-prost-types = "0.13"
+tonic = "0.14"
+prost = "0.14"
+prost-types = "0.14"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
 futures = "0.3"

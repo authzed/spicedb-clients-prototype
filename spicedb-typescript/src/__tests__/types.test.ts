@@ -6,9 +6,11 @@ import {
   Transaction,
   toProtoRelationship,
   fromProtoRelationship,
+  toProtoRelationshipFilter,
   toProtoDeletePreconditions,
   toProtoDeleteRelationshipsRequest,
 } from "../types.js";
+import { InvalidArgumentError } from "../errors.js";
 
 describe("relationship()", () => {
   it("parses simple resource and subject references", () => {
@@ -148,6 +150,58 @@ describe("Transaction", () => {
   });
 });
 
+describe("toProtoRelationshipFilter()", () => {
+  // Regression test for the offboarding hazard this finding describes:
+  // toProtoRelationshipFilter used to build optionalSubjectFilter only
+  // inside `if (filter.subjectType)`, so `{ resourceType: "document",
+  // subjectId: "alice" }` silently produced a proto filter with NO subject
+  // constraint at all -- deleteRelationships called with that filter would
+  // delete every relationship on every document, not just alice's. It must
+  // now throw instead of silently widening.
+  it("throws InvalidArgumentError naming subjectId when subjectType is missing", () => {
+    const call = () =>
+      toProtoRelationshipFilter({ resourceType: "document", subjectId: "alice" });
+    expect(call).toThrow(InvalidArgumentError);
+    expect(call).toThrow(/subjectId/);
+    expect(call).toThrow(/subjectType/);
+  });
+
+  it("throws InvalidArgumentError naming subjectRelation when subjectType is missing", () => {
+    const call = () =>
+      toProtoRelationshipFilter({
+        resourceType: "document",
+        subjectRelation: "member",
+      });
+    expect(call).toThrow(InvalidArgumentError);
+    expect(call).toThrow(/subjectRelation/);
+    expect(call).toThrow(/subjectType/);
+  });
+
+  // Companion to the two throw cases above -- proves subjectType alone (no
+  // subjectId) still builds a valid subject filter and is not accidentally
+  // caught by the new guard.
+  it("does not throw when subjectType is set alone", () => {
+    const proto = toProtoRelationshipFilter({
+      resourceType: "document",
+      subjectType: "user",
+    });
+    expect(proto.optionalSubjectFilter?.subjectType).toBe("user");
+    expect(proto.optionalSubjectFilter?.optionalSubjectId).toBe("");
+  });
+
+  // Companion proving the valid combination (subjectType supplied alongside
+  // subjectId) still works correctly.
+  it("does not throw when subjectType and subjectId are both set", () => {
+    const proto = toProtoRelationshipFilter({
+      resourceType: "document",
+      subjectType: "user",
+      subjectId: "alice",
+    });
+    expect(proto.optionalSubjectFilter?.subjectType).toBe("user");
+    expect(proto.optionalSubjectFilter?.optionalSubjectId).toBe("alice");
+  });
+});
+
 describe("toProtoDeletePreconditions()", () => {
   it("returns an empty array when no options are given", () => {
     expect(toProtoDeletePreconditions()).toEqual([]);
@@ -250,5 +304,19 @@ describe("toProtoDeleteRelationshipsRequest()", () => {
     expect(req.optionalPreconditions).toHaveLength(1);
     expect(req.optionalLimit).toBe(100);
     expect(req.optionalAllowPartialDeletions).toBe(true);
+  });
+
+  // Proves the fix for the offboarding hazard this finding describes: a
+  // filter carrying a subject ID but no subject type must be rejected
+  // before deleteRelationships can build a request at all -- not silently
+  // sent as an unconstrained-subject delete that would remove every
+  // relationship on every document.
+  it("throws InvalidArgumentError instead of building a request when the filter's subjectId has no subjectType", () => {
+    expect(() =>
+      toProtoDeleteRelationshipsRequest({
+        resourceType: "document",
+        subjectId: "alice",
+      }),
+    ).toThrow(InvalidArgumentError);
   });
 });

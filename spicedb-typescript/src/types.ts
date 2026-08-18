@@ -33,6 +33,7 @@ import {
   CheckPermissionResponse_Permissionship,
 } from "@spicedb/proto";
 import { timestampFromDate } from "@bufbuild/protobuf/wkt";
+import { InvalidArgumentError } from "./errors.js";
 
 /**
  * Represents a relationship between a resource and a subject.
@@ -603,7 +604,22 @@ export function fromProtoRelationship(
   return rel;
 }
 
-/** @internal */
+/**
+ * Converts filter options to a proto RelationshipFilter.
+ *
+ * @throws {InvalidArgumentError} if `subjectId` or `subjectRelation` is set
+ * without `subjectType`. The wire's `SubjectFilter.subjectType` is a
+ * required field, so there is no way to express a subject ID/relation
+ * constraint without it, which makes silently dropping the constraint the
+ * one unsafe resolution: a caller who wrote `{ resourceType: "document",
+ * subjectId: "alice" }`, expecting to narrow to alice's relationships,
+ * would instead match every subject on every document — e.g.
+ * `deleteRelationships` would delete every relationship on every document,
+ * not just alice's. See root DESIGN.md, "RULE: A conversion that cannot
+ * preserve meaning must fail", clause 1.
+ *
+ * @internal
+ */
 export function toProtoRelationshipFilter(
   filter: RelationshipFilterOptions,
 ): ProtoRelationshipFilter {
@@ -628,6 +644,13 @@ export function toProtoRelationshipFilter(
       );
     }
     proto.optionalSubjectFilter = subjectFilter;
+  } else if (filter.subjectId || filter.subjectRelation) {
+    const missing = filter.subjectId ? "subjectId" : "subjectRelation";
+    throw new InvalidArgumentError(
+      `Filter has ${missing} set without subjectType. The wire format ` +
+        `requires subjectType whenever a subject constraint is present -- ` +
+        `set subjectType before setting ${missing}.`,
+    );
   }
 
   return proto;

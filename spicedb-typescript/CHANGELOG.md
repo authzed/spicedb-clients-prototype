@@ -98,6 +98,26 @@
 
 ### Fixed
 
+- **2026-08-18**: `toProtoRelationshipFilter()` (used by `readRelationships`, `deleteRelationships`,
+  `exportBulkRelationships`, `Transaction.mustMatch`/`mustNotMatch`, and
+  `experimentalRegisterRelationshipCounter`) silently dropped `subjectId`/`subjectRelation` when
+  `subjectType` was not set, instead of throwing. `optionalSubjectFilter` was only built inside
+  `if (filter.subjectType)`, so `{ resourceType: "document", subjectId: "alice" }` produced a
+  proto `RelationshipFilter` with **no subject constraint at all**, while the filter object itself
+  still carried `subjectId: "alice"` — a caller reading the object back would see the constraint
+  they set; the server would not. `deleteRelationships(cs, filter)` called with that filter
+  deleted every relationship on every document, not just alice's — a correct-looking
+  user-offboarding call that wipes the whole system. The wire's `SubjectFilter.subjectType` is a
+  required field, so there is no way to express a subject ID/relation constraint without it,
+  which makes silent widening the one unsafe resolution — `toProtoRelationshipFilter()` now
+  throws `InvalidArgumentError` naming the field that was set without `subjectType`, per root
+  `DESIGN.md` "RULE: A conversion that cannot preserve meaning must fail", clause 1
+  (caller-supplied data the client cannot represent MUST raise a typed error). No signature
+  change: the function already threw for other invalid inputs elsewhere in this file, and every
+  call site already propagates synchronous throws (async generators throw on first `.next()`;
+  `withRetry`'s `isTransientError` check correctly does not retry a `SpiceDBError`). No
+  pre-existing test asserted the silent-drop behavior, so none needed replacing.
+
 - **2026-08-18**: `checkAll()` returned `true` for zero checks —
   `Array.prototype.every` is vacuously `true` over an empty array. Root
   `DESIGN.md`'s "An aggregate over zero checks is not a grant" clause names

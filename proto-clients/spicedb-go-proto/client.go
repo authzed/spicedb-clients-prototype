@@ -4,13 +4,16 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/url"
 	"strings"
 	"sync/atomic"
+	"unicode"
 
 	v1 "github.com/authzed/spicedb-clients/proto-clients/spicedb-go-proto/gen/authzed/api/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/resolver"
 )
 
 // Client wraps all generated gRPC service clients for SpiceDB.
@@ -68,11 +71,42 @@ func WithDialOptions(opts ...grpc.DialOption) Option {
 	}
 }
 
-// isLoopbackEndpoint reports whether a gRPC target string names a loopback
-// destination: the literal hostname "localhost", an IP in 127.0.0.0/8, the
-// IPv6 loopback ::1, or a unix domain socket target (unix:path or
-// unix:///path). A unix socket never leaves the host's kernel, so it is
-// loopback for the purposes of this check even though it has no IP at all.
+// isLoopbackEndpoint reports whether the connection NewClient would actually
+// open for endpoint terminates on a loopback destination: the literal
+// hostname "localhost", an IP in 127.0.0.0/8, the IPv6 loopback ::1, or a
+// unix domain socket target (unix:path or unix:///path). A unix socket never
+// leaves the host's kernel, so it is loopback for the purposes of this check
+// even though it has no IP at all.
+//
+// That wording is deliberate. This does not answer "does this string look
+// like it names a loopback host"; it answers "will the transport dial
+// loopback". Those are the same question only if this function and grpc-go
+// agree on where the host ends and the rest of the target begins -- and a
+// hand-rolled split of a target string will disagree with grpc-go's URI
+// parse somewhere. The equivalent guard in this repo's C# and Rust clients
+// did exactly that: given "127.0.0.1:443@evil.com" a last-colon split
+// yields host "127.0.0.1" and reports loopback, while their transports
+// parsed the same string as a URI, read "127.0.0.1:443" as userinfo, and
+// connected to evil.com. Go's own transport happens not to be fooled by
+// that particular input (grpc-go's DNS resolver keeps host "127.0.0.1" and
+// fails on the unparseable port), but relying on that is relying on an
+// accident of one input.
+//
+// So the target is resolved the way grpc.NewClient resolves it -- parse as
+// a URI, and if the scheme names no registered resolver, re-parse as
+// "<default scheme>:///" + target, exactly as
+// ClientConn.initParsedTargetAndResolverBuilder does -- and the host is
+// taken from the resulting resolver.Target's Endpoint() with the same
+// net.SplitHostPort grpc-go's DNS resolver and net.Dial themselves use. The
+// default scheme is "dns" (or "passthrough" when a custom dialer is
+// configured); both yield the same Endpoint() for a scheme-less target, so
+// the distinction cannot change this answer.
+//
+// Anything that could move the authority under URI parsing -- userinfo, a
+// query, a fragment, or a leftover '@', '/', '?', '#' or whitespace in the
+// endpoint itself -- is refused before the host is even considered. A
+// legitimate SpiceDB target contains none of those, and failing closed on a
+// weird endpoint is the correct trade for a credential leak.
 //
 // This is the exemption in root DESIGN.md, "RULE: Credentials over
 // insecure transport require an explicit opt-in": loopback is the reason
@@ -80,23 +114,30 @@ func WithDialOptions(opts ...grpc.DialOption) Option {
 // keep working with no extra ceremony. Anything else requires
 // WithInsecureAllowRemoteHost -- see NewClient.
 func isLoopbackEndpoint(endpoint string) bool {
-	target := endpoint
-
-	// Strip a grpc-go resolver scheme prefix (dns:///, passthrough:///,
-	// unix://, ...) per https://github.com/grpc/grpc/blob/master/doc/naming.md.
-	if idx := strings.Index(target, "://"); idx >= 0 {
-		scheme, rest := target[:idx], target[idx+3:]
-		if strings.EqualFold(scheme, "unix") {
-			return true
-		}
-		// An authority-form target (e.g. "passthrough:///host:port") has a
-		// third slash separating the (here, empty) authority from the
-		// endpoint; strip it so SplitHostPort below sees "host:port", not
-		// "/host:port".
-		target = strings.TrimPrefix(rest, "/")
-	} else if strings.HasPrefix(target, "unix:") {
-		// grpc-go also accepts the unprefixed "unix:path" form.
+	// Checked first, and only on the raw string: a unix target carries a
+	// filesystem path, so it legitimately contains the '/' the
+	// authority-shifting check below refuses, and it never leaves the host's
+	// kernel regardless of what the path says. Covers both the "unix:path"
+	// and "unix:///path" forms grpc-go accepts.
+	if strings.HasPrefix(endpoint, "unix:") {
 		return true
+	}
+
+	parsed, ok := parseGRPCTarget(endpoint)
+	if !ok {
+		return false
+	}
+
+	// Userinfo/query/fragment in the target proper, then the same characters
+	// surviving into the endpoint (e.g. "dns:///127.0.0.1:443@evil.com",
+	// where the '@' lands in the path rather than in a URL authority).
+	if parsed.URL.User != nil || parsed.URL.RawQuery != "" || parsed.URL.Fragment != "" {
+		return false
+	}
+	target := parsed.Endpoint()
+	if strings.ContainsAny(target, "@/?#") ||
+		strings.IndexFunc(target, unicode.IsSpace) >= 0 {
+		return false
 	}
 
 	host := target
@@ -112,6 +153,23 @@ func isLoopbackEndpoint(endpoint string) bool {
 		return ip.IsLoopback()
 	}
 	return false
+}
+
+// parseGRPCTarget reproduces grpc.NewClient's target resolution (see
+// ClientConn.initParsedTargetAndResolverBuilder in google.golang.org/grpc):
+// parse the target as a URI and keep it if its scheme names a registered
+// resolver, otherwise re-parse it under the default scheme in authority
+// form. Reported as not-ok when grpc-go itself would fail to parse, which is
+// a target it could never dial.
+func parseGRPCTarget(target string) (resolver.Target, bool) {
+	if u, err := url.Parse(target); err == nil && resolver.Get(u.Scheme) != nil {
+		return resolver.Target{URL: *u}, true
+	}
+	u, err := url.Parse(resolver.GetDefaultScheme() + ":///" + target)
+	if err != nil {
+		return resolver.Target{}, false
+	}
+	return resolver.Target{URL: *u}, true
 }
 
 // retryServiceConfig is the gRPC JSON service config installed by default on

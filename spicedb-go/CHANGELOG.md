@@ -223,6 +223,28 @@
 
 ### Bug Fixes
 
+- **2026-08-18**: **Security hardening — the guard that refuses to send credentials over
+  plaintext to a non-loopback host now derives its host the way grpc-go does.** The equivalent
+  guard in this repo's C#, Rust, TypeScript and Java clients had a bypass:
+  `"127.0.0.1:443@evil.com"` was read as loopback by a last-colon split while their transports
+  parsed the same string as a URI, took `127.0.0.1:443` for *userinfo*, and connected to
+  `evil.com`. **Go was not exploitable through that class** — grpc-go's DNS resolver keeps host
+  `127.0.0.1` and then fails on the unparseable port — but the guard was nonetheless doing its
+  own string split, and relying on that particular input happening not to fool grpc-go is
+  relying on an accident.
+
+  `isLoopbackEndpoint` now resolves the target the way `grpc.NewClient` does (parse as a URI;
+  if the scheme names no registered resolver, re-parse under the default scheme in authority
+  form, exactly as `ClientConn.initParsedTargetAndResolverBuilder` does), then takes the host
+  from the resulting `resolver.Target.Endpoint()` with the same `net.SplitHostPort` grpc-go's
+  DNS resolver and `net.Dial` themselves use. Targets carrying URI userinfo, a query, a
+  fragment, or a leftover `@`, `/`, `?`, `#`, or whitespace in the endpoint are refused
+  outright, so `"127.0.0.1:443@evil.com"` (and the `passthrough:///` and `dns:///` forms of it)
+  now require `WithInsecureAllowRemoteHost` instead of being silently accepted as loopback.
+  Every ordinary local target keeps working with no opt-in: `localhost:50051`,
+  `127.0.0.1:50051`, `[::1]:50051`, `::1`, `unix:` targets, and the `passthrough:///` and
+  `dns:///` forms of each.
+
 - **2026-08-18**: Abandoning a streaming iterator leaked the gRPC stream and the server-side
   dispatch. Every streaming call that returns an iterator (`Updates`, `LookupResources`,
   `LookupSubjects`, `ReadRelationships`, `ExportRelationships`) returns an `iter.Seq2` that stops on

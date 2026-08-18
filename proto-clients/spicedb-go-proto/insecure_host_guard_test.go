@@ -58,6 +58,78 @@ func TestIsLoopbackEndpoint(t *testing.T) {
 	}
 }
 
+// authorityShiftingEndpoints are targets whose URI authority is not what a
+// naive host:port split reads out of them. This exact set defeated the
+// equivalent guard in this repo's C#, Rust, TypeScript and Java clients: a
+// last-colon (or first-']') split reads a loopback host out of them, while
+// each of those transports parsed the same string as a URI, took
+// "127.0.0.1:443" for userinfo, and connected to evil.com -- shipping the
+// bearer token there in cleartext with the guard reporting "loopback".
+//
+// grpc-go is not fooled by these (its DNS resolver keeps host "127.0.0.1"
+// and then fails on the unparseable port "443@evil.com"), so Go was never
+// exploitable through this class. These stay non-loopback anyway: the guard
+// must fail closed on a target it cannot vouch for, and this fixture is what
+// would catch a future edit that reintroduced a hand-rolled split here.
+var authorityShiftingEndpoints = []string{
+	"127.0.0.1:443@evil.com",
+	"[::1]:443@evil.com",
+	"[::1]:0@127.0.0.1:19999",
+	"[localhost]:1@127.0.0.1:19999",
+	"localhost@evil.com",
+	"localhost/../evil.com",
+	"localhost#@evil.com",
+	"localhost?@evil.com",
+	"localhost.",
+	"localhost :50051",
+	"127.0.0.1 :50051",
+	// Scheme-form targets whose authority/path split hides a different host
+	// than the leading component suggests.
+	"passthrough:///127.0.0.1:443@evil.com",
+	"dns:///127.0.0.1:443@evil.com",
+	"dns://localhost/evil.example.com:443",
+}
+
+func TestIsLoopbackEndpointRefusesAuthorityShiftingTargets(t *testing.T) {
+	for _, endpoint := range authorityShiftingEndpoints {
+		require.False(t, isLoopbackEndpoint(endpoint), "expected %q to NOT be loopback", endpoint)
+	}
+}
+
+// TestRefusesAuthorityShiftingEndpointWithoutOptIn is the regression test for
+// the loopback-guard bypass, and it asserts non-transmission rather than
+// "an error was returned": every one of these endpoints must be refused
+// before NewClient builds anything capable of carrying the token, and the
+// real in-process capturing server started here must observe nothing at all.
+// An implementation that dialed, sent the token, and only then returned an
+// error would satisfy a bare require.Error but would fail this.
+func TestRefusesAuthorityShiftingEndpointWithoutOptIn(t *testing.T) {
+	for _, endpoint := range authorityShiftingEndpoints {
+		t.Run(endpoint, func(t *testing.T) {
+			dialer, dialCount, capturedAuth := startCapturingServer(t)
+
+			client, err := NewClient(endpoint, "super-secret-token",
+				WithInsecure(),
+				WithDialOptions(grpc.WithContextDialer(dialer)),
+			)
+
+			require.Error(t, err, "expected %q to be refused", endpoint)
+			require.Nil(t, client)
+			require.Contains(t, err.Error(), endpoint)
+			require.Contains(t, err.Error(), "WithInsecureAllowRemoteHost")
+
+			require.EqualValues(t, 0, dialCount.Load(),
+				"the dialer that would carry the credential to the wire must never be invoked")
+			select {
+			case got := <-capturedAuth:
+				t.Fatalf("bearer token reached a server for refused endpoint %q: %q", endpoint, got)
+			default:
+				// Expected: nothing was ever sent, so nothing was ever captured.
+			}
+		})
+	}
+}
+
 // capturingPermissionsServer records the "authorization" metadata value it
 // observes on each incoming CheckPermission call.
 type capturingPermissionsServer struct {

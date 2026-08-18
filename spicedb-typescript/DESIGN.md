@@ -261,6 +261,35 @@ class InvalidArgumentError extends SpiceDBError {}
 
 Automatic retry with exponential backoff for transient errors.
 
+### Deadlines
+
+Every unary method takes an optional `timeoutMs` (milliseconds) — either as
+a trailing `options?: { timeoutMs?: number }` parameter, or as a field on an
+existing options type (`CheckOptions`, `DeleteOptions`,
+`ExpandPermissionTreeParams`, `ReflectSchemaOptions`,
+`ComputablePermissionsParams`, `DependentRelationsParams`) — passed straight
+through as Connect's `CallOptions.timeoutMs`. `SpiceDBClientOptions` gains
+`defaultTimeoutMs`, applied to any unary call that doesn't supply its own;
+both default to 30 seconds, mirroring `authzed-node`'s
+`DEFAULT_DEADLINE_MS = 30_000` (its comment cites `grpc/grpc-node#541`). See
+root DESIGN.md, "RULE: A unary call must have a deadline" — without a
+finite default, a SpiceDB instance that accepts a connection but never
+answers hangs every caller that didn't opt in to a timeout forever, since
+the connection looks fine at the transport level and nothing is ever
+produced to retry.
+
+```typescript
+const client = createSpiceDBClient(endpoint, token, { defaultTimeoutMs: 5000 });
+const result = await client.checkPermission(full(), check);                         // bound by the 5s default
+const result = await client.checkPermission(full(), check, { timeoutMs: 1000 });     // overrides it for this call
+```
+
+Streaming methods (`readRelationships`, `lookupResources`, `lookupSubjects`,
+`watch`, `exportBulkRelationships`) do NOT take `timeoutMs` and are NOT
+bound by `defaultTimeoutMs` — they are long-lived by design (`watch` may run
+for the life of the process), and applying the unary default to them would
+make the stream itself the outage.
+
 ### Experimental API Naming Convention
 
 Methods wrapping experimental proto APIs MUST be prefixed with `experimental`

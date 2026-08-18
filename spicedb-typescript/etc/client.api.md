@@ -26,6 +26,7 @@ export class CancelledError extends SpiceDBError {
 // @public
 export interface CheckOptions {
     context?: Record<string, unknown>;
+    timeoutMs?: number;
 }
 
 // @public
@@ -66,6 +67,7 @@ export interface ComputablePermissionsParams {
     definitionNameFilter?: string;
     // (undocumented)
     relationName: string;
+    timeoutMs?: number;
 }
 
 // @public
@@ -89,6 +91,7 @@ export interface DeleteOptions {
     limit?: number;
     mustMatch?: RelationshipFilterOptions[];
     mustNotMatch?: RelationshipFilterOptions[];
+    timeoutMs?: number;
 }
 
 // @public
@@ -97,6 +100,7 @@ export interface DependentRelationsParams {
     definitionName: string;
     // (undocumented)
     permissionName: string;
+    timeoutMs?: number;
 }
 
 // @public
@@ -107,6 +111,7 @@ export interface ExpandPermissionTreeParams {
     resourceId: string;
     // (undocumented)
     resourceType: string;
+    timeoutMs?: number;
 }
 
 // @public
@@ -243,6 +248,7 @@ export interface ReflectSchemaOptions {
     permissionNameFilter?: string;
     // (undocumented)
     relationNameFilter?: string;
+    timeoutMs?: number;
 }
 
 // @public
@@ -429,7 +435,9 @@ export class SpiceDBClient {
         relations: RelationReference[];
         revision: string;
     }>;
-    diffSchema(consistency: Consistency, comparisonSchema: string): Promise<{
+    diffSchema(consistency: Consistency, comparisonSchema: string, options?: {
+        timeoutMs?: number;
+    }): Promise<{
         diffs: SchemaDiff[];
         revision: string;
     }>;
@@ -437,15 +445,25 @@ export class SpiceDBClient {
         expandedAt: string;
         treeRoot: PermissionTree;
     }>;
-    experimentalCountRelationships(name: string): Promise<RelationshipCountResult>;
-    experimentalRegisterRelationshipCounter(name: string, filter: RelationshipFilterOptions): Promise<void>;
-    experimentalUnregisterRelationshipCounter(name: string): Promise<void>;
+    experimentalCountRelationships(name: string, options?: {
+        timeoutMs?: number;
+    }): Promise<RelationshipCountResult>;
+    experimentalRegisterRelationshipCounter(name: string, filter: RelationshipFilterOptions, options?: {
+        timeoutMs?: number;
+    }): Promise<void>;
+    experimentalUnregisterRelationshipCounter(name: string, options?: {
+        timeoutMs?: number;
+    }): Promise<void>;
     exportBulkRelationships(consistency: Consistency, filter?: RelationshipFilterOptions): AsyncIterableIterator<Relationship>;
-    importBulkRelationships(relationships: Relationship[]): Promise<bigint>;
+    importBulkRelationships(relationships: Relationship[], options?: {
+        timeoutMs?: number;
+    }): Promise<bigint>;
     lookupResources(params: LookupResourcesParams, consistency: Consistency): AsyncIterableIterator<LookupResource>;
     lookupSubjects(params: LookupSubjectsParams, consistency: Consistency): AsyncIterableIterator<LookupSubject>;
     readRelationships(filter: RelationshipFilterOptions, consistency: Consistency): AsyncIterableIterator<Relationship>;
-    readSchema(): Promise<{
+    readSchema(options?: {
+        timeoutMs?: number;
+    }): Promise<{
         schema: string;
         revision: string;
     }>;
@@ -455,12 +473,17 @@ export class SpiceDBClient {
         revision: string;
     }>;
     watch(options?: WatchOptions): AsyncIterableIterator<WatchEvent>;
-    write(txn: Transaction): Promise<string>;
-    writeSchema(schema: string): Promise<string>;
+    write(txn: Transaction, options?: {
+        timeoutMs?: number;
+    }): Promise<string>;
+    writeSchema(schema: string, options?: {
+        timeoutMs?: number;
+    }): Promise<string>;
 }
 
 // @public
 export interface SpiceDBClientOptions {
+    defaultTimeoutMs?: number;
     // (undocumented)
     endpoint: string;
     // (undocumented)

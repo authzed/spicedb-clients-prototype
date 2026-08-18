@@ -89,9 +89,30 @@ export interface SpiceDBClientOptions {
   insecure?: boolean;
   headers?: Record<string, string>;
   maxRetries?: number;
+  /**
+   * Milliseconds applied to every unary call that does not pass its own
+   * `timeoutMs`. Defaults to `DEFAULT_TIMEOUT_MS` (30s), mirroring
+   * `authzed-node`'s `DEFAULT_DEADLINE_MS = 30_000` (its comment cites
+   * `grpc/grpc-node#541`, a known gRPC failure mode where a channel that
+   * accepts a connection but never answers produces no error at all).
+   * Without a finite default, a wedged SpiceDB hangs every caller that
+   * didn't opt in to a timeout -- in practice, most callers -- forever: the
+   * connection looks fine at the transport level, so nothing ever times out
+   * and nothing is ever produced to retry. See root DESIGN.md, "RULE: A
+   * unary call must have a deadline".
+   *
+   * Deliberately NOT applied to streaming calls (`readRelationships`,
+   * `lookupResources`, `lookupSubjects`, `watch`, `exportBulkRelationships`)
+   * -- those are long-lived by design, and applying this default to them
+   * would make the stream itself the outage (see DESIGN.md, "Streaming
+   * calls MUST NOT inherit the unary default").
+   */
+  defaultTimeoutMs?: number;
 }
 
 const DEFAULT_MAX_RETRIES = 3;
+
+const DEFAULT_TIMEOUT_MS = 30_000;
 
 /**
  * Normalizes the two calling conventions shared by `checkPermissions`,
@@ -139,6 +160,7 @@ function normalizeBulkCheckArgs(
 export class SpiceDBClient {
   private readonly proto: ReturnType<typeof createProtoClient>;
   private readonly maxRetries: number;
+  private readonly defaultTimeoutMs: number;
 
   constructor(options: SpiceDBClientOptions) {
     this.proto = createProtoClient(options.endpoint, options.token, {
@@ -146,6 +168,17 @@ export class SpiceDBClient {
       headers: options.headers,
     });
     this.maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
+    this.defaultTimeoutMs = options.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS;
+  }
+
+  /**
+   * Resolves a per-call `timeoutMs` override against `this.defaultTimeoutMs`.
+   * `undefined` means "use the client default" -- there is deliberately no
+   * way to make an unbounded unary call. See root DESIGN.md, "RULE: A unary
+   * call must have a deadline".
+   */
+  private effectiveTimeoutMs(timeoutMs?: number): number {
+    return timeoutMs ?? this.defaultTimeoutMs;
   }
 
   // ---------------------------------------------------------------------------
@@ -178,6 +211,7 @@ export class SpiceDBClient {
     check: CheckRequest,
     options?: CheckOptions,
   ): Promise<CheckResult> {
+    const timeoutMs = this.effectiveTimeoutMs(options?.timeoutMs);
     return this.withRetry(async () => {
       const resp = await this.proto.permissions.checkPermission(
         create(CheckPermissionRequestSchema, {
@@ -196,6 +230,7 @@ export class SpiceDBClient {
           }),
           context: mergeCheckContext(options?.context, check.context),
         }),
+        { timeoutMs },
       );
       return checkResultFromProto(resp);
     });
@@ -261,6 +296,7 @@ export class SpiceDBClient {
     checks: CheckRequest[],
     options?: CheckOptions,
   ): Promise<CheckResult[]> {
+    const timeoutMs = this.effectiveTimeoutMs(options?.timeoutMs);
     return this.withRetry(async () => {
       const resp = await this.proto.permissions.checkBulkPermissions(
         create(CheckBulkPermissionsRequestSchema, {
@@ -283,6 +319,7 @@ export class SpiceDBClient {
             }),
           ),
         }),
+        { timeoutMs },
       );
       // The proto guarantees pairs are returned in request order but says
       // nothing about count. A short response would otherwise silently
@@ -452,7 +489,8 @@ export class SpiceDBClient {
    *
    * @returns The revision at which the write was committed.
    */
-  async write(txn: Transaction): Promise<string> {
+  async write(txn: Transaction, options?: { timeoutMs?: number }): Promise<string> {
+    const timeoutMs = this.effectiveTimeoutMs(options?.timeoutMs);
     return this.callOnce(async () => {
       const resp = await this.proto.permissions.writeRelationships(
         create(WriteRelationshipsRequestSchema, {
@@ -460,6 +498,7 @@ export class SpiceDBClient {
           optionalPreconditions: txn.preconditions,
           optionalTransactionMetadata: txn.metadata as JsonObject | undefined,
         }),
+        { timeoutMs },
       );
       return resp.writtenAt?.token ?? "";
     });
@@ -488,9 +527,11 @@ export class SpiceDBClient {
     filter: RelationshipFilterOptions,
     options?: DeleteOptions,
   ): Promise<string> {
+    const timeoutMs = this.effectiveTimeoutMs(options?.timeoutMs);
     return this.callOnce(async () => {
       const resp = await this.proto.permissions.deleteRelationships(
         toProtoDeleteRelationshipsRequest(filter, options),
+        { timeoutMs },
       );
       return resp.deletedAt?.token ?? "";
     });
@@ -614,6 +655,7 @@ export class SpiceDBClient {
     consistency: Consistency,
     params: ExpandPermissionTreeParams,
   ): Promise<{ expandedAt: string; treeRoot: PermissionTree }> {
+    const timeoutMs = this.effectiveTimeoutMs(params.timeoutMs);
     return this.withRetry(async () => {
       const resp = await this.proto.permissions.expandPermissionTree(
         create(ExpandPermissionTreeRequestSchema, {
@@ -624,6 +666,7 @@ export class SpiceDBClient {
           }),
           permission: params.permission,
         }),
+        { timeoutMs },
       );
       return {
         expandedAt: resp.expandedAt?.token ?? "",
@@ -644,7 +687,9 @@ export class SpiceDBClient {
    */
   async importBulkRelationships(
     relationships: Relationship[],
+    options?: { timeoutMs?: number },
   ): Promise<bigint> {
+    const timeoutMs = this.effectiveTimeoutMs(options?.timeoutMs);
     return this.callOnce(async () => {
       const protoRels = relationships.map((rel) => toProtoRelationship(rel));
       const resp = await this.proto.permissions.importBulkRelationships(
@@ -658,6 +703,7 @@ export class SpiceDBClient {
             };
           }
         })(),
+        { timeoutMs },
       );
       return resp.numLoaded;
     });
@@ -712,10 +758,12 @@ export class SpiceDBClient {
    *
    * @returns The schema text and revision.
    */
-  async readSchema(): Promise<{ schema: string; revision: string }> {
+  async readSchema(options?: { timeoutMs?: number }): Promise<{ schema: string; revision: string }> {
+    const timeoutMs = this.effectiveTimeoutMs(options?.timeoutMs);
     return this.withRetry(async () => {
       const resp = await this.proto.schema.readSchema(
         create(ReadSchemaRequestSchema, {}),
+        { timeoutMs },
       );
       return {
         schema: resp.schemaText,
@@ -729,10 +777,12 @@ export class SpiceDBClient {
    *
    * @returns The revision at which the schema was written.
    */
-  async writeSchema(schema: string): Promise<string> {
+  async writeSchema(schema: string, options?: { timeoutMs?: number }): Promise<string> {
+    const timeoutMs = this.effectiveTimeoutMs(options?.timeoutMs);
     return this.callOnce(async () => {
       const resp = await this.proto.schema.writeSchema(
         create(WriteSchemaRequestSchema, { schema }),
+        { timeoutMs },
       );
       return resp.writtenAt?.token ?? "";
     });
@@ -749,6 +799,7 @@ export class SpiceDBClient {
     caveats: SchemaCaveat[];
     revision: string;
   }> {
+    const timeoutMs = this.effectiveTimeoutMs(options?.timeoutMs);
     return this.withRetry(async () => {
       const filters = options
         ? [
@@ -769,6 +820,7 @@ export class SpiceDBClient {
           consistency: consistency._toProto(),
           optionalFilters: filters,
         }),
+        { timeoutMs },
       );
       return {
         definitions: resp.definitions.map((def) => fromProtoSchemaDefinition(def)),
@@ -785,6 +837,7 @@ export class SpiceDBClient {
     consistency: Consistency,
     params: ComputablePermissionsParams,
   ): Promise<{ permissions: RelationReference[]; revision: string }> {
+    const timeoutMs = this.effectiveTimeoutMs(params.timeoutMs);
     return this.withRetry(async () => {
       const resp = await this.proto.schema.computablePermissions(
         create(ComputablePermissionsRequestSchema, {
@@ -793,6 +846,7 @@ export class SpiceDBClient {
           relationName: params.relationName,
           optionalDefinitionNameFilter: params.definitionNameFilter ?? "",
         }),
+        { timeoutMs },
       );
       return {
         permissions: resp.permissions.map((p) => fromProtoRelationReference(p)),
@@ -808,6 +862,7 @@ export class SpiceDBClient {
     consistency: Consistency,
     params: DependentRelationsParams,
   ): Promise<{ relations: RelationReference[]; revision: string }> {
+    const timeoutMs = this.effectiveTimeoutMs(params.timeoutMs);
     return this.withRetry(async () => {
       const resp = await this.proto.schema.dependentRelations(
         create(DependentRelationsRequestSchema, {
@@ -815,6 +870,7 @@ export class SpiceDBClient {
           definitionName: params.definitionName,
           permissionName: params.permissionName,
         }),
+        { timeoutMs },
       );
       return {
         relations: resp.relations.map((r) => fromProtoRelationReference(r)),
@@ -829,13 +885,16 @@ export class SpiceDBClient {
   async diffSchema(
     consistency: Consistency,
     comparisonSchema: string,
+    options?: { timeoutMs?: number },
   ): Promise<{ diffs: SchemaDiff[]; revision: string }> {
+    const timeoutMs = this.effectiveTimeoutMs(options?.timeoutMs);
     return this.withRetry(async () => {
       const resp = await this.proto.schema.diffSchema(
         create(DiffSchemaRequestSchema, {
           consistency: consistency._toProto(),
           comparisonSchema,
         }),
+        { timeoutMs },
       );
       return {
         diffs: resp.diffs.map((d) => fromProtoSchemaDiff(d)),
@@ -855,13 +914,16 @@ export class SpiceDBClient {
   async experimentalRegisterRelationshipCounter(
     name: string,
     filter: RelationshipFilterOptions,
+    options?: { timeoutMs?: number },
   ): Promise<void> {
+    const timeoutMs = this.effectiveTimeoutMs(options?.timeoutMs);
     return this.callOnce(async () => {
       await this.proto.experimental.experimentalRegisterRelationshipCounter(
         create(ExperimentalRegisterRelationshipCounterRequestSchema, {
           name,
           relationshipFilter: toProtoRelationshipFilter(filter),
         }),
+        { timeoutMs },
       );
     });
   }
@@ -872,11 +934,14 @@ export class SpiceDBClient {
    */
   async experimentalCountRelationships(
     name: string,
+    options?: { timeoutMs?: number },
   ): Promise<RelationshipCountResult> {
+    const timeoutMs = this.effectiveTimeoutMs(options?.timeoutMs);
     return this.withRetry(async () => {
       const resp =
         await this.proto.experimental.experimentalCountRelationships(
           create(ExperimentalCountRelationshipsRequestSchema, { name }),
+          { timeoutMs },
         );
       if (resp.counterResult.case === "counterStillCalculating") {
         return { stillCalculating: true };
@@ -896,12 +961,17 @@ export class SpiceDBClient {
    * Unregisters a previously registered relationship counter.
    * @experimental This API may change without following backwards compatibility rules.
    */
-  async experimentalUnregisterRelationshipCounter(name: string): Promise<void> {
+  async experimentalUnregisterRelationshipCounter(
+    name: string,
+    options?: { timeoutMs?: number },
+  ): Promise<void> {
+    const timeoutMs = this.effectiveTimeoutMs(options?.timeoutMs);
     return this.callOnce(async () => {
       await this.proto.experimental.experimentalUnregisterRelationshipCounter(
         create(ExperimentalUnregisterRelationshipCounterRequestSchema, {
           name,
         }),
+        { timeoutMs },
       );
     });
   }

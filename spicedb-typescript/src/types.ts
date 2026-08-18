@@ -94,6 +94,12 @@ export interface DeleteOptions {
    * with the same filter to continue deleting what remains.
    */
   limit?: number;
+  /**
+   * Milliseconds bounding this call, overriding the client's
+   * `defaultTimeoutMs`. See root DESIGN.md, "RULE: A unary call must have a
+   * deadline".
+   */
+  timeoutMs?: number;
 }
 
 /**
@@ -162,6 +168,12 @@ export interface CheckOptions {
    * ```
    */
   context?: Record<string, unknown>;
+  /**
+   * Milliseconds bounding this call, overriding the client's
+   * `defaultTimeoutMs`. See root DESIGN.md, "RULE: A unary call must have a
+   * deadline".
+   */
+  timeoutMs?: number;
 }
 
 /**
@@ -209,6 +221,12 @@ export interface ExpandPermissionTreeParams {
   resourceType: string;
   resourceId: string;
   permission: string;
+  /**
+   * Milliseconds bounding this call, overriding the client's
+   * `defaultTimeoutMs`. See root DESIGN.md, "RULE: A unary call must have a
+   * deadline".
+   */
+  timeoutMs?: number;
 }
 
 /**
@@ -219,6 +237,12 @@ export interface ReflectSchemaOptions {
   caveatNameFilter?: string;
   relationNameFilter?: string;
   permissionNameFilter?: string;
+  /**
+   * Milliseconds bounding this call, overriding the client's
+   * `defaultTimeoutMs`. See root DESIGN.md, "RULE: A unary call must have a
+   * deadline".
+   */
+  timeoutMs?: number;
 }
 
 /**
@@ -228,6 +252,12 @@ export interface ComputablePermissionsParams {
   definitionName: string;
   relationName: string;
   definitionNameFilter?: string;
+  /**
+   * Milliseconds bounding this call, overriding the client's
+   * `defaultTimeoutMs`. See root DESIGN.md, "RULE: A unary call must have a
+   * deadline".
+   */
+  timeoutMs?: number;
 }
 
 /**
@@ -236,6 +266,12 @@ export interface ComputablePermissionsParams {
 export interface DependentRelationsParams {
   definitionName: string;
   permissionName: string;
+  /**
+   * Milliseconds bounding this call, overriding the client's
+   * `defaultTimeoutMs`. See root DESIGN.md, "RULE: A unary call must have a
+   * deadline".
+   */
+  timeoutMs?: number;
 }
 
 /**

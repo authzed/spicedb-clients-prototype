@@ -98,6 +98,49 @@
 
 ### Fixed
 
+- **2026-08-18**: Call deadlines, per root `DESIGN.md` "RULE: A unary call must have a
+  deadline". Previously no method accepted a timeout and no client-level default existed, so a
+  SpiceDB instance that accepted a connection but never answered hung every caller forever — the
+  connection looks fine at the transport level, so no error is produced and there is nothing for
+  retry logic to act on.
+  - Every unary method gained an optional `timeoutMs` (milliseconds) — either a trailing
+    `options?: { timeoutMs?: number }` parameter (`write`, `readSchema`, `writeSchema`,
+    `diffSchema`, `importBulkRelationships`, the three experimental counter methods), or a new
+    field on an existing options type (`CheckOptions`, `DeleteOptions`,
+    `ExpandPermissionTreeParams`, `ReflectSchemaOptions`, `ComputablePermissionsParams`,
+    `DependentRelationsParams`) — passed straight through as Connect's `CallOptions.timeoutMs`.
+    Additive; existing call sites are unaffected. `checkPermissions`/`checkAny`/`checkAll`'s
+    classic variadic form still carries no options (unchanged, per its existing doc comment);
+    the explicit-array form picks up `timeoutMs` via `CheckOptions` automatically.
+  - `SpiceDBClientOptions` gained `defaultTimeoutMs`, applied to any unary call that doesn't
+    supply its own `timeoutMs`. Defaults to 30 seconds (`DEFAULT_TIMEOUT_MS`), mirroring
+    `authzed-node`'s `DEFAULT_DEADLINE_MS = 30_000` (its comment cites `grpc/grpc-node#541`).
+    There is deliberately no way to construct a client whose unary calls have no bound at all.
+  - Streaming methods (`readRelationships`, `lookupResources`, `lookupSubjects`, `watch`,
+    `exportBulkRelationships`) do **not** accept `timeoutMs` and are **not** bound by
+    `defaultTimeoutMs` — DESIGN.md's "Streaming calls MUST NOT inherit the unary default": these
+    are long-lived by design (`watch` may legitimately run for the life of the process), and a
+    30s cutoff would end a legitimate stream, which is a worse defect than the one this change
+    fixes.
+  - `DeadlineExceededError` (added earlier, but never actually produced by this client since
+    nothing enforced a deadline) is now reachable: a timed-out call rejects with it, not a
+    generic `SpiceDBError`. `Code.DeadlineExceeded` is not in `TRANSIENT_CODES`, so a timeout is
+    never auto-retried.
+  - `spicedb-gen`'s TypeScript typed-client template needed no change: its generated `check()`
+    already forwards a caller-supplied `options?: CheckOptions` straight through to
+    `checkPermission`, so it picks up `timeoutMs` automatically. Verified by regenerating
+    `testdata/typescript/permissions.ts` against the updated package and type-checking clean
+    (including `type_errors.ts`'s `@ts-expect-error` assertions, unaffected).
+  - New `src/__tests__/deadline.test.ts`, using `createRouterTransport` (from
+    `@connectrpc/connect`) instead of the `vi.fn()`-mocked `proto` field used elsewhere in this
+    suite — deadline enforcement lives in Connect's own transport machinery
+    (`protocol/signals.js`'s `createDeadlineSignal`), which a mock bypasses entirely.
+    `createRouterTransport` runs the real client-side transport stack against a real (in-process)
+    handler that deliberately stalls: a unary call against a stub that never responds rejects
+    with `DeadlineExceededError` well before the stall completes, a per-call `timeoutMs`
+    overrides a much larger client default, and a streaming call outlives a tiny unary default
+    instead of inheriting it. Every test is wrapped in a watchdog so a regression fails the suite
+    instead of hanging CI.
 - **2026-08-18**: Retry safety, per root `DESIGN.md` "RULE: Automatic retry is for idempotent
   operations only". Three changes:
   - `RESOURCE_EXHAUSTED` is no longer retried. In SpiceDB it signals memory load-shed (retrying

@@ -100,11 +100,13 @@ export class ResourceExhaustedError extends SpiceDBError {
   }
 }
 
-const TRANSIENT_CODES = new Set([
-  Code.Unavailable,
-  Code.ResourceExhausted,
-  Code.Aborted,
-]);
+// ResourceExhausted is deliberately excluded. In SpiceDB it signals either
+// memory load-shed (retrying adds load to an already-overloaded server) or a
+// deterministic MaxDepthExceeded (retrying can never succeed -- it just
+// re-runs the most expensive class of check several times before surfacing
+// the same error). See DESIGN.md, "Automatic retry is for idempotent
+// operations only".
+const TRANSIENT_CODES = new Set([Code.Unavailable, Code.Aborted]);
 
 /**
  * Returns true if the error is transient and should be retried.

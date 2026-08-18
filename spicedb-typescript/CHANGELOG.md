@@ -98,6 +98,29 @@
 
 ### Fixed
 
+- **2026-08-18**: Retry safety, per root `DESIGN.md` "RULE: Automatic retry is for idempotent
+  operations only". Three changes:
+  - `RESOURCE_EXHAUSTED` is no longer retried. In SpiceDB it signals memory load-shed (retrying
+    adds load to an already-overloaded server) or a deterministic `MaxDepthExceeded` (retrying can
+    never succeed — it re-runs the most expensive class of check several times before surfacing
+    the same error). Previously `Code.ResourceExhausted` was in `errors.ts`'s `TRANSIENT_CODES`.
+  - Mutations (`write`, `deleteRelationships`, `writeSchema`, `importBulkRelationships`, and the
+    experimental counter register/unregister calls) are no longer retried on a transient error,
+    even though the underlying code is retryable. A `write()` carrying `OPERATION_CREATE` or
+    preconditions is not idempotent: if it commits and the response is lost (a rolling restart, a
+    proxy dropping the connection), a retry would surface `ALREADY_EXISTS`/`FAILED_PRECONDITION`
+    for a write that in fact succeeded, and the caller would wrongly conclude it had failed. Reads
+    still retry automatically. All six mutation call sites previously routed through `withRetry`;
+    they now go through a new private `callOnce`, which converts the error without retrying.
+  - Backoff is now full-jitter (`Math.random() * cap`) instead of plain exponential doubling.
+    Without jitter, every client in a fleet retries on the same schedule after a server restart,
+    turning the recovery into a thundering herd.
+
+  `src/__tests__/errors.test.ts`'s `isTransientError` suite had an `it("returns true for
+  ResourceExhausted", ...)` case; it is renamed `"returns false for ResourceExhausted"` and
+  inverted, since the old assertion was exactly the defect this fixes. New coverage in
+  `src/__tests__/unary-retry.test.ts` (a mutation is attempted exactly once on a retryable error;
+  a read is retried; `RESOURCE_EXHAUSTED` is never retried; backoff varies between calls).
 - **2026-08-18**: `checkPermissions`/`checkAny`/`checkAll` did not verify that `checkBulkPermissions`
   returned as many pairs as were requested — the result array came straight from `resp.pairs.map(...)`,
   and nothing compared its length to the request's. The proto guarantees pairs are returned in

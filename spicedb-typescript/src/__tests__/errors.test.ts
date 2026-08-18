@@ -123,10 +123,15 @@ describe("isTransientError", () => {
     ).toBe(true);
   });
 
-  it("returns true for ResourceExhausted", () => {
+  it("returns false for ResourceExhausted", () => {
+    // Inverted from "returns true" -- RESOURCE_EXHAUSTED must NOT be
+    // retried. In SpiceDB it signals memory load-shed (retrying adds load
+    // to an already-overloaded server) or a deterministic MaxDepthExceeded
+    // (retrying can never succeed). See DESIGN.md, "Automatic retry is for
+    // idempotent operations only".
     expect(
       isTransientError(new ConnectError("", Code.ResourceExhausted)),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it("returns true for Aborted", () => {

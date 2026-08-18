@@ -453,7 +453,7 @@ export class SpiceDBClient {
    * @returns The revision at which the write was committed.
    */
   async write(txn: Transaction): Promise<string> {
-    return this.withRetry(async () => {
+    return this.callOnce(async () => {
       const resp = await this.proto.permissions.writeRelationships(
         create(WriteRelationshipsRequestSchema, {
           updates: txn.updates,
@@ -488,7 +488,7 @@ export class SpiceDBClient {
     filter: RelationshipFilterOptions,
     options?: DeleteOptions,
   ): Promise<string> {
-    return this.withRetry(async () => {
+    return this.callOnce(async () => {
       const resp = await this.proto.permissions.deleteRelationships(
         toProtoDeleteRelationshipsRequest(filter, options),
       );
@@ -645,7 +645,7 @@ export class SpiceDBClient {
   async importBulkRelationships(
     relationships: Relationship[],
   ): Promise<bigint> {
-    return this.withRetry(async () => {
+    return this.callOnce(async () => {
       const protoRels = relationships.map((rel) => toProtoRelationship(rel));
       const resp = await this.proto.permissions.importBulkRelationships(
         // Client streaming: send all relationships in batches
@@ -730,7 +730,7 @@ export class SpiceDBClient {
    * @returns The revision at which the schema was written.
    */
   async writeSchema(schema: string): Promise<string> {
-    return this.withRetry(async () => {
+    return this.callOnce(async () => {
       const resp = await this.proto.schema.writeSchema(
         create(WriteSchemaRequestSchema, { schema }),
       );
@@ -856,7 +856,7 @@ export class SpiceDBClient {
     name: string,
     filter: RelationshipFilterOptions,
   ): Promise<void> {
-    return this.withRetry(async () => {
+    return this.callOnce(async () => {
       await this.proto.experimental.experimentalRegisterRelationshipCounter(
         create(ExperimentalRegisterRelationshipCounterRequestSchema, {
           name,
@@ -897,7 +897,7 @@ export class SpiceDBClient {
    * @experimental This API may change without following backwards compatibility rules.
    */
   async experimentalUnregisterRelationshipCounter(name: string): Promise<void> {
-    return this.withRetry(async () => {
+    return this.callOnce(async () => {
       await this.proto.experimental.experimentalUnregisterRelationshipCounter(
         create(ExperimentalUnregisterRelationshipCounterRequestSchema, {
           name,
@@ -1011,6 +1011,18 @@ export class SpiceDBClient {
    * transient/attempt-budget decision; the zero-yielded guard is the
    * caller's responsibility.
    */
+  /**
+   * Full-jitter backoff delay in milliseconds: `uniform(0, cap)` rather than
+   * a fixed `cap`. Plain exponential backoff has every client in a fleet
+   * retry on the same schedule after a server restart, turning the recovery
+   * into a thundering herd; sampling uniformly under the cap spreads
+   * retries out instead.
+   */
+  private backoffMs(attempt: number): number {
+    const cap = Math.min(100 * 2 ** attempt, 5000);
+    return Math.random() * cap;
+  }
+
   private async shouldRetryEstablishment(
     attempt: number,
     err: unknown,
@@ -1018,9 +1030,27 @@ export class SpiceDBClient {
     if (!isTransientError(err) || attempt === this.maxRetries) {
       return false;
     }
-    const delay = Math.min(100 * 2 ** attempt, 5000);
-    await new Promise((resolve) => setTimeout(resolve, delay));
+    await new Promise((resolve) => setTimeout(resolve, this.backoffMs(attempt)));
     return true;
+  }
+
+  /**
+   * Calls `fn` once, converting a thrown error, but never retrying.
+   *
+   * For mutations. A `WriteRelationships` containing `OPERATION_CREATE`, or
+   * any request carrying preconditions, is not idempotent: if it commits
+   * and the response is lost (a rolling restart, a proxy dropping the
+   * connection), a retry would surface `ALREADY_EXISTS`/`FAILED_PRECONDITION`
+   * for a write that in fact succeeded, and the caller would wrongly
+   * conclude it had failed. See DESIGN.md, "Automatic retry is for
+   * idempotent operations only".
+   */
+  private async callOnce<T>(fn: () => Promise<T>): Promise<T> {
+    try {
+      return await fn();
+    } catch (err) {
+      throw toSpiceDBError(err);
+    }
   }
 
   private async withRetry<T>(fn: () => Promise<T>): Promise<T> {
@@ -1033,8 +1063,7 @@ export class SpiceDBClient {
         if (!isTransientError(err) || attempt === this.maxRetries) {
           throw toSpiceDBError(err);
         }
-        const delay = Math.min(100 * 2 ** attempt, 5000);
-        await new Promise((resolve) => setTimeout(resolve, delay));
+        await new Promise((resolve) => setTimeout(resolve, this.backoffMs(attempt)));
       }
     }
     throw toSpiceDBError(lastErr);

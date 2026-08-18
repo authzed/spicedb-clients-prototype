@@ -316,6 +316,9 @@ examples.
   - `ErrInvalidResource` — resource type, ID, or relation is empty
   - `ErrInvalidRelation` — relation string is empty
   - `ErrInvalidSubject` — subject type or ID is empty
+  - `ErrInvalidFilter` — a `Filter`'s `SubjectID`/`SubjectRelation` is set
+    without `SubjectType`; `Filter.ToProto` returns this instead of silently
+    building a filter with no subject constraint at all
 - `Must*` variants that panic (for tests/initialization)
 - Automatic retry with exponential backoff for transient gRPC errors
 

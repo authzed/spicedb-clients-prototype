@@ -120,7 +120,7 @@ func TestTxn(t *testing.T) {
 	require.NoError(t, txn.Create(r1))
 	require.NoError(t, txn.Touch(r2))
 	require.NoError(t, txn.Delete(r1))
-	txn.MustNotMatch(rel.NewFilter("document").WithResourceID("doc3"))
+	require.NoError(t, txn.MustNotMatch(rel.NewFilter("document").WithResourceID("doc3")))
 
 	require.Len(t, txn.V1Updates, 3)
 	require.Len(t, txn.Preconditions(), 1)
@@ -211,4 +211,67 @@ func TestToProtoInvalidCaveatContextReturnsError(t *testing.T) {
 	proto, err := r.ToProto()
 	require.Error(t, err)
 	require.Nil(t, proto)
+}
+
+// TestFilterToProtoSubjectIDWithoutSubjectTypeReturnsError is the regression
+// test for the offboarding hazard this finding describes: ToProto used to
+// nest OptionalSubjectId inside the SubjectType check, so
+// NewFilter("document").WithSubjectID("alice") produced a proto filter with
+// no subject constraint at all -- DeleteRelationships called with that
+// filter would delete every relationship on every document, not just
+// alice's. ToProto must now return an error naming the missing field
+// instead of silently widening the filter.
+func TestFilterToProtoSubjectIDWithoutSubjectTypeReturnsError(t *testing.T) {
+	f := rel.NewFilter("document").WithSubjectID("alice")
+
+	proto, err := f.ToProto()
+
+	require.Error(t, err)
+	require.Nil(t, proto)
+	require.ErrorIs(t, err, rel.ErrInvalidFilter)
+	require.Contains(t, err.Error(), "SubjectID")
+	require.Contains(t, err.Error(), "SubjectType")
+}
+
+// TestFilterToProtoSubjectRelationWithoutSubjectTypeReturnsError is the
+// SubjectRelation counterpart of the above -- the wire's
+// SubjectFilter.subject_type is required whenever any subject constraint
+// (ID or relation) is present.
+func TestFilterToProtoSubjectRelationWithoutSubjectTypeReturnsError(t *testing.T) {
+	f := rel.NewFilter("document").WithSubjectRelation("member")
+
+	proto, err := f.ToProto()
+
+	require.Error(t, err)
+	require.Nil(t, proto)
+	require.ErrorIs(t, err, rel.ErrInvalidFilter)
+	require.Contains(t, err.Error(), "SubjectRelation")
+	require.Contains(t, err.Error(), "SubjectType")
+}
+
+// TestFilterToProtoSubjectTypeAloneSucceeds is a companion to the two error
+// cases above -- proves that SubjectType alone (no SubjectID) still builds a
+// valid subject filter and is not accidentally caught by the new guard.
+func TestFilterToProtoSubjectTypeAloneSucceeds(t *testing.T) {
+	f := rel.NewFilter("document").WithSubjectType("user")
+
+	proto, err := f.ToProto()
+
+	require.NoError(t, err)
+	require.NotNil(t, proto.GetOptionalSubjectFilter())
+	require.Equal(t, "user", proto.GetOptionalSubjectFilter().GetSubjectType())
+	require.Empty(t, proto.GetOptionalSubjectFilter().GetOptionalSubjectId())
+}
+
+// TestFilterToProtoSubjectTypeAndIDSucceeds proves the valid combination
+// (SubjectType supplied alongside SubjectID) still works correctly.
+func TestFilterToProtoSubjectTypeAndIDSucceeds(t *testing.T) {
+	f := rel.NewFilter("document").WithSubjectType("user").WithSubjectID("alice")
+
+	proto, err := f.ToProto()
+
+	require.NoError(t, err)
+	require.NotNil(t, proto.GetOptionalSubjectFilter())
+	require.Equal(t, "user", proto.GetOptionalSubjectFilter().GetSubjectType())
+	require.Equal(t, "alice", proto.GetOptionalSubjectFilter().GetOptionalSubjectId())
 }

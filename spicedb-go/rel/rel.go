@@ -23,6 +23,10 @@ var (
 	ErrInvalidRelation = fmt.Errorf("relation is required")
 	// ErrInvalidSubject indicates a subject type or ID is empty.
 	ErrInvalidSubject = fmt.Errorf("subject type and id are required")
+	// ErrInvalidFilter indicates a Filter has SubjectID or SubjectRelation set
+	// without SubjectType. The wire's SubjectFilter.subject_type is required,
+	// so there is no way to express a subject constraint without it.
+	ErrInvalidFilter = fmt.Errorf("filter has a subject constraint set without SubjectType")
 )
 
 // Relationship is a flat representation of a SpiceDB relationship.
@@ -301,10 +305,20 @@ func (f Filter) WithSubjectRelation(relation string) Filter {
 	return f
 }
 
-// ToProto converts a Filter to its proto representation.
-func (f Filter) ToProto() *v1.RelationshipFilter {
+// ToProto converts a Filter to its proto representation. It returns an
+// error — instead of silently building a filter with no subject constraint
+// at all — if SubjectID or SubjectRelation is set without SubjectType. The
+// wire's SubjectFilter.subject_type is a required field, so there is no way
+// to express a subject ID/relation constraint without it, which makes
+// silently dropping the constraint the one unsafe resolution: a caller who
+// wrote NewFilter("document").WithSubjectID("alice"), expecting to narrow
+// to alice's relationships, would instead match every subject on every
+// document -- e.g. DeleteRelationships would delete every relationship on
+// every document, not just alice's. See root DESIGN.md, "RULE: A
+// conversion that cannot preserve meaning must fail", clause 1.
+func (f Filter) ToProto() (*v1.RelationshipFilter, error) {
 	if f.V1Filter != nil {
-		return f.V1Filter
+		return f.V1Filter, nil
 	}
 
 	filter := &v1.RelationshipFilter{
@@ -325,8 +339,19 @@ func (f Filter) ToProto() *v1.RelationshipFilter {
 				Relation: f.SubjectRelation,
 			}
 		}
+	} else if f.SubjectID != "" || f.SubjectRelation != "" {
+		missing := "SubjectID"
+		if f.SubjectID == "" {
+			missing = "SubjectRelation"
+		}
+		return nil, fmt.Errorf(
+			"spicedb: filter has %s set without SubjectType; the wire format requires "+
+				"SubjectType whenever a subject constraint is present -- call WithSubjectType(...) "+
+				"before With%s(...): %w",
+			missing, missing, ErrInvalidFilter,
+		)
 	}
-	return filter
+	return filter, nil
 }
 
 // Relationship.Filter returns a Filter that matches the exact resource of this relationship.
@@ -433,18 +458,32 @@ func (t *Txn) Delete(r Relationship) error {
 	return nil
 }
 
-// MustNotMatch adds a precondition that no relationships match the given filter.
-func (t *Txn) MustNotMatch(f Filter) {
+// MustNotMatch adds a precondition that no relationships match the given
+// filter. Returns an error, and adds nothing to the transaction, if f
+// cannot be converted to protobuf -- see Filter.ToProto.
+func (t *Txn) MustNotMatch(f Filter) error {
+	p, err := f.ToProto()
+	if err != nil {
+		return err
+	}
 	t.preconditions = append(t.preconditions, &v1.Precondition{
 		Operation: v1.Precondition_OPERATION_MUST_NOT_MATCH,
-		Filter:    f.ToProto(),
+		Filter:    p,
 	})
+	return nil
 }
 
-// MustMatch adds a precondition that at least one relationship matches the given filter.
-func (t *Txn) MustMatch(f Filter) {
+// MustMatch adds a precondition that at least one relationship matches the
+// given filter. Returns an error, and adds nothing to the transaction, if f
+// cannot be converted to protobuf -- see Filter.ToProto.
+func (t *Txn) MustMatch(f Filter) error {
+	p, err := f.ToProto()
+	if err != nil {
+		return err
+	}
 	t.preconditions = append(t.preconditions, &v1.Precondition{
 		Operation: v1.Precondition_OPERATION_MUST_MATCH,
-		Filter:    f.ToProto(),
+		Filter:    p,
 	})
+	return nil
 }

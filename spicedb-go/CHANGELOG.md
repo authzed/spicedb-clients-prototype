@@ -4,6 +4,55 @@
 
 ### Breaking Changes
 
+- **2026-08-18**: `rel.Filter.ToProto()` now returns `(*v1.RelationshipFilter, error)` instead of
+  a bare `*v1.RelationshipFilter`. Previously, `ToProto` nested `OptionalSubjectId`/
+  `OptionalRelation` inside the `SubjectType != ""` check, so
+  `rel.NewFilter("document").WithSubjectID("alice")` produced a proto `RelationshipFilter` with
+  **no subject constraint at all**, while the `Filter` value itself still reported
+  `SubjectID == "alice"` — a caller reading the struct back would see the constraint they set;
+  the server would not. `DeleteRelationships(ctx, filter)` called with that filter deleted every
+  relationship on every document, not just alice's — a correct-looking user-offboarding call
+  that wipes the whole system. The wire's `SubjectFilter.subject_type` is a required field, so
+  there is no way to express a subject ID/relation constraint without it, which makes silent
+  widening the one unsafe resolution of the three available (throw / require the type / widen).
+  `ToProto` now returns a new sentinel error, `rel.ErrInvalidFilter`, naming the field that was
+  set without `SubjectType`, per root `DESIGN.md` "RULE: A conversion that cannot preserve
+  meaning must fail", clause 1 (caller-supplied data the client cannot represent MUST raise a
+  typed error). This ripples through every caller that previously called `Filter.ToProto()`
+  directly: `rel.Txn.MustMatch`/`MustNotMatch` now return `error` (were `void`); the deferred
+  conversion error from `client.WithDeleteMustMatch`/`WithDeleteMustNotMatch` (which build a
+  `DeleteOption` and can't return an error directly) now surfaces from
+  `client.DeleteRelationships` itself, as a `*client.Error` with `Code: CodeInvalidArgument`; the
+  same wrapping applies to `client.ReadRelationships`, `client.ExportRelationships`, and
+  `client.RegisterRelationshipCounter`. A filter with `SubjectType` set (alone, or with
+  `SubjectID`/`SubjectRelation`) is unaffected — this only rejects the previously-silent
+  no-`SubjectType` case.
+
+  Before:
+  ```go
+  filter := rel.NewFilter("document").WithSubjectID("alice") // looks narrowed to alice
+  revision, err := client.DeleteRelationships(ctx, filter)   // deletes EVERY document relationship
+
+  var txn rel.Txn
+  txn.MustNotMatch(filter) // void; no way to detect the same silent widening here
+  ```
+  After:
+  ```go
+  filter := rel.NewFilter("document").WithSubjectID("alice") // missing WithSubjectType
+  revision, err := client.DeleteRelationships(ctx, filter)
+  // err: "spicedb: filter has SubjectID set without SubjectType; the wire format requires
+  // SubjectType whenever a subject constraint is present -- call WithSubjectType(...) before
+  // WithSubjectID(...)"
+
+  var txn rel.Txn
+  if err := txn.MustNotMatch(filter); err != nil {
+      log.Fatalf("failed to add precondition to transaction: %v", err)
+  }
+
+  // Fixed by supplying SubjectType, same as always intended:
+  filter = rel.NewFilter("document").WithSubjectType("user").WithSubjectID("alice")
+  ```
+
 - **2026-08-18**: `rel.Relationship.ToProto()` now returns `(*v1.Relationship, error)` instead of a bare `*v1.Relationship`, and `rel.Txn.Create`/`Touch`/`Delete` now return `error` instead of nothing. Previously, if a relationship's caveat context couldn't be converted to a protobuf `Struct` (`structpb.NewStruct` fails on values it cannot represent), `ToProto` silently discarded the error and returned the relationship anyway — with the caveat name attached and an empty context. That corruption is written to SpiceDB and persists: every future check against that relationship mis-evaluates the caveat, and re-checking with correct context never repairs it, only rewriting the relationship does. `ImportRelationships` had the same defect for bulk import, corrupting an entire dataset the same way at scale. The check-path equivalent (`checkItemFromRel` in `client/checks.go`) already returned `CodeInvalidArgument` on conversion failure; this change gives the write path the same treatment instead of a second, worse behavior for the identical failure. No API shape change beyond the added error returns — the conversion itself, and everything it produces on success, is unchanged.
 
   Before:

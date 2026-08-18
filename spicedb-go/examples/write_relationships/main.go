@@ -42,7 +42,9 @@ definition document {
 	if err := txn.Touch(rel.MustFromTriple("document", "firstdoc", "editor", "user", "bob", "")); err != nil {
 		log.Fatalf("failed to add relationship to transaction: %v", err)
 	}
-	txn.MustNotMatch(rel.NewFilter("document").WithResourceID("firstdoc").WithRelation("owner").WithSubjectType("user").WithSubjectID("mallory"))
+	if err := txn.MustNotMatch(rel.NewFilter("document").WithResourceID("firstdoc").WithRelation("owner").WithSubjectType("user").WithSubjectID("mallory")); err != nil {
+		log.Fatalf("failed to add precondition to transaction: %v", err)
+	}
 
 	revision, err := c.Write(ctx, txn)
 	if err != nil {

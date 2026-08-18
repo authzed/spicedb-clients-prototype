@@ -75,6 +75,20 @@ func (c *Client) ImportRelationships(ctx context.Context, rels iter.Seq[rel.Rela
 // relationships.
 func (c *Client) ExportRelationships(ctx context.Context, cs consistency.Strategy, f *rel.Filter) iter.Seq2[rel.Relationship, error] {
 	return func(yield func(rel.Relationship, error) bool) {
+		var filterProto *v1.RelationshipFilter
+		if f != nil {
+			p, err := f.ToProto()
+			if err != nil {
+				yield(rel.Relationship{}, &Error{
+					Code:    CodeInvalidArgument,
+					Message: fmt.Sprintf("spicedb: export relationships: %s", err),
+					err:     err,
+				})
+				return
+			}
+			filterProto = p
+		}
+
 		var cursor *v1.Cursor
 		for {
 			req := &v1.ExportBulkRelationshipsRequest{
@@ -82,8 +96,8 @@ func (c *Client) ExportRelationships(ctx context.Context, cs consistency.Strateg
 				OptionalLimit:  defaultExportPageSize,
 				OptionalCursor: cursor,
 			}
-			if f != nil {
-				req.OptionalRelationshipFilter = f.ToProto()
+			if filterProto != nil {
+				req.OptionalRelationshipFilter = filterProto
 			}
 
 			stream, err := c.psc.ExportBulkRelationships(ctx, req)

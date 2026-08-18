@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"iter"
 
@@ -37,11 +38,21 @@ func (c *Client) Write(ctx context.Context, txn rel.Txn) (revision string, err e
 // re-fetches pages of 512 relationships using the AfterResultCursor.
 func (c *Client) ReadRelationships(ctx context.Context, cs consistency.Strategy, f rel.Filter) iter.Seq2[rel.Relationship, error] {
 	return func(yield func(rel.Relationship, error) bool) {
+		filterProto, err := f.ToProto()
+		if err != nil {
+			yield(rel.Relationship{}, &Error{
+				Code:    CodeInvalidArgument,
+				Message: fmt.Sprintf("spicedb: read relationships: %s", err),
+				err:     err,
+			})
+			return
+		}
+
 		var cursor *v1.Cursor
 		for {
 			stream, err := c.psc.ReadRelationships(ctx, &v1.ReadRelationshipsRequest{
 				Consistency:        cs.V1Consistency,
-				RelationshipFilter: f.ToProto(),
+				RelationshipFilter: filterProto,
 				OptionalLimit:      defaultReadPageSize,
 				OptionalCursor:     cursor,
 			})
@@ -83,17 +94,28 @@ type DeleteOption func(*deleteOptions)
 type deleteOptions struct {
 	preconditions []*v1.Precondition
 	limit         uint32 // 0 = use defaultDeletePageSize
+	err           error  // first Filter.ToProto conversion error, if any, encountered while applying options
 }
 
 // WithDeleteMustMatch adds a MUST_MATCH precondition to the delete: the
 // server rejects the delete (and returns an error, deleting nothing) unless
 // at least one relationship matching filter exists at evaluation time.
-// Multiple precondition options accumulate; all are sent with every request.
+// Multiple precondition options accumulate; all are sent with every
+// request. If filter cannot be converted to protobuf (see Filter.ToProto),
+// the conversion error is deferred and surfaced by DeleteRelationships --
+// DeleteOption's signature can't return an error directly.
 func WithDeleteMustMatch(filter rel.Filter) DeleteOption {
 	return func(o *deleteOptions) {
+		p, err := filter.ToProto()
+		if err != nil {
+			if o.err == nil {
+				o.err = err
+			}
+			return
+		}
 		o.preconditions = append(o.preconditions, &v1.Precondition{
 			Operation: v1.Precondition_OPERATION_MUST_MATCH,
-			Filter:    filter.ToProto(),
+			Filter:    p,
 		})
 	}
 }
@@ -101,12 +123,22 @@ func WithDeleteMustMatch(filter rel.Filter) DeleteOption {
 // WithDeleteMustNotMatch adds a MUST_NOT_MATCH precondition to the delete:
 // the server rejects the delete (and returns an error, deleting nothing) if
 // any relationship matching filter exists at evaluation time. Multiple
-// precondition options accumulate; all are sent with every request.
+// precondition options accumulate; all are sent with every request. If
+// filter cannot be converted to protobuf (see Filter.ToProto), the
+// conversion error is deferred and surfaced by DeleteRelationships --
+// DeleteOption's signature can't return an error directly.
 func WithDeleteMustNotMatch(filter rel.Filter) DeleteOption {
 	return func(o *deleteOptions) {
+		p, err := filter.ToProto()
+		if err != nil {
+			if o.err == nil {
+				o.err = err
+			}
+			return
+		}
 		o.preconditions = append(o.preconditions, &v1.Precondition{
 			Operation: v1.Precondition_OPERATION_MUST_NOT_MATCH,
-			Filter:    filter.ToProto(),
+			Filter:    p,
 		})
 	}
 }
@@ -139,6 +171,22 @@ func (c *Client) DeleteRelationships(ctx context.Context, f rel.Filter, opts ...
 	for _, opt := range opts {
 		opt(&o)
 	}
+	if o.err != nil {
+		return "", &Error{
+			Code:    CodeInvalidArgument,
+			Message: fmt.Sprintf("spicedb: delete relationships: %s", o.err),
+			err:     o.err,
+		}
+	}
+
+	filterProto, err := f.ToProto()
+	if err != nil {
+		return "", &Error{
+			Code:    CodeInvalidArgument,
+			Message: fmt.Sprintf("spicedb: delete relationships: %s", err),
+			err:     err,
+		}
+	}
 
 	limit := uint32(defaultDeletePageSize)
 	if o.limit != 0 {
@@ -147,7 +195,7 @@ func (c *Client) DeleteRelationships(ctx context.Context, f rel.Filter, opts ...
 
 	for {
 		resp, err := c.psc.DeleteRelationships(ctx, &v1.DeleteRelationshipsRequest{
-			RelationshipFilter:            f.ToProto(),
+			RelationshipFilter:            filterProto,
 			OptionalPreconditions:         o.preconditions,
 			OptionalLimit:                 limit,
 			OptionalAllowPartialDeletions: true,

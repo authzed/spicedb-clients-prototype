@@ -126,7 +126,17 @@ public sealed record Relationship
         this with { CheckContext = context };
 
     /// <summary>
-    /// Converts this relationship to its proto representation.
+    /// Converts this relationship to its proto representation. CaveatContext
+    /// values are converted via <see cref="SpiceDBClient.ToProtoValue"/> —
+    /// the same type-dispatching converter used for check-time caveat
+    /// context — so a numeric, boolean, null, or nested map/list value lands
+    /// on its matching <c>kind</c> oneof case instead of being stringified.
+    /// A caveat like <c>now &lt; 100</c> stored against a stringified "50"
+    /// fails to evaluate, and fails silently as a conditional result — and
+    /// unlike a bad check-time context (which fails one call), a bad
+    /// write-time context is persisted: every future check against this
+    /// relationship mis-evaluates, and re-checking with correct context
+    /// never repairs it, only rewriting the relationship does.
     /// </summary>
     public Authzed.Api.V1.Relationship ToProto()
     {
@@ -160,7 +170,7 @@ public sealed record Relationship
                 var structValue = new Struct();
                 foreach (var (key, value) in CaveatContext)
                 {
-                    structValue.Fields[key] = Value.ForString(value?.ToString() ?? "");
+                    structValue.Fields[key] = SpiceDBClient.ToProtoValue(value);
                 }
                 rel.OptionalCaveat.Context = structValue;
             }
@@ -176,6 +186,13 @@ public sealed record Relationship
 
     /// <summary>
     /// Converts a proto Relationship to an idiomatic Relationship.
+    /// CaveatContext values are converted via
+    /// <see cref="SpiceDBClient.FromProtoValue"/>, the inverse of
+    /// <see cref="SpiceDBClient.ToProtoValue"/> used by <see cref="ToProto"/>
+    /// — this dispatches on each <c>Value</c>'s <c>kind</c> oneof so the
+    /// round trip through <see cref="ToProto"/>/<see cref="FromProto"/>
+    /// preserves types symmetrically instead of reading every value back as
+    /// a string.
     /// </summary>
     public static Relationship FromProto(Authzed.Api.V1.Relationship proto)
     {
@@ -192,7 +209,7 @@ public sealed record Relationship
         if (proto.OptionalCaveat != null)
         {
             var context = proto.OptionalCaveat.Context?.Fields
-                .ToDictionary(f => f.Key, f => (object)f.Value.StringValue);
+                .ToDictionary(f => f.Key, f => SpiceDBClient.FromProtoValue(f.Value)!);
 
             rel = rel with
             {

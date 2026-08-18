@@ -209,6 +209,26 @@
 
 ### Fixed
 
+- **2026-08-18**: `Relationship.ToProto()` stringified every `CaveatContext`
+  value (`Value.ForString(value?.ToString() ?? "")`), and `Relationship.FromProto`
+  read every value back via `Value.StringValue` only — a round trip destroyed
+  types in both directions. A caveat like `now < 100` stored against a
+  stringified `"50"` fails to evaluate, and fails *silently*, as a conditional
+  result rather than an error. Unlike a bad check-time context (which fails
+  one call), a bad write-time context is **persisted**: every future check
+  against that relationship mis-evaluates, and re-checking with correct
+  context never repairs it — only rewriting the relationship does. Both
+  directions now dispatch on the value's type/`kind` oneof via the same
+  converters the check-time path already used correctly:
+  `SpiceDBClient.ToProtoValue` (write) and the new
+  `SpiceDBClient.FromProtoValue` (read, the inverse). The doc comment on
+  `ToProtoValue` previously described the write path's stringification as a
+  documented contrast ("unlike `Relationship.ToProto`'s write-time
+  CaveatContext conversion, which stringifies every value") — that comment
+  described the defect as if it were by design; it's removed now that both
+  paths share one converter. No public API shape change — `ToProto`/`FromProto`
+  signatures are unchanged, only the values they produce/consume.
+
 - **2026-08-18**: `CheckAllAsync`/`CheckAllWithContextAsync` returned `true`
   for zero relationships — LINQ's `Enumerable.All` is vacuously `true` over
   an empty sequence. Root `DESIGN.md`'s "An aggregate over zero checks is not

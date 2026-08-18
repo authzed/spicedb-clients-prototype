@@ -1424,12 +1424,16 @@ public sealed class SpiceDBClient : IAsyncDisposable
 
     /// <summary>
     /// Converts a native .NET value into a protobuf Struct <see cref="Value"/>
-    /// for check-time caveat context. Unlike <see cref="Relationship.ToProto"/>'s
-    /// write-time CaveatContext conversion (which stringifies every value),
-    /// this preserves numeric/bool/null/nested shapes so caveat expressions
-    /// that compare typed parameters (e.g. a schema's <c>now &lt; 100</c>
-    /// against an <c>int</c>) evaluate correctly instead of comparing against
-    /// a string SpiceDB would reject or fail to coerce.
+    /// by dispatching on type — numbers, booleans, null, and nested
+    /// maps/lists all land on their matching <c>kind</c> oneof case rather
+    /// than being stringified. This is the single converter for caveat
+    /// context on both the check path (call-level and per-item context
+    /// merged in <see cref="MergeCheckContext"/>) and the write path
+    /// (<see cref="Relationship.ToProto"/>'s <c>CaveatContext</c>) — both
+    /// send values through this method so a numeric caveat parameter (e.g. a
+    /// schema's <c>now &lt; 100</c> compared against an <c>int</c>) evaluates
+    /// correctly instead of comparing against a string SpiceDB would reject
+    /// or fail to coerce, whichever surface it was supplied on.
     /// </summary>
     internal static Value ToProtoValue(object? value) => value switch
     {
@@ -1458,6 +1462,38 @@ public sealed class SpiceDBClient : IAsyncDisposable
             values.Add(ToProtoValue(item));
         return values.ToArray();
     }
+
+    /// <summary>
+    /// Converts a protobuf Struct <see cref="Value"/> into a native .NET
+    /// value by dispatching on its <c>kind</c> oneof — the read-side inverse
+    /// of <see cref="ToProtoValue"/>. Used by <see cref="Relationship.FromProto"/>
+    /// to read a stored relationship's caveat context back without
+    /// stringifying it: <c>number_value</c> becomes a <c>double</c> (a
+    /// integer caveat parameter legitimately round-trips as e.g. <c>42.0</c>
+    /// — <c>google.protobuf.Value.number_value</c> is a double on the wire,
+    /// not a defect in this conversion), <c>bool_value</c> a <c>bool</c>,
+    /// <c>null_value</c> becomes .NET <c>null</c>, and
+    /// <c>struct_value</c>/<c>list_value</c> recurse. Internal — exposed to
+    /// the test assembly via InternalsVisibleTo; not part of the public API.
+    /// </summary>
+    internal static object? FromProtoValue(Value value) => value.KindCase switch
+    {
+        Value.KindOneofCase.NullValue => null,
+        Value.KindOneofCase.BoolValue => value.BoolValue,
+        Value.KindOneofCase.NumberValue => value.NumberValue,
+        Value.KindOneofCase.StringValue => value.StringValue,
+        Value.KindOneofCase.StructValue => FromProtoStruct(value.StructValue),
+        Value.KindOneofCase.ListValue => value.ListValue.Values.Select(FromProtoValue).ToList(),
+        _ => null,
+    };
+
+    /// <summary>
+    /// Converts every field of a protobuf <see cref="Struct"/> via
+    /// <see cref="FromProtoValue"/>. Internal — exposed to the test assembly
+    /// via InternalsVisibleTo; not part of the public API.
+    /// </summary>
+    internal static IReadOnlyDictionary<string, object> FromProtoStruct(Struct s) =>
+        s.Fields.ToDictionary(f => f.Key, f => FromProtoValue(f.Value)!);
 
     /// <summary>
     /// Maps the proto LookupPermissionship enum to its native equivalent.

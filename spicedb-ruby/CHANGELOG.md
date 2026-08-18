@@ -4,6 +4,20 @@
 
 ### Breaking
 
+- **2026-08-18** (behavioral; new keyword argument): per root DESIGN.md, "RULE: Credentials over
+  insecure transport require an explicit opt-in" -- `Client.new_plaintext` (and the underlying
+  `SpiceDBProto::Client.new` with `insecure: true`) now refuse to construct a client for a
+  non-loopback endpoint (loopback means `localhost`, `127.0.0.0/8`, `::1`, or a `unix:` socket
+  target). Previously an insecure connection would send its bearer token in cleartext to any
+  host: `BearerTokenInterceptor` merges the token into request metadata directly, because
+  "channel credentials can't carry call credentials over a plaintext channel" -- necessary for
+  `insecure: true` to work against loopback at all, but with nothing checking where the
+  connection actually went. A new keyword argument, `allow_insecure_remote_credentials: true`,
+  opts in explicitly when a caller genuinely means to send credentials in cleartext to a remote
+  host; it must be passed alongside `insecure: true`/`new_plaintext`, since neither alone is
+  sufficient for a non-loopback endpoint anymore. `new_plaintext`/`new_system_tls` against
+  `localhost` are unaffected -- no code change needed for local development.
+
 - **2026-08-18** (behavioral; no signature change): the two entries below change what existing,
   unmodified call sites do. They are listed here because neither announces itself -- nothing
   fails to compile, and the difference only shows up under load or against a slow query.

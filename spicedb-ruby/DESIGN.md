@@ -43,6 +43,14 @@ Security-obvious named constructors:
 - Block form: `SpiceDB::Client.new_plaintext(...) { |client| ... }` — yields
   client and ensures cleanup
 
+Per root DESIGN.md, "RULE: Credentials over insecure transport require an
+explicit opt-in": `new_plaintext` only permits plaintext to a loopback
+endpoint (`localhost`, `127.0.0.0/8`, `::1`, or a `unix:` socket target) — the
+local-development case that is the entire reason it exists. Anything else
+needs `allow_insecure_remote_credentials: true` passed explicitly, or
+`new_plaintext` refuses to construct the client at all, before any connection
+is created.
+
 ### Consistency
 
 ZedTokens are opaque `String` values, never proto types. Consistency is an

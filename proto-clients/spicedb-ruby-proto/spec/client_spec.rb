@@ -95,6 +95,76 @@ RSpec.describe SpiceDBProto::Client do
   end
 end
 
+RSpec.describe "SpiceDBProto::Client.loopback_endpoint?" do
+  loopback = %w[
+    localhost:50051 LOCALHOST:50051 localhost
+    127.0.0.1:50051 127.0.0.1 127.55.66.77:50051
+    [::1]:50051 ::1
+    unix:/var/run/spicedb.sock unix:///var/run/spicedb.sock
+  ]
+  loopback.each do |endpoint|
+    it "treats #{endpoint.inspect} as loopback" do
+      expect(SpiceDBProto::Client.loopback_endpoint?(endpoint)).to be true
+    end
+  end
+
+  not_loopback = %w[
+    example.com:443 staging.internal:443 10.0.0.5:50051 8.8.8.8:443 0.0.0.0:50051
+  ]
+  not_loopback.each do |endpoint|
+    it "does not treat #{endpoint.inspect} as loopback" do
+      expect(SpiceDBProto::Client.loopback_endpoint?(endpoint)).to be false
+    end
+  end
+end
+
+# Regression coverage for root DESIGN.md, "RULE: Credentials over insecure
+# transport require an explicit opt-in".
+RSpec.describe "SpiceDBProto::Client insecure host guard" do
+  # expect(...).not_to receive(:new) is what proves the credential never
+  # reached the wire, not merely that an error was raised: GRPC::Core::Channel
+  # is what the token would ride on, and BearerTokenInterceptor is what would
+  # actually attach it to outgoing metadata. An implementation that built the
+  # channel/interceptor and only THEN raised would fail these expectations
+  # even though a bare `raise_error` assertion would still pass.
+  it "refuses a non-loopback endpoint without the opt-in, before any channel or interceptor is created" do
+    expect(GRPC::Core::Channel).not_to receive(:new)
+    expect(SpiceDBProto::BearerTokenInterceptor).not_to receive(:new)
+
+    expect {
+      SpiceDBProto::Client.new("evil.example.com:1234", "super-secret-token", insecure: true)
+    }.to raise_error(ArgumentError, /evil\.example\.com:1234/)
+  end
+
+  it "names the opt-in in the error message" do
+    expect {
+      SpiceDBProto::Client.new("evil.example.com:1234", "super-secret-token", insecure: true)
+    }.to raise_error(ArgumentError, /allow_insecure_remote_credentials/)
+  end
+
+  it "allows a loopback endpoint with no opt-in, and actually carries the token" do
+    client = SpiceDBProto::Client.new("localhost:50051", "test-token", insecure: true)
+    interceptor = client.instance_variable_get(:@interceptor)
+
+    metadata = {}
+    interceptor.request_response(request: nil, call: nil, method: nil, metadata: metadata) { nil }
+
+    expect(metadata["authorization"]).to eq("Bearer test-token")
+  end
+
+  it "allows a non-loopback endpoint when allow_insecure_remote_credentials is true, and sends the token" do
+    client = SpiceDBProto::Client.new(
+      "evil.example.com:1234", "remote-token", insecure: true, allow_insecure_remote_credentials: true
+    )
+    interceptor = client.instance_variable_get(:@interceptor)
+
+    metadata = {}
+    interceptor.request_response(request: nil, call: nil, method: nil, metadata: metadata) { nil }
+
+    expect(metadata["authorization"]).to eq("Bearer remote-token")
+  end
+end
+
 RSpec.describe SpiceDBProto::BearerTokenInterceptor do
   it "merges authorization metadata" do
     interceptor = described_class.new("my-token")

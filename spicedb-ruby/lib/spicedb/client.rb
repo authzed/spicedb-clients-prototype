@@ -149,15 +149,29 @@ module SpiceDB
     #
     # If a block is given, the client is yielded and cleanup is ensured.
     #
+    # By itself, this only works against a loopback +endpoint+ (localhost,
+    # 127.0.0.0/8, ::1, or a unix socket target) -- the local-development case that
+    # is the entire reason a plaintext connection exists. For any other endpoint,
+    # pass +allow_insecure_remote_credentials: true+, on purpose, if you genuinely
+    # mean to send a bearer token in cleartext to a remote host. See root
+    # DESIGN.md, "RULE: Credentials over insecure transport require an explicit
+    # opt-in".
+    #
     # @param endpoint [String] the SpiceDB server address (e.g., "localhost:50051")
     # @param token [String] the preshared key for authentication
     # @param default_timeout [Numeric] seconds applied to every unary call that
     #   does not pass its own `timeout:` (see {DEFAULT_TIMEOUT_SECONDS}). NOT
     #   applied to streaming calls.
+    # @param allow_insecure_remote_credentials [Boolean] explicit opt-in to send
+    #   credentials in cleartext to a non-loopback endpoint.
     # @yield [client] optionally yields the client for block-scoped usage
     # @return [Client]
-    def self.new_plaintext(endpoint, token, default_timeout: DEFAULT_TIMEOUT_SECONDS, &block)
-      client = new(endpoint: endpoint, token: token, insecure: true, default_timeout: default_timeout)
+    # @raise [ArgumentError] if endpoint is not loopback and
+    #   allow_insecure_remote_credentials is false.
+    def self.new_plaintext(endpoint, token, default_timeout: DEFAULT_TIMEOUT_SECONDS,
+                           allow_insecure_remote_credentials: false, &block)
+      client = new(endpoint: endpoint, token: token, insecure: true, default_timeout: default_timeout,
+                   allow_insecure_remote_credentials: allow_insecure_remote_credentials)
       if block
         begin
           yield client
@@ -196,7 +210,8 @@ module SpiceDB
 
     # @api private
     # Use {.new_plaintext} or {.new_system_tls} instead.
-    def initialize(endpoint:, token:, insecure: false, default_timeout: DEFAULT_TIMEOUT_SECONDS)
+    def initialize(endpoint:, token:, insecure: false, default_timeout: DEFAULT_TIMEOUT_SECONDS,
+                   allow_insecure_remote_credentials: false)
       @endpoint = endpoint
       @token = token
       @insecure = insecure
@@ -204,7 +219,10 @@ module SpiceDB
 
       begin
         require 'spicedb_proto'
-        @proto_client = SpiceDBProto::Client.new(endpoint, token, insecure: insecure)
+        @proto_client = SpiceDBProto::Client.new(
+          endpoint, token, insecure: insecure,
+                           allow_insecure_remote_credentials: allow_insecure_remote_credentials
+        )
       rescue LoadError
         # Proto gem not yet available (e.g. buf hasn't generated stubs).
         # Client object can still be created but gRPC calls will fail.

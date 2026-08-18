@@ -11,6 +11,8 @@ import io.grpc.StatusRuntimeException;
 import io.grpc.inprocess.InProcessChannelBuilder;
 import io.grpc.inprocess.InProcessServerBuilder;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.IOException;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -49,6 +51,41 @@ class InsecureHostGuardTest {
       "localhost.evil.com:443", "127.0.0.1.evil.com:443", "evil-localhost:443",
     };
     for (String endpoint : notLoopback) {
+      assertFalse(SpiceDBClient.isLoopbackEndpoint(endpoint), endpoint);
+    }
+  }
+
+  /**
+   * Endpoints whose URI authority is not what a naive host:port split reads out of them. grpc-java's
+   * {@code DnsNameResolver} takes its host from {@code URI.create("//" + name).getHost()}, so
+   * {@code "127.0.0.1:443@evil.com"} resolves and connects to <b>evil.com</b> while a last-colon
+   * split sees "127.0.0.1". Before the fix {@link SpiceDBClient#isLoopbackEndpoint} returned true
+   * for these, so {@code createPlaintext} built a client with no opt-in and shipped its bearer
+   * token to the attacker-controlled host in cleartext.
+   */
+  private static final String[] AUTHORITY_SHIFTING_ENDPOINTS = {
+    "127.0.0.1:443@evil.com",
+    "[::1]:443@evil.com",
+    "[::1]:0@127.0.0.1:19999",
+    "[localhost]:1@127.0.0.1:19999",
+  };
+
+  static String[] authorityShiftingEndpoints() {
+    return AUTHORITY_SHIFTING_ENDPOINTS;
+  }
+
+  @Test
+  void isLoopbackEndpointFalseForAuthorityShiftingTargets() {
+    for (String endpoint : AUTHORITY_SHIFTING_ENDPOINTS) {
+      assertFalse(SpiceDBClient.isLoopbackEndpoint(endpoint), endpoint);
+    }
+    // Other endpoints whose parse a manual split can disagree with: userinfo with no port,
+    // path/query/fragment, a trailing dot, embedded whitespace. All must fail closed.
+    String[] alsoRefused = {
+      "localhost@evil.com", "localhost/../evil.com", "localhost#@evil.com",
+      "localhost?@evil.com", "localhost.", "localhost :50051", "127.0.0.1 :50051",
+    };
+    for (String endpoint : alsoRefused) {
       assertFalse(SpiceDBClient.isLoopbackEndpoint(endpoint), endpoint);
     }
   }
@@ -181,6 +218,49 @@ class InsecureHostGuardTest {
       String got = server.capturedAuth.poll(5, TimeUnit.SECONDS);
       assertEquals("Bearer remote-token", got);
     }
+  }
+
+  /**
+   * The regression test for the loopback-guard bypass. Asserting only that construction throws
+   * would be satisfied by an implementation that builds the channel, sends the token, and throws
+   * afterwards -- so this asserts on the transport instead, exactly as {@link
+   * #refusesInsecureNonLoopbackWithoutOptIn} does: the channel builder handed in is wired to a REAL
+   * capturing server, and capturedAuth staying empty is what proves nothing capable of carrying the
+   * credential was ever built or dialed.
+   */
+  @ParameterizedTest
+  @MethodSource("authorityShiftingEndpoints")
+  void refusesEndpointWhoseUriAuthorityShiftsTheHost(String endpoint) throws Exception {
+    try (CapturingServer server = new CapturingServer()) {
+      IllegalArgumentException ex =
+          assertThrows(
+              IllegalArgumentException.class,
+              () ->
+                  SpiceDBClient.create(
+                      endpoint,
+                      "super-secret-token",
+                      SpiceDBClient.DEFAULT_TIMEOUT,
+                      server.channelBuilder(),
+                      SpiceDBClient.withInsecure()));
+
+      assertTrue(ex.getMessage().contains(endpoint), ex.getMessage());
+      assertTrue(ex.getMessage().contains("allowInsecureRemoteCredentials"), ex.getMessage());
+
+      assertNull(
+          server.capturedAuth.poll(200, TimeUnit.MILLISECONDS),
+          "server must never have observed a call, so nothing should be captured");
+    }
+  }
+
+  /** The same bypass reached through the public {@code createPlaintext} entry point. */
+  @ParameterizedTest
+  @MethodSource("authorityShiftingEndpoints")
+  void createPlaintextRefusesEndpointWhoseUriAuthorityShiftsTheHost(String endpoint) {
+    IllegalArgumentException ex =
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> SpiceDBClient.createPlaintext(endpoint, "super-secret-token"));
+    assertTrue(ex.getMessage().contains("allowInsecureRemoteCredentials"), ex.getMessage());
   }
 
   /**

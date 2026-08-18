@@ -220,6 +220,28 @@
 
 ### Fixes
 
+- **2026-08-18**: **Security — a bypass in the guard that refuses to send credentials over
+  plaintext to a non-loopback host was fixed.** `SpiceDBClient.createPlaintext(endpoint,
+  presharedKey)` accepted `"127.0.0.1:443@evil.com"` as loopback and sent the bearer token to
+  `evil.com` in cleartext, with no opt-in and nothing reported. `isLoopbackEndpoint` split the
+  endpoint on its last colon and read the host as `127.0.0.1`; grpc-java's `DnsNameResolver`
+  derives its host as `URI.create("//" + name).getHost()`, which reads `127.0.0.1:443` as
+  *userinfo* and returns `evil.com` — then resolves and connects there on the default port. (An
+  RPC to `"127.0.0.1:443@evil.invalid"` fails with `UNAVAILABLE: Unable to resolve host
+  evil.invalid`, naming the host it actually went looking for.) The `:authority` header carried
+  the whole undivided string, so nothing in the request made the redirection visible.
+  `"[::1]:443@evil.com"` and `"[::1]:0@127.0.0.1:19999"` bypassed it the same way through the
+  bracketed branch, which never validated what followed the `]`.
+
+  The root cause was that the guard parsed the endpoint differently than the transport did, so
+  the fix is not a tighter split: `isLoopbackEndpoint` now derives its host with the same
+  `URI.create("//" + …).getHost()` expression `DnsNameResolver` itself uses. Guard and
+  transport can no longer disagree. Endpoints containing `@`, `/`, `?`, `#`, or whitespace are
+  additionally refused outright, since a legitimate SpiceDB target contains none of them. A
+  bare IPv6 literal (`"::1"`) is bracketed before parsing and keeps working, as do `unix:`
+  targets, `localhost`, and 127.0.0.0/8. Both this client and `spicedb-java-proto` carried
+  independent copies of the guard; both are fixed.
+
 - **2026-08-18**: `exportRelationships` drained the ENTIRE server stream into an in-memory buffer
   before yielding a single `Relationship` to the caller -- an OOM risk for the one API most likely
   to face the largest dataset in the system (a full multi-million-relationship export).

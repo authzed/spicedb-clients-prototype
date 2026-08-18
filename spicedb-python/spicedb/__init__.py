@@ -58,6 +58,7 @@ from spicedb.types import (
     TreeOperation,
     Update,
     UpdateOperation,
+    WatchEvent,
 )
 
 __all__ = [
@@ -75,6 +76,7 @@ __all__ = [
     "Transaction",
     "Update",
     "UpdateOperation",
+    "WatchEvent",
     "PermissionTree",
     "IntermediateNode",
     "LeafNode",

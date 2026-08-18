@@ -295,18 +295,30 @@ def test_watch_event_maps_multiple_updates_and_revision():
         ],
         changes_through=core_pb2.ZedToken(token="deadbeef"),
     )
-    updates, revision = mapping.watch_event(resp)
-    assert [u.operation for u in updates] == [
+    event = mapping.watch_event(resp)
+    assert [u.operation for u in event.updates] == [
         UpdateOperation.TOUCH,
         UpdateOperation.DELETE,
     ]
-    assert [u.relationship.resource_id for u in updates] == ["1", "2"]
-    assert [u.relationship.subject_id for u in updates] == ["alice", "bob"]
-    assert revision == "deadbeef"
+    assert [u.relationship.resource_id for u in event.updates] == ["1", "2"]
+    assert [u.relationship.subject_id for u in event.updates] == ["alice", "bob"]
+    assert event.changes_through == "deadbeef"
+    assert event.is_checkpoint is False
 
 
 def test_watch_event_empty_updates_returns_empty_list_and_token():
     resp = wsp.WatchResponse(changes_through=core_pb2.ZedToken(token="cafebabe"))
-    updates, revision = mapping.watch_event(resp)
-    assert updates == []
-    assert revision == "cafebabe"
+    event = mapping.watch_event(resp)
+    assert event.updates == []
+    assert event.changes_through == "cafebabe"
+
+
+def test_watch_event_checkpoint_carries_no_updates_but_a_resume_token():
+    resp = wsp.WatchResponse(
+        changes_through=core_pb2.ZedToken(token="checkpoint-token"),
+        is_checkpoint=True,
+    )
+    event = mapping.watch_event(resp)
+    assert event.updates == []
+    assert event.changes_through == "checkpoint-token"
+    assert event.is_checkpoint is True

@@ -48,7 +48,7 @@ from spicedb.types import (
     Relationship,
     SchemaDiff,
     Transaction,
-    Update,
+    WatchEvent,
     _permission_tree_from_proto,
     _schema_diff_from_proto,
 )
@@ -578,10 +578,21 @@ class SpiceDBClient:
         *,
         object_types: list[str] | None = None,
         start_revision: str | None = None,
-    ) -> Iterator[tuple[list[Update], str]]:
-        """Watch for relationship changes. Yields (updates, revision) tuples."""
+        include_checkpoints: bool = False,
+    ) -> Iterator[WatchEvent]:
+        """Watch for relationship changes. Yields `WatchEvent`s.
+
+        `event.changes_through` is a resume point for a later `watch()`
+        call's `start_revision` -- keep it if you need to survive a dropped
+        stream. Pass `include_checkpoints=True` to also receive periodic
+        checkpoint events (`event.is_checkpoint`, no updates); recommended
+        behind a proxy that aborts idle connections, so the stream stays
+        alive during quiet periods.
+        """
         self._ensure_channel()
-        request = _requests.watch_request(object_types, start_revision)
+        request = _requests.watch_request(
+            object_types, start_revision, include_checkpoints
+        )
         attempt = 0
         while True:
             yielded = 0

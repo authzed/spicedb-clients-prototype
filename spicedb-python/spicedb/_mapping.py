@@ -19,6 +19,7 @@ from spicedb.types import (
     Permissionship,
     ResolvedSubject,
     Update,
+    WatchEvent,
     _check_permissionship_from_proto,
     _partial_caveat_from_proto,
     _permissionship_from_proto,
@@ -123,8 +124,9 @@ def lookup_subject(
     )
 
 
-def watch_event(resp: watch_service_pb2.WatchResponse) -> tuple[list[Update], str]:
-    return (
-        [Update._from_proto(u) for u in resp.updates],
-        resp.changes_through.token,
+def watch_event(resp: watch_service_pb2.WatchResponse) -> WatchEvent:
+    return WatchEvent(
+        updates=[Update._from_proto(u) for u in resp.updates],
+        changes_through=resp.changes_through.token,
+        is_checkpoint=resp.is_checkpoint,
     )

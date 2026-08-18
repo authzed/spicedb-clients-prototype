@@ -244,14 +244,27 @@ def import_batches(
 def watch_request(
     object_types: list[str] | None,
     start_revision: str | None,
+    include_checkpoints: bool = False,
 ) -> watch_service_pb2.WatchRequest:
     cursor = None
     if start_revision is not None:
         cursor = core_pb2.ZedToken(token=start_revision)
 
+    # optional_update_kinds is empty-means-default (relationship updates
+    # only, for backwards compatibility). A non-empty list is the exact set
+    # requested, so asking for checkpoints must also spell out relationship
+    # updates or the server would stop sending them.
+    update_kinds = []
+    if include_checkpoints:
+        update_kinds = [
+            watch_service_pb2.WATCH_KIND_INCLUDE_RELATIONSHIP_UPDATES,
+            watch_service_pb2.WATCH_KIND_INCLUDE_CHECKPOINTS,
+        ]
+
     return watch_service_pb2.WatchRequest(
         optional_object_types=object_types or [],
         optional_start_cursor=cursor,
+        optional_update_kinds=update_kinds,
     )
 
 

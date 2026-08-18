@@ -803,10 +803,11 @@ class TestLookupSubjectsEstablishmentRetry:
 
 
 class TestWatchEstablishmentRetry:
-    def _response(self, token: str):
+    def _response(self, token: str, *, is_checkpoint: bool = False):
         return watch_service_pb2.WatchResponse(
             updates=[],
             changes_through=core_pb2.ZedToken(token=token),
+            is_checkpoint=is_checkpoint,
         )
 
     async def test_retries_establishment_on_first_open_transient_error(
@@ -817,7 +818,7 @@ class TestWatchEstablishmentRetry:
             self._response("rev1"),
         )
 
-        got = [rev async for _updates, rev in client.watch()]
+        got = [event.changes_through async for event in client.watch()]
 
         assert got == ["rev1"]
         assert len(client._watch.Watch.calls) == 2
@@ -830,11 +831,62 @@ class TestWatchEstablishmentRetry:
 
         got = []
         with pytest.raises(UnavailableError):
-            async for _updates, rev in client.watch():
-                got.append(rev)
+            async for event in client.watch():
+                got.append(event.changes_through)
 
         assert got == ["rev1"]
         assert len(client._watch.Watch.calls) == 1
+
+    async def test_watch_event_exposes_usable_resume_token(self, make_client):
+        """A consumer whose stream dies must be able to resume from exactly
+        where it left off -- the resume token is what makes that possible
+        instead of forcing a restart from head (losing changes) or from the
+        original token (reprocessing, possibly past the GC window)."""
+        client = make_client()
+        client._watch.Watch = _async_stream(self._response("resume-me"))
+
+        [event] = [event async for event in client.watch()]
+
+        assert event.changes_through == "resume-me"
+
+    async def test_include_checkpoints_reaches_the_wire(self, make_client):
+        client = make_client()
+        client._watch.Watch = _async_stream(self._response("rev1"))
+
+        [_ async for _ in client.watch(include_checkpoints=True)]
+
+        (args, _kwargs) = client._watch.Watch.calls[0]
+        sent_request = args[0]
+        assert (
+            watch_service_pb2.WATCH_KIND_INCLUDE_CHECKPOINTS
+            in sent_request.optional_update_kinds
+        )
+
+    async def test_include_checkpoints_false_by_default(self, make_client):
+        client = make_client()
+        client._watch.Watch = _async_stream(self._response("rev1"))
+
+        [_ async for _ in client.watch()]
+
+        (args, _kwargs) = client._watch.Watch.calls[0]
+        sent_request = args[0]
+        assert sent_request.optional_update_kinds == []
+
+    async def test_checkpoint_event_distinguishable_from_update_event(
+        self, make_client
+    ):
+        client = make_client()
+        client._watch.Watch = _async_stream(
+            self._response("checkpoint-rev", is_checkpoint=True),
+        )
+
+        [event] = [
+            event async for event in client.watch(include_checkpoints=True)
+        ]
+
+        assert event.is_checkpoint is True
+        assert event.updates == []
+        assert event.changes_through == "checkpoint-rev"
 
 
 class TestExportRelationshipsEstablishmentRetry:

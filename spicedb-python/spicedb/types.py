@@ -210,6 +210,27 @@ class Update:
 
 
 @dataclass(frozen=True)
+class WatchEvent:
+    """A single event yielded by `SpiceDBClient.watch()`.
+
+    `changes_through` is the ZedToken this event is current through. Pass it
+    as `start_revision` to a later `watch()` call to resume after a dropped
+    stream -- without it, a consumer whose stream dies can only restart from
+    its original token (reprocessing everything since, possibly past the GC
+    window) or from head (silently losing every change in the gap).
+
+    A checkpoint event (`is_checkpoint=True`) carries no `updates` -- it
+    exists only to advertise a fresh resume point and, behind a proxy that
+    aborts idle connections, to keep the stream alive. Request checkpoints
+    with `watch(include_checkpoints=True)`.
+    """
+
+    updates: list[Update]
+    changes_through: str
+    is_checkpoint: bool = False
+
+
+@dataclass(frozen=True)
 class Filter:
     """A filter for matching relationships."""
 

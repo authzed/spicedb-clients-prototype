@@ -126,6 +126,31 @@
 
 ### Fixed
 
+- **2026-08-18**: Watch resumability. `watch()` (both flavors) now yields a
+  `WatchEvent` dataclass instead of a bare `(updates, revision)` tuple, and
+  accepts a keyword-only `include_checkpoints: bool = False`.
+  - `WatchEvent.changes_through` was already surfaced (as the tuple's second
+    element) — it is the proto's `changes_through` ZedToken, "the point in
+    time that the watch response is current through... can be used in a
+    subsequent WatchRequest to resume watching from this point." Renaming it
+    onto a named field (rather than a positional tuple slot) makes its
+    resumability role explicit at the call site.
+  - New: `WatchEvent.is_checkpoint`. Passing `include_checkpoints=True`
+    requests `WATCH_KIND_INCLUDE_CHECKPOINTS` from the server (previously no
+    caller could request this at all); a checkpoint event carries no
+    `updates`, so `is_checkpoint` lets a consumer distinguish "nothing
+    changed, here is a fresh resume point" from "here are changes" instead of
+    silently treating a checkpoint as an empty update batch. Per the proto:
+    recommended when running behind a proxy that aborts idle connections, so
+    the stream stays alive during quiet periods.
+  - Without a resume token, a consumer whose stream dropped could only
+    restart from its original `start_revision` (reprocessing everything
+    since, possibly past the GC window) or from head (silently losing every
+    change in the gap). `WatchEvent.changes_through` is always populated and
+    is safe to pass back as `start_revision`.
+  - `examples/watch_changes/` and `examples/sync_watch_changes/` updated for
+    the new `WatchEvent` shape and extended with a checkpoint-request
+    example.
 - **2026-08-18**: Call deadlines, per root `DESIGN.md` "RULE: A unary call must have a
   deadline". Previously no method on either flavor accepted a timeout, and no client-level
   default existed, so a SpiceDB instance that accepted a connection but never answered hung

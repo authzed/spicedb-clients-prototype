@@ -25,10 +25,19 @@ import { defineConfig } from "vitest/config";
  */
 export default defineConfig({
   resolve: {
-    alias: {
-      "@spicedb/proto": fileURLToPath(
-        new URL("../proto-clients/spicedb-typescript-proto/src/index.ts", import.meta.url),
-      ),
-    },
+    alias: [
+      {
+        // Anchored, not a bare string key. A string alias matches the key OR
+        // the key followed by "/", so `@spicedb/proto` would also capture a
+        // future deep import like `@spicedb/proto/gen/...` and rewrite it to
+        // `<abs>/src/index.ts/gen/...`, which fails confusingly. No deep
+        // import exists today; this makes sure one cannot be broken by this
+        // file later.
+        find: /^@spicedb\/proto$/,
+        replacement: fileURLToPath(
+          new URL("../proto-clients/spicedb-typescript-proto/src/index.ts", import.meta.url),
+        ),
+      },
+    ],
   },
 });

@@ -50,10 +50,38 @@ RSpec.describe SpiceDB::Client do
       end.to raise_error(ArgumentError, /allow_insecure_remote_credentials/)
     end
 
+    # The bypass shapes, at the public entry point. The proto layer holds the full
+    # fixture set and the "credential never reaches the wire" proof; these are the
+    # ones that must not slip through .new_plaintext itself.
+    [
+      '127.0.0.1:443@evil.com',
+      '[::1]:443@evil.com',
+      '[::1]:0@127.0.0.1:19999',
+      'localhost@evil.com',
+      '127.0.0.1:notaport'
+    ].each do |endpoint|
+      it "refuses authority-shifting #{endpoint.inspect} without the opt-in" do
+        expect do
+          described_class.new_plaintext(endpoint, 'testtoken')
+        end.to raise_error(ArgumentError, /allow_insecure_remote_credentials/)
+      end
+    end
+
     it 'allows a loopback endpoint with no opt-in' do
       expect do
         described_class.new_plaintext('localhost:50051', 'testtoken')
       end.not_to raise_error
+    end
+
+    # Unlike C#, TypeScript and Rust -- whose transports cannot dial a UDS path and
+    # so now refuse these -- grpc-ruby's C-core genuinely honours a unix: target,
+    # which is why the exemption stays here.
+    ['unix:/var/run/spicedb.sock', 'unix:///var/run/spicedb.sock'].each do |endpoint|
+      it "allows unix-socket target #{endpoint.inspect} with no opt-in" do
+        expect do
+          described_class.new_plaintext(endpoint, 'testtoken')
+        end.not_to raise_error
+      end
     end
 
     it 'allows a non-loopback endpoint when allow_insecure_remote_credentials is true' do

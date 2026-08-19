@@ -47,6 +47,63 @@ DNS name `unix` rather than a socket path. Anything else needs
 `createSpiceDBClient`/`new SpiceDBClient(...)` throws before any connection
 is created.
 
+### Custom TLS trust material
+
+```typescript
+// A SpiceDB behind a private or corporate CA
+const client = createSpiceDBClient("spicedb.internal:443", "my-token", {
+  tls: { caCert: readFileSync("/etc/ssl/certs/internal-ca.pem") },
+});
+
+// ...and where the server requires mutual TLS
+const client = createSpiceDBClient("spicedb.internal:443", "my-token", {
+  tls: { caCert, clientCert, clientKey },
+});
+```
+
+`caCert`/`clientCert`/`clientKey` are passed through to `node:tls`'s `ca`,
+`cert` and `key` on the HTTP/2 connection, and are typed as exactly what Node
+accepts there (a PEM string, a `Buffer`, or an array of either) so the option
+cannot drift from what the transport supports.
+
+Why these exist. Root DESIGN.md, "RULE: A system-TLS constructor must reach a
+real server", requires the default secure path to delegate to the ecosystem's
+default trust source, and names the hazard that leaves visible: Node ships a
+bundled Mozilla root store, so a CA an operator installed in the host's own
+store is **not** honoured. That rule permits delegating to the bundled set
+precisely *because* a caller can supply their own material instead; `tls` is
+what makes that true here.
+
+`caCert` **replaces** Node's bundled roots for that client rather than adding
+to them (`node:tls`'s own behavior, and generally what a deployment pinning a
+private CA wants). Omitting `tls` entirely leaves the transport's trust source
+untouched — the session manager is constructed with no session options at all,
+not with an object of `undefined`s — so this library never selects a root set
+of its own, which clause 1 of that rule prohibits.
+
+The material reaches the transport through `new Http2SessionManager(baseUrl,
+undefined, { ca, cert, key })`, **not** `createGrpcTransport`'s `nodeOptions`.
+Connect-ES documents that supplying a `sessionManager` "makes nodeOptions as
+well as the HTTP/2 session options ineffective", and this client always
+supplies one (so `close()` has a handle to abort) — trust material handed to
+`nodeOptions` would be silently dropped and every private-CA handshake would
+still fail.
+
+Two combinations throw at construction, before any session manager exists:
+
+- **`insecure: true` with any `tls` field.** A plaintext connection performs no
+  handshake, so `node:tls` would ignore the material and put the bearer token
+  on the wire in cleartext behind a call site that reads as though TLS were
+  configured — the failure root DESIGN.md, "RULE: Credentials over insecure
+  transport require an explicit opt-in", exists to prevent. Supplying trust
+  material is never a second, quieter route to an insecure transport, and never
+  a construction path that skips that rule's guard (which still runs first, and
+  whose message is what a caller sees). It throws rather than silently turning
+  TLS on, since an implicit upgrade is just as surprising.
+- **`clientCert` without `clientKey`, or vice versa.** Neither half is usable
+  alone; `node:tls` fails later, from a layer with no idea which option was
+  wrong.
+
 ### Consistency
 
 Explicit, never defaulted:

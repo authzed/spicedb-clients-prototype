@@ -4,6 +4,8 @@
 
 ```ts
 
+import type { SecureClientSessionOptions } from 'node:http2';
+
 // @public
 export class AlreadyExistsError extends SpiceDBError {
     constructor(message: string, options?: SpiceDBErrorOptions);
@@ -78,6 +80,7 @@ export class Consistency {
 export function createSpiceDBClient(endpoint: string, token: string, options?: {
     insecure?: boolean;
     allowInsecureRemoteCredentials?: boolean;
+    tls?: TlsOptions;
     headers?: Record<string, string>;
     maxRetries?: number;
     defaultTimeoutMs?: number;
@@ -506,6 +509,7 @@ export interface SpiceDBClientOptions {
     insecure?: boolean;
     // (undocumented)
     maxRetries?: number;
+    tls?: TlsOptions;
     // (undocumented)
     token: string;
 }
@@ -533,6 +537,13 @@ export interface SubjectRef {
     subjectId: string;
     // (undocumented)
     subjectType: string;
+}
+
+// @public
+export interface TlsOptions {
+    caCert?: SecureClientSessionOptions["ca"];
+    clientCert?: SecureClientSessionOptions["cert"];
+    clientKey?: SecureClientSessionOptions["key"];
 }
 
 // @public

@@ -1,3 +1,4 @@
+import type { SecureClientSessionOptions } from "node:http2";
 import { create, type JsonObject } from "@bufbuild/protobuf";
 import {
   createSpiceDBClient as createProtoClient,
@@ -82,6 +83,45 @@ import {
 } from "./errors.js";
 
 /**
+ * Caller-supplied TLS trust material for the secure path.
+ *
+ * Why this exists. Root DESIGN.md, "RULE: A system-TLS constructor must reach
+ * a real server", requires the default secure path to delegate to the
+ * ecosystem's default trust source -- for Connect-ES over Node http2, that is
+ * whatever `node:tls` uses when no `ca` is given -- and names the hazard that
+ * leaves visible: Node ships a bundled Mozilla root store, so a CA an operator
+ * installed in the host's own trust store is NOT honoured here. That rule
+ * permits delegating to the bundled set precisely *because* a caller can
+ * supply their own material instead. These options are what makes that true;
+ * without them a SpiceDB fronted by a private or corporate CA was unreachable.
+ *
+ * Each field is passed straight through to the corresponding `node:tls`
+ * option (`ca`, `cert`, `key`) on the HTTP/2 connection, and is typed as
+ * exactly what Node accepts there -- a PEM string, a Buffer, or an array of
+ * either -- so this cannot drift from what the transport actually supports.
+ */
+export interface TlsOptions {
+  /**
+   * Root certificate(s) used to verify SpiceDB's certificate, in place of
+   * Node's bundled roots. Supplying this REPLACES the default trust store for
+   * this client rather than adding to it -- that is `node:tls`'s behavior, and
+   * it is generally what a deployment pinning a private CA wants.
+   */
+  caCert?: SecureClientSessionOptions["ca"];
+  /**
+   * The client's own certificate chain, for a server that requires mutual
+   * TLS. Must be supplied together with {@link TlsOptions.clientKey}; either
+   * half alone is refused, since neither is usable without the other.
+   */
+  clientCert?: SecureClientSessionOptions["cert"];
+  /**
+   * The private key for {@link TlsOptions.clientCert}. Must be supplied
+   * together with it.
+   */
+  clientKey?: SecureClientSessionOptions["key"];
+}
+
+/**
  * Options for creating a SpiceDBClient.
  */
 export interface SpiceDBClientOptions {
@@ -105,6 +145,19 @@ export interface SpiceDBClientOptions {
    * to a remote host.
    */
   allowInsecureRemoteCredentials?: boolean;
+  /**
+   * Caller-supplied TLS trust material -- a private CA to verify SpiceDB
+   * against, and optionally a client certificate for mutual TLS. See
+   * {@link TlsOptions}.
+   *
+   * This never decides *whether* TLS is used: `insecure` alone does that.
+   * Combining the two throws, rather than silently ignoring the material the
+   * way `node:tls` would on a plaintext socket -- supplying a CA must not
+   * become a quieter route to sending a bearer token in cleartext. See root
+   * DESIGN.md, "RULE: Credentials over insecure transport require an explicit
+   * opt-in".
+   */
+  tls?: TlsOptions;
   headers?: Record<string, string>;
   maxRetries?: number;
   /**
@@ -223,6 +276,7 @@ export class SpiceDBClient {
     this.proto = createProtoClient(options.endpoint, options.token, {
       insecure: options.insecure,
       allowInsecureRemoteCredentials: options.allowInsecureRemoteCredentials,
+      tls: options.tls,
       headers: options.headers,
     });
     this.maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
@@ -1362,6 +1416,13 @@ export function createSpiceDBClient(
      * Credentials over insecure transport require an explicit opt-in".
      */
     allowInsecureRemoteCredentials?: boolean;
+    /**
+     * Caller-supplied TLS trust material — a private CA to verify SpiceDB
+     * against, and optionally a client certificate for mutual TLS. See
+     * {@link TlsOptions}, and {@link SpiceDBClientOptions.tls} for why
+     * combining it with `insecure` throws rather than being ignored.
+     */
+    tls?: TlsOptions;
     headers?: Record<string, string>;
     maxRetries?: number;
     defaultTimeoutMs?: number;

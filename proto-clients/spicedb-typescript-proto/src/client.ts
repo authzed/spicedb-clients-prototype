@@ -1,9 +1,48 @@
 import { createClient, type Client, type Transport } from "@connectrpc/connect";
 import { createGrpcTransport, Http2SessionManager } from "@connectrpc/connect-node";
+import type { SecureClientSessionOptions } from "node:http2";
 import { PermissionsService } from "./gen/authzed/api/v1/permission_service_pb.js";
 import { SchemaService } from "./gen/authzed/api/v1/schema_service_pb.js";
 import { WatchService } from "./gen/authzed/api/v1/watch_service_pb.js";
 import { ExperimentalService } from "./gen/authzed/api/v1/experimental_service_pb.js";
+
+/**
+ * Caller-supplied TLS trust material for the secure path.
+ *
+ * Why this exists. Root DESIGN.md, "RULE: A system-TLS constructor must reach
+ * a real server", requires the default secure path to delegate to the
+ * ecosystem's default trust source -- for Connect-ES over Node http2, that is
+ * whatever `node:tls` uses when no `ca` is given -- and names the hazard that
+ * leaves visible: Node ships a bundled Mozilla root store, so a CA an operator
+ * installed in the host's own trust store is NOT honoured here. That rule
+ * permits delegating to the bundled set precisely *because* a caller can
+ * supply their own material instead. These options are what makes that true;
+ * without them a SpiceDB fronted by a private or corporate CA was unreachable.
+ *
+ * Each field is passed straight through to the corresponding `node:tls`
+ * option (`ca`, `cert`, `key`) on the HTTP/2 connection, and is typed as
+ * exactly what Node accepts there -- a PEM string, a Buffer, or an array of
+ * either -- so this cannot drift from what the transport actually supports.
+ */
+export interface TlsOptions {
+  /**
+   * Root certificate(s) used to verify SpiceDB's certificate, in place of
+   * Node's bundled roots. Supplying this REPLACES the default trust store for
+   * this client rather than adding to it -- that is `node:tls`'s behavior, and
+   * it is generally what a deployment pinning a private CA wants.
+   */
+  caCert?: SecureClientSessionOptions["ca"];
+  /**
+   * The client's own certificate chain, for a server that requires mutual
+   * TLS. Must be supplied together with {@link TlsOptions.clientKey}.
+   */
+  clientCert?: SecureClientSessionOptions["cert"];
+  /**
+   * The private key for {@link TlsOptions.clientCert}. Must be supplied
+   * together with it.
+   */
+  clientKey?: SecureClientSessionOptions["key"];
+}
 
 /**
  * Optional configuration for the SpiceDB proto client.
@@ -28,6 +67,16 @@ export interface ClientOptions {
    * cleartext to a remote host.
    */
   allowInsecureRemoteCredentials?: boolean;
+  /**
+   * Caller-supplied TLS trust material -- a private CA to verify SpiceDB
+   * against, and optionally a client certificate for mutual TLS. See
+   * {@link TlsOptions}.
+   *
+   * This never decides *whether* TLS is used: {@link ClientOptions.insecure}
+   * alone does that, and combining the two is refused rather than silently
+   * ignored (see createSpiceDBClient).
+   */
+  tls?: TlsOptions;
   /** Additional headers to include in every request. */
   headers?: Record<string, string>;
 }
@@ -254,6 +303,53 @@ export function createSpiceDBClient(
     );
   }
 
+  // Trust material must never become a second, quieter route to a plaintext
+  // transport. A plaintext connection performs no TLS handshake, so
+  // http2.connect would ignore `ca`/`cert`/`key` entirely and put the bearer
+  // token on the wire in cleartext behind a call site reading
+  // `{ insecure: true, tls: { caCert } }` -- which looks, at a glance, like
+  // TLS was configured. That is exactly the failure root DESIGN.md, "RULE:
+  // Credentials over insecure transport require an explicit opt-in", exists
+  // to prevent, so the combination is refused rather than ignored. It refuses
+  // rather than "helpfully" turning TLS on: silently upgrading the transport
+  // is just as much of a surprise in the other direction.
+  const suppliedTlsMaterial = (
+    [
+      ["caCert", options?.tls?.caCert],
+      ["clientCert", options?.tls?.clientCert],
+      ["clientKey", options?.tls?.clientKey],
+    ] as const
+  )
+    .filter(([, value]) => value !== undefined)
+    .map(([name]) => name);
+
+  if (options?.insecure && suppliedTlsMaterial.length > 0) {
+    throw new Error(
+      `spicedb: refusing to build a client with insecure: true and TLS material ` +
+        `(${suppliedTlsMaterial.join(", ")}): a plaintext connection performs no TLS ` +
+        `handshake, so the material would be ignored and everything -- including the ` +
+        `bearer token -- would be sent in cleartext. Drop insecure to use TLS, or drop ` +
+        `the tls option to connect in plaintext`,
+    );
+  }
+
+  // Either half of a client identity is unusable alone. node:tls fails later
+  // and from a layer with no idea which option the caller got wrong; naming
+  // it here is the whole difference.
+  if (
+    (options?.tls?.clientCert === undefined) !==
+    (options?.tls?.clientKey === undefined)
+  ) {
+    const missing =
+      options?.tls?.clientKey === undefined ? "clientKey" : "clientCert";
+    const present =
+      options?.tls?.clientKey === undefined ? "clientCert" : "clientKey";
+    throw new Error(
+      `spicedb: tls.${present} was supplied without tls.${missing}: mutual TLS needs ` +
+        `both halves of the client identity, and neither is usable alone`,
+    );
+  }
+
   // Constructed explicitly (rather than left for createGrpcTransport to
   // build internally) so SpiceDBProtoClient.close() has a handle to abort
   // -- createGrpcTransport accepts a pre-built sessionManager via
@@ -266,7 +362,30 @@ export function createSpiceDBClient(
   const baseUrl = options?.insecure
     ? `http://${transportAuthority(endpoint)}`
     : `https://${transportAuthority(endpoint)}`;
-  const sessionManager = new Http2SessionManager(baseUrl);
+  // Third constructor argument, NOT createGrpcTransport's `nodeOptions`.
+  // Connect-ES documents that supplying a `sessionManager` "makes nodeOptions
+  // as well as the HTTP/2 session options ineffective", and this client always
+  // supplies one (see the comment above) -- so trust material handed to
+  // `nodeOptions` here would be silently dropped and every private-CA
+  // handshake would still fail, with nothing in the call site to suggest why.
+  // Http2SessionManager passes this object to `http2.connect`, which is where
+  // `ca`/`cert`/`key` take effect.
+  //
+  // `undefined` rather than an all-undefined object when no material was
+  // supplied, so the default secure path is provably untouched: this library
+  // must select no root set of its own, which clause 1 of "RULE: A system-TLS
+  // constructor must reach a real server" prohibits.
+  const sessionManager = new Http2SessionManager(
+    baseUrl,
+    undefined,
+    options?.tls
+      ? {
+          ca: options.tls.caCert,
+          cert: options.tls.clientCert,
+          key: options.tls.clientKey,
+        }
+      : undefined,
+  );
   const transport = createGrpcTransport({
     baseUrl,
     sessionManager,

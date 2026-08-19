@@ -31,6 +31,11 @@ Or use `mage test` which starts a SpiceDB container automatically.
 - `call_deadlines/` — `defaultTimeoutMs` on `createSpiceDBClient`, a per-call
   `timeoutMs` override, and confirming bulk import isn't bounded by the
   unary default.
+- `custom_tls/` — reaching a SpiceDB behind a private CA with `tls.caCert`,
+  and mutual TLS with `tls.clientCert`/`tls.clientKey`. Brings up its own
+  TLS-terminated endpoint — the only example that does not use the shared
+  SpiceDB at `localhost:50051`, since a plaintext server has nothing to say
+  about trust material.
 - `watch_changes/` — watching for relationship changes via the Watch API.
   This example streams indefinitely, so it's skipped by the integration test
   runner (`mage integrationTest`).

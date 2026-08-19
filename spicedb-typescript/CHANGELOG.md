@@ -4,6 +4,41 @@
 
 ### Added
 
+- **2026-08-19**: Caller-supplied TLS trust material, via a new `tls` option on
+  both `new SpiceDBClient({ ... })` and `createSpiceDBClient(...)`, plus the
+  new exported `TlsOptions` type. Purely additive — an existing call site is
+  byte-identical in behavior, and omitting `tls` leaves the transport's trust
+  source untouched.
+  - `tls.caCert` — root certificate(s) used to verify SpiceDB's certificate.
+    Supply this to reach a SpiceDB fronted by a private or corporate CA. It
+    replaces Node's bundled roots for that client rather than adding to them.
+  - `tls.clientCert` / `tls.clientKey` — the client's own certificate chain and
+    private key, for a server requiring mutual TLS. Both must be supplied
+    together; either alone throws.
+
+  Each field is typed as exactly what `node:tls` accepts for `ca`/`cert`/`key`
+  (a PEM string, a `Buffer`, or an array of either), so the option cannot drift
+  from what the transport supports. Without these, a private-CA deployment was
+  unreachable: Node ships a bundled Mozilla root store, so a CA installed in
+  the host's own store is not honoured. Root DESIGN.md, "RULE: A system-TLS
+  constructor must reach a real server", permits delegating to that bundled set
+  precisely because a caller can supply their own material instead — which is
+  now true.
+
+  Trust material never changes whether TLS is used. Combining any `tls` field
+  with `insecure: true` throws at construction rather than being silently
+  ignored (which is what `node:tls` would do on a plaintext socket, while the
+  call site read as though TLS were configured), so this cannot become a
+  quieter route around root DESIGN.md, "RULE: Credentials over insecure
+  transport require an explicit opt-in". The existing loopback guard still
+  applies first and unchanged.
+
+  ```typescript
+  const client = createSpiceDBClient("spicedb.internal:443", token, {
+    tls: { caCert: readFileSync("/etc/ssl/certs/internal-ca.pem") },
+  });
+  ```
+
 - **2026-08-18**: Error mapping now carries the server's detail all the way to
   the caller, per root DESIGN.md, "RULE: Error mapping must not lose the
   server's detail". Purely additive — `SpiceDBErrorOptions` extends

@@ -27,11 +27,39 @@ Create `src/client.ts` with:
    returns a `SpiceDBProtoClient`.
 
 3. **`ClientOptions` interface** — for optional configuration (insecure, custom
-   headers, etc.)
+   headers, TLS trust material, etc.)
+
+4. **`TlsOptions` interface** — caller-supplied TLS trust material, reachable
+   as `ClientOptions.tls`: `caCert`, `clientCert`, `clientKey`, each typed as
+   exactly what `node:tls` accepts for `ca`/`cert`/`key` so the option cannot
+   drift from what the transport supports.
+
+   These exist because root DESIGN.md, "RULE: A system-TLS constructor must
+   reach a real server", permits delegating to the runtime's default trust
+   source *because* a caller can supply their own material when it is not
+   enough — and Node's bundled Mozilla root store does not honour a CA an
+   operator installed in the host's own store.
+
+   They must be threaded through `new Http2SessionManager(baseUrl, undefined,
+   { ca, cert, key })`, **not** `createGrpcTransport`'s `nodeOptions`:
+   Connect-ES documents that supplying a `sessionManager` (which this client
+   always does, so `close()` has a handle to abort) makes `nodeOptions`
+   ineffective, so material passed there would be silently dropped. When `tls`
+   is absent the session manager must be constructed with no session options at
+   all rather than an object of `undefined`s, so the default trust source is
+   provably untouched.
+
+   `createClient` must throw, before any session manager is created, on
+   `insecure` combined with any `tls` field (root DESIGN.md, "RULE: Credentials
+   over insecure transport require an explicit opt-in" — a plaintext connection
+   would ignore the material and ship the bearer token in cleartext behind a
+   call site reading as though TLS were configured), and on `clientCert`
+   without `clientKey` or the reverse.
 
 Create `src/index.ts` with:
 
-- Re-export of `SpiceDBProtoClient`, `createClient`, `ClientOptions`
+- Re-export of `SpiceDBProtoClient`, `createClient`, `ClientOptions`,
+  `TlsOptions`
 - Re-export of key proto types from `src/gen/`
 
 ### Tests
@@ -43,6 +71,16 @@ Create `src/__tests__/client.test.ts` with:
 1. **Factory test** — verify `createClient` returns a client with all service
    properties
 2. **Options test** — verify custom options are applied
+
+Create `src/__tests__/custom-tls.test.ts` with a custom-CA fixture test: a
+throwaway CA generated in-process, a real gRPC-over-TLS server presenting a
+certificate signed by it, and a real client driven against it. Every
+connection assertion must be paired — same server, same client, differing only
+in whether the material was supplied — since a test that only asserts the
+failure cannot tell a rejected certificate from an unreachable port, and one
+that only asserts the success cannot tell a verified chain from a disabled one.
+Root DESIGN.md, "RULE: A system-TLS constructor must reach a real server",
+clause 2.
 
 ### Deprecation Handling
 

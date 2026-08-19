@@ -1,5 +1,10 @@
 // Client
-export { SpiceDBProtoClient, createSpiceDBClient, type ClientOptions } from "./client.js";
+export {
+  SpiceDBProtoClient,
+  createSpiceDBClient,
+  type ClientOptions,
+  type TlsOptions,
+} from "./client.js";
 
 // Service definitions
 export { PermissionsService } from "./gen/authzed/api/v1/permission_service_pb.js";

@@ -176,10 +176,14 @@ no bare-boolean coercion to guard against in documentation, unlike Ruby/TypeScri
 `checkPermission` and `checkPermissions` always call `CheckBulkPermissions` — there is no
 production call site for the non-bulk `CheckPermission` RPC (matches Go/Python/Ruby/C#).
 `CheckBulkPermissionsResponseItem` carries no per-item `checked_at` of its own; the single
-response-level token is propagated onto every `CheckResult` in the batch. A per-item error in a
+response-level token is propagated onto every `CheckResult` mapped from that response. A check over
+more than `DEFAULT_CHECK_BATCH_SIZE` relationships is split into one request per chunk, so the
+returned list can carry more than one distinct `checkedAt` — uniform within a chunk, not across the
+call. See root DESIGN.md, invariant 2 under bulk checks. A per-item error in a
 `CheckBulkPermissionsPair` is routed through `ErrorMapper` (using the item's own gRPC code) so
-callers get the specific typed exception (e.g. `PermissionDeniedException`), with the item's index
-preserved in the message (`"check item %d: ..."`, matching `spicedb-go`).
+callers get the specific typed exception (e.g. `PermissionDeniedException`), with the item's
+**absolute** index preserved in the message (`"check item %d: ..."`, matching `spicedb-go`) — the
+index into the caller's own array, not into the chunk that happened to carry it.
 
 #### Caveat context on checks
 

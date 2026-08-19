@@ -555,6 +555,17 @@ public final class SpiceDBClient implements AutoCloseable {
    * concatenated in input order — SpiceDB rejects a single request carrying more than 10,000. An
    * empty {@code relationships} sends no request at all and returns an empty list.
    *
+   * <p>Results from one request share a {@code checkedAt} (the response carries a single token for
+   * the whole request, not one per item), so an input large enough to be split carries more than
+   * one token across the returned list.
+   *
+   * <p>A per-call {@code timeout} on the overloads that accept one bounds <b>each request</b> this
+   * call makes, not the call as a whole, and the retry budget is likewise per request: worst-case
+   * wall time is {@code ceil(relationships.length / 1000.0) * timeout}. That is deliberate — one
+   * deadline spanning every chunk would make a large check fail purely for being large, and a retry
+   * budget shared across chunks would let one flaky chunk exhaust the allowance for the rest. Size
+   * the value per request, and impose a whole-operation bound yourself if you need one.
+   *
    * <p>See {@link #checkPermission} for the RULE governing how to interpret each result.
    */
   public List<CheckResult> checkPermissions(
@@ -628,6 +639,7 @@ public final class SpiceDBClient implements AutoCloseable {
               permission,
               context,
               timeout,
+              start,
               Arrays.copyOfRange(relationships, start, end)));
     }
     return results;
@@ -639,12 +651,19 @@ public final class SpiceDBClient implements AutoCloseable {
    * #DEFAULT_CHECK_BATCH_SIZE}; {@code checkPermissionsImpl} is what enforces both. Every response
    * guard below — the pair-count check and the malformed-oneof check — therefore applies per chunk,
    * exactly as it applied to the whole request before chunking.
+   *
+   * <p>{@code offset} is this chunk's start index within the caller's full array. Every "check item
+   * N" message below reports {@code offset + i}, not {@code i}: the index a caller sees must be the
+   * one they can use to look up their own relationship — see {@code spicedb-java/DESIGN.md}, which
+   * pins that contract. Reporting the chunk-relative index would attribute the failing item to a
+   * different resource entirely.
    */
   private List<CheckResult> checkChunk(
       Consistency consistency,
       String permission,
       Map<String, Object> context,
       Duration timeout,
+      int offset,
       Relationship... relationships) {
     var items = new ArrayList<CheckBulkPermissionsRequestItem>(relationships.length);
     for (Relationship r : relationships) {
@@ -687,10 +706,10 @@ public final class SpiceDBClient implements AutoCloseable {
         // Route the per-item error through ErrorMapper (by way of a StatusRuntimeException
         // carrying the item's own status) so callers get the SPECIFIC typed exception (e.g.
         // PermissionDeniedException) instead of the untyped base SpiceDBException — the item's
-        // code was previously discarded here. The item index is preserved in the message,
-        // matching spicedb-go's `fmt.Sprintf("check item %d", i)`.
+        // code was previously discarded here. The item's ABSOLUTE index (offset + i) is preserved
+        // in the message, matching spicedb-go's `fmt.Sprintf("check item %d", offset+i)`.
         throw ErrorMapper.toSpiceDBException(
-            perItemStatusException(pair.getError(), "check item " + i + ": "));
+            perItemStatusException(pair.getError(), "check item " + (offset + i) + ": "));
       } else if (pair.hasItem()) {
         results.add(checkResultFromBulkItem(pair.getItem(), checkedAt));
       } else {
@@ -701,7 +720,7 @@ public final class SpiceDBClient implements AutoCloseable {
         // misaligned-but-"successful" List. Mirrors spicedb-rust's malformed-oneof guard.
         throw new SpiceDBException(
             "check item "
-                + i
+                + (offset + i)
                 + ": malformed CheckBulkPermissionsPair (neither item nor error"
                 + " set)");
       }

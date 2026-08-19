@@ -49,8 +49,19 @@ class CheckChunkingTest {
     /** When >= 0, the request at that index returns one fewer pair than it was asked for. */
     private final int shortAtRequest;
 
+    /**
+     * When >= 0, the pair at that ABSOLUTE index — counted across every request, the way the caller
+     * counts — carries a per-item error instead of an item.
+     */
+    private final int errAtAbsolute;
+
     EchoService(int shortAtRequest) {
+      this(shortAtRequest, -1);
+    }
+
+    EchoService(int shortAtRequest, int errAtAbsolute) {
       this.shortAtRequest = shortAtRequest;
+      this.errAtAbsolute = errAtAbsolute;
     }
 
     @Override
@@ -58,6 +69,7 @@ class CheckChunkingTest {
         CheckBulkPermissionsRequest request,
         StreamObserver<CheckBulkPermissionsResponse> responseObserver) {
       int index = requestSizes.size();
+      int base = requestSizes.stream().mapToInt(Integer::intValue).sum();
       requestSizes.add(request.getItemsCount());
 
       List<CheckBulkPermissionsRequestItem> items = request.getItemsList();
@@ -68,7 +80,19 @@ class CheckChunkingTest {
       var response =
           CheckBulkPermissionsResponse.newBuilder()
               .setCheckedAt(ZedToken.newBuilder().setToken("tok").build());
-      for (CheckBulkPermissionsRequestItem item : items) {
+      for (int i = 0; i < items.size(); i++) {
+        CheckBulkPermissionsRequestItem item = items.get(i);
+        if (errAtAbsolute == base + i) {
+          response.addPairs(
+              CheckBulkPermissionsPair.newBuilder()
+                  .setError(
+                      build.buf.gen.google.rpc.Status.newBuilder()
+                          .setCode(io.grpc.Status.Code.PERMISSION_DENIED.value())
+                          .setMessage("nope")
+                          .build())
+                  .build());
+          continue;
+        }
         response.addPairs(
             CheckBulkPermissionsPair.newBuilder()
                 .setItem(
@@ -189,6 +213,34 @@ class CheckChunkingTest {
           service.requestSizes,
           "two requests went out before the guard fired — the failure was detected on the second"
               + " chunk, not on the whole input up front");
+    }
+  }
+
+  @Test
+  void perItemErrorReportsTheCallersAbsoluteIndex() throws IOException {
+    // Chunking made every "check item N" message chunk-relative: a failure at relationship 1003
+    // read as "check item 3", so a caller who logs or parses it acts on relationship 3 — one
+    // resource's answer attributed to another, the same failure family the pair-count guard exists
+    // to prevent, relocated into the diagnostic. spicedb-java/DESIGN.md pins this contract.
+    int failing = CHECK_BATCH_SIZE + 3;
+    var service = new EchoService(-1, failing);
+    try (TestServers servers = TestServers.start(service)) {
+      SpiceDBException ex =
+          assertThrows(
+              SpiceDBException.class,
+              () ->
+                  servers
+                      .client()
+                      .checkPermissions(
+                          Consistency.full(), "view", numberedRels(CHECK_BATCH_SIZE * 2)));
+
+      assertTrue(
+          ex.getMessage().contains("check item " + failing + ":"),
+          "must name the caller's index ("
+              + failing
+              + "), not the chunk-relative 3: "
+              + ex.getMessage());
+      assertFalse(ex.getMessage().contains("check item 3:"), ex.getMessage());
     }
   }
 }

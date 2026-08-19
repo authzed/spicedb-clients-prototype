@@ -367,6 +367,26 @@
 
 ### Fixed
 
+- **2026-08-19**: **`mage integrationTest` now asserts which example projects executed.** It ran
+  `dotnet test SpiceDB.Client.Examples.sln` and reported the exit code. `dotnet test` over a
+  solution *prints* "No test is available in ..." for an assembly with no tests and still exits 0,
+  so commenting out the single `[Fact]` in `RelationshipCounters` -- which leaves the file, the
+  `.csproj` and the `.sln` entry all in place, and therefore passes `CheckExamples` -- was silently
+  green. That is the residual instance of root DESIGN.md's "RULE: An example must be executed by CI
+  and must be able to fail", clause 1, in the client the rule's own narrative names, on the project
+  whose single test is its whole assembly. The run is now TRX-logged into a directory cleared
+  first, and every example assembly must have executed at least one test. Verified with that exact
+  probe: `these example projects executed no test: RelationshipCounters (dotnet reported 29 executed
+  tests across 12 of 13 example assemblies)`. A `NotExecuted` outcome does not count either, so a
+  `[Fact(Skip = "...")]` fails the same way -- verified separately.
+
+- **2026-08-19**: **`CallDeadlines` is a second narrow-schema project with no clear-first.** Like
+  `RawEscapeHatch`, it writes a `document` definition with only `viewer`, and SpiceDB refuses a
+  `WriteSchema` that drops a relation while a relationship still exists under it. It passed only
+  because the solution happens to list it after `BulkOperations`, which writes no `editor`;
+  reordering the solution would have failed it exactly as `RawEscapeHatch` did. It now calls
+  `SpiceDBTestServer.ClearDocumentRelationshipsAsync` before writing its schema.
+
 - **2026-08-19**: **The examples solution is now checked against the directory, not trusted.**
   All twelve examples once sat outside every solution file, so `dotnet build`/`dotnet test` never
   saw them -- for the repo's entire history. `SpiceDB.Client.Examples.sln` fixed that instance,

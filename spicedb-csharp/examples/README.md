@@ -53,10 +53,15 @@ SPICEDB_ENDPOINT=localhost:50071 mage integrationTest
 
 Every example in the table below is executed by `mage integrationTest`, which
 is what the `integration` job in `.github/workflows/csharp.yaml` runs -- there
-are no skips here. Membership is not taken on trust: `mage checkExamples` (also
+are no skips here. Neither membership nor execution is taken on trust: `mage checkExamples` (also
 run by `mage test`) diffs `examples/*/*.csproj` against the project list in
 `SpiceDB.Client.Examples.sln` in both directions and fails on divergence, and
-checks that every listed project has build configurations. All twelve examples
+checks that every listed project has build configurations; and the run itself is
+TRX-logged into a directory cleared beforehand, so `mage integrationTest` can
+assert that every example assembly executed at least one test. `dotnet test`
+over a solution *prints* "No test is available in ..." for an assembly with no
+tests and still exits 0, so an example whose tests are all commented out or
+`[Fact(Skip = "...")]` passes every membership check while running nothing. All twelve examples
 once sat outside every solution file, so nothing built or ran them for the
 repo's entire history; adding the solution fixed the instance, and this check
 is what stops example #14 from reintroducing it. `mage lint` covers both

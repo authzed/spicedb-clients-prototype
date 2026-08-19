@@ -31,6 +31,13 @@ public class CallDeadlinesTest
         await using var client = SpiceDBClient.CreatePlaintext(
             SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token, defaultTimeout: TimeSpan.FromSeconds(5));
 
+        // The schema above is narrower than the one the other examples write,
+        // and all thirteen projects share one SpiceDB. SpiceDB refuses a
+        // WriteSchema that drops a relation while a relationship still exists
+        // under it, so clear first. Today this project happens to run after
+        // BulkOperations, which writes no `editor`; reorder the solution and
+        // it would fail exactly as RawEscapeHatch did.
+        await SpiceDBTestServer.ClearDocumentRelationshipsAsync(client);
         await client.WriteSchemaAsync(Schema);
 
         var txn = new Transaction();
@@ -48,6 +55,13 @@ public class CallDeadlinesTest
     {
         await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
 
+        // The schema above is narrower than the one the other examples write,
+        // and all thirteen projects share one SpiceDB. SpiceDB refuses a
+        // WriteSchema that drops a relation while a relationship still exists
+        // under it, so clear first. Today this project happens to run after
+        // BulkOperations, which writes no `editor`; reorder the solution and
+        // it would fail exactly as RawEscapeHatch did.
+        await SpiceDBTestServer.ClearDocumentRelationshipsAsync(client);
         await client.WriteSchemaAsync(Schema);
 
         var txn = new Transaction();
@@ -74,6 +88,13 @@ public class CallDeadlinesTest
         // DeadlineExceededException well before it finished.
         await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
 
+        // The schema above is narrower than the one the other examples write,
+        // and all thirteen projects share one SpiceDB. SpiceDB refuses a
+        // WriteSchema that drops a relation while a relationship still exists
+        // under it, so clear first. Today this project happens to run after
+        // BulkOperations, which writes no `editor`; reorder the solution and
+        // it would fail exactly as RawEscapeHatch did.
+        await SpiceDBTestServer.ClearDocumentRelationshipsAsync(client);
         await client.WriteSchemaAsync(Schema);
 
         var relationships = Enumerable.Range(0, 50)

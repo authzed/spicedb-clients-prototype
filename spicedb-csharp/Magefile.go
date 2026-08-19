@@ -3,6 +3,7 @@
 package main
 
 import (
+	"encoding/xml"
 	"fmt"
 	"net"
 	"os"
@@ -219,6 +220,21 @@ func CheckExamples() error {
 	return nil
 }
 
+// exampleProjectNames returns the assembly names of the example projects on
+// disk -- the .csproj base names, which are also the built .dll names.
+func exampleProjectNames() ([]string, error) {
+	paths, err := filepath.Glob("examples/*/*.csproj")
+	if err != nil {
+		return nil, fmt.Errorf("glob examples failed: %w", err)
+	}
+	names := make([]string, 0, len(paths))
+	for _, p := range paths {
+		names = append(names, strings.TrimSuffix(filepath.Base(p), ".csproj"))
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
 // solutionProjects parses a .sln and returns its real projects as a map from
 // slash-separated relative path to project GUID, plus the set of GUIDs that
 // have at least one Build.0 configuration entry.
@@ -326,6 +342,10 @@ func IntegrationTest() error {
 	if err := CheckExamples(); err != nil {
 		return err
 	}
+	projects, err := exampleProjectNames()
+	if err != nil {
+		return err
+	}
 
 	endpoint := envOr("SPICEDB_ENDPOINT", defaultEndpoint)
 	token := envOr("SPICEDB_TOKEN", defaultToken)
@@ -375,8 +395,109 @@ func IntegrationTest() error {
 	// definition `document`" -- nondeterministically, on a different project
 	// each run. Two consecutive parallel runs here failed on four different
 	// examples. The examples are cheap; correctness is worth the seconds.
+	//
+	// The run is TRX-logged into a directory cleared first, so what follows can
+	// assert what actually executed. `dotnet test` over a solution *prints*
+	// "No test is available in ..." for an assembly with no tests and still
+	// exits 0 -- so commenting out the single [Fact] in RelationshipCounters,
+	// which leaves the file, the .csproj and the .sln entry all in place and
+	// therefore passes CheckExamples, was silently green before this.
+	results, err := filepath.Abs(filepath.Join("build", "example-results"))
+	if err != nil {
+		return err
+	}
+	if err := os.RemoveAll(results); err != nil {
+		return fmt.Errorf("clearing %s failed: %w", results, err)
+	}
+
 	fmt.Println("==> Running examples against SpiceDB...")
-	return sh.RunWithV(clientEnv, "dotnet", "test", examplesSolution, "--verbosity", "normal", "-maxcpucount:1")
+	runErr := sh.RunWithV(clientEnv, "dotnet", "test", examplesSolution,
+		"--verbosity", "normal", "-maxcpucount:1",
+		"--logger", "trx", "--results-directory", results)
+
+	ran, total, err := trxAssembliesRun(results)
+	if err != nil {
+		if runErr != nil {
+			return runErr
+		}
+		return err
+	}
+	var silent []string
+	for _, name := range projects {
+		if !ran[strings.ToLower(name)] {
+			silent = append(silent, name)
+		}
+	}
+	sort.Strings(silent)
+	if len(silent) > 0 {
+		return fmt.Errorf("these example projects executed no test: %s "+
+			"(dotnet reported %d executed tests across %d of %d example assemblies)",
+			strings.Join(silent, ", "), total, len(ran), len(projects))
+	}
+
+	if runErr != nil {
+		return runErr
+	}
+	fmt.Printf("==> All %d example projects ran, %d tests.\n", len(projects), total)
+	return nil
+}
+
+// trxAssembliesRun reads the TRX reports `dotnet test` wrote and returns the
+// set of example assembly names (without ".dll") that executed at least one
+// test, plus how many tests executed in total.
+//
+// A "NotExecuted" outcome is what VSTest records for a [Fact(Skip = "...")],
+// so it does not count: a fully-skipped project must not satisfy the assertion
+// that it ran.
+func trxAssembliesRun(dir string) (map[string]bool, int, error) {
+	files, err := filepath.Glob(filepath.Join(dir, "*.trx"))
+	if err != nil {
+		return nil, 0, fmt.Errorf("glob TRX reports failed: %w", err)
+	}
+	if len(files) == 0 {
+		return nil, 0, fmt.Errorf("no TRX reports under %s: the example run produced no "+
+			"results, so nothing can be said about what executed", dir)
+	}
+
+	ran := make(map[string]bool)
+	total := 0
+	for _, f := range files {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			return nil, 0, fmt.Errorf("reading %s: %w", f, err)
+		}
+		var run struct {
+			Definitions []struct {
+				ID      string `xml:"id,attr"`
+				Storage string `xml:"storage,attr"`
+			} `xml:"TestDefinitions>UnitTest"`
+			Results []struct {
+				TestID  string `xml:"testId,attr"`
+				Outcome string `xml:"outcome,attr"`
+			} `xml:"Results>UnitTestResult"`
+		}
+		if err := xml.Unmarshal(data, &run); err != nil {
+			return nil, 0, fmt.Errorf("parsing %s: %w", f, err)
+		}
+		assembly := make(map[string]string, len(run.Definitions))
+		for _, d := range run.Definitions {
+			// VSTest lowercases the whole storage path in the TRX, so the
+			// assembly name is matched case-insensitively against the project
+			// names rather than compared directly.
+			path := strings.ReplaceAll(d.Storage, `\`, "/")
+			assembly[d.ID] = strings.ToLower(strings.TrimSuffix(filepath.Base(path), ".dll"))
+		}
+		for _, r := range run.Results {
+			if r.Outcome == "NotExecuted" {
+				continue
+			}
+			if name := assembly[r.TestID]; name != "" {
+				ran[name] = true
+				total++
+			}
+		}
+	}
+	return ran, total, nil
 }
 
 // envOr returns the value of the named environment variable, or fallback when

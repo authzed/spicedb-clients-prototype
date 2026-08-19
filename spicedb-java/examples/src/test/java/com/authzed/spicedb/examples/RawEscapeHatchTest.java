@@ -51,6 +51,11 @@ import org.junit.jupiter.api.Test;
  */
 class RawEscapeHatchTest extends SpiceDBIntegrationTest {
 
+  // Note the fully-qualified `build.buf.gen.authzed.api.v1.Relationship` and
+  // `com.authzed.spicedb.Transaction` below. `Relationship` exists in both the idiomatic
+  // package and the generated one, and a raw call takes the generated type; a static import
+  // would hide exactly the tier boundary this example is about, so each name says which tier
+  // it means.
   @Test
   void rawChannel_sends_a_field_the_idiomatic_api_does_not_expose() {
     client.deleteRelationships(Filter.of("document"));

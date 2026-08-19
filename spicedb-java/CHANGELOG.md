@@ -28,8 +28,10 @@
   transport configuration exactly and re-attaching the token by hand, and getting either wrong
   gives the raw path different transport security than the idiomatic one. The bearer token comes
   free here, but a raw call gets no `SpiceDBException` mapping, no retry, and no `DEFAULT_TIMEOUT`
-  — call `withDeadlineAfter` yourself. The declared type is `Channel`, not `ManagedChannel`, so the
-  connection's lifecycle stays with the client: `close()` is what releases it.
+  — call `withDeadlineAfter` yourself. The connection's lifecycle stays with the
+  client: `close()` is what releases it, and the returned object is the wrapper
+  `ClientInterceptors.intercept` builds — a package-private `Channel` subclass whose delegate is
+  unreachable — so a cast to `ManagedChannel` throws rather than handing out `shutdown()`.
 
   It is an accessor, not a constructor: it takes no endpoint, preshared key, or transport setting,
   so channel construction stays on the single guarded path in `create` and this cannot become a

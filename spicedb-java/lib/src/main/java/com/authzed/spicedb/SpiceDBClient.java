@@ -1825,10 +1825,17 @@ public final class SpiceDBClient implements AutoCloseable {
    * <p>Four things to know before reaching for it. A raw call is a raw call: no {@link
    * SpiceDBException} mapping (you catch {@link StatusRuntimeException}), no retry, and no {@link
    * #DEFAULT_TIMEOUT} -- call {@code withDeadlineAfter} yourself. The connection belongs to this
-   * client: {@link #close()} shuts it down, and a stub built here must not outlive it. The declared
-   * type is {@code Channel}, not {@code ManagedChannel}, precisely so the lifecycle stays here --
-   * there is no {@code shutdown()} on it to call by accident. And there is no stability promise
-   * beyond grpc-java's and the generated code's.
+   * client: {@link #close()} shuts it down, and a stub built here must not outlive it. And there is
+   * no stability promise beyond grpc-java's and the generated code's.
+   *
+   * <p><b>The lifecycle stays here, and not merely by declaration.</b> What is returned is the
+   * wrapper {@code ClientInterceptors.intercept} builds -- a package-private {@code Channel}
+   * subclass holding the real channel as an unreachable delegate -- so {@code (ManagedChannel)
+   * client.rawChannel()} throws {@link ClassCastException} rather than handing out {@code
+   * shutdown()}. The {@code Channel} return type is what makes that honest at compile time; the
+   * wrapper is what makes it true at runtime. Returning the bare channel from here, still typed
+   * {@code Channel}, would compile, keep every sentence above true, and quietly give every caller a
+   * downcast to the client's own connection -- so do not "simplify" it that way.
    *
    * <p>It is an accessor, never a constructor: it takes no endpoint, preshared key, or transport
    * setting and hands back a channel that already exists, so it cannot become a second construction

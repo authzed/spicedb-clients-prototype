@@ -378,7 +378,10 @@ such as `WriteRelationshipsRequest.optionalTransactionMetadata`, or the single-c
 short of forking the client.
 
 A `Channel` rather than the stubs themselves, because it is strictly more: every generated
-stub, including for a service this client does not wrap, is one call away from it. Prefer
+stub, including for a service this client does not wrap, is one call away from it. Note this
+is *not* for want of a proto-client type — `proto-clients/spicedb-java-proto` does define
+`SpiceDBProtoClient` — but the idiomatic client has never used it: it builds its own channel,
+stubs and guard, so there is no such object here to hand back. Prefer
 it over rebuilding a `ManagedChannel` of your own, which means replicating this client's
 transport configuration exactly (including whatever a `ClientOption` did to the builder)
 and re-attaching the token by hand — get either wrong and the raw path runs with different
@@ -393,8 +396,13 @@ Four properties, all deliberate:
   `StatusRuntimeException`), no retry, and no `DEFAULT_TIMEOUT` — call `withDeadlineAfter`
   yourself.
 - **The connection belongs to the client.** `close()` shuts it down, and a stub built here
-  must not outlive it. The declared type is `Channel`, not `ManagedChannel`, precisely so
-  the lifecycle stays with the client — there is no `shutdown()` to call by accident.
+  must not outlive it. What actually keeps it that way is the *wrapper*, not the declared
+  type: `ClientInterceptors.intercept` returns a package-private `Channel` subclass holding
+  the real channel as an unreachable delegate, so `(ManagedChannel) client.rawChannel()`
+  throws `ClassCastException` instead of yielding `shutdown()`. The `Channel` return type
+  makes that honest at compile time; the wrapper makes it true at runtime. Returning the
+  bare channel typed as `Channel` would compile and read identically while silently losing
+  the guarantee.
 - **It is an accessor, never a constructor.** It takes no endpoint, preshared key, or
   transport setting, so channel construction stays on the single guarded path in `create`
   and the hatch cannot become a way around root DESIGN.md, "RULE: Credentials over insecure
@@ -486,20 +494,27 @@ gap). `isCheckpoint` is true for a checkpoint event, which carries no `updates`.
 
 ## Examples Manifest
 
-| Directory | Demonstrates |
-|-----------|-------------|
-| `check_permission/` | Basic permission check with checkPermission |
-| `conditional_check/` | `CONDITIONAL_PERMISSION` against a live caveated relationship whose context was never supplied — `hasPermission()` must be false |
-| `write_relationships/` | Writing relationships with transaction builder |
-| `read_relationships/` | Reading relationships with stream |
-| `lookup_resources/` | Finding resources a subject can access |
-| `lookup_subjects/` | Finding subjects with access to a resource |
-| `watch_changes/` | Watching for relationship changes |
-| `schema_management/` | Reading and writing schema |
-| `bulk_operations/` | Bulk checks and imports |
-| `schema_reflection/` | Schema reflection, computable permissions, dependent relations, diff |
-| `relationship_counters/` | Registering, reading, and unregistering relationship counters |
+Java's examples are JUnit classes in one source set (`examples/src/test/java/...`), not
+per-example directories — the rows below name the class, matching `examples/README.md`.
+
+| Test class | Demonstrates |
+|------------|-------------|
+| `CheckPermissionTest` | Basic permission check with `checkPermission`, returning `CheckResult` |
+| `ConditionalCheckTest` | `CONDITIONAL_PERMISSION` against a live caveated relationship whose context was never supplied — `hasPermission()` must be false |
+| `WriteRelationshipsTest` | Writing relationships with the `Transaction` builder |
+| `ReadRelationshipsTest` | Reading relationships with cursor-based auto-pagination |
+| `LookupResourcesTest` | Finding resources a subject can access |
+| `LookupSubjectsTest` | Finding subjects with access to a resource |
+| `WatchChangesTest` | Watching for relationship changes |
+| `SchemaManagementTest` | Reading and writing schema |
+| `BulkOperationsTest` | Bulk checks with `checkPermissions`/`checkAll`/`checkAny`, plus bulk import/export |
+| `SchemaReflectionTest` | Schema reflection, computable permissions, dependent relations, diff |
+| `RelationshipCountersTest` | Registering, reading, and unregistering relationship counters |
+| `ExpandPermissionTreeTest` | Expanding a permission with `expandPermissionTree` and walking the native `PermissionTree` (intermediate/leaf nodes, subjects) |
+| `CallDeadlinesTest` | The `Duration defaultTimeout` construction overload, a per-call `timeout` override, and confirming bulk import isn't bounded by the unary default |
 | `RawEscapeHatchTest` | `rawChannel()` — driving a generated stub directly for a proto field (`optionalTransactionMetadata`) and an RPC (`CheckPermission`) the idiomatic API does not expose |
+
+(`SpiceDBIntegrationTest` is the shared base class, not an example.)
 
 ## Changelog
 

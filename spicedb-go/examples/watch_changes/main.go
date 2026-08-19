@@ -2,16 +2,24 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"log"
+	"os"
 
 	"github.com/authzed/spicedb-clients/spicedb-go/client"
 	"github.com/authzed/spicedb-clients/spicedb-go/rel"
 )
 
 func main() {
-	c, err := client.NewPlaintext("localhost:50051", "somerandomkeyhere")
+	// Endpoint and token come from the environment so the example runs against
+	// whichever SpiceDB the caller started; the defaults match
+	// docker-compose.test.yml.
+	c, err := client.NewPlaintext(
+		cmp.Or(os.Getenv("SPICEDB_ENDPOINT"), "localhost:50051"),
+		cmp.Or(os.Getenv("SPICEDB_TOKEN"), "somerandomkeyhere"),
+	)
 	if err != nil {
 		log.Fatalf("failed to create client: %v", err)
 	}

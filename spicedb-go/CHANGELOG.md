@@ -259,6 +259,30 @@
 
 ### Bug Fixes
 
+- **2026-08-19**: **The example runner now asserts how many examples it ran.** `IntegrationTest`
+  globbed `examples/*/main.go` and skipped `watch_changes` by a hardcoded name comparison. A glob
+  cannot list an example that is not there, so a renamed or moved example produced a *shorter*
+  run that still reported green -- the same failure mode `.github/workflows/rust.yaml` already
+  guards against by grepping its test output for `"1 passed"`. The runner now checks the glob
+  against an expected count, checks that every skipped name is an example that exists, and fails
+  if the number executed is not `count - skipped`. New `mage checkExamples` runs those checks
+  without a server and is called from `mage test`, so the unit job catches a broken wiring too.
+  `watch_changes` is still skipped, but by a named entry that prints its reason and is counted.
+  Root DESIGN.md, "RULE: An example must be executed by CI and must be able to fail", clause 1.
+
+- **2026-08-19**: **Examples now read `SPICEDB_ENDPOINT` and `SPICEDB_TOKEN`**, defaulting to
+  `localhost:50051` and `somerandomkeyhere`. `examples/README.md` had told the reader to export
+  both variables since the directory existed, and no example read either one, so the documented
+  setup silently did nothing; the README also named token `testtoken`, which is not the key
+  `docker-compose.test.yml` starts SpiceDB with, so following it verbatim produced
+  `UNAUTHENTICATED`. `docker-compose.test.yml` takes its published port from `SPICEDB_TEST_PORT`
+  and its key from `SPICEDB_TEST_TOKEN` (same defaults), and `mage integrationTest` derives the
+  port from `SPICEDB_ENDPOINT`, so the suite can run on a host whose 50051 is occupied.
+
+- **2026-08-19** (documentation only): `examples/README.md` claimed `mage test` "starts a SpiceDB
+  container automatically". It does not, and never did -- `mage integrationTest` is the target
+  that starts one. The README now says which target does what, and which examples CI executes.
+
 - **2026-08-19**: **A large bulk check is no longer sent as one oversized request.**
   `Check`, `CheckOne`, `CheckAny` and `CheckAll` built a single `CheckBulkPermissions` request
   from however many relationships the caller passed. SpiceDB caps a request at

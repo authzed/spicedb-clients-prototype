@@ -55,13 +55,21 @@ class CheckChunkingTest {
      */
     private final int errAtAbsolute;
 
+    /** When >= 0, the pair at that ABSOLUTE index leaves its {@code response} oneof unset. */
+    private final int malformedAtAbsolute;
+
     EchoService(int shortAtRequest) {
-      this(shortAtRequest, -1);
+      this(shortAtRequest, -1, -1);
     }
 
     EchoService(int shortAtRequest, int errAtAbsolute) {
+      this(shortAtRequest, errAtAbsolute, -1);
+    }
+
+    EchoService(int shortAtRequest, int errAtAbsolute, int malformedAtAbsolute) {
       this.shortAtRequest = shortAtRequest;
       this.errAtAbsolute = errAtAbsolute;
+      this.malformedAtAbsolute = malformedAtAbsolute;
     }
 
     @Override
@@ -82,6 +90,11 @@ class CheckChunkingTest {
               .setCheckedAt(ZedToken.newBuilder().setToken("tok").build());
       for (int i = 0; i < items.size(); i++) {
         CheckBulkPermissionsRequestItem item = items.get(i);
+        if (malformedAtAbsolute == base + i) {
+          // Neither item nor error set — the oneof left empty.
+          response.addPairs(CheckBulkPermissionsPair.newBuilder().build());
+          continue;
+        }
         if (errAtAbsolute == base + i) {
           response.addPairs(
               CheckBulkPermissionsPair.newBuilder()
@@ -241,6 +254,35 @@ class CheckChunkingTest {
               + "), not the chunk-relative 3: "
               + ex.getMessage());
       assertFalse(ex.getMessage().contains("check item 3:"), ex.getMessage());
+    }
+  }
+
+  @Test
+  void malformedPairReportsTheCallersAbsoluteIndex() throws IOException {
+    // The malformed-oneof guard builds its own message rather than routing through ErrorMapper,
+    // so it needs its own coverage at a non-zero offset. The only other test of this guard
+    // (CheckResultsTest) uses a single relationship, i.e. offset 0 — where a chunk-relative index
+    // and an absolute one are indistinguishable, so it could not have caught the defect.
+    int failing = CHECK_BATCH_SIZE + 5;
+    var service = new EchoService(-1, -1, failing);
+    try (TestServers servers = TestServers.start(service)) {
+      SpiceDBException ex =
+          assertThrows(
+              SpiceDBException.class,
+              () ->
+                  servers
+                      .client()
+                      .checkPermissions(
+                          Consistency.full(), "view", numberedRels(CHECK_BATCH_SIZE * 2)));
+
+      assertTrue(ex.getMessage().contains("malformed CheckBulkPermissionsPair"), ex.getMessage());
+      assertTrue(
+          ex.getMessage().contains("check item " + failing + ":"),
+          "must name the caller's index ("
+              + failing
+              + "), not the chunk-relative 5: "
+              + ex.getMessage());
+      assertFalse(ex.getMessage().contains("check item 5:"), ex.getMessage());
     }
   }
 }

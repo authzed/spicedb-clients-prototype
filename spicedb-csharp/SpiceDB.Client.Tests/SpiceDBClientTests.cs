@@ -90,6 +90,38 @@ public class SpiceDBClientTests
         ex.Message.Should().Contain("allowInsecureRemoteCredentials");
     }
 
+    /// <summary>
+    /// The bypass shapes, at the public entry point. The proto layer holds the full
+    /// fixture set and the wire-level "token never sent" proof; these are the ones that
+    /// must not slip through CreatePlaintext itself, whose two-argument overload gives
+    /// a caller no way to opt in at all.
+    /// </summary>
+    [Theory]
+    [InlineData("127.0.0.1:443@evil.com")]
+    [InlineData("[::1]:443@evil.com")]
+    [InlineData("[::1]:0@127.0.0.1:19999")]
+    [InlineData("localhost@evil.com")]
+    public void CreatePlaintext_RefusesEndpointWhoseUriAuthorityShiftsTheHost(string endpoint)
+    {
+        var act = () => SpiceDBClient.CreatePlaintext(endpoint, "testtoken");
+        var ex = act.Should().Throw<InvalidOperationException>().Which;
+        ex.Message.Should().Contain("allowInsecureRemoteCredentials");
+    }
+
+    /// <summary>
+    /// A unix-socket endpoint is refused, not silently turned into a DNS lookup for the
+    /// hostname "unix". Grpc.Net.Client cannot dial a UDS path from an address string.
+    /// </summary>
+    [Theory]
+    [InlineData("unix:/var/run/spicedb.sock")]
+    [InlineData("unix:///var/run/spicedb.sock")]
+    public void CreatePlaintext_RefusesUnixSocketTargets(string endpoint)
+    {
+        var act = () => SpiceDBClient.CreatePlaintext(endpoint, "testtoken");
+        var ex = act.Should().Throw<InvalidOperationException>().Which;
+        ex.Message.Should().Contain("unix-domain-socket");
+    }
+
     [Fact]
     public void CreatePlaintext_LoopbackWorksWithNoOptIn()
     {

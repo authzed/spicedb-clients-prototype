@@ -62,8 +62,23 @@ public class InsecureHostGuardTest
     [InlineData("127.55.66.77:50051", true)]
     [InlineData("[::1]:50051", true)]
     [InlineData("::1", true)]
-    [InlineData("unix:/var/run/spicedb.sock", true)]
-    [InlineData("unix:///var/run/spicedb.sock", true)]
+    // Unix targets are NOT loopback for this client, deliberately, and this pair used
+    // to assert the opposite. Grpc.Net.Client cannot dial a UDS path from an address
+    // string: GrpcChannel.ForAddress("http://unix:/var/run/spicedb.sock") reports
+    // Target "unix", so the exemption was handing a bearer token to whatever DNS
+    // answers for the name "unix". The constructor now refuses these outright -- see
+    // TestRefusesUnixSocketTargets -- and the loopback question never arises.
+    [InlineData("unix:/var/run/spicedb.sock", false)]
+    [InlineData("unix:///var/run/spicedb.sock", false)]
+    [InlineData("UNIX:/var/run/spicedb.sock", false)]
+    // IDN-invalid hosts: Uri.TryCreate accepts these but Uri.IdnHost throws on them.
+    // This method must be total -- a System.UriFormatException escaping a constructor
+    // documented to throw InvalidOperationException is a broken contract, and the
+    // string comparisons this parse replaced could not throw at all.
+    [InlineData("‥localhost", false)]
+    [InlineData("‥localhost:50051", false)]
+    [InlineData("loc‥alhost", false)]
+    [InlineData("127.0.0.1‥x", false)]
     [InlineData("example.com:443", false)]
     [InlineData("staging.internal:443", false)]
     [InlineData("10.0.0.5:50051", false)]
@@ -159,6 +174,43 @@ public class InsecureHostGuardTest
 
         Assert.Contains("evil.example.com:1234", ex.Message);
         Assert.Contains("allowInsecureRemoteCredentials", ex.Message);
+
+        Assert.Equal(0, handler.InvocationCount);
+        Assert.Null(handler.CapturedAuth);
+    }
+
+    /// <summary>
+    /// A unix-socket target must be refused outright, not treated as loopback. This
+    /// transport has no UDS support reachable from an address string, so
+    /// GrpcChannel.ForAddress("http://unix:/var/run/spicedb.sock") resolves the DNS
+    /// name "unix" -- meaning the old "a unix socket never leaves the kernel"
+    /// exemption was shipping the bearer token to a remote host in cleartext while the
+    /// guard reported "loopback".
+    /// <para>
+    /// The refusal is unconditional: TLS and allowInsecureRemoteCredentials are both
+    /// exercised here, because neither makes dialing a host called "unix" the thing
+    /// the caller asked for. handler.InvocationCount proves nothing reached the
+    /// transport in any of those combinations.
+    /// </para>
+    /// </summary>
+    [Theory]
+    [InlineData("unix:/var/run/spicedb.sock", true, false)]
+    [InlineData("unix:///var/run/spicedb.sock", true, false)]
+    [InlineData("UNIX:/var/run/spicedb.sock", true, false)]
+    // The opt-in does not buy a unix target either: it authorizes cleartext to a
+    // remote host, not "resolve a hostname called unix".
+    [InlineData("unix:/var/run/spicedb.sock", true, true)]
+    // Nor does TLS.
+    [InlineData("unix:/var/run/spicedb.sock", false, false)]
+    public void TestRefusesUnixSocketTargets(string endpoint, bool insecure, bool allowInsecureRemoteCredentials)
+    {
+        var handler = new AuthCapturingHandler();
+
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            new SpiceDBProtoClient(endpoint, "super-secret-token", insecure, allowInsecureRemoteCredentials, handler));
+
+        Assert.Contains(endpoint, ex.Message);
+        Assert.Contains("unix-domain-socket", ex.Message);
 
         Assert.Equal(0, handler.InvocationCount);
         Assert.Null(handler.CapturedAuth);

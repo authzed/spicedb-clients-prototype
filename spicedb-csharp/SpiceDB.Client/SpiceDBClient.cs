@@ -136,7 +136,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
     /// (see <see cref="DefaultTimeout"/>).
     /// <para>
     /// By itself, this only works against a loopback <paramref name="endpoint"/>
-    /// (localhost, 127.0.0.0/8, ::1, or a unix socket target) — the local-development
+    /// (localhost, 127.0.0.0/8, or ::1) — the local-development
     /// case that is the entire reason a plaintext connection exists. For any other
     /// endpoint, pass <paramref name="allowInsecureRemoteCredentials"/>: true,
     /// on purpose, if you genuinely mean to send a bearer token in cleartext to a

@@ -39,7 +39,7 @@ public sealed class SpiceDBProtoClient : IDisposable
     /// <param name="insecure">If true, uses plaintext (no TLS). For testing only.</param>
     /// <param name="allowInsecureRemoteCredentials">
     /// By itself, <paramref name="insecure"/> only permits a plaintext connection to a
-    /// loopback endpoint (localhost, 127.0.0.0/8, ::1, or a unix socket target) -- the
+    /// loopback endpoint (localhost, 127.0.0.0/8, or ::1) -- the
     /// local-development case that is the entire reason <paramref name="insecure"/>
     /// exists. Set this to <c>true</c>, alongside <paramref name="insecure"/>, only if
     /// you genuinely mean to send a bearer token in cleartext to a non-loopback host --
@@ -74,6 +74,23 @@ public sealed class SpiceDBProtoClient : IDisposable
     internal SpiceDBProtoClient(
         string endpoint, string token, bool insecure, bool allowInsecureRemoteCredentials, HttpMessageHandler? httpHandler)
     {
+        // Refused unconditionally -- before the credential guard below, and regardless
+        // of TLS or of allowInsecureRemoteCredentials -- because this transport cannot
+        // do what such an endpoint asks for. Grpc.Net.Client has no unix-domain-socket
+        // support reachable from an address string: GrpcChannel.ForAddress
+        // ("http://unix:/var/run/spicedb.sock") parses "unix" as the HOST, so the
+        // endpoint that looks local resolves the DNS name "unix" and ships the bearer
+        // token there. Failing loudly here is the only honest answer; silently dialing
+        // a host called "unix" is not. (UDS is still reachable via CreateFromChannel
+        // with a channel built on a SocketsHttpHandler that has a UDS ConnectCallback.)
+        if (endpoint.StartsWith("unix:", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"spicedb: unix-domain-socket targets are not supported by this client's transport: \"{endpoint}\". " +
+                "Grpc.Net.Client would parse \"unix\" as a DNS hostname and connect there, not to the socket path. " +
+                "Use a \"host:port\" endpoint, or build a GrpcChannel with a unix-socket ConnectCallback and pass it to CreateFromChannel.");
+        }
+
         // See root DESIGN.md, "RULE: Credentials over insecure transport require an
         // explicit opt-in". This is the guard for the CallInvoker.Intercept bypass below
         // (and the InsecureChannelCredentials + interceptor path immediately following) --
@@ -196,9 +213,18 @@ public sealed class SpiceDBProtoClient : IDisposable
     /// <summary>
     /// Reports whether the connection this client would actually open for
     /// <paramref name="endpoint"/> terminates on a loopback destination: the literal
-    /// hostname "localhost", an IP in 127.0.0.0/8, the IPv6 loopback ::1, or a unix
-    /// domain socket target (a "unix:" prefix). A unix socket never leaves the host's
-    /// kernel, so it is loopback for this check even though it has no IP at all.
+    /// hostname "localhost", an IP in 127.0.0.0/8, or the IPv6 loopback ::1.
+    /// <para>
+    /// Unix-domain-socket targets are NOT in that list, unlike the equivalent guard in
+    /// the Go, Python and Ruby clients. Those clients' transports genuinely dial a UDS
+    /// path; this one cannot, so a "unix:" endpoint here would resolve the DNS name
+    /// "unix" instead. The constructor refuses such an endpoint outright rather than
+    /// letting this method call it loopback -- see the throw there.
+    /// </para>
+    /// <para>
+    /// Total by construction: it returns a bool for every input and never throws, which
+    /// the plain string comparisons it replaced got for free and a URI parse does not.
+    /// </para>
     /// <para>
     /// The wording above is deliberate, and is the whole point of this method's
     /// implementation. It does NOT answer "does this string look like it names a
@@ -233,14 +259,15 @@ public sealed class SpiceDBProtoClient : IDisposable
     /// </summary>
     internal static bool IsLoopbackEndpoint(string endpoint)
     {
-        // Checked first, and only on the raw string: a unix target is not a URI
-        // authority at all (it carries a filesystem path, so it legitimately contains
-        // the '/' the reserved-character check below refuses), and it never leaves
-        // the host's kernel regardless of what the path says.
-        if (endpoint.StartsWith("unix:", StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
+        // There is deliberately no "unix:" exemption here. Other SpiceDB clients grant
+        // one, on the grounds that a unix socket never leaves the host's kernel -- but
+        // that is only true of a transport that actually speaks UDS from an address
+        // string, and Grpc.Net.Client does not: GrpcChannel.ForAddress
+        // ("http://unix:/var/run/spicedb.sock") yields Target "unix", i.e. it resolves
+        // the DNS name "unix" and connects there in cleartext on port 80. Exempting it
+        // would be the exact guard/transport disagreement this method exists to
+        // prevent, so unix targets are instead refused outright by the constructor
+        // above, before this method is ever reached.
 
         // Fail closed on any character that can shift which part of the string the
         // URI parser treats as the authority: '@' (userinfo), '/' (path), '?'
@@ -276,7 +303,23 @@ public sealed class SpiceDBProtoClient : IDisposable
         // Uri.IdnHost is the host Grpc.Net.Client's SocketsHttpHandler resolves and
         // connects to; unlike Uri.Host it is already IDN-mapped, so a Unicode host
         // that maps onto an ASCII one cannot be judged in its pre-mapping form.
-        var host = uri.IdnHost;
+        //
+        // It throws UriFormatException for a host Uri accepted but IDN cannot map
+        // (e.g. "‥localhost"), so this method must be total the way the string
+        // comparisons it replaced were: a host nobody can name is a host we cannot
+        // vouch for, so treat the failure as "not loopback" rather than letting a
+        // System.UriFormatException escape a constructor documented to throw
+        // InvalidOperationException.
+        string host;
+        try
+        {
+            host = uri.IdnHost;
+        }
+        catch (UriFormatException)
+        {
+            return false;
+        }
+
         if (host.StartsWith('[') && host.EndsWith(']'))
         {
             host = host[1..^1];

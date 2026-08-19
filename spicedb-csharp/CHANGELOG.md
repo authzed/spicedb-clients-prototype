@@ -296,7 +296,29 @@
   resolves. Guard and transport can no longer disagree. Endpoints containing `@`, `/`, `?`,
   `#`, or whitespace are additionally refused outright, since a legitimate SpiceDB target
   contains none of them. A bare IPv6 literal (`"::1"`) is bracketed before parsing and keeps
-  working, as do `unix:` targets, `localhost`, and 127.0.0.0/8.
+  working, as do `localhost` and 127.0.0.0/8.
+
+- **2026-08-18**: **Breaking, and security-motivated: `unix:` endpoints are now refused instead
+  of being treated as loopback.** `CreatePlaintext("unix:/var/run/spicedb.sock", token)`
+  previously passed the guard on the grounds that "a unix socket never leaves the host's
+  kernel" — but `Grpc.Net.Client` has no unix-domain-socket support reachable from an address
+  string. `GrpcChannel.ForAddress("http://unix:/var/run/spicedb.sock")` reports
+  `Target == "unix"`, so it resolved the **DNS name `unix`** and shipped the bearer token
+  there in cleartext on port 80, while the guard reported "loopback". Nothing was ever
+  connecting to a socket path, so no working configuration breaks.
+
+  Such an endpoint now throws `InvalidOperationException` naming the problem, unconditionally
+  — before the credential guard, and regardless of TLS or `allowInsecureRemoteCredentials`,
+  since neither makes "resolve a hostname called `unix`" what the caller asked for. To use a
+  unix socket, build a `GrpcChannel` on a `SocketsHttpHandler` with a UDS `ConnectCallback`
+  and pass it to `CreateFromChannel`. The Go, Python and Ruby clients keep their `unix:`
+  exemption; their transports genuinely dial the path.
+
+- **2026-08-18**: `IsLoopbackEndpoint` could throw `System.UriFormatException` out of
+  `CreatePlaintext`, which documents `InvalidOperationException`. `Uri.TryCreate` accepts
+  hosts that `Uri.IdnHost` then refuses to IDN-map (`"‥localhost"`, `"loc‥alhost"`,
+  `"127.0.0.1‥x"`). The guard now catches that and fails closed, as total as the string
+  comparisons it replaced.
 
 - **2026-08-18**: Call deadlines, per root `DESIGN.md` "RULE: A unary call must have a
   deadline". Previously the client had `CancellationToken` throughout (real caller-side

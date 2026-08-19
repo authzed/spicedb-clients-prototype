@@ -42,3 +42,4 @@ bundle exec rspec check_permission/check_permission_spec.rb
 | `schema_reflection/` | Schema reflection, computable permissions, diffs |
 | `relationship_counters/` | Registering and reading relationship counters |
 | `expand_permission_tree/` | Expanding a permission into its native `PermissionTree` (intermediate/leaf nodes, subjects) |
+| `custom_tls/` | Reaching a SpiceDB behind a private CA with `new_custom_tls(ca_cert:)`, and mutual TLS with `client_cert:`/`client_key:`. Brings up its own TLS-terminated endpoint — the only example tagged `:no_spicedb`, since a plaintext server has nothing to demonstrate about trust material |

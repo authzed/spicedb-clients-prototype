@@ -23,6 +23,13 @@ RSpec.configure do |config|
 
   # Create a fresh plaintext client for each test, with clean state.
   config.around(:each) do |example|
+    # An example tagged :no_spicedb brings its own server and must not get the
+    # shared plaintext one -- custom_tls/ is the case: a plaintext SpiceDB has
+    # nothing to demonstrate about TLS trust material, so that example stands
+    # up its own TLS-terminated endpoint instead. Without this, the schema
+    # write below would make it depend on a SpiceDB it never talks to.
+    next example.run if example.metadata[:no_spicedb]
+
     SpiceDB::Client.new_plaintext(SPICEDB_ENDPOINT, SPICEDB_TOKEN) do |client|
       @client = client
       # Write the standard schema (idempotent)

@@ -95,7 +95,8 @@ module SpiceDB
 
   # The idiomatic SpiceDB client for Ruby.
   #
-  # Use {.new_plaintext} or {.new_system_tls} to create a client.
+  # Use {.new_plaintext}, {.new_system_tls} or {.new_custom_tls} to create a
+  # client.
   # All read operations require an explicit {SpiceDB::Consistency::Strategy}.
   class Client
     # check_context_to_struct, caveat_context_to_struct, check_context_value,
@@ -114,6 +115,12 @@ module SpiceDB
     # (the #updates/#call_watch request-building and response-mapping
     # helpers) come from here -- see {SpiceDB::WatchMapping}'s module doc.
     include SpiceDB::WatchMapping
+
+    # new_plaintext, new_system_tls, and new_custom_tls come from here --
+    # extended, not included, since they are class methods. See
+    # {SpiceDB::Connecting}'s module doc for why connection setup lives outside
+    # this class.
+    extend SpiceDB::Connecting
 
     # Default page sizes for transparent cursor pagination.
     DEFAULT_READ_PAGE_SIZE   = 512
@@ -144,74 +151,19 @@ module SpiceDB
     # @return [Object] the underlying proto client for advanced use cases
     attr_reader :proto_client
 
-    # Creates a client with an insecure (plaintext) connection.
-    # Use this for testing only — the lack of TLS is made obvious by the name.
-    #
-    # If a block is given, the client is yielded and cleanup is ensured.
-    #
-    # By itself, this only works against a loopback +endpoint+ (localhost,
-    # 127.0.0.0/8, ::1, or a unix socket target) -- the local-development case that
-    # is the entire reason a plaintext connection exists. For any other endpoint,
-    # pass +allow_insecure_remote_credentials: true+, on purpose, if you genuinely
-    # mean to send a bearer token in cleartext to a remote host. See root
-    # DESIGN.md, "RULE: Credentials over insecure transport require an explicit
-    # opt-in".
-    #
-    # @param endpoint [String] the SpiceDB server address (e.g., "localhost:50051")
-    # @param token [String] the preshared key for authentication
-    # @param default_timeout [Numeric] seconds applied to every unary call that
-    #   does not pass its own `timeout:` (see {DEFAULT_TIMEOUT_SECONDS}). NOT
-    #   applied to streaming calls.
-    # @param allow_insecure_remote_credentials [Boolean] explicit opt-in to send
-    #   credentials in cleartext to a non-loopback endpoint.
-    # @yield [client] optionally yields the client for block-scoped usage
-    # @return [Client]
-    # @raise [ArgumentError] if endpoint is not loopback and
-    #   allow_insecure_remote_credentials is false.
-    def self.new_plaintext(endpoint, token, default_timeout: DEFAULT_TIMEOUT_SECONDS,
-                           allow_insecure_remote_credentials: false, &block)
-      client = new(endpoint: endpoint, token: token, insecure: true, default_timeout: default_timeout,
-                   allow_insecure_remote_credentials: allow_insecure_remote_credentials)
-      if block
-        begin
-          yield client
-        ensure
-          client.close
-        end
-      else
-        client
-      end
-    end
-
-    # Creates a client using the system's TLS certificate pool.
-    # Use this for production connections.
-    #
-    # If a block is given, the client is yielded and cleanup is ensured.
-    #
-    # @param endpoint [String] the SpiceDB server address (e.g., "grpc.example.com:443")
-    # @param token [String] the preshared key for authentication
-    # @param default_timeout [Numeric] seconds applied to every unary call that
-    #   does not pass its own `timeout:` (see {DEFAULT_TIMEOUT_SECONDS}). NOT
-    #   applied to streaming calls.
-    # @yield [client] optionally yields the client for block-scoped usage
-    # @return [Client]
-    def self.new_system_tls(endpoint, token, default_timeout: DEFAULT_TIMEOUT_SECONDS, &block)
-      client = new(endpoint: endpoint, token: token, insecure: false, default_timeout: default_timeout)
-      if block
-        begin
-          yield client
-        ensure
-          client.close
-        end
-      else
-        client
-      end
-    end
-
     # @api private
-    # Use {.new_plaintext} or {.new_system_tls} instead.
+    # Use {.new_plaintext}, {.new_system_tls} or {.new_custom_tls} instead.
+    #
+    # +ca_cert+, +client_cert+ and +client_key+ are PEM strings carrying
+    # caller-supplied TLS trust material; see {SpiceDB::Connecting#new_custom_tls}
+    # for what they mean and why they exist. All three are nil on the
+    # {.new_system_tls} path, which is exactly the zero-argument credentials call
+    # gRPC would make on its own -- so that path still delegates to the ecosystem's
+    # default trust source, as root DESIGN.md, "RULE: A system-TLS constructor must
+    # reach a real server", clause 1 requires.
     def initialize(endpoint:, token:, insecure: false, default_timeout: DEFAULT_TIMEOUT_SECONDS,
-                   allow_insecure_remote_credentials: false)
+                   allow_insecure_remote_credentials: false,
+                   ca_cert: nil, client_cert: nil, client_key: nil)
       @endpoint = endpoint
       @token = token
       @insecure = insecure
@@ -221,7 +173,8 @@ module SpiceDB
         require 'spicedb_proto'
         @proto_client = SpiceDBProto::Client.new(
           endpoint, token, insecure: insecure,
-                           allow_insecure_remote_credentials: allow_insecure_remote_credentials
+                           allow_insecure_remote_credentials: allow_insecure_remote_credentials,
+                           ca_cert: ca_cert, client_cert: client_cert, client_key: client_key
         )
       rescue LoadError
         # Proto gem not yet available (e.g. buf hasn't generated stubs).

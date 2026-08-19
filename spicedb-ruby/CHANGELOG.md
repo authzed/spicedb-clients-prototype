@@ -73,6 +73,41 @@
 
 ### Added
 
+- **2026-08-19**: `SpiceDB::Client.new_custom_tls(endpoint, token, ca_cert:, client_cert:,
+  client_key:)` — a third named constructor, for a SpiceDB fronted by a private or corporate CA and
+  for mutual TLS. Purely additive; `new_plaintext` and `new_system_tls` are unchanged for callers.
+  - `ca_cert:` — PEM root certificate(s) verifying SpiceDB's certificate. Replaces gRPC's built-in
+    roots for that client rather than adding to them.
+  - `client_cert:` / `client_key:` — the client's own PEM certificate chain and private key. Both
+    must be supplied together; either alone raises `ArgumentError`, as does passing none of the
+    three (that is `new_system_tls`, and a constructor named for custom trust material that
+    silently used the compiled-in roots would be a quiet way to believe a private CA was
+    configured when it was not).
+
+  Without this, a private-CA deployment was unreachable: the credentials were built zero-argument
+  in the proto tier and were never parameterizable, and gRPC's C-core compiles in its own
+  `roots.pem`, so a CA installed in the host's trust store is not honoured. Root DESIGN.md, "RULE:
+  A system-TLS constructor must reach a real server", permits `new_system_tls` to delegate to that
+  bundled set precisely because a caller can supply their own material instead — which is now true.
+
+  Trust material never changes whether TLS is used: there is no plaintext constructor that accepts
+  it, and combining it with `insecure: true` on the private `Client.new` raises rather than
+  discarding it (which would send the bearer token in cleartext behind a call site reading as
+  though TLS were configured), so this cannot become a quieter route around root DESIGN.md, "RULE:
+  Credentials over insecure transport require an explicit opt-in". That rule's existing loopback
+  guard still applies first and unchanged.
+
+  The three constructors now live in `SpiceDB::Connecting`, which `SpiceDB::Client` extends — an
+  extraction with no call-site effect, made because `Client`'s `Metrics/ClassLength` ceiling is
+  there to be respected rather than raised.
+
+  ```ruby
+  SpiceDB::Client.new_custom_tls('spicedb.internal:443', token,
+                                 ca_cert: File.read('/etc/ssl/certs/internal-ca.pem')) do |client|
+    ...
+  end
+  ```
+
 - **2026-08-18**: Error mapping now carries the server's detail all the way to the caller, per root
   DESIGN.md, "RULE: Error mapping must not lose the server's detail". Purely additive.
   - Two new exception classes, both `SpiceDB::Error` subclasses:

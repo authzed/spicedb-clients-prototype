@@ -40,8 +40,18 @@ Security-obvious named constructors:
 - `SpiceDB::Client.new_plaintext(endpoint, token)` — for testing, makes
   insecure connection obvious
 - `SpiceDB::Client.new_system_tls(endpoint, token)` — for production
+- `SpiceDB::Client.new_custom_tls(endpoint, token, ca_cert:, client_cert:,
+  client_key:)` — for a SpiceDB fronted by a private CA, and for mutual TLS
 - Block form: `SpiceDB::Client.new_plaintext(...) { |client| ... }` — yields
   client and ensures cleanup
+
+All three live in `SpiceDB::Connecting`, which `Client` **extends**. That is
+purely an extraction — `SpiceDB::Client.new_plaintext(...)` and friends are
+unchanged for callers — done for the same reason `SpiceDB::CaveatContext`,
+`SpiceDB::Retrying` and `SpiceDB::WatchMapping` were: `Client`'s
+`Metrics/ClassLength` ceiling exists to stop that class growing without bound,
+and the answer to hitting it is to move a coherent concern out, never to raise
+the ceiling.
 
 Per root DESIGN.md, "RULE: Credentials over insecure transport require an
 explicit opt-in": `new_plaintext` only permits plaintext to a loopback
@@ -50,6 +60,64 @@ local-development case that is the entire reason it exists. Anything else
 needs `allow_insecure_remote_credentials: true` passed explicitly, or
 `new_plaintext` refuses to construct the client at all, before any connection
 is created.
+
+#### Custom TLS trust material
+
+```ruby
+# A SpiceDB behind a private or corporate CA
+SpiceDB::Client.new_custom_tls('spicedb.internal:443', token,
+                               ca_cert: File.read('/etc/ssl/certs/internal-ca.pem')) do |client|
+  ...
+end
+
+# ...and where the server requires mutual TLS
+SpiceDB::Client.new_custom_tls('spicedb.internal:443', token,
+                               ca_cert: ca_pem, client_cert: cert_pem, client_key: key_pem)
+```
+
+All three are PEM **strings**, not paths: certificates commonly arrive from a
+mounted secret or a config store rather than the local filesystem, and reading
+a file is the caller's one-liner either way.
+
+Why this constructor exists. Root DESIGN.md, "RULE: A system-TLS constructor
+must reach a real server", requires `new_system_tls` to delegate to the
+ecosystem's default trust source — for grpc-ruby, `GRPC::Core::ChannelCredentials.new`
+with no arguments — and names the hazard that leaves visible: gRPC's C-core
+compiles in its own `roots.pem`, so a CA an operator installed in the host's
+trust store is **not** honoured by `new_system_tls`. That rule permits
+delegating to the bundled set precisely *because* a caller can supply their own
+material instead; `new_custom_tls` is what makes that true.
+
+`ca_cert` **replaces** gRPC's built-in roots for that client rather than adding
+to them (the C-core's own behavior, and generally what a deployment pinning a
+private CA wants). The material reaches the C-core as
+`GRPC::Core::ChannelCredentials.new(ca_cert, client_key, client_cert)` — note
+the key comes *before* the certificate chain there, the reverse of how a caller
+names them. On the `new_system_tls` path all three are `nil`, which is the same
+call the zero-argument form makes, so that path is still pure delegation: this
+library never selects a root set of its own, which clause 1 of that rule
+prohibits.
+
+Three refusals, all raised before any channel or credential is created:
+
+- **All three arguments nil.** That is `new_system_tls`, and a constructor named
+  for custom trust material that silently used the compiled-in roots instead
+  would be a quiet way to believe a private CA was configured when it was not.
+- **Trust material on the plaintext path.** There is deliberately no plaintext
+  constructor that accepts it — `new_plaintext` takes none — and the private
+  `Client.new` refuses `insecure: true` combined with any of the three rather
+  than discarding it. A plaintext channel performs no handshake, so the material
+  would be ignored and the bearer token would go out in cleartext behind a call
+  site that reads as though TLS were configured: the failure root DESIGN.md,
+  "RULE: Credentials over insecure transport require an explicit opt-in", exists
+  to prevent. Supplying trust material is never a second, quieter route to an
+  insecure transport, and never a construction path that skips that rule's
+  guard — which still runs first, and whose message is what a caller sees. It
+  raises rather than silently turning TLS on, since an implicit upgrade is just
+  as surprising.
+- **`client_cert` without `client_key`, or vice versa.** Neither half is usable
+  alone; the C-core rejects the pair later, from a layer with no idea which
+  argument was wrong.
 
 ### Consistency
 

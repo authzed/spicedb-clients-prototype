@@ -48,11 +48,34 @@ module SpiceDBProto
     #   opt-in". Named and separate from +insecure+ on purpose: the rule requires an
     #   option a reader cannot mistake for a default, not a boolean that does double duty
     #   as the plaintext-transport switch.
+    # @param ca_cert [String, nil] PEM root certificate(s) used to verify SpiceDB's
+    #   certificate, in place of the roots gRPC would otherwise use. Supply this to reach
+    #   a SpiceDB fronted by a private or corporate CA.
+    #
+    #   Root DESIGN.md, "RULE: A system-TLS constructor must reach a real server",
+    #   requires the default secure path to delegate to the ecosystem's default trust
+    #   source -- for grpc-ruby that is +GRPC::Core::ChannelCredentials.new+ with no
+    #   arguments -- and names the hazard that leaves visible: gRPC's C-core compiles in
+    #   its own +roots.pem+, so a CA an operator installed in the host's trust store is
+    #   NOT honoured by the default. That rule permits delegating to the bundled set
+    #   precisely *because* a caller can supply their own material instead; this is what
+    #   makes that true. Passing +nil+ (the default) leaves the delegation exactly as it
+    #   was -- the C-core treats a nil root argument as "use the built-in roots" -- so
+    #   this library still selects no root set of its own, which clause 1 of that rule
+    #   prohibits.
+    # @param client_cert [String, nil] PEM certificate chain identifying this client, for
+    #   a server that requires mutual TLS. Must be supplied together with +client_key+.
+    # @param client_key [String, nil] PEM private key for +client_cert+. Must be supplied
+    #   together with it.
     # @raise [ArgumentError] if +insecure+ is true, +endpoint+ is not loopback, and
-    #   +allow_insecure_remote_credentials+ is false -- raised before any channel,
+    #   +allow_insecure_remote_credentials+ is false; if +insecure+ is true and any of
+    #   +ca_cert+/+client_cert+/+client_key+ is supplied, since a plaintext channel
+    #   performs no handshake to apply them to; or if exactly one of
+    #   +client_cert+/+client_key+ is supplied -- raised before any channel,
     #   credential, or connection is created, so the token can never reach the wire for a
     #   rejected combination.
-    def initialize(endpoint, token, insecure: false, allow_insecure_remote_credentials: false)
+    def initialize(endpoint, token, insecure: false, allow_insecure_remote_credentials: false,
+                   ca_cert: nil, client_cert: nil, client_key: nil)
       # See root DESIGN.md, "RULE: Credentials over insecure transport require an
       # explicit opt-in". This is the guard for the BearerTokenInterceptor bypass just
       # below (and the raw call-credentials proc a few lines further down) -- both exist
@@ -64,6 +87,10 @@ module SpiceDBProto
           "spicedb: refusing to send credentials over an insecure (plaintext) connection to non-loopback endpoint #{endpoint.inspect}: " \
           "use TLS (pass insecure: false), or pass allow_insecure_remote_credentials: true if you intend to send a bearer token in cleartext to a remote host"
       end
+
+      self.class.validate_tls_material!(
+        insecure: insecure, ca_cert: ca_cert, client_cert: client_cert, client_key: client_key
+      )
 
       # Build final credentials BEFORE constructing the channel, so exactly
       # one GRPC::Core::Channel is ever created. The previous implementation
@@ -86,7 +113,15 @@ module SpiceDBProto
         call_creds = GRPC::Core::CallCredentials.new(proc { |_context|
           { "authorization" => "Bearer #{token}" }
         })
-        credentials = GRPC::Core::ChannelCredentials.new.compose(call_creds)
+        # Positional, and in the C-core's order: (pem_root_certs,
+        # pem_private_key, pem_cert_chain). All nil is the same call as the
+        # zero-arg form this used to make -- the C-core reads a nil root
+        # argument as "use the built-in roots" -- so the default secure path
+        # still delegates, per root DESIGN.md, "RULE: A system-TLS constructor
+        # must reach a real server", clause 1. Note the key comes BEFORE the
+        # certificate chain here, the reverse of how a caller names them.
+        credentials = GRPC::Core::ChannelCredentials.new(ca_cert, client_key, client_cert)
+                                                    .compose(call_creds)
         stub_opts = {}
       end
 
@@ -110,6 +145,48 @@ module SpiceDBProto
     # Closes the underlying gRPC channel.
     def close
       @channel&.close
+    end
+
+    # Refuses a TLS configuration this client cannot honour. Called from the
+    # constructor, before any channel or credential is created.
+    #
+    # Two refusals, both fail-closed:
+    #
+    # 1. *Trust material with +insecure+.* A plaintext channel performs no TLS
+    #    handshake, so the material would simply be discarded and everything --
+    #    including the bearer token, which this client hands to a
+    #    BearerTokenInterceptor on that path -- would go out in cleartext, while the
+    #    call site read as though TLS were configured. That is precisely the failure
+    #    root DESIGN.md, "RULE: Credentials over insecure transport require an explicit
+    #    opt-in", exists to prevent, so supplying trust material must never become a
+    #    second, quieter route to an insecure transport. Note it raises rather than
+    #    "helpfully" turning TLS on: silently upgrading the transport would be just as
+    #    much of a surprise in the other direction.
+    # 2. *Half a client identity.* Neither +client_cert+ nor +client_key+ is usable
+    #    alone. The C-core rejects the pair later, from a layer with no idea which
+    #    argument the caller got wrong; failing here names it.
+    #
+    # @raise [ArgumentError] on either condition.
+    def self.validate_tls_material!(insecure:, ca_cert:, client_cert:, client_key:)
+      supplied = { ca_cert: ca_cert, client_cert: client_cert, client_key: client_key }
+                 .reject { |_name, value| value.nil? }
+                 .keys
+
+      if insecure && !supplied.empty?
+        raise ArgumentError,
+          "spicedb: refusing to build a client with insecure: true and TLS material " \
+          "(#{supplied.join(', ')}): a plaintext connection performs no TLS handshake, so the " \
+          "material would be ignored and everything -- including the bearer token -- would be " \
+          "sent in cleartext. Pass insecure: false to use TLS, or drop the TLS material to " \
+          "connect in plaintext"
+      end
+
+      return if client_cert.nil? == client_key.nil?
+
+      missing, present = client_key.nil? ? %i[client_key client_cert] : %i[client_cert client_key]
+      raise ArgumentError,
+        "spicedb: #{present} was supplied without #{missing}: mutual TLS needs both halves " \
+        "of the client identity, and neither is usable alone"
     end
 
     # Reports whether the connection this client would open for +endpoint+ terminates

@@ -559,6 +559,52 @@ silently, since the leak is invisible from the caller's side of a `break`.
 - **No treating a conditional permission as a grant** — see **RULE: Only an unconditional grant
   is true**
 
+### Where each client's raw escape hatch lives
+
+The bullet above permits a secondary API, and every client now has one, so a gap in an
+idiomatic surface has a workaround short of a fork. They are not uniform, because what
+"the underlying thing" is differs per ecosystem:
+
+- **Go** — `WithDialOptions(...)` on `NewWithOpts`, which takes any `grpc.DialOption`
+  (transport credentials, interceptors, keepalive). A *configuration* hatch: it does not
+  hand back the built `grpc.ClientConn` or the generated stubs, so a raw RPC means
+  building a client from `spicedb-go-proto` alongside.
+- **Python** — `raw_grpc()` on both `spicedb.sync.SpiceDBClient` and
+  `spicedb.aio.SpiceDBClient`, returning `spicedb.raw.RawGrpc` (the live channel plus the
+  bearer-token metadata, since this client authenticates per call).
+- **TypeScript** — `SpiceDBClient.raw()`, returning the `SpiceDBProtoClient` with the four
+  generated Connect clients.
+- **Rust** — `SpiceDBClient::raw_proto()`, returning `&SpiceDBProtoClient`; the generated
+  crate is re-exported as `spicedb::spicedb_proto` so callers can name its types.
+- **Java** — `ClientOption.apply(ManagedChannelBuilder)`, which configures the builder
+  before the channel exists. Also a configuration hatch, and documented as one on
+  `ClientOption#apply`. `grpc-netty-shaded` and the generated stubs are declared `api` in
+  `proto-clients/spicedb-java-proto/build.gradle.kts`, so both the builder and a
+  hand-built stub are usable from consumer code.
+- **C#** — `SpiceDBClient.CreateFromChannel(channel, key)`, which takes a caller-built
+  `GrpcChannel`. That channel stays **caller-owned**: disposing the client does not
+  dispose it, because the idiomatic .NET pattern is one DI-registered singleton channel
+  shared across the application.
+- **Ruby** — `SpiceDB::Client#proto_client`, an `attr_reader` documented as "the
+  underlying proto client for advanced use cases", whose `permissions`/`schema`/`watch`/
+  `experimental` stubs are already authenticated (composed call credentials on the secure
+  path, a `BearerTokenInterceptor` on the plaintext one).
+
+Two constraints bind all of them:
+
+1. **An accessor must never become a constructor.** Handing back an already-built
+   channel, stub, or client is fine; growing a parameter for an endpoint, token, or
+   transport setting is not — that would be a second path that builds a connection, and
+   **RULE: Credentials over insecure transport require an explicit opt-in** is enforced
+   on the single existing one. The Go, Java and C# hatches sit at construction *by
+   design* rather than after it, and each states in its own doc comment what its guard
+   can and cannot see about what a caller does to the builder or channel; that is the
+   trade those three already made, not a licence for the accessors to drift into it.
+2. **Exposing a built channel is not a trust-material hatch.** TLS is configured before a
+   channel exists, so these accessors do not satisfy **RULE: A system-TLS constructor must
+   reach a real server**, clause 1. That clause keeps its own per-client list, and Rust's
+   entry there is still "none".
+
 ## CI Workflow Conventions
 
 The repo uses one GitHub Actions workflow file per language plus `spicedb-gen.yaml` and `meta.yaml`. Rules for maintaining and extending CI:

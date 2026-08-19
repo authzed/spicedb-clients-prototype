@@ -2,6 +2,49 @@
 
 ## Unreleased
 
+### Added
+
+- **An escape hatch, `SpiceDBClient::raw_proto()`.** It returns `&SpiceDBProtoClient` —
+  the four generated tonic clients (`permissions`, `schema`, `watch`, `experimental`)
+  this crate makes its own calls through — so a request the idiomatic API cannot express
+  has a workaround short of forking the crate. Two real examples of such a request:
+  `WriteRelationshipsRequest::optional_transaction_metadata`, a proto field this crate
+  does not surface, and the single-check `CheckPermission` RPC, which `check_permission()`
+  deliberately routes around (every check goes through `CheckBulkPermissions`).
+
+  ```rust,ignore
+  use spicedb::spicedb_proto::authzed::api::v1 as proto;
+
+  // Clone: the generated clients take `&mut self`, and a tonic clone shares the
+  // same channel rather than opening a second connection.
+  let mut permissions = client.raw_proto().permissions.clone();
+  let response = permissions.check_permission(request).await?;
+  ```
+
+  The generated crate is re-exported as `spicedb::spicedb_proto` so callers can name
+  those types without adding a dependency that could drift to a different version of the
+  generated code. Both additions are purely additive.
+
+  Clearly-marked **secondary** API — root DESIGN.md's "What NOT To Do" keeps channels,
+  stubs and metadata out of the primary surface and permits exactly this ("escape hatches
+  for advanced use are acceptable as clearly marked secondary API"). No stability promise
+  beyond tonic's and the generated code's.
+
+  The bearer token comes free (each generated client carries this crate's interceptor),
+  but a raw call gets no `SpiceDBError` mapping, no retry, and no `default_timeout` — set
+  a deadline on the request yourself. The connection belongs to the `SpiceDBClient`, so a
+  clone taken from the hatch must not outlive it.
+
+  It is an accessor, not a constructor: it takes no endpoint, token, or transport
+  setting, so channel construction stays on the single guarded path in
+  `SpiceDBClientBuilder::build` and this cannot become a route around root DESIGN.md,
+  "RULE: Credentials over insecure transport require an explicit opt-in". It also does
+  **not** close either TLS gap this client still has (no trust store on a `FROM scratch`
+  image; no mutual TLS): the channel already exists by the time `raw_proto()` can be
+  called, and TLS is configured before that.
+
+  New example: `examples/raw_escape_hatch.rs`.
+
 ### Fixes
 
 - **Documentation — the `client` module no longer claims the builder gives "full control

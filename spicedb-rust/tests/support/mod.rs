@@ -182,9 +182,11 @@ type ProtoResponseStream<T> = Pin<Box<dyn Stream<Item = Result<T, Status>> + Sen
 /// Only the RPCs exercised by the behavioral test suites — `ReadRelationships`,
 /// `LookupResources`, `LookupSubjects`, `ExportBulkRelationships` (all used by
 /// `tests/read_stream_test.rs`), `DeleteRelationships` (used by
-/// `tests/delete_relationships_test.rs`), and `CheckBulkPermissions` (used by
-/// `tests/check_bulk_permissions_test.rs`) — have real behavior; the rest of
-/// the trait is `unimplemented!()` since nothing in this harness calls them.
+/// `tests/delete_relationships_test.rs`), `CheckBulkPermissions` (used by
+/// `tests/check_bulk_permissions_test.rs`), and `CheckPermission` (used by
+/// `tests/raw_escape_hatch_test.rs`, which reaches the single-check RPC the
+/// idiomatic client never calls) — have real behavior; the rest of the trait
+/// is `unimplemented!()` since nothing in this harness calls them.
 ///
 /// The paginating RPCs (`read_relationships`, `lookup_resources`,
 /// `export_bulk_relationships`) are configured with a *queue of pages*: each
@@ -221,6 +223,17 @@ pub struct MockPermissionsService {
     /// simulates a wedged server that accepts the call but never answers
     /// within any sensible deadline. Used by `tests/deadline_test.rs`.
     check_bulk_permissions_stall: Mutex<Option<std::time::Duration>>,
+
+    /// The single-check `CheckPermission` RPC. The idiomatic client never
+    /// calls it -- every check goes through `CheckBulkPermissions` -- so it
+    /// exists here for `tests/raw_escape_hatch_test.rs`, which drives it
+    /// through `SpiceDBClient::raw_proto()` precisely because the idiomatic
+    /// surface cannot reach it.
+    check_permission_requests: Arc<Mutex<Vec<proto::CheckPermissionRequest>>>,
+    /// The `authorization` metadata value seen on each `CheckPermission` call,
+    /// in call order. Proves a raw call carries this client's bearer token
+    /// rather than arriving unauthenticated.
+    check_permission_authorizations: Arc<Mutex<Vec<String>>>,
 
     write_relationships_calls: Arc<AtomicUsize>,
     write_relationships_fail: Mutex<VecDeque<Status>>,
@@ -269,6 +282,9 @@ impl MockPermissionsService {
             check_bulk_permissions_requests: Arc::new(Mutex::new(Vec::new())),
             check_bulk_permissions_fail: Mutex::new(VecDeque::new()),
             check_bulk_permissions_stall: Mutex::new(None),
+
+            check_permission_requests: Arc::new(Mutex::new(Vec::new())),
+            check_permission_authorizations: Arc::new(Mutex::new(Vec::new())),
 
             write_relationships_calls: Arc::new(AtomicUsize::new(0)),
             write_relationships_fail: Mutex::new(VecDeque::new()),
@@ -400,6 +416,18 @@ impl MockPermissionsService {
         &self,
     ) -> Arc<Mutex<Vec<proto::CheckBulkPermissionsRequest>>> {
         self.check_bulk_permissions_requests.clone()
+    }
+
+    /// Returns a live handle to the full `CheckPermissionRequest` received on
+    /// each single-check call, in call order.
+    pub fn check_permission_requests(&self) -> Arc<Mutex<Vec<proto::CheckPermissionRequest>>> {
+        self.check_permission_requests.clone()
+    }
+
+    /// Returns a live handle to the `authorization` metadata seen on each
+    /// single-check call, in call order.
+    pub fn check_permission_authorizations(&self) -> Arc<Mutex<Vec<String>>> {
+        self.check_permission_authorizations.clone()
     }
 
     /// Queues a `CheckBulkPermissions` failure: the next call returns `status`
@@ -538,9 +566,35 @@ impl PermissionsService for MockPermissionsService {
 
     async fn check_permission(
         &self,
-        _request: Request<proto::CheckPermissionRequest>,
+        request: Request<proto::CheckPermissionRequest>,
     ) -> Result<Response<proto::CheckPermissionResponse>, Status> {
-        unimplemented!("not exercised by the read-stream behavioral tests")
+        // Real behavior, unlike the other unexercised RPCs below: this is the
+        // RPC the idiomatic client deliberately never calls (all checks go
+        // through `CheckBulkPermissions`), which is what makes it the honest
+        // subject for the `raw_proto()` escape-hatch test.
+        let authorization = request
+            .metadata()
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        self.check_permission_authorizations
+            .lock()
+            .unwrap()
+            .push(authorization);
+        self.check_permission_requests
+            .lock()
+            .unwrap()
+            .push(request.into_inner());
+        Ok(Response::new(proto::CheckPermissionResponse {
+            checked_at: Some(proto::ZedToken {
+                token: "rev-raw".to_string(),
+            }),
+            permissionship: proto::check_permission_response::Permissionship::HasPermission as i32,
+            partial_caveat_info: None,
+            optional_expires_at: None,
+            debug_trace: None,
+        }))
     }
 
     async fn check_bulk_permissions(

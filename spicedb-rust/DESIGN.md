@@ -117,6 +117,53 @@ because this test needs a real endpoint on the public internet, not the dockeris
 SpiceDB that `integrationTest` starts — a local server's self-signed certificate is
 exactly what the platform trust store under test would, correctly, reject.
 
+### Escape hatch: raw proto access
+
+`SpiceDBClient::raw_proto()` returns `&SpiceDBProtoClient` — the four generated tonic
+clients (`permissions`, `schema`, `watch`, `experimental`) this crate makes its own calls
+through. The generated crate is re-exported as `spicedb::spicedb_proto`, so a caller can
+name those types without adding a dependency that could drift to a different version of
+the generated code:
+
+```rust,ignore
+use spicedb::spicedb_proto::authzed::api::v1 as proto;
+
+// Clone: the generated clients take `&mut self`, and a tonic clone shares the
+// same channel rather than opening a second connection.
+let mut permissions = client.raw_proto().permissions.clone();
+let response = permissions.check_permission(request).await?;
+```
+
+Clearly-marked **secondary** API, which is what root DESIGN.md's "What NOT To Do"
+permits: channels, stubs and metadata stay out of the primary surface, and "escape
+hatches for advanced use are acceptable as clearly marked secondary API". It exists so a
+request the idiomatic surface cannot express — an RPC or proto field not wrapped here,
+such as `WriteRelationshipsRequest::optional_transaction_metadata`, or the single-check
+`CheckPermission` RPC that `check_permission()` deliberately routes around — has a
+workaround short of forking the crate.
+
+Four properties, all deliberate:
+
+- **The bearer token comes free.** Each generated client is wrapped in this crate's
+  interceptor, so a raw call is authenticated exactly as an idiomatic one is.
+- **A raw call is a raw call.** No `SpiceDBError` mapping (you handle `tonic::Status`),
+  no retry, and no `default_timeout` — set a deadline on the request yourself.
+- **The connection belongs to the client.** It is released when the `SpiceDBClient`
+  drops; a clone taken from here must not outlive it.
+- **It is an accessor, never a constructor.** It takes no endpoint, token, or transport
+  setting, so channel construction stays on the single guarded path in
+  `SpiceDBClientBuilder::build` and the hatch cannot become a way around root DESIGN.md,
+  "RULE: Credentials over insecure transport require an explicit opt-in".
+
+**This does not close either TLS gap listed above.** The channel already exists by the
+time `raw_proto()` can be called, and TLS is configured before that, so neither the
+`FROM scratch` trust-store gap nor the missing mutual-TLS support is affected. Closing
+those still means adding options to `SpiceDBClientBuilder`, exactly as stated there.
+
+No stability promise beyond tonic's and the generated code's. Setting a per-call deadline
+or reading response metadata means depending on `tonic` (and `prost-types` for well-known
+types) yourself, at versions compatible with the ones this crate builds against.
+
 ### Consistency
 
 ZedTokens are opaque `String` values, never proto types. Consistency is an
@@ -485,6 +532,10 @@ tonic's own client-side timeout enforcement (`tonic::transport::Channel`'s
 
 ### `client` module
 
+**Escape hatch:**
+- `raw_proto(&self) -> &SpiceDBProtoClient` -- the generated tonic clients, as secondary
+  API; see "Escape hatch: raw proto access" above
+
 **Constructors:**
 - `SpiceDBClient::new_plaintext(endpoint, token) -> Result<Self, SpiceDBError>`
 - `SpiceDBClient::new_system_tls(endpoint, token) -> Result<Self, SpiceDBError>`
@@ -624,6 +675,7 @@ every change in the gap). `is_checkpoint` is true for a checkpoint event, which 
 | `schema_reflection/` | Schema reflection, computable permissions, dependent relations, diff |
 | `expand_permission_tree/` | Expanding a permission tree and walking the native `PermissionTree` |
 | `relationship_counters/` | Registering, reading, and unregistering relationship counters |
+| `raw_escape_hatch/` | `raw_proto()` — driving the generated tonic client directly for a proto field (`optional_transaction_metadata`) and an RPC (`CheckPermission`) the idiomatic API does not expose |
 
 ## Changelog
 

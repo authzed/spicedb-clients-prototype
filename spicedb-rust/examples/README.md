@@ -35,4 +35,5 @@ cargo run --example check_permission
 | `schema_reflection` | Schema reflection, computable permissions, diffs |
 | `expand_permission_tree` | Expanding a permission tree and walking the native `PermissionTree` |
 | `relationship_counters` | Experimental relationship counters |
+| `raw_escape_hatch` | The `raw_proto()` escape hatch: driving the generated tonic client on this client's own connection to send `optional_transaction_metadata` (a proto field this crate does not wrap) and to call the single-check `CheckPermission` RPC |
 | `call_deadlines` | Constructing a client with `default_timeout`, a per-call `_with_timeout` override, and confirming bulk import isn't bounded by the unary default |

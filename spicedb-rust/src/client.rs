@@ -242,6 +242,84 @@ impl SpiceDBClient {
         }
     }
 
+    /// Escape hatch: the underlying [`SpiceDBProtoClient`], holding the four
+    /// generated tonic clients (`permissions`, `schema`, `watch`,
+    /// `experimental`) this client makes its own calls through.
+    ///
+    /// Clearly-marked **secondary** API. Root DESIGN.md's "What NOT To Do"
+    /// keeps channels, stubs and metadata out of the primary surface and
+    /// permits exactly this -- "escape hatches for advanced use are acceptable
+    /// as clearly marked secondary API" -- so that a request the idiomatic
+    /// methods cannot express (an RPC or proto field not wrapped here, such as
+    /// `WriteRelationshipsRequest::optional_transaction_metadata`) has a
+    /// workaround short of forking the client.
+    ///
+    /// The generated clients take `&mut self`, so clone the one you want --
+    /// a tonic client clone shares the same channel, it does not open a second
+    /// connection:
+    ///
+    /// ```rust,no_run
+    /// use spicedb::client::SpiceDBClient;
+    /// use spicedb::spicedb_proto::authzed::api::v1 as proto;
+    ///
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let client = SpiceDBClient::new_plaintext("localhost:50051", "token").await?;
+    /// let mut permissions = client.raw_proto().permissions.clone();
+    /// let response = permissions
+    ///     .check_permission(proto::CheckPermissionRequest {
+    ///         consistency: Some(proto::Consistency {
+    ///             requirement: Some(proto::consistency::Requirement::FullyConsistent(true)),
+    ///         }),
+    ///         resource: Some(proto::ObjectReference {
+    ///             object_type: "document".into(),
+    ///             object_id: "readme".into(),
+    ///         }),
+    ///         permission: "view".into(),
+    ///         subject: Some(proto::SubjectReference {
+    ///             object: Some(proto::ObjectReference {
+    ///                 object_type: "user".into(),
+    ///                 object_id: "jimmy".into(),
+    ///             }),
+    ///             optional_relation: String::new(),
+    ///         }),
+    ///         context: None,
+    ///         with_tracing: false,
+    ///     })
+    ///     .await?;
+    /// # let _ = response;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// Four things to know before reaching for it:
+    ///
+    /// - **The bearer token comes free.** Each generated client is wrapped in
+    ///   this library's interceptor, so a raw call is authenticated exactly as
+    ///   an idiomatic one is.
+    /// - **A raw call is a raw call.** No [`SpiceDBError`] mapping (you handle
+    ///   `tonic::Status`), no retry on a transient failure, and no
+    ///   `default_timeout` -- set a deadline on the request yourself, or the
+    ///   call is unbounded.
+    /// - **The connection belongs to this client.** It is released when the
+    ///   client is dropped; a clone taken from here must not outlive it.
+    /// - **No stability promise beyond tonic's and the generated code's.**
+    ///   These are `spicedb-proto`'s types, re-exported as
+    ///   [`spicedb_proto`](crate::spicedb_proto) so callers can name them, and
+    ///   this crate will not shim over a change in either. Setting a per-call
+    ///   deadline, or reading response metadata, means depending on `tonic`
+    ///   (and `prost-types` for well-known types like
+    ///   `google.protobuf.Struct`) yourself, at versions compatible with the
+    ///   ones this crate builds against.
+    ///
+    /// It is an accessor, never a constructor: it takes no endpoint, token, or
+    /// transport setting and hands back a client that already exists, so it
+    /// cannot become a second construction path around the guard in
+    /// [`SpiceDBClientBuilder::build`] -- root DESIGN.md, "RULE: Credentials
+    /// over insecure transport require an explicit opt-in".
+    pub fn raw_proto(&self) -> &SpiceDBProtoClient {
+        &self.proto
+    }
+
     /// Resolves a per-call timeout override against [`Self`]'s
     /// `default_timeout`. `None` means "use the client default" -- there is
     /// deliberately no way to make an unbounded unary call. See root

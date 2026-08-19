@@ -11,6 +11,7 @@ import build.buf.gen.authzed.api.v1.PartialCaveatInfo;
 import build.buf.gen.authzed.api.v1.PermissionsServiceGrpc;
 import build.buf.gen.authzed.api.v1.ZedToken;
 import com.authzed.spicedb.errors.PermissionDeniedException;
+import com.authzed.spicedb.errors.ResourceExhaustedException;
 import io.grpc.Status;
 import io.grpc.stub.StreamObserver;
 import java.io.IOException;
@@ -263,6 +264,65 @@ class CheckResultsTest {
       assertTrue(
           ex.getMessage().contains("schema mismatch on doc2"),
           "expected message to carry the server's per-item error text, got: " + ex.getMessage());
+    }
+  }
+
+  /**
+   * A per-item failure must reach the caller carrying the same structured reason an RPC-level
+   * failure does. The per-item {@code google.rpc.Status} used to be reduced to a code and a
+   * message before mapping, silently dropping the item's own {@code ErrorInfo} — a failure mode
+   * that shows up as an empty reason and nothing red. See root DESIGN.md, "RULE: Error mapping
+   * must not lose the server's detail".
+   */
+  @Test
+  void perItemErrorCarriesItsOwnErrorReasonAndMetadata() throws IOException {
+    var errorInfo =
+        build.buf.gen.google.rpc.ErrorInfo.newBuilder()
+            .setReason("ERROR_REASON_MAXIMUM_DEPTH_EXCEEDED")
+            .setDomain("authzed.com")
+            .putMetadata("maximum_depth_allowed", "50")
+            .build();
+
+    var service =
+        new PermissionsServiceGrpc.PermissionsServiceImplBase() {
+          @Override
+          public void checkBulkPermissions(
+              CheckBulkPermissionsRequest request,
+              StreamObserver<CheckBulkPermissionsResponse> responseObserver) {
+            responseObserver.onNext(
+                CheckBulkPermissionsResponse.newBuilder()
+                    .setCheckedAt(ZedToken.newBuilder().setToken("rev-err").build())
+                    .addPairs(
+                        CheckBulkPermissionsPair.newBuilder()
+                            .setError(
+                                build.buf.gen.google.rpc.Status.newBuilder()
+                                    .setCode(Status.Code.RESOURCE_EXHAUSTED.value())
+                                    .setMessage("max depth exceeded")
+                                    .addDetails(
+                                        com.google.protobuf.Any.pack(
+                                            errorInfo, "type.googleapis.com/"))
+                                    .build())
+                            .build())
+                    .build());
+            responseObserver.onCompleted();
+          }
+        };
+
+    try (TestServers servers = TestServers.start(service)) {
+      SpiceDBClient client = servers.client();
+
+      ResourceExhaustedException ex =
+          assertThrows(
+              ResourceExhaustedException.class,
+              () ->
+                  client.checkPermissions(
+                      Consistency.full(),
+                      "view",
+                      Relationship.of("document", "doc1", "view", "user", "alice")));
+
+      assertEquals("ERROR_REASON_MAXIMUM_DEPTH_EXCEEDED", ex.getReason());
+      assertEquals("authzed.com", ex.getReasonDomain());
+      assertEquals("50", ex.getReasonMetadata().get("maximum_depth_allowed"));
     }
   }
 

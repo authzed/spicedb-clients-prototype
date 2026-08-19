@@ -3,6 +3,7 @@ export {
   SpiceDBClient,
   createSpiceDBClient,
   type SpiceDBClientOptions,
+  type SpiceDBProtoClient,
   type TlsOptions,
 } from "./client.js";
 

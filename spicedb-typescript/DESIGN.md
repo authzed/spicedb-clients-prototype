@@ -112,6 +112,49 @@ skipped handshake test reads as coverage while proving nothing, which is the
 failure mode root DESIGN.md, "RULE: A system-TLS constructor must reach a real
 server", clause 3 warns about one layer up.
 
+### Escape hatch: raw proto access
+
+`client.raw()` returns the underlying `SpiceDBProtoClient` — the four generated
+Connect clients (`permissions`, `schema`, `watch`, `experimental`) this library
+makes its own calls through:
+
+```typescript
+const { permissionship } = await client.raw().permissions.checkPermission({
+  consistency: { requirement: { case: "fullyConsistent", value: true } },
+  resource: { objectType: "document", objectId: "readme" },
+  permission: "view",
+  subject: { object: { objectType: "user", objectId: "jimmy" } },
+});
+```
+
+Clearly-marked **secondary** API, which is what root DESIGN.md's "What NOT To
+Do" permits: channels, stubs and metadata stay out of the primary surface, and
+"escape hatches for advanced use are acceptable as clearly marked secondary
+API". It exists so a request the idiomatic surface cannot express — an RPC or
+proto field not wrapped here, such as
+`WriteRelationshipsRequest.optionalTransactionMetadata` — has a workaround
+short of forking the client.
+
+Four properties, all deliberate:
+
+- **The `authorization` header comes free.** It is set by a transport
+  interceptor, so a raw call is authenticated exactly as an idiomatic one is.
+- **A raw call is a raw call.** No `SpiceDBError` mapping (you catch Connect's
+  `ConnectError`), no retry, and no `defaultTimeoutMs` — pass
+  `CallOptions.timeoutMs` yourself. That is the cost of the hatch, and the
+  reason the idiomatic methods remain the default.
+- **Do not call `close()` on it.** It is this client's own connection;
+  `SpiceDBClient.close()` is what releases it.
+- **It is an accessor, never a constructor.** It takes no endpoint, token, or
+  transport setting, so transport construction stays on the single guarded path
+  in the proto tier's `createSpiceDBClient` and the hatch cannot become a way
+  around root DESIGN.md, "RULE: Credentials over insecure transport require an
+  explicit opt-in".
+
+No stability promise beyond what `@connectrpc/connect` and the generated
+`@spicedb/proto` clients give. The type is re-exported as `SpiceDBProtoClient`
+so a caller can name it without depending on `@spicedb/proto` directly.
+
 ### Consistency
 
 Explicit, never defaulted:
@@ -466,6 +509,7 @@ See package sections above.
 | `watch_changes/` | Watching for changes |
 | `schema_management/` | Schema read/write |
 | `bulk_operations/` | Bulk checks and imports |
+| `raw_escape_hatch/` | `raw()` — driving the generated Connect client directly for a proto field (`optionalTransactionMetadata`) and an RPC (`CheckPermission`) the idiomatic API does not expose |
 
 ## Typed Client Generation
 

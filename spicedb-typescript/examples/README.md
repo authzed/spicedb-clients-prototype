@@ -31,6 +31,10 @@ Or use `mage test` which starts a SpiceDB container automatically.
 - `call_deadlines/` — `defaultTimeoutMs` on `createSpiceDBClient`, a per-call
   `timeoutMs` override, and confirming bulk import isn't bounded by the
   unary default.
+- `raw_escape_hatch/` — the `raw()` escape hatch: driving the generated
+  Connect client directly to send `optionalTransactionMetadata` (a proto field
+  this client does not wrap) and to call the single-check `CheckPermission`
+  RPC, then handing the same connection back to the idiomatic API.
 - `custom_tls/` — reaching a SpiceDB behind a private CA with `tls.caCert`,
   and mutual TLS with `tls.clientCert`/`tls.clientKey`. Brings up its own
   TLS-terminated endpoint — the only example that does not use the shared

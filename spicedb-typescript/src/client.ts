@@ -2,6 +2,7 @@ import { create, type JsonObject } from "@bufbuild/protobuf";
 import {
   createSpiceDBClient as createProtoClient,
   type ClientOptions as ProtoClientOptions,
+  type SpiceDBProtoClient,
   type TlsOptions,
   CheckBulkPermissionsRequestItemSchema,
   CheckBulkPermissionsRequestSchema,
@@ -81,6 +82,14 @@ import {
   toSpiceDBErrorFromStatus,
   isTransientError,
 } from "./errors.js";
+
+/**
+ * The escape hatch's return type: the underlying proto client, carrying the
+ * four generated Connect clients this library calls through. Re-exported from
+ * the proto tier so a caller can name what {@link SpiceDBClient.raw} hands
+ * back without depending on `@spicedb/proto` directly.
+ */
+export type { SpiceDBProtoClient };
 
 /**
  * Caller-supplied TLS trust material for the secure path.
@@ -240,7 +249,7 @@ async function* importBatches(
  * All write methods return an opaque revision string.
  */
 export class SpiceDBClient {
-  private readonly proto: ReturnType<typeof createProtoClient>;
+  private readonly proto: SpiceDBProtoClient;
   private readonly maxRetries: number;
   private readonly defaultTimeoutMs: number;
 
@@ -253,6 +262,54 @@ export class SpiceDBClient {
     });
     this.maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
     this.defaultTimeoutMs = options.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS;
+  }
+
+  /**
+   * Escape hatch: the underlying `SpiceDBProtoClient`, with the four generated
+   * Connect clients (`permissions`, `schema`, `watch`, `experimental`) this
+   * client makes its own calls through.
+   *
+   * Clearly-marked **secondary** API. Root DESIGN.md's "What NOT To Do" keeps
+   * channels, stubs and metadata out of the primary surface and permits exactly
+   * this -- "escape hatches for advanced use are acceptable as clearly marked
+   * secondary API" -- so that a request the idiomatic methods cannot express
+   * (an RPC or proto field not wrapped here, such as
+   * `WriteRelationshipsRequest.optionalTransactionMetadata`) has a workaround
+   * short of forking the client:
+   *
+   * ```ts
+   * const { permissionship } = await client.raw().permissions.checkPermission({
+   *   consistency: { requirement: { case: "fullyConsistent", value: true } },
+   *   resource: { objectType: "document", objectId: "readme" },
+   *   permission: "view",
+   *   subject: { object: { objectType: "user", objectId: "jimmy" } },
+   * });
+   * ```
+   *
+   * Four things to know before reaching for it:
+   *
+   * - The `authorization` header comes free. It is set by a transport
+   *   interceptor, so every raw call is authenticated exactly as an idiomatic
+   *   one is -- unlike this repo's Python client, which authenticates per call.
+   * - A raw call is a raw call: no `SpiceDBError` mapping (you catch
+   *   Connect's `ConnectError`), no retry on a transient failure, and no
+   *   `defaultTimeoutMs` -- pass `CallOptions.timeoutMs` yourself, or the call
+   *   is unbounded.
+   * - Do NOT call `close()` on the returned object. It is the same connection
+   *   this client uses, and {@link SpiceDBClient.close} is what releases it;
+   *   closing it here breaks every later call on this client.
+   * - No stability promise beyond what `@connectrpc/connect` and the generated
+   *   `@spicedb/proto` clients give. They are those packages' objects, and this
+   *   client will not shim over a change in either.
+   *
+   * It is an accessor, never a constructor: it takes no endpoint, token, or
+   * transport setting and hands back a client that already exists, so it cannot
+   * become a second construction path around the guard in
+   * `createSpiceDBClient` -- root DESIGN.md, "RULE: Credentials over insecure
+   * transport require an explicit opt-in".
+   */
+  raw(): SpiceDBProtoClient {
+    return this.proto;
   }
 
   /**

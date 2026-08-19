@@ -4,6 +4,42 @@
 
 ### Added
 
+- **2026-08-19**: An escape hatch, `SpiceDBClient.raw()`. It returns the
+  underlying `SpiceDBProtoClient` — the four generated Connect clients
+  (`permissions`, `schema`, `watch`, `experimental`) this library makes its own
+  calls through — so a request the idiomatic API cannot express has a
+  workaround short of forking the client:
+
+  ```typescript
+  const { permissionship } = await client.raw().permissions.checkPermission({
+    consistency: { requirement: { case: "fullyConsistent", value: true } },
+    resource: { objectType: "document", objectId: "readme" },
+    permission: "view",
+    subject: { object: { objectType: "user", objectId: "jimmy" } },
+  });
+  ```
+
+  Clearly-marked **secondary** API — root DESIGN.md's "What NOT To Do" keeps
+  channels, stubs and metadata out of the primary surface and permits exactly
+  this ("escape hatches for advanced use are acceptable as clearly marked
+  secondary API"). No stability promise beyond what `@connectrpc/connect` and
+  the generated `@spicedb/proto` clients give. The type is re-exported as
+  `SpiceDBProtoClient` so callers can name it without depending on
+  `@spicedb/proto` directly.
+
+  The `authorization` header comes free (it is set by a transport interceptor),
+  but a raw call gets no `SpiceDBError` mapping, no retry, and no
+  `defaultTimeoutMs` — pass `CallOptions.timeoutMs` yourself. Do not call
+  `close()` on the returned object: it is this client's own connection, and
+  `SpiceDBClient.close()` is what releases it.
+
+  It is an accessor, not a constructor: it takes no endpoint, token, or
+  transport setting, so transport construction stays on the single guarded path
+  in the proto tier and this cannot become a route around root DESIGN.md,
+  "RULE: Credentials over insecure transport require an explicit opt-in".
+
+  New example: `examples/raw_escape_hatch/`.
+
 - **2026-08-19**: Caller-supplied TLS trust material, via a new `tls` option on
   both `new SpiceDBClient({ ... })` and `createSpiceDBClient(...)`, plus the
   new exported `TlsOptions` type. Purely additive — an existing call site is

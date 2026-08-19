@@ -4,6 +4,7 @@
 
 ```ts
 
+import { SpiceDBProtoClient } from '@spicedb/proto';
 import { TlsOptions } from '@spicedb/proto';
 
 // @public
@@ -475,6 +476,7 @@ export class SpiceDBClient {
     }): Promise<bigint>;
     lookupResources(params: LookupResourcesParams, consistency: Consistency): AsyncIterableIterator<LookupResource>;
     lookupSubjects(params: LookupSubjectsParams, consistency: Consistency): AsyncIterableIterator<LookupSubject>;
+    raw(): SpiceDBProtoClient;
     readRelationships(filter: RelationshipFilterOptions, consistency: Consistency, options?: {
         signal?: AbortSignal;
     }): AsyncIterableIterator<Relationship>;
@@ -528,6 +530,8 @@ export interface SpiceDBErrorOptions extends ErrorOptions {
     reasonDomain?: string;
     reasonMetadata?: Record<string, string>;
 }
+
+export { SpiceDBProtoClient }
 
 // @public
 export interface SubjectRef {

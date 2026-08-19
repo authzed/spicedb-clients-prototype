@@ -18,6 +18,8 @@ generated C# files in `gen/`.
 ## File layout
 
 - `gen/` — buf-generated code (DO NOT MODIFY)
-- `Client.cs` — SpiceDBProtoClient class, constructor, IDisposable
-- `ClientTest.cs` — xUnit tests
-- `SpiceDB.Proto.csproj` — .NET 8 project file
+- `Client.cs` — SpiceDBProtoClient class, constructors, the loopback guard, IDisposable
+- `ClientTest.cs` — xUnit tests (construction, disposal, channel ownership)
+- `InsecureHostGuardTest.cs` — xUnit tests for the insecure-transport credentials guard
+- `TransitiveProtoStubs.cs` — metadata-only stubs for transitive proto dependencies
+- `SpiceDB.Proto.csproj` — `net10.0` project file

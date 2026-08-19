@@ -27,9 +27,11 @@ from spicedb.errors import (
     FailedPreconditionError,
     InvalidArgumentError,
     NotFoundError,
+    OutOfRangeError,
     PermissionDeniedError,
     ResourceExhaustedError,
     SpiceDBError,
+    UnauthenticatedError,
     UnavailableError,
 )
 from spicedb.types import (
@@ -111,5 +113,7 @@ __all__ = [
     "CancelledError",
     "DeadlineExceededError",
     "ResourceExhaustedError",
+    "UnauthenticatedError",
+    "OutOfRangeError",
     "EventLoopBindingError",
 ]

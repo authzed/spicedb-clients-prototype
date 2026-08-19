@@ -4,6 +4,44 @@
 
 ### Added
 
+- Error mapping now carries the server's detail all the way to the caller, per
+  root DESIGN.md, "RULE: Error mapping must not lose the server's detail".
+  Purely additive.
+  - Two new exception types, both `SpiceDBError` subclasses and both exported
+    from `spicedb`:
+    - `OutOfRangeError` for `OUT_OF_RANGE`, SpiceDB's code for an expired or
+      garbage-collected ZedToken. It previously fell through to the base
+      `SpiceDBError`, so the one recoverable error in a token-threading
+      application was indistinguishable from an internal fault. Recovery is
+      mechanical: discard the stale token and re-read at full consistency.
+    - `UnauthenticatedError` for `UNAUTHENTICATED` — a wrong, expired, or
+      rotated API token, previously also indistinguishable from an internal
+      fault. Distinct from `PermissionDeniedError`, which means the caller was
+      identified but not allowed.
+  - Every `SpiceDBError` now carries the `google.rpc.ErrorInfo` detail SpiceDB
+    attaches to a status, on three new attributes: `reason` (the name of an
+    `authzed.api.v1.ErrorReason` enum value, e.g.
+    `"ERROR_REASON_MAXIMUM_DEPTH_EXCEEDED"`), `reason_domain` (`"authzed.com"`
+    for SpiceDB), and `reason_metadata` (the specifics behind the reason, such
+    as which precondition failed). The reason is surfaced exactly as the server
+    sent it: a value a newer server knows and this client does not is passed
+    through unchanged rather than coerced or rejected, per root DESIGN.md's
+    "RULE: A conversion that cannot preserve meaning must fail", which requires
+    server-supplied unknowns to degrade rather than raise. `reason` is `""` and
+    `reason_metadata` `{}` when the server attached no `ErrorInfo`. Both
+    `to_spicedb_error` (whole-call errors) and `error_from_status_proto`
+    (per-item bulk errors) populate them.
+
+  ```python
+  try:
+      await client.write(txn)
+  except FailedPreconditionError as e:
+      if e.reason == "ERROR_REASON_WRITE_OR_DELETE_PRECONDITION_FAILURE":
+          print(e.reason_metadata["precondition_resource_id"])
+  except OutOfRangeError:
+      ...  # ZedToken expired or GC'd: drop it and re-read at full consistency.
+  ```
+
 - `spicedb.sync.SpiceDBClient` — a synchronous flavor of the client, exposing
   the same 22 methods as `spicedb.aio.SpiceDBClient` with identical names and
   signatures (`tests/test_parity.py` fails the build if the two surfaces

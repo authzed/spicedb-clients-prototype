@@ -38,9 +38,11 @@ Security-obvious named constructors:
 
 Per root DESIGN.md, "RULE: Credentials over insecure transport require an
 explicit opt-in": `CreatePlaintext` only permits plaintext to a loopback
-endpoint (`localhost`, `127.0.0.0/8`, `::1`, or a `unix:` socket target) — the
-local-development case that is the entire reason it exists. Anything else
-needs `allowInsecureRemoteCredentials: true` passed explicitly, or
+endpoint (`localhost`, `127.0.0.0/8`, or `::1`) — the local-development case
+that is the entire reason it exists. A `unix:` target is NOT loopback here and
+is refused outright: Grpc.Net.Client dials a URI, so it would resolve the DNS
+name `unix` rather than a socket path. Anything else needs
+`allowInsecureRemoteCredentials: true` passed explicitly, or
 `CreatePlaintext` refuses to construct the client at all, before any
 connection is created.
 

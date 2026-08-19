@@ -295,8 +295,19 @@
   uses — and applies the loopback test to `Uri.IdnHost`, the host the transport actually
   resolves. Guard and transport can no longer disagree. Endpoints containing `@`, `/`, `?`,
   `#`, or whitespace are additionally refused outright, since a legitimate SpiceDB target
-  contains none of them. A bare IPv6 literal (`"::1"`) is bracketed before parsing and keeps
-  working, as do `localhost` and 127.0.0.0/8.
+  contains none of them. A bare IPv6 literal (`"::1"`) is bracketed — for the guard's parse
+  **and** for the address the transport dials, both via one `TransportAuthority` helper, so the
+  two cannot disagree — and keeps working, as do `localhost` and 127.0.0.0/8.
+
+- **2026-08-18**: **Bare `::1` now actually connects.** It satisfied the guard but then threw
+  `UriFormatException` out of `GrpcChannel.ForAddress`, because the guard bracketed the literal
+  for its own parse while the constructor built the address from the raw endpoint
+  (`"http://::1"` is not a legal URI). This is the same escaping-exception defect as the
+  `Uri.IdnHost` one fixed earlier, one call further down, for an input the fixtures assert is
+  supported. `"::1"`, `"[::1]"`, `"0:0:0:0:0:0:0:1"` and `"[::1]:50051"` all construct a client.
+
+- **2026-08-18**: A null `endpoint` or `token` now throws `ArgumentNullException` rather than
+  `NullReferenceException` from whichever string operation happened to run first.
 
 - **2026-08-18**: **Breaking, and security-motivated: `unix:` endpoints are now refused instead
   of being treated as loopback.** `CreatePlaintext("unix:/var/run/spicedb.sock", token)`

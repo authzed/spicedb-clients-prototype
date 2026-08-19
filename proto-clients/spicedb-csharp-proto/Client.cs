@@ -83,6 +83,9 @@ public sealed class SpiceDBProtoClient : IDisposable
         // token there. Failing loudly here is the only honest answer; silently dialing
         // a host called "unix" is not. (UDS is still reachable via CreateFromChannel
         // with a channel built on a SocketsHttpHandler that has a UDS ConnectCallback.)
+        ArgumentNullException.ThrowIfNull(endpoint);
+        ArgumentNullException.ThrowIfNull(token);
+
         if (endpoint.StartsWith("unix:", StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException(
@@ -107,7 +110,11 @@ public sealed class SpiceDBProtoClient : IDisposable
         }
 
         var scheme = insecure ? "http" : "https";
-        var address = $"{scheme}://{endpoint}";
+        // TransportAuthority, not the raw endpoint: a bare IPv6 literal must be
+        // bracketed to be a legal URI authority, and it is the same function
+        // IsLoopbackEndpoint vetted, so the two cannot disagree about where this
+        // connection goes.
+        var address = $"{scheme}://{TransportAuthority(endpoint)}";
 
         var callCredentials = CallCredentials.FromInterceptor((_, metadata) =>
         {
@@ -211,6 +218,31 @@ public sealed class SpiceDBProtoClient : IDisposable
     }
 
     /// <summary>
+    /// Returns the URI authority the transport dials for <paramref name="endpoint"/>.
+    /// <para>
+    /// This exists so <see cref="IsLoopbackEndpoint"/> and the constructor cannot
+    /// disagree about what is being connected to. It brackets a bare IPv6 literal:
+    /// <c>"::1"</c> is an ordinary way to name the loopback host and an explicit part
+    /// of this client's supported set, but it is not a legal URI authority, so
+    /// <c>new Uri("http://::1")</c> throws. The guard used to bracket it for its own
+    /// parse while the constructor built the address from the raw endpoint, so
+    /// <c>"::1"</c> passed the guard and then threw <see cref="UriFormatException"/>
+    /// out of <see cref="GrpcChannel.ForAddress(string)"/> -- the very exception type
+    /// this constructor is documented not to throw.
+    /// </para>
+    /// </summary>
+    private static string TransportAuthority(string endpoint)
+    {
+        if (!endpoint.StartsWith('[')
+            && IPAddress.TryParse(endpoint, out var bareIp)
+            && bareIp.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6)
+        {
+            return $"[{endpoint}]";
+        }
+        return endpoint;
+    }
+
+    /// <summary>
     /// Reports whether the connection this client would actually open for
     /// <paramref name="endpoint"/> terminates on a loopback destination: the literal
     /// hostname "localhost", an IP in 127.0.0.0/8, or the IPv6 loopback ::1.
@@ -282,16 +314,11 @@ public sealed class SpiceDBProtoClient : IDisposable
             }
         }
 
-        // A bare IPv6 literal ("::1") is not a legal URI authority -- brackets are the
-        // only form the transport can dial -- so bracket it and let the one parser
-        // below judge it, rather than special-casing it out of the parse entirely.
-        var authority = endpoint;
-        if (!endpoint.StartsWith('[')
-            && IPAddress.TryParse(endpoint, out var bareIp)
-            && bareIp.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6)
-        {
-            authority = $"[{endpoint}]";
-        }
+        // Exactly the authority the constructor above dials -- see TransportAuthority.
+        // Using one function for both is the point: when this bracketed a bare IPv6
+        // literal and the constructor did not, "::1" passed the guard and then died
+        // in GrpcChannel.ForAddress with a UriFormatException.
+        var authority = TransportAuthority(endpoint);
 
         // The scheme is "http" because this guard only ever gates the insecure path;
         // either way, scheme does not affect how the authority is parsed.

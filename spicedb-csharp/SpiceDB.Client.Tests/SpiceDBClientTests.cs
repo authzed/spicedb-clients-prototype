@@ -129,6 +129,24 @@ public class SpiceDBClientTests
         act.Should().NotThrow();
     }
 
+    /// <summary>
+    /// Bare <c>::1</c> is item 8 of the loopback contract, so it must build a client
+    /// through the public entry point — not merely satisfy the guard and then throw
+    /// <c>UriFormatException</c> from <c>GrpcChannel.ForAddress</c>, which is what
+    /// happened while the guard bracketed the literal and the transport address did
+    /// not.
+    /// </summary>
+    [Theory]
+    [InlineData("::1")]
+    [InlineData("[::1]")]
+    [InlineData("0:0:0:0:0:0:0:1")]
+    [InlineData("[::1]:50051")]
+    public void CreatePlaintext_BareIpv6LoopbackWorksWithNoOptIn(string endpoint)
+    {
+        var act = () => SpiceDBClient.CreatePlaintext(endpoint, "testtoken");
+        act.Should().NotThrow();
+    }
+
     [Fact]
     public void CreatePlaintext_AllowInsecureRemoteCredentialsPermitsNonLoopback()
     {

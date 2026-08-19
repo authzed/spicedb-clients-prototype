@@ -180,6 +180,42 @@ public class InsecureHostGuardTest
     }
 
     /// <summary>
+    /// A bare IPv6 literal must produce a WORKING client, not merely satisfy the
+    /// guard. <c>"::1"</c> is item 8 of the loopback contract and an explicit fixture
+    /// in TestIsLoopbackEndpoint above -- but it is not a legal URI authority, so
+    /// while the guard bracketed it for its own parse and the constructor built the
+    /// address from the raw endpoint, <c>GrpcChannel.ForAddress("http://::1")</c>
+    /// threw <see cref="UriFormatException"/> and no client could be created at all.
+    /// That is the same escaping-exception defect as the IdnHost one, one call
+    /// further down, for an input the fixtures assert is supported.
+    /// </summary>
+    [Theory]
+    [InlineData("::1")]
+    [InlineData("[::1]")]
+    [InlineData("0:0:0:0:0:0:0:1")]
+    [InlineData("[::1]:50051")]
+    [InlineData("127.0.0.1")]
+    public void TestBareIpv6LoopbackConstructsAClient(string endpoint)
+    {
+        var handler = new AuthCapturingHandler();
+        using var client = new SpiceDBProtoClient(endpoint, "test-token", insecure: true, allowInsecureRemoteCredentials: false, httpHandler: handler);
+        Assert.NotNull(client);
+    }
+
+    /// <summary>
+    /// A null endpoint or token must surface as ArgumentNullException, not as a
+    /// NullReferenceException from whichever string operation happens to run first.
+    /// </summary>
+    [Fact]
+    public void TestNullArgumentsThrowArgumentNullException()
+    {
+        Assert.Throws<ArgumentNullException>(() =>
+            new SpiceDBProtoClient(null!, "token", insecure: true, allowInsecureRemoteCredentials: false));
+        Assert.Throws<ArgumentNullException>(() =>
+            new SpiceDBProtoClient("localhost:50051", null!, insecure: true, allowInsecureRemoteCredentials: false));
+    }
+
+    /// <summary>
     /// A unix-socket target must be refused outright, not treated as loopback. This
     /// transport has no UDS support reachable from an address string, so
     /// GrpcChannel.ForAddress("http://unix:/var/run/spicedb.sock") resolves the DNS

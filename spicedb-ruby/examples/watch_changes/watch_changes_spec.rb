@@ -10,14 +10,15 @@ RSpec.describe 'WatchChanges' do
   # this directory). The skip is printed with its reason and counted against
   # the expected example count, so it cannot go quiet.
   #
-  # It used to be excluded by `rspec examples/ --tag ~watch` instead, and the
-  # :watch tag below is what that matched. A tag filter that matches nothing
-  # exits 0, which is how this spec came to be tracked, documented, and never
-  # once executed in CI: the flag predates the file. The tag is kept because
-  # `--tag watch` is still a convenient way to run only these, but nothing
-  # depends on it for exclusion any more. Run this file explicitly with:
+  # It used to be excluded by `rspec examples/ --tag ~watch`, which is why this
+  # file once carried `:watch` on both `it` blocks. That flag predates the
+  # file: it was in the Magefile from the first Ruby commit, and this spec was
+  # added later already tagged, so it matched from the day it landed and this
+  # example has never executed in CI. The tags are gone now that exclusion is
+  # by directory -- leaving them would mean a reintroduced `--tag ~watch`
+  # silently excluded this twice over. Run this file explicitly with:
   #   bundle exec rspec examples/watch_changes/watch_changes_spec.rb
-  it 'receives relationship updates via the watch API', :watch do
+  it 'receives relationship updates via the watch API' do
     client.write_schema(TEST_SCHEMA)
 
     # Write a relationship so we have a starting revision
@@ -51,8 +52,8 @@ RSpec.describe 'WatchChanges' do
     expect(update.relationship.resource_type).to eq('document')
   end
 
-  # Tagged :watch for the same reason as above.
-  it 'receives a checkpoint event distinguishable from an update event', :watch do
+  # Skipped by directory for the same reason as above.
+  it 'receives a checkpoint event distinguishable from an update event' do
     client.write_schema(TEST_SCHEMA)
 
     # include_checkpoints: true asks the server for periodic checkpoint

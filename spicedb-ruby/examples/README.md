@@ -57,9 +57,12 @@ exception: `watch_changes/` is an open-ended stream with no bounded consumer
 yet, so the runner skips it by name and prints the skip. The runner names the
 remaining example directories on the rspec command line rather than filtering
 with `--tag ~watch`, and then reads rspec's JSON report to confirm every
-selected example actually contributed a spec -- a tag filter that matches
-nothing exits 0, which is how `watch_changes_spec.rb` came to be tracked,
-listed here, and never once executed in CI. See root `DESIGN.md`, "RULE: An
+selected example actually contributed a spec. Two separate things were wrong
+with the tag filter: it excluded `watch_changes_spec.rb` from every CI run the
+repo has ever done -- the `:watch` tags were added later, by a commit that had
+no reason to notice the flag -- and, being a filter, it would have exited 0
+just the same had it matched nothing at all. Naming the directories fixes the
+first; reading the report fixes the second. See root `DESIGN.md`, "RULE: An
 example must be executed by CI and must be able to fail".
 
 ## Examples

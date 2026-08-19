@@ -4,6 +4,28 @@
 
 ### Fixed
 
+- **2026-08-19**: **The example set is pinned by name, not by count.** `wantExampleCount` passed
+  unchanged when an example directory was *renamed* -- only deletion was caught, and a manifest
+  can drift from disk with no signal. `wantExamples` now lists every example by name and is
+  reconciled with the glob in both directions, the same shape the skip targets already used.
+  Verified by renaming `examples/lookup_subjects`: `expected but absent: [lookup_subjects];
+  present but not expected: [lookup_subj]`.
+
+- **2026-08-19**: **A skipped case no longer counts as an executed one.** The report reader
+  behind the executed-count assertion counted every reported case, so a fully-`xit`/`skip` example
+  would have satisfied "this example contributed a test case" while running nothing. Skipped
+  cases are now excluded and the reported total is the executed total. No such example exists
+  today; the point is that adding one cannot go unnoticed.
+
+- **2026-08-19** (documentation only): **Corrected the causal claim about `--tag ~watch`.**
+  `examples/README.md` and `watch_changes_spec.rb` said a tag filter "that matches nothing exits 0,
+  which is how this spec came to be tracked ... and never once executed". That is two true facts
+  glued into one false claim: the filter *did* match -- the spec carried `:watch` on both blocks --
+  and excluded it, because the flag predates the file. A filter matching nothing is a separate
+  hazard, and the one the JSON report now covers. Both texts now say which is which, matching what
+  `Magefile.go` already said. The now-redundant `:watch` tags are removed, so a reintroduced
+  `--tag ~watch` cannot silently double-exclude.
+
 - **2026-08-19**: **`rspec --tag ~watch` replaced by a named, counted skip list.** A tag filter
   that matches nothing exits 0, and that is how `examples/watch_changes/watch_changes_spec.rb`
   came to be git-tracked, listed in `examples/README.md` with no caveat, and **never once

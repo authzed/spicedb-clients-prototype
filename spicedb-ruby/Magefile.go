@@ -27,26 +27,45 @@ const (
 	// 50051 is taken.
 	defaultEndpoint = "localhost:50051"
 	defaultToken    = "somerandomkeyhere"
-
-	// Number of files matching examples/*/*_spec.rb. A glob cannot list an
-	// example that does not exist, but a renamed or moved file silently yields
-	// a *shorter* list instead of an error, so the count is asserted rather
-	// than trusted. Bump this when adding an example. See root DESIGN.md,
-	// "RULE: An example must be executed by CI and must be able to fail",
-	// clause 1.
-	wantExampleCount = 15
 )
+
+// wantExamples is every example this runner expects under examples/, by name.
+// The set is pinned rather than counted: a count alone still passes when an
+// example is renamed, and a glob cannot list an example that is not there, so a
+// moved or renamed example would otherwise just shrink the run and still report
+// green. Add a name here when adding an example. See root DESIGN.md, "RULE: An
+// example must be executed by CI and must be able to fail", clause 1.
+var wantExamples = []string{
+	"bulk_operations",
+	"call_deadlines",
+	"check_permission",
+	"custom_tls",
+	"delete_relationships",
+	"expand_permission_tree",
+	"lookup_resources",
+	"lookup_subjects",
+	"raw_escape_hatch",
+	"read_relationships",
+	"relationship_counters",
+	"schema_management",
+	"schema_reflection",
+	"watch_changes",
+	"write_relationships",
+}
 
 // skippedExamples maps an example that IntegrationTest does not execute to the
 // reason it does not. Every other example under examples/ MUST run. A skip has
 // to be listed here to happen at all, so it is visible in the run's output and
-// counted against wantExampleCount -- never the silent residue of a filter.
+// counted against wantExamples -- never the silent residue of a filter.
 //
-// This replaced `rspec --tag ~watch`. A tag filter that matches nothing exits
-// 0, so watch_changes_spec.rb -- added after the flag, already carrying :watch
-// on both `it` blocks -- had never executed in CI, while being git-tracked and
-// listed in the manifests with no caveat. Skipping by directory instead means
-// the skip is visible and counted.
+// This replaced `rspec --tag ~watch`. That flag was in the Magefile from the
+// first Ruby commit, and watch_changes_spec.rb was added later already carrying
+// :watch on both `it` blocks, so it matched from the day it landed and that
+// example had never executed in CI -- while being git-tracked and listed in the
+// manifests with no caveat. (A tag filter that matches *nothing* also exits 0,
+// which is the second, separate hazard the JSON report below covers.) Skipping
+// by directory instead means the skip is visible and counted; the now-redundant
+// :watch tags were removed so a reintroduced filter cannot double-exclude.
 var skippedExamples = map[string]string{
 	"watch_changes": "open-ended stream; needs a bounded consumer with explicit cancellation",
 }
@@ -139,13 +158,6 @@ func exampleTargets() ([]string, error) {
 	}
 	sort.Strings(files)
 
-	if len(files) != wantExampleCount {
-		return nil, fmt.Errorf(
-			"examples/*/*_spec.rb matched %d files, want %d: an example was added, renamed, or moved. "+
-				"Update wantExampleCount in Magefile.go if the change is intended",
-			len(files), wantExampleCount)
-	}
-
 	names := make([]string, 0, len(files))
 	onDisk := make(map[string]bool, len(files))
 	for _, f := range files {
@@ -157,11 +169,8 @@ func exampleTargets() ([]string, error) {
 		names = append(names, name)
 		onDisk[name] = true
 	}
-	for name := range skippedExamples {
-		if !onDisk[name] {
-			return nil, fmt.Errorf("skippedExamples names %q, which is not an example on disk: "+
-				"a renamed skip target would otherwise silently start being skipped by nothing", name)
-		}
+	if err := reconcile("examples/*/*_spec.rb", names, onDisk); err != nil {
+		return nil, err
 	}
 	return names, nil
 }
@@ -216,7 +225,7 @@ func IntegrationTest() error {
 		expected = append(expected, name)
 	}
 
-	wantExecuted := wantExampleCount - len(skippedExamples)
+	wantExecuted := len(wantExamples) - len(skippedExamples)
 	if len(expected) != wantExecuted {
 		return fmt.Errorf("selected %d examples to run, want %d (%d on disk, %d skipped)",
 			len(expected), wantExecuted, len(names), len(skippedExamples))
@@ -265,8 +274,10 @@ func IntegrationTest() error {
 }
 
 // rspecExamplesRun reads an rspec JSON report and returns the set of example
-// directories that contributed at least one rspec example, plus the total
-// number of rspec examples.
+// directories that contributed at least one *executed* rspec example, plus how
+// many were executed. Pending examples do not count: a pending example is still
+// reported, so counting it would let a fully-skipped spec satisfy the assertion
+// that it ran.
 func rspecExamplesRun(report string) (map[string]bool, int, error) {
 	data, err := os.ReadFile(report)
 	if err != nil {
@@ -275,20 +286,72 @@ func rspecExamplesRun(report string) (map[string]bool, int, error) {
 	var parsed struct {
 		Examples []struct {
 			FilePath string `json:"file_path"`
+			Status   string `json:"status"`
 		} `json:"examples"`
 	}
 	if err := json.Unmarshal(data, &parsed); err != nil {
 		return nil, 0, fmt.Errorf("parsing rspec report: %w", err)
 	}
 	ran := make(map[string]bool)
+	executed := 0
 	for _, e := range parsed.Examples {
+		// A pending/skipped example is reported like any other, so an `xit` or
+		// a `skip` would otherwise satisfy "this example contributed a spec"
+		// while executing nothing. rspec reports status "passed", "failed" or
+		// "pending".
+		if e.Status == "pending" {
+			continue
+		}
+		executed++
 		// file_path is "./examples/<name>/<name>_spec.rb".
 		parts := strings.Split(strings.TrimPrefix(filepath.ToSlash(e.FilePath), "./"), "/")
 		if len(parts) >= 2 && parts[0] == "examples" {
 			ran[parts[1]] = true
 		}
 	}
-	return ran, len(parsed.Examples), nil
+	return ran, executed, nil
+}
+
+// reconcile compares the example names found on disk against wantExamples in
+// both directions, and checks that every skip target still exists.
+//
+// The set is pinned by name rather than counted: a count alone still passes
+// when an example is *renamed*, and a glob cannot list an example that is not
+// there, so a moved or renamed example would otherwise just shrink the run and
+// still report green.
+func reconcile(glob string, names []string, onDisk map[string]bool) error {
+	want := make(map[string]bool, len(wantExamples))
+	for _, name := range wantExamples {
+		want[name] = true
+	}
+
+	var missing, unexpected []string
+	for _, name := range wantExamples {
+		if !onDisk[name] {
+			missing = append(missing, name)
+		}
+	}
+	for _, name := range names {
+		if !want[name] {
+			unexpected = append(unexpected, name)
+		}
+	}
+	sort.Strings(missing)
+	sort.Strings(unexpected)
+
+	if len(missing) > 0 || len(unexpected) > 0 {
+		return fmt.Errorf(
+			"%s does not match wantExamples in Magefile.go -- expected but absent: [%s]; "+
+				"present but not expected: [%s]. Update wantExamples if the change is intended",
+			glob, strings.Join(missing, ", "), strings.Join(unexpected, ", "))
+	}
+	for name := range skippedExamples {
+		if !onDisk[name] {
+			return fmt.Errorf("skippedExamples names %q, which is not an example on disk: "+
+				"a renamed skip target would otherwise silently start being skipped by nothing", name)
+		}
+	}
+	return nil
 }
 
 // envOr returns the value of the named environment variable, or fallback when

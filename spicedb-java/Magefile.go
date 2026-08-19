@@ -29,15 +29,31 @@ const (
 	defaultToken    = "somerandomkeyhere"
 
 	exampleTestDir = "examples/src/test/java/com/authzed/spicedb/examples"
-
-	// Number of concrete example test classes in exampleTestDir. A glob cannot
-	// list an example that does not exist, but a renamed or moved file silently
-	// yields a *shorter* list instead of an error, so the count is asserted
-	// rather than trusted. Bump this when adding an example. See root
-	// DESIGN.md, "RULE: An example must be executed by CI and must be able to
-	// fail", clause 1.
-	wantExampleCount = 14
 )
+
+// wantExamples is every example test class this runner expects in
+// exampleTestDir. The set is pinned rather than counted: a count alone still
+// passes when a class is renamed, and a glob cannot list a class that is not
+// there, so a moved or renamed example would otherwise just shrink the run and
+// still report green. Add a name here when adding an example. See root
+// DESIGN.md, "RULE: An example must be executed by CI and must be able to
+// fail", clause 1.
+var wantExamples = []string{
+	"BulkOperationsTest",
+	"CallDeadlinesTest",
+	"CheckPermissionTest",
+	"ConditionalCheckTest",
+	"ExpandPermissionTreeTest",
+	"LookupResourcesTest",
+	"LookupSubjectsTest",
+	"RawEscapeHatchTest",
+	"ReadRelationshipsTest",
+	"RelationshipCountersTest",
+	"SchemaManagementTest",
+	"SchemaReflectionTest",
+	"WatchChangesTest",
+	"WriteRelationshipsTest",
+}
 
 // notAnExample lists files under exampleTestDir that are not themselves
 // examples. SpiceDBIntegrationTest is the abstract base class the examples
@@ -164,17 +180,41 @@ func exampleTargets() ([]string, error) {
 		names = append(names, name)
 	}
 
-	if len(names) != wantExampleCount {
+	want := make(map[string]bool, len(wantExamples))
+	for _, name := range wantExamples {
+		want[name] = true
+	}
+	onDisk := make(map[string]bool, len(names))
+	for _, name := range names {
+		onDisk[name] = true
+	}
+
+	var missing, unexpected []string
+	for _, name := range wantExamples {
+		if !onDisk[name] {
+			missing = append(missing, name)
+		}
+	}
+	for _, name := range names {
+		if !want[name] {
+			unexpected = append(unexpected, name)
+		}
+	}
+	sort.Strings(missing)
+	sort.Strings(unexpected)
+
+	if len(missing) > 0 || len(unexpected) > 0 {
 		return nil, fmt.Errorf(
-			"%s/*Test.java yielded %d example classes, want %d: an example was added, renamed, "+
-				"or moved. Update wantExampleCount in Magefile.go if the change is intended",
-			exampleTestDir, len(names), wantExampleCount)
+			"%s/*Test.java does not match wantExamples in Magefile.go -- expected but absent: "+
+				"[%s]; present but not expected: [%s]. Update wantExamples if the change is intended",
+			exampleTestDir, strings.Join(missing, ", "), strings.Join(unexpected, ", "))
 	}
 	return names, nil
 }
 
 // junitClassesRun reads Gradle's JUnit XML reports and returns the set of
-// simple test-class names that reported at least one test case.
+// simple test-class names that reported at least one *executed* test case,
+// plus how many were executed. Skipped (@Disabled) cases do not count.
 func junitClassesRun(resultsDir string) (map[string]bool, int, error) {
 	files, err := filepath.Glob(filepath.Join(resultsDir, "TEST-*.xml"))
 	if err != nil {
@@ -193,12 +233,23 @@ func junitClassesRun(resultsDir string) (map[string]bool, int, error) {
 		}
 		var suite struct {
 			Name  string `xml:"name,attr"`
-			Tests int    `xml:"tests,attr"`
+			Cases []struct {
+				Skipped *struct{} `xml:"skipped"`
+			} `xml:"testcase"`
 		}
 		if err := xml.Unmarshal(data, &suite); err != nil {
 			return nil, 0, fmt.Errorf("parsing %s: %w", f, err)
 		}
-		if suite.Tests == 0 {
+		executed := 0
+		for _, c := range suite.Cases {
+			// A @Disabled case is still reported as a testcase, so counting it
+			// would let a fully-disabled class satisfy the assertion that it
+			// ran.
+			if c.Skipped == nil {
+				executed++
+			}
+		}
+		if executed == 0 {
 			continue
 		}
 		simple := suite.Name
@@ -206,7 +257,7 @@ func junitClassesRun(resultsDir string) (map[string]bool, int, error) {
 			simple = simple[i+1:]
 		}
 		ran[simple] = true
-		total += suite.Tests
+		total += executed
 	}
 	return ran, total, nil
 }

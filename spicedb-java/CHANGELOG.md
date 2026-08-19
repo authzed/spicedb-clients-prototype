@@ -295,6 +295,19 @@
 
 ### Fixes
 
+- **2026-08-19**: **The example set is pinned by name, not by count.** `wantExampleCount` passed
+  unchanged when an example class was *renamed* -- only deletion was caught, and a manifest
+  can drift from disk with no signal. `wantExamples` now lists every example by name and is
+  reconciled with the glob in both directions, the same shape the skip targets already used.
+  Verified by renaming `WatchChangesTest.java`: `expected but absent: [WatchChangesTest];
+  present but not expected: [WatchStreamTest]`.
+
+- **2026-08-19**: **A skipped case no longer counts as an executed one.** The report reader
+  behind the executed-count assertion counted every reported case, so a fully-`@Disabled` example
+  would have satisfied "this example contributed a test case" while running nothing. Skipped
+  cases are now excluded and the reported total is the executed total. No such example exists
+  today; the point is that adding one cannot go unnoticed.
+
 - **2026-08-19**: **`CallDeadlinesTest` could not run after any example that writes an `editor`
   relationship.** It writes its own schema, narrower than `SpiceDBIntegrationTest.SCHEMA`, and
   cleared `document` relationships *after* that write rather than before -- but SpiceDB refuses a

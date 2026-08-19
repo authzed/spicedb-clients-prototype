@@ -227,6 +227,9 @@ mod insecure_host_guard {
                 assert!(msg.contains("evil example.com:1234"), "{msg}");
                 assert!(msg.contains("allow_insecure_remote_credentials"), "{msg}");
             }
+            Err(other @ SpiceDBProtoClientError::InvalidToken(_)) => {
+                panic!("expected InsecureRemoteHostNotAllowed, got {other:?}")
+            }
             Err(other @ SpiceDBProtoClientError::UnixSocketNotSupported(_)) => {
                 panic!("expected InsecureRemoteHostNotAllowed, got {other:?}")
             }
@@ -316,6 +319,9 @@ mod insecure_host_guard {
             Err(SpiceDBProtoClientError::InsecureRemoteHostNotAllowed(msg)) => {
                 assert!(msg.contains(&endpoint), "{msg}");
                 assert!(msg.contains("allow_insecure_remote_credentials"), "{msg}");
+            }
+            Err(other @ SpiceDBProtoClientError::InvalidToken(_)) => {
+                panic!("expected InsecureRemoteHostNotAllowed, got {other:?}")
             }
             Err(other @ SpiceDBProtoClientError::UnixSocketNotSupported(_)) => {
                 panic!("expected InsecureRemoteHostNotAllowed, got {other:?}")
@@ -434,6 +440,48 @@ mod insecure_host_guard {
                     Err(SpiceDBProtoClientError::InsecureRemoteHostNotAllowed(_))
                 ),
                 "{endpoint:?} must be refused with a Result, not panic or succeed"
+            );
+        }
+    }
+
+    /// A token that cannot be encoded as an HTTP header must return `Err`,
+    /// not panic.
+    ///
+    /// The headline case is mundane and is the one that would actually bite:
+    /// a secret read from a file or a mounted k8s secret keeps its trailing
+    /// newline. Building the `authorization` metadata value with `.expect()`
+    /// turned that into `panicked at ...: valid bearer token:
+    /// InvalidMetadataValue`, unwinding out of a `Result`-returning async
+    /// constructor -- aborting the Tokio task carrying it, or the process
+    /// under `panic = "abort"`.
+    ///
+    /// `"tokén"` is included as a NEGATIVE case on purpose: bytes >= 0x80 are
+    /// legal obs-text header octets, so non-ASCII text does not trigger this
+    /// at all. That is exactly what makes the surviving control-character case
+    /// easy to miss.
+    #[tokio::test]
+    async fn token_that_cannot_be_a_header_returns_err_rather_than_panicking() {
+        for token in ["secret-from-file\n", "tok\nen", "tok\ren", "tok\0en"] {
+            let result =
+                SpiceDBProtoClient::new_with_options("localhost:50051", token, true, false).await;
+            match result {
+                Err(SpiceDBProtoClientError::InvalidToken(msg)) => {
+                    assert!(msg.contains("HTTP header"), "{msg}");
+                }
+                Err(other) => panic!("expected InvalidToken for {token:?}, got {other:?}"),
+                Ok(_) => panic!("expected {token:?} to be refused"),
+            }
+        }
+
+        // Legal header values, including a horizontal tab -- HTTP allows it as
+        // field-value whitespace, so it is NOT part of the refused set.
+        for token in ["tokén", "ordinary-token", "sk_live_abc123", "tok\ten"] {
+            let result =
+                SpiceDBProtoClient::new_with_options("localhost:50051", token, true, false).await;
+            assert!(
+                result.is_ok(),
+                "{token:?} is a legal header value and must be accepted: {:?}",
+                result.err()
             );
         }
     }

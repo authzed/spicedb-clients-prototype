@@ -25,6 +25,14 @@ pub enum SpiceDBProtoClientError {
     /// the credential guard and regardless of TLS, since no combination of
     /// options makes that the thing the caller asked for.
     UnixSocketNotSupported(String),
+    /// Refused because `token` cannot be carried in an HTTP header. A gRPC
+    /// `authorization` metadata value is an ASCII header value, so a control
+    /// character -- most commonly a trailing newline on a token read from a
+    /// file or a mounted secret -- has no valid encoding. Raised instead of
+    /// panicking: this is a `Result`-returning async constructor, and an
+    /// unwind here aborts the task carrying it (or the process, under
+    /// `panic = "abort"`).
+    InvalidToken(String),
     /// A tonic transport-level error (invalid URI, TLS/connect failure).
     Transport(tonic::transport::Error),
 }
@@ -34,6 +42,7 @@ impl fmt::Display for SpiceDBProtoClientError {
         match self {
             Self::InsecureRemoteHostNotAllowed(msg) => write!(f, "{msg}"),
             Self::UnixSocketNotSupported(msg) => write!(f, "{msg}"),
+            Self::InvalidToken(msg) => write!(f, "{msg}"),
             Self::Transport(e) => write!(f, "{e}"),
         }
     }
@@ -42,7 +51,9 @@ impl fmt::Display for SpiceDBProtoClientError {
 impl std::error::Error for SpiceDBProtoClientError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::InsecureRemoteHostNotAllowed(_) | Self::UnixSocketNotSupported(_) => None,
+            Self::InsecureRemoteHostNotAllowed(_)
+            | Self::UnixSocketNotSupported(_)
+            | Self::InvalidToken(_) => None,
             Self::Transport(e) => Some(e),
         }
     }
@@ -339,9 +350,26 @@ impl SpiceDBProtoClient {
             ep.connect().await?
         };
 
+        // Not .expect(): a gRPC metadata value is an ASCII header value, so a
+        // token holding a control character has no valid encoding -- and the
+        // overwhelmingly common way to get one is a trailing newline on a
+        // secret read from a file or a mounted k8s secret. Panicking there
+        // unwinds out of a Result-returning async fn, aborting the Tokio task
+        // carrying it, or the process under panic = "abort". Note that
+        // non-ASCII text such as "tokén" is NOT affected, and neither is a
+        // horizontal tab: bytes >= 0x80 are legal obs-text header octets and
+        // HTAB is legal field-value whitespace, which is what makes the
+        // surviving control-character case easy to miss.
         let bearer = format!("Bearer {}", token)
             .parse::<MetadataValue<tonic::metadata::Ascii>>()
-            .expect("valid bearer token");
+            .map_err(|_| {
+                SpiceDBProtoClientError::InvalidToken(
+                    "spicedb: token is not a valid gRPC metadata value: it contains a character \
+                     that cannot appear in an HTTP header (most often a trailing newline on a \
+                     token read from a file). Strip surrounding whitespace before passing it."
+                        .to_string(),
+                )
+            })?;
 
         let interceptor = BearerTokenInterceptor { token: bearer };
 

@@ -32,6 +32,17 @@
   sides now go through the same helper. `"::1"`, `"[::1]"` and `"0:0:0:0:0:0:0:1"` construct a
   client.
 
+- **A token that cannot be an HTTP header no longer panics out of the constructor.** Building
+  the `authorization` metadata value used `.expect("valid bearer token")`, so any token holding
+  a control character unwound out of a `Result`-returning async constructor — aborting the Tokio
+  task carrying it, or the process under `panic = "abort"`. **The realistic trigger is mundane:
+  a secret read from a file or a mounted k8s secret keeps its trailing newline.** It now returns
+  the new `SpiceDBProtoClientError::InvalidToken` (surfaced as `SpiceDBError::InvalidArgument`),
+  naming the likely cause. Non-ASCII tokens such as `"tokén"` were never affected — bytes `>=
+  0x80` are legal obs-text header octets — and neither is a horizontal tab, which is why the
+  control-character case survived the earlier endpoint fix. **Adding that variant is
+  source-breaking for an exhaustive `match` on `SpiceDBProtoClientError`.**
+
 - **A multi-byte endpoint no longer panics out of the constructor.** The unix-target check
   sliced `endpoint[..5]` — a *byte* index into a `&str` — which panics when byte 5 falls inside
   a character, so an IDN hostname such as `"abcdé.example.com:443"` unwound out of an async

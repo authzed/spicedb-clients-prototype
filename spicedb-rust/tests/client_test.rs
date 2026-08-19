@@ -146,6 +146,20 @@ mod insecure_host_guard {
         }
     }
 
+    /// A token with a trailing newline -- the shape you get from reading a
+    /// secret out of a file or a mounted k8s secret -- must return `Err`
+    /// through the public entry point, not panic out of it.
+    #[tokio::test]
+    async fn new_plaintext_returns_err_for_a_token_that_cannot_be_a_header() {
+        match SpiceDBClient::new_plaintext("localhost:50051", "secret-from-file\n").await {
+            Err(SpiceDBError::InvalidArgument(msg)) => {
+                assert!(msg.contains("HTTP header"), "{msg}");
+            }
+            Err(other) => panic!("expected InvalidArgument, got {other:?}"),
+            Ok(_) => panic!("expected a token with a trailing newline to be refused"),
+        }
+    }
+
     /// A unix-socket endpoint is refused, not silently turned into a DNS
     /// lookup for the hostname `unix`. tonic cannot dial a UDS path from a URI.
     #[tokio::test]

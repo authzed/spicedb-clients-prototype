@@ -2,6 +2,42 @@
 
 ## Unreleased
 
+### Added
+
+- **2026-08-19**: An escape hatch, `(*Client).RawProto()`. It returns the underlying
+  `*proto.Client` -- the four generated service clients this package makes its own calls
+  through -- so a request the idiomatic API cannot express has a workaround short of
+  forking the client:
+
+  ```go
+  resp, err := c.RawProto().PermissionsServiceClient.CheckPermission(ctx, req)
+  ```
+
+  Two real examples of such a request:
+  `WriteRelationshipsRequest.OptionalTransactionMetadata`, a proto field this package does
+  not surface, and the single-check `CheckPermission` RPC, which `CheckOne` deliberately
+  routes around (every check goes through `CheckBulkPermissions`). Purely additive.
+
+  Clearly-marked **secondary** API -- root DESIGN.md's "What NOT To Do" keeps channels,
+  stubs and metadata out of the primary surface and permits exactly this ("escape hatches
+  for advanced use are acceptable as clearly marked secondary API"). No stability promise
+  beyond grpc-go's and the generated code's.
+
+  Prefer it over building a second proto client alongside: `RawProto` dials nothing new,
+  so a raw call cannot silently run on a different transport than the idiomatic ones. The
+  bearer token comes free (the connection carries this library's `PerRPCCredentials`), but
+  a raw call gets no `*client.Error` mapping, no retry, and no deadline of this library's
+  -- set one on the `ctx`. Do not `Close` the returned client; `(*Client).Close` is what
+  releases the connection.
+
+  It is an accessor, not a constructor: it takes no endpoint, token, or transport setting,
+  so connection construction stays on the single guarded path in `NewWithOpts` and this
+  cannot become a route around root DESIGN.md, "RULE: Credentials over insecure transport
+  require an explicit opt-in". Returns `nil` for a zero-value `Client`, which no
+  constructor produces.
+
+  New example: `examples/raw_escape_hatch/`.
+
 ### Breaking Changes
 
 - **2026-08-18** (behavioral; no signature change): per root DESIGN.md, "RULE: Credentials over

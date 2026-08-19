@@ -110,6 +110,54 @@ func NewWithOpts(endpoint, presharedKey string, opts ...Option) (*Client, error)
 	}, nil
 }
 
+// RawProto is the escape hatch: the underlying proto client, holding the four
+// generated service clients (PermissionsServiceClient, SchemaServiceClient,
+// WatchServiceClient, ExperimentalServiceClient) this Client makes its own
+// calls through.
+//
+// Clearly-marked secondary API. Root DESIGN.md's "What NOT To Do" keeps
+// channels, stubs and metadata out of the primary surface and permits exactly
+// this -- "escape hatches for advanced use are acceptable as clearly marked
+// secondary API" -- so that a request the idiomatic methods cannot express (an
+// RPC or proto field not wrapped here, such as
+// WriteRelationshipsRequest.OptionalTransactionMetadata, or the single-check
+// CheckPermission RPC that CheckOne deliberately routes around) has a
+// workaround short of forking the client:
+//
+//	resp, err := c.RawProto().PermissionsServiceClient.CheckPermission(ctx, req)
+//
+// Prefer this over building a second proto client alongside: the returned
+// client dials nothing new. It is this Client's own connection, configured
+// exactly as you configured it (including anything passed to WithDialOptions)
+// and carrying the same bearer credentials, so a raw call cannot silently end
+// up on a different transport than the idiomatic ones.
+//
+// Four things to know before reaching for it:
+//
+//   - The bearer token comes free. The connection carries this library's
+//     PerRPCCredentials, so a raw call is authenticated exactly as an
+//     idiomatic one is.
+//   - A raw call is a raw call: no *client.Error mapping (you handle
+//     google.golang.org/grpc/status yourself), no retry, and no deadline of
+//     this library's -- set one on ctx.
+//   - Do not Close the returned client. It holds this Client's connection, and
+//     (*Client).Close is what releases it.
+//   - No stability promise beyond grpc-go's and the generated code's.
+//
+// It is an accessor, never a constructor: it takes no endpoint, token, or
+// transport setting and hands back a client that already exists, so it cannot
+// become a second construction path around the guard in NewWithOpts -- root
+// DESIGN.md, "RULE: Credentials over insecure transport require an explicit
+// opt-in".
+//
+// Returns nil for a zero-value Client (one no constructor produced).
+func (c *Client) RawProto() *proto.Client {
+	if c == nil {
+		return nil
+	}
+	return c.proto
+}
+
 // Close releases the underlying gRPC connection. Idempotent -- safe to call
 // more than once, including concurrently with itself (delegates to
 // proto.Client.Close, which guards with a CompareAndSwap).

@@ -529,6 +529,45 @@ reach ~120 s plus backoff. Root `DESIGN.md`, "On worst-case latency".
 Proto fields are semi-exposed on builder types (`Txn.V1Updates`,
 `Filter.V1Filter`, `Strategy.V1Consistency`) for advanced use cases.
 
+**`(*Client).RawProto()`** is the full one: it returns the underlying
+`*proto.Client`, holding the four generated service clients this package makes its own
+calls through.
+
+```go
+resp, err := c.RawProto().PermissionsServiceClient.CheckPermission(ctx, req)
+```
+
+Clearly-marked **secondary** API, which is what root DESIGN.md's "What NOT To Do"
+permits: channels, stubs and metadata stay out of the primary surface, and "escape
+hatches for advanced use are acceptable as clearly marked secondary API". It exists so a
+request the idiomatic surface cannot express — an RPC or proto field not wrapped here,
+such as `WriteRelationshipsRequest.OptionalTransactionMetadata`, or the single-check
+`CheckPermission` RPC that `CheckOne` deliberately routes around — has a workaround short
+of forking the client.
+
+Prefer it over building a second proto client alongside. `RawProto` dials nothing new: it
+is this `Client`'s own connection, configured exactly as the caller configured it
+(including anything passed to `WithDialOptions`) and carrying the same bearer
+credentials. Rebuilding that configuration by hand is how a raw call ends up on a
+different transport than the idiomatic ones while the call site reads as though it were
+the same server.
+
+Four properties, all deliberate:
+
+- **The bearer token comes free.** The connection carries this library's
+  `PerRPCCredentials`, so a raw call is authenticated exactly as an idiomatic one is.
+- **A raw call is a raw call.** No `*client.Error` mapping (you handle `grpc/status`
+  yourself), no retry, and no deadline of this library's — set one on the `ctx`.
+- **Do not `Close` the returned client.** It holds this `Client`'s connection, and
+  `(*Client).Close` is what releases it.
+- **It is an accessor, never a constructor.** It takes no endpoint, token, or transport
+  setting, so connection construction stays on the single guarded path in `NewWithOpts`
+  and the hatch cannot become a way around root DESIGN.md, "RULE: Credentials over
+  insecure transport require an explicit opt-in".
+
+No stability promise beyond grpc-go's and the generated code's. Returns `nil` for a
+zero-value `Client`, which no constructor produces.
+
 ## Public API Surface
 
 See package sections above for the complete API manifest.
@@ -548,6 +587,8 @@ See package sections above for the complete API manifest.
 | `schema_reflection/` | Schema reflection, computable permissions, dependent relations, diff |
 | `relationship_counters/` | Registering, reading, and unregistering relationship counters |
 | `expand_permission_tree/` | Expanding a permission into its tree of subjects with ExpandPermissionTree |
+| `delete_relationships/` | Deleting relationships, including precondition-guarded deletes |
+| `raw_escape_hatch/` | `RawProto()` — driving the generated service client directly for a proto field (`OptionalTransactionMetadata`) and an RPC (`CheckPermission`) the idiomatic API does not expose |
 
 ## Changelog
 

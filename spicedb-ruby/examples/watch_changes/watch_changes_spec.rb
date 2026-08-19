@@ -3,11 +3,19 @@
 require_relative '../spec_helper'
 
 RSpec.describe 'WatchChanges' do
-  # Tagged :watch so `mage integrationtest` (which runs
-  # `rspec examples/ --tag ~watch`) skips it by default, matching the other
-  # idiomatic clients' watch examples being excluded from the standard
-  # integration run (long-lived streaming call vs. the request/response
-  # examples elsewhere in this directory). Run it explicitly with:
+  # `mage integrationTest` skips this whole directory by name -- see
+  # skippedExamples in ../../Magefile.go -- matching the other idiomatic
+  # clients' watch examples being excluded from the standard integration run
+  # (long-lived streaming call vs. the request/response examples elsewhere in
+  # this directory). The skip is printed with its reason and counted against
+  # the expected example count, so it cannot go quiet.
+  #
+  # It used to be excluded by `rspec examples/ --tag ~watch` instead, and the
+  # :watch tag below is what that matched. A tag filter that matches nothing
+  # exits 0, which is how this spec came to be tracked, documented, and never
+  # once executed in CI: the flag predates the file. The tag is kept because
+  # `--tag watch` is still a convenient way to run only these, but nothing
+  # depends on it for exclusion any more. Run this file explicitly with:
   #   bundle exec rspec examples/watch_changes/watch_changes_spec.rb
   it 'receives relationship updates via the watch API', :watch do
     client.write_schema(TEST_SCHEMA)

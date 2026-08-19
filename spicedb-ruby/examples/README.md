@@ -5,25 +5,62 @@ integration test.
 
 ## Running
 
-Examples require a running SpiceDB instance. Set environment variables:
+`mage integrationTest` is the one command that does everything: it starts the
+SpiceDB container from `docker-compose.test.yml`, waits for it, runs every
+example spec against that server, and tears the container down afterwards.
+(`mage test` runs `spec/` and the example-wiring check -- it starts no
+container and runs no example.)
 
 ```bash
-export SPICEDB_ENDPOINT=localhost:50051
-export SPICEDB_TOKEN=testtoken
+mage integrationTest
 ```
 
-Then run all examples:
+To run the examples by hand you need a SpiceDB of your own.
+`examples/spec_helper.rb` reads `SPICEDB_ENDPOINT` and `SPICEDB_TOKEN`,
+defaulting to `localhost:50051` and `somerandomkeyhere` -- the endpoint and
+preshared key in `docker-compose.test.yml`. Run rspec **from the gem root**,
+naming the directory:
 
 ```bash
-cd examples
-bundle exec rspec
+docker compose -f docker-compose.test.yml up -d
+bundle exec rspec examples/
+
+# one example
+bundle exec rspec examples/check_permission
+
+# or against any other SpiceDB
+SPICEDB_ENDPOINT=spicedb.internal:50051 SPICEDB_TOKEN=hunter2 \
+    bundle exec rspec examples/
 ```
 
-Or run a single example:
+Naming the path matters. `cd examples && bundle exec rspec` -- which this file
+used to document -- loads **zero** spec files and exits **0**: with no `.rspec`
+present, RSpec falls back to its default path `spec`, which does not exist
+inside `examples/`, so it prints "No examples found" and reports success.
+
+`custom_tls/` is the exception among the examples: it stands up its own
+TLS-terminated server and ignores both variables, since a plaintext SpiceDB has
+nothing to demonstrate about trust material.
+
+If port 50051 is taken, `SPICEDB_TEST_PORT` chooses the port the compose file
+publishes on, and `mage integrationTest` derives it from `SPICEDB_ENDPOINT`:
 
 ```bash
-bundle exec rspec check_permission/check_permission_spec.rb
+SPICEDB_ENDPOINT=localhost:50071 mage integrationTest
 ```
+
+## What runs in CI
+
+Every example in the table below is executed by `mage integrationTest`, which
+is what the `integration` job in `.github/workflows/ruby.yaml` runs, with one
+exception: `watch_changes/` is an open-ended stream with no bounded consumer
+yet, so the runner skips it by name and prints the skip. The runner names the
+remaining example directories on the rspec command line rather than filtering
+with `--tag ~watch`, and then reads rspec's JSON report to confirm every
+selected example actually contributed a spec -- a tag filter that matches
+nothing exits 0, which is how `watch_changes_spec.rb` came to be tracked,
+listed here, and never once executed in CI. See root `DESIGN.md`, "RULE: An
+example must be executed by CI and must be able to fail".
 
 ## Examples
 

@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+### Fixed
+
+- **2026-08-19**: **`rspec --tag ~watch` replaced by a named, counted skip list.** A tag filter
+  that matches nothing exits 0, and that is how `examples/watch_changes/watch_changes_spec.rb`
+  came to be git-tracked, listed in `examples/README.md` with no caveat, and **never once
+  executed in CI**: `--tag ~watch` has been in the Magefile since the first Ruby commit, and the
+  spec was added later already carrying `:watch` on both `it` blocks. `IntegrationTest` now names
+  the example directories on the rspec command line, skips `watch_changes/` by an explicit named
+  entry that prints its reason, and then reads rspec's JSON report to confirm every selected
+  example actually contributed a spec. The selection is unchanged: 49 rspec examples, verified
+  identical to the old filter's by diffing `--dry-run --format json` output. New
+  `mage checkExamples` (also run by `mage test`, so it needs no server) asserts
+  `examples/*/*_spec.rb` still matches the expected count and that every skipped name is an
+  example that exists. Root DESIGN.md, "RULE: An example must be executed by CI and must be able
+  to fail", clause 1.
+
+  `.github/workflows/rust.yaml` already greps its test output for `"1 passed"` for exactly this
+  reason; this is that guard, applied to the runner where the defect had actually landed.
+
+- **2026-08-19** (documentation only): **`examples/README.md` documented a command that runs
+  nothing and reports success.** It said `cd examples && bundle exec rspec`. With no `.rspec`
+  present, RSpec falls back to its default path `spec`, which does not exist inside `examples/`,
+  so that command loads zero files, prints "No examples found", and exits 0 -- the primary
+  documented way to run the Ruby examples was green over nothing. The README now runs rspec from
+  the gem root with the path named (`bundle exec rspec examples/`), explains why the path
+  matters, and names `mage integrationTest` as the one command that starts the container. It also
+  documented `SPICEDB_TOKEN=testtoken`, which is not the key `docker-compose.test.yml` starts
+  SpiceDB with, so following it verbatim produced `UNAUTHENTICATED`; the default is
+  `somerandomkeyhere`, which is what `examples/spec_helper.rb` has always used.
+
 ### Added
 
 - **2026-08-19**: The escape hatch `SpiceDB::Client#proto_client` gained the test and example

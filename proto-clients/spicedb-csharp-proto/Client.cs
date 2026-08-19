@@ -18,6 +18,21 @@ public sealed class SpiceDBProtoClient : IDisposable
 {
     private readonly GrpcChannel _channel;
 
+    /// <summary>
+    /// Whether <see cref="Dispose"/> may tear down <see cref="_channel"/>: true only
+    /// when this client built the channel itself from an endpoint string.
+    /// <para>
+    /// A channel handed in through the <see cref="SpiceDBProtoClient(GrpcChannel, string)"/>
+    /// overload belongs to whoever built it. The idiomatic .NET way to supply one is a
+    /// DI-registered <b>singleton</b> <see cref="GrpcChannel"/> shared by the whole
+    /// application, so disposing it here would tear down a connection every other
+    /// consumer is still using -- the first scoped consumer to finish would break the
+    /// rest. Ownership is not transferred by lending a channel, so this client disposes
+    /// only what it created.
+    /// </para>
+    /// </summary>
+    private readonly bool _ownsChannel;
+
     /// <summary>gRPC client for the SpiceDB Permissions service.</summary>
     public PermissionsService.PermissionsServiceClient Permissions { get; }
 
@@ -156,6 +171,8 @@ public sealed class SpiceDBProtoClient : IDisposable
         }
 
         _channel = GrpcChannel.ForAddress(address, options);
+        // This client built the channel, so this client tears it down. See _ownsChannel.
+        _ownsChannel = true;
 
         // For insecure channels, use CallInvoker with headers to inject the token --
         // the endpoint has already been proven loopback (or explicitly allowed) above.
@@ -199,6 +216,9 @@ public sealed class SpiceDBProtoClient : IDisposable
     public SpiceDBProtoClient(GrpcChannel channel, string token)
     {
         _channel = channel;
+        // Borrowed, not owned: Dispose() must leave this channel open for whoever
+        // built it. See _ownsChannel.
+        _ownsChannel = false;
 
         // No guard here -- see the security note above: the channel already
         // exists by the time this runs, so there is nothing left to refuse.
@@ -215,11 +235,20 @@ public sealed class SpiceDBProtoClient : IDisposable
     }
 
     /// <summary>
-    /// Disposes the underlying gRPC channel.
+    /// Disposes the underlying gRPC channel, but only if this client created it.
+    /// <para>
+    /// A channel passed to <see cref="SpiceDBProtoClient(GrpcChannel, string)"/> is left
+    /// open and usable: it belongs to the caller, who is typically sharing one
+    /// DI-registered singleton across the application. Disposing a borrowed channel here
+    /// broke every other holder of it. See <see cref="_ownsChannel"/>.
+    /// </para>
     /// </summary>
     public void Dispose()
     {
-        _channel.Dispose();
+        if (_ownsChannel)
+        {
+            _channel.Dispose();
+        }
     }
 
     /// <summary>

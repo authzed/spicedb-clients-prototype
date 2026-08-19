@@ -334,6 +334,23 @@
 
 ### Fixed
 
+- **2026-08-19**: **A caller-supplied `GrpcChannel` is no longer disposed by the client that
+  borrowed it.** `SpiceDBClient.CreateFromChannel(channel, token)` is the documented escape
+  hatch for a channel you built yourself, but `DisposeAsync()` disposed it anyway
+  (`DisposeAsync` -> `SpiceDBProtoClient.Dispose()` -> `_channel.Dispose()`), regardless of
+  where the channel came from. The idiomatic .NET pattern is a DI-registered **singleton**
+  `GrpcChannel` shared across the application, so the first scoped consumer to finish tore
+  down a connection every other consumer was still using — surfacing elsewhere as
+  `ObjectDisposedException: Grpc.Net.Client.GrpcChannel` from unrelated code.
+
+  `SpiceDBProtoClient` now records whether it created the channel and disposes only what it
+  created. A channel it built from an endpoint string (`CreatePlaintext`, `CreateSystemTls`)
+  is still disposed exactly as before; a channel handed to `CreateFromChannel` is left open
+  for its owner, who disposes it at application shutdown. Lending a channel does not transfer
+  ownership. No API changed, and the security note on `CreateFromChannel` is unaffected: it
+  documents that no loopback check happens on an already-configured channel, which is
+  orthogonal to who disposes it.
+
 - **2026-08-18**: **Security — a bypass in the guard that refuses to send credentials over
   plaintext to a non-loopback host was fixed.** `SpiceDBClient.CreatePlaintext(endpoint,
   token)` accepted `"127.0.0.1:443@evil.com"` as loopback and sent the bearer token to

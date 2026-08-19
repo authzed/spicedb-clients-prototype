@@ -17,7 +17,9 @@ namespace SpiceDB.Client;
 /// <summary>
 /// The idiomatic SpiceDB client. Use <see cref="CreatePlaintext"/> or
 /// <see cref="CreateSystemTls"/> to create one. Implements
-/// <see cref="IAsyncDisposable"/> — the channel is disposed when the client is.
+/// <see cref="IAsyncDisposable"/> — a channel this client created is disposed
+/// when the client is, while a channel handed to <see cref="CreateFromChannel"/>
+/// is left open for its owner (see <see cref="DisposeAsync"/>).
 /// </summary>
 public sealed class SpiceDBClient : IAsyncDisposable
 {
@@ -192,6 +194,14 @@ public sealed class SpiceDBClient : IAsyncDisposable
     /// name="channel"/> actually has. Only pass a channel you built yourself and
     /// know the transport security of.
     /// </para>
+    /// <para>
+    /// <b>Ownership:</b> <paramref name="channel"/> stays yours. Disposing the
+    /// returned client does NOT dispose it, so a DI-registered singleton
+    /// <see cref="GrpcChannel"/> survives any number of scoped clients built on
+    /// it, and you dispose it yourself when the application shuts down. Only a
+    /// channel this library created — via <see cref="CreatePlaintext"/> or
+    /// <see cref="CreateSystemTls"/> — is torn down by <see cref="DisposeAsync"/>.
+    /// </para>
     /// </summary>
     public static SpiceDBClient CreateFromChannel(
         GrpcChannel channel, string presharedKey, TimeSpan? defaultTimeout = null)
@@ -213,6 +223,17 @@ public sealed class SpiceDBClient : IAsyncDisposable
             throw new ArgumentException("Preshared key must not be empty.", nameof(presharedKey));
     }
 
+    /// <summary>
+    /// Releases the connection this client created.
+    /// <para>
+    /// A channel supplied through <see cref="CreateFromChannel"/> is NOT disposed:
+    /// it belongs to the caller, who is typically sharing one DI-registered
+    /// singleton <see cref="GrpcChannel"/> across the application. Disposing it
+    /// here tore down a connection every other consumer was still using — the
+    /// first scoped consumer to finish broke the rest. Ownership tracking lives on
+    /// <c>SpiceDBProtoClient</c>, which is where the channel is actually disposed.
+    /// </para>
+    /// </summary>
     public ValueTask DisposeAsync()
     {
         _protoClient?.Dispose();

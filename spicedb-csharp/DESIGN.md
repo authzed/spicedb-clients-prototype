@@ -83,6 +83,23 @@ The client implements `IAsyncDisposable`:
 await using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "token");
 ```
 
+**A borrowed channel is never disposed.** `DisposeAsync` tears down only a
+channel this library created — the one `CreatePlaintext`/`CreateSystemTls`
+built. A `GrpcChannel` handed to `CreateFromChannel` stays open, because the
+idiomatic way to supply one is a DI-registered **singleton** shared by the whole
+application:
+
+```csharp
+services.AddSingleton(_ => GrpcChannel.ForAddress(uri, options));
+services.AddScoped(sp => SpiceDBClient.CreateFromChannel(
+    sp.GetRequiredService<GrpcChannel>(), presharedKey));
+```
+
+Disposing that channel with the first scoped client to finish would break every
+other consumer of it — which is exactly what happened until `SpiceDBProtoClient`
+started tracking whether it owned its channel. Lending a channel does not
+transfer ownership; the caller disposes it at application shutdown.
+
 ### Consistency
 
 ZedTokens are opaque `string` values, never proto types. Consistency is an
@@ -603,7 +620,8 @@ public sealed record CheckResult { Permissionship, MissingContext, CheckedAt, Ha
 
 - `ConsistencyStrategy.V1Consistency` — exposes underlying proto type
 - `Transaction.V1Updates` / `Transaction.Preconditions` — exposes underlying proto updates
-- `SpiceDBClient.CreateFromChannel(channel, key)` — use existing GrpcChannel
+- `SpiceDBClient.CreateFromChannel(channel, key)` — use existing GrpcChannel.
+  The channel stays caller-owned: `DisposeAsync` does not dispose it.
 
 ## Changelog
 

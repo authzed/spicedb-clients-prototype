@@ -6,7 +6,7 @@
 
 // @public
 export class AlreadyExistsError extends SpiceDBError {
-    constructor(message: string, options?: ErrorOptions);
+    constructor(message: string, options?: SpiceDBErrorOptions);
 }
 
 // @public
@@ -20,7 +20,7 @@ export function atLeastOrMinLatency(revision: string): Consistency;
 
 // @public
 export class CancelledError extends SpiceDBError {
-    constructor(message: string, options?: ErrorOptions);
+    constructor(message: string, options?: SpiceDBErrorOptions);
 }
 
 // @public
@@ -85,7 +85,7 @@ export function createSpiceDBClient(endpoint: string, token: string, options?: {
 
 // @public
 export class DeadlineExceededError extends SpiceDBError {
-    constructor(message: string, options?: ErrorOptions);
+    constructor(message: string, options?: SpiceDBErrorOptions);
 }
 
 // @public
@@ -118,7 +118,7 @@ export interface ExpandPermissionTreeParams {
 
 // @public
 export class FailedPreconditionError extends SpiceDBError {
-    constructor(message: string, options?: ErrorOptions);
+    constructor(message: string, options?: SpiceDBErrorOptions);
 }
 
 // @public
@@ -134,7 +134,7 @@ export interface IntermediateNode {
 
 // @public
 export class InvalidArgumentError extends SpiceDBError {
-    constructor(message: string, options?: ErrorOptions);
+    constructor(message: string, options?: SpiceDBErrorOptions);
 }
 
 // @public
@@ -205,7 +205,7 @@ export function minLatency(): Consistency;
 
 // @public
 export class NotFoundError extends SpiceDBError {
-    constructor(message: string, options?: ErrorOptions);
+    constructor(message: string, options?: SpiceDBErrorOptions);
 }
 
 // @public
@@ -217,6 +217,11 @@ export interface ObjectRef {
 }
 
 // @public
+export class OutOfRangeError extends SpiceDBError {
+    constructor(message: string, options?: SpiceDBErrorOptions);
+}
+
+// @public
 export interface PartialCaveatInfo {
     // (undocumented)
     missingRequiredContext: string[];
@@ -224,7 +229,7 @@ export interface PartialCaveatInfo {
 
 // @public
 export class PermissionDeniedError extends SpiceDBError {
-    constructor(message: string, options?: ErrorOptions);
+    constructor(message: string, options?: SpiceDBErrorOptions);
 }
 
 // @public
@@ -343,7 +348,7 @@ export interface ResolvedSubject {
 
 // @public
 export class ResourceExhaustedError extends SpiceDBError {
-    constructor(message: string, options?: ErrorOptions);
+    constructor(message: string, options?: SpiceDBErrorOptions);
 }
 
 // @public
@@ -507,7 +512,17 @@ export interface SpiceDBClientOptions {
 
 // @public
 export class SpiceDBError extends Error {
-    constructor(message: string, options?: ErrorOptions);
+    constructor(message: string, options?: SpiceDBErrorOptions);
+    readonly reason: string;
+    readonly reasonDomain: string;
+    readonly reasonMetadata: Record<string, string>;
+}
+
+// @public
+export interface SpiceDBErrorOptions extends ErrorOptions {
+    reason?: string;
+    reasonDomain?: string;
+    reasonMetadata?: Record<string, string>;
 }
 
 // @public
@@ -534,8 +549,13 @@ export class Transaction {
 export type TreeOperation = "unspecified" | "union" | "intersection" | "exclusion";
 
 // @public
+export class UnauthenticatedError extends SpiceDBError {
+    constructor(message: string, options?: SpiceDBErrorOptions);
+}
+
+// @public
 export class UnavailableError extends SpiceDBError {
-    constructor(message: string, options?: ErrorOptions);
+    constructor(message: string, options?: SpiceDBErrorOptions);
 }
 
 // @public

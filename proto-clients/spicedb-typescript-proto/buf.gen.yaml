@@ -12,3 +12,12 @@ plugins:
     include_imports: true
 inputs:
   - module: buf.build/authzed/api
+  # google.rpc.ErrorInfo is how SpiceDB attaches its structured ErrorReason and
+  # the metadata behind it to a status. No authzed proto imports it, so
+  # include_imports above does not reach it -- it has to be named as an input of
+  # its own for the idiomatic client to be able to decode an error detail rather
+  # than parse an error message. See root DESIGN.md, "RULE: Error mapping must
+  # not lose the server's detail".
+  - module: buf.build/googleapis/googleapis
+    paths:
+      - google/rpc/error_details.proto

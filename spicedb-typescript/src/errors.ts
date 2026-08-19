@@ -1,12 +1,59 @@
 import { ConnectError, Code } from "@connectrpc/connect";
+import type { Any } from "@bufbuild/protobuf/wkt";
+import { anyUnpack } from "@bufbuild/protobuf/wkt";
+import { ErrorInfoSchema } from "@spicedb/proto";
+
+/**
+ * Options accepted by every SpiceDB error, extending the standard
+ * `ErrorOptions` (so `{ cause }` keeps working) with SpiceDB's structured
+ * explanation of the failure.
+ */
+export interface SpiceDBErrorOptions extends ErrorOptions {
+  /** See {@link SpiceDBError.reason}. */
+  reason?: string;
+  /** See {@link SpiceDBError.reasonDomain}. */
+  reasonDomain?: string;
+  /** See {@link SpiceDBError.reasonMetadata}. */
+  reasonMetadata?: Record<string, string>;
+}
 
 /**
  * Base error class for all SpiceDB errors.
+ *
+ * Beyond the message, a SpiceDB error carries the server's structured
+ * explanation of the failure when the server sent one -- the
+ * `google.rpc.ErrorInfo` detail attached to the status. See root DESIGN.md,
+ * "Error mapping must not lose the server's detail".
  */
 export class SpiceDBError extends Error {
-  constructor(message: string, options?: ErrorOptions) {
+  /**
+   * The name of an `authzed.api.v1.ErrorReason` enum value, e.g.
+   * `"ERROR_REASON_MAXIMUM_DEPTH_EXCEEDED"`. Empty string when the server
+   * attached no `ErrorInfo`.
+   *
+   * The value is surfaced exactly as the server sent it. A reason a newer
+   * server knows and this client does not is passed through unchanged rather
+   * than coerced or rejected: it is server-supplied, and root DESIGN.md's
+   * "A conversion that cannot preserve meaning must fail" requires
+   * server-supplied unknowns to degrade safely rather than throw.
+   */
+  readonly reason: string;
+
+  /** Who produced the reason. SpiceDB uses `"authzed.com"`. */
+  readonly reasonDomain: string;
+
+  /**
+   * The specifics behind the reason -- which precondition failed, what depth
+   * limit was hit. Empty object when the server attached no `ErrorInfo`.
+   */
+  readonly reasonMetadata: Record<string, string>;
+
+  constructor(message: string, options?: SpiceDBErrorOptions) {
     super(message, options);
     this.name = "SpiceDBError";
+    this.reason = options?.reason ?? "";
+    this.reasonDomain = options?.reasonDomain ?? "";
+    this.reasonMetadata = options?.reasonMetadata ?? {};
   }
 }
 
@@ -14,7 +61,7 @@ export class SpiceDBError extends Error {
  * The caller does not have permission to perform the operation.
  */
 export class PermissionDeniedError extends SpiceDBError {
-  constructor(message: string, options?: ErrorOptions) {
+  constructor(message: string, options?: SpiceDBErrorOptions) {
     super(message, options);
     this.name = "PermissionDeniedError";
   }
@@ -24,7 +71,7 @@ export class PermissionDeniedError extends SpiceDBError {
  * The requested resource was not found.
  */
 export class NotFoundError extends SpiceDBError {
-  constructor(message: string, options?: ErrorOptions) {
+  constructor(message: string, options?: SpiceDBErrorOptions) {
     super(message, options);
     this.name = "NotFoundError";
   }
@@ -34,7 +81,7 @@ export class NotFoundError extends SpiceDBError {
  * The resource already exists.
  */
 export class AlreadyExistsError extends SpiceDBError {
-  constructor(message: string, options?: ErrorOptions) {
+  constructor(message: string, options?: SpiceDBErrorOptions) {
     super(message, options);
     this.name = "AlreadyExistsError";
   }
@@ -44,7 +91,7 @@ export class AlreadyExistsError extends SpiceDBError {
  * An invalid argument was provided.
  */
 export class InvalidArgumentError extends SpiceDBError {
-  constructor(message: string, options?: ErrorOptions) {
+  constructor(message: string, options?: SpiceDBErrorOptions) {
     super(message, options);
     this.name = "InvalidArgumentError";
   }
@@ -54,7 +101,7 @@ export class InvalidArgumentError extends SpiceDBError {
  * The operation was cancelled.
  */
 export class CancelledError extends SpiceDBError {
-  constructor(message: string, options?: ErrorOptions) {
+  constructor(message: string, options?: SpiceDBErrorOptions) {
     super(message, options);
     this.name = "CancelledError";
   }
@@ -64,7 +111,7 @@ export class CancelledError extends SpiceDBError {
  * A precondition for the operation was not met.
  */
 export class FailedPreconditionError extends SpiceDBError {
-  constructor(message: string, options?: ErrorOptions) {
+  constructor(message: string, options?: SpiceDBErrorOptions) {
     super(message, options);
     this.name = "FailedPreconditionError";
   }
@@ -74,7 +121,7 @@ export class FailedPreconditionError extends SpiceDBError {
  * The operation is not available (transient).
  */
 export class UnavailableError extends SpiceDBError {
-  constructor(message: string, options?: ErrorOptions) {
+  constructor(message: string, options?: SpiceDBErrorOptions) {
     super(message, options);
     this.name = "UnavailableError";
   }
@@ -84,7 +131,7 @@ export class UnavailableError extends SpiceDBError {
  * The operation deadline was exceeded before it could complete.
  */
 export class DeadlineExceededError extends SpiceDBError {
-  constructor(message: string, options?: ErrorOptions) {
+  constructor(message: string, options?: SpiceDBErrorOptions) {
     super(message, options);
     this.name = "DeadlineExceededError";
   }
@@ -94,9 +141,39 @@ export class DeadlineExceededError extends SpiceDBError {
  * A resource quota or limit was exhausted, such as a rate limit.
  */
 export class ResourceExhaustedError extends SpiceDBError {
-  constructor(message: string, options?: ErrorOptions) {
+  constructor(message: string, options?: SpiceDBErrorOptions) {
     super(message, options);
     this.name = "ResourceExhaustedError";
+  }
+}
+
+/**
+ * The request carried no usable credentials.
+ *
+ * In SpiceDB this is a wrong, expired, or rotated API token -- the most common
+ * error a new integration produces. It is distinct from
+ * {@link PermissionDeniedError}, which means the caller was identified but is
+ * not allowed, and from a bare {@link SpiceDBError}, which may be an internal
+ * server fault: refresh credentials on this one, page someone on that one.
+ */
+export class UnauthenticatedError extends SpiceDBError {
+  constructor(message: string, options?: SpiceDBErrorOptions) {
+    super(message, options);
+    this.name = "UnauthenticatedError";
+  }
+}
+
+/**
+ * A ZedToken names a revision that is no longer available.
+ *
+ * SpiceDB returns `OUT_OF_RANGE` when the revision a ZedToken refers to has
+ * expired or been garbage-collected. Recovery is mechanical: discard the stale
+ * token and re-read at full consistency.
+ */
+export class OutOfRangeError extends SpiceDBError {
+  constructor(message: string, options?: SpiceDBErrorOptions) {
+    super(message, options);
+    this.name = "OutOfRangeError";
   }
 }
 
@@ -119,7 +196,33 @@ export function isTransientError(err: unknown): boolean {
 }
 
 /**
+ * Reads SpiceDB's `google.rpc.ErrorInfo` detail off a {@link ConnectError} and
+ * turns it into constructor options. `findDetails` does the decoding, so this
+ * works against the structured detail the transport parsed out of
+ * `grpc-status-details-bin` rather than against anything reconstructed from
+ * the error's message. Details it cannot decode are dropped by `findDetails`
+ * itself, so a malformed or unfamiliar detail never costs the caller the
+ * code-to-type mapping.
+ */
+function reasonOptionsFromConnectError(err: ConnectError): SpiceDBErrorOptions {
+  const [info] = err.findDetails(ErrorInfoSchema);
+  if (info === undefined) {
+    return {};
+  }
+  return {
+    reason: info.reason,
+    reasonDomain: info.domain,
+    reasonMetadata: { ...info.metadata },
+  };
+}
+
+/**
  * Converts a ConnectError to a typed SpiceDB error.
+ *
+ * The originating error is preserved as `cause`, and SpiceDB's structured
+ * reason -- when the server sent one -- is surfaced on the returned error's
+ * `reason`/`reasonDomain`/`reasonMetadata`. See root DESIGN.md, "Error mapping
+ * must not lose the server's detail".
  */
 export function toSpiceDBError(err: unknown): SpiceDBError {
   if (err instanceof SpiceDBError) {
@@ -127,30 +230,7 @@ export function toSpiceDBError(err: unknown): SpiceDBError {
   }
 
   if (err instanceof ConnectError) {
-    const msg = err.message;
-    switch (err.code) {
-      case Code.PermissionDenied:
-        return new PermissionDeniedError(msg, { cause: err });
-      case Code.NotFound:
-        return new NotFoundError(msg, { cause: err });
-      case Code.AlreadyExists:
-        return new AlreadyExistsError(msg, { cause: err });
-      case Code.InvalidArgument:
-        return new InvalidArgumentError(msg, { cause: err });
-      case Code.Canceled:
-        return new CancelledError(msg, { cause: err });
-      case Code.FailedPrecondition:
-        return new FailedPreconditionError(msg, { cause: err });
-      case Code.DeadlineExceeded:
-        return new DeadlineExceededError(msg, { cause: err });
-      case Code.ResourceExhausted:
-        return new ResourceExhaustedError(msg, { cause: err });
-      case Code.Unavailable:
-      case Code.Aborted:
-        return new UnavailableError(msg, { cause: err });
-      default:
-        return new SpiceDBError(msg, { cause: err });
-    }
+    return mapConnectError(err, reasonOptionsFromConnectError(err));
   }
 
   if (err instanceof Error) {
@@ -158,6 +238,45 @@ export function toSpiceDBError(err: unknown): SpiceDBError {
   }
 
   return new SpiceDBError(String(err));
+}
+
+/**
+ * Maps a {@link ConnectError}'s code to a typed error class, attaching the
+ * error as `cause` and whatever structured reason the caller resolved.
+ */
+function mapConnectError(
+  err: ConnectError,
+  reason: SpiceDBErrorOptions,
+): SpiceDBError {
+  const msg = err.message;
+  const opts: SpiceDBErrorOptions = { cause: err, ...reason };
+  switch (err.code) {
+    case Code.PermissionDenied:
+      return new PermissionDeniedError(msg, opts);
+    case Code.NotFound:
+      return new NotFoundError(msg, opts);
+    case Code.AlreadyExists:
+      return new AlreadyExistsError(msg, opts);
+    case Code.InvalidArgument:
+      return new InvalidArgumentError(msg, opts);
+    case Code.Canceled:
+      return new CancelledError(msg, opts);
+    case Code.FailedPrecondition:
+      return new FailedPreconditionError(msg, opts);
+    case Code.DeadlineExceeded:
+      return new DeadlineExceededError(msg, opts);
+    case Code.ResourceExhausted:
+      return new ResourceExhaustedError(msg, opts);
+    case Code.Unauthenticated:
+      return new UnauthenticatedError(msg, opts);
+    case Code.OutOfRange:
+      return new OutOfRangeError(msg, opts);
+    case Code.Unavailable:
+    case Code.Aborted:
+      return new UnavailableError(msg, opts);
+    default:
+      return new SpiceDBError(msg, opts);
+  }
 }
 
 /**
@@ -176,10 +295,30 @@ export function toSpiceDBError(err: unknown): SpiceDBError {
  * a permission-denied, an invalid-argument, and an internal server error
  * are meaningfully different outcomes for a caller and must not be
  * indistinguishable.
+ *
+ * A per-item status carries its own `details`, which are unpacked here with
+ * protobuf's own `anyUnpack` so a per-item failure surfaces the same structured
+ * `reason` and metadata an RPC-level failure does.
  */
 export function toSpiceDBErrorFromStatus(status: {
   code: number;
   message: string;
+  details?: Any[];
 }): SpiceDBError {
-  return toSpiceDBError(new ConnectError(status.message, status.code as Code));
+  let reason: SpiceDBErrorOptions = {};
+  for (const detail of status.details ?? []) {
+    const info = anyUnpack(detail, ErrorInfoSchema);
+    if (info !== undefined) {
+      reason = {
+        reason: info.reason,
+        reasonDomain: info.domain,
+        reasonMetadata: { ...info.metadata },
+      };
+      break;
+    }
+  }
+  return mapConnectError(
+    new ConnectError(status.message, status.code as Code),
+    reason,
+  );
 }

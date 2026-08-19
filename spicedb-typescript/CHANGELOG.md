@@ -4,6 +4,55 @@
 
 ### Added
 
+- **2026-08-18**: Error mapping now carries the server's detail all the way to
+  the caller, per root DESIGN.md, "RULE: Error mapping must not lose the
+  server's detail". Purely additive — `SpiceDBErrorOptions` extends
+  `ErrorOptions`, so every existing `new NotFoundError(msg, { cause })` call
+  site is unchanged.
+  - Two new error classes, both `SpiceDBError` subclasses and both exported
+    from the package root:
+    - `OutOfRangeError` for `Code.OutOfRange`, SpiceDB's code for an expired or
+      garbage-collected ZedToken. It previously fell through to the base
+      `SpiceDBError`, so the one recoverable error in a token-threading
+      application was indistinguishable from an internal fault. Recovery is
+      mechanical: discard the stale token and re-read at full consistency.
+    - `UnauthenticatedError` for `Code.Unauthenticated` — a wrong, expired, or
+      rotated API token, previously also indistinguishable from an internal
+      fault. Distinct from `PermissionDeniedError`, which means the caller was
+      identified but not allowed.
+  - Every `SpiceDBError` now carries the `google.rpc.ErrorInfo` detail SpiceDB
+    attaches to a status, on three new readonly properties: `reason` (the name
+    of an `authzed.api.v1.ErrorReason` enum value, e.g.
+    `"ERROR_REASON_MAXIMUM_DEPTH_EXCEEDED"`), `reasonDomain` (`"authzed.com"`
+    for SpiceDB), and `reasonMetadata` (the specifics behind the reason, such
+    as which precondition failed). The reason is surfaced exactly as the server
+    sent it: a value a newer server knows and this client does not is passed
+    through unchanged rather than coerced or rejected, per root DESIGN.md's
+    "RULE: A conversion that cannot preserve meaning must fail", which requires
+    server-supplied unknowns to degrade rather than throw. `reason` is `""` and
+    `reasonMetadata` `{}` when the server attached no `ErrorInfo`. Per-item
+    bulk errors (`toSpiceDBErrorFromStatus`) carry them too — that function now
+    also accepts the status's `details`.
+  - New exported type `SpiceDBErrorOptions`, the options bag every error class
+    accepts.
+
+  ```ts
+  try {
+    await client.write(txn);
+  } catch (err) {
+    if (err instanceof FailedPreconditionError) {
+      console.log(err.reason, err.reasonMetadata.precondition_resource_id);
+    } else if (err instanceof OutOfRangeError) {
+      // ZedToken expired or GC'd: drop it and re-read at full consistency.
+    }
+  }
+  ```
+
+  `@spicedb/proto` now also exports `ErrorInfo`/`ErrorInfoSchema` (from
+  `google/rpc/error_details.proto`, newly added as a `buf generate` input) and
+  `ErrorReason`/`ErrorReasonSchema`, so callers who want the generated enum can
+  compare against it directly.
+
 - **2026-08-17**: `checkPermission`/`checkPermissions`/`checkAny`/`checkAll`
   gain a call-level default caveat context via a new `CheckOptions` type
   (`{ context?: Record<string, unknown> }`). Previously the only way to

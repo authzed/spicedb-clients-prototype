@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { ConnectError, Code } from "@connectrpc/connect";
+import { create, toBinary } from "@bufbuild/protobuf";
+import { anyPack } from "@bufbuild/protobuf/wkt";
+import { ErrorInfoSchema, ErrorReason, ErrorReasonSchema } from "@spicedb/proto";
 import {
   SpiceDBError,
   PermissionDeniedError,
@@ -7,6 +10,8 @@ import {
   AlreadyExistsError,
   InvalidArgumentError,
   UnavailableError,
+  UnauthenticatedError,
+  OutOfRangeError,
   FailedPreconditionError,
   CancelledError,
   DeadlineExceededError,
@@ -15,6 +20,31 @@ import {
   toSpiceDBErrorFromStatus,
   isTransientError,
 } from "../errors.js";
+
+/**
+ * Builds a ConnectError carrying a `google.rpc.ErrorInfo` detail in the shape
+ * the gRPC transport produces for one: an incoming detail is the type name
+ * plus the serialized message, not a schema/value pair.
+ */
+function connectErrorWithReason(
+  code: Code,
+  message: string,
+  reason: string,
+  metadata: Record<string, string>,
+  domain = "authzed.com",
+): ConnectError {
+  const err = new ConnectError(message, code);
+  err.details = [
+    {
+      type: ErrorInfoSchema.typeName,
+      value: toBinary(
+        ErrorInfoSchema,
+        create(ErrorInfoSchema, { reason, domain, metadata }),
+      ),
+    },
+  ];
+  return err;
+}
 
 describe("toSpiceDBError", () => {
   it("maps PermissionDenied", () => {
@@ -85,6 +115,132 @@ describe("toSpiceDBError", () => {
   it("passes through SpiceDBError", () => {
     const err = new NotFoundError("nope");
     expect(toSpiceDBError(err)).toBe(err);
+  });
+
+  // OUT_OF_RANGE is SpiceDB's code for an expired or garbage-collected
+  // ZedToken. Recovery is mechanical -- drop the token, re-read at full
+  // consistency -- so it has to be distinguishable by type rather than by
+  // message.
+  it("maps OutOfRange to its own type", () => {
+    const err = new ConnectError("revision no longer available", Code.OutOfRange);
+    const result = toSpiceDBError(err);
+    expect(result).toBeInstanceOf(OutOfRangeError);
+    expect(result).toBeInstanceOf(SpiceDBError);
+    expect(result).not.toBeInstanceOf(InvalidArgumentError);
+    expect(result.name).toBe("OutOfRangeError");
+  });
+
+  // A wrong, expired, or rotated token must be distinguishable from an
+  // internal server fault, so a caller can refresh credentials on one and page
+  // someone on the other.
+  it("maps Unauthenticated to its own type", () => {
+    const err = new ConnectError("bad token", Code.Unauthenticated);
+    const result = toSpiceDBError(err);
+    expect(result).toBeInstanceOf(UnauthenticatedError);
+    expect(result).not.toBeInstanceOf(PermissionDeniedError);
+    expect(result.name).toBe("UnauthenticatedError");
+  });
+
+  it("neither newly mapped code is retried", () => {
+    expect(isTransientError(new ConnectError("x", Code.OutOfRange))).toBe(false);
+    expect(isTransientError(new ConnectError("x", Code.Unauthenticated))).toBe(
+      false,
+    );
+  });
+});
+
+// SpiceDB's structured explanation of a failure -- the google.rpc.ErrorInfo
+// detail on the status -- must survive the mapping into a typed error, so a
+// caller can branch on the reason and read its metadata instead of
+// string-matching a message. See root DESIGN.md, "Error mapping must not lose
+// the server's detail".
+describe("ErrorReason is reachable", () => {
+  it("surfaces the reason, domain, and metadata", () => {
+    const err = connectErrorWithReason(
+      Code.ResourceExhausted,
+      "max depth exceeded",
+      "ERROR_REASON_MAXIMUM_DEPTH_EXCEEDED",
+      { maximum_depth_allowed: "50" },
+    );
+    const result = toSpiceDBError(err);
+
+    expect(result).toBeInstanceOf(ResourceExhaustedError);
+    // The exposed reason is exactly the authzed.api.v1.ErrorReason enum name,
+    // so a caller can compare against the generated enum without this client
+    // carrying a hand-maintained copy of it.
+    expect(result.reason).toBe("ERROR_REASON_MAXIMUM_DEPTH_EXCEEDED");
+    expect(result.reason).toBe(
+      ErrorReasonSchema.value[ErrorReason.MAXIMUM_DEPTH_EXCEEDED]?.name,
+    );
+    expect(result.reasonDomain).toBe("authzed.com");
+    expect(result.reasonMetadata).toEqual({ maximum_depth_allowed: "50" });
+  });
+
+  it("keeps the metadata naming which precondition failed", () => {
+    const err = connectErrorWithReason(
+      Code.FailedPrecondition,
+      "precondition failed",
+      "ERROR_REASON_WRITE_OR_DELETE_PRECONDITION_FAILURE",
+      {
+        precondition_resource_id: "firstdoc",
+        precondition_relation: "viewer",
+      },
+    );
+    const result = toSpiceDBError(err);
+
+    expect(result).toBeInstanceOf(FailedPreconditionError);
+    expect(result.reason).toBe(
+      "ERROR_REASON_WRITE_OR_DELETE_PRECONDITION_FAILURE",
+    );
+    expect(result.reasonMetadata.precondition_resource_id).toBe("firstdoc");
+    expect(result.reasonMetadata.precondition_relation).toBe("viewer");
+  });
+
+  // A reason a newer server knows and this client does not is server-supplied:
+  // root DESIGN.md's "A conversion that cannot preserve meaning must fail"
+  // requires it to degrade safely, not to throw.
+  it("passes an unrecognized reason through without throwing", () => {
+    const err = connectErrorWithReason(
+      Code.InvalidArgument,
+      "from the future",
+      "ERROR_REASON_INVENTED_BY_A_NEWER_SERVER",
+      { k: "v" },
+    );
+    const result = toSpiceDBError(err);
+
+    expect(result).toBeInstanceOf(InvalidArgumentError);
+    expect(result.reason).toBe("ERROR_REASON_INVENTED_BY_A_NEWER_SERVER");
+    expect(result.reasonMetadata).toEqual({ k: "v" });
+  });
+
+  it("leaves the reason empty when the server attached no ErrorInfo", () => {
+    const result = toSpiceDBError(new ConnectError("nope", Code.NotFound));
+    expect(result.reason).toBe("");
+    expect(result.reasonDomain).toBe("");
+    expect(result.reasonMetadata).toEqual({});
+  });
+
+  // A per-item bulk error arrives as a google.rpc.Status with its own details,
+  // and must not lose them on the way to a typed error.
+  it("surfaces the reason from a per-item google.rpc.Status", () => {
+    const result = toSpiceDBErrorFromStatus({
+      code: 8,
+      message: "max depth exceeded",
+      details: [
+        anyPack(
+          ErrorInfoSchema,
+          create(ErrorInfoSchema, {
+            reason: "ERROR_REASON_MAXIMUM_DEPTH_EXCEEDED",
+            domain: "authzed.com",
+            metadata: { maximum_depth_allowed: "50" },
+          }),
+        ),
+      ],
+    });
+
+    expect(result).toBeInstanceOf(ResourceExhaustedError);
+    expect(result.reason).toBe("ERROR_REASON_MAXIMUM_DEPTH_EXCEEDED");
+    expect(result.reasonMetadata).toEqual({ maximum_depth_allowed: "50" });
   });
 });
 

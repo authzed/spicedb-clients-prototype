@@ -94,14 +94,24 @@ covered by a test that **completes a real TLS handshake**.
    gRPC's C-core (Python's `grpcio`, Ruby's `grpc`) compiles in its own `roots.pem`, and
    Node ships a bundled Mozilla store, so on those clients a CA an operator installed on
    the host is not honoured. That is a property of the ecosystem, not a violation of
-   this clause. Giving callers a way to supply their own CA bundle is the remedy, and
-   **every client must have one** — the delegation this clause permits is conditional on
-   it. A client whose default trust source cannot be overridden makes a private-CA
-   deployment unreachable with no supported workaround, and that is a defect under this
-   clause, not a gap outside it.
+   this clause. Giving callers a way to supply their own CA bundle is the remedy, and it
+   is not optional where the hazard applies:
 
-   Where each client's escape hatch lives, since they are not uniform and two of them are
-   not new API at all:
+   **A client whose default trust source is not one the operator can write to MUST let a
+   caller supply their own.** For those clients — Python and Ruby on gRPC's C-core,
+   TypeScript on Node's bundled store — the delegation this clause permits is conditional
+   on that override existing: without it a private-CA deployment is unreachable with no
+   supported workaround, which is a defect under this clause rather than a gap outside
+   it. Where the default *is* an operator-writable store — the OS store for Go, C# and
+   Rust, the JDK's `cacerts` for Java — installing the CA on the host already serves that
+   case through the default constructor, so this clause requires nothing further. An
+   override is still worth having there (chiefly for mutual TLS, and for pinning a CA the
+   host does not trust), but its absence is not a violation of this rule. Scope the "must"
+   that way and the enumeration below is consistent with it; read it as universal and it
+   is not.
+
+   Where each client's escape hatch lives, since they are not uniform and three of them
+   are not new API at all:
 
    - **Go** — `WithDialOptions(grpc.WithTransportCredentials(...))`. Later dial options
      overwrite earlier ones, so a caller's credentials win over the client's default.
@@ -116,10 +126,13 @@ covered by a test that **completes a real TLS handshake**.
      and `createSpiceDBClient`, threaded to `Http2SessionManager`'s session options.
    - **Ruby** — `SpiceDB::Client.new_custom_tls(endpoint, token, ca_cert:, client_cert:,
      client_key:)`.
-   - **Rust** — none, and none is needed for the hazard above: tonic's `tls-native-roots`
-     reads the OS trust store at runtime, so an operator-installed CA is already honoured
-     by `new_system_tls`. What is left uncovered is narrower — an image with no OS trust
-     store at all — and is stated in `spicedb-rust/DESIGN.md`.
+   - **Rust** — none. Not required by the clause above, since tonic's `tls-native-roots`
+     reads the OS trust store at runtime and an operator-installed CA is therefore already
+     honoured by `new_system_tls`. Two gaps remain and are stated plainly in
+     `spicedb-rust/DESIGN.md` rather than papered over: an image with no OS trust store at
+     all, and **mutual TLS, which this client cannot do at all** — reading the host's
+     roots says nothing about presenting a client certificate, so `tls-native-roots` does
+     not cover it.
 
    Supplying trust material is a TLS concern and must never double as a transport switch.
    A client must refuse the combination of custom trust material and an insecure

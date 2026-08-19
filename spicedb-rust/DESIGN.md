@@ -67,12 +67,27 @@ clients now have one (`ca_cert=`, `tls: { caCert }`, `new_custom_tls(ca_cert:)`)
 because on those runtimes the *default* is the wrong trust source for a private CA, and
 the rule above permits that default only because such an escape hatch exists. This
 client has the opposite problem: its default already reads the host's store, so the
-private-CA case works with `new_system_tls` alone. Only the empty-trust-store image is
-left uncovered, and no option is offered for it today. `SpiceDBClientBuilder` therefore
-exposes exactly `.plaintext()`, `.allow_insecure_remote_credentials()` and
-`.default_timeout()`, and the module doc on `src/client.rs` says so — it previously
-claimed "full control over TLS configuration", which was never true of any version of
-this builder.
+private-CA case works with `new_system_tls` alone.
+
+**Two things remain uncovered here, and no option is offered for either today:**
+
+1. **An image with no OS trust store at all** (`FROM scratch`), which has nothing for
+   `with_native_roots` to read, where a distroless Python or Node image would still
+   connect on its compiled-in bundle.
+2. **Mutual TLS.** There is no way to present a client certificate. This gap is
+   independent of the trust-store one and is *not* closed by `tls-native-roots`: reading
+   the host's roots says nothing about proving this client's own identity to a server
+   that demands one. The Python, TypeScript and Ruby clients each take a client
+   certificate and key alongside the CA (`client_cert=`/`client_key=`,
+   `tls: { clientCert, clientKey }`, `new_custom_tls(client_cert:, client_key:)`); this
+   client takes neither.
+
+`SpiceDBClientBuilder` therefore exposes exactly `.plaintext()`,
+`.allow_insecure_remote_credentials()` and `.default_timeout()` — no CA bundle, no client
+identity — and the module doc on `src/client.rs` says so. It previously claimed "full
+control over TLS configuration", which was never true of any version of this builder.
+Closing either gap means adding options to that builder; the decision on record is to
+state the gaps honestly rather than imply they do not exist.
 
 Do **not** substitute `ClientTlsConfig::with_enabled_roots()`. Its body begins
 `let config = ClientTlsConfig::new()`, discarding `self`, so chaining it after

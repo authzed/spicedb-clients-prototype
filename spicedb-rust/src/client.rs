@@ -31,12 +31,19 @@
 //! their own material where the default is not enough. Here the default already
 //! is the host's store.
 //!
-//! The gap this leaves is narrower and is stated in `spicedb-rust/DESIGN.md`
-//! under "TLS roots": a `FROM scratch` image with no OS trust store has nothing
-//! to read, where a distroless Python or Node image would still connect on its
-//! compiled-in bundle. Closing that would mean adding a CA-bundle option here
-//! too, on [`SpiceDBClientBuilder`]; it is not present today, and this doc says
-//! so rather than implying otherwise.
+//! Two gaps remain, both stated in `spicedb-rust/DESIGN.md` under "TLS roots":
+//!
+//! 1. A `FROM scratch` image with no OS trust store has nothing to read, where a
+//!    distroless Python or Node image would still connect on its compiled-in
+//!    bundle.
+//! 2. **Mutual TLS is not supported at all.** Reading the host's roots says
+//!    nothing about proving *this* client's identity to a server that demands a
+//!    client certificate, so `tls-native-roots` does not close this one. The
+//!    Python, TypeScript and Ruby clients each accept a client certificate and
+//!    key; this one accepts neither.
+//!
+//! Closing either would mean adding options to [`SpiceDBClientBuilder`]. Neither
+//! is present today, and this doc says so rather than implying otherwise.
 
 use std::collections::HashMap;
 use std::time::Duration;

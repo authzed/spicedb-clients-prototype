@@ -163,7 +163,10 @@ module SpiceDBProto
       # at all (it carries a filesystem path, so it legitimately contains the "/" the
       # reserved-character check below refuses), and it never leaves the host's kernel
       # regardless of what the path says.
-      return true if endpoint.start_with?("unix:")
+      # Case-insensitive because a URI scheme is: C-core normalizes "UNIX:" and dials
+      # the socket just the same, so a case-sensitive check here would refuse a target
+      # the transport happily treats as local.
+      return true if endpoint[0, 5].casecmp("unix:").zero?
       return false if endpoint.match?(AUTHORITY_SHIFTING)
 
       host =

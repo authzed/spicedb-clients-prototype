@@ -128,6 +128,7 @@ RSpec.describe "SpiceDBProto::Client.loopback_endpoint?" do
     127.0.0.1:50051 127.0.0.1 127.55.66.77:50051
     [::1]:50051 ::1
     unix:/var/run/spicedb.sock unix:///var/run/spicedb.sock
+    UNIX:/var/run/spicedb.sock Unix:///var/run/spicedb.sock
   ]
   loopback.each do |endpoint|
     it "treats #{endpoint.inspect} as loopback" do

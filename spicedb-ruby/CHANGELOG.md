@@ -180,7 +180,10 @@
   bypass. `"127.0.0.1:443@evil.com"` and `"127.0.0.1:notaport"` now require
   `allow_insecure_remote_credentials: true` instead of being accepted as loopback. Every
   ordinary local target keeps working with no opt-in: `localhost:50051`, `127.0.0.1:50051`,
-  `[::1]:50051`, `::1`, and `unix:` targets.
+  `[::1]:50051`, `::1`, and `unix:` targets — the last now matched
+  case-insensitively, since a URI scheme is case-insensitive and C-core normalizes `UNIX:`
+  and dials the socket just the same, so the previous case-sensitive check refused a target
+  the transport treats as local.
 
 - **2026-08-18**: `lookup_subjects` wrapped the ENTIRE streaming call in `with_retry`, so a
   mid-stream failure after some results had already been yielded to the caller retried the whole

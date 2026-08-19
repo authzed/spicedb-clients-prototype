@@ -5,10 +5,16 @@ import static org.assertj.core.api.Assertions.*;
 import com.authzed.spicedb.Relationship;
 import com.authzed.spicedb.SpiceDBClient;
 import com.authzed.spicedb.Transaction;
+import com.authzed.spicedb.errors.CancelledException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -47,11 +53,58 @@ class WatchChangesTest extends SpiceDBIntegrationTest {
     // since the original startRevision or silently losing changes by restarting from head.
     assertThat(event.changesThrough()).isNotEmpty();
 
+    // The update must be the one that was written, not merely "an update": asserting only the
+    // resource type would pass on a stream that delivered the seed write above, or any other
+    // document relationship an earlier example left behind.
     assertThat(event.updates()).isNotEmpty();
     SpiceDBClient.Update update = event.updates().get(0);
+    // TOUCH is a write, so it can only be the mapping for an explicit OPERATION_TOUCH -- never a
+    // default an unrecognized operation falls into.
     assertThat(update.operation())
         .isIn(SpiceDBClient.UpdateOperation.CREATE, SpiceDBClient.UpdateOperation.TOUCH);
     assertThat(update.relationship().resourceType()).isEqualTo("document");
+    assertThat(update.relationship().resourceID()).isEqualTo("watchdoc");
+    assertThat(update.relationship().resourceRelation()).isEqualTo("viewer");
+    assertThat(update.relationship().subjectType()).isEqualTo("user");
+    assertThat(update.relationship().subjectID()).isEqualTo("alice");
+  }
+
+  @Test
+  void abandoning_the_stream_releases_it() throws Exception {
+    // A caller that walks away mid-stream must not be left waiting. The consumer here is parked on
+    // a quiet watch stream -- nothing is being written, so nothing will ever arrive -- and closing
+    // the stream has to end it.
+    //
+    // Unlike the same test in the C# client, where `await foreach` disposes the iterator and the
+    // release is a language guarantee no assertion can fail on, the release here is this client's
+    // own work: updates() registers an onClose handler that cancels the gRPC context. A stream
+    // that dropped that handler leaves this consumer parked forever and fails the bound below.
+    // See root DESIGN.md, "RULE: Abandoning a stream must release it".
+    Stream<SpiceDBClient.WatchEvent> stream = client.updates(List.of("document"), null);
+
+    ExecutorService executor = Executors.newSingleThreadExecutor();
+    try {
+      Future<?> consumer =
+          executor.submit(
+              () -> {
+                // Consume forever; only the close below ends this.
+                stream.forEach(event -> {});
+              });
+
+      // Give the stream a moment to actually open before abandoning it.
+      Thread.sleep(200);
+      stream.close();
+
+      assertThatThrownBy(() -> consumer.get(10, TimeUnit.SECONDS))
+          .as("the watch consumer was still running 10s after the stream was closed")
+          .isInstanceOf(ExecutionException.class)
+          .cause()
+          // The native error type, not the raw gRPC one: an abandoned stream surfaces as
+          // CancelledException, so this also pins the error mapping on the streaming path.
+          .isInstanceOf(CancelledException.class);
+    } finally {
+      executor.shutdownNow();
+    }
   }
 
   @Test

@@ -4,6 +4,52 @@
 
 ### Added
 
+- **2026-08-19: three examples that ran without being able to fail now assert something
+  that does.** Root DESIGN.md, "RULE: An example must be executed by CI and must be able
+  to fail", clause 2. No example was renamed or removed; the example set goes from 43
+  tests to 46 across the same 14 classes.
+
+  - `CallDeadlinesTest` proves a deadline instead of only showing fast local calls
+    succeeding. Its three existing tests pass identically whether or not the timeout ever
+    reaches the wire — `bulkImportIsNotBoundedByTheUnaryDefault` is the sharpest case,
+    since its own comment claims to guard against the unary default leaking into the
+    import path, but a 50-relationship import finishes far inside the 30-second default,
+    so the regression it describes could not fail it. Two new tests stand up a
+    `ServerSocket` that accepts connections and never speaks gRPC — what a wedged SpiceDB
+    looks like from a client — and require `DeadlineExceededException` from both the
+    `Duration defaultTimeout` construction parameter and the per-call `timeout` override.
+    Each runs under a 17-second watchdog, comfortably below `DEFAULT_TIMEOUT`, so a
+    per-call timeout that was accepted and dropped trips the watchdog rather than
+    passing.
+  - `RelationshipCountersTest` polls to a terminal state instead of sleeping three
+    seconds and then wrapping every assertion in `if (!result.stillCalculating())`, which
+    asserts nothing on a slow run and nothing on any run if the still-calculating mapping
+    is inverted — the likeliest bug on that exact field. The count asserted is now exact
+    (three viewers, with an `editor` written that the relation filter must exclude), and
+    `unregister_counter` requires the subsequent read to raise
+    `FailedPreconditionException` rather than merely asserting that unregistering "does
+    not throw", which a no-op unregister satisfies just as well. The cleanup hooks now
+    catch `FailedPreconditionException` rather than `Exception`, so an unreachable server
+    or a bad token still fails the example.
+  - `WatchChangesTest` requires the exact update just written — resource, relation and
+    subject — rather than only that its resource type is `document`, which the seed write
+    or any leftover document relationship would satisfy. A new test also proves the
+    release half of "RULE: Abandoning a stream must release it": a consumer parked on a
+    quiet stream must end when the stream is closed, and must surface
+    `CancelledException` rather than a raw `StatusRuntimeException`.
+
+  Verified by mutation, not by inspection: making `effectiveTimeout` ignore its argument,
+  inverting `getCounterStillCalculating`, dropping the relation from the relationship
+  filter, removing the `onClose` handler that cancels the gRPC context, and mapping
+  `OPERATION_TOUCH` to `UNSPECIFIED` each fail the example that covers them, and each was
+  confirmed to compile first so the failure is the assertion rather than the build.
+
+  Worth recording for contrast: the same stream-release test in the C# client **cannot**
+  fail, because `await foreach` disposes the async iterator and with it the gRPC call, so
+  the release there is a language guarantee rather than client code. In Java it is this
+  client's own `onClose` handler, and removing it does fail the example — which is why
+  the test exists here in the form it does.
+
 - **2026-08-19**: An escape hatch, `SpiceDBClient.rawChannel()`. It returns this client's own
   `io.grpc.Channel` with its bearer metadata already attached, so any generated stub is one
   `newStub` call away and a request the idiomatic API cannot express has a workaround short of

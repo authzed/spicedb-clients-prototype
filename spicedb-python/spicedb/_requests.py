@@ -21,7 +21,7 @@ from authzed.api.v1 import (
 from google.protobuf import struct_pb2
 
 from spicedb.consistency import Consistency
-from spicedb.types import Filter, Relationship, Transaction
+from spicedb.types import Filter, Relationship, Transaction, context_to_struct
 
 DEFAULT_PAGE_SIZE = 512
 IMPORT_BATCH_SIZE = 1000
@@ -44,9 +44,7 @@ def context_struct(context: dict[str, Any] | None) -> struct_pb2.Struct | None:
     """Build a protobuf Struct from caveat context, or None if unset."""
     if context is None:
         return None
-    s = struct_pb2.Struct()
-    s.update(context)
-    return s
+    return context_to_struct(context, "caveat context")
 
 
 def object_reference(obj: tuple[str, str]) -> core_pb2.ObjectReference:

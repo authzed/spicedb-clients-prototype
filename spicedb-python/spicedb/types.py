@@ -14,6 +14,32 @@ from google.protobuf.message import Message
 from spicedb.errors import InvalidArgumentError
 
 
+def context_to_struct(context: dict[str, Any], what: str) -> struct_pb2.Struct:
+    """Convert caller-supplied context to a protobuf ``Struct``, key by key.
+
+    ``Struct.update`` converts the whole mapping in one call and, on an
+    unrepresentable value, raises a bare ``ValueError("Unexpected type")`` --
+    not a client error, and with no indication of which key was at fault. A
+    caller with a large context map would have to bisect it.
+
+    Root DESIGN.md, "RULE: A conversion that cannot preserve meaning must
+    fail", clause 1: caller-supplied data the client cannot represent must
+    raise a typed error *naming what could not be converted*. Converting one
+    key at a time is what makes naming it possible.
+    """
+    s = struct_pb2.Struct()
+    for key, value in context.items():
+        try:
+            s[key] = value
+        except (ValueError, TypeError) as exc:
+            raise InvalidArgumentError(
+                f"{what} key {key!r} holds a value that cannot be converted to "
+                f"protobuf: {value!r} (of type {type(value).__name__}). Caveat "
+                "context must contain only JSON-representable values."
+            ) from exc
+    return s
+
+
 @dataclass(frozen=True)
 class Relationship:
     """An immutable representation of a SpiceDB relationship.
@@ -133,8 +159,7 @@ class Relationship:
         if self.caveat_name is not None:
             ctx = None
             if self.caveat_context is not None:
-                ctx = struct_pb2.Struct()
-                ctx.update(self.caveat_context)
+                ctx = context_to_struct(self.caveat_context, "caveat context")
             caveat = core_pb2.ContextualizedCaveat(
                 caveat_name=self.caveat_name,
                 context=ctx,

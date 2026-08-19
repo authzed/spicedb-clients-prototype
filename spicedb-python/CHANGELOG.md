@@ -4,6 +4,60 @@
 
 ### Added
 
+- **2026-08-19: four new examples, one per root `DESIGN.md` RULE that had no executed
+  coverage in any client — and one client fix they exposed.** 19 example suites -> 23,
+  33 test cases -> 57, none renamed or removed. Group E Phase 3.
+
+  **The fix comes first, because an example found it.** Caveat context holding a value
+  protobuf cannot represent raised a bare `ValueError("Unexpected type")` from
+  `Struct.update` — not a `SpiceDBError`, and with no indication of *which* key was at
+  fault, so a caller with a large context map had to bisect it. Root DESIGN.md's "RULE: A
+  conversion that cannot preserve meaning must fail", clause 1, requires a **typed error
+  naming what could not be converted**. Both conversion sites (`Relationship._to_proto`
+  and `_requests.context_struct`) now go through a shared `context_to_struct` that
+  converts key by key and raises `InvalidArgumentError` naming the offending key and its
+  type. Converting one key at a time is what makes naming it possible.
+
+  - `examples/insecure_opt_in` — "RULE: Credentials over insecure transport require an
+    explicit opt-in". Loopback plaintext needs no ceremony; a remote plaintext host is
+    refused at construction, so the token never reaches a socket; and the named
+    `allow_insecure_remote_credentials` permits it. Five endpoints that could move the
+    authority under URI parsing are each required to be refused —
+    `127.0.0.1:443@evil.com` above all, where a last-colon split reads the host as
+    `127.0.0.1` while the real authority is `evil.com`. Python hands its target to gRPC's
+    C-core, which parses it in C++ out of reach, so the rule requires failing closed on
+    these rather than guessing.
+  - `examples/unrepresentable_values` — the rule above, both directions. Unconvertible
+    caveat context is refused with a typed error naming the key (and *not* naming the
+    innocent one beside it); a filter with `subject_id` and no `subject_type` is refused
+    rather than silently widening, which for `delete_relationships` is the difference
+    between deleting alice's relationships and deleting every relationship on every
+    document. In the other direction, a permissionship value this client has never seen
+    must neither raise nor grant.
+  - `examples/error_mapping` — "RULE: Error mapping must not lose the server's detail",
+    written as the two recoveries the rule names: a stale ZedToken surfaces as
+    `OutOfRangeError` with the underlying status still reachable as `__cause__`, recovered
+    by dropping the token and re-reading at full consistency; a rotated token surfaces as
+    `UnauthenticatedError`, distinct from a transport fault. Nothing parses a message.
+  - `examples/retry_policy` — "RULE: Automatic retry is for idempotent operations only",
+    with attempts counted **server-side**, the only way to tell a retry from its absence:
+    at the caller a transparently-retried success and a first-try success are identical. A
+    read failing twice with `UNAVAILABLE` is retried to success in 3 attempts; a write
+    failing the same way is attempted exactly once; `RESOURCE_EXHAUSTED` is attempted
+    exactly once even on a read.
+
+  Verified by mutation, 6 of 6 killing their example: disabling the loopback guard;
+  making the caveat-context failure untyped; letting an under-specified filter widen;
+  dropping `OUT_OF_RANGE` from the code map; adding `RESOURCE_EXHAUSTED` to the transient
+  set; and routing mutations through `_with_retry` instead of `_call_once`.
+
+  `error_mapping` and `retry_policy` drive a stand-in gRPC server rather than the real
+  SpiceDB, because neither code is reachable from it — verified, not assumed: a garbage
+  ZedToken returns `INVALID_ARGUMENT` and the in-memory datastore never collects the
+  revision, and a wrong preshared key returns **`PERMISSION_DENIED`, not
+  `UNAUTHENTICATED`**. `error_mapping` asserts that real behaviour too, so a reader does
+  not write a credential-refresh branch that can never run.
+
 - **2026-08-19**: Four examples that ran (or, for the two watch examples, did
   not run) without being able to fail now assert something that does. Root
   DESIGN.md, "RULE: An example must be executed by CI and must be able to

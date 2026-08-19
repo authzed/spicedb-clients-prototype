@@ -71,6 +71,10 @@ fail".
 | `bulk_operations/` | Bulk checks and bulk relationship import/export |
 | `expand_permission_tree/` | Expanding a permission into its tree of subjects |
 | `call_deadlines/` | Constructing a client with `default_timeout`, a per-call `timeout` override, and confirming bulk import isn't bounded by the unary default |
+| `error_mapping/` | Recovering from `OUT_OF_RANGE` (stale ZedToken) and `UNAUTHENTICATED` without parsing a message |
+| `insecure_opt_in/` | Why `insecure=True` is loopback-only, and the named opt-in a remote plaintext host requires |
+| `retry_policy/` | Which calls are retried for you and which are not, counted server-side |
+| `unrepresentable_values/` | Caller data that cannot convert fails loudly, naming the key; unknown server enums degrade safely |
 | `sync_check_permission/` | Basic permission check with `spicedb.sync` — build the client once at startup and reuse it, no event loop required |
 | `sync_write_relationships/` | Writing relationships with the transaction builder, synchronously |
 | `sync_read_relationships/` | Reading relationships with a plain `for` loop instead of `async for` |

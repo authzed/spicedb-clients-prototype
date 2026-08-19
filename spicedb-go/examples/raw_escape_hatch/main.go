@@ -69,6 +69,24 @@ definition document {
 		log.Fatalf("write schema failed: %v", err)
 	}
 
+	// Clear first: a TOUCH of an already-identical relationship is not a
+	// change, so SpiceDB would emit no watch event for it and the read-back
+	// below would wait forever on a rerun.
+	if _, err := c.DeleteRelationships(ctx, rel.NewFilter("document")); err != nil {
+		log.Fatalf("clearing document relationships failed: %v", err)
+	}
+
+	// A seed write fixes the revision the watch below starts from, so it sees
+	// the metadata write and nothing that came before it.
+	var seed rel.Txn
+	if err := seed.Touch(rel.MustFromTriple("document", "ledger", "viewer", "user", "seed", "")); err != nil {
+		log.Fatalf("failed to add relationship to transaction: %v", err)
+	}
+	seedRevision, err := c.Write(ctx, seed)
+	if err != nil {
+		log.Fatalf("seed write failed: %v", err)
+	}
+
 	// ── 1. A proto field the idiomatic API does not expose ───────────────
 	//
 	// The bearer token rides this client's own connection credentials, so
@@ -80,6 +98,41 @@ definition document {
 	if err != nil {
 		log.Fatalf("build transaction metadata failed: %v", err)
 	}
+
+	// Sending the metadata proves nothing on its own: a client that dropped
+	// the field would look identical from here, because WriteRelationships
+	// does not echo it back. The only place it becomes observable is the Watch
+	// stream, so the read-back below is what makes this example able to fail.
+	// Watch is started before the write so the event cannot be missed.
+	watchCtx, cancelWatch := context.WithCancel(ctx)
+	defer cancelWatch()
+
+	watchStream, err := c.RawProto().WatchServiceClient.Watch(watchCtx, &v1.WatchRequest{
+		OptionalObjectTypes: []string{"document"},
+		OptionalStartCursor: &v1.ZedToken{Token: seedRevision},
+	})
+	if err != nil {
+		log.Fatalf("raw watch failed: %v", err)
+	}
+
+	type watched struct {
+		metadata map[string]any
+		err      error
+	}
+	seen := make(chan watched, 1)
+	go func() {
+		for {
+			resp, err := watchStream.Recv()
+			if err != nil {
+				seen <- watched{err: err}
+				return
+			}
+			if md := resp.GetOptionalTransactionMetadata(); md != nil {
+				seen <- watched{metadata: md.AsMap()}
+				return
+			}
+		}
+	}()
 
 	written, err := c.RawProto().PermissionsServiceClient.WriteRelationships(ctx, &v1.WriteRelationshipsRequest{
 		Updates: []*v1.RelationshipUpdate{{
@@ -99,6 +152,31 @@ definition document {
 	}
 	revision := written.GetWrittenAt().GetToken()
 	fmt.Printf("raw write committed at revision %s\n", revision)
+
+	// Read the metadata back out of the Watch stream.
+	select {
+	case got := <-seen:
+		if got.err != nil {
+			log.Fatalf("raw watch stream failed before the metadata arrived: %v", got.err)
+		}
+		fmt.Printf("watch reported transaction metadata: %v\n", got.metadata)
+		if got.metadata["correlation_id"] != "example-42" {
+			log.Fatalf("expected correlation_id \"example-42\" on the watched transaction, got %v",
+				got.metadata["correlation_id"])
+		}
+		if got.metadata["actor"] != "billing-job" {
+			log.Fatalf("expected actor \"billing-job\" on the watched transaction, got %v",
+				got.metadata["actor"])
+		}
+	case <-time.After(30 * time.Second):
+		log.Fatalf("no watch event carried OptionalTransactionMetadata within 30s: " +
+			"the metadata sent on the raw write never reached the server")
+	}
+
+	// Abandoning the raw stream is the caller's job on this path: RawProto
+	// hands back the generated client, so there is no iterator cleanup to lean
+	// on. See root DESIGN.md, "RULE: Abandoning a stream must release it".
+	cancelWatch()
 
 	// The idiomatic API picks up right where the raw call left off -- same
 	// client, same connection, including read-your-writes on the raw revision.

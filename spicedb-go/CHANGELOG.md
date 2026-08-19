@@ -4,6 +4,48 @@
 
 ### Added
 
+- **2026-08-19**: New example, `examples/call_deadlines/`, and every example that could
+  only pass now asserts something that can fail. Root DESIGN.md, "RULE: An example must be
+  executed by CI and must be able to fail", clause 2.
+
+  `call_deadlines` is the one that did not exist: twelve of the thirteen examples passed a
+  bare `context.Background()` to every call, teaching the anti-pattern "RULE: A unary call
+  must have a deadline" exists to prevent, and nothing demonstrated the deadline. It stands
+  up a listener that accepts TCP connections and never speaks gRPC -- what a wedged SpiceDB
+  looks like from a client -- and requires the call to come back
+  `client.ErrDeadlineExceeded` on the caller's schedule. The call runs behind a watchdog, so
+  a client that dropped the caller's context fails the example instead of hanging the job.
+
+  The rest are strengthened in place, with no example renamed or removed:
+
+  - `watch_changes/` **now runs in CI**. It was skipped by name -- "open-ended stream; needs
+    a bounded consumer with explicit cancellation" -- which meant the only streaming example
+    never executed and "RULE: Abandoning a stream must release it" had no executed coverage
+    at all. It is now a bounded consumer: subscribe from a known revision, write the update
+    it is waiting for, consume until that exact update arrives, cancel explicitly, and
+    require the consumer to return promptly. It was previously assertion-free (`fmt.Printf`
+    only, with a statically unreachable trailing line).
+  - `relationship_counters/` polls to a terminal state instead of sleeping two seconds and
+    then wrapping every assertion in `if !stillCalculating`. The timeout is a failure, not a
+    way out, and the count asserted is exact (two viewers, with an `editor` written that the
+    filter must exclude) rather than "non-zero". Unregistering is verified by requiring the
+    subsequent read to fail.
+  - `delete_relationships/` reads every delete back. It previously asserted only
+    `err != nil` on the guarded delete; it now asserts the typed error and its
+    `ERROR_REASON_WRITE_OR_DELETE_PRECONDITION_FAILURE` reason, that a rejected delete
+    removed nothing, and that a `WithDeleteLimit(1)` delete pages through all three matches.
+  - `schema_management/` asserts its own round trip. `strings.Contains(readSchema,
+    "definition user")` was true no matter what this example did -- all thirteen examples
+    write that string into one shared SpiceDB. It now writes a schema, reads it back, and
+    rewrites one relation, asserting the change is visible and the old name is gone.
+  - `schema_reflection/` asserts contents, not four consecutive non-empty checks: the exact
+    relation and permission names, that `document#viewer` computes exactly `document#view`,
+    the full dependency set of `document#view`, and the specific diff kinds -- so a mapping
+    that reported every diff as `unknown` fails.
+  - `raw_escape_hatch/` reads `OptionalTransactionMetadata` back out of the Watch stream.
+    It was sent and never verified, which is the one thing that example exists to
+    demonstrate.
+
 - **2026-08-19**: An escape hatch, `(*Client).RawProto()`. It returns the underlying
   `*proto.Client` -- the four generated service clients this package makes its own calls
   through -- so a request the idiomatic API cannot express has a workaround short of

@@ -581,7 +581,8 @@ See package sections above for the complete API manifest.
 | `read_relationships/` | Reading relationships with iterator |
 | `lookup_resources/` | Finding resources a subject can access |
 | `lookup_subjects/` | Finding subjects with access to a resource |
-| `watch_changes/` | Watching for relationship changes |
+| `watch_changes/` | Watching for relationship changes with a bounded consumer: subscribe, write, consume until the expected update arrives, cancel, and require the stream to release |
+| `call_deadlines/` | Bounding calls with a `context.Context` deadline, proved against a listener that accepts the connection and never answers |
 | `schema_management/` | Reading and writing schema |
 | `bulk_operations/` | Bulk checks, batch writes, and bulk import/export |
 | `schema_reflection/` | Schema reflection, computable permissions, dependent relations, diff |

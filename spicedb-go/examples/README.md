@@ -39,12 +39,13 @@ SPICEDB_ENDPOINT=localhost:50071 mage integrationTest
 ## What runs in CI
 
 Every example in the table below is executed by `mage integrationTest`, which
-is what the `integration` job in `.github/workflows/go.yaml` runs, with one
-exception: `watch_changes` is an open-ended stream with no bounded consumer
-yet, so the runner skips it by name and prints the skip. The runner also
-asserts how many examples it executed, so an example that is renamed out of the
-glob fails the job instead of quietly shrinking the run. See root `DESIGN.md`,
-"RULE: An example must be executed by CI and must be able to fail".
+is what the `integration` job in `.github/workflows/go.yaml` runs. Nothing is
+skipped: `watch_changes` used to be, for being an open-ended stream with no
+bounded consumer, and it now has one. The runner reconciles the examples on
+disk against the list in `Magefile.go` in both directions, so an example that
+is renamed out of the glob fails the job instead of quietly shrinking the run.
+See root `DESIGN.md`, "RULE: An example must be executed by CI and must be able
+to fail".
 
 ## Examples
 
@@ -56,7 +57,8 @@ glob fails the job instead of quietly shrinking the run. See root `DESIGN.md`,
 | `delete_relationships/` | Deleting relationships, including precondition-guarded deletes |
 | `lookup_resources/` | Resource lookup |
 | `lookup_subjects/` | Subject lookup |
-| `watch_changes/` | Watching for changes |
+| `watch_changes/` | Watching for changes with a bounded consumer that cancels the stream explicitly |
+| `call_deadlines/` | Bounding calls with a `context.Context` deadline, including a call against a server that never answers |
 | `schema_management/` | Schema read/write |
 | `bulk_operations/` | Bulk checks, batch writes, and bulk import/export |
 | `expand_permission_tree/` | Expanding a permission into its tree of subjects |

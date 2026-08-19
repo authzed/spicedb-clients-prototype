@@ -128,6 +128,18 @@ module SpiceDB
     DEFAULT_EXPORT_PAGE_SIZE = 512
     DEFAULT_DELETE_PAGE_SIZE = 1_000
     DEFAULT_IMPORT_BATCH_SIZE = 1_000
+    # How many items go into one CheckBulkPermissions request.
+    #
+    # SpiceDB rejects a request carrying more items than +maxBulkCheckCount+
+    # -- 10,000, a hard-coded const in +internal/services/v1/bulkcheck.go+
+    # with no flag to raise or lower it -- with
+    # +ERROR_REASON_TOO_MANY_CHECKS_IN_REQUEST+. Nothing in the proto
+    # enforces this: +CheckBulkPermissionsRequest.items+ carries only a
+    # per-item +required+ rule, not a collection-size rule, so the limit
+    # lives solely in server code and a client that forwards the caller's
+    # Array unchanged fails on large inputs. 1,000 leaves ten times' headroom
+    # and matches DEFAULT_IMPORT_BATCH_SIZE and the other clients' check
+    # batch size.
     DEFAULT_CHECK_BATCH_SIZE = 1_000
 
     # Applied to every unary call that does not pass its own `timeout:`.
@@ -218,8 +230,14 @@ module SpiceDB
 
     # Performs a bulk permission check on the given relationships.
     #
-    # Returns a {SpiceDB::CheckResult} for each relationship — see
-    # {#check_permission} for why this isn't a Boolean.
+    # Returns a {SpiceDB::CheckResult} for each relationship, in the same
+    # order — see {#check_permission} for why this isn't a Boolean.
+    #
+    # Large inputs are split automatically into requests of at most
+    # {DEFAULT_CHECK_BATCH_SIZE} (1,000) items and the responses concatenated
+    # in input order — SpiceDB rejects a single request carrying more than
+    # 10,000. An empty +relationships+ sends no request at all and returns
+    # +[]+.
     #
     # `context:` is a call-level default applied to every relationship's
     # check. Each relationship can instead (or in addition) carry its own
@@ -240,14 +258,27 @@ module SpiceDB
     # @return [Array<SpiceDB::CheckResult>]
     def check_permissions(consistency, permission, *relationships, context: nil, timeout: nil)
       relationships = relationships.flatten
+      # Zero relationships sends nothing at all. An empty request is not a
+      # cheaper way to ask nothing -- it is a round trip whose only possible
+      # answer is the empty Array, and #check_all already treats an aggregate
+      # over zero checks as false rather than a grant.
       return [] if relationships.empty?
 
-      with_retry do
-        # Delegate to proto client BulkCheckPermissions
-        # Each relationship becomes a CheckBulkPermissionsRequestItem
-        items = relationships.map { |r| check_item_from_rel(r, permission) }
+      # One request per chunk of DEFAULT_CHECK_BATCH_SIZE, results
+      # concatenated in input order (each_slice + flat_map) so results[i]
+      # still corresponds to relationships[i] across the chunk boundary. A
+      # caller passing fewer than DEFAULT_CHECK_BATCH_SIZE relationships --
+      # the overwhelmingly common case -- still makes exactly one request.
+      # Retry is per chunk, so a transient failure on the third chunk never
+      # re-sends the first two.
+      relationships.each_slice(DEFAULT_CHECK_BATCH_SIZE).flat_map do |chunk|
+        with_retry do
+          # Delegate to proto client BulkCheckPermissions
+          # Each relationship becomes a CheckBulkPermissionsRequestItem
+          items = chunk.map { |r| check_item_from_rel(r, permission) }
 
-        call_bulk_check(consistency, items, context, effective_timeout(timeout))
+          call_bulk_check(consistency, items, context, effective_timeout(timeout))
+        end
       end
     end
 

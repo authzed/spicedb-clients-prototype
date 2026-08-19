@@ -918,6 +918,22 @@ public final class SpiceDBClient implements AutoCloseable {
     }
 
     /**
+     * Preconditions and page size with no per-call deadline — equivalent to the canonical
+     * constructor with a {@code null} timeout, which is exactly the "no per-call deadline"
+     * semantics that form already expresses.
+     *
+     * <p>Kept explicitly: {@code timeout} was added as a fourth record component after this type
+     * shipped with three, and a record's canonical constructor is generated from its component
+     * list, so adding the component silently removed this signature. Deleting this constructor is a
+     * binary and source break for every caller that wrote {@code new DeleteOptions(a, b, c)}. If a
+     * fifth component is ever added, add the corresponding delegating overload here rather than
+     * letting the old arity disappear.
+     */
+    public DeleteOptions(List<Filter> mustMatch, List<Filter> mustNotMatch, Integer limit) {
+      this(mustMatch, mustNotMatch, limit, null);
+    }
+
+    /**
      * No preconditions, default page size (1,000) — identical behavior to {@link
      * #deleteRelationships(Filter)}.
      */

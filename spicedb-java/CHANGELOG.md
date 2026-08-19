@@ -302,8 +302,13 @@
   "API compatible" regardless. Since `.github/workflows/java.yaml` runs this as the only Java API
   gate, it had been decorative. The flag is now passed, and the failure message no longer implies
   `mage updateAllowBreak` is a target of this module — it is a root-level target
-  (`Magefile.go:168`), so it must be run from the repository root. Enabling the gate immediately
-  surfaced a real, previously-hidden break; see the `DeleteOptions` note below.
+  (`Magefile.go:168`), so it must be run from the repository root.
+
+  Enabling it surfaced exactly one real break across this branch, since fixed rather than waived:
+  adding the `Duration timeout` component to the `DeleteOptions` record had silently removed the
+  generated three-argument constructor. That constructor is now declared explicitly, delegating to
+  the canonical form with a `null` timeout, so the deadline work above is additive after all and
+  the gate is green on its merits rather than by exemption.
 
 - **2026-08-19**: **The gRPC stack now resolves to a single version (1.79.0) instead of three.**
   This client declared `io.grpc:*` at 1.68.0 while `spicedb-java-proto` declared it at 1.72.0, but
@@ -409,20 +414,9 @@
     `checkPermission(consistency, permission, r, timeout)`, `write(txn, timeout)`,
     `readSchema(timeout)`), mirroring the existing `checkPermission(..., Map<String, Object>
     context)` overload convention. `deleteRelationships` instead reads a new
-    `DeleteOptions.withTimeout(Duration)`. The new overloads are additive, but
-    `DeleteOptions` is **not**: see the breaking note immediately below. Applied via grpc-java's
-    `stub.withDeadlineAfter(millis, TimeUnit.MILLISECONDS)`, called fresh on each retry attempt.
-  - **BREAKING — `DeleteOptions` gained a fourth record component.** It is now
-    `DeleteOptions(List<Filter> mustMatch, List<Filter> mustNotMatch, Integer limit, Duration
-    timeout)`; the canonical three-argument constructor `DeleteOptions(List<Filter>,
-    List<Filter>, Integer)` **no longer exists**. Because `DeleteOptions` is a record, adding the
-    component removed that constructor outright, which breaks both binary and source
-    compatibility for anyone calling `new DeleteOptions(a, b, c)` directly. The documented
-    `DeleteOptions.none().withMustMatch(...).withLimit(...)` idiom is unaffected and remains the
-    recommended form; direct constructor callers should migrate to it, or pass a trailing `null`
-    timeout. Permitted because these clients are unreleased — recorded here rather than waived
-    because nothing else would have surfaced it: the japicmp gate that should have caught it was
-    running without `--error-on-binary-incompatibility` and exited 0 while printing the removal.
+    `DeleteOptions.withTimeout(Duration)`. Additive — existing call sites are unaffected. Applied
+    via grpc-java's `stub.withDeadlineAfter(millis, TimeUnit.MILLISECONDS)`, called fresh on each
+    retry attempt.
   - `SpiceDBClient.createPlaintext`/`createSystemTls`/`create` all gained a `Duration
     defaultTimeout` overload, applied to any unary call that doesn't pass its own `timeout`. New
     public `SpiceDBClient.DEFAULT_TIMEOUT = Duration.ofSeconds(30)` mirrors `authzed-node`'s

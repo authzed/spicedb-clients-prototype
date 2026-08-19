@@ -331,4 +331,31 @@ class DeleteRelationshipsOptionsTest {
     assertTrue(options.mustNotMatch().isEmpty());
     assertNull(options.limit());
   }
+
+  /**
+   * The three-argument constructor is part of the published surface and must keep working. It was
+   * the record's generated canonical constructor until {@code Duration timeout} was added as a
+   * fourth component, which silently removed it - a binary and source break for every caller that
+   * wrote {@code new DeleteOptions(a, b, c)}. It is now declared explicitly, and this pins it:
+   * adding a fifth component must not delete this arity again.
+   */
+  @Test
+  void threeArgConstructorStillWorksAndMeansNoTimeout() {
+    var mustMatch = List.of(Filter.of("document").withResourceID("doc1"));
+    var mustNotMatch = List.of(Filter.of("document").withResourceID("doc2"));
+
+    var options = new SpiceDBClient.DeleteOptions(mustMatch, mustNotMatch, 500);
+
+    assertEquals(mustMatch, options.mustMatch());
+    assertEquals(mustNotMatch, options.mustNotMatch());
+    assertEquals(500, options.limit());
+    assertNull(options.timeout(), "three-arg form must mean no per-call deadline");
+
+    // It must delegate to the canonical constructor, so normalization and validation still apply.
+    var nulls = new SpiceDBClient.DeleteOptions(null, null, null);
+    assertTrue(nulls.mustMatch().isEmpty());
+    assertTrue(nulls.mustNotMatch().isEmpty());
+    assertThrows(
+        IllegalArgumentException.class, () -> new SpiceDBClient.DeleteOptions(null, null, 0));
+  }
 }

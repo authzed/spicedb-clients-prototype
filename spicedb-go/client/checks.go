@@ -92,7 +92,7 @@ func (c *Client) CheckWithContext(ctx context.Context, cs consistency.Strategy, 
 	results := make([]CheckResult, 0, len(rs))
 	for start := 0; start < len(rs); start += defaultCheckBatchSize {
 		end := min(start+defaultCheckBatchSize, len(rs))
-		chunkResults, err := c.checkChunk(ctx, cs, permission, checkContext, rs[start:end])
+		chunkResults, err := c.checkChunk(ctx, cs, permission, checkContext, rs[start:end], start)
 		if err != nil {
 			return nil, err
 		}
@@ -106,7 +106,14 @@ func (c *Client) CheckWithContext(ctx context.Context, cs consistency.Strategy, 
 // CheckWithContext is what enforces both. Every response guard below --
 // the pair-count check and the malformed-oneof check -- therefore applies
 // per chunk, exactly as it applied to the whole request before chunking.
-func (c *Client) checkChunk(ctx context.Context, cs consistency.Strategy, permission string, checkContext map[string]any, rs []rel.Relationship) ([]CheckResult, error) {
+//
+// offset is rs's start index within the caller's full slice. Every "check
+// item %d" below reports offset+i, not i: the index a caller sees must be
+// the one they can use to look up their own relationship. Reporting the
+// chunk-relative index would attribute the failing item to a different
+// resource entirely -- the same misattribution the pair-count guard exists
+// to prevent, relocated into the diagnostic.
+func (c *Client) checkChunk(ctx context.Context, cs consistency.Strategy, permission string, checkContext map[string]any, rs []rel.Relationship, offset int) ([]CheckResult, error) {
 	items := make([]*v1.CheckBulkPermissionsRequestItem, len(rs))
 	for i, r := range rs {
 		item, err := checkItemFromRel(r, permission, checkContext)
@@ -144,7 +151,7 @@ func (c *Client) checkChunk(ctx context.Context, cs consistency.Strategy, permis
 	results := make([]CheckResult, len(resp.GetPairs()))
 	for i, pair := range resp.GetPairs() {
 		if errResp := pair.GetError(); errResp != nil {
-			return nil, mapGRPCError(fmt.Sprintf("check item %d", i), status.FromProto(errResp).Err())
+			return nil, mapGRPCError(fmt.Sprintf("check item %d", offset+i), status.FromProto(errResp).Err())
 		}
 		if pair.GetItem() == nil {
 			// pair.Response is a oneof -- a well-behaved server always sets
@@ -156,7 +163,7 @@ func (c *Client) checkChunk(ctx context.Context, cs consistency.Strategy, permis
 				Code: CodeInternal,
 				Message: fmt.Sprintf(
 					"spicedb: check item %d: malformed CheckBulkPermissionsPair (neither item nor error set)",
-					i,
+					offset+i,
 				),
 			}
 		}

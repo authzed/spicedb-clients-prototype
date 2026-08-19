@@ -275,6 +275,19 @@
   this branch now runs per chunk. A caller passing fewer than 1,000 relationships still makes
   exactly one request.
 
+  Two consequences of the split are worth stating outright, because they change contracts callers
+  may already depend on:
+
+  - **A per-item error message now names the caller's own index.** The `check item %d` prefix is
+    computed from an absolute offset, not from the position within whichever request carried the
+    failure. Without that, a failure at relationship 1,003 reported as `check item 3` — the same
+    misattribution the response-length guard exists to prevent, relocated into the diagnostic.
+  - **`CheckedAt` is per response, and a response is now one chunk.** Results from a single
+    request still share one token; an input large enough to be split carries more than one across
+    the returned slice. Root DESIGN.md's bulk-check invariant has been re-scoped to match. The
+    per-call deadline is unaffected — this client threads the caller's `ctx` rather than
+    synthesising a deadline per request.
+
   `defaultCheckBatchSize` is now shared by `CheckWithContext`'s chunking and `CheckIter`'s
   batching rather than duplicated: same RPC, same server limit, so a second constant could only
   drift. Because `CheckIter` flushes at exactly that size, each batch it hands downstream is a

@@ -42,4 +42,5 @@ bundle exec rspec check_permission/check_permission_spec.rb
 | `schema_reflection/` | Schema reflection, computable permissions, diffs |
 | `relationship_counters/` | Registering and reading relationship counters |
 | `expand_permission_tree/` | Expanding a permission into its native `PermissionTree` (intermediate/leaf nodes, subjects) |
+| `raw_escape_hatch/` | The `#proto_client` escape hatch: driving the generated stub on this client's own connection to send `optional_transaction_metadata` (a proto field this gem does not wrap) and to call the single-check `CheckPermission` RPC |
 | `custom_tls/` | Reaching a SpiceDB behind a private CA with `new_custom_tls(ca_cert:)`, and mutual TLS with `client_cert:`/`client_key:`. Brings up its own TLS-terminated endpoint — the only example tagged `:no_spicedb`, since a plaintext server has nothing to demonstrate about trust material |

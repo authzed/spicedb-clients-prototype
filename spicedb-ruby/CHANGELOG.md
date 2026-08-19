@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Added
+
+- **2026-08-19**: The escape hatch `SpiceDB::Client#proto_client` gained the test and example
+  it never had. The reader itself is unchanged and predates this entry — what is new is that
+  its contract is now pinned: `spec/client_raw_escape_hatch_spec.rb` runs a real
+  `GRPC::RpcServer`, drives the single-check `CheckPermission` RPC (which `#check_permission`
+  deliberately routes around, so the gap is genuine) through the hatch's stubs, and asserts
+  both the response and the `authorization` metadata the server received — mutation-verified
+  by forcing the interceptor to a wrong token. It also pins that the hatch is an accessor,
+  not a construction path (arity zero), and that the insecure-transport guard still refuses
+  a non-loopback plaintext endpoint.
+
+  `examples/raw_escape_hatch/` shows the two things the idiomatic API cannot express:
+  `optional_transaction_metadata` on a write, and the single-check RPC. Both documented in
+  DESIGN.md's "Escape Hatches", which previously said only that the proto client was
+  "accessible ... for advanced use cases".
+
 ### Breaking
 
 - **2026-08-18** (behavioral; new keyword argument): per root DESIGN.md, "RULE: Credentials over

@@ -668,12 +668,61 @@ gap). `is_checkpoint` is true for a checkpoint event, which carries no `updates`
 
 ### Escape Hatches
 
-The proto client (`spicedb-proto` gem) is accessible via `client.proto_client`
-for advanced use cases that need direct access to gRPC stubs.
+`client.proto_client` returns the underlying `SpiceDBProto::Client` — the
+`permissions`/`schema`/`watch`/`experimental` stubs this gem makes its own calls through:
+
+```ruby
+response = client.proto_client.permissions.check_permission(request)
+```
+
+Clearly-marked **secondary** API, which is what root DESIGN.md's "What NOT To Do" permits:
+channels, stubs and metadata stay out of the primary surface, and "escape hatches for
+advanced use are acceptable as clearly marked secondary API". It exists so a request the
+idiomatic surface cannot express — an RPC or proto field not wrapped here, such as
+`WriteRelationshipsRequest#optional_transaction_metadata`, or the single-check
+`CheckPermission` RPC that `#check_permission` deliberately routes around — has a
+workaround short of forking the gem.
+
+Four properties, all deliberate:
+
+- **The bearer token comes free.** The stubs carry it already (composed call credentials on
+  the secure path, a `BearerTokenInterceptor` on the plaintext one), so a raw call is
+  authenticated exactly as an idiomatic one is.
+- **A raw call is a raw call.** No `SpiceDB::Error` mapping (you rescue `GRPC::BadStatus`),
+  no retry, and no `default_timeout` — pass `deadline:` yourself.
+- **The connection belongs to the client.** `#close` releases it; closing it from here
+  breaks every later call.
+- **It is an accessor, never a constructor.** An `attr_reader` takes no arguments, so
+  channel construction stays on the single guarded path in the constructor and this cannot
+  become a way around root DESIGN.md, "RULE: Credentials over insecure transport require an
+  explicit opt-in". `spec/client_raw_escape_hatch_spec.rb` pins that (arity zero) alongside
+  a real-server test of the hatch itself.
+
+No stability promise beyond grpc-ruby's and the generated code's.
 
 ## Public API Surface
 
 See module sections above for the complete API manifest.
+
+## Examples Manifest
+
+| Directory | Demonstrates |
+|-----------|-------------|
+| `check_permission/` | Basic permission check with `check_permission` |
+| `write_relationships/` | Writing relationships with the transaction builder |
+| `delete_relationships/` | Deleting relationships, including guarded deletes with `must_match:`/`must_not_match:` and `limit:` |
+| `read_relationships/` | Reading relationships with an enumerator |
+| `lookup_resources/` | Finding resources a subject can access |
+| `lookup_subjects/` | Finding subjects with access to a resource |
+| `watch_changes/` | Watching for relationship changes |
+| `schema_management/` | Schema read/write operations |
+| `bulk_operations/` | Bulk checks, `check_all`, `check_any`, and import |
+| `call_deadlines/` | Constructing a client with `default_timeout:`, a per-call `timeout:` override, and confirming bulk import isn't bounded by the unary default |
+| `schema_reflection/` | Schema reflection, computable permissions, diffs |
+| `relationship_counters/` | Registering and reading relationship counters |
+| `expand_permission_tree/` | Expanding a permission into its native `PermissionTree` (intermediate/leaf nodes, subjects) |
+| `raw_escape_hatch/` | `#proto_client` — driving the generated stub directly for a proto field (`optional_transaction_metadata`) and an RPC (`CheckPermission`) the idiomatic API does not expose |
+| `custom_tls/` | Reaching a SpiceDB behind a private CA with `new_custom_tls(ca_cert:)`, and mutual TLS with `client_cert:`/`client_key:`. Brings up its own TLS-terminated endpoint — the only example tagged `:no_spicedb` |
 
 ## Changelog
 

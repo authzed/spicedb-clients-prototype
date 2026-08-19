@@ -19,13 +19,13 @@
  * from an unreachable port; one that only asserted the success could not tell
  * a verified chain from a disabled one.
  */
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import * as http2 from "node:http2";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { connectNodeAdapter } from "@connectrpc/connect-node";
+import { connectNodeAdapter, Http2SessionManager } from "@connectrpc/connect-node";
 import { createSpiceDBClient } from "../client.js";
 import { PermissionsService } from "../gen/authzed/api/v1/permission_service_pb.js";
 
@@ -241,12 +241,10 @@ describe("TLS material is not a way around the credential guard", () => {
     ).toThrow(/allowInsecureRemoteCredentials/);
   });
 
-  it("refuses to build the client before any session manager exists", async () => {
+  it("refuses to build the client before any connection is opened", () => {
     // The refusal must land in createSpiceDBClient, not on the first call: a
     // client that accepted the combination and only failed later would
     // already be a token leak waiting for its first RPC.
-    const { Http2SessionManager } = await import("@connectrpc/connect-node");
-    const { vi } = await import("vitest");
     const spy = vi.spyOn(Http2SessionManager.prototype, "connect");
     try {
       expect(() =>

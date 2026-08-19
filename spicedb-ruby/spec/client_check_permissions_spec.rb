@@ -84,3 +84,28 @@ RSpec.describe 'SpiceDB::Client#check_permissions response/request length guard'
     end.to raise_error(SpiceDB::Error, /check item 0/)
   end
 end
+
+RSpec.describe 'SpiceDB::Client#check_permissions error pair with an empty message' do
+  let(:client) { SpiceDB::Client.new_plaintext('localhost:50051', 'testtoken') }
+  let(:relationship) { SpiceDB::Relationship.from_triple('document', 'doc1', 'viewer', 'user', 'alice') }
+
+  # google.rpc.Status requires a code, never a message, so a server is entitled
+  # to send an error pair whose message is empty. The per-item guard used to
+  # dispatch on `!pair.error.message.empty?`, so such a pair fell past it, then
+  # past the malformed-oneof guard (the oneof IS set to :error), and
+  # dereferenced `pair.item.permissionship` on nil -- a NoMethodError raised
+  # from inside the client rather than the typed error the caller can rescue.
+  it 'raises the typed error, not NoMethodError, when the per-item status carries no message' do
+    error_status = Google::Rpc::Status.new(code: 7, message: '')
+    pair = Authzed::Api::V1::CheckBulkPermissionsPair.new(error: error_status)
+    response = Authzed::Api::V1::CheckBulkPermissionsResponse.new(pairs: [pair])
+
+    permissions_service = double('permissions_service')
+    allow(permissions_service).to receive(:check_bulk_permissions).and_return(response)
+    client.instance_variable_set(:@proto_client, double('proto_client', permissions: permissions_service))
+
+    expect do
+      client.check_permissions(SpiceDB::Consistency.full, 'view', relationship)
+    end.to raise_error(SpiceDB::PermissionDeniedError)
+  end
+end

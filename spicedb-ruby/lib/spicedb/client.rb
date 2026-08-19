@@ -952,7 +952,15 @@ module SpiceDB
       checked_at = resp.checked_at&.token || ''
 
       resp.pairs.each_with_index.map do |pair, i|
-        raise SpiceDB.to_spicedb_error(pair.error) if pair.respond_to?(:error) && pair.error && pair.error.respond_to?(:message) && !pair.error.message.empty?
+        # Dispatch on the oneof group, not on the error's message text. The
+        # previous guard fired only when `pair.error.message` was non-empty,
+        # so an error pair carrying a code with an EMPTY message fell through
+        # it, then fell through the malformed check below (the oneof IS set),
+        # and dereferenced `pair.item.permissionship` on nil -- a
+        # NoMethodError crash inside the client for a response the server is
+        # entitled to send: `google.rpc.Status` requires a code, never a
+        # message. `response` is the authority on which arm is populated.
+        raise SpiceDB.to_spicedb_error(pair.error) if pair.response == :error
 
         # `response` is the oneof group name — nil means neither `item` nor
         # `error` was set. The proto schema guarantees a well-behaved server

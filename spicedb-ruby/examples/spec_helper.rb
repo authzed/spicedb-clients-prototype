@@ -32,10 +32,22 @@ RSpec.configure do |config|
 
     SpiceDB::Client.new_plaintext(SPICEDB_ENDPOINT, SPICEDB_TOKEN) do |client|
       @client = client
-      # Write the standard schema (idempotent)
+      # Clear first, then write the schema -- not the other way round. Every
+      # example runs against one SpiceDB, and SpiceDB refuses a WriteSchema
+      # that drops a relation while a relationship still exists under it, so
+      # what a previous example left behind has to go before this one's schema
+      # write. TEST_SCHEMA happens to be a superset that drops nothing today,
+      # which is the only reason the old order survived; narrow it and the
+      # ordering becomes load-bearing with no warning.
+      #
+      # Exactly one error is tolerated: on a fresh server there is no
+      # `document` definition yet, which SpiceDB reports as FAILED_PRECONDITION
+      # (ERROR_REASON_UNKNOWN_DEFINITION). Anything else must still fail.
+      begin
+        client.delete_relationships(SpiceDB::Filter.new(resource_type: 'document'))
+      rescue SpiceDB::FailedPreconditionError # rubocop:disable Lint/SuppressedException
+      end
       client.write_schema(TEST_SCHEMA)
-      # Delete all existing relationships for test isolation
-      client.delete_relationships(SpiceDB::Filter.new(resource_type: 'document'))
       example.run
     end
   end

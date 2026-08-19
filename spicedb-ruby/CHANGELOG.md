@@ -4,6 +4,18 @@
 
 ### Fixed
 
+- **2026-08-19**: **`examples/spec_helper.rb`'s shared hook was not clear-before-write.** It wrote
+  `TEST_SCHEMA` and *then* deleted, which is safe only because `TEST_SCHEMA` is a superset that
+  drops no relation -- narrow it at any point and this gem acquires the exact defect the other
+  four clients just fixed, with no warning. Two rounds of review documents described this hook as
+  the model the others should copy, which it was not. It now deletes first and writes second,
+  tolerating only `FailedPreconditionError` (a fresh server with no `document` definition).
+
+- **2026-08-19** (output only): the integration summary read `N test cases (M skipped)`, where the
+  parenthesised number counts skipped *example directories* and sat immediately after a *case*
+  count. Now that skipped cases are a separately tracked concept, it reads `N test cases executed;
+  M examples skipped`.
+
 - **2026-08-19**: **The example set is pinned by name, not by count.** `wantExampleCount` passed
   unchanged when an example directory was *renamed* -- only deletion was caught, and a manifest
   can drift from disk with no signal. `wantExamples` now lists every example by name and is
@@ -26,11 +38,14 @@
   `Magefile.go` already said. The now-redundant `:watch` tags are removed, so a reintroduced
   `--tag ~watch` cannot silently double-exclude.
 
-- **2026-08-19**: **`rspec --tag ~watch` replaced by a named, counted skip list.** A tag filter
-  that matches nothing exits 0, and that is how `examples/watch_changes/watch_changes_spec.rb`
-  came to be git-tracked, listed in `examples/README.md` with no caveat, and **never once
-  executed in CI**: `--tag ~watch` has been in the Magefile since the first Ruby commit, and the
-  spec was added later already carrying `:watch` on both `it` blocks. `IntegrationTest` now names
+- **2026-08-19**: **`rspec --tag ~watch` replaced by a named, counted skip list.**
+  (Corrected by the entry above: the opening clause here originally blamed a filter that matches
+  nothing, which is not what happened.) `examples/watch_changes/watch_changes_spec.rb` was
+  git-tracked, listed in `examples/README.md` with no caveat, and **never once executed in CI**,
+  because `--tag ~watch` has been in the Magefile since the first Ruby commit and the spec was
+  added later already carrying `:watch` on both `it` blocks -- so the filter matched it and
+  excluded it from the day it landed. A filter matching *nothing* is a separate hazard, covered
+  by the JSON report below. `IntegrationTest` now names
   the example directories on the rspec command line, skips `watch_changes/` by an explicit named
   entry that prints its reason, and then reads rspec's JSON report to confirm every selected
   example actually contributed a spec. The selection is unchanged: 49 rspec examples, verified

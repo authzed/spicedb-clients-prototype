@@ -30,8 +30,16 @@ func TestIsLoopbackEndpoint(t *testing.T) {
 		"::1",
 		"unix:/var/run/spicedb.sock",
 		"unix:///var/run/spicedb.sock",
+		// grpc-go routes on the lower-cased scheme (url.Parse lower-cases it),
+		// so an upper-cased unix target reaches the unix resolver just the same
+		// and must be recognized here too.
+		"UNIX:///var/run/spicedb.sock",
+		"Unix:/var/run/spicedb.sock",
 		"passthrough:///localhost:50051",
 		"dns:///127.0.0.1:50051",
+		// Loopback authority AND loopback endpoint: a nameserver on loopback is
+		// as trustworthy as the loopback endpoint it resolves.
+		"dns://localhost/127.0.0.1:50051",
 	}
 	for _, endpoint := range loopback {
 		require.True(t, isLoopbackEndpoint(endpoint), "expected %q to be loopback", endpoint)
@@ -66,11 +74,16 @@ func TestIsLoopbackEndpoint(t *testing.T) {
 // "127.0.0.1:443" for userinfo, and connected to evil.com -- shipping the
 // bearer token there in cleartext with the guard reporting "loopback".
 //
-// grpc-go is not fooled by these (its DNS resolver keeps host "127.0.0.1"
-// and then fails on the unparseable port "443@evil.com"), so Go was never
-// exploitable through this class. These stay non-loopback anyway: the guard
-// must fail closed on a target it cannot vouch for, and this fixture is what
-// would catch a future edit that reintroduced a hand-rolled split here.
+// grpc-go is not fooled by the userinfo forms (its DNS resolver keeps host
+// "127.0.0.1" and then fails on the unparseable port "443@evil.com"), so Go
+// was never exploitable through THAT shape. They stay non-loopback anyway:
+// the guard must fail closed on a target it cannot vouch for, and this
+// fixture is what would catch a future edit that reintroduced a hand-rolled
+// split here.
+//
+// The "dns://<host>/..." entries below are a different matter -- Go was
+// genuinely exploitable through those, and by this guard's own doing. See
+// their comment.
 var authorityShiftingEndpoints = []string{
 	"127.0.0.1:443@evil.com",
 	"[::1]:443@evil.com",
@@ -87,7 +100,23 @@ var authorityShiftingEndpoints = []string{
 	// than the leading component suggests.
 	"passthrough:///127.0.0.1:443@evil.com",
 	"dns:///127.0.0.1:443@evil.com",
+	// Remote authority, remote endpoint.
 	"dns://localhost/evil.example.com:443",
+	// Remote AUTHORITY with a loopback endpoint -- the direction the first
+	// cut of this guard got wrong, because it read only Endpoint() and never
+	// looked at URL.Host. For the dns scheme the authority is the nameserver:
+	// grpc-go hands it to newNetResolver and every lookup for the loopback
+	// endpoint -- including the _grpc_config TXT query whose service config
+	// grpc-go then APPLIES -- is answered by it. Proven with a UDP listener
+	// on loopback: the pre-fix guard accepted these with no opt-in, and one
+	// RPC put a real DNS query on that socket.
+	"dns://evil.com/localhost:50051",
+	"dns://evil.com/localhost",
+	"dns://8.8.8.8:53/localhost:50051",
+	"dns://evil.com/127.0.0.1:50051",
+	// A unix target's authority must be empty; grpc-go's unix resolver
+	// rejects a non-empty host ("expected target with empty host") outright.
+	"unix://evil.com/var/run/spicedb.sock",
 }
 
 func TestIsLoopbackEndpointRefusesAuthorityShiftingTargets(t *testing.T) {

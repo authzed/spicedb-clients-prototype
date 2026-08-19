@@ -114,6 +114,34 @@ func TestNewWithOpts_RefusesInsecureNonLoopbackWithoutOptIn(t *testing.T) {
 	}
 }
 
+// TestNewPlaintext_RefusesAuthorityShiftingEndpoints covers the public entry
+// point most callers reach for. The proto tier holds the full fixture set;
+// these are the shapes that must not slip through NewPlaintext itself, which
+// takes no options at all and so has no way for a caller to opt in.
+//
+// The "dns://evil.com/localhost:50051" family is the one that matters most
+// here: its endpoint IS loopback, so a guard that reads only the endpoint
+// accepts it -- while grpc-go treats the authority as the NAMESERVER and
+// sends every lookup, including the _grpc_config TXT query whose service
+// config it then applies, to evil.com.
+func TestNewPlaintext_RefusesAuthorityShiftingEndpoints(t *testing.T) {
+	for _, endpoint := range []string{
+		"dns://evil.com/localhost:50051",
+		"dns://evil.com/localhost",
+		"dns://8.8.8.8:53/localhost:50051",
+		"127.0.0.1:443@evil.com",
+		"[::1]:443@evil.com",
+		"unix://evil.com/var/run/spicedb.sock",
+	} {
+		t.Run(endpoint, func(t *testing.T) {
+			c, err := NewPlaintext(endpoint, "super-secret-token")
+			require.Error(t, err, "expected %q to be refused", endpoint)
+			require.Nil(t, c)
+			require.Contains(t, err.Error(), "WithInsecureAllowRemoteHost")
+		})
+	}
+}
+
 // TestNewPlaintext_LoopbackWorksWithNoOptIn proves the loopback exemption
 // needs no ceremony through the idiomatic constructor: NewPlaintext against
 // a loopback endpoint succeeds and actually delivers the bearer token, with

@@ -235,15 +235,28 @@
 
   `isLoopbackEndpoint` now resolves the target the way `grpc.NewClient` does (parse as a URI;
   if the scheme names no registered resolver, re-parse under the default scheme in authority
-  form, exactly as `ClientConn.initParsedTargetAndResolverBuilder` does), then takes the host
-  from the resulting `resolver.Target.Endpoint()` with the same `net.SplitHostPort` grpc-go's
-  DNS resolver and `net.Dial` themselves use. Targets carrying URI userinfo, a query, a
-  fragment, or a leftover `@`, `/`, `?`, `#`, or whitespace in the endpoint are refused
-  outright, so `"127.0.0.1:443@evil.com"` (and the `passthrough:///` and `dns:///` forms of it)
-  now require `WithInsecureAllowRemoteHost` instead of being silently accepted as loopback.
-  Every ordinary local target keeps working with no opt-in: `localhost:50051`,
-  `127.0.0.1:50051`, `[::1]:50051`, `::1`, `unix:` targets, and the `passthrough:///` and
-  `dns:///` forms of each.
+  form, as `ClientConn.initParsedTargetAndResolverBuilder` does) and judges **both** places a
+  gRPC target can carry a host, each with the same `net.SplitHostPort` grpc-go's DNS resolver
+  and `net.Dial` use:
+
+  - the **endpoint** (the URI path), which is what gets resolved and dialed; and
+  - the **authority** (the URI host), which for the `dns` scheme is the *nameserver* grpc-go
+    queries — it hands `target.URL.Host` to `newNetResolver`, which dials it on port 53.
+
+  Judging only the endpoint is not enough: `"dns://evil.com/localhost:50051"` has a loopback
+  endpoint, but every lookup for it — including the `_grpc_config` TXT query whose service
+  config grpc-go then *applies* — goes to `evil.com`, and whether the returned address is
+  honoured comes down to host-resolver ordering. A target is now loopback only when the
+  endpoint is loopback **and** the authority is absent or itself loopback.
+
+  Targets carrying URI userinfo, a query, a fragment, or a leftover `@`, `/`, `?`, `#`, or
+  whitespace in the endpoint are refused outright. So `"127.0.0.1:443@evil.com"` (and its
+  `passthrough:///` and `dns:///` forms), `"dns://evil.com/localhost:50051"`, and
+  `"unix://evil.com/var/run/spicedb.sock"` all now require `WithInsecureAllowRemoteHost`
+  instead of being accepted as loopback. Every ordinary local target keeps working with no
+  opt-in: `localhost:50051`, `127.0.0.1:50051`, `[::1]:50051`, `::1`, `unix:` targets (now
+  matched case-insensitively on the scheme, as grpc-go itself does), and the `passthrough:///`
+  and `dns:///` forms of each.
 
 - **2026-08-18**: Abandoning a streaming iterator leaked the gRPC stream and the server-side
   dispatch. Every streaming call that returns an iterator (`Updates`, `LookupResources`,

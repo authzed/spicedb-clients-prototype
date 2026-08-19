@@ -92,19 +92,52 @@ func WithDialOptions(opts ...grpc.DialOption) Option {
 // fails on the unparseable port), but relying on that is relying on an
 // accident of one input.
 //
-// So the target is resolved the way grpc.NewClient resolves it -- parse as
-// a URI, and if the scheme names no registered resolver, re-parse as
-// "<default scheme>:///" + target, exactly as
-// ClientConn.initParsedTargetAndResolverBuilder does -- and the host is
-// taken from the resulting resolver.Target's Endpoint() with the same
-// net.SplitHostPort grpc-go's DNS resolver and net.Dial themselves use. The
-// default scheme is "dns" (or "passthrough" when a custom dialer is
-// configured); both yield the same Endpoint() for a scheme-less target, so
-// the distinction cannot change this answer.
+// A gRPC target has TWO places a host can hide, and BOTH are judged here:
+//
+//   - the endpoint (the URI path), which is what gets resolved and dialed;
+//     and
+//   - the authority (the URI host), which for the dns scheme is the
+//     NAMESERVER grpc-go queries -- see internal/resolver/dns, which hands
+//     target.URL.Host to newNetResolver and builds a net.Resolver dialing
+//     it on port 53.
+//
+// Judging only the endpoint is not enough, and an earlier version of this
+// function made exactly that mistake: "dns://evil.com/localhost:50051" has
+// the loopback endpoint "localhost:50051", but every lookup for it --
+// including the _grpc_config TXT query whose service config grpc-go then
+// APPLIES -- goes to evil.com. Whether the returned address is honoured
+// depends on host-resolver ordering (files-first on darwin, but an
+// "nsswitch.conf" ordering "dns files", or an /etc/hosts without localhost,
+// puts the address -- and the cleartext connection carrying the bearer
+// token -- in the attacker's gift). So a target counts as loopback only
+// when the endpoint is loopback AND the authority is either absent or
+// itself loopback.
+//
+// The target is resolved the way grpc.NewClient resolves it -- parse as a
+// URI, and if the scheme names no registered resolver, re-parse as
+// "<default scheme>:///" + target, as
+// ClientConn.initParsedTargetAndResolverBuilder does. Two deliberate
+// divergences from it remain, both of which fail closed rather than open:
+//
+//   - grpc.NewClient consults cc.getResolver, which checks per-dial
+//     resolvers registered via grpc.WithResolvers(...) (reachable here
+//     through WithDialOptions) before falling back to the global
+//     resolver.Get used below. A target naming such a private scheme is
+//     therefore not recognized here, takes the default-scheme fallback, and
+//     lands in the endpoint with its "://" intact -- which the
+//     reserved-character check refuses.
+//   - resolver.GetDefaultScheme() is "passthrough", while grpc.NewClient's
+//     own default is dopts.defaultScheme ("dns", or "passthrough" when a
+//     custom dialer is set). That distinction cannot change this answer:
+//     "dns:///" + target and "passthrough:///" + target parse to the same
+//     empty authority and the same Endpoint().
+//
+// Each host is then taken with the same net.SplitHostPort grpc-go's DNS
+// resolver and net.Dial themselves use.
 //
 // Anything that could move the authority under URI parsing -- userinfo, a
 // query, a fragment, or a leftover '@', '/', '?', '#' or whitespace in the
-// endpoint itself -- is refused before the host is even considered. A
+// endpoint itself -- is refused before any host is considered. A
 // legitimate SpiceDB target contains none of those, and failing closed on a
 // weird endpoint is the correct trade for a credential leak.
 //
@@ -114,18 +147,21 @@ func WithDialOptions(opts ...grpc.DialOption) Option {
 // keep working with no extra ceremony. Anything else requires
 // WithInsecureAllowRemoteHost -- see NewClient.
 func isLoopbackEndpoint(endpoint string) bool {
-	// Checked first, and only on the raw string: a unix target carries a
-	// filesystem path, so it legitimately contains the '/' the
-	// authority-shifting check below refuses, and it never leaves the host's
-	// kernel regardless of what the path says. Covers both the "unix:path"
-	// and "unix:///path" forms grpc-go accepts.
-	if strings.HasPrefix(endpoint, "unix:") {
-		return true
-	}
-
 	parsed, ok := parseGRPCTarget(endpoint)
 	if !ok {
 		return false
+	}
+
+	// url.Parse lower-cases the scheme, so this recognizes "unix:", "UNIX:",
+	// "unix://" and "UNIX://" alike -- exactly the set resolver.Get("unix")
+	// routes to grpc-go's unix resolver. A unix target carries a filesystem
+	// path, so it legitimately holds the '/' the reserved-character check
+	// below refuses, and it never leaves the host's kernel regardless of what
+	// the path says. Its authority must still be empty: grpc-go's unix
+	// resolver rejects a non-empty host outright ("expected target with empty
+	// host"), so "unix://somewhere/path" dials nothing at all.
+	if parsed.URL.Scheme == "unix" {
+		return parsed.URL.Host == ""
 	}
 
 	// Userinfo/query/fragment in the target proper, then the same characters
@@ -134,14 +170,31 @@ func isLoopbackEndpoint(endpoint string) bool {
 	if parsed.URL.User != nil || parsed.URL.RawQuery != "" || parsed.URL.Fragment != "" {
 		return false
 	}
+
+	// The authority -- for the dns scheme, the nameserver every lookup for
+	// the endpoint below is sent to. Absent is the ordinary case
+	// ("localhost:50051", "dns:///localhost:50051"); anything present must
+	// itself be loopback.
+	if parsed.URL.Host != "" && !isLoopbackHostPort(parsed.URL.Host) {
+		return false
+	}
+
 	target := parsed.Endpoint()
 	if strings.ContainsAny(target, "@/?#") ||
 		strings.IndexFunc(target, unicode.IsSpace) >= 0 {
 		return false
 	}
+	return isLoopbackHostPort(target)
+}
 
-	host := target
-	if h, _, err := net.SplitHostPort(target); err == nil {
+// isLoopbackHostPort reports whether a "host", "host:port" or "[host]:port"
+// string names a loopback host, split with the same net.SplitHostPort
+// grpc-go's DNS resolver and net.Dial use. Never performs a DNS lookup:
+// net.ParseIP is pure parsing, so a real remote hostname is simply not an IP
+// and is treated as non-loopback.
+func isLoopbackHostPort(hostPort string) bool {
+	host := hostPort
+	if h, _, err := net.SplitHostPort(hostPort); err == nil {
 		host = h
 	}
 	host = strings.Trim(host, "[]")
@@ -159,8 +212,9 @@ func isLoopbackEndpoint(endpoint string) bool {
 // ClientConn.initParsedTargetAndResolverBuilder in google.golang.org/grpc):
 // parse the target as a URI and keep it if its scheme names a registered
 // resolver, otherwise re-parse it under the default scheme in authority
-// form. Reported as not-ok when grpc-go itself would fail to parse, which is
-// a target it could never dial.
+// form. See isLoopbackEndpoint above for the two divergences from grpc-go
+// that remain, and why each fails closed. Reported as not-ok when grpc-go
+// itself would fail to parse, which is a target it could never dial.
 func parseGRPCTarget(target string) (resolver.Target, bool) {
 	if u, err := url.Parse(target); err == nil && resolver.Get(u.Scheme) != nil {
 		return resolver.Target{URL: *u}, true

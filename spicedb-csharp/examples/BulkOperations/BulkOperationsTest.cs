@@ -23,7 +23,7 @@ public class BulkOperationsTest
     [Fact]
     public async Task BulkWrite_And_BulkCheck()
     {
-        await using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "somerandomkeyhere");
+        await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
 
         await client.WriteSchemaAsync(Schema);
 
@@ -61,7 +61,7 @@ public class BulkOperationsTest
     [Fact]
     public async Task CheckAll_AllPermitted()
     {
-        await using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "somerandomkeyhere");
+        await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
 
         await client.WriteSchemaAsync(Schema);
 
@@ -87,7 +87,7 @@ public class BulkOperationsTest
     [Fact]
     public async Task CheckAny_AtLeastOnePermitted()
     {
-        await using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "somerandomkeyhere");
+        await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
 
         await client.WriteSchemaAsync(Schema);
 
@@ -110,7 +110,7 @@ public class BulkOperationsTest
     [Fact]
     public async Task ImportRelationships_And_ExportRelationships()
     {
-        await using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "somerandomkeyhere");
+        await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
 
         await client.WriteSchemaAsync(Schema);
 

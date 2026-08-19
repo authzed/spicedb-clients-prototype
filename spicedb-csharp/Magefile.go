@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -25,7 +27,22 @@ const (
 	// IntegrationTest. Without it nothing in examples/ was compiled or run by
 	// CI at all.
 	examplesSolution = "SpiceDB.Client.Examples.sln"
+
+	// Defaults for the container docker-compose.test.yml starts. Overridable
+	// via SPICEDB_ENDPOINT / SPICEDB_TOKEN, which examples/SpiceDBTestServer.cs
+	// reads, so the suite can be pointed at a SpiceDB on another port when
+	// 50051 is taken.
+	defaultEndpoint = "localhost:50051"
+	defaultToken    = "somerandomkeyhere"
 )
+
+// slnProjectLine matches a solution's project entries:
+//
+//	Project("{TYPE-GUID}") = "Name", "relative\path.csproj", "{PROJECT-GUID}"
+//
+// Solution folders use the same syntax with a path that is not a .csproj, so
+// the path is what distinguishes a real project from a folder.
+var slnProjectLine = regexp.MustCompile(`^Project\("\{[^}]+\}"\) = "[^"]*", "([^"]+)", "(\{[^}]+\})"`)
 
 // Gen updates the idiomatic client based on proto client changes.
 func Gen() error {
@@ -110,6 +127,9 @@ func Gen() error {
 // was in any solution, so `dotnet test SpiceDB.Client.sln` never touched
 // them.
 func Test() error {
+	if err := CheckExamples(); err != nil {
+		return err
+	}
 	if err := sh.RunV("dotnet", "build", "SpiceDB.Client.sln"); err != nil {
 		return err
 	}
@@ -119,9 +139,128 @@ func Test() error {
 	return sh.RunV("dotnet", "build", examplesSolution)
 }
 
-// Lint runs dotnet format to check code style.
+// CheckExamples reconciles the example projects on disk against the ones the
+// examples solution lists, in both directions, and fails on any divergence.
+//
+// This is the guard the original defect had none of. All twelve examples once
+// sat outside every solution file, so `dotnet build`/`dotnet test` never saw
+// them -- for the repo's entire history. Adding SpiceDB.Client.Examples.sln
+// fixed the instance, but a solution is a hand-maintained snapshot: example #14
+// reintroduces the same defect by default, because nothing compares the two.
+// It also checks that every listed project has build configurations, since a
+// project can be listed and still excluded from every build.
+//
+// It needs no server, so Test runs it too. See root DESIGN.md, "RULE: An
+// example must be executed by CI and must be able to fail", clause 1.
+func CheckExamples() error {
+	onDisk, err := filepath.Glob("examples/*/*.csproj")
+	if err != nil {
+		return fmt.Errorf("glob examples failed: %w", err)
+	}
+	sort.Strings(onDisk)
+
+	inSolution, configured, err := solutionProjects(examplesSolution)
+	if err != nil {
+		return err
+	}
+
+	diskSet := make(map[string]bool, len(onDisk))
+	for _, p := range onDisk {
+		diskSet[filepath.ToSlash(p)] = true
+	}
+
+	var missing, phantom []string
+	for p := range diskSet {
+		if _, listed := inSolution[p]; !listed {
+			missing = append(missing, p)
+		}
+	}
+	for p := range inSolution {
+		// The library project is legitimately in the examples solution -- the
+		// examples reference it. Only examples/ entries are reconciled here.
+		if !strings.HasPrefix(p, "examples/") {
+			continue
+		}
+		if !diskSet[p] {
+			phantom = append(phantom, p)
+		}
+	}
+	sort.Strings(missing)
+	sort.Strings(phantom)
+
+	if len(missing) > 0 {
+		return fmt.Errorf("these example projects exist on disk but are not in %s, so nothing "+
+			"builds or runs them: %s. Add them with: dotnet sln %s add <path>",
+			examplesSolution, strings.Join(missing, ", "), examplesSolution)
+	}
+	if len(phantom) > 0 {
+		return fmt.Errorf("%s lists these example projects, which are not on disk: %s",
+			examplesSolution, strings.Join(phantom, ", "))
+	}
+
+	var unbuilt []string
+	for p := range inSolution {
+		if !strings.HasPrefix(p, "examples/") {
+			continue
+		}
+		if !configured[inSolution[p]] {
+			unbuilt = append(unbuilt, p)
+		}
+	}
+	sort.Strings(unbuilt)
+	if len(unbuilt) > 0 {
+		return fmt.Errorf("these example projects are listed in %s but have no Build.0 "+
+			"configuration, so the solution loads them without building them: %s",
+			examplesSolution, strings.Join(unbuilt, ", "))
+	}
+
+	fmt.Printf("==> spicedb-csharp: %d example projects on disk, all present and buildable in %s\n",
+		len(onDisk), examplesSolution)
+	return nil
+}
+
+// solutionProjects parses a .sln and returns its real projects as a map from
+// slash-separated relative path to project GUID, plus the set of GUIDs that
+// have at least one Build.0 configuration entry.
+func solutionProjects(solution string) (map[string]string, map[string]bool, error) {
+	data, err := os.ReadFile(solution)
+	if err != nil {
+		return nil, nil, fmt.Errorf("reading %s: %w", solution, err)
+	}
+	projects := make(map[string]string)
+	configured := make(map[string]bool)
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(strings.TrimSuffix(line, "\r"))
+		if m := slnProjectLine.FindStringSubmatch(line); m != nil {
+			path := strings.ReplaceAll(m[1], `\`, "/")
+			// Solution folders reuse the Project(...) syntax with a plain name
+			// in place of a project path.
+			if strings.HasSuffix(strings.ToLower(path), ".csproj") {
+				projects[path] = m[2]
+			}
+			continue
+		}
+		if strings.Contains(line, ".Build.0 =") {
+			if i := strings.Index(line, "}"); i > 0 {
+				configured[line[:i+1]] = true
+			}
+		}
+	}
+	if len(projects) == 0 {
+		return nil, nil, fmt.Errorf("%s lists no projects; is the format understood?", solution)
+	}
+	return projects, configured, nil
+}
+
+// Lint runs dotnet format to check code style, over both solutions.
+//
+// The examples solution is included because it was not: `dotnet format` ran
+// against SpiceDB.Client.sln alone, so no example was ever linted.
 func Lint() error {
-	return sh.RunV("dotnet", "format", "SpiceDB.Client.sln", "--verify-no-changes")
+	if err := sh.RunV("dotnet", "format", "SpiceDB.Client.sln", "--verify-no-changes"); err != nil {
+		return err
+	}
+	return sh.RunV("dotnet", "format", examplesSolution, "--verify-no-changes")
 }
 
 // ApiCompat checks for breaking API changes against the given base git ref.
@@ -182,34 +321,80 @@ func ApiCompat(baseRef string) error {
 
 // IntegrationTest starts SpiceDB via Docker and runs examples against it.
 func IntegrationTest() error {
+	// Fail before starting anything if the examples on disk are not the ones
+	// the solution builds.
+	if err := CheckExamples(); err != nil {
+		return err
+	}
+
+	endpoint := envOr("SPICEDB_ENDPOINT", defaultEndpoint)
+	token := envOr("SPICEDB_TOKEN", defaultToken)
+
+	// Publish the container on whatever port the endpoint names, so a caller
+	// whose 50051 is occupied can run the suite by setting SPICEDB_ENDPOINT
+	// alone.
+	port, err := portOf(endpoint)
+	if err != nil {
+		return err
+	}
+	composeEnv := map[string]string{"SPICEDB_TEST_PORT": port, "SPICEDB_TEST_TOKEN": token}
+
 	// Start SpiceDB
 	fmt.Println("==> Starting SpiceDB...")
-	if err := sh.RunV("docker", "compose", "-f", "docker-compose.test.yml", "up", "-d"); err != nil {
+	if err := sh.RunWithV(composeEnv, "docker", "compose", "-f", "docker-compose.test.yml", "up", "-d"); err != nil {
 		return fmt.Errorf("docker compose up failed: %w", err)
 	}
 	defer func() {
 		fmt.Println("==> Stopping SpiceDB...")
-		_ = sh.RunV("docker", "compose", "-f", "docker-compose.test.yml", "down")
+		_ = sh.RunWithV(composeEnv, "docker", "compose", "-f", "docker-compose.test.yml", "down")
 	}()
 
 	// Wait for SpiceDB to be ready
 	fmt.Println("==> Waiting for SpiceDB to be ready...")
-	if err := waitForReady("localhost:50051", 30*time.Second); err != nil {
+	if err := waitForReady(endpoint, 30*time.Second); err != nil {
 		return err
 	}
+
+	clientEnv := map[string]string{"SPICEDB_ENDPOINT": endpoint, "SPICEDB_TOKEN": token}
 
 	// Run integration tests (no --no-build: VSTest cannot load .NET 10 assemblies
 	// without a fresh build step, and the build is fast enough to not matter here)
 	fmt.Println("==> Running integration tests...")
-	if err := sh.RunV("dotnet", "test", "SpiceDB.Client.sln", "--verbosity", "normal"); err != nil {
+	if err := sh.RunWithV(clientEnv, "dotnet", "test", "SpiceDB.Client.sln", "--verbosity", "normal"); err != nil {
 		return err
 	}
 
 	// Then the examples, which are the integration suite proper -- each one
 	// drives a real SpiceDB. They live in their own solution because they
 	// cannot run in the unit job, which has no server.
+	//
+	// -maxcpucount:1 because all thirteen projects share that one SpiceDB and
+	// each writes a whole schema. Run concurrently, one project's WriteSchema
+	// lands between another's schema write and its relationship write, and the
+	// second fails with "relation/permission `editor` not found under
+	// definition `document`" -- nondeterministically, on a different project
+	// each run. Two consecutive parallel runs here failed on four different
+	// examples. The examples are cheap; correctness is worth the seconds.
 	fmt.Println("==> Running examples against SpiceDB...")
-	return sh.RunV("dotnet", "test", examplesSolution, "--verbosity", "normal")
+	return sh.RunWithV(clientEnv, "dotnet", "test", examplesSolution, "--verbosity", "normal", "-maxcpucount:1")
+}
+
+// envOr returns the value of the named environment variable, or fallback when
+// it is unset or empty.
+func envOr(name, fallback string) string {
+	if v := os.Getenv(name); v != "" {
+		return v
+	}
+	return fallback
+}
+
+// portOf returns the port component of a host:port endpoint.
+func portOf(endpoint string) (string, error) {
+	_, port, err := net.SplitHostPort(endpoint)
+	if err != nil {
+		return "", fmt.Errorf("SPICEDB_ENDPOINT %q is not host:port: %w", endpoint, err)
+	}
+	return port, nil
 }
 
 func waitForReady(addr string, timeout time.Duration) error {

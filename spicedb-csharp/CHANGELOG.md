@@ -367,6 +367,56 @@
 
 ### Fixed
 
+- **2026-08-19**: **The examples solution is now checked against the directory, not trusted.**
+  All twelve examples once sat outside every solution file, so `dotnet build`/`dotnet test` never
+  saw them -- for the repo's entire history. `SpiceDB.Client.Examples.sln` fixed that instance,
+  but a solution is a hand-maintained snapshot and nothing compared it to disk: `grep -r
+  "Examples.sln"` returned two hits, neither of them a check, so example #14 reintroduced the
+  original defect by default. New `mage checkExamples` (also run by `mage test` and at the top of
+  `mage integrationTest`, so it needs no server) diffs `examples/*/*.csproj` against the
+  solution's project list in both directions and fails on divergence, and additionally fails if a
+  listed project has no `Build.0` configuration -- a project can be listed and still excluded
+  from every build. All three branches were verified by breaking them deliberately. Root
+  DESIGN.md, "RULE: An example must be executed by CI and must be able to fail", clause 1.
+
+- **2026-08-19**: **`mage lint` now covers the examples solution.** It ran `dotnet format` against
+  `SpiceDB.Client.sln` alone, which contains only the library and its unit tests, so **no example
+  was ever linted**. Verified by introducing a whitespace error in an example: green before,
+  `error WHITESPACE` and exit 2 after.
+
+- **2026-08-19**: **The example suite was nondeterministic, and is now serialized.** `dotnet test
+  SpiceDB.Client.Examples.sln` runs the thirteen projects concurrently, and all thirteen share one
+  SpiceDB and each writes a whole schema. One project's `WriteSchemaAsync` therefore lands between
+  another's schema write and its relationship write, and the second fails with
+  `relation/permission 'editor' not found under definition 'document'`. Two consecutive runs
+  failed on four different examples -- `LookupSubjects` and `CheckPermission` on the first,
+  `CallDeadlines` (all three tests) and `LookupResources` on the second -- which is what a green
+  CI run on this suite has always been a coin flip away from. The examples run with
+  `-maxcpucount:1` now. Serialized, the suite is deterministic: two consecutive runs, 30 example
+  tests across 13 projects, zero failures.
+
+- **2026-08-19**: **`RawEscapeHatch` could not run after any example that writes an `editor`
+  relationship.** Its schema is deliberately narrower than the shared one, and SpiceDB refuses a
+  `WriteSchema` that drops a relation while a relationship still exists under it -- so once the
+  suite was serialized, it failed every time with `cannot delete relation 'editor' in object
+  definition 'document'`. Under the old concurrent run this was invisible, since whether it failed
+  depended on which project got there first. It now clears `document` relationships before writing
+  its schema, via a shared helper.
+
+- **2026-08-19**: **Examples now read `SPICEDB_ENDPOINT` and `SPICEDB_TOKEN`**, defaulting to
+  `localhost:50051` and `somerandomkeyhere`. Both were hardcoded in thirty places, so the suite
+  could not run on a host whose 50051 was already taken. New `examples/SpiceDBTestServer.cs`,
+  linked into every example project by new `examples/Directory.Build.props`, holds both in one
+  place. `docker-compose.test.yml` takes its published port from `SPICEDB_TEST_PORT` and its key
+  from `SPICEDB_TEST_TOKEN` (same defaults), and `mage integrationTest` derives the port from
+  `SPICEDB_ENDPOINT`.
+
+- **2026-08-19** (documentation only): `examples/README.md` said to run `dotnet test` in a
+  directory that contains no project or solution file, and claimed `mage test` "starts a SpiceDB
+  container automatically". It does not, and never did. The README now names
+  `mage integrationTest`, names the solution for a by-hand run, explains why `-maxcpucount:1` is
+  required, and says what CI checks about example membership.
+
 - **2026-08-19**: **A large bulk check is no longer sent as one oversized request.**
   `CheckPermissionsAsync`, `CheckPermissionAsync`, `CheckAnyAsync` and `CheckAllAsync` (and
   their `WithContext` variants) built a single `CheckBulkPermissions` request from however many

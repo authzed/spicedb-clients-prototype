@@ -22,7 +22,7 @@ public class RelationshipCountersTest
     [Fact]
     public async Task RelationshipCounters_RegisterCountAndUnregister()
     {
-        await using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "somerandomkeyhere");
+        await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
 
         await client.WriteSchemaAsync(Schema);
 

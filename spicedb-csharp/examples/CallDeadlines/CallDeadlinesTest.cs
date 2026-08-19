@@ -29,7 +29,7 @@ public class CallDeadlinesTest
         // disappearing) would fail this example, not just a unit test
         // against a stalling stub.
         await using var client = SpiceDBClient.CreatePlaintext(
-            "localhost:50051", "somerandomkeyhere", defaultTimeout: TimeSpan.FromSeconds(5));
+            SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token, defaultTimeout: TimeSpan.FromSeconds(5));
 
         await client.WriteSchemaAsync(Schema);
 
@@ -46,7 +46,7 @@ public class CallDeadlinesTest
     [Fact]
     public async Task PerCallTimeout_OverridesTheClientDefault()
     {
-        await using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "somerandomkeyhere");
+        await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
 
         await client.WriteSchemaAsync(Schema);
 
@@ -72,7 +72,7 @@ public class CallDeadlinesTest
         // as below -- must still succeed; if a future change accidentally routed the unary
         // default into this call, a large enough import would start failing with
         // DeadlineExceededException well before it finished.
-        await using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "somerandomkeyhere");
+        await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
 
         await client.WriteSchemaAsync(Schema);
 

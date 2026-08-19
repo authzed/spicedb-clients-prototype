@@ -22,7 +22,7 @@ public class WriteRelationshipsTest
     [Fact]
     public async Task WriteRelationships_ReturnsRevision()
     {
-        await using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "somerandomkeyhere");
+        await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
 
         await client.WriteSchemaAsync(Schema);
 
@@ -39,7 +39,7 @@ public class WriteRelationshipsTest
     [Fact]
     public async Task WriteRelationships_WithPrecondition()
     {
-        await using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "somerandomkeyhere");
+        await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
 
         await client.WriteSchemaAsync(Schema);
 
@@ -64,7 +64,7 @@ public class WriteRelationshipsTest
     [Fact]
     public async Task WriteRelationships_FailedPreconditionCarriesTheReason()
     {
-        await using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "somerandomkeyhere");
+        await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
 
         await client.WriteSchemaAsync(Schema);
 

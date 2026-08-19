@@ -21,7 +21,7 @@ public class WatchChangesTest
     [Fact]
     public async Task WatchChanges_ReceivesUpdates()
     {
-        await using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "somerandomkeyhere");
+        await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
 
         await client.WriteSchemaAsync(Schema);
 
@@ -77,7 +77,7 @@ public class WatchChangesTest
         // changed. A checkpoint carries no updates, so a consumer must check
         // WatchEvent.IsCheckpoint to tell "nothing changed, here is a fresh
         // resume point" from "here are changes".
-        await using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "somerandomkeyhere");
+        await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
         await client.WriteSchemaAsync(Schema);
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));

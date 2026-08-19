@@ -23,7 +23,7 @@ public class ReadRelationshipsTest
     [Fact]
     public async Task ReadRelationships_ReturnsMatchingRelationships()
     {
-        await using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "somerandomkeyhere");
+        await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
 
         await client.WriteSchemaAsync(Schema);
 

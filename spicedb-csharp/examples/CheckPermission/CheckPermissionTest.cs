@@ -27,7 +27,7 @@ public class CheckPermissionTest
     [Fact]
     public async Task CheckPermission_Granted()
     {
-        await using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "somerandomkeyhere");
+        await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
 
         // Setup: write schema and test data
         await client.WriteSchemaAsync(Schema);
@@ -49,7 +49,7 @@ public class CheckPermissionTest
     [Fact]
     public async Task CheckPermission_Denied()
     {
-        await using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "somerandomkeyhere");
+        await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
 
         await client.WriteSchemaAsync(Schema);
 
@@ -76,7 +76,7 @@ public class CheckPermissionTest
         // against the same live server/schema as the other tests in this
         // class without deleting the `document` definition out from under
         // their relationships.
-        await using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "somerandomkeyhere");
+        await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
 
         await client.WriteSchemaAsync(Schema);
 
@@ -108,7 +108,7 @@ public class CheckPermissionTest
         // proving a caller can actually act on CheckResult.MissingContext and
         // resolve a ConditionalPermission into a real grant, not just
         // observe the conditional state.
-        await using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "somerandomkeyhere");
+        await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
 
         await client.WriteSchemaAsync(Schema);
 
@@ -136,7 +136,7 @@ public class CheckPermissionTest
         // CheckPermissionsWithContextAsync, and a per-item override via
         // Relationship.WithCheckContext that wins for its own item while a
         // sibling item still falls back to the call-level default.
-        await using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "somerandomkeyhere");
+        await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
 
         await client.WriteSchemaAsync(Schema);
 

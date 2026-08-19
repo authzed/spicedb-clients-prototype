@@ -43,7 +43,14 @@ public class RawEscapeHatchTest
     [Fact]
     public async Task RawProto_SendsAFieldTheIdiomaticApiDoesNotExpose()
     {
-        await using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "somerandomkeyhere");
+        await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
+        // The schema above is deliberately narrower than the one the other
+        // examples write, and all thirteen share one SpiceDB. SpiceDB refuses a
+        // WriteSchema that drops a relation while a relationship still exists
+        // under it, so clear what an earlier example left behind first --
+        // otherwise this fails with "cannot delete relation `editor` in object
+        // definition `document`".
+        await SpiceDBTestServer.ClearDocumentRelationshipsAsync(client);
         await client.WriteSchemaAsync(Schema);
 
         // The bearer token rides this client's own call invoker, so there is
@@ -111,7 +118,14 @@ public class RawEscapeHatchTest
     [Fact]
     public async Task RawProto_CallsAnRpcTheIdiomaticApiRoutesAround()
     {
-        await using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "somerandomkeyhere");
+        await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
+        // The schema above is deliberately narrower than the one the other
+        // examples write, and all thirteen share one SpiceDB. SpiceDB refuses a
+        // WriteSchema that drops a relation while a relationship still exists
+        // under it, so clear what an earlier example left behind first --
+        // otherwise this fails with "cannot delete relation `editor` in object
+        // definition `document`".
+        await SpiceDBTestServer.ClearDocumentRelationshipsAsync(client);
         await client.WriteSchemaAsync(Schema);
         var txn = new Transaction();
         txn.Touch(SpiceDB.Client.Relationship.FromTriple(

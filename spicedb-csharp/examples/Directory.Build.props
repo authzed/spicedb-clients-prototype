@@ -1,0 +1,16 @@
+<Project>
+
+  <!--
+    Applies to every project under examples/ (MSBuild picks up the nearest
+    Directory.Build.props walking up from each project directory; there is none
+    above this one, so SpiceDB.Client and SpiceDB.Client.Tests are unaffected).
+
+    It links one shared source file into each example project so the endpoint
+    and preshared key are read from SPICEDB_ENDPOINT / SPICEDB_TOKEN in one
+    place rather than hardcoded thirty times.
+  -->
+  <ItemGroup>
+    <Compile Include="$(MSBuildThisFileDirectory)SpiceDBTestServer.cs" Link="SpiceDBTestServer.cs" />
+  </ItemGroup>
+
+</Project>

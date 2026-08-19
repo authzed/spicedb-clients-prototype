@@ -5,20 +5,50 @@ test.
 
 ## Running
 
-Examples require a running SpiceDB instance. Set environment variables:
+`mage integrationTest` is the one command that does everything: it starts the
+SpiceDB container from `docker-compose.test.yml`, waits for it, runs the
+`#[ignore]`d live tests, and then runs every example against that server. It
+tears the container down afterwards. (`mage test` runs the unit suite, clippy
+and the example-wiring check -- it starts no container and runs no example.)
 
 ```bash
-export SPICEDB_ENDPOINT=localhost:50051
-export SPICEDB_TOKEN=testtoken
+mage integrationTest
 ```
 
-Or use `mage test` which starts a SpiceDB container automatically.
-
-Run a specific example:
+To run one example by hand you need a SpiceDB of your own. Every example reads
+`SPICEDB_ENDPOINT` and `SPICEDB_TOKEN`, defaulting to `localhost:50051` and
+`testtoken` -- the endpoint and preshared key in `docker-compose.test.yml`:
 
 ```bash
+docker compose -f docker-compose.test.yml up -d
 cargo run --example check_permission
+
+# or against any other SpiceDB
+SPICEDB_ENDPOINT=spicedb.internal:50051 SPICEDB_TOKEN=hunter2 \
+    cargo run --example check_permission
 ```
+
+If port 50051 is taken, `SPICEDB_TEST_PORT` chooses the port the compose file
+publishes on, and `mage integrationTest` derives it from `SPICEDB_ENDPOINT`:
+
+```bash
+SPICEDB_ENDPOINT=localhost:50071 mage integrationTest
+```
+
+The examples share one server and run in name order, so each deletes the
+`document` relationships it wrote before exiting. Skipping that cleanup makes a
+*later* example fail: SpiceDB refuses a `WriteSchema` that drops a relation
+while a relationship still exists under it.
+
+## What runs in CI
+
+Every example in the table below is executed by `mage integrationTest`, which
+is what the `integration` job in `.github/workflows/rust.yaml` runs, with one
+exception: `watch_changes` is an open-ended stream with no bounded consumer
+yet, so the runner skips it by name and prints the skip. The runner also
+asserts how many examples it executed, so an example that is renamed out of the
+glob fails the job instead of quietly shrinking the run. See root `DESIGN.md`,
+"RULE: An example must be executed by CI and must be able to fail".
 
 ## Examples
 

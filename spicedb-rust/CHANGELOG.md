@@ -47,6 +47,46 @@
 
 ### Fixes
 
+- **2026-08-19**: **No example had ever been executed.** `mage integrationTest` documented
+  itself as "starts SpiceDB via Docker and runs examples against it", started the container on
+  the right port with the right key -- and then ran `cargo test -- --ignored`, which runs the
+  two `#[ignore]`d functions in `tests/live_integration_test.rs` and zero examples. Neither
+  `cargo run --example` nor `cargo build --examples` had ever appeared in this repo's history,
+  so every runtime assertion in all 13 examples was dead code. `IntegrationTest` now runs each
+  example with `cargo run --example` after the ignored tests, and asserts how many it executed.
+
+  Turning execution on found a real defect in the examples: **they were not isolated from each
+  other.** Only `raw_escape_hatch` deleted what it wrote, so by the time it ran (7th in name
+  order) six earlier examples had left `document` relationships behind, and its deliberately
+  narrow schema could not be written -- SpiceDB refuses a `WriteSchema` that drops a relation
+  while a relationship still exists under it, and the run died on
+  `cannot delete relation 'editor' in object definition 'document'`. The other nine
+  relationship-writing examples now delete their `document` relationships before exiting, the
+  same cleanup `spicedb-go`'s examples have always carried, which makes the suite
+  order-independent rather than merely passing in today's glob order.
+
+  `cargo clippy` gained `--all-targets` in all three places it is invoked (`Gen`, `Test`,
+  `Lint`), so example and test code is linted rather than skipped. That flag had been written
+  down as intended in an earlier plan and never landed; adding it surfaced no new warnings.
+
+  Root DESIGN.md, "RULE: An example must be executed by CI and must be able to fail", clause 1.
+
+- **2026-08-19**: **Examples and the live tests now read `SPICEDB_ENDPOINT` and
+  `SPICEDB_TOKEN`**, defaulting to `localhost:50051` and `testtoken`. Both were hardcoded, so
+  the two variables `examples/README.md` told the reader to export did nothing, and the suite
+  could not run on a host whose 50051 was already taken. `docker-compose.test.yml` takes the
+  published port from `SPICEDB_TEST_PORT` and the preshared key from `SPICEDB_TEST_TOKEN` (same
+  defaults), and `mage integrationTest` derives the port from `SPICEDB_ENDPOINT`, so
+  `SPICEDB_ENDPOINT=localhost:50071 mage integrationTest` is all that is needed.
+
+- **2026-08-19**: **The example set is now checked, not assumed.** New `mage checkExamples`
+  (also run by `mage test`, so it needs no server) asserts that `examples/*.rs` still matches
+  the expected count and that every name the runner skips is an example that exists. A glob
+  cannot list an example that is not there, so before this a renamed or moved file silently
+  produced a *shorter* run that still reported green -- the same failure mode as a name filter
+  matching nothing. `watch_changes` remains skipped, but now by an explicit named entry that
+  prints its reason and is counted, rather than by omission.
+
 - **2026-08-19**: **A per-item check error named the wrong relationship.** `check_permissions`
   splits inputs at `DEFAULT_CHECK_BATCH_SIZE` and mapped each response with a chunk-local
   `enumerate()`, so both the per-item-error message and the malformed-oneof message reported the

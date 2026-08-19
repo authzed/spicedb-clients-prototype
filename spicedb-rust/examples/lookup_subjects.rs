@@ -5,7 +5,7 @@
 use futures::StreamExt;
 use spicedb::client::SpiceDBClient;
 use spicedb::consistency;
-use spicedb::types::{Relationship, Transaction};
+use spicedb::types::{Filter, Relationship, Transaction};
 
 const SCHEMA: &str = r#"definition user {}
 
@@ -20,7 +20,14 @@ definition document {
 
 #[tokio::main]
 async fn main() {
-    let client = SpiceDBClient::new_plaintext("localhost:50051", "testtoken")
+    // Endpoint and token come from the environment so the example runs against
+    // whichever SpiceDB the caller started; the defaults match
+    // docker-compose.test.yml.
+    let endpoint =
+        std::env::var("SPICEDB_ENDPOINT").unwrap_or_else(|_| "localhost:50051".to_string());
+    let token = std::env::var("SPICEDB_TOKEN").unwrap_or_else(|_| "testtoken".to_string());
+
+    let client = SpiceDBClient::new_plaintext(endpoint, token)
         .await
         .expect("failed to create client");
 
@@ -82,4 +89,13 @@ async fn main() {
         subject_ids.contains(&"bob".to_string()),
         "expected bob in results (editor implies view)"
     );
+
+    // Clean up so a later example isn't blocked by leftover relationships: the
+    // integration runner drives every example against one SpiceDB, and an
+    // example that narrows the schema fails outright if a relationship still
+    // exists under a relation it drops.
+    client
+        .delete_relationships(&Filter::new("document"))
+        .await
+        .expect("cleanup failed");
 }

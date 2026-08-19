@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use spicedb::client::SpiceDBClient;
 use spicedb::consistency;
-use spicedb::types::{Relationship, Transaction};
+use spicedb::types::{Filter, Relationship, Transaction};
 
 const SCHEMA: &str = r#"definition user {}
 
@@ -26,7 +26,14 @@ async fn main() {
     // path -- not a mock -- so a signature drift here (e.g. the builder
     // method silently disappearing) would fail this example, not just a
     // unit test against a stalling stub.
-    let client = SpiceDBClient::builder("localhost:50051", "testtoken")
+    // Endpoint and token come from the environment so the example runs against
+    // whichever SpiceDB the caller started; the defaults match
+    // docker-compose.test.yml.
+    let endpoint =
+        std::env::var("SPICEDB_ENDPOINT").unwrap_or_else(|_| "localhost:50051".to_string());
+    let token = std::env::var("SPICEDB_TOKEN").unwrap_or_else(|_| "testtoken".to_string());
+
+    let client = SpiceDBClient::builder(endpoint, token)
         .plaintext()
         .default_timeout(Duration::from_secs(5))
         .build()
@@ -125,4 +132,13 @@ async fn main() {
         .expect("import with timeout failed");
     println!("imported {num_loaded_bounded} relationships with an explicit 30s timeout");
     assert_eq!(num_loaded_bounded, 50);
+
+    // Clean up so a later example isn't blocked by leftover relationships: the
+    // integration runner drives every example against one SpiceDB, and an
+    // example that narrows the schema fails outright if a relationship still
+    // exists under a relation it drops.
+    client
+        .delete_relationships(&Filter::new("document"))
+        .await
+        .expect("cleanup failed");
 }

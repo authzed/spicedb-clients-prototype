@@ -304,9 +304,17 @@ Invariants that hold in all seven clients:
    on its ordering. Every client maps to and from the wire explicitly, so the native
    ordinals may differ between clients and from the proto's, harmlessly and by
    design.
-2. **`checked_at` on a bulk check is response-level, not per-item.**
+2. **`checked_at` on a bulk check is response-level, not per-item — and a
+   response is one chunk, not necessarily the whole call.**
    `CheckBulkPermissionsResponseItem` has no token of its own, so the one token on
-   the enclosing response is propagated onto every result in the batch.
+   the enclosing response is propagated onto every result *from that response*.
+   Every client splits a check over more than 1,000 items into one request per
+   chunk (SpiceDB rejects a request carrying more than `maxBulkCheckCount`, and
+   nothing in the proto enforces that cap), so a caller passing more than 1,000
+   relationships gets results whose `checked_at` differs across chunk boundaries.
+   Within one chunk the token is uniform; across the returned collection it is
+   not. A caller threading a token into an at-least-as-fresh read must therefore
+   pick a specific result's token rather than assuming one exists for the call.
 3. **`check_any` / `check_all` stay boolean and count only an unconditional grant**
    (RULE clause 3). Callers needing the third state use the plural method.
 4. **A per-item error in a bulk check is raised as a typed error**, never coerced

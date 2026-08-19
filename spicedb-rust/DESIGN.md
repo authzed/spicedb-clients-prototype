@@ -341,8 +341,11 @@ is mapped through the same `error::from_grpc_status` used by every other RPC
 in this client, so a per-item `PERMISSION_DENIED` surfaces as
 `SpiceDBError::PermissionDenied`, not a generic fallback.
 `CheckBulkPermissionsResponse.checked_at` is one token for the whole
-response (not per-item), so every `CheckResult` in a batch call shares the
-same `checked_at`.
+response (not per-item), so every `CheckResult` mapped from a given response
+shares the same `checked_at`. `check_permissions` splits an input larger than
+`DEFAULT_CHECK_BATCH_SIZE` into one request per chunk, so the returned `Vec`
+can carry more than one distinct `checked_at` — uniform within a chunk, not
+across the call. See root DESIGN.md, invariant 2 under bulk checks.
 
 ### Streaming and Transparent Cursor Pagination
 

@@ -47,6 +47,14 @@
 
 ### Fixes
 
+- **2026-08-19** (documentation only; no behaviour change): `check_permissions`' doc comment
+  said each result's `checked_at` was "the revision the whole batch was evaluated at" — directly
+  after the sentence explaining that large batches are split into chunks of 1,000, which it
+  contradicts. `CheckBulkPermissions` carries one `checked_at` per *response*, so a split input
+  carries more than one across the returned `Vec`. The doc comment and `DESIGN.md` now say that,
+  matching root DESIGN.md's re-scoped bulk-check invariant. This client's chunking behaviour is
+  unchanged and remains the model the other six now follow.
+
 - **Documentation — the `client` module no longer claims the builder gives "full control
   over TLS configuration".** `SpiceDBClientBuilder` exposes `.plaintext()`,
   `.allow_insecure_remote_credentials()` and `.default_timeout()`, and never offered a CA

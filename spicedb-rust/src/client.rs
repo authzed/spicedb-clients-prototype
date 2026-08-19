@@ -427,9 +427,11 @@ impl SpiceDBClient {
     /// [`CheckResult`] for each, in the same order as `relationships`.
     ///
     /// Uses `BulkCheckPermissions` under the hood. Large batches are
-    /// automatically split into chunks of 1,000. Each result's `checked_at`
-    /// is the revision the whole batch was evaluated at (`BulkCheckPermissions`
-    /// carries one `checked_at` per response, not per item).
+    /// automatically split into chunks of 1,000. `BulkCheckPermissions`
+    /// carries one `checked_at` per response, not per item, so every result
+    /// from a given chunk shares that chunk's revision — an input large
+    /// enough to be split therefore carries more than one `checked_at`
+    /// across the returned `Vec`, not one for the whole call.
     ///
     /// See [`check_permissions_with_context`](Self::check_permissions_with_context)
     /// to supply a call-level caveat context default; a relationship built

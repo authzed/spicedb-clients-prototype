@@ -675,6 +675,7 @@ every change in the gap). `is_checkpoint` is true for a checkpoint event, which 
 | `schema_reflection/` | Schema reflection, computable permissions, dependent relations, diff |
 | `expand_permission_tree/` | Expanding a permission tree and walking the native `PermissionTree` |
 | `relationship_counters/` | Registering, reading, and unregistering relationship counters |
+| `call_deadlines` | Constructing a client with `default_timeout`, a per-call `_with_timeout` override, and confirming bulk import isn't bounded by the unary default |
 | `raw_escape_hatch/` | `raw_proto()` — driving the generated tonic client directly for a proto field (`optional_transaction_metadata`) and an RPC (`CheckPermission`) the idiomatic API does not expose |
 
 ## Changelog

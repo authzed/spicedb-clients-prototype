@@ -561,46 +561,62 @@ silently, since the leak is invisible from the caller's side of a `break`.
 
 ### Where each client's raw escape hatch lives
 
-The bullet above permits a secondary API, and every client now has one, so a gap in an
-idiomatic surface has a workaround short of a fork. They are not uniform, because what
-"the underlying thing" is differs per ecosystem:
+**Every client can issue an unwrapped RPC on its own connection, with its own
+credentials, through a documented accessor** — that is the property this section exists
+to guarantee, and it is what makes the bullet *"No exposing gRPC internals (channels,
+stubs, metadata) in the primary API (escape hatches for advanced use are acceptable as
+clearly marked secondary API)"*, above, a complete answer rather than half of one. A gap
+in an idiomatic surface therefore has a workaround short of a fork, and the workaround
+never requires rebuilding the connection.
 
-- **Go** — `WithDialOptions(...)` on `NewWithOpts`, which takes any `grpc.DialOption`
-  (transport credentials, interceptors, keepalive). A *configuration* hatch: it does not
-  hand back the built `grpc.ClientConn` or the generated stubs, so a raw RPC means
-  building a client from `spicedb-go-proto` alongside.
-- **Python** — `raw_grpc()` on both `spicedb.sync.SpiceDBClient` and
+What the accessor returns is not uniform, because "the underlying thing" differs per
+ecosystem. Each entry below states its shape: **accessor** (hands back what the client
+already built) or **configuration** (shapes the connection before it exists). Several
+clients have both.
+
+- **Go** — *accessor:* `(*client.Client).RawProto()`, returning `*proto.Client` with the
+  four generated service clients. *Configuration:* `WithDialOptions(...)` on
+  `NewWithOpts`, which takes any `grpc.DialOption`.
+- **Python** — *accessor:* `raw_grpc()` on both `spicedb.sync.SpiceDBClient` and
   `spicedb.aio.SpiceDBClient`, returning `spicedb.raw.RawGrpc` (the live channel plus the
   bearer-token metadata, since this client authenticates per call).
-- **TypeScript** — `SpiceDBClient.raw()`, returning the `SpiceDBProtoClient` with the four
-  generated Connect clients.
-- **Rust** — `SpiceDBClient::raw_proto()`, returning `&SpiceDBProtoClient`; the generated
-  crate is re-exported as `spicedb::spicedb_proto` so callers can name its types.
-- **Java** — `ClientOption.apply(ManagedChannelBuilder)`, which configures the builder
-  before the channel exists. Also a configuration hatch, and documented as one on
-  `ClientOption#apply`. `grpc-netty-shaded` and the generated stubs are declared `api` in
-  `proto-clients/spicedb-java-proto/build.gradle.kts`, so both the builder and a
-  hand-built stub are usable from consumer code.
-- **C#** — `SpiceDBClient.CreateFromChannel(channel, key)`, which takes a caller-built
-  `GrpcChannel`. That channel stays **caller-owned**: disposing the client does not
-  dispose it, because the idiomatic .NET pattern is one DI-registered singleton channel
-  shared across the application.
-- **Ruby** — `SpiceDB::Client#proto_client`, an `attr_reader` documented as "the
-  underlying proto client for advanced use cases", whose `permissions`/`schema`/`watch`/
-  `experimental` stubs are already authenticated (composed call credentials on the secure
-  path, a `BearerTokenInterceptor` on the plaintext one).
+- **TypeScript** — *accessor:* `SpiceDBClient.raw()`, returning the `SpiceDBProtoClient`
+  with the four generated Connect clients.
+- **Rust** — *accessor:* `SpiceDBClient::raw_proto()`, returning `&SpiceDBProtoClient`;
+  the generated crate is re-exported as `spicedb::spicedb_proto` so callers can name its
+  types.
+- **Java** — *accessor:* `SpiceDBClient.rawChannel()`, returning this client's own
+  `io.grpc.Channel` with its bearer metadata already attached, so any generated stub is
+  one `newStub` call away. Declared as `Channel`, not `ManagedChannel`, so the lifecycle
+  stays with the client. *Configuration:* `ClientOption.apply(ManagedChannelBuilder)`,
+  documented as an escape hatch on `ClientOption#apply`. `grpc-netty-shaded` and the
+  generated stubs are declared `api` in
+  `proto-clients/spicedb-java-proto/build.gradle.kts`, so both reach consumer code.
+- **C#** — *accessor:* `SpiceDBClient.RawProto()`, returning the `SpiceDBProtoClient` with
+  the four generated service clients. *Configuration:* `CreateFromChannel(channel, key)`,
+  which takes a caller-built `GrpcChannel`; that channel stays **caller-owned**, since
+  disposing the client does not dispose it — the idiomatic .NET pattern is one
+  DI-registered singleton channel shared across the application.
+- **Ruby** — *accessor:* `SpiceDB::Client#proto_client`, an `attr_reader` documented as
+  "the underlying proto client for advanced use cases", whose `permissions`/`schema`/
+  `watch`/`experimental` stubs are already authenticated (composed call credentials on the
+  secure path, a `BearerTokenInterceptor` on the plaintext one).
 
-Two constraints bind all of them:
+Three constraints bind all of them:
 
 1. **An accessor must never become a constructor.** Handing back an already-built
    channel, stub, or client is fine; growing a parameter for an endpoint, token, or
    transport setting is not — that would be a second path that builds a connection, and
    **RULE: Credentials over insecure transport require an explicit opt-in** is enforced
-   on the single existing one. The Go, Java and C# hatches sit at construction *by
-   design* rather than after it, and each states in its own doc comment what its guard
-   can and cannot see about what a caller does to the builder or channel; that is the
-   trade those three already made, not a licence for the accessors to drift into it.
-2. **Exposing a built channel is not a trust-material hatch.** TLS is configured before a
+   on the single existing one. Each client's tests pin this directly, by asserting the
+   accessor takes no arguments.
+2. **A configuration hatch is not a substitute for an accessor.** Rebuilding the
+   connection to make one raw call means replicating the client's transport configuration
+   by hand; get it wrong and the raw path runs with *different transport security than the
+   idiomatic one* while the call site reads as though it were the same server. That is a
+   correctness hazard, not an inconvenience — which is why the accessor is the guaranteed
+   property above and the configuration hatch is an extra.
+3. **Exposing a built channel is not a trust-material hatch.** TLS is configured before a
    channel exists, so these accessors do not satisfy **RULE: A system-TLS constructor must
    reach a real server**, clause 1. That clause keeps its own per-client list, and Rust's
    entry there is still "none".

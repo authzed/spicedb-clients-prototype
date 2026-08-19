@@ -742,6 +742,8 @@ See package sections above.
 | `schema_management/` | Schema read/write |
 | `bulk_operations/` | Bulk checks and imports |
 | `expand_permission_tree/` | Expanding a permission into its tree of subjects |
+| `call_deadlines/` | Constructing a client with `default_timeout`, a per-call `timeout` override, and confirming bulk import isn't bounded by the unary default |
+| `custom_tls/` | Reaching a SpiceDB behind a private CA with `ca_cert`, and mutual TLS with `client_cert`/`client_key`. Brings its own TLS endpoint |
 | `sync_check_permission/` | Basic permission check with `spicedb.sync` — one client built at startup, reused, no event loop |
 | `sync_write_relationships/` | Writing relationships with the transaction builder, synchronously |
 | `sync_read_relationships/` | Reading relationships with a plain `for` loop instead of `async for` |

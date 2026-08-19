@@ -509,6 +509,9 @@ See package sections above.
 | `watch_changes/` | Watching for changes |
 | `schema_management/` | Schema read/write |
 | `bulk_operations/` | Bulk checks and imports |
+| `expand_permission_tree/` | `expandPermissionTree` and walking the native `PermissionTree` |
+| `call_deadlines/` | `defaultTimeoutMs` on `createSpiceDBClient`, a per-call `timeoutMs` override, and confirming bulk import isn't bounded by the unary default |
+| `custom_tls/` | Reaching a SpiceDB behind a private CA with `tls.caCert`, and mutual TLS with `tls.clientCert`/`tls.clientKey`. Brings up its own TLS-terminated endpoint |
 | `raw_escape_hatch/` | `raw()` — driving the generated Connect client directly for a proto field (`optionalTransactionMetadata`) and an RPC (`CheckPermission`) the idiomatic API does not expose |
 
 ## Typed Client Generation

@@ -414,6 +414,34 @@
 
 ### Features
 
+- **2026-08-18**: Error mapping now carries the server's detail all the way to the caller, per root
+  DESIGN.md, "RULE: Error mapping must not lose the server's detail". Purely additive.
+  - New sentinel `ErrOutOfRange` and new `ErrorCode` value `CodeOutOfRange`. `OUT_OF_RANGE` is
+    SpiceDB's code for an expired or garbage-collected ZedToken; it previously fell through to
+    `CodeUnknown` and matched no sentinel, so the one recoverable error in a token-threading
+    application was indistinguishable from any other unmapped failure. Recovery is mechanical:
+    discard the stale token and re-read at full consistency. `CodeOutOfRange` is appended to the
+    `ErrorCode` constant block, so every existing constant keeps its numeric value.
+  - New fields on `*Error`: `Reason`, `ReasonDomain`, and `ReasonMetadata`. These carry the
+    `google.rpc.ErrorInfo` detail SpiceDB attaches to a status — `Reason` is the name of an
+    `authzed.api.v1.ErrorReason` enum value (e.g. `"ERROR_REASON_MAXIMUM_DEPTH_EXCEEDED"`), and
+    `ReasonMetadata` is the specifics behind it, such as which precondition failed. The reason is
+    surfaced exactly as the server sent it: a value a newer server knows and this client does not
+    is passed through unchanged rather than coerced or rejected, per root DESIGN.md's
+    "RULE: A conversion that cannot preserve meaning must fail", which requires server-supplied
+    unknowns to degrade rather than raise. `Reason` is empty and `ReasonMetadata` nil when the
+    server attached no `ErrorInfo`.
+
+  ```go
+  var spiceErr *client.Error
+  if errors.As(err, &spiceErr) && spiceErr.Reason == "ERROR_REASON_MAXIMUM_DEPTH_EXCEEDED" {
+      log.Printf("depth limit was %s", spiceErr.ReasonMetadata["maximum_depth_allowed"])
+  }
+  if errors.Is(err, client.ErrOutOfRange) {
+      // ZedToken expired or GC'd: drop it and re-read at full consistency.
+  }
+  ```
+
 - **2026-08-17**: `Check`, `CheckOne`, `CheckAny`, `CheckAll`, and `CheckIter` each gain a `*WithContext` counterpart (`CheckWithContext`, `CheckOneWithContext`, `CheckAnyWithContext`, `CheckAllWithContext`, `CheckIterWithContext`) for supplying caveat context on a check. This closes a real gap: `CheckResult.MissingContext` (added above) told a caller a check needed caveat context like `"now"`, but there was previously no parameter anywhere on the check surface to supply it, making the information non-actionable. Purely additive — every existing call site (`client.Check(ctx, cs, "view", r1, r2)`, `client.CheckOne(...)`, etc.) is completely unaffected; the non-context methods are unchanged in signature and now simply delegate to their `*WithContext` counterpart with a `nil` context.
 
   Each `*WithContext` method takes an extra `checkContext map[string]any` parameter, positioned right after `permission` and before the (still variadic) relationships, e.g. `CheckWithContext(ctx, cs, permission, checkContext, rs ...rel.Relationship)`. New field on `rel.Relationship`: `CheckContext map[string]any`, set via the new `rel.Relationship.WithCheckContext(map[string]any)` builder, for supplying context to just one relationship in a call — distinct from the existing `CaveatContext`/`WithCaveat`, which is stored with a relationship on write, not sent on check. The two merge key by key for each item — item keys win on conflict, call-level keys absent from the item are retained, never wholesale-replaced, so a per-item override can't silently drop a shared key the caveat still needs.

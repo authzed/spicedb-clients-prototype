@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 
@@ -55,6 +56,32 @@ definition document {
 	fmt.Printf("wrote relationships at revision: %s\n", revision)
 	if revision == "" {
 		log.Fatalf("expected non-empty revision")
+	}
+
+	// A failed precondition arrives with SpiceDB's structured explanation
+	// attached, not just a message. The typed error exposes the
+	// authzed.api.v1.ErrorReason name and the metadata naming which
+	// precondition did not hold, so recovery can be written against data
+	// rather than against a parsed string.
+	var doomed rel.Txn
+	if err := doomed.Touch(rel.MustFromTriple("document", "seconddoc", "viewer", "user", "alice", "")); err != nil {
+		log.Fatalf("failed to add relationship to transaction: %v", err)
+	}
+	if err := doomed.MustMatch(rel.NewFilter("document").WithResourceID("firstdoc").WithRelation("owner").WithSubjectType("user").WithSubjectID("nobody")); err != nil {
+		log.Fatalf("failed to add precondition to transaction: %v", err)
+	}
+
+	if _, err := c.Write(ctx, doomed); err == nil {
+		log.Fatalf("expected the unsatisfiable precondition to fail the write")
+	} else {
+		if !errors.Is(err, client.ErrFailedPrecondition) {
+			log.Fatalf("expected client.ErrFailedPrecondition, got: %v", err)
+		}
+		var spiceErr *client.Error
+		if errors.As(err, &spiceErr) {
+			fmt.Printf("precondition failed: reason=%q domain=%q metadata=%v\n",
+				spiceErr.Reason, spiceErr.ReasonDomain, spiceErr.ReasonMetadata)
+		}
 	}
 
 	// Clean up so later examples that write a narrower schema aren't blocked

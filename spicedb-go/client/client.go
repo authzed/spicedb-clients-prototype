@@ -56,6 +56,22 @@ func WithInsecureAllowRemoteHost() Option {
 }
 
 // WithDialOptions adds custom gRPC dial options.
+//
+// Security note (root DESIGN.md, "RULE: Credentials over insecure transport
+// require an explicit opt-in"): the guard NewWithOpts applies recognizes
+// WithInsecure/WithInsecureAllowRemoteHost by the options themselves, and
+// cannot see what an arbitrary grpc.DialOption does to the connection.
+// Caller options are appended AFTER this library's own, and later dial options
+// win in grpc-go, so a grpc.WithTransportCredentials passed here replaces the
+// transport security this library selected -- the guard evaluates the endpoint
+// and the named options, not the result.
+//
+// This is not a credential leak today, and the reason is worth knowing rather
+// than assuming: the bearer credentials are a grpc.PerRPCCredentials whose
+// RequireTransportSecurity reports !insecure, so downgrading the transport
+// here while leaving WithInsecure unset makes grpc-go refuse to send the token
+// at all rather than send it in cleartext. It fails closed. Everything this
+// option does to the connection is nonetheless the caller's responsibility.
 func WithDialOptions(opts ...grpc.DialOption) Option {
 	return func(o *options) { o.dialOptions = append(o.dialOptions, opts...) }
 }

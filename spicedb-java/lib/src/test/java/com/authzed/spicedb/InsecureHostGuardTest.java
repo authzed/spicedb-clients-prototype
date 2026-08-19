@@ -56,12 +56,13 @@ class InsecureHostGuardTest {
   }
 
   /**
-   * Endpoints whose URI authority is not what a naive host:port split reads out of them. grpc-java's
-   * {@code DnsNameResolver} takes its host from {@code URI.create("//" + name).getHost()}, so
-   * {@code "127.0.0.1:443@evil.com"} resolves and connects to <b>evil.com</b> while a last-colon
-   * split sees "127.0.0.1". Before the fix {@link SpiceDBClient#isLoopbackEndpoint} returned true
-   * for these, so {@code createPlaintext} built a client with no opt-in and shipped its bearer
-   * token to the attacker-controlled host in cleartext.
+   * Endpoints whose URI authority is not what a naive host:port split reads out of them.
+   * grpc-java's {@code DnsNameResolver} takes its host from
+   * {@code URI.create("//" + name).getHost()}, so {@code "127.0.0.1:443@evil.com"} resolves and
+   * connects to <b>evil.com</b> while a last-colon split sees "127.0.0.1". Before the fix
+   * {@link SpiceDBClient#isLoopbackEndpoint} returned true for these, so {@code createPlaintext}
+   * built a client with no opt-in and shipped its bearer token to the attacker-controlled host
+   * in cleartext.
    */
   private static final String[] AUTHORITY_SHIFTING_ENDPOINTS = {
     "127.0.0.1:443@evil.com",

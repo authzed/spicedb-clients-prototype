@@ -224,6 +224,52 @@ public sealed class SpiceDBClient : IAsyncDisposable
     }
 
     /// <summary>
+    /// Escape hatch: the underlying <see cref="SpiceDBProtoClient"/>, with the four
+    /// generated gRPC service clients (<c>Permissions</c>, <c>Schema</c>, <c>Watch</c>,
+    /// <c>Experimental</c>) this client makes its own calls through.
+    /// <para>
+    /// Clearly-marked <b>secondary</b> API. Root DESIGN.md's "What NOT To Do" keeps
+    /// channels, stubs and metadata out of the primary surface and permits exactly this —
+    /// "escape hatches for advanced use are acceptable as clearly marked secondary API" —
+    /// so that a request the idiomatic methods cannot express (an RPC or proto field not
+    /// wrapped here, such as <c>WriteRelationshipsRequest.OptionalTransactionMetadata</c>,
+    /// or the single-check <c>CheckPermission</c> RPC that
+    /// <see cref="CheckPermissionAsync"/> deliberately routes around) has a workaround
+    /// short of forking the client:
+    /// <code>
+    /// var response = await client.RawProto().Permissions.CheckPermissionAsync(request);
+    /// </code>
+    /// </para>
+    /// <para>
+    /// Four things to know before reaching for it. The bearer token comes free — each
+    /// service client is built on an intercepted <see cref="CallInvoker"/>, so a raw call
+    /// is authenticated exactly as an idiomatic one is. A raw call is a raw call: no
+    /// <c>SpiceDBException</c> mapping (you catch <see cref="RpcException"/>), no retry,
+    /// and no <see cref="DefaultTimeout"/> — pass a <c>deadline</c> yourself. Do not
+    /// dispose the returned object: it holds this client's own connection, and
+    /// <see cref="DisposeAsync"/> is what releases it (or, for a channel you supplied to
+    /// <see cref="CreateFromChannel"/>, you are). And there is no stability promise beyond
+    /// what <c>Grpc.Net.Client</c> and the generated clients give.
+    /// </para>
+    /// <para>
+    /// It is an accessor, never a constructor: it takes no endpoint, preshared key, or
+    /// transport-security argument and hands back a client that already exists, so it
+    /// cannot become a second construction path around the guard in
+    /// <see cref="CreatePlaintext"/> — root DESIGN.md, "RULE: Credentials over insecure
+    /// transport require an explicit opt-in".
+    /// </para>
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// Thrown only for a client built through the internal test-only constructor that takes
+    /// service clients directly — that client has no proto client, and no public factory
+    /// can produce one.
+    /// </exception>
+    public SpiceDBProtoClient RawProto() =>
+        _protoClient ?? throw new InvalidOperationException(
+            "spicedb: this client was constructed from service clients directly (test-only seam) " +
+            "and has no underlying SpiceDBProtoClient.");
+
+    /// <summary>
     /// Releases the connection this client created.
     /// <para>
     /// A channel supplied through <see cref="CreateFromChannel"/> is NOT disposed:

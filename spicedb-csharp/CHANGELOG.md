@@ -4,6 +4,39 @@
 
 ### Added
 
+- **2026-08-19**: An escape hatch, `SpiceDBClient.RawProto()`. It returns the underlying
+  `SpiceDBProtoClient` — the four generated service clients (`Permissions`, `Schema`, `Watch`,
+  `Experimental`) this library makes its own calls through — so a request the idiomatic API cannot
+  express has a workaround short of forking the client:
+
+  ```csharp
+  var response = await client.RawProto().Permissions.CheckPermissionAsync(request);
+  ```
+
+  Two real examples of such a request: `WriteRelationshipsRequest.OptionalTransactionMetadata`, a
+  proto field this client does not surface, and the single-check `CheckPermission` RPC, which
+  `CheckPermissionAsync` deliberately routes around (every check goes through
+  `CheckBulkPermissions`). Purely additive.
+
+  Clearly-marked **secondary** API — root DESIGN.md's "What NOT To Do" keeps channels, stubs and
+  metadata out of the primary surface and permits exactly this ("escape hatches for advanced use
+  are acceptable as clearly marked secondary API"). No stability promise beyond
+  `Grpc.Net.Client`'s and the generated code's.
+
+  It complements `CreateFromChannel`, which configures the connection before it exists: until now a
+  caller who used `CreatePlaintext` or `CreateSystemTls` had no hatch at all, since `_protoClient`
+  was private with no getter. The bearer token comes free (each service client is built on an
+  intercepted `CallInvoker`), but a raw call gets no `SpiceDBException` mapping, no retry, and no
+  `DefaultTimeout` — pass a `deadline` yourself. Do not dispose the returned object; `DisposeAsync`
+  is what releases the connection.
+
+  It is an accessor, not a constructor: it takes no endpoint, preshared key, or transport setting,
+  so channel construction stays on the single guarded path in `SpiceDBProtoClient` and this cannot
+  become a route around root DESIGN.md, "RULE: Credentials over insecure transport require an
+  explicit opt-in".
+
+  New example: `examples/RawEscapeHatch/`.
+
 - **2026-08-18**: Error mapping now carries the server's detail all the way to
   the caller, per root DESIGN.md, "RULE: Error mapping must not lose the
   server's detail". Purely additive.

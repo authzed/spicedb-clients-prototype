@@ -100,6 +100,46 @@ other consumer of it — which is exactly what happened until `SpiceDBProtoClien
 started tracking whether it owned its channel. Lending a channel does not
 transfer ownership; the caller disposes it at application shutdown.
 
+### Escape hatch: raw proto access
+
+`client.RawProto()` returns the underlying `SpiceDBProtoClient` — the four generated
+service clients (`Permissions`, `Schema`, `Watch`, `Experimental`) this library makes its
+own calls through:
+
+```csharp
+var response = await client.RawProto().Permissions.CheckPermissionAsync(request);
+```
+
+Clearly-marked **secondary** API, which is what root DESIGN.md's "What NOT To Do"
+permits: channels, stubs and metadata stay out of the primary surface, and "escape
+hatches for advanced use are acceptable as clearly marked secondary API". It exists so a
+request the idiomatic surface cannot express — an RPC or proto field not wrapped here,
+such as `WriteRelationshipsRequest.OptionalTransactionMetadata`, or the single-check
+`CheckPermission` RPC that `CheckPermissionAsync` deliberately routes around — has a
+workaround short of forking the client.
+
+It complements `CreateFromChannel`, which shapes the connection *before* it exists (and is
+where custom TLS goes): `RawProto()` hands back what was built, whichever constructor
+built it, so a caller who used `CreatePlaintext`/`CreateSystemTls` has a hatch too.
+
+Four properties, all deliberate:
+
+- **The bearer token comes free.** Each service client is built on an intercepted
+  `CallInvoker`, so a raw call is authenticated exactly as an idiomatic one is.
+- **A raw call is a raw call.** No `SpiceDBException` mapping (you catch `RpcException`),
+  no retry, and no `DefaultTimeout` — pass a `deadline` yourself.
+- **Do not dispose the returned object.** It holds this client's connection, and
+  `DisposeAsync` is what releases it (or, for a channel you supplied to
+  `CreateFromChannel`, you are).
+- **It is an accessor, never a constructor.** It takes no endpoint, preshared key, or
+  transport setting, so channel construction stays on the single guarded path in
+  `SpiceDBProtoClient` and the hatch cannot become a way around root DESIGN.md, "RULE:
+  Credentials over insecure transport require an explicit opt-in".
+
+No stability promise beyond `Grpc.Net.Client`'s and the generated code's. Throws
+`InvalidOperationException` only for a client built through the internal test-only
+constructor, which no public factory can produce.
+
 ### Consistency
 
 ZedTokens are opaque `string` values, never proto types. Consistency is an
@@ -622,6 +662,8 @@ public sealed record CheckResult { Permissionship, MissingContext, CheckedAt, Ha
 - `Transaction.V1Updates` / `Transaction.Preconditions` — exposes underlying proto updates
 - `SpiceDBClient.CreateFromChannel(channel, key)` — use existing GrpcChannel.
   The channel stays caller-owned: `DisposeAsync` does not dispose it.
+- `SpiceDBClient.RawProto()` — the underlying `SpiceDBProtoClient` and its four generated
+  service clients, for an RPC or proto field the idiomatic API does not wrap
 
 ## Changelog
 

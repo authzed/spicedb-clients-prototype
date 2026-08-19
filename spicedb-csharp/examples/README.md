@@ -35,3 +35,4 @@ Or use `mage test` which starts a SpiceDB container automatically.
 | `SchemaReflection/` | Schema reflection, computable permissions, diffs |
 | `RelationshipCounters/` | Relationship counter registration and counting |
 | `ExpandPermissionTree/` | Expanding a permission into its native `PermissionTree` of subjects |
+| `RawEscapeHatch/` | The `RawProto()` escape hatch: driving the generated service client on this client's own connection to send `OptionalTransactionMetadata` (a proto field this client does not wrap) and to call the single-check `CheckPermission` RPC |

@@ -47,6 +47,29 @@
 
 ### Fixes
 
+- **2026-08-19**: **The live-test step could select nothing and still report success.**
+  `IntegrationTest` ran `cargo test -- --ignored` and trusted its exit code, four lines above the
+  example loop that does assert a count. `--ignored` is a filter, and libtest exits 0 when a filter
+  selects nothing: removing the two `#[ignore]` attributes made the step run zero tests, silently,
+  green. It now sums the reported pass counts and requires `wantLiveTestCount`, exactly as
+  `.github/workflows/rust.yaml:81-87` does for its handshake test -- which is the pattern root
+  DESIGN.md cites. Verified by deleting both attributes: `live integration tests reported 0 passed,
+  want 2`.
+
+- **2026-08-19**: **Example cleanup moved from exit to before the schema write.** Each example
+  deleted its `document` relationships at the end of `main()`, after its own `write_schema`. That
+  ordering only helps if every example completes: `runExamples` continues past a failure, so one
+  genuine failure cascaded into spurious failures in the narrow-schema examples that ran later.
+  Every example now clears `document` first, unchecked (a fresh server has no `document` definition
+  yet, which is not a failure), which is the shape `spicedb-ruby`'s `spec_helper.rb` and
+  `spicedb-java`/`spicedb-csharp` use.
+
+- **2026-08-19**: **The example set is pinned by name, not by count.** `wantExampleCount = 13`
+  passed unchanged when an example was *renamed* -- only deletion was caught. `wantExamples` now
+  lists all thirteen and is reconciled with the glob in both directions. Verified by renaming
+  `lookup_subjects.rs` to `lookup_subj.rs`: `expected but absent: [lookup_subjects]; present but
+  not expected: [lookup_subj]`.
+
 - **2026-08-19**: **No example had ever been executed.** `mage integrationTest` documented
   itself as "starts SpiceDB via Docker and runs examples against it", started the container on
   the right port with the right key -- and then ran `cargo test -- --ignored`, which runs the

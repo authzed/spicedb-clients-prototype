@@ -35,10 +35,14 @@ publishes on, and `mage integrationTest` derives it from `SPICEDB_ENDPOINT`:
 SPICEDB_ENDPOINT=localhost:50071 mage integrationTest
 ```
 
-The examples share one server and run in name order, so each deletes the
-`document` relationships it wrote before exiting. Skipping that cleanup makes a
-*later* example fail: SpiceDB refuses a `WriteSchema` that drops a relation
-while a relationship still exists under it.
+The examples share one server, so each clears the `document` relationships
+*before* writing its schema rather than after finishing with them. SpiceDB
+refuses a `WriteSchema` that drops a relation while a relationship still exists
+under it, so what a previous example left behind is the next example's problem
+-- and a cleanup at exit does nothing when the example that should have run it
+failed first, which turns one genuine failure into several spurious ones. The
+delete is deliberately unchecked: on a fresh server there is no `document`
+definition yet, which is not a failure.
 
 ## What runs in CI
 

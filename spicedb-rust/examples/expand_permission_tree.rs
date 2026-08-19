@@ -46,6 +46,15 @@ async fn main() {
         .await
         .expect("failed to create client");
 
+    // Clear before writing the schema, not after using it. Every example runs
+    // against one SpiceDB and writes a whole schema, and SpiceDB refuses a
+    // WriteSchema that drops a relation while a relationship still exists
+    // under it -- so what a *previous* example left behind is this example's
+    // problem, and a cleanup at exit does not help if this example fails
+    // first. The error is ignored on purpose: on a fresh server there is no
+    // `document` definition yet, which is not a failure.
+    let _ = client.delete_relationships(&Filter::new("document")).await;
+
     // Write schema
     client
         .write_schema(SCHEMA)
@@ -122,13 +131,4 @@ async fn main() {
         subjects.contains(&("user".to_string(), "bob".to_string())),
         "expected bob to appear as a subject in the expanded tree"
     );
-
-    // Clean up so a later example isn't blocked by leftover relationships: the
-    // integration runner drives every example against one SpiceDB, and an
-    // example that narrows the schema fails outright if a relationship still
-    // exists under a relation it drops.
-    client
-        .delete_relationships(&Filter::new("document"))
-        .await
-        .expect("cleanup failed");
 }

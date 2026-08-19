@@ -3,6 +3,7 @@
 //! Run with: `cargo run --example schema_management`
 
 use spicedb::client::SpiceDBClient;
+use spicedb::types::Filter;
 
 const SCHEMA: &str = r#"definition user {}
 
@@ -27,6 +28,15 @@ async fn main() {
     let client = SpiceDBClient::new_plaintext(endpoint, token)
         .await
         .expect("failed to create client");
+
+    // Clear before writing the schema, not after using it. Every example runs
+    // against one SpiceDB and writes a whole schema, and SpiceDB refuses a
+    // WriteSchema that drops a relation while a relationship still exists
+    // under it -- so what a *previous* example left behind is this example's
+    // problem, and a cleanup at exit does not help if this example fails
+    // first. The error is ignored on purpose: on a fresh server there is no
+    // `document` definition yet, which is not a failure.
+    let _ = client.delete_relationships(&Filter::new("document")).await;
 
     // Write a schema
     let revision = client

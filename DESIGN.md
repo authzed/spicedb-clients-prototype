@@ -15,7 +15,10 @@ toward correct, performant usage patterns ("pit of success").
 - Deprecate with new alternatives — add new methods instead of changing existing ones, unless existing methods can be changed in a forward-compatible manner
 - This applies even when idiomatic improvements suggest changes, unless explicitly specified to be a `BREAKING CHANGE`. If so, then that specification tests precedence, confirmation must be received from the runner before the changes are made, and the breaking change should be documented in the release notes
   for each client, with at least one example of how to migrate forward
-- Examples must *ALWAYS* compile and pass testing, unless the user has *EXPLICITLY* approved the breaking change
+- Examples must *ALWAYS* compile and pass testing, unless the user has *EXPLICITLY* approved the breaking change.
+  Compiling and passing is necessary but not sufficient: an example must also be wired into a
+  runner and must be capable of failing — see **RULE: An example must be executed by CI and must
+  be able to fail**
 
 ## Deprecation Propagation
 
@@ -555,6 +558,64 @@ nothing ever told it the caller walked away.
 
 A client that cannot cancel an in-flight stream leaks a server-side dispatch per abandoned call —
 silently, since the leak is invisible from the caller's side of a `break`.
+
+## RULE: An example must be executed by CI and must be able to fail
+
+The `examples/` directory in every client is the repo's integration-test tier: it is the only
+place where client code runs against a real SpiceDB. An example earns that status only if two
+things are true of it — **something runs it on every relevant change**, and **it fails when the
+behaviour it demonstrates breaks**. An example that satisfies neither is not a test; it is a
+code sample that the repo's own coverage claims have been counting as a test.
+
+Two distinct failure modes produce that outcome, and they need naming separately because the
+remedies do not overlap.
+
+1. **An example nothing runs.** Membership in a runner is a separate fact from existence on
+   disk, and nothing reconciles them by default. All twelve C# examples sat outside every
+   solution file for the repo's entire history, so `dotnet build`/`dotnet test` never saw them —
+   the code compiled in no one's CI. Rust's `IntegrationTest` documented itself as running
+   examples against a container it did start, on the right port, with the right key, while its
+   body ran `cargo test -- --ignored`: two ignored test functions and zero examples, so every
+   runtime assertion in all thirteen Rust examples was dead code that had never executed once.
+   Both defects were invisible because the target *appeared* to cover the directory.
+
+   Therefore: **each client MUST have a check that reconciles what is on disk against what the
+   runner actually executes.** Where membership is enumerated by hand — a `.sln`, a project
+   list, a manifest — the check MUST diff the enumeration against the directory and fail on
+   divergence in either direction, because a snapshot that is correct today is reintroduced as a
+   defect by the next example added. Where membership comes from a glob, the glob cannot drift,
+   but a rename or a moved file silently yields a *shorter list* rather than an error, so the
+   runner MUST assert the number of examples it executed and fail if that count is not the
+   number expected.
+
+   The same applies to name-filtered runs. A name or tag filter that matches nothing exits
+   successfully in every test framework this repo uses: `pytest -k`, `rspec --tag`, `cargo test`
+   with a filter, and a hardcoded skip in a runner loop all report green on an empty selection.
+   `.github/workflows/rust.yaml` already greps its output for `"1 passed"` for exactly this
+   reason, and that guard is the pattern to copy: **a filtered run MUST assert how many examples
+   it executed.** Skipping an example is permitted — some need machinery that does not exist
+   yet — but a skip MUST be explicit, counted, and visible in the run's output, never the silent
+   residue of a filter.
+
+2. **An example that cannot fail.** Executing an example proves nothing if its assertions hold
+   regardless of the behaviour under test. `spicedb-typescript`'s custom-TLS example asserted
+   `Array.isArray(results)` over a zero-item result — true of an empty array, and therefore true
+   when no TLS handshake was ever attempted, which is precisely what was happening. This is the
+   same defect as **RULE: A system-TLS constructor must reach a real server** names for
+   constructors ("asserting a constructor succeeds is no better wherever the language connects
+   lazily"), generalised to the examples tier.
+
+   Therefore: **every example MUST assert on the specific behaviour it exists to demonstrate,
+   and that assertion MUST fail if the behaviour is removed.** Concretely, an assertion is
+   insufficient under this rule when it is satisfied by an empty result, by a type check alone,
+   by a constructor returning non-null, or by any conditional whose guard can be false on a
+   normal run — a `if (stillCalculating) { ...asserts... }` after a fixed sleep asserts nothing
+   on the run where the guard is false, and reports green either way. The test for compliance is
+   mechanical: delete the behaviour and confirm the example goes red.
+
+An example directory is a claim about coverage. Both clauses exist so that the claim is checkable
+by machine rather than by reading, because every instance above survived repeated human review of
+the very directories it lived in.
 
 ## What NOT To Do
 

@@ -352,6 +352,44 @@ public class CheckResultTests
         await act.Should().ThrowExactlyAsync<NotFoundException>();
     }
 
+    // A per-item failure must reach the caller carrying the same structured
+    // reason an RPC-level failure does. The per-item google.rpc.Status used to
+    // be reduced to a code and a message before mapping, silently dropping the
+    // item's own ErrorInfo — a failure mode that shows up as an empty Reason
+    // and nothing red. See root DESIGN.md, "RULE: Error mapping must not lose
+    // the server's detail".
+    [Fact]
+    public async Task CheckPermissionsAsync_PerItemError_CarriesItsOwnErrorReason()
+    {
+        var perItemStatus = new Google.Rpc.Status
+        {
+            Code = (int)StatusCode.ResourceExhausted,
+            Message = "max depth exceeded",
+        };
+        perItemStatus.Details.Add(Google.Protobuf.WellKnownTypes.Any.Pack(new Google.Rpc.ErrorInfo
+        {
+            Reason = "ERROR_REASON_MAXIMUM_DEPTH_EXCEEDED",
+            Domain = "authzed.com",
+            Metadata = { { "maximum_depth_allowed", "50" } },
+        }));
+
+        var resp = new CheckBulkPermissionsResponse
+        {
+            Pairs = { new CheckBulkPermissionsPair { Error = perItemStatus } },
+        };
+
+        var mockPermissions = MockCheckBulk(resp);
+        await using var client = NewClient(mockPermissions.Object);
+
+        var rel = Relationship.FromTriple("document", "doc1", "viewer", "user", "alice");
+        var act = async () => await client.CheckPermissionAsync(Consistency.Full(), "view", rel);
+
+        var result = await act.Should().ThrowExactlyAsync<ResourceExhaustedException>();
+        result.Which.Reason.Should().Be("ERROR_REASON_MAXIMUM_DEPTH_EXCEEDED");
+        result.Which.ReasonDomain.Should().Be("authzed.com");
+        result.Which.ReasonMetadata.Should().Contain("maximum_depth_allowed", "50");
+    }
+
     // ── HARD REQUIREMENT: a response with fewer (or more) pairs than request
     //    items, or a pair whose Response oneof is unset (neither Item nor
     //    Error), must fail loudly with a typed error rather than silently

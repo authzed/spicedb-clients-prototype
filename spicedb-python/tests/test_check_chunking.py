@@ -32,7 +32,7 @@ def numbered_rels(n):
     ]
 
 
-def echo_response(request, short_by=0):
+def echo_response(request, short_by=0, malformed_local=None):
     """A response answering `request`, echoing each item's resource ID back
     through `missing_required_context` so a caller can prove which request
     item every result came from -- and therefore that concatenating chunk
@@ -42,19 +42,23 @@ def echo_response(request, short_by=0):
     guard.
     """
     items = request.items[: len(request.items) - short_by] if short_by else request.items
+
+    def pair(i, item):
+        if malformed_local == i:
+            # `response` oneof left unset entirely.
+            return permission_service_pb2.CheckBulkPermissionsPair()
+        return permission_service_pb2.CheckBulkPermissionsPair(
+            item=permission_service_pb2.CheckBulkPermissionsResponseItem(
+                permissionship=permission_service_pb2.CheckPermissionResponse.PERMISSIONSHIP_HAS_PERMISSION,
+                partial_caveat_info=core_pb2.PartialCaveatInfo(
+                    missing_required_context=[item.resource.object_id]
+                ),
+            )
+        )
+
     return permission_service_pb2.CheckBulkPermissionsResponse(
         checked_at=core_pb2.ZedToken(token="tok"),
-        pairs=[
-            permission_service_pb2.CheckBulkPermissionsPair(
-                item=permission_service_pb2.CheckBulkPermissionsResponseItem(
-                    permissionship=permission_service_pb2.CheckPermissionResponse.PERMISSIONSHIP_HAS_PERMISSION,
-                    partial_caveat_info=core_pb2.PartialCaveatInfo(
-                        missing_required_context=[item.resource.object_id]
-                    ),
-                )
-            )
-            for item in items
-        ],
+        pairs=[pair(i, item) for i, item in enumerate(items)],
     )
 
 
@@ -62,14 +66,25 @@ class _Recorder:
     """Stands in for the `CheckBulkPermissions` stub, recording the item
     count of every request it is handed."""
 
-    def __init__(self, short_at=None):
+    def __init__(self, short_at=None, malformed_at_absolute=None):
         self.sizes = []
         self._short_at = short_at
+        self._malformed_at_absolute = malformed_at_absolute
 
     def _respond(self, request):
         index = len(self.sizes)
+        base = sum(self.sizes)
         self.sizes.append(len(request.items))
-        return echo_response(request, short_by=1 if self._short_at == index else 0)
+        malformed_local = None
+        if self._malformed_at_absolute is not None:
+            local = self._malformed_at_absolute - base
+            if 0 <= local < len(request.items):
+                malformed_local = local
+        return echo_response(
+            request,
+            short_by=1 if self._short_at == index else 0,
+            malformed_local=malformed_local,
+        )
 
     def sync_stub(self):
         return mock.Mock(side_effect=lambda request, **kw: self._respond(request))
@@ -190,6 +205,30 @@ class TestSyncCheckChunking:
 
         assert "999 pair(s)" in str(excinfo.value)
         assert f"{CHECK_BATCH_SIZE} request item(s)" in str(excinfo.value)
+        # Two requests went out before the guard fired -- proof the failure
+        # was detected on the second chunk, not on the whole input up front.
+        assert recorder.sizes == [CHECK_BATCH_SIZE, CHECK_BATCH_SIZE]
+
+    def test_malformed_pair_reports_the_callers_absolute_index(self, make_sync_client):
+        """The index in a per-item message must be the caller's own, not the
+        index within whichever chunk happened to carry the failure.
+
+        Chunking made every "check item N" message chunk-relative: a failure
+        at relationship 1003 read as "check item 3", so a caller who logs or
+        parses it acts on relationship 3 -- one resource's answer attributed
+        to another, the same failure family the pair-count guard exists to
+        prevent, relocated into the diagnostic.
+        """
+        failing = CHECK_BATCH_SIZE + 3
+        client = make_sync_client()
+        recorder = _Recorder(malformed_at_absolute=failing)
+        client._permissions.CheckBulkPermissions = recorder.sync_stub()
+
+        with pytest.raises(SpiceDBError) as excinfo:
+            client.check_permissions(full(), *numbered_rels(CHECK_BATCH_SIZE * 2))
+
+        assert f"check item {failing}:" in str(excinfo.value)
+        assert "check item 3:" not in str(excinfo.value)
 
 
 class TestAioCheckChunking:
@@ -253,3 +292,16 @@ class TestAioCheckChunking:
 
         assert "999 pair(s)" in str(excinfo.value)
         assert f"{CHECK_BATCH_SIZE} request item(s)" in str(excinfo.value)
+        assert recorder.sizes == [CHECK_BATCH_SIZE, CHECK_BATCH_SIZE]
+
+    async def test_malformed_pair_reports_the_callers_absolute_index(self, make_aio_client):
+        failing = CHECK_BATCH_SIZE + 3
+        client = make_aio_client()
+        recorder = _Recorder(malformed_at_absolute=failing)
+        client._permissions.CheckBulkPermissions = recorder.aio_stub()
+
+        with pytest.raises(SpiceDBError) as excinfo:
+            await client.check_permissions(full(), *numbered_rels(CHECK_BATCH_SIZE * 2))
+
+        assert f"check item {failing}:" in str(excinfo.value)
+        assert "check item 3:" not in str(excinfo.value)

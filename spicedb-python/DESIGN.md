@@ -320,8 +320,11 @@ ZedToken), which no earlier version of this client surfaced at all — thread
 it into `at_least()` to make a later call observe this check and everything
 it observed (read-your-writes for checks; see `examples/read_your_writes/`).
 `CheckBulkPermissionsResponse.checked_at` is response-level, not per-item, so
-`check_permissions()` propagates that one token onto every `CheckResult` it
-returns.
+`check_permissions()` propagates that one token onto every `CheckResult` mapped
+from that response. A check over more than `CHECK_BATCH_SIZE` relationships is
+split into one request per chunk, so the returned list can carry more than one
+distinct `checked_at` — uniform within a chunk, not across the call. See root
+DESIGN.md, invariant 2 under bulk checks.
 
 #### Caveat context: call-level default and per-item override
 

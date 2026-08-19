@@ -395,6 +395,11 @@ class SpiceDBClient:
         carrying more than 10,000 items. An empty `rels` sends no request
         at all and returns `[]`.
 
+        Results from one request share a `checked_at` (the response carries
+        a single token for the whole request, not one per item), so an input
+        large enough to be split carries more than one token across the
+        returned list.
+
         `context` is a call-level default applied to every relationship's
         check item. A relationship built with its own
         `check_context` (e.g. `Relationship.from_triple(..., check_context=
@@ -406,8 +411,15 @@ class SpiceDBClient:
         which is written into a relationship at write time -- see the
         `Relationship` docstring.
 
-        `timeout` (seconds) bounds this call, overriding the client's
-        `default_timeout`."""
+        `timeout` (seconds) bounds **each request** this call makes,
+        overriding the client's `default_timeout`. A check over more than
+        `CHECK_BATCH_SIZE` relationships is split into one request per
+        chunk, and both this deadline and the retry budget apply to each
+        chunk independently, not to the call as a whole -- worst-case wall
+        time is `ceil(len(rels) / CHECK_BATCH_SIZE) * timeout`. That is
+        deliberate: one deadline spanning every chunk would make a large
+        check fail purely for being large, and a shared retry budget would
+        let one flaky chunk exhaust the allowance for the rest."""
         self._ensure_channel()
         # Zero relationships sends nothing at all. An empty request is not a
         # cheaper way to ask nothing -- it is a round trip whose only
@@ -429,6 +441,7 @@ class SpiceDBClient:
                     rels[start : start + _CHECK_BATCH_SIZE],
                     context,
                     timeout,
+                    start,
                 )
             )
         return results
@@ -439,6 +452,7 @@ class SpiceDBClient:
         rels: tuple[Relationship, ...],
         context: dict[str, Any] | None,
         timeout: float | None,
+        offset: int,
     ) -> list[CheckResult]:
         """Issue one CheckBulkPermissions request for `rels` and map the
         response.
@@ -447,6 +461,10 @@ class SpiceDBClient:
         `check_permissions` is what enforces both. The pair-count guard in
         `_mapping.check_results` therefore applies per chunk, exactly as it
         applied to the whole request before chunking.
+
+        `offset` is `rels`'s start index within the caller's full list, so
+        the "check item N" message names the caller's own index rather than
+        a chunk-relative one.
         """
         request = _requests.check_bulk_request(consistency, rels, context)
         t = self._effective_timeout(timeout)
@@ -457,7 +475,7 @@ class SpiceDBClient:
             )
 
         resp = self._with_retry(_call)
-        return _mapping.check_results(resp, len(request.items))
+        return _mapping.check_results(resp, len(request.items), offset)
 
     def check_any(
         self,

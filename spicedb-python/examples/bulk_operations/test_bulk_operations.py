@@ -23,7 +23,11 @@ async def test_bulk_checks(client: SpiceDBClient):
     revision = await client.write(txn)
     print(f"wrote {len(users)} relationships at revision: {revision}")
 
-    # Bulk check permissions. check_permissions() returns a list of
+    # Bulk check permissions. Inputs over 1,000 relationships are split into
+    # one CheckBulkPermissions request per 1,000 automatically and the
+    # results concatenated in input order -- SpiceDB rejects a single
+    # request carrying more than 10,000. Nothing here changes for a larger
+    # list. check_permissions() returns a list of
     # CheckResult, not bare bools -- .has_permission is true ONLY for a full
     # HAS_PERMISSION grant.
     checks = [

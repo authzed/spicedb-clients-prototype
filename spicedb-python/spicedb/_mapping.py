@@ -30,6 +30,7 @@ from spicedb.types import (
 def check_results(
     resp: permission_service_pb2.CheckBulkPermissionsResponse,
     expected_count: int,
+    offset: int = 0,
 ) -> list[CheckResult]:
     """Map a bulk-check response to CheckResults, raising on any per-item
     error.
@@ -44,6 +45,13 @@ def check_results(
     silently desync results[i] from relationships[i] for every item after
     the gap -- one resource's answer attributed to another. Raise loudly
     instead of returning a misaligned-but-"successful" list.
+
+    ``offset`` is this response's start index within the caller's full
+    relationship list, since a large check is split across several requests.
+    The "check item N" message below reports ``offset + i``, not ``i``: the
+    index a caller sees must be the one they can use to look up their own
+    relationship. Reporting the chunk-relative index would attribute the
+    failing item to a different resource entirely.
     """
     if len(resp.pairs) != expected_count:
         raise SpiceDBError(
@@ -63,7 +71,7 @@ def check_results(
             # malformed-oneof guard: fail loudly instead of falling through
             # to the item field's default (zero) value.
             raise SpiceDBError(
-                f"check item {i}: malformed CheckBulkPermissionsPair "
+                f"check item {offset + i}: malformed CheckBulkPermissionsPair "
                 "(neither item nor error set)"
             )
         results.append(

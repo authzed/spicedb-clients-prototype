@@ -5,7 +5,13 @@
  */
 import { createSpiceDBClient } from "../../src/index.js";
 
-const client = createSpiceDBClient("localhost:50051", "testtoken", {
+// Endpoint and token come from the environment so the example runs against
+// whichever SpiceDB the caller started; the defaults match
+// docker-compose.test.yml.
+const endpoint = process.env.SPICEDB_ENDPOINT || "localhost:50051";
+const token = process.env.SPICEDB_TOKEN || "testtoken";
+
+const client = createSpiceDBClient(endpoint, token, {
   insecure: true,
 });
 

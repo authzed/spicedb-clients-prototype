@@ -28,7 +28,13 @@ function assert(condition: boolean, message: string): void {
 // so a signature drift here (e.g. the option silently disappearing from
 // createSpiceDBClient's options type) would fail this example to typecheck,
 // not just a unit test against a stalling stub.
-const client = createSpiceDBClient("localhost:50051", "testtoken", {
+// Endpoint and token come from the environment so the example runs against
+// whichever SpiceDB the caller started; the defaults match
+// docker-compose.test.yml.
+const endpoint = process.env.SPICEDB_ENDPOINT || "localhost:50051";
+const token = process.env.SPICEDB_TOKEN || "testtoken";
+
+const client = createSpiceDBClient(endpoint, token, {
   insecure: true,
   defaultTimeoutMs: 5000,
 });

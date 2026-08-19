@@ -13,7 +13,7 @@ export interface ClientOptions {
    * Use plaintext (insecure) connection instead of TLS.
    *
    * By itself, this only permits a plaintext connection to a loopback
-   * endpoint (localhost, 127.0.0.0/8, ::1, or a unix socket target) -- see
+   * endpoint (localhost, 127.0.0.0/8, or ::1) -- see
    * root DESIGN.md, "RULE: Credentials over insecure transport require an
    * explicit opt-in". For a non-loopback endpoint, also pass
    * `allowInsecureRemoteCredentials: true`.
@@ -35,10 +35,15 @@ export interface ClientOptions {
 /**
  * Reports whether the connection this client would actually open for
  * `endpoint` terminates on a loopback destination: the literal hostname
- * "localhost", an IP in 127.0.0.0/8, the IPv6 loopback ::1, or a unix
- * domain socket target (a "unix:" prefix). A unix socket never leaves the
- * host's kernel, so it is loopback for this check even though it has no IP
- * at all.
+ * "localhost", an IP in 127.0.0.0/8, or the IPv6 loopback ::1.
+ *
+ * Unix-domain-socket targets are NOT in that list, unlike the equivalent
+ * guard in the Go, Python and Ruby clients. Those clients' transports
+ * genuinely dial a UDS path; this one cannot. `new URL("http://unix:/var/
+ * run/spicedb.sock").origin` is `"http://unix"`, and that origin is what
+ * `Http2SessionManager` hands to `http2.connect` -- so a "unix:" endpoint
+ * here resolves the DNS name `unix`. createSpiceDBClient below refuses such
+ * an endpoint outright rather than letting this function call it loopback.
  *
  * That wording is deliberate. This function does not answer "does this
  * string look like it names a loopback host"; it answers "will the
@@ -58,7 +63,7 @@ export interface ClientOptions {
  * dials and asking `URL` -- the same parser `Http2SessionManager` uses --
  * for its hostname. There is one parse, so guard and transport cannot
  * disagree. Before that, anything that could move the authority under URI
- * parsing (`@`, `/`, `?`, `#`, whitespace) is refused outright: a
+ * parsing (`@`, `/`, `\`, `?`, `#`, whitespace) is refused outright: a
  * legitimate SpiceDB target contains none of those, and failing closed on a
  * weird endpoint is the correct trade for a credential leak.
  *
@@ -72,21 +77,18 @@ export interface ClientOptions {
  * directly; not part of the package's public API surface.
  */
 export function isLoopbackEndpoint(endpoint: string): boolean {
-  // Checked first, and only on the raw string: a unix target is not a URI
-  // authority at all (it carries a filesystem path, so it legitimately
-  // contains the "/" the reserved-character check below refuses), and it
-  // never leaves the host's kernel regardless of what the path says.
-  if (endpoint.startsWith("unix:")) {
-    return true;
-  }
+  // There is deliberately no "unix:" exemption here -- see the doc comment
+  // above, and the unconditional refusal in createSpiceDBClient below.
 
   // Fail closed on any character that can shift which part of the string
   // the URL parser treats as the authority: "@" (userinfo), "/" (path),
-  // "?" (query), "#" (fragment), whitespace. Redundant with the URL parse
-  // below -- deliberately so. The parse is what makes this function
-  // correct; this is what keeps it correct if some future edit ever
-  // reaches for a manual split again.
-  if (/[@/?#]|\s/.test(endpoint)) {
+  // "\" (which WHATWG URL treats as "/" for special schemes, so
+  // "localhost\evil.com" has the authority "localhost"), "?" (query), "#"
+  // (fragment), whitespace. Redundant with the URL parse below --
+  // deliberately so. The parse is what makes this function correct; this is
+  // what keeps it correct if some future edit ever reaches for a manual
+  // split again, which a backslash would defeat exactly as a slash does.
+  if (/[@/\\?#]|\s/.test(endpoint)) {
     return false;
   }
 
@@ -195,6 +197,24 @@ export function createSpiceDBClient(
   token: string,
   options?: ClientOptions,
 ): SpiceDBProtoClient {
+  // Refused unconditionally -- ahead of the credential guard below, and
+  // regardless of TLS or of allowInsecureRemoteCredentials -- because this
+  // transport cannot do what such an endpoint asks for. Connect-ES over
+  // Node http2 has no unix-domain-socket support reachable from a baseUrl:
+  // `new URL("http://unix:/var/run/spicedb.sock").origin` is `"http://unix"`,
+  // and Http2SessionManager hands exactly that to http2.connect. So the
+  // endpoint that looks local would resolve the DNS name `unix` and ship the
+  // bearer token there. Failing loudly is the only honest answer; silently
+  // dialing a host called "unix" is not. Matched case-insensitively because
+  // URL lower-cases the scheme, so "UNIX:" reaches the same place.
+  if (/^unix:/i.test(endpoint)) {
+    throw new Error(
+      `spicedb: unix-domain-socket targets are not supported by this client's transport: "${endpoint}". ` +
+        `Node's http2 client would parse "unix" as a DNS hostname and connect there, not to the socket path. ` +
+        `Use a "host:port" endpoint instead.`,
+    );
+  }
+
   // See root DESIGN.md, "RULE: Credentials over insecure transport require
   // an explicit opt-in". Refuse before the session manager, transport, or
   // authorization-header interceptor below are ever created, so a bearer

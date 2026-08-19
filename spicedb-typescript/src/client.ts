@@ -91,7 +91,7 @@ export interface SpiceDBClientOptions {
    * Use plaintext (insecure) connection instead of TLS.
    *
    * By itself, this only permits a plaintext connection to a loopback
-   * endpoint (localhost, 127.0.0.0/8, ::1, or a unix socket target) -- see
+   * endpoint (localhost, 127.0.0.0/8, or ::1) -- see
    * root DESIGN.md, "RULE: Credentials over insecure transport require an
    * explicit opt-in". For a non-loopback endpoint, also pass
    * `allowInsecureRemoteCredentials: true`.

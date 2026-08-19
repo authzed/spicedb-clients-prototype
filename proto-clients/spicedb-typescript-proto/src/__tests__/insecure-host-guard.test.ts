@@ -66,7 +66,6 @@ describe("isLoopbackEndpoint", () => {
     "localhost:50051", "LOCALHOST:50051", "localhost",
     "127.0.0.1:50051", "127.0.0.1", "127.55.66.77:50051",
     "[::1]:50051", "::1",
-    "unix:/var/run/spicedb.sock", "unix:///var/run/spicedb.sock",
   ])("treats %s as loopback", (endpoint) => {
     expect(isLoopbackEndpoint(endpoint)).toBe(true);
   });
@@ -88,6 +87,23 @@ describe("isLoopbackEndpoint", () => {
     "localhost.",
     "localhost :50051",
     "127.0.0.1 :50051",
+    // Unix targets are NOT loopback for this client, deliberately, and the
+    // first two used to be asserted as loopback above. Node's http2 client
+    // cannot dial a UDS path from a baseUrl:
+    // `new URL("http://unix:/var/run/spicedb.sock").origin` is
+    // `"http://unix"`, so the exemption was handing a bearer token to
+    // whatever DNS answers for the name "unix". createSpiceDBClient now
+    // refuses these outright -- see the unix-socket test below.
+    "unix:/var/run/spicedb.sock",
+    "unix:///var/run/spicedb.sock",
+    "UNIX:/var/run/spicedb.sock",
+    // WHATWG URL treats "\" as "/" for special schemes, so a manual split on
+    // these would see a different authority than `new URL` does. Guard and
+    // transport happen to agree here (both read "localhost"), so this was
+    // never a bypass -- it is fenced off so it cannot become one.
+    "localhost\\evil.com",
+    "127.0.0.1\\evil.com",
+    "localhost\\@evil.com",
   ])("does not treat %s as loopback", (endpoint) => {
     expect(isLoopbackEndpoint(endpoint)).toBe(false);
   });
@@ -139,6 +155,39 @@ describe("createSpiceDBClient insecure host guard", () => {
       expect(capturedAuth).toEqual([]);
     },
   );
+
+  /**
+   * A unix-socket target must be refused outright, not treated as loopback.
+   * This transport has no UDS support reachable from a baseUrl, so
+   * `new URL("http://unix:/var/run/spicedb.sock").origin` is `"http://unix"`
+   * and `Http2SessionManager` hands exactly that to `http2.connect` -- meaning
+   * the old "a unix socket never leaves the kernel" exemption was shipping the
+   * bearer token to a remote host in cleartext while the guard said
+   * "loopback".
+   *
+   * The refusal is unconditional: TLS and allowInsecureRemoteCredentials are
+   * both exercised, because neither makes dialing a host called "unix" the
+   * thing the caller asked for. The session-manager spy proves nothing was
+   * constructed in any of those combinations.
+   */
+  it.each([
+    ["unix:/var/run/spicedb.sock", { insecure: true }],
+    ["unix:///var/run/spicedb.sock", { insecure: true }],
+    ["UNIX:/var/run/spicedb.sock", { insecure: true }],
+    // The opt-in does not buy a unix target either.
+    ["unix:/var/run/spicedb.sock", { insecure: true, allowInsecureRemoteCredentials: true }],
+    // Nor does TLS.
+    ["unix:/var/run/spicedb.sock", {}],
+  ] as const)("refuses unix-socket target %s", async (endpoint, options) => {
+    const { createSpiceDBClient } = await import("../client.js");
+
+    expect(() => createSpiceDBClient(endpoint, "super-secret-token", options)).toThrowError(
+      /unix-domain-socket/,
+    );
+
+    expect(http2SessionManagerCtor).not.toHaveBeenCalled();
+    expect(capturedAuth).toEqual([]);
+  });
 
   it("allows a loopback endpoint with no opt-in, and actually sends the token", async () => {
     const { createSpiceDBClient } = await import("../client.js");

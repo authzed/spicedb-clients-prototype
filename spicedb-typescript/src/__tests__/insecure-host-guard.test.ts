@@ -19,6 +19,36 @@ describe("createSpiceDBClient insecure host guard (idiomatic layer)", () => {
     ).toThrowError(/allowInsecureRemoteCredentials/);
   });
 
+  /**
+   * The bypass shapes, at the public entry point. The proto layer holds the
+   * full fixture set and the "token never sent" proof; these are the ones
+   * that must not slip through createSpiceDBClient here.
+   */
+  it.each([
+    "127.0.0.1:443@evil.com",
+    "[::1]:443@evil.com",
+    "[::1]:0@127.0.0.1:19999",
+    "localhost@evil.com",
+  ])("refuses %s, whose URI authority is a different host than a host:port split reads", (endpoint) => {
+    expect(() =>
+      createSpiceDBClient(endpoint, "test-token", { insecure: true }),
+    ).toThrowError(/allowInsecureRemoteCredentials/);
+  });
+
+  /**
+   * A unix-socket endpoint is refused, not silently turned into a DNS lookup
+   * for the hostname "unix". Node's http2 client cannot dial a UDS path from
+   * a baseUrl.
+   */
+  it.each(["unix:/var/run/spicedb.sock", "unix:///var/run/spicedb.sock"])(
+    "refuses unix-socket target %s",
+    (endpoint) => {
+      expect(() => createSpiceDBClient(endpoint, "test-token", { insecure: true })).toThrowError(
+        /unix-domain-socket/,
+      );
+    },
+  );
+
   it("allows a loopback endpoint with no opt-in", () => {
     expect(() =>
       createSpiceDBClient("localhost:50051", "test-token", { insecure: true }),

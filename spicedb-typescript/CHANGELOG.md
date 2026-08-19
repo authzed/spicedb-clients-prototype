@@ -115,8 +115,23 @@
   dials and asks `URL` — the same parser `Http2SessionManager` uses — for its `hostname`.
   Guard and transport can no longer disagree. Endpoints containing `@`, `/`, `?`, `#`, or
   whitespace are additionally refused outright, since a legitimate SpiceDB target contains none
-  of them. A bare IPv6 literal (`"::1"`) is bracketed before parsing and keeps working, as do
-  `unix:` targets, `localhost`, and 127.0.0.0/8.
+  of them — `\` too, which WHATWG `URL` treats as `/` for special schemes. A bare IPv6 literal
+  (`"::1"`) is bracketed before parsing and keeps working, as do `localhost` and 127.0.0.0/8.
+
+- **2026-08-18**: **Breaking, and security-motivated: `unix:` endpoints are now refused instead
+  of being treated as loopback.** `createSpiceDBClient("unix:/var/run/spicedb.sock", token,
+  { insecure: true })` previously passed the guard on the grounds that "a unix socket never
+  leaves the host's kernel" — but Connect-ES over Node's `http2` has no unix-domain-socket
+  support reachable from a `baseUrl`. `new URL("http://unix:/var/run/spicedb.sock").origin` is
+  `"http://unix"`, and `Http2SessionManager` hands exactly that to `http2.connect`, so it
+  resolved the **DNS name `unix`** and shipped the bearer token there in cleartext on port 80
+  while the guard reported "loopback". Nothing was ever connecting to a socket path, so no
+  working configuration breaks.
+
+  Such an endpoint now throws, unconditionally — before the credential guard, and regardless of
+  TLS or `allowInsecureRemoteCredentials`, since neither makes "resolve a hostname called
+  `unix`" what the caller asked for. The Go, Python and Ruby clients keep their `unix:`
+  exemption; their transports genuinely dial the path.
 
 - **2026-08-18**: `importBulkRelationships` required a materialized array, and then held the
   dataset twice. The signature was `relationships: Relationship[]`, and the body ran

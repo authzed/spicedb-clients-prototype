@@ -213,7 +213,19 @@ func mapGRPCError(op string, err error) error {
 	if info := errorInfoFrom(st); info != nil {
 		mapped.Reason = info.GetReason()
 		mapped.ReasonDomain = info.GetDomain()
-		mapped.ReasonMetadata = info.GetMetadata()
+		// Copied, not aliased. Today this is defence in depth rather than a
+		// fix: Status.Details unmarshals a fresh ErrorInfo on every call, so
+		// the map GetMetadata returns is already private to this error. Copying
+		// keeps that true if grpc-go ever caches the unmarshalled details, and
+		// matches what the other six clients do -- a caller who mutates
+		// ReasonMetadata must never be able to reach the status that Unwrap
+		// still exposes.
+		if metadata := info.GetMetadata(); len(metadata) > 0 {
+			mapped.ReasonMetadata = make(map[string]string, len(metadata))
+			for k, v := range metadata {
+				mapped.ReasonMetadata[k] = v
+			}
+		}
 	}
 	return mapped
 }

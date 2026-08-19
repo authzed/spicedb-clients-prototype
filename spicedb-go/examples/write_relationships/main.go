@@ -78,9 +78,20 @@ definition document {
 			log.Fatalf("expected client.ErrFailedPrecondition, got: %v", err)
 		}
 		var spiceErr *client.Error
-		if errors.As(err, &spiceErr) {
-			fmt.Printf("precondition failed: reason=%q domain=%q metadata=%v\n",
-				spiceErr.Reason, spiceErr.ReasonDomain, spiceErr.ReasonMetadata)
+		if !errors.As(err, &spiceErr) {
+			log.Fatalf("expected a native *client.Error, got: %v", err)
+		}
+		fmt.Printf("precondition failed: reason=%q domain=%q metadata=%v\n",
+			spiceErr.Reason, spiceErr.ReasonDomain, spiceErr.ReasonMetadata)
+		if spiceErr.Reason != "ERROR_REASON_WRITE_OR_DELETE_PRECONDITION_FAILURE" {
+			log.Fatalf("expected the write/delete precondition reason, got: %q", spiceErr.Reason)
+		}
+		if spiceErr.ReasonDomain != "authzed.com" {
+			log.Fatalf("expected domain \"authzed.com\", got: %q", spiceErr.ReasonDomain)
+		}
+		if spiceErr.ReasonMetadata["precondition_resource_id"] != "firstdoc" {
+			log.Fatalf("expected the reason metadata to name the failing precondition, got: %v",
+				spiceErr.ReasonMetadata)
 		}
 	}
 

@@ -359,6 +359,53 @@ page.
 - Batched imports (1,000-item chunks)
 - Exponential backoff retry for transient gRPC errors
 
+### Escape hatch: raw channel access
+
+`client.rawChannel()` returns this client's own `io.grpc.Channel`, with its bearer
+metadata already attached, so any generated stub is one `newStub` call away:
+
+```java
+var stub = PermissionsServiceGrpc.newBlockingStub(client.rawChannel());
+CheckPermissionResponse response = stub.checkPermission(request);
+```
+
+Clearly-marked **secondary** API, which is what root DESIGN.md's "What NOT To Do"
+permits: channels, stubs and metadata stay out of the primary surface, and "escape
+hatches for advanced use are acceptable as clearly marked secondary API". It exists so a
+request the idiomatic surface cannot express — an RPC or proto field not wrapped here,
+such as `WriteRelationshipsRequest.optionalTransactionMetadata`, or the single-check
+`CheckPermission` RPC that `checkPermission` deliberately routes around — has a workaround
+short of forking the client.
+
+A `Channel` rather than the stubs themselves, because it is strictly more: every generated
+stub, including for a service this client does not wrap, is one call away from it. Prefer
+it over rebuilding a `ManagedChannel` of your own, which means replicating this client's
+transport configuration exactly (including whatever a `ClientOption` did to the builder)
+and re-attaching the token by hand — get either wrong and the raw path runs with different
+transport security than the idiomatic one while the call site reads as though it were the
+same server.
+
+Four properties, all deliberate:
+
+- **The bearer token comes free.** The returned channel attaches this client's metadata to
+  every call made through it, so a raw call is authenticated exactly as an idiomatic one.
+- **A raw call is a raw call.** No `SpiceDBException` mapping (you catch
+  `StatusRuntimeException`), no retry, and no `DEFAULT_TIMEOUT` — call `withDeadlineAfter`
+  yourself.
+- **The connection belongs to the client.** `close()` shuts it down, and a stub built here
+  must not outlive it. The declared type is `Channel`, not `ManagedChannel`, precisely so
+  the lifecycle stays with the client — there is no `shutdown()` to call by accident.
+- **It is an accessor, never a constructor.** It takes no endpoint, preshared key, or
+  transport setting, so channel construction stays on the single guarded path in `create`
+  and the hatch cannot become a way around root DESIGN.md, "RULE: Credentials over insecure
+  transport require an explicit opt-in".
+
+This is separate from, and complementary to, `ClientOption.apply(ManagedChannelBuilder)`
+above: that one *configures* the channel before it exists (and is where custom TLS and any
+other builder-level setting go), while this one *hands back* the channel that was built.
+
+No stability promise beyond grpc-java's and the generated code's.
+
 ### Experimental APIs
 
 Methods from SpiceDB's `ExperimentalService` are clearly annotated:
@@ -371,6 +418,10 @@ These may change without following the backwards compatibility mandate.
 ## Public API Surface
 
 ### SpiceDBClient
+
+**Escape hatch:**
+- `rawChannel()` — this client's own `io.grpc.Channel`, bearer metadata attached, as
+  secondary API; see "Escape hatch: raw channel access" above
 
 **Constructors:**
 - `createPlaintext(String endpoint, String presharedKey)`
@@ -448,6 +499,7 @@ gap). `isCheckpoint` is true for a checkpoint event, which carries no `updates`.
 | `bulk_operations/` | Bulk checks and imports |
 | `schema_reflection/` | Schema reflection, computable permissions, dependent relations, diff |
 | `relationship_counters/` | Registering, reading, and unregistering relationship counters |
+| `RawEscapeHatchTest` | `rawChannel()` — driving a generated stub directly for a proto field (`optionalTransactionMetadata`) and an RPC (`CheckPermission`) the idiomatic API does not expose |
 
 ## Changelog
 

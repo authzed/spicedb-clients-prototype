@@ -36,4 +36,5 @@ Or use `mage test` which starts a SpiceDB container automatically.
 | `SchemaReflectionTest` | Schema reflection, computable permissions, dependent relations, schema diff |
 | `RelationshipCountersTest` | Experimental relationship counter registration and reading |
 | `ExpandPermissionTreeTest` | Expanding a permission with `expandPermissionTree` and walking the native `PermissionTree` (intermediate/leaf nodes, subjects) |
+| `RawEscapeHatchTest` | The `rawChannel()` escape hatch: building a generated stub on this client's own channel to send `optionalTransactionMetadata` (a proto field this client does not wrap) and to call the single-check `CheckPermission` RPC |
 | `CallDeadlinesTest` | The `Duration defaultTimeout` construction overload, a per-call `timeout` override, and confirming bulk import isn't bounded by the unary default |

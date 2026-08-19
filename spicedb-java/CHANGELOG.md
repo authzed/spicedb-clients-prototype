@@ -4,6 +4,41 @@
 
 ### Added
 
+- **2026-08-19**: An escape hatch, `SpiceDBClient.rawChannel()`. It returns this client's own
+  `io.grpc.Channel` with its bearer metadata already attached, so any generated stub is one
+  `newStub` call away and a request the idiomatic API cannot express has a workaround short of
+  forking the client:
+
+  ```java
+  var stub = PermissionsServiceGrpc.newBlockingStub(client.rawChannel());
+  CheckPermissionResponse response = stub.checkPermission(request);
+  ```
+
+  Two real examples of such a request: `WriteRelationshipsRequest.optionalTransactionMetadata`, a
+  proto field this client does not surface, and the single-check `CheckPermission` RPC, which
+  `checkPermission` deliberately routes around (every check goes through `CheckBulkPermissions`).
+  Purely additive.
+
+  Clearly-marked **secondary** API — root DESIGN.md's "What NOT To Do" keeps channels, stubs and
+  metadata out of the primary surface and permits exactly this ("escape hatches for advanced use
+  are acceptable as clearly marked secondary API"). No stability promise beyond grpc-java's and the
+  generated code's.
+
+  Prefer it over rebuilding a `ManagedChannel` of your own: that means replicating this client's
+  transport configuration exactly and re-attaching the token by hand, and getting either wrong
+  gives the raw path different transport security than the idiomatic one. The bearer token comes
+  free here, but a raw call gets no `SpiceDBException` mapping, no retry, and no `DEFAULT_TIMEOUT`
+  — call `withDeadlineAfter` yourself. The declared type is `Channel`, not `ManagedChannel`, so the
+  connection's lifecycle stays with the client: `close()` is what releases it.
+
+  It is an accessor, not a constructor: it takes no endpoint, preshared key, or transport setting,
+  so channel construction stays on the single guarded path in `create` and this cannot become a
+  route around root DESIGN.md, "RULE: Credentials over insecure transport require an explicit
+  opt-in". It is complementary to the existing `ClientOption.apply(ManagedChannelBuilder)` hatch,
+  which configures the channel *before* it exists.
+
+  New example: `RawEscapeHatchTest`.
+
 - **2026-08-18**: Error mapping now carries the server's detail all the way to the caller, per root
   DESIGN.md, "RULE: Error mapping must not lose the server's detail". Purely additive.
   - Two new exception types, both `SpiceDBException` subclasses:

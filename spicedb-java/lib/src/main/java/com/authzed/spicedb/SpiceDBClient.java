@@ -4,6 +4,8 @@ import build.buf.gen.authzed.api.v1.*;
 import com.authzed.spicedb.errors.ErrorMapper;
 import com.authzed.spicedb.errors.InvalidArgumentException;
 import com.authzed.spicedb.errors.SpiceDBException;
+import io.grpc.Channel;
+import io.grpc.ClientInterceptors;
 import io.grpc.Context;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
@@ -78,6 +80,13 @@ public final class SpiceDBClient implements AutoCloseable {
   private final PermissionsServiceGrpc.PermissionsServiceStub permissionsAsyncStub;
   private final Duration defaultTimeout;
 
+  /**
+   * The same channel, wrapped so every call made through it carries this client's bearer metadata.
+   * Handed out by {@link #rawChannel()}; see there for why it is the authenticated channel rather
+   * than the bare one.
+   */
+  private final Channel authenticatedChannel;
+
   private SpiceDBClient(ManagedChannel channel, Metadata metadata) {
     this(channel, metadata, DEFAULT_TIMEOUT);
   }
@@ -100,6 +109,8 @@ public final class SpiceDBClient implements AutoCloseable {
     this.permissionsAsyncStub =
         PermissionsServiceGrpc.newStub(channel)
             .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata));
+    this.authenticatedChannel =
+        ClientInterceptors.intercept(channel, MetadataUtils.newAttachHeadersInterceptor(metadata));
   }
 
   /**
@@ -1780,6 +1791,52 @@ public final class SpiceDBClient implements AutoCloseable {
                     ExperimentalUnregisterRelationshipCounterRequest.newBuilder()
                         .setName(name)
                         .build()));
+  }
+
+  // -----------------------------------------------------------------------
+  // Escape hatch
+  // -----------------------------------------------------------------------
+
+  /**
+   * Escape hatch: this client's own gRPC {@link Channel}, already carrying its bearer metadata.
+   *
+   * <p>Clearly-marked <b>secondary</b> API. Root DESIGN.md's "What NOT To Do" keeps channels, stubs
+   * and metadata out of the primary surface and permits exactly this -- "escape hatches for
+   * advanced use are acceptable as clearly marked secondary API" -- so that a request the idiomatic
+   * methods cannot express (an RPC or proto field not wrapped here, such as {@code
+   * WriteRelationshipsRequest.optionalTransactionMetadata}, or the single-check {@code
+   * CheckPermission} RPC that {@link #checkPermission} deliberately routes around) has a workaround
+   * short of forking the client. Build any generated stub on it:
+   *
+   * <pre>{@code
+   * var stub = PermissionsServiceGrpc.newBlockingStub(client.rawChannel());
+   * CheckPermissionResponse response = stub.checkPermission(request);
+   * }</pre>
+   *
+   * <p>A {@link Channel} rather than the stubs themselves, because it is strictly more: every
+   * generated stub -- including for a service this client does not wrap -- is one {@code newStub}
+   * call away from it, and the bearer token still comes free, since the returned channel attaches
+   * this client's metadata to every call made through it. Prefer it over rebuilding a {@link
+   * ManagedChannel} of your own: that means replicating this client's transport configuration
+   * exactly (including anything a {@link ClientOption} did to the builder) and re-attaching the
+   * token by hand, and getting either wrong gives you different transport security on the raw path
+   * while the call site reads as though it were the same connection.
+   *
+   * <p>Four things to know before reaching for it. A raw call is a raw call: no {@link
+   * SpiceDBException} mapping (you catch {@link StatusRuntimeException}), no retry, and no {@link
+   * #DEFAULT_TIMEOUT} -- call {@code withDeadlineAfter} yourself. The connection belongs to this
+   * client: {@link #close()} shuts it down, and a stub built here must not outlive it. The declared
+   * type is {@code Channel}, not {@code ManagedChannel}, precisely so the lifecycle stays here --
+   * there is no {@code shutdown()} on it to call by accident. And there is no stability promise
+   * beyond grpc-java's and the generated code's.
+   *
+   * <p>It is an accessor, never a constructor: it takes no endpoint, preshared key, or transport
+   * setting and hands back a channel that already exists, so it cannot become a second construction
+   * path around the guard in {@link #create(String, String, ClientOption...)} -- root DESIGN.md,
+   * "RULE: Credentials over insecure transport require an explicit opt-in".
+   */
+  public Channel rawChannel() {
+    return authenticatedChannel;
   }
 
   // -----------------------------------------------------------------------

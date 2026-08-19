@@ -54,6 +54,11 @@ public sealed class SpiceDBProtoClient : IDisposable
     /// any channel, credential, or connection is created, so the token can never reach the
     /// wire for a rejected combination.
     /// </exception>
+    /// <exception cref="UriFormatException">
+    /// Thrown when <paramref name="endpoint"/> is not a parseable URI authority (e.g.
+    /// <c>"]127.0.0.1["</c>). Reachable only once the guard above has passed, i.e. for a
+    /// loopback endpoint or under <paramref name="allowInsecureRemoteCredentials"/>.
+    /// </exception>
     public SpiceDBProtoClient(
         string endpoint, string token, bool insecure = false, bool allowInsecureRemoteCredentials = false)
         : this(endpoint, token, insecure, allowInsecureRemoteCredentials, httpHandler: null)

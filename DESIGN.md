@@ -162,6 +162,28 @@ localhost example into a staging config, and a long-lived SpiceDB token — a co
 authorization bypass in anyone else's hands — goes onto the wire in cleartext with nothing
 signalling that it happened.
 
+**The guard's answer must be the transport's answer.** Whether an endpoint counts as loopback
+is decided by asking the same parser the client dials with — `System.Uri` for Grpc.Net.Client,
+`http::Uri` for tonic, WHATWG `URL` for Connect-ES over Node http2, `URI.create("//" + name)`
+for grpc-java's `DnsNameResolver`, grpc-go's own target resolution — not by a hand-rolled
+string split. A split that disagrees with the transport anywhere is a bypass: given
+`127.0.0.1:443@evil.com`, a last-colon split reads the host as `127.0.0.1` while a URI parser
+reads `127.0.0.1:443` as *userinfo* and connects to `evil.com`. Where a binding genuinely cannot
+reach its transport's parser (Python and Ruby hand the target to grpc's C-core, which parses it
+in C++), the client must say so explicitly and fail closed instead: refuse any endpoint
+containing a character that could move the authority under URI parsing — `@`, `/`, `?`, `#`,
+whitespace.
+
+A consequence, and it is intended: **the precise set of loopback spellings is per-client, and
+uniformity across clients is explicitly not promised.** Parsers differ in what they normalize —
+IPv4-mapped IPv6, bracketed hostnames, percent-encoding — so `::ffff:127.0.0.1` or
+`[localhost]:50051` may be loopback in one client and not another. That is correct. Forcing the
+seven to agree would mean writing normalization the parsers themselves do not do, which is the
+hand-rolled string manipulation this rule exists to remove. What every client must guarantee is
+the security property, not the spelling: an endpoint the guard calls loopback is one the
+transport dials on loopback, and everything else takes the named opt-in. Divergences that
+fail closed are acceptable; a divergence that fails open is the bug.
+
 ## RULE: Only an unconditional grant is true
 
 **Binding on every client, in every language, with no exceptions.**

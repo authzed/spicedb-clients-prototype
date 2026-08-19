@@ -4,6 +4,53 @@
 
 ### Added
 
+- **2026-08-19: four new examples, one per root `DESIGN.md` RULE that had no executed
+  coverage in any client.** 14 examples -> 18, none renamed or removed. Group E Phase 3.
+
+  - `examples/insecure_opt_in` — "RULE: Credentials over insecure transport require an
+    explicit opt-in". Loopback plaintext is allowed with no ceremony; a remote plaintext
+    host is refused during construction, so the token never reaches a socket; and the
+    named `WithInsecureAllowRemoteHost` permits it. The fourth case is the sharp one:
+    `127.0.0.1:443@evil.com` must be **refused**, because under URI parsing
+    `127.0.0.1:443` is *userinfo* and the real host is `evil.com`. A guard that split on
+    the last colon would call that loopback and leak the token.
+  - `examples/unrepresentable_values` — "RULE: A conversion that cannot preserve meaning
+    must fail", both directions. Caveat context holding a Go channel is refused with a
+    typed error **naming the offending key**; a filter with a subject ID and no subject
+    type is refused rather than silently widening (as `DeleteRelationships` that would be
+    the difference between deleting alice's relationships and deleting everything). In the
+    other direction, a permissionship value this client has never seen must not raise and
+    must not be a grant.
+  - `examples/error_mapping` — "RULE: Error mapping must not lose the server's detail",
+    written as the two recoveries the rule names: a stale ZedToken surfaces as
+    `ErrOutOfRange` with the gRPC status still reachable through `Unwrap`, and the fix is
+    to drop the token and re-read at full consistency; a rotated token surfaces as
+    `ErrUnauthenticated`, distinct from a transport fault, so "refresh credentials on auth
+    failure, page someone on internal error" is expressible. Nothing parses a message.
+  - `examples/retry_policy` — "RULE: Automatic retry is for idempotent operations only",
+    counted server-side, which is the only way to tell a retry from its absence. A read
+    that fails twice with `UNAVAILABLE` is retried to success in 3 attempts; a
+    `WriteRelationships` that fails the same way is attempted **exactly once**; and
+    `RESOURCE_EXHAUSTED` is attempted exactly once even on a read, because in SpiceDB it
+    means load-shed or a deterministic `MaxDepthExceeded` — retrying makes the first worse
+    and can never fix the second.
+
+  Verified by mutation, 6 of 6 killing their example: disabling the loopback guard;
+  replacing the URI-parser check with a last-colon string split (caught by the
+  `@evil.com` case specifically); making mutations retryable; adding `RESOURCE_EXHAUSTED`
+  to the retryable set; letting an under-specified filter widen; dropping `OUT_OF_RANGE`
+  from the code map; and mapping an unrecognised permissionship to a grant.
+
+  **Two premises from the audit did not survive execution, and the examples record what is
+  actually true.** `OUT_OF_RANGE` is *not* "trivially producible against the container the
+  integration jobs already start": a garbage ZedToken returns `INVALID_ARGUMENT`, and the
+  in-memory datastore does not collect the revision — with `--datastore-gc-window=5s` and
+  35 seconds elapsed, a snapshot read at the old token still succeeded. And a wrong
+  preshared key comes back **`PERMISSION_DENIED`**, not `UNAUTHENTICATED`. So the two codes
+  are exercised against a stand-in server that returns them deterministically, while
+  `error_mapping` additionally asserts the real SpiceDB's `PERMISSION_DENIED` behaviour so
+  a reader does not write an unreachable credential-refresh branch.
+
 - **2026-08-19: `NewSystemTLS` now has a test that completes a real TLS handshake.** Root
   DESIGN.md, "RULE: A system-TLS constructor must reach a real server". The only TLS
   coverage was `TestNewSystemTLS`, which constructs against a loopback *plaintext* port

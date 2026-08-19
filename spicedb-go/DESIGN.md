@@ -583,6 +583,10 @@ See package sections above for the complete API manifest.
 | `lookup_subjects/` | Finding subjects with access to a resource |
 | `watch_changes/` | Watching for relationship changes with a bounded consumer: subscribe, write, consume until the expected update arrives, cancel, and require the stream to release |
 | `call_deadlines/` | Bounding calls with a `context.Context` deadline, proved against a listener that accepts the connection and never answers |
+| `error_mapping/` | Recovering from `OUT_OF_RANGE` (stale ZedToken) and `UNAUTHENTICATED` without parsing a message |
+| `insecure_opt_in/` | Why plaintext is loopback-only, and the named opt-in a remote plaintext host requires |
+| `retry_policy/` | Which calls are retried for you and which are not, counted server-side |
+| `unrepresentable_values/` | Caller data that cannot convert fails loudly; unknown server enums degrade safely |
 | `schema_management/` | Reading and writing schema |
 | `bulk_operations/` | Bulk checks, batch writes, and bulk import/export |
 | `schema_reflection/` | Schema reflection, computable permissions, dependent relations, diff |

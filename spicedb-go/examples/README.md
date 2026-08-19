@@ -59,6 +59,10 @@ to fail".
 | `lookup_subjects/` | Subject lookup |
 | `watch_changes/` | Watching for changes with a bounded consumer that cancels the stream explicitly |
 | `call_deadlines/` | Bounding calls with a `context.Context` deadline, including a call against a server that never answers |
+| `error_mapping/` | Recovering from `OUT_OF_RANGE` (stale ZedToken) and `UNAUTHENTICATED` without parsing a message |
+| `insecure_opt_in/` | Why plaintext is loopback-only, and the named opt-in a remote plaintext host requires |
+| `retry_policy/` | Which calls are retried for you and which are not, counted server-side |
+| `unrepresentable_values/` | Caller data that cannot convert fails loudly; unknown server enums degrade safely |
 | `schema_management/` | Schema read/write |
 | `bulk_operations/` | Bulk checks, batch writes, and bulk import/export |
 | `expand_permission_tree/` | Expanding a permission into its tree of subjects |

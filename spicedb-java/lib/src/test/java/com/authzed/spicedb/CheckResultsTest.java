@@ -269,10 +269,10 @@ class CheckResultsTest {
 
   /**
    * A per-item failure must reach the caller carrying the same structured reason an RPC-level
-   * failure does. The per-item {@code google.rpc.Status} used to be reduced to a code and a
-   * message before mapping, silently dropping the item's own {@code ErrorInfo} — a failure mode
-   * that shows up as an empty reason and nothing red. See root DESIGN.md, "RULE: Error mapping
-   * must not lose the server's detail".
+   * failure does. The per-item {@code google.rpc.Status} used to be reduced to a code and a message
+   * before mapping, silently dropping the item's own {@code ErrorInfo} — a failure mode that shows
+   * up as an empty reason and nothing red. See root DESIGN.md, "RULE: Error mapping must not lose
+   * the server's detail".
    */
   @Test
   void perItemErrorCarriesItsOwnErrorReasonAndMetadata() throws IOException {

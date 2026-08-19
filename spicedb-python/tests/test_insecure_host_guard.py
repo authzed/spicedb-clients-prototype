@@ -219,3 +219,30 @@ async def test_aio_allow_insecure_remote_credentials_sends_token_to_non_loopback
 
     assert len(recorder.headers) == 1
     assert recorder.headers[0][1] == f"Bearer {TOKEN}"
+
+
+# F4: an authority-bearing unix target is guard-loopback (the prefix check is
+# deliberately case-insensitive and does not inspect the authority), so what
+# actually stops it is the transport. C-core refuses to build a usable channel
+# for ANY casing -- "authority-based URIs not supported by the unix scheme" ->
+# "the target uri is not valid" -- so nothing is dialed and no token moves.
+#
+# This pins that. It is NOT a red-first regression test: it passes before and
+# after, because it asserts existing transport behaviour rather than a change.
+# Its job is to fail loudly if C-core ever starts accepting authority-bearing
+# unix targets, at which point the guard's permissiveness would become a real
+# leak instead of a harmless over-permission.
+@pytest.mark.parametrize(
+    "endpoint", ["unix://evil.com/tmp/x.sock", "UNIX://evil.com/tmp/x.sock"]
+)
+def test_authority_bearing_unix_target_is_refused_by_the_transport(endpoint: str):
+    # Precondition: the guard alone does not stop these.
+    assert is_loopback_endpoint(endpoint) is True
+
+    channel = grpc.insecure_channel(endpoint)
+    try:
+        with pytest.raises(grpc.RpcError) as excinfo:
+            channel.unary_unary("/demo.Svc/Method")(b"", timeout=5.0)
+        assert "target uri is not valid" in excinfo.value.details()
+    finally:
+        channel.close()

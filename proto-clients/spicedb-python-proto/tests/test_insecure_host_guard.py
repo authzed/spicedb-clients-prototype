@@ -55,6 +55,13 @@ AUTHORITY_SHIFTING_ENDPOINTS = [
     "127.0.0.1 :50051",
     # The port validation whose removal from the C# guard opened the bypass.
     "127.0.0.1:notaport",
+    # Non-ASCII "digits". str.isdigit() is true for all of these, so a port
+    # predicate built on it would split here and hand back the loopback host --
+    # while C-core, which this fallback exists to mirror, parses none of them
+    # as a port. Ruby's /\A\d+\z/ was already correct; Python's was not.
+    "127.0.0.1:\u0664\u0664\u0663",
+    "127.0.0.1:\uff14\uff14\uff13",
+    "127.0.0.1:\u00b2",
 ]
 
 

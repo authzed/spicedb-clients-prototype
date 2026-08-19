@@ -23,6 +23,18 @@ import re
 _AUTHORITY_SHIFTING = re.compile(r"[@/?#]|\s")
 
 
+def _is_ascii_port(port: str) -> bool:
+    """Report whether ``port`` is a run of ASCII digits, as C-core requires.
+
+    Not ``str.isdigit()``: that is true for non-ASCII digits and other numeric
+    characters -- ``"٤٤٣"`` (Arabic-Indic), ``"４４３"`` (fullwidth) and ``"²"``
+    all pass it, and none of them is a port C-core would parse. This predicate
+    is the whole basis for splitting ``host:port`` at all, and a fallback whose
+    justification is "mirror C-core exactly" cannot be looser than C-core.
+    """
+    return port.isascii() and port.isdigit()
+
+
 def bearer_metadata(token: str) -> list[tuple[str, str]]:
     """Build the gRPC metadata carrying the bearer token."""
     return [("authorization", f"Bearer {token}")]
@@ -99,7 +111,7 @@ def is_loopback_endpoint(endpoint: str) -> bool:
         rest = endpoint[end + 1 :]
         # C-core accepts "[host]" or "[host]:<digits>" and rejects anything
         # else; "[::1]:443@evil.com" is NOT a bracketed loopback host.
-        if rest and not (rest.startswith(":") and rest[1:].isdigit()):
+        if rest and not (rest.startswith(":") and _is_ascii_port(rest[1:])):
             return False
         host = endpoint[1:end]
     elif endpoint.count(":") > 1:
@@ -110,7 +122,7 @@ def is_loopback_endpoint(endpoint: str) -> bool:
         candidate, _, port = endpoint.rpartition(":")
         # Only a numeric port makes this a host:port; otherwise the colon is
         # part of something C-core would not split here either.
-        if port.isdigit():
+        if _is_ascii_port(port):
             host = candidate
 
     if host.lower() == "localhost":

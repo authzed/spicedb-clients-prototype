@@ -144,7 +144,10 @@
   (2) splits what remains the way C-core's `SplitHostPort` does — a bracketed host must be
   followed by end-of-string or `":"` + a numeric port, and a single-colon `host:port` is split
   only when the port is numeric. That numeric-port check is the one whose removal opened the C#
-  bypass. `"127.0.0.1:443@evil.com"`, `"[::1]:443@evil.com"` and `"127.0.0.1:notaport"` now
+  bypass, and it tests for **ASCII** digits: `str.isdigit()` is true for `"٤٤٣"`, `"４４３"` and
+  `"²"`, none of which C-core parses as a port, so a predicate built on it would have split
+  there and handed back the loopback host. `"127.0.0.1:443@evil.com"`, `"[::1]:443@evil.com"`,
+  `"127.0.0.1:notaport"` and the non-ASCII-digit forms now
   require `allow_insecure_remote_credentials=True` instead of being accepted as loopback. Every
   ordinary local target keeps working with no opt-in: `localhost:50051`, `127.0.0.1:50051`,
   `[::1]:50051`, `::1`, and `unix:` targets.

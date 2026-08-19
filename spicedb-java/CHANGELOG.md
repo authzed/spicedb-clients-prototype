@@ -295,6 +295,29 @@
 
 ### Fixes
 
+- **2026-08-19**: **The gRPC stack now resolves to a single version (1.79.0) instead of three.**
+  This client declared `io.grpc:*` at 1.68.0 while `spicedb-java-proto` declared it at 1.72.0, but
+  neither number was what the build actually used. The BSR-generated stubs
+  (`build.buf.gen:authzed_api_grpc_java:1.79.0.2...`) depend on `io.grpc:grpc-core:1.79.0`, and
+  Gradle's default conflict resolution picks the highest, so `grpc-api`, `grpc-core`, `grpc-stub`,
+  `grpc-protobuf`, `grpc-protobuf-lite` and `grpc-context` all resolved to **1.79.0** — a version
+  neither build file mentioned.
+
+  What did *not* get pulled up were the artifacts nothing else depends on. `grpc-netty-shaded` and
+  `grpc-util` sat at **1.72.0**, and `grpc-inprocess` at **1.68.0**, against a 1.79.0 core. grpc-java
+  supports no such mixture: every `io.grpc:*` artifact is released in lockstep against the others'
+  internal SPIs, and `grpc-netty-shaded` shades *Netty*, not gRPC — the `io.grpc.netty` transport
+  classes inside it are compiled against `grpc-core`'s internals and were being loaded against a core
+  eleven minor versions newer. That is the transport every real connection goes through.
+
+  All ten declarations across both modules are now `1.79.0`, matching the version the generated stubs
+  are built against, and the resolved graph is uniform: `grpc-util` and `grpc-inprocess` move up to
+  1.79.0 with everything else. Dependency *scopes* are unchanged — `grpc-netty-shaded` stays `api` in
+  the proto client so the shaded `NettyChannelBuilder` cast documented under "Custom TLS trust
+  material" keeps compiling, and `grpc-api` stays `api` here so `rawChannel()`'s `io.grpc.Channel`
+  return type stays usable. No public API change: japicmp reports "No changes", because the compile
+  classpath already resolved to 1.79.0 before this fix.
+
 - **2026-08-19**: **A large bulk check is no longer sent as one oversized request.**
   `checkPermissions`, `checkPermission`, `checkAny` and `checkAll` built a single
   `CheckBulkPermissions` request from however many relationships the caller passed. SpiceDB caps

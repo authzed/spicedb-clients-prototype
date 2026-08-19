@@ -52,3 +52,16 @@ Any methods or fields marked deprecated in the proto definitions must carry
 
 - No business logic — only plumbing (connection, auth, stub access)
 - Generated files under `gen/` are never modified
+- **Every `io.grpc:*` declaration — here and in `spicedb-java/lib` — carries the same
+  version, and that version is the one the BSR gRPC stubs
+  (`build.buf.gen:authzed_api_grpc_java:<grpcVersion>.<n>...`) are built against.**
+  grpc-java releases its artifacts in lockstep against each other's internal SPIs and
+  supports no mixture of versions. The trap is that a skew here does not fail the build:
+  the BSR stubs depend on `io.grpc:grpc-core`, so Gradle's "highest wins" quietly pulls
+  `grpc-api`/`grpc-core`/`grpc-stub`/`grpc-protobuf` up to the stubs' version no matter what
+  is declared, while artifacts nothing else depends on — `grpc-netty-shaded`, `grpc-util`,
+  `grpc-inprocess`, `grpc-testing` — stay stranded at the declared number. `grpc-netty-shaded`
+  shades *Netty*, not gRPC, so its `io.grpc.netty` transport classes then run against a
+  `grpc-core` they were not compiled against. Verify with
+  `gradle :lib:dependencies --configuration testRuntimeClasspath` and read the resolved
+  versions, not the declared ones.

@@ -69,6 +69,14 @@ transitively to anyone depending on this client. (An audit claimed consumers
 "cannot even cast to the shaded builder" — that is false, and the `api`
 declaration is what makes it false. Keep it `api`.)
 
+Both modules pin every `io.grpc:*` artifact to the **same** version, and to the one
+the BSR gRPC stubs are generated against — see spicedb-java-proto's DESIGN.md
+"Invariants". `grpc-netty-shaded` is the artifact this section depends on, and it is
+also the one a skew strands: nothing else in the graph depends on it, so it keeps the
+declared version while `grpc-core` gets pulled up by the stubs, and the shaded
+transport then runs against a core it was not compiled against. Check the *resolved*
+graph, not the declarations.
+
 This is what satisfies root DESIGN.md, "RULE: A system-TLS constructor must
 reach a real server", whose clause 1 permits `createSystemTls` to delegate to
 `useTransportSecurity()` only because a caller can supply their own trust

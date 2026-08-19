@@ -221,8 +221,9 @@ module SpiceDB
     # @param permission [String] the permission to check
     # @param relationship [SpiceDB::Relationship]
     # @param context [Hash, nil] call-level caveat context for this check
-    # @param timeout [Numeric, nil] seconds bounding this call, overriding
-    #   the client's default_timeout
+    # @param timeout [Numeric, nil] seconds bounding each request this
+    #   call makes (see {#check_permissions} — a large check is split
+    #   into several), overriding the client's default_timeout
     # @return [SpiceDB::CheckResult]
     def check_permission(consistency, permission, relationship, context: nil, timeout: nil)
       check_permissions(consistency, permission, relationship, context: context, timeout: timeout).first
@@ -239,6 +240,20 @@ module SpiceDB
     # 10,000. An empty +relationships+ sends no request at all and returns
     # +[]+.
     #
+    # Results from one request share a +checked_at+ (the response carries a
+    # single token for the whole request, not one per item), so an input
+    # large enough to be split carries more than one token across the
+    # returned Array.
+    #
+    # +timeout:+ bounds *each request* this call makes, not the call as a
+    # whole, and the retry budget is likewise per request: worst-case wall
+    # time is +(relationships.length / 1000.0).ceil * timeout+. That is
+    # deliberate — one deadline spanning every chunk would make a large check
+    # fail purely for being large, and a retry budget shared across chunks
+    # would let one flaky chunk exhaust the allowance for the rest. Size the
+    # value per request, and impose a whole-operation bound yourself if you
+    # need one.
+    #
     # `context:` is a call-level default applied to every relationship's
     # check. Each relationship can instead (or in addition) carry its own
     # `Relationship#check_context` (e.g. `rel.with_check_context({...})`),
@@ -253,8 +268,9 @@ module SpiceDB
     # @param permission [String] the permission to check
     # @param relationships [Array<SpiceDB::Relationship>]
     # @param context [Hash, nil] call-level caveat context, applied to every item
-    # @param timeout [Numeric, nil] seconds bounding this call, overriding
-    #   the client's default_timeout
+    # @param timeout [Numeric, nil] seconds bounding each request this
+    #   call makes (see {#check_permissions} — a large check is split
+    #   into several), overriding the client's default_timeout
     # @return [Array<SpiceDB::CheckResult>]
     def check_permissions(consistency, permission, *relationships, context: nil, timeout: nil)
       relationships = relationships.flatten
@@ -271,13 +287,14 @@ module SpiceDB
       # the overwhelmingly common case -- still makes exactly one request.
       # Retry is per chunk, so a transient failure on the third chunk never
       # re-sends the first two.
-      relationships.each_slice(DEFAULT_CHECK_BATCH_SIZE).flat_map do |chunk|
+      relationships.each_slice(DEFAULT_CHECK_BATCH_SIZE).with_index.flat_map do |chunk, chunk_index|
+        start = chunk_index * DEFAULT_CHECK_BATCH_SIZE
         with_retry do
           # Delegate to proto client BulkCheckPermissions
           # Each relationship becomes a CheckBulkPermissionsRequestItem
           items = chunk.map { |r| check_item_from_rel(r, permission) }
 
-          call_bulk_check(consistency, items, context, effective_timeout(timeout))
+          call_bulk_check(consistency, items, context, effective_timeout(timeout), start)
         end
       end
     end
@@ -292,8 +309,9 @@ module SpiceDB
     # @param permission [String]
     # @param relationships [Array<SpiceDB::Relationship>]
     # @param context [Hash, nil] call-level caveat context, applied to every item — see {#check_permissions}
-    # @param timeout [Numeric, nil] seconds bounding this call, overriding
-    #   the client's default_timeout
+    # @param timeout [Numeric, nil] seconds bounding each request this
+    #   call makes (see {#check_permissions} — a large check is split
+    #   into several), overriding the client's default_timeout
     # @return [Boolean]
     def check_any(consistency, permission, *relationships, context: nil, timeout: nil)
       check_permissions(consistency, permission, *relationships, context: context, timeout: timeout).any?(&:has_permission?)
@@ -310,8 +328,9 @@ module SpiceDB
     # @param permission [String]
     # @param relationships [Array<SpiceDB::Relationship>]
     # @param context [Hash, nil] call-level caveat context, applied to every item — see {#check_permissions}
-    # @param timeout [Numeric, nil] seconds bounding this call, overriding
-    #   the client's default_timeout
+    # @param timeout [Numeric, nil] seconds bounding each request this
+    #   call makes (see {#check_permissions} — a large check is split
+    #   into several), overriding the client's default_timeout
     # @return [Boolean]
     #
     # Returns false, not the vacuous true Enumerable#all? yields on an empty
@@ -877,7 +896,12 @@ module SpiceDB
     # ground truth: only CheckBulkPermissionsRequestItem#context, field 4,
     # carries context on the wire), so the merged context must be built and
     # attached per item here.
-    def call_bulk_check(consistency, items, call_level_context, timeout_seconds)
+    # +offset+ is this chunk's start index within the caller's full Array.
+    # The "check item N" message reports +offset + i+, not +i+: the index a
+    # caller sees must be the one they can use to look up their own
+    # relationship. Reporting the chunk-relative index would attribute the
+    # failing item to a different resource entirely.
+    def call_bulk_check(consistency, items, call_level_context, timeout_seconds, offset = 0)
       proto_items = items.map do |item|
         item_args = {
           resource: Authzed::Api::V1::ObjectReference.new(
@@ -937,7 +961,7 @@ module SpiceDB
         # dereferencing `pair.item`, which is nil in this case.
         if pair.response.nil?
           raise SpiceDB::Error,
-                "check item #{i}: malformed CheckBulkPermissionsPair (neither item nor error set)"
+                "check item #{offset + i}: malformed CheckBulkPermissionsPair (neither item nor error set)"
         end
 
         CheckResult.new(

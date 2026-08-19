@@ -267,6 +267,22 @@
   this branch now runs per chunk. A caller passing fewer than 1,000 relationships still makes
   exactly one request.
 
+  Three consequences of the split are worth stating outright, because they change contracts
+  callers may already depend on:
+
+  - **A per-item error message now names the caller's own index.** The `check item N` prefix is
+    computed from an absolute offset, not from the position within whichever request carried the
+    failure. Without that, a failure at relationship 1,003 reported as `check item 3` — the same
+    misattribution the response-length guard exists to prevent, relocated into the diagnostic.
+  - **`checked_at` is per response, and a response is now one chunk.** Results from a single
+    request still share one token; an input large enough to be split carries more than one across
+    the returned collection. Root DESIGN.md's bulk-check invariant has been re-scoped to match.
+  - **A per-call timeout, and the retry budget, bound each request rather than the whole call.**
+    Worst-case wall time for `n` checks is `ceil(n / 1000) x timeout`. This is deliberate: one
+    deadline spanning every chunk would make a large check fail purely for being large, and a
+    retry budget shared across chunks would let one flaky chunk exhaust the allowance for the
+    rest. The docs now say so.
+
   Retry is applied per chunk, so a transient failure on the third chunk never re-sends the first
   two. `DEFAULT_CHECK_BATCH_SIZE` was declared but used only by a spec asserting it equalled
   1,000; it is now what does the chunking, and that spec now pins a value the code depends on.

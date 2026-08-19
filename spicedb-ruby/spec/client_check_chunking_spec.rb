@@ -26,18 +26,22 @@ RSpec.describe 'SpiceDB::Client#check_permissions chunking' do
   #
   # +short_at+, when given, makes the request at that index (0-based) return
   # one fewer pair than it was asked for.
-  def stub_echo_server(short_at: nil)
+  def stub_echo_server(short_at: nil, malformed_at_absolute: nil)
     sizes = []
 
     permissions_service = double('permissions_service')
     allow(permissions_service).to receive(:check_bulk_permissions) do |request, **_kwargs|
       index = sizes.length
+      base = sizes.sum
       sizes << request.items.length
 
       items = request.items.to_a
       items = items[0...-1] if short_at == index && !items.empty?
 
-      pairs = items.map do |item|
+      pairs = items.each_with_index.map do |(item), i|
+        # `response` oneof left unset entirely.
+        next Authzed::Api::V1::CheckBulkPermissionsPair.new if malformed_at_absolute == base + i
+
         Authzed::Api::V1::CheckBulkPermissionsPair.new(
           item: Authzed::Api::V1::CheckBulkPermissionsResponseItem.new(
             permissionship: :PERMISSIONSHIP_HAS_PERMISSION,
@@ -134,5 +138,19 @@ RSpec.describe 'SpiceDB::Client#check_permissions chunking' do
     # Two requests went out before the guard fired -- proof the failure was
     # detected on the second chunk, not on the whole input up front.
     expect(sizes).to eq([batch_size, batch_size])
+  end
+
+  it "reports the caller's absolute index in a per-item message, not the chunk-relative one" do
+    # Chunking made every "check item N" message chunk-relative: a failure at
+    # relationship 1003 read as "check item 3", so a caller who logs or parses
+    # it acts on relationship 3 -- one resource's answer attributed to another,
+    # the same failure family the pair-count guard exists to prevent, relocated
+    # into the diagnostic.
+    failing = batch_size + 3
+    stub_echo_server(malformed_at_absolute: failing)
+
+    expect do
+      client.check_permissions(SpiceDB::Consistency.full, 'view', numbered_rels(batch_size * 2))
+    end.to raise_error(SpiceDB::Error, /check item #{failing}: malformed/)
   end
 end

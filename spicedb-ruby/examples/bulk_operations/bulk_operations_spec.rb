@@ -18,6 +18,11 @@ RSpec.describe 'BulkOperations' do
       SpiceDB::Relationship.from_triple('document', 'report', 'viewer', 'user', user)
     end
 
+    # Inputs over 1,000 relationships are split into one
+    # CheckBulkPermissions request per 1,000 automatically and the results
+    # concatenated in input order -- SpiceDB rejects a single request
+    # carrying more than 10,000. Nothing here changes for a larger Array.
+    #
     # check_permissions returns an Array<SpiceDB::CheckResult>, not
     # booleans — use #has_permission? per result rather than testing a
     # result itself (every CheckResult is truthy in Ruby regardless of

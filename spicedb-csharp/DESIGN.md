@@ -294,7 +294,10 @@ construction" per root DESIGN.md clause 5 (`if (result)` does not compile).
 
 `CheckBulkPermissionsResponse.checked_at` is response-level, not per-item —
 the bulk path propagates that one token onto every `CheckResult.CheckedAt`
-in the batch.
+mapped from that response. A check over more than `DefaultCheckBatchSize`
+relationships is split into one request per chunk, so the returned array can
+carry more than one distinct `CheckedAt` — uniform within a chunk, not across
+the call. See root DESIGN.md, invariant 2 under bulk checks.
 
 A per-item `CheckBulkPermissions` error (`google.rpc.Status`, carried as the
 `error` arm of the pair's oneof) is routed through the same `ErrorMapper`

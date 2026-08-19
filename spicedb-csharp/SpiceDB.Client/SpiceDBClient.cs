@@ -332,6 +332,23 @@ public sealed class SpiceDBClient : IAsyncDisposable
     /// <paramref name="relationships"/> sends no request at all and returns
     /// an empty array.
     /// </para>
+    /// <para>
+    /// Results from one request share a <see cref="CheckResult.CheckedAt"/>
+    /// (the response carries a single token for the whole request, not one
+    /// per item), so an input large enough to be split carries more than one
+    /// token across the returned array.
+    /// </para>
+    /// <para>
+    /// A per-call <c>timeout</c> on the overloads that accept one bounds
+    /// <b>each request</b> this call makes, not the call as a whole, and the
+    /// retry budget is likewise per request: worst-case wall time is
+    /// <c>ceil(relationships.Length / 1000.0) * timeout</c>. That is
+    /// deliberate — one deadline spanning every chunk would make a large
+    /// check fail purely for being large, and a retry budget shared across
+    /// chunks would let one flaky chunk exhaust the allowance for the rest.
+    /// Size the value per request, and pass a
+    /// <see cref="CancellationToken"/> if you need a whole-operation bound.
+    /// </para>
     /// </summary>
     /// <remarks>
     /// This variadic overload does not accept a per-call <c>timeout</c> —
@@ -430,6 +447,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
                 context,
                 cancellationToken,
                 timeout,
+                start,
                 relationships[start..(start + length)]));
         }
         return [.. results];
@@ -443,6 +461,14 @@ public sealed class SpiceDBClient : IAsyncDisposable
     /// response guard below — the pair-count check and the malformed-oneof
     /// check — therefore applies per chunk, exactly as it applied to the whole
     /// request before chunking.
+    /// <para>
+    /// <paramref name="offset"/> is this chunk's start index within the
+    /// caller's full array. The "check item N" message reports
+    /// <c>offset + i</c>, not <c>i</c>: the index a caller sees must be the
+    /// one they can use to look up their own relationship. Reporting the
+    /// chunk-relative index would attribute the failing item to a different
+    /// resource entirely.
+    /// </para>
     /// </summary>
     private async Task<CheckResult[]> CheckChunkAsync(
         ConsistencyStrategy consistency,
@@ -450,6 +476,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
         IReadOnlyDictionary<string, object>? context,
         CancellationToken cancellationToken,
         TimeSpan? timeout,
+        int offset,
         Relationship[] relationships)
     {
         var items = relationships.Select(r => CheckItemFromRel(r, permission, context)).ToList();
@@ -508,8 +535,8 @@ public sealed class SpiceDBClient : IAsyncDisposable
                 // practice. Mirrors spicedb-rust's malformed-oneof guard:
                 // fail loudly instead of dereferencing a null Item.
                 throw new SpiceDBException(
-                    $"check item {i}: malformed CheckBulkPermissionsPair (neither Item nor " +
-                    "Error set).");
+                    $"check item {offset + i}: malformed CheckBulkPermissionsPair (neither Item " +
+                    "nor Error set).");
             }
         }
         return results;

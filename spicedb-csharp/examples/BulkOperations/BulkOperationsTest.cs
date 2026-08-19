@@ -38,7 +38,11 @@ public class BulkOperationsTest
         var revision = await client.WriteAsync(txn);
         Assert.NotEmpty(revision);
 
-        // Bulk check permissions
+        // Bulk check permissions. Inputs over 1,000 relationships are split
+        // into one CheckBulkPermissions request per 1,000 automatically and
+        // the results concatenated in input order — SpiceDB rejects a single
+        // request carrying more than 10,000. Nothing here changes for a
+        // larger array.
         var checks = users
             .Select(u => Relationship.FromTriple("document", "report", "view", "user", u))
             .ToArray();

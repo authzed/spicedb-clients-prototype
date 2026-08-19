@@ -46,6 +46,14 @@ public class CheckChunkingTests
         /// <summary>When >= 0, the request at that index returns one fewer pair than asked.</summary>
         public int ShortAtRequest { get; init; } = -1;
 
+        /// <summary>
+        /// When >= 0, the pair at that ABSOLUTE index — counted across every request, the way
+        /// the caller counts — leaves its <c>Response</c> oneof unset. That is the guard whose
+        /// message carries an index in this client: a per-item <c>Error</c> is routed straight
+        /// through <c>ErrorMapper</c> and never gains a "check item N" prefix here.
+        /// </summary>
+        public int MalformedAtAbsolute { get; init; } = -1;
+
         public Mock<PermissionsService.PermissionsServiceClient> Mock()
         {
             var mock = new Mock<PermissionsService.PermissionsServiceClient>();
@@ -62,15 +70,22 @@ public class CheckChunkingTests
         private CheckBulkPermissionsResponse Respond(CheckBulkPermissionsRequest req)
         {
             var index = Sizes.Count;
+            var numberBase = Sizes.Sum();
             Sizes.Add(req.Items.Count);
 
-            var items = ShortAtRequest == index && req.Items.Count > 0
+            var items = (ShortAtRequest == index && req.Items.Count > 0
                 ? req.Items.Take(req.Items.Count - 1)
-                : req.Items;
+                : req.Items).ToList();
 
             var resp = new CheckBulkPermissionsResponse { CheckedAt = new ZedToken { Token = "tok" } };
-            foreach (var item in items)
+            for (var i = 0; i < items.Count; i++)
             {
+                if (MalformedAtAbsolute == numberBase + i)
+                {
+                    // Neither Item nor Error set — the oneof left empty.
+                    resp.Pairs.Add(new CheckBulkPermissionsPair());
+                    continue;
+                }
                 resp.Pairs.Add(new CheckBulkPermissionsPair
                 {
                     Item = new CheckBulkPermissionsResponseItem
@@ -78,7 +93,7 @@ public class CheckChunkingTests
                         Permissionship = CheckPermissionResponse.Types.Permissionship.HasPermission,
                         PartialCaveatInfo = new Authzed.Api.V1.PartialCaveatInfo
                         {
-                            MissingRequiredContext = { item.Resource.ObjectId },
+                            MissingRequiredContext = { items[i].Resource.ObjectId },
                         },
                     },
                 });
@@ -170,5 +185,25 @@ public class CheckChunkingTests
         recorder.Sizes.Should().Equal(
             CheckBatchSize,
             CheckBatchSize);
+    }
+
+    [Fact]
+    public async Task CheckPermissionsAsync_MalformedPair_ReportsTheCallersAbsoluteIndex()
+    {
+        // Chunking made every "check item N" message chunk-relative: a failure
+        // at relationship 1003 read as "check item 3", so a caller who logs or
+        // parses it acts on relationship 3 — one resource's answer attributed
+        // to another, the same failure family the pair-count guard exists to
+        // prevent, relocated into the diagnostic.
+        const int failing = CheckBatchSize + 3;
+        var recorder = new Recorder { MalformedAtAbsolute = failing };
+        await using var client = NewClient(recorder.Mock().Object);
+
+        var act = async () => await client.CheckPermissionsAsync(
+            Consistency.Full(), "view", default, NumberedRels(CheckBatchSize * 2));
+
+        var thrown = await act.Should().ThrowAsync<SpiceDBException>();
+        thrown.Which.Message.Should().Contain($"check item {failing}:");
+        thrown.Which.Message.Should().NotContain("check item 3:");
     }
 }

@@ -579,23 +579,36 @@ remedies do not overlap.
    runtime assertion in all thirteen Rust examples was dead code that had never executed once.
    Both defects were invisible because the target *appeared* to cover the directory.
 
-   Therefore: **each client MUST have a check that reconciles what is on disk against what the
-   runner actually executes.** Where membership is enumerated by hand — a `.sln`, a project
-   list, a manifest — the check MUST diff the enumeration against the directory and fail on
-   divergence in either direction, because a snapshot that is correct today is reintroduced as a
-   defect by the next example added. Where membership comes from a glob, the glob cannot drift,
-   but a rename or a moved file silently yields a *shorter list* rather than an error, so the
-   runner MUST assert the number of examples it executed and fail if that count is not the
-   number expected.
+   Therefore: **each client MUST reconcile the example set on disk against an expected set
+   named in the runner, by name, in both directions** — failing on a name expected but absent,
+   and on a name present but not expected. Where membership is additionally enumerated by hand —
+   a `.sln`, a project list, a manifest — that enumeration MUST be diffed against the directory
+   the same way, because a snapshot that is correct today is reintroduced as a defect by the
+   next example added.
 
-   The same applies to name-filtered runs. A name or tag filter that matches nothing exits
-   successfully in every test framework this repo uses: `pytest -k`, `rspec --tag`, `cargo test`
-   with a filter, and a hardcoded skip in a runner loop all report green on an empty selection.
-   `.github/workflows/rust.yaml` already greps its output for `"1 passed"` for exactly this
-   reason, and that guard is the pattern to copy: **a filtered run MUST assert how many examples
-   it executed.** Skipping an example is permitted — some need machinery that does not exist
-   yet — but a skip MUST be explicit, counted, and visible in the run's output, never the silent
-   residue of a filter.
+   **A count is not a reconciliation, and MUST NOT be used as one.** This is the sharpest thing
+   this rule has to say, because counting is the obvious implementation and it fails on the most
+   ordinary edit there is: rename an example and the count is unchanged, so the runner executes
+   a set that is no longer the set anyone reviewed, and reports green. Deletion is the only
+   drift a count catches. Six clients here shipped exactly that guard and it survived a full
+   review before the hole was found by renaming a directory. Pin the names; let the count fall
+   out of the list as a consequence.
+
+   The same reconciliation covers name-filtered runs, which are the other half of this clause. A
+   name or tag filter that matches nothing exits successfully in every test framework this repo
+   uses: `pytest -k`, `rspec --tag`, `cargo test` with a filter, and a hardcoded skip in a runner
+   loop all report green on an empty selection. `.github/workflows/rust.yaml` greps its output
+   for `"1 passed"` for exactly this reason. So: **a runner MUST NOT select examples by name or
+   tag filter where it can name them explicitly instead** — a reconciled list of names, passed to
+   the test command, cannot silently select nothing. Where a filter is unavoidable, or where the
+   test framework may skip what it was handed, **the runner MUST read back what actually
+   executed** — a JUnit or TRX report, an rspec JSON report, a libtest pass count — and fail
+   unless every expected example contributed at least one *executed* case. A skipped case is not
+   an executed one: counting it lets a fully-disabled example satisfy the assertion that it ran.
+
+   Skipping an example is permitted — some need machinery that does not exist yet — but a skip
+   MUST be listed by name in the runner, checked to still exist on disk, and printed with its
+   reason, never the silent residue of a filter.
 
 2. **An example that cannot fail.** Executing an example proves nothing if its assertions hold
    regardless of the behaviour under test. `spicedb-typescript`'s custom-TLS example asserted

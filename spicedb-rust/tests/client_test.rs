@@ -94,7 +94,9 @@ mod insecure_host_guard {
                 assert!(msg.contains("allow_insecure_remote_credentials"), "{msg}");
             }
             Err(other) => panic!("expected SpiceDBError::InvalidArgument, got {other:?}"),
-            Ok(_) => panic!("expected construction to be refused for a non-loopback endpoint with no opt-in"),
+            Ok(_) => panic!(
+                "expected construction to be refused for a non-loopback endpoint with no opt-in"
+            ),
         }
     }
 

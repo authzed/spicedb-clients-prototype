@@ -152,10 +152,10 @@ impl SpiceDBClientBuilder {
             spicedb_proto::SpiceDBProtoClientError::InsecureRemoteHostNotAllowed(msg)
             | spicedb_proto::SpiceDBProtoClientError::UnixSocketNotSupported(msg)
             | spicedb_proto::SpiceDBProtoClientError::InvalidToken(msg) => {
-                SpiceDBError::InvalidArgument(msg)
+                SpiceDBError::InvalidArgument(msg.into())
             }
             spicedb_proto::SpiceDBProtoClientError::Transport(e) => {
-                SpiceDBError::Transport(e.to_string())
+                SpiceDBError::Transport(e.to_string().into())
             }
         })?;
 
@@ -430,9 +430,23 @@ impl SpiceDBClient {
                         // uses, instead of hardcoding a status — a per-item
                         // PERMISSION_DENIED must surface as PermissionDenied,
                         // not as a generic InvalidArgument.
-                        return Err(error::from_grpc_status(
-                            err_resp.code,
-                            format!("check item {}: {}", i, err_resp.message),
+                        //
+                        // The item's own `google.rpc.Status` is re-encoded into
+                        // the `grpc-status-details-bin` form a `tonic::Status`
+                        // carries, so the item's `ErrorInfo` reaches the caller
+                        // too: a per-item failure and an RPC-level failure must
+                        // be indistinguishable except by the reason itself. See
+                        // root DESIGN.md, "RULE: Error mapping must not lose the
+                        // server's detail".
+                        let message = format!("check item {}: {}", i, err_resp.message);
+                        let details = prost::Message::encode_to_vec(err_resp);
+                        return Err(error::from_grpc_status_with_message(
+                            tonic::Status::with_details(
+                                tonic::Code::from_i32(err_resp.code),
+                                message.clone(),
+                                details.into(),
+                            ),
+                            message,
                         ));
                     }
                     Some(proto::check_bulk_permissions_pair::Response::Item(item)) => {
@@ -701,7 +715,7 @@ impl SpiceDBClient {
                 while let Some(resp) = stream
                     .message()
                     .await
-                    .map_err(|s| error::from_grpc_status(s.code() as i32, s.message().to_string()))?
+                    .map_err(error::from_grpc_status)?
                 {
                     count += 1;
                     if let Some(c) = resp.after_result_cursor {
@@ -856,7 +870,7 @@ impl SpiceDBClient {
                 while let Some(resp) = stream
                     .message()
                     .await
-                    .map_err(|s| error::from_grpc_status(s.code() as i32, s.message().to_string()))?
+                    .map_err(error::from_grpc_status)?
                 {
                     count += 1;
                     if let Some(c) = resp.after_result_cursor {
@@ -942,7 +956,7 @@ impl SpiceDBClient {
             while let Some(resp) = stream
                 .message()
                 .await
-                .map_err(|s| error::from_grpc_status(s.code() as i32, s.message().to_string()))?
+                .map_err(error::from_grpc_status)?
             {
                 // Prefer the nested subject field; fall back to the deprecated
                 // top-level fields for servers that don't yet populate it.
@@ -1179,13 +1193,8 @@ impl SpiceDBClient {
         relation_name: &str,
         timeout: Duration,
     ) -> Result<(Vec<RelationReference>, String), SpiceDBError> {
-        self.computable_permissions_impl(
-            consistency,
-            definition_name,
-            relation_name,
-            Some(timeout),
-        )
-        .await
+        self.computable_permissions_impl(consistency, definition_name, relation_name, Some(timeout))
+            .await
     }
 
     async fn computable_permissions_impl(
@@ -1269,11 +1278,7 @@ impl SpiceDBClient {
                     permission_name: permission_name.to_string(),
                 });
                 request.set_timeout(timeout);
-                self.proto
-                    .schema
-                    .clone()
-                    .dependent_relations(request)
-                    .await
+                self.proto.schema.clone().dependent_relations(request).await
             })
             .await?;
 
@@ -1515,7 +1520,7 @@ impl SpiceDBClient {
             .clone()
             .import_bulk_relationships(request)
             .await
-            .map_err(|s| error::from_grpc_status(s.code() as i32, s.message().to_string()))?;
+            .map_err(error::from_grpc_status)?;
 
         batch_task.await.ok();
         Ok(resp.into_inner().num_loaded)
@@ -1566,7 +1571,7 @@ impl SpiceDBClient {
                 while let Some(resp) = stream
                     .message()
                     .await
-                    .map_err(|s| error::from_grpc_status(s.code() as i32, s.message().to_string()))?
+                    .map_err(error::from_grpc_status)?
                 {
                     if let Some(c) = resp.after_result_cursor {
                         cursor = Some(c);
@@ -1699,7 +1704,7 @@ impl SpiceDBClient {
             while let Some(resp) = stream
                 .message()
                 .await
-                .map_err(|s| error::from_grpc_status(s.code() as i32, s.message().to_string()))?
+                .map_err(error::from_grpc_status)?
             {
                 let mut updates = Vec::with_capacity(resp.updates.len());
                 for update in &resp.updates {
@@ -1782,12 +1787,11 @@ impl SpiceDBClient {
         let timeout = self.effective_timeout(timeout);
         let filter = filter.to_proto()?;
         self.call_once(|| async {
-            let mut request = tonic::Request::new(
-                proto::ExperimentalRegisterRelationshipCounterRequest {
+            let mut request =
+                tonic::Request::new(proto::ExperimentalRegisterRelationshipCounterRequest {
                     name: name.to_string(),
                     relationship_filter: Some(filter.clone()),
-                },
-            );
+                });
             request.set_timeout(timeout);
             self.proto
                 .experimental
@@ -1813,8 +1817,7 @@ impl SpiceDBClient {
         &self,
         name: &str,
     ) -> Result<Option<CountResult>, SpiceDBError> {
-        self.experimental_count_relationships_impl(name, None)
-            .await
+        self.experimental_count_relationships_impl(name, None).await
     }
 
     /// [`experimental_count_relationships`](Self::experimental_count_relationships)
@@ -1836,11 +1839,10 @@ impl SpiceDBClient {
         let timeout = self.effective_timeout(timeout);
         let resp = self
             .retry(|| async {
-                let mut request = tonic::Request::new(
-                    proto::ExperimentalCountRelationshipsRequest {
+                let mut request =
+                    tonic::Request::new(proto::ExperimentalCountRelationshipsRequest {
                         name: name.to_string(),
-                    },
-                );
+                    });
                 request.set_timeout(timeout);
                 self.proto
                     .experimental
@@ -1905,11 +1907,10 @@ impl SpiceDBClient {
     ) -> Result<(), SpiceDBError> {
         let timeout = self.effective_timeout(timeout);
         self.call_once(|| async {
-            let mut request = tonic::Request::new(
-                proto::ExperimentalUnregisterRelationshipCounterRequest {
+            let mut request =
+                tonic::Request::new(proto::ExperimentalUnregisterRelationshipCounterRequest {
                     name: name.to_string(),
-                },
-            );
+                });
             request.set_timeout(timeout);
             self.proto
                 .experimental
@@ -1957,9 +1958,7 @@ impl SpiceDBClient {
         F: Fn() -> Fut,
         Fut: std::future::Future<Output = Result<tonic::Response<T>, tonic::Status>>,
     {
-        f().await.map_err(|status| {
-            error::from_grpc_status(status.code() as i32, status.message().to_string())
-        })
+        f().await.map_err(error::from_grpc_status)
     }
 }
 
@@ -1993,8 +1992,7 @@ where
         match f().await {
             Ok(resp) => return Ok(resp),
             Err(status) => {
-                let err =
-                    error::from_grpc_status(status.code() as i32, status.message().to_string());
+                let err = error::from_grpc_status(status);
                 if !error::is_transient(&err) || attempt >= MAX_RETRIES {
                     return Err(err);
                 }

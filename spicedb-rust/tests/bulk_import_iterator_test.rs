@@ -38,7 +38,10 @@ async fn import_relationships_accepts_a_plain_iterator_not_just_a_vec() {
         .await
         .expect("import should succeed");
 
-    assert_eq!(num_loaded, 5, "the real server must see all 5 relationships from the iterator");
+    assert_eq!(
+        num_loaded, 5,
+        "the real server must see all 5 relationships from the iterator"
+    );
 }
 
 #[tokio::test]

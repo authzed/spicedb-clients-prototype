@@ -435,6 +435,54 @@
 
 ### Breaking changes
 
+- **2026-08-18**: error mapping no longer discards the server's status, per root DESIGN.md,
+  "RULE: Error mapping must not lose the server's detail". `from_grpc_status` reduced a
+  `tonic::Status` to a code and a string before mapping ever ran; its own doc comment recorded
+  the cost. It now takes the `Status` itself:
+
+  ```rust
+  // before
+  pub fn from_grpc_status(code: i32, message: String) -> SpiceDBError
+  // after
+  pub fn from_grpc_status(status: tonic::Status) -> SpiceDBError
+  ```
+
+  - **Every `SpiceDBError` variant's payload changed from `String` to the new
+    `ErrorPayload`.** `matches!(err, SpiceDBError::NotFound(_))` and
+    `SpiceDBError::NotFound("gone".into())` are unaffected; `ErrorPayload` `Display`s as the
+    bare message and derefs to `str`, so `err.to_string()` and `msg.contains(..)` on a bound
+    payload are unchanged too. Code that moved a bound `String` out of a variant needs
+    `.to_string()` (or `.message()`).
+  - **New variants**: `SpiceDBError::OutOfRange` (`OUT_OF_RANGE` — an expired or
+    garbage-collected ZedToken; recovery is mechanical: drop the token and re-read at full
+    consistency) and `SpiceDBError::Unauthenticated` (`UNAUTHENTICATED` — a wrong, expired, or
+    rotated API token). Both previously fell through to `SpiceDBError::Status`, which is also
+    where an internal server fault lands, so neither was distinguishable from one. A `match`
+    with no wildcard arm over `SpiceDBError` must handle the two new variants.
+  - **`SpiceDBError` now implements `Display`/`Error` directly instead of deriving them**, so
+    `source()` yields the originating `tonic::Status` — the chain runs
+    `SpiceDBError` → `tonic::Status` → whatever tonic put behind it. Rendering is unchanged.
+  - **New accessors**: `reason()`, `reason_domain()`, `reason_metadata()` expose the
+    `google.rpc.ErrorInfo` detail SpiceDB attaches (the `authzed.api.v1.ErrorReason` name, e.g.
+    `"ERROR_REASON_MAXIMUM_DEPTH_EXCEEDED"`, and the specifics behind it, such as which
+    precondition failed); `status()` hands back the whole `tonic::Status`; `message()` returns
+    the message without the prefix `Display` adds. The reason is surfaced exactly as the server
+    sent it — a value a newer server knows and this client does not is passed through unchanged,
+    per root DESIGN.md's "RULE: A conversion that cannot preserve meaning must fail", which
+    requires server-supplied unknowns to degrade rather than fail.
+  - **The `DEADLINE_EXCEEDED` mapping no longer string-matches.** tonic's client-side deadline
+    surfaces as `Cancelled("Timeout expired")`; recognising it previously meant comparing
+    against `TimeoutExpired`'s rendered `Display` text, because the signature above had already
+    thrown the `Status` away. It is now a downcast of the status's `source()` to tonic's
+    publicly-exported `TimeoutExpired`. A server that genuinely cancels with that exact wording
+    is no longer misreported as a deadline.
+  - **`check_bulk_permissions` per-item errors keep their own details.** The per-item
+    `google.rpc.Status` was reduced to a code and a message; it is now re-encoded into the
+    status's `grpc-status-details-bin`, so a per-item failure carries the same structured reason
+    an RPC-level failure does.
+  - New dependency `tonic-types`, tonic's own decoder for `google.rpc` error details, used
+    instead of decoding that trailer by hand.
+
 - **2026-08-18**: per root DESIGN.md, "RULE: Credentials over insecure transport require an
   explicit opt-in" -- `SpiceDBClientBuilder::plaintext()` / `SpiceDBClient::new_plaintext` (and
   the underlying `SpiceDBProtoClient::new`) now refuse to construct a client for a non-loopback

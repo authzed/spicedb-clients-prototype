@@ -3,6 +3,7 @@
 //! Run with: `cargo run --example write_relationships`
 
 use spicedb::client::SpiceDBClient;
+use spicedb::error::SpiceDBError;
 use spicedb::types::{DeleteOptions, Filter, Relationship, Transaction};
 
 const SCHEMA: &str = r#"definition user {}
@@ -49,6 +50,48 @@ async fn main() {
 
     println!("wrote relationships at revision: {revision}");
     assert!(!revision.is_empty(), "expected non-empty revision");
+
+    // A failed precondition arrives with SpiceDB's structured explanation
+    // attached, not just a message: the typed error carries the
+    // authzed.api.v1.ErrorReason name and the metadata naming which
+    // precondition did not hold, so recovery can be written against data
+    // rather than against a parsed string.
+    let seconddoc_viewer =
+        Relationship::new("document", "seconddoc", "viewer", "user", "alice", "")
+            .expect("invalid relationship");
+    let mut doomed = Transaction::new();
+    doomed.touch(&seconddoc_viewer);
+    doomed.must_match(
+        Filter::new("document")
+            .with_resource_id("firstdoc")
+            .with_relation("owner")
+            .with_subject_type("user")
+            .with_subject_id("nobody"),
+    );
+
+    let precondition_err = client
+        .write(&doomed)
+        .await
+        .expect_err("expected the unsatisfiable precondition to fail the write");
+
+    println!(
+        "precondition failed: reason={:?} domain={:?} metadata={:?}",
+        precondition_err.reason(),
+        precondition_err.reason_domain(),
+        precondition_err.reason_metadata()
+    );
+    assert!(
+        matches!(precondition_err, SpiceDBError::FailedPrecondition(_)),
+        "expected FailedPrecondition, got {precondition_err:?}"
+    );
+    assert_eq!(
+        precondition_err.reason(),
+        Some("ERROR_REASON_WRITE_OR_DELETE_PRECONDITION_FAILURE")
+    );
+    assert!(
+        !precondition_err.reason_metadata().is_empty(),
+        "expected the reason metadata to name the failing precondition"
+    );
 
     // Delete relationships, guarded by a precondition and a page-size limit.
     // `delete_relationships` (used above implicitly via `write`'s Transaction)

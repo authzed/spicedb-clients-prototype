@@ -401,11 +401,14 @@ impl Filter {
                 } else {
                     "subject_relation"
                 };
-                return Err(SpiceDBError::InvalidArgument(format!(
-                    "Filter has {missing} set without subject_type. The wire format requires \
-                     subject_type whenever a subject constraint is present -- call \
-                     with_subject_type(...) before with_{missing}(...)."
-                )));
+                return Err(SpiceDBError::InvalidArgument(
+                    format!(
+                        "Filter has {missing} set without subject_type. The wire format requires \
+                         subject_type whenever a subject constraint is present -- call \
+                         with_subject_type(...) before with_{missing}(...)."
+                    )
+                    .into(),
+                ));
             }
             None => None,
         };

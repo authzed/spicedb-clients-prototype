@@ -556,3 +556,138 @@ async fn per_item_error_carries_its_own_error_reason_and_metadata() {
         Some("50")
     );
 }
+
+/// The chunk size `check_permissions` splits at. Mirrors the crate-private
+/// `DEFAULT_CHECK_BATCH_SIZE`.
+const CHECK_BATCH_SIZE: usize = 1_000;
+
+fn numbered_rels(n: usize) -> Vec<Relationship> {
+    (0..n)
+        .map(|i| {
+            Relationship::new("document", format!("{i:05}"), "view", "user", "alice", "")
+                .expect("valid relationship")
+        })
+        .collect()
+}
+
+fn ok_pair() -> proto::CheckBulkPermissionsPair {
+    item_pair(
+        proto::check_permission_response::Permissionship::HasPermission,
+        None,
+    )
+}
+
+/// Every "check item N" message must name the caller's own index, not the
+/// index within whichever chunk carried the failure.
+///
+/// `check_permissions` splits at `DEFAULT_CHECK_BATCH_SIZE` and mapped each
+/// response with a chunk-local `enumerate()`, so a failure at the caller's
+/// relationship 1003 reported `check item 3` -- one resource's answer
+/// attributed to another, which is exactly the misattribution the pair-count
+/// guard exists to prevent, relocated into the diagnostic. This client chunked
+/// before the other six did, so it carried the defect longest.
+#[tokio::test]
+async fn per_item_error_reports_the_callers_absolute_index() {
+    let failing = CHECK_BATCH_SIZE + 3;
+
+    let mock = MockPermissionsService::new();
+    // First chunk: 1,000 successful items.
+    mock.push_check_bulk_permissions_response(proto::CheckBulkPermissionsResponse {
+        checked_at: None,
+        pairs: (0..CHECK_BATCH_SIZE).map(|_| ok_pair()).collect(),
+    });
+    // Second chunk: the failure sits at local index 3, absolute index 1003.
+    mock.push_check_bulk_permissions_response(proto::CheckBulkPermissionsResponse {
+        checked_at: None,
+        pairs: (0..CHECK_BATCH_SIZE)
+            .map(|i| {
+                if i == 3 {
+                    error_pair(7, "nope")
+                } else {
+                    ok_pair()
+                }
+            })
+            .collect(),
+    });
+
+    let addr = spawn_permissions_server(mock).await;
+    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
+        .await
+        .expect("client should connect to mock server");
+
+    let err = client
+        .check_permissions(
+            &consistency::full(),
+            "view",
+            &numbered_rels(CHECK_BATCH_SIZE * 2),
+        )
+        .await
+        .expect_err("a per-item error must surface as an Err");
+
+    let message = err.to_string();
+    assert!(
+        message.contains(&format!("check item {failing}:")),
+        "must name the caller's index ({failing}), not the chunk-relative 3: {message}"
+    );
+    assert!(
+        !message.contains("check item 3:"),
+        "must not report the chunk-relative index: {message}"
+    );
+}
+
+/// The same requirement on the malformed-oneof guard, which builds its own
+/// message rather than routing through the error mapper.
+#[tokio::test]
+async fn malformed_pair_reports_the_callers_absolute_index() {
+    let failing = CHECK_BATCH_SIZE + 5;
+
+    let mock = MockPermissionsService::new();
+    mock.push_check_bulk_permissions_response(proto::CheckBulkPermissionsResponse {
+        checked_at: None,
+        pairs: (0..CHECK_BATCH_SIZE).map(|_| ok_pair()).collect(),
+    });
+    mock.push_check_bulk_permissions_response(proto::CheckBulkPermissionsResponse {
+        checked_at: None,
+        pairs: (0..CHECK_BATCH_SIZE)
+            .map(|i| {
+                if i == 5 {
+                    // Neither Item nor Error set -- the oneof left empty.
+                    proto::CheckBulkPermissionsPair {
+                        request: None,
+                        response: None,
+                    }
+                } else {
+                    ok_pair()
+                }
+            })
+            .collect(),
+    });
+
+    let addr = spawn_permissions_server(mock).await;
+    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
+        .await
+        .expect("client should connect to mock server");
+
+    let err = client
+        .check_permissions(
+            &consistency::full(),
+            "view",
+            &numbered_rels(CHECK_BATCH_SIZE * 2),
+        )
+        .await
+        .expect_err("a malformed pair must surface as an Err");
+
+    let message = err.to_string();
+    assert!(
+        message.contains("malformed CheckBulkPermissionsPair"),
+        "{message}"
+    );
+    assert!(
+        message.contains(&format!("check item {failing}:")),
+        "must name the caller's index ({failing}), not the chunk-relative 5: {message}"
+    );
+    assert!(
+        !message.contains("check item 5:"),
+        "must not report the chunk-relative index: {message}"
+    );
+}

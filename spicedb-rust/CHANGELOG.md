@@ -47,6 +47,19 @@
 
 ### Fixes
 
+- **2026-08-19**: **A per-item check error named the wrong relationship.** `check_permissions`
+  splits inputs at `DEFAULT_CHECK_BATCH_SIZE` and mapped each response with a chunk-local
+  `enumerate()`, so both the per-item-error message and the malformed-oneof message reported the
+  index *within that chunk*. A failure at the caller's relationship 1,003 read as `check item 3`,
+  so a caller who logs or parses the message acts on relationship 3 — one resource's answer
+  attributed to another, which is exactly the misattribution the pair-count guard exists to
+  prevent, relocated into the diagnostic. Both messages now report an absolute offset.
+
+  This crate chunked before the other six did, so it carried the defect longest; the six fixed it
+  as part of adopting chunking, and this closes the gap that left this crate silently diverging
+  from a contract `spicedb-java/DESIGN.md` pins as "matching `spicedb-go`". Two tests cover it,
+  each putting the failure in the second chunk.
+
 - **2026-08-19** (documentation only; no behaviour change): `check_permissions`' doc comment
   said each result's `checked_at` was "the revision the whole batch was evaluated at" — directly
   after the sentence explaining that large batches are split into chunks of 1,000, which it

@@ -512,7 +512,16 @@ impl SpiceDBClient {
         let timeout = self.effective_timeout(timeout);
         let mut all_results = Vec::with_capacity(relationships.len());
 
-        for chunk in relationships.chunks(DEFAULT_CHECK_BATCH_SIZE) {
+        for (chunk_index, chunk) in relationships.chunks(DEFAULT_CHECK_BATCH_SIZE).enumerate() {
+            // This chunk's start index within `relationships`, as the caller
+            // counts. Every "check item N" message below reports `offset + i`,
+            // not the chunk-local `i`: the index a caller sees must be the one
+            // they can use to look up their own relationship. Reporting the
+            // chunk-relative index attributed a failure at relationship 1003
+            // to relationship 3 -- one resource's answer attributed to
+            // another, which is the very failure the pair-count guard above
+            // exists to prevent, relocated into the diagnostic.
+            let offset = chunk_index * DEFAULT_CHECK_BATCH_SIZE;
             let items = build_check_items(permission, chunk, context);
 
             let resp = self
@@ -562,7 +571,7 @@ impl SpiceDBClient {
                         // be indistinguishable except by the reason itself. See
                         // root DESIGN.md, "RULE: Error mapping must not lose the
                         // server's detail".
-                        let message = format!("check item {}: {}", i, err_resp.message);
+                        let message = format!("check item {}: {}", offset + i, err_resp.message);
                         let details = prost::Message::encode_to_vec(err_resp);
                         return Err(error::from_grpc_status_with_message(
                             tonic::Status::with_details(
@@ -586,8 +595,9 @@ impl SpiceDBClient {
                         // the rest of the batch. Fail loudly instead of
                         // returning a misaligned-but-"successful" Vec.
                         return Err(error::internal(format!(
-                            "check item {i}: malformed CheckBulkPermissionsPair (neither Item \
-                             nor Error set)"
+                            "check item {}: malformed CheckBulkPermissionsPair (neither Item \
+                             nor Error set)",
+                            offset + i
                         )));
                     }
                 }

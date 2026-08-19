@@ -587,8 +587,11 @@ clients have both.
   types.
 - **Java** — *accessor:* `SpiceDBClient.rawChannel()`, returning this client's own
   `io.grpc.Channel` with its bearer metadata already attached, so any generated stub is
-  one `newStub` call away. Declared as `Channel`, not `ManagedChannel`, so the lifecycle
-  stays with the client. *Configuration:* `ClientOption.apply(ManagedChannelBuilder)`,
+  one `newStub` call away. The lifecycle stays with the client because
+  `ClientInterceptors.intercept` returns a package-private `Channel` subclass whose delegate
+  is unreachable — a cast to `ManagedChannel` throws — not merely because the return type
+  says `Channel`. (The idiomatic client does not wrap `spicedb-java-proto`'s
+  `SpiceDBProtoClient`, which exists but is unused there; it builds its own stubs.) *Configuration:* `ClientOption.apply(ManagedChannelBuilder)`,
   documented as an escape hatch on `ClientOption#apply`. `grpc-netty-shaded` and the
   generated stubs are declared `api` in
   `proto-clients/spicedb-java-proto/build.gradle.kts`, so both reach consumer code.
@@ -606,10 +609,23 @@ Three constraints bind all of them:
 
 1. **An accessor must never become a constructor.** Handing back an already-built
    channel, stub, or client is fine; growing a parameter for an endpoint, token, or
-   transport setting is not — that would be a second path that builds a connection, and
+   transport setting is not — that would be a new path that builds a connection, and
    **RULE: Credentials over insecure transport require an explicit opt-in** is enforced
-   on the single existing one. Each client's tests pin this directly, by asserting the
-   accessor takes no arguments.
+   on the paths that already do (one each in Go, Python, TypeScript, Rust, C# and Ruby;
+   Java has three — `SpiceDBClient.java`'s plaintext, custom and system-TLS factories,
+   with the guard on the first two and the third TLS-only by construction). Each client's
+   tests pin this directly, by asserting the accessor takes no arguments.
+
+   **The configuration hatches carry a disclosure, and it is not decoration.** A guard
+   that recognizes named options cannot see what an arbitrary builder callback or dial
+   option does to the connection, so each of those hatches states in its own doc comment
+   what its guard can and cannot see — Java on `ClientOption#apply` and `create`, C# on
+   `CreateFromChannel`, Go on `WithDialOptions` in both tiers. Go's is the mildest case
+   and shows why the disclosure belongs there anyway: caller dial options are appended
+   last and later ones win, so a caller can replace the transport credentials this library
+   chose; it fails closed only because the bearer credentials' `RequireTransportSecurity`
+   makes grpc-go refuse to attach the token to a downgraded transport. A hatch whose
+   disclosure is missing is a hatch whose reader has to derive that themselves.
 2. **A configuration hatch is not a substitute for an accessor.** Rebuilding the
    connection to make one raw call means replicating the client's transport configuration
    by hand; get it wrong and the raw path runs with *different transport security than the

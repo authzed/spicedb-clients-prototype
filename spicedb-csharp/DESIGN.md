@@ -665,6 +665,24 @@ public sealed record CheckResult { Permissionship, MissingContext, CheckedAt, Ha
 - `SpiceDBClient.RawProto()` — the underlying `SpiceDBProtoClient` and its four generated
   service clients, for an RPC or proto field the idiomatic API does not wrap
 
+## Examples Manifest
+
+| Directory | Demonstrates |
+|-----------|-------------|
+| `CheckPermission/` | Basic permission check |
+| `WriteRelationships/` | Writing relationships with transactions |
+| `ReadRelationships/` | Reading relationships with async enumerables |
+| `LookupResources/` | Resource lookup |
+| `LookupSubjects/` | Subject lookup |
+| `CallDeadlines/` | The `defaultTimeout` construction parameter, a per-call `timeout` override, and confirming bulk import isn't bounded by the unary default |
+| `WatchChanges/` | Watching for changes |
+| `SchemaManagement/` | Schema read/write |
+| `BulkOperations/` | Bulk checks, batch writes, and bulk relationship import/export |
+| `SchemaReflection/` | Schema reflection, computable permissions, diffs |
+| `RelationshipCounters/` | Relationship counter registration and counting |
+| `ExpandPermissionTree/` | Expanding a permission into its native `PermissionTree` of subjects |
+| `RawEscapeHatch/` | `RawProto()` — driving the generated service client directly for a proto field (`OptionalTransactionMetadata`) and an RPC (`CheckPermission`) the idiomatic API does not expose |
+
 ## Changelog
 
 See [CHANGELOG.md](CHANGELOG.md) for release notes.

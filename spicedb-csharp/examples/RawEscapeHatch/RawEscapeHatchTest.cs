@@ -57,6 +57,12 @@ public class RawEscapeHatchTest
             },
         };
 
+        // Fully qualified on purpose, not out of habit: `Relationship`,
+        // `RelationshipUpdate` and `Consistency` exist in BOTH namespaces — the
+        // idiomatic `SpiceDB.Client` one and the generated `Authzed.Api.V1` one —
+        // and a raw call takes the proto types. A `using` alias would hide exactly
+        // the tier boundary this example is about, so the names say which tier they
+        // mean.
         var written = await client.RawProto().Permissions.WriteRelationshipsAsync(
             new WriteRelationshipsRequest
             {

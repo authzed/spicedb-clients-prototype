@@ -16,7 +16,7 @@ all reusing the one client below.
 
 import pytest
 
-from conftest import ENDPOINT, SCHEMA, TOKEN
+from conftest import ENDPOINT, SCHEMA, TOKEN, clear_documents_sync
 from spicedb import Filter, Relationship, full
 from spicedb.consistency import at_least
 from spicedb.sync import SpiceDBClient
@@ -43,6 +43,8 @@ def test_check_permission_sync():
     # A real app would call write_schema once at startup too -- it's
     # colocated with the test body here only to keep the example
     # self-contained and independent of test ordering.
+    # Clear before writing the schema -- see conftest.clear_documents.
+    clear_documents_sync(client)
     client.write_schema(SCHEMA)
     revision = client.write(_grant())
 

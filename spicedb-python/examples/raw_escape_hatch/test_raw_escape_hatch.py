@@ -26,7 +26,7 @@ from authzed.api.v1 import permission_service_pb2 as psp
 from authzed.api.v1 import permission_service_pb2_grpc as psg
 from google.protobuf import struct_pb2
 
-from conftest import ENDPOINT, SCHEMA, TOKEN
+from conftest import ENDPOINT, SCHEMA, TOKEN, clear_documents_sync
 from spicedb import Filter, Relationship, full
 from spicedb.consistency import at_least
 from spicedb.sync import SpiceDBClient
@@ -94,6 +94,8 @@ def test_raw_grpc_from_the_sync_client():
         ENDPOINT, token=TOKEN, insecure=True
     )
     try:
+        # Clear before writing the schema -- see conftest.clear_documents.
+        clear_documents_sync(sync_client)
         sync_client.write_schema(SCHEMA)
         txn = Transaction()
         txn.touch(Relationship.from_triple("document:ledger", "viewer", "user:jimmy"))

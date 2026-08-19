@@ -9,7 +9,7 @@ deadline".
 
 import pytest
 
-from conftest import ENDPOINT, TOKEN
+from conftest import ENDPOINT, TOKEN, clear_documents
 from spicedb import Filter, Relationship, full
 from spicedb.aio import SpiceDBClient
 from spicedb.types import Transaction
@@ -30,6 +30,8 @@ async def test_default_timeout_construction_param():
         insecure=True,
         default_timeout=5.0,
     ) as client:
+        # Clear before writing the schema -- see conftest.clear_documents.
+        await clear_documents(client)
         await client.write_schema(
             "definition user {}\n\n"
             "definition document {\n"

@@ -20,7 +20,7 @@ import time
 
 import pytest
 
-from conftest import ENDPOINT, SCHEMA, TOKEN
+from conftest import ENDPOINT, SCHEMA, TOKEN, clear_documents_sync
 from spicedb import Filter, Relationship, UpdateOperation
 from spicedb.sync import SpiceDBClient
 from spicedb.types import Transaction
@@ -33,6 +33,8 @@ def test_watch_changes_sync():
     with SpiceDBClient(
         ENDPOINT, token=TOKEN, insecure=True
     ) as client:
+        # Clear before writing the schema -- see conftest.clear_documents.
+        clear_documents_sync(client)
         client.write_schema(SCHEMA)
 
         # Write an initial relationship to get a starting revision.
@@ -119,6 +121,8 @@ def test_watch_changes_with_checkpoints_sync():
     with SpiceDBClient(
         ENDPOINT, token=TOKEN, insecure=True
     ) as client:
+        # Clear before writing the schema -- see conftest.clear_documents.
+        clear_documents_sync(client)
         client.write_schema(SCHEMA)
 
         seen_checkpoint = False

@@ -9,7 +9,7 @@ results.
 
 import pytest
 
-from conftest import ENDPOINT, SCHEMA, TOKEN
+from conftest import ENDPOINT, SCHEMA, TOKEN, clear_documents_sync
 from spicedb import Filter, Relationship, full
 from spicedb.sync import SpiceDBClient
 from spicedb.types import Transaction
@@ -22,6 +22,8 @@ def test_read_relationships_sync():
     with SpiceDBClient(
         ENDPOINT, token=TOKEN, insecure=True
     ) as client:
+        # Clear before writing the schema -- see conftest.clear_documents.
+        clear_documents_sync(client)
         client.write_schema(SCHEMA)
 
         # Set up more than one relationship.

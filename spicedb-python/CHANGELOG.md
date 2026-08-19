@@ -234,6 +234,28 @@
 
 ### Fixed
 
+- **2026-08-19**: **The example set is pinned by name, not by count.** `wantExampleCount` passed
+  unchanged when an example directory was *renamed* -- only deletion was caught, and a manifest
+  can drift from disk with no signal. `wantExamples` now lists every example by name and is
+  reconciled with the glob in both directions, the same shape the skip targets already used.
+  Verified by renaming `examples/lookup_subjects`: `expected but absent: [lookup_subjects];
+  present but not expected: [lookup_subj]`.
+
+- **2026-08-19**: **A skipped case no longer counts as an executed one.** The report reader
+  behind the executed-count assertion counted every reported case, so a fully-`@pytest.mark.skip` example
+  would have satisfied "this example contributed a test case" while running nothing. Skipped
+  cases are now excluded and the reported total is the executed total. No such example exists
+  today; the point is that adding one cannot go unnoticed.
+
+- **2026-08-19**: **Example cleanup moved to before the schema write.** `examples/conftest.py`'s
+  fixture wrote the shared schema without clearing first, and the four `sync_*` examples plus
+  `call_deadlines` and `raw_escape_hatch` build their own client and bypass the fixture entirely.
+  Since SpiceDB refuses a `WriteSchema` that drops a relation while a relationship still exists
+  under it, what a previous example left behind is the next one's problem -- and a teardown-time
+  cleanup does nothing when the test that should have run it failed first, so one genuine failure
+  cascades into spurious ones. `conftest.clear_documents` / `clear_documents_sync` now run before
+  every schema write, tolerating the fresh-server case where no `document` definition exists.
+
 - **2026-08-19**: **`pytest -k "not watch"` replaced by a named, counted skip list.** A `-k`
   substring filter that matches nothing exits 0, so the previous form could silently stop
   excluding what it was written to exclude -- or silently start excluding everything -- with no

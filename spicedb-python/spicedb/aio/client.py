@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 
 from spicedb import _mapping, _requests
 from spicedb._auth import bearer_metadata, require_insecure_transport_allowed
+from spicedb._tls import channel_credentials, require_tls_material_usable
 from spicedb._requests import DEFAULT_PAGE_SIZE as _DEFAULT_PAGE_SIZE
 from spicedb._requests import IMPORT_BATCH_SIZE as _IMPORT_BATCH_SIZE
 from spicedb.consistency import Consistency
@@ -95,6 +96,20 @@ class SpiceDBClient:
     -- the local-development case that is the entire reason it exists. See
     root DESIGN.md, "RULE: Credentials over insecure transport require an
     explicit opt-in".
+
+    To reach a SpiceDB fronted by a private or corporate CA, pass that CA's
+    roots as ``ca_cert`` (PEM bytes), and add ``client_cert``/``client_key``
+    where the server requires mutual TLS::
+
+        async with SpiceDBClient(
+            "spicedb.internal:443",
+            token="test",
+            ca_cert=pathlib.Path("/etc/ssl/certs/internal-ca.pem").read_bytes(),
+        ) as client:
+            ...
+
+    Trust material never changes whether TLS is used: ``insecure`` alone
+    decides that, and passing both is refused rather than silently ignored.
     """
 
     def __init__(
@@ -104,6 +119,9 @@ class SpiceDBClient:
         *,
         insecure: bool = False,
         allow_insecure_remote_credentials: bool = False,
+        ca_cert: bytes | None = None,
+        client_cert: bytes | None = None,
+        client_key: bytes | None = None,
         max_retries: int = _DEFAULT_MAX_RETRIES,
         default_timeout: float = _DEFAULT_TIMEOUT_SECONDS,
     ):
@@ -119,18 +137,50 @@ class SpiceDBClient:
         (localhost, 127.0.0.0/8, ::1, or a unix socket target) needs no such
         opt-in -- that is the ordinary local-development case.
 
+        ``ca_cert``, ``client_cert`` and ``client_key`` are PEM bytes
+        configuring TLS for the secure path. Leave all three unset for the
+        default: grpc's own trust source, as root DESIGN.md, "RULE: A
+        system-TLS constructor must reach a real server", clause 1 requires.
+
+        - ``ca_cert`` -- the root(s) used to verify SpiceDB's certificate,
+          one or more concatenated PEM certificates. Supply this to reach a
+          SpiceDB fronted by a private or corporate CA. It REPLACES grpc's
+          bundled roots for this client rather than adding to them. That
+          bundled set is compiled into grpc's C-core, so a CA installed in
+          the host's own trust store is not otherwise honoured -- the exact
+          hazard the rule above names, and the reason this parameter exists.
+        - ``client_cert`` / ``client_key`` -- the client's own certificate
+          chain and private key, for a server that requires mutual TLS. Both
+          must be supplied together.
+
+        None of the three enables or disables TLS; ``insecure`` alone decides
+        that, and combining it with any of them is refused (see below) rather
+        than silently ignored.
+
         :raises spicedb.errors.InvalidArgumentError: if ``insecure`` is True,
             ``endpoint`` is not loopback, and
-            ``allow_insecure_remote_credentials`` is False. Raised before any
-            channel or credential is created.
+            ``allow_insecure_remote_credentials`` is False; if ``insecure`` is
+            True and any of ``ca_cert``/``client_cert``/``client_key`` is
+            supplied, since a plaintext connection performs no handshake to
+            apply them to; or if exactly one of ``client_cert``/``client_key``
+            is supplied. Raised before any channel or credential is created.
         """
         require_insecure_transport_allowed(
             endpoint,
             insecure=insecure,
             allow_insecure_remote_credentials=allow_insecure_remote_credentials,
         )
+        require_tls_material_usable(
+            insecure=insecure,
+            ca_cert=ca_cert,
+            client_cert=client_cert,
+            client_key=client_key,
+        )
         self._endpoint = endpoint
         self._insecure = insecure
+        self._ca_cert = ca_cert
+        self._client_cert = client_cert
+        self._client_key = client_key
         self._max_retries = max_retries
         self._default_timeout = default_timeout
         self._metadata = bearer_metadata(token)
@@ -165,7 +215,10 @@ class SpiceDBClient:
             self._channel = grpc.aio.insecure_channel(self._endpoint)
         else:
             self._channel = grpc.aio.secure_channel(
-                self._endpoint, grpc.ssl_channel_credentials()
+                self._endpoint,
+                channel_credentials(
+                    self._ca_cert, self._client_cert, self._client_key
+                ),
             )
         self._loop = loop
 

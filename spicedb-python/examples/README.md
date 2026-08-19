@@ -33,3 +33,4 @@ Or use `mage test` which starts a SpiceDB container automatically.
 | `sync_write_relationships/` | Writing relationships with the transaction builder, synchronously |
 | `sync_read_relationships/` | Reading relationships with a plain `for` loop instead of `async for` |
 | `sync_watch_changes/` | Watching for changes from a blocking generator |
+| `custom_tls/` | Reaching a SpiceDB behind a private CA with `ca_cert`, and mutual TLS with `client_cert`/`client_key`. Brings its own TLS endpoint — the only example that does not use the shared SpiceDB at `localhost:50051`, since a plaintext server has nothing to say about trust material |

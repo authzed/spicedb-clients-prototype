@@ -4,6 +4,39 @@
 
 ### Added
 
+- Caller-supplied TLS trust material on both `spicedb.sync.SpiceDBClient` and
+  `spicedb.aio.SpiceDBClient`: three new keyword-only constructor parameters,
+  all PEM bytes and all defaulting to `None`. Purely additive — an existing
+  call site is byte-identical in behavior.
+  - `ca_cert` — the root(s) used to verify SpiceDB's certificate. Supply this
+    to reach a SpiceDB fronted by a private or corporate CA. It replaces
+    grpc's roots for that client rather than adding to them.
+  - `client_cert` / `client_key` — the client's own certificate chain and
+    private key, for a server requiring mutual TLS. Both must be supplied
+    together; either alone raises `InvalidArgumentError`.
+
+  Without these, a private-CA deployment was unreachable: grpc's C-core
+  compiles in its own `roots.pem`, so a CA installed in the host's trust store
+  is not honoured. Root DESIGN.md, "RULE: A system-TLS constructor must reach
+  a real server", permits delegating to that bundled set precisely because a
+  caller can supply their own material instead — which is now true.
+
+  Trust material never changes whether TLS is used. Combining any of the three
+  with `insecure=True` raises `InvalidArgumentError` in the constructor rather
+  than being silently ignored (which is what grpc would do, while the call site
+  read as though TLS were configured), so this cannot become a quieter route
+  around root DESIGN.md, "RULE: Credentials over insecure transport require an
+  explicit opt-in". The existing loopback guard still applies first and
+  unchanged.
+
+  ```python
+  client = SpiceDBClient(
+      "spicedb.internal:443",
+      token="my-token",
+      ca_cert=pathlib.Path("/etc/ssl/certs/internal-ca.pem").read_bytes(),
+  )
+  ```
+
 - Error mapping now carries the server's detail all the way to the caller, per
   root DESIGN.md, "RULE: Error mapping must not lose the server's detail".
   Purely additive.

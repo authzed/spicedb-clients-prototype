@@ -76,6 +76,60 @@ local-development case that is the entire reason it exists. Anything else
 needs `allow_insecure_remote_credentials=True` passed explicitly, or the
 constructor raises `InvalidArgumentError` before any channel is created.
 
+### Custom TLS trust material
+
+```python
+# A SpiceDB behind a private or corporate CA
+client = SpiceDBClient(
+    "spicedb.internal:443",
+    token="my-token",
+    ca_cert=pathlib.Path("/etc/ssl/certs/internal-ca.pem").read_bytes(),
+)
+
+# ...and where the server requires mutual TLS
+client = SpiceDBClient(
+    "spicedb.internal:443",
+    token="my-token",
+    ca_cert=ca_pem,
+    client_cert=cert_pem,
+    client_key=key_pem,
+)
+```
+
+All three are PEM **bytes**, not paths: certificates commonly arrive from a
+mounted secret or a config store rather than the local filesystem, and reading
+a file is the caller's one-liner either way.
+
+Why these exist. Root DESIGN.md, "RULE: A system-TLS constructor must reach a
+real server", requires the default secure path to delegate to the ecosystem's
+default trust source — for grpc-python that is `grpc.ssl_channel_credentials()`
+with no arguments — and names the hazard that leaves visible: grpc's C-core
+compiles in its own `roots.pem`, so a CA an operator installed in the host's
+trust store is **not** honoured by the default. That rule permits delegating
+to the bundled set precisely *because* a caller can supply their own material
+instead; `ca_cert` is what makes that true here.
+
+`ca_cert` **replaces** grpc's bundled roots for that client rather than adding
+to them (grpc's own behavior, and generally what a deployment pinning a private
+CA wants). Leaving all three unset produces credentials byte-identical to a
+bare `grpc.ssl_channel_credentials()`, so the default remains pure delegation —
+this library never selects a root set of its own, which clause 1 of that rule
+prohibits.
+
+Two combinations are refused in the constructor, before any channel exists:
+
+- **`insecure=True` with any of the three.** A plaintext connection performs no
+  handshake, so grpc would silently ignore the material and put the bearer
+  token on the wire in cleartext behind a call site that reads as though TLS
+  were configured — the failure root DESIGN.md, "RULE: Credentials over
+  insecure transport require an explicit opt-in", exists to prevent. Supplying
+  trust material is never a second, quieter route to an insecure transport, and
+  never a construction path that skips that rule's guard. It raises rather than
+  silently turning TLS on, since an implicit upgrade is just as surprising.
+- **`client_cert` without `client_key`, or vice versa.** Neither half is usable
+  alone; grpc's C-core would reject the pair later, from a layer with no idea
+  which argument was wrong.
+
 Context manager — `async with` on `spicedb.aio`, `with` on `spicedb.sync`:
 
 ```python

@@ -2,7 +2,7 @@ package com.authzed.spicedb.examples;
 
 import com.authzed.spicedb.Filter;
 import com.authzed.spicedb.SpiceDBClient;
-import com.authzed.spicedb.errors.SpiceDBException;
+import com.authzed.spicedb.errors.FailedPreconditionException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 
@@ -57,8 +57,11 @@ abstract class SpiceDBIntegrationTest {
   static void clearDocumentRelationships(SpiceDBClient client) {
     try {
       client.deleteRelationships(Filter.of("document"));
-    } catch (SpiceDBException e) {
+    } catch (FailedPreconditionException e) {
       // No `document` definition in the live schema yet: nothing to clear.
+      // SpiceDB reports that as FAILED_PRECONDITION
+      // (ERROR_REASON_UNKNOWN_DEFINITION). Only that error is tolerated -- an
+      // unreachable server or a bad token must still fail the example.
     }
   }
 

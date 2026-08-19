@@ -295,6 +295,12 @@
 
 ### Fixes
 
+- **2026-08-19**: **The clear-before-write delete tolerates one error, not all of them.** It
+  swallowed every failure, so an unreachable server or a rotated token read as "nothing to clear"
+  and the test carried on to fail somewhere less obvious. Only
+  `FAILED_PRECONDITION`/`ERROR_REASON_UNKNOWN_DEFINITION` -- a fresh server with no `document`
+  definition -- is tolerated now; anything else fails the test where it happened.
+
 - **2026-08-19**: **The example set is pinned by name, not by count.** `wantExampleCount` passed
   unchanged when an example class was *renamed* -- only deletion was caught, and a manifest
   can drift from disk with no signal. `wantExamples` now lists every example by name and is

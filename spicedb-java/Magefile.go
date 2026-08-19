@@ -378,11 +378,17 @@ func IntegrationTest() error {
 		return err
 	}
 
-	// Clear the example reports first, for two reasons: it makes
-	// :examples:test out of date, so Gradle cannot skip the run it was asked
-	// for, and it means any report present afterwards was written by this run
-	// rather than left over from an earlier one -- which is what makes the
-	// count below evidence rather than decoration.
+	// Clear the example reports first. The part that carries the weight is
+	// what this makes true afterwards: any report present was written by *this*
+	// run, so the check below is evidence rather than decoration, and its
+	// absence is itself a failure ("no JUnit reports under ...").
+	//
+	// Deleting the outputs usually also makes :examples:test out of date, but
+	// that is the weaker of the two reasons and cannot be relied on: a warm
+	// daemon with stale file-watching has been observed reporting
+	// ":examples:test UP-TO-DATE" with this directory freshly deleted. The run
+	// still failed correctly -- on the missing reports, not on the staleness.
+	// Do not remove the report-presence check as redundant.
 	exampleResults := "examples/build/test-results/test"
 	if err := os.RemoveAll(exampleResults); err != nil {
 		return fmt.Errorf("clearing %s failed: %w", exampleResults, err)

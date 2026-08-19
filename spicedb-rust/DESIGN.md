@@ -39,10 +39,12 @@ Endpoint and token parameters accept `impl Into<String>` for ergonomics.
 
 Per root DESIGN.md, "RULE: Credentials over insecure transport require an
 explicit opt-in": `.plaintext()`/`new_plaintext` only permit a plaintext
-connection to a loopback endpoint (`localhost`, `127.0.0.0/8`, `::1`, or a
-`unix:` socket target) — the local-development case that is the entire
-reason they exist. Anything else needs `.allow_insecure_remote_credentials()`
-called explicitly on the builder, or `build()` returns
+connection to a loopback endpoint (`localhost`, `127.0.0.0/8`, or `::1`) —
+the local-development case that is the entire reason they exist. A `unix:`
+target is NOT loopback here and is refused outright: tonic dials a URI, so it
+would resolve the DNS name `unix` rather than a socket path. Anything else
+needs `.allow_insecure_remote_credentials()` called explicitly on the builder,
+or `build()` returns
 `SpiceDBError::InvalidArgument` before any channel is created.
 
 **TLS roots.** `new_system_tls` uses tonic's `tls-native-roots` feature and calls

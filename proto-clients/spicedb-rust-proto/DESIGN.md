@@ -44,9 +44,11 @@ The `src/client.rs` file provides:
 
    Per root DESIGN.md, "RULE: Credentials over insecure transport require an
    explicit opt-in": `insecure` alone only permits a plaintext connection to
-   a loopback endpoint (`localhost`, `127.0.0.0/8`, `::1`, or a `unix:`
-   socket target). `SpiceDBProtoClient::new_with_options(endpoint, token,
-   insecure, allow_insecure_remote_credentials)` is the opt-in entry point
+   a loopback endpoint (`localhost`, `127.0.0.0/8`, or `::1`). A
+   `unix:` target is NOT loopback here and is refused outright: tonic dials a
+   URI, so it would resolve the DNS name `unix` rather than a socket path.
+   `SpiceDBProtoClient::new_with_options(endpoint, token, insecure,
+   allow_insecure_remote_credentials)` is the opt-in entry point
    for a non-loopback endpoint; `new` delegates to it with `false`. Returns
    `SpiceDBProtoClientError` (not a bare `tonic::transport::Error`), with an
    `InsecureRemoteHostNotAllowed(String)` variant for a rejected combination

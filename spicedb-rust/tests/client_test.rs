@@ -120,6 +120,32 @@ mod insecure_host_guard {
         }
     }
 
+    /// Bare `::1` must produce a working client through the public entry
+    /// point, not merely satisfy the guard: it is item 8 of the loopback
+    /// contract. It is not a legal URI authority, so it has to be bracketed
+    /// when the transport address is built, and it previously was not.
+    #[tokio::test]
+    async fn new_plaintext_accepts_bare_ipv6_loopback() {
+        for endpoint in ["::1", "[::1]", "[::1]:50051"] {
+            let result = SpiceDBClient::new_plaintext(endpoint, "testtoken").await;
+            assert!(
+                result.is_ok(),
+                "bare IPv6 loopback {endpoint:?} must construct a client, got {:?}",
+                result.err()
+            );
+        }
+    }
+
+    /// A multi-byte character must not panic out of the constructor.
+    #[tokio::test]
+    async fn new_plaintext_returns_err_for_multibyte_endpoint() {
+        match SpiceDBClient::new_plaintext("abcdé.example.com:443", "testtoken").await {
+            Err(SpiceDBError::InvalidArgument(_)) => {}
+            Err(other) => panic!("expected InvalidArgument, got {other:?}"),
+            Ok(_) => panic!("expected a multi-byte non-loopback endpoint to be refused"),
+        }
+    }
+
     /// A unix-socket endpoint is refused, not silently turned into a DNS
     /// lookup for the hostname `unix`. tonic cannot dial a UDS path from a URI.
     #[tokio::test]

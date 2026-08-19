@@ -22,8 +22,21 @@
   `Endpoint` is built from, and applies the loopback test to `Uri::host`. Guard and transport
   can no longer disagree. Endpoints containing `@`, `/`, `?`, `#`, or whitespace are
   additionally refused outright, since a legitimate SpiceDB target contains none of them. A
-  bare IPv6 literal (`"::1"`) is bracketed before parsing and keeps working, as do `localhost`
-  and 127.0.0.0/8.
+  bare IPv6 literal (`"::1"`) is bracketed — for the guard's parse **and** for the URI the
+  transport dials, both via one `transport_authority` helper, so the two cannot disagree — and
+  keeps working, as do `localhost` and 127.0.0.0/8.
+
+- **Bare `::1` now actually connects.** It satisfied the guard but then failed construction with
+  `InvalidUri(InvalidAuthority)`, because the guard bracketed it for its own parse while the
+  constructor built its URI from the raw endpoint (`"http://::1"` is not a legal URI). Both
+  sides now go through the same helper. `"::1"`, `"[::1]"` and `"0:0:0:0:0:0:0:1"` construct a
+  client.
+
+- **A multi-byte endpoint no longer panics out of the constructor.** The unix-target check
+  sliced `endpoint[..5]` — a *byte* index into a `&str` — which panics when byte 5 falls inside
+  a character, so an IDN hostname such as `"abcdé.example.com:443"` unwound out of an async
+  constructor instead of returning `Err`, aborting the Tokio task carrying it (or the process
+  under `panic = "abort"`). It now uses `str::get`, which is total.
 
 - **Breaking, and security-motivated: `unix:` endpoints are now refused instead of being
   treated as loopback.** `SpiceDBClient::new_plaintext("unix:/var/run/spicedb.sock", token)`

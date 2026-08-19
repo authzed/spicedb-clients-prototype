@@ -389,6 +389,55 @@ mod insecure_host_guard {
         }
     }
 
+    /// A bare IPv6 literal is item 8 of the loopback contract, and it must
+    /// produce a WORKING client, not merely satisfy the guard.
+    ///
+    /// `"::1"` is not a legal URI authority, so `"http://::1".parse::<Uri>()`
+    /// fails with `InvalidAuthority`. The guard bracketed it for its own parse
+    /// while the constructor built its URI from the raw endpoint, so `"::1"`
+    /// passed the guard and then failed to construct at all -- while the
+    /// fixture list above and the CHANGELOG both claimed it was supported.
+    /// Both now go through `transport_authority`.
+    #[tokio::test]
+    async fn bare_ipv6_loopback_constructs_a_client() {
+        for endpoint in ["::1", "[::1]", "0:0:0:0:0:0:0:1"] {
+            let result = SpiceDBProtoClient::new_with_options(endpoint, "t", true, false).await;
+            assert!(
+                result.is_ok(),
+                "bare IPv6 loopback {endpoint:?} must construct a client, got {:?}",
+                result.err()
+            );
+        }
+    }
+
+    /// A multi-byte character straddling byte 5 must return `Err`, not panic.
+    ///
+    /// The unix-target check sliced `endpoint[..5]`, a BYTE index into a
+    /// `&str`, which panics when byte 5 lands inside a character -- so
+    /// `"abcdé.example.com:443"` unwound out of this async constructor
+    /// instead of returning a `Result`, aborting the Tokio task carrying it
+    /// (or the process, under `panic = "abort"`). An IDN hostname is the
+    /// realistic trigger. C# and TypeScript never had this: their equivalents
+    /// (`StartsWith(..., OrdinalIgnoreCase)` and `/^unix:/i`) are total.
+    #[tokio::test]
+    async fn multibyte_endpoint_returns_err_rather_than_panicking() {
+        for endpoint in [
+            "abcdé.example.com:443",
+            "abcdé",
+            "unié:50051",
+            "日本語.example.com:443",
+        ] {
+            let result = SpiceDBProtoClient::new_with_options(endpoint, "t", true, false).await;
+            assert!(
+                matches!(
+                    result,
+                    Err(SpiceDBProtoClientError::InsecureRemoteHostNotAllowed(_))
+                ),
+                "{endpoint:?} must be refused with a Result, not panic or succeed"
+            );
+        }
+    }
+
     /// Companion to the two tests above: with no opt-in, the exact same
     /// TEST-NET-1 address that construction just permitted (with opt-in) is
     /// refused outright.

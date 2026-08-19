@@ -101,8 +101,10 @@ impl SpiceDBClientBuilder {
     /// Disables TLS for the connection. Use only for testing.
     ///
     /// By itself, this only permits a plaintext connection to a loopback
-    /// endpoint (localhost, 127.0.0.0/8, ::1, or a unix socket target) --
-    /// see root DESIGN.md, "RULE: Credentials over insecure transport
+    /// endpoint (localhost, 127.0.0.0/8, or ::1) -- a `unix:` target is NOT
+    /// loopback here and is refused outright, since tonic dials a URI and
+    /// would resolve the DNS name `unix` instead of a socket path. See
+    /// root DESIGN.md, "RULE: Credentials over insecure transport
     /// require an explicit opt-in". For a non-loopback endpoint, also call
     /// [`allow_insecure_remote_credentials`](Self::allow_insecure_remote_credentials).
     pub fn plaintext(mut self) -> Self {

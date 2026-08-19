@@ -54,6 +54,26 @@ impl From<tonic::transport::Error> for SpiceDBProtoClientError {
     }
 }
 
+/// Returns the URI authority the transport dials for `endpoint`.
+///
+/// This exists so [`is_loopback_endpoint`] and
+/// [`SpiceDBProtoClient::new_with_options`] cannot disagree about what is
+/// being connected to. It brackets a bare IPv6 literal: `"::1"` is a perfectly
+/// ordinary way to name the loopback host and is an explicit part of this
+/// client's supported set, but it is *not* a legal URI authority, so
+/// `"http://::1".parse::<Uri>()` fails with `InvalidAuthority`. The guard used
+/// to bracket it for its own parse while the constructor built the URI from
+/// the raw endpoint, which meant `"::1"` passed the guard and then failed to
+/// construct a client at all.
+///
+/// Anything already bracketed, or not an IPv6 literal, is returned unchanged.
+fn transport_authority(endpoint: &str) -> String {
+    match endpoint.parse::<IpAddr>() {
+        Ok(IpAddr::V6(_)) if !endpoint.starts_with('[') => format!("[{endpoint}]"),
+        _ => endpoint.to_string(),
+    }
+}
+
 /// Reports whether the connection this client would actually open for
 /// `endpoint` terminates on a loopback destination: the literal hostname
 /// "localhost", an IP in 127.0.0.0/8, or the IPv6 loopback ::1.
@@ -117,14 +137,12 @@ pub fn is_loopback_endpoint(endpoint: &str) -> bool {
         return false;
     }
 
-    // A bare IPv6 literal ("::1") is not a legal URI authority -- brackets
-    // are the only form the transport can dial -- so bracket it and let the
-    // one parser below judge it, rather than special-casing it out of the
-    // parse entirely.
-    let authority = match endpoint.parse::<IpAddr>() {
-        Ok(IpAddr::V6(_)) if !endpoint.starts_with('[') => format!("[{endpoint}]"),
-        _ => endpoint.to_string(),
-    };
+    // Exactly the authority the transport will dial -- see
+    // transport_authority, which new_with_options uses to build its URI. Using
+    // one function for both is the point: if this bracketed a bare IPv6
+    // literal and the constructor did not, the guard would vet an address the
+    // transport never sees.
+    let authority = transport_authority(endpoint);
 
     // The scheme is "http" because this guard only ever gates the insecure
     // path; either way, scheme does not affect how the authority is parsed.
@@ -212,7 +230,9 @@ impl SpiceDBProtoClient {
     /// * `token` - Bearer token for authentication
     /// * `insecure` - If true, disables TLS (for local testing). By itself,
     ///   this only permits a plaintext connection to a loopback endpoint
-    ///   (localhost, 127.0.0.0/8, ::1, or a unix socket target) -- see
+    ///   (localhost, 127.0.0.0/8, or ::1; a `unix:` target is NOT loopback
+    ///   here and is refused outright, since tonic would resolve the DNS
+    ///   name `unix` instead of a socket path) -- see
     ///   [`new_with_options`](Self::new_with_options) for a non-loopback
     ///   endpoint.
     pub async fn new(
@@ -254,7 +274,17 @@ impl SpiceDBProtoClient {
         // that DNS name and ship the bearer token there. Failing loudly is the
         // only honest answer; silently dialing a host called "unix" is not.
         // Matched case-insensitively because a URI scheme is case-insensitive.
-        if endpoint.len() >= 5 && endpoint[..5].eq_ignore_ascii_case("unix:") {
+        //
+        // endpoint.get(..5), not endpoint[..5]: the latter is a BYTE slice on a
+        // &str and panics when byte 5 falls inside a multi-byte character, so
+        // an IDN hostname like "abcdé.example.com:443" unwound out of this
+        // async constructor instead of returning Err -- aborting the Tokio task
+        // carrying it, or the process under panic=abort. get() returns None
+        // there instead.
+        if endpoint
+            .get(..5)
+            .is_some_and(|p| p.eq_ignore_ascii_case("unix:"))
+        {
             return Err(SpiceDBProtoClientError::UnixSocketNotSupported(format!(
                 "spicedb: unix-domain-socket targets are not supported by this client's \
                  transport: \"{endpoint}\". tonic would parse \"unix\" as a DNS hostname and \
@@ -278,10 +308,15 @@ impl SpiceDBProtoClient {
             )));
         }
 
+        // transport_authority, not the raw endpoint: a bare IPv6 literal must
+        // be bracketed to be a legal URI authority, and it is the same
+        // function the guard above vetted, so the two cannot disagree about
+        // where this connection goes.
+        let authority = transport_authority(endpoint);
         let uri = if insecure {
-            format!("http://{}", endpoint)
+            format!("http://{}", authority)
         } else {
-            format!("https://{}", endpoint)
+            format!("https://{}", authority)
         };
 
         let mut ep = Endpoint::from_shared(uri)?;

@@ -353,9 +353,9 @@ response. Default page sizes use sensible defaults:
 
 | Method | Default page size | Notes |
 |--------|------------------|-------|
-| `read_relationships` | 512 | cursor-based auto-pagination |
-| `lookup_resources` | 512 | cursor-based auto-pagination |
-| `lookup_subjects` | -- | no cursor support in SpiceDB yet; single streaming call |
+| `read_relationships.rs` | 512 | cursor-based auto-pagination |
+| `lookup_resources.rs` | 512 | cursor-based auto-pagination |
+| `lookup_subjects.rs` | -- | no cursor support in SpiceDB yet; single streaming call |
 | `export_relationships` | 512 | cursor-based auto-pagination |
 | `delete_relationships` | 1,000 | auto-repeats until all matched rels deleted; matches SpiceDB's default `--max-delete-relationships-limit` |
 | `import_relationships` | 1,000 | batches into client-streaming sends |
@@ -662,21 +662,21 @@ every change in the gap). `is_checkpoint` is true for a checkpoint event, which 
 
 (To be added when examples are implemented)
 
-| Directory | Demonstrates |
+| Example | Demonstrates |
 |-----------|-------------|
-| `check_permission/` | Basic permission check, plus a caveated check that comes back `ConditionalPermission` and is then resolved to a grant via `check_permission_with_context` |
-| `write_relationships/` | Writing relationships with transaction builder |
-| `read_relationships/` | Reading relationships with stream |
-| `lookup_resources/` | Finding resources a subject can access |
-| `lookup_subjects/` | Finding subjects with access to a resource |
-| `watch_changes/` | Watching for relationship changes |
-| `schema_management/` | Reading and writing schema |
-| `bulk_operations/` | Bulk checks and imports |
-| `schema_reflection/` | Schema reflection, computable permissions, dependent relations, diff |
-| `expand_permission_tree/` | Expanding a permission tree and walking the native `PermissionTree` |
-| `relationship_counters/` | Registering, reading, and unregistering relationship counters |
-| `call_deadlines` | Constructing a client with `default_timeout`, a per-call `_with_timeout` override, and confirming bulk import isn't bounded by the unary default |
-| `raw_escape_hatch/` | `raw_proto()` — driving the generated tonic client directly for a proto field (`optional_transaction_metadata`) and an RPC (`CheckPermission`) the idiomatic API does not expose |
+| `check_permission.rs` | Basic permission check, plus a caveated check that comes back `ConditionalPermission` and is then resolved to a grant via `check_permission_with_context` |
+| `write_relationships.rs` | Writing relationships with transaction builder |
+| `read_relationships.rs` | Reading relationships with stream |
+| `lookup_resources.rs` | Finding resources a subject can access |
+| `lookup_subjects.rs` | Finding subjects with access to a resource |
+| `watch_changes.rs` | Watching for relationship changes |
+| `schema_management.rs` | Reading and writing schema |
+| `bulk_operations.rs` | Bulk checks and imports |
+| `schema_reflection.rs` | Schema reflection, computable permissions, dependent relations, diff |
+| `expand_permission_tree.rs` | Expanding a permission tree and walking the native `PermissionTree` |
+| `relationship_counters.rs` | Registering, reading, and unregistering relationship counters |
+| `call_deadlines.rs` | Constructing a client with `default_timeout`, a per-call `_with_timeout` override, and confirming bulk import isn't bounded by the unary default |
+| `raw_escape_hatch.rs` | `raw_proto()` — driving the generated tonic client directly for a proto field (`optional_transaction_metadata`) and an RPC (`CheckPermission`) the idiomatic API does not expose |
 
 ## Changelog
 

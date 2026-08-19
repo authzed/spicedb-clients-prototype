@@ -105,8 +105,9 @@ dropped. It must keep covering, at minimum:
    that a constructor threw.
 4. **Bare IPv6 loopback constructs a real client**, rather than passing the guard and then
    throwing `UriFormatException` out of `GrpcChannel.ForAddress`.
-5. **`unix:` targets are refused outright**, in every combination of `insecure` and
-   `allowInsecureRemoteCredentials` — this transport would resolve the DNS name `unix`.
+5. **`unix:` targets are refused outright**, before either `insecure` or
+   `allowInsecureRemoteCredentials` is consulted — this transport would resolve the DNS
+   name `unix`.
 6. **Null arguments throw `ArgumentNullException`.**
 
 ### Deprecation Handling

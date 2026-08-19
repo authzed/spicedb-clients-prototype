@@ -51,7 +51,12 @@ class CallDeadlinesTest {
     // just a unit test against a stalling stub.
     client =
         SpiceDBClient.createPlaintext(
-            "localhost:50051", "somerandomkeyhere", Duration.ofSeconds(5));
+            SpiceDBIntegrationTest.ENDPOINT, SpiceDBIntegrationTest.TOKEN, Duration.ofSeconds(5));
+    // The schema here is narrower than the shared one in SpiceDBIntegrationTest, and every
+    // example runs against the same SpiceDB. SpiceDB refuses a WriteSchema that drops a relation
+    // while a relationship still exists under it, so clear before writing, not after: an earlier
+    // example leaving document:report#editor@user:alice behind is enough to fail this outright.
+    SpiceDBIntegrationTest.clearDocumentRelationships(client);
     client.writeSchema(SCHEMA);
     client.deleteRelationships(Filter.of("document"));
 
@@ -68,7 +73,14 @@ class CallDeadlinesTest {
 
   @Test
   void perCallTimeoutOverridesTheClientDefault() {
-    client = SpiceDBClient.createPlaintext("localhost:50051", "somerandomkeyhere");
+    client =
+        SpiceDBClient.createPlaintext(
+            SpiceDBIntegrationTest.ENDPOINT, SpiceDBIntegrationTest.TOKEN);
+    // The schema here is narrower than the shared one in SpiceDBIntegrationTest, and every
+    // example runs against the same SpiceDB. SpiceDB refuses a WriteSchema that drops a relation
+    // while a relationship still exists under it, so clear before writing, not after: an earlier
+    // example leaving document:report#editor@user:alice behind is enough to fail this outright.
+    SpiceDBIntegrationTest.clearDocumentRelationships(client);
     client.writeSchema(SCHEMA);
     client.deleteRelationships(Filter.of("document"));
 
@@ -95,7 +107,14 @@ class CallDeadlinesTest {
     // must still succeed; if a future change accidentally routed the unary default into this
     // call, a large enough import would start failing with DeadlineExceededException well before
     // it finished.
-    client = SpiceDBClient.createPlaintext("localhost:50051", "somerandomkeyhere");
+    client =
+        SpiceDBClient.createPlaintext(
+            SpiceDBIntegrationTest.ENDPOINT, SpiceDBIntegrationTest.TOKEN);
+    // The schema here is narrower than the shared one in SpiceDBIntegrationTest, and every
+    // example runs against the same SpiceDB. SpiceDB refuses a WriteSchema that drops a relation
+    // while a relationship still exists under it, so clear before writing, not after: an earlier
+    // example leaving document:report#editor@user:alice behind is enough to fail this outright.
+    SpiceDBIntegrationTest.clearDocumentRelationships(client);
     client.writeSchema(SCHEMA);
     client.deleteRelationships(Filter.of("document"));
 

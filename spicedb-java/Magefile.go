@@ -3,11 +3,13 @@
 package main
 
 import (
+	"encoding/xml"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -18,7 +20,32 @@ const (
 	maxRetries     = 3
 	protoClientDir = "../proto-clients/spicedb-java-proto"
 	lastGenFile    = ".last-generation"
+
+	// Defaults for the container docker-compose.test.yml starts. Overridable
+	// via SPICEDB_ENDPOINT / SPICEDB_TOKEN, which SpiceDBIntegrationTest reads,
+	// so the suite can be pointed at a SpiceDB on another port when 50051 is
+	// taken.
+	defaultEndpoint = "localhost:50051"
+	defaultToken    = "somerandomkeyhere"
+
+	exampleTestDir = "examples/src/test/java/com/authzed/spicedb/examples"
+
+	// Number of concrete example test classes in exampleTestDir. A glob cannot
+	// list an example that does not exist, but a renamed or moved file silently
+	// yields a *shorter* list instead of an error, so the count is asserted
+	// rather than trusted. Bump this when adding an example. See root
+	// DESIGN.md, "RULE: An example must be executed by CI and must be able to
+	// fail", clause 1.
+	wantExampleCount = 14
 )
+
+// notAnExample lists files under exampleTestDir that are not themselves
+// examples. SpiceDBIntegrationTest is the abstract base class the examples
+// extend: it has no @Test method, so JUnit never reports it as having run and
+// it must not be counted as one.
+var notAnExample = map[string]bool{
+	"SpiceDBIntegrationTest": true,
+}
 
 // Gen updates the idiomatic client based on proto client changes.
 func Gen() error {
@@ -97,7 +124,91 @@ func Gen() error {
 // that need a live SpiceDB; they run via IntegrationTest, which starts
 // docker-compose first.
 func Test() error {
+	if err := CheckExamples(); err != nil {
+		return err
+	}
 	return sh.RunV("gradle", ":lib:test")
+}
+
+// CheckExamples verifies the example wiring without needing a server or Gradle:
+// that the expected number of example test classes are on disk. It is cheap, so
+// Test runs it too.
+func CheckExamples() error {
+	names, err := exampleTargets()
+	if err != nil {
+		return err
+	}
+	fmt.Printf("==> spicedb-java: %d example test classes on disk\n", len(names))
+	return nil
+}
+
+// exampleTargets returns the sorted example test-class names on disk, after
+// asserting the set is the one this runner expects.
+//
+// The count assertion is what makes a rename fail loudly: a glob cannot list an
+// example that is not there, so without it a moved or renamed file just shrinks
+// the run and still reports green.
+func exampleTargets() ([]string, error) {
+	files, err := filepath.Glob(filepath.Join(exampleTestDir, "*Test.java"))
+	if err != nil {
+		return nil, fmt.Errorf("glob examples failed: %w", err)
+	}
+	sort.Strings(files)
+
+	var names []string
+	for _, f := range files {
+		name := strings.TrimSuffix(filepath.Base(f), ".java")
+		if notAnExample[name] {
+			continue
+		}
+		names = append(names, name)
+	}
+
+	if len(names) != wantExampleCount {
+		return nil, fmt.Errorf(
+			"%s/*Test.java yielded %d example classes, want %d: an example was added, renamed, "+
+				"or moved. Update wantExampleCount in Magefile.go if the change is intended",
+			exampleTestDir, len(names), wantExampleCount)
+	}
+	return names, nil
+}
+
+// junitClassesRun reads Gradle's JUnit XML reports and returns the set of
+// simple test-class names that reported at least one test case.
+func junitClassesRun(resultsDir string) (map[string]bool, int, error) {
+	files, err := filepath.Glob(filepath.Join(resultsDir, "TEST-*.xml"))
+	if err != nil {
+		return nil, 0, fmt.Errorf("glob test results failed: %w", err)
+	}
+	if len(files) == 0 {
+		return nil, 0, fmt.Errorf("no JUnit reports under %s: the example task produced no "+
+			"results, so nothing can be said about what ran", resultsDir)
+	}
+	ran := make(map[string]bool)
+	total := 0
+	for _, f := range files {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			return nil, 0, fmt.Errorf("reading %s: %w", f, err)
+		}
+		var suite struct {
+			Name  string `xml:"name,attr"`
+			Tests int    `xml:"tests,attr"`
+		}
+		if err := xml.Unmarshal(data, &suite); err != nil {
+			return nil, 0, fmt.Errorf("parsing %s: %w", f, err)
+		}
+		if suite.Tests == 0 {
+			continue
+		}
+		simple := suite.Name
+		if i := strings.LastIndex(simple, "."); i >= 0 {
+			simple = simple[i+1:]
+		}
+		ran[simple] = true
+		total += suite.Tests
+	}
+	return ran, total, nil
 }
 
 // Build compiles all source via Gradle.
@@ -181,25 +292,103 @@ func ApiCompat(baseRef string) error {
 
 // IntegrationTest starts SpiceDB via Docker and runs examples against it.
 func IntegrationTest() error {
+	// Fail before starting anything if the example set on disk is not the one
+	// this runner expects to execute.
+	names, err := exampleTargets()
+	if err != nil {
+		return err
+	}
+
+	endpoint := envOr("SPICEDB_ENDPOINT", defaultEndpoint)
+	token := envOr("SPICEDB_TOKEN", defaultToken)
+
+	// Publish the container on whatever port the endpoint names, so a caller
+	// whose 50051 is occupied can run the suite by setting SPICEDB_ENDPOINT
+	// alone.
+	port, err := portOf(endpoint)
+	if err != nil {
+		return err
+	}
+	composeEnv := map[string]string{"SPICEDB_TEST_PORT": port, "SPICEDB_TEST_TOKEN": token}
+
 	// Start SpiceDB
 	fmt.Println("==> Starting SpiceDB...")
-	if err := sh.RunV("docker", "compose", "-f", "docker-compose.test.yml", "up", "-d"); err != nil {
+	if err := sh.RunWithV(composeEnv, "docker", "compose", "-f", "docker-compose.test.yml", "up", "-d"); err != nil {
 		return fmt.Errorf("docker compose up failed: %w", err)
 	}
 	defer func() {
 		fmt.Println("==> Stopping SpiceDB...")
-		_ = sh.RunV("docker", "compose", "-f", "docker-compose.test.yml", "down")
+		_ = sh.RunWithV(composeEnv, "docker", "compose", "-f", "docker-compose.test.yml", "down")
 	}()
 
 	// Wait for SpiceDB to be ready
 	fmt.Println("==> Waiting for SpiceDB to be ready...")
-	if err := waitForReady("localhost:50051", 30*time.Second); err != nil {
+	if err := waitForReady(endpoint, 30*time.Second); err != nil {
 		return err
 	}
 
-	// Run integration tests via Gradle
+	// Clear the example reports first, for two reasons: it makes
+	// :examples:test out of date, so Gradle cannot skip the run it was asked
+	// for, and it means any report present afterwards was written by this run
+	// rather than left over from an earlier one -- which is what makes the
+	// count below evidence rather than decoration.
+	exampleResults := "examples/build/test-results/test"
+	if err := os.RemoveAll(exampleResults); err != nil {
+		return fmt.Errorf("clearing %s failed: %w", exampleResults, err)
+	}
+
+	// Run integration tests via Gradle. `gradle test` covers :lib:test and
+	// :examples:test; the examples are the integration suite proper.
 	fmt.Println("==> Running integration tests...")
-	return sh.RunV("gradle", "test")
+	clientEnv := map[string]string{"SPICEDB_ENDPOINT": endpoint, "SPICEDB_TOKEN": token}
+	runErr := sh.RunWithV(clientEnv, "gradle", "test")
+
+	// Check what actually ran before reporting on pass/fail. Gradle skips a
+	// task it believes is up to date and reports the build as successful, so a
+	// green `gradle test` on its own does not establish that any example
+	// executed.
+	ran, total, err := junitClassesRun(exampleResults)
+	if err != nil {
+		if runErr != nil {
+			return fmt.Errorf("integration tests failed: %w", runErr)
+		}
+		return err
+	}
+	var missing []string
+	for _, name := range names {
+		if !ran[name] {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("these example test classes reported no test case: %s "+
+			"(Gradle reported %d tests across %d of %d example classes)",
+			strings.Join(missing, ", "), total, len(ran), len(names))
+	}
+
+	if runErr != nil {
+		return fmt.Errorf("integration tests failed: %w", runErr)
+	}
+	fmt.Printf("==> All %d example classes ran, %d tests.\n", len(names), total)
+	return nil
+}
+
+// envOr returns the value of the named environment variable, or fallback when
+// it is unset or empty.
+func envOr(name, fallback string) string {
+	if v := os.Getenv(name); v != "" {
+		return v
+	}
+	return fallback
+}
+
+// portOf returns the port component of a host:port endpoint.
+func portOf(endpoint string) (string, error) {
+	_, port, err := net.SplitHostPort(endpoint)
+	if err != nil {
+		return "", fmt.Errorf("SPICEDB_ENDPOINT %q is not host:port: %w", endpoint, err)
+	}
+	return port, nil
 }
 
 func waitForReady(addr string, timeout time.Duration) error {

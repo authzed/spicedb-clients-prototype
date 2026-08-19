@@ -295,6 +295,42 @@
 
 ### Fixes
 
+- **2026-08-19**: **`CallDeadlinesTest` could not run after any example that writes an `editor`
+  relationship.** It writes its own schema, narrower than `SpiceDBIntegrationTest.SCHEMA`, and
+  cleared `document` relationships *after* that write rather than before -- but SpiceDB refuses a
+  `WriteSchema` that drops a relation while a relationship still exists under it, so all three of
+  its tests failed with `cannot delete relation 'editor' in object definition 'document', as at
+  least one relationship exists under it: document:report#editor@user:alice`. Whether it failed
+  depended on JUnit's class discovery order relative to `BulkOperationsTest`, which is not stable
+  across runs: the same commit passed on one run of `mage integrationTest` and failed three tests
+  on the next. It now calls the new `SpiceDBIntegrationTest.clearDocumentRelationships` helper
+  before writing its schema.
+
+- **2026-08-19**: **`mage integrationTest` now proves the examples ran.** It ran `gradle test` and
+  reported whatever Gradle's exit code said. Gradle skips a task it believes is up to date and
+  still reports the build successful, so a green run did not establish that any example executed.
+  The runner now deletes `examples/build/test-results/test` before invoking Gradle -- which both
+  makes `:examples:test` out of date, so it cannot be skipped, and guarantees any report present
+  afterwards came from this run -- and then reads those reports to confirm every example class on
+  disk contributed at least one test case. New `mage checkExamples` (also run by `mage test`, so it
+  needs neither a server nor Gradle) asserts the expected number of example classes are on disk, so
+  a rename fails loudly instead of quietly shrinking the run. Root DESIGN.md, "RULE: An example
+  must be executed by CI and must be able to fail", clause 1.
+
+- **2026-08-19**: **The examples now read `SPICEDB_ENDPOINT` and `SPICEDB_TOKEN`**, defaulting to
+  `localhost:50051` and `somerandomkeyhere`, via `SpiceDBIntegrationTest.ENDPOINT`/`TOKEN`. Both
+  were hardcoded, so the suite could not run on a host whose 50051 was already taken.
+  `docker-compose.test.yml` takes its published port from `SPICEDB_TEST_PORT` and its key from
+  `SPICEDB_TEST_TOKEN` (same defaults), and `mage integrationTest` derives the port from
+  `SPICEDB_ENDPOINT`.
+
+- **2026-08-19** (documentation only): `examples/README.md` told the reader to run
+  `./gradlew :examples:test`. **There is no `gradlew` wrapper anywhere in `spicedb-java`** -- the
+  only one in the repo belongs to `spicedb-gen/testdata/java` -- so the documented command fails
+  outright. It also claimed `mage test` "starts a SpiceDB container automatically"; it does not,
+  and never did, and it does not run the examples either. The README now names
+  `mage integrationTest`, uses plain `gradle`, and records what CI checks about the examples.
+
 - **2026-08-19**: **The Java API-compatibility gate now actually fails on breaking changes.**
   `spicedb-java/Magefile.go`'s `apiCompat` ran japicmp with `--only-incompatible
   --ignore-missing-classes` but without `--error-on-binary-incompatibility`, so japicmp printed the

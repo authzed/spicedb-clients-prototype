@@ -258,8 +258,12 @@ func IntegrationTest() error {
 		executed = append(executed, name)
 	}
 
-	// A skip that matches nothing, or a glob that shrank, must fail the job
-	// rather than quietly reduce what ran.
+	// Belt-and-braces, not the guard. reconcile has already proved that disk
+	// equals wantExamples and that every skip key names an example that
+	// exists, so by construction this loop ran exactly this many -- the check
+	// can only fire if the loop above is edited to skip something silently.
+	// What actually protects the run is reconcile (which set ran) plus the
+	// failures list below (whether they passed).
 	wantExecuted := len(wantExamples) - len(skippedExamples)
 	if len(executed) != wantExecuted {
 		return fmt.Errorf("executed %d examples, want %d (%d on disk, %d skipped)",

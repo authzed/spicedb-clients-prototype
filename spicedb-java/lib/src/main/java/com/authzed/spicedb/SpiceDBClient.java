@@ -49,6 +49,19 @@ public final class SpiceDBClient implements AutoCloseable {
   private static final int DEFAULT_IMPORT_BATCH_SIZE = 1_000;
   private static final int DEFAULT_EXPORT_PAGE_SIZE = 512;
 
+  /**
+   * How many items go into one {@code CheckBulkPermissions} request.
+   *
+   * <p>SpiceDB rejects a request carrying more items than {@code maxBulkCheckCount} — 10,000, a
+   * hard-coded const in {@code internal/services/v1/bulkcheck.go} with no flag to raise or lower it
+   * — with {@code ERROR_REASON_TOO_MANY_CHECKS_IN_REQUEST}. Nothing in the proto enforces this:
+   * {@code CheckBulkPermissionsRequest.items} carries only a per-item {@code required} rule, not a
+   * collection-size rule, so the limit lives solely in server code and a client that forwards the
+   * caller's array unchanged fails on large inputs. 1,000 leaves ten times' headroom and matches
+   * {@link #DEFAULT_IMPORT_BATCH_SIZE} and the other clients' check batch size.
+   */
+  private static final int DEFAULT_CHECK_BATCH_SIZE = 1_000;
+
   private static final int MAX_RETRIES = 4;
   private static final long INITIAL_BACKOFF_MS = 100;
 
@@ -538,6 +551,10 @@ public final class SpiceDBClient implements AutoCloseable {
    * Checks permissions for multiple relationships, returning a {@link CheckResult} for each. All
    * checks use BulkCheckPermissions under the hood.
    *
+   * <p>Large inputs are split automatically into requests of at most 1,000 items and the responses
+   * concatenated in input order — SpiceDB rejects a single request carrying more than 10,000. An
+   * empty {@code relationships} sends no request at all and returns an empty list.
+   *
    * <p>See {@link #checkPermission} for the RULE governing how to interpret each result.
    */
   public List<CheckResult> checkPermissions(
@@ -591,10 +608,44 @@ public final class SpiceDBClient implements AutoCloseable {
       Map<String, Object> context,
       Duration timeout,
       Relationship... relationships) {
+    // Zero relationships sends nothing at all. An empty request is not a cheaper way to ask
+    // nothing — it is a round trip whose only possible answer is the empty list, and checkAll
+    // already treats an aggregate over zero checks as false rather than a grant.
     if (relationships.length == 0) {
       return List.of();
     }
 
+    // One request per chunk of DEFAULT_CHECK_BATCH_SIZE, results concatenated in input order so
+    // results.get(i) still corresponds to relationships[i] across the chunk boundary. A caller
+    // passing fewer than DEFAULT_CHECK_BATCH_SIZE relationships — the overwhelmingly common case
+    // — still makes exactly one request.
+    var results = new ArrayList<CheckResult>(relationships.length);
+    for (int start = 0; start < relationships.length; start += DEFAULT_CHECK_BATCH_SIZE) {
+      int end = Math.min(start + DEFAULT_CHECK_BATCH_SIZE, relationships.length);
+      results.addAll(
+          checkChunk(
+              consistency,
+              permission,
+              context,
+              timeout,
+              Arrays.copyOfRange(relationships, start, end)));
+    }
+    return results;
+  }
+
+  /**
+   * Issues one {@code CheckBulkPermissions} request for {@code relationships} and maps the
+   * response. {@code relationships} is non-empty and no longer than {@link
+   * #DEFAULT_CHECK_BATCH_SIZE}; {@code checkPermissionsImpl} is what enforces both. Every response
+   * guard below — the pair-count check and the malformed-oneof check — therefore applies per chunk,
+   * exactly as it applied to the whole request before chunking.
+   */
+  private List<CheckResult> checkChunk(
+      Consistency consistency,
+      String permission,
+      Map<String, Object> context,
+      Duration timeout,
+      Relationship... relationships) {
     var items = new ArrayList<CheckBulkPermissionsRequestItem>(relationships.length);
     for (Relationship r : relationships) {
       items.add(checkItemFromRel(r, permission, context));

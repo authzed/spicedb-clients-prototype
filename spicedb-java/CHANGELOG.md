@@ -295,6 +295,22 @@
 
 ### Fixes
 
+- **2026-08-19**: **A large bulk check is no longer sent as one oversized request.**
+  `checkPermissions`, `checkPermission`, `checkAny` and `checkAll` built a single
+  `CheckBulkPermissions` request from however many relationships the caller passed. SpiceDB caps
+  a request at `maxBulkCheckCount` -- 10,000, a hard-coded const in
+  `internal/services/v1/bulkcheck.go` with no flag to raise or lower it -- and rejects anything
+  larger with `ERROR_REASON_TOO_MANY_CHECKS_IN_REQUEST`. Nothing in the proto enforced the cap
+  either (`CheckBulkPermissionsRequest.items` carries only a per-item `required` rule, not a
+  collection-size rule), so the failure surfaced only at runtime, on the largest inputs.
+
+  Checks are now split into requests of at most 1,000 items -- the same batch size the import
+  path already uses, and the value `spicedb-rust` (the one client that already chunked) picked
+  -- and the responses are concatenated in input order, so `results[i]` still corresponds to the
+  caller's i-th relationship across a chunk boundary. The response-length guard added earlier on
+  this branch now runs per chunk. A caller passing fewer than 1,000 relationships still makes
+  exactly one request.
+
 - **2026-08-18**: **Security — a bypass in the guard that refuses to send credentials over
   plaintext to a non-loopback host was fixed.** `SpiceDBClient.createPlaintext(endpoint,
   presharedKey)` accepted `"127.0.0.1:443@evil.com"` as loopback and sent the bearer token to

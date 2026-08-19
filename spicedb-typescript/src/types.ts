@@ -192,8 +192,9 @@ export interface CheckOptions {
    * single deadline spanning every chunk would make a large check fail purely
    * for being large, and a retry budget shared across chunks would let one
    * flaky chunk exhaust the allowance for the rest. Size the value per
-   * request, and impose a whole-operation bound yourself (e.g. an
-   * `AbortSignal`) if you need one.
+   * request, and impose a whole-operation bound yourself if you need one —
+   * `CheckOptions` accepts no `signal`, so the `AbortSignal` the streaming
+   * surfaces take is not available here.
    */
   timeoutMs?: number;
 }

@@ -245,10 +245,13 @@
   Three consequences of the split are worth stating outright, because they change contracts
   callers may already depend on:
 
-  - **A per-item error message now names the caller's own index.** The `check item N` prefix is
+  - **The malformed-pair message now names the caller's own index.** Its `check item N` prefix is
     computed from an absolute offset, not from the position within whichever request carried the
     failure. Without that, a failure at relationship 1,003 reported as `check item 3` — the same
     misattribution the response-length guard exists to prevent, relocated into the diagnostic.
+    This client's *per-item error* path is unaffected: it routes the item's own status straight
+    through the error mapper and never carried a `check item N` prefix to get wrong. Only
+    `spicedb-go` and `spicedb-java` index that path.
   - **`checked_at` is per response, and a response is now one chunk.** Results from a single
     request still share one token; an input large enough to be split carries more than one across
     the returned collection. Root DESIGN.md's bulk-check invariant has been re-scoped to match.

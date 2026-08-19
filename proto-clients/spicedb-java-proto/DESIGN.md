@@ -52,16 +52,49 @@ Any methods or fields marked deprecated in the proto definitions must carry
 
 - No business logic — only plumbing (connection, auth, stub access)
 - Generated files under `gen/` are never modified
-- **Every `io.grpc:*` declaration — here and in `spicedb-java/lib` — carries the same
-  version, and that version is the one the BSR gRPC stubs
-  (`build.buf.gen:authzed_api_grpc_java:<grpcVersion>.<n>...`) are built against.**
+- **Every `io.grpc:*` artifact — here and in `spicedb-java/lib` — resolves to one version,
+  and that version is the one the BSR gRPC stubs
+  (`build.buf.gen:authzed_api_grpc_java:<grpcVersion>.<n>...`) are generated against.**
   grpc-java releases its artifacts in lockstep against each other's internal SPIs and
-  supports no mixture of versions. The trap is that a skew here does not fail the build:
-  the BSR stubs depend on `io.grpc:grpc-core`, so Gradle's "highest wins" quietly pulls
-  `grpc-api`/`grpc-core`/`grpc-stub`/`grpc-protobuf` up to the stubs' version no matter what
-  is declared, while artifacts nothing else depends on — `grpc-netty-shaded`, `grpc-util`,
-  `grpc-inprocess`, `grpc-testing` — stay stranded at the declared number. `grpc-netty-shaded`
-  shades *Netty*, not gRPC, so its `io.grpc.netty` transport classes then run against a
-  `grpc-core` they were not compiled against. Verify with
-  `gradle :lib:dependencies --configuration testRuntimeClasspath` and read the resolved
-  versions, not the declared ones.
+  supports no mixture of versions.
+
+  Both modules enforce this with `io.grpc:grpc-bom`: each declares
+  `api(platform("io.grpc:grpc-bom:<version>"))` and every `io.grpc:*` coordinate is
+  versionless, so there is exactly one number to change per module and a partial bump is
+  structurally impossible. It is declared `api` rather than `implementation` because the
+  `api` configuration does not extend `implementation`, so an implementation-scoped platform
+  would not govern `api` coordinates such as lib's `grpc-api`. **When bumping, change the BOM
+  version and the `authzed_api_grpc_java` BSR coordinate together** — the BSR publishes the
+  same proto snapshot built against several gRPC versions, so a matching stub build is
+  normally available.
+
+  Why this is enforced structurally rather than by convention: a skew here does **not** fail
+  the build, in either direction. The BSR stubs depend on `io.grpc:grpc-core` at their own
+  gRPC version, so Gradle's "highest wins" silently reconciles the core cluster
+  (`grpc-api`/`grpc-core`/`grpc-stub`/`grpc-protobuf`) to whichever is higher — the stubs'
+  version when the declarations are lower, the declared version when they are higher (the
+  case a dependency-bump PR produces). Either way the artifacts nothing else depends on —
+  `grpc-netty-shaded`, `grpc-util`, `grpc-inprocess`, `grpc-testing` — are left at their own
+  number, because there is no competing request to raise them. `grpc-netty-shaded` shades
+  *Netty*, not gRPC, so its `io.grpc.netty` transport classes then link against a `grpc-core`
+  they were not compiled against; this has already produced a `NoSuchMethodError` on
+  `ManagedClientTransport$Listener.transportShutdown` thrown on a Netty event-loop thread,
+  which never reaches the caller and turned prompt `UNAVAILABLE` connection failures into
+  hangs that only ended at the deadline as `DEADLINE_EXCEEDED`.
+
+  Verify by reading the *resolved* versions, not the declared ones — from `spicedb-java/`:
+
+  ```
+  gradle :lib:dependencies --configuration testRuntimeClasspath
+  ```
+
+  and from this module's own directory (`:lib` does not exist in this build):
+
+  ```
+  gradle :dependencies --configuration testRuntimeClasspath
+  ```
+
+  Every `io.grpc:*` line must show the same version. With the BOM in place the expected shape
+  is `io.grpc:grpc-netty-shaded -> <version>` (a versionless request meeting a BOM constraint,
+  marked `(c)`); a `X:1.72.0 -> 1.79.0` arrow means two *different* versions were requested and
+  the invariant is broken.

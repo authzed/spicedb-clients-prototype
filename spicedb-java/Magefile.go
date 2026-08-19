@@ -163,10 +163,17 @@ func ApiCompat(baseRef string) error {
 
 	japicmpJar, _ = filepath.Abs(japicmpJar)
 
-	// Compare: -o = old (baseline), -n = new (current)
+	// Compare: -o = old (baseline), -n = new (current).
+	// --error-on-binary-incompatibility is what makes this a gate: without it japicmp
+	// prints the incompatibilities it finds and still exits 0, so sh.RunV returns nil
+	// and this reports "API compatible" regardless of what was found.
 	if err := sh.RunV("java", "-jar", japicmpJar, "-o", baselineJAR, "-n", currentJAR,
-		"--only-incompatible", "--ignore-missing-classes"); err != nil {
-		return fmt.Errorf("API compatibility check failed: breaking changes detected. Run 'mage updateAllowBreak' to proceed: %w", err)
+		"--only-incompatible", "--ignore-missing-classes",
+		"--error-on-binary-incompatibility"); err != nil {
+		return fmt.Errorf("API compatibility check failed: breaking changes detected "+
+			"(listed above). If the break is intentional, run 'mage updateAllowBreak' "+
+			"from the repository root -- it is a root-level target, not one of this "+
+			"module's: %w", err)
 	}
 	fmt.Println("==> spicedb-java: API compatible")
 	return nil

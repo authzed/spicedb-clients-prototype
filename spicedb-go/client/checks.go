@@ -12,11 +12,39 @@ import (
 	"github.com/authzed/spicedb-clients/spicedb-go/rel"
 )
 
+// defaultCheckBatchSize bounds how many items go into a single
+// CheckBulkPermissions request.
+//
+// SpiceDB rejects a request carrying more items than maxBulkCheckCount --
+// 10,000, a hard-coded const in internal/services/v1/bulkcheck.go with no
+// flag to raise or lower it -- with
+// ERROR_REASON_TOO_MANY_CHECKS_IN_REQUEST. Nothing in the proto enforces
+// this: CheckBulkPermissionsRequest.items carries only a per-item
+// `required` rule, not a collection-size rule, so the limit lives solely in
+// server code and a client that forwards the caller's slice unchanged fails
+// on large inputs. 1,000 leaves ten times' headroom and matches
+// defaultImportBatchSize.
+//
+// One constant deliberately serves two callers: CheckWithContext chunks a
+// caller's slice by it, and CheckIter accumulates into batches of it. They
+// are the same RPC against the same server limit, so a second constant
+// could only ever drift out of agreement with this one. Because CheckIter
+// flushes at exactly this size, each batch it hands to CheckWithContext is
+// a single chunk there -- CheckIter's request pattern is unchanged by the
+// chunking below.
 const defaultCheckBatchSize = 1000
 
 // Check performs a bulk permission check on the given relationships and
-// returns a CheckResult for each relationship. All checks use
-// BulkCheckPermissions under the hood.
+// returns a CheckResult for each relationship, in the same order. All checks
+// use BulkCheckPermissions under the hood.
+//
+// Large inputs are split automatically into requests of at most 1,000 items
+// and the responses concatenated in input order -- SpiceDB rejects a single
+// request carrying more than 10,000. An empty rs sends no request at all.
+// Results within one request share a CheckedAt (the response carries a
+// single token for the whole batch, not one per item), so an input large
+// enough to be split can carry more than one token across the returned
+// slice.
 //
 // CheckResult.Permissionship carries the server's three-valued answer — a
 // Conditional result means the server needed caveat context that was not
@@ -48,10 +76,37 @@ func (c *Client) Check(ctx context.Context, cs consistency.Strategy, permission 
 // call-level default. Pass a nil checkContext for no call-level default
 // (equivalent to calling Check).
 func (c *Client) CheckWithContext(ctx context.Context, cs consistency.Strategy, permission string, checkContext map[string]any, rs ...rel.Relationship) ([]CheckResult, error) {
+	// Zero relationships sends nothing at all. An empty request is not a
+	// cheaper way to ask nothing -- it is a round trip whose only possible
+	// answer is the empty slice, and CheckAllWithContext already treats an
+	// aggregate over zero checks as false rather than a grant.
 	if len(rs) == 0 {
 		return nil, nil
 	}
 
+	// One request per chunk of defaultCheckBatchSize, results concatenated
+	// in input order so results[i] still corresponds to rs[i] across the
+	// chunk boundary. A caller passing fewer than defaultCheckBatchSize
+	// relationships -- the overwhelmingly common case -- still makes
+	// exactly one request.
+	results := make([]CheckResult, 0, len(rs))
+	for start := 0; start < len(rs); start += defaultCheckBatchSize {
+		end := min(start+defaultCheckBatchSize, len(rs))
+		chunkResults, err := c.checkChunk(ctx, cs, permission, checkContext, rs[start:end])
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, chunkResults...)
+	}
+	return results, nil
+}
+
+// checkChunk issues one CheckBulkPermissions request for rs and maps the
+// response. rs must be non-empty and no longer than defaultCheckBatchSize;
+// CheckWithContext is what enforces both. Every response guard below --
+// the pair-count check and the malformed-oneof check -- therefore applies
+// per chunk, exactly as it applied to the whole request before chunking.
+func (c *Client) checkChunk(ctx context.Context, cs consistency.Strategy, permission string, checkContext map[string]any, rs []rel.Relationship) ([]CheckResult, error) {
 	items := make([]*v1.CheckBulkPermissionsRequestItem, len(rs))
 	for i, r := range rs {
 		item, err := checkItemFromRel(r, permission, checkContext)

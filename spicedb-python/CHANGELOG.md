@@ -234,6 +234,36 @@
 
 ### Fixed
 
+- **2026-08-19**: **`pytest -k "not watch"` replaced by a named, counted skip list.** A `-k`
+  substring filter that matches nothing exits 0, so the previous form could silently stop
+  excluding what it was written to exclude -- or silently start excluding everything -- with no
+  signal either way. `.github/workflows/rust.yaml` already greps its test output for `"1 passed"`
+  for precisely this reason. `IntegrationTest` now names the example directories on the pytest
+  command line, skips `watch_changes/` and `sync_watch_changes/` by explicit named entries that
+  print their reason, and then reads pytest's JUnit report to confirm every selected example
+  actually contributed a test case. The selection is unchanged: 33 tests, verified identical to
+  the old filter's by diffing `--collect-only` output. New `mage checkExamples` (also run by
+  `mage test`, so it needs no server) asserts `examples/*/test_*.py` still matches the expected
+  count and that every skipped name is an example that exists. Root DESIGN.md, "RULE: An example
+  must be executed by CI and must be able to fail", clause 1.
+
+- **2026-08-19**: **Examples now read `SPICEDB_ENDPOINT` and `SPICEDB_TOKEN`**, defaulting to
+  `localhost:50051` and `somerandomkeyhere`. `examples/README.md` had told the reader to export
+  both variables since the directory existed, and no example read either one, so the documented
+  setup silently did nothing; the README also named token `testtoken`, which is not the key
+  `docker-compose.test.yml` starts SpiceDB with, so following it verbatim produced
+  `UNAUTHENTICATED`. `examples/conftest.py` now holds both as `ENDPOINT`/`TOKEN`, and the six
+  examples that build their own client import them from there. `docker-compose.test.yml` takes
+  its published port from `SPICEDB_TEST_PORT` and its key from `SPICEDB_TEST_TOKEN` (same
+  defaults), and `mage integrationTest` derives the port from `SPICEDB_ENDPOINT`, so the suite
+  can run on a host whose 50051 is occupied. `custom_tls/` is unchanged: it stands up its own
+  TLS-terminated server and never talks to the shared one.
+
+- **2026-08-19** (documentation only): `examples/README.md` claimed `mage test` "starts a SpiceDB
+  container automatically". It does not, and never did -- and it does not run the examples at
+  all; `mage integrationTest` is the target that does both. The README now says which target does
+  what, and which examples CI executes.
+
 - **2026-08-19**: **A large bulk check is no longer sent as one oversized request.**
   `check_permissions`, `check_permission`, `check_any` and `check_all` -- on both
   `spicedb.sync.SpiceDBClient` and `spicedb.aio.SpiceDBClient` -- built a single

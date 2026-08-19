@@ -9,6 +9,7 @@ deadline".
 
 import pytest
 
+from conftest import ENDPOINT, TOKEN
 from spicedb import Filter, Relationship, full
 from spicedb.aio import SpiceDBClient
 from spicedb.types import Transaction
@@ -24,8 +25,8 @@ async def test_default_timeout_construction_param():
     # disappearing from the constructor) would fail this test, not just a
     # unit test against a stalling stub.
     async with SpiceDBClient(
-        "localhost:50051",
-        token="somerandomkeyhere",
+        ENDPOINT,
+        token=TOKEN,
         insecure=True,
         default_timeout=5.0,
     ) as client:

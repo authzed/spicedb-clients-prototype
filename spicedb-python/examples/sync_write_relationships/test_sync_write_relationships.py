@@ -8,7 +8,7 @@ Demonstrates create, touch, delete, and preconditions, all built with
 
 import pytest
 
-from conftest import SCHEMA
+from conftest import ENDPOINT, SCHEMA, TOKEN
 from spicedb import Filter, Relationship, full
 from spicedb.sync import SpiceDBClient
 from spicedb.types import Transaction
@@ -19,7 +19,7 @@ pytestmark = pytest.mark.integration
 
 def test_write_relationships_sync():
     with SpiceDBClient(
-        "localhost:50051", token="somerandomkeyhere", insecure=True
+        ENDPOINT, token=TOKEN, insecure=True
     ) as client:
         client.write_schema(SCHEMA)
 

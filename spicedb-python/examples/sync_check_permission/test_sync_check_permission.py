@@ -16,7 +16,7 @@ all reusing the one client below.
 
 import pytest
 
-from conftest import SCHEMA
+from conftest import ENDPOINT, SCHEMA, TOKEN
 from spicedb import Filter, Relationship, full
 from spicedb.consistency import at_least
 from spicedb.sync import SpiceDBClient
@@ -29,7 +29,7 @@ pytestmark = pytest.mark.integration
 # block scoped to a single test. A real app builds exactly one of these at
 # startup and never rebuilds it; nothing below closes it early, to prove the
 # point.
-client = SpiceDBClient("localhost:50051", token="somerandomkeyhere", insecure=True)
+client = SpiceDBClient(ENDPOINT, token=TOKEN, insecure=True)
 
 
 def _grant() -> Transaction:

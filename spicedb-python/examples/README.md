@@ -5,12 +5,54 @@ integration test.
 
 ## Running
 
+`mage integrationTest` is the one command that does everything: it starts the
+SpiceDB container from `docker-compose.test.yml`, waits for it, runs every
+example suite against that server, and tears the container down afterwards.
+(`mage test` runs `tests/` and the example-wiring check -- it starts no
+container and runs no example.)
+
 ```bash
-export SPICEDB_ENDPOINT=localhost:50051
-export SPICEDB_TOKEN=testtoken
+mage integrationTest
 ```
 
-Or use `mage test` which starts a SpiceDB container automatically.
+To run one example by hand you need a SpiceDB of your own. `examples/conftest.py`
+reads `SPICEDB_ENDPOINT` and `SPICEDB_TOKEN`, defaulting to `localhost:50051`
+and `somerandomkeyhere` -- the endpoint and preshared key in
+`docker-compose.test.yml` -- and every example that uses the shared server takes
+both from there:
+
+```bash
+docker compose -f docker-compose.test.yml up -d
+uv run pytest examples/check_permission -v
+
+# or against any other SpiceDB
+SPICEDB_ENDPOINT=spicedb.internal:50051 SPICEDB_TOKEN=hunter2 \
+    uv run pytest examples/check_permission -v
+```
+
+`custom_tls/` is the exception: it stands up its own TLS-terminated server and
+ignores both variables, since a plaintext SpiceDB has nothing to demonstrate
+about trust material.
+
+If port 50051 is taken, `SPICEDB_TEST_PORT` chooses the port the compose file
+publishes on, and `mage integrationTest` derives it from `SPICEDB_ENDPOINT`:
+
+```bash
+SPICEDB_ENDPOINT=localhost:50071 mage integrationTest
+```
+
+## What runs in CI
+
+Every example in the table below is executed by `mage integrationTest`, which
+is what the `integration` job in `.github/workflows/python.yaml` runs, with two
+exceptions: `watch_changes/` and `sync_watch_changes/` are open-ended streams
+with no bounded consumer yet, so the runner skips them by name and prints each
+skip. The runner names the remaining example directories on the pytest command
+line rather than filtering with `-k`, and then reads pytest's JUnit report to
+confirm every selected example actually contributed a test case -- a `-k`
+filter that matches nothing exits 0, which is how a suite can report green over
+nothing at all. See root `DESIGN.md`, "RULE: An example must be executed by CI
+and must be able to fail".
 
 ## Examples
 

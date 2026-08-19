@@ -20,7 +20,7 @@ import time
 
 import pytest
 
-from conftest import SCHEMA
+from conftest import ENDPOINT, SCHEMA, TOKEN
 from spicedb import Filter, Relationship, UpdateOperation
 from spicedb.sync import SpiceDBClient
 from spicedb.types import Transaction
@@ -31,7 +31,7 @@ pytestmark = pytest.mark.integration
 
 def test_watch_changes_sync():
     with SpiceDBClient(
-        "localhost:50051", token="somerandomkeyhere", insecure=True
+        ENDPOINT, token=TOKEN, insecure=True
     ) as client:
         client.write_schema(SCHEMA)
 
@@ -117,7 +117,7 @@ def test_watch_changes_with_checkpoints_sync():
     consumer must branch on `event.is_checkpoint` to tell "nothing changed,
     here is a fresh resume point" from "here are changes"."""
     with SpiceDBClient(
-        "localhost:50051", token="somerandomkeyhere", insecure=True
+        ENDPOINT, token=TOKEN, insecure=True
     ) as client:
         client.write_schema(SCHEMA)
 

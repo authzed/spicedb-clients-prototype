@@ -26,7 +26,7 @@ from authzed.api.v1 import permission_service_pb2 as psp
 from authzed.api.v1 import permission_service_pb2_grpc as psg
 from google.protobuf import struct_pb2
 
-from conftest import SCHEMA
+from conftest import ENDPOINT, SCHEMA, TOKEN
 from spicedb import Filter, Relationship, full
 from spicedb.consistency import at_least
 from spicedb.sync import SpiceDBClient
@@ -91,7 +91,7 @@ async def test_raw_grpc_sends_a_field_the_idiomatic_api_does_not_expose(client):
 def test_raw_grpc_from_the_sync_client():
     """Sync flavor: same hatch, no `await` -- `raw_grpc()` returns directly."""
     sync_client = SpiceDBClient(
-        "localhost:50051", token="somerandomkeyhere", insecure=True
+        ENDPOINT, token=TOKEN, insecure=True
     )
     try:
         sync_client.write_schema(SCHEMA)

@@ -28,6 +28,7 @@ use std::time::Duration;
 
 use spicedb::client::SpiceDBClient;
 use spicedb::consistency;
+use spicedb::error::SpiceDBError;
 use spicedb::spicedb_proto::authzed::api::v1 as proto;
 use spicedb::types::{Filter, Relationship};
 
@@ -56,9 +57,16 @@ async fn main() {
     // WriteSchema that drops a relation while a relationship still exists
     // under it -- so what a *previous* example left behind is this example's
     // problem, and a cleanup at exit does not help if this example fails
-    // first. The error is ignored on purpose: on a fresh server there is no
-    // `document` definition yet, which is not a failure.
-    let _ = client.delete_relationships(&Filter::new("document")).await;
+    // first.
+    //
+    // Exactly one error is tolerated: on a fresh server there is no `document`
+    // definition yet, which SpiceDB reports as FailedPrecondition
+    // (ERROR_REASON_UNKNOWN_DEFINITION). Anything else -- an unreachable
+    // server, a bad token -- must still fail the example.
+    match client.delete_relationships(&Filter::new("document")).await {
+        Ok(_) | Err(SpiceDBError::FailedPrecondition(_)) => {}
+        Err(e) => panic!("cleanup before schema write failed: {e:?}"),
+    }
 
     client
         .write_schema(SCHEMA)

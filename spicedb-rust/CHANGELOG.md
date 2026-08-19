@@ -47,6 +47,12 @@
 
 ### Fixes
 
+- **2026-08-19**: **The clear-before-write delete tolerates one error, not all of them.** It
+  swallowed every failure, so an unreachable server or a rotated token read as "nothing to clear"
+  and the example carried on to fail somewhere less obvious. Only
+  `FAILED_PRECONDITION`/`ERROR_REASON_UNKNOWN_DEFINITION` -- a fresh server with no `document`
+  definition -- is tolerated now; anything else fails the example where it happened.
+
 - **2026-08-19**: **The live-test step could select nothing and still report success.**
   `IntegrationTest` ran `cargo test -- --ignored` and trusted its exit code, four lines above the
   example loop that does assert a count. `--ignored` is a filter, and libtest exits 0 when a filter
@@ -60,9 +66,12 @@
   deleted its `document` relationships at the end of `main()`, after its own `write_schema`. That
   ordering only helps if every example completes: `runExamples` continues past a failure, so one
   genuine failure cascaded into spurious failures in the narrow-schema examples that ran later.
-  Every example now clears `document` first, unchecked (a fresh server has no `document` definition
-  yet, which is not a failure), which is the shape `spicedb-ruby`'s `spec_helper.rb` and
-  `spicedb-java`/`spicedb-csharp` use.
+  The twelve examples that write a schema now clear `document` first (`watch_changes` writes
+  neither a schema nor a relationship, so it has nothing to clear). The delete tolerates exactly
+  one error -- `FailedPrecondition`/`ERROR_REASON_UNKNOWN_DEFINITION`, which is a fresh server with
+  no `document` definition -- and panics on anything else, so an unreachable server or a bad token
+  still fails the example. This is the shape `spicedb-java` and `spicedb-csharp` use;
+  `spicedb-ruby`'s `spec_helper.rb` was reordered to match in the same round.
 
 - **2026-08-19**: **The example set is pinned by name, not by count.** `wantExampleCount = 13`
   passed unchanged when an example was *renamed* -- only deletion was caught. `wantExamples` now

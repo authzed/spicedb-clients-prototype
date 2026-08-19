@@ -4,7 +4,17 @@ using Xunit;
 // (ImportRelationshipsAsync) is a client-streaming call that is NOT bounded
 // by the unary default -- see root DESIGN.md, "RULE: A unary call must have
 // a deadline".
+//
+// The failure that rule exists to close is a *wedged* server: one that accepts
+// the connection and then never answers. Nothing looks wrong at the transport
+// level, so an unbounded call hangs forever rather than erroring. The tests
+// against a real SpiceDB below pass identically whether or not the timeout ever
+// reaches the wire, so the last two stand up a socket that behaves exactly that
+// way and require the call to come back DeadlineExceededException on the
+// caller's schedule.
 
+using System.Net;
+using System.Net.Sockets;
 using SpiceDB.Client;
 using static SpiceDB.Client.Consistency;
 
@@ -111,6 +121,85 @@ public class CallDeadlinesTest
         var numLoadedBounded = await client.ImportRelationshipsAsync(
             ToAsyncEnumerable(moreRelationships), timeout: TimeSpan.FromSeconds(30));
         Assert.Equal(50u, numLoadedBounded);
+    }
+
+    /// <summary>
+    /// The deadline handed to the calls against the wedged server. Short,
+    /// because the point is to watch it expire.
+    /// </summary>
+    private static readonly TimeSpan WedgedTimeout = TimeSpan.FromSeconds(2);
+
+    /// <summary>
+    /// Wall-clock bound on a wedged call. If a call with a 2s deadline has not
+    /// returned after this long, the deadline is not reaching the RPC -- and
+    /// the test fails with that message instead of hanging the CI job.
+    /// </summary>
+    private static readonly TimeSpan WedgedWatchdog = TimeSpan.FromSeconds(17);
+
+    [Fact]
+    public async Task DefaultTimeout_ExpiresAgainstAServerThatNeverAnswers()
+    {
+        using var wedged = WedgedListener(out var endpoint);
+
+        await using var client = SpiceDBClient.CreatePlaintext(
+            endpoint, SpiceDBTestServer.Token, defaultTimeout: WedgedTimeout);
+
+        var rel = Relationship.FromTriple("document", "readme", "view", "user", "alice");
+        await ExpectDeadlineToFireAsync(
+            "defaultTimeout",
+            () => client.CheckPermissionAsync(Full(), "view", rel));
+    }
+
+    [Fact]
+    public async Task PerCallTimeout_ExpiresAgainstAServerThatNeverAnswers()
+    {
+        using var wedged = WedgedListener(out var endpoint);
+
+        // No defaultTimeout here, so only the per-call argument can bound this.
+        // The override is a different code path, and one that accepted the
+        // argument and dropped it would still pass every fast-local-call test
+        // above.
+        await using var client = SpiceDBClient.CreatePlaintext(endpoint, SpiceDBTestServer.Token);
+
+        var rel = Relationship.FromTriple("document", "readme", "view", "user", "alice");
+        await ExpectDeadlineToFireAsync(
+            "per-call timeout",
+            () => client.CheckPermissionAsync(Full(), "view", rel, timeout: WedgedTimeout));
+    }
+
+    /// <summary>
+    /// A socket that accepts TCP connections and never speaks gRPC. The kernel
+    /// completes the handshake for connections sitting in the backlog, so a
+    /// client connects successfully and then waits forever for the HTTP/2
+    /// server preface. That is what a wedged SpiceDB looks like from a client
+    /// -- an open, healthy-looking connection with no reply behind it -- and it
+    /// is why "the connection worked" is not a bound.
+    /// </summary>
+    private static TcpListener WedgedListener(out string endpoint)
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        endpoint = $"127.0.0.1:{((IPEndPoint)listener.LocalEndpoint).Port}";
+        return listener;
+    }
+
+    /// <summary>
+    /// Runs the call under a watchdog and requires it to fail with
+    /// DeadlineExceededException.
+    /// </summary>
+    private static async Task ExpectDeadlineToFireAsync(string what, Func<Task<CheckResult>> call)
+    {
+        var task = call();
+        var finished = await Task.WhenAny(task, Task.Delay(WedgedWatchdog));
+        Assert.True(
+            ReferenceEquals(finished, task),
+            $"a call with a {WedgedTimeout} {what} had not returned after {WedgedWatchdog} " +
+            "against a server that never answers: the deadline is not reaching the RPC");
+
+        // The specific exception matters. ThrowsAnyAsync<Exception> is also
+        // satisfied by an UnavailableException from a refused connection, which
+        // says nothing at all about deadlines.
+        await Assert.ThrowsAsync<DeadlineExceededException>(() => task);
     }
 
     private static async IAsyncEnumerable<Relationship> ToAsyncEnumerable(

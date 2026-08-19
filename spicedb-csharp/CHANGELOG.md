@@ -4,6 +4,52 @@
 
 ### Added
 
+- **2026-08-19: five examples that ran without being able to fail now assert something
+  that does.** Root DESIGN.md, "RULE: An example must be executed by CI and must be able
+  to fail", clause 2. No example was renamed or removed; the example count goes from 30
+  tests to 34 across the same 13 projects.
+
+  - `examples/CallDeadlines` proves a deadline instead of only showing fast local calls
+    succeeding. Its three existing tests pass identically whether or not the timeout ever
+    reaches the wire, so two new ones stand up a `TcpListener` that accepts connections
+    and never speaks gRPC — what a wedged SpiceDB looks like from a client — and require
+    both the `defaultTimeout` construction parameter and the per-call `timeout` override
+    to raise `DeadlineExceededException`. Each runs under a watchdog, so a dropped
+    deadline fails the example rather than hanging the job.
+  - `examples/RelationshipCounters` polls to a terminal state instead of sleeping two
+    seconds and then wrapping every assertion in `if (!stillCalculating)`. This is the
+    only test in that assembly, so a 100%-broken counter feature previously shipped
+    green — including if the still-calculating mapping were inverted, the likeliest bug
+    on that exact field. The count asserted is now exact (two viewers, with an `editor`
+    written that the relation filter must exclude), and unregistering is verified by
+    requiring the subsequent read to raise `FailedPreconditionException`.
+  - `examples/LookupSubjects` writes a wildcard. `Assert.Empty(result.ExcludedSubjects)`
+    against a schema with no wildcards was the only thing exercising that field, and no
+    C# example wrote a wildcard at all, so dropped exclusions — which turn a partial
+    grant into a blanket grant — had nothing to catch them. A new test grants `viewer` to
+    `user:*`, carves `eve` back out via `banned`, and requires `eve` in
+    `ExcludedSubjects`. The pre-existing test now asserts the exact subject set rather
+    than two `Contains` checks that a lookup ignoring the permission would satisfy.
+  - `examples/SchemaReflection` asserts contents rather than four consecutive non-empty
+    checks: exact definition, relation and permission names, that `document#viewer`
+    computes exactly `document#view` and is reported as a permission, the full dependency
+    set of `document#view`, and specific diff kinds — so a mapping that reported every
+    diff as `unknown` fails.
+  - `examples/WatchChanges` requires the update it just wrote (resource, relation,
+    subject and operation) rather than only that its resource type is `document`, which
+    the seed write or any leftover document relationship would satisfy.
+
+  One assertion here is deliberately **not** claimed as proof. `WatchChanges` also
+  cancels a consumer parked on a quiet stream, and mutation testing showed that cutting
+  the cancellation token out of *both* places `UpdatesAsync` passes it still ends that
+  consumer 5ms after the cancel: `await foreach` disposes the async iterator, which
+  disposes the gRPC call. **In C# the release half of "RULE: Abandoning a stream must
+  release it" is a language guarantee, not something this client implements**, so no
+  assertion in that test can fail on it. What the test does pin — and what a mutation
+  does break — is that abandoning the stream surfaces as the native `CancelledException`
+  rather than leaking a raw `Grpc.Core.RpcException` out of the streaming path. The test
+  says so in-comment rather than implying coverage it does not have.
+
 - **2026-08-19**: An escape hatch, `SpiceDBClient.RawProto()`. It returns the underlying
   `SpiceDBProtoClient` — the four generated service clients (`Permissions`, `Schema`, `Watch`,
   `Experimental`) this library makes its own calls through — so a request the idiomatic API cannot

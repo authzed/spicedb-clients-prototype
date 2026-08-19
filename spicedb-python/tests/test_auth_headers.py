@@ -26,6 +26,12 @@ from spicedb.consistency import full
 
 TOKEN = "test-token"
 
+# One relationship, because `check_permissions` with zero relationships now
+# sends no request at all (an empty bulk check is a round trip whose only
+# possible answer is the empty list). These tests need a real RPC to reach
+# the wire, so they hand it something to ask about.
+_ONE_REL = Relationship.from_triple("document:readme", "view", "user:alice")
+
 
 @pytest.fixture(scope="module")
 def tls_pair() -> tuple[bytes, bytes]:
@@ -57,7 +63,22 @@ class _Recorder:
 
     def check_bulk(self, request: bytes, context) -> bytes:
         self._record(context)
-        return psp.CheckBulkPermissionsResponse().SerializeToString()
+        # Answer one pair per request item. The client's pair-count guard
+        # rejects a response that does not match the request's item count,
+        # so a fixed empty response would fail every caller that asks about
+        # an actual relationship.
+        req = psp.CheckBulkPermissionsRequest()
+        req.ParseFromString(request)
+        return psp.CheckBulkPermissionsResponse(
+            pairs=[
+                psp.CheckBulkPermissionsPair(
+                    item=psp.CheckBulkPermissionsResponseItem(
+                        permissionship=psp.CheckPermissionResponse.PERMISSIONSHIP_HAS_PERMISSION
+                    )
+                )
+                for _ in req.items
+            ]
+        ).SerializeToString()
 
     def read_relationships(self, request: bytes, context):
         self._record(context)
@@ -146,7 +167,7 @@ async def test_aio_sends_exactly_one_authorization_header(
                 ):
                     pass
             else:
-                await client.check_permissions(full())
+                await client.check_permissions(full(), _ONE_REL)
             await client.close()
     finally:
         server.stop(0)
@@ -255,7 +276,7 @@ def test_sync_sends_exactly_one_authorization_header(
                 ):
                     pass
             else:
-                client.check_permissions(full())
+                client.check_permissions(full(), _ONE_REL)
             client.close()
     finally:
         server.stop(0)

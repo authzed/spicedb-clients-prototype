@@ -28,6 +28,7 @@ import grpc
 import pytest
 from authzed.api.v1 import permission_service_pb2 as psp
 
+from spicedb import Relationship
 from spicedb.consistency import full
 from spicedb.errors import InvalidArgumentError, SpiceDBError
 
@@ -112,7 +113,31 @@ def certs() -> Certs:
 
 
 def _check_bulk(request: bytes, context) -> bytes:
-    return psp.CheckBulkPermissionsResponse().SerializeToString()
+    # Answer one pair per request item. The client's pair-count guard
+    # rejects a response that does not match the request's item count, so a
+    # fixed empty response would fail every caller that asks about an
+    # actual relationship -- and `check_permissions` with zero
+    # relationships no longer reaches the wire at all, so asking about one
+    # is what makes these tests prove a handshake completed.
+    req = psp.CheckBulkPermissionsRequest()
+    req.ParseFromString(request)
+    return psp.CheckBulkPermissionsResponse(
+        pairs=[
+            psp.CheckBulkPermissionsPair(
+                item=psp.CheckBulkPermissionsResponseItem(
+                    permissionship=psp.CheckPermissionResponse.PERMISSIONSHIP_HAS_PERMISSION
+                )
+            )
+            for _ in req.items
+        ]
+    ).SerializeToString()
+
+
+# One relationship, because `check_permissions` with zero relationships now
+# sends no request at all. A completed call is the whole point of these
+# tests -- it is what proves the handshake, HTTP/2 framing and gRPC framing
+# all worked -- so they must actually reach the server.
+_ONE_REL = Relationship.from_triple("document:readme", "view", "user:alice")
 
 
 def _serve(certs: Certs, *, require_client_auth: bool = False):
@@ -168,14 +193,14 @@ def test_sync_ca_cert_completes_a_handshake_the_default_roots_reject(certs):
             f"localhost:{port}", token=TOKEN,
             ca_cert=certs.ca, default_timeout=_TIMEOUT, max_retries=0,
         ) as client:
-            assert client.check_permissions(full()) == []
+            assert len(client.check_permissions(full(), _ONE_REL)) == 1
 
         with SpiceDBClient(
             f"localhost:{port}", token=TOKEN,
             default_timeout=_TIMEOUT, max_retries=0,
         ) as untrusting:
             with pytest.raises(SpiceDBError):
-                untrusting.check_permissions(full())
+                untrusting.check_permissions(full(), _ONE_REL)
     finally:
         server.stop(0)
 
@@ -197,14 +222,14 @@ async def test_aio_ca_cert_completes_a_handshake_the_default_roots_reject(certs)
             f"localhost:{port}", token=TOKEN,
             ca_cert=certs.ca, default_timeout=_TIMEOUT, max_retries=0,
         ) as client:
-            assert await client.check_permissions(full()) == []
+            assert len(await client.check_permissions(full(), _ONE_REL)) == 1
 
         async with SpiceDBClient(
             f"localhost:{port}", token=TOKEN,
             default_timeout=_TIMEOUT, max_retries=0,
         ) as untrusting:
             with pytest.raises(SpiceDBError):
-                await untrusting.check_permissions(full())
+                await untrusting.check_permissions(full(), _ONE_REL)
     finally:
         server.stop(0)
 
@@ -231,14 +256,14 @@ def test_sync_client_cert_satisfies_a_server_requiring_mutual_tls(certs):
             client_key=certs.client_key,
             default_timeout=_TIMEOUT, max_retries=0,
         ) as client:
-            assert client.check_permissions(full()) == []
+            assert len(client.check_permissions(full(), _ONE_REL)) == 1
 
         with SpiceDBClient(
             f"localhost:{port}", token=TOKEN,
             ca_cert=certs.ca, default_timeout=_TIMEOUT, max_retries=0,
         ) as anonymous:
             with pytest.raises(SpiceDBError):
-                anonymous.check_permissions(full())
+                anonymous.check_permissions(full(), _ONE_REL)
     finally:
         server.stop(0)
 
@@ -255,14 +280,14 @@ async def test_aio_client_cert_satisfies_a_server_requiring_mutual_tls(certs):
             client_key=certs.client_key,
             default_timeout=_TIMEOUT, max_retries=0,
         ) as client:
-            assert await client.check_permissions(full()) == []
+            assert len(await client.check_permissions(full(), _ONE_REL)) == 1
 
         async with SpiceDBClient(
             f"localhost:{port}", token=TOKEN,
             ca_cert=certs.ca, default_timeout=_TIMEOUT, max_retries=0,
         ) as anonymous:
             with pytest.raises(SpiceDBError):
-                await anonymous.check_permissions(full())
+                await anonymous.check_permissions(full(), _ONE_REL)
     finally:
         server.stop(0)
 

@@ -35,6 +35,11 @@ from spicedb.consistency import full
 from spicedb.errors import DeadlineExceededError
 from spicedb.sync import SpiceDBClient as SyncSpiceDBClient
 
+# One relationship, because `check_permissions` with zero relationships now
+# sends no request at all -- and a call that never reaches the wire can
+# never demonstrate a deadline.
+_ONE_REL = Relationship.from_triple("document:readme", "view", "user:alice")
+
 TOKEN = "test-token"
 
 # How long a "never responds" handler stalls before finally answering. Every
@@ -164,7 +169,7 @@ def test_sync_unary_call_times_out_with_deadline_exceeded_error():
         )
         start = time.monotonic()
         with pytest.raises(DeadlineExceededError):
-            _run_with_watchdog(lambda: client.check_permissions(full()))
+            _run_with_watchdog(lambda: client.check_permissions(full(), _ONE_REL))
         elapsed = time.monotonic() - start
         client.close()
     finally:
@@ -191,7 +196,7 @@ def test_sync_per_call_timeout_overrides_client_default():
         start = time.monotonic()
         with pytest.raises(DeadlineExceededError):
             _run_with_watchdog(
-                lambda: client.check_permissions(full(), timeout=0.2)
+                lambda: client.check_permissions(full(), _ONE_REL, timeout=0.2)
             )
         elapsed = time.monotonic() - start
         client.close()
@@ -292,7 +297,7 @@ async def test_aio_unary_call_times_out_with_deadline_exceeded_error():
         start = time.monotonic()
         with pytest.raises(DeadlineExceededError):
             await asyncio.wait_for(
-                client.check_permissions(full()), timeout=_WATCHDOG_SECONDS
+                client.check_permissions(full(), _ONE_REL), timeout=_WATCHDOG_SECONDS
             )
         elapsed = time.monotonic() - start
         await client.close()
@@ -313,7 +318,7 @@ async def test_aio_per_call_timeout_overrides_client_default():
         start = time.monotonic()
         with pytest.raises(DeadlineExceededError):
             await asyncio.wait_for(
-                client.check_permissions(full(), timeout=0.2),
+                client.check_permissions(full(), _ONE_REL, timeout=0.2),
                 timeout=_WATCHDOG_SECONDS,
             )
         elapsed = time.monotonic() - start

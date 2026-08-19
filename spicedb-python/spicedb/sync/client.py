@@ -35,6 +35,7 @@ from spicedb import _mapping, _requests
 from spicedb._auth import bearer_metadata, require_insecure_transport_allowed
 from spicedb._tls import channel_credentials, require_tls_material_usable
 from spicedb._requests import DEFAULT_PAGE_SIZE as _DEFAULT_PAGE_SIZE
+from spicedb._requests import CHECK_BATCH_SIZE as _CHECK_BATCH_SIZE
 from spicedb._requests import IMPORT_BATCH_SIZE as _IMPORT_BATCH_SIZE
 from spicedb.consistency import Consistency
 from spicedb.errors import is_transient, to_spicedb_error
@@ -388,6 +389,12 @@ class SpiceDBClient:
         """Check multiple permissions via BulkCheckPermissions. Returns a
         list of CheckResult, one per relationship, in the same order.
 
+        Large inputs are split automatically into requests of at most
+        `_requests.CHECK_BATCH_SIZE` (1,000) items and the responses
+        concatenated in input order -- SpiceDB rejects a single request
+        carrying more than 10,000 items. An empty `rels` sends no request
+        at all and returns `[]`.
+
         `context` is a call-level default applied to every relationship's
         check item. A relationship built with its own
         `check_context` (e.g. `Relationship.from_triple(..., check_context=
@@ -402,6 +409,45 @@ class SpiceDBClient:
         `timeout` (seconds) bounds this call, overriding the client's
         `default_timeout`."""
         self._ensure_channel()
+        # Zero relationships sends nothing at all. An empty request is not a
+        # cheaper way to ask nothing -- it is a round trip whose only
+        # possible answer is the empty list, and `check_all` already treats
+        # an aggregate over zero checks as False rather than a grant.
+        if not rels:
+            return []
+
+        # One request per chunk of `CHECK_BATCH_SIZE`, results concatenated
+        # in input order so results[i] still corresponds to rels[i] across
+        # the chunk boundary. A caller passing fewer than `CHECK_BATCH_SIZE`
+        # relationships -- the overwhelmingly common case -- still makes
+        # exactly one request.
+        results: list[CheckResult] = []
+        for start in range(0, len(rels), _CHECK_BATCH_SIZE):
+            results.extend(
+                self._check_chunk(
+                    consistency,
+                    rels[start : start + _CHECK_BATCH_SIZE],
+                    context,
+                    timeout,
+                )
+            )
+        return results
+
+    def _check_chunk(
+        self,
+        consistency: Consistency,
+        rels: tuple[Relationship, ...],
+        context: dict[str, Any] | None,
+        timeout: float | None,
+    ) -> list[CheckResult]:
+        """Issue one CheckBulkPermissions request for `rels` and map the
+        response.
+
+        `rels` is non-empty and no longer than `CHECK_BATCH_SIZE`;
+        `check_permissions` is what enforces both. The pair-count guard in
+        `_mapping.check_results` therefore applies per chunk, exactly as it
+        applied to the whole request before chunking.
+        """
         request = _requests.check_bulk_request(consistency, rels, context)
         t = self._effective_timeout(timeout)
 

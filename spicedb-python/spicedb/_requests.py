@@ -26,6 +26,19 @@ from spicedb.types import Filter, Relationship, Transaction
 DEFAULT_PAGE_SIZE = 512
 IMPORT_BATCH_SIZE = 1000
 
+# How many items go into a single CheckBulkPermissions request.
+#
+# SpiceDB rejects a request carrying more items than ``maxBulkCheckCount``
+# -- 10,000, a hard-coded const in ``internal/services/v1/bulkcheck.go``
+# with no flag to raise or lower it -- with
+# ``ERROR_REASON_TOO_MANY_CHECKS_IN_REQUEST``. Nothing in the proto enforces
+# this: ``CheckBulkPermissionsRequest.items`` carries only a per-item
+# ``required`` rule, not a collection-size rule, so the limit lives solely
+# in server code and a client that forwards the caller's arguments unchanged
+# fails on large inputs. 1,000 leaves ten times' headroom and matches
+# ``IMPORT_BATCH_SIZE`` and the other clients' check batch size.
+CHECK_BATCH_SIZE = 1000
+
 
 def context_struct(context: dict[str, Any] | None) -> struct_pb2.Struct | None:
     """Build a protobuf Struct from caveat context, or None if unset."""

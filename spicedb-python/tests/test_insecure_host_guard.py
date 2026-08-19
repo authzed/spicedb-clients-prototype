@@ -13,12 +13,19 @@ from unittest import mock
 import grpc
 import pytest
 
+from spicedb import Relationship
 from spicedb._auth import is_loopback_endpoint
 from spicedb.aio import SpiceDBClient as AsyncSpiceDBClient
 from spicedb.consistency import full
 from spicedb.errors import InvalidArgumentError
 from spicedb.sync import SpiceDBClient as SyncSpiceDBClient
 from tests.test_auth_headers import TOKEN, _Recorder, _serve
+
+# One relationship, because `check_permissions` with zero relationships now
+# sends no request at all (an empty bulk check is a round trip whose only
+# possible answer is the empty list). These tests assert a header reached a
+# real server, so they need a real RPC.
+_ONE_REL = Relationship.from_triple("document:readme", "view", "user:alice")
 
 LOOPBACK_ENDPOINTS = [
     "localhost:50051", "LOCALHOST:50051", "localhost",
@@ -140,7 +147,7 @@ def test_sync_loopback_allows_insecure_with_no_opt_in_and_sends_token():
     server, port = _serve(recorder, None)
     try:
         client = SyncSpiceDBClient(f"localhost:{port}", token=TOKEN, insecure=True)
-        client.check_permissions(full())
+        client.check_permissions(full(), _ONE_REL)
         client.close()
     finally:
         server.stop(0)
@@ -154,7 +161,7 @@ async def test_aio_loopback_allows_insecure_with_no_opt_in_and_sends_token():
     server, port = _serve(recorder, None)
     try:
         client = AsyncSpiceDBClient(f"localhost:{port}", token=TOKEN, insecure=True)
-        await client.check_permissions(full())
+        await client.check_permissions(full(), _ONE_REL)
         await client.close()
     finally:
         server.stop(0)
@@ -186,7 +193,7 @@ def test_sync_allow_insecure_remote_credentials_sends_token_to_non_loopback():
                 insecure=True,
                 allow_insecure_remote_credentials=True,
             )
-            client.check_permissions(full())
+            client.check_permissions(full(), _ONE_REL)
             client.close()
     finally:
         server.stop(0)
@@ -212,7 +219,7 @@ async def test_aio_allow_insecure_remote_credentials_sends_token_to_non_loopback
                 insecure=True,
                 allow_insecure_remote_credentials=True,
             )
-            await client.check_permissions(full())
+            await client.check_permissions(full(), _ONE_REL)
             await client.close()
     finally:
         server.stop(0)

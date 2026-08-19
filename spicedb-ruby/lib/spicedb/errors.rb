@@ -31,7 +31,11 @@ module SpiceDB
       super(message)
       @reason = reason
       @reason_domain = reason_domain
-      @reason_metadata = reason_metadata
+      # Copied, not aliased: the caller's Hash must not become a live handle
+      # into a raised error, nor the error's into the caller's. Every other
+      # client copies here. `dup` is required -- `Hash#to_h` returns `self` for
+      # a Hash, so freezing its result alone would freeze the caller's object.
+      @reason_metadata = reason_metadata.to_h.dup.freeze
     end
   end
 

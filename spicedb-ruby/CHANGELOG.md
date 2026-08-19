@@ -93,7 +93,8 @@
     "RULE: A conversion that cannot preserve meaning must fail", which requires server-supplied
     unknowns to degrade rather than raise. `reason` is `''` and `reason_metadata` `{}` when the
     server attached no `ErrorInfo`. `SpiceDB::Error.new(message)` still works unchanged — the three
-    are optional keyword arguments.
+    are optional keyword arguments. `reason_metadata` is a frozen copy: a caller cannot mutate it
+    into the error, and mutating the Hash they passed in does not change what the error reports.
   - New file `lib/spicedb/error_details.rb` (`SpiceDB::ErrorDetails`), which reads the `ErrorInfo`
     off whichever shape the error arrived in: a `GRPC::BadStatus` (details in the
     `grpc-status-details-bin` trailer) or a `Google::Rpc::Status` (per-item bulk failure, details

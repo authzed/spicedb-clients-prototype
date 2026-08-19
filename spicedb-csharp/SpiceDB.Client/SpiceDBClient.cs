@@ -339,15 +339,23 @@ public sealed class SpiceDBClient : IAsyncDisposable
     /// token across the returned array.
     /// </para>
     /// <para>
-    /// A per-call <c>timeout</c> on the overloads that accept one bounds
-    /// <b>each request</b> this call makes, not the call as a whole, and the
-    /// retry budget is likewise per request: worst-case wall time is
-    /// <c>ceil(relationships.Length / 1000.0) * timeout</c>. That is
+    /// The deadline that bounds a chunked call is the client-level
+    /// <see cref="DefaultTimeout"/>, and it bounds <b>each request</b> rather
+    /// than the call as a whole; the retry budget is likewise per request.
+    /// Worst-case wall time is
+    /// <c>ceil(relationships.Length / 1000.0) * DefaultTimeout</c>. That is
     /// deliberate — one deadline spanning every chunk would make a large
     /// check fail purely for being large, and a retry budget shared across
     /// chunks would let one flaky chunk exhaust the allowance for the rest.
-    /// Size the value per request, and pass a
+    /// Size <see cref="DefaultTimeout"/> per request, and pass a
     /// <see cref="CancellationToken"/> if you need a whole-operation bound.
+    /// </para>
+    /// <para>
+    /// The per-call <c>timeout</c> parameter is not a knob on this path:
+    /// <see cref="CheckPermissionAsync"/> is the only caller that supplies
+    /// one, and it always passes exactly one relationship, which is never
+    /// split. A per-call override on the plural surface would need a new
+    /// overload.
     /// </para>
     /// </summary>
     /// <remarks>

@@ -58,8 +58,6 @@ mod insecure_host_guard {
         "127.55.66.77:50051",
         "[::1]:50051",
         "::1",
-        "unix:/var/run/spicedb.sock",
-        "unix:///var/run/spicedb.sock",
     ];
 
     const NON_LOOPBACK_ENDPOINTS: &[&str] = &[
@@ -97,6 +95,15 @@ mod insecure_host_guard {
         "localhost.",
         "localhost :50051",
         "127.0.0.1 :50051",
+        // Unix targets are NOT loopback for this client, deliberately, and the
+        // first two used to be asserted as loopback above. tonic's Channel
+        // takes a URI, and "http://unix:/var/run/spicedb.sock" parses with
+        // host "unix" -- so the exemption was handing a bearer token to
+        // whatever DNS answers for the name "unix". new_with_options now
+        // refuses these outright; see refuses_unix_socket_targets below.
+        "unix:/var/run/spicedb.sock",
+        "unix:///var/run/spicedb.sock",
+        "UNIX:/var/run/spicedb.sock",
     ];
 
     #[test]
@@ -220,6 +227,9 @@ mod insecure_host_guard {
                 assert!(msg.contains("evil example.com:1234"), "{msg}");
                 assert!(msg.contains("allow_insecure_remote_credentials"), "{msg}");
             }
+            Err(other @ SpiceDBProtoClientError::UnixSocketNotSupported(_)) => {
+                panic!("expected InsecureRemoteHostNotAllowed, got {other:?}")
+            }
             Err(SpiceDBProtoClientError::Transport(e)) => panic!(
                 "expected InsecureRemoteHostNotAllowed (proving the guard ran before any \
                  URI/transport work), but got a Transport error instead -- meaning control reached \
@@ -307,6 +317,9 @@ mod insecure_host_guard {
                 assert!(msg.contains(&endpoint), "{msg}");
                 assert!(msg.contains("allow_insecure_remote_credentials"), "{msg}");
             }
+            Err(other @ SpiceDBProtoClientError::UnixSocketNotSupported(_)) => {
+                panic!("expected InsecureRemoteHostNotAllowed, got {other:?}")
+            }
             Err(SpiceDBProtoClientError::Transport(e)) => panic!(
                 "expected InsecureRemoteHostNotAllowed (proving the guard ran before any \
                  URI/transport work), but got a Transport error instead: {e}"
@@ -331,6 +344,49 @@ mod insecure_host_guard {
             "nothing may reach {addr} for a refused endpoint -- the bearer token must never \
              have been put on the wire"
         );
+    }
+
+    /// A unix-socket target must be refused outright, not treated as loopback.
+    /// tonic's `Channel` takes a URI, and
+    /// `"http://unix:/var/run/spicedb.sock".parse::<Uri>()` has host `"unix"`
+    /// -- so the old "a unix socket never leaves the kernel" exemption was
+    /// shipping the bearer token to whatever DNS answers for the name `unix`,
+    /// in cleartext, while the guard reported "loopback".
+    ///
+    /// The refusal is unconditional: TLS and the opt-in are both exercised
+    /// here, because neither makes dialing a host called `unix` the thing the
+    /// caller asked for. Nothing can be sent, because construction never
+    /// returns a client at all.
+    #[tokio::test]
+    async fn refuses_unix_socket_targets() {
+        for (endpoint, insecure, allow_remote) in [
+            ("unix:/var/run/spicedb.sock", true, false),
+            ("unix:///var/run/spicedb.sock", true, false),
+            ("UNIX:/var/run/spicedb.sock", true, false),
+            // The opt-in does not buy a unix target either.
+            ("unix:/var/run/spicedb.sock", true, true),
+            // Nor does TLS.
+            ("unix:/var/run/spicedb.sock", false, false),
+        ] {
+            let result =
+                SpiceDBProtoClient::new_with_options(endpoint, "super-secret-token", insecure, allow_remote)
+                    .await;
+
+            match result {
+                Err(SpiceDBProtoClientError::UnixSocketNotSupported(msg)) => {
+                    assert!(msg.contains(endpoint), "{msg}");
+                    assert!(msg.contains("unix-domain-socket"), "{msg}");
+                }
+                Err(other) => panic!(
+                    "expected UnixSocketNotSupported for {endpoint:?} (insecure={insecure}, \
+                     allow_remote={allow_remote}), got {other:?}"
+                ),
+                Ok(_) => panic!(
+                    "expected {endpoint:?} to be refused (insecure={insecure}, \
+                     allow_remote={allow_remote})"
+                ),
+            }
+        }
     }
 
     /// Companion to the two tests above: with no opt-in, the exact same

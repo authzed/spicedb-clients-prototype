@@ -22,8 +22,24 @@
   `Endpoint` is built from, and applies the loopback test to `Uri::host`. Guard and transport
   can no longer disagree. Endpoints containing `@`, `/`, `?`, `#`, or whitespace are
   additionally refused outright, since a legitimate SpiceDB target contains none of them. A
-  bare IPv6 literal (`"::1"`) is bracketed before parsing and keeps working, as do `unix:`
-  targets, `localhost`, and 127.0.0.0/8.
+  bare IPv6 literal (`"::1"`) is bracketed before parsing and keeps working, as do `localhost`
+  and 127.0.0.0/8.
+
+- **Breaking, and security-motivated: `unix:` endpoints are now refused instead of being
+  treated as loopback.** `SpiceDBClient::new_plaintext("unix:/var/run/spicedb.sock", token)`
+  previously passed the guard on the grounds that "a unix socket never leaves the host's
+  kernel" — but tonic's `Channel` takes a URI, and
+  `"http://unix:/var/run/spicedb.sock".parse::<Uri>()` has host `"unix"`. So it resolved the
+  **DNS name `unix`** and shipped the bearer token there in cleartext, while the guard reported
+  "loopback". Nothing was ever connecting to a socket path, so no working configuration breaks.
+
+  Such an endpoint now fails with the new
+  `SpiceDBProtoClientError::UnixSocketNotSupported` (surfaced as
+  `SpiceDBError::InvalidArgument` from the idiomatic client), unconditionally — before the
+  credential guard, and regardless of TLS or `allow_insecure_remote_credentials`, since neither
+  makes "resolve a hostname called `unix`" what the caller asked for. **Adding that variant is
+  source-breaking for an exhaustive `match` on `SpiceDBProtoClientError`.** The Go, Python and
+  Ruby clients keep their `unix:` exemption; their transports genuinely dial the path.
 
 - **`import_relationships` required a materialized `Vec<Relationship>`.** A caller streaming in a
   large import from an iterator/generator (a lazy computation, a DB cursor) was forced to collect

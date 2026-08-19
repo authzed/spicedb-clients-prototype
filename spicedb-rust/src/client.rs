@@ -147,7 +147,8 @@ impl SpiceDBClientBuilder {
         )
         .await
         .map_err(|e| match e {
-            spicedb_proto::SpiceDBProtoClientError::InsecureRemoteHostNotAllowed(msg) => {
+            spicedb_proto::SpiceDBProtoClientError::InsecureRemoteHostNotAllowed(msg)
+            | spicedb_proto::SpiceDBProtoClientError::UnixSocketNotSupported(msg) => {
                 SpiceDBError::InvalidArgument(msg)
             }
             spicedb_proto::SpiceDBProtoClientError::Transport(e) => {

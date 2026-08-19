@@ -98,6 +98,43 @@ mod insecure_host_guard {
         }
     }
 
+    /// The bypass shapes, at the public entry point. The proto tier holds the
+    /// full fixture set and the over-the-wire "token never sent" proof; these
+    /// are the ones that must not slip through `new_plaintext` itself, which
+    /// takes no options at all and so offers a caller no way to opt in.
+    #[tokio::test]
+    async fn new_plaintext_refuses_endpoints_whose_uri_authority_shifts_the_host() {
+        for endpoint in [
+            "127.0.0.1:443@evil.com",
+            "[::1]:443@evil.com",
+            "[::1]:0@127.0.0.1:19999",
+            "localhost@evil.com",
+        ] {
+            match SpiceDBClient::new_plaintext(endpoint, "super-secret-token").await {
+                Err(SpiceDBError::InvalidArgument(msg)) => {
+                    assert!(msg.contains("allow_insecure_remote_credentials"), "{msg}");
+                }
+                Err(other) => panic!("expected InvalidArgument for {endpoint:?}, got {other:?}"),
+                Ok(_) => panic!("expected {endpoint:?} to be refused"),
+            }
+        }
+    }
+
+    /// A unix-socket endpoint is refused, not silently turned into a DNS
+    /// lookup for the hostname `unix`. tonic cannot dial a UDS path from a URI.
+    #[tokio::test]
+    async fn new_plaintext_refuses_unix_socket_targets() {
+        for endpoint in ["unix:/var/run/spicedb.sock", "unix:///var/run/spicedb.sock"] {
+            match SpiceDBClient::new_plaintext(endpoint, "super-secret-token").await {
+                Err(SpiceDBError::InvalidArgument(msg)) => {
+                    assert!(msg.contains("unix-domain-socket"), "{msg}");
+                }
+                Err(other) => panic!("expected InvalidArgument for {endpoint:?}, got {other:?}"),
+                Ok(_) => panic!("expected {endpoint:?} to be refused"),
+            }
+        }
+    }
+
     #[tokio::test]
     async fn loopback_allows_insecure_with_no_opt_in_and_actually_calls_the_server() {
         let mock = MockPermissionsService::new();

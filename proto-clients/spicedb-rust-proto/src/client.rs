@@ -17,6 +17,14 @@ pub enum SpiceDBProtoClientError {
     /// is created, so the token can never reach the wire for a rejected
     /// combination.
     InsecureRemoteHostNotAllowed(String),
+    /// Refused because `endpoint` names a unix domain socket, which this
+    /// client's transport cannot dial. tonic's `Channel` takes a URI, and
+    /// `"http://unix:/var/run/spicedb.sock".parse::<Uri>()` has host `"unix"`
+    /// -- so accepting such an endpoint would resolve the DNS name `unix` and
+    /// connect there, not to the socket path. Raised unconditionally, before
+    /// the credential guard and regardless of TLS, since no combination of
+    /// options makes that the thing the caller asked for.
+    UnixSocketNotSupported(String),
     /// A tonic transport-level error (invalid URI, TLS/connect failure).
     Transport(tonic::transport::Error),
 }
@@ -25,6 +33,7 @@ impl fmt::Display for SpiceDBProtoClientError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InsecureRemoteHostNotAllowed(msg) => write!(f, "{msg}"),
+            Self::UnixSocketNotSupported(msg) => write!(f, "{msg}"),
             Self::Transport(e) => write!(f, "{e}"),
         }
     }
@@ -33,7 +42,7 @@ impl fmt::Display for SpiceDBProtoClientError {
 impl std::error::Error for SpiceDBProtoClientError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::InsecureRemoteHostNotAllowed(_) => None,
+            Self::InsecureRemoteHostNotAllowed(_) | Self::UnixSocketNotSupported(_) => None,
             Self::Transport(e) => Some(e),
         }
     }
@@ -47,10 +56,16 @@ impl From<tonic::transport::Error> for SpiceDBProtoClientError {
 
 /// Reports whether the connection this client would actually open for
 /// `endpoint` terminates on a loopback destination: the literal hostname
-/// "localhost", an IP in 127.0.0.0/8, the IPv6 loopback ::1, or a unix
-/// domain socket target (a "unix:" prefix). A unix socket never leaves the
-/// host's kernel, so it is loopback for this check even though it has no IP
-/// at all.
+/// "localhost", an IP in 127.0.0.0/8, or the IPv6 loopback ::1.
+///
+/// Unix-domain-socket targets are NOT in that list, unlike the equivalent
+/// guard in the Go, Python and Ruby clients. Those clients' transports
+/// genuinely dial a UDS path; this one cannot.
+/// `"http://unix:/var/run/spicedb.sock".parse::<Uri>()` has host `"unix"`, so
+/// a "unix:" endpoint here would resolve that DNS name instead.
+/// [`SpiceDBProtoClient::new_with_options`] refuses such an endpoint outright
+/// with [`SpiceDBProtoClientError::UnixSocketNotSupported`], rather than
+/// letting this function call it loopback.
 ///
 /// That wording is deliberate. This function does not answer "does this
 /// string look like it names a loopback host"; it answers "will the
@@ -86,13 +101,8 @@ impl From<tonic::transport::Error> for SpiceDBProtoClientError {
 /// I/O either way), so a real remote hostname is simply rejected as "not
 /// an IP" and treated as non-loopback.
 pub fn is_loopback_endpoint(endpoint: &str) -> bool {
-    // Checked first, and only on the raw string: a unix target is not a URI
-    // authority at all (it carries a filesystem path, so it legitimately
-    // contains the '/' the reserved-character check below refuses), and it
-    // never leaves the host's kernel regardless of what the path says.
-    if endpoint.starts_with("unix:") {
-        return true;
-    }
+    // There is deliberately no "unix:" exemption here -- see the doc comment
+    // above, and the unconditional refusal in new_with_options below.
 
     // Fail closed on any character that can shift which part of the string
     // the URI parser treats as the authority: '@' (userinfo), '/' (path),
@@ -236,6 +246,22 @@ impl SpiceDBProtoClient {
         insecure: bool,
         allow_insecure_remote_credentials: bool,
     ) -> Result<Self, SpiceDBProtoClientError> {
+        // Refused unconditionally -- ahead of the credential guard below, and
+        // regardless of TLS or of allow_insecure_remote_credentials -- because
+        // this transport cannot do what such an endpoint asks for. tonic's
+        // Channel takes a URI, and "http://unix:/var/run/spicedb.sock" parses
+        // with host "unix", so the endpoint that looks local would resolve
+        // that DNS name and ship the bearer token there. Failing loudly is the
+        // only honest answer; silently dialing a host called "unix" is not.
+        // Matched case-insensitively because a URI scheme is case-insensitive.
+        if endpoint.len() >= 5 && endpoint[..5].eq_ignore_ascii_case("unix:") {
+            return Err(SpiceDBProtoClientError::UnixSocketNotSupported(format!(
+                "spicedb: unix-domain-socket targets are not supported by this client's \
+                 transport: \"{endpoint}\". tonic would parse \"unix\" as a DNS hostname and \
+                 connect there, not to the socket path. Use a \"host:port\" endpoint instead."
+            )));
+        }
+
         // See root DESIGN.md, "RULE: Credentials over insecure transport
         // require an explicit opt-in". This is the guard for
         // BearerTokenInterceptor above: tonic's Interceptor trait has no

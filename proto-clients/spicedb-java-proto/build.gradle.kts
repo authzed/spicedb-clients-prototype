@@ -31,15 +31,15 @@ sourceSets {
 
 dependencies {
     // BSR Generated SDKs — pre-built proto stubs with all transitive deps resolved
-    api("build.buf.gen:authzed_api_protocolbuffers_java:34.0.0.1.20260217075218.5b2fc906e1a2")
-    api("build.buf.gen:authzed_api_grpc_java:1.79.0.2.20260217075218.5b2fc906e1a2")
+    api("build.buf.gen:authzed_api_protocolbuffers_java:35.1.0.1.20260521180231.55aa23d533a3")
+    api("build.buf.gen:authzed_api_grpc_java:1.83.1.1.20260521180231.55aa23d533a3")
 
-    api("io.grpc:grpc-netty-shaded:1.72.0")
-    api("io.grpc:grpc-protobuf:1.72.0")
-    api("io.grpc:grpc-stub:1.72.0")
+    api("io.grpc:grpc-netty-shaded:1.83.1")
+    api("io.grpc:grpc-protobuf:1.83.1")
+    api("io.grpc:grpc-stub:1.83.1")
     api("javax.annotation:javax.annotation-api:1.3.2")
 
-    testImplementation(platform("org.junit:junit-bom:5.11.4"))
+    testImplementation(platform("org.junit:junit-bom:6.1.3"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }

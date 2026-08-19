@@ -121,9 +121,9 @@ class DeleteRelationshipsOptionsTest {
   }
 
   /**
-   * Same rejection, but for a {@code mustMatch} precondition filter rather than the primary
-   * filter -- preconditions are converted before any RPC is attempted, so this must also fail
-   * closed with no request sent.
+   * Same rejection, but for a {@code mustMatch} precondition filter rather than the primary filter
+   * -- preconditions are converted before any RPC is attempted, so this must also fail closed with
+   * no request sent.
    */
   @Test
   void deleteRelationshipsThrowsWhenMustMatchFilterSubjectIDHasNoSubjectType() throws IOException {
@@ -172,8 +172,7 @@ class DeleteRelationshipsOptionsTest {
       DeleteRelationshipsRequest req = service.captured.get(0);
       assertEquals("user", req.getRelationshipFilter().getOptionalSubjectFilter().getSubjectType());
       assertEquals(
-          "alice",
-          req.getRelationshipFilter().getOptionalSubjectFilter().getOptionalSubjectId());
+          "alice", req.getRelationshipFilter().getOptionalSubjectFilter().getOptionalSubjectId());
     }
   }
 

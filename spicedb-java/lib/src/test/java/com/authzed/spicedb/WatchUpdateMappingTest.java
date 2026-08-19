@@ -15,15 +15,15 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Proves that {@link SpiceDBClient#updateFromProto} maps an unrecognized watch {@code
- * RelationshipUpdate.Operation} — including {@code OPERATION_UNSPECIFIED} and any future wire
- * value this client does not know about — to {@link SpiceDBClient.UpdateOperation#UNSPECIFIED},
- * never to {@link SpiceDBClient.UpdateOperation#TOUCH}.
+ * RelationshipUpdate.Operation} — including {@code OPERATION_UNSPECIFIED} and any future wire value
+ * this client does not know about — to {@link SpiceDBClient.UpdateOperation#UNSPECIFIED}, never to
+ * {@link SpiceDBClient.UpdateOperation#TOUCH}.
  *
- * <p>Root {@code DESIGN.md}, "RULE: A conversion that cannot preserve meaning must fail", clause
- * 2: server-supplied values the client does not recognise MUST NOT raise, and MUST map to the
- * safe, non-permissive default — never a grant, and never a write. Mapping an unrecognized
- * operation to {@code TOUCH} would let a cache or index mirror consuming the watch stream upsert
- * a relationship that may in fact have been deleted.
+ * <p>Root {@code DESIGN.md}, "RULE: A conversion that cannot preserve meaning must fail", clause 2:
+ * server-supplied values the client does not recognise MUST NOT raise, and MUST map to the safe,
+ * non-permissive default — never a grant, and never a write. Mapping an unrecognized operation to
+ * {@code TOUCH} would let a cache or index mirror consuming the watch stream upsert a relationship
+ * that may in fact have been deleted.
  */
 class WatchUpdateMappingTest {
 

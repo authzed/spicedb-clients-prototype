@@ -18,9 +18,9 @@ import org.junit.jupiter.api.Test;
 
 /**
  * A watch stream that dies cannot be correctly resumed unless the client surfaces {@code
- * changes_through} (proto: "This token can be used in a subsequent WatchRequest to resume
- * watching from this point"), and cannot survive an idle-timeout proxy unless the client can
- * request {@code WATCH_KIND_INCLUDE_CHECKPOINTS}. These tests exercise both.
+ * changes_through} (proto: "This token can be used in a subsequent WatchRequest to resume watching
+ * from this point"), and cannot survive an idle-timeout proxy unless the client can request {@code
+ * WATCH_KIND_INCLUDE_CHECKPOINTS}. These tests exercise both.
  */
 class WatchResumabilityTest {
 

@@ -348,7 +348,8 @@ class CheckResultsTest {
       SpiceDBClient client = servers.client();
       boolean allGranted = client.checkAll(Consistency.full(), "view");
 
-      assertFalse(allGranted, "checkAll must return false, not vacuously true, for zero relationships");
+      assertFalse(
+          allGranted, "checkAll must return false, not vacuously true, for zero relationships");
     }
   }
 

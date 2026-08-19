@@ -13,21 +13,21 @@ import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
 
 /**
- * Proves that {@link SpiceDBClient#exportRelationships} yields its first item before the
- * underlying server stream completes, instead of buffering the whole export into memory first.
+ * Proves that {@link SpiceDBClient#exportRelationships} yields its first item before the underlying
+ * server stream completes, instead of buffering the whole export into memory first.
  *
- * <p>{@code ExportBulkRelationships}' {@code optional_limit} bounds the number of relationships
- * in a single response MESSAGE, unlike every other paginated RPC's {@code optional_limit}, which
+ * <p>{@code ExportBulkRelationships}' {@code optional_limit} bounds the number of relationships in
+ * a single response MESSAGE, unlike every other paginated RPC's {@code optional_limit}, which
  * bounds the WHOLE stream. A single {@code ExportBulkRelationships} call keeps streaming further
- * response messages until the entire dataset has been sent -- it does not end after one "page".
- * The mock service below exploits exactly this: it sends ONE response message and then leaves the
+ * response messages until the entire dataset has been sent -- it does not end after one "page". The
+ * mock service below exploits exactly this: it sends ONE response message and then leaves the
  * stream open (never calls {@code onCompleted()}), simulating an export that has far more data
  * still to come. Before this fix, {@code exportRelationships}'s internal {@code fetchNextPage()}
- * looped on {@code serverStream.hasNext()} until the server closed the stream -- against this
- * mock service, that loop would block forever waiting for a completion that never arrives, so
- * even the FIRST relationship would never reach the caller. The fix pulls exactly one response
- * message per internal refill, so the first item is available immediately regardless of whether
- * the server has finished.
+ * looped on {@code serverStream.hasNext()} until the server closed the stream -- against this mock
+ * service, that loop would block forever waiting for a completion that never arrives, so even the
+ * FIRST relationship would never reach the caller. The fix pulls exactly one response message per
+ * internal refill, so the first item is available immediately regardless of whether the server has
+ * finished.
  */
 class ExportRelationshipsStreamingTest {
 

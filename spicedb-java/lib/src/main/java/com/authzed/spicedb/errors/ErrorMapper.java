@@ -10,9 +10,9 @@ import java.util.Set;
  * <p>Transient error codes (UNAVAILABLE, ABORTED) are identified by {@link
  * #isTransient(StatusRuntimeException)} for retry logic. RESOURCE_EXHAUSTED is deliberately
  * excluded: in SpiceDB it signals either memory load-shed (retrying adds load to an
- * already-overloaded server) or a deterministic MaxDepthExceeded (retrying can never succeed --
- * it just re-runs the most expensive class of check several times before surfacing the same
- * error). See root DESIGN.md, "Automatic retry is for idempotent operations only".
+ * already-overloaded server) or a deterministic MaxDepthExceeded (retrying can never succeed -- it
+ * just re-runs the most expensive class of check several times before surfacing the same error).
+ * See root DESIGN.md, "Automatic retry is for idempotent operations only".
  */
 public final class ErrorMapper {
 

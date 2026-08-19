@@ -286,8 +286,7 @@ class CheckContextTest {
 
       assertTrue(thrown.getMessage().contains("bad_key"), thrown.getMessage());
       assertTrue(
-          thrown.getMessage().contains(UnrepresentableValue.class.getName()),
-          thrown.getMessage());
+          thrown.getMessage().contains(UnrepresentableValue.class.getName()), thrown.getMessage());
       assertTrue(captured.isEmpty(), "no request should have been sent to the server");
     }
   }

@@ -130,7 +130,8 @@ class SpiceDBClientTest {
 
     assertEquals(Value.KindCase.STRUCT_VALUE, fields.get("a_map").getKindCase());
     assertEquals(
-        "value", fields.get("a_map").getStructValue().getFieldsMap().get("nested").getStringValue());
+        "value",
+        fields.get("a_map").getStructValue().getFieldsMap().get("nested").getStringValue());
 
     assertEquals(Value.KindCase.LIST_VALUE, fields.get("a_list").getKindCase());
     var listValues = fields.get("a_list").getListValue().getValuesList();

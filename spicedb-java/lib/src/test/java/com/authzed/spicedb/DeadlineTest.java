@@ -38,10 +38,10 @@ import org.junit.jupiter.api.Test;
  * deadline is actually enforced, since grpc's deadline machinery lives below the handler.
  *
  * <p>Every stalling handler self-bounds its stall to {@link #STALL_MS} rather than blocking
- * forever: long enough to dwarf the tiny per-test deadlines below (proving enforcement, not
- * luck). Each call is additionally run on a background thread and joined with {@link
- * Future#get(long, TimeUnit)}, which fails the test (instead of hanging it, and CI along with it)
- * if a regression reintroduces an unbounded call.
+ * forever: long enough to dwarf the tiny per-test deadlines below (proving enforcement, not luck).
+ * Each call is additionally run on a background thread and joined with {@link Future#get(long,
+ * TimeUnit)}, which fails the test (instead of hanging it, and CI along with it) if a regression
+ * reintroduces an unbounded call.
  */
 class DeadlineTest {
 
@@ -112,8 +112,7 @@ class DeadlineTest {
       Throwable thrown =
           runWithWatchdog(
               () ->
-                  client.checkPermission(
-                      Consistency.full(), "view", rel, Duration.ofMillis(200)));
+                  client.checkPermission(Consistency.full(), "view", rel, Duration.ofMillis(200)));
       long elapsedMs = (System.nanoTime() - start) / 1_000_000;
 
       assertInstanceOf(DeadlineExceededException.class, thrown, "got: " + thrown);
@@ -270,8 +269,7 @@ class DeadlineTest {
 
       long start = System.nanoTime();
       Throwable thrown =
-          runWithWatchdog(
-              () -> client.importRelationships(List.of(rel), Duration.ofMillis(200)));
+          runWithWatchdog(() -> client.importRelationships(List.of(rel), Duration.ofMillis(200)));
       long elapsedMs = (System.nanoTime() - start) / 1_000_000;
 
       assertInstanceOf(DeadlineExceededException.class, thrown, "got: " + thrown);
@@ -350,9 +348,9 @@ class DeadlineTest {
    * every 10ms and returns early once the client gives up (deadline expiry propagates a
    * cancellation to the server-side {@link Context}). Without this, the handler would sleep the
    * full {@code ms} regardless of the client's much shorter deadline, and grpc's channel/server
-   * shutdown (used in {@link InProcessHarness#close}) would block for several extra seconds
-   * waiting for this handler thread to notice and finish -- these tests don't need to pay that
-   * cost to prove the CLIENT enforces its deadline.
+   * shutdown (used in {@link InProcessHarness#close}) would block for several extra seconds waiting
+   * for this handler thread to notice and finish -- these tests don't need to pay that cost to
+   * prove the CLIENT enforces its deadline.
    */
   private static void waitOutStallOrCancellation(long ms) {
     Context context = Context.current();
@@ -369,10 +367,9 @@ class DeadlineTest {
   }
 
   /**
-   * Runs {@code call} on a background thread and waits up to {@link #WATCHDOG_SECONDS}, failing
-   * the test (instead of hanging it, and CI along with it) if a regression reintroduces an
-   * unbounded call. Returns the exception the call threw -- callers use this when they expect a
-   * failure.
+   * Runs {@code call} on a background thread and waits up to {@link #WATCHDOG_SECONDS}, failing the
+   * test (instead of hanging it, and CI along with it) if a regression reintroduces an unbounded
+   * call. Returns the exception the call threw -- callers use this when they expect a failure.
    */
   private static <T> Throwable runWithWatchdog(Callable<T> call) throws Exception {
     ExecutorService executor = Executors.newSingleThreadExecutor();
@@ -448,10 +445,10 @@ class DeadlineTest {
     }
 
     /**
-     * Shuts the channel and server down forcibly (not gracefully): a deadline-exceeded call
-     * leaves the underlying in-process stream in a state where {@code SpiceDBClient#close()}'s
-     * graceful {@code channel.awaitTermination(5, SECONDS)} can block for the full 5s even though
-     * the RPC itself has long since finished from the client's point of view -- these short-lived,
+     * Shuts the channel and server down forcibly (not gracefully): a deadline-exceeded call leaves
+     * the underlying in-process stream in a state where {@code SpiceDBClient#close()}'s graceful
+     * {@code channel.awaitTermination(5, SECONDS)} can block for the full 5s even though the RPC
+     * itself has long since finished from the client's point of view -- these short-lived,
      * single-test channels don't need graceful drain, only prompt reclamation.
      */
     @Override

@@ -1,5 +1,7 @@
 package com.authzed.spicedb;
 
+import static org.junit.jupiter.api.Assertions.*;
+
 import build.buf.gen.authzed.api.v1.PermissionsServiceGrpc;
 import io.grpc.Metadata;
 import io.grpc.Server;
@@ -10,15 +12,12 @@ import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.inprocess.InProcessChannelBuilder;
 import io.grpc.inprocess.InProcessServerBuilder;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.MethodSource;
-
 import java.io.IOException;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
-
-import static org.junit.jupiter.api.Assertions.*;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 
 /**
  * Regression tests for root DESIGN.md, "RULE: Credentials over insecure transport require an
@@ -29,10 +28,16 @@ class InsecureHostGuardTest {
   @Test
   void isLoopbackEndpointTrueForLoopbackTargets() {
     String[] loopback = {
-      "localhost:50051", "LOCALHOST:50051", "localhost",
-      "127.0.0.1:50051", "127.0.0.1", "127.55.66.77:50051",
-      "[::1]:50051", "::1",
-      "unix:/var/run/spicedb.sock", "unix:///var/run/spicedb.sock",
+      "localhost:50051",
+      "LOCALHOST:50051",
+      "localhost",
+      "127.0.0.1:50051",
+      "127.0.0.1",
+      "127.55.66.77:50051",
+      "[::1]:50051",
+      "::1",
+      "unix:/var/run/spicedb.sock",
+      "unix:///var/run/spicedb.sock",
     };
     for (String endpoint : loopback) {
       assertTrue(SpiceDBClient.isLoopbackEndpoint(endpoint), endpoint);
@@ -42,13 +47,18 @@ class InsecureHostGuardTest {
   @Test
   void isLoopbackEndpointFalseForNonLoopbackTargets() {
     String[] notLoopback = {
-      "example.com:443", "staging.internal:443",
-      "10.0.0.5:50051", "8.8.8.8:443", "0.0.0.0:50051",
+      "example.com:443",
+      "staging.internal:443",
+      "10.0.0.5:50051",
+      "8.8.8.8:443",
+      "0.0.0.0:50051",
       // Typosquats/lookalikes: a future refactor toward String#contains or
       // String#endsWith on "localhost"/"127.0.0.1" would wrongly treat these
       // as loopback and reopen a credential leak. Must stay non-loopback
       // under exact-match host comparison.
-      "localhost.evil.com:443", "127.0.0.1.evil.com:443", "evil-localhost:443",
+      "localhost.evil.com:443",
+      "127.0.0.1.evil.com:443",
+      "evil-localhost:443",
     };
     for (String endpoint : notLoopback) {
       assertFalse(SpiceDBClient.isLoopbackEndpoint(endpoint), endpoint);
@@ -57,12 +67,12 @@ class InsecureHostGuardTest {
 
   /**
    * Endpoints whose URI authority is not what a naive host:port split reads out of them.
-   * grpc-java's {@code DnsNameResolver} takes its host from
-   * {@code URI.create("//" + name).getHost()}, so {@code "127.0.0.1:443@evil.com"} resolves and
-   * connects to <b>evil.com</b> while a last-colon split sees "127.0.0.1". Before the fix
-   * {@link SpiceDBClient#isLoopbackEndpoint} returned true for these, so {@code createPlaintext}
-   * built a client with no opt-in and shipped its bearer token to the attacker-controlled host
-   * in cleartext.
+   * grpc-java's {@code DnsNameResolver} takes its host from {@code URI.create("//" +
+   * name).getHost()}, so {@code "127.0.0.1:443@evil.com"} resolves and connects to <b>evil.com</b>
+   * while a last-colon split sees "127.0.0.1". Before the fix {@link
+   * SpiceDBClient#isLoopbackEndpoint} returned true for these, so {@code createPlaintext} built a
+   * client with no opt-in and shipped its bearer token to the attacker-controlled host in
+   * cleartext.
    */
   private static final String[] AUTHORITY_SHIFTING_ENDPOINTS = {
     "127.0.0.1:443@evil.com",
@@ -83,8 +93,13 @@ class InsecureHostGuardTest {
     // Other endpoints whose parse a manual split can disagree with: userinfo with no port,
     // path/query/fragment, a trailing dot, embedded whitespace. All must fail closed.
     String[] alsoRefused = {
-      "localhost@evil.com", "localhost/../evil.com", "localhost#@evil.com",
-      "localhost?@evil.com", "localhost.", "localhost :50051", "127.0.0.1 :50051",
+      "localhost@evil.com",
+      "localhost/../evil.com",
+      "localhost#@evil.com",
+      "localhost?@evil.com",
+      "localhost.",
+      "localhost :50051",
+      "127.0.0.1 :50051",
     };
     for (String endpoint : alsoRefused) {
       assertFalse(SpiceDBClient.isLoopbackEndpoint(endpoint), endpoint);
@@ -95,11 +110,11 @@ class InsecureHostGuardTest {
       Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
 
   /**
-   * Starts a real in-process gRPC server that records the "authorization" metadata it observes
-   * on every call (via a server-level interceptor, so it fires before any handler) and closes
-   * every call with UNIMPLEMENTED. {@link #channelBuilder()} hands out a fresh in-process channel
-   * builder wired to this same server -- production code decides whether that builder is ever
-   * built and used at all.
+   * Starts a real in-process gRPC server that records the "authorization" metadata it observes on
+   * every call (via a server-level interceptor, so it fires before any handler) and closes every
+   * call with UNIMPLEMENTED. {@link #channelBuilder()} hands out a fresh in-process channel builder
+   * wired to this same server -- production code decides whether that builder is ever built and
+   * used at all.
    */
   private static final class CapturingServer implements AutoCloseable {
     final Server server;
@@ -112,7 +127,9 @@ class InsecureHostGuardTest {
           new ServerInterceptor() {
             @Override
             public <ReqT, RespT> ServerCall.Listener<ReqT> interceptCall(
-                ServerCall<ReqT, RespT> call, Metadata headers, ServerCallHandler<ReqT, RespT> next) {
+                ServerCall<ReqT, RespT> call,
+                Metadata headers,
+                ServerCallHandler<ReqT, RespT> next) {
               capturedAuth.add(headers.get(AUTHORIZATION_KEY));
               call.close(Status.UNIMPLEMENTED, new Metadata());
               return new ServerCall.Listener<ReqT>() {};
@@ -151,15 +168,15 @@ class InsecureHostGuardTest {
   }
 
   /**
-   * The regression test: a rejected combination must never reach the point of building or using
-   * the channel that would carry the credential -- proving the token never reaches anything
-   * capable of putting it on the wire, not merely that an exception was raised. The channel
-   * builder passed in here is wired to a REAL capturing server exactly as
+   * The regression test: a rejected combination must never reach the point of building or using the
+   * channel that would carry the credential -- proving the token never reaches anything capable of
+   * putting it on the wire, not merely that an exception was raised. The channel builder passed in
+   * here is wired to a REAL capturing server exactly as
    * loopbackAllowsInsecureWithNoOptInAndSendsToken's is; capturedAuth staying empty after the
-   * constructor throws is what proves the guard fired before that channel was ever built or
-   * dialed. An implementation that built the channel, sent the token, and only THEN threw would
-   * still fail a bare assertThrows check but would fail this one, since the server would have
-   * recorded the token.
+   * constructor throws is what proves the guard fired before that channel was ever built or dialed.
+   * An implementation that built the channel, sent the token, and only THEN threw would still fail
+   * a bare assertThrows check but would fail this one, since the server would have recorded the
+   * token.
    */
   @Test
   void refusesInsecureNonLoopbackWithoutOptIn() throws Exception {
@@ -265,11 +282,11 @@ class InsecureHostGuardTest {
   }
 
   /**
-   * createPlaintext (the primary, publicly-documented entry point) must reach the identical
-   * guard -- proven with a real assertion on the exception, since createPlaintext has no
-   * channel-builder injection seam (it always dials ManagedChannelBuilder.forTarget directly).
-   * The wire-level "token never sent" proof above (via create's test-only seam) is what
-   * establishes the guard's mechanism is sound; this proves createPlaintext actually reaches it.
+   * createPlaintext (the primary, publicly-documented entry point) must reach the identical guard
+   * -- proven with a real assertion on the exception, since createPlaintext has no channel-builder
+   * injection seam (it always dials ManagedChannelBuilder.forTarget directly). The wire-level
+   * "token never sent" proof above (via create's test-only seam) is what establishes the guard's
+   * mechanism is sound; this proves createPlaintext actually reaches it.
    */
   @Test
   void createPlaintextRefusesNonLoopbackWithoutOptIn() {

@@ -9,7 +9,6 @@ import build.buf.gen.authzed.api.v1.SchemaServiceGrpc;
 import build.buf.gen.authzed.api.v1.WriteRelationshipsRequest;
 import build.buf.gen.authzed.api.v1.WriteRelationshipsResponse;
 import com.authzed.spicedb.errors.ResourceExhaustedException;
-import com.authzed.spicedb.errors.SpiceDBException;
 import com.authzed.spicedb.errors.UnavailableException;
 import io.grpc.Status;
 import io.grpc.stub.StreamObserver;
@@ -32,8 +31,8 @@ import org.junit.jupiter.api.Test;
  * </ul>
  *
  * <p>See {@link ErrorMapperTest} for the inverted {@code isTransient} coverage of the {@code
- * RESOURCE_EXHAUSTED} half of this guarantee, and {@link StreamEstablishmentRetryTest} for the
- * same guarantees on streaming RPC establishment.
+ * RESOURCE_EXHAUSTED} half of this guarantee, and {@link StreamEstablishmentRetryTest} for the same
+ * guarantees on streaming RPC establishment.
  */
 class UnaryRetrySafetyTest {
 
@@ -121,7 +120,9 @@ class UnaryRetrySafetyTest {
 
       assertThrows(UnavailableException.class, () -> client.write(txn));
       assertEquals(
-          1, attempts.get(), "a mutation must be attempted exactly once, even on a retryable error");
+          1,
+          attempts.get(),
+          "a mutation must be attempted exactly once, even on a retryable error");
     }
   }
 

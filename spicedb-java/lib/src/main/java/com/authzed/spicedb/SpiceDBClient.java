@@ -54,20 +54,19 @@ public final class SpiceDBClient implements AutoCloseable {
    * Applied to every unary call that does not pass its own {@code timeout} override.
    *
    * <p>Mirrors {@code authzed-node}'s {@code DEFAULT_DEADLINE_MS = 30_000} (its comment cites
-   * {@code grpc/grpc-node#541}, a known gRPC failure mode where a channel that accepts a
-   * connection but never answers produces no error at all). Without a finite default, a wedged
-   * SpiceDB hangs every caller that didn't opt in to a timeout -- in practice, most callers --
-   * forever: the connection looks fine at the transport level, so nothing ever times out and
-   * nothing is ever produced to retry. See root DESIGN.md, "RULE: A unary call must have a
-   * deadline".
+   * {@code grpc/grpc-node#541}, a known gRPC failure mode where a channel that accepts a connection
+   * but never answers produces no error at all). Without a finite default, a wedged SpiceDB hangs
+   * every caller that didn't opt in to a timeout -- in practice, most callers -- forever: the
+   * connection looks fine at the transport level, so nothing ever times out and nothing is ever
+   * produced to retry. See root DESIGN.md, "RULE: A unary call must have a deadline".
    *
    * <p>Deliberately NOT applied to server-streaming calls ({@link #readRelationships}, {@link
    * #lookupResources}, {@link #lookupSubjects}, {@link #updates}, {@link #exportRelationships}) --
-   * those are long-lived by design, and applying this default to them would make the stream
-   * itself the outage -- NOR to the client-streaming {@link #importRelationships(Iterable)},
-   * whose duration scales with the size of the caller's dataset rather than server latency, so no
-   * fixed default is correct for it either (see DESIGN.md, "Streaming calls MUST NOT inherit the
-   * unary default").
+   * those are long-lived by design, and applying this default to them would make the stream itself
+   * the outage -- NOR to the client-streaming {@link #importRelationships(Iterable)}, whose
+   * duration scales with the size of the caller's dataset rather than server latency, so no fixed
+   * default is correct for it either (see DESIGN.md, "Streaming calls MUST NOT inherit the unary
+   * default").
    */
   public static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(30);
 
@@ -107,10 +106,10 @@ public final class SpiceDBClient implements AutoCloseable {
    * Creates a client with an insecure (plaintext) connection. Use this for testing only — the lack
    * of TLS is made obvious by the name.
    *
-   * <p>By itself, this only works against a loopback {@code endpoint} (localhost, 127.0.0.0/8,
-   * ::1, or a unix socket target) -- see root DESIGN.md, "RULE: Credentials over insecure
-   * transport require an explicit opt-in". For a non-loopback endpoint, use {@link
-   * #createPlaintext(String, String, boolean)}.
+   * <p>By itself, this only works against a loopback {@code endpoint} (localhost, 127.0.0.0/8, ::1,
+   * or a unix socket target) -- see root DESIGN.md, "RULE: Credentials over insecure transport
+   * require an explicit opt-in". For a non-loopback endpoint, use {@link #createPlaintext(String,
+   * String, boolean)}.
    */
   public static SpiceDBClient createPlaintext(String endpoint, String presharedKey) {
     return createPlaintext(endpoint, presharedKey, DEFAULT_TIMEOUT, false);
@@ -135,14 +134,14 @@ public final class SpiceDBClient implements AutoCloseable {
 
   /**
    * Creates a client with an insecure (plaintext) connection and a client-wide {@code
-   * defaultTimeout} applied to every unary call that doesn't pass its own {@code timeout}
-   * override (see {@link #DEFAULT_TIMEOUT}). Use this for testing only — the lack of TLS is made
-   * obvious by the name.
+   * defaultTimeout} applied to every unary call that doesn't pass its own {@code timeout} override
+   * (see {@link #DEFAULT_TIMEOUT}). Use this for testing only — the lack of TLS is made obvious by
+   * the name.
    *
-   * <p>By itself, this only works against a loopback {@code endpoint} (localhost, 127.0.0.0/8,
-   * ::1, or a unix socket target) -- see root DESIGN.md, "RULE: Credentials over insecure
-   * transport require an explicit opt-in". For a non-loopback endpoint, use {@link
-   * #createPlaintext(String, String, Duration, boolean)}.
+   * <p>By itself, this only works against a loopback {@code endpoint} (localhost, 127.0.0.0/8, ::1,
+   * or a unix socket target) -- see root DESIGN.md, "RULE: Credentials over insecure transport
+   * require an explicit opt-in". For a non-loopback endpoint, use {@link #createPlaintext(String,
+   * String, Duration, boolean)}.
    */
   public static SpiceDBClient createPlaintext(
       String endpoint, String presharedKey, Duration defaultTimeout) {
@@ -158,7 +157,9 @@ public final class SpiceDBClient implements AutoCloseable {
    *     allowInsecureRemoteCredentials} is false -- thrown before any channel is created.
    */
   public static SpiceDBClient createPlaintext(
-      String endpoint, String presharedKey, Duration defaultTimeout,
+      String endpoint,
+      String presharedKey,
+      Duration defaultTimeout,
       boolean allowInsecureRemoteCredentials) {
     requireInsecureTransportAllowed(endpoint, true, allowInsecureRemoteCredentials);
     ManagedChannel channel = ManagedChannelBuilder.forTarget(endpoint).usePlaintext().build();
@@ -174,8 +175,8 @@ public final class SpiceDBClient implements AutoCloseable {
 
   /**
    * Creates a client using the system's TLS certificate pool and a client-wide {@code
-   * defaultTimeout} applied to every unary call that doesn't pass its own {@code timeout}
-   * override (see {@link #DEFAULT_TIMEOUT}). Use this for production connections.
+   * defaultTimeout} applied to every unary call that doesn't pass its own {@code timeout} override
+   * (see {@link #DEFAULT_TIMEOUT}). Use this for production connections.
    */
   public static SpiceDBClient createSystemTls(
       String endpoint, String presharedKey, Duration defaultTimeout) {
@@ -195,11 +196,12 @@ public final class SpiceDBClient implements AutoCloseable {
    * explicit opt-in"):</b> this method refuses to combine {@link #withInsecure()} with a
    * non-loopback {@code endpoint} unless {@link #allowInsecureRemoteCredentials()} is also among
    * {@code options} -- but it recognizes only those two named options themselves, by identity, not
-   * by inspecting what any option actually does to the builder ({@code io.grpc.ManagedChannelBuilder}
-   * exposes no way to read back whether plaintext was configured). A custom {@link ClientOption}
-   * lambda that calls {@code builder.usePlaintext()} directly bypasses this guard entirely and is
-   * not detected -- that lambda is the raw escape hatch documented on {@link ClientOption#apply};
-   * the full credential-safety burden for what it does to the builder falls on whoever writes it.
+   * by inspecting what any option actually does to the builder ({@code
+   * io.grpc.ManagedChannelBuilder} exposes no way to read back whether plaintext was configured). A
+   * custom {@link ClientOption} lambda that calls {@code builder.usePlaintext()} directly bypasses
+   * this guard entirely and is not detected -- that lambda is the raw escape hatch documented on
+   * {@link ClientOption#apply}; the full credential-safety burden for what it does to the builder
+   * falls on whoever writes it.
    *
    * @param endpoint the SpiceDB endpoint
    * @param presharedKey the bearer token
@@ -211,9 +213,8 @@ public final class SpiceDBClient implements AutoCloseable {
   }
 
   /**
-   * Creates a client with custom options and a client-wide {@code defaultTimeout} applied to
-   * every unary call that doesn't pass its own {@code timeout} override (see {@link
-   * #DEFAULT_TIMEOUT}).
+   * Creates a client with custom options and a client-wide {@code defaultTimeout} applied to every
+   * unary call that doesn't pass its own {@code timeout} override (see {@link #DEFAULT_TIMEOUT}).
    *
    * <p>See {@link #create(String, String, ClientOption...)} for the security note on what this
    * guard can and cannot see among custom {@code options}.
@@ -230,8 +231,8 @@ public final class SpiceDBClient implements AutoCloseable {
 
   /**
    * Test-only seam: as {@link #create(String, String, Duration, ClientOption...)}, but lets a
-   * caller (the test source set) override the underlying {@link ManagedChannelBuilder} -- e.g.
-   * with an in-process or a real local transport -- while {@code endpoint} (what the guard below
+   * caller (the test source set) override the underlying {@link ManagedChannelBuilder} -- e.g. with
+   * an in-process or a real local transport -- while {@code endpoint} (what the guard below
    * actually evaluates) stays independent and can be an arbitrary non-loopback literal.
    * Package-private: not part of the public API.
    */
@@ -258,7 +259,8 @@ public final class SpiceDBClient implements AutoCloseable {
     }
     requireInsecureTransportAllowed(endpoint, insecureRequested, allowInsecureRemoteCredentials);
 
-    var builder = testChannelBuilder != null ? testChannelBuilder : ManagedChannelBuilder.forTarget(endpoint);
+    var builder =
+        testChannelBuilder != null ? testChannelBuilder : ManagedChannelBuilder.forTarget(endpoint);
     for (ClientOption option : options) {
       option.apply(builder);
     }
@@ -345,21 +347,21 @@ public final class SpiceDBClient implements AutoCloseable {
   /**
    * Reports whether the connection this client would actually open for {@code endpoint} terminates
    * on a loopback destination: the literal hostname "localhost", an IP in 127.0.0.0/8, the IPv6
-   * loopback ::1, or a unix domain socket target (a "unix:" prefix). A unix socket never leaves
-   * the host's kernel, so it is loopback for this check even though it has no IP at all.
+   * loopback ::1, or a unix domain socket target (a "unix:" prefix). A unix socket never leaves the
+   * host's kernel, so it is loopback for this check even though it has no IP at all.
    *
-   * <p>That wording is deliberate. This method does not answer "does this string look like it
-   * names a loopback host"; it answers "will the transport dial loopback". Those are the same
-   * question only if this method and the transport agree on where the host ends and the rest of
-   * the target begins -- and a hand-rolled string split will always disagree with a URI parser
-   * somewhere. It used to: given {@code "127.0.0.1:443@evil.com"} a last-colon split yields host
-   * "127.0.0.1" and reports loopback, while grpc-java's {@code DnsNameResolver} derives its host
-   * as {@code URI.create("//" + name).getHost()} -- which reads "127.0.0.1:443" as URI
-   * <i>userinfo</i> and returns "evil.com", then resolves and connects there on the default port
-   * (an RPC against {@code "127.0.0.1:443@evil.invalid"} fails with "Unable to resolve host
-   * evil.invalid", naming the host it actually went looking for). So the bearer token went to
-   * evil.com in cleartext with this method reporting "loopback", and the {@code :authority} header
-   * carried the whole undivided string, hiding it.
+   * <p>That wording is deliberate. This method does not answer "does this string look like it names
+   * a loopback host"; it answers "will the transport dial loopback". Those are the same question
+   * only if this method and the transport agree on where the host ends and the rest of the target
+   * begins -- and a hand-rolled string split will always disagree with a URI parser somewhere. It
+   * used to: given {@code "127.0.0.1:443@evil.com"} a last-colon split yields host "127.0.0.1" and
+   * reports loopback, while grpc-java's {@code DnsNameResolver} derives its host as {@code
+   * URI.create("//" + name).getHost()} -- which reads "127.0.0.1:443" as URI <i>userinfo</i> and
+   * returns "evil.com", then resolves and connects there on the default port (an RPC against {@code
+   * "127.0.0.1:443@evil.invalid"} fails with "Unable to resolve host evil.invalid", naming the host
+   * it actually went looking for). So the bearer token went to evil.com in cleartext with this
+   * method reporting "loopback", and the {@code :authority} header carried the whole undivided
+   * string, hiding it.
    *
    * <p>So the host is derived with the same {@code URI.create("//" + …).getHost()} expression
    * {@code DnsNameResolver} itself uses. There is one parse, so guard and transport cannot
@@ -368,15 +370,14 @@ public final class SpiceDBClient implements AutoCloseable {
    * contains none of those, and failing closed on a weird endpoint is the correct trade for a
    * credential leak.
    *
-   * <p>This is the exemption in root DESIGN.md, "RULE: Credentials over insecure transport
-   * require an explicit opt-in": loopback is the reason a plaintext connection exists at all
-   * (local development, docker-compose, CI), so it must keep working with no extra ceremony.
+   * <p>This is the exemption in root DESIGN.md, "RULE: Credentials over insecure transport require
+   * an explicit opt-in": loopback is the reason a plaintext connection exists at all (local
+   * development, docker-compose, CI), so it must keep working with no extra ceremony.
    *
    * <p>Never performs a DNS lookup: a numeric IPv4 literal is parsed by hand, an IPv6-shaped
-   * literal (recognized by containing a ':', which no real hostname ever does) is handed to
-   * {@link java.net.InetAddress#getByName}, which the JDK resolves purely by parsing for a
-   * literal address, and anything else is treated as not loopback without ever consulting a
-   * resolver.
+   * literal (recognized by containing a ':', which no real hostname ever does) is handed to {@link
+   * java.net.InetAddress#getByName}, which the JDK resolves purely by parsing for a literal
+   * address, and anything else is treated as not loopback without ever consulting a resolver.
    */
   static boolean isLoopbackEndpoint(String endpoint) {
     // Checked first, and only on the raw string: a unix target is not a URI authority at all (it
@@ -456,19 +457,20 @@ public final class SpiceDBClient implements AutoCloseable {
 
   /**
    * Refuses an insecure connection to a non-loopback endpoint. See root DESIGN.md, "RULE:
-   * Credentials over insecure transport require an explicit opt-in". Call this before creating
-   * any channel -- a rejected combination must never get far enough to put a bearer token on the
-   * wire.
+   * Credentials over insecure transport require an explicit opt-in". Call this before creating any
+   * channel -- a rejected combination must never get far enough to put a bearer token on the wire.
    *
-   * @throws IllegalArgumentException if {@code insecure} is true, {@code endpoint} is not
-   *     loopback, and {@code allowInsecureRemoteCredentials} is false.
+   * @throws IllegalArgumentException if {@code insecure} is true, {@code endpoint} is not loopback,
+   *     and {@code allowInsecureRemoteCredentials} is false.
    */
   private static void requireInsecureTransportAllowed(
       String endpoint, boolean insecure, boolean allowInsecureRemoteCredentials) {
     if (insecure && !allowInsecureRemoteCredentials && !isLoopbackEndpoint(endpoint)) {
       throw new IllegalArgumentException(
           "spicedb: refusing to send credentials over an insecure (plaintext) connection to "
-              + "non-loopback endpoint \"" + endpoint + "\": use TLS, or pass "
+              + "non-loopback endpoint \""
+              + endpoint
+              + "\": use TLS, or pass "
               + "allowInsecureRemoteCredentials=true (or the allowInsecureRemoteCredentials() "
               + "ClientOption) if you intend to send a bearer token in cleartext to a remote "
               + "host");
@@ -495,13 +497,12 @@ public final class SpiceDBClient implements AutoCloseable {
   }
 
   /**
-   * As {@link #checkPermission(Consistency, String, Relationship)}, with a per-call {@code
-   * timeout} overriding the client's default (see {@link #DEFAULT_TIMEOUT}).
+   * As {@link #checkPermission(Consistency, String, Relationship)}, with a per-call {@code timeout}
+   * overriding the client's default (see {@link #DEFAULT_TIMEOUT}).
    */
   public CheckResult checkPermission(
       Consistency consistency, String permission, Relationship r, Duration timeout) {
-    List<CheckResult> results =
-        checkPermissionsImpl(consistency, permission, null, timeout, r);
+    List<CheckResult> results = checkPermissionsImpl(consistency, permission, null, timeout, r);
     return results.get(0);
   }
 
@@ -570,8 +571,8 @@ public final class SpiceDBClient implements AutoCloseable {
   }
 
   /**
-   * Shared implementation behind every {@code checkPermission(s)} overload -- request-building
-   * and response-mapping, including the call-level {@code context} merge, live here once.
+   * Shared implementation behind every {@code checkPermission(s)} overload -- request-building and
+   * response-mapping, including the call-level {@code context} merge, live here once.
    */
   private List<CheckResult> checkPermissionsImpl(
       Consistency consistency,
@@ -637,7 +638,9 @@ public final class SpiceDBClient implements AutoCloseable {
         // from relationships[i] for the rest of the batch. Fail loudly instead of returning a
         // misaligned-but-"successful" List. Mirrors spicedb-rust's malformed-oneof guard.
         throw new SpiceDBException(
-            "check item " + i + ": malformed CheckBulkPermissionsPair (neither item nor error"
+            "check item "
+                + i
+                + ": malformed CheckBulkPermissionsPair (neither item nor error"
                 + " set)");
       }
     }
@@ -702,8 +705,7 @@ public final class SpiceDBClient implements AutoCloseable {
    * overriding the client's default (see {@link #DEFAULT_TIMEOUT}).
    *
    * <p>Returns false, not the vacuous true a for-loop over zero relationships would fall through
-   * to, when {@code relationships} is empty (RULE: "An aggregate over zero checks is not a
-   * grant").
+   * to, when {@code relationships} is empty (RULE: "An aggregate over zero checks is not a grant").
    */
   public boolean checkAll(
       Consistency consistency, String permission, Duration timeout, Relationship... relationships) {
@@ -757,8 +759,8 @@ public final class SpiceDBClient implements AutoCloseable {
   }
 
   /**
-   * As {@link #write(Transaction)}, with a per-call {@code timeout} overriding the client's
-   * default (see {@link #DEFAULT_TIMEOUT}).
+   * As {@link #write(Transaction)}, with a per-call {@code timeout} overriding the client's default
+   * (see {@link #DEFAULT_TIMEOUT}).
    */
   public String write(Transaction txn, Duration timeout) {
     var reqBuilder = WriteRelationshipsRequest.newBuilder();
@@ -1080,8 +1082,8 @@ public final class SpiceDBClient implements AutoCloseable {
   }
 
   /**
-   * As {@link #readSchema()}, with a per-call {@code timeout} overriding the client's default
-   * (see {@link #DEFAULT_TIMEOUT}).
+   * As {@link #readSchema()}, with a per-call {@code timeout} overriding the client's default (see
+   * {@link #DEFAULT_TIMEOUT}).
    */
   public SchemaResult readSchema(Duration timeout) {
     long timeoutMs = effectiveTimeout(timeout).toMillis();
@@ -1144,8 +1146,8 @@ public final class SpiceDBClient implements AutoCloseable {
   }
 
   /**
-   * As {@link #reflectSchema(Consistency)}, with a per-call {@code timeout} overriding the
-   * client's default (see {@link #DEFAULT_TIMEOUT}).
+   * As {@link #reflectSchema(Consistency)}, with a per-call {@code timeout} overriding the client's
+   * default (see {@link #DEFAULT_TIMEOUT}).
    */
   public ReflectSchemaResult reflectSchema(Consistency consistency, Duration timeout) {
     long timeoutMs = effectiveTimeout(timeout).toMillis();
@@ -1208,8 +1210,8 @@ public final class SpiceDBClient implements AutoCloseable {
   }
 
   /**
-   * As {@link #computablePermissions(Consistency, String, String)}, with a per-call {@code
-   * timeout} overriding the client's default (see {@link #DEFAULT_TIMEOUT}).
+   * As {@link #computablePermissions(Consistency, String, String)}, with a per-call {@code timeout}
+   * overriding the client's default (see {@link #DEFAULT_TIMEOUT}).
    */
   public ComputablePermissionsResult computablePermissions(
       Consistency consistency, String definitionName, String relationName, Duration timeout) {
@@ -1368,8 +1370,8 @@ public final class SpiceDBClient implements AutoCloseable {
    *
    * <p>{@code ImportBulkRelationships} is client-streaming: its duration scales with the size of
    * {@code relationships}, not with server latency, so unlike every other method on this client,
-   * this call is NOT bounded by {@link #DEFAULT_TIMEOUT} (root DESIGN.md, "RULE: A unary call
-   * must have a deadline", clause 3). It is unbounded; use {@link #importRelationships(Iterable,
+   * this call is NOT bounded by {@link #DEFAULT_TIMEOUT} (root DESIGN.md, "RULE: A unary call must
+   * have a deadline", clause 3). It is unbounded; use {@link #importRelationships(Iterable,
    * Duration)} to bound it explicitly.
    */
   public long importRelationships(Iterable<Relationship> relationships) {
@@ -1377,9 +1379,9 @@ public final class SpiceDBClient implements AutoCloseable {
   }
 
   /**
-   * As {@link #importRelationships(Iterable)}, with an explicit per-call {@code timeout}. There
-   * is no client default to override here (see {@link #importRelationships(Iterable)}) -- this
-   * is the only way to bound this call at all.
+   * As {@link #importRelationships(Iterable)}, with an explicit per-call {@code timeout}. There is
+   * no client default to override here (see {@link #importRelationships(Iterable)}) -- this is the
+   * only way to bound this call at all.
    */
   public long importRelationships(Iterable<Relationship> relationships, Duration timeout) {
     // Deliberately NOT effectiveTimeout(timeout) -- no client default applies here, only an
@@ -1457,13 +1459,13 @@ public final class SpiceDBClient implements AutoCloseable {
    * WHOLE stream, ending the call once that many results have been returned), {@code
    * ExportBulkRelationships}' {@code optional_limit} bounds only the number of relationships the
    * server puts in a SINGLE response MESSAGE ("page") -- the server keeps streaming further
-   * messages on the SAME call until the whole dataset has been sent. The loop shape that is
-   * correct for {@link #updates}/every lookup method (drain the current page's server stream,
-   * check the count against the page size to decide whether to reissue with a new cursor) is
-   * therefore wrong here: it would drain the ENTIRE export -- however many relationships that is
-   * -- into one in-memory buffer before this method's {@code Stream} produced its first element,
-   * which is an OOM risk in the one API most likely to face the largest dataset in the system (a
-   * full 10M-relationship export). Instead, this pulls exactly ONE response message (up to {@link
+   * messages on the SAME call until the whole dataset has been sent. The loop shape that is correct
+   * for {@link #updates}/every lookup method (drain the current page's server stream, check the
+   * count against the page size to decide whether to reissue with a new cursor) is therefore wrong
+   * here: it would drain the ENTIRE export -- however many relationships that is -- into one
+   * in-memory buffer before this method's {@code Stream} produced its first element, which is an
+   * OOM risk in the one API most likely to face the largest dataset in the system (a full
+   * 10M-relationship export). Instead, this pulls exactly ONE response message (up to {@link
    * #DEFAULT_EXPORT_PAGE_SIZE} relationships) per underlying {@code hasNext()}/{@code next()}
    * refill, mirroring {@link #updates}' single-message-at-a-time model, and only opens a new call
    * -- with establishment retry, same as {@link #updates} -- lazily, on first use.
@@ -1563,9 +1565,9 @@ public final class SpiceDBClient implements AutoCloseable {
     /**
      * The server sent an operation this client does not recognize -- either {@code
      * OPERATION_UNSPECIFIED} on the wire, or a future operation value added after this client
-     * shipped. Never treat this as a write: a cache or index mirror consuming the watch stream
-     * that upserts on an unrecognized operation could turn a delete it doesn't understand into a
-     * silent write.
+     * shipped. Never treat this as a write: a cache or index mirror consuming the watch stream that
+     * upserts on an unrecognized operation could turn a delete it doesn't understand into a silent
+     * write.
      */
     UNSPECIFIED,
     CREATE,
@@ -1574,20 +1576,18 @@ public final class SpiceDBClient implements AutoCloseable {
   }
 
   /**
-   * A single event from the watch API, corresponding to one {@code WatchResponse} from the
-   * server.
+   * A single event from the watch API, corresponding to one {@code WatchResponse} from the server.
    *
-   * <p>{@code changesThrough} is always populated -- proto: "the ZedToken that represents the
-   * point in time that the watch response is current through. This token can be used in a
-   * subsequent WatchRequest to resume watching from this point." Pass it as {@code
-   * startRevision} to a later {@link #updates(List, String)} call to resume after a dropped
-   * stream, instead of restarting from the original {@code startRevision} (reprocessing
-   * everything since, possibly past the GC window) or from head (silently losing every change
-   * in the gap).
+   * <p>{@code changesThrough} is always populated -- proto: "the ZedToken that represents the point
+   * in time that the watch response is current through. This token can be used in a subsequent
+   * WatchRequest to resume watching from this point." Pass it as {@code startRevision} to a later
+   * {@link #updates(List, String)} call to resume after a dropped stream, instead of restarting
+   * from the original {@code startRevision} (reprocessing everything since, possibly past the GC
+   * window) or from head (silently losing every change in the gap).
    *
-   * <p>{@code isCheckpoint} is true for a checkpoint event, which carries no {@code updates} --
-   * it exists only to advertise a fresh {@code changesThrough} and, behind a proxy that aborts
-   * idle connections, to keep the stream alive. Checkpoints are only sent when {@code
+   * <p>{@code isCheckpoint} is true for a checkpoint event, which carries no {@code updates} -- it
+   * exists only to advertise a fresh {@code changesThrough} and, behind a proxy that aborts idle
+   * connections, to keep the stream alive. Checkpoints are only sent when {@code
    * includeCheckpoints} is passed to {@link #updates(List, String, boolean)}.
    */
   public record WatchEvent(List<Update> updates, String changesThrough, boolean isCheckpoint) {
@@ -1597,9 +1597,9 @@ public final class SpiceDBClient implements AutoCloseable {
   }
 
   /**
-   * Returns a stream over watch events from SpiceDB's watch API, starting from the given
-   * revision. Equivalent to {@code updates(objectTypes, startRevision, false)} -- does not
-   * request checkpoints.
+   * Returns a stream over watch events from SpiceDB's watch API, starting from the given revision.
+   * Equivalent to {@code updates(objectTypes, startRevision, false)} -- does not request
+   * checkpoints.
    *
    * <p>The returned stream should be closed when done.
    */
@@ -1608,10 +1608,10 @@ public final class SpiceDBClient implements AutoCloseable {
   }
 
   /**
-   * As {@link #updates(List, String)}, but with {@code includeCheckpoints} to also request
-   * periodic checkpoint events ({@link WatchEvent#isCheckpoint()}, no updates). Recommended if
-   * this SpiceDB instance is running behind a proxy that aborts idle connections, since a
-   * checkpoint keeps the stream alive even when there are no changes.
+   * As {@link #updates(List, String)}, but with {@code includeCheckpoints} to also request periodic
+   * checkpoint events ({@link WatchEvent#isCheckpoint()}, no updates). Recommended if this SpiceDB
+   * instance is running behind a proxy that aborts idle connections, since a checkpoint keeps the
+   * stream alive even when there are no changes.
    *
    * <p>The returned stream should be closed when done.
    */
@@ -1732,8 +1732,8 @@ public final class SpiceDBClient implements AutoCloseable {
   }
 
   /**
-   * As {@link #experimentalCountRelationships(String)}, with a per-call {@code timeout}
-   * overriding the client's default (see {@link #DEFAULT_TIMEOUT}).
+   * As {@link #experimentalCountRelationships(String)}, with a per-call {@code timeout} overriding
+   * the client's default (see {@link #DEFAULT_TIMEOUT}).
    *
    * <p><b>Experimental:</b> this API may change without notice.
    */
@@ -1745,9 +1745,7 @@ public final class SpiceDBClient implements AutoCloseable {
                 experimentalStub
                     .withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS)
                     .experimentalCountRelationships(
-                        ExperimentalCountRelationshipsRequest.newBuilder()
-                            .setName(name)
-                            .build()));
+                        ExperimentalCountRelationshipsRequest.newBuilder().setName(name).build()));
 
     if (resp.getCounterStillCalculating()) {
       return new CountResult(0, "", true);
@@ -1767,8 +1765,8 @@ public final class SpiceDBClient implements AutoCloseable {
   }
 
   /**
-   * As {@link #experimentalUnregisterRelationshipCounter(String)}, with a per-call {@code
-   * timeout} overriding the client's default (see {@link #DEFAULT_TIMEOUT}).
+   * As {@link #experimentalUnregisterRelationshipCounter(String)}, with a per-call {@code timeout}
+   * overriding the client's default (see {@link #DEFAULT_TIMEOUT}).
    *
    * <p><b>Experimental:</b> this API may change without notice.
    */
@@ -1807,8 +1805,8 @@ public final class SpiceDBClient implements AutoCloseable {
 
   /**
    * Resolves a per-call {@code timeout} override against {@link #defaultTimeout}. {@code null}
-   * means "use the client default" -- there is deliberately no way to make an unbounded unary
-   * call. See root DESIGN.md, "RULE: A unary call must have a deadline".
+   * means "use the client default" -- there is deliberately no way to make an unbounded unary call.
+   * See root DESIGN.md, "RULE: A unary call must have a deadline".
    */
   private Duration effectiveTimeout(Duration timeout) {
     return timeout != null ? timeout : defaultTimeout;
@@ -1859,10 +1857,10 @@ public final class SpiceDBClient implements AutoCloseable {
   }
 
   /**
-   * Full-jitter backoff delay in milliseconds: {@code uniform(0, cap)} rather than the fixed
-   * {@code cap}. Without jitter, every client in a fleet retries on the same schedule after a
-   * server restart, turning the recovery into a thundering herd; sampling uniformly under the cap
-   * spreads retries out instead.
+   * Full-jitter backoff delay in milliseconds: {@code uniform(0, cap)} rather than the fixed {@code
+   * cap}. Without jitter, every client in a fleet retries on the same schedule after a server
+   * restart, turning the recovery into a thundering herd; sampling uniformly under the cap spreads
+   * retries out instead.
    */
   private static long jitteredBackoffMs(long cap) {
     return (long) (ThreadLocalRandom.current().nextDouble() * cap);
@@ -1918,13 +1916,13 @@ public final class SpiceDBClient implements AutoCloseable {
    *
    * <p>For grpc-java's blocking stub, {@code stub.someStreamingMethod(request)} never throws — it
    * only enqueues the call and returns an {@link Iterator}; the RPC's actual outcome (including a
-   * transient {@code UNAVAILABLE}/{@code ABORTED}) only surfaces on the
-   * iterator's first {@code hasNext()}/{@code next()} call. Wrapping only the stub call in {@link
-   * #withRetry} (the old code) therefore never actually retries anything — the exception always
-   * escapes on the caller's first poll, past the retry loop. This method fixes that by folding the
-   * priming {@code hasNext()} call INTO the retried unit of work: if it throws a transient error,
-   * {@link #withRetry} re-issues {@code openCall} (a fresh RPC, e.g. from the same page cursor)
-   * after backoff, exactly as it would for a unary call.
+   * transient {@code UNAVAILABLE}/{@code ABORTED}) only surfaces on the iterator's first {@code
+   * hasNext()}/{@code next()} call. Wrapping only the stub call in {@link #withRetry} (the old
+   * code) therefore never actually retries anything — the exception always escapes on the caller's
+   * first poll, past the retry loop. This method fixes that by folding the priming {@code
+   * hasNext()} call INTO the retried unit of work: if it throws a transient error, {@link
+   * #withRetry} re-issues {@code openCall} (a fresh RPC, e.g. from the same page cursor) after
+   * backoff, exactly as it would for a unary call.
    *
    * <p><b>No-replay guarantee:</b> this method must only ever be used to open a stream/page BEFORE
    * any item has been handed to the caller. Once it returns, the returned iterator is primed (its
@@ -2064,9 +2062,7 @@ public final class SpiceDBClient implements AutoCloseable {
     return merged;
   }
 
-  /**
-   * Converts a check-time context map to a proto {@code Struct}, reusing {@link #toProtoValue}.
-   */
+  /** Converts a check-time context map to a proto {@code Struct}, reusing {@link #toProtoValue}. */
   private static com.google.protobuf.Struct toProtoStruct(Map<String, Object> context) {
     var builder = com.google.protobuf.Struct.newBuilder();
     for (var entry : context.entrySet()) {
@@ -2389,11 +2385,11 @@ public final class SpiceDBClient implements AutoCloseable {
   /**
    * Converts a {@link Filter} to its proto representation.
    *
-   * @throws InvalidArgumentException if {@code subjectID} or {@code subjectRelation} is set
-   *     without {@code subjectType}. The wire's {@code SubjectFilter.subject_type} is a required
-   *     field, so there is no way to express a subject ID/relation constraint without it, which
-   *     makes silently dropping the constraint the one unsafe resolution: a caller who wrote
-   *     {@code Filter.of("document").withSubjectID("alice")}, expecting to narrow to alice's
+   * @throws InvalidArgumentException if {@code subjectID} or {@code subjectRelation} is set without
+   *     {@code subjectType}. The wire's {@code SubjectFilter.subject_type} is a required field, so
+   *     there is no way to express a subject ID/relation constraint without it, which makes
+   *     silently dropping the constraint the one unsafe resolution: a caller who wrote {@code
+   *     Filter.of("document").withSubjectID("alice")}, expecting to narrow to alice's
    *     relationships, would instead match every subject on every document -- e.g. {@code
    *     deleteRelationships} would delete every relationship on every document, not just alice's.
    *     See root DESIGN.md, "RULE: A conversion that cannot preserve meaning must fail", clause 1.
@@ -2563,14 +2559,14 @@ public final class SpiceDBClient implements AutoCloseable {
 
   /**
    * Converts a native Java value into a protobuf {@code Value} by dispatching on type, recursing
-   * into nested {@link Map}/{@link List} values. This is the single converter for caveat context
-   * on both surfaces: check-time (merged in {@link #mergeCheckContext}, sent via {@link
+   * into nested {@link Map}/{@link List} values. This is the single converter for caveat context on
+   * both surfaces: check-time (merged in {@link #mergeCheckContext}, sent via {@link
    * #toProtoStruct}) and write-time (a relationship's stored {@code caveatContext}, in {@link
-   * #toProtoRelationship}). A numeric/boolean/null/nested value lands on its matching {@code
-   * kind} oneof case instead of being stringified, so a caveat comparing a typed parameter (e.g.
-   * a schema's {@code now < 100} against an {@code int}) evaluates correctly on either surface --
-   * and on the write path, evaluates correctly on every future check against the stored
-   * relationship, since a bad write-time context is persisted rather than failing just once.
+   * #toProtoRelationship}). A numeric/boolean/null/nested value lands on its matching {@code kind}
+   * oneof case instead of being stringified, so a caveat comparing a typed parameter (e.g. a
+   * schema's {@code now < 100} against an {@code int}) evaluates correctly on either surface -- and
+   * on the write path, evaluates correctly on every future check against the stored relationship,
+   * since a bad write-time context is persisted rather than failing just once.
    *
    * @throws InvalidArgumentException if {@code value}'s type cannot be represented on the wire
    *     (e.g. a custom class instance). Caveat context is caller-supplied, so per root {@code
@@ -2617,8 +2613,8 @@ public final class SpiceDBClient implements AutoCloseable {
    * InvalidArgumentException} because {@code value}'s type cannot be represented -- re-raises with
    * {@code key} named, so the caller can tell which entry in their context map needs fixing rather
    * than just "some value, somewhere." For a nested {@link Map}, the innermost failure names its
-   * own (nested) key first, and each enclosing call adds its key in turn, so the message traces
-   * the full path to the offending entry.
+   * own (nested) key first, and each enclosing call adds its key in turn, so the message traces the
+   * full path to the offending entry.
    */
   private static com.google.protobuf.Value toProtoValueForKey(String key, Object value) {
     try {
@@ -2631,9 +2627,8 @@ public final class SpiceDBClient implements AutoCloseable {
   /**
    * Converts a protobuf {@code Value} into a native Java value by dispatching on its {@code kind}
    * oneof -- the read-side inverse of {@link #toProtoValue}, recursing into nested {@code
-   * Struct}/{@code ListValue} values so a relationship read back via {@link
-   * #fromProtoRelationship} doesn't lose the shape of a caveat context it wrote with {@link
-   * #toProtoValue}.
+   * Struct}/{@code ListValue} values so a relationship read back via {@link #fromProtoRelationship}
+   * doesn't lose the shape of a caveat context it wrote with {@link #toProtoValue}.
    */
   private static Object fromProtoValue(com.google.protobuf.Value value) {
     return switch (value.getKindCase()) {

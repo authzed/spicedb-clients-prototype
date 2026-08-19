@@ -15,10 +15,10 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 /**
- * Demonstrates the client-level {@code Duration defaultTimeout} construction parameter, a
- * per-call {@code timeout} override, and that bulk import ({@link
- * SpiceDBClient#importRelationships}) is a client-streaming call that is NOT bounded by the
- * unary default -- see root DESIGN.md, "RULE: A unary call must have a deadline".
+ * Demonstrates the client-level {@code Duration defaultTimeout} construction parameter, a per-call
+ * {@code timeout} override, and that bulk import ({@link SpiceDBClient#importRelationships}) is a
+ * client-streaming call that is NOT bounded by the unary default -- see root DESIGN.md, "RULE: A
+ * unary call must have a deadline".
  *
  * <p>Unlike the other examples in this package, this test constructs its own {@link SpiceDBClient}
  * (rather than using {@link SpiceDBIntegrationTest}'s shared fixture) so it can exercise the
@@ -49,7 +49,9 @@ class CallDeadlinesTest {
     // Duration defaultTimeout is the documented, real construction path -- not a mock -- so a
     // signature drift here (e.g. the overload silently disappearing) would fail this example, not
     // just a unit test against a stalling stub.
-    client = SpiceDBClient.createPlaintext("localhost:50051", "somerandomkeyhere", Duration.ofSeconds(5));
+    client =
+        SpiceDBClient.createPlaintext(
+            "localhost:50051", "somerandomkeyhere", Duration.ofSeconds(5));
     client.writeSchema(SCHEMA);
     client.deleteRelationships(Filter.of("document"));
 

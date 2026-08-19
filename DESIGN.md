@@ -94,8 +94,38 @@ covered by a test that **completes a real TLS handshake**.
    gRPC's C-core (Python's `grpcio`, Ruby's `grpc`) compiles in its own `roots.pem`, and
    Node ships a bundled Mozilla store, so on those clients a CA an operator installed on
    the host is not honoured. That is a property of the ecosystem, not a violation of
-   this clause. Giving callers a way to supply their own CA bundle is the remedy, and it
-   is a separate concern tracked for a later sub-project.
+   this clause. Giving callers a way to supply their own CA bundle is the remedy, and
+   **every client must have one** — the delegation this clause permits is conditional on
+   it. A client whose default trust source cannot be overridden makes a private-CA
+   deployment unreachable with no supported workaround, and that is a defect under this
+   clause, not a gap outside it.
+
+   Where each client's escape hatch lives, since they are not uniform and two of them are
+   not new API at all:
+
+   - **Go** — `WithDialOptions(grpc.WithTransportCredentials(...))`. Later dial options
+     overwrite earlier ones, so a caller's credentials win over the client's default.
+   - **C#** — `CreateFromChannel`, which takes a caller-built `GrpcChannel` and therefore
+     any `HttpClientHandler`/`SocketsHttpHandler` TLS configuration.
+   - **Java** — `ClientOption.apply(ManagedChannelBuilder)`. `grpc-netty-shaded` is
+     declared `api` in `proto-clients/spicedb-java-proto/build.gradle.kts`, so it reaches
+     consumers transitively and the builder is usable from their code.
+   - **Python** — `ca_cert=`, `client_cert=`, `client_key=` (PEM bytes) on both
+     `spicedb.sync.SpiceDBClient` and `spicedb.aio.SpiceDBClient`.
+   - **TypeScript** — `tls: { caCert, clientCert, clientKey }` on `SpiceDBClientOptions`
+     and `createSpiceDBClient`, threaded to `Http2SessionManager`'s session options.
+   - **Ruby** — `SpiceDB::Client.new_custom_tls(endpoint, token, ca_cert:, client_cert:,
+     client_key:)`.
+   - **Rust** — none, and none is needed for the hazard above: tonic's `tls-native-roots`
+     reads the OS trust store at runtime, so an operator-installed CA is already honoured
+     by `new_system_tls`. What is left uncovered is narrower — an image with no OS trust
+     store at all — and is stated in `spicedb-rust/DESIGN.md`.
+
+   Supplying trust material is a TLS concern and must never double as a transport switch.
+   A client must refuse the combination of custom trust material and an insecure
+   transport rather than silently discarding the material, and the escape hatch must not
+   become a construction path that skips the guard in **RULE: Credentials over insecure
+   transport require an explicit opt-in**.
 
    This clause is enforced by code review, not by the handshake test: a connection to a
    public endpoint succeeds under almost any plausible root set, so the test cannot tell

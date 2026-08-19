@@ -9,7 +9,34 @@
 //!   lack of TLS obvious.
 //! - **System TLS** — uses the system's TLS certificate pool. Recommended for
 //!   production.
-//! - **Builder** — full control over TLS configuration and other options.
+//! - **Builder** — the same two transports, plus the connection options this
+//!   client exposes: [`plaintext`](SpiceDBClientBuilder::plaintext),
+//!   [`allow_insecure_remote_credentials`](SpiceDBClientBuilder::allow_insecure_remote_credentials),
+//!   and [`default_timeout`](SpiceDBClientBuilder::default_timeout).
+//!
+//! # TLS trust
+//!
+//! There is deliberately no way to hand this client a CA bundle or a client
+//! certificate. TLS trust comes from tonic's `tls-native-roots` feature, which
+//! reads the **OS trust store at runtime** — so a CA an operator installed on the
+//! host is already honoured, and a private-CA deployment works with
+//! [`SpiceDBClient::new_system_tls`] and nothing else.
+//!
+//! That is not true of every SpiceDB client, which is why the sibling Python,
+//! TypeScript and Ruby clients grew explicit trust-material parameters: gRPC's
+//! C-core compiles in its own `roots.pem` and Node ships a bundled Mozilla store,
+//! so on those runtimes the host's own store is invisible. Root `DESIGN.md`,
+//! "RULE: A system-TLS constructor must reach a real server", names that hazard
+//! and permits delegating to a runtime's default *because* a caller can supply
+//! their own material where the default is not enough. Here the default already
+//! is the host's store.
+//!
+//! The gap this leaves is narrower and is stated in `spicedb-rust/DESIGN.md`
+//! under "TLS roots": a `FROM scratch` image with no OS trust store has nothing
+//! to read, where a distroless Python or Node image would still connect on its
+//! compiled-in bundle. Closing that would mean adding a CA-bundle option here
+//! too, on [`SpiceDBClientBuilder`]; it is not present today, and this doc says
+//! so rather than implying otherwise.
 
 use std::collections::HashMap;
 use std::time::Duration;

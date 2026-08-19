@@ -44,6 +44,31 @@ plaintext to a loopback endpoint (`localhost`, `127.0.0.0/8`, `::1`, or a
 `NewWithOpts` refuses to construct the client at all, before any connection
 is created.
 
+#### Custom TLS trust material
+
+There is deliberately **no** dedicated CA-bundle option: `WithDialOptions` already
+is one.
+
+```go
+creds := credentials.NewTLS(&tls.Config{RootCAs: pool, Certificates: []tls.Certificate{id}})
+c, err := client.NewWithOpts(endpoint, client.WithDialOptions(grpc.WithTransportCredentials(creds)))
+```
+
+Caller-supplied dial options are appended **after** this client's own, and later
+dial options overwrite earlier ones in grpc-go, so a caller's
+`WithTransportCredentials` replaces the default `credentials.NewTLS(nil)`. That
+is the same mechanism the retry service-config comment in
+`proto-clients/spicedb-go-proto/client.go` relies on, and it is what satisfies
+root DESIGN.md, "RULE: A system-TLS constructor must reach a real server", whose
+clause 1 permits delegating to `credentials.NewTLS(nil)` only because a caller
+can override it. Adding a parallel `WithCACert`-style option would give two ways
+to set the same field, with the winner decided by append order.
+
+Note that Go's default is already the OS trust store, so unlike the Python,
+TypeScript and Ruby clients — whose runtimes use a compiled-in or bundled root
+set — an operator-installed CA is honoured by `NewSystemTLS` with no options at
+all. This hatch is for pinning a CA the host does *not* trust, and for mutual TLS.
+
 ### Consistency
 
 ZedTokens are opaque `string` values, never proto types. Consistency is an

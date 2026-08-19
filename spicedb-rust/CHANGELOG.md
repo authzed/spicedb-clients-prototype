@@ -4,6 +4,17 @@
 
 ### Fixes
 
+- **Documentation — the `client` module no longer claims the builder gives "full control
+  over TLS configuration".** `SpiceDBClientBuilder` exposes `.plaintext()`,
+  `.allow_insecure_remote_credentials()` and `.default_timeout()`, and never offered a CA
+  bundle or a client certificate. The module doc now lists what it actually does, and
+  states where TLS trust comes from: tonic's `tls-native-roots` reads the OS trust store at
+  runtime, so a CA an operator installed on the host is already honoured by
+  `new_system_tls` — which is why no trust-material parameter was added here, unlike the
+  Python, TypeScript and Ruby clients, whose runtimes use a compiled-in or bundled root set
+  the operator cannot reach. The one case still uncovered (an image with no OS trust store
+  at all) is named in `DESIGN.md` rather than papered over. No API change.
+
 - **Security — a bypass in the guard that refuses to send credentials over plaintext to a
   non-loopback host was fixed.** Building an insecure client for `"127.0.0.1:443@evil.com"`
   was accepted as loopback and sent the bearer token to `evil.com` in cleartext, with no

@@ -60,8 +60,19 @@ roots, not delegating to the runtime's.
 
 The trade-off in this client is therefore accepted deliberately and is not universal: a
 `FROM scratch` image with no OS trust store will fail here, whereas a distroless Python
-or Node image connects fine on its compiled-in bundle. A caller-supplied CA bundle is
-the general remedy and is tracked separately.
+or Node image connects fine on its compiled-in bundle.
+
+A caller-supplied CA bundle is the general remedy, and the Python, TypeScript and Ruby
+clients now have one (`ca_cert=`, `tls: { caCert }`, `new_custom_tls(ca_cert:)`) —
+because on those runtimes the *default* is the wrong trust source for a private CA, and
+the rule above permits that default only because such an escape hatch exists. This
+client has the opposite problem: its default already reads the host's store, so the
+private-CA case works with `new_system_tls` alone. Only the empty-trust-store image is
+left uncovered, and no option is offered for it today. `SpiceDBClientBuilder` therefore
+exposes exactly `.plaintext()`, `.allow_insecure_remote_credentials()` and
+`.default_timeout()`, and the module doc on `src/client.rs` says so — it previously
+claimed "full control over TLS configuration", which was never true of any version of
+this builder.
 
 Do **not** substitute `ClientTlsConfig::with_enabled_roots()`. Its body begins
 `let config = ClientTlsConfig::new()`, discarding `self`, so chaining it after

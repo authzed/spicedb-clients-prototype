@@ -43,6 +43,50 @@ Anything else needs the separately-named `allowInsecureRemoteCredentials`
 overload/`ClientOption` passed explicitly, or the constructor throws
 `IllegalArgumentException` before any channel is created.
 
+#### Custom TLS trust material
+
+There is deliberately **no** dedicated CA-bundle option: `ClientOption` already
+is one. It is a functional interface over `apply(ManagedChannelBuilder<?>)`, so a
+caller reaches grpc-java's own TLS configuration directly:
+
+```java
+import io.grpc.netty.shaded.io.grpc.netty.GrpcSslContexts;
+import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
+
+ClientOption privateCa = builder ->
+    ((NettyChannelBuilder) builder).sslContext(
+        GrpcSslContexts.forClient().trustManager(caFile).keyManager(certFile, keyFile).build());
+var client = SpiceDBClient.create(endpoint, presharedKey, privateCa);
+```
+
+The cast lands on a real runtime type — `create` builds the channel with
+`ManagedChannelBuilder.forTarget(endpoint)`, which resolves through grpc-java's
+`ManagedChannelProvider` SPI to `NettyChannelBuilder` when `grpc-netty-shaded` is
+the transport on the classpath — and those shaded symbols are on the consumer's
+compile classpath, because `proto-clients/spicedb-java-proto/build.gradle.kts`
+declares `io.grpc:grpc-netty-shaded` as `api`, not `implementation`, so it flows
+transitively to anyone depending on this client. (An audit claimed consumers
+"cannot even cast to the shaded builder" — that is false, and the `api`
+declaration is what makes it false. Keep it `api`.)
+
+This is what satisfies root DESIGN.md, "RULE: A system-TLS constructor must
+reach a real server", whose clause 1 permits `createSystemTls` to delegate to
+`useTransportSecurity()` only because a caller can supply their own trust
+material instead. A parallel CA option would be a second way to set the same
+builder state, resolved by application order.
+
+Note the security caveat already documented on `ClientOption#apply`: a custom
+option gets the raw builder and can do anything to it, including
+`usePlaintext()`, which the credential guard cannot see. Supplying trust
+material is a TLS concern and must not be used to switch the transport — root
+DESIGN.md, "RULE: Credentials over insecure transport require an explicit
+opt-in".
+
+Note also that the JDK's `cacerts` is a trust store an operator can install into,
+so unlike the Python, TypeScript and Ruby clients — whose runtimes use a
+compiled-in or bundled root set the operator cannot touch — this hatch is for
+pinning a CA outside `cacerts`, and for mutual TLS.
+
 The client implements `AutoCloseable` for use with try-with-resources:
 ```java
 try (var client = SpiceDBClient.createPlaintext("localhost:50051", "test")) {

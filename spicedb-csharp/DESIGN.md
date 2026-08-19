@@ -46,6 +46,37 @@ name `unix` rather than a socket path. Anything else needs
 `CreatePlaintext` refuses to construct the client at all, before any
 connection is created.
 
+#### Custom TLS trust material
+
+There is deliberately **no** dedicated CA-bundle parameter: `CreateFromChannel`
+already is one. A caller builds the `GrpcChannel`, and with it the whole
+`SocketsHttpHandler`/`HttpClientHandler` TLS surface — a private root, a client
+certificate for mutual TLS, or a custom validation callback:
+
+```csharp
+var handler = new SocketsHttpHandler {
+    SslOptions = new SslClientAuthenticationOptions {
+        ClientCertificates = new X509CertificateCollection { clientCert },
+        RemoteCertificateValidationCallback = ValidateAgainstPrivateRoot,
+    },
+};
+var channel = GrpcChannel.ForAddress(uri, new GrpcChannelOptions { HttpHandler = handler });
+var client = SpiceDBClient.CreateFromChannel(channel, presharedKey);
+```
+
+This is what satisfies root DESIGN.md, "RULE: A system-TLS constructor must
+reach a real server", whose clause 1 permits `CreateSystemTls` to delegate to
+`ChannelCredentials.SecureSsl` only because a caller can supply their own trust
+material instead. Adding a parallel CA parameter would mean two ways to
+configure one channel's TLS, and a caller passing both would have no way to
+predict which won.
+
+Note that .NET's default is already the OS trust store, so unlike the Python,
+TypeScript and Ruby clients — whose runtimes use a compiled-in or bundled root
+set — an operator-installed CA is honoured by `CreateSystemTls` with nothing
+extra. This hatch is for pinning a CA the host does *not* trust, and for mutual
+TLS.
+
 The client implements `IAsyncDisposable`:
 
 ```csharp

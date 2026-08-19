@@ -1,11 +1,16 @@
 version: v2
+# Both plugins are pinned. Unversioned `remote:` resolves to whatever is latest
+# at generation time, so an unrelated `mage gen` would silently rewrite every
+# file under src/gen with a newer codegen. protoc-gen-es is held at the version
+# matching the pinned @bufbuild/protobuf runtime (2.11.0); raise the two
+# together, in a commit that does nothing else.
 plugins:
-  - remote: buf.build/connectrpc/es
+  - remote: buf.build/connectrpc/es:v1.6.1
     out: src/gen
     opt:
       - target=ts
     include_imports: true
-  - remote: buf.build/bufbuild/es
+  - remote: buf.build/bufbuild/es:v2.11.0
     out: src/gen
     opt:
       - target=ts

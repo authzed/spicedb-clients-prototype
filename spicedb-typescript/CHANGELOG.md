@@ -51,7 +51,11 @@
   `@spicedb/proto` now also exports `ErrorInfo`/`ErrorInfoSchema` (from
   `google/rpc/error_details.proto`, newly added as a `buf generate` input) and
   `ErrorReason`/`ErrorReasonSchema`, so callers who want the generated enum can
-  compare against it directly.
+  compare against it directly. Both remote plugins in the proto tier's
+  `buf.gen.yaml` are now pinned (`bufbuild/es:v2.11.0`, matching the pinned
+  `@bufbuild/protobuf` runtime, and `connectrpc/es:v1.6.1`) — they were
+  unversioned, so any `mage gen` would have silently rewritten all of `src/gen`
+  with a newer codegen.
 
 - **2026-08-17**: `checkPermission`/`checkPermissions`/`checkAny`/`checkAll`
   gain a call-level default caveat context via a new `CheckOptions` type

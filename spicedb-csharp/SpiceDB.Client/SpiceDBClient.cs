@@ -28,6 +28,22 @@ public sealed class SpiceDBClient : IAsyncDisposable
     private const int DefaultLookupPageSize = 512;
     private const int DefaultImportBatchSize = 1_000;
     private const int DefaultExportPageSize = 512;
+    /// <summary>
+    /// How many items go into one CheckBulkPermissions request.
+    /// <para>
+    /// SpiceDB rejects a request carrying more items than
+    /// <c>maxBulkCheckCount</c> — 10,000, a hard-coded const in
+    /// <c>internal/services/v1/bulkcheck.go</c> with no flag to raise or
+    /// lower it — with <c>ERROR_REASON_TOO_MANY_CHECKS_IN_REQUEST</c>.
+    /// Nothing in the proto enforces this:
+    /// <c>CheckBulkPermissionsRequest.items</c> carries only a per-item
+    /// <c>required</c> rule, not a collection-size rule, so the limit lives
+    /// solely in server code and a client that forwards the caller's array
+    /// unchanged fails on large inputs. 1,000 leaves ten times' headroom and
+    /// matches <see cref="DefaultImportBatchSize"/> and the other clients'
+    /// check batch size.
+    /// </para>
+    /// </summary>
     private const int DefaultCheckBatchSize = 1_000;
     private const int MaxRetryAttempts = 3;
     private static readonly TimeSpan InitialBackoff = TimeSpan.FromMilliseconds(100);
@@ -309,6 +325,13 @@ public sealed class SpiceDBClient : IAsyncDisposable
     /// <see cref="CheckPermissionsWithContextAsync"/> for a call-level
     /// default and the exact per-key merge rule with per-item context.
     /// </para>
+    /// <para>
+    /// Large inputs are split automatically into requests of at most 1,000
+    /// items and the responses concatenated in input order — SpiceDB rejects
+    /// a single request carrying more than 10,000. An empty
+    /// <paramref name="relationships"/> sends no request at all and returns
+    /// an empty array.
+    /// </para>
     /// </summary>
     /// <remarks>
     /// This variadic overload does not accept a per-call <c>timeout</c> —
@@ -385,9 +408,50 @@ public sealed class SpiceDBClient : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(consistency);
         if (string.IsNullOrEmpty(permission))
             throw new ArgumentException("Permission must not be empty.", nameof(permission));
+        // Zero relationships sends nothing at all. An empty request is not a
+        // cheaper way to ask nothing — it is a round trip whose only possible
+        // answer is the empty array, and CheckAllAsync already treats an
+        // aggregate over zero checks as false rather than a grant.
         if (relationships.Length == 0)
             return [];
 
+        // One request per chunk of DefaultCheckBatchSize, results concatenated
+        // in input order so results[i] still corresponds to relationships[i]
+        // across the chunk boundary. A caller passing fewer than
+        // DefaultCheckBatchSize relationships — the overwhelmingly common
+        // case — still makes exactly one request.
+        var results = new List<CheckResult>(relationships.Length);
+        for (var start = 0; start < relationships.Length; start += DefaultCheckBatchSize)
+        {
+            var length = Math.Min(DefaultCheckBatchSize, relationships.Length - start);
+            results.AddRange(await CheckChunkAsync(
+                consistency,
+                permission,
+                context,
+                cancellationToken,
+                timeout,
+                relationships[start..(start + length)]));
+        }
+        return [.. results];
+    }
+
+    /// <summary>
+    /// Issues one CheckBulkPermissions request for <paramref name="relationships"/>
+    /// and maps the response. <paramref name="relationships"/> is non-empty
+    /// and no longer than <see cref="DefaultCheckBatchSize"/>;
+    /// <see cref="CheckPermissionsCoreAsync"/> is what enforces both. Every
+    /// response guard below — the pair-count check and the malformed-oneof
+    /// check — therefore applies per chunk, exactly as it applied to the whole
+    /// request before chunking.
+    /// </summary>
+    private async Task<CheckResult[]> CheckChunkAsync(
+        ConsistencyStrategy consistency,
+        string permission,
+        IReadOnlyDictionary<string, object>? context,
+        CancellationToken cancellationToken,
+        TimeSpan? timeout,
+        Relationship[] relationships)
+    {
         var items = relationships.Select(r => CheckItemFromRel(r, permission, context)).ToList();
 
         var resp = await RetryAsync(async () =>

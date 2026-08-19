@@ -367,6 +367,26 @@
 
 ### Fixed
 
+- **2026-08-19**: **A large bulk check is no longer sent as one oversized request.**
+  `CheckPermissionsAsync`, `CheckPermissionAsync`, `CheckAnyAsync` and `CheckAllAsync` (and
+  their `WithContext` variants) built a single `CheckBulkPermissions` request from however many
+  relationships the caller passed. SpiceDB caps a request at `maxBulkCheckCount` -- 10,000, a
+  hard-coded const in `internal/services/v1/bulkcheck.go` with no flag to raise or lower it --
+  and rejects anything larger with `ERROR_REASON_TOO_MANY_CHECKS_IN_REQUEST`. Nothing in the
+  proto enforced the cap either (`CheckBulkPermissionsRequest.items` carries only a per-item
+  `required` rule, not a collection-size rule), so the failure surfaced only at runtime, on the
+  largest inputs.
+
+  Checks are now split into requests of at most 1,000 items -- the same batch size the import
+  path already uses, and the value `spicedb-rust` (the one client that already chunked) picked
+  -- and the responses are concatenated in input order, so `results[i]` still corresponds to the
+  caller's i-th relationship across a chunk boundary. The response-length guard added earlier on
+  this branch now runs per chunk. A caller passing fewer than 1,000 relationships still makes
+  exactly one request.
+
+  `DefaultCheckBatchSize` was already declared and never referenced; it is now what does the
+  chunking, rather than a second constant being introduced beside it.
+
 - **2026-08-19**: **A caller-supplied `GrpcChannel` is no longer disposed by the client that
   borrowed it.** `SpiceDBClient.CreateFromChannel(channel, token)` is the documented escape
   hatch for a channel you built yourself, but `DisposeAsync()` disposed it anyway

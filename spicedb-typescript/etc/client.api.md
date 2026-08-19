@@ -77,6 +77,7 @@ export class Consistency {
 // @public
 export function createSpiceDBClient(endpoint: string, token: string, options?: {
     insecure?: boolean;
+    allowInsecureRemoteCredentials?: boolean;
     headers?: Record<string, string>;
     maxRetries?: number;
     defaultTimeoutMs?: number;
@@ -491,12 +492,12 @@ export class SpiceDBClient {
 
 // @public
 export interface SpiceDBClientOptions {
+    allowInsecureRemoteCredentials?: boolean;
     defaultTimeoutMs?: number;
     // (undocumented)
     endpoint: string;
     // (undocumented)
     headers?: Record<string, string>;
-    // (undocumented)
     insecure?: boolean;
     // (undocumented)
     maxRetries?: number;

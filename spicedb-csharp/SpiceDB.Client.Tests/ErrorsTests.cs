@@ -206,5 +206,160 @@ public class ErrorsTests
         new ResourceExhaustedException("").Should().BeAssignableTo<SpiceDBException>();
         new DeadlineExceededException("").Should().BeAssignableTo<SpiceDBException>();
         new AbortedException("").Should().BeAssignableTo<SpiceDBException>();
+        new UnauthenticatedException("").Should().BeAssignableTo<SpiceDBException>();
+        new OutOfRangeException("").Should().BeAssignableTo<SpiceDBException>();
+    }
+
+    /// <summary>
+    /// Returns the wire name of an <c>authzed.api.v1.ErrorReason</c> value, read off the generated
+    /// enum's own descriptor rather than from a hand-written table — so a drift between the
+    /// exposed reason string and the proto enum fails this test.
+    /// </summary>
+    private static string ProtoNameOf(Authzed.Api.V1.ErrorReason reason) =>
+        Authzed.Api.V1.ErrorReasonReflection.Descriptor.EnumTypes[0]
+            .FindValueByNumber((int)reason)!.Name;
+
+    /// <summary>
+    /// Builds an RpcException carrying a google.rpc.ErrorInfo detail, the shape SpiceDB uses to
+    /// explain a failure.
+    /// </summary>
+    private static RpcException WithErrorInfo(
+        Grpc.Core.StatusCode code, string message, Google.Rpc.ErrorInfo info)
+    {
+        var status = new Google.Rpc.Status
+        {
+            Code = (int)code,
+            Message = message,
+        };
+        status.Details.Add(Google.Protobuf.WellKnownTypes.Any.Pack(info));
+        return status.ToRpcException();
+    }
+
+    // OUT_OF_RANGE is SpiceDB's code for an expired or garbage-collected ZedToken. Recovery is
+    // mechanical -- drop the token, re-read at full consistency -- so it must be distinguishable
+    // by type rather than by message. See root DESIGN.md, "RULE: Error mapping must not lose the
+    // server's detail".
+    [Fact]
+    public void ToSpiceDBException_MapsOutOfRangeToItsOwnType()
+    {
+        var rpc = new RpcException(
+            new Grpc.Core.Status(StatusCode.OutOfRange, "revision no longer available"));
+        var ex = ErrorMapper.ToSpiceDBException(rpc);
+
+        ex.Should().BeOfType<OutOfRangeException>();
+        ex.Should().NotBeOfType<InvalidArgumentException>();
+        ex.Message.Should().Be("revision no longer available");
+    }
+
+    // A wrong, expired, or rotated token must be distinguishable from an internal server fault, so
+    // a caller can refresh credentials on one and page someone on the other.
+    [Fact]
+    public void ToSpiceDBException_MapsUnauthenticatedToItsOwnType()
+    {
+        var rpc = new RpcException(new Grpc.Core.Status(StatusCode.Unauthenticated, "bad token"));
+        var ex = ErrorMapper.ToSpiceDBException(rpc);
+
+        ex.Should().BeOfType<UnauthenticatedException>();
+        ex.Should().NotBeOfType<PermissionDeniedException>();
+    }
+
+    [Fact]
+    public void IsTransient_NeitherNewlyMappedCode_ReturnsFalse()
+    {
+        ErrorMapper.IsTransient(
+            new RpcException(new Grpc.Core.Status(StatusCode.OutOfRange, "x"))).Should().BeFalse();
+        ErrorMapper.IsTransient(
+            new RpcException(new Grpc.Core.Status(StatusCode.Unauthenticated, "x"))).Should().BeFalse();
+    }
+
+    [Fact]
+    public void ToSpiceDBException_SurfacesErrorReasonAndMetadata()
+    {
+        var rpc = WithErrorInfo(
+            StatusCode.ResourceExhausted,
+            "max depth exceeded",
+            new Google.Rpc.ErrorInfo
+            {
+                Reason = "ERROR_REASON_MAXIMUM_DEPTH_EXCEEDED",
+                Domain = "authzed.com",
+                Metadata = { { "maximum_depth_allowed", "50" } },
+            });
+
+        var ex = ErrorMapper.ToSpiceDBException(rpc);
+
+        ex.Should().BeOfType<ResourceExhaustedException>();
+        // The exposed reason is exactly the authzed.api.v1.ErrorReason enum name, so a caller can
+        // compare against the generated enum without this client carrying a hand-maintained copy
+        // of it.
+        ex.Reason.Should().Be("ERROR_REASON_MAXIMUM_DEPTH_EXCEEDED");
+        ex.Reason.Should().Be(ProtoNameOf(Authzed.Api.V1.ErrorReason.MaximumDepthExceeded));
+        ex.ReasonDomain.Should().Be("authzed.com");
+        ex.ReasonMetadata.Should().Contain("maximum_depth_allowed", "50");
+    }
+
+    [Fact]
+    public void ToSpiceDBException_ReasonMetadataNamesTheFailingPrecondition()
+    {
+        var rpc = WithErrorInfo(
+            StatusCode.FailedPrecondition,
+            "precondition failed",
+            new Google.Rpc.ErrorInfo
+            {
+                Reason = "ERROR_REASON_WRITE_OR_DELETE_PRECONDITION_FAILURE",
+                Domain = "authzed.com",
+                Metadata =
+                {
+                    { "precondition_resource_id", "firstdoc" },
+                    { "precondition_relation", "viewer" },
+                },
+            });
+
+        var ex = ErrorMapper.ToSpiceDBException(rpc);
+
+        ex.Should().BeOfType<FailedPreconditionException>();
+        ex.Reason.Should().Be("ERROR_REASON_WRITE_OR_DELETE_PRECONDITION_FAILURE");
+        ex.ReasonMetadata.Should().Contain("precondition_resource_id", "firstdoc");
+        ex.ReasonMetadata.Should().Contain("precondition_relation", "viewer");
+    }
+
+    // A reason a newer server knows and this client does not is server-supplied: root DESIGN.md's
+    // "RULE: A conversion that cannot preserve meaning must fail" requires it to degrade safely,
+    // not to throw.
+    [Fact]
+    public void ToSpiceDBException_UnrecognizedReasonPassesThroughWithoutThrowing()
+    {
+        var rpc = WithErrorInfo(
+            StatusCode.InvalidArgument,
+            "from the future",
+            new Google.Rpc.ErrorInfo
+            {
+                Reason = "ERROR_REASON_INVENTED_BY_A_NEWER_SERVER",
+                Domain = "authzed.com",
+                Metadata = { { "k", "v" } },
+            });
+
+        var ex = ErrorMapper.ToSpiceDBException(rpc);
+
+        ex.Should().BeOfType<InvalidArgumentException>();
+        ex.Reason.Should().Be("ERROR_REASON_INVENTED_BY_A_NEWER_SERVER");
+        ex.ReasonMetadata.Should().Contain("k", "v");
+    }
+
+    [Fact]
+    public void ToSpiceDBException_AbsentErrorInfoLeavesReasonEmpty()
+    {
+        var ex = ErrorMapper.ToSpiceDBException(
+            new RpcException(new Grpc.Core.Status(StatusCode.NotFound, "nope")));
+
+        ex.Reason.Should().BeEmpty();
+        ex.ReasonDomain.Should().BeEmpty();
+        ex.ReasonMetadata.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void LocallyConstructedException_HasNoReason()
+    {
+        new SpiceDBException("local problem").Reason.Should().BeEmpty();
+        new SpiceDBException("local problem").ReasonMetadata.Should().BeEmpty();
     }
 }

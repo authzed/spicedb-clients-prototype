@@ -4,6 +4,7 @@ using System.Runtime.CompilerServices;
 using Authzed.Api.SpiceDB.Proto;
 using Authzed.Api.V1;
 using Google.Protobuf.WellKnownTypes;
+using Google.Rpc;
 using Grpc.Core;
 using Grpc.Net.Client;
 
@@ -355,13 +356,15 @@ public sealed class SpiceDBClient : IAsyncDisposable
             var pair = resp.Pairs[i];
             if (pair.Error != null)
             {
-                // pair.Error is a google.rpc.Status (numeric code + message),
-                // not a thrown RpcException. Synthesize one so the per-item
-                // error routes through the same ErrorMapper switch as every
-                // other RPC in this client, instead of discarding the code
-                // and throwing the base SpiceDBException.
-                var status = new Status((StatusCode)pair.Error.Code, pair.Error.Message);
-                throw ErrorMapper.ToSpiceDBException(new RpcException(status));
+                // pair.Error is a google.rpc.Status, not a thrown RpcException. ToRpcException
+                // (Google.Api.CommonProtos) turns it into one so the per-item error routes
+                // through the same ErrorMapper switch as every other RPC in this client, instead
+                // of discarding the code and throwing the base SpiceDBException. It also carries
+                // the status's own details across, so a per-item failure reaches the caller with
+                // the same structured reason an RPC-level failure does — hand-building a
+                // Grpc.Core.Status from just the code and message dropped them. See root
+                // DESIGN.md, "RULE: Error mapping must not lose the server's detail".
+                throw ErrorMapper.ToSpiceDBException(pair.Error.ToRpcException());
             }
             else if (pair.Item != null)
             {

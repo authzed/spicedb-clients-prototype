@@ -4,6 +4,60 @@
 
 ### Added
 
+- **2026-08-18**: Error mapping now carries the server's detail all the way to
+  the caller, per root DESIGN.md, "RULE: Error mapping must not lose the
+  server's detail". Purely additive.
+  - Two new exception types, both `SpiceDBException` subclasses:
+    - `OutOfRangeException` for `StatusCode.OutOfRange`, SpiceDB's code for an
+      expired or garbage-collected ZedToken. It previously fell through to the
+      base `SpiceDBException`, so the one recoverable error in a
+      token-threading application was indistinguishable from an internal fault.
+      Recovery is mechanical: discard the stale token and re-read at full
+      consistency.
+    - `UnauthenticatedException` for `StatusCode.Unauthenticated` — a wrong,
+      expired, or rotated API token, previously also indistinguishable from an
+      internal fault. Distinct from `PermissionDeniedException`, which means
+      the caller was identified but not allowed.
+  - Every `SpiceDBException` now exposes the `google.rpc.ErrorInfo` detail
+    SpiceDB attaches to a status, via three new properties: `Reason` (the name
+    of an `authzed.api.v1.ErrorReason` enum value, e.g.
+    `"ERROR_REASON_MAXIMUM_DEPTH_EXCEEDED"`), `ReasonDomain` (`"authzed.com"`
+    for SpiceDB), and `ReasonMetadata` (the specifics behind the reason, such
+    as which precondition failed). They are derived from the preserved
+    `InnerException`, so no subclass constructor changed and the reason can
+    never drift from the status the exception was built out of. The reason is
+    surfaced exactly as the server sent it: a value a newer server knows and
+    this client does not is passed through unchanged rather than coerced or
+    rejected, per root DESIGN.md's "RULE: A conversion that cannot preserve
+    meaning must fail", which requires server-supplied unknowns to degrade
+    rather than throw. `Reason` is `""` and `ReasonMetadata` empty when the
+    server attached no `ErrorInfo`.
+  - `CheckBulkPermissionsAsync` per-item errors now keep their own details on
+    the way to a typed exception. The per-item `google.rpc.Status` was
+    previously reduced to a code and a message before mapping, discarding the
+    item's `ErrorInfo`.
+  - New dependency `Grpc.StatusProto`, gRPC's own implementation of the
+    `grpc-status-details-bin` bridge between `RpcException` and
+    `Google.Rpc.Status`, used instead of reading and writing that trailer by
+    hand. `Google.Api.CommonProtos` (already present transitively) is now
+    referenced explicitly, since `Errors.cs` reads `ErrorInfo` directly.
+
+  ```csharp
+  try
+  {
+      await client.WriteAsync(txn);
+  }
+  catch (FailedPreconditionException ex)
+      when (ex.Reason == "ERROR_REASON_WRITE_OR_DELETE_PRECONDITION_FAILURE")
+  {
+      Console.WriteLine(ex.ReasonMetadata["precondition_resource_id"]);
+  }
+  catch (OutOfRangeException)
+  {
+      // ZedToken expired or GC'd: drop it and re-read at full consistency.
+  }
+  ```
+
 - **2026-08-17**: The check surface can now supply caveat context, in both
   forms. Previously `MissingContext` on a `ConditionalPermission` result
   told a caller what the server needed, but there was no parameter to

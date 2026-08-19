@@ -76,6 +76,27 @@ export interface ClientOptions {
  * Exported (but not re-exported from index.ts) so tests can exercise it
  * directly; not part of the package's public API surface.
  */
+/**
+ * Returns the URL authority the transport dials for `endpoint`.
+ *
+ * This exists so `isLoopbackEndpoint` and `createSpiceDBClient` cannot
+ * disagree about what is being connected to. It brackets a bare IPv6 literal
+ * (recognized by holding more than one ":", which no `host:port` form and no
+ * real hostname ever does): `"::1"` is an ordinary way to name the loopback
+ * host and an explicit part of this client's supported set, but it is not a
+ * legal URL authority, so `new URL("http://::1")` throws `Invalid URL`. The
+ * guard used to bracket it for its own parse while `createSpiceDBClient` built
+ * its `baseUrl` from the raw endpoint, so `"::1"` passed the guard and then
+ * failed to construct a client at all.
+ *
+ * Anything already bracketed, or not an IPv6 literal, is returned unchanged.
+ */
+function transportAuthority(endpoint: string): string {
+  return !endpoint.startsWith("[") && (endpoint.match(/:/g) ?? []).length > 1
+    ? `[${endpoint}]`
+    : endpoint;
+}
+
 export function isLoopbackEndpoint(endpoint: string): boolean {
   // There is deliberately no "unix:" exemption here -- see the doc comment
   // above, and the unconditional refusal in createSpiceDBClient below.
@@ -92,15 +113,12 @@ export function isLoopbackEndpoint(endpoint: string): boolean {
     return false;
   }
 
-  // A bare IPv6 literal ("::1") is not a legal URL authority -- brackets
-  // are the only form the transport can dial -- so bracket it (recognized
-  // by holding more than one ":", which no host:port form and no real
-  // hostname ever does) and let the one parser below judge it, rather than
-  // special-casing it out of the parse entirely.
-  const authority =
-    !endpoint.startsWith("[") && (endpoint.match(/:/g) ?? []).length > 1
-      ? `[${endpoint}]`
-      : endpoint;
+  // Exactly the authority the transport will dial -- see transportAuthority,
+  // which createSpiceDBClient uses to build its baseUrl. Using one function
+  // for both is the point: while this bracketed a bare IPv6 literal and
+  // createSpiceDBClient did not, "::1" passed the guard and then died in
+  // `new URL()` with "Invalid URL".
+  const authority = transportAuthority(endpoint);
 
   // The scheme is "http" because this guard only ever gates the insecure
   // path; either way, scheme does not affect how the authority is parsed.
@@ -240,11 +258,17 @@ export function createSpiceDBClient(
   // build internally) so SpiceDBProtoClient.close() has a handle to abort
   // -- createGrpcTransport accepts a pre-built sessionManager via
   // GrpcTransportOptions precisely to support this.
-  const sessionManager = new Http2SessionManager(
-    options?.insecure ? `http://${endpoint}` : `https://${endpoint}`,
-  );
+  //
+  // transportAuthority, not the raw endpoint: a bare IPv6 literal must be
+  // bracketed to be a legal URL authority, and it is the same function
+  // isLoopbackEndpoint vetted, so the two cannot disagree about where this
+  // connection goes.
+  const baseUrl = options?.insecure
+    ? `http://${transportAuthority(endpoint)}`
+    : `https://${transportAuthority(endpoint)}`;
+  const sessionManager = new Http2SessionManager(baseUrl);
   const transport = createGrpcTransport({
-    baseUrl: options?.insecure ? `http://${endpoint}` : `https://${endpoint}`,
+    baseUrl,
     sessionManager,
     interceptors: [
       // Sets the bearer token unconditionally, regardless of transport

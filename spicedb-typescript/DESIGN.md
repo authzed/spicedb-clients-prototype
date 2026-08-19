@@ -39,9 +39,11 @@ const client = new SpiceDBClient({ endpoint, token, insecure: true });
 
 Per root DESIGN.md, "RULE: Credentials over insecure transport require an
 explicit opt-in": `insecure: true` only permits plaintext to a loopback
-endpoint (`localhost`, `127.0.0.0/8`, `::1`, or a `unix:` socket target) —
-the local-development case that is the entire reason it exists. Anything
-else needs `allowInsecureRemoteCredentials: true` passed explicitly, or
+endpoint (`localhost`, `127.0.0.0/8`, or `::1`) — the local-development case
+that is the entire reason it exists. A `unix:` target is NOT loopback here and
+is refused outright: Node http2 dials a URL origin, so it would resolve the
+DNS name `unix` rather than a socket path. Anything else needs
+`allowInsecureRemoteCredentials: true` passed explicitly, or
 `createSpiceDBClient`/`new SpiceDBClient(...)` throws before any connection
 is created.
 

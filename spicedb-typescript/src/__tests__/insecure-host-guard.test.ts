@@ -49,6 +49,19 @@ describe("createSpiceDBClient insecure host guard (idiomatic layer)", () => {
     },
   );
 
+  /**
+   * Bare `::1` is item 8 of the loopback contract, so it must build a client
+   * through the public entry point — not merely satisfy the guard and then
+   * throw `Invalid URL` from `new URL()`, which is what happened while the
+   * guard bracketed the literal and the `baseUrl` did not.
+   */
+  it.each(["::1", "[::1]", "0:0:0:0:0:0:0:1", "[::1]:50051"])(
+    "constructs a client for bare IPv6 loopback %s",
+    (endpoint) => {
+      expect(() => createSpiceDBClient(endpoint, "test-token", { insecure: true })).not.toThrow();
+    },
+  );
+
   it("allows a loopback endpoint with no opt-in", () => {
     expect(() =>
       createSpiceDBClient("localhost:50051", "test-token", { insecure: true }),

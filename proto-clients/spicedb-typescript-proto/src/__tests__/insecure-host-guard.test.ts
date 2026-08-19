@@ -189,6 +189,25 @@ describe("createSpiceDBClient insecure host guard", () => {
     expect(capturedAuth).toEqual([]);
   });
 
+  /**
+   * A bare IPv6 literal must produce a WORKING client, not merely satisfy the
+   * guard. `"::1"` is item 8 of the loopback contract and an explicit fixture
+   * above -- but it is not a legal URL authority, so while the guard bracketed
+   * it for its own parse and `createSpiceDBClient` built its `baseUrl` from
+   * the raw endpoint, `new URL("http://::1")` threw `Invalid URL` and no
+   * client could be created at all.
+   */
+  it.each(["::1", "[::1]", "0:0:0:0:0:0:0:1", "[::1]:50051", "127.0.0.1"])(
+    "constructs a client for bare IPv6 loopback %s",
+    async (endpoint) => {
+      const { createSpiceDBClient } = await import("../client.js");
+
+      const client = createSpiceDBClient(endpoint, "test-token", { insecure: true });
+      expect(client).toBeDefined();
+      client.close();
+    },
+  );
+
   it("allows a loopback endpoint with no opt-in, and actually sends the token", async () => {
     const { createSpiceDBClient } = await import("../client.js");
 

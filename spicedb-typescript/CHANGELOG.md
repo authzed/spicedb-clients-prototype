@@ -116,7 +116,23 @@
   Guard and transport can no longer disagree. Endpoints containing `@`, `/`, `?`, `#`, or
   whitespace are additionally refused outright, since a legitimate SpiceDB target contains none
   of them — `\` too, which WHATWG `URL` treats as `/` for special schemes. A bare IPv6 literal
-  (`"::1"`) is bracketed before parsing and keeps working, as do `localhost` and 127.0.0.0/8.
+  (`"::1"`) is bracketed — for the guard's parse **and** for the `baseUrl` the transport dials,
+  both via one `transportAuthority` helper, so the two cannot disagree — and keeps working, as
+  do `localhost` and 127.0.0.0/8.
+
+- **2026-08-18**: **Bare `::1` now actually connects.** It satisfied the guard but then threw
+  `TypeError: Invalid URL` from `new URL()`, because the guard bracketed the literal for its own
+  parse while `createSpiceDBClient` built its `baseUrl` from the raw endpoint (`"http://::1"` is
+  not a legal URL). `"::1"`, `"[::1]"`, `"0:0:0:0:0:0:0:1"` and `"[::1]:50051"` all construct a
+  client.
+
+- **2026-08-18**: Tests in this package now resolve `@spicedb/proto` to the proto package's
+  **source** rather than its built `dist/` (new `vitest.config.ts` alias). The workspace link
+  resolves to `dist/index.js`, and `Magefile.go`'s `Test()` builds only the package under test,
+  so a local `npm test` here exercised whatever `dist/` was last built by hand — which hid a
+  guard fix and let these tests pass against a version of `isLoopbackEndpoint` that still had
+  the bypass. CI was never affected (`.github/workflows/typescript.yaml` builds
+  `@spicedb/proto` in all four jobs); this closes the local gap.
 
 - **2026-08-18**: **Breaking, and security-motivated: `unix:` endpoints are now refused instead
   of being treated as loopback.** `createSpiceDBClient("unix:/var/run/spicedb.sock", token,

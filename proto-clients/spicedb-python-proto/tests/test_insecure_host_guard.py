@@ -18,6 +18,10 @@ LOOPBACK_ENDPOINTS = [
     "127.0.0.1:50051", "127.0.0.1", "127.55.66.77:50051",
     "[::1]:50051", "::1",
     "unix:/var/run/spicedb.sock", "unix:///var/run/spicedb.sock",
+    # A URI scheme is case-insensitive and C-core normalizes it, so an
+    # upper-cased unix target reaches the same UDS connect and must be
+    # recognized here too.
+    "UNIX:/var/run/spicedb.sock", "Unix:///var/run/spicedb.sock",
 ]
 
 NON_LOOPBACK_ENDPOINTS = [

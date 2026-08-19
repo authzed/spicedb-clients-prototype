@@ -150,7 +150,10 @@
   `"127.0.0.1:notaport"` and the non-ASCII-digit forms now
   require `allow_insecure_remote_credentials=True` instead of being accepted as loopback. Every
   ordinary local target keeps working with no opt-in: `localhost:50051`, `127.0.0.1:50051`,
-  `[::1]:50051`, `::1`, and `unix:` targets.
+  `[::1]:50051`, `::1`, and `unix:` targets — the last now matched
+  case-insensitively, since a URI scheme is case-insensitive and C-core normalizes `UNIX:`
+  and dials the socket just the same, so the previous case-sensitive check refused a target
+  the transport treats as local.
 
 - **2026-08-18**: Abandoning a stream did not release it. Every streaming method on both
   surfaces (`read_relationships`, `lookup_resources`, `lookup_subjects`, `watch`,

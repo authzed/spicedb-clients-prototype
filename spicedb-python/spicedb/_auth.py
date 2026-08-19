@@ -97,7 +97,10 @@ def is_loopback_endpoint(endpoint: str) -> bool:
     # authority at all (it carries a filesystem path, so it legitimately
     # contains the "/" the reserved-character check below refuses), and it
     # never leaves the host's kernel regardless of what the path says.
-    if endpoint.startswith("unix:"):
+    # Case-insensitive because a URI scheme is: C-core normalizes "UNIX:" and
+    # dials the socket just the same, so a case-sensitive check here would
+    # refuse a target the transport happily treats as local.
+    if endpoint[:5].lower() == "unix:":
         return True
 
     if _AUTHORITY_SHIFTING.search(endpoint):

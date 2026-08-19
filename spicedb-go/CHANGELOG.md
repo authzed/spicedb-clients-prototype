@@ -247,16 +247,35 @@
   endpoint, but every lookup for it — including the `_grpc_config` TXT query whose service
   config grpc-go then *applies* — goes to `evil.com`, and whether the returned address is
   honoured comes down to host-resolver ordering. A target is now loopback only when the
-  endpoint is loopback **and** the authority is absent or itself loopback.
+  endpoint is loopback **and** the target carries no authority at all.
+
+  **Not even a loopback authority is accepted.** `"dns://127.0.0.1:9999/localhost:50051"` is
+  refused too. It is tempting to allow it — a nameserver on loopback looks like the same trust
+  position as the system resolver — but it is not: redirecting the system resolver means
+  editing `/etc/hosts` or `resolv.conf`, which needs root, while **binding a high UDP port on
+  loopback needs no privilege at all**. On a shared host or a multi-process container any
+  unprivileged process can answer the `_grpc_config` TXT query with a service config grpc-go
+  applies, and answer the A/AAAA lookup with an address of its choosing. The endpoint string
+  naming that nameserver is attacker-supplied, which is exactly what this guard defends
+  against.
 
   Targets carrying URI userinfo, a query, a fragment, or a leftover `@`, `/`, `?`, `#`, or
   whitespace in the endpoint are refused outright. So `"127.0.0.1:443@evil.com"` (and its
-  `passthrough:///` and `dns:///` forms), `"dns://evil.com/localhost:50051"`, and
+  `passthrough:///` and `dns:///` forms), every `scheme://authority/endpoint` form including
+  `"dns://evil.com/localhost:50051"` and `"dns://127.0.0.1:9999/localhost:50051"`, and
   `"unix://evil.com/var/run/spicedb.sock"` all now require `WithInsecureAllowRemoteHost`
   instead of being accepted as loopback. Every ordinary local target keeps working with no
-  opt-in: `localhost:50051`, `127.0.0.1:50051`, `[::1]:50051`, `::1`, `unix:` targets (now
-  matched case-insensitively on the scheme, as grpc-go itself does), and the `passthrough:///`
-  and `dns:///` forms of each.
+  opt-in: `localhost:50051`, `127.0.0.1:50051`, `[::1]:50051`, `[::1]`, `::1`, `unix:` and
+  `unix-abstract:` targets (matched case-insensitively on the scheme, as grpc-go itself does),
+  and the authority-less `passthrough:///` and `dns:///` forms of each.
+
+  Host extraction now follows the same three-step sequence as grpc-go's DNS resolver (bare IP
+  literal, then `net.SplitHostPort`, then the same split with a port appended so a bare
+  `[::1]` is de-bracketed by the parser). It replaces a `strings.Trim(host, "[]")` that
+  stripped any number of brackets from either end, so `"]127.0.0.1["`, `"[::1"` and `"::1]"`
+  had all reported loopback — harmless, since `net.SplitHostPort` rejects them and nothing
+  could be dialed, but hand-rolled string surgery next to a parser is the pattern that
+  produced the original bypass.
 
 - **2026-08-18**: Abandoning a streaming iterator leaked the gRPC stream and the server-side
   dispatch. Every streaming call that returns an iterator (`Updates`, `LookupResources`,

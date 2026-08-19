@@ -110,8 +110,10 @@ func WithDialOptions(opts ...grpc.DialOption) Option {
 // "nsswitch.conf" ordering "dns files", or an /etc/hosts without localhost,
 // puts the address -- and the cleartext connection carrying the bearer
 // token -- in the attacker's gift). So a target counts as loopback only
-// when the endpoint is loopback AND the authority is either absent or
-// itself loopback.
+// when the endpoint is loopback AND the target carries no authority at all.
+// Not even a loopback authority is accepted -- see the comment at that
+// check for why a nameserver on loopback is NOT the same trust position as
+// the system resolver.
 //
 // The target is resolved the way grpc.NewClient resolves it -- parse as a
 // URI, and if the scheme names no registered resolver, re-parse as
@@ -157,10 +159,12 @@ func isLoopbackEndpoint(endpoint string) bool {
 	// routes to grpc-go's unix resolver. A unix target carries a filesystem
 	// path, so it legitimately holds the '/' the reserved-character check
 	// below refuses, and it never leaves the host's kernel regardless of what
-	// the path says. Its authority must still be empty: grpc-go's unix
-	// resolver rejects a non-empty host outright ("expected target with empty
-	// host"), so "unix://somewhere/path" dials nothing at all.
-	if parsed.URL.Scheme == "unix" {
+	// the path says. "unix-abstract" is included because grpc-go registers
+	// both schemes against that same resolver and an abstract socket is
+	// equally confined to the kernel. The authority must still be empty:
+	// grpc-go's unix resolver rejects a non-empty host outright ("invalid
+	// (non-empty) authority"), so "unix://somewhere/path" dials nothing.
+	if parsed.URL.Scheme == "unix" || parsed.URL.Scheme == "unix-abstract" {
 		return parsed.URL.Host == ""
 	}
 
@@ -171,11 +175,29 @@ func isLoopbackEndpoint(endpoint string) bool {
 		return false
 	}
 
-	// The authority -- for the dns scheme, the nameserver every lookup for
-	// the endpoint below is sent to. Absent is the ordinary case
-	// ("localhost:50051", "dns:///localhost:50051"); anything present must
-	// itself be loopback.
-	if parsed.URL.Host != "" && !isLoopbackHostPort(parsed.URL.Host) {
+	// Any authority at all disqualifies the target. For the dns scheme the
+	// authority is the nameserver every lookup for the endpoint below is sent
+	// to, and the endpoint string naming it is attacker-supplied -- which is
+	// the whole thing this guard exists to defend against.
+	//
+	// A loopback authority is NOT an exception, deliberately. The tempting
+	// argument -- that a nameserver on loopback is the same trust position as
+	// the system resolver, so "dns://127.0.0.1:9999/localhost:50051" is no
+	// worse than "localhost:50051" -- is wrong: redirecting the system
+	// resolver means editing /etc/hosts or resolv.conf, which needs root,
+	// while binding a high UDP port on loopback needs no privilege at all.
+	// Those are separated by the entire privilege boundary. On a shared host
+	// or a multi-process container, any unprivileged local process can stand
+	// up a nameserver, answer the _grpc_config TXT query with a service config
+	// grpc-go will APPLY, and answer the A/AAAA lookup with an address of its
+	// choosing -- over which the bearer token then travels in cleartext.
+	//
+	// The cost of refusing is close to nothing: an ordinary endpoint
+	// ("localhost:50051") carries no authority, and the authority-form
+	// "dns:///localhost:50051" has an empty one and keeps working. Only the
+	// rare, deliberate resolver-directing form changes, and a caller doing
+	// that on purpose can pass WithInsecureAllowRemoteHost.
+	if parsed.URL.Host != "" {
 		return false
 	}
 
@@ -187,17 +209,42 @@ func isLoopbackEndpoint(endpoint string) bool {
 	return isLoopbackHostPort(target)
 }
 
-// isLoopbackHostPort reports whether a "host", "host:port" or "[host]:port"
-// string names a loopback host, split with the same net.SplitHostPort
-// grpc-go's DNS resolver and net.Dial use. Never performs a DNS lookup:
+// isLoopbackHostPort reports whether a "host", "host:port", "[host]:port" or
+// bare "[host]" string names a loopback host. Never performs a DNS lookup:
 // net.ParseIP is pure parsing, so a real remote hostname is simply not an IP
 // and is treated as non-loopback.
+//
+// The host is extracted with the same three-step sequence grpc-go's DNS
+// resolver uses (internal/resolver/dns, parseTarget): a bare IP literal, then
+// net.SplitHostPort, then the same split with a default port appended so a
+// bare "[::1]" is de-bracketed by the parser rather than by hand.
+//
+// It does NOT trim brackets itself. strings.Trim(host, "[]") -- what this used
+// to do -- removes any number of brackets from either end, so "]127.0.0.1[",
+// "[::1", "::1]" and "[127.0.0.1]" all reported loopback. None of those was
+// exploitable, because net.SplitHostPort rejects them and so nothing could be
+// dialed, but hand-rolled string surgery sitting next to a parser is precisely
+// the pattern that produced the bypass this guard exists to close.
+//
+// An empty host (from ":50051") is treated as non-loopback here, whereas
+// grpc-go maps it to "localhost". That is a deliberate over-refusal: erring
+// closed costs a caller nothing but an explicit opt-in.
 func isLoopbackHostPort(hostPort string) bool {
-	host := hostPort
-	if h, _, err := net.SplitHostPort(hostPort); err == nil {
+	var host string
+	switch {
+	case net.ParseIP(hostPort) != nil:
+		// A bare IPv4 or IPv6 literal, unbracketed.
+		host = hostPort
+	default:
+		h, _, err := net.SplitHostPort(hostPort)
+		if err != nil {
+			h, _, err = net.SplitHostPort(hostPort + ":" + defaultDNSPort)
+		}
+		if err != nil {
+			return false
+		}
 		host = h
 	}
-	host = strings.Trim(host, "[]")
 
 	if strings.EqualFold(host, "localhost") {
 		return true
@@ -207,6 +254,11 @@ func isLoopbackHostPort(hostPort string) bool {
 	}
 	return false
 }
+
+// defaultDNSPort is appended only to make net.SplitHostPort accept a
+// port-less host, mirroring grpc-go's DNS resolver. Its value never reaches a
+// connection and is irrelevant to the loopback decision.
+const defaultDNSPort = "443"
 
 // parseGRPCTarget reproduces grpc.NewClient's target resolution (see
 // ClientConn.initParsedTargetAndResolverBuilder in google.golang.org/grpc):

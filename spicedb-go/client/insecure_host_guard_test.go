@@ -128,6 +128,12 @@ func TestNewPlaintext_RefusesAuthorityShiftingEndpoints(t *testing.T) {
 	for _, endpoint := range []string{
 		"dns://evil.com/localhost:50051",
 		"dns://evil.com/localhost",
+		// A loopback authority is refused too: binding a high UDP port on
+		// loopback is unprivileged, unlike editing /etc/hosts or resolv.conf,
+		// so a local nameserver is NOT the same trust position as the system
+		// resolver. See the proto tier's fixture list for the full reasoning.
+		"dns://127.0.0.1:9999/localhost:50051",
+		"dns://localhost/127.0.0.1:50051",
 		"dns://8.8.8.8:53/localhost:50051",
 		"127.0.0.1:443@evil.com",
 		"[::1]:443@evil.com",

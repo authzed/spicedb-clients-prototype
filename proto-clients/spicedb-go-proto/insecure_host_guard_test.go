@@ -37,9 +37,14 @@ func TestIsLoopbackEndpoint(t *testing.T) {
 		"Unix:/var/run/spicedb.sock",
 		"passthrough:///localhost:50051",
 		"dns:///127.0.0.1:50051",
-		// Loopback authority AND loopback endpoint: a nameserver on loopback is
-		// as trustworthy as the loopback endpoint it resolves.
-		"dns://localhost/127.0.0.1:50051",
+		// unix-abstract is registered against the same grpc-go resolver as
+		// unix, and an abstract socket is equally confined to the kernel.
+		"unix-abstract:spicedb.sock",
+		// A bare bracketed literal with no port. net.SplitHostPort rejects it
+		// on its own; grpc-go's DNS resolver retries with a port appended, and
+		// so does this guard, rather than trimming brackets by hand.
+		"[::1]",
+		"[127.0.0.1]",
 	}
 	for _, endpoint := range loopback {
 		require.True(t, isLoopbackEndpoint(endpoint), "expected %q to be loopback", endpoint)
@@ -115,8 +120,31 @@ var authorityShiftingEndpoints = []string{
 	"dns://8.8.8.8:53/localhost:50051",
 	"dns://evil.com/127.0.0.1:50051",
 	// A unix target's authority must be empty; grpc-go's unix resolver
-	// rejects a non-empty host ("expected target with empty host") outright.
+	// rejects a non-empty host ("invalid (non-empty) authority") outright.
 	"unix://evil.com/var/run/spicedb.sock",
+	"unix-abstract://evil.com/spicedb.sock",
+	// A LOOPBACK authority is refused too, and that is deliberate. It was
+	// briefly allowed on the reasoning that a nameserver on loopback is the
+	// same trust position as the system resolver. It is not: redirecting the
+	// system resolver means editing /etc/hosts or resolv.conf, which needs
+	// root, while binding a high UDP port on loopback needs no privilege at
+	// all. Any unprivileged local process on a shared host or in a
+	// multi-process container can answer the _grpc_config TXT query with a
+	// service config grpc-go APPLIES, and answer the A/AAAA lookup with an
+	// address of its choosing -- and the bearer token then travels there in
+	// cleartext. The endpoint string naming that nameserver is
+	// attacker-supplied, which is the whole thing this guard defends against.
+	// Refusing costs nothing real: "localhost:50051" carries no authority and
+	// "dns:///localhost:50051" has an empty one, so both still work.
+	"dns://localhost/127.0.0.1:50051",
+	"dns://127.0.0.1:9999/localhost:50051",
+	"dns://localhost:53/localhost:50051",
+	"dns://[::1]/localhost:50051",
+	// Bracket surgery: strings.Trim(host, "[]") used to strip any number of
+	// brackets from either end and call all of these loopback.
+	"]127.0.0.1[",
+	"[::1",
+	"::1]",
 }
 
 func TestIsLoopbackEndpointRefusesAuthorityShiftingTargets(t *testing.T) {

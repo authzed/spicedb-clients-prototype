@@ -52,6 +52,8 @@ must not share a client across event loops — doing so raises
 - **`spicedb.types`** — relationship types, filters, transactions (dataclasses)
 - **`spicedb.consistency`** — consistency strategy constructors
 - **`spicedb.errors`** — typed exception hierarchy
+- **`spicedb.raw`** — the escape hatch's `RawGrpc` container; secondary API,
+  see "Escape hatch" below
 
 There is no `spicedb.client` module anymore, and no `spicedb.SpiceDBClient`
 alias — import `spicedb.aio.SpiceDBClient` or `spicedb.sync.SpiceDBClient`
@@ -156,6 +158,50 @@ reusing it for the process lifetime:
 client = SpiceDBClient("localhost:50051", token="testtoken", insecure=True)
 # reused by every caller for the life of the process; nothing to await
 ```
+
+### Escape hatch: raw gRPC access
+
+`raw_grpc()` on both flavors returns a `spicedb.raw.RawGrpc` — the live channel
+and the bearer-token metadata this client is already using:
+
+```python
+from authzed.api.v1 import permission_service_pb2 as psp
+from authzed.api.v1 import permission_service_pb2_grpc as psg
+
+raw = client.raw_grpc()                # sync
+raw = await client.raw_grpc()          # aio -- the channel binds to the running loop
+stub = psg.PermissionsServiceStub(raw.channel)
+resp = stub.CheckPermission(psp.CheckPermissionRequest(...), metadata=raw.metadata)
+```
+
+Clearly-marked **secondary** API, which is what root DESIGN.md's "What NOT To
+Do" permits: channels, stubs and metadata stay out of the primary surface, and
+"escape hatches for advanced use are acceptable as clearly marked secondary
+API". It exists so a request the idiomatic surface cannot express — an RPC or
+proto field not wrapped here, such as
+`WriteRelationshipsRequest.optional_transaction_metadata` — has a workaround
+short of forking the client.
+
+Four properties, all deliberate:
+
+- **`metadata` is not optional.** This client authenticates per call rather
+  than through channel credentials or an interceptor (see `spicedb._auth`), so
+  a stub built from `raw.channel` alone sends no token and SpiceDB answers
+  `UNAUTHENTICATED`.
+- **A raw call is a raw call.** No `spicedb.errors` mapping, no retry, and no
+  `default_timeout` — pass `timeout=` yourself. That is the cost of the hatch,
+  and the reason the idiomatic methods remain the default.
+- **The channel stays owned by the client.** `close()`/`__exit__` closes it;
+  closing it yourself breaks every later call on that client.
+- **It is an accessor, never a constructor.** It takes no endpoint, token, or
+  transport setting, and `spicedb.raw` defines no client. Channel construction
+  stays on the single guarded path in `__init__`, so the hatch cannot become a
+  way around root DESIGN.md, "RULE: Credentials over insecure transport require
+  an explicit opt-in".
+
+No stability promise beyond what `grpcio` and the generated `authzed.api.v1`
+stubs give: they are those packages' objects, and this client will not shim
+over a change in either.
 
 ### Consistency
 
@@ -700,6 +746,7 @@ See package sections above.
 | `sync_write_relationships/` | Writing relationships with the transaction builder, synchronously |
 | `sync_read_relationships/` | Reading relationships with a plain `for` loop instead of `async for` |
 | `sync_watch_changes/` | Watching for changes from a blocking generator |
+| `raw_escape_hatch/` | `raw_grpc()` — driving a generated stub directly for a proto field (`optional_transaction_metadata`) and an RPC (`CheckPermission`) the idiomatic API does not expose, on both flavors |
 
 ## Changelog
 

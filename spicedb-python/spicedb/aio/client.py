@@ -30,6 +30,7 @@ from spicedb._requests import DEFAULT_PAGE_SIZE as _DEFAULT_PAGE_SIZE
 from spicedb._requests import IMPORT_BATCH_SIZE as _IMPORT_BATCH_SIZE
 from spicedb.consistency import Consistency
 from spicedb.errors import EventLoopBindingError, is_transient, to_spicedb_error
+from spicedb.raw import RawGrpc
 from spicedb.types import (
     CheckResult,
     Filter,
@@ -237,6 +238,36 @@ class SpiceDBClient:
         self._experimental = experimental_service_pb2_grpc.ExperimentalServiceStub(
             self._channel
         )
+
+    async def raw_grpc(self) -> RawGrpc:
+        """Escape hatch: the live gRPC channel and the bearer-token metadata.
+
+        Clearly-marked secondary API, per root DESIGN.md's "What NOT To Do"
+        ("escape hatches for advanced use are acceptable as clearly marked
+        secondary API"). Use it to reach a SpiceDB RPC, request field, or
+        call option this client does not wrap yet, instead of forking it.
+        Nothing here maps errors to :mod:`spicedb.errors`, retries transient
+        failures, or applies ``default_timeout`` -- a raw call gets grpc's
+        behavior, not this client's. See :class:`spicedb.raw.RawGrpc` for the
+        usage pattern and the (deliberately thin) stability promise.
+
+        A coroutine, unlike the sync flavor's, because a ``grpc.aio`` channel
+        is created on and bound to the running event loop: this opens the
+        channel if it is not open yet, and raises
+        :class:`spicedb.errors.EventLoopBindingError` from the wrong loop
+        exactly as any other call on this client would. The channel stays
+        owned by this client: ``close()`` closes it, and closing it yourself
+        breaks every later call on this client.
+
+        This is NOT a second way to connect. It hands back the channel this
+        client already built and cannot take an endpoint, token, or transport
+        setting, so it cannot route around the guard in ``__init__`` -- root
+        DESIGN.md, "RULE: Credentials over insecure transport require an
+        explicit opt-in".
+        """
+        self._ensure_channel()
+        assert self._channel is not None  # _ensure_channel guarantees it
+        return RawGrpc(channel=self._channel, metadata=tuple(self._metadata))
 
     async def close(self) -> None:
         """Close the underlying gRPC channel. A no-op if never used."""

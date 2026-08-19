@@ -33,4 +33,5 @@ Or use `mage test` which starts a SpiceDB container automatically.
 | `sync_write_relationships/` | Writing relationships with the transaction builder, synchronously |
 | `sync_read_relationships/` | Reading relationships with a plain `for` loop instead of `async for` |
 | `sync_watch_changes/` | Watching for changes from a blocking generator |
+| `raw_escape_hatch/` | The `raw_grpc()` escape hatch: building a generated stub on the client's own channel to send `optional_transaction_metadata` (a proto field this client does not wrap) and to call the single-check `CheckPermission` RPC, from both the async and sync flavors |
 | `custom_tls/` | Reaching a SpiceDB behind a private CA with `ca_cert`, and mutual TLS with `client_cert`/`client_key`. Brings its own TLS endpoint — the only example that does not use the shared SpiceDB at `localhost:50051`, since a plaintext server has nothing to say about trust material |

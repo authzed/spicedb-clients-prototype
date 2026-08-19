@@ -38,6 +38,7 @@ from spicedb._requests import DEFAULT_PAGE_SIZE as _DEFAULT_PAGE_SIZE
 from spicedb._requests import IMPORT_BATCH_SIZE as _IMPORT_BATCH_SIZE
 from spicedb.consistency import Consistency
 from spicedb.errors import is_transient, to_spicedb_error
+from spicedb.raw import RawGrpc
 from spicedb.types import (
     CheckResult,
     Filter,
@@ -236,6 +237,32 @@ class SpiceDBClient:
         self._experimental = experimental_service_pb2_grpc.ExperimentalServiceStub(
             self._channel
         )
+
+    def raw_grpc(self) -> RawGrpc:
+        """Escape hatch: the live gRPC channel and the bearer-token metadata.
+
+        Clearly-marked secondary API, per root DESIGN.md's "What NOT To Do"
+        ("escape hatches for advanced use are acceptable as clearly marked
+        secondary API"). Use it to reach a SpiceDB RPC, request field, or
+        call option this client does not wrap yet, instead of forking it.
+        Nothing here maps errors to :mod:`spicedb.errors`, retries transient
+        failures, or applies ``default_timeout`` -- a raw call gets grpc's
+        behavior, not this client's. See :class:`spicedb.raw.RawGrpc` for the
+        usage pattern and the (deliberately thin) stability promise.
+
+        Opens the channel if it is not open yet, so the returned channel is
+        always usable. It stays owned by this client: ``close()`` closes it,
+        and closing it yourself breaks every later call on this client.
+
+        This is NOT a second way to connect. It hands back the channel this
+        client already built and cannot take an endpoint, token, or transport
+        setting, so it cannot route around the guard in ``__init__`` -- root
+        DESIGN.md, "RULE: Credentials over insecure transport require an
+        explicit opt-in".
+        """
+        self._ensure_channel()
+        assert self._channel is not None  # _ensure_channel guarantees it
+        return RawGrpc(channel=self._channel, metadata=tuple(self._metadata))
 
     def close(self) -> None:
         """Close the underlying gRPC channel. A no-op if never used."""

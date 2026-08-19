@@ -4,6 +4,42 @@
 
 ### Added
 
+- An escape hatch, `raw_grpc()`, on both `spicedb.sync.SpiceDBClient` and
+  `spicedb.aio.SpiceDBClient`. It returns a `spicedb.raw.RawGrpc` carrying the
+  live channel (`.channel`) and the bearer-token metadata (`.metadata`) the
+  client is already using, so a request the idiomatic API cannot express has a
+  workaround short of forking the client:
+
+  ```python
+  from authzed.api.v1 import permission_service_pb2 as psp
+  from authzed.api.v1 import permission_service_pb2_grpc as psg
+
+  raw = client.raw_grpc()            # sync; `await client.raw_grpc()` on aio,
+  stub = psg.PermissionsServiceStub(raw.channel)   # since the aio channel binds
+  resp = stub.CheckPermission(       # to the running event loop
+      psp.CheckPermissionRequest(...), metadata=raw.metadata)
+  ```
+
+  Clearly-marked **secondary** API — root DESIGN.md's "What NOT To Do" keeps
+  channels, stubs and metadata out of the primary surface and permits exactly
+  this ("escape hatches for advanced use are acceptable as clearly marked
+  secondary API"). No stability promise beyond what `grpcio` and the generated
+  `authzed.api.v1` stubs give.
+
+  Pass `raw.metadata` on every raw call: this client attaches its token per
+  call rather than on the channel, so a stub built from `raw.channel` alone
+  gets `UNAUTHENTICATED`. A raw call also gets no error mapping, no retry, and
+  no `default_timeout`. The channel remains owned by the client — `close()`
+  closes it, and closing it yourself breaks every later call.
+
+  It is an accessor, not a constructor: it takes no endpoint, token, or
+  transport setting, and `spicedb.raw` defines no client, so channel
+  construction stays on the single guarded path in `__init__` and this cannot
+  become a route around root DESIGN.md, "RULE: Credentials over insecure
+  transport require an explicit opt-in".
+
+  New example: `examples/raw_escape_hatch/`.
+
 - Caller-supplied TLS trust material on both `spicedb.sync.SpiceDBClient` and
   `spicedb.aio.SpiceDBClient`: three new keyword-only constructor parameters,
   all PEM bytes and all defaulting to `None`. Purely additive — an existing

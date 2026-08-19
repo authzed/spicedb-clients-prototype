@@ -9,13 +9,15 @@
 //! [`SpiceDBError::status`] and as the [`std::error::Error::source`] of the
 //! error, and SpiceDB's structured `ErrorReason` — the `google.rpc.ErrorInfo`
 //! detail on that status — is surfaced through [`SpiceDBError::reason`] and
-//! [`SpiceDBError::reason_metadata`]. See root DESIGN.md, "RULE: Error mapping
-//! must not lose the server's detail".
+//! [`SpiceDBError::reason_metadata`]. Errors that never had a status, such as a
+//! transport failure, keep the underlying error as their `source()` instead.
+//! See root DESIGN.md, "RULE: Error mapping must not lose the server's detail".
 
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 use std::ops::Deref;
+use std::sync::Arc;
 
 use tonic::{Code, Status};
 use tonic_types::StatusExt;
@@ -25,7 +27,7 @@ use tonic_types::StatusExt;
 ///
 /// Held behind a `Box` so that [`ErrorPayload`] -- and therefore every
 /// `Result<_, SpiceDBError>` in this crate -- stays small.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct ServerDetail {
     reason: String,
     reason_domain: String,
@@ -42,10 +44,14 @@ struct ServerDetail {
 /// SpiceDBError::NotFound(_))` and `SpiceDBError::NotFound("gone".into())` both
 /// still work. It `Display`s and derefs as the bare message, so formatting and
 /// string inspection are unchanged.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct ErrorPayload {
     message: String,
     detail: Option<Box<ServerDetail>>,
+    /// A non-gRPC cause, for errors that never had a status at all -- today,
+    /// transport failures. Kept as an `Arc` rather than a `Box` so the payload
+    /// stays `Clone`, which is how `tonic::Status` holds its own source.
+    cause: Option<Arc<dyn Error + Send + Sync + 'static>>,
 }
 
 impl ErrorPayload {
@@ -67,6 +73,21 @@ impl ErrorPayload {
                 reason_metadata: info.map(|i| i.metadata).unwrap_or_default(),
                 status,
             })),
+            cause: None,
+        }
+    }
+
+    /// Builds a payload for a failure that never produced a gRPC status --
+    /// today, a transport error -- keeping `cause` as the error's source.
+    ///
+    /// Without this, connection and TLS failures would be the only errors in
+    /// the hierarchy with no `source()` chain at all, which is backwards: they
+    /// are the class where the underlying cause is most diagnostic.
+    pub(crate) fn with_cause(message: String, cause: impl Error + Send + Sync + 'static) -> Self {
+        Self {
+            message,
+            detail: None,
+            cause: Some(Arc::new(cause)),
         }
     }
 
@@ -113,7 +134,7 @@ impl From<&str> for ErrorPayload {
 }
 
 /// The error type returned by all SpiceDB client operations.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum SpiceDBError {
     /// The caller does not have permission to execute the operation.
     PermissionDenied(ErrorPayload),
@@ -278,7 +299,14 @@ impl Error for SpiceDBError {
     /// `thiserror`'s derive would make the payload the source and add a hop
     /// that renders as the same message.
     fn source(&self) -> Option<&(dyn Error + 'static)> {
-        self.status().map(|s| s as &(dyn Error + 'static))
+        self.status()
+            .map(|s| s as &(dyn Error + 'static))
+            .or_else(|| {
+                self.payload()
+                    .cause
+                    .as_deref()
+                    .map(|c| c as &(dyn Error + 'static))
+            })
     }
 }
 

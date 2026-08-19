@@ -5,8 +5,55 @@ use spicedb::consistency;
 use spicedb::error::SpiceDBError;
 use spicedb::types::Relationship;
 use spicedb_proto::authzed::api::v1 as proto;
+use std::error::Error;
 
 use support::{spawn_permissions_server, MockPermissionsService};
+
+/// A connection failure must keep a walkable `source()` chain down to the
+/// underlying I/O error. This is the class of error where the cause is most
+/// diagnostic, and it used to be the only one in the hierarchy with no chain at
+/// all -- the transport error was stringified and dropped. See root DESIGN.md,
+/// "RULE: Error mapping must not lose the server's detail".
+///
+/// Port 1 on loopback cannot be bound without privileges, so the connect is
+/// refused deterministically and no network is involved. The TLS constructor is
+/// used because it connects eagerly; the plaintext one connects lazily and so
+/// cannot surface a transport failure at construction time.
+#[tokio::test]
+async fn transport_failure_keeps_a_source_chain_to_the_io_error() {
+    let err = match SpiceDBClient::new_system_tls("127.0.0.1:1", "testtoken").await {
+        Err(err) => err,
+        // SpiceDBClient is not Debug, so this cannot use expect_err.
+        Ok(_) => panic!("connecting to a closed loopback port must fail"),
+    };
+
+    assert!(
+        matches!(err, SpiceDBError::Transport(_)),
+        "expected SpiceDBError::Transport, got {err:?}"
+    );
+
+    let mut source = Error::source(&err);
+    let mut found_refused = false;
+    let mut depth = 0;
+    while let Some(current) = source {
+        depth += 1;
+        if let Some(io) = current.downcast_ref::<std::io::Error>() {
+            if io.kind() == std::io::ErrorKind::ConnectionRefused {
+                found_refused = true;
+            }
+        }
+        source = current.source();
+    }
+
+    assert!(
+        depth > 0,
+        "SpiceDBError::Transport must expose a source; it exposed none"
+    );
+    assert!(
+        found_refused,
+        "expected ConnectionRefused somewhere in the source chain (walked {depth} levels)"
+    );
+}
 
 #[tokio::test]
 async fn test_new_plaintext_creates_client() {

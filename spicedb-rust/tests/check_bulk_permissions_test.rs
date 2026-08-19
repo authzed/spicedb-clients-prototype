@@ -19,6 +19,7 @@ use spicedb::error::SpiceDBError;
 use spicedb::types::{Permissionship, Relationship};
 use spicedb_proto::authzed::api::v1 as proto;
 use spicedb_proto::google::rpc::Status as RpcStatus;
+use tonic_types::pb::ErrorInfo;
 
 use support::{spawn_permissions_server, MockPermissionsService};
 
@@ -46,6 +47,38 @@ fn error_pair(code: i32, message: &str) -> proto::CheckBulkPermissionsPair {
                 code,
                 message: message.to_string(),
                 details: Vec::new(),
+            },
+        )),
+    }
+}
+
+/// A per-item error carrying a `google.rpc.ErrorInfo` detail, the shape SpiceDB
+/// uses to explain a failure. The detail rides on the item's own status, not on
+/// the RPC's, so it only reaches the caller if the per-item path preserves it.
+fn error_pair_with_reason(
+    code: i32,
+    message: &str,
+    reason: &str,
+    metadata: &[(&str, &str)],
+) -> proto::CheckBulkPermissionsPair {
+    let info = ErrorInfo {
+        reason: reason.to_string(),
+        domain: "authzed.com".to_string(),
+        metadata: metadata
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect(),
+    };
+    proto::CheckBulkPermissionsPair {
+        request: None,
+        response: Some(proto::check_bulk_permissions_pair::Response::Error(
+            RpcStatus {
+                code,
+                message: message.to_string(),
+                details: vec![prost_types::Any {
+                    type_url: "type.googleapis.com/google.rpc.ErrorInfo".to_string(),
+                    value: prost::Message::encode_to_vec(&info),
+                }],
             },
         )),
     }
@@ -473,5 +506,53 @@ async fn check_permission_errors_instead_of_panicking_on_zero_pairs() {
         matches!(err, SpiceDBError::Status { code: 13, .. }),
         "expected SpiceDBError::Status{{code: 13 (INTERNAL), ..}} for a pairs/items length \
          mismatch, got {err:?}"
+    );
+}
+
+/// A per-item failure must reach the caller carrying the same structured reason
+/// an RPC-level failure does. The per-item `google.rpc.Status` used to be
+/// reduced to a code and a message before mapping, which silently dropped the
+/// item's own `ErrorInfo` -- and dropping it fails quietly, with an empty
+/// reason and nothing red. See root DESIGN.md, "RULE: Error mapping must not
+/// lose the server's detail".
+#[tokio::test]
+async fn per_item_error_carries_its_own_error_reason_and_metadata() {
+    let mock = MockPermissionsService::new();
+    // gRPC code 8 == RESOURCE_EXHAUSTED.
+    mock.push_check_bulk_permissions_response(proto::CheckBulkPermissionsResponse {
+        checked_at: Some(proto::ZedToken {
+            token: "rev-1".to_string(),
+        }),
+        pairs: vec![error_pair_with_reason(
+            8,
+            "max depth exceeded",
+            "ERROR_REASON_MAXIMUM_DEPTH_EXCEEDED",
+            &[("maximum_depth_allowed", "50")],
+        )],
+    });
+
+    let addr = spawn_permissions_server(mock).await;
+    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
+        .await
+        .expect("client should connect to mock server");
+
+    let rel = Relationship::new("document", "doc1", "view", "user", "alice", "")
+        .expect("valid relationship");
+    let err = client
+        .check_permissions(&consistency::full(), "view", &[rel])
+        .await
+        .expect_err("a per-item error must surface as an Err");
+
+    assert!(
+        matches!(err, SpiceDBError::ResourceExhausted(_)),
+        "expected ResourceExhausted for a per-item RESOURCE_EXHAUSTED, got {err:?}"
+    );
+    assert_eq!(err.reason(), Some("ERROR_REASON_MAXIMUM_DEPTH_EXCEEDED"));
+    assert_eq!(err.reason_domain(), Some("authzed.com"));
+    assert_eq!(
+        err.reason_metadata()
+            .get("maximum_depth_allowed")
+            .map(String::as_str),
+        Some("50")
     );
 }

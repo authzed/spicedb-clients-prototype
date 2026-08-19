@@ -473,13 +473,23 @@
   - **The `DEADLINE_EXCEEDED` mapping no longer string-matches.** tonic's client-side deadline
     surfaces as `Cancelled("Timeout expired")`; recognising it previously meant comparing
     against `TimeoutExpired`'s rendered `Display` text, because the signature above had already
-    thrown the `Status` away. It is now a downcast of the status's `source()` to tonic's
-    publicly-exported `TimeoutExpired`. A server that genuinely cancels with that exact wording
-    is no longer misreported as a deadline.
+    thrown the `Status` away. It is now identified by walking the status's `source()` chain and
+    downcasting to tonic's publicly-exported `TimeoutExpired`. The **whole chain** is walked, not
+    just the immediate source: against a real `Channel` the timeout sits at depth 2, behind a
+    `tonic::transport::Error`, and only a status built directly from the timeout has it at depth
+    1. (Walking is also what tonic's own `find_status_in_source_chain` does.) A server that
+    genuinely cancels with that exact wording is no longer misreported as a deadline.
   - **`check_bulk_permissions` per-item errors keep their own details.** The per-item
     `google.rpc.Status` was reduced to a code and a message; it is now re-encoded into the
     status's `grpc-status-details-bin`, so a per-item failure carries the same structured reason
     an RPC-level failure does.
+  - **`SpiceDBError::Transport` now keeps a `source()` chain too.** A connection or TLS failure
+    previously stringified the underlying `tonic::transport::Error` and dropped it, leaving the
+    class of error where the cause is most diagnostic as the only one in the hierarchy with no
+    chain at all. The chain now runs `SpiceDBError::Transport` → `SpiceDBProtoClientError` →
+    `tonic::transport::Error` → `ConnectError` → `std::io::Error`.
+  - `SpiceDBError` and `ErrorPayload` derive `Clone` (per this client's CLAUDE.md rule 10;
+    `PartialEq`/`Eq` remain impossible because `tonic::Status` implements neither).
   - New dependency `tonic-types`, tonic's own decoder for `google.rpc` error details, used
     instead of decoding that trailer by hand.
 

@@ -154,8 +154,18 @@ impl SpiceDBClientBuilder {
             | spicedb_proto::SpiceDBProtoClientError::InvalidToken(msg) => {
                 SpiceDBError::InvalidArgument(msg.into())
             }
-            spicedb_proto::SpiceDBProtoClientError::Transport(e) => {
-                SpiceDBError::Transport(e.to_string().into())
+            transport @ spicedb_proto::SpiceDBProtoClientError::Transport(_) => {
+                // Keep the transport failure itself as the error's source, not
+                // just its rendered text. `SpiceDBProtoClientError` implements
+                // `source()` down to the `tonic::transport::Error`, so a caller
+                // can walk from `SpiceDBError::Transport` to the underlying
+                // connection or TLS failure -- the class of error where the
+                // cause chain is most diagnostic, and previously the only one
+                // in this hierarchy with no chain at all.
+                SpiceDBError::Transport(error::ErrorPayload::with_cause(
+                    transport.to_string(),
+                    transport,
+                ))
             }
         })?;
 

@@ -10,12 +10,12 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@connectrpc/connect": "^2.0.0",
-    "@connectrpc/connect-node": "^2.0.0",
-    "@bufbuild/protobuf": "^2.0.0"
+    "@connectrpc/connect": "^2.1.2",
+    "@connectrpc/connect-node": "^2.1.2",
+    "@bufbuild/protobuf": "^2.14.0"
   },
   "devDependencies": {
-    "typescript": "^5.7.0",
-    "vitest": "^3.0.0"
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
   }
 }

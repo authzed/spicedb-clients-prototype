@@ -71,6 +71,29 @@ jobs:
         run: mage -d proto-clients/spicedb-java-proto test
       - name: Idiomatic client tests
         run: mage -d spicedb-java test
+      # Kept as its own step so a network outage stays distinguishable from a TLS
+      # regression. The test is @EnabledIfEnvironmentVariable, so without the env below
+      # it reports as *skipped* rather than passed — and Gradle reports a build with a
+      # skipped test as SUCCESSFUL. Reading the JUnit XML is therefore what makes a
+      # renamed, deleted or silently-skipped test fail here instead of going green.
+      # Root DESIGN.md, "RULE: A system-TLS constructor must reach a real server",
+      # clause 3.
+      - name: TLS handshake test (requires network)
+        env:
+          SPICEDB_TLS_INTEGRATION: "1"
+        run: |
+          gradle :lib:test --tests "com.authzed.spicedb.SystemTlsHandshakeTest" --rerun-tasks
+          report=lib/build/test-results/test/TEST-com.authzed.spicedb.SystemTlsHandshakeTest.xml
+          test -f "$report" || {
+            echo "::error::no test report at $report — was the handshake test renamed or removed?"
+            exit 1
+          }
+          grep -q 'tests="1" skipped="0" failures="0" errors="0"' "$report" || {
+            echo "::error::handshake test did not run to completion — skipped, or more/fewer than one case:"
+            head -3 "$report"
+            exit 1
+          }
+        working-directory: spicedb-java
 
   integration:
     needs: paths-filter

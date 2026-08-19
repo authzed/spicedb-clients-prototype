@@ -14,6 +14,12 @@ func TestNewPlaintext(t *testing.T) {
 	require.NotNil(t, c)
 }
 
+// TestNewSystemTLS covers construction only, and deliberately says so: the target is a
+// loopback *plaintext* port and grpc.NewClient is lazy, so no packet leaves the process
+// and nothing here exercises TLS. It would pass with an empty trust store. The honest
+// handshake test that would not is TestNewSystemTLS_CompletesRealHandshake in
+// tls_handshake_test.go -- see root DESIGN.md, "RULE: A system-TLS constructor must
+// reach a real server", clause 2.
 func TestNewSystemTLS(t *testing.T) {
 	c, err := client.NewSystemTLS("passthrough:///localhost:50051", "test-token")
 	require.NoError(t, err)

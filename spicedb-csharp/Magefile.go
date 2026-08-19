@@ -134,7 +134,13 @@ func Test() error {
 	if err := sh.RunV("dotnet", "build", "SpiceDB.Client.sln"); err != nil {
 		return err
 	}
-	if err := sh.RunV("dotnet", "test", "SpiceDB.Client.sln", "--no-build", "--verbosity", "normal"); err != nil {
+	// The TLS handshake test is excluded here and run in its own CI step: it needs
+	// the network, and keeping it out of the default run is the gate root DESIGN.md's
+	// "RULE: A system-TLS constructor must reach a real server" clause 3 asks for.
+	// xunit 2 has no runtime skip, so a trait is the only gate that cannot report a
+	// test as passed while it did nothing.
+	if err := sh.RunV("dotnet", "test", "SpiceDB.Client.sln", "--no-build", "--verbosity", "normal",
+		"--filter", "Category!=TlsHandshake"); err != nil {
 		return err
 	}
 	return sh.RunV("dotnet", "build", examplesSolution)
@@ -380,7 +386,10 @@ func IntegrationTest() error {
 	// Run integration tests (no --no-build: VSTest cannot load .NET 10 assemblies
 	// without a fresh build step, and the build is fast enough to not matter here)
 	fmt.Println("==> Running integration tests...")
-	if err := sh.RunWithV(clientEnv, "dotnet", "test", "SpiceDB.Client.sln", "--verbosity", "normal"); err != nil {
+	// See Test(): the TLS handshake test has its own CI step and does not belong in a
+	// run whose point is the local SpiceDB container.
+	if err := sh.RunWithV(clientEnv, "dotnet", "test", "SpiceDB.Client.sln", "--verbosity", "normal",
+		"--filter", "Category!=TlsHandshake"); err != nil {
 		return err
 	}
 

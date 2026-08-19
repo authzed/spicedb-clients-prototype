@@ -4,6 +4,29 @@
 
 ### Added
 
+- **2026-08-19: `NewSystemTLS` now has a test that completes a real TLS handshake.** Root
+  DESIGN.md, "RULE: A system-TLS constructor must reach a real server". The only TLS
+  coverage was `TestNewSystemTLS`, which constructs against a loopback *plaintext* port
+  and asserts the constructor returned non-nil. `grpc.NewClient` is lazy, so no packet
+  left the process: **it passed with an empty trust store**, which is the exact defect
+  the rule exists to catch. The new `TestNewSystemTLS_CompletesRealHandshake`
+  (`client/tls_handshake_test.go`) drives `NewSystemTLS` against `grpc.authzed.com:443`
+  and forces the connection with a real RPC, per clause 2.
+
+  It does not pin a status code, on purpose: gRPC reports a failed handshake and a live
+  server's "no healthy upstream" as the same `codes.Unavailable`, so the code cannot
+  discriminate. The message can, and what the test pins is the distinction the rule
+  cares about — did we reach a server, or did we fail on trust material — with
+  never-reached-the-endpoint signatures failing separately so a network outage does not
+  read as a TLS regression.
+
+  Gated behind `SPICEDB_TLS_INTEGRATION` and run in its own CI step, which greps for the
+  test's `--- PASS:` line. That grep is load-bearing: `go test -run` exits 0 when the
+  name filter matches nothing, and a skipped test also exits 0, so without it a renamed,
+  deleted or silently-skipped test would go green — reproducing the rule's own failure
+  mode one layer up (clause 3). Verified by mutation: swapping `credentials.NewTLS(nil)`
+  for an empty `x509.NewCertPool()` fails the test.
+
 - **2026-08-19**: New example, `examples/call_deadlines/`, and every example that could
   only pass now asserts something that can fail. Root DESIGN.md, "RULE: An example must be
   executed by CI and must be able to fail", clause 2.

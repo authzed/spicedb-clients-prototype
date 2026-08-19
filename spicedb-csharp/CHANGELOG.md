@@ -4,6 +4,30 @@
 
 ### Added
 
+- **2026-08-19: `CreateSystemTls` now has a test that completes a real TLS handshake.**
+  Root DESIGN.md, "RULE: A system-TLS constructor must reach a real server". The only TLS
+  coverage was `CreateSystemTls_ReturnsClient`, which constructs against
+  `grpc.example.com:443` — a reserved, non-routable name — and asserts the result is
+  non-null. `GrpcChannel` connects lazily, so **it passed with an empty trust store**,
+  which is the exact defect the rule exists to catch. The new
+  `TlsHandshakeTests.CreateSystemTls_CompletesRealHandshake` drives `CreateSystemTls`
+  against `grpc.authzed.com:443` and forces the connection with a real RPC, per clause 2.
+
+  It does not pin a status code, on purpose: gRPC reports a failed handshake and a live
+  server's "no healthy upstream" alike, so the status cannot discriminate. The exception
+  chain can, and it is flattened through `InnerException` because Grpc.Net wraps the TLS
+  failure in an `HttpRequestException` inside an `RpcException`, which this client then
+  maps again.
+
+  Gated by a `[Trait("Category", "TlsHandshake")]` rather than an environment variable,
+  and **excluded from `mage test` and `mage integrationTest`** so the default runs stay
+  offline. xunit 2 has no runtime skip, so an `if (env is null) return;` gate would report
+  the test as *Passed* while doing nothing — the same "reads as coverage, provides none"
+  failure the rule is about. Its own CI step selects the category and greps for
+  `Passed: 1`; that grep is load-bearing, because `dotnet test` with a filter matching
+  nothing exits 0. Verified by mutation: giving the channel an
+  `SslClientAuthenticationOptions` that validates nothing fails the test.
+
 - **2026-08-19: five examples that ran without being able to fail now assert something
   that does.** Root DESIGN.md, "RULE: An example must be executed by CI and must be able
   to fail", clause 2. No example was renamed or removed; the example count goes from 30

@@ -4,6 +4,27 @@
 
 ### Added
 
+- **2026-08-19: `createSystemTls` now has a test at all, and it completes a real TLS
+  handshake.** Root DESIGN.md, "RULE: A system-TLS constructor must reach a real server".
+  This client had **no TLS test at any tier** — a grep for
+  `Tls|TLS|useTransportSecurity|handshake` across `lib/src/test/` returned nothing. The
+  new `SystemTlsHandshakeTest` drives `createSystemTls` against `grpc.authzed.com:443`
+  and forces the connection with a real RPC, since `ManagedChannelBuilder` connects
+  lazily (clause 2).
+
+  It does not pin a status code, on purpose: gRPC reports a failed handshake and a live
+  server's "no healthy upstream" alike, so the status cannot discriminate. The `getCause`
+  chain can, and it is flattened because grpc-java wraps the SSL failure below the
+  `StatusRuntimeException` this client then maps again.
+
+  Gated with `@EnabledIfEnvironmentVariable("SPICEDB_TLS_INTEGRATION")`, which JUnit
+  reports as *skipped* rather than passed — the distinction that makes the CI check
+  honest. Its own CI step sets the variable and then reads the JUnit XML for
+  `tests="1" skipped="0" failures="0" errors="0"`, because Gradle reports a build whose
+  only test was skipped as SUCCESSFUL. Verified by mutation: building the channel with a
+  `TrustManagerFactory` initialised on an empty `KeyStore` fails the test with exactly
+  the "truststore is probably not loaded" message it exists to produce.
+
 - **2026-08-19: three examples that ran without being able to fail now assert something
   that does.** Root DESIGN.md, "RULE: An example must be executed by CI and must be able
   to fail", clause 2. No example was renamed or removed; the example set goes from 43

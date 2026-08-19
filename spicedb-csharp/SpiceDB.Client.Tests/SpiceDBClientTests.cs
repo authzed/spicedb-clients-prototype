@@ -55,6 +55,11 @@ public class SpiceDBClientTests
         client.Should().NotBeNull();
     }
 
+    // Construction only, and deliberately so: grpc.example.com is a reserved,
+    // non-routable name and GrpcChannel connects lazily, so nothing here exercises TLS
+    // and this would pass with an empty trust store. The honest handshake test that
+    // would not is TlsHandshakeTests.CreateSystemTls_CompletesRealHandshake -- see root
+    // DESIGN.md, "RULE: A system-TLS constructor must reach a real server", clause 2.
     [Fact]
     public void CreateSystemTls_ReturnsClient()
     {

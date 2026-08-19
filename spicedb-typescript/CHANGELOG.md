@@ -4,6 +4,34 @@
 
 ### Added
 
+- **2026-08-19**: Three examples that ran without being able to fail now assert
+  something that does. Root DESIGN.md, "RULE: An example must be executed by CI
+  and must be able to fail", clause 2. No example was renamed or removed.
+
+  - `examples/watch_changes/` **now runs in CI**. It was skipped by name —
+    "open-ended stream; needs a bounded consumer with explicit cancellation" —
+    so the only streaming example never executed and "RULE: Abandoning a stream
+    must release it" had no executed coverage here at all. It was also
+    assertion-free: `console.log` with a statically unreachable trailing line.
+    It is now a bounded consumer that subscribes from a known revision, writes
+    the update it is waiting for, consumes until that exact update arrives,
+    calls `abort()` through `WatchOptions.signal`, and then requires the
+    consumer to settle with a `CancelledError` inside ten seconds. Dropping the
+    signal from the Connect call makes it fail on that bound instead of hanging.
+  - `examples/call_deadlines/` proves a deadline instead of only showing fast
+    local calls succeeding. It stands up a listener that accepts TCP
+    connections and never speaks HTTP/2 — what a wedged SpiceDB looks like from
+    a client — and requires both `defaultTimeoutMs` and a per-call `timeoutMs`
+    to produce `DeadlineExceededError`. The call runs behind a watchdog, so a
+    client that accepted the option and never attached it fails the example
+    rather than hanging the job. It also clears `document` before writing its
+    narrower schema, which it previously did not.
+  - `examples/raw_escape_hatch/` reads `optionalTransactionMetadata` back out
+    of the Watch stream. It was sent and never verified — a client that dropped
+    the field looked identical from the call site, because
+    `WriteRelationships` does not echo it back, and that field is the whole
+    reason the example exists.
+
 - **2026-08-19**: An escape hatch, `SpiceDBClient.raw()`. It returns the
   underlying `SpiceDBProtoClient` — the four generated Connect clients
   (`permissions`, `schema`, `watch`, `experimental`) this library makes its own

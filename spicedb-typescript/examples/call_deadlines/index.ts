@@ -6,9 +6,21 @@
  * bulk import (`importBulkRelationships`) is a client-streaming call that is
  * NOT bounded by `defaultTimeoutMs` -- see root DESIGN.md, "RULE: A unary
  * call must have a deadline".
+ *
+ * The failure that rule exists to close is a *wedged* server: one that accepts
+ * the connection and then never answers. Nothing looks wrong at the transport
+ * level, so an unbounded call hangs forever rather than erroring. Showing only
+ * fast local calls succeeding would pass identically whether or not the
+ * timeout ever reached the wire, so this example also stands up a socket that
+ * behaves exactly that way and requires the call to come back
+ * DeadlineExceededError on the caller's schedule.
  */
+import { createServer, type Server } from "node:net";
+import { once } from "node:events";
 import {
   createSpiceDBClient,
+  DeadlineExceededError,
+  FailedPreconditionError,
   Transaction,
   relationship,
   full,
@@ -38,6 +50,20 @@ const client = createSpiceDBClient(endpoint, token, {
   insecure: true,
   defaultTimeoutMs: 5000,
 });
+
+// The schema below is narrower than the one most examples write, and they all
+// share one SpiceDB. SpiceDB refuses a WriteSchema that drops a relation while
+// a relationship still exists under it, so clear before writing, not after: an
+// earlier example leaving `document:x#editor@user:y` behind is enough to fail
+// this outright. Exactly one error is tolerated -- on a fresh server there is
+// no `document` definition yet, which SpiceDB reports as FailedPrecondition.
+try {
+  await client.deleteRelationships({ resourceType: "document" });
+} catch (err) {
+  if (!(err instanceof FailedPreconditionError)) {
+    throw err;
+  }
+}
 
 await client.writeSchema(`
 definition user {}
@@ -118,6 +144,102 @@ console.log(
   `imported ${numLoadedBounded} relationships with an explicit 30s timeout`,
 );
 assert(numLoadedBounded === 50n, "expected 50 relationships imported");
+
+// ---------------------------------------------------------------------------
+// The case the rule is about: a server that never answers.
+//
+// This listener accepts TCP connections and never speaks HTTP/2, so the
+// server preface never arrives. That is what a wedged SpiceDB looks like from
+// a client -- an open, healthy-looking connection with no reply behind it --
+// and it is why "the connection worked" is not a bound. Everything above this
+// point passes whether or not `timeoutMs` reaches the wire; this does not.
+// ---------------------------------------------------------------------------
+const WEDGED_TIMEOUT_MS = 2_000;
+
+const wedged: Server = createServer((socket) => {
+  // Hold the connection open and send nothing, ever.
+  socket.on("error", () => {});
+});
+wedged.listen(0, "127.0.0.1");
+await once(wedged, "listening");
+const wedgedAddress = wedged.address();
+if (wedgedAddress === null || typeof wedgedAddress === "string") {
+  console.error("ASSERTION FAILED: could not determine the wedged listener's port");
+  process.exit(1);
+}
+
+const wedgedClient = createSpiceDBClient(
+  `127.0.0.1:${wedgedAddress.port}`,
+  token,
+  { insecure: true, defaultTimeoutMs: WEDGED_TIMEOUT_MS },
+);
+
+// The call runs behind a watchdog. If the timeout never reaches the wire -- a
+// client that accepted `defaultTimeoutMs` and never attached it, say -- this
+// call does not return at all, and an example that simply awaited it would
+// hang the CI job rather than fail it.
+const watchdog = new Promise<never>((_resolve, reject) => {
+  const timer = setTimeout(
+    () =>
+      reject(
+        new Error(
+          `a call with a ${WEDGED_TIMEOUT_MS}ms timeout had not returned after ` +
+            `${WEDGED_TIMEOUT_MS + 15_000}ms against a server that never answers: ` +
+            `the caller's timeout is not reaching the RPC`,
+        ),
+      ),
+    WEDGED_TIMEOUT_MS + 15_000,
+  );
+  timer.unref?.();
+});
+
+const startedAt = Date.now();
+const wedgedOutcome = await Promise.race([
+  wedgedClient.checkPermission(full(), check).then(
+    () => undefined,
+    (err: unknown) => err,
+  ),
+  watchdog,
+]);
+const elapsedMs = Date.now() - startedAt;
+
+console.log(`wedged server: ${String(wedgedOutcome)} after ${elapsedMs}ms`);
+
+// The specific error matters. "An error occurred" would also be satisfied by
+// an UnavailableError from a refused connection -- which is what this would
+// degrade into if the listener above stopped accepting, and which says
+// nothing at all about deadlines.
+assert(
+  wedgedOutcome instanceof DeadlineExceededError,
+  `expected DeadlineExceededError from the wedged server, got: ${String(wedgedOutcome)}`,
+);
+
+// And it has to expire on the caller's schedule. The client retries transient
+// failures, so the bound here allows for the retry budget rather than pinning
+// a single attempt.
+assert(
+  elapsedMs < WEDGED_TIMEOUT_MS + 15_000,
+  `the ${WEDGED_TIMEOUT_MS}ms timeout took ${elapsedMs}ms to fire: the caller's timeout is not bounding the call`,
+);
+
+// A per-call `timeoutMs` must bite the same way, overriding the client
+// default rather than being quietly ignored on the per-call path.
+const perCallOutcome = await Promise.race([
+  wedgedClient
+    .checkPermission(full(), check, { timeoutMs: 1_000 })
+    .then(
+      () => undefined,
+      (err: unknown) => err,
+    ),
+  watchdog,
+]);
+assert(
+  perCallOutcome instanceof DeadlineExceededError,
+  `expected a per-call timeoutMs to expire against the wedged server, got: ${String(perCallOutcome)}`,
+);
+
+wedgedClient.close();
+wedged.close();
 
 // Clean up so later examples that write a narrower schema aren't blocked by
 // leftover relationships (examples run in sequence against one shared

@@ -24,6 +24,7 @@
  */
 import {
   createSpiceDBClient,
+  FailedPreconditionError,
   Transaction,
   relationship,
   full,
@@ -46,6 +47,19 @@ const client = createSpiceDBClient(endpoint, token, {
   insecure: true,
 });
 
+// Clear before writing this narrower schema, and before the write below: a
+// TOUCH of a relationship that already exists, unchanged, is not a change, so
+// SpiceDB would emit no watch event for it and the read-back would wait
+// forever on a rerun. On a fresh server there is no `document` definition yet,
+// which SpiceDB reports as FailedPrecondition -- the one tolerated error.
+try {
+  await client.deleteRelationships({ resourceType: "document" });
+} catch (err) {
+  if (!(err instanceof FailedPreconditionError)) {
+    throw err;
+  }
+}
+
 await client.writeSchema(`
 definition user {}
 
@@ -55,11 +69,36 @@ definition document {
 }
 `);
 
+// A seed write fixes the revision the watch below starts from, so it sees the
+// metadata write and nothing that came before it.
+const seed = new Transaction();
+seed.touch(relationship("document:ledger", "viewer", "user:seed"));
+const seedRevision = await client.write(seed);
+
 // ── 1. A proto field the idiomatic API does not expose ───────────────────
 //
 // `raw()` hands back the same client the idiomatic methods call through, so
 // this write goes over the same connection and carries the same bearer token
 // (set by a transport interceptor — nothing extra to pass).
+// Sending the metadata proves nothing on its own: a client that dropped the
+// field would look identical from here, because WriteRelationships does not
+// echo it back. The only place it becomes observable is the Watch stream, so
+// the read-back below is what makes this example able to fail. Watch is
+// started before the write so the event cannot be missed.
+const metadataAbort = new AbortController();
+const metadataSeen = (async (): Promise<Record<string, unknown> | undefined> => {
+  for await (const event of client.watch({
+    objectTypes: ["document"],
+    startRevision: seedRevision,
+    signal: metadataAbort.signal,
+  })) {
+    if (event.metadata !== undefined) {
+      return event.metadata as Record<string, unknown>;
+    }
+  }
+  return undefined;
+})();
+
 const written = await client.raw().permissions.writeRelationships({
   updates: [
     {
@@ -79,6 +118,32 @@ const written = await client.raw().permissions.writeRelationships({
 const revision = written.writtenAt?.token ?? "";
 console.log(`raw write committed at revision ${revision}`);
 assert(revision !== "", "expected a revision from the raw write");
+
+// Read the metadata back out of the Watch stream.
+const metadataWatchdog = new Promise<never>((_resolve, reject) => {
+  const timer = setTimeout(
+    () =>
+      reject(
+        new Error(
+          "no watch event carried optionalTransactionMetadata within 30s: the " +
+            "metadata sent on the raw write never reached the server",
+        ),
+      ),
+    30_000,
+  );
+  timer.unref?.();
+});
+const metadata = await Promise.race([metadataSeen, metadataWatchdog]);
+metadataAbort.abort();
+console.log(`watch reported transaction metadata: ${JSON.stringify(metadata)}`);
+assert(
+  metadata?.correlation_id === "example-42",
+  `expected correlation_id "example-42" on the watched transaction, got ${String(metadata?.correlation_id)}`,
+);
+assert(
+  metadata?.actor === "billing-job",
+  `expected actor "billing-job" on the watched transaction, got ${String(metadata?.actor)}`,
+);
 
 // The idiomatic API picks up right where the raw call left off — same client,
 // same connection.
@@ -111,6 +176,9 @@ assert(single.permissionship === 2, "expected PERMISSIONSHIP_HAS_PERMISSION");
 const cleanup = new Transaction();
 cleanup.delete(relationship("document:ledger", "viewer", "user:jimmy"));
 await client.write(cleanup);
+// ...including the seed written above, which the transaction above does not
+// name.
+await client.deleteRelationships({ resourceType: "document" });
 
 // Close the CLIENT, never `client.raw().close()` — the raw object is this
 // client's own connection, and closing it there breaks every later call.

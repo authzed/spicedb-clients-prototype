@@ -53,9 +53,13 @@ var wantExamples = []string{
 // reason it does not. Every other example under examples/ MUST run. A skip has
 // to be listed here to happen at all, so it is visible in the run's output and
 // counted against wantExamples -- never the silent residue of a filter.
-var skippedExamples = map[string]string{
-	"watch_changes": "open-ended stream; needs a bounded consumer with explicit cancellation",
-}
+//
+// It is empty on purpose. watch_changes used to live here -- "open-ended
+// stream; needs a bounded consumer with explicit cancellation" -- which meant
+// the only streaming example never ran, and root DESIGN.md's "RULE: Abandoning
+// a stream must release it" had no executed coverage at all. It now has that
+// bounded consumer, so nothing is skipped.
+var skippedExamples = map[string]string{}
 
 // Gen updates the idiomatic TypeScript client based on proto client changes.
 func Gen() error {

@@ -43,12 +43,13 @@ SPICEDB_ENDPOINT=localhost:50071 mage integrationTest
 ## What runs in CI
 
 Every example listed below is executed by `mage integrationTest`, which is what
-the `integration` job in `.github/workflows/typescript.yaml` runs, with one
-exception: `watch_changes` is an open-ended stream with no bounded consumer
-yet, so the runner skips it by name and prints the skip. The runner also
-asserts how many examples it executed, so an example that is renamed out of the
-glob fails the job instead of quietly shrinking the run. See root `DESIGN.md`,
-"RULE: An example must be executed by CI and must be able to fail".
+the `integration` job in `.github/workflows/typescript.yaml` runs. Nothing is
+skipped: `watch_changes` used to be, for being an open-ended stream with no
+bounded consumer, and it now has one. The runner reconciles the examples on
+disk against the list in `Magefile.go` in both directions, so an example that
+is renamed out of the glob fails the job instead of quietly shrinking the run.
+See root `DESIGN.md`, "RULE: An example must be executed by CI and must be able
+to fail".
 
 ## Examples
 
@@ -67,8 +68,9 @@ glob fails the job instead of quietly shrinking the run. See root `DESIGN.md`,
   and preconditions.
 - `schema_management/` — reading and writing the SpiceDB schema.
 - `call_deadlines/` — `defaultTimeoutMs` on `createSpiceDBClient`, a per-call
-  `timeoutMs` override, and confirming bulk import isn't bounded by the
-  unary default.
+  `timeoutMs` override, confirming bulk import isn't bounded by the unary
+  default, and proving the timeout actually bites: a listener that accepts the
+  connection and never speaks HTTP/2 must produce `DeadlineExceededError`.
 - `raw_escape_hatch/` — the `raw()` escape hatch: driving the generated
   Connect client directly to send `optionalTransactionMetadata` (a proto field
   this client does not wrap) and to call the single-check `CheckPermission`
@@ -78,6 +80,7 @@ glob fails the job instead of quietly shrinking the run. See root `DESIGN.md`,
   TLS-terminated endpoint — the only example that does not use the shared
   SpiceDB at `localhost:50051`, since a plaintext server has nothing to say
   about trust material.
-- `watch_changes/` — watching for relationship changes via the Watch API.
-  This example streams indefinitely, so it's skipped by the integration test
-  runner (`mage integrationTest`).
+- `watch_changes/` — watching for relationship changes via the Watch API, with
+  a bounded consumer: subscribe from a known revision, write the update it is
+  waiting for, consume until that exact update arrives, `abort()` the stream,
+  and require the consumer to settle promptly afterwards.

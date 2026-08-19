@@ -506,7 +506,7 @@ See package sections above.
 | `read_relationships/` | Reading relationships with async iterator |
 | `lookup_resources/` | Resource lookup, incl. reading `permissionship`/`partialCaveat` |
 | `lookup_subjects/` | Subject lookup, incl. wildcard `"*"` + `excludedSubjects` |
-| `watch_changes/` | Watching for changes |
+| `watch_changes/` | Watching for changes with a bounded consumer: subscribe, write, consume until the expected update arrives, `abort()`, and require the stream to release |
 | `schema_management/` | Schema read/write |
 | `bulk_operations/` | Bulk checks and imports |
 | `expand_permission_tree/` | `expandPermissionTree` and walking the native `PermissionTree` |

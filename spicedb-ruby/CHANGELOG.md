@@ -73,6 +73,44 @@
 
 ### Added
 
+- **2026-08-18**: Error mapping now carries the server's detail all the way to the caller, per root
+  DESIGN.md, "RULE: Error mapping must not lose the server's detail". Purely additive.
+  - Two new exception classes, both `SpiceDB::Error` subclasses:
+    - `SpiceDB::OutOfRangeError` for gRPC code 11 (`OUT_OF_RANGE`), SpiceDB's code for an expired
+      or garbage-collected ZedToken. It previously fell through to the base `SpiceDB::Error`, so
+      the one recoverable error in a token-threading application was indistinguishable from an
+      internal fault. Recovery is mechanical: discard the stale token and re-read at full
+      consistency.
+    - `SpiceDB::UnauthenticatedError` for gRPC code 16 (`UNAUTHENTICATED`) — a wrong, expired, or
+      rotated API token, previously also indistinguishable from an internal fault. Distinct from
+      `PermissionDeniedError`, which means the caller was identified but not allowed.
+  - Every `SpiceDB::Error` now carries the `google.rpc.ErrorInfo` detail SpiceDB attaches to a
+    status, on three new readers: `reason` (the name of an `authzed.api.v1.ErrorReason` enum value,
+    e.g. `"ERROR_REASON_MAXIMUM_DEPTH_EXCEEDED"`), `reason_domain` (`"authzed.com"` for SpiceDB),
+    and `reason_metadata` (the specifics behind the reason, such as which precondition failed). The
+    reason is surfaced exactly as the server sent it: a value a newer server knows and this client
+    does not is passed through unchanged rather than coerced or rejected, per root DESIGN.md's
+    "RULE: A conversion that cannot preserve meaning must fail", which requires server-supplied
+    unknowns to degrade rather than raise. `reason` is `''` and `reason_metadata` `{}` when the
+    server attached no `ErrorInfo`. `SpiceDB::Error.new(message)` still works unchanged — the three
+    are optional keyword arguments.
+  - New file `lib/spicedb/error_details.rb` (`SpiceDB::ErrorDetails`), which reads the `ErrorInfo`
+    off whichever shape the error arrived in: a `GRPC::BadStatus` (details in the
+    `grpc-status-details-bin` trailer) or a `Google::Rpc::Status` (per-item bulk failure, details
+    on the message itself). Extracted into its own module rather than added to `errors.rb`, so the
+    error hierarchy stays small.
+
+  ```ruby
+  begin
+    client.write(txn)
+  rescue SpiceDB::FailedPreconditionError => e
+    puts e.reason_metadata['precondition_resource_id'] if
+      e.reason == 'ERROR_REASON_WRITE_OR_DELETE_PRECONDITION_FAILURE'
+  rescue SpiceDB::OutOfRangeError
+    # ZedToken expired or GC'd: drop it and re-read at full consistency.
+  end
+  ```
+
 - **Caveat context on the check surface**: `check_permission`/`check_permissions`/`check_any`/`check_all` gain an optional `context:` keyword, and `SpiceDB::Relationship` gains a `check_context` field (with a matching `with_check_context(context)` builder). Previously a `CheckResult` with `permissionship == :conditional_permission` told you `missing_context` — the caveat parameter names SpiceDB couldn't evaluate — but there was no way to actually supply them, leaving the caller stuck. `context:` is a call-level default fanned out onto every relationship in the call (all checks go through `BulkCheckPermissions`, whose wire format attaches context per item — `CheckBulkPermissionsRequestItem#context`, proto field 4 — since `CheckBulkPermissionsRequest` itself has no context field); `relationship.with_check_context({...})` overrides that default for one relationship only, merged **key-by-key** with the call-level context (the item's keys win on conflict, but call-level keys the item doesn't mention are retained — NOT a wholesale replacement, which would silently drop shared keys and land the caller right back in `CONDITIONAL_PERMISSION`). An item with no `check_context` inherits `context:` unchanged; if neither is supplied, no `context` field is set on the wire at all (`nil`, not an empty `Struct`). Purely additive: `context:` defaults to `nil` on every check method and `check_context` defaults to `nil` on `Relationship`, so no existing call site changes.
 
   `check_context` is check-time-only and a **different concept** from the pre-existing `Relationship#caveat_context` (write-time context embedded in `optional_caveat`, persisted to SpiceDB). `check_context` has no wire representation on the write path at all — it's read exclusively by the check methods — so it can never leak into a write and silently alter a stored relationship's caveat. `with_caveat` and `with_check_context` never touch each other's field.

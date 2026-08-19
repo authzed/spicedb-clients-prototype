@@ -1,8 +1,39 @@
 # frozen_string_literal: true
 
+require_relative 'error_details'
+
 module SpiceDB
   # Base exception for all SpiceDB errors.
-  class Error < StandardError; end
+  #
+  # Beyond the message, a SpiceDB error carries the server's structured
+  # explanation of the failure when the server sent one -- the
+  # `google.rpc.ErrorInfo` detail attached to the status. See root DESIGN.md,
+  # "RULE: Error mapping must not lose the server's detail".
+  #
+  # @!attribute [r] reason
+  #   @return [String] the name of an `authzed.api.v1.ErrorReason` enum value,
+  #     e.g. `"ERROR_REASON_MAXIMUM_DEPTH_EXCEEDED"`; empty when the server
+  #     attached no ErrorInfo. Surfaced exactly as the server sent it -- a
+  #     reason a newer server knows and this client does not is passed through
+  #     unchanged rather than coerced or rejected, because it is
+  #     server-supplied and root DESIGN.md's "RULE: A conversion that cannot
+  #     preserve meaning must fail" requires server-supplied unknowns to
+  #     degrade safely rather than raise.
+  # @!attribute [r] reason_domain
+  #   @return [String] who produced the reason; SpiceDB uses "authzed.com"
+  # @!attribute [r] reason_metadata
+  #   @return [Hash{String=>String}] the specifics behind the reason, such as
+  #     which precondition failed
+  class Error < StandardError
+    attr_reader :reason, :reason_domain, :reason_metadata
+
+    def initialize(message = nil, reason: '', reason_domain: '', reason_metadata: {})
+      super(message)
+      @reason = reason
+      @reason_domain = reason_domain
+      @reason_metadata = reason_metadata
+    end
+  end
 
   # The caller does not have permission to execute the operation.
   class PermissionDeniedError < Error; end
@@ -31,6 +62,22 @@ module SpiceDB
   # The server has received too many requests.
   class ResourceExhaustedError < Error; end
 
+  # The request carried no usable credentials.
+  #
+  # In SpiceDB this is a wrong, expired, or rotated API token -- the most
+  # common error a new integration produces. It is distinct from
+  # PermissionDeniedError, which means the caller was identified but is not
+  # allowed, and from a bare Error, which may be an internal server fault:
+  # refresh credentials on this one, page someone on that one.
+  class UnauthenticatedError < Error; end
+
+  # A ZedToken names a revision that is no longer available.
+  #
+  # SpiceDB returns OUT_OF_RANGE when the revision a ZedToken refers to has
+  # expired or been garbage-collected. Recovery is mechanical: discard the
+  # stale token and re-read at full consistency.
+  class OutOfRangeError < Error; end
+
   # Maps gRPC status codes to SpiceDB exception classes.
   #
   # Uses GRPC::Core::StatusCodes constants when the grpc gem is available,
@@ -44,7 +91,9 @@ module SpiceDB
     7 => PermissionDeniedError,   # PERMISSION_DENIED
     8 => ResourceExhaustedError,  # RESOURCE_EXHAUSTED
     9 => FailedPreconditionError, # FAILED_PRECONDITION
-    14 => UnavailableError        # UNAVAILABLE
+    11 => OutOfRangeError,        # OUT_OF_RANGE
+    14 => UnavailableError,       # UNAVAILABLE
+    16 => UnauthenticatedError    # UNAUTHENTICATED
   }.freeze
 
   # gRPC status codes that are transient and worth retrying.
@@ -70,6 +119,10 @@ module SpiceDB
   # a repeated `google.protobuf.Any` field, not a message string, so it is
   # skipped in favor of `#message`.
   #
+  # The server's ErrorInfo detail, when present, is surfaced on the returned
+  # exception as `reason`/`reason_domain`/`reason_metadata`. See root
+  # DESIGN.md, "RULE: Error mapping must not lose the server's detail".
+  #
   # @param err [GRPC::BadStatus, Google::Rpc::Status] a gRPC or rich status error
   # @return [SpiceDB::Error] a typed SpiceDB exception
   def to_spicedb_error(err)
@@ -83,7 +136,7 @@ module SpiceDB
               else
                 err.to_s
               end
-    cls.new(message)
+    cls.new(message, **ErrorDetails.reason_kwargs(err))
   end
 
   # Returns true if the error is transient and worth retrying.

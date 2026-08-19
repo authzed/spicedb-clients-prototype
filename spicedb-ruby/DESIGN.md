@@ -714,12 +714,12 @@ See module sections above for the complete API manifest.
 | `read_relationships/` | Reading relationships with an enumerator |
 | `lookup_resources/` | Finding resources a subject can access |
 | `lookup_subjects/` | Finding subjects with access to a resource |
-| `watch_changes/` | Watching for relationship changes |
+| `watch_changes/` | Watching for relationship changes with a bounded consumer: subscribe from a known revision, write, consume until that exact update arrives, then `break` |
 | `schema_management/` | Schema read/write operations |
 | `bulk_operations/` | Bulk checks, `check_all`, `check_any`, and import |
-| `call_deadlines/` | Constructing a client with `default_timeout:`, a per-call `timeout:` override, and confirming bulk import isn't bounded by the unary default |
+| `call_deadlines/` | Constructing a client with `default_timeout:`, a per-call `timeout:` override, confirming bulk import isn't bounded by the unary default, and proving both deadlines bite against a listener that accepts the connection and never answers |
 | `schema_reflection/` | Schema reflection, computable permissions, diffs |
-| `relationship_counters/` | Registering and reading relationship counters |
+| `relationship_counters/` | Registering and reading relationship counters, polling to a terminal state and asserting an exact count |
 | `expand_permission_tree/` | Expanding a permission into its native `PermissionTree` (intermediate/leaf nodes, subjects) |
 | `raw_escape_hatch/` | `#proto_client` — driving the generated stub directly for a proto field (`optional_transaction_metadata`) and an RPC (`CheckPermission`) the idiomatic API does not expose |
 | `custom_tls/` | Reaching a SpiceDB behind a private CA with `new_custom_tls(ca_cert:)`, and mutual TLS with `client_cert:`/`client_key:`. Brings up its own TLS-terminated endpoint — the only example tagged `:no_spicedb` |

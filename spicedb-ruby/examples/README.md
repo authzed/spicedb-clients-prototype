@@ -52,12 +52,12 @@ SPICEDB_ENDPOINT=localhost:50071 mage integrationTest
 ## What runs in CI
 
 Every example in the table below is executed by `mage integrationTest`, which
-is what the `integration` job in `.github/workflows/ruby.yaml` runs, with one
-exception: `watch_changes/` is an open-ended stream with no bounded consumer
-yet, so the runner skips it by name and prints the skip. The runner names the
-remaining example directories on the rspec command line rather than filtering
-with `--tag ~watch`, and then reads rspec's JSON report to confirm every
-selected example actually contributed a spec. Two separate things were wrong
+is what the `integration` job in `.github/workflows/ruby.yaml` runs. Nothing is
+skipped: `watch_changes/` used to be, for being an open-ended stream with no
+bounded consumer, and it now has one. The runner names the example directories
+on the rspec command line rather than filtering with `--tag ~watch`, and then
+reads rspec's JSON report to confirm every selected example actually
+contributed a spec. Two separate things were wrong
 with the tag filter: it excluded `watch_changes_spec.rb` from every CI run the
 repo has ever done -- the `:watch` tags were added later, by a commit that had
 no reason to notice the flag -- and, being a filter, it would have exited 0
@@ -75,7 +75,7 @@ example must be executed by CI and must be able to fail".
 | `read_relationships/` | Reading relationships with enumerator |
 | `lookup_resources/` | Finding resources a subject can access |
 | `lookup_subjects/` | Finding subjects with access to a resource |
-| `watch_changes/` | Watching for relationship changes |
+| `watch_changes/` | Watching for relationship changes with a bounded consumer: subscribe, write, consume until the expected update arrives, then `break` |
 | `schema_management/` | Schema read/write operations |
 | `bulk_operations/` | Bulk checks, check_all, check_any, and import |
 | `call_deadlines/` | Constructing a client with `default_timeout:`, a per-call `timeout:` override, and confirming bulk import isn't bounded by the unary default |

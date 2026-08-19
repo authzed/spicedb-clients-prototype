@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require 'timeout'
+
 require_relative '../spec_helper'
 require 'spicedb_proto'
 # Struct.from_hash lives in protobuf's well-known-types helpers, which the
@@ -28,8 +30,20 @@ require 'google/protobuf/well_known_types'
 # What you give up on the raw path, and why the idiomatic methods stay the
 # default: no SpiceDB::Error mapping (you rescue GRPC::BadStatus), no retry on a
 # transient failure, and no default_timeout -- pass `deadline:` yourself.
+# Bounds the wait for the raw Watch read-back below.
+RAW_WATCH_TIMEOUT = 30
+
 RSpec.describe 'RawEscapeHatch' do
-  it 'sends a proto field the idiomatic API does not expose' do
+  it 'sends a proto field the idiomatic API does not expose, and reads it back' do
+    # A seed write fixes the revision the Watch below starts from, so it sees
+    # the metadata write and nothing that came before it. (The shared hook
+    # clears `document` before each example, so the raw write below is a real
+    # change: a TOUCH of an already-identical relationship produces no watch
+    # event.)
+    seed = SpiceDB::Transaction.new
+    seed.touch(SpiceDB::Relationship.from_triple('document', 'ledger', 'viewer', 'user', 'seed'))
+    seed_revision = client.write(seed)
+
     # The stubs behind #proto_client already carry this client's bearer token
     # (composed call credentials on the secure path, an interceptor on the
     # plaintext one), so there is nothing extra to attach.
@@ -59,6 +73,35 @@ RSpec.describe 'RawEscapeHatch' do
     revision = written.written_at.token
     puts "raw write committed at revision #{revision}"
     expect(revision).not_to be_empty
+
+    # Read the metadata back. Sending it proves nothing on its own: a client
+    # that dropped the field would look identical from here, because
+    # WriteRelationships does not echo it back. The only place it becomes
+    # observable is the Watch stream -- and optional_transaction_metadata is
+    # not on the idiomatic SpiceDB::WatchEvent either, so the read-back is a
+    # second use of the same escape hatch.
+    seen_metadata = nil
+    Timeout.timeout(RAW_WATCH_TIMEOUT, nil,
+                    "no watch event carried optional_transaction_metadata within #{RAW_WATCH_TIMEOUT}s: " \
+                    'the metadata sent on the raw write never reached the server') do
+      client.proto_client.watch.watch(
+        Authzed::Api::V1::WatchRequest.new(
+          optional_object_types: ['document'],
+          optional_start_cursor: Authzed::Api::V1::ZedToken.new(token: seed_revision)
+        )
+      ).each do |resp|
+        next if resp.optional_transaction_metadata.nil?
+
+        seen_metadata = resp.optional_transaction_metadata.to_h
+        # Abandoning a raw stream is the caller's job on this path -- see
+        # ../../DESIGN.md, "Stream lifecycle: abandoning an Enumerator
+        # releases it", for why `break` is what releases it here too.
+        break
+      end
+    end
+
+    puts "watch reported transaction metadata: #{seen_metadata}"
+    expect(seen_metadata).to eq('correlation_id' => 'example-42', 'actor' => 'billing-job')
 
     # The idiomatic API picks up right where the raw call left off -- same
     # client, same connection, including read-your-writes on the raw revision.

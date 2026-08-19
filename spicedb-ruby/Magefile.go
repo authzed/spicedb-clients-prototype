@@ -66,9 +66,13 @@ var wantExamples = []string{
 // which is the second, separate hazard the JSON report below covers.) Skipping
 // by directory instead means the skip is visible and counted; the now-redundant
 // :watch tags were removed so a reintroduced filter cannot double-exclude.
-var skippedExamples = map[string]string{
-	"watch_changes": "open-ended stream; needs a bounded consumer with explicit cancellation",
-}
+//
+// It is empty on purpose. watch_changes used to live here -- "open-ended
+// stream; needs a bounded consumer with explicit cancellation" -- which meant
+// the only streaming example never ran, and root DESIGN.md's "RULE: Abandoning
+// a stream must release it" had no executed coverage at all. It now has that
+// bounded consumer, so nothing is skipped.
+var skippedExamples = map[string]string{}
 
 // Gen updates the idiomatic Ruby client based on proto client changes.
 func Gen() error {

@@ -4,6 +4,44 @@
 
 ### Fixed
 
+- **2026-08-19**: **Six examples ran (or, for `watch_changes/`, did not run) without being able
+  to fail.** Root DESIGN.md, "RULE: An example must be executed by CI and must be able to fail",
+  clause 2. No example was renamed or removed.
+
+  - `examples/watch_changes/` **now runs in CI**. It was skipped by name -- "open-ended stream;
+    needs a bounded consumer with explicit cancellation" -- so the only streaming example never
+    executed and "RULE: Abandoning a stream must release it" had no executed coverage here at
+    all. It is now a bounded consumer: subscribe from a known revision, write the update it is
+    waiting for, consume until exactly that update arrives, then `break` (which is this client's
+    abandonment path -- see DESIGN.md, "Stream lifecycle: abandoning an Enumerator releases it").
+    Both examples run under `Timeout.timeout`, so a stalled stream fails with a message instead
+    of hanging the job.
+  - `examples/relationship_counters/` polls to a terminal state instead of sleeping two seconds
+    and then wrapping every assertion in `unless result.still_calculating`, which asserts nothing
+    on a slow run and nothing on any run if that mapping is inverted. The count asserted is exact
+    (two viewers, with an `editor` written that the filter must exclude), and unregistering is
+    verified by requiring the subsequent read to raise. The second example's
+    `expect([true, false]).to include(result.still_calculating)` -- which passes for anything
+    except `nil` -- is gone.
+  - `examples/call_deadlines/` gains two examples against a `TCPServer` that accepts connections
+    and never speaks gRPC, requiring `SpiceDB::DeadlineExceededError` from both `default_timeout:`
+    and a per-call `timeout:`. Each runs under a watchdog, so a client that accepted the keyword
+    and never attached it fails the example rather than hanging the job.
+  - `examples/delete_relationships/` reads every delete back. It asserted only that a revision
+    came back, which happens whether or not anything was deleted -- so `must_match:` and `limit:`
+    being dropped entirely would have passed, which is every claim each example's own title
+    makes. The rejected guarded delete is now also required to have deleted nothing, and
+    `limit: 1` is exercised against three owners so a paging loop that stopped after one page
+    fails.
+  - `examples/schema_reflection/` asserts contents. `expect(diffs.map(&:kind)).not_to be_empty`
+    stood two lines after asserting `diffs` itself is non-empty -- `map` preserves length, so it
+    could not fail; the specific diff kinds are asserted now, and `:unknown` is rejected.
+    Relations and permissions are compared as exact sets rather than "not empty".
+  - `examples/raw_escape_hatch/` reads `optional_transaction_metadata` back out of the Watch
+    stream. It was sent and never verified -- and since that field is not on the idiomatic
+    `SpiceDB::WatchEvent` either, reading it back is a second use of the same hatch, which is
+    exactly the point the example is making.
+
 - **2026-08-19**: **`examples/spec_helper.rb`'s shared hook was not clear-before-write.** It wrote
   `TEST_SCHEMA` and *then* deleted, which is safe only because `TEST_SCHEMA` is a superset that
   drops no relation -- narrow it at any point and this gem acquires the exact defect the other

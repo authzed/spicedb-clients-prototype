@@ -1,6 +1,18 @@
 # frozen_string_literal: true
 
+require 'socket'
+require 'timeout'
+
 require_relative '../spec_helper'
+
+# The deadline handed to the calls against the wedged server below. Short,
+# because the point is to watch it expire.
+WEDGED_TIMEOUT = 2
+
+# Wall-clock bound on a wedged call. If a call with a 2s deadline has not
+# returned after this long, the deadline is not reaching the RPC -- and the
+# example fails with that message instead of hanging the CI job.
+WEDGED_WATCHDOG = 17
 
 # Demonstrates the client-level `default_timeout:` construction parameter, a
 # per-call `timeout:` override on a unary call, and that bulk import
@@ -68,5 +80,59 @@ RSpec.describe 'Call deadlines' do
   ensure
     client.delete_relationships(SpiceDB::Filter.new(resource_type: 'document').with_resource_id('bulk'))
     client.delete_relationships(SpiceDB::Filter.new(resource_type: 'document').with_resource_id('bulk2'))
+  end
+
+  # A socket that accepts TCP connections and never speaks gRPC. The kernel
+  # completes the handshake for connections sitting in the backlog, so a client
+  # connects successfully and then waits forever for the HTTP/2 server preface.
+  # That is what a wedged SpiceDB looks like from a client -- an open,
+  # healthy-looking connection with no reply behind it -- and it is why "the
+  # connection worked" is not a bound. Everything above this point passes
+  # whether or not the deadline reaches the wire; the two examples below do not.
+  def with_wedged_server
+    listener = TCPServer.new('127.0.0.1', 0)
+    yield "127.0.0.1:#{listener.addr[1]}"
+  ensure
+    listener&.close
+  end
+
+  # Runs the block under a watchdog, failing rather than hanging if a call that
+  # was supposed to be bounded never comes back.
+  def expect_deadline_to_fire(what, &block)
+    Timeout.timeout(WEDGED_WATCHDOG, nil,
+                    "a call with a #{WEDGED_TIMEOUT}s #{what} had not returned after " \
+                    "#{WEDGED_WATCHDOG}s against a server that never answers: " \
+                    'the deadline is not reaching the RPC') do
+      # The specific error matters: `raise_error(StandardError)` is also
+      # satisfied by SpiceDB::UnavailableError from a refused connection, which
+      # says nothing at all about deadlines.
+      expect(&block).to raise_error(SpiceDB::DeadlineExceededError)
+    end
+  end
+
+  it 'expires default_timeout: against a server that never answers' do
+    with_wedged_server do |endpoint|
+      SpiceDB::Client.new_plaintext(endpoint, SPICEDB_TOKEN, default_timeout: WEDGED_TIMEOUT) do |wedged|
+        rel = SpiceDB::Relationship.from_triple('document', 'readme', 'view', 'user', 'alice')
+        expect_deadline_to_fire('default_timeout') do
+          wedged.check_permission(SpiceDB::Consistency.full, 'view', rel)
+        end
+      end
+    end
+  end
+
+  it 'expires a per-call timeout: against a server that never answers' do
+    with_wedged_server do |endpoint|
+      # No default_timeout: here, so only the per-call argument can bound this.
+      # The override is a different code path, and one that accepted the
+      # argument and dropped it would still pass every fast-local-call example
+      # above.
+      SpiceDB::Client.new_plaintext(endpoint, SPICEDB_TOKEN) do |wedged|
+        rel = SpiceDB::Relationship.from_triple('document', 'readme', 'view', 'user', 'alice')
+        expect_deadline_to_fire('per-call timeout') do
+          wedged.check_permission(SpiceDB::Consistency.full, 'view', rel, timeout: WEDGED_TIMEOUT)
+        end
+      end
+    end
   end
 end

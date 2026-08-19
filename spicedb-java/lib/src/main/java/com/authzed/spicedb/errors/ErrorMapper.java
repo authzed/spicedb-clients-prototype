@@ -24,6 +24,11 @@ public final class ErrorMapper {
   /**
    * Converts a gRPC {@link StatusRuntimeException} to a typed SpiceDB exception.
    *
+   * <p>The originating exception is passed through as the cause, which is also where the returned
+   * exception's {@link SpiceDBException#getReason()} and {@link
+   * SpiceDBException#getReasonMetadata()} come from -- SpiceDB's {@code google.rpc.ErrorInfo}
+   * detail. See root DESIGN.md, "RULE: Error mapping must not lose the server's detail".
+   *
    * @param e the gRPC exception
    * @return a typed {@link SpiceDBException} subclass
    */
@@ -43,6 +48,8 @@ public final class ErrorMapper {
       case CANCELLED -> new CancelledException(message, e);
       case DEADLINE_EXCEEDED -> new DeadlineExceededException(message, e);
       case RESOURCE_EXHAUSTED -> new ResourceExhaustedException(message, e);
+      case UNAUTHENTICATED -> new UnauthenticatedException(message, e);
+      case OUT_OF_RANGE -> new OutOfRangeException(message, e);
       default -> new SpiceDBException(message, e);
     };
   }

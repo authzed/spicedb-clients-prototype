@@ -4,6 +4,44 @@
 
 ### Added
 
+- **2026-08-18**: Error mapping now carries the server's detail all the way to the caller, per root
+  DESIGN.md, "RULE: Error mapping must not lose the server's detail". Purely additive.
+  - Two new exception types, both `SpiceDBException` subclasses:
+    - `OutOfRangeException` for `OUT_OF_RANGE`, SpiceDB's code for an expired or
+      garbage-collected ZedToken. It previously fell through to the base `SpiceDBException`, so
+      the one recoverable error in a token-threading application was indistinguishable from an
+      internal fault. Recovery is mechanical: discard the stale token and re-read at full
+      consistency.
+    - `UnauthenticatedException` for `UNAUTHENTICATED` — a wrong, expired, or rotated API token,
+      previously also indistinguishable from an internal fault. Distinct from
+      `PermissionDeniedException`, which means the caller was identified but not allowed.
+  - Every `SpiceDBException` now exposes the `google.rpc.ErrorInfo` detail SpiceDB attaches to a
+    status, via three new methods: `getReason()` (the name of an `authzed.api.v1.ErrorReason` enum
+    value, e.g. `"ERROR_REASON_MAXIMUM_DEPTH_EXCEEDED"`), `getReasonDomain()` (`"authzed.com"` for
+    SpiceDB), and `getReasonMetadata()` (the specifics behind the reason, such as which
+    precondition failed). They are derived from the preserved `cause`, so no subclass constructor
+    changed and the reason can never drift from the status the exception was built out of. The
+    reason is surfaced exactly as the server sent it: a value a newer server knows and this client
+    does not is passed through unchanged rather than coerced or rejected, per root DESIGN.md's
+    "RULE: A conversion that cannot preserve meaning must fail", which requires server-supplied
+    unknowns to degrade rather than throw. `getReason()` returns `""` and `getReasonMetadata()` an
+    empty map when the server attached no `ErrorInfo`.
+  - `checkBulkPermissions` per-item errors now keep their own details on the way to a typed
+    exception. The per-item `google.rpc.Status` was previously reduced to a code and a message
+    before mapping, discarding the item's `ErrorInfo`.
+
+  ```java
+  try {
+    client.write(txn);
+  } catch (FailedPreconditionException e) {
+    if (e.getReason().equals("ERROR_REASON_WRITE_OR_DELETE_PRECONDITION_FAILURE")) {
+      System.out.println(e.getReasonMetadata().get("precondition_resource_id"));
+    }
+  } catch (OutOfRangeException e) {
+    // ZedToken expired or GC'd: drop it and re-read at full consistency.
+  }
+  ```
+
 - **2026-08-17**: Caveat CHECK-TIME context on the check surface. Two forms, both additive
   overloads — the existing `checkPermission`/`checkPermissions`/`checkAny`/`checkAll` signatures
   are byte-for-byte unchanged:

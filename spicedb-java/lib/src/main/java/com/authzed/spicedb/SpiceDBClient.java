@@ -10,6 +10,7 @@ import io.grpc.ManagedChannelBuilder;
 import io.grpc.Metadata;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
+import io.grpc.protobuf.StatusProto;
 import io.grpc.stub.MetadataUtils;
 import io.grpc.stub.StreamObserver;
 import java.net.URI;
@@ -620,17 +621,13 @@ public final class SpiceDBClient implements AutoCloseable {
     for (int i = 0; i < resp.getPairsCount(); i++) {
       CheckBulkPermissionsPair pair = resp.getPairs(i);
       if (pair.hasError()) {
-        // Route the per-item error through ErrorMapper (by way of a synthesized
-        // StatusRuntimeException carrying the item's own code) so callers get the SPECIFIC typed
-        // exception (e.g. PermissionDeniedException) instead of the untyped base SpiceDBException
-        // — the item's code was previously discarded here. The item index is preserved in the
-        // message, matching spicedb-go's `fmt.Sprintf("check item %d", i)`.
-        build.buf.gen.google.rpc.Status errorStatus = pair.getError();
-        StatusRuntimeException sre =
-            Status.fromCodeValue(errorStatus.getCode())
-                .withDescription("check item " + i + ": " + errorStatus.getMessage())
-                .asRuntimeException();
-        throw ErrorMapper.toSpiceDBException(sre);
+        // Route the per-item error through ErrorMapper (by way of a StatusRuntimeException
+        // carrying the item's own status) so callers get the SPECIFIC typed exception (e.g.
+        // PermissionDeniedException) instead of the untyped base SpiceDBException — the item's
+        // code was previously discarded here. The item index is preserved in the message,
+        // matching spicedb-go's `fmt.Sprintf("check item %d", i)`.
+        throw ErrorMapper.toSpiceDBException(
+            perItemStatusException(pair.getError(), "check item " + i + ": "));
       } else if (pair.hasItem()) {
         results.add(checkResultFromBulkItem(pair.getItem(), checkedAt));
       } else {
@@ -2218,6 +2215,33 @@ public final class SpiceDBClient implements AutoCloseable {
       case PERMISSIONSHIP_NO_PERMISSION -> LookupResult.Permissionship.NO_PERMISSION;
       default -> LookupResult.Permissionship.UNSPECIFIED;
     };
+  }
+
+  /**
+   * Wraps a per-item {@code google.rpc.Status} (from a bulk response pair) in a {@link
+   * StatusRuntimeException} that keeps the status's own details, so a per-item failure reaches the
+   * caller carrying the same structured reason an RPC-level failure does. See root DESIGN.md,
+   * "RULE: Error mapping must not lose the server's detail".
+   *
+   * <p>The status arrives as the BSR-generated {@code build.buf.gen.google.rpc.Status} while gRPC's
+   * own {@link StatusProto} works with {@code com.google.rpc.Status} -- two generated classes for
+   * the same message. They are bridged by a serialize/parse round-trip rather than a field-by-field
+   * copy, so no field can be forgotten as the message evolves. If the round-trip ever fails, the
+   * code and message still reach the caller as a typed exception; only the details are lost.
+   */
+  private static StatusRuntimeException perItemStatusException(
+      build.buf.gen.google.rpc.Status errorStatus, String messagePrefix) {
+    String message = messagePrefix + errorStatus.getMessage();
+    try {
+      return StatusProto.toStatusRuntimeException(
+          com.google.rpc.Status.parseFrom(errorStatus.toByteArray()).toBuilder()
+              .setMessage(message)
+              .build());
+    } catch (com.google.protobuf.InvalidProtocolBufferException e) {
+      return Status.fromCodeValue(errorStatus.getCode())
+          .withDescription(message)
+          .asRuntimeException();
+    }
   }
 
   /**

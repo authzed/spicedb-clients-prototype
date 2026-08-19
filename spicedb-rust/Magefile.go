@@ -65,9 +65,12 @@ var wantExamples = []string{
 // "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out".
 var libtestResult = regexp.MustCompile(`test result: \w+\. (\d+) passed;`)
 
-var skippedExamples = map[string]string{
-	"watch_changes": "open-ended stream; needs a bounded consumer with explicit cancellation",
-}
+// skippedExamples is empty on purpose. watch_changes used to live here --
+// "open-ended stream; needs a bounded consumer with explicit cancellation" --
+// which meant the only streaming example never ran, and root DESIGN.md's
+// "RULE: Abandoning a stream must release it" had no executed coverage at all.
+// It now has that bounded consumer, so nothing is skipped.
+var skippedExamples = map[string]string{}
 
 // Gen updates the idiomatic client based on proto client changes.
 func Gen() error {

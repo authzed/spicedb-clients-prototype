@@ -672,13 +672,13 @@ every change in the gap). `is_checkpoint` is true for a checkpoint event, which 
 | `read_relationships.rs` | Reading relationships with stream |
 | `lookup_resources.rs` | Finding resources a subject can access |
 | `lookup_subjects.rs` | Finding subjects with access to a resource |
-| `watch_changes.rs` | Watching for relationship changes |
+| `watch_changes.rs` | Watching for relationship changes with a bounded consumer: subscribe from a known revision, write, consume until that exact update arrives, drop the stream, then resume on a fresh one and require the same update |
 | `schema_management.rs` | Reading and writing schema |
 | `bulk_operations.rs` | Bulk checks and imports |
 | `schema_reflection.rs` | Schema reflection, computable permissions, dependent relations, diff |
 | `expand_permission_tree.rs` | Expanding a permission tree and walking the native `PermissionTree` |
-| `relationship_counters.rs` | Registering, reading, and unregistering relationship counters |
-| `call_deadlines.rs` | Constructing a client with `default_timeout`, a per-call `_with_timeout` override, and confirming bulk import isn't bounded by the unary default |
+| `relationship_counters.rs` | Registering, reading, and unregistering relationship counters, polling to a terminal state and asserting an exact count |
+| `call_deadlines.rs` | Constructing a client with `default_timeout`, a per-call `_with_timeout` override, confirming bulk import isn't bounded by the unary default, and proving both deadlines bite against a listener that accepts the connection and never answers |
 | `raw_escape_hatch.rs` | `raw_proto()` — driving the generated tonic client directly for a proto field (`optional_transaction_metadata`) and an RPC (`CheckPermission`) the idiomatic API does not expose |
 
 ## Changelog

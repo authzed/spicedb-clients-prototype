@@ -4,8 +4,17 @@
 //! by `default_timeout` -- see root DESIGN.md, "RULE: A unary call must have
 //! a deadline".
 //!
+//! The failure that rule exists to close is a *wedged* server: one that accepts
+//! the connection and then never answers. Nothing looks wrong at the transport
+//! level, so an unbounded call hangs forever rather than erroring. The calls
+//! against a real SpiceDB below pass identically whether or not the timeout
+//! ever reaches the wire, so this example also stands up a socket that behaves
+//! exactly that way and requires the call to come back `DeadlineExceeded` on
+//! the caller's schedule.
+//!
 //! Run with: `cargo run --example call_deadlines`
 
+use std::net::TcpListener;
 use std::time::Duration;
 
 use spicedb::client::SpiceDBClient;
@@ -19,6 +28,14 @@ definition document {
     relation viewer: user
     permission view = viewer
 }"#;
+
+/// The deadline handed to the calls against the wedged server. Short, because
+/// the point is to watch it expire.
+const WEDGED_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Wall-clock bound on a wedged call. If a call with a 2s deadline has not
+/// returned after this long, the deadline is not reaching the RPC.
+const WEDGED_WATCHDOG: Duration = Duration::from_secs(17);
 
 #[tokio::main]
 async fn main() {
@@ -149,4 +166,85 @@ async fn main() {
         .expect("import with timeout failed");
     println!("imported {num_loaded_bounded} relationships with an explicit 30s timeout");
     assert_eq!(num_loaded_bounded, 50);
+
+    // ── The case the rule is about: a server that never answers ──────────
+    //
+    // This listener accepts TCP connections at the kernel level and never
+    // speaks gRPC: the socket is never handed to an accept loop, so the HTTP/2
+    // server preface never arrives. That is what a wedged SpiceDB looks like
+    // from a client -- an open, healthy-looking connection with no reply behind
+    // it -- and it is why "the connection worked" is not a bound.
+    let wedged = TcpListener::bind("127.0.0.1:0").expect("failed to open the wedged listener");
+    let wedged_endpoint = format!("127.0.0.1:{}", wedged.local_addr().unwrap().port());
+
+    let wedged_client = SpiceDBClient::builder(wedged_endpoint.clone(), "somerandomkeyhere")
+        .plaintext()
+        .default_timeout(WEDGED_TIMEOUT)
+        .build()
+        .await
+        .expect("failed to create the wedged client");
+
+    // Each call runs under a watchdog. If the deadline never reaches the wire
+    // -- a client that accepted `default_timeout` and never attached it, say --
+    // the call does not return at all, and an example that simply awaited it
+    // would hang the CI job rather than fail it.
+    let outcome = tokio::time::timeout(
+        WEDGED_WATCHDOG,
+        wedged_client.check_permission(&consistency::full(), "view", &check_rel),
+    )
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "a call with a {WEDGED_TIMEOUT:?} default_timeout had not returned after \
+             {WEDGED_WATCHDOG:?} against a server that never answers: the deadline is not \
+             reaching the RPC"
+        )
+    });
+
+    // The specific error matters. "An error occurred" is also satisfied by
+    // `Unavailable` from a refused connection -- which is what this would
+    // degrade into if the listener stopped accepting, and which says nothing at
+    // all about deadlines. (tonic reports its own client-side deadline as
+    // `Cancelled("Timeout expired")`; this client maps that back to
+    // `DeadlineExceeded`, which is the mapping being asserted here.)
+    match outcome {
+        Err(SpiceDBError::DeadlineExceeded(_)) => {
+            println!("wedged server: default_timeout expired as DeadlineExceeded");
+        }
+        other => panic!("expected DeadlineExceeded from the wedged server, got {other:?}"),
+    }
+
+    // A per-call `_with_timeout` has to bite the same way: the override is a
+    // different code path, and one that accepted the argument and dropped it
+    // would still pass every fast-local-call assertion above.
+    let outcome = tokio::time::timeout(
+        WEDGED_WATCHDOG,
+        wedged_client.check_permission_with_timeout(
+            &consistency::full(),
+            "view",
+            &check_rel,
+            WEDGED_TIMEOUT,
+        ),
+    )
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "a call with a {WEDGED_TIMEOUT:?} per-call timeout had not returned after \
+             {WEDGED_WATCHDOG:?} against a server that never answers: the per-call timeout is \
+             not reaching the RPC"
+        )
+    });
+    match outcome {
+        Err(SpiceDBError::DeadlineExceeded(_)) => {
+            println!("wedged server: per-call timeout expired as DeadlineExceeded");
+        }
+        other => panic!("expected DeadlineExceeded from the wedged server, got {other:?}"),
+    }
+
+    // Clean up so later examples that write a narrower schema aren't blocked by
+    // leftover relationships.
+    client
+        .delete_relationships(&Filter::new("document"))
+        .await
+        .expect("cleanup failed");
 }

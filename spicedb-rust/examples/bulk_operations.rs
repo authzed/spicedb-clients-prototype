@@ -147,9 +147,13 @@ async fn main() {
         .expect("import failed");
 
     println!("imported {count} relationships");
-    assert!(count > 0, "expected at least one imported relationship");
+    assert_eq!(count, 100, "expected all 100 relationships to be imported");
 
-    // Bulk export relationships
+    // Bulk export relationships. This example cleared `document` before
+    // writing, so the whole store is exactly what it wrote: three viewers of
+    // document:report plus the hundred imported above. Asserting the number
+    // means an export that stopped after the first page, or dropped a page's
+    // results, fails here -- the count used to be printed and nothing more.
     let stream = client.export_relationships(&consistency::full(), None);
     tokio::pin!(stream);
 
@@ -159,4 +163,30 @@ async fn main() {
     }
 
     println!("exported {} relationships", exported.len());
+    assert_eq!(
+        exported.len(),
+        users.len() + 100,
+        "expected the export to return every relationship this example wrote"
+    );
+    // And they are the relationships that were written, not placeholders: a
+    // conversion that lost the subject would still produce the right count.
+    assert!(
+        exported
+            .iter()
+            .any(|r| r.resource_id == "report" && r.subject_id == "alice"),
+        "expected the export to include document:report#viewer@user:alice"
+    );
+    assert!(
+        exported
+            .iter()
+            .any(|r| r.resource_id == "bulk-doc-99" && r.subject_id == "alice"),
+        "expected the export to include the last imported relationship"
+    );
+
+    // Clean up so later examples that write a narrower schema aren't blocked by
+    // leftover relationships.
+    client
+        .delete_relationships(&Filter::new("document"))
+        .await
+        .expect("cleanup failed");
 }

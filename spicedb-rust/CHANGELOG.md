@@ -4,6 +4,40 @@
 
 ### Added
 
+- **2026-08-19: five examples that ran without being able to fail now assert something
+  that does.** Root DESIGN.md, "RULE: An example must be executed by CI and must be able
+  to fail", clause 2. No example was renamed or removed.
+
+  - `examples/watch_changes.rs` **now runs in CI**. It was skipped by name — "open-ended
+    stream; needs a bounded consumer with explicit cancellation" — so the only streaming
+    example never executed and "RULE: Abandoning a stream must release it" had no executed
+    coverage here at all. It was also assertion-free: `println!` only. It is now a bounded
+    consumer that subscribes from a known revision, writes the update it is waiting for,
+    consumes until exactly that update arrives (with a checkpoint), drops the stream, then
+    resumes from the same revision on a fresh stream and requires the same update again —
+    so a start cursor that does not round-trip, or a client left wedged by the abandoned
+    stream, fails rather than passing quietly.
+  - `examples/relationship_counters.rs` polls to a terminal state instead of sleeping two
+    seconds and then guarding every assertion behind `Some(count) =>`, which asserts
+    nothing on a slow run and nothing on any run if the still-calculating mapping is
+    inverted. The count asserted is exact (two viewers, with an `editor` written that the
+    filter must exclude), and unregistering is verified by requiring the subsequent read
+    to return `FailedPrecondition`.
+  - `examples/call_deadlines.rs` proves a deadline instead of only showing fast local
+    calls succeeding. It stands up a `TcpListener` that accepts connections and never
+    speaks gRPC — what a wedged SpiceDB looks like from a client — and requires both
+    `default_timeout` and `check_permission_with_timeout` to return
+    `SpiceDBError::DeadlineExceeded`, which also pins the mapping of tonic's own
+    `Cancelled("Timeout expired")`. Each call runs under a watchdog, so a dropped deadline
+    fails the example rather than hanging the job.
+  - `examples/schema_reflection.rs` asserts contents rather than four consecutive
+    non-empty checks: exact relation and permission names, that `document#viewer` computes
+    exactly `document#view`, the full dependency set of `document#view`, and the specific
+    diff kinds — so a mapping that reported every diff as `unknown` fails.
+  - `examples/bulk_operations.rs` asserts the export count and two specific exported
+    relationships. The count was printed and nothing more, and the import asserted only
+    `count > 0`.
+
 - **An escape hatch, `SpiceDBClient::raw_proto()`.** It returns `&SpiceDBProtoClient` —
   the four generated tonic clients (`permissions`, `schema`, `watch`, `experimental`)
   this crate makes its own calls through — so a request the idiomatic API cannot express

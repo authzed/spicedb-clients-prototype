@@ -47,12 +47,13 @@ definition yet, which is not a failure.
 ## What runs in CI
 
 Every example in the table below is executed by `mage integrationTest`, which
-is what the `integration` job in `.github/workflows/rust.yaml` runs, with one
-exception: `watch_changes` is an open-ended stream with no bounded consumer
-yet, so the runner skips it by name and prints the skip. The runner also
-asserts how many examples it executed, so an example that is renamed out of the
-glob fails the job instead of quietly shrinking the run. See root `DESIGN.md`,
-"RULE: An example must be executed by CI and must be able to fail".
+is what the `integration` job in `.github/workflows/rust.yaml` runs. Nothing is
+skipped: `watch_changes` used to be, for being an open-ended stream with no
+bounded consumer, and it now has one. The runner reconciles the examples on
+disk against the list in `Magefile.go` in both directions, so an example that
+is renamed out of the glob fails the job instead of quietly shrinking the run.
+See root `DESIGN.md`, "RULE: An example must be executed by CI and must be able
+to fail".
 
 ## Examples
 
@@ -63,7 +64,7 @@ glob fails the job instead of quietly shrinking the run. See root `DESIGN.md`,
 | `read_relationships` | Reading relationships with filters |
 | `lookup_resources` | Finding resources a subject can access |
 | `lookup_subjects` | Finding subjects with access to a resource |
-| `watch_changes` | Watching for relationship changes |
+| `watch_changes` | Watching for relationship changes with a bounded consumer: subscribe, write, consume until the expected update arrives, drop the stream, then resume on a fresh one |
 | `schema_management` | Schema read/write |
 | `bulk_operations` | Bulk checks, imports, and exports |
 | `schema_reflection` | Schema reflection, computable permissions, diffs |

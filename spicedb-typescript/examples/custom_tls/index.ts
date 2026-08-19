@@ -78,6 +78,18 @@ const server = leaf(
 const clientId = leaf("client", "extendedKeyUsage=clientAuth");
 const caCert = readFileSync(join(dir, "ca.crt"));
 
+// One real check. `checkPermissions` with zero checks sends no request at
+// all -- an empty bulk check is a round trip whose only possible answer is
+// `[]` -- and a call that never reaches the wire proves nothing about the
+// handshake this example exists to demonstrate.
+const ONE_CHECK = {
+  resourceType: "document",
+  resourceId: "readme",
+  permission: "view",
+  subjectType: "user",
+  subjectId: "alice",
+};
+
 // --- A stand-in for a TLS-terminated SpiceDB.
 function serve(requireClientCert: boolean): Promise<{
   port: number;
@@ -86,7 +98,13 @@ function serve(requireClientCert: boolean): Promise<{
   const handler = connectNodeAdapter({
     routes: (router) => {
       router.service(PermissionsService, {
-        checkBulkPermissions: () => ({ pairs: [] }),
+        // One pair per request item: the client rejects a response whose
+        // pair count does not match the request's item count.
+        checkBulkPermissions: (req: { items: unknown[] }) => ({
+          pairs: req.items.map(() => ({
+            response: { case: "item" as const, value: {} },
+          })),
+        }),
       });
     },
   });
@@ -122,11 +140,11 @@ try {
     const client = createSpiceDBClient(`localhost:${port}`, "testtoken", {
       tls: { caCert },
     });
-    const results = await client.checkPermissions(full());
+    const results = await client.checkPermissions(full(), ONE_CHECK);
     console.log(
       `connected over TLS to a private CA; ${results.length} check result(s)`,
     );
-    assert(Array.isArray(results), "the call must complete over TLS");
+    assert(results.length === 1, "the call must complete over TLS");
     client.close();
     await close();
   }
@@ -141,11 +159,11 @@ try {
         clientKey: clientId.key,
       },
     });
-    const results = await client.checkPermissions(full());
+    const results = await client.checkPermissions(full(), ONE_CHECK);
     console.log(
       `connected over mutual TLS; ${results.length} check result(s)`,
     );
-    assert(Array.isArray(results), "the mutual-TLS call must complete");
+    assert(results.length === 1, "the mutual-TLS call must complete");
     client.close();
     await close();
   }

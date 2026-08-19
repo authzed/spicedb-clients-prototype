@@ -211,6 +211,22 @@ function normalizeBulkCheckArgs(
 const IMPORT_BATCH_SIZE = 1000;
 
 /**
+ * How many items go into one `CheckBulkPermissions` request.
+ *
+ * SpiceDB rejects a request carrying more items than `maxBulkCheckCount` --
+ * 10,000, a hard-coded const in `internal/services/v1/bulkcheck.go` with no
+ * flag to raise or lower it -- with
+ * `ERROR_REASON_TOO_MANY_CHECKS_IN_REQUEST`. Nothing in the proto enforces
+ * this: `CheckBulkPermissionsRequest.items` carries only a per-item
+ * `required` rule, not a collection-size rule, so the limit lives solely in
+ * server code and a client that forwards the caller's array unchanged fails
+ * on large inputs. 1,000 leaves ten times' headroom and matches
+ * `IMPORT_BATCH_SIZE` and the other clients' check batch size.
+ * @internal
+ */
+const CHECK_BATCH_SIZE = 1000;
+
+/**
  * Converts a caller's relationship sequence into the request stream
  * `importBulkRelationships` sends, batching as it goes.
  *
@@ -452,10 +468,16 @@ export class SpiceDBClient {
    * permission-denied, an invalid-argument, and an internal server error
    * all indistinguishable from a real "no permission" answer.
    *
+   * Large inputs are split automatically into requests of at most 1,000
+   * items and the responses concatenated in input order — SpiceDB rejects a
+   * single request carrying more than 10,000. An empty `checks` sends no
+   * request at all and resolves to `[]`.
+   *
    * @returns An array of {@link CheckResult}, one per check request, in the
-   *          same order. Every result shares the same `checkedAt` — the
-   *          response carries a single token for the whole batch, not one
-   *          per item.
+   *          same order. Results within one request share a `checkedAt` —
+   *          the response carries a single token for the whole batch, not
+   *          one per item — so an input large enough to be split can carry
+   *          more than one token across the returned array.
    */
   async checkPermissions(
     consistency: Consistency,
@@ -489,6 +511,46 @@ export class SpiceDBClient {
    * @internal
    */
   private async runBulkCheck(
+    consistency: Consistency,
+    checks: CheckRequest[],
+    options?: CheckOptions,
+  ): Promise<CheckResult[]> {
+    // Zero checks sends nothing at all. An empty request is not a cheaper
+    // way to ask nothing -- it is a round trip whose only possible answer is
+    // the empty array, and `checkAll` already treats an aggregate over zero
+    // checks as `false` rather than a grant.
+    if (checks.length === 0) {
+      return [];
+    }
+
+    // One request per chunk of `CHECK_BATCH_SIZE`, results concatenated in
+    // input order so `results[i]` still corresponds to `checks[i]` across
+    // the chunk boundary. A caller passing fewer than `CHECK_BATCH_SIZE`
+    // checks -- the overwhelmingly common case -- still makes exactly one
+    // request. Retry is per chunk, so a transient failure on the third
+    // chunk never re-sends the first two.
+    const results: CheckResult[] = [];
+    for (let start = 0; start < checks.length; start += CHECK_BATCH_SIZE) {
+      results.push(
+        ...(await this.runBulkCheckChunk(
+          consistency,
+          checks.slice(start, start + CHECK_BATCH_SIZE),
+          options,
+        )),
+      );
+    }
+    return results;
+  }
+
+  /**
+   * Issues one `CheckBulkPermissions` request for `checks` and maps the
+   * response. `checks` is non-empty and no longer than `CHECK_BATCH_SIZE`;
+   * `runBulkCheck` is what enforces both. Every response guard below --
+   * the pair-count check and the malformed-oneof check -- therefore applies
+   * per chunk, exactly as it applied to the whole request before chunking.
+   * @internal
+   */
+  private async runBulkCheckChunk(
     consistency: Consistency,
     checks: CheckRequest[],
     options?: CheckOptions,

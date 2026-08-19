@@ -27,6 +27,20 @@ import { full } from "../consistency.js";
 
 const TOKEN = "test-token";
 
+/**
+ * One real check. `checkPermissions` with zero checks no longer reaches the
+ * wire at all (an empty bulk check is a round trip whose only possible
+ * answer is `[]`), and a call that never reaches the wire cannot prove a
+ * handshake completed -- which is the whole point of these tests.
+ */
+const ONE_CHECK = {
+  resourceType: "document",
+  resourceId: "readme",
+  permission: "view",
+  subjectType: "user",
+  subjectId: "alice",
+};
+
 let dir: string;
 let ca: Buffer;
 let serverCert: Buffer;
@@ -76,7 +90,15 @@ async function serve(): Promise<{ port: number; close: () => Promise<void> }> {
   const handler = connectNodeAdapter({
     routes: (router) => {
       router.service(PermissionsService, {
-        checkBulkPermissions: () => ({ pairs: [] }),
+        // One pair per request item: the client's pair-count guard rejects
+        // a response whose pair count does not match the request's, so a
+        // fixed empty response would fail any caller that asks about an
+        // actual check.
+        checkBulkPermissions: (req: { items: unknown[] }) => ({
+          pairs: req.items.map(() => ({
+            response: { case: "item" as const, value: {} },
+          })),
+        }),
       });
     },
   });
@@ -105,7 +127,12 @@ describe("SpiceDBClient tls option", () => {
         tls: { caCert: ca },
         maxRetries: 0,
       });
-      await expect(trusting.checkPermissions(full())).resolves.toEqual([]);
+      // One real check, not an empty array: `checkPermissions` with zero
+      // checks now sends no request at all, so an empty call would resolve
+      // without ever completing the handshake this test exists to prove.
+      await expect(
+        trusting.checkPermissions(full(), ONE_CHECK),
+      ).resolves.toHaveLength(1);
       trusting.close();
 
       // Same server, same call, no `tls`: Node's bundled roots have never
@@ -116,7 +143,9 @@ describe("SpiceDBClient tls option", () => {
         token: TOKEN,
         maxRetries: 0,
       });
-      await expect(untrusting.checkPermissions(full())).rejects.toThrow();
+      await expect(
+        untrusting.checkPermissions(full(), ONE_CHECK),
+      ).rejects.toThrow();
       untrusting.close();
     } finally {
       await close();

@@ -183,7 +183,9 @@
   `[::1]:50051`, `::1`, and `unix:` targets — the last now matched
   case-insensitively, since a URI scheme is case-insensitive and C-core normalizes `UNIX:`
   and dials the socket just the same, so the previous case-sensitive check refused a target
-  the transport treats as local.
+  the transport treats as local. That comparison is a regexp match rather than
+  `String#casecmp`, which returns `nil` — and so raised `NoMethodError` from `nil.zero?` —
+  for a non-ASCII-compatible encoding such as UTF-16LE.
 
 - **2026-08-18**: `lookup_subjects` wrapped the ENTIRE streaming call in `with_retry`, so a
   mid-stream failure after some results had already been yielded to the caller retried the whole

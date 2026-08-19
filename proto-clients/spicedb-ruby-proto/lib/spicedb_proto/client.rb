@@ -166,7 +166,7 @@ module SpiceDBProto
       # Case-insensitive because a URI scheme is: C-core normalizes "UNIX:" and dials
       # the socket just the same, so a case-sensitive check here would refuse a target
       # the transport happily treats as local.
-      return true if endpoint[0, 5].casecmp("unix:").zero?
+      return true if endpoint.match?(/\Aunix:/i)
       return false if endpoint.match?(AUTHORITY_SHIFTING)
 
       host =

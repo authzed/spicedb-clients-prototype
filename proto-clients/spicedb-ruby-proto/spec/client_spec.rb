@@ -219,6 +219,37 @@ RSpec.describe "SpiceDBProto::Client authority-shifting endpoint guard" do
   end
 end
 
+# F4: an authority-bearing unix target is guard-loopback (the prefix check is
+# deliberately case-insensitive and does not inspect the authority), so what
+# actually stops it is the transport. C-core refuses to build a usable channel
+# for ANY casing -- "authority-based URIs not supported by the unix scheme" ->
+# "the target uri is not valid" -- so nothing is dialed and no token moves.
+#
+# This pins that. It is NOT a red-first regression test: it passes before and
+# after, because it asserts existing transport behaviour rather than a change.
+# Its job is to fail loudly if C-core ever starts accepting authority-bearing
+# unix targets, at which point the guard's permissiveness would become a real
+# leak instead of a harmless over-permission.
+RSpec.describe "SpiceDBProto authority-bearing unix targets are refused by the transport" do
+  ["unix://evil.com/tmp/x.sock", "UNIX://evil.com/tmp/x.sock"].each do |endpoint|
+    it "cannot complete an RPC to #{endpoint.inspect}" do
+      # Precondition: the guard alone does not stop these.
+      expect(SpiceDBProto::Client.loopback_endpoint?(endpoint)).to be true
+
+      channel = GRPC::Core::Channel.new(endpoint, {}, :this_channel_is_insecure)
+      stub = GRPC::ClientStub.new(endpoint, :this_channel_is_insecure, channel_override: channel)
+      begin
+        expect do
+          stub.request_response("/demo.Svc/Method", "", ->(x) { x }, ->(x) { x },
+                                deadline: Time.now + 5)
+        end.to raise_error(GRPC::BadStatus, /target uri is not valid/)
+      ensure
+        channel.close
+      end
+    end
+  end
+end
+
 RSpec.describe SpiceDBProto::BearerTokenInterceptor do
   it "merges authorization metadata" do
     interceptor = described_class.new("my-token")

@@ -43,7 +43,10 @@ txn.touch(relationship("document:readme", "viewer", "user:jimmy"));
 txn.touch(relationship("document:design", "editor", "user:sally"));
 const setupRevision = await client.write(txn);
 
-// Bulk check permissions
+// Bulk check permissions. Inputs over 1,000 checks are split into one
+// CheckBulkPermissions request per 1,000 automatically and the results
+// concatenated in input order -- SpiceDB rejects a single request carrying
+// more than 10,000. Nothing here changes for a larger array.
 const checks: CheckRequest[] = [
   {
     resourceType: "document",

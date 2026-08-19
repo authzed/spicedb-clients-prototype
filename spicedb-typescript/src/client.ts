@@ -535,6 +535,7 @@ export class SpiceDBClient {
         ...(await this.runBulkCheckChunk(
           consistency,
           checks.slice(start, start + CHECK_BATCH_SIZE),
+          start,
           options,
         )),
       );
@@ -548,11 +549,18 @@ export class SpiceDBClient {
    * `runBulkCheck` is what enforces both. Every response guard below --
    * the pair-count check and the malformed-oneof check -- therefore applies
    * per chunk, exactly as it applied to the whole request before chunking.
+   *
+   * `offset` is `checks`'s start index within the caller's full array. The
+   * "check item N" message reports `offset + i`, not `i`: the index a caller
+   * sees must be the one they can use to look up their own check. Reporting
+   * the chunk-relative index would attribute the failing item to a different
+   * resource entirely.
    * @internal
    */
   private async runBulkCheckChunk(
     consistency: Consistency,
     checks: CheckRequest[],
+    offset: number,
     options?: CheckOptions,
   ): Promise<CheckResult[]> {
     const timeoutMs = this.effectiveTimeoutMs(options?.timeoutMs);
@@ -615,7 +623,7 @@ export class SpiceDBClient {
         // indistinguishable from a real server answer of "no permission",
         // which hides a broken server behind a plausible-looking denial.
         throw new SpiceDBError(
-          `check item ${i}: malformed CheckBulkPermissionsPair ` +
+          `check item ${offset + i}: malformed CheckBulkPermissionsPair ` +
             `(neither item nor error set)`,
         );
       });

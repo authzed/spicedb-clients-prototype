@@ -55,27 +55,36 @@ interface Recorder {
  * return one fewer pair than it was asked for, exercising the per-chunk
  * pair-count guard.
  */
-function recordingStub(shortAtRequest?: number): Recorder {
+function recordingStub(
+  shortAtRequest?: number,
+  malformedAtAbsolute?: number,
+): Recorder {
   const sizes: number[] = [];
   const fn = vi.fn(async (req: { items: { resource?: { objectId: string } }[] }) => {
     const index = sizes.length;
+    const base = sizes.reduce((a, b) => a + b, 0);
     sizes.push(req.items.length);
     const items =
       shortAtRequest === index ? req.items.slice(0, -1) : req.items;
     return {
       checkedAt: create(ZedTokenSchema, { token: "tok" }),
-      pairs: items.map((item) => ({
-        response: {
-          case: "item" as const,
-          value: create(CheckBulkPermissionsResponseItemSchema, {
-            permissionship:
-              CheckPermissionResponse_Permissionship.HAS_PERMISSION,
-            partialCaveatInfo: create(PartialCaveatInfoSchema, {
-              missingRequiredContext: [item.resource?.objectId ?? ""],
-            }),
-          }),
-        },
-      })),
+      pairs: items.map((item, i) =>
+        malformedAtAbsolute === base + i
+          ? // `response` oneof left unset entirely.
+            { response: { case: undefined } }
+          : {
+              response: {
+                case: "item" as const,
+                value: create(CheckBulkPermissionsResponseItemSchema, {
+                  permissionship:
+                    CheckPermissionResponse_Permissionship.HAS_PERMISSION,
+                  partialCaveatInfo: create(PartialCaveatInfoSchema, {
+                    missingRequiredContext: [item.resource?.objectId ?? ""],
+                  }),
+                }),
+              },
+            },
+      ),
     };
   });
   return { sizes, fn };
@@ -183,5 +192,26 @@ describe("checkPermissions() chunking", () => {
     // Two requests went out before the guard fired -- proof the failure was
     // detected on the second chunk, not on the whole input up front.
     expect(recorder.sizes).toEqual([CHECK_BATCH_SIZE, CHECK_BATCH_SIZE]);
+  });
+
+  it("reports the caller's absolute index in a per-item message, not the chunk-relative one", async () => {
+    // Chunking made every "check item N" message chunk-relative: a failure at
+    // check 1003 read as "check item 3", so a caller who logs or parses it
+    // acts on check 3 — one resource's answer attributed to another, the same
+    // failure family the pair-count guard exists to prevent, relocated into
+    // the diagnostic.
+    const failing = CHECK_BATCH_SIZE + 3;
+    const recorder = recordingStub(undefined, failing);
+    const client = clientWith(recorder);
+
+    const rejection = client.checkPermissions(
+      full(),
+      numberedChecks(CHECK_BATCH_SIZE * 2),
+    );
+
+    await expect(rejection).rejects.toThrow(
+      new RegExp(`check item ${failing}: malformed`),
+    );
+    await expect(rejection).rejects.not.toThrow(/check item 3: malformed/);
   });
 });

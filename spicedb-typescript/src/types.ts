@@ -181,9 +181,19 @@ export interface CheckOptions {
    */
   context?: Record<string, unknown>;
   /**
-   * Milliseconds bounding this call, overriding the client's
-   * `defaultTimeoutMs`. See root DESIGN.md, "RULE: A unary call must have a
-   * deadline".
+   * Milliseconds bounding **each request** this call makes, overriding the
+   * client's `defaultTimeoutMs`. See root DESIGN.md, "RULE: A unary call must
+   * have a deadline".
+   *
+   * A bulk check over more than 1,000 items is split into one request per
+   * 1,000, and this deadline — and the retry budget — applies to each of them
+   * independently, not to the call as a whole. Worst-case wall time for `n`
+   * checks is therefore `ceil(n / 1000) * timeoutMs`. That is deliberate: a
+   * single deadline spanning every chunk would make a large check fail purely
+   * for being large, and a retry budget shared across chunks would let one
+   * flaky chunk exhaust the allowance for the rest. Size the value per
+   * request, and impose a whole-operation bound yourself (e.g. an
+   * `AbortSignal`) if you need one.
    */
   timeoutMs?: number;
 }

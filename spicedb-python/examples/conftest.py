@@ -6,7 +6,7 @@ import pytest
 
 from spicedb import Filter
 from spicedb.aio import SpiceDBClient
-from spicedb.errors import SpiceDBError
+from spicedb.errors import FailedPreconditionError
 
 
 # Endpoint and token come from the environment so the examples run against
@@ -34,7 +34,7 @@ def clear_documents_sync(c) -> None:
     """Synchronous twin of :func:`clear_documents`, for the ``sync_*`` examples."""
     try:
         c.delete_relationships(Filter(resource_type="document"))
-    except SpiceDBError:
+    except FailedPreconditionError:
         pass
 
 
@@ -47,11 +47,13 @@ async def clear_documents(c) -> None:
     behind is the next one's problem, and it has to be cleared **before** the
     schema write -- a cleanup at teardown does nothing when the test that
     should have run it failed first. On a fresh server there is no ``document``
-    definition yet, which is not a failure.
+    definition yet, which SpiceDB reports as FAILED_PRECONDITION
+    (``ERROR_REASON_UNKNOWN_DEFINITION``). That one error is tolerated and no
+    other: an unreachable server or a bad token must still fail the example.
     """
     try:
         await c.delete_relationships(Filter(resource_type="document"))
-    except SpiceDBError:
+    except FailedPreconditionError:
         pass
 
 

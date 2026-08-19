@@ -285,8 +285,8 @@ func IntegrationTest() error {
 	if runErr != nil {
 		return fmt.Errorf("integration tests failed: %w", runErr)
 	}
-	fmt.Printf("==> All %d example suites passed, %d test cases (%d skipped).\n",
-		len(expected), total, len(skippedExamples))
+	fmt.Printf("==> All %d example suites passed: %d test cases executed; %s skipped.\n",
+		len(expected), total, plural(len(skippedExamples), "example"))
 	return nil
 }
 
@@ -374,6 +374,15 @@ func reconcile(glob string, names []string, onDisk map[string]bool) error {
 		}
 	}
 	return nil
+}
+
+// plural renders "1 example" / "2 examples" so the summary line stays readable
+// when exactly one example is skipped.
+func plural(n int, noun string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, noun)
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
 }
 
 // envOr returns the value of the named environment variable, or fallback when

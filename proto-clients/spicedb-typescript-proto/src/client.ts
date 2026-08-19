@@ -34,7 +34,8 @@ export interface TlsOptions {
   caCert?: SecureClientSessionOptions["ca"];
   /**
    * The client's own certificate chain, for a server that requires mutual
-   * TLS. Must be supplied together with {@link TlsOptions.clientKey}.
+   * TLS. Must be supplied together with {@link TlsOptions.clientKey}; either
+   * half alone is refused, since neither is usable without the other.
    */
   clientCert?: SecureClientSessionOptions["cert"];
   /**

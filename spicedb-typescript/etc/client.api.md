@@ -4,7 +4,7 @@
 
 ```ts
 
-import type { SecureClientSessionOptions } from 'node:http2';
+import { TlsOptions } from '@spicedb/proto';
 
 // @public
 export class AlreadyExistsError extends SpiceDBError {
@@ -539,12 +539,7 @@ export interface SubjectRef {
     subjectType: string;
 }
 
-// @public
-export interface TlsOptions {
-    caCert?: SecureClientSessionOptions["ca"];
-    clientCert?: SecureClientSessionOptions["cert"];
-    clientKey?: SecureClientSessionOptions["key"];
-}
+export { TlsOptions }
 
 // @public
 export class Transaction {

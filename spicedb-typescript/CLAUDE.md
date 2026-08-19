@@ -14,3 +14,13 @@ This is the idiomatic TypeScript client for SpiceDB.
 8. Update CHANGELOG.md after making changes
 9. Run `pnpm build && pnpm test` after making changes
 10. No `any` types in public API — use `unknown` if truly needed
+
+## Test prerequisites
+
+`openssl` must be on `PATH`. The custom-TLS fixtures —
+`src/__tests__/custom-tls.test.ts` and `examples/custom_tls/` — shell out to it to
+generate a throwaway CA and sign the certificates their real TLS servers present.
+They **fail** rather than skip when it is missing (a skipped test reads as
+coverage while proving nothing), so on a minimal image you get
+`spawnSync openssl ENOENT` with no hint. Every other test here runs without it.
+CI is fine: the workflows run on `depot-ubuntu-24.04-arm-*`, which ships openssl.

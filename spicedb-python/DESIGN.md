@@ -130,6 +130,14 @@ Two combinations are refused in the constructor, before any channel exists:
   alone; grpc's C-core would reject the pair later, from a layer with no idea
   which argument was wrong.
 
+Testing this needs `openssl` on `PATH`: `tests/test_custom_tls.py` and
+`examples/custom_tls/` generate a throwaway CA and sign a server certificate with
+it, then complete a real handshake against a real gRPC TLS server. They fail
+rather than skip without it, deliberately — a skipped handshake test reads as
+coverage while proving nothing, which is the failure mode root DESIGN.md, "RULE:
+A system-TLS constructor must reach a real server", clause 3 warns about one
+layer up.
+
 Context manager — `async with` on `spicedb.aio`, `with` on `spicedb.sync`:
 
 ```python

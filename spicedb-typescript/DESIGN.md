@@ -104,6 +104,14 @@ Two combinations throw at construction, before any session manager exists:
   alone; `node:tls` fails later, from a layer with no idea which option was
   wrong.
 
+Testing this needs `openssl` on `PATH`: the `custom-tls.test.ts` fixtures in both
+tiers, and `examples/custom_tls/`, generate a throwaway CA and sign a server
+certificate with it, then complete a real handshake against a real
+gRPC-over-TLS server. They fail rather than skip without it, deliberately — a
+skipped handshake test reads as coverage while proving nothing, which is the
+failure mode root DESIGN.md, "RULE: A system-TLS constructor must reach a real
+server", clause 3 warns about one layer up.
+
 ### Consistency
 
 Explicit, never defaulted:

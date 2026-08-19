@@ -33,10 +33,13 @@ async def test_read_relationships(client: SpiceDBClient):
         print(f"found relationship: {rel.subject_type}:{rel.subject_id}")
         found.append(rel)
 
-    assert len(found) >= 2
+    # The full set comes back -- alice and bob, but not charlie (an editor, not
+    # a viewer). `>= 2` with two `in` checks passed on a filter that was
+    # ignored entirely, since charlie would just be a third result; the sync
+    # twin of this example got it right, and this one now matches it.
+    assert len(found) == 2
     subject_ids = {r.subject_id for r in found}
-    assert "alice" in subject_ids
-    assert "bob" in subject_ids
+    assert subject_ids == {"alice", "bob"}
 
     # Clean up so later examples that write a narrower schema aren't blocked
     # by leftover relationships.

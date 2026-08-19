@@ -4,6 +4,38 @@
 
 ### Added
 
+- **2026-08-19**: Four examples that ran (or, for the two watch examples, did
+  not run) without being able to fail now assert something that does. Root
+  DESIGN.md, "RULE: An example must be executed by CI and must be able to
+  fail", clause 2. No example was renamed or removed.
+
+  - `examples/watch_changes/` and `examples/sync_watch_changes/` **now run in
+    CI**. Both were skipped by name — "open-ended stream; needs a bounded
+    consumer with explicit cancellation" — so the only streaming examples never
+    executed and "RULE: Abandoning a stream must release it" had no executed
+    coverage here. Both are now bounded consumers: subscribe from a known
+    revision, write the update they are waiting for, consume until exactly that
+    update arrives, abandon the stream (`aclose()` in the async flavour, `break`
+    plus `close()` in the sync one), and require the generator to be exhausted
+    afterwards. Every `pytest.skip` on timeout became a `pytest.fail`: an
+    example that skips itself when the server is slow reports green while
+    proving nothing. The async example gained a third case that cancels a
+    consumer parked on a quiet stream and requires it to stop.
+  - `examples/call_deadlines/` proves a deadline instead of only showing fast
+    local calls succeeding. Two new cases stand up a socket that accepts TCP
+    connections and never speaks gRPC — what a wedged SpiceDB looks like from a
+    client — and require both `default_timeout` and a per-call `timeout=` to
+    raise `DeadlineExceededError`. Each runs under a watchdog, so a client that
+    accepted the argument and never attached it fails the example rather than
+    hanging the job.
+  - `examples/raw_escape_hatch/` reads `optional_transaction_metadata` back out
+    of the Watch stream. It was sent and never verified — and since that field
+    is not on the idiomatic `WatchEvent` either, reading it back is a second
+    use of the same hatch, which is exactly the point the example is making.
+  - `examples/read_relationships/` asserts `len(found) == 2` and set equality
+    instead of `len(found) >= 2` with two membership checks, which passed on a
+    filter that was ignored entirely. Its own sync twin already got this right.
+
 - An escape hatch, `raw_grpc()`, on both `spicedb.sync.SpiceDBClient` and
   `spicedb.aio.SpiceDBClient`. It returns a `spicedb.raw.RawGrpc` carrying the
   live channel (`.channel`) and the bearer-token metadata (`.metadata`) the

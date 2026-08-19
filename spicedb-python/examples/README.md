@@ -44,15 +44,15 @@ SPICEDB_ENDPOINT=localhost:50071 mage integrationTest
 ## What runs in CI
 
 Every example in the table below is executed by `mage integrationTest`, which
-is what the `integration` job in `.github/workflows/python.yaml` runs, with two
-exceptions: `watch_changes/` and `sync_watch_changes/` are open-ended streams
-with no bounded consumer yet, so the runner skips them by name and prints each
-skip. The runner names the remaining example directories on the pytest command
-line rather than filtering with `-k`, and then reads pytest's JUnit report to
-confirm every selected example actually contributed a test case -- a `-k`
-filter that matches nothing exits 0, which is how a suite can report green over
-nothing at all. See root `DESIGN.md`, "RULE: An example must be executed by CI
-and must be able to fail".
+is what the `integration` job in `.github/workflows/python.yaml` runs. Nothing
+is skipped: `watch_changes/` and `sync_watch_changes/` used to be, for being
+open-ended streams with no bounded consumer, and both now have one. The runner
+names the example directories on the pytest command line rather than filtering
+with `-k`, and then reads pytest's JUnit report to confirm every selected
+example actually contributed a test case -- a `-k` filter that matches nothing
+exits 0, which is how a suite can report green over nothing at all. See root
+`DESIGN.md`, "RULE: An example must be executed by CI and must be able to
+fail".
 
 ## Examples
 
@@ -66,7 +66,7 @@ and must be able to fail".
 | `delete_relationships/` | Deleting relationships, including precondition-guarded deletes |
 | `lookup_resources/` | Resource lookup |
 | `lookup_subjects/` | Subject lookup |
-| `watch_changes/` | Watching for changes |
+| `watch_changes/` | Watching for changes with a bounded consumer: subscribe, write, consume until the expected update arrives, then `aclose()` the stream |
 | `schema_management/` | Schema read/write/reflect/diff, plus computable_permissions/dependent_relations introspection |
 | `bulk_operations/` | Bulk checks and bulk relationship import/export |
 | `expand_permission_tree/` | Expanding a permission into its tree of subjects |
@@ -74,6 +74,6 @@ and must be able to fail".
 | `sync_check_permission/` | Basic permission check with `spicedb.sync` — build the client once at startup and reuse it, no event loop required |
 | `sync_write_relationships/` | Writing relationships with the transaction builder, synchronously |
 | `sync_read_relationships/` | Reading relationships with a plain `for` loop instead of `async for` |
-| `sync_watch_changes/` | Watching for changes from a blocking generator |
+| `sync_watch_changes/` | Watching for changes from a blocking generator, with the same bounded-consumer shape driven by a thread |
 | `raw_escape_hatch/` | The `raw_grpc()` escape hatch: building a generated stub on the client's own channel to send `optional_transaction_metadata` (a proto field this client does not wrap) and to call the single-check `CheckPermission` RPC, from both the async and sync flavors |
 | `custom_tls/` | Reaching a SpiceDB behind a private CA with `ca_cert`, and mutual TLS with `client_cert`/`client_key`. Brings its own TLS endpoint — the only example that does not use the shared SpiceDB at `localhost:50051`, since a plaintext server has nothing to say about trust material |

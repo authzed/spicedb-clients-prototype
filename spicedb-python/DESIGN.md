@@ -741,16 +741,16 @@ See package sections above.
 | `delete_relationships/` | Deleting relationships, including precondition-guarded deletes |
 | `lookup_resources/` | Resource lookup |
 | `lookup_subjects/` | Subject lookup |
-| `watch_changes/` | Watching for changes |
+| `watch_changes/` | Watching for changes with a bounded consumer: subscribe from a known revision, write, consume until that exact update arrives, then `aclose()` and require the generator to be exhausted |
 | `schema_management/` | Schema read/write |
 | `bulk_operations/` | Bulk checks and imports |
 | `expand_permission_tree/` | Expanding a permission into its tree of subjects |
-| `call_deadlines/` | Constructing a client with `default_timeout`, a per-call `timeout` override, and confirming bulk import isn't bounded by the unary default |
+| `call_deadlines/` | Constructing a client with `default_timeout`, a per-call `timeout` override, confirming bulk import isn't bounded by the unary default, and proving both deadlines bite against a listener that accepts the connection and never answers |
 | `custom_tls/` | Reaching a SpiceDB behind a private CA with `ca_cert`, and mutual TLS with `client_cert`/`client_key`. Brings its own TLS endpoint |
 | `sync_check_permission/` | Basic permission check with `spicedb.sync` — one client built at startup, reused, no event loop |
 | `sync_write_relationships/` | Writing relationships with the transaction builder, synchronously |
 | `sync_read_relationships/` | Reading relationships with a plain `for` loop instead of `async for` |
-| `sync_watch_changes/` | Watching for changes from a blocking generator |
+| `sync_watch_changes/` | The same bounded-consumer shape from a blocking generator, driven by a thread with a bounded join |
 | `raw_escape_hatch/` | `raw_grpc()` — driving a generated stub directly for a proto field (`optional_transaction_metadata`) and an RPC (`CheckPermission`) the idiomatic API does not expose, on both flavors |
 
 ## Changelog

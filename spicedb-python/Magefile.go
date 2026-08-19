@@ -65,10 +65,13 @@ var wantExamples = []string{
 // This replaced `pytest -k "not watch"`. A `-k` substring filter that matches
 // nothing exits 0, so the previous form could silently stop excluding (or
 // silently start excluding everything) with no signal either way.
-var skippedExamples = map[string]string{
-	"watch_changes":      "open-ended stream; needs a bounded consumer with explicit cancellation",
-	"sync_watch_changes": "open-ended stream; needs a bounded consumer with explicit cancellation",
-}
+//
+// It is empty on purpose. watch_changes and sync_watch_changes used to live
+// here -- "open-ended stream; needs a bounded consumer with explicit
+// cancellation" -- which meant the only streaming examples never ran, and root
+// DESIGN.md's "RULE: Abandoning a stream must release it" had no executed
+// coverage at all. Both now have that bounded consumer, so nothing is skipped.
+var skippedExamples = map[string]string{}
 
 // Gen updates the idiomatic Python client based on proto client changes.
 func Gen() error {

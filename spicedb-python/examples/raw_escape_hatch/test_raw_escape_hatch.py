@@ -20,10 +20,14 @@ call is unbounded. `raw_grpc()` also makes no stability promise beyond grpc's
 own.
 """
 
+import asyncio
+
 import pytest
 from authzed.api.v1 import core_pb2 as core
 from authzed.api.v1 import permission_service_pb2 as psp
 from authzed.api.v1 import permission_service_pb2_grpc as psg
+from authzed.api.v1 import watch_service_pb2 as wsp
+from authzed.api.v1 import watch_service_pb2_grpc as wsg
 from google.protobuf import struct_pb2
 
 from conftest import ENDPOINT, SCHEMA, TOKEN, clear_documents_sync
@@ -39,6 +43,14 @@ async def test_raw_grpc_sends_a_field_the_idiomatic_api_does_not_expose(client):
     """Async flavor: `raw_grpc()` is awaited, since a `grpc.aio` channel is
     created on -- and bound to -- the running event loop."""
     await client.write_schema(SCHEMA)
+
+    # A seed write fixes the revision the Watch below starts from, so it sees
+    # the metadata write and nothing that came before it. (The `client` fixture
+    # clears `document` first, so the raw write below is a real change -- a
+    # TOUCH of an already-identical relationship produces no watch event.)
+    seed = Transaction()
+    seed.touch(Relationship.from_triple("document:ledger", "viewer", "user:seed"))
+    seed_revision = await client.write(seed)
 
     raw = await client.raw_grpc()
     stub = psg.PermissionsServiceStub(raw.channel)
@@ -73,6 +85,45 @@ async def test_raw_grpc_sends_a_field_the_idiomatic_api_does_not_expose(client):
     revision = response.written_at.token
     print(f"raw write committed at revision {revision}")
     assert revision
+
+    # Read the metadata back. Sending it proves nothing on its own: a client
+    # that dropped the field would look identical from here, because
+    # WriteRelationships does not echo it back. The only place it becomes
+    # observable is the Watch stream -- and `optional_transaction_metadata` is
+    # not on the idiomatic `WatchEvent` either, so the read-back is a second
+    # use of the same escape hatch.
+    watch_stub = wsg.WatchServiceStub(raw.channel)
+    watch_call = watch_stub.Watch(
+        wsp.WatchRequest(
+            optional_object_types=["document"],
+            optional_start_cursor=core.ZedToken(token=seed_revision),
+        ),
+        metadata=raw.metadata,
+    )
+    seen_metadata = None
+    try:
+        async with asyncio.timeout(30.0):
+            async for response in watch_call:
+                if response.HasField("optional_transaction_metadata"):
+                    seen_metadata = dict(response.optional_transaction_metadata)
+                    break
+    except TimeoutError:
+        pytest.fail(
+            "no watch event carried optional_transaction_metadata within 30s: "
+            "the metadata sent on the raw write never reached the server"
+        )
+    finally:
+        # Abandoning a raw stream is the caller's job on this path: the hatch
+        # hands back the generated stub, so there is no iterator cleanup to
+        # lean on. See root DESIGN.md, "RULE: Abandoning a stream must release
+        # it".
+        watch_call.cancel()
+
+    print(f"watch reported transaction metadata: {seen_metadata}")
+    assert seen_metadata == {
+        "correlation_id": "example-42",
+        "actor": "billing-job",
+    }
 
     # Same client, same connection: the idiomatic API picks up right where the
     # raw call left off, including read-your-writes on the raw revision.

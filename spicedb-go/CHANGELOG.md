@@ -259,6 +259,13 @@
 
 ### Bug Fixes
 
+- **2026-08-19**: **The example set is pinned by name, not by count.** `wantExampleCount` passed
+  unchanged when an example directory was *renamed* -- only deletion was caught, and a manifest
+  can drift from disk with no signal. `wantExamples` now lists every example by name and is
+  reconciled with the glob in both directions, the same shape the skip targets already used.
+  Verified by renaming `examples/lookup_subjects`: `expected but absent: [lookup_subjects];
+  present but not expected: [lookup_subj]`.
+
 - **2026-08-19**: **The example runner now asserts how many examples it ran.** `IntegrationTest`
   globbed `examples/*/main.go` and skipped `watch_changes` by a hardcoded name comparison. A glob
   cannot list an example that is not there, so a renamed or moved example produced a *shorter*

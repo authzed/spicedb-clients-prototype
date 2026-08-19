@@ -25,20 +25,34 @@ const (
 	// suite can be pointed at a SpiceDB on another port when 50051 is taken.
 	defaultEndpoint = "localhost:50051"
 	defaultToken    = "somerandomkeyhere"
-
-	// Number of directories matching examples/*/main.go. A glob cannot list an
-	// example that does not exist, but a renamed or moved file silently yields
-	// a *shorter* list instead of an error, so the count is asserted rather
-	// than trusted. Bump this when adding an example. See root DESIGN.md,
-	// "RULE: An example must be executed by CI and must be able to fail",
-	// clause 1.
-	wantExampleCount = 13
 )
+
+// wantExamples is every example this runner expects under examples/, by name.
+// The set is pinned rather than counted: a count alone still passes when an
+// example is renamed, and a glob cannot list an example that is not there, so a
+// moved or renamed example would otherwise just shrink the run and still report
+// green. Add a name here when adding an example. See root DESIGN.md, "RULE: An
+// example must be executed by CI and must be able to fail", clause 1.
+var wantExamples = []string{
+	"bulk_operations",
+	"check_permission",
+	"delete_relationships",
+	"expand_permission_tree",
+	"lookup_resources",
+	"lookup_subjects",
+	"raw_escape_hatch",
+	"read_relationships",
+	"relationship_counters",
+	"schema_management",
+	"schema_reflection",
+	"watch_changes",
+	"write_relationships",
+}
 
 // skippedExamples maps an example that IntegrationTest does not execute to the
 // reason it does not. Every other example under examples/ MUST run. A skip has
 // to be listed here to happen at all, so it is visible in the run's output and
-// counted against wantExampleCount -- never the silent residue of a filter.
+// counted against wantExamples -- never the silent residue of a filter.
 var skippedExamples = map[string]string{
 	"watch_changes": "open-ended stream; needs a bounded consumer with explicit cancellation",
 }
@@ -155,13 +169,6 @@ func exampleTargets() ([]string, error) {
 	}
 	sort.Strings(files)
 
-	if len(files) != wantExampleCount {
-		return nil, fmt.Errorf(
-			"examples/*/main.go matched %d files, want %d: an example was added, renamed, or moved. "+
-				"Update wantExampleCount in Magefile.go if the change is intended",
-			len(files), wantExampleCount)
-	}
-
 	names := make([]string, 0, len(files))
 	onDisk := make(map[string]bool, len(files))
 	for _, f := range files {
@@ -169,11 +176,8 @@ func exampleTargets() ([]string, error) {
 		names = append(names, name)
 		onDisk[name] = true
 	}
-	for name := range skippedExamples {
-		if !onDisk[name] {
-			return nil, fmt.Errorf("skippedExamples names %q, which is not an example on disk: "+
-				"a renamed skip target would otherwise silently start being skipped by nothing", name)
-		}
+	if err := reconcile("examples/*/main.go", names, onDisk); err != nil {
+		return nil, err
 	}
 	return names, nil
 }
@@ -253,7 +257,7 @@ func IntegrationTest() error {
 
 	// A skip that matches nothing, or a glob that shrank, must fail the job
 	// rather than quietly reduce what ran.
-	wantExecuted := wantExampleCount - len(skippedExamples)
+	wantExecuted := len(wantExamples) - len(skippedExamples)
 	if len(executed) != wantExecuted {
 		return fmt.Errorf("executed %d examples, want %d (%d on disk, %d skipped)",
 			len(executed), wantExecuted, len(names), len(skippedExamples))
@@ -263,6 +267,48 @@ func IntegrationTest() error {
 		return fmt.Errorf("integration tests failed: %s", strings.Join(failures, ", "))
 	}
 	fmt.Printf("==> All %d examples passed (%d skipped).\n", len(executed), len(skippedExamples))
+	return nil
+}
+
+// reconcile compares the example names found on disk against wantExamples in
+// both directions, and checks that every skip target still exists.
+//
+// The set is pinned by name rather than counted: a count alone still passes
+// when an example is *renamed*, and a glob cannot list an example that is not
+// there, so a moved or renamed example would otherwise just shrink the run and
+// still report green.
+func reconcile(glob string, names []string, onDisk map[string]bool) error {
+	want := make(map[string]bool, len(wantExamples))
+	for _, name := range wantExamples {
+		want[name] = true
+	}
+
+	var missing, unexpected []string
+	for _, name := range wantExamples {
+		if !onDisk[name] {
+			missing = append(missing, name)
+		}
+	}
+	for _, name := range names {
+		if !want[name] {
+			unexpected = append(unexpected, name)
+		}
+	}
+	sort.Strings(missing)
+	sort.Strings(unexpected)
+
+	if len(missing) > 0 || len(unexpected) > 0 {
+		return fmt.Errorf(
+			"%s does not match wantExamples in Magefile.go -- expected but absent: [%s]; "+
+				"present but not expected: [%s]. Update wantExamples if the change is intended",
+			glob, strings.Join(missing, ", "), strings.Join(unexpected, ", "))
+	}
+	for name := range skippedExamples {
+		if !onDisk[name] {
+			return fmt.Errorf("skippedExamples names %q, which is not an example on disk: "+
+				"a renamed skip target would otherwise silently start being skipped by nothing", name)
+		}
+	}
 	return nil
 }
 

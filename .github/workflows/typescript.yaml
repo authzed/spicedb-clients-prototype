@@ -16,6 +16,10 @@ concurrency:
 jobs:
   paths-filter:
     runs-on: depot-ubuntu-24.04-arm-small
+    # No job may sit at GitHub's 360-minute default: a hung step should
+    # fail fast and free the runner. The slowest job here runs well under
+    # five minutes, so this is a backstop, not a budget.
+    timeout-minutes: 20
     outputs:
       changed: ${{ steps.filter.outputs.changed }}
     steps:
@@ -39,6 +43,10 @@ jobs:
     needs: paths-filter
     if: needs.paths-filter.outputs.changed == 'true'
     runs-on: depot-ubuntu-24.04-arm-4
+    # No job may sit at GitHub's 360-minute default: a hung step should
+    # fail fast and free the runner. The slowest job here runs well under
+    # five minutes, so this is a backstop, not a budget.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v5
@@ -50,6 +58,7 @@ jobs:
           node-version: 20
           cache: pnpm
       - name: Install mage
+        timeout-minutes: 5
         run: go install github.com/magefile/mage@latest
       - name: Install deps
         run: pnpm install --frozen-lockfile
@@ -62,6 +71,10 @@ jobs:
     needs: paths-filter
     if: needs.paths-filter.outputs.changed == 'true'
     runs-on: depot-ubuntu-24.04-arm-4
+    # No job may sit at GitHub's 360-minute default: a hung step should
+    # fail fast and free the runner. The slowest job here runs well under
+    # five minutes, so this is a backstop, not a budget.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v5
@@ -73,6 +86,7 @@ jobs:
           node-version: 20
           cache: pnpm
       - name: Install mage
+        timeout-minutes: 5
         run: go install github.com/magefile/mage@latest
       - name: Install deps
         run: pnpm install --frozen-lockfile
@@ -87,6 +101,10 @@ jobs:
     needs: paths-filter
     if: needs.paths-filter.outputs.changed == 'true'
     runs-on: depot-ubuntu-24.04-arm-4
+    # No job may sit at GitHub's 360-minute default: a hung step should
+    # fail fast and free the runner. The slowest job here runs well under
+    # five minutes, so this is a backstop, not a budget.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v5
@@ -98,6 +116,7 @@ jobs:
           node-version: 20
           cache: pnpm
       - name: Install mage
+        timeout-minutes: 5
         run: go install github.com/magefile/mage@latest
       - name: Install deps
         run: pnpm install --frozen-lockfile
@@ -110,6 +129,10 @@ jobs:
     needs: paths-filter
     if: needs.paths-filter.outputs.changed == 'true' && github.event_name == 'pull_request'
     runs-on: depot-ubuntu-24.04-arm-small
+    # No job may sit at GitHub's 360-minute default: a hung step should
+    # fail fast and free the runner. The slowest job here runs well under
+    # five minutes, so this is a backstop, not a budget.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
         with:
@@ -123,6 +146,7 @@ jobs:
           node-version: 20
           cache: pnpm
       - name: Install mage
+        timeout-minutes: 5
         run: go install github.com/magefile/mage@latest
       - name: Install deps
         run: pnpm install --frozen-lockfile

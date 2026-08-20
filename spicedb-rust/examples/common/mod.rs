@@ -189,7 +189,10 @@ impl PermissionsService for StandIn {
     ) -> Result<Response<proto::WriteRelationshipsResponse>, Status> {
         self.counts.write.fetch_add(1, Ordering::SeqCst);
         // Always fails, transiently. A retrying client would come back.
-        Err(Status::new(Code::Unavailable, "transient, from the stand-in"))
+        Err(Status::new(
+            Code::Unavailable,
+            "transient, from the stand-in",
+        ))
     }
 
     type ReadRelationshipsStream = ProtoStream<proto::ReadRelationshipsResponse>;

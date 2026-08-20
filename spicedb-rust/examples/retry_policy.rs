@@ -53,7 +53,10 @@ async fn main() {
         .check_permission(&consistency::full(), "view", &doc())
         .await
         .expect("a read failing transiently should have been retried to success");
-    assert!(result.has_permission(), "the retried check should have granted");
+    assert!(
+        result.has_permission(),
+        "the retried check should have granted"
+    );
     assert_eq!(
         counts.check(),
         3,

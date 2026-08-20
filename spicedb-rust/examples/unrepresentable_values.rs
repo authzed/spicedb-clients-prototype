@@ -46,8 +46,7 @@ async fn main() {
     // relationships and deleting every relationship on every document.
     let endpoint =
         std::env::var("SPICEDB_ENDPOINT").unwrap_or_else(|_| "localhost:50051".to_string());
-    let token =
-        std::env::var("SPICEDB_TOKEN").unwrap_or_else(|_| "somerandomkeyhere".to_string());
+    let token = std::env::var("SPICEDB_TOKEN").unwrap_or_else(|_| "somerandomkeyhere".to_string());
     let live = SpiceDBClient::new_plaintext(endpoint, token)
         .await
         .expect("connect to SpiceDB");
@@ -57,7 +56,9 @@ async fn main() {
     let err = live
         .delete_relationships(&Filter::new("document").with_subject_id("alice"))
         .await
-        .expect_err("a filter whose subject constraint the wire cannot express must fail, not widen");
+        .expect_err(
+            "a filter whose subject constraint the wire cannot express must fail, not widen",
+        );
     // Typed AND client-side. Asserting only the variant would not discriminate:
     // a widened filter that reached the server comes back InvalidArgument too,
     // so this pins the client's own message -- the refusal that happens before

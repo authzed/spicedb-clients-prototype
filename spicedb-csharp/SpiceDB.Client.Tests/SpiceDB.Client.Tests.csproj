@@ -13,7 +13,12 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="FluentAssertions" Version="8.10.0" />
+    <!-- Pinned to the 7.x line deliberately: 7.2.2 is the last Apache-2.0 release.
+         FluentAssertions 8.x ships under a commercial (Xceed) licence; its nuspec
+         switches from an Apache-2.0 licence expression to a licence file. That is a
+         licensing decision, not a version bump, so a dependency update must not
+         carry this to 8.x on its own. -->
+    <PackageReference Include="FluentAssertions" Version="7.2.2" />
     <PackageReference Include="Grpc.AspNetCore.Server" Version="2.67.0" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.9.0" />
     <PackageReference Include="Moq" Version="4.20.72" />

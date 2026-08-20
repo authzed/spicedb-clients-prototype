@@ -679,6 +679,10 @@ every change in the gap). `is_checkpoint` is true for a checkpoint event, which 
 | `expand_permission_tree.rs` | Expanding a permission tree and walking the native `PermissionTree` |
 | `relationship_counters.rs` | Registering, reading, and unregistering relationship counters, polling to a terminal state and asserting an exact count |
 | `call_deadlines.rs` | Constructing a client with `default_timeout`, a per-call `_with_timeout` override, confirming bulk import isn't bounded by the unary default, and proving both deadlines bite against a listener that accepts the connection and never answers |
+| `error_mapping` | Recovering from `OUT_OF_RANGE` (stale ZedToken) and `UNAUTHENTICATED` without parsing a message |
+| `insecure_opt_in` | Why `.plaintext()` is loopback-only, and the named opt-in a remote plaintext host requires |
+| `retry_policy` | Which calls are retried for you and which are not, counted server-side |
+| `unrepresentable_values` | A filter the wire cannot express fails loudly; unknown server enums degrade safely |
 | `raw_escape_hatch.rs` | `raw_proto()` — driving the generated tonic client directly for a proto field (`optional_transaction_metadata`) and an RPC (`CheckPermission`) the idiomatic API does not expose |
 
 ## Changelog

@@ -72,3 +72,7 @@ to fail".
 | `relationship_counters` | Experimental relationship counters |
 | `raw_escape_hatch` | The `raw_proto()` escape hatch: driving the generated tonic client on this client's own connection to send `optional_transaction_metadata` (a proto field this crate does not wrap) and to call the single-check `CheckPermission` RPC |
 | `call_deadlines` | Constructing a client with `default_timeout`, a per-call `_with_timeout` override, and confirming bulk import isn't bounded by the unary default |
+| `error_mapping` | Recovering from `OUT_OF_RANGE` (stale ZedToken) and `UNAUTHENTICATED` without parsing a message |
+| `insecure_opt_in` | Why `.plaintext()` is loopback-only, and the named opt-in a remote plaintext host requires |
+| `retry_policy` | Which calls are retried for you and which are not, counted server-side |
+| `unrepresentable_values` | A filter the wire cannot express fails loudly; unknown server enums degrade safely |

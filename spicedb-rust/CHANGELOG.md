@@ -4,6 +4,58 @@
 
 ### Added
 
+- **2026-08-19: four new examples, one per root `DESIGN.md` RULE that had no executed
+  coverage in any client.** 13 examples -> 17, none renamed or removed. Group E Phase 3,
+  and the last of the seven clients.
+
+  - `examples/insecure_opt_in` — "RULE: Credentials over insecure transport require an
+    explicit opt-in". Loopback plaintext needs no ceremony; a remote plaintext host is
+    refused while building, so the token never reaches a socket; and the named
+    `.allow_insecure_remote_credentials()` permits it. Four endpoints whose authority
+    could move under URI parsing are each required to be refused —
+    `127.0.0.1:443@evil.com` above all, where a last-colon split reads the host as
+    `127.0.0.1` while `http::Uri`, what tonic parses with, reads the authority as
+    `evil.com`.
+  - `examples/unrepresentable_values` — "RULE: A conversion that cannot preserve meaning
+    must fail". A filter with `subject_id` and no `subject_type` is refused rather than
+    silently widening, which for `delete_relationships` is the difference between deleting
+    alice's relationships and deleting every relationship on every document. In the other
+    direction, a permissionship this client has never seen must neither raise nor grant.
+
+    **The sibling clients demonstrate clause 1 twice; only once is possible here.** They
+    also feed an unconvertible caveat-context value, but this client types caveat context
+    as `HashMap<String, serde_json::Value>` and every `serde_json::Value` has a protobuf
+    `Struct` representation — the type system already closed that hole at compile time, so
+    there is no such failure to demonstrate. That is a real difference from Python, where
+    the same case was a runtime failure that had to be fixed to name its key, and it is
+    recorded rather than faked with a contrived value.
+  - `examples/error_mapping` — "RULE: Error mapping must not lose the server's detail",
+    written as the two recoveries the rule names: a stale ZedToken surfaces as
+    `SpiceDBError::OutOfRange`, recovered by dropping the token and re-reading at full
+    consistency; a rotated token surfaces as `SpiceDBError::Unauthenticated`, distinct
+    from a transport fault. Nothing parses a message.
+  - `examples/retry_policy` — "RULE: Automatic retry is for idempotent operations only",
+    with attempts counted **server-side**, the only way to tell a retry from its absence:
+    at the caller a transparently-retried success and a first-try success are identical. A
+    read failing twice with `UNAVAILABLE` is retried to success in 3 attempts; a write
+    failing the same way is attempted exactly once; `RESOURCE_EXHAUSTED` exactly once even
+    on a read.
+
+  The last three drive a shared tonic stand-in in `examples/common/mod.rs` — a directory
+  rather than `examples/common.rs`, because the integration runner globs `examples/*.rs`
+  and a top-level file there would be picked up as an example with no `main`.
+
+  Verified by mutation, 5 of 5 killing their example: disabling the loopback guard;
+  dropping `OUT_OF_RANGE` from the status mapping; making `ResourceExhausted` transient;
+  giving `call_once` a retry budget; and letting an under-specified filter widen.
+
+  **One mutation improved an assertion rather than confirming it.** The filter check
+  originally asserted only `matches!(err, InvalidArgument(_))`, and survived the widening
+  mutation — because a widened filter that *reaches* the server comes back
+  `INVALID_ARGUMENT` too, so the variant alone could not tell a client-side refusal from a
+  server-side rejection. It now also requires the message to name `subject_type`, which
+  only this client's own refusal produces, and the mutation kills it.
+
 - **2026-08-19: five examples that ran without being able to fail now assert something
   that does.** Root DESIGN.md, "RULE: An example must be executed by CI and must be able
   to fail", clause 2. No example was renamed or removed.

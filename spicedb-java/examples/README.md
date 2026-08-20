@@ -79,3 +79,7 @@ still exists under it, and JUnit's class order is not something to rely on.
 | `ExpandPermissionTreeTest` | Expanding a permission with `expandPermissionTree` and walking the native `PermissionTree` (intermediate/leaf nodes, subjects) |
 | `RawEscapeHatchTest` | The `rawChannel()` escape hatch: building a generated stub on this client's own channel to send `optionalTransactionMetadata` (a proto field this client does not wrap) and to call the single-check `CheckPermission` RPC |
 | `CallDeadlinesTest` | The `Duration defaultTimeout` construction overload, a per-call `timeout` override, and confirming bulk import isn't bounded by the unary default |
+| `ErrorMappingTest` | Recovering from `OUT_OF_RANGE` (stale ZedToken) and `UNAUTHENTICATED` without parsing a message |
+| `InsecureOptInTest` | Why `createPlaintext` is loopback-only, and the named opt-in a remote plaintext host requires |
+| `RetryPolicyTest` | Which calls are retried for you and which are not, counted server-side |
+| `UnrepresentableValuesTest` | Caller data that cannot convert fails loudly, naming the key; unknown server enums degrade safely |

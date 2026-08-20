@@ -4,6 +4,54 @@
 
 ### Added
 
+- **2026-08-19: four new examples, one per root `DESIGN.md` RULE that had no executed
+  coverage in any client.** 14 example classes -> 18, 46 tests -> 62, none renamed or
+  removed. Group E Phase 3.
+
+  - `InsecureOptInTest` — "RULE: Credentials over insecure transport require an explicit
+    opt-in". Loopback plaintext needs no ceremony; a remote plaintext host is refused at
+    construction, so the token never reaches a socket; and the named third argument to
+    `createPlaintext` permits it. Four endpoints whose authority could move under URI
+    parsing are each required to be refused — `127.0.0.1:443@evil.com` above all, where a
+    last-colon split reads the host as `127.0.0.1` while `URI.create("//" + name)`, what
+    grpc-java's `DnsNameResolver` uses, reads the authority as `evil.com`.
+  - `UnrepresentableValuesTest` — "RULE: A conversion that cannot preserve meaning must
+    fail", both directions. Unconvertible caveat context is refused with
+    `InvalidArgumentException` naming the offending key (and *not* naming the innocent one
+    beside it); a filter with `subjectID` and no `subjectType` is refused rather than
+    silently widening, which for `deleteRelationships` is the difference between deleting
+    alice's relationships and deleting every relationship on every document. In the other
+    direction, a permissionship this client has never seen must neither raise nor grant.
+  - `ErrorMappingTest` — "RULE: Error mapping must not lose the server's detail", written
+    as the two recoveries the rule names: a stale ZedToken surfaces as `OutOfRangeException`
+    with the `StatusRuntimeException` still reachable as its cause, recovered by dropping
+    the token and re-reading at full consistency; a rotated token surfaces as
+    `UnauthenticatedException`, distinct from a transport fault. Nothing parses a message.
+  - `RetryPolicyTest` — "RULE: Automatic retry is for idempotent operations only", with
+    attempts counted **server-side**, the only way to tell a retry from its absence: at the
+    caller a transparently-retried success and a first-try success are identical. A read
+    failing twice with `UNAVAILABLE` is retried to success in 3 attempts; a write failing
+    the same way is attempted exactly once; `RESOURCE_EXHAUSTED` exactly once even on a
+    read.
+
+  Verified by mutation, 6 of 6 killing their example: removing the insecure-transport
+  guard; dropping `OUT_OF_RANGE` from the mapper; adding `RESOURCE_EXHAUSTED` to
+  `TRANSIENT_CODES`; routing `callOnce` through `withRetry`; letting an under-specified
+  filter widen; and mapping an unrecognised permissionship to a grant.
+
+  `ErrorMappingTest` and `RetryPolicyTest` drive an in-process gRPC stand-in rather than
+  the real SpiceDB, because neither code is reachable from it — verified, not assumed: a
+  garbage ZedToken returns `INVALID_ARGUMENT` and the in-memory datastore never collects
+  the revision, and a wrong preshared key returns **`PERMISSION_DENIED`, not
+  `UNAUTHENTICATED`**. `ErrorMappingTest` asserts that real behaviour too, so a reader does
+  not write a credential-refresh branch that can never run.
+
+  One note earned in review: `InsecureOptInTest` writes a schema narrower than the shared
+  one, and passed in isolation while failing the full suite — SpiceDB refuses a
+  `WriteSchema` that drops a relation while a relationship still exists under it, and an
+  earlier example had left `document:report#editor` behind. It now calls
+  `clearDocumentRelationships` first, like every other example whose schema is narrower.
+
 - **2026-08-19: `createSystemTls` now has a test at all, and it completes a real TLS
   handshake.** Root DESIGN.md, "RULE: A system-TLS constructor must reach a real server".
   This client had **no TLS test at any tier** — a grep for

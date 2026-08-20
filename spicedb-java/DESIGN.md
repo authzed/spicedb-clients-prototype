@@ -530,6 +530,10 @@ per-example directories — the rows below name the class, matching `examples/RE
 | `RelationshipCountersTest` | Registering, reading, and unregistering relationship counters |
 | `ExpandPermissionTreeTest` | Expanding a permission with `expandPermissionTree` and walking the native `PermissionTree` (intermediate/leaf nodes, subjects) |
 | `CallDeadlinesTest` | The `Duration defaultTimeout` construction overload, a per-call `timeout` override, and confirming bulk import isn't bounded by the unary default |
+| `ErrorMappingTest` | Recovering from `OUT_OF_RANGE` (stale ZedToken) and `UNAUTHENTICATED` without parsing a message |
+| `InsecureOptInTest` | Why `createPlaintext` is loopback-only, and the named opt-in a remote plaintext host requires |
+| `RetryPolicyTest` | Which calls are retried for you and which are not, counted server-side |
+| `UnrepresentableValuesTest` | Caller data that cannot convert fails loudly, naming the key; unknown server enums degrade safely |
 | `RawEscapeHatchTest` | `rawChannel()` — driving a generated stub directly for a proto field (`optionalTransactionMetadata`) and an RPC (`CheckPermission`) the idiomatic API does not expose |
 
 (`SpiceDBIntegrationTest` is the shared base class, not an example.)

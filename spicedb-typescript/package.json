@@ -10,18 +10,18 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@bufbuild/protobuf": "^2.0.0",
-    "@connectrpc/connect": "^2.0.0",
+    "@bufbuild/protobuf": "^2.14.0",
+    "@connectrpc/connect": "^2.1.2",
     "@spicedb/proto": "workspace:*"
   },
   "peerDependencies": {
-    "@types/node": "^25.5.0"
+    "@types/node": "^26.2.0"
   },
   "devDependencies": {
-    "@connectrpc/connect-node": "^2.0.0",
-    "@microsoft/api-extractor": "^7.57.7",
-    "@types/node": "^25.5.0",
-    "typescript": "^5.7.0",
-    "vitest": "^3.0.0"
+    "@connectrpc/connect-node": "^2.1.2",
+    "@microsoft/api-extractor": "^7.58.12",
+    "@types/node": "^26.2.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.10"
   }
 }

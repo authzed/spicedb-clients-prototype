@@ -4,6 +4,51 @@
 
 ### Added
 
+- **2026-08-19: four new examples, one per root `DESIGN.md` RULE that had no executed
+  coverage in any client.** 13 example projects -> 17, 34 tests -> 50, none renamed or
+  removed. Group E Phase 3.
+
+  - `examples/InsecureOptIn` — "RULE: Credentials over insecure transport require an
+    explicit opt-in". Loopback plaintext needs no ceremony; a remote plaintext host is
+    refused at construction, so the token never reaches a socket; and the named
+    `allowInsecureRemoteCredentials` permits it. Four endpoints whose authority could
+    move under URI parsing are each required to be refused — `127.0.0.1:443@evil.com`
+    above all, where a last-colon split reads the host as `127.0.0.1` while `System.Uri`,
+    what Grpc.Net.Client parses with, reads the authority as `evil.com`.
+  - `examples/UnrepresentableValues` — "RULE: A conversion that cannot preserve meaning
+    must fail", both directions. Unconvertible caveat context is refused naming the
+    offending key (and *not* naming the innocent one beside it); a filter with
+    `SubjectID` and no `SubjectType` is refused rather than silently widening, which for
+    `DeleteRelationshipsAsync` is the difference between deleting alice's relationships
+    and deleting every relationship on every document. In the other direction, a
+    permissionship this client has never seen must neither raise nor grant.
+  - `examples/ErrorMapping` — "RULE: Error mapping must not lose the server's detail",
+    written as the two recoveries the rule names: a stale ZedToken surfaces as
+    `OutOfRangeException` with the `RpcException` still reachable as `InnerException`,
+    recovered by dropping the token and re-reading at full consistency; a rotated token
+    surfaces as `UnauthenticatedException`, distinct from a transport fault.
+  - `examples/RetryPolicy` — "RULE: Automatic retry is for idempotent operations only",
+    with attempts counted **server-side**, the only way to tell a retry from its absence:
+    at the caller a transparently-retried success and a first-try success are identical.
+    A read failing twice with `UNAVAILABLE` is retried to success in 3 attempts; a write
+    failing the same way is attempted exactly once; `RESOURCE_EXHAUSTED` exactly once even
+    on a read.
+
+  Verified by mutation, 5 of 5 killing their example: disabling the loopback guard;
+  dropping `OUT_OF_RANGE` from the mapper; adding `StatusCode.ResourceExhausted` to
+  `TransientCodes`; letting an under-specified filter widen; and routing `CallOnceAsync`
+  through `RetryAsync`.
+
+  The last three examples host a real Kestrel gRPC stand-in (the pattern
+  `SpiceDB.Client.Tests` already uses), because neither R5 code is reachable from the real
+  SpiceDB — verified, not assumed: a garbage ZedToken returns `INVALID_ARGUMENT` and the
+  in-memory datastore never collects the revision, and a wrong preshared key returns
+  **`PERMISSION_DENIED`, not `UNAUTHENTICATED`**. `ErrorMapping` asserts that real
+  behaviour too, so a reader does not write a credential-refresh branch that can never
+  run. Those three projects therefore carry a `Microsoft.AspNetCore.App` framework
+  reference and `Grpc.AspNetCore.Server`; `InsecureOptIn` needs neither, since its
+  refusals happen before any connection.
+
 - **2026-08-19: `CreateSystemTls` now has a test that completes a real TLS handshake.**
   Root DESIGN.md, "RULE: A system-TLS constructor must reach a real server". The only TLS
   coverage was `CreateSystemTls_ReturnsClient`, which constructs against

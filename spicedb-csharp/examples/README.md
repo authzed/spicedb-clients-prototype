@@ -79,6 +79,10 @@ executed by CI and must be able to fail".
 | `LookupResources/` | Resource lookup |
 | `LookupSubjects/` | Subject lookup |
 | `CallDeadlines/` | The `defaultTimeout` construction parameter, a per-call `timeout` override, and confirming bulk import isn't bounded by the unary default |
+| `ErrorMapping/` | Recovering from `OUT_OF_RANGE` (stale ZedToken) and `UNAUTHENTICATED` without parsing a message |
+| `InsecureOptIn/` | Why `CreatePlaintext` is loopback-only, and the named opt-in a remote plaintext host requires |
+| `RetryPolicy/` | Which calls are retried for you and which are not, counted server-side |
+| `UnrepresentableValues/` | Caller data that cannot convert fails loudly, naming the key; unknown server enums degrade safely |
 | `WatchChanges/` | Watching for changes |
 | `SchemaManagement/` | Schema read/write |
 | `BulkOperations/` | Bulk checks, batch writes, and bulk relationship import/export |

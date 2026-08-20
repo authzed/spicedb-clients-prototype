@@ -1,5 +1,5 @@
 module github.com/authzed/spicedb-clients/spicedb-ruby
 
-go 1.23.0
+go 1.26.5
 
 require github.com/magefile/mage v1.17.2

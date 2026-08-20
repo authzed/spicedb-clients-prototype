@@ -1,6 +1,6 @@
 module github.com/authzed/spicedb-clients/spicedb-go
 
-go 1.25.0
+go 1.26.5
 
 require (
 	github.com/authzed/spicedb-clients/proto-clients/spicedb-go-proto v0.0.0

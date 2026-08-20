@@ -122,6 +122,6 @@ RSpec.describe 'SpiceDB::Client#proto_client escape hatch' do
     # And the guard still refuses what it always did.
     expect do
       SpiceDB::Client.new_plaintext('evil.example.com:50051', 'test-token')
-    end.to raise_error(ArgumentError, /allow_insecure_remote_credentials/)
+    end.to raise_error(SpiceDB::InvalidArgumentError, /allow_insecure_remote_credentials/)
   end
 end

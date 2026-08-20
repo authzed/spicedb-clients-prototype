@@ -147,6 +147,22 @@ function transportAuthority(endpoint: string): string {
     : endpoint;
 }
 
+/**
+ * Thrown when a plaintext connection to a non-loopback endpoint is requested
+ * without `allowInsecureRemoteCredentials`.
+ *
+ * A named class rather than a bare `Error` so the idiomatic client can map this
+ * refusal onto its own error type without matching on prose -- see root
+ * DESIGN.md, "RULE: Credentials over insecure transport require an explicit
+ * opt-in", clause 4.
+ */
+export class InsecureRemoteHostError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InsecureRemoteHostError";
+  }
+}
+
 export function isLoopbackEndpoint(endpoint: string): boolean {
   // There is deliberately no "unix:" exemption here -- see the doc comment
   // above, and the unconditional refusal in createSpiceDBClient below.
@@ -296,7 +312,7 @@ export function createSpiceDBClient(
     !options?.allowInsecureRemoteCredentials &&
     !isLoopbackEndpoint(endpoint)
   ) {
-    throw new Error(
+    throw new InsecureRemoteHostError(
       `spicedb: refusing to send credentials over an insecure (plaintext) connection to ` +
         `non-loopback endpoint "${endpoint}": use TLS (omit insecure), or pass ` +
         `allowInsecureRemoteCredentials: true if you intend to send a bearer token in ` +

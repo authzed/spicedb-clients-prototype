@@ -90,7 +90,10 @@ public class SpiceDBClientTests
     public void CreatePlaintext_RefusesNonLoopbackWithoutOptIn()
     {
         var act = () => SpiceDBClient.CreatePlaintext("evil.example.com:1234", "testtoken");
-        var ex = act.Should().Throw<InvalidOperationException>().Which;
+        // This client's own typed argument error, not the proto tier's exception -- see
+        // root DESIGN.md, "RULE: Credentials over insecure transport require an explicit
+        // opt-in", clause 4.
+        var ex = act.Should().Throw<InvalidArgumentException>().Which;
         ex.Message.Should().Contain("evil.example.com:1234");
         ex.Message.Should().Contain("allowInsecureRemoteCredentials");
     }
@@ -109,7 +112,7 @@ public class SpiceDBClientTests
     public void CreatePlaintext_RefusesEndpointWhoseUriAuthorityShiftsTheHost(string endpoint)
     {
         var act = () => SpiceDBClient.CreatePlaintext(endpoint, "testtoken");
-        var ex = act.Should().Throw<InvalidOperationException>().Which;
+        var ex = act.Should().Throw<InvalidArgumentException>().Which;
         ex.Message.Should().Contain("allowInsecureRemoteCredentials");
     }
 

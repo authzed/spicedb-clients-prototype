@@ -4,6 +4,20 @@
 
 ### Fixed
 
+- **2026-08-19: the insecure-remote-host refusal now raises `SpiceDB::InvalidArgumentError`.**
+  Root DESIGN.md, "RULE: Credentials over insecure transport require an explicit opt-in",
+  clause 4 (new). The refusal for a plaintext connection to a non-loopback host is a caller
+  argument rejected before any connection exists, so it now takes the same
+  `InvalidArgument`-family error this client already uses when a filter's subject constraint
+  cannot be expressed on the wire. Previously the seven clients gave six different answers to
+  that question, which meant a caller catching this mistake had to learn a different type per
+  language for no reason a reader could infer.
+
+  It previously raised a plain `ArgumentError`. The proto tier now raises
+  `SpiceDBProto::InsecureRemoteHostError` (still an `ArgumentError` subclass, so proto-tier
+  rescues are unaffected), and the client rescues only that one — the TLS trust-material
+  validations beside it keep raising `ArgumentError`.
+
 - **2026-08-19**: **Six examples ran (or, for `watch_changes/`, did not run) without being able
   to fail.** Root DESIGN.md, "RULE: An example must be executed by CI and must be able to fail",
   clause 2. No example was renamed or removed.

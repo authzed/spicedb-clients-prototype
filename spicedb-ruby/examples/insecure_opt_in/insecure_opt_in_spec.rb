@@ -14,12 +14,12 @@ require_relative '../spec_helper'
 # host over plaintext takes a second, separately-named keyword the caller cannot
 # supply by accident: `allow_insecure_remote_credentials:`.
 #
-# On the error type: this guard raises a plain +ArgumentError+, not
-# +SpiceDB::InvalidArgumentError+. The seven clients currently give six different
-# answers here (Go a plain error, Python InvalidArgumentError, TypeScript a plain
-# Error, Java IllegalArgumentException, C# InvalidOperationException, Ruby
-# ArgumentError), so this example asserts what THIS client does rather than
-# inventing a seventh -- the divergence is recorded, not papered over.
+# On the error type: this is a caller argument rejected before any connection
+# exists, so it takes the same +SpiceDB::InvalidArgumentError+ a filter the wire
+# cannot express uses. The proto tier raises a plain +ArgumentError+, which this
+# client maps so a caller never has to know it exists -- see root DESIGN.md,
+# "RULE: Credentials over insecure transport require an explicit opt-in",
+# clause 4.
 #
 # The sharpest cases are the last ones. Ruby hands its target to gRPC's C-core,
 # which parses it in C++ out of this client's reach, so the rule requires failing
@@ -44,7 +44,7 @@ RSpec.describe 'Insecure transport opt-in' do
     # the token never reaches a socket. This is not about whether the host
     # exists -- example.com is refused because it is not loopback, full stop.
     expect { SpiceDB::Client.new_plaintext('example.com:50051', SPICEDB_TOKEN) }
-      .to raise_error(ArgumentError, /example\.com:50051/)
+      .to raise_error(SpiceDB::InvalidArgumentError, /example\.com:50051/)
   end
 
   it 'allows a remote plaintext host with the named opt-in', :no_spicedb do
@@ -68,7 +68,7 @@ RSpec.describe 'Insecure transport opt-in' do
       # Fail closed. A client that split on the last colon would call
       # 127.0.0.1:443@evil.com loopback and hand the token to evil.com.
       expect { SpiceDB::Client.new_plaintext(endpoint, SPICEDB_TOKEN) }
-        .to raise_error(ArgumentError)
+        .to raise_error(SpiceDB::InvalidArgumentError)
     end
   end
 end

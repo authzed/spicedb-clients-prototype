@@ -11,6 +11,7 @@ import build.buf.gen.authzed.api.v1.ObjectReference;
 import build.buf.gen.authzed.api.v1.PermissionsServiceGrpc;
 import build.buf.gen.authzed.api.v1.SubjectReference;
 import build.buf.gen.authzed.api.v1.ZedToken;
+import com.authzed.spicedb.errors.InvalidArgumentException;
 import io.grpc.Metadata;
 import io.grpc.Server;
 import io.grpc.ServerCall;
@@ -196,9 +197,9 @@ class RawEscapeHatchTest {
         "rawChannel must take no arguments");
 
     // And the guard still refuses what it always did.
-    IllegalArgumentException ex =
+    InvalidArgumentException ex =
         assertThrows(
-            IllegalArgumentException.class,
+            InvalidArgumentException.class,
             () ->
                 SpiceDBClient.create(
                     "evil.example.com:1234", "test-token", SpiceDBClient.withInsecure()));

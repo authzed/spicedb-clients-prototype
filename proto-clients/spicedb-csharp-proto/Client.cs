@@ -14,6 +14,23 @@ namespace Authzed.Api.SpiceDB.Proto;
 /// SpiceDBProtoClient wraps all generated gRPC service clients for SpiceDB.
 /// It handles channel creation, TLS configuration, and bearer token injection.
 /// </summary>
+/// <summary>
+/// Thrown when a plaintext connection to a non-loopback endpoint is requested
+/// without <c>allowInsecureRemoteCredentials</c>.
+/// </summary>
+/// <remarks>
+/// A distinct type rather than a bare <see cref="InvalidOperationException"/> so
+/// the idiomatic client can map this refusal onto its own error without catching
+/// every <see cref="InvalidOperationException"/> the constructor might throw --
+/// the unix-socket refusal beside it is a different argument error and must not
+/// be reclassified with it. See root DESIGN.md, "RULE: Credentials over insecure
+/// transport require an explicit opt-in", clause 4.
+/// </remarks>
+public sealed class InsecureRemoteHostException : InvalidOperationException
+{
+    public InsecureRemoteHostException(string message) : base(message) { }
+}
+
 public sealed class SpiceDBProtoClient : IDisposable
 {
     private readonly GrpcChannel _channel;
@@ -124,7 +141,7 @@ public sealed class SpiceDBProtoClient : IDisposable
         // credential, or handler -- capable of carrying the token onto the wire.
         if (insecure && !allowInsecureRemoteCredentials && !IsLoopbackEndpoint(endpoint))
         {
-            throw new InvalidOperationException(
+            throw new InsecureRemoteHostException(
                 $"spicedb: refusing to send credentials over an insecure (plaintext) connection to non-loopback endpoint \"{endpoint}\": " +
                 "use TLS (pass insecure: false), or pass allowInsecureRemoteCredentials: true if you intend to send a bearer token in cleartext to a remote host");
         }

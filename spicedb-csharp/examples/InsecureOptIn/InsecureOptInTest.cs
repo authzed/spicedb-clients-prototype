@@ -62,7 +62,11 @@ public class InsecureOptInTest
         // No connection is attempted: the refusal happens during construction, so the
         // token never reaches a socket. This is not about whether the host exists --
         // example.com is refused because it is not loopback, full stop.
-        var ex = Assert.ThrowsAny<Exception>(
+        // This client's own typed argument error, the same one a filter the wire cannot
+        // express uses -- not the proto tier's InvalidOperationException, which a caller
+        // of this class should never see. Root DESIGN.md, "RULE: Credentials over
+        // insecure transport require an explicit opt-in", clause 4.
+        var ex = Assert.Throws<InvalidArgumentException>(
             () => SpiceDBClient.CreatePlaintext("example.com:50051", SpiceDBTestServer.Token));
         Assert.Contains("example.com:50051", ex.Message);
         Assert.Contains("allowInsecureRemoteCredentials", ex.Message);
@@ -89,7 +93,7 @@ public class InsecureOptInTest
         // Fail closed on anything whose authority could move under URI parsing. A client
         // that split on the last colon would call 127.0.0.1:443@evil.com loopback and
         // hand the token to evil.com.
-        Assert.ThrowsAny<Exception>(
+        Assert.Throws<InvalidArgumentException>(
             () => SpiceDBClient.CreatePlaintext(endpoint, SpiceDBTestServer.Token));
     }
 }

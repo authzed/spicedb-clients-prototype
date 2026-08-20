@@ -192,6 +192,16 @@ module SpiceDB
         # Proto gem not yet available (e.g. buf hasn't generated stubs).
         # Client object can still be created but gRPC calls will fail.
         @proto_client = nil
+      rescue SpiceDBProto::InsecureRemoteHostError => e
+        # The insecure-remote-host refusal is a caller argument this client
+        # rejects before any connection exists, so it surfaces as
+        # SpiceDB::InvalidArgumentError -- the same type a filter the wire
+        # cannot express uses. Only this refusal is remapped: the TLS
+        # trust-material validations beside it raise plain ArgumentError and
+        # stay that way. See
+        # root DESIGN.md, "RULE: Credentials over insecure transport require an
+        # explicit opt-in", clause 4.
+        raise SpiceDB::InvalidArgumentError, e.message
       end
     end
 

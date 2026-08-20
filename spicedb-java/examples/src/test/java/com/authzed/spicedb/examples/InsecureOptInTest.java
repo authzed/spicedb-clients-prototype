@@ -3,6 +3,7 @@ package com.authzed.spicedb.examples;
 import static org.assertj.core.api.Assertions.*;
 
 import com.authzed.spicedb.SpiceDBClient;
+import com.authzed.spicedb.errors.InvalidArgumentException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -63,7 +64,10 @@ class InsecureOptInTest {
     assertThatThrownBy(
             () -> SpiceDBClient.createPlaintext("example.com:50051", SpiceDBIntegrationTest.TOKEN))
         .as("SECURITY: a bearer token was accepted for cleartext delivery to a non-loopback host")
-        .isInstanceOf(IllegalArgumentException.class)
+        // This client's own typed argument error, the same one a filter the wire cannot express
+        // uses -- not a language-native IllegalArgumentException. Root DESIGN.md, "RULE:
+        // Credentials over insecure transport require an explicit opt-in", clause 4.
+        .isInstanceOf(InvalidArgumentException.class)
         .hasMessageContaining("example.com:50051");
   }
 
@@ -91,6 +95,6 @@ class InsecureOptInTest {
     // the last colon would call 127.0.0.1:443@evil.com loopback and hand the token to evil.com.
     assertThatThrownBy(() -> SpiceDBClient.createPlaintext(endpoint, SpiceDBIntegrationTest.TOKEN))
         .as("SECURITY: %s was accepted as loopback", endpoint)
-        .isInstanceOf(IllegalArgumentException.class);
+        .isInstanceOf(InvalidArgumentException.class);
   }
 }

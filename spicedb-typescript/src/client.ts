@@ -1,6 +1,7 @@
 import { create, type JsonObject } from "@bufbuild/protobuf";
 import {
   createSpiceDBClient as createProtoClient,
+  InsecureRemoteHostError,
   type ClientOptions as ProtoClientOptions,
   type SpiceDBProtoClient,
   type TlsOptions,
@@ -77,6 +78,7 @@ import {
 } from "./types.js";
 
 import {
+  InvalidArgumentError,
   SpiceDBError,
   toSpiceDBError,
   toSpiceDBErrorFromStatus,
@@ -270,12 +272,25 @@ export class SpiceDBClient {
   private readonly defaultTimeoutMs: number;
 
   constructor(options: SpiceDBClientOptions) {
-    this.proto = createProtoClient(options.endpoint, options.token, {
-      insecure: options.insecure,
-      allowInsecureRemoteCredentials: options.allowInsecureRemoteCredentials,
-      tls: options.tls,
-      headers: options.headers,
-    });
+    try {
+      this.proto = createProtoClient(options.endpoint, options.token, {
+        insecure: options.insecure,
+        allowInsecureRemoteCredentials: options.allowInsecureRemoteCredentials,
+        tls: options.tls,
+        headers: options.headers,
+      });
+    } catch (err) {
+      // The insecure-remote-host refusal is a caller argument this client rejects
+      // before any connection exists, so it surfaces as InvalidArgumentError -- the
+      // same type a filter the wire cannot express uses. The proto tier's own error
+      // class is an implementation detail a caller of this class should never see.
+      // See root DESIGN.md, "RULE: Credentials over insecure transport require an
+      // explicit opt-in", clause 4.
+      if (err instanceof InsecureRemoteHostError) {
+        throw new InvalidArgumentError(err.message, { cause: err });
+      }
+      throw err;
+    }
     this.maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
     this.defaultTimeoutMs = options.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS;
   }

@@ -4,6 +4,19 @@
 
 ### Added
 
+- **2026-08-19: the insecure-remote-host refusal now matches `ErrInvalidArgument`.**
+  Root DESIGN.md, "RULE: Credentials over insecure transport require an explicit opt-in", clause 4 (new). The refusal for a plaintext connection to a non-loopback host is a caller
+  argument rejected before any connection exists, so it now takes the same
+  `InvalidArgument`-family error this client already uses when a filter's subject
+  constraint cannot be expressed on the wire. Previously the seven clients gave six
+  different answers to that question, which meant a caller catching this mistake had to
+  learn a different type per language for no reason a reader could infer.
+
+  `NewWithOpts` maps the proto tier's new `ErrInsecureRemoteHost` sentinel onto
+  `ErrInvalidArgument`, so `errors.Is(err, client.ErrInvalidArgument)` is true for this
+  refusal. The proto tier's sentinel remains reachable through the same chain for anyone
+  who wants to distinguish it specifically.
+
 - **2026-08-19: four new examples, one per root `DESIGN.md` RULE that had no executed
   coverage in any client.** 14 examples -> 18, none renamed or removed. Group E Phase 3.
 

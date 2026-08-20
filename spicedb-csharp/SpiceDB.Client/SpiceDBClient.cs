@@ -174,8 +174,23 @@ public sealed class SpiceDBClient : IAsyncDisposable
         bool allowInsecureRemoteCredentials = false)
     {
         ValidateArgs(endpoint, presharedKey);
-        var protoClient = new SpiceDBProtoClient(
-            endpoint, presharedKey, insecure: true, allowInsecureRemoteCredentials: allowInsecureRemoteCredentials);
+        SpiceDBProtoClient protoClient;
+        try
+        {
+            protoClient = new SpiceDBProtoClient(
+                endpoint, presharedKey, insecure: true, allowInsecureRemoteCredentials: allowInsecureRemoteCredentials);
+        }
+        catch (InsecureRemoteHostException ex)
+        {
+            // The insecure-remote-host refusal is a caller argument this client rejects
+            // before any connection exists, so it surfaces as InvalidArgumentException --
+            // the same type a filter the wire cannot express uses. The proto tier's own
+            // exception type is an implementation detail a caller of this class should
+            // never have to know. See root DESIGN.md, "RULE: Credentials over insecure
+            // transport require an explicit opt-in", clause 4.
+            throw new InvalidArgumentException(ex.Message, ex);
+        }
+
         return new SpiceDBClient(protoClient, defaultTimeout ?? DefaultTimeout);
     }
 

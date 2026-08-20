@@ -75,9 +75,21 @@ async fn main() {
     // This is not about whether the host exists -- example.com is refused
     // because it is not loopback, full stop.
     let refused = SpiceDBClient::new_plaintext("example.com:50051", token()).await;
+    // `expect_err` would need SpiceDBClient: Debug, which it deliberately is not
+    // (it holds channels and a token), so match instead.
+    let err = match refused {
+        Ok(_) => panic!(
+            "SECURITY: a bearer token was accepted for cleartext delivery to a non-loopback host"
+        ),
+        Err(e) => e,
+    };
+    // This client's own typed argument error, the same one a filter the wire
+    // cannot express uses -- the proto tier's InsecureRemoteHostNotAllowed is an
+    // implementation detail a caller should never see. Root DESIGN.md, "RULE:
+    // Credentials over insecure transport require an explicit opt-in", clause 4.
     assert!(
-        refused.is_err(),
-        "SECURITY: a bearer token was accepted for cleartext delivery to a non-loopback host"
+        matches!(err, SpiceDBError::InvalidArgument(_)),
+        "the refusal must be SpiceDBError::InvalidArgument, got {err:?}"
     );
     println!("remote plaintext, no opt-in: refused");
 
@@ -106,11 +118,16 @@ async fn main() {
         "127.0.0.1:50051?x=evil.com",
         "127.0.0.1:50051#evil.com",
     ] {
-        let result = SpiceDBClient::new_plaintext(spoof, token()).await;
+        let err = match SpiceDBClient::new_plaintext(spoof, token()).await {
+            Ok(_) => panic!(
+                "SECURITY: {spoof} was accepted as loopback -- the guard is splitting the \
+                 string instead of asking the transport's parser"
+            ),
+            Err(e) => e,
+        };
         assert!(
-            result.is_err(),
-            "SECURITY: {spoof} was accepted as loopback -- the guard is splitting the string \
-             instead of asking the transport's parser"
+            matches!(err, SpiceDBError::InvalidArgument(_)),
+            "the refusal for {spoof} must be SpiceDBError::InvalidArgument, got {err:?}"
         );
         println!("authority-moving endpoint {spoof}: refused");
     }

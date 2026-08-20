@@ -73,7 +73,8 @@ public class InsecureHostGuardTest
     [InlineData("UNIX:/var/run/spicedb.sock", false)]
     // IDN-invalid hosts: Uri.TryCreate accepts these but Uri.IdnHost throws on them.
     // This method must be total -- a System.UriFormatException escaping a constructor
-    // documented to throw InvalidOperationException is a broken contract, and the
+    // documented to throw InsecureRemoteHostException (an InvalidOperationException
+    // subclass, so callers catching the base type still work) is a broken contract, and the
     // string comparisons this parse replaced could not throw at all.
     [InlineData("‥localhost", false)]
     [InlineData("‥localhost:50051", false)]
@@ -139,7 +140,7 @@ public class InsecureHostGuardTest
     {
         var handler = new AuthCapturingHandler();
 
-        var ex = Assert.Throws<InvalidOperationException>(() =>
+        var ex = Assert.Throws<InsecureRemoteHostException>(() =>
             new SpiceDBProtoClient(endpoint, "super-secret-token", insecure: true, allowInsecureRemoteCredentials: false, httpHandler: handler));
 
         Assert.Contains(endpoint, ex.Message);
@@ -169,7 +170,7 @@ public class InsecureHostGuardTest
     {
         var handler = new AuthCapturingHandler();
 
-        var ex = Assert.Throws<InvalidOperationException>(() =>
+        var ex = Assert.Throws<InsecureRemoteHostException>(() =>
             new SpiceDBProtoClient("evil.example.com:1234", "super-secret-token", insecure: true, allowInsecureRemoteCredentials: false, httpHandler: handler));
 
         Assert.Contains("evil.example.com:1234", ex.Message);

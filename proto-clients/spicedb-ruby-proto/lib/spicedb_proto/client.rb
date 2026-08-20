@@ -14,6 +14,18 @@ module SpiceDBProto
   # @example Insecure connection (for testing)
   #   client = SpiceDBProto::Client.new("localhost:50051", "my-token", insecure: true)
   #
+  # Raised when a plaintext connection to a non-loopback endpoint is requested
+  # without +allow_insecure_remote_credentials+.
+  #
+  # A distinct class rather than a bare ArgumentError so the idiomatic client can
+  # map this refusal onto its own error without rescuing every ArgumentError the
+  # constructor might raise -- the TLS trust-material validations beside it are
+  # different argument errors and must not be reclassified with it. It still
+  # subclasses ArgumentError, so existing rescues keep working. See root
+  # DESIGN.md, "RULE: Credentials over insecure transport require an explicit
+  # opt-in", clause 4.
+  class InsecureRemoteHostError < ArgumentError; end
+
   class Client
     # Characters that can move which part of a target string a URI parser treats as the
     # authority: "@" (userinfo), "/" (path), "?" (query), "#" (fragment), and whitespace.
@@ -83,7 +95,7 @@ module SpiceDBProto
       # channel, so nothing else here stops a bearer token from reaching an arbitrary
       # insecure host.
       if insecure && !allow_insecure_remote_credentials && !self.class.loopback_endpoint?(endpoint)
-        raise ArgumentError,
+        raise InsecureRemoteHostError,
           "spicedb: refusing to send credentials over an insecure (plaintext) connection to non-loopback endpoint #{endpoint.inspect}: " \
           "use TLS (pass insecure: false), or pass allow_insecure_remote_credentials: true if you intend to send a bearer token in cleartext to a remote host"
       end

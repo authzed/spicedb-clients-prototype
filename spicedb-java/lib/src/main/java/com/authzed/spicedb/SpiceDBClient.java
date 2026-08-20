@@ -484,13 +484,16 @@ public final class SpiceDBClient implements AutoCloseable {
    * Credentials over insecure transport require an explicit opt-in". Call this before creating any
    * channel -- a rejected combination must never get far enough to put a bearer token on the wire.
    *
-   * @throws IllegalArgumentException if {@code insecure} is true, {@code endpoint} is not loopback,
-   *     and {@code allowInsecureRemoteCredentials} is false.
+   * @throws InvalidArgumentException if {@code insecure} is true, {@code endpoint} is not loopback,
+   *     and {@code allowInsecureRemoteCredentials} is false. This is a caller argument refused
+   *     before any connection exists, so it takes the same type as every other such refusal in this
+   *     client -- see root DESIGN.md, "RULE: Credentials over insecure transport require an
+   *     explicit opt-in", clause 4.
    */
   private static void requireInsecureTransportAllowed(
       String endpoint, boolean insecure, boolean allowInsecureRemoteCredentials) {
     if (insecure && !allowInsecureRemoteCredentials && !isLoopbackEndpoint(endpoint)) {
-      throw new IllegalArgumentException(
+      throw new InvalidArgumentException(
           "spicedb: refusing to send credentials over an insecure (plaintext) connection to "
               + "non-loopback endpoint \""
               + endpoint

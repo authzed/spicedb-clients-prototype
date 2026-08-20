@@ -3,6 +3,7 @@ package com.authzed.spicedb;
 import static org.junit.jupiter.api.Assertions.*;
 
 import build.buf.gen.authzed.api.v1.PermissionsServiceGrpc;
+import com.authzed.spicedb.errors.InvalidArgumentException;
 import io.grpc.Metadata;
 import io.grpc.Server;
 import io.grpc.ServerCall;
@@ -181,9 +182,9 @@ class InsecureHostGuardTest {
   @Test
   void refusesInsecureNonLoopbackWithoutOptIn() throws Exception {
     try (CapturingServer server = new CapturingServer()) {
-      IllegalArgumentException ex =
+      InvalidArgumentException ex =
           assertThrows(
-              IllegalArgumentException.class,
+              InvalidArgumentException.class,
               () ->
                   SpiceDBClient.create(
                       "evil.example.com:1234",
@@ -250,9 +251,9 @@ class InsecureHostGuardTest {
   @MethodSource("authorityShiftingEndpoints")
   void refusesEndpointWhoseUriAuthorityShiftsTheHost(String endpoint) throws Exception {
     try (CapturingServer server = new CapturingServer()) {
-      IllegalArgumentException ex =
+      InvalidArgumentException ex =
           assertThrows(
-              IllegalArgumentException.class,
+              InvalidArgumentException.class,
               () ->
                   SpiceDBClient.create(
                       endpoint,
@@ -274,9 +275,9 @@ class InsecureHostGuardTest {
   @ParameterizedTest
   @MethodSource("authorityShiftingEndpoints")
   void createPlaintextRefusesEndpointWhoseUriAuthorityShiftsTheHost(String endpoint) {
-    IllegalArgumentException ex =
+    InvalidArgumentException ex =
         assertThrows(
-            IllegalArgumentException.class,
+            InvalidArgumentException.class,
             () -> SpiceDBClient.createPlaintext(endpoint, "super-secret-token"));
     assertTrue(ex.getMessage().contains("allowInsecureRemoteCredentials"), ex.getMessage());
   }
@@ -290,9 +291,9 @@ class InsecureHostGuardTest {
    */
   @Test
   void createPlaintextRefusesNonLoopbackWithoutOptIn() {
-    IllegalArgumentException ex =
+    InvalidArgumentException ex =
         assertThrows(
-            IllegalArgumentException.class,
+            InvalidArgumentException.class,
             () -> SpiceDBClient.createPlaintext("evil.example.com:1234", "test-token"));
     assertTrue(ex.getMessage().contains("allowInsecureRemoteCredentials"), ex.getMessage());
   }

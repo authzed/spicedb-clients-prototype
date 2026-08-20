@@ -2,6 +2,7 @@ package spicedbgoproto
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -15,6 +16,14 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/resolver"
 )
+
+// ErrInsecureRemoteHost is returned when a plaintext connection to a
+// non-loopback endpoint is requested without WithInsecureAllowRemoteHost. It is
+// a sentinel rather than a bare message so the idiomatic client can map this
+// refusal onto its own error type without matching on prose -- see root
+// DESIGN.md, "RULE: Credentials over insecure transport require an explicit
+// opt-in", clause 4.
+var ErrInsecureRemoteHost = errors.New("spicedb: insecure connection to a non-loopback host requires an explicit opt-in")
 
 // Client wraps all generated gRPC service clients for SpiceDB.
 type Client struct {
@@ -374,8 +383,8 @@ func NewClient(endpoint string, token string, opts ...Option) (*Client, error) {
 	// after the fact.
 	if cfg.insecure && !cfg.allowInsecureRemote && !isLoopbackEndpoint(endpoint) {
 		return nil, fmt.Errorf(
-			"spicedb: refusing to send credentials over an insecure (plaintext) connection to non-loopback endpoint %q: use TLS (drop WithInsecure), or pass WithInsecureAllowRemoteHost() if you intend to send a bearer token in cleartext to a remote host",
-			endpoint,
+			"spicedb: refusing to send credentials over an insecure (plaintext) connection to non-loopback endpoint %q: use TLS (drop WithInsecure), or pass WithInsecureAllowRemoteHost() if you intend to send a bearer token in cleartext to a remote host: %w",
+			endpoint, ErrInsecureRemoteHost,
 		)
 	}
 

@@ -22,6 +22,7 @@ package main
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -67,6 +68,13 @@ definition document {
 	// exists -- example.com is refused because it is not loopback, full stop.
 	if _, err := client.NewPlaintext("example.com:50051", token); err == nil {
 		log.Fatal("SECURITY: NewPlaintext sent a bearer token to a non-loopback host in cleartext with no opt-in")
+	} else if !errors.Is(err, client.ErrInvalidArgument) {
+		// The refusal is this client's own typed argument error, the same one a
+		// filter the wire cannot express uses -- not the proto tier's type, and
+		// not a bare message a caller would have to string-match. Root
+		// DESIGN.md, "RULE: Credentials over insecure transport require an
+		// explicit opt-in", clause 4.
+		log.Fatalf("the refusal must match ErrInvalidArgument, got %v", err)
 	} else {
 		fmt.Printf("remote plaintext, no opt-in: refused (%v)\n", err)
 	}
@@ -97,6 +105,8 @@ definition document {
 	if _, err := client.NewPlaintext("127.0.0.1:443@evil.com", token); err == nil {
 		log.Fatal("SECURITY: an endpoint whose real host is evil.com was accepted as loopback -- " +
 			"the guard is splitting the string instead of asking the transport's parser")
+	} else if !errors.Is(err, client.ErrInvalidArgument) {
+		log.Fatalf("the refusal must match ErrInvalidArgument, got %v", err)
 	} else {
 		fmt.Printf("userinfo spoof 127.0.0.1:443@evil.com: refused (%v)\n", err)
 	}

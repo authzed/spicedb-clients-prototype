@@ -2,6 +2,7 @@
 package client
 
 import (
+	"errors"
 	"fmt"
 
 	proto "github.com/authzed/spicedb-clients/proto-clients/spicedb-go-proto"
@@ -114,6 +115,16 @@ func NewWithOpts(endpoint, presharedKey string, opts ...Option) (*Client, error)
 
 	pc, err := proto.NewClient(endpoint, presharedKey, protoOpts...)
 	if err != nil {
+		// The insecure-remote-host refusal is a caller argument this client
+		// rejects before any connection exists, so it surfaces as
+		// ErrInvalidArgument -- the same sentinel a filter the wire cannot
+		// express uses. The proto tier's own error type is an implementation
+		// detail a caller of this package should never have to know. See root
+		// DESIGN.md, "RULE: Credentials over insecure transport require an
+		// explicit opt-in", clause 4.
+		if errors.Is(err, proto.ErrInsecureRemoteHost) {
+			return nil, fmt.Errorf("spicedb: failed to create client: %w: %w", err, ErrInvalidArgument)
+		}
 		return nil, fmt.Errorf("spicedb: failed to create client: %w", err)
 	}
 

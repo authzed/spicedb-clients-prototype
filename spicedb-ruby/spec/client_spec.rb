@@ -47,7 +47,7 @@ RSpec.describe SpiceDB::Client do
     it 'refuses a non-loopback endpoint without the opt-in' do
       expect do
         described_class.new_plaintext('evil.example.com:1234', 'testtoken')
-      end.to raise_error(ArgumentError, /allow_insecure_remote_credentials/)
+      end.to raise_error(SpiceDB::InvalidArgumentError, /allow_insecure_remote_credentials/)
     end
 
     # The bypass shapes, at the public entry point. The proto layer holds the full
@@ -63,7 +63,7 @@ RSpec.describe SpiceDB::Client do
       it "refuses authority-shifting #{endpoint.inspect} without the opt-in" do
         expect do
           described_class.new_plaintext(endpoint, 'testtoken')
-        end.to raise_error(ArgumentError, /allow_insecure_remote_credentials/)
+        end.to raise_error(SpiceDB::InvalidArgumentError, /allow_insecure_remote_credentials/)
       end
     end
 

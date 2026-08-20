@@ -1,4 +1,5 @@
 // Client
+export { InsecureRemoteHostError } from "./client.js";
 export {
   SpiceDBProtoClient,
   createSpiceDBClient,

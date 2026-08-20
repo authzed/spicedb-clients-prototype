@@ -23,7 +23,7 @@ import pytest
 
 from conftest import ENDPOINT, TOKEN
 from spicedb.aio import SpiceDBClient
-from spicedb.errors import SpiceDBError
+from spicedb.errors import InvalidArgumentError
 
 
 pytestmark = pytest.mark.integration
@@ -54,7 +54,10 @@ async def test_remote_plaintext_is_refused_without_the_opt_in() -> None:
     This is not about whether the host exists -- example.com is refused because
     it is not loopback, full stop.
     """
-    with pytest.raises(SpiceDBError) as excinfo:
+    # This client's own typed argument error, the same one a filter the wire
+    # cannot express uses -- see root DESIGN.md, "RULE: Credentials over insecure
+    # transport require an explicit opt-in", clause 4.
+    with pytest.raises(InvalidArgumentError) as excinfo:
         SpiceDBClient("example.com:50051", token=TOKEN, insecure=True)
     assert "loopback" in str(excinfo.value).lower()
 
@@ -95,5 +98,5 @@ async def test_authority_moving_endpoints_are_refused(endpoint: str) -> None:
     parser -- gRPC's C-core parses the target in C++ -- so the rule requires
     refusing these outright instead of guessing.
     """
-    with pytest.raises(SpiceDBError):
+    with pytest.raises(InvalidArgumentError):
         SpiceDBClient(endpoint, token=TOKEN, insecure=True)

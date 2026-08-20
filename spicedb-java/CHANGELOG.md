@@ -4,6 +4,18 @@
 
 ### Added
 
+- **2026-08-19: the insecure-remote-host refusal now throws `InvalidArgumentException`.**
+  Root DESIGN.md, "RULE: Credentials over insecure transport require an explicit opt-in", clause 4 (new). The refusal for a plaintext connection to a non-loopback host is a caller
+  argument rejected before any connection exists, so it now takes the same
+  `InvalidArgument`-family error this client already uses when a filter's subject
+  constraint cannot be expressed on the wire. Previously the seven clients gave six
+  different answers to that question, which meant a caller catching this mistake had to
+  learn a different type per language for no reason a reader could infer.
+
+  It previously threw a language-native `IllegalArgumentException`. Callers catching that
+  will need to catch `com.authzed.spicedb.errors.InvalidArgumentException` instead; the two
+  guard unit tests and the `insecure_opt_in` example were updated with it.
+
 - **2026-08-19: four new examples, one per root `DESIGN.md` RULE that had no executed
   coverage in any client.** 14 example classes -> 18, 46 tests -> 62, none renamed or
   removed. Group E Phase 3.

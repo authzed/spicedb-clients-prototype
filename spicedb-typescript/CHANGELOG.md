@@ -4,6 +4,18 @@
 
 ### Added
 
+- **2026-08-19: the insecure-remote-host refusal now throws `InvalidArgumentError`.**
+  Root DESIGN.md, "RULE: Credentials over insecure transport require an explicit opt-in", clause 4 (new). The refusal for a plaintext connection to a non-loopback host is a caller
+  argument rejected before any connection exists, so it now takes the same
+  `InvalidArgument`-family error this client already uses when a filter's subject
+  constraint cannot be expressed on the wire. Previously the seven clients gave six
+  different answers to that question, which meant a caller catching this mistake had to
+  learn a different type per language for no reason a reader could infer.
+
+  It previously threw a plain `Error` straight out of the proto tier. The proto tier now
+  throws a named `InsecureRemoteHostError`, which the client maps — so a caller of the
+  idiomatic API never sees the proto tier's type.
+
 - **2026-08-19: four new examples, one per root `DESIGN.md` RULE that had no executed
   coverage in any client.** 12 examples -> 16, none renamed or removed. Group E Phase 3.
 

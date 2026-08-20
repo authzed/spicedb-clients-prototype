@@ -202,6 +202,31 @@ this rule now governs.
    separately-named `InsecureClient` a caller must reach for deliberately, not a flag on the
    default constructor. A client whose only route to insecure operation is a boolean on its
    primary entry point does not meet this bar.
+4. **The refusal must be the client's own typed argument error.** A caller who catches
+   this needs to catch something, and the thing to catch must be the same shape as every
+   other argument this client refuses before an RPC. Each client already reports the
+   analogous case — a filter whose subject constraint the wire cannot express, see
+   **RULE: A conversion that cannot preserve meaning must fail**, clause 1 — as its own
+   `InvalidArgument`-family error: Go's `ErrInvalidArgument` sentinel, Python's
+   `InvalidArgumentError`, TypeScript's `InvalidArgumentError`, Java's
+   `InvalidArgumentException`, C#'s `InvalidArgumentException`, Ruby's
+   `SpiceDB::InvalidArgumentError`, Rust's `SpiceDBError::InvalidArgument`. This refusal
+   is the same category — caller-supplied input the client rejects before any connection
+   exists — and takes the same type.
+
+   One rule, seven idiomatic spellings; the *type* is per-language, the *category* is
+   not. What this forbids is a client reaching for a language-native argument exception
+   (`ArgumentError`, `IllegalArgumentException`, a bare `Error`) for this one case while
+   using its own hierarchy everywhere else, which is what made the seven clients
+   disagree: a caller writing `except InvalidArgumentError` in one language and
+   `rescue ArgumentError` in another is catching the same mistake two different ways for
+   no reason a reader can infer.
+
+   **Where the guard runs is not where it is reported.** All seven detect this in the
+   proto tier, which has its own error types and must not depend on the idiomatic layer.
+   The idiomatic constructor is therefore responsible for mapping that refusal into its
+   own error before it reaches a caller — the proto tier's type is an implementation
+   detail, and a caller of the idiomatic API should never see it.
 
 Name the failure this rule exists to prevent: a developer copies `insecure: true` from a
 localhost example into a staging config, and a long-lived SpiceDB token — a complete

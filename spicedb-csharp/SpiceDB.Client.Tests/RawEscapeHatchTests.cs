@@ -200,7 +200,7 @@ public class RawEscapeHatchTests
 
         // And the guard still refuses what it always did.
         var act = () => SpiceDBClient.CreatePlaintext("evil.example.com:50051", Token);
-        act.Should().Throw<InvalidOperationException>()
+        act.Should().Throw<InvalidArgumentException>()
             .WithMessage("*allowInsecureRemoteCredentials*");
     }
 }

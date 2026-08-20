@@ -20,7 +20,7 @@
  * real host as `evil.com`. A client that split the string would hand the token
  * to evil.com believing it was talking to loopback.
  */
-import { createSpiceDBClient } from "../../src/index.js";
+import { createSpiceDBClient, InvalidArgumentError } from "../../src/index.js";
 
 const ENDPOINT = process.env.SPICEDB_ENDPOINT ?? "localhost:50051";
 const TOKEN = process.env.SPICEDB_TOKEN ?? "somerandomkeyhere";
@@ -32,20 +32,26 @@ function assert(condition: unknown, message: string): asserts condition {
 }
 
 /**
- * Requires construction to be refused, and the refusal to say why.
+ * Requires construction to be refused, with this client's own typed argument
+ * error, and a message that says why.
  *
- * Note what is NOT asserted: the error's class. This guard throws a plain
- * `Error` from the proto tier, where the Python client raises its own
- * `InvalidArgumentError`. That inconsistency is real and is recorded rather
- * than papered over here -- pinning `SpiceDBError` would fail today, and
- * pinning `Error` would assert nothing, since every error is one.
+ * The type matters: this is a caller argument rejected before any connection
+ * exists, so it takes the same `InvalidArgumentError` a filter the wire cannot
+ * express uses. The proto tier throws its own `InsecureRemoteHostError`, which
+ * the client maps here so a caller never has to know it exists. See root
+ * DESIGN.md, "RULE: Credentials over insecure transport require an explicit
+ * opt-in", clause 4.
  */
 async function refuses(endpoint: string, what: string): Promise<void> {
   let refused = false;
   try {
     createSpiceDBClient(endpoint, TOKEN, { insecure: true });
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    assert(
+      err instanceof InvalidArgumentError,
+      `${what}: expected InvalidArgumentError, got ${String(err)}`,
+    );
+    const message = err.message;
     // The message has to be actionable: name the endpoint, and name the way out.
     assert(
       message.includes(endpoint),

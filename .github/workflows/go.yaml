@@ -23,8 +23,8 @@ jobs:
     outputs:
       changed: ${{ steps.filter.outputs.changed }}
     steps:
-      - uses: actions/checkout@v6
-      - uses: dorny/paths-filter@d1c1ffe0248fe513906c8e24db8ea791d46f8590 # v3
+      - uses: actions/checkout@v7
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v3
         id: filter
         with:
           filters: |
@@ -45,11 +45,16 @@ jobs:
     # five minutes, so this is a backstop, not a budget.
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
+      # Held at v5 deliberately. setup-go v6+ defaults GOTOOLCHAIN=local, so Go
+      # stops fetching the toolchain go.mod asks for and every job that needs a
+      # newer one dies with "go.mod requires go >= 1.25.7 (running go 1.24.13;
+      # GOTOOLCHAIN=local)". Moving to v6/v7 needs explicit toolchain handling,
+      # which is its own change rather than a dependency bump.
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - uses: golangci/golangci-lint-action@55c2c1448f86e01eaae002a5a3a9624417608d84 # v6
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           working-directory: spicedb-go
       - name: Install mage
@@ -67,7 +72,7 @@ jobs:
     # five minutes, so this is a backstop, not a budget.
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -105,7 +110,7 @@ jobs:
     # five minutes, so this is a backstop, not a budget.
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -124,7 +129,7 @@ jobs:
     # five minutes, so this is a backstop, not a budget.
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: actions/setup-go@v5

@@ -21,7 +21,7 @@ jobs:
     # five minutes, so this is a backstop, not a budget.
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Install yamllint
         run: pip3 install yamllint
       - name: Lint workflow YAML
@@ -34,8 +34,8 @@ jobs:
     # five minutes, so this is a backstop, not a budget.
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 20
       - name: Install markdownlint-cli2
@@ -51,27 +51,32 @@ jobs:
     # five minutes, so this is a backstop, not a budget.
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
+      # Held at v5 deliberately. setup-go v6+ defaults GOTOOLCHAIN=local, so Go
+      # stops fetching the toolchain go.mod asks for and every job that needs a
+      # newer one dies with "go.mod requires go >= 1.25.7 (running go 1.24.13;
+      # GOTOOLCHAIN=local)". Moving to v6/v7 needs explicit toolchain handling,
+      # which is its own change rather than a dependency bump.
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 # v3
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           enable-cache: true
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
-      - uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+      - uses: actions/setup-node@v7
         with:
           node-version: 20
           cache: pnpm
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.0.x
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 17
-      - uses: gradle/actions/setup-gradle@48b5f213c81028ace310571dc5ec0fbbca0b2947 # v4
-      - uses: ruby/setup-ruby@afeafc3d1ab54a631816aba4c914a0081c12ff2f # v1
+      - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
+      - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1
         with:
           ruby-version: '3.2'
           bundler-cache: false
@@ -80,7 +85,7 @@ jobs:
         working-directory: spicedb-ruby
         run: bundle install
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
           workspaces: spicedb-rust
       - name: Install protoc
@@ -98,7 +103,7 @@ jobs:
       - name: Generate all clients
         run: mage gen:all
       - name: Fail if generated files drifted
-        uses: chainguard-dev/actions/nodiff@3e76343fe029f8e2a10bfbec0da8f437e5dab7a5 # main
+        uses: chainguard-dev/actions/nodiff@7bd1e94b2a1b7faa891392757de7d89489070c5c # main
         with:
           path: ""
           fixup-command: mage gen:all

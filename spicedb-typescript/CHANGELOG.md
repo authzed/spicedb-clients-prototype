@@ -4,6 +4,50 @@
 
 ### Added
 
+- **2026-08-19: four new examples, one per root `DESIGN.md` RULE that had no executed
+  coverage in any client.** 12 examples -> 16, none renamed or removed. Group E Phase 3.
+
+  - `examples/insecure_opt_in` — "RULE: Credentials over insecure transport require an
+    explicit opt-in". Loopback plaintext needs no ceremony; a remote plaintext host is
+    refused at construction, so the token never reaches a socket; and the named
+    `allowInsecureRemoteCredentials` permits it. The fourth case is the sharp one:
+    `127.0.0.1:443@evil.com` must be refused, because the WHATWG `URL` parser Connect-ES
+    dials with reads `127.0.0.1:443` as *userinfo* and the real host as `evil.com`.
+  - `examples/unrepresentable_values` — "RULE: A conversion that cannot preserve meaning
+    must fail", both directions. A filter with `subjectId` and no `subjectType` is refused
+    with `InvalidArgumentError` rather than silently widening — for
+    `deleteRelationships` that is the difference between deleting alice's relationships
+    and deleting every relationship on every document. In the other direction, a
+    permissionship this client has never seen neither throws nor grants.
+  - `examples/error_mapping` — "RULE: Error mapping must not lose the server's detail",
+    written as the two recoveries the rule names: a stale ZedToken surfaces as
+    `OutOfRangeError` with the underlying error still reachable as `cause`, recovered by
+    dropping the token and re-reading at full consistency; a rotated token surfaces as
+    `UnauthenticatedError`, distinct from a transport fault. Nothing parses a message.
+  - `examples/retry_policy` — "RULE: Automatic retry is for idempotent operations only",
+    with attempts counted **server-side**, the only way to tell a retry from its absence:
+    at the caller a transparently-retried success and a first-try success are identical. A
+    read failing twice with `UNAVAILABLE` is retried to success in 3 attempts; a write
+    failing the same way is attempted exactly once; `RESOURCE_EXHAUSTED` exactly once even
+    on a read.
+
+  Verified by mutation, 4 of 4 killing their example: letting an under-specified filter
+  widen; dropping `OUT_OF_RANGE` from the code map; adding `RESOURCE_EXHAUSTED` to
+  `TRANSIENT_CODES`; and routing `callOnce` through `withRetry`.
+
+  Two things worth recording for anyone writing a stand-in for this client. Its
+  `checkPermission` calls the **unary `CheckPermission`** RPC, not
+  `CheckBulkPermissions` as the Go and Python clients do. And clients must be closed
+  *before* the stand-in's `http2` server: `close()` waits for existing sessions to end, so
+  a still-open client connection means its callback never fires and the example hangs —
+  which CI cannot distinguish from an example that is merely slow.
+
+  One inconsistency is recorded rather than papered over: the insecure-transport guard
+  throws a plain `Error` from the proto tier here, where the Python client raises its own
+  `InvalidArgumentError`. `insecure_opt_in` therefore asserts the refusal and its message
+  (which must name both the endpoint and the opt-in) rather than the error's class —
+  pinning `SpiceDBError` would fail today, and pinning `Error` would assert nothing.
+
 - **2026-08-19**: Three examples that ran without being able to fail now assert
   something that does. Root DESIGN.md, "RULE: An example must be executed by CI
   and must be able to fail", clause 2. No example was renamed or removed.

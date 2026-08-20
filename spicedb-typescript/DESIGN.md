@@ -511,6 +511,10 @@ See package sections above.
 | `bulk_operations/` | Bulk checks and imports |
 | `expand_permission_tree/` | `expandPermissionTree` and walking the native `PermissionTree` |
 | `call_deadlines/` | `defaultTimeoutMs` on `createSpiceDBClient`, a per-call `timeoutMs` override, and confirming bulk import isn't bounded by the unary default |
+| `error_mapping/` | Recovering from `OUT_OF_RANGE` (stale ZedToken) and `UNAUTHENTICATED` without parsing a message |
+| `insecure_opt_in/` | Why `insecure` is loopback-only, and the named opt-in a remote plaintext host requires |
+| `retry_policy/` | Which calls are retried for you and which are not, counted server-side |
+| `unrepresentable_values/` | Caller data that cannot convert fails loudly; unknown server enums degrade safely |
 | `custom_tls/` | Reaching a SpiceDB behind a private CA with `tls.caCert`, and mutual TLS with `tls.clientCert`/`tls.clientKey`. Brings up its own TLS-terminated endpoint |
 | `raw_escape_hatch/` | `raw()` — driving the generated Connect client directly for a proto field (`optionalTransactionMetadata`) and an RPC (`CheckPermission`) the idiomatic API does not expose |
 

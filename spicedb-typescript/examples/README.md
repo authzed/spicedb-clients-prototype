@@ -71,6 +71,15 @@ to fail".
   `timeoutMs` override, confirming bulk import isn't bounded by the unary
   default, and proving the timeout actually bites: a listener that accepts the
   connection and never speaks HTTP/2 must produce `DeadlineExceededError`.
+- `insecure_opt_in/` — why `insecure` is loopback-only, the named
+  `allowInsecureRemoteCredentials` opt-in a remote plaintext host requires, and the
+  `127.0.0.1:443@evil.com` spoof a hand-rolled split would wave through.
+- `unrepresentable_values/` — caller data the wire cannot express fails loudly; an
+  unrecognised server permissionship neither throws nor grants.
+- `error_mapping/` — recovering from `OUT_OF_RANGE` (stale ZedToken) and
+  `UNAUTHENTICATED` without parsing a message.
+- `retry_policy/` — which calls are retried for you and which are not, counted
+  server-side against a stand-in.
 - `raw_escape_hatch/` — the `raw()` escape hatch: driving the generated
   Connect client directly to send `optionalTransactionMetadata` (a proto field
   this client does not wrap) and to call the single-check `CheckPermission`

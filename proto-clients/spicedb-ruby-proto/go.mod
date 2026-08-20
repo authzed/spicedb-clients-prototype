@@ -1,5 +1,5 @@
 module github.com/authzed/spicedb-clients/proto-clients/spicedb-ruby-proto
 
-go 1.24.0
+go 1.26.5
 
-require github.com/magefile/mage v1.15.0
+require github.com/magefile/mage v1.17.2

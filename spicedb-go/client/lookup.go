@@ -19,6 +19,18 @@ const defaultLookupPageSize = 512
 // results.
 func (c *Client) LookupResources(ctx context.Context, cs consistency.Strategy, resourceType, permission, subjectType, subjectID string) iter.Seq2[LookupResource, error] {
 	return func(yield func(LookupResource, error) bool) {
+		// Abandoning this iterator -- a `break` in the consuming range
+		// loop, or any early return -- must release the stream. grpc-go's
+		// ClientConn.NewStream contract is explicit: unless the context is
+		// cancelled, Close is called, or RecvMsg drains to a non-nil error,
+		// "a goroutine and a context will be leaked", and SpiceDB keeps the
+		// server-side dispatch open for as long as the connection lives.
+		// Cancelling on the way out covers every exit path, including the
+		// early return taken when the consumer breaks. See root DESIGN.md,
+		// "RULE: Abandoning a stream must release it".
+		ctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+
 		var cursor *v1.Cursor
 		for {
 			stream, err := c.psc.LookupResources(ctx, &v1.LookupResourcesRequest{
@@ -81,6 +93,18 @@ func (c *Client) LookupResources(ctx context.Context, cs consistency.Strategy, r
 // they risk granting access to subjects the server explicitly excluded.
 func (c *Client) LookupSubjects(ctx context.Context, cs consistency.Strategy, resourceType, resourceID, permission, subjectType string) iter.Seq2[LookupSubject, error] {
 	return func(yield func(LookupSubject, error) bool) {
+		// Abandoning this iterator -- a `break` in the consuming range
+		// loop, or any early return -- must release the stream. grpc-go's
+		// ClientConn.NewStream contract is explicit: unless the context is
+		// cancelled, Close is called, or RecvMsg drains to a non-nil error,
+		// "a goroutine and a context will be leaked", and SpiceDB keeps the
+		// server-side dispatch open for as long as the connection lives.
+		// Cancelling on the way out covers every exit path, including the
+		// early return taken when the consumer breaks. See root DESIGN.md,
+		// "RULE: Abandoning a stream must release it".
+		ctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+
 		stream, err := c.psc.LookupSubjects(ctx, &v1.LookupSubjectsRequest{
 			Consistency: cs.V1Consistency,
 			Resource: &v1.ObjectReference{

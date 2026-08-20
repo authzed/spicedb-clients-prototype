@@ -48,6 +48,37 @@ RSpec.describe 'WriteRelationships' do
     expect(revision).not_to be_empty
   end
 
+  it 'surfaces the reason and its metadata when a precondition fails' do
+    # A failed precondition arrives with SpiceDB's structured explanation
+    # attached, not just a message: the typed error carries the
+    # authzed.api.v1.ErrorReason name and the metadata naming which
+    # precondition did not hold, so recovery can be written against data rather
+    # than against a parsed string.
+    client.write_schema(TEST_SCHEMA)
+
+    unsatisfiable = SpiceDB::Filter.new(resource_type: 'document')
+                                   .with_resource_id('firstdoc')
+                                   .with_relation('owner')
+                                   .with_subject_type('user')
+                                   .with_subject_id('nobody')
+
+    txn = SpiceDB::Transaction.new
+    txn.touch(SpiceDB::Relationship.from_triple('document', 'seconddoc', 'viewer', 'user', 'alice'))
+    txn.must_match(unsatisfiable)
+
+    error = nil
+    begin
+      client.write(txn)
+    rescue SpiceDB::FailedPreconditionError => e
+      error = e
+    end
+
+    expect(error).not_to be_nil
+    expect(error.reason).to eq('ERROR_REASON_WRITE_OR_DELETE_PRECONDITION_FAILURE')
+    expect(error.reason_domain).to eq('authzed.com')
+    expect(error.reason_metadata['precondition_resource_id']).to eq('firstdoc')
+  end
+
   it 'supports delete operations' do
     client.write_schema(TEST_SCHEMA)
 

@@ -1,9 +1,9 @@
 services:
   spicedb:
     image: authzed/spicedb:latest
-    command: serve --grpc-preshared-key=somerandomkeyhere --datastore-engine=memory
+    command: serve --grpc-preshared-key=${SPICEDB_TEST_TOKEN:-somerandomkeyhere} --datastore-engine=memory
     ports:
-      - "50051:50051"
+      - "${SPICEDB_TEST_PORT:-50051}:50051"
     healthcheck:
       test: ["CMD", "grpc_health_probe", "-addr=:50051"]
       interval: 2s

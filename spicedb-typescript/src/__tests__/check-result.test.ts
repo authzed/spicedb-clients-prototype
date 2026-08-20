@@ -15,7 +15,11 @@ import {
 } from "../types.js";
 import { SpiceDBClient } from "../client.js";
 import { full } from "../consistency.js";
-import { PermissionDeniedError, NotFoundError } from "../errors.js";
+import {
+  PermissionDeniedError,
+  NotFoundError,
+  SpiceDBError,
+} from "../errors.js";
 
 // ---------------------------------------------------------------------------
 // Pure mapper tests
@@ -423,6 +427,29 @@ describe("checkAny / checkAll — conditional does not count as granted (fail-cl
 });
 
 // ---------------------------------------------------------------------------
+// checkAll must not be vacuously true on zero checks. Array.prototype.every
+// is vacuously true over an empty array, so a caller gating on
+// checkAll(cs, "edit", ...docs.map(toCheck)) would have been silently
+// granted whenever the derived checks array came up empty (a filter that
+// matched nothing, an upstream returning []). Root DESIGN.md: "An aggregate
+// over zero checks is not a grant." checkAny is deliberately left alone —
+// Array.prototype.some is already correctly false on empty.
+// ---------------------------------------------------------------------------
+describe("checkAll — zero checks is not a grant (fail-closed)", () => {
+  it("returns false for zero checks, even if the bulk-check call would have returned zero pairs", async () => {
+    const fn = vi.fn().mockResolvedValue({
+      checkedAt: create(ZedTokenSchema, { token: "r" }),
+      pairs: [],
+    });
+    const client = clientWithFakeProto({
+      permissions: { checkBulkPermissions: fn },
+    });
+
+    expect(await client.checkAll(full())).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Task 16 — call-level caveat context default (`CheckOptions`), and its
 // merge with the pre-existing per-item context (`CheckRequest.context`).
 //
@@ -591,5 +618,134 @@ describe("call-level CheckOptions — default context, per-item context, and the
     expect(request.items).toHaveLength(2);
     expect(request.items[0].context).toBeUndefined();
     expect(request.items[1].context).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bulk-check response length guard.
+//
+// The proto guarantees pairs are returned in request order but says nothing
+// about count. Sizing the result array off `resp.pairs` silently desynced
+// results[i] from checks[i] for every item after a gap — one resource's
+// answer attributed to another — and `checkAll`'s `.every()` returned `true`
+// over an array missing the very checks that would have denied. The
+// `checkPermissions` doc promises "one per check request, in the same order";
+// this guard is what enforces it. Matches the guard the other six clients got.
+// ---------------------------------------------------------------------------
+describe("bulk-check response length guard", () => {
+  const grantedItem = () => ({
+    response: {
+      case: "item" as const,
+      value: create(CheckBulkPermissionsResponseItemSchema, {
+        permissionship: CheckPermissionResponse_Permissionship.HAS_PERMISSION,
+      }),
+    },
+  });
+
+  const fakeWithPairs = (pairCount: number) =>
+    clientWithFakeProto({
+      permissions: {
+        checkBulkPermissions: vi.fn().mockResolvedValue({
+          checkedAt: create(ZedTokenSchema, { token: "batch-rev" }),
+          pairs: Array.from({ length: pairCount }, grantedItem),
+        }),
+      },
+    });
+
+  it("throws when the response carries fewer pairs than the request carried items", async () => {
+    const client = fakeWithPairs(2);
+
+    await expect(
+      client.checkPermissions(
+        full(),
+        aCheck({ subjectId: "a" }),
+        aCheck({ subjectId: "b" }),
+        aCheck({ subjectId: "c" }),
+      ),
+    ).rejects.toThrow(/2 pair\(s\) for 3 request item\(s\)/);
+  });
+
+  it("throws when the response carries more pairs than the request carried items", async () => {
+    const client = fakeWithPairs(5);
+
+    await expect(
+      client.checkPermissions(
+        full(),
+        aCheck({ subjectId: "a" }),
+        aCheck({ subjectId: "b" }),
+        aCheck({ subjectId: "c" }),
+      ),
+    ).rejects.toThrow(/5 pair\(s\) for 3 request item\(s\)/);
+  });
+
+  it("throws a typed SpiceDBError, not a bare Error", async () => {
+    const client = fakeWithPairs(0);
+
+    await expect(
+      client.checkPermissions(full(), aCheck()),
+    ).rejects.toBeInstanceOf(SpiceDBError);
+  });
+
+  it("checkAll rejects a short response instead of returning a vacuous true", async () => {
+    // Every returned pair says HAS_PERMISSION, but only one of the three
+    // requested checks came back. Without the guard, `.every()` over that
+    // single granted result returned true for all three.
+    const client = fakeWithPairs(1);
+
+    await expect(
+      client.checkAll(
+        full(),
+        aCheck({ subjectId: "a" }),
+        aCheck({ subjectId: "b" }),
+        aCheck({ subjectId: "c" }),
+      ),
+    ).rejects.toThrow(/1 pair\(s\) for 3 request item\(s\)/);
+  });
+
+  it("checkAny rejects a short response rather than aggregating over it", async () => {
+    const client = fakeWithPairs(1);
+
+    await expect(
+      client.checkAny(
+        full(),
+        aCheck({ subjectId: "a" }),
+        aCheck({ subjectId: "b" }),
+      ),
+    ).rejects.toThrow(/1 pair\(s\) for 2 request item\(s\)/);
+  });
+
+  it("a matching-length response is unaffected", async () => {
+    const client = fakeWithPairs(3);
+
+    const results = await client.checkPermissions(
+      full(),
+      aCheck({ subjectId: "a" }),
+      aCheck({ subjectId: "b" }),
+      aCheck({ subjectId: "c" }),
+    );
+
+    expect(results).toHaveLength(3);
+    expect(results.every((r) => r.hasPermission())).toBe(true);
+  });
+
+  // A CheckBulkPermissionsPair whose `response` oneof is unset used to
+  // degrade to an `unspecified` CheckResult. `.map()` does preserve index
+  // alignment, so the desync rationale above doesn't apply — but an
+  // `unspecified` result is indistinguishable from a genuine "no permission"
+  // answer, so a broken server hid behind a plausible-looking denial. It now
+  // throws, matching the other six clients.
+  it("throws on a malformed pair (oneof neither item nor error) instead of degrading to unspecified", async () => {
+    const client = clientWithFakeProto({
+      permissions: {
+        checkBulkPermissions: vi.fn().mockResolvedValue({
+          checkedAt: create(ZedTokenSchema, { token: "batch-rev" }),
+          pairs: [{ response: { case: undefined } }],
+        }),
+      },
+    });
+
+    await expect(client.checkPermissions(full(), aCheck())).rejects.toThrow(
+      /malformed CheckBulkPermissionsPair/,
+    );
   });
 });

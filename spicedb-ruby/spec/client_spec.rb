@@ -36,6 +36,63 @@ RSpec.describe SpiceDB::Client do
     end
   end
 
+  # Regression coverage for root DESIGN.md, "RULE: Credentials over insecure
+  # transport require an explicit opt-in". The proto-layer spec
+  # (spec/client_spec.rb in spicedb-ruby-proto,
+  # "SpiceDBProto::Client insecure host guard") is what proves the credential
+  # itself never reaches the wire -- via GRPC::Core::Channel/
+  # BearerTokenInterceptor message expectations; these tests prove the
+  # idiomatic constructor actually reaches, and propagates, that same guard.
+  describe 'insecure host guard' do
+    it 'refuses a non-loopback endpoint without the opt-in' do
+      expect do
+        described_class.new_plaintext('evil.example.com:1234', 'testtoken')
+      end.to raise_error(SpiceDB::InvalidArgumentError, /allow_insecure_remote_credentials/)
+    end
+
+    # The bypass shapes, at the public entry point. The proto layer holds the full
+    # fixture set and the "credential never reaches the wire" proof; these are the
+    # ones that must not slip through .new_plaintext itself.
+    [
+      '127.0.0.1:443@evil.com',
+      '[::1]:443@evil.com',
+      '[::1]:0@127.0.0.1:19999',
+      'localhost@evil.com',
+      '127.0.0.1:notaport'
+    ].each do |endpoint|
+      it "refuses authority-shifting #{endpoint.inspect} without the opt-in" do
+        expect do
+          described_class.new_plaintext(endpoint, 'testtoken')
+        end.to raise_error(SpiceDB::InvalidArgumentError, /allow_insecure_remote_credentials/)
+      end
+    end
+
+    it 'allows a loopback endpoint with no opt-in' do
+      expect do
+        described_class.new_plaintext('localhost:50051', 'testtoken')
+      end.not_to raise_error
+    end
+
+    # Unlike C#, TypeScript and Rust -- whose transports cannot dial a UDS path and
+    # so now refuse these -- grpc-ruby's C-core genuinely honours a unix: target,
+    # which is why the exemption stays here.
+    ['unix:/var/run/spicedb.sock', 'unix:///var/run/spicedb.sock'].each do |endpoint|
+      it "allows unix-socket target #{endpoint.inspect} with no opt-in" do
+        expect do
+          described_class.new_plaintext(endpoint, 'testtoken')
+        end.not_to raise_error
+      end
+    end
+
+    it 'allows a non-loopback endpoint when allow_insecure_remote_credentials is true' do
+      expect do
+        described_class.new_plaintext(
+          'evil.example.com:1234', 'testtoken', allow_insecure_remote_credentials: true
+        )
+      end.not_to raise_error
+    end
+  end
+
   describe 'constants' do
     it 'has sensible page size defaults' do
       expect(described_class::DEFAULT_READ_PAGE_SIZE).to eq(512)

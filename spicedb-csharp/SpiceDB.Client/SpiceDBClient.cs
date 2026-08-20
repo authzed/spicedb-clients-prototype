@@ -4,6 +4,7 @@ using System.Runtime.CompilerServices;
 using Authzed.Api.SpiceDB.Proto;
 using Authzed.Api.V1;
 using Google.Protobuf.WellKnownTypes;
+using Google.Rpc;
 using Grpc.Core;
 using Grpc.Net.Client;
 
@@ -16,7 +17,9 @@ namespace SpiceDB.Client;
 /// <summary>
 /// The idiomatic SpiceDB client. Use <see cref="CreatePlaintext"/> or
 /// <see cref="CreateSystemTls"/> to create one. Implements
-/// <see cref="IAsyncDisposable"/> — the channel is disposed when the client is.
+/// <see cref="IAsyncDisposable"/> — a channel this client created is disposed
+/// when the client is, while a channel handed to <see cref="CreateFromChannel"/>
+/// is left open for its owner (see <see cref="DisposeAsync"/>).
 /// </summary>
 public sealed class SpiceDBClient : IAsyncDisposable
 {
@@ -25,23 +28,102 @@ public sealed class SpiceDBClient : IAsyncDisposable
     private const int DefaultLookupPageSize = 512;
     private const int DefaultImportBatchSize = 1_000;
     private const int DefaultExportPageSize = 512;
+    /// <summary>
+    /// How many items go into one CheckBulkPermissions request.
+    /// <para>
+    /// SpiceDB rejects a request carrying more items than
+    /// <c>maxBulkCheckCount</c> — 10,000, a hard-coded const in
+    /// <c>internal/services/v1/bulkcheck.go</c> with no flag to raise or
+    /// lower it — with <c>ERROR_REASON_TOO_MANY_CHECKS_IN_REQUEST</c>.
+    /// Nothing in the proto enforces this:
+    /// <c>CheckBulkPermissionsRequest.items</c> carries only a per-item
+    /// <c>required</c> rule, not a collection-size rule, so the limit lives
+    /// solely in server code and a client that forwards the caller's array
+    /// unchanged fails on large inputs. 1,000 leaves ten times' headroom and
+    /// matches <see cref="DefaultImportBatchSize"/> and the other clients'
+    /// check batch size.
+    /// </para>
+    /// </summary>
     private const int DefaultCheckBatchSize = 1_000;
     private const int MaxRetryAttempts = 3;
     private static readonly TimeSpan InitialBackoff = TimeSpan.FromMilliseconds(100);
+
+    /// <summary>
+    /// Applied to every unary call that does not pass its own <c>timeout</c>.
+    /// <para>
+    /// Mirrors <c>authzed-node</c>'s <c>DEFAULT_DEADLINE_MS = 30_000</c> (its
+    /// comment cites <c>grpc/grpc-node#541</c>, a known gRPC failure mode
+    /// where a channel that accepts a connection but never answers produces
+    /// no error at all). Without a finite default, a wedged SpiceDB hangs
+    /// every caller that didn't opt in to a timeout — in practice, most
+    /// callers — forever: the connection looks fine at the transport level,
+    /// so nothing ever times out and nothing is ever produced to retry. See
+    /// root DESIGN.md, "RULE: A unary call must have a deadline".
+    /// </para>
+    /// <para>
+    /// Deliberately NOT applied to streaming calls (<see cref="ReadRelationshipsAsync"/>,
+    /// <see cref="LookupResourcesAsync"/>, <see cref="LookupSubjectsAsync"/>,
+    /// <see cref="UpdatesAsync"/>, <see cref="ExportRelationshipsAsync"/>) —
+    /// those are long-lived by design, and applying this default to them
+    /// would make the stream itself the outage (see DESIGN.md, "Streaming
+    /// calls MUST NOT inherit the unary default").
+    /// </para>
+    /// </summary>
+    public static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// Full-jitter backoff delay: <c>uniform(0, cap)</c> rather than the
+    /// fixed <paramref name="cap"/>. Without jitter, every client in a
+    /// fleet retries on the same schedule after a server restart, turning
+    /// the recovery into a thundering herd; sampling uniformly under the
+    /// cap spreads retries out instead.
+    /// </summary>
+    private static TimeSpan JitteredDelay(TimeSpan cap) =>
+        TimeSpan.FromMilliseconds(Random.Shared.NextDouble() * cap.TotalMilliseconds);
+
+    /// <summary>
+    /// Resolves a per-call <paramref name="timeout"/> override against
+    /// <see cref="_defaultTimeout"/>. <c>null</c> means "use the client
+    /// default" — there is deliberately no way to make an unbounded unary
+    /// call. See root DESIGN.md, "RULE: A unary call must have a deadline".
+    /// </summary>
+    private TimeSpan EffectiveTimeout(TimeSpan? timeout) => timeout ?? _defaultTimeout;
+
+    /// <summary>
+    /// Computes an absolute UTC deadline from a per-call <paramref name="timeout"/>
+    /// override (or the client default). Call this fresh at each individual
+    /// RPC attempt — including inside a retry loop's lambda — so a retried
+    /// call gets a full new window per attempt rather than a shrinking one.
+    /// </summary>
+    private DateTime EffectiveDeadline(TimeSpan? timeout) => DateTime.UtcNow + EffectiveTimeout(timeout);
+
+    /// <summary>
+    /// As <see cref="EffectiveDeadline"/>, but for client-streaming calls
+    /// (currently only <see cref="ImportRelationshipsAsync"/>) that must NOT
+    /// fall back to <see cref="_defaultTimeout"/> — see root DESIGN.md,
+    /// "RULE: A unary call must have a deadline", clause 3 (client-streaming
+    /// RPCs are excluded from the unary default because their duration
+    /// scales with the caller's dataset, not server latency). <c>null</c>
+    /// in, <c>null</c> out: no client default is ever substituted here.
+    /// </summary>
+    private static DateTime? DeadlineOrNull(TimeSpan? timeout) =>
+        timeout.HasValue ? DateTime.UtcNow + timeout.Value : null;
 
     private readonly SpiceDBProtoClient? _protoClient;
     private readonly PermissionsService.PermissionsServiceClient _permissions;
     private readonly SchemaService.SchemaServiceClient _schema;
     private readonly WatchService.WatchServiceClient _watch;
     private readonly ExperimentalService.ExperimentalServiceClient _experimental;
+    private readonly TimeSpan _defaultTimeout;
 
-    private SpiceDBClient(SpiceDBProtoClient protoClient)
+    private SpiceDBClient(SpiceDBProtoClient protoClient, TimeSpan defaultTimeout)
     {
         _protoClient = protoClient;
         _permissions = protoClient.Permissions;
         _schema = protoClient.Schema;
         _watch = protoClient.Watch;
         _experimental = protoClient.Experimental;
+        _defaultTimeout = defaultTimeout;
     }
 
     /// <summary>
@@ -54,44 +136,106 @@ public sealed class SpiceDBClient : IAsyncDisposable
         PermissionsService.PermissionsServiceClient permissions,
         SchemaService.SchemaServiceClient schema,
         WatchService.WatchServiceClient watch,
-        ExperimentalService.ExperimentalServiceClient experimental)
+        ExperimentalService.ExperimentalServiceClient experimental,
+        TimeSpan? defaultTimeout = null)
     {
         _protoClient = null;
         _permissions = permissions;
         _schema = schema;
         _watch = watch;
         _experimental = experimental;
+        _defaultTimeout = defaultTimeout ?? DefaultTimeout;
     }
 
     /// <summary>
     /// Creates a client with a plaintext (insecure) connection. Use this for
     /// testing only — the lack of TLS is made obvious by the name.
+    /// <paramref name="defaultTimeout"/>, if supplied, overrides the default
+    /// applied to every unary call that doesn't pass its own <c>timeout</c>
+    /// (see <see cref="DefaultTimeout"/>).
+    /// <para>
+    /// By itself, this only works against a loopback <paramref name="endpoint"/>
+    /// (localhost, 127.0.0.0/8, or ::1) — the local-development
+    /// case that is the entire reason a plaintext connection exists. For any other
+    /// endpoint, pass <paramref name="allowInsecureRemoteCredentials"/>: true,
+    /// on purpose, if you genuinely mean to send a bearer token in cleartext to a
+    /// remote host. See root DESIGN.md, "RULE: Credentials over insecure transport
+    /// require an explicit opt-in".
+    /// </para>
     /// </summary>
     /// <exception cref="ArgumentException">Thrown when endpoint or presharedKey is empty.</exception>
-    public static SpiceDBClient CreatePlaintext(string endpoint, string presharedKey)
+    /// <exception cref="InvalidOperationException">
+    /// Thrown when <paramref name="endpoint"/> is not loopback and
+    /// <paramref name="allowInsecureRemoteCredentials"/> is false — before any
+    /// channel, credential, or connection is created.
+    /// </exception>
+    public static SpiceDBClient CreatePlaintext(
+        string endpoint, string presharedKey, TimeSpan? defaultTimeout = null,
+        bool allowInsecureRemoteCredentials = false)
     {
         ValidateArgs(endpoint, presharedKey);
-        var protoClient = new SpiceDBProtoClient(endpoint, presharedKey, insecure: true);
-        return new SpiceDBClient(protoClient);
+        SpiceDBProtoClient protoClient;
+        try
+        {
+            protoClient = new SpiceDBProtoClient(
+                endpoint, presharedKey, insecure: true, allowInsecureRemoteCredentials: allowInsecureRemoteCredentials);
+        }
+        catch (InsecureRemoteHostException ex)
+        {
+            // The insecure-remote-host refusal is a caller argument this client rejects
+            // before any connection exists, so it surfaces as InvalidArgumentException --
+            // the same type a filter the wire cannot express uses. The proto tier's own
+            // exception type is an implementation detail a caller of this class should
+            // never have to know. See root DESIGN.md, "RULE: Credentials over insecure
+            // transport require an explicit opt-in", clause 4.
+            throw new InvalidArgumentException(ex.Message, ex);
+        }
+
+        return new SpiceDBClient(protoClient, defaultTimeout ?? DefaultTimeout);
     }
 
     /// <summary>
     /// Creates a client using the system's TLS certificate pool. Use this
-    /// for production connections.
+    /// for production connections. <paramref name="defaultTimeout"/>, if
+    /// supplied, overrides the default applied to every unary call that
+    /// doesn't pass its own <c>timeout</c> (see <see cref="DefaultTimeout"/>).
     /// </summary>
     /// <exception cref="ArgumentException">Thrown when endpoint or presharedKey is empty.</exception>
-    public static SpiceDBClient CreateSystemTls(string endpoint, string presharedKey)
+    public static SpiceDBClient CreateSystemTls(
+        string endpoint, string presharedKey, TimeSpan? defaultTimeout = null)
     {
         ValidateArgs(endpoint, presharedKey);
         var protoClient = new SpiceDBProtoClient(endpoint, presharedKey, insecure: false);
-        return new SpiceDBClient(protoClient);
+        return new SpiceDBClient(protoClient, defaultTimeout ?? DefaultTimeout);
     }
 
     /// <summary>
     /// Creates a client from an existing <see cref="GrpcChannel"/>.
     /// This is the escape hatch for advanced configuration.
+    /// <paramref name="defaultTimeout"/>, if supplied, overrides the default
+    /// applied to every unary call that doesn't pass its own <c>timeout</c>
+    /// (see <see cref="DefaultTimeout"/>).
+    /// <para>
+    /// <b>Security note:</b> unlike <see cref="CreatePlaintext"/>, this overload
+    /// performs no loopback check (root DESIGN.md, "RULE: Credentials over
+    /// insecure transport require an explicit opt-in") -- <paramref name="channel"/>
+    /// already exists, fully configured, by the time this runs, so there is no
+    /// endpoint string or insecure flag left to guard. The bearer token is attached
+    /// unconditionally regardless of what transport security <paramref
+    /// name="channel"/> actually has. Only pass a channel you built yourself and
+    /// know the transport security of.
+    /// </para>
+    /// <para>
+    /// <b>Ownership:</b> <paramref name="channel"/> stays yours. Disposing the
+    /// returned client does NOT dispose it, so a DI-registered singleton
+    /// <see cref="GrpcChannel"/> survives any number of scoped clients built on
+    /// it, and you dispose it yourself when the application shuts down. Only a
+    /// channel this library created — via <see cref="CreatePlaintext"/> or
+    /// <see cref="CreateSystemTls"/> — is torn down by <see cref="DisposeAsync"/>.
+    /// </para>
     /// </summary>
-    public static SpiceDBClient CreateFromChannel(GrpcChannel channel, string presharedKey)
+    public static SpiceDBClient CreateFromChannel(
+        GrpcChannel channel, string presharedKey, TimeSpan? defaultTimeout = null)
     {
         ArgumentNullException.ThrowIfNull(channel);
         if (string.IsNullOrEmpty(presharedKey))
@@ -99,7 +243,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
         // Create a proto client wrapping the provided channel by using
         // a dummy endpoint — the channel is already configured.
         var protoClient = new SpiceDBProtoClient(channel, presharedKey);
-        return new SpiceDBClient(protoClient);
+        return new SpiceDBClient(protoClient, defaultTimeout ?? DefaultTimeout);
     }
 
     private static void ValidateArgs(string endpoint, string presharedKey)
@@ -110,6 +254,63 @@ public sealed class SpiceDBClient : IAsyncDisposable
             throw new ArgumentException("Preshared key must not be empty.", nameof(presharedKey));
     }
 
+    /// <summary>
+    /// Escape hatch: the underlying <see cref="SpiceDBProtoClient"/>, with the four
+    /// generated gRPC service clients (<c>Permissions</c>, <c>Schema</c>, <c>Watch</c>,
+    /// <c>Experimental</c>) this client makes its own calls through.
+    /// <para>
+    /// Clearly-marked <b>secondary</b> API. Root DESIGN.md's "What NOT To Do" keeps
+    /// channels, stubs and metadata out of the primary surface and permits exactly this —
+    /// "escape hatches for advanced use are acceptable as clearly marked secondary API" —
+    /// so that a request the idiomatic methods cannot express (an RPC or proto field not
+    /// wrapped here, such as <c>WriteRelationshipsRequest.OptionalTransactionMetadata</c>,
+    /// or the single-check <c>CheckPermission</c> RPC that
+    /// <see cref="CheckPermissionAsync"/> deliberately routes around) has a workaround
+    /// short of forking the client:
+    /// <code>
+    /// var response = await client.RawProto().Permissions.CheckPermissionAsync(request);
+    /// </code>
+    /// </para>
+    /// <para>
+    /// Four things to know before reaching for it. The bearer token comes free — each
+    /// service client is built on an intercepted <see cref="CallInvoker"/>, so a raw call
+    /// is authenticated exactly as an idiomatic one is. A raw call is a raw call: no
+    /// <c>SpiceDBException</c> mapping (you catch <see cref="RpcException"/>), no retry,
+    /// and no <see cref="DefaultTimeout"/> — pass a <c>deadline</c> yourself. Do not
+    /// dispose the returned object: it holds this client's own connection, and
+    /// <see cref="DisposeAsync"/> is what releases it (or, for a channel you supplied to
+    /// <see cref="CreateFromChannel"/>, you are). And there is no stability promise beyond
+    /// what <c>Grpc.Net.Client</c> and the generated clients give.
+    /// </para>
+    /// <para>
+    /// It is an accessor, never a constructor: it takes no endpoint, preshared key, or
+    /// transport-security argument and hands back a client that already exists, so it
+    /// cannot become a second construction path around the guard in
+    /// <see cref="CreatePlaintext"/> — root DESIGN.md, "RULE: Credentials over insecure
+    /// transport require an explicit opt-in".
+    /// </para>
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// Thrown only for a client built through the internal test-only constructor that takes
+    /// service clients directly — that client has no proto client, and no public factory
+    /// can produce one.
+    /// </exception>
+    public SpiceDBProtoClient RawProto() =>
+        _protoClient ?? throw new InvalidOperationException(
+            "spicedb: this client was constructed from service clients directly (test-only seam) " +
+            "and has no underlying SpiceDBProtoClient.");
+
+    /// <summary>
+    /// Releases the connection this client created.
+    /// <para>
+    /// A channel supplied through <see cref="CreateFromChannel"/> is NOT disposed:
+    /// it belongs to the caller, who is typically sharing one DI-registered
+    /// singleton <see cref="GrpcChannel"/> across the application. Disposing it
+    /// here tore down a connection every other consumer was still using — the
+    /// first scoped consumer to finish broke the rest. Ownership tracking lives on
+    /// <c>SpiceDBProtoClient</c>, which is where the channel is actually disposed.
+    /// </para>
+    /// </summary>
     public ValueTask DisposeAsync()
     {
         _protoClient?.Dispose();
@@ -139,13 +340,54 @@ public sealed class SpiceDBClient : IAsyncDisposable
     /// <see cref="CheckPermissionsWithContextAsync"/> for a call-level
     /// default and the exact per-key merge rule with per-item context.
     /// </para>
+    /// <para>
+    /// Large inputs are split automatically into requests of at most 1,000
+    /// items and the responses concatenated in input order — SpiceDB rejects
+    /// a single request carrying more than 10,000. An empty
+    /// <paramref name="relationships"/> sends no request at all and returns
+    /// an empty array.
+    /// </para>
+    /// <para>
+    /// Results from one request share a <see cref="CheckResult.CheckedAt"/>
+    /// (the response carries a single token for the whole request, not one
+    /// per item), so an input large enough to be split carries more than one
+    /// token across the returned array.
+    /// </para>
+    /// <para>
+    /// The deadline that bounds a chunked call is the client-level
+    /// <see cref="DefaultTimeout"/>, and it bounds <b>each request</b> rather
+    /// than the call as a whole; the retry budget is likewise per request.
+    /// Worst-case wall time is
+    /// <c>ceil(relationships.Length / 1000.0) * DefaultTimeout</c>. That is
+    /// deliberate — one deadline spanning every chunk would make a large
+    /// check fail purely for being large, and a retry budget shared across
+    /// chunks would let one flaky chunk exhaust the allowance for the rest.
+    /// Size <see cref="DefaultTimeout"/> per request, and pass a
+    /// <see cref="CancellationToken"/> if you need a whole-operation bound.
+    /// </para>
+    /// <para>
+    /// The per-call <c>timeout</c> parameter is not a knob on this path:
+    /// <see cref="CheckPermissionAsync"/> is the only caller that supplies
+    /// one, and it always passes exactly one relationship, which is never
+    /// split. A per-call override on the plural surface would need a new
+    /// overload.
+    /// </para>
     /// </summary>
+    /// <remarks>
+    /// This variadic overload does not accept a per-call <c>timeout</c> —
+    /// inserting one ahead of <c>params relationships</c> would silently
+    /// break any existing positional call site passing relationships right
+    /// after <paramref name="cancellationToken"/> (e.g.
+    /// <c>CheckPermissionsAsync(cs, "view", default, rel1, rel2)</c>). It is
+    /// still bounded by the client's <see cref="DefaultTimeout"/>; use
+    /// <see cref="CheckPermissionAsync"/> for a per-call override on checks.
+    /// </remarks>
     public async Task<CheckResult[]> CheckPermissionsAsync(
         ConsistencyStrategy consistency,
         string permission,
         CancellationToken cancellationToken = default,
         params Relationship[] relationships) =>
-        await CheckPermissionsCoreAsync(consistency, permission, null, cancellationToken, relationships);
+        await CheckPermissionsCoreAsync(consistency, permission, null, cancellationToken, null, relationships);
 
     /// <summary>
     /// <see cref="CheckPermissionsAsync"/> with a call-level default caveat
@@ -183,7 +425,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
         IReadOnlyDictionary<string, object>? context,
         CancellationToken cancellationToken = default,
         params Relationship[] relationships) =>
-        await CheckPermissionsCoreAsync(consistency, permission, context, cancellationToken, relationships);
+        await CheckPermissionsCoreAsync(consistency, permission, context, cancellationToken, null, relationships);
 
     /// <summary>
     /// Shared implementation behind <see cref="CheckPermissionsAsync"/>,
@@ -200,14 +442,66 @@ public sealed class SpiceDBClient : IAsyncDisposable
         string permission,
         IReadOnlyDictionary<string, object>? context,
         CancellationToken cancellationToken,
+        TimeSpan? timeout,
         Relationship[] relationships)
     {
         ArgumentNullException.ThrowIfNull(consistency);
         if (string.IsNullOrEmpty(permission))
             throw new ArgumentException("Permission must not be empty.", nameof(permission));
+        // Zero relationships sends nothing at all. An empty request is not a
+        // cheaper way to ask nothing — it is a round trip whose only possible
+        // answer is the empty array, and CheckAllAsync already treats an
+        // aggregate over zero checks as false rather than a grant.
         if (relationships.Length == 0)
             return [];
 
+        // One request per chunk of DefaultCheckBatchSize, results concatenated
+        // in input order so results[i] still corresponds to relationships[i]
+        // across the chunk boundary. A caller passing fewer than
+        // DefaultCheckBatchSize relationships — the overwhelmingly common
+        // case — still makes exactly one request.
+        var results = new List<CheckResult>(relationships.Length);
+        for (var start = 0; start < relationships.Length; start += DefaultCheckBatchSize)
+        {
+            var length = Math.Min(DefaultCheckBatchSize, relationships.Length - start);
+            results.AddRange(await CheckChunkAsync(
+                consistency,
+                permission,
+                context,
+                cancellationToken,
+                timeout,
+                start,
+                relationships[start..(start + length)]));
+        }
+        return [.. results];
+    }
+
+    /// <summary>
+    /// Issues one CheckBulkPermissions request for <paramref name="relationships"/>
+    /// and maps the response. <paramref name="relationships"/> is non-empty
+    /// and no longer than <see cref="DefaultCheckBatchSize"/>;
+    /// <see cref="CheckPermissionsCoreAsync"/> is what enforces both. Every
+    /// response guard below — the pair-count check and the malformed-oneof
+    /// check — therefore applies per chunk, exactly as it applied to the whole
+    /// request before chunking.
+    /// <para>
+    /// <paramref name="offset"/> is this chunk's start index within the
+    /// caller's full array. The "check item N" message reports
+    /// <c>offset + i</c>, not <c>i</c>: the index a caller sees must be the
+    /// one they can use to look up their own relationship. Reporting the
+    /// chunk-relative index would attribute the failing item to a different
+    /// resource entirely.
+    /// </para>
+    /// </summary>
+    private async Task<CheckResult[]> CheckChunkAsync(
+        ConsistencyStrategy consistency,
+        string permission,
+        IReadOnlyDictionary<string, object>? context,
+        CancellationToken cancellationToken,
+        TimeSpan? timeout,
+        int offset,
+        Relationship[] relationships)
+    {
         var items = relationships.Select(r => CheckItemFromRel(r, permission, context)).ToList();
 
         var resp = await RetryAsync(async () =>
@@ -217,6 +511,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
                     Consistency = consistency.V1Consistency,
                     Items = { items },
                 },
+                deadline: EffectiveDeadline(timeout),
                 cancellationToken: cancellationToken),
             cancellationToken);
 
@@ -224,21 +519,48 @@ public sealed class SpiceDBClient : IAsyncDisposable
         // CheckBulkPermissionsResponseItem has no per-item token of its own.
         var checkedAt = resp.CheckedAt?.Token ?? "";
 
+        // The proto guarantees pairs are returned in request order but says
+        // nothing about count. A short response would otherwise silently
+        // desync results[i] from relationships[i] for every item after the
+        // gap — one resource's answer attributed to another. Fail loudly
+        // instead of returning a misaligned-but-"successful" array.
+        if (resp.Pairs.Count != items.Count)
+        {
+            throw new SpiceDBException(
+                $"CheckBulkPermissions returned {resp.Pairs.Count} pair(s) for {items.Count} " +
+                "request item(s).");
+        }
+
         var results = new CheckResult[resp.Pairs.Count];
         for (var i = 0; i < resp.Pairs.Count; i++)
         {
             var pair = resp.Pairs[i];
             if (pair.Error != null)
             {
-                // pair.Error is a google.rpc.Status (numeric code + message),
-                // not a thrown RpcException. Synthesize one so the per-item
-                // error routes through the same ErrorMapper switch as every
-                // other RPC in this client, instead of discarding the code
-                // and throwing the base SpiceDBException.
-                var status = new Status((StatusCode)pair.Error.Code, pair.Error.Message);
-                throw ErrorMapper.ToSpiceDBException(new RpcException(status));
+                // pair.Error is a google.rpc.Status, not a thrown RpcException. ToRpcException
+                // (Google.Api.CommonProtos) turns it into one so the per-item error routes
+                // through the same ErrorMapper switch as every other RPC in this client, instead
+                // of discarding the code and throwing the base SpiceDBException. It also carries
+                // the status's own details across, so a per-item failure reaches the caller with
+                // the same structured reason an RPC-level failure does — hand-building a
+                // Grpc.Core.Status from just the code and message dropped them. See root
+                // DESIGN.md, "RULE: Error mapping must not lose the server's detail".
+                throw ErrorMapper.ToSpiceDBException(pair.Error.ToRpcException());
             }
-            results[i] = ToCheckResult(pair.Item, checkedAt);
+            else if (pair.Item != null)
+            {
+                results[i] = ToCheckResult(pair.Item, checkedAt);
+            }
+            else
+            {
+                // pair.Response is a oneof — a well-behaved server always sets
+                // it to Item or Error, so this should be unreachable in
+                // practice. Mirrors spicedb-rust's malformed-oneof guard:
+                // fail loudly instead of dereferencing a null Item.
+                throw new SpiceDBException(
+                    $"check item {offset + i}: malformed CheckBulkPermissionsPair (neither Item " +
+                    "nor Error set).");
+            }
         }
         return results;
     }
@@ -258,9 +580,10 @@ public sealed class SpiceDBClient : IAsyncDisposable
         string permission,
         Relationship relationship,
         CancellationToken cancellationToken = default,
-        IReadOnlyDictionary<string, object>? context = null)
+        IReadOnlyDictionary<string, object>? context = null,
+        TimeSpan? timeout = null)
     {
-        var results = await CheckPermissionsCoreAsync(consistency, permission, context, cancellationToken, [relationship]);
+        var results = await CheckPermissionsCoreAsync(consistency, permission, context, cancellationToken, timeout, [relationship]);
         return results[0];
     }
 
@@ -276,7 +599,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
         CancellationToken cancellationToken = default,
         params Relationship[] relationships)
     {
-        var results = await CheckPermissionsCoreAsync(consistency, permission, null, cancellationToken, relationships);
+        var results = await CheckPermissionsCoreAsync(consistency, permission, null, cancellationToken, null, relationships);
         return results.Any(r => r.HasPermission);
     }
 
@@ -292,7 +615,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
         CancellationToken cancellationToken = default,
         params Relationship[] relationships)
     {
-        var results = await CheckPermissionsCoreAsync(consistency, permission, context, cancellationToken, relationships);
+        var results = await CheckPermissionsCoreAsync(consistency, permission, context, cancellationToken, null, relationships);
         return results.Any(r => r.HasPermission);
     }
 
@@ -308,7 +631,14 @@ public sealed class SpiceDBClient : IAsyncDisposable
         CancellationToken cancellationToken = default,
         params Relationship[] relationships)
     {
-        var results = await CheckPermissionsCoreAsync(consistency, permission, null, cancellationToken, relationships);
+        // Enumerable.All is vacuously true over an empty sequence, so without this guard an empty
+        // relationships array — reached via CheckPermissionsCoreAsync's own early return of []  —
+        // would silently produce "all checks passed" for zero checks. Guard explicitly instead of
+        // relying on that shared early return (RULE: "An aggregate over zero checks is not a grant").
+        if (relationships.Length == 0)
+            return false;
+
+        var results = await CheckPermissionsCoreAsync(consistency, permission, null, cancellationToken, null, relationships);
         return results.All(r => r.HasPermission);
     }
 
@@ -324,7 +654,13 @@ public sealed class SpiceDBClient : IAsyncDisposable
         CancellationToken cancellationToken = default,
         params Relationship[] relationships)
     {
-        var results = await CheckPermissionsCoreAsync(consistency, permission, context, cancellationToken, relationships);
+        // See CheckAllAsync: guard the empty case explicitly rather than relying on
+        // CheckPermissionsCoreAsync's early return of [], which would otherwise feed
+        // Enumerable.All an empty sequence and vacuously return true.
+        if (relationships.Length == 0)
+            return false;
+
+        var results = await CheckPermissionsCoreAsync(consistency, permission, context, cancellationToken, null, relationships);
         return results.All(r => r.HasPermission);
     }
 
@@ -338,7 +674,8 @@ public sealed class SpiceDBClient : IAsyncDisposable
     /// </summary>
     public async Task<string> WriteAsync(
         Transaction transaction,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        TimeSpan? timeout = null)
     {
         ArgumentNullException.ThrowIfNull(transaction);
 
@@ -347,11 +684,11 @@ public sealed class SpiceDBClient : IAsyncDisposable
         if (transaction.Preconditions.Count > 0)
             req.OptionalPreconditions.AddRange(transaction.Preconditions);
 
-        var resp = await RetryAsync(async () =>
+        var resp = await CallOnceAsync(async () =>
             await _permissions.WriteRelationshipsAsync(
                 req,
-                cancellationToken: cancellationToken),
-            cancellationToken);
+                deadline: EffectiveDeadline(timeout),
+                cancellationToken: cancellationToken));
 
         return resp.WrittenAt?.Token ?? "";
     }
@@ -362,8 +699,8 @@ public sealed class SpiceDBClient : IAsyncDisposable
     /// pages of 512 relationships using the AfterResultCursor.
     /// <para>
     /// Stream/page ESTABLISHMENT is retried on transient errors (the same
-    /// {UNAVAILABLE, RESOURCE_EXHAUSTED, ABORTED} predicate and backoff/attempt
-    /// budget as unary calls), with the attempt budget reset for each new
+    /// {UNAVAILABLE, ABORTED} predicate and backoff/attempt budget as
+    /// unary calls), with the attempt budget reset for each new
     /// page. Once any item has been yielded from the current page's open
     /// stream, a transient error is mapped and rethrown instead of retried —
     /// retrying after a yield would risk re-delivering already-yielded items.
@@ -404,7 +741,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
                 catch (RpcException ex) when (attempt < MaxRetryAttempts && ErrorMapper.IsTransient(ex))
                 {
                     attempt++;
-                    await Task.Delay(backoff, cancellationToken);
+                    await Task.Delay(JitteredDelay(backoff), cancellationToken);
                     backoff *= 2;
                     continue;
                 }
@@ -452,7 +789,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
 
                 if (!pageComplete)
                 {
-                    await Task.Delay(backoff, cancellationToken);
+                    await Task.Delay(JitteredDelay(backoff), cancellationToken);
                     backoff *= 2;
                 }
             }
@@ -494,7 +831,8 @@ public sealed class SpiceDBClient : IAsyncDisposable
         IReadOnlyList<Filter>? mustMatch = null,
         IReadOnlyList<Filter>? mustNotMatch = null,
         uint? limit = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        TimeSpan? timeout = null)
     {
         ArgumentNullException.ThrowIfNull(filter);
 
@@ -524,11 +862,11 @@ public sealed class SpiceDBClient : IAsyncDisposable
             if (preconditions.Count > 0)
                 req.OptionalPreconditions.AddRange(preconditions);
 
-            var resp = await RetryAsync(async () =>
+            var resp = await CallOnceAsync(async () =>
                 await _permissions.DeleteRelationshipsAsync(
                     req,
-                    cancellationToken: cancellationToken),
-                cancellationToken);
+                    deadline: EffectiveDeadline(timeout),
+                    cancellationToken: cancellationToken));
 
             revision = resp.DeletedAt?.Token ?? "";
 
@@ -601,7 +939,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
                 catch (RpcException ex) when (attempt < MaxRetryAttempts && ErrorMapper.IsTransient(ex))
                 {
                     attempt++;
-                    await Task.Delay(backoff, cancellationToken);
+                    await Task.Delay(JitteredDelay(backoff), cancellationToken);
                     backoff *= 2;
                     continue;
                 }
@@ -653,7 +991,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
 
                 if (!pageComplete)
                 {
-                    await Task.Delay(backoff, cancellationToken);
+                    await Task.Delay(JitteredDelay(backoff), cancellationToken);
                     backoff *= 2;
                 }
             }
@@ -724,7 +1062,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
             catch (RpcException ex) when (yielded == 0 && attempt < MaxRetryAttempts && ErrorMapper.IsTransient(ex))
             {
                 attempt++;
-                await Task.Delay(backoff, cancellationToken);
+                await Task.Delay(JitteredDelay(backoff), cancellationToken);
                 backoff *= 2;
                 continue;
             }
@@ -763,7 +1101,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
             }
 
             // Reached only via the transient-retry break above.
-            await Task.Delay(backoff, cancellationToken);
+            await Task.Delay(JitteredDelay(backoff), cancellationToken);
             backoff *= 2;
         }
     }
@@ -776,11 +1114,13 @@ public sealed class SpiceDBClient : IAsyncDisposable
     /// Returns the current SpiceDB schema and the revision it was read at.
     /// </summary>
     public async Task<(string Schema, string Revision)> ReadSchemaAsync(
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        TimeSpan? timeout = null)
     {
         var resp = await RetryAsync(async () =>
             await _schema.ReadSchemaAsync(
                 new ReadSchemaRequest(),
+                deadline: EffectiveDeadline(timeout),
                 cancellationToken: cancellationToken),
             cancellationToken);
 
@@ -792,16 +1132,17 @@ public sealed class SpiceDBClient : IAsyncDisposable
     /// </summary>
     public async Task<string> WriteSchemaAsync(
         string schema,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        TimeSpan? timeout = null)
     {
         if (string.IsNullOrEmpty(schema))
             throw new ArgumentException("Schema must not be empty.", nameof(schema));
 
-        var resp = await RetryAsync(async () =>
+        var resp = await CallOnceAsync(async () =>
             await _schema.WriteSchemaAsync(
                 new WriteSchemaRequest { Schema = schema },
-                cancellationToken: cancellationToken),
-            cancellationToken);
+                deadline: EffectiveDeadline(timeout),
+                cancellationToken: cancellationToken));
 
         return resp.WrittenAt?.Token ?? "";
     }
@@ -811,13 +1152,15 @@ public sealed class SpiceDBClient : IAsyncDisposable
     /// </summary>
     public async Task<ReflectSchemaResult> ReflectSchemaAsync(
         ConsistencyStrategy consistency,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        TimeSpan? timeout = null)
     {
         ArgumentNullException.ThrowIfNull(consistency);
 
         var resp = await RetryAsync(async () =>
             await _schema.ReflectSchemaAsync(
                 new ReflectSchemaRequest { Consistency = consistency.V1Consistency },
+                deadline: EffectiveDeadline(timeout),
                 cancellationToken: cancellationToken),
             cancellationToken);
 
@@ -875,7 +1218,8 @@ public sealed class SpiceDBClient : IAsyncDisposable
         ConsistencyStrategy consistency,
         string definitionName,
         string relationName,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        TimeSpan? timeout = null)
     {
         ArgumentNullException.ThrowIfNull(consistency);
 
@@ -887,6 +1231,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
                     DefinitionName = definitionName,
                     RelationName = relationName,
                 },
+                deadline: EffectiveDeadline(timeout),
                 cancellationToken: cancellationToken),
             cancellationToken);
 
@@ -907,7 +1252,8 @@ public sealed class SpiceDBClient : IAsyncDisposable
         ConsistencyStrategy consistency,
         string definitionName,
         string permissionName,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        TimeSpan? timeout = null)
     {
         ArgumentNullException.ThrowIfNull(consistency);
 
@@ -919,6 +1265,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
                     DefinitionName = definitionName,
                     PermissionName = permissionName,
                 },
+                deadline: EffectiveDeadline(timeout),
                 cancellationToken: cancellationToken),
             cancellationToken);
 
@@ -939,7 +1286,8 @@ public sealed class SpiceDBClient : IAsyncDisposable
     public async Task<(IReadOnlyList<SchemaDiff> Diffs, string Revision)> DiffSchemaAsync(
         ConsistencyStrategy consistency,
         string comparisonSchema,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        TimeSpan? timeout = null)
     {
         ArgumentNullException.ThrowIfNull(consistency);
 
@@ -950,6 +1298,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
                     Consistency = consistency.V1Consistency,
                     ComparisonSchema = comparisonSchema,
                 },
+                deadline: EffectiveDeadline(timeout),
                 cancellationToken: cancellationToken),
             cancellationToken);
 
@@ -970,7 +1319,8 @@ public sealed class SpiceDBClient : IAsyncDisposable
         string resourceType,
         string resourceID,
         string permission,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        TimeSpan? timeout = null)
     {
         ArgumentNullException.ThrowIfNull(consistency);
 
@@ -986,6 +1336,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
                     },
                     Permission = permission,
                 },
+                deadline: EffectiveDeadline(timeout),
                 cancellationToken: cancellationToken),
             cancellationToken);
 
@@ -1004,17 +1355,31 @@ public sealed class SpiceDBClient : IAsyncDisposable
     /// Streams relationships to SpiceDB for bulk import, returning the number
     /// of relationships loaded. Relationships are automatically batched into
     /// chunks of 1,000.
+    ///
+    /// <para>
+    /// <c>ImportBulkRelationships</c> is client-streaming: its duration scales
+    /// with the size of <paramref name="relationships"/>, not with server
+    /// latency, so unlike every other method on this client, this call does
+    /// NOT fall back to the client's default timeout (root DESIGN.md, "RULE:
+    /// A unary call must have a deadline", clause 3). Omitting
+    /// <paramref name="timeout"/> means this call is unbounded; pass it
+    /// explicitly to bound a bulk import. (<paramref name="cancellationToken"/>
+    /// still cancels the call regardless.)
+    /// </para>
     /// </summary>
     public async Task<ulong> ImportRelationshipsAsync(
         IAsyncEnumerable<Relationship> relationships,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        TimeSpan? timeout = null)
     {
         ArgumentNullException.ThrowIfNull(relationships);
 
         AsyncClientStreamingCall<ImportBulkRelationshipsRequest, ImportBulkRelationshipsResponse> stream;
         try
         {
-            stream = _permissions.ImportBulkRelationships(cancellationToken: cancellationToken);
+            stream = _permissions.ImportBulkRelationships(
+                deadline: DeadlineOrNull(timeout),
+                cancellationToken: cancellationToken);
         }
         catch (RpcException ex)
         {
@@ -1104,7 +1469,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
                 catch (RpcException ex) when (attempt < MaxRetryAttempts && ErrorMapper.IsTransient(ex))
                 {
                     attempt++;
-                    await Task.Delay(backoff, cancellationToken);
+                    await Task.Delay(JitteredDelay(backoff), cancellationToken);
                     backoff *= 2;
                     continue;
                 }
@@ -1153,7 +1518,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
 
                 if (!pageComplete)
                 {
-                    await Task.Delay(backoff, cancellationToken);
+                    await Task.Delay(JitteredDelay(backoff), cancellationToken);
                     backoff *= 2;
                 }
             }
@@ -1168,11 +1533,28 @@ public sealed class SpiceDBClient : IAsyncDisposable
     // ──────────────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Returns an async enumerable of relationship changes from SpiceDB's watch
-    /// API, starting from the given revision.
+    /// Returns an async enumerable of watch events from SpiceDB's watch API,
+    /// starting from the given revision. Each yielded <see cref="WatchEvent"/>
+    /// corresponds to one server response: zero or more relationship updates,
+    /// all current through <see cref="WatchEvent.ChangesThrough"/>.
+    /// <para>
+    /// <see cref="WatchEvent.ChangesThrough"/> is always populated. Pass it as
+    /// <paramref name="startRevision"/> on a later call to resume after a
+    /// dropped stream, instead of restarting from the original
+    /// <paramref name="startRevision"/> (reprocessing everything since,
+    /// possibly past the GC window) or from head (silently losing every
+    /// change in the gap).
+    /// </para>
+    /// <para>
+    /// <paramref name="includeCheckpoints"/> requests periodic checkpoint
+    /// events (<see cref="WatchEvent.IsCheckpoint"/>, no updates) in addition
+    /// to relationship updates. Recommended if this SpiceDB instance is
+    /// running behind a proxy that aborts idle connections, since a
+    /// checkpoint keeps the stream alive even when there are no changes.
+    /// </para>
     /// <para>
     /// Watch ESTABLISHMENT is retried on transient errors — but only up until
-    /// the first update is yielded. Once anything has been yielded from the
+    /// the first event is yielded. Once anything has been yielded from the
     /// current watch stream, a transient error is mapped and rethrown instead
     /// of retried; retrying mid-watch would risk re-delivering already-seen
     /// updates (or silently skipping ones the caller never saw), and there is
@@ -1180,9 +1562,10 @@ public sealed class SpiceDBClient : IAsyncDisposable
     /// <see cref="ReadRelationshipsAsync"/> for the full rationale.
     /// </para>
     /// </summary>
-    public async IAsyncEnumerable<RelationshipUpdate> UpdatesAsync(
+    public async IAsyncEnumerable<WatchEvent> UpdatesAsync(
         IEnumerable<string>? objectTypes = null,
         string? startRevision = null,
+        bool includeCheckpoints = false,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         var req = new WatchRequest();
@@ -1190,6 +1573,15 @@ public sealed class SpiceDBClient : IAsyncDisposable
             req.OptionalObjectTypes.AddRange(objectTypes);
         if (!string.IsNullOrEmpty(startRevision))
             req.OptionalStartCursor = new ZedToken { Token = startRevision };
+        if (includeCheckpoints)
+        {
+            // OptionalUpdateKinds is empty-means-default (relationship updates only, for
+            // backwards compatibility) -- a non-empty list is the exact set requested, so asking
+            // for checkpoints must also spell out relationship updates or the server would stop
+            // sending them.
+            req.OptionalUpdateKinds.Add(WatchKind.IncludeRelationshipUpdates);
+            req.OptionalUpdateKinds.Add(WatchKind.IncludeCheckpoints);
+        }
 
         var attempt = 0;
         var backoff = InitialBackoff;
@@ -1207,7 +1599,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
             catch (RpcException ex) when (yielded == 0 && attempt < MaxRetryAttempts && ErrorMapper.IsTransient(ex))
             {
                 attempt++;
-                await Task.Delay(backoff, cancellationToken);
+                await Task.Delay(JitteredDelay(backoff), cancellationToken);
                 backoff *= 2;
                 continue;
             }
@@ -1241,15 +1633,17 @@ public sealed class SpiceDBClient : IAsyncDisposable
                 if (!hasNext)
                     yield break;
 
-                foreach (var update in resp!.Updates)
+                yielded++;
+                yield return new WatchEvent
                 {
-                    yielded++;
-                    yield return UpdateFromProto(update);
-                }
+                    Updates = resp!.Updates.Select(UpdateFromProto).ToList(),
+                    ChangesThrough = resp.ChangesThrough?.Token ?? "",
+                    IsCheckpoint = resp.IsCheckpoint,
+                };
             }
 
             // Reached only via the transient-retry break above.
-            await Task.Delay(backoff, cancellationToken);
+            await Task.Delay(JitteredDelay(backoff), cancellationToken);
             backoff *= 2;
         }
     }
@@ -1269,21 +1663,22 @@ public sealed class SpiceDBClient : IAsyncDisposable
     public async Task ExperimentalRegisterRelationshipCounterAsync(
         string name,
         Filter filter,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        TimeSpan? timeout = null)
     {
         if (string.IsNullOrEmpty(name))
             throw new ArgumentException("Name must not be empty.", nameof(name));
         ArgumentNullException.ThrowIfNull(filter);
 
-        await RetryAsync(async () =>
+        await CallOnceAsync(async () =>
             await _experimental.ExperimentalRegisterRelationshipCounterAsync(
                 new ExperimentalRegisterRelationshipCounterRequest
                 {
                     Name = name,
                     RelationshipFilter = filter.ToProto(),
                 },
-                cancellationToken: cancellationToken),
-            cancellationToken);
+                deadline: EffectiveDeadline(timeout),
+                cancellationToken: cancellationToken));
     }
 
     /// <summary>
@@ -1297,7 +1692,8 @@ public sealed class SpiceDBClient : IAsyncDisposable
     /// </summary>
     public async Task<(CountResult? Result, bool StillCalculating)> ExperimentalCountRelationshipsAsync(
         string name,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        TimeSpan? timeout = null)
     {
         if (string.IsNullOrEmpty(name))
             throw new ArgumentException("Name must not be empty.", nameof(name));
@@ -1305,6 +1701,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
         var resp = await RetryAsync(async () =>
             await _experimental.ExperimentalCountRelationshipsAsync(
                 new ExperimentalCountRelationshipsRequest { Name = name },
+                deadline: EffectiveDeadline(timeout),
                 cancellationToken: cancellationToken),
             cancellationToken);
 
@@ -1328,16 +1725,17 @@ public sealed class SpiceDBClient : IAsyncDisposable
     /// </summary>
     public async Task ExperimentalUnregisterRelationshipCounterAsync(
         string name,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        TimeSpan? timeout = null)
     {
         if (string.IsNullOrEmpty(name))
             throw new ArgumentException("Name must not be empty.", nameof(name));
 
-        await RetryAsync(async () =>
+        await CallOnceAsync(async () =>
             await _experimental.ExperimentalUnregisterRelationshipCounterAsync(
                 new ExperimentalUnregisterRelationshipCounterRequest { Name = name },
-                cancellationToken: cancellationToken),
-            cancellationToken);
+                deadline: EffectiveDeadline(timeout),
+                cancellationToken: cancellationToken));
     }
 
     // ──────────────────────────────────────────────────────────────────────
@@ -1394,7 +1792,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
         if (callLevel != null)
         {
             foreach (var (key, value) in callLevel)
-                merged.Fields[key] = ToProtoValue(value);
+                merged.Fields[key] = ToProtoValueForKey(key, value);
         }
         if (item != null)
         {
@@ -1403,7 +1801,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
             // rule. Call-level keys the item doesn't mention are untouched
             // by this loop, which is the "call-level retained" half.
             foreach (var (key, value) in item)
-                merged.Fields[key] = ToProtoValue(value);
+                merged.Fields[key] = ToProtoValueForKey(key, value);
         }
 
         return merged;
@@ -1411,13 +1809,21 @@ public sealed class SpiceDBClient : IAsyncDisposable
 
     /// <summary>
     /// Converts a native .NET value into a protobuf Struct <see cref="Value"/>
-    /// for check-time caveat context. Unlike <see cref="Relationship.ToProto"/>'s
-    /// write-time CaveatContext conversion (which stringifies every value),
-    /// this preserves numeric/bool/null/nested shapes so caveat expressions
-    /// that compare typed parameters (e.g. a schema's <c>now &lt; 100</c>
-    /// against an <c>int</c>) evaluate correctly instead of comparing against
-    /// a string SpiceDB would reject or fail to coerce.
+    /// by dispatching on type — numbers, booleans, null, and nested
+    /// maps/lists all land on their matching <c>kind</c> oneof case rather
+    /// than being stringified. This is the single converter for caveat
+    /// context on both the check path (call-level and per-item context
+    /// merged in <see cref="MergeCheckContext"/>) and the write path
+    /// (<see cref="Relationship.ToProto"/>'s <c>CaveatContext</c>) — both
+    /// send values through this method so a numeric caveat parameter (e.g. a
+    /// schema's <c>now &lt; 100</c> compared against an <c>int</c>) evaluates
+    /// correctly instead of comparing against a string SpiceDB would reject
+    /// or fail to coerce, whichever surface it was supplied on.
     /// </summary>
+    /// <exception cref="InvalidArgumentException">
+    /// Thrown when <paramref name="value"/>'s type cannot be represented on the wire (e.g. a
+    /// custom class instance) — never silently stringified.
+    /// </exception>
     internal static Value ToProtoValue(object? value) => value switch
     {
         null => Value.ForNull(),
@@ -1427,14 +1833,41 @@ public sealed class SpiceDBClient : IAsyncDisposable
             Value.ForNumber(Convert.ToDouble(value)),
         IReadOnlyDictionary<string, object> nested => Value.ForStruct(ToProtoStructFrom(nested)),
         System.Collections.IEnumerable list => Value.ForList(ToProtoValueList(list)),
-        _ => Value.ForString(value.ToString() ?? ""),
+        // A value this conversion cannot represent (e.g. a custom class instance) came from the
+        // caller, who can see this error and fix their input -- stringifying it instead would
+        // silently produce a caveat context value SpiceDB never intended, per root DESIGN.md
+        // "RULE: A conversion that cannot preserve meaning must fail", clause 1. Shared by both
+        // the check path (MergeCheckContext) and the write path (Relationship.ToProto).
+        _ => throw new InvalidArgumentException(
+            $"unsupported caveat context value type: {value.GetType()}"),
     };
+
+    /// <summary>
+    /// Calls <see cref="ToProtoValue"/> for one caveat-context entry, and — if it throws
+    /// <see cref="InvalidArgumentException"/> because <paramref name="value"/>'s type cannot be
+    /// represented — re-raises with <paramref name="key"/> named, so the caller can tell which
+    /// entry in their context dictionary needs fixing rather than just "some value, somewhere."
+    /// For a nested dictionary, the innermost failure names its own (nested) key first, and each
+    /// enclosing call adds its key in turn, so the message traces the full path to the offending
+    /// entry.
+    /// </summary>
+    internal static Value ToProtoValueForKey(string key, object? value)
+    {
+        try
+        {
+            return ToProtoValue(value);
+        }
+        catch (InvalidArgumentException e)
+        {
+            throw new InvalidArgumentException($"caveat context key \"{key}\": {e.Message}", e);
+        }
+    }
 
     private static Struct ToProtoStructFrom(IReadOnlyDictionary<string, object> dict)
     {
         var s = new Struct();
         foreach (var (key, value) in dict)
-            s.Fields[key] = ToProtoValue(value);
+            s.Fields[key] = ToProtoValueForKey(key, value);
         return s;
     }
 
@@ -1445,6 +1878,38 @@ public sealed class SpiceDBClient : IAsyncDisposable
             values.Add(ToProtoValue(item));
         return values.ToArray();
     }
+
+    /// <summary>
+    /// Converts a protobuf Struct <see cref="Value"/> into a native .NET
+    /// value by dispatching on its <c>kind</c> oneof — the read-side inverse
+    /// of <see cref="ToProtoValue"/>. Used by <see cref="Relationship.FromProto"/>
+    /// to read a stored relationship's caveat context back without
+    /// stringifying it: <c>number_value</c> becomes a <c>double</c> (a
+    /// integer caveat parameter legitimately round-trips as e.g. <c>42.0</c>
+    /// — <c>google.protobuf.Value.number_value</c> is a double on the wire,
+    /// not a defect in this conversion), <c>bool_value</c> a <c>bool</c>,
+    /// <c>null_value</c> becomes .NET <c>null</c>, and
+    /// <c>struct_value</c>/<c>list_value</c> recurse. Internal — exposed to
+    /// the test assembly via InternalsVisibleTo; not part of the public API.
+    /// </summary>
+    internal static object? FromProtoValue(Value value) => value.KindCase switch
+    {
+        Value.KindOneofCase.NullValue => null,
+        Value.KindOneofCase.BoolValue => value.BoolValue,
+        Value.KindOneofCase.NumberValue => value.NumberValue,
+        Value.KindOneofCase.StringValue => value.StringValue,
+        Value.KindOneofCase.StructValue => FromProtoStruct(value.StructValue),
+        Value.KindOneofCase.ListValue => value.ListValue.Values.Select(FromProtoValue).ToList(),
+        _ => null,
+    };
+
+    /// <summary>
+    /// Converts every field of a protobuf <see cref="Struct"/> via
+    /// <see cref="FromProtoValue"/>. Internal — exposed to the test assembly
+    /// via InternalsVisibleTo; not part of the public API.
+    /// </summary>
+    internal static IReadOnlyDictionary<string, object> FromProtoStruct(Struct s) =>
+        s.Fields.ToDictionary(f => f.Key, f => FromProtoValue(f.Value)!);
 
     /// <summary>
     /// Maps the proto LookupPermissionship enum to its native equivalent.
@@ -1631,12 +2096,21 @@ public sealed class SpiceDBClient : IAsyncDisposable
 
     private static RelationshipUpdate UpdateFromProto(Authzed.Api.V1.RelationshipUpdate pu)
     {
+        // Server-supplied data: an unrecognized operation (OPERATION_UNSPECIFIED, or a future
+        // wire value added after this client shipped) MUST NOT map to a write. Mirrors
+        // ToTreeOperation directly above and both permissionship mappers in this file, which
+        // already map an unrecognized server enum to their safe Unspecified value rather than
+        // raising or guessing. Root DESIGN.md, "RULE: A conversion that cannot preserve meaning
+        // must fail", clause 2: server-supplied values the client does not recognise MUST NOT
+        // raise, and MUST map to the safe, non-permissive default -- never a grant, and never a
+        // write. Mapping to Touch here would let a cache or index mirror consuming the watch
+        // stream upsert a relationship that may in fact have been deleted.
         var op = pu.Operation switch
         {
             Authzed.Api.V1.RelationshipUpdate.Types.Operation.Create => UpdateOperation.Create,
             Authzed.Api.V1.RelationshipUpdate.Types.Operation.Touch => UpdateOperation.Touch,
             Authzed.Api.V1.RelationshipUpdate.Types.Operation.Delete => UpdateOperation.Delete,
-            _ => UpdateOperation.Touch,
+            _ => UpdateOperation.Unspecified,
         };
         return new RelationshipUpdate
         {
@@ -1646,7 +2120,9 @@ public sealed class SpiceDBClient : IAsyncDisposable
     }
 
     /// <summary>
-    /// Retries an async operation with exponential backoff for transient gRPC errors.
+    /// Retries an async operation with full-jitter exponential backoff for
+    /// transient gRPC errors. Only for idempotent (read) operations — see
+    /// <see cref="CallOnceAsync{T}"/> for mutations.
     /// </summary>
     private static async Task<T> RetryAsync<T>(
         Func<Task<T>> operation,
@@ -1661,13 +2137,39 @@ public sealed class SpiceDBClient : IAsyncDisposable
             }
             catch (RpcException ex) when (attempt < MaxRetryAttempts && ErrorMapper.IsTransient(ex))
             {
-                await Task.Delay(backoff, cancellationToken);
+                await Task.Delay(JitteredDelay(backoff), cancellationToken);
                 backoff *= 2;
             }
             catch (RpcException ex)
             {
                 throw ErrorMapper.ToSpiceDBException(ex);
             }
+        }
+    }
+
+    /// <summary>
+    /// Runs an async operation once, converting a gRPC error, but never
+    /// retrying.
+    /// <para>
+    /// For mutations. A <c>WriteRelationships</c> containing
+    /// <c>OPERATION_CREATE</c>, or any request carrying preconditions, is
+    /// not idempotent: if it commits and the response is lost (a rolling
+    /// restart, a proxy dropping the connection), a retry would surface
+    /// <c>ALREADY_EXISTS</c>/<c>FAILED_PRECONDITION</c> for a write that in
+    /// fact succeeded, and the caller would wrongly conclude it had
+    /// failed. See DESIGN.md, "Automatic retry is for idempotent
+    /// operations only".
+    /// </para>
+    /// </summary>
+    private static async Task<T> CallOnceAsync<T>(Func<Task<T>> operation)
+    {
+        try
+        {
+            return await operation();
+        }
+        catch (RpcException ex)
+        {
+            throw ErrorMapper.ToSpiceDBException(ex);
         }
     }
 }

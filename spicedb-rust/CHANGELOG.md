@@ -2,8 +2,481 @@
 
 ## Unreleased
 
+### Added
+
+- **2026-08-19: four new examples, one per root `DESIGN.md` RULE that had no executed
+  coverage in any client.** 13 examples -> 17, none renamed or removed. Group E Phase 3,
+  and the last of the seven clients.
+
+  - `examples/insecure_opt_in` — "RULE: Credentials over insecure transport require an
+    explicit opt-in". Loopback plaintext needs no ceremony; a remote plaintext host is
+    refused while building, so the token never reaches a socket; and the named
+    `.allow_insecure_remote_credentials()` permits it. Four endpoints whose authority
+    could move under URI parsing are each required to be refused —
+    `127.0.0.1:443@evil.com` above all, where a last-colon split reads the host as
+    `127.0.0.1` while `http::Uri`, what tonic parses with, reads the authority as
+    `evil.com`.
+  - `examples/unrepresentable_values` — "RULE: A conversion that cannot preserve meaning
+    must fail". A filter with `subject_id` and no `subject_type` is refused rather than
+    silently widening, which for `delete_relationships` is the difference between deleting
+    alice's relationships and deleting every relationship on every document. In the other
+    direction, a permissionship this client has never seen must neither raise nor grant.
+
+    **The sibling clients demonstrate clause 1 twice; only once is possible here.** They
+    also feed an unconvertible caveat-context value, but this client types caveat context
+    as `HashMap<String, serde_json::Value>` and every `serde_json::Value` has a protobuf
+    `Struct` representation — the type system already closed that hole at compile time, so
+    there is no such failure to demonstrate. That is a real difference from Python, where
+    the same case was a runtime failure that had to be fixed to name its key, and it is
+    recorded rather than faked with a contrived value.
+  - `examples/error_mapping` — "RULE: Error mapping must not lose the server's detail",
+    written as the two recoveries the rule names: a stale ZedToken surfaces as
+    `SpiceDBError::OutOfRange`, recovered by dropping the token and re-reading at full
+    consistency; a rotated token surfaces as `SpiceDBError::Unauthenticated`, distinct
+    from a transport fault. Nothing parses a message.
+  - `examples/retry_policy` — "RULE: Automatic retry is for idempotent operations only",
+    with attempts counted **server-side**, the only way to tell a retry from its absence:
+    at the caller a transparently-retried success and a first-try success are identical. A
+    read failing twice with `UNAVAILABLE` is retried to success in 3 attempts; a write
+    failing the same way is attempted exactly once; `RESOURCE_EXHAUSTED` exactly once even
+    on a read.
+
+  The last three drive a shared tonic stand-in in `examples/common/mod.rs` — a directory
+  rather than `examples/common.rs`, because the integration runner globs `examples/*.rs`
+  and a top-level file there would be picked up as an example with no `main`.
+
+  Verified by mutation, 5 of 5 killing their example: disabling the loopback guard;
+  dropping `OUT_OF_RANGE` from the status mapping; making `ResourceExhausted` transient;
+  giving `call_once` a retry budget; and letting an under-specified filter widen.
+
+  **One mutation improved an assertion rather than confirming it.** The filter check
+  originally asserted only `matches!(err, InvalidArgument(_))`, and survived the widening
+  mutation — because a widened filter that *reaches* the server comes back
+  `INVALID_ARGUMENT` too, so the variant alone could not tell a client-side refusal from a
+  server-side rejection. It now also requires the message to name `subject_type`, which
+  only this client's own refusal produces, and the mutation kills it.
+
+- **2026-08-19: five examples that ran without being able to fail now assert something
+  that does.** Root DESIGN.md, "RULE: An example must be executed by CI and must be able
+  to fail", clause 2. No example was renamed or removed.
+
+  - `examples/watch_changes.rs` **now runs in CI**. It was skipped by name — "open-ended
+    stream; needs a bounded consumer with explicit cancellation" — so the only streaming
+    example never executed and "RULE: Abandoning a stream must release it" had no executed
+    coverage here at all. It was also assertion-free: `println!` only. It is now a bounded
+    consumer that subscribes from a known revision, writes the update it is waiting for,
+    consumes until exactly that update arrives (with a checkpoint), drops the stream, then
+    resumes from the same revision on a fresh stream and requires the same update again —
+    so a start cursor that does not round-trip, or a client left wedged by the abandoned
+    stream, fails rather than passing quietly.
+  - `examples/relationship_counters.rs` polls to a terminal state instead of sleeping two
+    seconds and then guarding every assertion behind `Some(count) =>`, which asserts
+    nothing on a slow run and nothing on any run if the still-calculating mapping is
+    inverted. The count asserted is exact (two viewers, with an `editor` written that the
+    filter must exclude), and unregistering is verified by requiring the subsequent read
+    to return `FailedPrecondition`.
+  - `examples/call_deadlines.rs` proves a deadline instead of only showing fast local
+    calls succeeding. It stands up a `TcpListener` that accepts connections and never
+    speaks gRPC — what a wedged SpiceDB looks like from a client — and requires both
+    `default_timeout` and `check_permission_with_timeout` to return
+    `SpiceDBError::DeadlineExceeded`, which also pins the mapping of tonic's own
+    `Cancelled("Timeout expired")`. Each call runs under a watchdog, so a dropped deadline
+    fails the example rather than hanging the job.
+  - `examples/schema_reflection.rs` asserts contents rather than four consecutive
+    non-empty checks: exact relation and permission names, that `document#viewer` computes
+    exactly `document#view`, the full dependency set of `document#view`, and the specific
+    diff kinds — so a mapping that reported every diff as `unknown` fails.
+  - `examples/bulk_operations.rs` asserts the export count and two specific exported
+    relationships. The count was printed and nothing more, and the import asserted only
+    `count > 0`.
+
+- **An escape hatch, `SpiceDBClient::raw_proto()`.** It returns `&SpiceDBProtoClient` —
+  the four generated tonic clients (`permissions`, `schema`, `watch`, `experimental`)
+  this crate makes its own calls through — so a request the idiomatic API cannot express
+  has a workaround short of forking the crate. Two real examples of such a request:
+  `WriteRelationshipsRequest::optional_transaction_metadata`, a proto field this crate
+  does not surface, and the single-check `CheckPermission` RPC, which `check_permission()`
+  deliberately routes around (every check goes through `CheckBulkPermissions`).
+
+  ```rust,ignore
+  use spicedb::spicedb_proto::authzed::api::v1 as proto;
+
+  // Clone: the generated clients take `&mut self`, and a tonic clone shares the
+  // same channel rather than opening a second connection.
+  let mut permissions = client.raw_proto().permissions.clone();
+  let response = permissions.check_permission(request).await?;
+  ```
+
+  The generated crate is re-exported as `spicedb::spicedb_proto` so callers can name
+  those types without adding a dependency that could drift to a different version of the
+  generated code. Both additions are purely additive.
+
+  Clearly-marked **secondary** API — root DESIGN.md's "What NOT To Do" keeps channels,
+  stubs and metadata out of the primary surface and permits exactly this ("escape hatches
+  for advanced use are acceptable as clearly marked secondary API"). No stability promise
+  beyond tonic's and the generated code's.
+
+  The bearer token comes free (each generated client carries this crate's interceptor),
+  but a raw call gets no `SpiceDBError` mapping, no retry, and no `default_timeout` — set
+  a deadline on the request yourself. The connection belongs to the `SpiceDBClient`, so a
+  clone taken from the hatch must not outlive it.
+
+  It is an accessor, not a constructor: it takes no endpoint, token, or transport
+  setting, so channel construction stays on the single guarded path in
+  `SpiceDBClientBuilder::build` and this cannot become a route around root DESIGN.md,
+  "RULE: Credentials over insecure transport require an explicit opt-in". It also does
+  **not** close either TLS gap this client still has (no trust store on a `FROM scratch`
+  image; no mutual TLS): the channel already exists by the time `raw_proto()` can be
+  called, and TLS is configured before that.
+
+  New example: `examples/raw_escape_hatch.rs`.
+
 ### Fixes
 
+- **2026-08-19**: **The clear-before-write delete tolerates one error, not all of them.** It
+  swallowed every failure, so an unreachable server or a rotated token read as "nothing to clear"
+  and the example carried on to fail somewhere less obvious. Only
+  `FAILED_PRECONDITION`/`ERROR_REASON_UNKNOWN_DEFINITION` -- a fresh server with no `document`
+  definition -- is tolerated now; anything else fails the example where it happened.
+
+- **2026-08-19**: **The live-test step could select nothing and still report success.**
+  `IntegrationTest` ran `cargo test -- --ignored` and trusted its exit code, four lines above the
+  example loop that does assert a count. `--ignored` is a filter, and libtest exits 0 when a filter
+  selects nothing: removing the two `#[ignore]` attributes made the step run zero tests, silently,
+  green. It now sums the reported pass counts and requires `wantLiveTestCount`, exactly as
+  `.github/workflows/rust.yaml:81-87` does for its handshake test -- which is the pattern root
+  DESIGN.md cites. Verified by deleting both attributes: `live integration tests reported 0 passed,
+  want 2`.
+
+- **2026-08-19**: **Example cleanup moved from exit to before the schema write.** Each example
+  deleted its `document` relationships at the end of `main()`, after its own `write_schema`. That
+  ordering only helps if every example completes: `runExamples` continues past a failure, so one
+  genuine failure cascaded into spurious failures in the narrow-schema examples that ran later.
+  The twelve examples that write a schema now clear `document` first (`watch_changes` writes
+  neither a schema nor a relationship, so it has nothing to clear). The delete tolerates exactly
+  one error -- `FailedPrecondition`/`ERROR_REASON_UNKNOWN_DEFINITION`, which is a fresh server with
+  no `document` definition -- and panics on anything else, so an unreachable server or a bad token
+  still fails the example. This is the shape `spicedb-java` and `spicedb-csharp` use;
+  `spicedb-ruby`'s `spec_helper.rb` was reordered to match in the same round.
+
+- **2026-08-19**: **The example set is pinned by name, not by count.** `wantExampleCount = 13`
+  passed unchanged when an example was *renamed* -- only deletion was caught. `wantExamples` now
+  lists all thirteen and is reconciled with the glob in both directions. Verified by renaming
+  `lookup_subjects.rs` to `lookup_subj.rs`: `expected but absent: [lookup_subjects]; present but
+  not expected: [lookup_subj]`.
+
+- **2026-08-19**: **No example had ever been executed.** `mage integrationTest` documented
+  itself as "starts SpiceDB via Docker and runs examples against it", started the container on
+  the right port with the right key -- and then ran `cargo test -- --ignored`, which runs the
+  two `#[ignore]`d functions in `tests/live_integration_test.rs` and zero examples. Neither
+  `cargo run --example` nor `cargo build --examples` had ever appeared in this repo's history,
+  so every runtime assertion in all 13 examples was dead code. `IntegrationTest` now runs each
+  example with `cargo run --example` after the ignored tests, and asserts how many it executed.
+
+  Turning execution on found a real defect in the examples: **they were not isolated from each
+  other.** Only `raw_escape_hatch` deleted what it wrote, so by the time it ran (7th in name
+  order) six earlier examples had left `document` relationships behind, and its deliberately
+  narrow schema could not be written -- SpiceDB refuses a `WriteSchema` that drops a relation
+  while a relationship still exists under it, and the run died on
+  `cannot delete relation 'editor' in object definition 'document'`. The other nine
+  relationship-writing examples now delete their `document` relationships before exiting, the
+  same cleanup `spicedb-go`'s examples have always carried, which makes the suite
+  order-independent rather than merely passing in today's glob order.
+
+  `cargo clippy` gained `--all-targets` in all three places it is invoked (`Gen`, `Test`,
+  `Lint`), so example and test code is linted rather than skipped. That flag had been written
+  down as intended in an earlier plan and never landed; adding it surfaced no new warnings.
+
+  Root DESIGN.md, "RULE: An example must be executed by CI and must be able to fail", clause 1.
+
+- **2026-08-19**: **Examples and the live tests now read `SPICEDB_ENDPOINT` and
+  `SPICEDB_TOKEN`**, defaulting to `localhost:50051` and `testtoken`. Both were hardcoded, so
+  the two variables `examples/README.md` told the reader to export did nothing, and the suite
+  could not run on a host whose 50051 was already taken. `docker-compose.test.yml` takes the
+  published port from `SPICEDB_TEST_PORT` and the preshared key from `SPICEDB_TEST_TOKEN` (same
+  defaults), and `mage integrationTest` derives the port from `SPICEDB_ENDPOINT`, so
+  `SPICEDB_ENDPOINT=localhost:50071 mage integrationTest` is all that is needed.
+
+- **2026-08-19**: **The example set is now checked, not assumed.** New `mage checkExamples`
+  (also run by `mage test`, so it needs no server) asserts that `examples/*.rs` still matches
+  the expected count and that every name the runner skips is an example that exists. A glob
+  cannot list an example that is not there, so before this a renamed or moved file silently
+  produced a *shorter* run that still reported green -- the same failure mode as a name filter
+  matching nothing. `watch_changes` remains skipped, but now by an explicit named entry that
+  prints its reason and is counted, rather than by omission.
+
+- **2026-08-19**: **A per-item check error named the wrong relationship.** `check_permissions`
+  splits inputs at `DEFAULT_CHECK_BATCH_SIZE` and mapped each response with a chunk-local
+  `enumerate()`, so both the per-item-error message and the malformed-oneof message reported the
+  index *within that chunk*. A failure at the caller's relationship 1,003 read as `check item 3`,
+  so a caller who logs or parses the message acts on relationship 3 — one resource's answer
+  attributed to another, which is exactly the misattribution the pair-count guard exists to
+  prevent, relocated into the diagnostic. Both messages now report an absolute offset.
+
+  This crate chunked before the other six did, so it carried the defect longest; the six fixed it
+  as part of adopting chunking, and this closes the gap that left this crate silently diverging
+  from a contract `spicedb-java/DESIGN.md` pins as "matching `spicedb-go`". Two tests cover it,
+  each putting the failure in the second chunk.
+
+- **2026-08-19** (documentation only; no behaviour change): `check_permissions`' doc comment
+  said each result's `checked_at` was "the revision the whole batch was evaluated at" — directly
+  after the sentence explaining that large batches are split into chunks of 1,000, which it
+  contradicts. `CheckBulkPermissions` carries one `checked_at` per *response*, so a split input
+  carries more than one across the returned `Vec`. The doc comment and `DESIGN.md` now say that,
+  matching root DESIGN.md's re-scoped bulk-check invariant. This client's chunking behaviour is
+  unchanged and remains the model the other six now follow.
+
+- **Documentation — the `client` module no longer claims the builder gives "full control
+  over TLS configuration".** `SpiceDBClientBuilder` exposes `.plaintext()`,
+  `.allow_insecure_remote_credentials()` and `.default_timeout()`, and never offered a CA
+  bundle or a client certificate. The module doc now lists what it actually does, and
+  states where TLS trust comes from: tonic's `tls-native-roots` reads the OS trust store at
+  runtime, so a CA an operator installed on the host is already honoured by
+  `new_system_tls` — which is why no trust-material parameter was added here, unlike the
+  Python, TypeScript and Ruby clients, whose runtimes use a compiled-in or bundled root set
+  the operator cannot reach. The one case still uncovered (an image with no OS trust store
+  at all) is named in `DESIGN.md` rather than papered over. No API change.
+
+- **Security — a bypass in the guard that refuses to send credentials over plaintext to a
+  non-loopback host was fixed.** Building an insecure client for `"127.0.0.1:443@evil.com"`
+  was accepted as loopback and sent the bearer token to `evil.com` in cleartext, with no
+  opt-in and nothing reported. `is_loopback_endpoint` split the endpoint on its last colon
+  and read the host as `127.0.0.1`; `Endpoint::from_shared("http://127.0.0.1:443@evil.com")`
+  parses the same string as a URI, reads `127.0.0.1:443` as *userinfo*, and reports
+  `uri.host() == Some("evil.com")`. `"[::1]:443@evil.com"` and `"[::1]:0@127.0.0.1:19999"`
+  bypassed it identically through the bracketed branch, which never validated what followed
+  the `]`. A regression test drives a real gRPC server on a real socket and confirms it
+  observes nothing; against the previous implementation that server received
+  `Bearer <token>`.
+
+  The root cause was that the guard parsed the endpoint differently than the transport did,
+  so the fix is not a tighter split: `is_loopback_endpoint` now builds the exact URI the
+  client dials (`"http://" + endpoint`), parses it with the same `Uri` type tonic's
+  `Endpoint` is built from, and applies the loopback test to `Uri::host`. Guard and transport
+  can no longer disagree. Endpoints containing `@`, `/`, `?`, `#`, or whitespace are
+  additionally refused outright, since a legitimate SpiceDB target contains none of them. A
+  bare IPv6 literal (`"::1"`) is bracketed — for the guard's parse **and** for the URI the
+  transport dials, both via one `transport_authority` helper, so the two cannot disagree — and
+  keeps working, as do `localhost` and 127.0.0.0/8.
+
+- **Bare `::1` now actually connects.** It satisfied the guard but then failed construction with
+  `InvalidUri(InvalidAuthority)`, because the guard bracketed it for its own parse while the
+  constructor built its URI from the raw endpoint (`"http://::1"` is not a legal URI). Both
+  sides now go through the same helper. `"::1"`, `"[::1]"` and `"0:0:0:0:0:0:0:1"` construct a
+  client.
+
+- **A token that cannot be an HTTP header no longer panics out of the constructor.** Building
+  the `authorization` metadata value used `.expect("valid bearer token")`, so any token holding
+  a control character unwound out of a `Result`-returning async constructor — aborting the Tokio
+  task carrying it, or the process under `panic = "abort"`. **The realistic trigger is mundane:
+  a secret read from a file or a mounted k8s secret keeps its trailing newline.** It now returns
+  the new `SpiceDBProtoClientError::InvalidToken` (surfaced as `SpiceDBError::InvalidArgument`),
+  naming the likely cause. Non-ASCII tokens such as `"tokén"` were never affected — bytes `>=
+  0x80` are legal obs-text header octets — and neither is a horizontal tab, which is why the
+  control-character case survived the earlier endpoint fix. **Adding that variant is
+  source-breaking for an exhaustive `match` on `SpiceDBProtoClientError`.**
+
+- **A multi-byte endpoint no longer panics out of the constructor.** The unix-target check
+  sliced `endpoint[..5]` — a *byte* index into a `&str` — which panics when byte 5 falls inside
+  a character, so an IDN hostname such as `"abcdé.example.com:443"` unwound out of an async
+  constructor instead of returning `Err`, aborting the Tokio task carrying it (or the process
+  under `panic = "abort"`). It now uses `str::get`, which is total.
+
+- **Breaking, and security-motivated: `unix:` endpoints are now refused instead of being
+  treated as loopback.** `SpiceDBClient::new_plaintext("unix:/var/run/spicedb.sock", token)`
+  previously passed the guard on the grounds that "a unix socket never leaves the host's
+  kernel" — but tonic's `Channel` takes a URI, and
+  `"http://unix:/var/run/spicedb.sock".parse::<Uri>()` has host `"unix"`. So it resolved the
+  **DNS name `unix`** and shipped the bearer token there in cleartext, while the guard reported
+  "loopback". Nothing was ever connecting to a socket path, so no working configuration breaks.
+
+  Such an endpoint now fails with the new
+  `SpiceDBProtoClientError::UnixSocketNotSupported` (surfaced as
+  `SpiceDBError::InvalidArgument` from the idiomatic client), unconditionally — before the
+  credential guard, and regardless of TLS or `allow_insecure_remote_credentials`, since neither
+  makes "resolve a hostname called `unix`" what the caller asked for. **Adding that variant is
+  source-breaking for an exhaustive `match` on `SpiceDBProtoClientError`.** The Go, Python and
+  Ruby clients keep their `unix:` exemption; their transports genuinely dial the path.
+
+- **`import_relationships` required a materialized `Vec<Relationship>`.** A caller streaming in a
+  large import from an iterator/generator (a lazy computation, a DB cursor) was forced to collect
+  it into a `Vec` first just to call this method -- unlike every other bulk/paginated RPC,
+  `ImportBulkRelationships` is client-streaming, so the caller is the one producing an unbounded
+  amount of data.
+  - **Breaking:** `import_relationships`/`import_relationships_with_timeout` are now generic over
+    `impl IntoIterator<Item = Relationship> + Send + 'static` (with `IntoIter: Send`) instead of
+    a concrete `Vec<Relationship>` parameter. A `Vec` (or array) still works unchanged -- both
+    implement `IntoIterator<Item = Relationship>` -- so this only breaks a caller that named the
+    concrete parameter type explicitly. The background batching task now chunks the source
+    iterator manually (`Iterator::take`/`by_ref`) instead of `Vec::chunks`, so only one batch
+    (1,000 relationships) is ever held in memory at a time regardless of how the source is
+    produced.
+- **Call deadlines, per root `DESIGN.md` "RULE: A unary call must have a deadline".**
+  Previously no method accepted a timeout and no client-level default existed, so a SpiceDB
+  instance that accepted a connection but never answered hung every caller forever — the
+  connection looks fine at the transport level, so no error is produced and there is nothing
+  for retry logic to act on.
+  - Every unary method gained a `_with_timeout(..., timeout: Duration)` sibling (e.g.
+    `check_permission_with_timeout`, `write_with_timeout`, `read_schema_with_timeout`),
+    mirroring the existing `_with_context` convention — fully additive, zero existing call
+    sites changed. `delete_relationships_with` instead reads a new `DeleteOptions::with_timeout`
+    field. Each `_with_timeout` variant sets `tonic::Request::set_timeout` on the request.
+  - `SpiceDBClient::builder(...)` gained `.default_timeout(Duration)` (default 30s,
+    `client::DEFAULT_TIMEOUT`), applied to any unary call that doesn't use a `_with_timeout`
+    variant. 30s mirrors `authzed-node`'s `DEFAULT_DEADLINE_MS = 30_000` (its comment cites
+    `grpc/grpc-node#541`). There is deliberately no way to construct a client whose unary calls
+    have no bound at all.
+  - Streaming methods (`read_relationships`, `lookup_resources`, `lookup_subjects`, `updates`,
+    `export_relationships`) have no `_with_timeout` variant and are **not** bound by
+    `default_timeout` — DESIGN.md's "Streaming calls MUST NOT inherit the unary default": these
+    are long-lived by design (`updates` may legitimately run for the life of the process), and a
+    30s cutoff would end a legitimate stream, which is a worse defect than the one this change
+    fixes.
+  - **Fix round 1 correction:** `import_relationships` (`ImportBulkRelationships`) also has an
+    `import_relationships_with_timeout` sibling, but — unlike the unary methods above — it is
+    client-streaming, not unary, and is now explicitly **excluded** from `default_timeout`: its
+    duration scales with the size of the caller's dataset, not with server latency, so no fixed
+    default is correct for it (root DESIGN.md, "RULE: A unary call must have a deadline",
+    clause 3, amended to cover client-streaming and bidirectional RPCs, not only
+    server-streaming). `import_relationships` is now unbounded;
+    `import_relationships_with_timeout` still bounds the call explicitly. An earlier version of
+    this fix incorrectly resolved `import_relationships` against `default_timeout`, which would
+    have silently aborted large, legitimate multi-minute loads at 30 seconds.
+  - **Behavioral finding:** tonic's own client-side timeout enforcement (its
+    `transport::Channel`'s `GrpcTimeout` middleware, triggered by the `grpc-timeout` header
+    `Request::set_timeout` sets) surfaces a purely local timeout as
+    `Status::cancelled("Timeout expired")`, **not** `Status::deadline_exceeded` — confirmed
+    against tonic 0.12.3's source (`TimeoutExpired`'s `Display` impl, matched via
+    `Status::from_error`'s downcast handling). Left unmapped, that would make
+    `SpiceDBError::DeadlineExceeded` (added earlier, but never actually producible) unreachable
+    for exactly the case a deadline exists to guard against: a server that never responds at
+    all. `error::from_grpc_status` now special-cases that exact `(code, message)` pair and maps
+    it to `SpiceDBError::DeadlineExceeded` instead. `DEADLINE_EXCEEDED` was already excluded
+    from `is_transient`, so a timeout is never auto-retried.
+  - New `tests/deadline_test.rs`, against a real in-process gRPC server
+    (`support::MockPermissionsService`, extended with `stall_check_bulk_permissions`/
+    `stall_read_relationships`/`stall_import_bulk_relationships`) whose handlers deliberately
+    stall: a unary call against a stub that never responds fails with
+    `SpiceDBError::DeadlineExceeded` well before the server's stall completes (not a hang), a
+    per-call `_with_timeout` overrides a much larger client default, a streaming call outlives a
+    tiny unary default instead of inheriting it, and `import_relationships` both outlives the
+    tiny unary default (proving the exclusion) and still fails promptly through
+    `import_relationships_with_timeout` (proving the exclusion is from the default, not from the
+    ability to bound the call). Every test is wrapped in `tokio::time::timeout` as a watchdog so
+    a regression fails the suite instead of hanging CI.
+  - **Fix round 1 correction (comment accuracy):** the remap comment in `error::from_grpc_status`
+    previously claimed tonic gives no way to recover `TimeoutExpired`'s original type at the
+    remap site. That's not quite right — `tonic::Status` implements `Error::source()` and
+    `TimeoutExpired` is publicly exported, so a structural downcast is possible upstream of this
+    function. What actually discards the type is this function's own `(code: i32, message:
+    String)` signature. Corrected the comment; the string-match fix itself was already correct
+    and unchanged.
+  - New `examples/call_deadlines.rs`, run against a real SpiceDB rather than a mock: constructs a
+    client via the documented `default_timeout` builder option, overrides it per-call, and
+    confirms bulk import is unbounded by default.
+- **Retry safety, per root `DESIGN.md` "RULE: Automatic retry is for idempotent operations
+  only".** Three changes:
+  - `RESOURCE_EXHAUSTED` is no longer retried. In SpiceDB it signals memory load-shed (retrying
+    adds load to an already-overloaded server) or a deterministic `MaxDepthExceeded` (retrying can
+    never succeed — it re-runs the most expensive class of check several times before surfacing
+    the same error). Previously `error::is_transient` treated both `SpiceDBError::ResourceExhausted`
+    and gRPC code 8 as transient.
+  - Mutations (`write`, `delete_relationships`/`delete_relationships_with`, `write_schema`, the
+    `experimental_register_relationship_counter`/`experimental_unregister_relationship_counter`
+    calls) are no longer retried on a transient error, even though the underlying gRPC code is
+    retryable. A `write()` carrying `OPERATION_CREATE` or preconditions is not idempotent: if it
+    commits and the response is lost (a rolling restart, a proxy dropping the connection), a retry
+    would surface `ALREADY_EXISTS`/`FAILED_PRECONDITION` for a write that in fact succeeded, and the
+    caller would wrongly conclude it had failed. Reads still retry automatically. All five mutation
+    call sites previously went through `SpiceDBClient::retry`; they now go through a new
+    `SpiceDBClient::call_once`, which converts the error without retrying.
+  - Backoff is now full-jitter (`jittered_backoff_ms`, `uniform(0, cap)`) instead of plain
+    exponential doubling. Without jitter, every client in a fleet retries on the same schedule
+    after a server restart, turning the recovery into a thundering herd. Requires a new direct
+    dependency on `rand` (already present transitively).
+
+  `src/error.rs`'s `test_is_transient_resource_exhausted` and
+  `test_is_transient_resource_exhausted_via_from_grpc_status`, and their duplicates in
+  `tests/error_test.rs`, previously asserted `is_transient(...)` was `true` for `RESOURCE_EXHAUSTED`;
+  all four are inverted to assert `false`, since the old assertions were exactly the defect this
+  fixes. New coverage in `tests/retry_safety_test.rs` (a mutation is attempted exactly once on a
+  retryable error, a non-transient error, and `RESOURCE_EXHAUSTED`; a read is retried;
+  `RESOURCE_EXHAUSTED` is never retried on a read) and a `jittered_backoff_ms` unit test in
+  `src/client.rs` (backoff varies between calls). The mock `PermissionsService` harness in
+  `tests/support/mod.rs` gained a real (previously `unimplemented!()`) `write_relationships` and
+  failure-injection for both it and `check_bulk_permissions`.
+- **`updates()` silently dropped every watch update whose operation it did not recognize.** The
+  mapper's fallthrough arm was `_ => continue`, so an `OPERATION_UNSPECIFIED` — or any future
+  operation value added to the proto after this client shipped — made the whole update vanish from
+  the stream: a consumer mirroring the stream into a cache or index never learned the relationship
+  had changed at all, with no error and no gap it could detect. That is worse than the wrong-write
+  defect the other clients had, because there is nothing for the caller to inspect. `UpdateOperation`
+  gains an `Unspecified` variant and the fallthrough arm now yields it, so the update is delivered
+  and the caller can decide (re-read the relationship, or fail the mirror closed). Root `DESIGN.md`,
+  "RULE: A conversion that cannot preserve meaning must fail", clause 2: server-supplied values the
+  client does not recognise MUST NOT raise, and MUST map to the safe, non-permissive default —
+  dropping is not that default. `Transaction`'s builder never produces `Unspecified`; if one is fed
+  back into `write()` it is sent as `OPERATION_UNSPECIFIED` for the server to reject, rather than
+  guessing at a mutation the caller never asked for.
+- **`Filter::to_proto` built a `SubjectFilter` with `subject_type` defaulted to an empty string
+  whenever only `subject_id`/`subject_relation` was set, instead of raising.** Unlike the other six
+  clients, this was not silent: the condition included `|| self.subject_id.is_some()`, so
+  `Filter::new("document").with_subject_id("alice")` still produced a `SubjectFilter` (with
+  `subject_type: ""`), and the wire's `SubjectFilter.subject_type` is a required, pattern-validated
+  field (`^([a-z][a-z0-9_]{1,61}[a-z0-9]/)*[a-z][a-z0-9_]{1,62}[a-z0-9]$`, which an empty string
+  cannot match), so `delete_relationships`/`read_relationships`/etc. sent a request the server was
+  guaranteed to reject with `InvalidArgument` — confirmed against a live SpiceDB instance: the
+  server returns a `buf.validate` violation on `relationship_filter.optional_subject_filter.subject_type`
+  and deletes nothing. That is better than the silent-wrong-answer defect in the other clients (no
+  data was ever at risk), but still worse than a clear client-side error: every such call paid for
+  a network round-trip only to fail with a raw server-side regex-validation message, rather than
+  being rejected immediately with a message naming the problem. `to_proto` now returns
+  `Err(SpiceDBError::InvalidArgument(..))` naming the field that was set without `subject_type`,
+  matching the other clients' message shape, per root `DESIGN.md` "RULE: A conversion that cannot
+  preserve meaning must fail", clause 1. `to_proto` is `pub(crate)`, so this ripples only within
+  the crate: `preconditions_to_proto` (shared by `write` and `delete_relationships_with`),
+  `delete_relationships_with`, `experimental_register_relationship_counter`, `read_relationships`,
+  and `export_relationships` all now surface the conversion error before any RPC is attempted
+  (the last two, being `Stream`-returning rather than `Result`-returning, surface it as the
+  stream's first yielded `Err` instead of changing their signature). No pre-existing test asserted
+  the old behavior, so none needed replacing.
+- **`check_permissions`/`check_permissions_with_context` did not verify that
+  the server returned as many pairs as were requested.** This closes the gap
+  the malformed-pair fix below explicitly documented as still open: nothing
+  checked that `inner.pairs` had as many entries as the `items` sent in the
+  request, so a well-formed-but-short response (fewer pairs than items, no
+  malformed entries among the pairs present) silently produced a
+  `Vec<CheckResult>` shorter than `relationships` — every `results[i]` after
+  the gap misaligned with `relationships[i]`, attributing one resource's
+  answer to another. The proto guarantees pairs are returned in request
+  order but says nothing about count. Each chunk's response is now checked
+  with `inner.pairs.len() != items.len()` before pairs are mapped, returning
+  `Err(error::internal(..))` (gRPC code 13, `SpiceDBError::Status { code:
+  13, .. }`) naming both counts instead of silently returning a short
+  result. This also makes the singular `check_permission`'s
+  `results.remove(0)` unreachable for a zero-pair response — see the
+  dedicated fix and regression test below.
+- **`check_permission` could panic on the authorization hot path.** `Ok(results.remove(0))`
+  panicked (`removal index (is 0) should be < len (is 0)`) inside the caller's task whenever the
+  server returned zero pairs for a one-item request — this was the gap the length-guard fix above
+  closes. `check_permission` now goes through `check_permissions_with_context`'s new
+  `inner.pairs.len() != items.len()` guard before it ever reaches `results.remove(0)`: a
+  zero-pair response is rejected with `Err(error::internal(..))` before `results` is returned, so
+  the singular path can no longer observe an empty `Vec` there. Added
+  `check_permission_errors_instead_of_panicking_on_zero_pairs` as a dedicated regression test
+  proving the typed-error behavior directly on `check_permission` (not just the shared bulk path).
+- **`check_all`/`check_all_with_context` returned `true` for zero
+  relationships.** Rust's `Iterator::all` is vacuously `true` over an empty
+  sequence. Root `DESIGN.md`'s "An aggregate over zero checks is not a
+  grant" clause names the hazard: a gate like
+  `check_all(cs, "edit", &docs_to_rels(&docs))` was silently granted
+  whenever the derived relationships slice came up empty — a filter that
+  matched nothing, an upstream returning an empty `Vec`. Both methods now
+  guard the empty case before the aggregate and return `false` — neither
+  reached the server for this case even before the fix, since
+  `check_permissions_with_context` already short-circuits on an empty
+  relationships slice. `check_any`/`check_any_with_context` are unchanged —
+  already correctly `false` on empty (`Iterator::any`).
 - **`new_system_tls` could not connect to any TLS server.** The client enabled tonic's
   `tls` feature but neither `tls-native-roots` nor `tls-webpki-roots`, and built its
   config with a bare `ClientTlsConfig::new()`. In tonic 0.12 that carries an empty
@@ -85,12 +558,17 @@
   was only recognized via the `Status { code, .. }` match arm, which stopped
   matching once `from_grpc_status` started returning the dedicated
   `ResourceExhausted` variant for that code; without the fix, rate-limited
-  calls would have silently stopped retrying.
+  calls would have silently stopped retrying. As shipped they do not retry at
+  all -- the 2026-08-18 retry-safety entry above removed `RESOURCE_EXHAUSTED`
+  from the retryable set on purpose, which supersedes this paragraph's
+  reasoning.
 
 
 - **Delete page size correction**: `DEFAULT_DELETE_PAGE_SIZE` is now 1,000 (matching SpiceDB's default `--max-delete-relationships-limit`, so the default `delete_relationships` call works against a stock server), not 10,000 — the earlier "10,000" correction in this file was itself wrong
 - **Standardized the retryable gRPC code set to `{UNAVAILABLE, RESOURCE_EXHAUSTED,
-  ABORTED}`**, aligning with the other idiomatic clients. `DEADLINE_EXCEEDED` is no
+  ABORTED}`**, aligning with the other idiomatic clients. The shipped set is
+  `{UNAVAILABLE, ABORTED}`: the 2026-08-18 retry-safety entry above removed
+  `RESOURCE_EXHAUSTED` from it, across every client. `DEADLINE_EXCEEDED` is no
   longer treated as transient/retried — a deadline is a caller-set budget, and
   retrying past it silently extends an operation beyond the time the caller
   asked for. `ABORTED` (e.g. optimistic-concurrency/transaction conflicts) is
@@ -189,6 +667,162 @@
   relationship in one call for single-shot, all-or-nothing semantics.
 
 ### Breaking changes
+
+- **2026-08-18**: error mapping no longer discards the server's status, per root DESIGN.md,
+  "RULE: Error mapping must not lose the server's detail". `from_grpc_status` reduced a
+  `tonic::Status` to a code and a string before mapping ever ran; its own doc comment recorded
+  the cost. It now takes the `Status` itself:
+
+  ```rust
+  // before
+  pub fn from_grpc_status(code: i32, message: String) -> SpiceDBError
+  // after
+  pub fn from_grpc_status(status: tonic::Status) -> SpiceDBError
+  ```
+
+  - **Every `SpiceDBError` variant's payload changed from `String` to the new
+    `ErrorPayload`.** `matches!(err, SpiceDBError::NotFound(_))` and
+    `SpiceDBError::NotFound("gone".into())` are unaffected; `ErrorPayload` `Display`s as the
+    bare message and derefs to `str`, so `err.to_string()` and `msg.contains(..)` on a bound
+    payload are unchanged too. Code that moved a bound `String` out of a variant needs
+    `.to_string()` (or `.message()`).
+  - **New variants**: `SpiceDBError::OutOfRange` (`OUT_OF_RANGE` — an expired or
+    garbage-collected ZedToken; recovery is mechanical: drop the token and re-read at full
+    consistency) and `SpiceDBError::Unauthenticated` (`UNAUTHENTICATED` — a wrong, expired, or
+    rotated API token). Both previously fell through to `SpiceDBError::Status`, which is also
+    where an internal server fault lands, so neither was distinguishable from one. A `match`
+    with no wildcard arm over `SpiceDBError` must handle the two new variants.
+  - **`SpiceDBError` now implements `Display`/`Error` directly instead of deriving them**, so
+    `source()` yields the originating `tonic::Status` — the chain runs
+    `SpiceDBError` → `tonic::Status` → whatever tonic put behind it. Rendering is unchanged.
+  - **New accessors**: `reason()`, `reason_domain()`, `reason_metadata()` expose the
+    `google.rpc.ErrorInfo` detail SpiceDB attaches (the `authzed.api.v1.ErrorReason` name, e.g.
+    `"ERROR_REASON_MAXIMUM_DEPTH_EXCEEDED"`, and the specifics behind it, such as which
+    precondition failed); `status()` hands back the whole `tonic::Status`; `message()` returns
+    the message without the prefix `Display` adds. The reason is surfaced exactly as the server
+    sent it — a value a newer server knows and this client does not is passed through unchanged,
+    per root DESIGN.md's "RULE: A conversion that cannot preserve meaning must fail", which
+    requires server-supplied unknowns to degrade rather than fail.
+  - **The `DEADLINE_EXCEEDED` mapping no longer string-matches.** tonic's client-side deadline
+    surfaces as `Cancelled("Timeout expired")`; recognising it previously meant comparing
+    against `TimeoutExpired`'s rendered `Display` text, because the signature above had already
+    thrown the `Status` away. It is now identified by walking the status's `source()` chain and
+    downcasting to tonic's publicly-exported `TimeoutExpired`. The **whole chain** is walked, not
+    just the immediate source: against a real `Channel` the timeout sits at depth 2, behind a
+    `tonic::transport::Error`, and only a status built directly from the timeout has it at depth
+    1. (Walking is also what tonic's own `find_status_in_source_chain` does.) A server that
+    genuinely cancels with that exact wording is no longer misreported as a deadline.
+  - **`check_bulk_permissions` per-item errors keep their own details.** The per-item
+    `google.rpc.Status` was reduced to a code and a message; it is now re-encoded into the
+    status's `grpc-status-details-bin`, so a per-item failure carries the same structured reason
+    an RPC-level failure does.
+  - **`SpiceDBError::Transport` now keeps a `source()` chain too.** A connection or TLS failure
+    previously stringified the underlying `tonic::transport::Error` and dropped it, leaving the
+    class of error where the cause is most diagnostic as the only one in the hierarchy with no
+    chain at all. The chain now runs `SpiceDBError::Transport` → `SpiceDBProtoClientError` →
+    `tonic::transport::Error` → `ConnectError` → `std::io::Error`.
+  - `SpiceDBError` and `ErrorPayload` derive `Clone` (per this client's CLAUDE.md rule 10;
+    `PartialEq`/`Eq` remain impossible because `tonic::Status` implements neither).
+  - New dependency `tonic-types`, tonic's own decoder for `google.rpc` error details, used
+    instead of decoding that trailer by hand.
+
+- **2026-08-18**: per root DESIGN.md, "RULE: Credentials over insecure transport require an
+  explicit opt-in" -- `SpiceDBClientBuilder::plaintext()` / `SpiceDBClient::new_plaintext` (and
+  the underlying `SpiceDBProtoClient::new`) now refuse to construct a client for a non-loopback
+  endpoint (loopback means `localhost`, `127.0.0.0/8`, `::1`, or a `unix:` socket target).
+  Previously an insecure connection would send its bearer token in cleartext to any host --
+  tonic's `Interceptor` trait has no built-in "refuse over an insecure channel" check the way
+  some other language bindings do, so nothing checked where the connection actually went.
+  - `SpiceDBProtoClient::new`'s error type changed from `tonic::transport::Error` to the new
+    `SpiceDBProtoClientError` (variants `InsecureRemoteHostNotAllowed(String)` and
+    `Transport(tonic::transport::Error)`); a new `SpiceDBProtoClient::new_with_options(endpoint,
+    token, insecure, allow_insecure_remote_credentials)` is the opt-in entry point, and `new`
+    delegates to it with `false`.
+  - `SpiceDBClientBuilder` gains `allow_insecure_remote_credentials()`, for use alongside
+    `.plaintext()`. Named and separate from `plaintext()` on purpose: the rule requires an
+    option a reader cannot mistake for a default, not a boolean that does double duty as the
+    plaintext-transport switch. `build()` now returns `SpiceDBError::InvalidArgument` for a
+    rejected combination, before any channel is created.
+  - `new_plaintext`/`.plaintext()` against `localhost` are unaffected -- no code change needed
+    for local development.
+
+- **2026-08-18**: `updates` no longer takes `start_revision` and `include_checkpoints` as
+  positional arguments. `client.updates(&types, None, false)` was the only call in this client
+  where a reader could not tell what a literal argument meant without opening the signature --
+  every other optional setting already goes through a named builder. Watch now matches the
+  `delete_relationships`/`delete_relationships_with` shape the client already had:
+
+  ```rust
+  // Before:
+  let stream = client.updates(&object_types, None, false);
+  let stream = client.updates(&object_types, Some(resume_token), true);
+
+  // After:
+  let stream = client.updates(&object_types);
+  let stream = client.updates_with(
+      &object_types,
+      &WatchOptions::new().with_start_revision(resume_token).with_checkpoints(),
+  );
+  ```
+
+  New `spicedb::types::WatchOptions` with `new()`, `with_start_revision(impl Into<String>)`,
+  and `with_checkpoints()`. Behavior is unchanged in every respect -- the same request is
+  built from the same inputs; only how the caller names them changed.
+
+
+- **2026-08-18** (behavioral; no signature change): the two entries below change what existing,
+  unmodified call sites do. They are listed here because neither announces itself -- nothing
+  fails to compile, and the difference only shows up under load or against a slow query.
+  - **Unary calls are now bounded by a 30-second default** -- see "Call deadlines" in this
+    release. A call that legitimately takes longer than 30 s (most plausibly a deep
+    `expand_permission_tree` on a large graph, or a filtered delete sweeping many pages) now fails
+    with a deadline error where it previously ran to completion. Raise it with
+    `SpiceDBClient::builder(...).default_timeout(Duration)`, or pass `_with_timeout` on the
+    individual call. There is deliberately no way to ask for no bound at all on a unary call.
+  - **Mutations are no longer retried automatically** -- see "Retry safety" in this release.
+    `write`, `delete_relationships`, `write_schema`, `import_relationships`, and the experimental
+    counter register/unregister calls now surface a transient `UNAVAILABLE` to the caller on the
+    first attempt rather than retrying. This is the correct default (replaying a non-idempotent
+    write can report failure for a write that in fact committed), but a caller who was relying on
+    the client to ride out a rolling restart must now retry themselves, knowing their own
+    idempotency. Reads are unaffected. `RESOURCE_EXHAUSTED` is no longer retried either, on reads
+    or mutations.
+
+- **Watch resumability.** `updates` previously dropped `WatchResponse.changes_through`
+  entirely and had no way to request `WATCH_KIND_INCLUDE_CHECKPOINTS` -- a prior audit's grep
+  hit on `optional_update_kinds: Vec::new()` was a false positive: that's a required
+  struct-literal field being zeroed, not a feature.
+  - **Breaking:** `updates(&self, object_types, start_revision, include_checkpoints)` now
+    returns `impl Stream<Item = Result<WatchEvent, SpiceDBError>>` instead of
+    `impl Stream<Item = Result<Update, SpiceDBError>>`, gains a new `include_checkpoints: bool`
+    parameter, and yields once per server response (a batch of updates) rather than flattening
+    to one item per relationship update — a checkpoint response carries zero updates, so a
+    per-update-only stream has no way to surface one at all.
+
+    ```rust
+    pub struct WatchEvent {
+        pub updates: Vec<Update>,
+        pub changes_through: String, // resume token; pass as start_revision to resume after a dropped stream
+        pub is_checkpoint: bool,     // true for a checkpoint event, which carries no updates
+    }
+    ```
+  - `WatchEvent::changes_through` is the proto's `changes_through` -- "This token can be used
+    in a subsequent WatchRequest to resume watching from this point." Without it, a consumer
+    whose stream dropped could only restart from its original `start_revision` (reprocessing
+    everything since, possibly past the GC window) or from head (silently losing every change
+    in the gap).
+  - `include_checkpoints: true` requests `WATCH_KIND_INCLUDE_CHECKPOINTS` (plus
+    `WATCH_KIND_INCLUDE_RELATIONSHIP_UPDATES`, since `optional_update_kinds` is
+    empty-means-default and a non-empty list replaces rather than extends it) -- no prior way
+    existed to ask for this at all. `WatchEvent::is_checkpoint` lets a caller tell "nothing
+    changed, here is a fresh resume point" from "here are changes".
+  - `examples/watch_changes.rs` updated for the new `WatchEvent` shape and to request
+    checkpoints. `tests/support/mod.rs`'s `MockWatchService` gained a `requests()` accessor so
+    tests can assert on the `WatchRequest` actually received, not just that the call
+    succeeded. New tests in `tests/watch_test.rs`: a watch event exposes a usable resume
+    token, `include_checkpoints` reaches the built `WatchRequest`, and a checkpoint event is
+    distinguishable from one carrying updates. The three pre-existing behavioral tests updated
+    for the new `WatchEvent` return type without weakening any existing assertion.
 
 - **`check_permission` and `check_permissions` now return `CheckResult`/`Vec<CheckResult>`
   instead of `bool`/`Vec<bool>`.** `CheckPermissionResponse.permissionship` is

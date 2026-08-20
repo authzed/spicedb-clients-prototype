@@ -182,6 +182,23 @@ RSpec.describe 'SpiceDB::Client check results' do
 
       expect(result).to be true
     end
+
+    # Ruby's Enumerable#all? is vacuously true over an empty collection, so
+    # a caller gating on check_all(cs, "edit", *docs.map(&:to_rel)) would
+    # have been silently granted whenever the derived relationships array
+    # came up empty -- a filter that matched nothing, an upstream returning
+    # []. Root DESIGN.md: "An aggregate over zero checks is not a grant."
+    # check_any is deliberately left alone -- Enumerable#any? is already
+    # correctly false on an empty collection. The stub below (zero pairs) is
+    # defensive: check_permissions already short-circuits before the RPC for
+    # zero relationships, so it should never actually be called.
+    it 'is false, not vacuously true, for zero relationships' do
+      stub_bulk_check([])
+
+      result = client.check_all(SpiceDB::Consistency.full, 'view')
+
+      expect(result).to be false
+    end
   end
 
   describe '#check_permissionship_from_proto' do

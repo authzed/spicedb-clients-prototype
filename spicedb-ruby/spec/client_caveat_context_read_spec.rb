@@ -13,9 +13,15 @@ require 'spicedb_proto'
 # returned "" for every non-string value, silently destroying stored context.
 #
 # The proto here is built BY HAND rather than through relationship_to_proto. That is
-# deliberate: it isolates the read path from the write path, which still stringifies
-# (fixed separately). This spec therefore asserts the correct FINAL behavior and needs
-# no revision when the write path is corrected.
+# deliberate and still load-bearing: it isolates the read path from the write path, so
+# these assertions describe what the read path does with a proto Struct regardless of
+# how that Struct was produced. A regression in the write path cannot mask a regression
+# in the read path here, and vice versa.
+#
+# The write path no longer stringifies -- SpiceDB::CaveatContext::caveat_context_to_struct
+# now converts each value to its proper Google::Protobuf::Value kind, so a round trip
+# through relationship_to_proto and back preserves Ruby types. That correction did not
+# require touching this spec, which is the point of building the proto by hand.
 RSpec.describe 'SpiceDB::Client caveat context read path' do
   let(:client) { SpiceDB::Client.new_plaintext('localhost:50051', 'testtoken') }
 

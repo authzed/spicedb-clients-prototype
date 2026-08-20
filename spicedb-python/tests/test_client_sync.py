@@ -121,20 +121,90 @@ def test_check_any_and_check_all_do_not_count_conditional(make_client):
         assert c.check_all(full(), rel) is False
 
 
-def test_transient_error_is_retried_then_succeeds(make_client):
-    """Guards the Task 1 is_transient fix -- without it this retries zero times."""
+def test_check_all_with_zero_relationships_returns_false(make_client):
+    """Sync-flavor counterpart of
+    tests/test_client.py::TestCheckPermissionReturnsCheckResult::
+    test_check_all_with_zero_relationships_returns_false.
+
+    Python's builtin all() is vacuously True over an empty iterable, so
+    check_all(cs, "edit") with no relationships would otherwise return True
+    -- a fail-open authorization gate for a call site like
+    check_all(cs, "edit", *docs_to_rels(docs)) whenever the derived
+    relationship collection comes up empty. Root DESIGN.md: "An aggregate
+    over zero checks is not a grant." check_any/check_all are implemented
+    independently in each flavor's client.py and test_parity.py only
+    compares signatures, so this must stay in lockstep with the aio-flavor
+    test above.
+    """
+    from authzed.api.v1 import core_pb2
     from authzed.api.v1 import permission_service_pb2 as psp
 
+    c = make_client()
+    resp = psp.CheckBulkPermissionsResponse(
+        checked_at=core_pb2.ZedToken(token="deadbeef"),
+        pairs=[],
+    )
+    with mock.patch.object(c._permissions, "CheckBulkPermissions", return_value=resp):
+        assert c.check_all(full()) is False
+
+
+def test_transient_error_is_retried_then_succeeds(make_client):
+    """Guards the Task 1 is_transient fix -- without it this retries zero times.
+
+    Uses a read (ReadSchema), not WriteRelationships: mutations are no
+    longer retried at all (see test_mutation_transient_error_is_attempted_once_only
+    below) -- retrying a WriteRelationships whose response was lost, but
+    which in fact committed, would surface ALREADY_EXISTS/FAILED_PRECONDITION
+    for a write that succeeded. DESIGN.md, "Automatic retry is for
+    idempotent operations only".
+    """
+    from authzed.api.v1 import schema_service_pb2 as ssp
+
     c = make_client(max_retries=2)
-    ok = psp.WriteRelationshipsResponse()
+    ok = ssp.ReadSchemaResponse(schema_text="definition user {}")
     stub = mock.Mock(side_effect=[_SyncRpcError(grpc.StatusCode.UNAVAILABLE), ok])
+    with mock.patch.object(c._schema, "ReadSchema", stub):
+        c.read_schema()
+    assert stub.call_count == 2, "a transient error must be retried"
+
+
+def test_mutation_transient_error_is_attempted_once_only(make_client):
+    """A mutation (WriteRelationships) is NOT retried, even on a retryable
+    code: it may carry OPERATION_CREATE or preconditions, and if it
+    actually committed but the response was lost, a retry would surface
+    ALREADY_EXISTS/FAILED_PRECONDITION for a write that in fact succeeded.
+    DESIGN.md, "Automatic retry is for idempotent operations only"."""
+    c = make_client(max_retries=3)
+    stub = mock.Mock(side_effect=_SyncRpcError(grpc.StatusCode.UNAVAILABLE))
     with mock.patch.object(c._permissions, "WriteRelationships", stub):
         from spicedb import Transaction
 
         txn = Transaction()
         txn.create(Relationship.from_triple("document:a", "viewer", "user:jimmy"))
-        c.write(txn)
-    assert stub.call_count == 2, "a transient error must be retried"
+        with pytest.raises(UnavailableError):
+            c.write(txn)
+    assert stub.call_count == 1, "mutations must be attempted exactly once"
+
+
+def test_resource_exhausted_is_never_retried(make_client):
+    from spicedb.errors import ResourceExhaustedError
+
+    c = make_client(max_retries=3)
+    stub = mock.Mock(side_effect=_SyncRpcError(grpc.StatusCode.RESOURCE_EXHAUSTED))
+    with mock.patch.object(c._schema, "ReadSchema", stub):
+        with pytest.raises(ResourceExhaustedError):
+            c.read_schema()
+    assert stub.call_count == 1, "RESOURCE_EXHAUSTED must never be retried"
+
+
+def test_backoff_has_jitter(make_client):
+    """Backoff must vary between runs -- assert the jitter exists, not an
+    exact value. Without jitter every client in a fleet retries on the
+    same schedule after a server restart (thundering herd)."""
+    c = make_client(max_retries=1)
+    seen = {c._backoff_seconds(2) for _ in range(50)}
+    assert len(seen) > 1, "backoff should vary between calls"
+    assert all(0 <= v <= 0.4 for v in seen)
 
 
 def test_transient_error_gives_up_after_max_retries(make_client):
@@ -163,6 +233,31 @@ def test_no_event_loop_is_required_anywhere():
     assert SpiceDBClient("localhost:50051", token="t", insecure=True)._channel is None
 
 
+class _FakeSyncCall:
+    """Stand-in for the call object a ``grpc`` streaming stub returns.
+
+    A real stub hands back one object that is both the response iterator and
+    the RPC handle, and the client now cancels that handle on the way out of
+    every stream (root DESIGN.md, "RULE: Abandoning a stream must release
+    it"). A bare ``iter([...])`` has no ``cancel()``, so a stub returning one
+    is not the shape the client sees in production -- and a test built on
+    that shape would go green while the shipped code raised
+    ``AttributeError``. ``cancelled`` additionally lets a test assert the
+    client released the stream.
+    """
+
+    def __init__(self, iterable):
+        self._it = iter(iterable)
+        self.cancelled = False
+
+    def __iter__(self):
+        return self._it
+
+    def cancel(self) -> bool:
+        self.cancelled = True
+        return True
+
+
 def test_read_relationships_returns_a_plain_iterator(make_client):
     from authzed.api.v1 import permission_service_pb2 as psp
 
@@ -175,7 +270,9 @@ def test_read_relationships_returns_a_plain_iterator(make_client):
         )
         for i in range(3)
     ]
-    with mock.patch.object(c._permissions, "ReadRelationships", return_value=iter(page)):
+    with mock.patch.object(
+        c._permissions, "ReadRelationships", return_value=_FakeSyncCall(page)
+    ):
         got = list(c.read_relationships(Filter(resource_type="document"), full()))
     assert [r.resource_id for r in got] == ["0", "1", "2"]
 
@@ -186,7 +283,7 @@ def test_read_relationships_stops_when_page_is_short(make_client):
 
     c = make_client()
     stub = mock.Mock(
-        return_value=iter(
+        return_value=_FakeSyncCall(
             [
                 psp.ReadRelationshipsResponse(
                     relationship=Relationship.from_triple(
@@ -215,7 +312,7 @@ def test_streaming_retries_establishment_only_before_first_yield(make_client):
         )
         raise _SyncRpcError(grpc.StatusCode.UNAVAILABLE)
 
-    stub = mock.Mock(return_value=_one_then_fail())
+    stub = mock.Mock(return_value=_FakeSyncCall(_one_then_fail()))
     with mock.patch.object(c._permissions, "ReadRelationships", stub):
         it = c.read_relationships(Filter(resource_type="document"), full())
         assert next(it).resource_id == "a"

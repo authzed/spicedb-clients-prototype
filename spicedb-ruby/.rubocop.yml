@@ -14,12 +14,15 @@ Metrics/BlockLength:
 Metrics/ModuleLength:
   Max: 200
 
-# Bumped for the caveat-context read-path fix, which added two dispatch
-# methods (caveat_context_value_from_proto, struct_to_caveat_context). They
-# share a google.protobuf.Value codec with check_context_value but serve a
-# different wire field on a different path — not a round trip with it.
+# Lowered from 850: the caveat-context codec (check_context_to_struct,
+# caveat_context_to_struct, check_context_value, caveat_context_value_from_proto,
+# struct_to_caveat_context) moved out to SpiceDB::CaveatContext
+# (caveat_context.rb), shrinking Client's actual class length to 800 lines.
+# 810 leaves a small margin without re-inflating the ceiling this cop exists
+# to enforce — do not raise this back toward 850 to make room for more
+# private helpers; extract another module instead, the way this one was.
 Metrics/ClassLength:
-  Max: 850
+  Max: 810
 
 Metrics/AbcSize:
   Max: 80

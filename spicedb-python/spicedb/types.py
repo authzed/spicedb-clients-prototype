@@ -11,6 +11,34 @@ from authzed.api.v1 import core_pb2, permission_service_pb2, schema_service_pb2
 from google.protobuf import struct_pb2, timestamp_pb2
 from google.protobuf.message import Message
 
+from spicedb.errors import InvalidArgumentError
+
+
+def context_to_struct(context: dict[str, Any], what: str) -> struct_pb2.Struct:
+    """Convert caller-supplied context to a protobuf ``Struct``, key by key.
+
+    ``Struct.update`` converts the whole mapping in one call and, on an
+    unrepresentable value, raises a bare ``ValueError("Unexpected type")`` --
+    not a client error, and with no indication of which key was at fault. A
+    caller with a large context map would have to bisect it.
+
+    Root DESIGN.md, "RULE: A conversion that cannot preserve meaning must
+    fail", clause 1: caller-supplied data the client cannot represent must
+    raise a typed error *naming what could not be converted*. Converting one
+    key at a time is what makes naming it possible.
+    """
+    s = struct_pb2.Struct()
+    for key, value in context.items():
+        try:
+            s[key] = value
+        except (ValueError, TypeError) as exc:
+            raise InvalidArgumentError(
+                f"{what} key {key!r} holds a value that cannot be converted to "
+                f"protobuf: {value!r} (of type {type(value).__name__}). Caveat "
+                "context must contain only JSON-representable values."
+            ) from exc
+    return s
+
 
 @dataclass(frozen=True)
 class Relationship:
@@ -131,8 +159,7 @@ class Relationship:
         if self.caveat_name is not None:
             ctx = None
             if self.caveat_context is not None:
-                ctx = struct_pb2.Struct()
-                ctx.update(self.caveat_context)
+                ctx = context_to_struct(self.caveat_context, "caveat context")
             caveat = core_pb2.ContextualizedCaveat(
                 caveat_name=self.caveat_name,
                 context=ctx,
@@ -208,6 +235,27 @@ class Update:
 
 
 @dataclass(frozen=True)
+class WatchEvent:
+    """A single event yielded by `SpiceDBClient.watch()`.
+
+    `changes_through` is the ZedToken this event is current through. Pass it
+    as `start_revision` to a later `watch()` call to resume after a dropped
+    stream -- without it, a consumer whose stream dies can only restart from
+    its original token (reprocessing everything since, possibly past the GC
+    window) or from head (silently losing every change in the gap).
+
+    A checkpoint event (`is_checkpoint=True`) carries no `updates` -- it
+    exists only to advertise a fresh resume point and, behind a proxy that
+    aborts idle connections, to keep the stream alive. Request checkpoints
+    with `watch(include_checkpoints=True)`.
+    """
+
+    updates: list[Update]
+    changes_through: str
+    is_checkpoint: bool = False
+
+
+@dataclass(frozen=True)
 class Filter:
     """A filter for matching relationships."""
 
@@ -220,7 +268,20 @@ class Filter:
     subject_relation: str = ""
 
     def _to_proto(self) -> permission_service_pb2.RelationshipFilter:
-        """Convert to proto RelationshipFilter."""
+        """Convert to proto RelationshipFilter.
+
+        Raises ``InvalidArgumentError`` if ``subject_id`` or
+        ``subject_relation`` is set without ``subject_type``. The wire's
+        ``SubjectFilter.subject_type`` is a required field, so there is no
+        way to express a subject ID/relation constraint without it, which
+        makes silently dropping the constraint the one unsafe resolution: a
+        caller who wrote ``Filter("document", subject_id="alice")``,
+        expecting to narrow to alice's relationships, would instead match
+        every subject on every document -- e.g. ``delete_relationships``
+        would delete every relationship on every document, not just
+        alice's. See root DESIGN.md, "RULE: A conversion that cannot
+        preserve meaning must fail", clause 1.
+        """
         subject_filter = None
         if self.subject_type:
             rel_filter = None
@@ -232,6 +293,13 @@ class Filter:
                 subject_type=self.subject_type,
                 optional_subject_id=self.subject_id,
                 optional_relation=rel_filter,
+            )
+        elif self.subject_id or self.subject_relation:
+            missing = "subject_relation" if not self.subject_id else "subject_id"
+            raise InvalidArgumentError(
+                f"Filter has {missing} set without subject_type. The wire format "
+                "requires subject_type whenever a subject constraint is present -- "
+                f"set subject_type before setting {missing}."
             )
         return permission_service_pb2.RelationshipFilter(
             resource_type=self.resource_type,

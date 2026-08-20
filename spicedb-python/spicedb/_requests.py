@@ -8,7 +8,8 @@ once.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+import itertools
+from collections.abc import Iterable, Iterator
 from typing import Any
 
 from authzed.api.v1 import (
@@ -20,19 +21,30 @@ from authzed.api.v1 import (
 from google.protobuf import struct_pb2
 
 from spicedb.consistency import Consistency
-from spicedb.types import Filter, Relationship, Transaction
+from spicedb.types import Filter, Relationship, Transaction, context_to_struct
 
 DEFAULT_PAGE_SIZE = 512
 IMPORT_BATCH_SIZE = 1000
+
+# How many items go into a single CheckBulkPermissions request.
+#
+# SpiceDB rejects a request carrying more items than ``maxBulkCheckCount``
+# -- 10,000, a hard-coded const in ``internal/services/v1/bulkcheck.go``
+# with no flag to raise or lower it -- with
+# ``ERROR_REASON_TOO_MANY_CHECKS_IN_REQUEST``. Nothing in the proto enforces
+# this: ``CheckBulkPermissionsRequest.items`` carries only a per-item
+# ``required`` rule, not a collection-size rule, so the limit lives solely
+# in server code and a client that forwards the caller's arguments unchanged
+# fails on large inputs. 1,000 leaves ten times' headroom and matches
+# ``IMPORT_BATCH_SIZE`` and the other clients' check batch size.
+CHECK_BATCH_SIZE = 1000
 
 
 def context_struct(context: dict[str, Any] | None) -> struct_pb2.Struct | None:
     """Build a protobuf Struct from caveat context, or None if unset."""
     if context is None:
         return None
-    s = struct_pb2.Struct()
-    s.update(context)
-    return s
+    return context_to_struct(context, "caveat context")
 
 
 def object_reference(obj: tuple[str, str]) -> core_pb2.ObjectReference:
@@ -227,31 +239,56 @@ def export_request(
 
 
 def import_batches(
-    relationships: list[Relationship], batch_size: int = IMPORT_BATCH_SIZE
+    relationships: Iterable[Relationship], batch_size: int = IMPORT_BATCH_SIZE
 ) -> Iterator[permission_service_pb2.ImportBulkRelationshipsRequest]:
     """Chunk relationships into ImportBulkRelationships requests.
+
+    `relationships` is consumed lazily via a plain iterator, not indexed --
+    unlike every other paginated/bulk RPC, ImportBulkRelationships is
+    client-streaming: the caller is the one producing an unbounded amount of
+    data, and a caller streaming in millions of relationships from a
+    generator (`File.foreach`-equivalent, a DB cursor) should never be forced
+    to materialize the whole thing into a `list` first just to hand it to
+    this client. Only one batch (`batch_size` relationships) is ever held in
+    memory at a time.
 
     A plain generator, so both the sync client and the async client's request
     feed can drive it.
     """
-    for i in range(0, len(relationships), batch_size):
-        batch = relationships[i : i + batch_size]
+    it = iter(relationships)
+    while True:
+        batch = [r._to_proto() for r in itertools.islice(it, batch_size)]
+        if not batch:
+            return
         yield permission_service_pb2.ImportBulkRelationshipsRequest(
-            relationships=[r._to_proto() for r in batch]
+            relationships=batch
         )
 
 
 def watch_request(
     object_types: list[str] | None,
     start_revision: str | None,
+    include_checkpoints: bool = False,
 ) -> watch_service_pb2.WatchRequest:
     cursor = None
     if start_revision is not None:
         cursor = core_pb2.ZedToken(token=start_revision)
 
+    # optional_update_kinds is empty-means-default (relationship updates
+    # only, for backwards compatibility). A non-empty list is the exact set
+    # requested, so asking for checkpoints must also spell out relationship
+    # updates or the server would stop sending them.
+    update_kinds = []
+    if include_checkpoints:
+        update_kinds = [
+            watch_service_pb2.WATCH_KIND_INCLUDE_RELATIONSHIP_UPDATES,
+            watch_service_pb2.WATCH_KIND_INCLUDE_CHECKPOINTS,
+        ]
+
     return watch_service_pb2.WatchRequest(
         optional_object_types=object_types or [],
         optional_start_cursor=cursor,
+        optional_update_kinds=update_kinds,
     )
 
 

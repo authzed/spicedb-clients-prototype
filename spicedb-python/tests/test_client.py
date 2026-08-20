@@ -47,6 +47,31 @@ async def make_client():
         await c.close()
 
 
+class _FakeAioCall:
+    """Stand-in for the call object a ``grpc.aio`` streaming stub returns.
+
+    A real stub hands back one object that is both the response iterator and
+    the RPC handle, and the client now cancels that handle on the way out of
+    every stream (root DESIGN.md, "RULE: Abandoning a stream must release
+    it"). A bare async generator has no ``cancel()``, so a stub returning one
+    is not the shape the client sees in production -- and a test built on
+    that shape would go green while the shipped code raised
+    ``AttributeError``. ``cancelled`` additionally lets a test assert the
+    client released the stream.
+    """
+
+    def __init__(self, gen):
+        self._gen = gen
+        self.cancelled = False
+
+    def __aiter__(self):
+        return self._gen.__aiter__()
+
+    def cancel(self) -> bool:
+        self.cancelled = True
+        return True
+
+
 def _async_stream(*responses):
     """Build a stub for a grpc.aio server-streaming call.
 
@@ -65,7 +90,7 @@ def _async_stream(*responses):
 
     def _call(*args, **kwargs):
         _call.calls.append((args, kwargs))
-        return _gen()
+        return _FakeAioCall(_gen())
 
     _call.calls = []
     return _call
@@ -98,7 +123,7 @@ def _stream_open_fails_then_succeeds(*responses, fail_times: int = 1):
 
     def _call(*args, **kwargs):
         _call.calls.append((args, kwargs))
-        return _gen()
+        return _FakeAioCall(_gen())
 
     _call.calls = []
     return _call
@@ -118,7 +143,7 @@ def _stream_fails_after_yielding(*responses):
 
     def _call(*args, **kwargs):
         _call.calls.append((args, kwargs))
-        return _gen()
+        return _FakeAioCall(_gen())
 
     _call.calls = []
     return _call
@@ -332,6 +357,29 @@ class TestCheckPermissionReturnsCheckResult:
         assert await client.check_any(full(), rel) is False
         assert await client.check_all(full(), rel) is False
 
+    async def test_check_all_with_zero_relationships_returns_false(self, make_client):
+        """Python's builtin all() is vacuously True over an empty iterable,
+        so check_all(cs, "edit") with no relationships would otherwise return
+        True -- a fail-open authorization gate. This matters because the
+        idiomatic call site is a gate over a *derived* collection
+        (check_all(cs, "edit", *docs_to_rels(docs))), and any ordinary way
+        that collection comes up empty (a filter matching nothing, an
+        upstream returning []) must not silently open the gate. Root
+        DESIGN.md: "An aggregate over zero checks is not a grant."
+
+        check_any/check_all are implemented independently in each flavor's
+        client.py, so this must stay in lockstep with the sync-flavor
+        counterpart, tests/test_client_sync.py::
+        test_check_all_with_zero_relationships_returns_false."""
+        client = make_client()
+        response = permission_service_pb2.CheckBulkPermissionsResponse(
+            checked_at=core_pb2.ZedToken(token="deadbeef"),
+            pairs=[],
+        )
+        client._permissions.CheckBulkPermissions = AsyncMock(return_value=response)
+
+        assert await client.check_all(full()) is False
+
 
 class TestBulkCheckPerItemErrorFidelity:
     """check_permissions must surface the real per-item google.rpc.Status
@@ -527,6 +575,24 @@ class TestDeleteRelationships:
         assert list(request.optional_preconditions) == []
         assert request.optional_limit == 0
         assert request.optional_allow_partial_deletions is False
+
+    async def test_filter_subject_id_without_subject_type_raises_before_rpc(
+        self, make_client
+    ):
+        """Regression test for the offboarding hazard this finding
+        describes: a filter carrying a subject ID but no subject type must
+        be rejected before it ever reaches the server, not silently sent as
+        an unconstrained-subject delete that would remove every
+        relationship on every document."""
+        client = self._client(make_client)
+        f = Filter(resource_type="document", subject_id="alice")
+
+        with pytest.raises(InvalidArgumentError) as exc_info:
+            await client.delete_relationships(f)
+
+        assert "subject_id" in str(exc_info.value)
+        assert "subject_type" in str(exc_info.value)
+        client._permissions.DeleteRelationships.assert_not_awaited()
 
     async def test_must_match_sets_precondition(self, make_client):
         client = self._client(make_client)
@@ -762,10 +828,11 @@ class TestLookupSubjectsEstablishmentRetry:
 
 
 class TestWatchEstablishmentRetry:
-    def _response(self, token: str):
+    def _response(self, token: str, *, is_checkpoint: bool = False):
         return watch_service_pb2.WatchResponse(
             updates=[],
             changes_through=core_pb2.ZedToken(token=token),
+            is_checkpoint=is_checkpoint,
         )
 
     async def test_retries_establishment_on_first_open_transient_error(
@@ -776,7 +843,7 @@ class TestWatchEstablishmentRetry:
             self._response("rev1"),
         )
 
-        got = [rev async for _updates, rev in client.watch()]
+        got = [event.changes_through async for event in client.watch()]
 
         assert got == ["rev1"]
         assert len(client._watch.Watch.calls) == 2
@@ -789,11 +856,62 @@ class TestWatchEstablishmentRetry:
 
         got = []
         with pytest.raises(UnavailableError):
-            async for _updates, rev in client.watch():
-                got.append(rev)
+            async for event in client.watch():
+                got.append(event.changes_through)
 
         assert got == ["rev1"]
         assert len(client._watch.Watch.calls) == 1
+
+    async def test_watch_event_exposes_usable_resume_token(self, make_client):
+        """A consumer whose stream dies must be able to resume from exactly
+        where it left off -- the resume token is what makes that possible
+        instead of forcing a restart from head (losing changes) or from the
+        original token (reprocessing, possibly past the GC window)."""
+        client = make_client()
+        client._watch.Watch = _async_stream(self._response("resume-me"))
+
+        [event] = [event async for event in client.watch()]
+
+        assert event.changes_through == "resume-me"
+
+    async def test_include_checkpoints_reaches_the_wire(self, make_client):
+        client = make_client()
+        client._watch.Watch = _async_stream(self._response("rev1"))
+
+        [_ async for _ in client.watch(include_checkpoints=True)]
+
+        (args, _kwargs) = client._watch.Watch.calls[0]
+        sent_request = args[0]
+        assert (
+            watch_service_pb2.WATCH_KIND_INCLUDE_CHECKPOINTS
+            in sent_request.optional_update_kinds
+        )
+
+    async def test_include_checkpoints_false_by_default(self, make_client):
+        client = make_client()
+        client._watch.Watch = _async_stream(self._response("rev1"))
+
+        [_ async for _ in client.watch()]
+
+        (args, _kwargs) = client._watch.Watch.calls[0]
+        sent_request = args[0]
+        assert sent_request.optional_update_kinds == []
+
+    async def test_checkpoint_event_distinguishable_from_update_event(
+        self, make_client
+    ):
+        client = make_client()
+        client._watch.Watch = _async_stream(
+            self._response("checkpoint-rev", is_checkpoint=True),
+        )
+
+        [event] = [
+            event async for event in client.watch(include_checkpoints=True)
+        ]
+
+        assert event.is_checkpoint is True
+        assert event.updates == []
+        assert event.changes_through == "checkpoint-rev"
 
 
 class TestExportRelationshipsEstablishmentRetry:
@@ -894,3 +1012,65 @@ def test_reusing_a_client_across_event_loops_raises_a_clear_error():
     # verifies. Left open, the abandoned grpc.aio channel's GC teardown
     # produces a ResourceWarning: unclosed event loop.
     asyncio.run(client.close())
+
+
+# ── Unary retry safety (DESIGN.md: "Automatic retry is for idempotent
+# operations only") ──────────────────────────────────────────────────────
+#
+# Reads retry on a transient error; mutations (WriteRelationships,
+# DeleteRelationships, WriteSchema, the counter register/unregister calls)
+# do not, regardless of retryable-ness -- a WriteRelationships may carry
+# OPERATION_CREATE or preconditions, and if it actually committed but the
+# response was lost, a retry would surface ALREADY_EXISTS/FAILED_PRECONDITION
+# for a write that in fact succeeded. RESOURCE_EXHAUSTED is never retried at
+# all: in SpiceDB it means memory load-shed or a deterministic
+# MaxDepthExceeded, never a transient hiccup.
+
+
+async def test_read_transient_error_is_retried_then_succeeds(make_client):
+    from authzed.api.v1 import schema_service_pb2 as ssp
+
+    client = make_client(max_retries=2)
+    ok = ssp.ReadSchemaResponse(schema_text="definition user {}")
+    client._schema.ReadSchema = AsyncMock(side_effect=[_transient_error(), ok])
+    result = await client.read_schema()
+    assert result == "definition user {}"
+    assert client._schema.ReadSchema.await_count == 2, "a transient error must be retried"
+
+
+async def test_mutation_transient_error_is_attempted_once_only(make_client):
+    from spicedb import Transaction
+
+    client = make_client(max_retries=3)
+    client._permissions.WriteRelationships = AsyncMock(side_effect=_transient_error())
+    txn = Transaction()
+    txn.create(Relationship.from_triple("document:a", "viewer", "user:jimmy"))
+    with pytest.raises(UnavailableError):
+        await client.write(txn)
+    assert client._permissions.WriteRelationships.await_count == 1, (
+        "mutations must be attempted exactly once"
+    )
+
+
+async def test_resource_exhausted_is_never_retried(make_client):
+    from spicedb.errors import ResourceExhaustedError
+
+    client = make_client(max_retries=3)
+    client._schema.ReadSchema = AsyncMock(
+        side_effect=_transient_error(grpc.StatusCode.RESOURCE_EXHAUSTED)
+    )
+    with pytest.raises(ResourceExhaustedError):
+        await client.read_schema()
+    assert client._schema.ReadSchema.await_count == 1, "RESOURCE_EXHAUSTED must never be retried"
+
+
+def test_backoff_has_jitter():
+    """Backoff must vary between runs -- assert the jitter exists, not an
+    exact value. Without jitter every client in a fleet retries on the
+    same schedule after a server restart (thundering herd).
+
+    `_backoff_seconds` is a staticmethod with no channel/loop dependency,
+    so this does not need `make_client`."""
+    seen = {SpiceDBClient._backoff_seconds(2) for _ in range(50)}
+    assert len(seen) > 1, "backoff should vary between calls"
+    assert all(0 <= v <= 0.4 for v in seen)

@@ -55,6 +55,11 @@ public class SpiceDBClientTests
         client.Should().NotBeNull();
     }
 
+    // Construction only, and deliberately so: grpc.example.com is a reserved,
+    // non-routable name and GrpcChannel connects lazily, so nothing here exercises TLS
+    // and this would pass with an empty trust store. The honest handshake test that
+    // would not is TlsHandshakeTests.CreateSystemTls_CompletesRealHandshake -- see root
+    // DESIGN.md, "RULE: A system-TLS constructor must reach a real server", clause 2.
     [Fact]
     public void CreateSystemTls_ReturnsClient()
     {
@@ -68,6 +73,94 @@ public class SpiceDBClientTests
         await using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "testtoken");
         client.Should().NotBeNull();
         // Disposing should not throw
+    }
+
+    /// <summary>
+    /// Regression test for root DESIGN.md, "RULE: Credentials over insecure
+    /// transport require an explicit opt-in": CreatePlaintext against a
+    /// non-loopback endpoint, with no allowInsecureRemoteCredentials, must
+    /// refuse to construct a client at all -- before any channel, credential,
+    /// or connection is created. The proto-layer test
+    /// (InsecureHostGuardTest.TestRefusesInsecureNonLoopbackWithoutOptIn) is
+    /// what proves the token itself is never handed to the transport; this
+    /// test proves the idiomatic constructor actually reaches, and propagates,
+    /// that same guard.
+    /// </summary>
+    [Fact]
+    public void CreatePlaintext_RefusesNonLoopbackWithoutOptIn()
+    {
+        var act = () => SpiceDBClient.CreatePlaintext("evil.example.com:1234", "testtoken");
+        // This client's own typed argument error, not the proto tier's exception -- see
+        // root DESIGN.md, "RULE: Credentials over insecure transport require an explicit
+        // opt-in", clause 4.
+        var ex = act.Should().Throw<InvalidArgumentException>().Which;
+        ex.Message.Should().Contain("evil.example.com:1234");
+        ex.Message.Should().Contain("allowInsecureRemoteCredentials");
+    }
+
+    /// <summary>
+    /// The bypass shapes, at the public entry point. The proto layer holds the full
+    /// fixture set and the wire-level "token never sent" proof; these are the ones that
+    /// must not slip through CreatePlaintext itself, whose two-argument overload gives
+    /// a caller no way to opt in at all.
+    /// </summary>
+    [Theory]
+    [InlineData("127.0.0.1:443@evil.com")]
+    [InlineData("[::1]:443@evil.com")]
+    [InlineData("[::1]:0@127.0.0.1:19999")]
+    [InlineData("localhost@evil.com")]
+    public void CreatePlaintext_RefusesEndpointWhoseUriAuthorityShiftsTheHost(string endpoint)
+    {
+        var act = () => SpiceDBClient.CreatePlaintext(endpoint, "testtoken");
+        var ex = act.Should().Throw<InvalidArgumentException>().Which;
+        ex.Message.Should().Contain("allowInsecureRemoteCredentials");
+    }
+
+    /// <summary>
+    /// A unix-socket endpoint is refused, not silently turned into a DNS lookup for the
+    /// hostname "unix". Grpc.Net.Client cannot dial a UDS path from an address string.
+    /// </summary>
+    [Theory]
+    [InlineData("unix:/var/run/spicedb.sock")]
+    [InlineData("unix:///var/run/spicedb.sock")]
+    public void CreatePlaintext_RefusesUnixSocketTargets(string endpoint)
+    {
+        var act = () => SpiceDBClient.CreatePlaintext(endpoint, "testtoken");
+        var ex = act.Should().Throw<InvalidOperationException>().Which;
+        ex.Message.Should().Contain("unix-domain-socket");
+    }
+
+    [Fact]
+    public void CreatePlaintext_LoopbackWorksWithNoOptIn()
+    {
+        var act = () => SpiceDBClient.CreatePlaintext("localhost:50051", "testtoken");
+        act.Should().NotThrow();
+    }
+
+    /// <summary>
+    /// Bare <c>::1</c> is item 8 of the loopback contract, so it must build a client
+    /// through the public entry point — not merely satisfy the guard and then throw
+    /// <c>UriFormatException</c> from <c>GrpcChannel.ForAddress</c>, which is what
+    /// happened while the guard bracketed the literal and the transport address did
+    /// not.
+    /// </summary>
+    [Theory]
+    [InlineData("::1")]
+    [InlineData("[::1]")]
+    [InlineData("0:0:0:0:0:0:0:1")]
+    [InlineData("[::1]:50051")]
+    public void CreatePlaintext_BareIpv6LoopbackWorksWithNoOptIn(string endpoint)
+    {
+        var act = () => SpiceDBClient.CreatePlaintext(endpoint, "testtoken");
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void CreatePlaintext_AllowInsecureRemoteCredentialsPermitsNonLoopback()
+    {
+        var act = () => SpiceDBClient.CreatePlaintext(
+            "evil.example.com:1234", "testtoken", allowInsecureRemoteCredentials: true);
+        act.Should().NotThrow();
     }
 
     [Fact]

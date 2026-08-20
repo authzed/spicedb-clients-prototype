@@ -26,6 +26,17 @@ definition doc {
     permission view = viewer
 }"#;
 
+/// The live server these tests connect to. `mage integrationTest` starts it and
+/// exports `SPICEDB_ENDPOINT`/`SPICEDB_TOKEN`, the same two variables every
+/// example reads; the defaults match `docker-compose.test.yml`.
+fn live_endpoint() -> String {
+    std::env::var("SPICEDB_ENDPOINT").unwrap_or_else(|_| "localhost:50051".to_string())
+}
+
+fn live_token() -> String {
+    std::env::var("SPICEDB_TOKEN").unwrap_or_else(|_| "testtoken".to_string())
+}
+
 /// T4: writes a caveated relationship, checks the permission with no caveat
 /// context supplied, and asserts the server reports a `ConditionalPermission`
 /// result rather than a grant — the server needed `now` to evaluate `active`
@@ -33,7 +44,7 @@ definition doc {
 #[tokio::test]
 #[ignore = "requires a live SpiceDB server (see module docs)"]
 async fn check_permission_with_missing_caveat_context_is_conditional_not_granted() {
-    let client = SpiceDBClient::new_plaintext("localhost:50051", "testtoken")
+    let client = SpiceDBClient::new_plaintext(live_endpoint(), live_token())
         .await
         .expect("connect to live SpiceDB");
 
@@ -88,7 +99,7 @@ async fn check_permission_with_missing_caveat_context_is_conditional_not_granted
 #[tokio::test]
 #[ignore = "requires a live SpiceDB server (see module docs)"]
 async fn check_permission_with_context_resolves_conditional_to_grant() {
-    let client = SpiceDBClient::new_plaintext("localhost:50051", "testtoken")
+    let client = SpiceDBClient::new_plaintext(live_endpoint(), live_token())
         .await
         .expect("connect to live SpiceDB");
 

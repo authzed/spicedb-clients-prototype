@@ -26,6 +26,12 @@ from spicedb.consistency import full
 
 TOKEN = "test-token"
 
+# One relationship, because `check_permissions` with zero relationships now
+# sends no request at all (an empty bulk check is a round trip whose only
+# possible answer is the empty list). These tests need a real RPC to reach
+# the wire, so they hand it something to ask about.
+_ONE_REL = Relationship.from_triple("document:readme", "view", "user:alice")
+
 
 @pytest.fixture(scope="module")
 def tls_pair() -> tuple[bytes, bytes]:
@@ -57,7 +63,22 @@ class _Recorder:
 
     def check_bulk(self, request: bytes, context) -> bytes:
         self._record(context)
-        return psp.CheckBulkPermissionsResponse().SerializeToString()
+        # Answer one pair per request item. The client's pair-count guard
+        # rejects a response that does not match the request's item count,
+        # so a fixed empty response would fail every caller that asks about
+        # an actual relationship.
+        req = psp.CheckBulkPermissionsRequest()
+        req.ParseFromString(request)
+        return psp.CheckBulkPermissionsResponse(
+            pairs=[
+                psp.CheckBulkPermissionsPair(
+                    item=psp.CheckBulkPermissionsResponseItem(
+                        permissionship=psp.CheckPermissionResponse.PERMISSIONSHIP_HAS_PERMISSION
+                    )
+                )
+                for _ in req.items
+            ]
+        ).SerializeToString()
 
     def read_relationships(self, request: bytes, context):
         self._record(context)
@@ -146,7 +167,7 @@ async def test_aio_sends_exactly_one_authorization_header(
                 ):
                     pass
             else:
-                await client.check_permissions(full())
+                await client.check_permissions(full(), _ONE_REL)
             await client.close()
     finally:
         server.stop(0)
@@ -199,6 +220,42 @@ def test_sync_import_relationships_sends_exactly_one_authorization_header(
     assert recorder.headers[0][1] == f"Bearer {TOKEN}"
 
 
+def test_sync_import_relationships_accepts_a_one_shot_generator(tls_pair):
+    """`import_relationships` must accept an iterator/generator without
+
+    requiring the caller to materialize it into a `list` first -- a caller
+    streaming in millions of relationships from `File.foreach`-equivalent
+    generator or a DB cursor should not be forced to hold them all in memory
+    at once just to call this method. Drives a real in-process gRPC server
+    (like the test above) with a plain generator that can only be iterated
+    ONCE: if the client (or `_requests.import_batches` underneath it)
+    materialized `relationships` into a list/tuple before streaming, this
+    would still pass, but if it re-iterated the source (e.g. under a retry)
+    it would raise on the second pass.
+    """
+    from spicedb.sync import SpiceDBClient as SyncSpiceDBClient
+
+    recorder = _Recorder()
+    server, port = _serve(recorder, None)
+    consumed_once = False
+
+    def one_shot():
+        nonlocal consumed_once
+        assert not consumed_once, "the generator must not be iterated more than once"
+        consumed_once = True
+        for i in range(5):
+            yield Relationship.from_triple(f"document:{i}", "viewer", "user:jimmy")
+
+    try:
+        client = SyncSpiceDBClient(f"localhost:{port}", token=TOKEN, insecure=True)
+        num_loaded = client.import_relationships(one_shot())
+        client.close()
+    finally:
+        server.stop(0)
+
+    assert num_loaded == 5, "the real server must see all 5 relationships from the generator"
+
+
 @pytest.mark.parametrize("secure", [False, True])
 @pytest.mark.parametrize("streaming", [False, True])
 def test_sync_sends_exactly_one_authorization_header(
@@ -219,7 +276,7 @@ def test_sync_sends_exactly_one_authorization_header(
                 ):
                     pass
             else:
-                client.check_permissions(full())
+                client.check_permissions(full(), _ONE_REL)
             client.close()
     finally:
         server.stop(0)

@@ -23,6 +23,19 @@ var (
 	ErrInvalidRelation = fmt.Errorf("relation is required")
 	// ErrInvalidSubject indicates a subject type or ID is empty.
 	ErrInvalidSubject = fmt.Errorf("subject type and id are required")
+	// ErrInvalidFilter indicates a Filter has SubjectID or SubjectRelation set
+	// without SubjectType. The wire's SubjectFilter.subject_type is required,
+	// so there is no way to express a subject constraint without it.
+	ErrInvalidFilter = fmt.Errorf("filter has a subject constraint set without SubjectType")
+	// ErrInvalidCaveatContext indicates a Relationship's CaveatContext holds a
+	// value that cannot be represented as a protobuf Struct (structpb.NewStruct
+	// rejects it). The error wrapping this sentinel names the offending key.
+	//
+	// Caveat context is caller-supplied, so this fails loudly rather than
+	// writing the relationship with its caveat name attached and its context
+	// silently missing — see root DESIGN.md, "RULE: A conversion that cannot
+	// preserve meaning must fail", clause 1.
+	ErrInvalidCaveatContext = fmt.Errorf("caveat context holds a value that cannot be converted to protobuf")
 )
 
 // Relationship is a flat representation of a SpiceDB relationship.
@@ -178,8 +191,21 @@ func (r Relationship) String() string {
 	return s
 }
 
-// ToProto converts a Relationship to its proto representation.
-func (r Relationship) ToProto() *v1.Relationship {
+// ToProto converts a Relationship to its proto representation. It returns an
+// error wrapping ErrInvalidCaveatContext — instead of silently dropping the
+// caveat context and writing the relationship anyway — if CaveatContext
+// cannot be converted to a protobuf Struct (structpb.NewStruct fails on
+// values it cannot represent). Silently persisting a caveat name with no
+// context would mis-evaluate every future check against that relationship,
+// and re-checking with correct context would never repair it; only rewriting
+// the relationship would. See checkItemFromRel in client/checks.go for the
+// identical treatment on the check path.
+//
+// The error names the offending key. structpb.NewStruct reports only the
+// value's type, not which entry held it, so the conversion is done per key
+// and the failing key is identified here — matching what the C#, Java and
+// Ruby clients report for the same failure.
+func (r Relationship) ToProto() (*v1.Relationship, error) {
 	rel := &v1.Relationship{
 		Resource: &v1.ObjectReference{
 			ObjectType: r.ResourceType,
@@ -200,10 +226,11 @@ func (r Relationship) ToProto() *v1.Relationship {
 			CaveatName: r.CaveatName,
 		}
 		if r.CaveatContext != nil {
-			ctx, err := structpb.NewStruct(r.CaveatContext)
-			if err == nil {
-				rel.OptionalCaveat.Context = ctx
+			ctx, err := CaveatContextToStruct(r.CaveatContext)
+			if err != nil {
+				return nil, fmt.Errorf("spicedb: relationship %s: %w", r, err)
 			}
+			rel.OptionalCaveat.Context = ctx
 		}
 	}
 
@@ -211,7 +238,39 @@ func (r Relationship) ToProto() *v1.Relationship {
 		rel.OptionalExpiresAt = timestamppb.New(*r.Expiration)
 	}
 
-	return rel
+	return rel, nil
+}
+
+// CaveatContextToStruct converts a caveat-context map to a protobuf Struct,
+// returning an error wrapping ErrInvalidCaveatContext and naming the
+// offending key if any value cannot be represented.
+//
+// This is the single converter for both surfaces that carry caveat context:
+// write-time (a relationship's CaveatContext, via Relationship.ToProto) and
+// check-time (the merged context on a bulk-check item, in
+// client.checkItemFromRel). Keeping one converter is deliberate — the
+// original defect in several clients in this repo was a write path that
+// converted differently from the check path.
+//
+// structpb.NewStruct converts the whole map at once and reports only the
+// value's Go type ("invalid type: chan int"), never which entry held it — on
+// a context map with many keys that leaves the caller guessing. Converting
+// per key costs one extra allocation and lets the error say which entry to
+// fix, the same way C#'s ToProtoValueForKey, Java's toProtoValueForKey, and
+// Ruby's check_context_to_struct rescue-and-re-raise already do.
+func CaveatContextToStruct(context map[string]any) (*structpb.Struct, error) {
+	fields := make(map[string]*structpb.Value, len(context))
+	for k, v := range context {
+		val, err := structpb.NewValue(v)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"caveat context key %q: %w: %s",
+				k, ErrInvalidCaveatContext, err,
+			)
+		}
+		fields[k] = val
+	}
+	return &structpb.Struct{Fields: fields}, nil
 }
 
 // FromProto converts a proto Relationship to an idiomatic Relationship.
@@ -292,10 +351,20 @@ func (f Filter) WithSubjectRelation(relation string) Filter {
 	return f
 }
 
-// ToProto converts a Filter to its proto representation.
-func (f Filter) ToProto() *v1.RelationshipFilter {
+// ToProto converts a Filter to its proto representation. It returns an
+// error — instead of silently building a filter with no subject constraint
+// at all — if SubjectID or SubjectRelation is set without SubjectType. The
+// wire's SubjectFilter.subject_type is a required field, so there is no way
+// to express a subject ID/relation constraint without it, which makes
+// silently dropping the constraint the one unsafe resolution: a caller who
+// wrote NewFilter("document").WithSubjectID("alice"), expecting to narrow
+// to alice's relationships, would instead match every subject on every
+// document -- e.g. DeleteRelationships would delete every relationship on
+// every document, not just alice's. See root DESIGN.md, "RULE: A
+// conversion that cannot preserve meaning must fail", clause 1.
+func (f Filter) ToProto() (*v1.RelationshipFilter, error) {
 	if f.V1Filter != nil {
-		return f.V1Filter
+		return f.V1Filter, nil
 	}
 
 	filter := &v1.RelationshipFilter{
@@ -316,8 +385,19 @@ func (f Filter) ToProto() *v1.RelationshipFilter {
 				Relation: f.SubjectRelation,
 			}
 		}
+	} else if f.SubjectID != "" || f.SubjectRelation != "" {
+		missing := "SubjectID"
+		if f.SubjectID == "" {
+			missing = "SubjectRelation"
+		}
+		return nil, fmt.Errorf(
+			"spicedb: filter has %s set without SubjectType; the wire format requires "+
+				"SubjectType whenever a subject constraint is present -- call WithSubjectType(...) "+
+				"before With%s(...): %w",
+			missing, missing, ErrInvalidFilter,
+		)
 	}
-	return filter
+	return filter, nil
 }
 
 // Relationship.Filter returns a Filter that matches the exact resource of this relationship.
@@ -341,13 +421,29 @@ type Update struct {
 type UpdateOperation int
 
 const (
-	UpdateOperationCreate UpdateOperation = iota + 1
+	// UpdateOperationUnspecified means the server sent an operation this
+	// client does not recognize — either OPERATION_UNSPECIFIED on the wire,
+	// or a future operation value added after this client shipped. It is the
+	// zero value, so it is also what an unset Update.Operation reads as.
+	//
+	// Never treat it as a write: a cache or index mirror consuming the watch
+	// stream that upserts on an unrecognized operation could turn a delete it
+	// doesn't understand into a silent write. Handle it explicitly (re-read
+	// the relationship, or fail the mirror closed) rather than letting it
+	// fall through a default branch.
+	UpdateOperationUnspecified UpdateOperation = iota
+	UpdateOperationCreate
 	UpdateOperationTouch
 	UpdateOperationDelete
 )
 
-
 // UpdateFromProto converts a proto RelationshipUpdate to an idiomatic Update.
+//
+// An operation this client does not recognize maps to
+// UpdateOperationUnspecified — never to a write. This is server-supplied
+// data, so it degrades to the safe, non-permissive default rather than
+// raising; see root DESIGN.md, "RULE: A conversion that cannot preserve
+// meaning must fail", clause 2.
 func UpdateFromProto(pu *v1.RelationshipUpdate) Update {
 	var op UpdateOperation
 	switch pu.GetOperation() {
@@ -357,6 +453,8 @@ func UpdateFromProto(pu *v1.RelationshipUpdate) Update {
 		op = UpdateOperationTouch
 	case v1.RelationshipUpdate_OPERATION_DELETE:
 		op = UpdateOperationDelete
+	default:
+		op = UpdateOperationUnspecified
 	}
 	return Update{
 		Operation:    op,
@@ -367,8 +465,8 @@ func UpdateFromProto(pu *v1.RelationshipUpdate) Update {
 // Txn is a transaction builder for batching relationship writes.
 type Txn struct {
 	// V1Updates exposes the underlying proto updates for advanced use cases.
-	V1Updates       []*v1.RelationshipUpdate
-	preconditions   []*v1.Precondition
+	V1Updates     []*v1.RelationshipUpdate
+	preconditions []*v1.Precondition
 }
 
 // Preconditions returns the preconditions added to this transaction.
@@ -377,43 +475,80 @@ func (t *Txn) Preconditions() []*v1.Precondition {
 }
 
 // Create adds a relationship create to the transaction. Fails if the
-// relationship already exists.
-func (t *Txn) Create(r Relationship) {
+// relationship already exists. Returns an error, and adds nothing to the
+// transaction, if r's caveat context cannot be converted to protobuf — see
+// Relationship.ToProto.
+func (t *Txn) Create(r Relationship) error {
+	p, err := r.ToProto()
+	if err != nil {
+		return err
+	}
 	t.V1Updates = append(t.V1Updates, &v1.RelationshipUpdate{
 		Operation:    v1.RelationshipUpdate_OPERATION_CREATE,
-		Relationship: r.ToProto(),
+		Relationship: p,
 	})
+	return nil
 }
 
 // Touch adds a relationship touch to the transaction. Creates or updates
-// the relationship.
-func (t *Txn) Touch(r Relationship) {
+// the relationship. Returns an error, and adds nothing to the transaction,
+// if r's caveat context cannot be converted to protobuf — see
+// Relationship.ToProto.
+func (t *Txn) Touch(r Relationship) error {
+	p, err := r.ToProto()
+	if err != nil {
+		return err
+	}
 	t.V1Updates = append(t.V1Updates, &v1.RelationshipUpdate{
 		Operation:    v1.RelationshipUpdate_OPERATION_TOUCH,
-		Relationship: r.ToProto(),
+		Relationship: p,
 	})
+	return nil
 }
 
-// Delete adds a relationship delete to the transaction.
-func (t *Txn) Delete(r Relationship) {
+// Delete adds a relationship delete to the transaction. Returns an error,
+// and adds nothing to the transaction, if r's caveat context cannot be
+// converted to protobuf — see Relationship.ToProto. Deletes ordinarily
+// don't need caveat context, but Delete accepts the same Relationship type
+// as Create and Touch, so the same conversion applies.
+func (t *Txn) Delete(r Relationship) error {
+	p, err := r.ToProto()
+	if err != nil {
+		return err
+	}
 	t.V1Updates = append(t.V1Updates, &v1.RelationshipUpdate{
 		Operation:    v1.RelationshipUpdate_OPERATION_DELETE,
-		Relationship: r.ToProto(),
+		Relationship: p,
 	})
+	return nil
 }
 
-// MustNotMatch adds a precondition that no relationships match the given filter.
-func (t *Txn) MustNotMatch(f Filter) {
+// MustNotMatch adds a precondition that no relationships match the given
+// filter. Returns an error, and adds nothing to the transaction, if f
+// cannot be converted to protobuf -- see Filter.ToProto.
+func (t *Txn) MustNotMatch(f Filter) error {
+	p, err := f.ToProto()
+	if err != nil {
+		return err
+	}
 	t.preconditions = append(t.preconditions, &v1.Precondition{
 		Operation: v1.Precondition_OPERATION_MUST_NOT_MATCH,
-		Filter:    f.ToProto(),
+		Filter:    p,
 	})
+	return nil
 }
 
-// MustMatch adds a precondition that at least one relationship matches the given filter.
-func (t *Txn) MustMatch(f Filter) {
+// MustMatch adds a precondition that at least one relationship matches the
+// given filter. Returns an error, and adds nothing to the transaction, if f
+// cannot be converted to protobuf -- see Filter.ToProto.
+func (t *Txn) MustMatch(f Filter) error {
+	p, err := f.ToProto()
+	if err != nil {
+		return err
+	}
 	t.preconditions = append(t.preconditions, &v1.Precondition{
 		Operation: v1.Precondition_OPERATION_MUST_MATCH,
-		Filter:    f.ToProto(),
+		Filter:    p,
 	})
+	return nil
 }

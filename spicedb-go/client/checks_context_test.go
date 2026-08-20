@@ -71,6 +71,9 @@ func newCapturingTestClient(t *testing.T) (*Client, *checkCapturingServer) {
 	srv, dialer := startCheckCapturingServer(t)
 	c, err := NewWithOpts("passthrough:///bufnet", "test-token",
 		WithInsecure(),
+		// bufnet is an in-memory bufconn dial target, not a real network
+		// destination -- unrelated to what this test exercises.
+		WithInsecureAllowRemoteHost(),
 		WithDialOptions(grpc.WithContextDialer(dialer)),
 	)
 	require.NoError(t, err)
@@ -302,6 +305,32 @@ func TestWithContextVariants_ForwardCallLevelContextToWire(t *testing.T) {
 	})
 }
 
+// CheckAll's aggregate is a bare `for` loop that falls through to `return
+// true, nil` once it runs out of results — exactly what happens on a
+// zero-length slice, since the loop body never executes. That is Go's
+// version of "all/every is vacuously true on empty", and it turns CheckAll
+// into a fail-open gate for any derived collection (a filter that matched
+// nothing, an upstream returning nil) that happens to come up empty.
+// CheckAll/CheckAllWithContext must guard the empty case and return false
+// without ever reaching the server.
+func TestCheckAll_EmptyRelationshipsReturnsFalse(t *testing.T) {
+	t.Run("CheckAll", func(t *testing.T) {
+		c, srv := newCapturingTestClient(t)
+		got, err := c.CheckAll(context.Background(), consistency.MinLatency(), "view")
+		require.NoError(t, err)
+		require.False(t, got, "CheckAll must return false, not vacuously true, for zero relationships")
+		require.Empty(t, srv.requests, "CheckAll must not consult the server for zero relationships")
+	})
+
+	t.Run("CheckAllWithContext", func(t *testing.T) {
+		c, srv := newCapturingTestClient(t)
+		got, err := c.CheckAllWithContext(context.Background(), consistency.MinLatency(), "view", nil)
+		require.NoError(t, err)
+		require.False(t, got, "CheckAllWithContext must return false, not vacuously true, for zero relationships")
+		require.Empty(t, srv.requests, "CheckAllWithContext must not consult the server for zero relationships")
+	})
+}
+
 // unconvertibleContext is a caveat context value that structpb.NewStruct
 // cannot represent (channels have no protobuf Value encoding), used to prove
 // that a conversion failure is surfaced as an error rather than silently
@@ -380,4 +409,34 @@ func TestCheck_UnconvertibleContextReturnsError(t *testing.T) {
 		require.Equal(t, 1, count, "CheckIterWithContext must yield exactly one (zero-value, error) pair, not silently skip the batch")
 		assertRejected(t, srv, gotErr)
 	})
+}
+
+// TestCheck_UnconvertibleContextNamesOffendingKey proves the check path
+// reports WHICH context entry could not be converted, and that the error
+// carries rel.ErrInvalidCaveatContext so a caller can match it with
+// errors.Is without string-matching.
+//
+// The check path and the write path (rel.Relationship.ToProto) now share one
+// converter, rel.CaveatContextToStruct, so they cannot drift apart in what
+// they accept or how they describe a failure — the divergence that produced
+// the original stringify-on-write defect in several clients in this repo.
+func TestCheck_UnconvertibleContextNamesOffendingKey(t *testing.T) {
+	r := rel.MustFromTriple("document", "1", "view", "user", "alice", "")
+	bad := map[string]any{
+		"fine":     42,
+		"offender": make(chan int),
+	}
+
+	c, srv := newCapturingTestClient(t)
+
+	_, err := c.CheckWithContext(context.Background(), consistency.MinLatency(), "view", bad, r)
+
+	require.Error(t, err)
+	require.ErrorIs(t, err, rel.ErrInvalidCaveatContext,
+		"the check path must carry the same sentinel as the write path")
+	require.ErrorIs(t, err, ErrInvalidArgument,
+		"and must still be a CodeInvalidArgument *client.Error")
+	require.Contains(t, err.Error(), `"offender"`,
+		"the error must name the offending key, not just the value's type")
+	require.Empty(t, srv.requests, "request must not be sent once context conversion fails")
 }

@@ -3,19 +3,29 @@
 package main
 
 import (
+	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"os"
 
 	"github.com/authzed/spicedb-clients/spicedb-go/client"
 	"github.com/authzed/spicedb-clients/spicedb-go/rel"
 )
 
 func main() {
-	c, err := client.NewPlaintext("localhost:50051", "somerandomkeyhere")
+	// Endpoint and token come from the environment so the example runs against
+	// whichever SpiceDB the caller started; the defaults match
+	// docker-compose.test.yml.
+	c, err := client.NewPlaintext(
+		cmp.Or(os.Getenv("SPICEDB_ENDPOINT"), "localhost:50051"),
+		cmp.Or(os.Getenv("SPICEDB_TOKEN"), "somerandomkeyhere"),
+	)
 	if err != nil {
 		log.Fatalf("failed to create client: %v", err)
 	}
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 
@@ -36,9 +46,15 @@ definition document {
 
 	// Write relationships with transaction builder
 	var txn rel.Txn
-	txn.Touch(rel.MustFromTriple("document", "firstdoc", "viewer", "user", "alice", ""))
-	txn.Touch(rel.MustFromTriple("document", "firstdoc", "editor", "user", "bob", ""))
-	txn.MustNotMatch(rel.NewFilter("document").WithResourceID("firstdoc").WithRelation("owner").WithSubjectType("user").WithSubjectID("mallory"))
+	if err := txn.Touch(rel.MustFromTriple("document", "firstdoc", "viewer", "user", "alice", "")); err != nil {
+		log.Fatalf("failed to add relationship to transaction: %v", err)
+	}
+	if err := txn.Touch(rel.MustFromTriple("document", "firstdoc", "editor", "user", "bob", "")); err != nil {
+		log.Fatalf("failed to add relationship to transaction: %v", err)
+	}
+	if err := txn.MustNotMatch(rel.NewFilter("document").WithResourceID("firstdoc").WithRelation("owner").WithSubjectType("user").WithSubjectID("mallory")); err != nil {
+		log.Fatalf("failed to add precondition to transaction: %v", err)
+	}
 
 	revision, err := c.Write(ctx, txn)
 	if err != nil {
@@ -48,6 +64,43 @@ definition document {
 	fmt.Printf("wrote relationships at revision: %s\n", revision)
 	if revision == "" {
 		log.Fatalf("expected non-empty revision")
+	}
+
+	// A failed precondition arrives with SpiceDB's structured explanation
+	// attached, not just a message. The typed error exposes the
+	// authzed.api.v1.ErrorReason name and the metadata naming which
+	// precondition did not hold, so recovery can be written against data
+	// rather than against a parsed string.
+	var doomed rel.Txn
+	if err := doomed.Touch(rel.MustFromTriple("document", "seconddoc", "viewer", "user", "alice", "")); err != nil {
+		log.Fatalf("failed to add relationship to transaction: %v", err)
+	}
+	if err := doomed.MustMatch(rel.NewFilter("document").WithResourceID("firstdoc").WithRelation("owner").WithSubjectType("user").WithSubjectID("nobody")); err != nil {
+		log.Fatalf("failed to add precondition to transaction: %v", err)
+	}
+
+	if _, err := c.Write(ctx, doomed); err == nil {
+		log.Fatalf("expected the unsatisfiable precondition to fail the write")
+	} else {
+		if !errors.Is(err, client.ErrFailedPrecondition) {
+			log.Fatalf("expected client.ErrFailedPrecondition, got: %v", err)
+		}
+		var spiceErr *client.Error
+		if !errors.As(err, &spiceErr) {
+			log.Fatalf("expected a native *client.Error, got: %v", err)
+		}
+		fmt.Printf("precondition failed: reason=%q domain=%q metadata=%v\n",
+			spiceErr.Reason, spiceErr.ReasonDomain, spiceErr.ReasonMetadata)
+		if spiceErr.Reason != "ERROR_REASON_WRITE_OR_DELETE_PRECONDITION_FAILURE" {
+			log.Fatalf("expected the write/delete precondition reason, got: %q", spiceErr.Reason)
+		}
+		if spiceErr.ReasonDomain != "authzed.com" {
+			log.Fatalf("expected domain \"authzed.com\", got: %q", spiceErr.ReasonDomain)
+		}
+		if spiceErr.ReasonMetadata["precondition_resource_id"] != "firstdoc" {
+			log.Fatalf("expected the reason metadata to name the failing precondition, got: %v",
+				spiceErr.ReasonMetadata)
+		}
 	}
 
 	// Clean up so later examples that write a narrower schema aren't blocked

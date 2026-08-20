@@ -7,6 +7,7 @@ import build.buf.gen.authzed.api.v1.DeleteRelationshipsResponse;
 import build.buf.gen.authzed.api.v1.PermissionsServiceGrpc;
 import build.buf.gen.authzed.api.v1.Precondition;
 import build.buf.gen.authzed.api.v1.ZedToken;
+import com.authzed.spicedb.errors.InvalidArgumentException;
 import io.grpc.stub.StreamObserver;
 import java.io.IOException;
 import java.util.ArrayList;
@@ -77,6 +78,101 @@ class DeleteRelationshipsOptionsTest {
       assertEquals(0, req.getOptionalPreconditionsCount());
       assertEquals(1_000, req.getOptionalLimit());
       assertTrue(req.getOptionalAllowPartialDeletions());
+    }
+  }
+
+  /**
+   * Regression test for the offboarding hazard this finding describes: {@code toRelationshipFilter}
+   * used to build {@code optionalSubjectFilter} only inside {@code if (subjectType is set)}, so a
+   * filter with {@code subjectID} but no {@code subjectType} produced a proto {@code
+   * RelationshipFilter} with NO subject constraint at all -- {@code deleteRelationships} called
+   * with that filter would delete every relationship on every document, not just the intended
+   * subject's. It must now throw before any RPC is attempted, instead of silently widening.
+   */
+  @Test
+  void deleteRelationshipsThrowsWhenFilterSubjectIDHasNoSubjectType() throws IOException {
+    var service = new CapturingSingleCompleteService();
+    Filter badFilter = Filter.of("document").withSubjectID("alice");
+
+    try (TestServers servers = TestServers.start(service)) {
+      SpiceDBClient client = servers.client();
+      InvalidArgumentException e =
+          assertThrows(InvalidArgumentException.class, () -> client.deleteRelationships(badFilter));
+      assertTrue(e.getMessage().contains("subjectID"));
+      assertTrue(e.getMessage().contains("subjectType"));
+      assertEquals(0, service.captured.size(), "no request should reach the server");
+    }
+  }
+
+  /** {@code subjectRelation} counterpart of the above. */
+  @Test
+  void deleteRelationshipsThrowsWhenFilterSubjectRelationHasNoSubjectType() throws IOException {
+    var service = new CapturingSingleCompleteService();
+    Filter badFilter = Filter.of("document").withSubjectRelation("member");
+
+    try (TestServers servers = TestServers.start(service)) {
+      SpiceDBClient client = servers.client();
+      InvalidArgumentException e =
+          assertThrows(InvalidArgumentException.class, () -> client.deleteRelationships(badFilter));
+      assertTrue(e.getMessage().contains("subjectRelation"));
+      assertTrue(e.getMessage().contains("subjectType"));
+      assertEquals(0, service.captured.size(), "no request should reach the server");
+    }
+  }
+
+  /**
+   * Same rejection, but for a {@code mustMatch} precondition filter rather than the primary filter
+   * -- preconditions are converted before any RPC is attempted, so this must also fail closed with
+   * no request sent.
+   */
+  @Test
+  void deleteRelationshipsThrowsWhenMustMatchFilterSubjectIDHasNoSubjectType() throws IOException {
+    var service = new CapturingSingleCompleteService();
+    Filter badGuard = Filter.of("document").withSubjectID("alice");
+
+    try (TestServers servers = TestServers.start(service)) {
+      SpiceDBClient client = servers.client();
+      var options = SpiceDBClient.DeleteOptions.none().withMustMatch(badGuard);
+      assertThrows(
+          InvalidArgumentException.class, () -> client.deleteRelationships(FILTER, options));
+      assertEquals(0, service.captured.size(), "no request should reach the server");
+    }
+  }
+
+  /**
+   * Companion to the throw cases above -- proves a filter with subjectType alone (no subjectID)
+   * still builds a valid subject filter and is not accidentally caught by the new guard.
+   */
+  @Test
+  void deleteRelationshipsSendsSubjectTypeAloneWithoutThrowing() throws IOException {
+    var service = new CapturingSingleCompleteService();
+    Filter filter = Filter.of("document").withSubjectType("user");
+
+    try (TestServers servers = TestServers.start(service)) {
+      SpiceDBClient client = servers.client();
+      client.deleteRelationships(filter);
+
+      DeleteRelationshipsRequest req = service.captured.get(0);
+      assertEquals("user", req.getRelationshipFilter().getOptionalSubjectFilter().getSubjectType());
+      assertEquals(
+          "", req.getRelationshipFilter().getOptionalSubjectFilter().getOptionalSubjectId());
+    }
+  }
+
+  /** Companion proving the valid combination (subjectType alongside subjectID) still works. */
+  @Test
+  void deleteRelationshipsSendsSubjectTypeAndIDWithoutThrowing() throws IOException {
+    var service = new CapturingSingleCompleteService();
+    Filter filter = Filter.of("document").withSubjectType("user").withSubjectID("alice");
+
+    try (TestServers servers = TestServers.start(service)) {
+      SpiceDBClient client = servers.client();
+      client.deleteRelationships(filter);
+
+      DeleteRelationshipsRequest req = service.captured.get(0);
+      assertEquals("user", req.getRelationshipFilter().getOptionalSubjectFilter().getSubjectType());
+      assertEquals(
+          "alice", req.getRelationshipFilter().getOptionalSubjectFilter().getOptionalSubjectId());
     }
   }
 
@@ -234,5 +330,32 @@ class DeleteRelationshipsOptionsTest {
     assertTrue(options.mustMatch().isEmpty());
     assertTrue(options.mustNotMatch().isEmpty());
     assertNull(options.limit());
+  }
+
+  /**
+   * The three-argument constructor is part of the published surface and must keep working. It was
+   * the record's generated canonical constructor until {@code Duration timeout} was added as a
+   * fourth component, which silently removed it - a binary and source break for every caller that
+   * wrote {@code new DeleteOptions(a, b, c)}. It is now declared explicitly, and this pins it:
+   * adding a fifth component must not delete this arity again.
+   */
+  @Test
+  void threeArgConstructorStillWorksAndMeansNoTimeout() {
+    var mustMatch = List.of(Filter.of("document").withResourceID("doc1"));
+    var mustNotMatch = List.of(Filter.of("document").withResourceID("doc2"));
+
+    var options = new SpiceDBClient.DeleteOptions(mustMatch, mustNotMatch, 500);
+
+    assertEquals(mustMatch, options.mustMatch());
+    assertEquals(mustNotMatch, options.mustNotMatch());
+    assertEquals(500, options.limit());
+    assertNull(options.timeout(), "three-arg form must mean no per-call deadline");
+
+    // It must delegate to the canonical constructor, so normalization and validation still apply.
+    var nulls = new SpiceDBClient.DeleteOptions(null, null, null);
+    assertTrue(nulls.mustMatch().isEmpty());
+    assertTrue(nulls.mustNotMatch().isEmpty());
+    assertThrows(
+        IllegalArgumentException.class, () -> new SpiceDBClient.DeleteOptions(null, null, 0));
   }
 }

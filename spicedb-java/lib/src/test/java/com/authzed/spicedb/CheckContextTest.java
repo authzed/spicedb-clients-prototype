@@ -166,9 +166,14 @@ class CheckContextTest {
   // ---------------------------------------------------------------------
   // C5 -- nested Map/List values in CHECK-TIME context must convert to a
   // proper proto Struct/ListValue, not get stringified. Scalars already
-  // worked (see C1-C4), which is why no earlier test caught this. Write-time
-  // caveat context stringification (Relationship#toProtoRelationship) is
-  // untouched and out of scope here.
+  // worked (see C1-C4), which is why no earlier test caught this.
+  //
+  // The write path no longer stringifies either: SpiceDBClient#toProtoValue
+  // is now the single converter for BOTH surfaces -- check-time (via
+  // toProtoStruct) and write-time (a relationship's stored caveatContext, via
+  // toProtoRelationship). The tests below stay scoped to the check surface;
+  // the write surface has its own coverage. Keeping them separate is
+  // deliberate, so a regression on one surface can't be masked by the other.
   // ---------------------------------------------------------------------
 
   @Test
@@ -251,6 +256,38 @@ class CheckContextTest {
       assertEquals(2, ids.size());
       assertEquals(1.0, ids.get(0).getNumberValue());
       assertEquals(2.0, ids.get(1).getNumberValue());
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // An unrepresentable check-time caveat context value must raise, not
+  // silently stringify (root DESIGN.md "RULE: A conversion that cannot
+  // preserve meaning must fail", clause 1). Shared converter with the write
+  // path -- SpiceDBClientTest covers toProtoRelationship.
+  // ---------------------------------------------------------------------
+
+  private static final class UnrepresentableValue {}
+
+  @Test
+  void unrepresentableCheckContextValueThrows() throws IOException {
+    var captured = new ArrayList<CheckBulkPermissionsRequest>();
+    try (TestServers servers = TestServers.start(capturingService(captured))) {
+      SpiceDBClient client = servers.client();
+
+      var thrown =
+          assertThrows(
+              com.authzed.spicedb.errors.InvalidArgumentException.class,
+              () ->
+                  client.checkPermissions(
+                      Consistency.full(),
+                      "view",
+                      Map.of("bad_key", new UnrepresentableValue()),
+                      Relationship.of("document", "doc1", "view", "user", "alice")));
+
+      assertTrue(thrown.getMessage().contains("bad_key"), thrown.getMessage());
+      assertTrue(
+          thrown.getMessage().contains(UnrepresentableValue.class.getName()), thrown.getMessage());
+      assertTrue(captured.isEmpty(), "no request should have been sent to the server");
     }
   }
 

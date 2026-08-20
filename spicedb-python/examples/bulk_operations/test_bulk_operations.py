@@ -23,7 +23,11 @@ async def test_bulk_checks(client: SpiceDBClient):
     revision = await client.write(txn)
     print(f"wrote {len(users)} relationships at revision: {revision}")
 
-    # Bulk check permissions. check_permissions() returns a list of
+    # Bulk check permissions. Inputs over 1,000 relationships are split into
+    # one CheckBulkPermissions request per 1,000 automatically and the
+    # results concatenated in input order -- SpiceDB rejects a single
+    # request carrying more than 10,000. Nothing here changes for a larger
+    # list. check_permissions() returns a list of
     # CheckResult, not bare bools -- .has_permission is true ONLY for a full
     # HAS_PERMISSION grant.
     checks = [
@@ -65,6 +69,21 @@ async def test_bulk_import_export(client: SpiceDBClient):
     num_loaded = await client.import_relationships(relationships)
     print(f"imported {num_loaded} relationships")
     assert num_loaded == len(users)
+
+    # import_relationships also accepts a generator (or any other iterable)
+    # instead of a list -- it's consumed lazily, one batch at a time, so a
+    # caller streaming in millions of relationships from a generator or a DB
+    # cursor is never forced to materialize the whole thing into a list
+    # first.
+    more_users = ["grace", "heidi"]
+
+    def relationship_generator():
+        for user in more_users:
+            yield Relationship.from_triple("document:archive", "viewer", f"user:{user}")
+
+    num_loaded_from_generator = await client.import_relationships(relationship_generator())
+    print(f"imported {num_loaded_from_generator} relationships from a generator")
+    assert num_loaded_from_generator == len(more_users)
 
     # export_relationships streams relationships back out, paginating
     # automatically under the hood.

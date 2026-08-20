@@ -23,7 +23,7 @@ public class BulkOperationsTest
     [Fact]
     public async Task BulkWrite_And_BulkCheck()
     {
-        await using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "somerandomkeyhere");
+        await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
 
         await client.WriteSchemaAsync(Schema);
 
@@ -38,7 +38,11 @@ public class BulkOperationsTest
         var revision = await client.WriteAsync(txn);
         Assert.NotEmpty(revision);
 
-        // Bulk check permissions
+        // Bulk check permissions. Inputs over 1,000 relationships are split
+        // into one CheckBulkPermissions request per 1,000 automatically and
+        // the results concatenated in input order — SpiceDB rejects a single
+        // request carrying more than 10,000. Nothing here changes for a
+        // larger array.
         var checks = users
             .Select(u => Relationship.FromTriple("document", "report", "view", "user", u))
             .ToArray();
@@ -57,7 +61,7 @@ public class BulkOperationsTest
     [Fact]
     public async Task CheckAll_AllPermitted()
     {
-        await using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "somerandomkeyhere");
+        await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
 
         await client.WriteSchemaAsync(Schema);
 
@@ -83,7 +87,7 @@ public class BulkOperationsTest
     [Fact]
     public async Task CheckAny_AtLeastOnePermitted()
     {
-        await using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "somerandomkeyhere");
+        await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
 
         await client.WriteSchemaAsync(Schema);
 
@@ -106,7 +110,7 @@ public class BulkOperationsTest
     [Fact]
     public async Task ImportRelationships_And_ExportRelationships()
     {
-        await using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "somerandomkeyhere");
+        await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
 
         await client.WriteSchemaAsync(Schema);
 

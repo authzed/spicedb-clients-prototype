@@ -35,6 +35,72 @@ Security-obvious static factory methods:
 - `SpiceDBClient.createSystemTls(endpoint, presharedKey)` — for production
 - `SpiceDBClient.create(endpoint, presharedKey, options...)` — escape hatch
 
+Per root DESIGN.md, "RULE: Credentials over insecure transport require an
+explicit opt-in": `createPlaintext`/`withInsecure()` only permit plaintext to
+a loopback endpoint (`localhost`, `127.0.0.0/8`, `::1`, or a `unix:` socket
+target) — the local-development case that is the entire reason they exist.
+Anything else needs the separately-named `allowInsecureRemoteCredentials`
+overload/`ClientOption` passed explicitly, or the constructor throws
+`IllegalArgumentException` before any channel is created.
+
+#### Custom TLS trust material
+
+There is deliberately **no** dedicated CA-bundle option: `ClientOption` already
+is one. It is a functional interface over `apply(ManagedChannelBuilder<?>)`, so a
+caller reaches grpc-java's own TLS configuration directly:
+
+```java
+import io.grpc.netty.shaded.io.grpc.netty.GrpcSslContexts;
+import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
+
+ClientOption privateCa = builder ->
+    ((NettyChannelBuilder) builder).sslContext(
+        GrpcSslContexts.forClient().trustManager(caFile).keyManager(certFile, keyFile).build());
+var client = SpiceDBClient.create(endpoint, presharedKey, privateCa);
+```
+
+The cast lands on a real runtime type — `create` builds the channel with
+`ManagedChannelBuilder.forTarget(endpoint)`, which resolves through grpc-java's
+`ManagedChannelProvider` SPI to `NettyChannelBuilder` when `grpc-netty-shaded` is
+the transport on the classpath — and those shaded symbols are on the consumer's
+compile classpath, because `proto-clients/spicedb-java-proto/build.gradle.kts`
+declares `io.grpc:grpc-netty-shaded` as `api`, not `implementation`, so it flows
+transitively to anyone depending on this client. (An audit claimed consumers
+"cannot even cast to the shaded builder" — that is false, and the `api`
+declaration is what makes it false. Keep it `api`.)
+
+Both modules resolve every `io.grpc:*` artifact to the **same** version — the one the
+BSR gRPC stubs are generated against — and enforce it with
+`api(platform("io.grpc:grpc-bom:<version>"))` plus versionless coordinates, so there is
+one number per module rather than ten. See spicedb-java-proto's DESIGN.md "Invariants"
+for the full rule and how to verify it.
+
+`grpc-netty-shaded` is the artifact this section depends on, and it is also the one a
+skew strands. Nothing else in the graph depends on it, so it keeps whatever version is
+declared for it while the core cluster gets reconciled to the highest request — from the
+BSR stubs when the declarations are lower, from the declarations when they are higher.
+The shaded transport then links against a `grpc-core` it was not compiled against, which
+fails on a Netty event-loop thread where the error never reaches the caller. Check the
+*resolved* graph, not the declarations.
+
+This is what satisfies root DESIGN.md, "RULE: A system-TLS constructor must
+reach a real server", whose clause 1 permits `createSystemTls` to delegate to
+`useTransportSecurity()` only because a caller can supply their own trust
+material instead. A parallel CA option would be a second way to set the same
+builder state, resolved by application order.
+
+Note the security caveat already documented on `ClientOption#apply`: a custom
+option gets the raw builder and can do anything to it, including
+`usePlaintext()`, which the credential guard cannot see. Supplying trust
+material is a TLS concern and must not be used to switch the transport — root
+DESIGN.md, "RULE: Credentials over insecure transport require an explicit
+opt-in".
+
+Note also that the JDK's `cacerts` is a trust store an operator can install into,
+so unlike the Python, TypeScript and Ruby clients — whose runtimes use a
+compiled-in or bundled root set the operator cannot touch — this hatch is for
+pinning a CA outside `cacerts`, and for mutual TLS.
+
 The client implements `AutoCloseable` for use with try-with-resources:
 ```java
 try (var client = SpiceDBClient.createPlaintext("localhost:50051", "test")) {
@@ -124,10 +190,14 @@ no bare-boolean coercion to guard against in documentation, unlike Ruby/TypeScri
 `checkPermission` and `checkPermissions` always call `CheckBulkPermissions` — there is no
 production call site for the non-bulk `CheckPermission` RPC (matches Go/Python/Ruby/C#).
 `CheckBulkPermissionsResponseItem` carries no per-item `checked_at` of its own; the single
-response-level token is propagated onto every `CheckResult` in the batch. A per-item error in a
+response-level token is propagated onto every `CheckResult` mapped from that response. A check over
+more than `DEFAULT_CHECK_BATCH_SIZE` relationships is split into one request per chunk, so the
+returned list can carry more than one distinct `checkedAt` — uniform within a chunk, not across the
+call. See root DESIGN.md, invariant 2 under bulk checks. A per-item error in a
 `CheckBulkPermissionsPair` is routed through `ErrorMapper` (using the item's own gRPC code) so
-callers get the specific typed exception (e.g. `PermissionDeniedException`), with the item's index
-preserved in the message (`"check item %d: ..."`, matching `spicedb-go`).
+callers get the specific typed exception (e.g. `PermissionDeniedException`), with the item's
+**absolute** index preserved in the message (`"check item %d: ..."`, matching `spicedb-go`) — the
+index into the caller's own array, not into the chunk that happened to carry it.
 
 #### Caveat context on checks
 
@@ -224,8 +294,80 @@ Unchecked exceptions extending `RuntimeException`:
 - `InvalidArgumentException`
 
 `ErrorMapper.toSpiceDBException(StatusRuntimeException)` maps gRPC status codes
-to typed exceptions. Transient errors (UNAVAILABLE, RESOURCE_EXHAUSTED, ABORTED)
-are retried with exponential backoff.
+to typed exceptions.
+
+Automatic retry with jittered exponential backoff, for **reads only**, on
+**`UNAVAILABLE` and `ABORTED`**.
+
+`RESOURCE_EXHAUSTED` is deliberately NOT retryable. In SpiceDB it means
+either memory load-shed — where retrying adds load to an already-overloaded
+server — or a deterministic `MaxDepthExceeded`, which can never succeed and
+whose retries re-run the most expensive class of check several times before
+surfacing the same error. See root `DESIGN.md`, "RULE: Automatic retry is
+for idempotent operations only".
+
+**Mutations are never auto-retried.** `WriteRelationships` carrying
+`OPERATION_CREATE`, or any request with preconditions, is not idempotent: if
+it commits and the response is lost — a rolling restart, a proxy dropping the
+connection — the retry returns `ALREADY_EXISTS`/`FAILED_PRECONDITION` and the
+caller concludes a write failed that in fact succeeded. Writes, deletes,
+schema writes, bulk import, and the counter registration calls therefore
+never enter the retry loop: their errors are mapped to this client's typed
+form and raised on the first attempt. A caller who wants a mutation retried
+must decide that themselves, knowing their own idempotency.
+
+**Timeout shape**: the per-call timeout is a per-*attempt* budget, applied
+fresh to each retry rather than shrinking across them, so a call that
+legitimately needs several retries is not made more likely to fail than one
+that needs none. Worst-case latency for a timeout `t` is therefore
+`t × (retries + 1)` plus backoff, and an auto-paging call spends a fresh `t`
+per page. Root `DESIGN.md`, "On worst-case latency", covers why this differs
+from Go's; a caller needing a true end-to-end bound must impose it above this
+client.
+
+### Deadlines
+
+Every unary method has an overload taking a trailing `Duration timeout`
+(`deleteRelationships` instead reads `DeleteOptions.withTimeout(Duration)`),
+mirroring the existing `checkPermission(..., Map<String, Object> context)`
+overload convention. The timeout is applied via grpc-java's
+`stub.withDeadlineAfter(millis, TimeUnit.MILLISECONDS)`, called fresh on
+each retry attempt so a retried call gets a full new window per attempt.
+`SpiceDBClient.createPlaintext`/`createSystemTls`/`create` all gained a
+`Duration defaultTimeout` overload, applied to any unary call that doesn't
+pass its own `timeout` — both default to `SpiceDBClient.DEFAULT_TIMEOUT`
+(30s), mirroring `authzed-node`'s `DEFAULT_DEADLINE_MS = 30_000` (its
+comment cites `grpc/grpc-node#541`). See root DESIGN.md, "RULE: A unary
+call must have a deadline".
+
+```java
+try (var client = SpiceDBClient.createPlaintext("localhost:50051", "token", Duration.ofSeconds(5))) {
+    CheckResult r = client.checkPermission(Consistency.full(), "view", rel);                         // bound by the 5s default
+    CheckResult r2 = client.checkPermission(Consistency.full(), "view", rel, Duration.ofSeconds(1));  // overrides it
+}
+```
+
+Server-streaming methods (`readRelationships`, `lookupResources`,
+`lookupSubjects`, `updates`, `exportRelationships`) take no `timeout`
+overload and are NOT bound by `defaultTimeout` — they are long-lived by
+design (`updates` may run for the life of the process), and applying the
+unary default to them would make the stream itself the outage.
+
+`importRelationships` (`ImportBulkRelationships`) is client-streaming, not
+server-streaming, but the same exclusion applies for the mirror-image
+reason: its duration scales with the size of the caller's dataset, not with
+server latency, so no fixed default is correct for it either. Unlike the
+server-streaming methods above, it DOES have a `Duration timeout` overload
+— there is simply no default to override, so the no-argument
+`importRelationships(Iterable)` is unbounded and the
+`importRelationships(Iterable, Duration)` overload is the only way to
+bound it.
+
+Note for callers reasoning about worst-case latency: the timeout is a
+per-*attempt* budget, applied fresh on each retry, so a call that retries
+can take up to `timeout × (retries + 1)` plus backoff, and an auto-paging
+call (e.g. `deleteRelationships`) applies the same timeout fresh to each
+page.
 
 ### Performance
 
@@ -234,6 +376,61 @@ are retried with exponential backoff.
 - Batched deletions (1,000-item limit, matching SpiceDB's default `--max-delete-relationships-limit`) to avoid server-side timeouts
 - Batched imports (1,000-item chunks)
 - Exponential backoff retry for transient gRPC errors
+
+### Escape hatch: raw channel access
+
+`client.rawChannel()` returns this client's own `io.grpc.Channel`, with its bearer
+metadata already attached, so any generated stub is one `newStub` call away:
+
+```java
+var stub = PermissionsServiceGrpc.newBlockingStub(client.rawChannel());
+CheckPermissionResponse response = stub.checkPermission(request);
+```
+
+Clearly-marked **secondary** API, which is what root DESIGN.md's "What NOT To Do"
+permits: channels, stubs and metadata stay out of the primary surface, and "escape
+hatches for advanced use are acceptable as clearly marked secondary API". It exists so a
+request the idiomatic surface cannot express — an RPC or proto field not wrapped here,
+such as `WriteRelationshipsRequest.optionalTransactionMetadata`, or the single-check
+`CheckPermission` RPC that `checkPermission` deliberately routes around — has a workaround
+short of forking the client.
+
+A `Channel` rather than the stubs themselves, because it is strictly more: every generated
+stub, including for a service this client does not wrap, is one call away from it. Note this
+is *not* for want of a proto-client type — `proto-clients/spicedb-java-proto` does define
+`SpiceDBProtoClient` — but the idiomatic client has never used it: it builds its own channel,
+stubs and guard, so there is no such object here to hand back. Prefer
+it over rebuilding a `ManagedChannel` of your own, which means replicating this client's
+transport configuration exactly (including whatever a `ClientOption` did to the builder)
+and re-attaching the token by hand — get either wrong and the raw path runs with different
+transport security than the idiomatic one while the call site reads as though it were the
+same server.
+
+Four properties, all deliberate:
+
+- **The bearer token comes free.** The returned channel attaches this client's metadata to
+  every call made through it, so a raw call is authenticated exactly as an idiomatic one.
+- **A raw call is a raw call.** No `SpiceDBException` mapping (you catch
+  `StatusRuntimeException`), no retry, and no `DEFAULT_TIMEOUT` — call `withDeadlineAfter`
+  yourself.
+- **The connection belongs to the client.** `close()` shuts it down, and a stub built here
+  must not outlive it. What actually keeps it that way is the *wrapper*, not the declared
+  type: `ClientInterceptors.intercept` returns a package-private `Channel` subclass holding
+  the real channel as an unreachable delegate, so `(ManagedChannel) client.rawChannel()`
+  throws `ClassCastException` instead of yielding `shutdown()`. The `Channel` return type
+  makes that honest at compile time; the wrapper makes it true at runtime. Returning the
+  bare channel typed as `Channel` would compile and read identically while silently losing
+  the guarantee.
+- **It is an accessor, never a constructor.** It takes no endpoint, preshared key, or
+  transport setting, so channel construction stays on the single guarded path in `create`
+  and the hatch cannot become a way around root DESIGN.md, "RULE: Credentials over insecure
+  transport require an explicit opt-in".
+
+This is separate from, and complementary to, `ClientOption.apply(ManagedChannelBuilder)`
+above: that one *configures* the channel before it exists (and is where custom TLS and any
+other builder-level setting go), while this one *hands back* the channel that was built.
+
+No stability promise beyond grpc-java's and the generated code's.
 
 ### Experimental APIs
 
@@ -248,10 +445,16 @@ These may change without following the backwards compatibility mandate.
 
 ### SpiceDBClient
 
+**Escape hatch:**
+- `rawChannel()` — this client's own `io.grpc.Channel`, bearer metadata attached, as
+  secondary API; see "Escape hatch: raw channel access" above
+
 **Constructors:**
 - `createPlaintext(String endpoint, String presharedKey)`
+- `createPlaintext(String endpoint, String presharedKey, boolean allowInsecureRemoteCredentials)`
 - `createSystemTls(String endpoint, String presharedKey)`
-- `create(String endpoint, String presharedKey, ClientOption... options)`
+- `create(String endpoint, String presharedKey, ClientOption... options)` — recognizes
+  `withInsecure()` and `allowInsecureRemoteCredentials()` among `options`
 
 **Checks:**
 - `checkPermission(Consistency, String permission, Relationship)` → `CheckResult`
@@ -289,7 +492,18 @@ These may change without following the backwards compatibility mandate.
 - `exportRelationships(Consistency, Filter)` → `Stream<Relationship>`
 
 **Watch:**
-- `updates(List<String> objectTypes, String startRevision)` → `Stream<Update>`
+- `updates(List<String> objectTypes, String startRevision)` → `Stream<WatchEvent>`
+- `updates(List<String> objectTypes, String startRevision, boolean includeCheckpoints)` →
+  `Stream<WatchEvent>` — `includeCheckpoints` requests `WATCH_KIND_INCLUDE_CHECKPOINTS`
+  (recommended behind a proxy that aborts idle connections, since a checkpoint keeps the
+  stream alive with no changes to report)
+
+`WatchEvent(List<Update> updates, String changesThrough, boolean isCheckpoint)` is one event
+per `WatchResponse`. `changesThrough` is always populated -- proto: "This token can be used in
+a subsequent WatchRequest to resume watching from this point" -- pass it as `startRevision` to
+resume after a dropped stream instead of restarting from the original `startRevision`
+(reprocessing, possibly past the GC window) or from head (silently losing every change in the
+gap). `isCheckpoint` is true for a checkpoint event, which carries no `updates`.
 
 **Experimental:**
 - `experimentalRegisterRelationshipCounter(String name, Filter)`
@@ -298,19 +512,31 @@ These may change without following the backwards compatibility mandate.
 
 ## Examples Manifest
 
-| Directory | Demonstrates |
-|-----------|-------------|
-| `check_permission/` | Basic permission check with checkPermission |
-| `conditional_check/` | `CONDITIONAL_PERMISSION` against a live caveated relationship whose context was never supplied — `hasPermission()` must be false |
-| `write_relationships/` | Writing relationships with transaction builder |
-| `read_relationships/` | Reading relationships with stream |
-| `lookup_resources/` | Finding resources a subject can access |
-| `lookup_subjects/` | Finding subjects with access to a resource |
-| `watch_changes/` | Watching for relationship changes |
-| `schema_management/` | Reading and writing schema |
-| `bulk_operations/` | Bulk checks and imports |
-| `schema_reflection/` | Schema reflection, computable permissions, dependent relations, diff |
-| `relationship_counters/` | Registering, reading, and unregistering relationship counters |
+Java's examples are JUnit classes in one source set (`examples/src/test/java/...`), not
+per-example directories — the rows below name the class, matching `examples/README.md`.
+
+| Test class | Demonstrates |
+|------------|-------------|
+| `CheckPermissionTest` | Basic permission check with `checkPermission`, returning `CheckResult` |
+| `ConditionalCheckTest` | `CONDITIONAL_PERMISSION` against a live caveated relationship whose context was never supplied — `hasPermission()` must be false |
+| `WriteRelationshipsTest` | Writing relationships with the `Transaction` builder |
+| `ReadRelationshipsTest` | Reading relationships with cursor-based auto-pagination |
+| `LookupResourcesTest` | Finding resources a subject can access |
+| `LookupSubjectsTest` | Finding subjects with access to a resource |
+| `WatchChangesTest` | Watching for relationship changes |
+| `SchemaManagementTest` | Reading and writing schema |
+| `BulkOperationsTest` | Bulk checks with `checkPermissions`/`checkAll`/`checkAny`, plus bulk import/export |
+| `SchemaReflectionTest` | Schema reflection, computable permissions, dependent relations, diff |
+| `RelationshipCountersTest` | Registering, reading, and unregistering relationship counters |
+| `ExpandPermissionTreeTest` | Expanding a permission with `expandPermissionTree` and walking the native `PermissionTree` (intermediate/leaf nodes, subjects) |
+| `CallDeadlinesTest` | The `Duration defaultTimeout` construction overload, a per-call `timeout` override, and confirming bulk import isn't bounded by the unary default |
+| `ErrorMappingTest` | Recovering from `OUT_OF_RANGE` (stale ZedToken) and `UNAUTHENTICATED` without parsing a message |
+| `InsecureOptInTest` | Why `createPlaintext` is loopback-only, and the named opt-in a remote plaintext host requires |
+| `RetryPolicyTest` | Which calls are retried for you and which are not, counted server-side |
+| `UnrepresentableValuesTest` | Caller data that cannot convert fails loudly, naming the key; unknown server enums degrade safely |
+| `RawEscapeHatchTest` | `rawChannel()` — driving a generated stub directly for a proto field (`optionalTransactionMetadata`) and an RPC (`CheckPermission`) the idiomatic API does not expose |
+
+(`SpiceDBIntegrationTest` is the shared base class, not an example.)
 
 ## Changelog
 

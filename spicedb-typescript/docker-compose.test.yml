@@ -1,6 +1,6 @@
 services:
   spicedb:
     image: authzed/spicedb:latest
-    command: serve --grpc-preshared-key testtoken
+    command: serve --grpc-preshared-key ${SPICEDB_TEST_TOKEN:-testtoken}
     ports:
-      - "50051:50051"
+      - "${SPICEDB_TEST_PORT:-50051}:50051"

@@ -36,6 +36,11 @@ class BulkOperationsTest extends SpiceDBIntegrationTest {
     writeRevision = client.write(txn);
   }
 
+  /**
+   * Inputs over 1,000 relationships are split into one CheckBulkPermissions request per 1,000
+   * automatically and the results concatenated in input order — SpiceDB rejects a single request
+   * carrying more than 10,000. Nothing here changes for a larger array.
+   */
   @Test
   void bulk_check_returns_result_per_relationship() {
     List<CheckResult> results =

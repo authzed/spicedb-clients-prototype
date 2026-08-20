@@ -15,7 +15,10 @@ toward correct, performant usage patterns ("pit of success").
 - Deprecate with new alternatives — add new methods instead of changing existing ones, unless existing methods can be changed in a forward-compatible manner
 - This applies even when idiomatic improvements suggest changes, unless explicitly specified to be a `BREAKING CHANGE`. If so, then that specification tests precedence, confirmation must be received from the runner before the changes are made, and the breaking change should be documented in the release notes
   for each client, with at least one example of how to migrate forward
-- Examples must *ALWAYS* compile and pass testing, unless the user has *EXPLICITLY* approved the breaking change
+- Examples must *ALWAYS* compile and pass testing, unless the user has *EXPLICITLY* approved the breaking change.
+  Compiling and passing is necessary but not sufficient: an example must also be wired into a
+  runner and must be capable of failing — see **RULE: An example must be executed by CI and must
+  be able to fail**
 
 ## Deprecation Propagation
 
@@ -95,7 +98,50 @@ covered by a test that **completes a real TLS handshake**.
    Node ships a bundled Mozilla store, so on those clients a CA an operator installed on
    the host is not honoured. That is a property of the ecosystem, not a violation of
    this clause. Giving callers a way to supply their own CA bundle is the remedy, and it
-   is a separate concern tracked for a later sub-project.
+   is not optional where the hazard applies:
+
+   **A client whose default trust source is not one the operator can write to MUST let a
+   caller supply their own.** For those clients — Python and Ruby on gRPC's C-core,
+   TypeScript on Node's bundled store — the delegation this clause permits is conditional
+   on that override existing: without it a private-CA deployment is unreachable with no
+   supported workaround, which is a defect under this clause rather than a gap outside
+   it. Where the default *is* an operator-writable store — the OS store for Go, C# and
+   Rust, the JDK's `cacerts` for Java — installing the CA on the host already serves that
+   case through the default constructor, so this clause requires nothing further. An
+   override is still worth having there (chiefly for mutual TLS, and for pinning a CA the
+   host does not trust), but its absence is not a violation of this rule. Scope the "must"
+   that way and the enumeration below is consistent with it; read it as universal and it
+   is not.
+
+   Where each client's escape hatch lives, since they are not uniform and three of them
+   are not new API at all:
+
+   - **Go** — `WithDialOptions(grpc.WithTransportCredentials(...))`. Later dial options
+     overwrite earlier ones, so a caller's credentials win over the client's default.
+   - **C#** — `CreateFromChannel`, which takes a caller-built `GrpcChannel` and therefore
+     any `HttpClientHandler`/`SocketsHttpHandler` TLS configuration.
+   - **Java** — `ClientOption.apply(ManagedChannelBuilder)`. `grpc-netty-shaded` is
+     declared `api` in `proto-clients/spicedb-java-proto/build.gradle.kts`, so it reaches
+     consumers transitively and the builder is usable from their code.
+   - **Python** — `ca_cert=`, `client_cert=`, `client_key=` (PEM bytes) on both
+     `spicedb.sync.SpiceDBClient` and `spicedb.aio.SpiceDBClient`.
+   - **TypeScript** — `tls: { caCert, clientCert, clientKey }` on `SpiceDBClientOptions`
+     and `createSpiceDBClient`, threaded to `Http2SessionManager`'s session options.
+   - **Ruby** — `SpiceDB::Client.new_custom_tls(endpoint, token, ca_cert:, client_cert:,
+     client_key:)`.
+   - **Rust** — none. Not required by the clause above, since tonic's `tls-native-roots`
+     reads the OS trust store at runtime and an operator-installed CA is therefore already
+     honoured by `new_system_tls`. Two gaps remain and are stated plainly in
+     `spicedb-rust/DESIGN.md` rather than papered over: an image with no OS trust store at
+     all, and **mutual TLS, which this client cannot do at all** — reading the host's
+     roots says nothing about presenting a client certificate, so `tls-native-roots` does
+     not cover it.
+
+   Supplying trust material is a TLS concern and must never double as a transport switch.
+   A client must refuse the combination of custom trust material and an insecure
+   transport rather than silently discarding the material, and the escape hatch must not
+   become a construction path that skips the guard in **RULE: Credentials over insecure
+   transport require an explicit opt-in**.
 
    This clause is enforced by code review, not by the handshake test: a connection to a
    public endpoint succeeds under almost any plausible root set, so the test cannot tell
@@ -119,6 +165,95 @@ covered by a test that **completes a real TLS handshake**.
 
 A client whose default secure constructor cannot reach a public endpoint is not
 shippable, and no amount of green CI substitutes for one honest handshake.
+
+## RULE: Credentials over insecure transport require an explicit opt-in
+
+All seven clients send their bearer token to any host over plaintext with no host check
+whatsoever. An exhaustive search for `127.0.0.1`, `loopback`, and `localhost` across every
+client and every proto tier turned up only doc-comment samples — zero runtime conditionals
+anywhere.
+
+Three clients go further: each contains code written specifically to bypass its transport's
+own refusal to attach call credentials to an insecure channel, with a comment explaining why.
+
+- **Go** — a `PerRPCCredentials` implementation whose `RequireTransportSecurity()` returns
+  `!insecure`, so grpc-go's check passes exactly when the connection is insecure.
+- **C#** — a `CallInvoker.Intercept` that sets the header raw, with the comment *"since
+  CompositeChannelCredentials requires secure transport"*.
+- **Ruby** — a `BearerTokenInterceptor` merging metadata directly, with the comment *"channel
+  credentials can't carry call credentials over a plaintext channel"* — grpc-ruby's C-core
+  actually raises on the composed path, so the bypass avoids a hard failure.
+
+Python, Java, TypeScript, and Rust never engage a checked mechanism at all: plain metadata or
+headers is the only path their underlying libraries offer for an insecure channel, so there is
+no refusal for them to defeat — the guard was simply never built. gRPC's refusal to attach call
+credentials to an insecure channel exists precisely to prevent this. Routing around it —
+deliberately, as in the three clients above, or by omission, as in the other four — is what
+this rule now governs.
+
+1. **A client MUST NOT send credentials over an insecure transport to a non-loopback host
+   unless the caller has explicitly opted in through a named parameter.** Named means a
+   reader cannot mistake it for a default: a distinct, documented option the caller supplies
+   on purpose, never a boolean that does double duty as the plaintext-transport switch.
+2. **A warning is not sufficient.** A log line the developer never reads does not close a
+   credential leak. The client must refuse, or require the explicit opt-in above, before it
+   proceeds — logging while sending the credential anyway does not satisfy this rule.
+3. **The official Python client sets the precedent.** Its insecure posture lives on a
+   separately-named `InsecureClient` a caller must reach for deliberately, not a flag on the
+   default constructor. A client whose only route to insecure operation is a boolean on its
+   primary entry point does not meet this bar.
+4. **The refusal must be the client's own typed argument error.** A caller who catches
+   this needs to catch something, and the thing to catch must be the same shape as every
+   other argument this client refuses before an RPC. Each client already reports the
+   analogous case — a filter whose subject constraint the wire cannot express, see
+   **RULE: A conversion that cannot preserve meaning must fail**, clause 1 — as its own
+   `InvalidArgument`-family error: Go's `ErrInvalidArgument` sentinel, Python's
+   `InvalidArgumentError`, TypeScript's `InvalidArgumentError`, Java's
+   `InvalidArgumentException`, C#'s `InvalidArgumentException`, Ruby's
+   `SpiceDB::InvalidArgumentError`, Rust's `SpiceDBError::InvalidArgument`. This refusal
+   is the same category — caller-supplied input the client rejects before any connection
+   exists — and takes the same type.
+
+   One rule, seven idiomatic spellings; the *type* is per-language, the *category* is
+   not. What this forbids is a client reaching for a language-native argument exception
+   (`ArgumentError`, `IllegalArgumentException`, a bare `Error`) for this one case while
+   using its own hierarchy everywhere else, which is what made the seven clients
+   disagree: a caller writing `except InvalidArgumentError` in one language and
+   `rescue ArgumentError` in another is catching the same mistake two different ways for
+   no reason a reader can infer.
+
+   **Where the guard runs is not where it is reported.** All seven detect this in the
+   proto tier, which has its own error types and must not depend on the idiomatic layer.
+   The idiomatic constructor is therefore responsible for mapping that refusal into its
+   own error before it reaches a caller — the proto tier's type is an implementation
+   detail, and a caller of the idiomatic API should never see it.
+
+Name the failure this rule exists to prevent: a developer copies `insecure: true` from a
+localhost example into a staging config, and a long-lived SpiceDB token — a complete
+authorization bypass in anyone else's hands — goes onto the wire in cleartext with nothing
+signalling that it happened.
+
+**The guard's answer must be the transport's answer.** Whether an endpoint counts as loopback
+is decided by asking the same parser the client dials with — `System.Uri` for Grpc.Net.Client,
+`http::Uri` for tonic, WHATWG `URL` for Connect-ES over Node http2, `URI.create("//" + name)`
+for grpc-java's `DnsNameResolver`, grpc-go's own target resolution — not by a hand-rolled
+string split. A split that disagrees with the transport anywhere is a bypass: given
+`127.0.0.1:443@evil.com`, a last-colon split reads the host as `127.0.0.1` while a URI parser
+reads `127.0.0.1:443` as *userinfo* and connects to `evil.com`. Where a binding genuinely cannot
+reach its transport's parser (Python and Ruby hand the target to grpc's C-core, which parses it
+in C++), the client must say so explicitly and fail closed instead: refuse any endpoint
+containing a character that could move the authority under URI parsing — `@`, `/`, `?`, `#`,
+whitespace.
+
+A consequence, and it is intended: **the precise set of loopback spellings is per-client, and
+uniformity across clients is explicitly not promised.** Parsers differ in what they normalize —
+IPv4-mapped IPv6, bracketed hostnames, percent-encoding — so `::ffff:127.0.0.1` or
+`[localhost]:50051` may be loopback in one client and not another. That is correct. Forcing the
+seven to agree would mean writing normalization the parsers themselves do not do, which is the
+hand-rolled string manipulation this rule exists to remove. What every client must guarantee is
+the security property, not the spelling: an endpoint the guard calls loopback is one the
+transport dials on loopback, and everything else takes the named opt-in. Divergences that
+fail closed are acceptable; a divergence that fails open is the bug.
 
 ## RULE: Only an unconditional grant is true
 
@@ -157,6 +292,13 @@ Therefore:
    bare boolean is forbidden, because it makes "denied" indistinguishable from
    "you did not supply the caveat context." Callers must be able to tell those
    apart, and to learn which context was missing.
+7. **An aggregate over zero checks is not a grant.** `check_all` (Python, Ruby, Rust),
+   `CheckAll`/`CheckAllWithContext` (Go), `checkAll` (TypeScript, Java), and
+   `CheckAllAsync`/`CheckAllWithContextAsync` (C#) MUST return false for an empty input set.
+   Every language's `all`/`every` primitive is vacuously true on an empty sequence, so the
+   idiomatic implementation is the bug: all seven clients had this defect independently. Guard
+   the empty case explicitly, before the aggregate, and test it. `check_any` is already correctly
+   false on empty — that asymmetry is intentional and must not be "made consistent."
 
 The failure this rule exists to prevent is real and shipped: one client previously
 returned `true` for `CONDITIONAL_PERMISSION` by design, granting access on a caveat
@@ -164,9 +306,9 @@ that was never evaluated.
 
 ## The Check Surface: a three-valued result, not a boolean
 
-**Binding on every client.** The RULE above says what a check *means*; this section
-says what a check *returns*. Per-client `DESIGN.md`s inherit from here — they name
-the fields in their own idiom, they do not redefine the contract.
+**Binding on every client.** The **RULE: Only an unconditional grant is true**, above, says what
+a check *means*; this section says what a check *returns*. Per-client `DESIGN.md`s inherit from
+here — they name the fields in their own idiom, they do not redefine the contract.
 
 Both check methods — the singular (`check_permission`) and the plural
 (`check_permissions`) — return a `CheckResult`, never a bare `bool`. `CheckResult`
@@ -190,9 +332,17 @@ Invariants that hold in all seven clients:
    on its ordering. Every client maps to and from the wire explicitly, so the native
    ordinals may differ between clients and from the proto's, harmlessly and by
    design.
-2. **`checked_at` on a bulk check is response-level, not per-item.**
+2. **`checked_at` on a bulk check is response-level, not per-item — and a
+   response is one chunk, not necessarily the whole call.**
    `CheckBulkPermissionsResponseItem` has no token of its own, so the one token on
-   the enclosing response is propagated onto every result in the batch.
+   the enclosing response is propagated onto every result *from that response*.
+   Every client splits a check over more than 1,000 items into one request per
+   chunk (SpiceDB rejects a request carrying more than `maxBulkCheckCount`, and
+   nothing in the proto enforces that cap), so a caller passing more than 1,000
+   relationships gets results whose `checked_at` differs across chunk boundaries.
+   Within one chunk the token is uniform; across the returned collection it is
+   not. A caller threading a token into an at-least-as-fresh read must therefore
+   pick a specific result's token rather than assuming one exists for the call.
 3. **`check_any` / `check_all` stay boolean and count only an unconditional grant**
    (RULE clause 3). Callers needing the third state use the plural method.
 4. **A per-item error in a bulk check is raised as a typed error**, never coerced
@@ -204,7 +354,7 @@ Invariants that hold in all seven clients:
    of the call, not the item). Bulk import is the one exception, because
    `ImportBulkRelationshipsResponse` has no token on the wire at all.
 
-## Caveat Context on the Check Surface
+## Caveat Context on the Check and Write Surfaces
 
 **Binding on every client.** `missing_context` names the keys the server needed;
 this is the API that supplies them. Without it the diagnostic would not be
@@ -242,14 +392,268 @@ Two further requirements:
   `CheckBulkPermissionsRequestItem.context` field 4) are different wire fields with
   different lifetimes. A client must keep them as separate concepts and must never
   send one where the other belongs.
-- **Types are preserved on the check path.** Caveat context values go onto
-  `google.protobuf.Value`'s `kind` oneof by type — numbers as numbers, booleans as
-  booleans, null as null, nested maps/lists recursively. Stringifying a numeric
-  parameter makes a caveat like `now < 100` fail to evaluate, and it fails *quietly*,
-  as another conditional result.
+- **Types are preserved on every caveat-context path.** Caveat context values go onto
+  `google.protobuf.Value`'s `kind` oneof by type — numbers as numbers, booleans as booleans,
+  null as null, nested maps and lists recursively — on the check path (`CheckPermissionRequest.context`,
+  `CheckBulkPermissionsRequestItem.context`) **and** on the write path
+  (`Relationship.optional_caveat.context`), in both directions. Stringifying a numeric parameter
+  makes a caveat like `now < 100` fail to evaluate, and it fails *quietly*, as another
+  conditional result. Write-time is the worse half: a bad check context fails one call, while a
+  bad write context is persisted and mis-evaluates every future check against that
+  relationship — re-checking never repairs it, only rewriting does.
 
 `check_any` / `check_all` accept the same context shape as `check_permissions` — they
 aggregate over the same request and must be able to evaluate caveats.
+
+## RULE: A conversion that cannot preserve meaning must fail
+
+Dropping a value, stringifying it, or widening a filter are all silent-wrong-answer machines: the
+call succeeds, the caller proceeds, and the damage surfaces later somewhere else. But the correct
+response to an unrepresentable value is not one behavior — it depends on **who supplied it**:
+
+1. **Caller-supplied data the client cannot represent MUST raise a typed error naming what could
+   not be converted.** Caveat context that will not convert, and a filter whose constraint the
+   wire format cannot express, are both requests the caller made. The caller can see the failure
+   and fix their input, so the client does not approximate the value and does not discard it — it
+   fails loudly instead of guessing.
+2. **Server-supplied values the client does not recognise MUST NOT raise, and MUST map to the
+   safe, non-permissive default — never a grant, and never a write.** A `permissionship` value
+   added to the wire after a client shipped is not the caller's mistake, and the caller has no
+   input to correct. Raising here would break forward compatibility: a server rolling out a new
+   enum value would make every deployed client throw on every check. This is the same posture
+   already stated for the grant path — *RULE: Only an unconditional grant is true*, clause 1
+   ("An unrecognized future enum value is also not-a-grant") and the `permissionship` row of the
+   Check Surface table ("Unrecognized future wire values map to *unspecified*, which is not a
+   grant") — restated here as the general rule for any server-originated enum, not only
+   `permissionship`.
+
+The two clauses are not in tension: one governs data the caller can fix by raising loudly, the
+other governs data the caller cannot fix by degrading safely. Confusing the two directions is the
+failure mode either way — raising on an unrecognised server enum turns a routine server upgrade
+into a client-side outage, and silently discarding unrepresentable caller data turns a caller's
+mistake into a silent wrong answer.
+
+## RULE: Error mapping must not lose the server's detail
+
+`OUT_OF_RANGE` is mapped to a typed error in 0 of 7 clients. `UNAUTHENTICATED` is mapped in
+only one — Go; the other six leave it indistinguishable from an internal server fault. Every
+proto tier already generates SpiceDB's `ErrorReason` enum from `error_reason.proto`, and not
+one idiomatic client references it anywhere. Six clients do preserve the underlying error
+object — as `cause`, `innerException`, or via `Unwrap` — so the information is reachable but
+unparsed. Rust discards it outright: `from_grpc_status(code: i32, message: String)` reduces the
+status to a code and a string before mapping ever runs, a lossy boundary its own doc comment
+admits.
+
+1. **A client MUST map `OUT_OF_RANGE` and `UNAUTHENTICATED` to typed errors**, not left to fall
+   through to a generic status-code wrapper. These are not exotic codes: they are the two a
+   caller actually hits in production, and every other mapped code in a client's error
+   hierarchy already sets the precedent for treating them the same way.
+2. **A client MUST preserve the underlying status object on every typed error**, so
+   `google.rpc.Status`'s details and SpiceDB's `ErrorReason` remain reachable to a caller who
+   wants them — as `cause`, `inner`, `Unwrap()`, or the language's equivalent. A mapping step
+   that reduces a status to a bare code and string, as Rust's does, has already thrown the
+   information away before it can be used; parsing must work against the original status,
+   never against a string rebuilt from it.
+
+Name both consequences:
+
+- `OUT_OF_RANGE` is SpiceDB's code for an expired or garbage-collected ZedToken. It is the
+  single most actionable recoverable error in a token-threading application, and its correct
+  handling is mechanical — discard the stale token, re-read at full consistency, retry.
+  Collapsed into a generic error, every caller must string-match a message to recover an error
+  the client already knew the shape of.
+- `UNAUTHENTICATED` is the most common error a new integration produces — a wrong, expired, or
+  rotated API token. In six clients it is currently indistinguishable from an internal server
+  fault, so a caller cannot write "refresh credentials on auth failure, page someone on
+  internal error" — the one distinction that error most needs to carry.
+
+## RULE: Automatic retry is for idempotent operations only
+
+A client MUST NOT silently retry a mutation whose replay changes the outcome. A
+`WriteRelationships` containing `OPERATION_CREATE`, or any request carrying preconditions, is
+not idempotent: if it commits and the response is lost, the retry returns `ALREADY_EXISTS` or
+`FAILED_PRECONDITION` and the caller concludes a write failed that in fact succeeded. Retry
+reads freely; retry mutations only when the caller opts in.
+
+`RESOURCE_EXHAUSTED` MUST NOT be in the retryable set. In SpiceDB it signals memory load-shed or
+a deterministic `MaxDepthExceeded` — the first is made worse by retrying and the second can
+never succeed.
+
+Backoff MUST be jittered. Without jitter every client in a fleet retries on the same schedule
+after a restart, converting a recovery into a thundering herd.
+
+## RULE: A unary call must have a deadline
+
+A wedged SpiceDB — one that accepts the connection but never answers — hangs every caller that
+has no bound on the call. It hangs them silently: the connection is open and nothing looks wrong
+at the transport level, so no error is ever produced, and automatic retry cannot help because
+there is nothing to retry against. Callers queue up behind the wedged call until the connection
+pool is exhausted, and an outage that started with one bad call spreads to requests that have
+nothing to do with it.
+
+1. **A client MUST let a caller bound a unary call.** Every unary RPC — `CheckPermission`,
+   `WriteRelationships`, `ReadSchema`, and the rest — must accept a deadline or timeout from the
+   caller, expressed in the language's idiomatic form: a context deadline in Go, a timeout
+   parameter or cancellation token elsewhere.
+2. **A client SHOULD apply a default when the caller supplies none.** An opt-in-only parameter
+   leaves the defect intact for everyone who does not opt in — in practice, most callers. The
+   default must be finite; treating "no timeout" as the default reproduces the defect this rule
+   exists to close. `authzed-node` sets the precedent: it ships a `DEFAULT_DEADLINE_MS`, with a
+   comment citing `grpc/grpc-node#541`, a known gRPC failure mode the default exists to guard
+   against.
+3. **Streaming calls MUST NOT inherit the unary default.** This excludes every RPC that isn't
+   plain unary — server-streaming (`watch`, `export`, and the lookup streams: `LookupResources`,
+   `LookupSubjects`, and their variants), client-streaming (`ImportBulkRelationships`), and any
+   future bidirectional RPC alike. The rule is about call *shape*, not which end does the
+   streaming: `watch` is long-lived because it waits on the server for as long as the process
+   cares to keep watching; `ImportBulkRelationships` is long-lived because its duration scales
+   with the size of the dataset the *caller* is feeding it, and a caller legitimately streaming in
+   millions of relationships can take minutes to do so. No fixed default is correct for either
+   shape, and applying one would make the transfer itself the outage — the caller's data volume,
+   not a wedged server, would be what trips it.
+
+   What replaces the default differs by which end is streaming, and the difference is not
+   cosmetic:
+
+   - **Server-streaming calls MUST offer cancellation, not a deadline.** A deadline answers "how
+     long may this take?", and for `watch` the honest answer is "as long as the process cares to
+     keep watching" — there is no duration that is wrong to allow and no duration whose expiry
+     means something went wrong. The question a caller of a long-lived stream actually needs to
+     answer is "I am done with this, stop" — which is cancellation, and which is a *caller*
+     decision made at an arbitrary later moment rather than a bound guessed up front. So these
+     calls take no per-call timeout, and instead satisfy **RULE: Abandoning a stream must release
+     it**, below. Offering a deadline here instead would be worse than offering nothing: whatever
+     value a caller picked would eventually fire mid-stream and look like a server fault.
+   - **Client-streaming calls SHOULD keep an explicit per-call override.**
+     `ImportBulkRelationships` is the caller's own upload, so the caller *does* know roughly how
+     long their dataset should take and may legitimately want to cap it. That override must be
+     opt-in and default to unbounded, since only the caller knows the volume.
+
+   A caller who needs a hard wall-clock bound on a server stream still has one — cancel it from a
+   timer. The point is that the client must not pick that timer's value for them.
+
+A client with no deadline anywhere is one wedged server away from an outage that looks, from the
+caller's side, exactly like a hang with no cause.
+
+**On worst-case latency**: what a timeout of `t` bounds depends on where the retry loop lives, and
+the two shapes in this repo differ by more than 4x on the same nominal value. A client MUST
+document which shape it has; a caller reasoning about an end-to-end budget cannot infer it from the
+parameter name.
+
+- **Per-attempt budget** (six clients: Python, TypeScript, Java, C#, Ruby, Rust). The client hand-
+  rolls its retry loop and applies `t` fresh to each attempt, deliberately: a budget that shrank
+  across attempts would make a call that legitimately needs several retries *more* likely to fail
+  than one that needs none. So `t` bounds each attempt, not the call — worst-case latency is
+  `t × (retries + 1)` plus backoff between them, and for an auto-paging call (e.g. a filtered
+  delete) the same `t` applies fresh to each page.
+- **Absolute deadline** (Go). Retry is grpc-go's own service-config `retryPolicy`, which reuses the
+  caller's `context.Context` across every attempt. A context deadline is a point in time, not a
+  duration, so it bounds the whole operation: attempts, backoff, and pagination all draw down the
+  same budget, and a retry that starts after the deadline has passed fails immediately.
+
+Concretely, `t = 30s` on a read that exhausts its retries means up to ~120 s plus backoff in the
+six, and at most 30 s in Go. Neither is wrong — Go's is what a `context.Context` *means*, and
+reimplementing per-attempt budgets on top of it would fight the language's central convention —
+but a caller porting a timeout value between clients is not carrying its meaning with it. In the
+per-attempt clients, a caller who needs a true end-to-end bound must impose it themselves, above
+the client.
+
+## RULE: Abandoning a stream must release it
+
+Streaming RPCs invite a common idiom: take the first N results and stop. If stopping early does
+not tell the server to stop, the client has traded a fast return for a leak — the server keeps a
+dispatch open per abandoned stream, for as long as the underlying connection lives, because
+nothing ever told it the caller walked away.
+
+1. **A client MUST expose cancellation for every streaming call.** The caller-facing surface — an
+   async iterator, a generator, a channel — must offer an explicit, working way to stop consuming
+   before the stream is exhausted.
+2. **The transport MUST actually release the stream on abandonment.** Exposing a cancel method
+   that the transport underneath ignores does not satisfy this rule; the caller believes the
+   stream is closed and it is not. Verify this against the transport the client actually ships,
+   not the one implied by its API.
+3. **A `for`-loop `break` calling a generator's `return()` is not sufficient on its own.** Where a
+   language's iteration protocol closes a generator by calling `return()` on `break`, that
+   mechanism only releases the stream if the transport underneath honors it — and this is a trap
+   precisely because the call site looks identical whether it does or not. Connect-ES is a
+   concrete instance: it deliberately omits `return()` on its iterator, so a `break` in consuming
+   code never releases the underlying HTTP/2 stream. A client built on a transport with this
+   property must wire cancellation through an explicit path and must not rely on the loop idiom
+   alone.
+
+A client that cannot cancel an in-flight stream leaks a server-side dispatch per abandoned call —
+silently, since the leak is invisible from the caller's side of a `break`.
+
+## RULE: An example must be executed by CI and must be able to fail
+
+The `examples/` directory in every client is the repo's integration-test tier: it is the only
+place where client code runs against a real SpiceDB. An example earns that status only if two
+things are true of it — **something runs it on every relevant change**, and **it fails when the
+behaviour it demonstrates breaks**. An example that satisfies neither is not a test; it is a
+code sample that the repo's own coverage claims have been counting as a test.
+
+Two distinct failure modes produce that outcome, and they need naming separately because the
+remedies do not overlap.
+
+1. **An example nothing runs.** Membership in a runner is a separate fact from existence on
+   disk, and nothing reconciles them by default. All twelve C# examples sat outside every
+   solution file for the repo's entire history, so `dotnet build`/`dotnet test` never saw them —
+   the code compiled in no one's CI. Rust's `IntegrationTest` documented itself as running
+   examples against a container it did start, on the right port, with the right key, while its
+   body ran `cargo test -- --ignored`: two ignored test functions and zero examples, so every
+   runtime assertion in all thirteen Rust examples was dead code that had never executed once.
+   Both defects were invisible because the target *appeared* to cover the directory.
+
+   Therefore: **each client MUST reconcile the example set on disk against an expected set
+   named in the runner, by name, in both directions** — failing on a name expected but absent,
+   and on a name present but not expected. Where membership is additionally enumerated by hand —
+   a `.sln`, a project list, a manifest — that enumeration MUST be diffed against the directory
+   the same way, because a snapshot that is correct today is reintroduced as a defect by the
+   next example added.
+
+   **A count is not a reconciliation, and MUST NOT be used as one.** This is the sharpest thing
+   this rule has to say, because counting is the obvious implementation and it fails on the most
+   ordinary edit there is: rename an example and the count is unchanged, so the runner executes
+   a set that is no longer the set anyone reviewed, and reports green. Deletion is the only
+   drift a count catches. Six clients here shipped exactly that guard and it survived a full
+   review before the hole was found by renaming a directory. Pin the names; let the count fall
+   out of the list as a consequence.
+
+   The same reconciliation covers name-filtered runs, which are the other half of this clause. A
+   name or tag filter that matches nothing exits successfully in every test framework this repo
+   uses: `pytest -k`, `rspec --tag`, `cargo test` with a filter, and a hardcoded skip in a runner
+   loop all report green on an empty selection. `.github/workflows/rust.yaml` greps its output
+   for `"1 passed"` for exactly this reason. So: **a runner MUST NOT select examples by name or
+   tag filter where it can name them explicitly instead** — a reconciled list of names, passed to
+   the test command, cannot silently select nothing. Where a filter is unavoidable, or where the
+   test framework may skip what it was handed, **the runner MUST read back what actually
+   executed** — a JUnit or TRX report, an rspec JSON report, a libtest pass count — and fail
+   unless every expected example contributed at least one *executed* case. A skipped case is not
+   an executed one: counting it lets a fully-disabled example satisfy the assertion that it ran.
+
+   Skipping an example is permitted — some need machinery that does not exist yet — but a skip
+   MUST be listed by name in the runner, checked to still exist on disk, and printed with its
+   reason, never the silent residue of a filter.
+
+2. **An example that cannot fail.** Executing an example proves nothing if its assertions hold
+   regardless of the behaviour under test. `spicedb-typescript`'s custom-TLS example asserted
+   `Array.isArray(results)` over a zero-item result — true of an empty array, and therefore true
+   when no TLS handshake was ever attempted, which is precisely what was happening. This is the
+   same defect as **RULE: A system-TLS constructor must reach a real server** names for
+   constructors ("asserting a constructor succeeds is no better wherever the language connects
+   lazily"), generalised to the examples tier.
+
+   Therefore: **every example MUST assert on the specific behaviour it exists to demonstrate,
+   and that assertion MUST fail if the behaviour is removed.** Concretely, an assertion is
+   insufficient under this rule when it is satisfied by an empty result, by a type check alone,
+   by a constructor returning non-null, or by any conditional whose guard can be false on a
+   normal run — a `if (stillCalculating) { ...asserts... }` after a fixed sleep asserts nothing
+   on the run where the guard is false, and reports green either way. The test for compliance is
+   mechanical: delete the behaviour and confirm the example goes red.
+
+An example directory is a claim about coverage. Both clauses exist so that the claim is checkable
+by machine rather than by reading, because every instance above survived repeated human review of
+the very directories it lived in.
 
 ## What NOT To Do
 
@@ -259,7 +663,86 @@ aggregate over the same request and must be able to evaluate caveats.
 - No silent defaults for consistency — make users choose explicitly
 - No exposing gRPC internals (channels, stubs, metadata) in the primary API
   (escape hatches for advanced use are acceptable as clearly marked secondary API)
-- **No treating a conditional permission as a grant** — see the RULE above
+- **No treating a conditional permission as a grant** — see **RULE: Only an unconditional grant
+  is true**
+
+### Where each client's raw escape hatch lives
+
+**Every client can issue an unwrapped RPC on its own connection, with its own
+credentials, through a documented accessor** — that is the property this section exists
+to guarantee, and it is what makes the bullet *"No exposing gRPC internals (channels,
+stubs, metadata) in the primary API (escape hatches for advanced use are acceptable as
+clearly marked secondary API)"*, above, a complete answer rather than half of one. A gap
+in an idiomatic surface therefore has a workaround short of a fork, and the workaround
+never requires rebuilding the connection.
+
+What the accessor returns is not uniform, because "the underlying thing" differs per
+ecosystem. Each entry below states its shape: **accessor** (hands back what the client
+already built) or **configuration** (shapes the connection before it exists). Several
+clients have both.
+
+- **Go** — *accessor:* `(*client.Client).RawProto()`, returning `*proto.Client` with the
+  four generated service clients. *Configuration:* `WithDialOptions(...)` on
+  `NewWithOpts`, which takes any `grpc.DialOption`.
+- **Python** — *accessor:* `raw_grpc()` on both `spicedb.sync.SpiceDBClient` and
+  `spicedb.aio.SpiceDBClient`, returning `spicedb.raw.RawGrpc` (the live channel plus the
+  bearer-token metadata, since this client authenticates per call).
+- **TypeScript** — *accessor:* `SpiceDBClient.raw()`, returning the `SpiceDBProtoClient`
+  with the four generated Connect clients.
+- **Rust** — *accessor:* `SpiceDBClient::raw_proto()`, returning `&SpiceDBProtoClient`;
+  the generated crate is re-exported as `spicedb::spicedb_proto` so callers can name its
+  types.
+- **Java** — *accessor:* `SpiceDBClient.rawChannel()`, returning this client's own
+  `io.grpc.Channel` with its bearer metadata already attached, so any generated stub is
+  one `newStub` call away. The lifecycle stays with the client because
+  `ClientInterceptors.intercept` returns a package-private `Channel` subclass whose delegate
+  is unreachable — a cast to `ManagedChannel` throws — not merely because the return type
+  says `Channel`. (The idiomatic client does not wrap `spicedb-java-proto`'s
+  `SpiceDBProtoClient`, which exists but is unused there; it builds its own stubs.) *Configuration:* `ClientOption.apply(ManagedChannelBuilder)`,
+  documented as an escape hatch on `ClientOption#apply`. `grpc-netty-shaded` and the
+  generated stubs are declared `api` in
+  `proto-clients/spicedb-java-proto/build.gradle.kts`, so both reach consumer code.
+- **C#** — *accessor:* `SpiceDBClient.RawProto()`, returning the `SpiceDBProtoClient` with
+  the four generated service clients. *Configuration:* `CreateFromChannel(channel, key)`,
+  which takes a caller-built `GrpcChannel`; that channel stays **caller-owned**, since
+  disposing the client does not dispose it — the idiomatic .NET pattern is one
+  DI-registered singleton channel shared across the application.
+- **Ruby** — *accessor:* `SpiceDB::Client#proto_client`, an `attr_reader` documented as
+  "the underlying proto client for advanced use cases", whose `permissions`/`schema`/
+  `watch`/`experimental` stubs are already authenticated (composed call credentials on the
+  secure path, a `BearerTokenInterceptor` on the plaintext one).
+
+Three constraints bind all of them:
+
+1. **An accessor must never become a constructor.** Handing back an already-built
+   channel, stub, or client is fine; growing a parameter for an endpoint, token, or
+   transport setting is not — that would be a new path that builds a connection, and
+   **RULE: Credentials over insecure transport require an explicit opt-in** is enforced
+   on the paths that already do (one each in Go, Python, TypeScript, Rust, C# and Ruby;
+   Java has three — `SpiceDBClient.java`'s plaintext, custom and system-TLS factories,
+   with the guard on the first two and the third TLS-only by construction). Each client's
+   tests pin this directly, by asserting the accessor takes no arguments.
+
+   **The configuration hatches carry a disclosure, and it is not decoration.** A guard
+   that recognizes named options cannot see what an arbitrary builder callback or dial
+   option does to the connection, so each of those hatches states in its own doc comment
+   what its guard can and cannot see — Java on `ClientOption#apply` and `create`, C# on
+   `CreateFromChannel`, Go on `WithDialOptions` in both tiers. Go's is the mildest case
+   and shows why the disclosure belongs there anyway: caller dial options are appended
+   last and later ones win, so a caller can replace the transport credentials this library
+   chose; it fails closed only because the bearer credentials' `RequireTransportSecurity`
+   makes grpc-go refuse to attach the token to a downgraded transport. A hatch whose
+   disclosure is missing is a hatch whose reader has to derive that themselves.
+2. **A configuration hatch is not a substitute for an accessor.** Rebuilding the
+   connection to make one raw call means replicating the client's transport configuration
+   by hand; get it wrong and the raw path runs with *different transport security than the
+   idiomatic one* while the call site reads as though it were the same server. That is a
+   correctness hazard, not an inconvenience — which is why the accessor is the guaranteed
+   property above and the configuration hatch is an extra.
+3. **Exposing a built channel is not a trust-material hatch.** TLS is configured before a
+   channel exists, so these accessors do not satisfy **RULE: A system-TLS constructor must
+   reach a real server**, clause 1. That clause keeps its own per-client list, and Rust's
+   entry there is still "none".
 
 ## CI Workflow Conventions
 
@@ -270,6 +753,8 @@ The repo uses one GitHub Actions workflow file per language plus `spicedb-gen.ya
 2. **Standard job set per language workflow.** Each language workflow contains: `paths-filter`, `lint`, `unit`, `integration`, and `apicompat` (if the language appears in `apiCompatLanguages` in the root `Magefile.go`). All four work-jobs gate on `paths-filter.outputs.changed == 'true'`. `apicompat` additionally gates on `github.event_name == 'pull_request'` so it has a base ref to diff against.
 
 3. **paths-filter scope.** Each filter must watch the workflow file itself, the language's `proto-clients/spicedb-<lang>-proto/**`, the language's `spicedb-<lang>/**`, root `Magefile.go`, and root `go.mod` / `go.sum`. Workflow edits without filter coverage produce a silently-skipping CI.
+
+   **A filter must also watch what the job's code is compiled against, not only where that code lives.** `spicedb-gen.yaml` watched `spicedb-gen/**` alone, but the generator's templates emit code importing `spicedb-go/{client,consistency,rel}`, `spicedb-typescript/src`, `spicedb-python/spicedb`, and `spicedb-java/lib/src/main/java`, and every `testdata/` project builds against those live in-repo sources. A signature change in a consumed package could therefore break generation while every generator job skipped and reported green — which is exactly how a dropped-error regression reached review (finding F4). Scope such entries to the packages actually imported; a blanket `spicedb-*/**` runs the suite on every client change and invites someone to revert the whole filter as noise. Note the filter is necessary but not sufficient: pair it with a test that actually fails on the regression, since a discarded return value still compiles.
 
 4. **Runner sizing.** Default to `depot-ubuntu-24.04-arm-4`. Use `arm-small` for trivial steps (paths-filter, apicompat, yaml lint). Use `arm-8` only for cross-cutting work that touches every language (e.g. `meta.gen-nodiff`). Justify any size deviation in a comment.
 

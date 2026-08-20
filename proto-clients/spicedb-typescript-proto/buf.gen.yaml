@@ -1,14 +1,28 @@
 version: v2
+# Both plugins are pinned. Unversioned `remote:` resolves to whatever is latest
+# at generation time, so an unrelated `mage gen` would silently rewrite every
+# file under src/gen with a newer codegen. protoc-gen-es is held at the version
+# matching the pinned @bufbuild/protobuf runtime (2.11.0); raise the two
+# together, in a commit that does nothing else.
 plugins:
-  - remote: buf.build/connectrpc/es
+  - remote: buf.build/connectrpc/es:v1.6.1
     out: src/gen
     opt:
       - target=ts
     include_imports: true
-  - remote: buf.build/bufbuild/es
+  - remote: buf.build/bufbuild/es:v2.11.0
     out: src/gen
     opt:
       - target=ts
     include_imports: true
 inputs:
   - module: buf.build/authzed/api
+  # google.rpc.ErrorInfo is how SpiceDB attaches its structured ErrorReason and
+  # the metadata behind it to a status. No authzed proto imports it, so
+  # include_imports above does not reach it -- it has to be named as an input of
+  # its own for the idiomatic client to be able to decode an error detail rather
+  # than parse an error message. See root DESIGN.md, "RULE: Error mapping must
+  # not lose the server's detail".
+  - module: buf.build/googleapis/googleapis
+    paths:
+      - google/rpc/error_details.proto

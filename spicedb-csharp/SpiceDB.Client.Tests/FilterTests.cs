@@ -166,12 +166,43 @@ public class FilterTests
     }
 
     [Fact]
-    public void ToProto_WithoutSubjectType_DoesNotSetSubjectFilter()
+    public void ToProto_SubjectIDWithoutSubjectType_Throws()
     {
-        // SubjectID without SubjectType should not create a subject filter
-        var proto = new Filter("document").WithSubjectID("alice").ToProto();
+        // The wire cannot express a subject ID without a subject type
+        // (SubjectFilter.subject_type is required) -- silently dropping the
+        // constraint instead would widen a filter like
+        // new Filter("document").WithSubjectID("alice") into "every subject
+        // on every document," which a caller using it with
+        // DeleteRelationshipsAsync would not expect. Must throw naming the
+        // missing field instead of silently building an unconstrained filter.
+        var act = () => new Filter("document").WithSubjectID("alice").ToProto();
 
-        proto.OptionalSubjectFilter.Should().BeNull();
+        var thrown = act.Should().Throw<InvalidArgumentException>().Which;
+        thrown.Message.Should().Contain(nameof(Filter.SubjectID));
+        thrown.Message.Should().Contain(nameof(Filter.SubjectType));
+    }
+
+    [Fact]
+    public void ToProto_SubjectRelationWithoutSubjectType_Throws()
+    {
+        var act = () => new Filter("document").WithSubjectRelation("member").ToProto();
+
+        var thrown = act.Should().Throw<InvalidArgumentException>().Which;
+        thrown.Message.Should().Contain(nameof(Filter.SubjectRelation));
+        thrown.Message.Should().Contain(nameof(Filter.SubjectType));
+    }
+
+    [Fact]
+    public void ToProto_SubjectTypeAndID_DoesNotThrowAndSetsSubjectFilter()
+    {
+        // Companion to the two throw cases above -- proves the valid
+        // combination (SubjectType supplied alongside SubjectID) still
+        // works and is not accidentally caught by the new guard.
+        var proto = new Filter("document").WithSubjectType("user").WithSubjectID("alice").ToProto();
+
+        proto.OptionalSubjectFilter.Should().NotBeNull();
+        proto.OptionalSubjectFilter.SubjectType.Should().Be("user");
+        proto.OptionalSubjectFilter.OptionalSubjectId.Should().Be("alice");
     }
 
     [Fact]

@@ -35,4 +35,4 @@ pub mod authzed {
     }
 }
 
-pub use client::SpiceDBProtoClient;
+pub use client::{SpiceDBProtoClient, SpiceDBProtoClientError};

@@ -36,11 +36,109 @@ Security-obvious named constructors:
 - `SpiceDBClient.CreateFromChannel(channel, presharedKey)` — escape hatch with
   existing GrpcChannel
 
+Per root DESIGN.md, "RULE: Credentials over insecure transport require an
+explicit opt-in": `CreatePlaintext` only permits plaintext to a loopback
+endpoint (`localhost`, `127.0.0.0/8`, or `::1`) — the local-development case
+that is the entire reason it exists. A `unix:` target is NOT loopback here and
+is refused outright: Grpc.Net.Client dials a URI, so it would resolve the DNS
+name `unix` rather than a socket path. Anything else needs
+`allowInsecureRemoteCredentials: true` passed explicitly, or
+`CreatePlaintext` refuses to construct the client at all, before any
+connection is created.
+
+#### Custom TLS trust material
+
+There is deliberately **no** dedicated CA-bundle parameter: `CreateFromChannel`
+already is one. A caller builds the `GrpcChannel`, and with it the whole
+`SocketsHttpHandler`/`HttpClientHandler` TLS surface — a private root, a client
+certificate for mutual TLS, or a custom validation callback:
+
+```csharp
+var handler = new SocketsHttpHandler {
+    SslOptions = new SslClientAuthenticationOptions {
+        ClientCertificates = new X509CertificateCollection { clientCert },
+        RemoteCertificateValidationCallback = ValidateAgainstPrivateRoot,
+    },
+};
+var channel = GrpcChannel.ForAddress(uri, new GrpcChannelOptions { HttpHandler = handler });
+var client = SpiceDBClient.CreateFromChannel(channel, presharedKey);
+```
+
+This is what satisfies root DESIGN.md, "RULE: A system-TLS constructor must
+reach a real server", whose clause 1 permits `CreateSystemTls` to delegate to
+`ChannelCredentials.SecureSsl` only because a caller can supply their own trust
+material instead. Adding a parallel CA parameter would mean two ways to
+configure one channel's TLS, and a caller passing both would have no way to
+predict which won.
+
+Note that .NET's default is already the OS trust store, so unlike the Python,
+TypeScript and Ruby clients — whose runtimes use a compiled-in or bundled root
+set — an operator-installed CA is honoured by `CreateSystemTls` with nothing
+extra. This hatch is for pinning a CA the host does *not* trust, and for mutual
+TLS.
+
 The client implements `IAsyncDisposable`:
 
 ```csharp
 await using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "token");
 ```
+
+**A borrowed channel is never disposed.** `DisposeAsync` tears down only a
+channel this library created — the one `CreatePlaintext`/`CreateSystemTls`
+built. A `GrpcChannel` handed to `CreateFromChannel` stays open, because the
+idiomatic way to supply one is a DI-registered **singleton** shared by the whole
+application:
+
+```csharp
+services.AddSingleton(_ => GrpcChannel.ForAddress(uri, options));
+services.AddScoped(sp => SpiceDBClient.CreateFromChannel(
+    sp.GetRequiredService<GrpcChannel>(), presharedKey));
+```
+
+Disposing that channel with the first scoped client to finish would break every
+other consumer of it — which is exactly what happened until `SpiceDBProtoClient`
+started tracking whether it owned its channel. Lending a channel does not
+transfer ownership; the caller disposes it at application shutdown.
+
+### Escape hatch: raw proto access
+
+`client.RawProto()` returns the underlying `SpiceDBProtoClient` — the four generated
+service clients (`Permissions`, `Schema`, `Watch`, `Experimental`) this library makes its
+own calls through:
+
+```csharp
+var response = await client.RawProto().Permissions.CheckPermissionAsync(request);
+```
+
+Clearly-marked **secondary** API, which is what root DESIGN.md's "What NOT To Do"
+permits: channels, stubs and metadata stay out of the primary surface, and "escape
+hatches for advanced use are acceptable as clearly marked secondary API". It exists so a
+request the idiomatic surface cannot express — an RPC or proto field not wrapped here,
+such as `WriteRelationshipsRequest.OptionalTransactionMetadata`, or the single-check
+`CheckPermission` RPC that `CheckPermissionAsync` deliberately routes around — has a
+workaround short of forking the client.
+
+It complements `CreateFromChannel`, which shapes the connection *before* it exists (and is
+where custom TLS goes): `RawProto()` hands back what was built, whichever constructor
+built it, so a caller who used `CreatePlaintext`/`CreateSystemTls` has a hatch too.
+
+Four properties, all deliberate:
+
+- **The bearer token comes free.** Each service client is built on an intercepted
+  `CallInvoker`, so a raw call is authenticated exactly as an idiomatic one is.
+- **A raw call is a raw call.** No `SpiceDBException` mapping (you catch `RpcException`),
+  no retry, and no `DefaultTimeout` — pass a `deadline` yourself.
+- **Do not dispose the returned object.** It holds this client's connection, and
+  `DisposeAsync` is what releases it (or, for a channel you supplied to
+  `CreateFromChannel`, you are).
+- **It is an accessor, never a constructor.** It takes no endpoint, preshared key, or
+  transport setting, so channel construction stays on the single guarded path in
+  `SpiceDBProtoClient` and the hatch cannot become a way around root DESIGN.md, "RULE:
+  Credentials over insecure transport require an explicit opt-in".
+
+No stability promise beyond `Grpc.Net.Client`'s and the generated code's. Throws
+`InvalidOperationException` only for a client built through the internal test-only
+constructor, which no public factory can produce.
 
 ### Consistency
 
@@ -196,7 +294,10 @@ construction" per root DESIGN.md clause 5 (`if (result)` does not compile).
 
 `CheckBulkPermissionsResponse.checked_at` is response-level, not per-item —
 the bulk path propagates that one token onto every `CheckResult.CheckedAt`
-in the batch.
+mapped from that response. A check over more than `DefaultCheckBatchSize`
+relationships is split into one request per chunk, so the returned array can
+carry more than one distinct `CheckedAt` — uniform within a chunk, not across
+the call. See root DESIGN.md, invariant 2 under bulk checks.
 
 A per-item `CheckBulkPermissions` error (`google.rpc.Status`, carried as the
 `error` arm of the pair's oneof) is routed through the same `ErrorMapper`
@@ -293,7 +394,7 @@ Async enumerables:
 - `LookupResourcesAsync(consistency, resourceType, permission, subjectType, subjectID)` → `IAsyncEnumerable<LookupResource>`
 - `LookupSubjectsAsync(consistency, resourceType, resourceID, permission, subjectType)` → `IAsyncEnumerable<LookupSubject>`
 - `ExportRelationshipsAsync(consistency, filter?)` → `IAsyncEnumerable<Relationship>`
-- `UpdatesAsync(objectTypes?, startRevision?)` → `IAsyncEnumerable<RelationshipUpdate>`
+- `UpdatesAsync(objectTypes?, startRevision?, includeCheckpoints?)` → `IAsyncEnumerable<WatchEvent>`
 
 ### Lookups
 
@@ -401,7 +502,18 @@ proto `tree_type` oneof.
 
 ### Watch
 
-- `UpdatesAsync(objectTypes?, startRevision?)` → `IAsyncEnumerable<RelationshipUpdate>`
+- `UpdatesAsync(objectTypes?, startRevision?, includeCheckpoints?)` → `IAsyncEnumerable<WatchEvent>`
+  — `includeCheckpoints` (default `false`) requests `WATCH_KIND_INCLUDE_CHECKPOINTS`
+  (recommended behind a proxy that aborts idle connections, since a checkpoint keeps the
+  stream alive with no changes to report)
+
+`WatchEvent { IReadOnlyList<RelationshipUpdate> Updates, string ChangesThrough, bool
+IsCheckpoint }` is one event per `WatchResponse`. `ChangesThrough` is always populated --
+proto: "This token can be used in a subsequent WatchRequest to resume watching from this
+point" -- pass it as `startRevision` to resume after a dropped stream instead of restarting
+from the original `startRevision` (reprocessing, possibly past the GC window) or from head
+(silently losing every change in the gap). `IsCheckpoint` is true for a checkpoint event,
+which carries no `Updates`.
 
 ### Experimental — Relationship Counters
 
@@ -429,13 +541,94 @@ Exception hierarchy rooted at `SpiceDBException`:
 `ErrorMapper` static class:
 
 - `ToSpiceDBException(RpcException)` — maps gRPC status codes to typed exceptions
-- `IsTransient(Exception)` — returns true for UNAVAILABLE, RESOURCE_EXHAUSTED, ABORTED
+- `IsTransient(Exception)` — returns true for UNAVAILABLE and ABORTED
 
 ### Auto-Retry
 
-Automatic retry with exponential backoff for transient gRPC errors (UNAVAILABLE,
-RESOURCE_EXHAUSTED, ABORTED). Max 3 retries (4 attempts total) with 100ms
-initial backoff, doubling each retry.
+Automatic retry with jittered exponential backoff, for **reads only**, on
+**`UNAVAILABLE` and `ABORTED`**.
+
+`RESOURCE_EXHAUSTED` is deliberately NOT retryable. In SpiceDB it means
+either memory load-shed — where retrying adds load to an already-overloaded
+server — or a deterministic `MaxDepthExceeded`, which can never succeed and
+whose retries re-run the most expensive class of check several times before
+surfacing the same error. See root `DESIGN.md`, "RULE: Automatic retry is
+for idempotent operations only".
+
+**Mutations are never auto-retried.** `WriteRelationships` carrying
+`OPERATION_CREATE`, or any request with preconditions, is not idempotent: if
+it commits and the response is lost — a rolling restart, a proxy dropping the
+connection — the retry returns `ALREADY_EXISTS`/`FAILED_PRECONDITION` and the
+caller concludes a write failed that in fact succeeded. Writes, deletes,
+schema writes, bulk import, and the counter registration calls therefore
+never enter the retry loop: their errors are mapped to this client's typed
+form and raised on the first attempt. A caller who wants a mutation retried
+must decide that themselves, knowing their own idempotency.
+
+**Timeout shape**: the per-call timeout is a per-*attempt* budget, applied
+fresh to each retry rather than shrinking across them, so a call that
+legitimately needs several retries is not made more likely to fail than one
+that needs none. Worst-case latency for a timeout `t` is therefore
+`t × (retries + 1)` plus backoff, and an auto-paging call spends a fresh `t`
+per page. Root `DESIGN.md`, "On worst-case latency", covers why this differs
+from Go's; a caller needing a true end-to-end bound must impose it above this
+client.
+
+Max 3 retries (4 attempts total), 100ms initial backoff, doubling each retry,
+sampled with full jitter.
+
+### Deadlines
+
+Every unary method (`CheckPermissionAsync`, `WriteAsync`, `ReadSchemaAsync`,
+etc.) takes an optional `TimeSpan? timeout = null`, applied via
+`CallOptions.Deadline` — **alongside**, not instead of, the pre-existing
+`CancellationToken`: a cancelled token stops the client from waiting, but
+only a server-enforced deadline tells the server itself to stop working.
+`CreatePlaintext`/`CreateSystemTls`/`CreateFromChannel` all take an optional
+`TimeSpan? defaultTimeout = null`, applied to any unary call that doesn't
+pass its own `timeout` — both default to `SpiceDBClient.DefaultTimeout`
+(30s), mirroring `authzed-node`'s `DEFAULT_DEADLINE_MS = 30_000` (its
+comment cites `grpc/grpc-node#541`). See root DESIGN.md, "RULE: A unary
+call must have a deadline".
+
+The six `params Relationship[]` check overloads (`CheckPermissionsAsync`,
+`CheckPermissionsWithContextAsync`, `CheckAnyAsync`, `CheckAnyWithContextAsync`,
+`CheckAllAsync`, `CheckAllWithContextAsync`) deliberately do **not** take a
+`timeout` parameter: inserting one ahead of
+the `params` array would silently break any existing positional call site
+passing relationships right after `cancellationToken` (e.g.
+`CheckPermissionsAsync(cs, "view", default, rel1, rel2)` — `rel1` would try
+to bind to the new parameter instead of the params array). They are still
+bounded by the client's `DefaultTimeout`; use the singular
+`CheckPermissionAsync` for a per-call override on checks.
+
+```csharp
+await using var client = SpiceDBClient.CreatePlaintext(endpoint, token, defaultTimeout: TimeSpan.FromSeconds(5));
+var result = await client.CheckPermissionAsync(Consistency.Full(), "view", rel);                                    // bound by the 5s default
+var result2 = await client.CheckPermissionAsync(Consistency.Full(), "view", rel, timeout: TimeSpan.FromSeconds(1)); // overrides it
+```
+
+Server-streaming methods (`ReadRelationshipsAsync`, `LookupResourcesAsync`,
+`LookupSubjectsAsync`, `UpdatesAsync`, `ExportRelationshipsAsync`) take no
+`timeout` parameter and are NOT bound by `DefaultTimeout` — they are
+long-lived by design (`UpdatesAsync` may run for the life of the process),
+and applying the unary default to them would make the stream itself the
+outage.
+
+`ImportRelationshipsAsync` is client-streaming, not server-streaming, but
+the same exclusion applies for the mirror-image reason: its duration scales
+with the size of the caller's dataset, not with server latency, so no fixed
+default is correct for it either. Unlike the server-streaming methods
+above, it DOES take a `timeout` parameter — omitting it means unbounded
+there, not "use `DefaultTimeout`"; pass it explicitly to bound a bulk
+import. (Its `cancellationToken` still works as caller-side cancellation
+regardless.)
+
+Note for callers reasoning about worst-case latency: `timeout` is a
+per-*attempt* budget, applied fresh on each retry, so a call that retries
+can take up to `timeout × (retries + 1)` plus backoff, and an auto-paging
+call (e.g. `DeleteRelationshipsAsync`) applies the same `timeout` fresh to
+each page.
 
 ### Supporting Types
 
@@ -470,7 +663,32 @@ public sealed record CheckResult { Permissionship, MissingContext, CheckedAt, Ha
 
 - `ConsistencyStrategy.V1Consistency` — exposes underlying proto type
 - `Transaction.V1Updates` / `Transaction.Preconditions` — exposes underlying proto updates
-- `SpiceDBClient.CreateFromChannel(channel, key)` — use existing GrpcChannel
+- `SpiceDBClient.CreateFromChannel(channel, key)` — use existing GrpcChannel.
+  The channel stays caller-owned: `DisposeAsync` does not dispose it.
+- `SpiceDBClient.RawProto()` — the underlying `SpiceDBProtoClient` and its four generated
+  service clients, for an RPC or proto field the idiomatic API does not wrap
+
+## Examples Manifest
+
+| Directory | Demonstrates |
+|-----------|-------------|
+| `CheckPermission/` | Basic permission check |
+| `WriteRelationships/` | Writing relationships with transactions |
+| `ReadRelationships/` | Reading relationships with async enumerables |
+| `LookupResources/` | Resource lookup |
+| `LookupSubjects/` | Subject lookup |
+| `CallDeadlines/` | The `defaultTimeout` construction parameter, a per-call `timeout` override, and confirming bulk import isn't bounded by the unary default |
+| `ErrorMapping/` | Recovering from `OUT_OF_RANGE` (stale ZedToken) and `UNAUTHENTICATED` without parsing a message |
+| `InsecureOptIn/` | Why `CreatePlaintext` is loopback-only, and the named opt-in a remote plaintext host requires |
+| `RetryPolicy/` | Which calls are retried for you and which are not, counted server-side |
+| `UnrepresentableValues/` | Caller data that cannot convert fails loudly, naming the key; unknown server enums degrade safely |
+| `WatchChanges/` | Watching for changes |
+| `SchemaManagement/` | Schema read/write |
+| `BulkOperations/` | Bulk checks, batch writes, and bulk relationship import/export |
+| `SchemaReflection/` | Schema reflection, computable permissions, diffs |
+| `RelationshipCounters/` | Relationship counter registration and counting |
+| `ExpandPermissionTree/` | Expanding a permission into its native `PermissionTree` of subjects |
+| `RawEscapeHatch/` | `RawProto()` — driving the generated service client directly for a proto field (`OptionalTransactionMetadata`) and an RPC (`CheckPermission`) the idiomatic API does not expose |
 
 ## Changelog
 

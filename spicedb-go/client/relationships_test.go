@@ -83,10 +83,54 @@ func TestDeleteRelationships_NoOptions_PreservesDefaultBehavior(t *testing.T) {
 
 	require.Len(t, stub.requests, 1)
 	req := stub.requests[0]
-	require.Equal(t, filter.ToProto(), req.GetRelationshipFilter())
+	filterProto, err := filter.ToProto()
+	require.NoError(t, err)
+	require.Equal(t, filterProto, req.GetRelationshipFilter())
 	require.Equal(t, uint32(defaultDeletePageSize), req.GetOptionalLimit())
 	require.True(t, req.GetOptionalAllowPartialDeletions())
 	require.Empty(t, req.GetOptionalPreconditions())
+}
+
+// TestDeleteRelationships_FilterSubjectIDWithoutSubjectType_ReturnsError
+// proves the fix for the offboarding hazard this finding describes: a
+// filter carrying a subject ID but no subject type must be rejected before
+// it ever reaches the server, not silently sent as an unconstrained-subject
+// delete that would remove every relationship on every document.
+func TestDeleteRelationships_FilterSubjectIDWithoutSubjectType_ReturnsError(t *testing.T) {
+	stub := &deleteStubServer{}
+	dialer := startDeleteStubServer(t, stub)
+	c := newTestClient(t, dialer)
+
+	filter := rel.NewFilter("document").WithSubjectID("alice")
+
+	_, err := c.DeleteRelationships(context.Background(), filter)
+	require.Error(t, err)
+	require.ErrorIs(t, err, rel.ErrInvalidFilter)
+	require.Contains(t, err.Error(), "SubjectID")
+	require.Contains(t, err.Error(), "SubjectType")
+
+	require.Empty(t, stub.requests, "no request should reach the server for an unconvertible filter")
+}
+
+// TestDeleteRelationships_WithDeleteMustMatchFilterSubjectIDWithoutSubjectType_ReturnsError
+// proves the same rejection applies when the unconvertible filter arrives
+// via a WithDeleteMustMatch/WithDeleteMustNotMatch precondition option
+// rather than as the primary filter -- DeleteOption can't return an error
+// directly, so the conversion error must be deferred and surfaced by
+// DeleteRelationships itself.
+func TestDeleteRelationships_WithDeleteMustMatchFilterSubjectIDWithoutSubjectType_ReturnsError(t *testing.T) {
+	stub := &deleteStubServer{}
+	dialer := startDeleteStubServer(t, stub)
+	c := newTestClient(t, dialer)
+
+	filter := rel.NewFilter("document").WithResourceID("firstdoc")
+	badGuard := rel.NewFilter("document").WithSubjectID("alice")
+
+	_, err := c.DeleteRelationships(context.Background(), filter, WithDeleteMustMatch(badGuard))
+	require.Error(t, err)
+	require.ErrorIs(t, err, rel.ErrInvalidFilter)
+
+	require.Empty(t, stub.requests, "no request should reach the server for an unconvertible precondition filter")
 }
 
 // TestDeleteRelationships_WithDeleteMustMatch_SetsMustMatchPrecondition
@@ -108,7 +152,9 @@ func TestDeleteRelationships_WithDeleteMustMatch_SetsMustMatchPrecondition(t *te
 	preconditions := stub.requests[0].GetOptionalPreconditions()
 	require.Len(t, preconditions, 1)
 	require.Equal(t, v1.Precondition_OPERATION_MUST_MATCH, preconditions[0].GetOperation())
-	require.Equal(t, guard.ToProto(), preconditions[0].GetFilter())
+	guardProto, err := guard.ToProto()
+	require.NoError(t, err)
+	require.Equal(t, guardProto, preconditions[0].GetFilter())
 }
 
 // TestDeleteRelationships_WithDeleteMustNotMatch_SetsMustNotMatchPrecondition
@@ -130,7 +176,9 @@ func TestDeleteRelationships_WithDeleteMustNotMatch_SetsMustNotMatchPrecondition
 	preconditions := stub.requests[0].GetOptionalPreconditions()
 	require.Len(t, preconditions, 1)
 	require.Equal(t, v1.Precondition_OPERATION_MUST_NOT_MATCH, preconditions[0].GetOperation())
-	require.Equal(t, guard.ToProto(), preconditions[0].GetFilter())
+	guardProto, err := guard.ToProto()
+	require.NoError(t, err)
+	require.Equal(t, guardProto, preconditions[0].GetFilter())
 }
 
 // TestDeleteRelationships_MultiplePreconditions_AreAllSent proves that
@@ -155,9 +203,13 @@ func TestDeleteRelationships_MultiplePreconditions_AreAllSent(t *testing.T) {
 	preconditions := stub.requests[0].GetOptionalPreconditions()
 	require.Len(t, preconditions, 2)
 	require.Equal(t, v1.Precondition_OPERATION_MUST_MATCH, preconditions[0].GetOperation())
-	require.Equal(t, mustMatch.ToProto(), preconditions[0].GetFilter())
+	mustMatchProto, err := mustMatch.ToProto()
+	require.NoError(t, err)
+	require.Equal(t, mustMatchProto, preconditions[0].GetFilter())
 	require.Equal(t, v1.Precondition_OPERATION_MUST_NOT_MATCH, preconditions[1].GetOperation())
-	require.Equal(t, mustNotMatch.ToProto(), preconditions[1].GetFilter())
+	mustNotMatchProto, err := mustNotMatch.ToProto()
+	require.NoError(t, err)
+	require.Equal(t, mustNotMatchProto, preconditions[1].GetFilter())
 }
 
 // TestDeleteRelationships_WithDeleteLimit_OverridesDefaultLimit proves that
@@ -206,11 +258,14 @@ func TestDeleteRelationships_AutoPaging_ResendsPreconditionsEveryCall(t *testing
 	require.NoError(t, err)
 	require.Equal(t, "rev-complete", revision)
 
+	guardProto, err := guard.ToProto()
+	require.NoError(t, err)
+
 	require.Len(t, stub.requests, 2)
 	for i, req := range stub.requests {
 		preconditions := req.GetOptionalPreconditions()
 		require.Lenf(t, preconditions, 1, "call %d", i)
 		require.Equal(t, v1.Precondition_OPERATION_MUST_MATCH, preconditions[0].GetOperation())
-		require.Equal(t, guard.ToProto(), preconditions[0].GetFilter())
+		require.Equal(t, guardProto, preconditions[0].GetFilter())
 	}
 }

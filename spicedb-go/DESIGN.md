@@ -35,6 +35,40 @@ Security-obvious named constructors:
 - `client.NewWithOpts(endpoint string, opts ...Option) (*Client, error)` —
   escape hatch with functional options
 
+Per root DESIGN.md, "RULE: Credentials over insecure transport require an
+explicit opt-in": `WithInsecure()` (and therefore `NewPlaintext`) only permits
+plaintext to a loopback endpoint (`localhost`, `127.0.0.0/8`, `::1`, or a
+`unix:` socket target) — the local-development case that is the entire reason
+`WithInsecure` exists. Anything else needs the separately-named
+`WithInsecureAllowRemoteHost()` option passed alongside `WithInsecure()`, or
+`NewWithOpts` refuses to construct the client at all, before any connection
+is created.
+
+#### Custom TLS trust material
+
+There is deliberately **no** dedicated CA-bundle option: `WithDialOptions` already
+is one.
+
+```go
+creds := credentials.NewTLS(&tls.Config{RootCAs: pool, Certificates: []tls.Certificate{id}})
+c, err := client.NewWithOpts(endpoint, client.WithDialOptions(grpc.WithTransportCredentials(creds)))
+```
+
+Caller-supplied dial options are appended **after** this client's own, and later
+dial options overwrite earlier ones in grpc-go, so a caller's
+`WithTransportCredentials` replaces the default `credentials.NewTLS(nil)`. That
+is the same mechanism the retry service-config comment in
+`proto-clients/spicedb-go-proto/client.go` relies on, and it is what satisfies
+root DESIGN.md, "RULE: A system-TLS constructor must reach a real server", whose
+clause 1 permits delegating to `credentials.NewTLS(nil)` only because a caller
+can override it. Adding a parallel `WithCACert`-style option would give two ways
+to set the same field, with the winner decided by append order.
+
+Note that Go's default is already the OS trust store, so unlike the Python,
+TypeScript and Ruby clients — whose runtimes use a compiled-in or bundled root
+set — an operator-installed CA is honoured by `NewSystemTLS` with no options at
+all. This hatch is for pinning a CA the host does *not* trust, and for mutual TLS.
+
 ### Consistency
 
 ZedTokens are opaque `string` values, never proto types. Consistency is an
@@ -206,7 +240,7 @@ Iterators:
 - `LookupResources(...)` → `iter.Seq2[client.LookupResource, error]`
 - `LookupSubjects(...)` → `iter.Seq2[client.LookupSubject, error]`
 - `ExportRelationships(...)` → `iter.Seq2[rel.Relationship, error]`
-- `Updates(...)` → `iter.Seq2[rel.Update, error]`
+- `Updates(...)` → `iter.Seq2[client.WatchEvent, error]`
 
 `LookupResource` and `LookupSubject` (see `client/lookup_types.go`) are native
 result structs, not bare ID strings — they carry the data a caller needs to
@@ -242,6 +276,26 @@ rather than yielded with that value. `NoPermission` only appears on
 `CheckResult`, from the check surface, where the server is answering a
 question about one specific pair and "no" is itself the answer.
 
+`WatchEvent` (see `client/watch.go`) is one event per `WatchResponse`,
+carrying the resume token and checkpoint flag the raw proto does not surface
+on its own:
+
+```go
+type WatchEvent struct {
+    Updates        []rel.Update
+    ChangesThrough string // resume token; pass as startRevision to resume after a dropped stream
+    IsCheckpoint   bool   // true for a checkpoint event, which carries no Updates
+}
+```
+
+`ChangesThrough` is always populated. Without it, a consumer whose stream
+dies can only restart from its original `startRevision` (reprocessing
+everything since, possibly past the GC window) or from head (silently
+losing every change in the gap). `WithIncludeCheckpoints()` (a `WatchOption`
+to `Updates`) requests periodic checkpoint events — recommended behind a
+proxy that aborts idle connections — and `IsCheckpoint` lets a caller tell
+"nothing changed, here is a fresh resume point" from "here are changes".
+
 `Permissionship` is `PermissionshipHasPermission` for a full grant, or
 `PermissionshipConditionalPermission` when the match depends on caveat
 context that wasn't supplied (`PartialCaveat.MissingRequiredContext` lists
@@ -251,18 +305,104 @@ what's missing). A conditional result is NOT a full grant. When
 wildcard grant — callers MUST check it before treating `"*"` as "every
 subject has access," or they risk over-granting to excluded subjects.
 
+#### Stream lifecycle: abandoning an iterator releases it
+
+Root `DESIGN.md`, "RULE: Abandoning a stream must release it", requires that
+stopping early actually tells the server to stop. Go's range-over-func makes
+stopping early the natural idiom — `break` out of the loop and the iterator's
+`yield` returns `false` — so the client must make that idiom safe rather than
+document its way around it.
+
+Every streaming iterator derives its own cancellable context from the one
+the caller passed and cancels it on the way out (`CheckIter`/
+`CheckIterWithContext` are excluded: they batch input relationships into
+`BulkCheckPermissions` calls and never open a stream, so there is nothing
+to release):
+
+```go
+return func(yield func(WatchEvent, error) bool) {
+    ctx, cancel := context.WithCancel(ctx)
+    defer cancel()
+    // ... open the stream on the derived ctx ...
+}
+```
+
+The `defer` covers every exit path — consumer `break`, mid-stream error, and
+normal exhaustion alike — which is why cancellation is wired to the iterator's
+return rather than to any single one of them. Without it, grpc-go's
+`ClientConn.NewStream` contract applies: unless the context is cancelled,
+`Close` is called, or `RecvMsg` drains to a non-nil error, "a goroutine and a
+context will be leaked", and SpiceDB holds a dispatch open per abandoned
+stream for the life of the connection. The leak is invisible from the caller's
+side of a `break`, which is what makes it worth closing in the library rather
+than in every call site.
+
+This is additive to the caller's own control, not a replacement for it: the
+caller's context still governs the call, and cancelling it still cancels the
+stream. It only adds a release the caller could not otherwise express, because
+the caller's context typically outlives the loop.
+
+`client/stream_release_test.go` holds the tests for this. They assert on a
+*server-side* signal — a stub handler parked on its own `stream.Context()
+.Done()` — because a test asserting only that the range loop exited passes
+whether or not the stream was released.
+
+`ImportRelationships` is the one client-streaming call and does not fit the
+shape above — it consumes an `iter.Seq`, it does not return one — but it
+opens a `grpc.ClientStream` the same way and can abandon it the same way: a
+relationship whose caveat context fails to convert, or a `Send` that fails
+mid-batch, returns early and would otherwise leave that stream unreleased on
+the caller's own (typically long-lived) context. It uses the identical
+fix — a `context.WithCancel` derived at the top of the function and
+deferred once — so it, not just the five iterators above, releases on every
+exit path. Six streaming calls total, all covered.
+
+#### `Close()`: releasing the connection
+
+`Client.Close() error` releases the underlying gRPC connection. It is
+idempotent and safe to call concurrently with itself (the proto tier guards
+with a `CompareAndSwap`, since `grpc.ClientConn.Close` is not documented safe
+to call twice), and it is a no-op on a `Client` that never opened a connection
+— a zero value, or one assembled by hand from stubs in a test.
+
+`Close()` and per-stream cancellation solve different problems and neither
+substitutes for the other. `Close()` is connection-scoped: it tears down the
+one connection every call on this `Client` shares, so it belongs at process or
+component shutdown (`defer c.Close()` after construction, as every example
+does). Abandoning a single iterator must not require tearing down the
+connection the rest of the program is still using — that is what the derived
+per-stream context above is for.
+
 ### Writes
 
 Transaction builder pattern:
 
 ```go
 var txn rel.Txn
-txn.Create(relationship)
-txn.Touch(relationship)
-txn.Delete(relationship)
-txn.MustNotMatch(filter) // precondition
+if err := txn.Create(relationship); err != nil {
+    return err
+}
+if err := txn.Touch(relationship); err != nil {
+    return err
+}
+if err := txn.Delete(relationship); err != nil {
+    return err
+}
+if err := txn.MustNotMatch(filter); err != nil { // precondition
+    return err
+}
 revision, err := client.Write(ctx, txn)
 ```
+
+Every builder method returns `error` and adds nothing to the transaction when
+it does — `Create`/`Touch`/`Delete` if the relationship's `CaveatContext`
+cannot be converted to protobuf (`rel.ErrInvalidCaveatContext`),
+`MustMatch`/`MustNotMatch` if the filter cannot (`rel.ErrInvalidFilter`).
+These are not decorative: discarding them writes a relationship with its
+caveat name attached and its context silently missing, which mis-evaluates
+every future check against that relationship and is only repaired by
+rewriting it. Go permits dropping a return value in statement position, so
+nothing warns you — check them.
 
 `Write`, `DeleteRelationships`, and `WriteSchema` all return the revision the
 mutation occurred at. `ImportRelationships` (bulk import) is the one
@@ -316,8 +456,67 @@ examples.
   - `ErrInvalidResource` — resource type, ID, or relation is empty
   - `ErrInvalidRelation` — relation string is empty
   - `ErrInvalidSubject` — subject type or ID is empty
+  - `ErrInvalidFilter` — a `Filter`'s `SubjectID`/`SubjectRelation` is set
+    without `SubjectType`; `Filter.ToProto` returns this instead of silently
+    building a filter with no subject constraint at all
+  - `ErrInvalidCaveatContext` — a `Relationship`'s `CaveatContext` holds a
+    value protobuf cannot represent; `Relationship.ToProto`,
+    `Txn.Create`/`Touch`/`Delete`, and the check surface all return this
+    instead of writing the relationship with its caveat name attached and its
+    context silently missing. The wrapping error **names the offending key**:
+    `structpb.NewStruct` reports only the value's Go type, so
+    `rel.CaveatContextToStruct` converts per key and identifies the entry —
+    the same thing the C#, Java and Ruby clients report for this failure.
+    `rel.CaveatContextToStruct` is the single converter for both surfaces
+    (write-time `CaveatContext` and check-time `CheckContext`), so the two
+    can never drift apart
+
+  Both sentinels live in `rel`, which is deliberately client-independent — it
+  cannot import `client` without an import cycle. The `client` package wraps
+  them as a `*client.Error` with `CodeInvalidArgument` at its own API
+  boundaries (`ImportRelationships`, `ReadRelationships`,
+  `DeleteRelationships`, and the check surface), so `errors.Is` works against
+  both `rel`'s sentinel and `client.ErrInvalidArgument` for any error that
+  passed through the client. An error returned directly by a `rel` builder
+  (e.g. `Txn.Create`) carries the `rel` sentinel only.
 - `Must*` variants that panic (for tests/initialization)
-- Automatic retry with exponential backoff for transient gRPC errors
+- Automatic retry with jittered exponential backoff for transient gRPC
+  errors — see "Retry and timeout semantics" below
+
+#### Retry and timeout semantics
+
+Automatic retry with jittered exponential backoff, for **reads only**, on
+**`UNAVAILABLE` and `ABORTED`**.
+
+`RESOURCE_EXHAUSTED` is deliberately NOT retryable. In SpiceDB it means
+either memory load-shed — where retrying adds load to an already-overloaded
+server — or a deterministic `MaxDepthExceeded`, which can never succeed and
+whose retries re-run the most expensive class of check several times before
+surfacing the same error. See root `DESIGN.md`, "RULE: Automatic retry is
+for idempotent operations only".
+
+**Mutations are never auto-retried.** `WriteRelationships` carrying
+`OPERATION_CREATE`, or any request with preconditions, is not idempotent: if
+it commits and the response is lost — a rolling restart, a proxy dropping the
+connection — the retry returns `ALREADY_EXISTS`/`FAILED_PRECONDITION` and the
+caller concludes a write failed that in fact succeeded. This client expresses
+that in the service config rather than in a call-once wrapper: one
+SERVICE-level `methodConfig` entry carries the `retryPolicy` for all four
+services, and a second METHOD-level entry naming the seven mutation RPCs
+carries none. grpc-go's `getMethodConfig` prefers an exact
+`/service/method` match over a `/service/` wildcard, so those seven get no
+retry while every other RPC on the same service does. A caller who wants a
+mutation retried must decide that themselves, knowing their own idempotency.
+
+**Timeout shape**: unlike the other six clients, this one has no per-call
+timeout of its own — the caller's `context.Context` is the bound, and retry is
+grpc-go's service-config `retryPolicy`, which reuses that same context across
+every attempt. A context deadline is a point in time, not a duration, so it
+bounds the whole operation: attempts, backoff between them, and auto-pagination
+all draw down one budget, and a retry that would start after the deadline fails
+immediately instead. `context.WithTimeout(ctx, 30*time.Second)` therefore means
+at most 30 s here, where the same nominal 30 s in the hand-rolled clients can
+reach ~120 s plus backoff. Root `DESIGN.md`, "On worst-case latency".
 
 ### Performance
 
@@ -329,6 +528,45 @@ examples.
 
 Proto fields are semi-exposed on builder types (`Txn.V1Updates`,
 `Filter.V1Filter`, `Strategy.V1Consistency`) for advanced use cases.
+
+**`(*Client).RawProto()`** is the full one: it returns the underlying
+`*proto.Client`, holding the four generated service clients this package makes its own
+calls through.
+
+```go
+resp, err := c.RawProto().PermissionsServiceClient.CheckPermission(ctx, req)
+```
+
+Clearly-marked **secondary** API, which is what root DESIGN.md's "What NOT To Do"
+permits: channels, stubs and metadata stay out of the primary surface, and "escape
+hatches for advanced use are acceptable as clearly marked secondary API". It exists so a
+request the idiomatic surface cannot express — an RPC or proto field not wrapped here,
+such as `WriteRelationshipsRequest.OptionalTransactionMetadata`, or the single-check
+`CheckPermission` RPC that `CheckOne` deliberately routes around — has a workaround short
+of forking the client.
+
+Prefer it over building a second proto client alongside. `RawProto` dials nothing new: it
+is this `Client`'s own connection, configured exactly as the caller configured it
+(including anything passed to `WithDialOptions`) and carrying the same bearer
+credentials. Rebuilding that configuration by hand is how a raw call ends up on a
+different transport than the idiomatic ones while the call site reads as though it were
+the same server.
+
+Four properties, all deliberate:
+
+- **The bearer token comes free.** The connection carries this library's
+  `PerRPCCredentials`, so a raw call is authenticated exactly as an idiomatic one is.
+- **A raw call is a raw call.** No `*client.Error` mapping (you handle `grpc/status`
+  yourself), no retry, and no deadline of this library's — set one on the `ctx`.
+- **Do not `Close` the returned client.** It holds this `Client`'s connection, and
+  `(*Client).Close` is what releases it.
+- **It is an accessor, never a constructor.** It takes no endpoint, token, or transport
+  setting, so connection construction stays on the single guarded path in `NewWithOpts`
+  and the hatch cannot become a way around root DESIGN.md, "RULE: Credentials over
+  insecure transport require an explicit opt-in".
+
+No stability promise beyond grpc-go's and the generated code's. Returns `nil` for a
+zero-value `Client`, which no constructor produces.
 
 ## Public API Surface
 
@@ -343,12 +581,19 @@ See package sections above for the complete API manifest.
 | `read_relationships/` | Reading relationships with iterator |
 | `lookup_resources/` | Finding resources a subject can access |
 | `lookup_subjects/` | Finding subjects with access to a resource |
-| `watch_changes/` | Watching for relationship changes |
+| `watch_changes/` | Watching for relationship changes with a bounded consumer: subscribe, write, consume until the expected update arrives, cancel, and require the stream to release |
+| `call_deadlines/` | Bounding calls with a `context.Context` deadline, proved against a listener that accepts the connection and never answers |
+| `error_mapping/` | Recovering from `OUT_OF_RANGE` (stale ZedToken) and `UNAUTHENTICATED` without parsing a message |
+| `insecure_opt_in/` | Why plaintext is loopback-only, and the named opt-in a remote plaintext host requires |
+| `retry_policy/` | Which calls are retried for you and which are not, counted server-side |
+| `unrepresentable_values/` | Caller data that cannot convert fails loudly; unknown server enums degrade safely |
 | `schema_management/` | Reading and writing schema |
 | `bulk_operations/` | Bulk checks, batch writes, and bulk import/export |
 | `schema_reflection/` | Schema reflection, computable permissions, dependent relations, diff |
 | `relationship_counters/` | Registering, reading, and unregistering relationship counters |
 | `expand_permission_tree/` | Expanding a permission into its tree of subjects with ExpandPermissionTree |
+| `delete_relationships/` | Deleting relationships, including precondition-guarded deletes |
+| `raw_escape_hatch/` | `RawProto()` — driving the generated service client directly for a proto field (`OptionalTransactionMetadata`) and an RPC (`CheckPermission`) the idiomatic API does not expose |
 
 ## Changelog
 

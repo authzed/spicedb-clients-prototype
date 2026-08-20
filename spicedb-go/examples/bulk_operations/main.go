@@ -3,9 +3,11 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"slices"
 
 	"github.com/authzed/spicedb-clients/spicedb-go/client"
@@ -14,10 +16,17 @@ import (
 )
 
 func main() {
-	c, err := client.NewPlaintext("localhost:50051", "somerandomkeyhere")
+	// Endpoint and token come from the environment so the example runs against
+	// whichever SpiceDB the caller started; the defaults match
+	// docker-compose.test.yml.
+	c, err := client.NewPlaintext(
+		cmp.Or(os.Getenv("SPICEDB_ENDPOINT"), "localhost:50051"),
+		cmp.Or(os.Getenv("SPICEDB_TOKEN"), "somerandomkeyhere"),
+	)
 	if err != nil {
 		log.Fatalf("failed to create client: %v", err)
 	}
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 
@@ -40,7 +49,9 @@ definition document {
 	var txn rel.Txn
 	users := []string{"alice", "bob", "charlie"}
 	for _, user := range users {
-		txn.Touch(rel.MustFromTriple("document", "report", "viewer", "user", user, ""))
+		if err := txn.Touch(rel.MustFromTriple("document", "report", "viewer", "user", user, "")); err != nil {
+			log.Fatalf("failed to add relationship to transaction: %v", err)
+		}
 	}
 	revision, err := c.Write(ctx, txn)
 	if err != nil {
@@ -51,7 +62,11 @@ definition document {
 		log.Fatalf("expected non-empty revision")
 	}
 
-	// Bulk check permissions
+	// Bulk check permissions. Inputs over 1,000 relationships are split
+	// into one CheckBulkPermissions request per 1,000 automatically and
+	// the results concatenated in input order -- SpiceDB rejects a single
+	// request carrying more than 10,000. Nothing here changes for a
+	// larger slice.
 	var checks []rel.Relationship
 	for _, user := range users {
 		checks = append(checks, rel.MustFromTriple("document", "report", "view", "user", user, ""))

@@ -11,6 +11,7 @@ import build.buf.gen.authzed.api.v1.PartialCaveatInfo;
 import build.buf.gen.authzed.api.v1.PermissionsServiceGrpc;
 import build.buf.gen.authzed.api.v1.ZedToken;
 import com.authzed.spicedb.errors.PermissionDeniedException;
+import com.authzed.spicedb.errors.ResourceExhaustedException;
 import io.grpc.Status;
 import io.grpc.stub.StreamObserver;
 import java.io.IOException;
@@ -266,6 +267,65 @@ class CheckResultsTest {
     }
   }
 
+  /**
+   * A per-item failure must reach the caller carrying the same structured reason an RPC-level
+   * failure does. The per-item {@code google.rpc.Status} used to be reduced to a code and a message
+   * before mapping, silently dropping the item's own {@code ErrorInfo} — a failure mode that shows
+   * up as an empty reason and nothing red. See root DESIGN.md, "RULE: Error mapping must not lose
+   * the server's detail".
+   */
+  @Test
+  void perItemErrorCarriesItsOwnErrorReasonAndMetadata() throws IOException {
+    var errorInfo =
+        build.buf.gen.google.rpc.ErrorInfo.newBuilder()
+            .setReason("ERROR_REASON_MAXIMUM_DEPTH_EXCEEDED")
+            .setDomain("authzed.com")
+            .putMetadata("maximum_depth_allowed", "50")
+            .build();
+
+    var service =
+        new PermissionsServiceGrpc.PermissionsServiceImplBase() {
+          @Override
+          public void checkBulkPermissions(
+              CheckBulkPermissionsRequest request,
+              StreamObserver<CheckBulkPermissionsResponse> responseObserver) {
+            responseObserver.onNext(
+                CheckBulkPermissionsResponse.newBuilder()
+                    .setCheckedAt(ZedToken.newBuilder().setToken("rev-err").build())
+                    .addPairs(
+                        CheckBulkPermissionsPair.newBuilder()
+                            .setError(
+                                build.buf.gen.google.rpc.Status.newBuilder()
+                                    .setCode(Status.Code.RESOURCE_EXHAUSTED.value())
+                                    .setMessage("max depth exceeded")
+                                    .addDetails(
+                                        com.google.protobuf.Any.pack(
+                                            errorInfo, "type.googleapis.com/"))
+                                    .build())
+                            .build())
+                    .build());
+            responseObserver.onCompleted();
+          }
+        };
+
+    try (TestServers servers = TestServers.start(service)) {
+      SpiceDBClient client = servers.client();
+
+      ResourceExhaustedException ex =
+          assertThrows(
+              ResourceExhaustedException.class,
+              () ->
+                  client.checkPermissions(
+                      Consistency.full(),
+                      "view",
+                      Relationship.of("document", "doc1", "view", "user", "alice")));
+
+      assertEquals("ERROR_REASON_MAXIMUM_DEPTH_EXCEEDED", ex.getReason());
+      assertEquals("authzed.com", ex.getReasonDomain());
+      assertEquals("50", ex.getReasonMetadata().get("maximum_depth_allowed"));
+    }
+  }
+
   // ---------------------------------------------------------------------
   // Aggregates — checkAny/checkAll count ONLY HAS_PERMISSION (RULE clause
   // 3): a CONDITIONAL_PERMISSION result must never contribute to a true.
@@ -315,6 +375,134 @@ class CheckResultsTest {
               Relationship.of("document", "doc2", "view", "user", "bob"));
 
       assertFalse(anyGranted, "a CONDITIONAL_PERMISSION result must not count as a grant");
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // checkAll must not be vacuously true on zero relationships: Java's
+  // for-loop aggregate (like every language's all/every primitive) never
+  // executes its body on an empty array and falls through to `return
+  // true`, turning checkAll into a fail-open gate whenever a caller passes
+  // a derived relationship array that happens to be empty (a filter that
+  // matched nothing, an upstream returning an empty array). RULE: "An
+  // aggregate over zero checks is not a grant." checkPermissions already
+  // returns List.of() for zero relationships without calling the server, so
+  // this never reaches checkBulkPermissions either — the service below
+  // fails the test if that assumption ever changes.
+  // ---------------------------------------------------------------------
+
+  @Test
+  void checkAllReturnsFalseForZeroRelationships() throws IOException {
+    var service =
+        new PermissionsServiceGrpc.PermissionsServiceImplBase() {
+          @Override
+          public void checkBulkPermissions(
+              CheckBulkPermissionsRequest request,
+              StreamObserver<CheckBulkPermissionsResponse> responseObserver) {
+            throw new AssertionError(
+                "checkAll with zero relationships must not consult the server");
+          }
+        };
+
+    try (TestServers servers = TestServers.start(service)) {
+      SpiceDBClient client = servers.client();
+      boolean allGranted = client.checkAll(Consistency.full(), "view");
+
+      assertFalse(
+          allGranted, "checkAll must return false, not vacuously true, for zero relationships");
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // HARD REQUIREMENT: a response with fewer (or more) pairs than request
+  // items must fail loudly with a typed error naming both counts, not
+  // silently return a misaligned List<CheckResult>. The proto guarantees
+  // pairs are returned in request order but says nothing about count, so a
+  // short response would otherwise silently desync results[i] from
+  // relationships[i] for every item after the gap.
+  // ---------------------------------------------------------------------
+
+  @Test
+  void checkPermissionsThrowsWhenResponseHasFewerPairsThanRequestItems() throws IOException {
+    var service =
+        new PermissionsServiceGrpc.PermissionsServiceImplBase() {
+          @Override
+          public void checkBulkPermissions(
+              CheckBulkPermissionsRequest request,
+              StreamObserver<CheckBulkPermissionsResponse> responseObserver) {
+            // Two relationships requested, only one pair returned.
+            responseObserver.onNext(
+                CheckBulkPermissionsResponse.newBuilder()
+                    .setCheckedAt(ZedToken.newBuilder().setToken("rev-short").build())
+                    .addPairs(
+                        CheckBulkPermissionsPair.newBuilder()
+                            .setItem(
+                                CheckBulkPermissionsResponseItem.newBuilder()
+                                    .setPermissionship(
+                                        CheckPermissionResponse.Permissionship
+                                            .PERMISSIONSHIP_HAS_PERMISSION)
+                                    .build())
+                            .build())
+                    .build());
+            responseObserver.onCompleted();
+          }
+        };
+
+    try (TestServers servers = TestServers.start(service)) {
+      SpiceDBClient client = servers.client();
+
+      com.authzed.spicedb.errors.SpiceDBException ex =
+          assertThrows(
+              com.authzed.spicedb.errors.SpiceDBException.class,
+              () ->
+                  client.checkPermissions(
+                      Consistency.full(),
+                      "view",
+                      Relationship.of("document", "doc1", "view", "user", "alice"),
+                      Relationship.of("document", "doc2", "view", "user", "bob")));
+
+      assertTrue(
+          ex.getMessage().contains("1") && ex.getMessage().contains("2"),
+          "expected message to name both the pair count (1) and item count (2), got: "
+              + ex.getMessage());
+    }
+  }
+
+  @Test
+  void checkPermissionsThrowsOnMalformedPairInsteadOfShrinkingResults() throws IOException {
+    var service =
+        new PermissionsServiceGrpc.PermissionsServiceImplBase() {
+          @Override
+          public void checkBulkPermissions(
+              CheckBulkPermissionsRequest request,
+              StreamObserver<CheckBulkPermissionsResponse> responseObserver) {
+            // Neither `item` nor `error` set on the pair's `response` oneof — the proto schema
+            // guarantees a well-behaved server never sends this, but nothing on the wire
+            // prevents it.
+            responseObserver.onNext(
+                CheckBulkPermissionsResponse.newBuilder()
+                    .setCheckedAt(ZedToken.newBuilder().setToken("rev-malformed").build())
+                    .addPairs(CheckBulkPermissionsPair.newBuilder().build())
+                    .build());
+            responseObserver.onCompleted();
+          }
+        };
+
+    try (TestServers servers = TestServers.start(service)) {
+      SpiceDBClient client = servers.client();
+
+      com.authzed.spicedb.errors.SpiceDBException ex =
+          assertThrows(
+              com.authzed.spicedb.errors.SpiceDBException.class,
+              () ->
+                  client.checkPermissions(
+                      Consistency.full(),
+                      "view",
+                      Relationship.of("document", "doc1", "view", "user", "alice")));
+
+      assertTrue(
+          ex.getMessage().contains("check item 0"),
+          "expected message to preserve the item index, got: " + ex.getMessage());
     }
   }
 

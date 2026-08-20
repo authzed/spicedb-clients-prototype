@@ -262,6 +262,38 @@ public class CheckResultTests
         all.Should().BeFalse();
     }
 
+    // ── CheckAll must not be vacuously true on zero relationships: LINQ's
+    //    Enumerable.All is vacuously true over an empty sequence, so a caller
+    //    gating on CheckAllAsync(cs, "edit", ct, docs.Select(ToRel).ToArray())
+    //    would have been silently granted whenever the derived relationships
+    //    array came up empty (a filter that matched nothing, an upstream
+    //    returning []). Root DESIGN.md: "An aggregate over zero checks is not
+    //    a grant." No mock setup on CheckBulkPermissionsAsync is configured
+    //    below — CheckAllAsync must never reach the server for zero
+    //    relationships (the pre-existing `relationships.Length == 0` early
+    //    return in CheckPermissionsCoreAsync already guarantees that; this
+    //    guards the boolean CheckAllAsync/CheckAllWithContextAsync return). ──
+
+    [Fact]
+    public async Task CheckAllAsync_ZeroRelationships_ReturnsFalse()
+    {
+        var mockPermissions = new Mock<PermissionsService.PermissionsServiceClient>();
+        await using var client = NewClient(mockPermissions.Object);
+
+        var all = await client.CheckAllAsync(Consistency.Full(), "view");
+        all.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task CheckAllWithContextAsync_ZeroRelationships_ReturnsFalse()
+    {
+        var mockPermissions = new Mock<PermissionsService.PermissionsServiceClient>();
+        await using var client = NewClient(mockPermissions.Object);
+
+        var all = await client.CheckAllWithContextAsync(Consistency.Full(), "view", null);
+        all.Should().BeFalse();
+    }
+
     // ── HARD REQUIREMENT: per-item CheckBulkPermissions error surfaces as
     //    its specific typed exception, not the base SpiceDBException ───────
 
@@ -318,6 +350,100 @@ public class CheckResultTests
         var act = async () => await client.CheckPermissionAsync(Consistency.Full(), "view", rel);
 
         await act.Should().ThrowExactlyAsync<NotFoundException>();
+    }
+
+    // A per-item failure must reach the caller carrying the same structured
+    // reason an RPC-level failure does. The per-item google.rpc.Status used to
+    // be reduced to a code and a message before mapping, silently dropping the
+    // item's own ErrorInfo — a failure mode that shows up as an empty Reason
+    // and nothing red. See root DESIGN.md, "RULE: Error mapping must not lose
+    // the server's detail".
+    [Fact]
+    public async Task CheckPermissionsAsync_PerItemError_CarriesItsOwnErrorReason()
+    {
+        var perItemStatus = new Google.Rpc.Status
+        {
+            Code = (int)StatusCode.ResourceExhausted,
+            Message = "max depth exceeded",
+        };
+        perItemStatus.Details.Add(Google.Protobuf.WellKnownTypes.Any.Pack(new Google.Rpc.ErrorInfo
+        {
+            Reason = "ERROR_REASON_MAXIMUM_DEPTH_EXCEEDED",
+            Domain = "authzed.com",
+            Metadata = { { "maximum_depth_allowed", "50" } },
+        }));
+
+        var resp = new CheckBulkPermissionsResponse
+        {
+            Pairs = { new CheckBulkPermissionsPair { Error = perItemStatus } },
+        };
+
+        var mockPermissions = MockCheckBulk(resp);
+        await using var client = NewClient(mockPermissions.Object);
+
+        var rel = Relationship.FromTriple("document", "doc1", "viewer", "user", "alice");
+        var act = async () => await client.CheckPermissionAsync(Consistency.Full(), "view", rel);
+
+        var result = await act.Should().ThrowExactlyAsync<ResourceExhaustedException>();
+        result.Which.Reason.Should().Be("ERROR_REASON_MAXIMUM_DEPTH_EXCEEDED");
+        result.Which.ReasonDomain.Should().Be("authzed.com");
+        result.Which.ReasonMetadata.Should().Contain("maximum_depth_allowed", "50");
+    }
+
+    // ── HARD REQUIREMENT: a response with fewer (or more) pairs than request
+    //    items, or a pair whose Response oneof is unset (neither Item nor
+    //    Error), must fail loudly with a typed error rather than silently
+    //    return a misaligned CheckResult[]. The proto guarantees pairs are
+    //    returned in request order but says nothing about count, so a short
+    //    response would otherwise silently desync results[i] from
+    //    relationships[i] for every item after the gap — one resource's
+    //    answer attributed to another. ─────────────────────────────────────
+
+    [Fact]
+    public async Task CheckPermissionsAsync_FewerPairsThanRequestItems_ThrowsSpiceDBException()
+    {
+        // Two relationships requested, only one pair returned.
+        var resp = new CheckBulkPermissionsResponse
+        {
+            Pairs =
+            {
+                new CheckBulkPermissionsPair
+                {
+                    Item = new CheckBulkPermissionsResponseItem { Permissionship = CheckPermissionResponse.Types.Permissionship.HasPermission },
+                },
+            },
+        };
+
+        var mockPermissions = MockCheckBulk(resp);
+        await using var client = NewClient(mockPermissions.Object);
+
+        var rel1 = Relationship.FromTriple("document", "doc1", "viewer", "user", "alice");
+        var rel2 = Relationship.FromTriple("document", "doc2", "viewer", "user", "bob");
+        var act = async () => await client.CheckPermissionsAsync(Consistency.Full(), "view", default, rel1, rel2);
+
+        var result = await act.Should().ThrowExactlyAsync<SpiceDBException>();
+        result.Which.Message.Should().Contain("1").And.Contain("2");
+    }
+
+    [Fact]
+    public async Task CheckPermissionsAsync_MalformedPair_ThrowsInsteadOfShrinkingResults()
+    {
+        // Neither Item nor Error set on the pair's Response oneof — the proto
+        // schema guarantees a well-behaved server never sends this, but
+        // nothing on the wire prevents it.
+        var resp = new CheckBulkPermissionsResponse
+        {
+            Pairs = { new CheckBulkPermissionsPair() },
+        };
+
+        var mockPermissions = MockCheckBulk(resp);
+        await using var client = NewClient(mockPermissions.Object);
+
+        var rel = Relationship.FromTriple("document", "doc1", "viewer", "user", "alice");
+        var act = async () => await client.CheckPermissionAsync(Consistency.Full(), "view", rel);
+
+        var result = await act.Should().ThrowExactlyAsync<SpiceDBException>();
+        result.Which.Message.Should().Contain("check item 0");
     }
 
     // ── LookupResource/LookupSubject gain LookedUpAt ────────────────────────

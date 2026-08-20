@@ -4,9 +4,12 @@
 
 ```ts
 
+import { SpiceDBProtoClient } from '@spicedb/proto';
+import { TlsOptions } from '@spicedb/proto';
+
 // @public
 export class AlreadyExistsError extends SpiceDBError {
-    constructor(message: string, options?: ErrorOptions);
+    constructor(message: string, options?: SpiceDBErrorOptions);
 }
 
 // @public
@@ -20,12 +23,13 @@ export function atLeastOrMinLatency(revision: string): Consistency;
 
 // @public
 export class CancelledError extends SpiceDBError {
-    constructor(message: string, options?: ErrorOptions);
+    constructor(message: string, options?: SpiceDBErrorOptions);
 }
 
 // @public
 export interface CheckOptions {
     context?: Record<string, unknown>;
+    timeoutMs?: number;
 }
 
 // @public
@@ -66,6 +70,7 @@ export interface ComputablePermissionsParams {
     definitionNameFilter?: string;
     // (undocumented)
     relationName: string;
+    timeoutMs?: number;
 }
 
 // @public
@@ -75,13 +80,16 @@ export class Consistency {
 // @public
 export function createSpiceDBClient(endpoint: string, token: string, options?: {
     insecure?: boolean;
+    allowInsecureRemoteCredentials?: boolean;
+    tls?: TlsOptions;
     headers?: Record<string, string>;
     maxRetries?: number;
+    defaultTimeoutMs?: number;
 }): SpiceDBClient;
 
 // @public
 export class DeadlineExceededError extends SpiceDBError {
-    constructor(message: string, options?: ErrorOptions);
+    constructor(message: string, options?: SpiceDBErrorOptions);
 }
 
 // @public
@@ -89,6 +97,7 @@ export interface DeleteOptions {
     limit?: number;
     mustMatch?: RelationshipFilterOptions[];
     mustNotMatch?: RelationshipFilterOptions[];
+    timeoutMs?: number;
 }
 
 // @public
@@ -97,6 +106,7 @@ export interface DependentRelationsParams {
     definitionName: string;
     // (undocumented)
     permissionName: string;
+    timeoutMs?: number;
 }
 
 // @public
@@ -107,11 +117,12 @@ export interface ExpandPermissionTreeParams {
     resourceId: string;
     // (undocumented)
     resourceType: string;
+    timeoutMs?: number;
 }
 
 // @public
 export class FailedPreconditionError extends SpiceDBError {
-    constructor(message: string, options?: ErrorOptions);
+    constructor(message: string, options?: SpiceDBErrorOptions);
 }
 
 // @public
@@ -127,7 +138,7 @@ export interface IntermediateNode {
 
 // @public
 export class InvalidArgumentError extends SpiceDBError {
-    constructor(message: string, options?: ErrorOptions);
+    constructor(message: string, options?: SpiceDBErrorOptions);
 }
 
 // @public
@@ -156,6 +167,7 @@ export interface LookupResourcesParams {
     permission: string;
     // (undocumented)
     resourceType: string;
+    signal?: AbortSignal;
     // (undocumented)
     subjectId: string;
     // (undocumented)
@@ -185,6 +197,7 @@ export interface LookupSubjectsParams {
     resourceId: string;
     // (undocumented)
     resourceType: string;
+    signal?: AbortSignal;
     // (undocumented)
     subjectRelation?: string;
     // (undocumented)
@@ -196,7 +209,7 @@ export function minLatency(): Consistency;
 
 // @public
 export class NotFoundError extends SpiceDBError {
-    constructor(message: string, options?: ErrorOptions);
+    constructor(message: string, options?: SpiceDBErrorOptions);
 }
 
 // @public
@@ -208,6 +221,11 @@ export interface ObjectRef {
 }
 
 // @public
+export class OutOfRangeError extends SpiceDBError {
+    constructor(message: string, options?: SpiceDBErrorOptions);
+}
+
+// @public
 export interface PartialCaveatInfo {
     // (undocumented)
     missingRequiredContext: string[];
@@ -215,7 +233,7 @@ export interface PartialCaveatInfo {
 
 // @public
 export class PermissionDeniedError extends SpiceDBError {
-    constructor(message: string, options?: ErrorOptions);
+    constructor(message: string, options?: SpiceDBErrorOptions);
 }
 
 // @public
@@ -243,6 +261,7 @@ export interface ReflectSchemaOptions {
     permissionNameFilter?: string;
     // (undocumented)
     relationNameFilter?: string;
+    timeoutMs?: number;
 }
 
 // @public
@@ -333,7 +352,7 @@ export interface ResolvedSubject {
 
 // @public
 export class ResourceExhaustedError extends SpiceDBError {
-    constructor(message: string, options?: ErrorOptions);
+    constructor(message: string, options?: SpiceDBErrorOptions);
 }
 
 // @public
@@ -420,6 +439,7 @@ export class SpiceDBClient {
     checkPermissions(consistency: Consistency, ...checks: CheckRequest[]): Promise<CheckResult[]>;
     // (undocumented)
     checkPermissions(consistency: Consistency, checks: CheckRequest[], options?: CheckOptions): Promise<CheckResult[]>;
+    close(): void;
     computablePermissions(consistency: Consistency, params: ComputablePermissionsParams): Promise<{
         permissions: RelationReference[];
         revision: string;
@@ -429,7 +449,9 @@ export class SpiceDBClient {
         relations: RelationReference[];
         revision: string;
     }>;
-    diffSchema(consistency: Consistency, comparisonSchema: string): Promise<{
+    diffSchema(consistency: Consistency, comparisonSchema: string, options?: {
+        timeoutMs?: number;
+    }): Promise<{
         diffs: SchemaDiff[];
         revision: string;
     }>;
@@ -437,15 +459,30 @@ export class SpiceDBClient {
         expandedAt: string;
         treeRoot: PermissionTree;
     }>;
-    experimentalCountRelationships(name: string): Promise<RelationshipCountResult>;
-    experimentalRegisterRelationshipCounter(name: string, filter: RelationshipFilterOptions): Promise<void>;
-    experimentalUnregisterRelationshipCounter(name: string): Promise<void>;
-    exportBulkRelationships(consistency: Consistency, filter?: RelationshipFilterOptions): AsyncIterableIterator<Relationship>;
-    importBulkRelationships(relationships: Relationship[]): Promise<bigint>;
+    experimentalCountRelationships(name: string, options?: {
+        timeoutMs?: number;
+    }): Promise<RelationshipCountResult>;
+    experimentalRegisterRelationshipCounter(name: string, filter: RelationshipFilterOptions, options?: {
+        timeoutMs?: number;
+    }): Promise<void>;
+    experimentalUnregisterRelationshipCounter(name: string, options?: {
+        timeoutMs?: number;
+    }): Promise<void>;
+    exportBulkRelationships(consistency: Consistency, filter?: RelationshipFilterOptions, options?: {
+        signal?: AbortSignal;
+    }): AsyncIterableIterator<Relationship>;
+    importBulkRelationships(relationships: Iterable<Relationship> | AsyncIterable<Relationship>, options?: {
+        timeoutMs?: number;
+    }): Promise<bigint>;
     lookupResources(params: LookupResourcesParams, consistency: Consistency): AsyncIterableIterator<LookupResource>;
     lookupSubjects(params: LookupSubjectsParams, consistency: Consistency): AsyncIterableIterator<LookupSubject>;
-    readRelationships(filter: RelationshipFilterOptions, consistency: Consistency): AsyncIterableIterator<Relationship>;
-    readSchema(): Promise<{
+    raw(): SpiceDBProtoClient;
+    readRelationships(filter: RelationshipFilterOptions, consistency: Consistency, options?: {
+        signal?: AbortSignal;
+    }): AsyncIterableIterator<Relationship>;
+    readSchema(options?: {
+        timeoutMs?: number;
+    }): Promise<{
         schema: string;
         revision: string;
     }>;
@@ -455,28 +492,46 @@ export class SpiceDBClient {
         revision: string;
     }>;
     watch(options?: WatchOptions): AsyncIterableIterator<WatchEvent>;
-    write(txn: Transaction): Promise<string>;
-    writeSchema(schema: string): Promise<string>;
+    write(txn: Transaction, options?: {
+        timeoutMs?: number;
+    }): Promise<string>;
+    writeSchema(schema: string, options?: {
+        timeoutMs?: number;
+    }): Promise<string>;
 }
 
 // @public
 export interface SpiceDBClientOptions {
+    allowInsecureRemoteCredentials?: boolean;
+    defaultTimeoutMs?: number;
     // (undocumented)
     endpoint: string;
     // (undocumented)
     headers?: Record<string, string>;
-    // (undocumented)
     insecure?: boolean;
     // (undocumented)
     maxRetries?: number;
+    tls?: TlsOptions;
     // (undocumented)
     token: string;
 }
 
 // @public
 export class SpiceDBError extends Error {
-    constructor(message: string, options?: ErrorOptions);
+    constructor(message: string, options?: SpiceDBErrorOptions);
+    readonly reason: string;
+    readonly reasonDomain: string;
+    readonly reasonMetadata: Record<string, string>;
 }
+
+// @public
+export interface SpiceDBErrorOptions extends ErrorOptions {
+    reason?: string;
+    reasonDomain?: string;
+    reasonMetadata?: Record<string, string>;
+}
+
+export { SpiceDBProtoClient }
 
 // @public
 export interface SubjectRef {
@@ -487,6 +542,8 @@ export interface SubjectRef {
     // (undocumented)
     subjectType: string;
 }
+
+export { TlsOptions }
 
 // @public
 export class Transaction {
@@ -502,14 +559,18 @@ export class Transaction {
 export type TreeOperation = "unspecified" | "union" | "intersection" | "exclusion";
 
 // @public
+export class UnauthenticatedError extends SpiceDBError {
+    constructor(message: string, options?: SpiceDBErrorOptions);
+}
+
+// @public
 export class UnavailableError extends SpiceDBError {
-    constructor(message: string, options?: ErrorOptions);
+    constructor(message: string, options?: SpiceDBErrorOptions);
 }
 
 // @public
 export interface WatchChange {
-    // (undocumented)
-    operation: "create" | "touch" | "delete";
+    operation: "create" | "touch" | "delete" | "unspecified";
     // (undocumented)
     relationship: Relationship;
 }
@@ -518,11 +579,9 @@ export interface WatchChange {
 export interface WatchEvent {
     // (undocumented)
     changes: WatchChange[];
-    // (undocumented)
     isCheckpoint: boolean;
     // (undocumented)
     metadata?: Record<string, unknown>;
-    // (undocumented)
     revision: string;
     // (undocumented)
     schemaUpdated: boolean;
@@ -530,8 +589,10 @@ export interface WatchEvent {
 
 // @public
 export interface WatchOptions {
+    includeCheckpoints?: boolean;
     // (undocumented)
     objectTypes?: string[];
+    signal?: AbortSignal;
     // (undocumented)
     startRevision?: string;
 }

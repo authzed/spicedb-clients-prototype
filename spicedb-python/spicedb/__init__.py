@@ -27,9 +27,11 @@ from spicedb.errors import (
     FailedPreconditionError,
     InvalidArgumentError,
     NotFoundError,
+    OutOfRangeError,
     PermissionDeniedError,
     ResourceExhaustedError,
     SpiceDBError,
+    UnauthenticatedError,
     UnavailableError,
 )
 from spicedb.types import (
@@ -58,6 +60,7 @@ from spicedb.types import (
     TreeOperation,
     Update,
     UpdateOperation,
+    WatchEvent,
 )
 
 __all__ = [
@@ -75,6 +78,7 @@ __all__ = [
     "Transaction",
     "Update",
     "UpdateOperation",
+    "WatchEvent",
     "PermissionTree",
     "IntermediateNode",
     "LeafNode",
@@ -109,5 +113,7 @@ __all__ = [
     "CancelledError",
     "DeadlineExceededError",
     "ResourceExhaustedError",
+    "UnauthenticatedError",
+    "OutOfRangeError",
     "EventLoopBindingError",
 ]

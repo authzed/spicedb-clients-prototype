@@ -337,10 +337,11 @@ public class StreamingEstablishmentRetryTests
 
         await using var client = NewClient(watch: mockWatch.Object);
 
-        var got = new List<RelationshipUpdate>();
-        await foreach (var u in client.UpdatesAsync())
-            got.Add(u);
+        var events = new List<WatchEvent>();
+        await foreach (var e in client.UpdatesAsync())
+            events.Add(e);
 
+        var got = events.SelectMany(e => e.Updates).ToList();
         got.Select(u => u.Relationship.ResourceID).Should().Equal("doc1");
         script.CallCount.Should().Be(2);
     }
@@ -367,14 +368,15 @@ public class StreamingEstablishmentRetryTests
 
         await using var client = NewClient(watch: mockWatch.Object);
 
-        var got = new List<RelationshipUpdate>();
+        var events = new List<WatchEvent>();
         var act = async () =>
         {
-            await foreach (var u in client.UpdatesAsync())
-                got.Add(u);
+            await foreach (var e in client.UpdatesAsync())
+                events.Add(e);
         };
 
         await act.Should().ThrowAsync<UnavailableException>();
+        var got = events.SelectMany(e => e.Updates).ToList();
         got.Select(u => u.Relationship.ResourceID).Should().Equal("doc1");
         script.CallCount.Should().Be(1);
     }

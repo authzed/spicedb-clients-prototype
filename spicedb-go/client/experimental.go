@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"fmt"
 
 	v1 "github.com/authzed/spicedb-clients/proto-clients/spicedb-go-proto/gen/authzed/api/v1"
 	"github.com/authzed/spicedb-clients/spicedb-go/rel"
@@ -18,9 +19,17 @@ type CountResult struct {
 // relationships matching the given filter. The counter is computed
 // asynchronously by SpiceDB.
 func (c *Client) RegisterRelationshipCounter(ctx context.Context, name string, f rel.Filter) error {
-	_, err := c.esc.ExperimentalRegisterRelationshipCounter(ctx, &v1.ExperimentalRegisterRelationshipCounterRequest{
+	filterProto, err := f.ToProto()
+	if err != nil {
+		return &Error{
+			Code:    CodeInvalidArgument,
+			Message: fmt.Sprintf("spicedb: register relationship counter: %s", err),
+			err:     err,
+		}
+	}
+	_, err = c.esc.ExperimentalRegisterRelationshipCounter(ctx, &v1.ExperimentalRegisterRelationshipCounterRequest{
 		Name:               name,
-		RelationshipFilter: f.ToProto(),
+		RelationshipFilter: filterProto,
 	})
 	if err != nil {
 		return mapGRPCError("register relationship counter", err)

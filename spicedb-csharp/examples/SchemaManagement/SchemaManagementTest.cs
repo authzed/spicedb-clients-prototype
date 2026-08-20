@@ -21,7 +21,7 @@ public class SchemaManagementTest
     [Fact]
     public async Task WriteSchema_ReturnsRevision()
     {
-        await using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "somerandomkeyhere");
+        await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
 
         var revision = await client.WriteSchemaAsync(Schema);
 
@@ -31,7 +31,7 @@ public class SchemaManagementTest
     [Fact]
     public async Task ReadSchema_ReturnsWrittenSchema()
     {
-        await using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "somerandomkeyhere");
+        await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
 
         await client.WriteSchemaAsync(Schema);
 

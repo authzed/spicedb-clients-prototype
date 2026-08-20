@@ -40,20 +40,28 @@ public class CheckContextTests
                 It.IsAny<CancellationToken>()))
             .Callback<CheckBulkPermissionsRequest, Metadata, DateTime?, CancellationToken>(
                 (req, _, _, _) => captured.Add(req))
-            .Returns(() => MakeUnaryCall(new CheckBulkPermissionsResponse
-            {
-                CheckedAt = new ZedToken { Token = "tok" },
-                Pairs =
+            // Pair count must match the request's item count — the client now
+            // guards CheckBulkPermissions responses against a pairs/items
+            // length mismatch (root DESIGN.md: a short response would
+            // otherwise silently desync results[i] from relationships[i]).
+            // These tests only assert on the captured REQUEST, not on
+            // CheckResult, so one HasPermission pair per requested item keeps
+            // that guard satisfied without changing what's being verified.
+            .Returns<CheckBulkPermissionsRequest, Metadata, DateTime?, CancellationToken>(
+                (req, _, _, _) => MakeUnaryCall(new CheckBulkPermissionsResponse
                 {
-                    Enumerable.Range(0, 8).Select(_ => new CheckBulkPermissionsPair
+                    CheckedAt = new ZedToken { Token = "tok" },
+                    Pairs =
                     {
-                        Item = new CheckBulkPermissionsResponseItem
+                        req.Items.Select(_ => new CheckBulkPermissionsPair
                         {
-                            Permissionship = CheckPermissionResponse.Types.Permissionship.HasPermission,
-                        },
-                    }),
-                },
-            }));
+                            Item = new CheckBulkPermissionsResponseItem
+                            {
+                                Permissionship = CheckPermissionResponse.Types.Permissionship.HasPermission,
+                            },
+                        }),
+                    },
+                }));
 
         mockPermissions = mock;
         capturedRequests = captured;
@@ -238,6 +246,29 @@ public class CheckContextTests
         var items = captured[0].Items;
         items[0].Context.Should().Be(AsStruct(("now", 42)));
         items[1].Context.Should().Be(AsStruct(("now", 42)));
+    }
+
+    // ── Unrepresentable check-time caveat context value must raise, not
+    // ── silently stringify (root DESIGN.md "RULE: A conversion that cannot
+    // ── preserve meaning must fail", clause 1). Shared converter with the
+    // ── write path -- RelationshipTests covers ToProto/Relationship.ToProto.
+
+    private sealed class UnrepresentableValue { }
+
+    [Fact]
+    public async Task CheckPermissionsWithContextAsync_UnrepresentableContextValue_Throws()
+    {
+        var client = NewClient(out _, out _);
+
+        var rel = Relationship.FromTriple("document", "doc1", "viewer", "user", "alice");
+        var context = new Dictionary<string, object> { ["bad_key"] = new UnrepresentableValue() };
+
+        var act = async () => await client.CheckPermissionsWithContextAsync(
+            Consistency.Full(), "view", context, default, rel);
+
+        var result = await act.Should().ThrowAsync<InvalidArgumentException>();
+        result.Which.Message.Should().Contain("bad_key");
+        result.Which.Message.Should().Contain(nameof(UnrepresentableValue));
     }
 
     [Fact]

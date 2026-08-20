@@ -1,3 +1,4 @@
+using System.Net;
 using Grpc.Core;
 using Grpc.Core.Interceptors;
 using Grpc.Net.Client;
@@ -13,9 +14,41 @@ namespace Authzed.Api.SpiceDB.Proto;
 /// SpiceDBProtoClient wraps all generated gRPC service clients for SpiceDB.
 /// It handles channel creation, TLS configuration, and bearer token injection.
 /// </summary>
+/// <summary>
+/// Thrown when a plaintext connection to a non-loopback endpoint is requested
+/// without <c>allowInsecureRemoteCredentials</c>.
+/// </summary>
+/// <remarks>
+/// A distinct type rather than a bare <see cref="InvalidOperationException"/> so
+/// the idiomatic client can map this refusal onto its own error without catching
+/// every <see cref="InvalidOperationException"/> the constructor might throw --
+/// the unix-socket refusal beside it is a different argument error and must not
+/// be reclassified with it. See root DESIGN.md, "RULE: Credentials over insecure
+/// transport require an explicit opt-in", clause 4.
+/// </remarks>
+public sealed class InsecureRemoteHostException : InvalidOperationException
+{
+    public InsecureRemoteHostException(string message) : base(message) { }
+}
+
 public sealed class SpiceDBProtoClient : IDisposable
 {
     private readonly GrpcChannel _channel;
+
+    /// <summary>
+    /// Whether <see cref="Dispose"/> may tear down <see cref="_channel"/>: true only
+    /// when this client built the channel itself from an endpoint string.
+    /// <para>
+    /// A channel handed in through the <see cref="SpiceDBProtoClient(GrpcChannel, string)"/>
+    /// overload belongs to whoever built it. The idiomatic .NET way to supply one is a
+    /// DI-registered <b>singleton</b> <see cref="GrpcChannel"/> shared by the whole
+    /// application, so disposing it here would tear down a connection every other
+    /// consumer is still using -- the first scoped consumer to finish would break the
+    /// rest. Ownership is not transferred by lending a channel, so this client disposes
+    /// only what it created.
+    /// </para>
+    /// </summary>
+    private readonly bool _ownsChannel;
 
     /// <summary>gRPC client for the SpiceDB Permissions service.</summary>
     public PermissionsService.PermissionsServiceClient Permissions { get; }
@@ -36,10 +69,89 @@ public sealed class SpiceDBProtoClient : IDisposable
     /// <param name="endpoint">The gRPC endpoint (e.g. "grpc.authzed.com:443").</param>
     /// <param name="token">Bearer token for authentication.</param>
     /// <param name="insecure">If true, uses plaintext (no TLS). For testing only.</param>
-    public SpiceDBProtoClient(string endpoint, string token, bool insecure = false)
+    /// <param name="allowInsecureRemoteCredentials">
+    /// By itself, <paramref name="insecure"/> only permits a plaintext connection to a
+    /// loopback endpoint (localhost, 127.0.0.0/8, or ::1) -- the
+    /// local-development case that is the entire reason <paramref name="insecure"/>
+    /// exists. Set this to <c>true</c>, alongside <paramref name="insecure"/>, only if
+    /// you genuinely mean to send a bearer token in cleartext to a non-loopback host --
+    /// see root DESIGN.md, "RULE: Credentials over insecure transport require an
+    /// explicit opt-in". Named and separate from <paramref name="insecure"/> on purpose:
+    /// the rule requires an option a reader cannot mistake for a default, not a boolean
+    /// that does double duty as the plaintext-transport switch.
+    /// </param>
+    /// <exception cref="InvalidOperationException">
+    /// Thrown when <paramref name="insecure"/> is true, <paramref name="endpoint"/> is not
+    /// loopback, and <paramref name="allowInsecureRemoteCredentials"/> is false -- before
+    /// any channel, credential, or connection is created, so the token can never reach the
+    /// wire for a rejected combination.
+    /// </exception>
+    /// <exception cref="UriFormatException">
+    /// Thrown when <paramref name="endpoint"/> is not a parseable URI authority (e.g.
+    /// <c>"]127.0.0.1["</c>). Reachable only once the guard above has passed, i.e. for a
+    /// loopback endpoint or under <paramref name="allowInsecureRemoteCredentials"/>.
+    /// </exception>
+    public SpiceDBProtoClient(
+        string endpoint, string token, bool insecure = false, bool allowInsecureRemoteCredentials = false)
+        : this(endpoint, token, insecure, allowInsecureRemoteCredentials, httpHandler: null)
     {
+        // Public entry point; see the internal overload below for the shared
+        // implementation and the test-only HttpMessageHandler seam.
+    }
+
+    /// <summary>
+    /// Test-only seam: as the public constructor above, but lets a caller (the test
+    /// assembly) override the underlying <see cref="HttpMessageHandler"/>. That lets a
+    /// test capture the exact outgoing <c>authorization</c> header a real call would
+    /// carry -- entirely in-memory, no real socket -- and prove
+    /// TestRefusesInsecureNonLoopbackWithoutOptIn's guard below stops that handler from
+    /// ever being reached for a rejected combination, not merely that an exception was
+    /// thrown. Not part of the public API.
+    /// </summary>
+    internal SpiceDBProtoClient(
+        string endpoint, string token, bool insecure, bool allowInsecureRemoteCredentials, HttpMessageHandler? httpHandler)
+    {
+        // Refused unconditionally -- before the credential guard below, and regardless
+        // of TLS or of allowInsecureRemoteCredentials -- because this transport cannot
+        // do what such an endpoint asks for. Grpc.Net.Client has no unix-domain-socket
+        // support reachable from an address string: GrpcChannel.ForAddress
+        // ("http://unix:/var/run/spicedb.sock") parses "unix" as the HOST, so the
+        // endpoint that looks local resolves the DNS name "unix" and ships the bearer
+        // token there. Failing loudly here is the only honest answer; silently dialing
+        // a host called "unix" is not. (UDS is still reachable via CreateFromChannel
+        // with a channel built on a SocketsHttpHandler that has a UDS ConnectCallback.)
+        ArgumentNullException.ThrowIfNull(endpoint);
+        ArgumentNullException.ThrowIfNull(token);
+
+        if (endpoint.StartsWith("unix:", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"spicedb: unix-domain-socket targets are not supported by this client's transport: \"{endpoint}\". " +
+                "Grpc.Net.Client would parse \"unix\" as a DNS hostname and connect there, not to the socket path. " +
+                "Use a \"host:port\" endpoint, or build a GrpcChannel with a unix-socket ConnectCallback and pass it to CreateFromChannel.");
+        }
+
+        // See root DESIGN.md, "RULE: Credentials over insecure transport require an
+        // explicit opt-in". This is the guard for the CallInvoker.Intercept bypass below
+        // (and the InsecureChannelCredentials + interceptor path immediately following) --
+        // both exist because CompositeChannelCredentials requires secure transport, so
+        // nothing else here stops a bearer token from reaching an arbitrary insecure host.
+        // Refusing here, before options.HttpHandler/GrpcChannel.ForAddress/CallCredentials
+        // are ever created, means a rejected combination never has anything -- channel,
+        // credential, or handler -- capable of carrying the token onto the wire.
+        if (insecure && !allowInsecureRemoteCredentials && !IsLoopbackEndpoint(endpoint))
+        {
+            throw new InsecureRemoteHostException(
+                $"spicedb: refusing to send credentials over an insecure (plaintext) connection to non-loopback endpoint \"{endpoint}\": " +
+                "use TLS (pass insecure: false), or pass allowInsecureRemoteCredentials: true if you intend to send a bearer token in cleartext to a remote host");
+        }
+
         var scheme = insecure ? "http" : "https";
-        var address = $"{scheme}://{endpoint}";
+        // TransportAuthority, not the raw endpoint: a bare IPv6 literal must be
+        // bracketed to be a legal URI authority, and it is the same function
+        // IsLoopbackEndpoint vetted, so the two cannot disagree about where this
+        // connection goes.
+        var address = $"{scheme}://{TransportAuthority(endpoint)}";
 
         var callCredentials = CallCredentials.FromInterceptor((_, metadata) =>
         {
@@ -53,7 +165,7 @@ public sealed class SpiceDBProtoClient : IDisposable
 
         // Compose channel credentials with call credentials for secure channels.
         // For insecure channels, we add the bearer token via a separate interceptor
-        // since CompositeChannelCredentials requires secure transport.
+        // since CompositeChannelCredentials requires secure transport -- guarded above.
         GrpcChannelOptions options;
         if (insecure)
         {
@@ -70,10 +182,17 @@ public sealed class SpiceDBProtoClient : IDisposable
                 Credentials = compositeCredentials,
             };
         }
+        if (httpHandler is not null)
+        {
+            options.HttpHandler = httpHandler;
+        }
 
         _channel = GrpcChannel.ForAddress(address, options);
+        // This client built the channel, so this client tears it down. See _ownsChannel.
+        _ownsChannel = true;
 
-        // For insecure channels, use CallInvoker with headers to inject the token.
+        // For insecure channels, use CallInvoker with headers to inject the token --
+        // the endpoint has already been proven loopback (or explicitly allowed) above.
         var invoker = _channel.CreateCallInvoker();
         if (insecure)
         {
@@ -94,13 +213,32 @@ public sealed class SpiceDBProtoClient : IDisposable
     /// Creates a new SpiceDB proto client from an existing <see cref="GrpcChannel"/>,
     /// injecting the bearer token via an interceptor.
     /// This is the escape hatch for advanced channel configuration.
+    /// <para>
+    /// <b>Security note:</b> this overload has no <c>insecure</c>/
+    /// <c>allowInsecureRemoteCredentials</c> parameters and performs no loopback
+    /// check (root DESIGN.md, "RULE: Credentials over insecure transport require an
+    /// explicit opt-in") -- unlike the endpoint-string constructor above, there is
+    /// no <c>ChannelCredentials.Insecure</c> branch to guard here: <paramref
+    /// name="channel"/> already exists, fully configured, by the time this runs.
+    /// The interceptor below sets the bearer token raw, unconditionally, exactly
+    /// like the guarded path above, but whether that is safe depends entirely on
+    /// how the caller built <paramref name="channel"/> (plaintext vs. TLS, and to
+    /// which host) -- something this constructor cannot see or second-guess after
+    /// the fact. Only use this with a channel you built yourself and know the
+    /// transport security of.
+    /// </para>
     /// </summary>
     /// <param name="channel">A pre-configured gRPC channel.</param>
     /// <param name="token">Bearer token for authentication.</param>
     public SpiceDBProtoClient(GrpcChannel channel, string token)
     {
         _channel = channel;
+        // Borrowed, not owned: Dispose() must leave this channel open for whoever
+        // built it. See _ownsChannel.
+        _ownsChannel = false;
 
+        // No guard here -- see the security note above: the channel already
+        // exists by the time this runs, so there is nothing left to refuse.
         var invoker = channel.CreateCallInvoker().Intercept(metadata =>
         {
             metadata.Add("authorization", $"Bearer {token}");
@@ -114,10 +252,161 @@ public sealed class SpiceDBProtoClient : IDisposable
     }
 
     /// <summary>
-    /// Disposes the underlying gRPC channel.
+    /// Disposes the underlying gRPC channel, but only if this client created it.
+    /// <para>
+    /// A channel passed to <see cref="SpiceDBProtoClient(GrpcChannel, string)"/> is left
+    /// open and usable: it belongs to the caller, who is typically sharing one
+    /// DI-registered singleton across the application. Disposing a borrowed channel here
+    /// broke every other holder of it. See <see cref="_ownsChannel"/>.
+    /// </para>
     /// </summary>
     public void Dispose()
     {
-        _channel.Dispose();
+        if (_ownsChannel)
+        {
+            _channel.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Returns the URI authority the transport dials for <paramref name="endpoint"/>.
+    /// <para>
+    /// This exists so <see cref="IsLoopbackEndpoint"/> and the constructor cannot
+    /// disagree about what is being connected to. It brackets a bare IPv6 literal:
+    /// <c>"::1"</c> is an ordinary way to name the loopback host and an explicit part
+    /// of this client's supported set, but it is not a legal URI authority, so
+    /// <c>new Uri("http://::1")</c> throws. The guard used to bracket it for its own
+    /// parse while the constructor built the address from the raw endpoint, so
+    /// <c>"::1"</c> passed the guard and then threw <see cref="UriFormatException"/>
+    /// out of <see cref="GrpcChannel.ForAddress(string)"/> -- the very exception type
+    /// this constructor is documented not to throw.
+    /// </para>
+    /// </summary>
+    private static string TransportAuthority(string endpoint)
+    {
+        if (!endpoint.StartsWith('[')
+            && IPAddress.TryParse(endpoint, out var bareIp)
+            && bareIp.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6)
+        {
+            return $"[{endpoint}]";
+        }
+        return endpoint;
+    }
+
+    /// <summary>
+    /// Reports whether the connection this client would actually open for
+    /// <paramref name="endpoint"/> terminates on a loopback destination: the literal
+    /// hostname "localhost", an IP in 127.0.0.0/8, or the IPv6 loopback ::1.
+    /// <para>
+    /// Unix-domain-socket targets are NOT in that list, unlike the equivalent guard in
+    /// the Go, Python and Ruby clients. Those clients' transports genuinely dial a UDS
+    /// path; this one cannot, so a "unix:" endpoint here would resolve the DNS name
+    /// "unix" instead. The constructor refuses such an endpoint outright rather than
+    /// letting this method call it loopback -- see the throw there.
+    /// </para>
+    /// <para>
+    /// Total by construction: it returns a bool for every input and never throws, which
+    /// the plain string comparisons it replaced got for free and a URI parse does not.
+    /// </para>
+    /// <para>
+    /// The wording above is deliberate, and is the whole point of this method's
+    /// implementation. It does NOT answer "does this string look like it names a
+    /// loopback host"; it answers "will the transport dial loopback". Those are the
+    /// same question only if this method and the transport agree on where the host
+    /// ends and the rest of the target begins -- and a hand-rolled string split will
+    /// always disagree with a URI parser somewhere. It used to: given
+    /// <c>"127.0.0.1:443@evil.com"</c> a last-colon split yields host "127.0.0.1" and
+    /// reports loopback, while <see cref="GrpcChannel.ForAddress(string)"/> reads
+    /// "127.0.0.1:443" as URI <i>userinfo</i> and connects to evil.com -- so the
+    /// bearer token went to evil.com in cleartext with the guard reporting "loopback".
+    /// Restoring the port validation that once made that particular input fail to
+    /// split would close that one input and leave the class open.
+    /// </para>
+    /// <para>
+    /// So the host is derived by handing the exact URI the constructor above builds
+    /// (<c>"http://" + endpoint</c>) to <see cref="Uri"/> -- the same parser
+    /// <see cref="GrpcChannel.ForAddress(string)"/> uses -- and asking IT for the
+    /// host. Guard and transport cannot disagree, because there is only one parse.
+    /// Before that, anything that could move the authority under URI parsing
+    /// (<c>@</c>, <c>/</c>, <c>?</c>, <c>#</c>, whitespace) is refused outright: a
+    /// legitimate SpiceDB target contains none of those, and failing closed on a weird
+    /// endpoint is the correct trade for a credential leak.
+    /// </para>
+    /// <para>
+    /// This is the exemption in root DESIGN.md, "RULE: Credentials over insecure
+    /// transport require an explicit opt-in": loopback is the reason plaintext
+    /// connections exist at all (local development, docker-compose, CI), so it must
+    /// keep working with no extra ceremony. Anything else requires
+    /// <c>allowInsecureRemoteCredentials: true</c> -- see the constructor above.
+    /// </para>
+    /// </summary>
+    internal static bool IsLoopbackEndpoint(string endpoint)
+    {
+        // There is deliberately no "unix:" exemption here. Other SpiceDB clients grant
+        // one, on the grounds that a unix socket never leaves the host's kernel -- but
+        // that is only true of a transport that actually speaks UDS from an address
+        // string, and Grpc.Net.Client does not: GrpcChannel.ForAddress
+        // ("http://unix:/var/run/spicedb.sock") yields Target "unix", i.e. it resolves
+        // the DNS name "unix" and connects there in cleartext on port 80. Exempting it
+        // would be the exact guard/transport disagreement this method exists to
+        // prevent, so unix targets are instead refused outright by the constructor
+        // above, before this method is ever reached.
+
+        // Fail closed on any character that can shift which part of the string the
+        // URI parser treats as the authority: '@' (userinfo), '/' (path), '?'
+        // (query), '#' (fragment), whitespace. Redundant with the Uri parse below --
+        // deliberately so. The parse is what makes this method correct; this is what
+        // keeps it correct if some future edit ever reaches for a manual split again.
+        foreach (var c in endpoint)
+        {
+            if (c is '@' or '/' or '?' or '#' || char.IsWhiteSpace(c))
+            {
+                return false;
+            }
+        }
+
+        // Exactly the authority the constructor above dials -- see TransportAuthority.
+        // Using one function for both is the point: when this bracketed a bare IPv6
+        // literal and the constructor did not, "::1" passed the guard and then died
+        // in GrpcChannel.ForAddress with a UriFormatException.
+        var authority = TransportAuthority(endpoint);
+
+        // The scheme is "http" because this guard only ever gates the insecure path;
+        // either way, scheme does not affect how the authority is parsed.
+        if (!Uri.TryCreate($"http://{authority}", UriKind.Absolute, out var uri))
+        {
+            return false;
+        }
+
+        // Uri.IdnHost is the host Grpc.Net.Client's SocketsHttpHandler resolves and
+        // connects to; unlike Uri.Host it is already IDN-mapped, so a Unicode host
+        // that maps onto an ASCII one cannot be judged in its pre-mapping form.
+        //
+        // It throws UriFormatException for a host Uri accepted but IDN cannot map
+        // (e.g. "‥localhost"), so this method must be total the way the string
+        // comparisons it replaced were: a host nobody can name is a host we cannot
+        // vouch for, so treat the failure as "not loopback" rather than letting a
+        // System.UriFormatException escape a constructor documented to throw
+        // InvalidOperationException.
+        string host;
+        try
+        {
+            host = uri.IdnHost;
+        }
+        catch (UriFormatException)
+        {
+            return false;
+        }
+
+        if (host.StartsWith('[') && host.EndsWith(']'))
+        {
+            host = host[1..^1];
+        }
+
+        if (string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+        return IPAddress.TryParse(host, out var ip) && IPAddress.IsLoopback(ip);
     }
 }

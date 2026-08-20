@@ -9,6 +9,8 @@ use std::fmt;
 use chrono::{DateTime, Utc};
 use spicedb_proto::authzed::api::v1 as proto;
 
+use crate::error::SpiceDBError;
+
 /// A flat representation of a SpiceDB relationship.
 ///
 /// Avoids nested proto types in favor of plain Rust fields. All fields use
@@ -369,37 +371,73 @@ impl Filter {
         self
     }
 
-    pub(crate) fn to_proto(&self) -> proto::RelationshipFilter {
-        let optional_subject_filter = if self.subject_type.is_some()
-            || self.subject_id.is_some()
-            || self.subject_relation.is_some()
-        {
-            Some(proto::SubjectFilter {
-                subject_type: self.subject_type.clone().unwrap_or_default(),
+    /// Converts this filter to its proto representation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpiceDBError::InvalidArgument`] if `subject_id` or `subject_relation` is set
+    /// without `subject_type`. The wire's `SubjectFilter.subject_type` is a required field, so
+    /// there is no way to express a subject ID/relation constraint without it, which makes
+    /// silently dropping the constraint the one unsafe resolution: a caller who wrote
+    /// `Filter::new("document").with_subject_id("alice")`, expecting to narrow to alice's
+    /// relationships, would instead match every subject on every document -- e.g.
+    /// `delete_relationships` would delete every relationship on every document, not just
+    /// alice's. See root DESIGN.md, "RULE: A conversion that cannot preserve meaning must fail",
+    /// clause 1.
+    pub(crate) fn to_proto(&self) -> Result<proto::RelationshipFilter, SpiceDBError> {
+        let optional_subject_filter = match &self.subject_type {
+            Some(subject_type) => Some(proto::SubjectFilter {
+                subject_type: subject_type.clone(),
                 optional_subject_id: self.subject_id.clone().unwrap_or_default(),
                 optional_relation: self.subject_relation.as_ref().map(|r| {
                     proto::subject_filter::RelationFilter {
                         relation: r.clone(),
                     }
                 }),
-            })
-        } else {
-            None
+            }),
+            None if self.subject_id.is_some() || self.subject_relation.is_some() => {
+                let missing = if self.subject_id.is_some() {
+                    "subject_id"
+                } else {
+                    "subject_relation"
+                };
+                return Err(SpiceDBError::InvalidArgument(
+                    format!(
+                        "Filter has {missing} set without subject_type. The wire format requires \
+                         subject_type whenever a subject constraint is present -- call \
+                         with_subject_type(...) before with_{missing}(...)."
+                    )
+                    .into(),
+                ));
+            }
+            None => None,
         };
 
-        proto::RelationshipFilter {
+        Ok(proto::RelationshipFilter {
             resource_type: self.resource_type.clone(),
             optional_resource_id: self.resource_id.clone().unwrap_or_default(),
             optional_resource_id_prefix: self.resource_id_prefix.clone().unwrap_or_default(),
             optional_relation: self.relation.clone().unwrap_or_default(),
             optional_subject_filter,
-        }
+        })
     }
 }
 
 /// The type of mutation in a relationship update.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpdateOperation {
+    /// The server sent an operation this client does not recognize -- either
+    /// `OPERATION_UNSPECIFIED` on the wire, or a future operation value added
+    /// after this client shipped. Only ever produced by the watch stream;
+    /// never construct it for a write.
+    ///
+    /// Never treat this as a write: a cache or index mirror consuming the
+    /// watch stream that upserts on an unrecognized operation could turn a
+    /// delete it doesn't understand into a silent write. Handle it explicitly
+    /// (re-read the relationship, or fail the mirror closed) -- and note the
+    /// update is still yielded, because dropping it silently would make the
+    /// consumer miss a change it has no way to learn about.
+    Unspecified,
     /// Create the relationship. Fails if it already exists.
     Create,
     /// Create or update the relationship.
@@ -414,6 +452,78 @@ pub enum UpdateOperation {
 pub struct Update {
     pub operation: UpdateOperation,
     pub relationship: Relationship,
+}
+
+/// A single event from [`SpiceDBClient::updates`](crate::client::SpiceDBClient::updates),
+/// corresponding to one `WatchResponse` from the server.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct WatchEvent {
+    pub updates: Vec<Update>,
+    /// The point in time this event is current through. Always populated.
+    /// Proto: "the ZedToken that represents the point in time that the
+    /// watch response is current through. This token can be used in a
+    /// subsequent WatchRequest to resume watching from this point." Pass it
+    /// as `start_revision` to a later `updates` call to resume after a
+    /// dropped stream, instead of restarting from the original
+    /// `start_revision` (reprocessing everything since, possibly past the
+    /// GC window) or from head (silently losing every change in the gap).
+    pub changes_through: String,
+    /// True for a checkpoint event, which carries no [`updates`](Self::updates) -- it
+    /// exists only to advertise a fresh [`changes_through`](Self::changes_through) and,
+    /// behind a proxy that aborts idle connections, to keep the stream
+    /// alive. Checkpoints are only sent when
+    /// [`WatchOptions::with_checkpoints`] was passed to `updates_with`.
+    pub is_checkpoint: bool,
+}
+
+/// Optional settings for [`SpiceDBClient::updates_with`](crate::client::SpiceDBClient::updates_with).
+///
+/// Exists so a watch's optional settings read as names at the call site.
+/// `updates` previously took the checkpoint flag as a bare positional
+/// `bool` -- `client.updates(&types, None, false)` -- which is the one place
+/// in this client where a reader could not tell what a literal argument
+/// meant without opening the signature. Built the same way
+/// [`DeleteOptions`] is:
+///
+/// ```
+/// use spicedb::types::WatchOptions;
+///
+/// let options = WatchOptions::new()
+///     .with_start_revision("some-zedtoken")
+///     .with_checkpoints();
+/// ```
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WatchOptions {
+    /// Resume from this revision instead of from head. Pass a
+    /// [`WatchEvent::changes_through`] from a previous stream to pick up
+    /// exactly where it stopped.
+    pub start_revision: Option<String>,
+    /// Request periodic checkpoint events ([`WatchEvent::is_checkpoint`],
+    /// carrying no updates) in addition to relationship updates.
+    /// Recommended if this SpiceDB instance is running behind a proxy that
+    /// aborts idle connections, since a checkpoint keeps the stream alive
+    /// even when there are no changes.
+    pub include_checkpoints: bool,
+}
+
+impl WatchOptions {
+    /// Creates an empty `WatchOptions`: watch from head, no checkpoints.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Resumes from `revision` rather than from head.
+    pub fn with_start_revision(mut self, revision: impl Into<String>) -> Self {
+        self.start_revision = Some(revision.into());
+        self
+    }
+
+    /// Requests periodic checkpoint events in addition to relationship
+    /// updates.
+    pub fn with_checkpoints(mut self) -> Self {
+        self.include_checkpoints = true;
+        self
+    }
 }
 
 /// A transaction builder for batching relationship writes.
@@ -479,6 +589,10 @@ pub struct DeleteOptions {
     /// Overrides the default per-request page size (1,000) used by
     /// `delete_relationships`'/`delete_relationships_with`'s auto-paging loop.
     pub limit: Option<u32>,
+    /// Overrides the client's `default_timeout` (seconds bounding EACH
+    /// page's call). `None` uses the client default. See root DESIGN.md,
+    /// "RULE: A unary call must have a deadline".
+    pub timeout: Option<std::time::Duration>,
 }
 
 impl DeleteOptions {
@@ -504,6 +618,12 @@ impl DeleteOptions {
     /// Overrides the default per-request page size (1,000).
     pub fn with_limit(mut self, limit: u32) -> Self {
         self.limit = Some(limit);
+        self
+    }
+
+    /// Overrides the client's `default_timeout` for each page's call.
+    pub fn with_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.timeout = Some(timeout);
         self
     }
 
@@ -1252,6 +1372,68 @@ mod tests {
     fn test_filter_with_prefix() {
         let f = Filter::new("document").with_resource_id_prefix("doc-");
         assert_eq!(f.resource_id_prefix, Some("doc-".to_string()));
+    }
+
+    /// Regression test for the offboarding hazard this finding describes:
+    /// `to_proto` used to build a `SubjectFilter` with `subject_type` defaulted to
+    /// an empty string whenever only `subject_id`/`subject_relation` was set --
+    /// unlike the other clients, this wasn't silent (the server rejects an empty
+    /// `subject_type`, since it's a required, pattern-validated field), but it
+    /// still let a caller build and send a filter the wire can never accept,
+    /// instead of failing client-side with a message naming the problem.
+    /// `to_proto` must now return `Err` instead.
+    #[test]
+    fn test_filter_to_proto_subject_id_without_subject_type_errors() {
+        let f = Filter::new("document").with_subject_id("alice");
+
+        let err = f.to_proto().unwrap_err();
+
+        let msg = err.to_string();
+        assert!(msg.contains("subject_id"), "message was: {msg}");
+        assert!(msg.contains("subject_type"), "message was: {msg}");
+        assert!(matches!(err, SpiceDBError::InvalidArgument(_)));
+    }
+
+    /// `subject_relation` counterpart of the above.
+    #[test]
+    fn test_filter_to_proto_subject_relation_without_subject_type_errors() {
+        let f = Filter::new("document").with_subject_relation("member");
+
+        let err = f.to_proto().unwrap_err();
+
+        let msg = err.to_string();
+        assert!(msg.contains("subject_relation"), "message was: {msg}");
+        assert!(msg.contains("subject_type"), "message was: {msg}");
+        assert!(matches!(err, SpiceDBError::InvalidArgument(_)));
+    }
+
+    /// Companion to the two error cases above -- proves `subject_type` alone (no
+    /// `subject_id`) still builds a valid subject filter and is not accidentally
+    /// caught by the new guard.
+    #[test]
+    fn test_filter_to_proto_subject_type_alone_does_not_error() {
+        let f = Filter::new("document").with_subject_type("user");
+
+        let proto = f.to_proto().unwrap();
+
+        let subject_filter = proto.optional_subject_filter.unwrap();
+        assert_eq!(subject_filter.subject_type, "user");
+        assert_eq!(subject_filter.optional_subject_id, "");
+    }
+
+    /// Companion proving the valid combination (`subject_type` supplied
+    /// alongside `subject_id`) still works correctly.
+    #[test]
+    fn test_filter_to_proto_subject_type_and_id_does_not_error() {
+        let f = Filter::new("document")
+            .with_subject_type("user")
+            .with_subject_id("alice");
+
+        let proto = f.to_proto().unwrap();
+
+        let subject_filter = proto.optional_subject_filter.unwrap();
+        assert_eq!(subject_filter.subject_type, "user");
+        assert_eq!(subject_filter.optional_subject_id, "alice");
     }
 
     #[test]

@@ -33,6 +33,7 @@ import {
   CheckPermissionResponse_Permissionship,
 } from "@spicedb/proto";
 import { timestampFromDate } from "@bufbuild/protobuf/wkt";
+import { InvalidArgumentError } from "./errors.js";
 
 /**
  * Represents a relationship between a resource and a subject.
@@ -93,6 +94,12 @@ export interface DeleteOptions {
    * with the same filter to continue deleting what remains.
    */
   limit?: number;
+  /**
+   * Milliseconds bounding this call, overriding the client's
+   * `defaultTimeoutMs`. See root DESIGN.md, "RULE: A unary call must have a
+   * deadline".
+   */
+  timeoutMs?: number;
 }
 
 /**
@@ -106,6 +113,12 @@ export interface LookupResourcesParams {
   subjectRelation?: string;
   context?: Record<string, unknown>;
   limit?: number;
+  /**
+   * Aborting this releases the underlying stream -- see
+   * {@link SpiceDBClient.lookupResources} and root DESIGN.md, "RULE:
+   * Abandoning a stream must release it".
+   */
+  signal?: AbortSignal;
 }
 
 /**
@@ -119,6 +132,12 @@ export interface LookupSubjectsParams {
   subjectRelation?: string;
   context?: Record<string, unknown>;
   limit?: number;
+  /**
+   * Aborting this releases the underlying stream -- see
+   * {@link SpiceDBClient.lookupSubjects} and root DESIGN.md, "RULE:
+   * Abandoning a stream must release it".
+   */
+  signal?: AbortSignal;
 }
 
 /**
@@ -161,13 +180,41 @@ export interface CheckOptions {
    * ```
    */
   context?: Record<string, unknown>;
+  /**
+   * Milliseconds bounding **each request** this call makes, overriding the
+   * client's `defaultTimeoutMs`. See root DESIGN.md, "RULE: A unary call must
+   * have a deadline".
+   *
+   * A bulk check over more than 1,000 items is split into one request per
+   * 1,000, and this deadline — and the retry budget — applies to each of them
+   * independently, not to the call as a whole. Worst-case wall time for `n`
+   * checks is therefore `ceil(n / 1000) * timeoutMs`. That is deliberate: a
+   * single deadline spanning every chunk would make a large check fail purely
+   * for being large, and a retry budget shared across chunks would let one
+   * flaky chunk exhaust the allowance for the rest. Size the value per
+   * request, and impose a whole-operation bound yourself if you need one —
+   * `CheckOptions` accepts no `signal`, so the `AbortSignal` the streaming
+   * surfaces take is not available here.
+   */
+  timeoutMs?: number;
 }
 
 /**
  * A change event from the Watch API.
  */
 export interface WatchChange {
-  operation: "create" | "touch" | "delete";
+  /**
+   * The kind of mutation this change represents.
+   *
+   * `"unspecified"` means the server sent an operation this client does not
+   * recognize — either `OPERATION_UNSPECIFIED` on the wire, or a future
+   * operation value added after this client shipped. Never treat it as a
+   * write: a cache or index mirror consuming the watch stream that upserts on
+   * an unrecognized operation could turn a delete it doesn't understand into a
+   * silent write. Handle it explicitly (re-read the relationship, or fail the
+   * mirror closed) rather than falling through to a default branch.
+   */
+  operation: "create" | "touch" | "delete" | "unspecified";
   relationship: Relationship;
 }
 
@@ -176,9 +223,23 @@ export interface WatchChange {
  */
 export interface WatchEvent {
   changes: WatchChange[];
+  /**
+   * The point in time this event is current through. Pass it as
+   * `WatchOptions.startRevision` on a later `watch()` call to resume after a
+   * dropped stream, instead of restarting from the original revision
+   * (reprocessing everything since, possibly past the GC window) or from
+   * head (silently losing every change in the gap).
+   */
   revision: string;
   metadata?: Record<string, unknown>;
   schemaUpdated: boolean;
+  /**
+   * True for a checkpoint event, which carries no `changes` -- it exists
+   * only to advertise a fresh `revision` and, behind a proxy that aborts
+   * idle connections, to keep the stream alive. Only sent when
+   * `WatchOptions.includeCheckpoints` is set. Check this before assuming an
+   * event with no `changes` means nothing happened.
+   */
   isCheckpoint: boolean;
 }
 
@@ -188,6 +249,19 @@ export interface WatchEvent {
 export interface WatchOptions {
   objectTypes?: string[];
   startRevision?: string;
+  /**
+   * Also request periodic checkpoint events (`WatchEvent.isCheckpoint`, no
+   * `changes`). Recommended if this SpiceDB instance is running behind a
+   * proxy that aborts idle connections, since a checkpoint keeps the stream
+   * alive even when there are no changes to report.
+   */
+  includeCheckpoints?: boolean;
+  /**
+   * Aborting this releases the underlying stream -- see
+   * {@link SpiceDBClient.watch} and root DESIGN.md, "RULE: Abandoning a
+   * stream must release it".
+   */
+  signal?: AbortSignal;
 }
 
 /**
@@ -197,6 +271,12 @@ export interface ExpandPermissionTreeParams {
   resourceType: string;
   resourceId: string;
   permission: string;
+  /**
+   * Milliseconds bounding this call, overriding the client's
+   * `defaultTimeoutMs`. See root DESIGN.md, "RULE: A unary call must have a
+   * deadline".
+   */
+  timeoutMs?: number;
 }
 
 /**
@@ -207,6 +287,12 @@ export interface ReflectSchemaOptions {
   caveatNameFilter?: string;
   relationNameFilter?: string;
   permissionNameFilter?: string;
+  /**
+   * Milliseconds bounding this call, overriding the client's
+   * `defaultTimeoutMs`. See root DESIGN.md, "RULE: A unary call must have a
+   * deadline".
+   */
+  timeoutMs?: number;
 }
 
 /**
@@ -216,6 +302,12 @@ export interface ComputablePermissionsParams {
   definitionName: string;
   relationName: string;
   definitionNameFilter?: string;
+  /**
+   * Milliseconds bounding this call, overriding the client's
+   * `defaultTimeoutMs`. See root DESIGN.md, "RULE: A unary call must have a
+   * deadline".
+   */
+  timeoutMs?: number;
 }
 
 /**
@@ -224,6 +316,12 @@ export interface ComputablePermissionsParams {
 export interface DependentRelationsParams {
   definitionName: string;
   permissionName: string;
+  /**
+   * Milliseconds bounding this call, overriding the client's
+   * `defaultTimeoutMs`. See root DESIGN.md, "RULE: A unary call must have a
+   * deadline".
+   */
+  timeoutMs?: number;
 }
 
 /**
@@ -603,7 +701,22 @@ export function fromProtoRelationship(
   return rel;
 }
 
-/** @internal */
+/**
+ * Converts filter options to a proto RelationshipFilter.
+ *
+ * @throws {InvalidArgumentError} if `subjectId` or `subjectRelation` is set
+ * without `subjectType`. The wire's `SubjectFilter.subjectType` is a
+ * required field, so there is no way to express a subject ID/relation
+ * constraint without it, which makes silently dropping the constraint the
+ * one unsafe resolution: a caller who wrote `{ resourceType: "document",
+ * subjectId: "alice" }`, expecting to narrow to alice's relationships,
+ * would instead match every subject on every document — e.g.
+ * `deleteRelationships` would delete every relationship on every document,
+ * not just alice's. See root DESIGN.md, "RULE: A conversion that cannot
+ * preserve meaning must fail", clause 1.
+ *
+ * @internal
+ */
 export function toProtoRelationshipFilter(
   filter: RelationshipFilterOptions,
 ): ProtoRelationshipFilter {
@@ -628,6 +741,13 @@ export function toProtoRelationshipFilter(
       );
     }
     proto.optionalSubjectFilter = subjectFilter;
+  } else if (filter.subjectId || filter.subjectRelation) {
+    const missing = filter.subjectId ? "subjectId" : "subjectRelation";
+    throw new InvalidArgumentError(
+      `Filter has ${missing} set without subjectType. The wire format ` +
+        `requires subjectType whenever a subject constraint is present -- ` +
+        `set subjectType before setting ${missing}.`,
+    );
   }
 
   return proto;

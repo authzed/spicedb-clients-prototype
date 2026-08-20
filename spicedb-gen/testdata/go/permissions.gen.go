@@ -463,29 +463,41 @@ func LookupSubjects(ctx context.Context, tc *TypedClient, cs consistency.Strateg
 
 // --- Write Methods ---
 
-// Touch creates or updates the given relationships.
+// Touch creates or updates the given relationships. It returns an error,
+// without writing anything, if any relationship's caveat context cannot be
+// converted to protobuf -- see rel.Relationship.ToProto.
 func (tc *TypedClient) Touch(ctx context.Context, rels ...TypedRelationship) (string, error) {
 	var txn rel.Txn
 	for _, r := range rels {
-		txn.Touch(r.r)
+		if err := txn.Touch(r.r); err != nil {
+			return "", err
+		}
 	}
 	return tc.Client.Write(ctx, txn)
 }
 
-// Create creates the given relationships, failing if they already exist.
+// Create creates the given relationships, failing if they already exist. It
+// returns an error, without writing anything, if any relationship's caveat
+// context cannot be converted to protobuf -- see rel.Relationship.ToProto.
 func (tc *TypedClient) Create(ctx context.Context, rels ...TypedRelationship) (string, error) {
 	var txn rel.Txn
 	for _, r := range rels {
-		txn.Create(r.r)
+		if err := txn.Create(r.r); err != nil {
+			return "", err
+		}
 	}
 	return tc.Client.Write(ctx, txn)
 }
 
-// Delete deletes the given relationships.
+// Delete deletes the given relationships. It returns an error, without
+// writing anything, if any relationship's caveat context cannot be converted
+// to protobuf -- see rel.Relationship.ToProto.
 func (tc *TypedClient) Delete(ctx context.Context, rels ...TypedRelationship) (string, error) {
 	var txn rel.Txn
 	for _, r := range rels {
-		txn.Delete(r.r)
+		if err := txn.Delete(r.r); err != nil {
+			return "", err
+		}
 	}
 	return tc.Client.Write(ctx, txn)
 }

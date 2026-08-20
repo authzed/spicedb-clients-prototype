@@ -1,5 +1,11 @@
 // Client
-export { SpiceDBClient, createSpiceDBClient, type SpiceDBClientOptions } from "./client.js";
+export {
+  SpiceDBClient,
+  createSpiceDBClient,
+  type SpiceDBClientOptions,
+  type SpiceDBProtoClient,
+  type TlsOptions,
+} from "./client.js";
 
 // Consistency
 export { Consistency, full, minLatency, atLeast, atLeastOrFull, atLeastOrMinLatency, snapshot } from "./consistency.js";
@@ -58,4 +64,7 @@ export {
   UnavailableError,
   DeadlineExceededError,
   ResourceExhaustedError,
+  UnauthenticatedError,
+  OutOfRangeError,
+  type SpiceDBErrorOptions,
 } from "./errors.js";

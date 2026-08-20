@@ -23,6 +23,30 @@ jobs:
       - uses: dorny/paths-filter@d1c1ffe0248fe513906c8e24db8ea791d46f8590 # v3
         id: filter
         with:
+          # The entries below 'spicedb-gen/**' are NOT unrelated -- do not remove them.
+          # spicedb-gen's templates emit code that imports these client packages, and every
+          # testdata project builds against the live in-repo sources (testdata/go's go.mod
+          # `replace`, testdata/typescript's `workspace:*`, testdata/python's
+          # `[tool.uv.sources] path`, testdata/java's `includeBuild`). So a signature change
+          # in one of them can break generation without touching spicedb-gen/** at all, and
+          # with a filter watching only spicedb-gen/** every job here would skip and report
+          # green.
+          #
+          # That is not hypothetical. Task 3 of the group-B fix wave (f9e039c) changed
+          # rel.Txn's Create/Touch/Delete to return error, touching spicedb-go/rel/rel.go and
+          # spicedb-go/client/bulk.go. The Go template kept calling them in statement
+          # position, where Go permits discarding a return value, so the generated typed
+          # client silently dropped caveat-context conversion errors. Every job here skipped,
+          # and only a human reading the template caught it (finding F4, fixed in cde3836).
+          #
+          # Note the filter is necessary but not sufficient: the defect still COMPILED, so a
+          # build alone would not have failed. What fails is
+          # TestWriteMethodsPropagateTxnErrors in spicedb-gen/golang/generator_test.go, added
+          # with the F4 fix -- and it only runs if this filter matches. Keep both.
+          #
+          # Scoped to the packages the templates actually import, deliberately -- a blanket
+          # 'spicedb-*/**' would run this suite on every client change and the noise would get
+          # the whole filter reverted.
           filters: |
             changed:
               - '.github/workflows/spicedb-gen.yaml'
@@ -30,6 +54,16 @@ jobs:
               - 'go.mod'
               - 'go.sum'
               - 'spicedb-gen/**'
+              # Go template: imports spicedb-go/{client,consistency,rel}
+              - 'spicedb-go/client/**'
+              - 'spicedb-go/consistency/**'
+              - 'spicedb-go/rel/**'
+              # TypeScript template: imports "@spicedb/client" (pnpm workspace -> spicedb-typescript)
+              - 'spicedb-typescript/src/**'
+              # Python templates: import spicedb, spicedb.consistency, spicedb.sync, spicedb.aio
+              - 'spicedb-python/spicedb/**'
+              # Java template: imports com.authzed.spicedb.*
+              - 'spicedb-java/lib/src/main/java/**'
 
   test:
     needs: paths-filter

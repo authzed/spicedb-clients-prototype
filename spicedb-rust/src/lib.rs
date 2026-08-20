@@ -59,3 +59,14 @@ pub mod client;
 pub mod consistency;
 pub mod error;
 pub mod types;
+
+/// The generated proto crate, re-exported.
+///
+/// Secondary API, for the escape hatch only: it is what lets a caller name the
+/// types [`SpiceDBClient::raw_proto`](client::SpiceDBClient::raw_proto) hands
+/// back -- and build the requests to send through them -- without adding a
+/// separate dependency that could drift to a different version of the
+/// generated code. Nothing in the primary API takes or returns these types
+/// (root DESIGN.md, "What NOT To Do": no protobuf types in the public API),
+/// and they carry no stability promise beyond the generated crate's own.
+pub use spicedb_proto;

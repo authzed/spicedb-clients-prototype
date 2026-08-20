@@ -126,7 +126,17 @@ public sealed record Relationship
         this with { CheckContext = context };
 
     /// <summary>
-    /// Converts this relationship to its proto representation.
+    /// Converts this relationship to its proto representation. CaveatContext
+    /// values are converted via <see cref="SpiceDBClient.ToProtoValue"/> —
+    /// the same type-dispatching converter used for check-time caveat
+    /// context — so a numeric, boolean, null, or nested map/list value lands
+    /// on its matching <c>kind</c> oneof case instead of being stringified.
+    /// A caveat like <c>now &lt; 100</c> stored against a stringified "50"
+    /// fails to evaluate, and fails silently as a conditional result — and
+    /// unlike a bad check-time context (which fails one call), a bad
+    /// write-time context is persisted: every future check against this
+    /// relationship mis-evaluates, and re-checking with correct context
+    /// never repairs it, only rewriting the relationship does.
     /// </summary>
     public Authzed.Api.V1.Relationship ToProto()
     {
@@ -160,7 +170,7 @@ public sealed record Relationship
                 var structValue = new Struct();
                 foreach (var (key, value) in CaveatContext)
                 {
-                    structValue.Fields[key] = Value.ForString(value?.ToString() ?? "");
+                    structValue.Fields[key] = SpiceDBClient.ToProtoValueForKey(key, value);
                 }
                 rel.OptionalCaveat.Context = structValue;
             }
@@ -176,6 +186,13 @@ public sealed record Relationship
 
     /// <summary>
     /// Converts a proto Relationship to an idiomatic Relationship.
+    /// CaveatContext values are converted via
+    /// <see cref="SpiceDBClient.FromProtoValue"/>, the inverse of
+    /// <see cref="SpiceDBClient.ToProtoValue"/> used by <see cref="ToProto"/>
+    /// — this dispatches on each <c>Value</c>'s <c>kind</c> oneof so the
+    /// round trip through <see cref="ToProto"/>/<see cref="FromProto"/>
+    /// preserves types symmetrically instead of reading every value back as
+    /// a string.
     /// </summary>
     public static Relationship FromProto(Authzed.Api.V1.Relationship proto)
     {
@@ -192,7 +209,7 @@ public sealed record Relationship
         if (proto.OptionalCaveat != null)
         {
             var context = proto.OptionalCaveat.Context?.Fields
-                .ToDictionary(f => f.Key, f => (object)f.Value.StringValue);
+                .ToDictionary(f => f.Key, f => SpiceDBClient.FromProtoValue(f.Value)!);
 
             rel = rel with
             {
@@ -244,7 +261,43 @@ public sealed record RelationshipUpdate
 /// </summary>
 public enum UpdateOperation
 {
+    /// <summary>
+    /// The server sent an operation this client does not recognize — either
+    /// <c>OPERATION_UNSPECIFIED</c> on the wire, or a future operation value added after this
+    /// client shipped. Never treat this as a write: a cache or index mirror consuming the watch
+    /// stream that upserts on an unrecognized operation could turn a delete it doesn't
+    /// understand into a silent write.
+    /// </summary>
+    Unspecified = 0,
     Create = 1,
     Touch = 2,
     Delete = 3,
+}
+
+/// <summary>
+/// A single event from <see cref="SpiceDBClient.UpdatesAsync"/>, corresponding to one
+/// <c>WatchResponse</c> from the server.
+/// </summary>
+public sealed record WatchEvent
+{
+    public IReadOnlyList<RelationshipUpdate> Updates { get; init; } = Array.Empty<RelationshipUpdate>();
+
+    /// <summary>
+    /// The point in time this event is current through. Always populated. Proto:
+    /// "the ZedToken that represents the point in time that the watch response is current
+    /// through. This token can be used in a subsequent WatchRequest to resume watching from this
+    /// point." Pass it as <c>startRevision</c> to a later <see cref="SpiceDBClient.UpdatesAsync"/>
+    /// call to resume after a dropped stream, instead of restarting from the original
+    /// <c>startRevision</c> (reprocessing everything since, possibly past the GC window) or from
+    /// head (silently losing every change in the gap).
+    /// </summary>
+    public string ChangesThrough { get; init; } = "";
+
+    /// <summary>
+    /// True for a checkpoint event, which carries no <see cref="Updates"/> — it exists only to
+    /// advertise a fresh <see cref="ChangesThrough"/> and, behind a proxy that aborts idle
+    /// connections, to keep the stream alive. Checkpoints are only sent when
+    /// <c>includeCheckpoints</c> is passed to <see cref="SpiceDBClient.UpdatesAsync"/>.
+    /// </summary>
+    public bool IsCheckpoint { get; init; }
 }

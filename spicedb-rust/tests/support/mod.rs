@@ -93,6 +93,7 @@ pub struct MockWatchService {
     fail_establish_times: usize,
     fail_establish_status: Status,
     establish_calls: Arc<AtomicUsize>,
+    requests: Arc<Mutex<Vec<proto::WatchRequest>>>,
 }
 
 impl MockWatchService {
@@ -107,7 +108,17 @@ impl MockWatchService {
             fail_establish_times: 0,
             fail_establish_status: Status::unavailable("unused"),
             establish_calls: Arc::new(AtomicUsize::new(0)),
+            requests: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    /// Returns a live handle to the full `WatchRequest` received on each
+    /// `Watch` call, in call order -- lets tests assert on what the client
+    /// actually put on the wire (e.g. `optional_update_kinds`), not just
+    /// that the call succeeded. Grab this *before* moving the mock into
+    /// [`spawn_watch_server`].
+    pub fn requests(&self) -> Arc<Mutex<Vec<proto::WatchRequest>>> {
+        self.requests.clone()
     }
 
     /// Makes the first `times` `Watch` calls fail immediately with `status`
@@ -133,8 +144,9 @@ impl WatchService for MockWatchService {
 
     async fn watch(
         &self,
-        _request: Request<proto::WatchRequest>,
+        request: Request<proto::WatchRequest>,
     ) -> Result<Response<Self::WatchStream>, Status> {
+        self.requests.lock().unwrap().push(request.into_inner());
         let call_index = self.establish_calls.fetch_add(1, Ordering::SeqCst);
         if call_index < self.fail_establish_times {
             return Err(self.fail_establish_status.clone());
@@ -170,9 +182,11 @@ type ProtoResponseStream<T> = Pin<Box<dyn Stream<Item = Result<T, Status>> + Sen
 /// Only the RPCs exercised by the behavioral test suites — `ReadRelationships`,
 /// `LookupResources`, `LookupSubjects`, `ExportBulkRelationships` (all used by
 /// `tests/read_stream_test.rs`), `DeleteRelationships` (used by
-/// `tests/delete_relationships_test.rs`), and `CheckBulkPermissions` (used by
-/// `tests/check_bulk_permissions_test.rs`) — have real behavior; the rest of
-/// the trait is `unimplemented!()` since nothing in this harness calls them.
+/// `tests/delete_relationships_test.rs`), `CheckBulkPermissions` (used by
+/// `tests/check_bulk_permissions_test.rs`), and `CheckPermission` (used by
+/// `tests/raw_escape_hatch_test.rs`, which reaches the single-check RPC the
+/// idiomatic client never calls) — have real behavior; the rest of the trait
+/// is `unimplemented!()` since nothing in this harness calls them.
 ///
 /// The paginating RPCs (`read_relationships`, `lookup_resources`,
 /// `export_bulk_relationships`) are configured with a *queue of pages*: each
@@ -204,6 +218,39 @@ pub struct MockPermissionsService {
     check_bulk_permissions_responses: Mutex<VecDeque<proto::CheckBulkPermissionsResponse>>,
     check_bulk_permissions_calls: Arc<AtomicUsize>,
     check_bulk_permissions_requests: Arc<Mutex<Vec<proto::CheckBulkPermissionsRequest>>>,
+    check_bulk_permissions_fail: Mutex<VecDeque<Status>>,
+    /// If set, `check_bulk_permissions` sleeps this long before responding --
+    /// simulates a wedged server that accepts the call but never answers
+    /// within any sensible deadline. Used by `tests/deadline_test.rs`.
+    check_bulk_permissions_stall: Mutex<Option<std::time::Duration>>,
+
+    /// The single-check `CheckPermission` RPC. The idiomatic client never
+    /// calls it -- every check goes through `CheckBulkPermissions` -- so it
+    /// exists here for `tests/raw_escape_hatch_test.rs`, which drives it
+    /// through `SpiceDBClient::raw_proto()` precisely because the idiomatic
+    /// surface cannot reach it.
+    check_permission_requests: Arc<Mutex<Vec<proto::CheckPermissionRequest>>>,
+    /// The `authorization` metadata value seen on each `CheckPermission` call,
+    /// in call order. Proves a raw call carries this client's bearer token
+    /// rather than arriving unauthenticated.
+    check_permission_authorizations: Arc<Mutex<Vec<String>>>,
+
+    write_relationships_calls: Arc<AtomicUsize>,
+    write_relationships_fail: Mutex<VecDeque<Status>>,
+
+    /// If set, `read_relationships` sleeps this long before streaming its
+    /// page -- proves a streaming call outlives a tiny unary
+    /// `default_timeout` instead of inheriting it. Used by
+    /// `tests/deadline_test.rs`.
+    read_relationships_stall: Mutex<Option<std::time::Duration>>,
+
+    import_bulk_relationships_calls: Arc<AtomicUsize>,
+    /// If set, `import_bulk_relationships` sleeps this long -- after fully
+    /// draining the client-streaming request -- before responding. Proves
+    /// `import_relationships` (client-streaming) is neither bound by the
+    /// tiny unary `default_timeout` nor unresponsive to an explicit
+    /// `import_relationships_with_timeout`. Used by `tests/deadline_test.rs`.
+    import_bulk_relationships_stall: Mutex<Option<std::time::Duration>>,
 }
 
 impl MockPermissionsService {
@@ -233,6 +280,19 @@ impl MockPermissionsService {
             check_bulk_permissions_responses: Mutex::new(VecDeque::new()),
             check_bulk_permissions_calls: Arc::new(AtomicUsize::new(0)),
             check_bulk_permissions_requests: Arc::new(Mutex::new(Vec::new())),
+            check_bulk_permissions_fail: Mutex::new(VecDeque::new()),
+            check_bulk_permissions_stall: Mutex::new(None),
+
+            check_permission_requests: Arc::new(Mutex::new(Vec::new())),
+            check_permission_authorizations: Arc::new(Mutex::new(Vec::new())),
+
+            write_relationships_calls: Arc::new(AtomicUsize::new(0)),
+            write_relationships_fail: Mutex::new(VecDeque::new()),
+
+            read_relationships_stall: Mutex::new(None),
+
+            import_bulk_relationships_calls: Arc::new(AtomicUsize::new(0)),
+            import_bulk_relationships_stall: Mutex::new(None),
         }
     }
 
@@ -357,6 +417,72 @@ impl MockPermissionsService {
     ) -> Arc<Mutex<Vec<proto::CheckBulkPermissionsRequest>>> {
         self.check_bulk_permissions_requests.clone()
     }
+
+    /// Returns a live handle to the full `CheckPermissionRequest` received on
+    /// each single-check call, in call order.
+    pub fn check_permission_requests(&self) -> Arc<Mutex<Vec<proto::CheckPermissionRequest>>> {
+        self.check_permission_requests.clone()
+    }
+
+    /// Returns a live handle to the `authorization` metadata seen on each
+    /// single-check call, in call order.
+    pub fn check_permission_authorizations(&self) -> Arc<Mutex<Vec<String>>> {
+        self.check_permission_authorizations.clone()
+    }
+
+    /// Queues a `CheckBulkPermissions` failure: the next call returns `status`
+    /// instead of a response. Queue multiple to fail several calls in a row;
+    /// once exhausted, calls fall through to the normal response queue. Used
+    /// to prove reads are retried on a transient error.
+    pub fn queue_check_bulk_permissions_failure(&self, status: Status) {
+        self.check_bulk_permissions_fail
+            .lock()
+            .unwrap()
+            .push_back(status);
+    }
+
+    /// Makes every subsequent `CheckBulkPermissions` call sleep `duration`
+    /// before responding -- simulates a wedged server. Used to prove a
+    /// unary call actually times out instead of hanging.
+    pub fn stall_check_bulk_permissions(&self, duration: std::time::Duration) {
+        *self.check_bulk_permissions_stall.lock().unwrap() = Some(duration);
+    }
+
+    /// Makes every subsequent `ReadRelationships` call sleep `duration`
+    /// before streaming its page -- proves a streaming call is not bound by
+    /// the tiny unary default used to prove the unary case times out.
+    pub fn stall_read_relationships(&self, duration: std::time::Duration) {
+        *self.read_relationships_stall.lock().unwrap() = Some(duration);
+    }
+
+    /// Makes the next `ImportBulkRelationships` call sleep `duration` --
+    /// after fully draining the client-streaming request -- before
+    /// responding. Simulates a wedged server on the bulk-import path.
+    pub fn stall_import_bulk_relationships(&self, duration: std::time::Duration) {
+        *self.import_bulk_relationships_stall.lock().unwrap() = Some(duration);
+    }
+
+    /// Returns a live handle to the `ImportBulkRelationships` call counter.
+    /// Grab this *before* moving the mock into [`spawn_permissions_server`].
+    pub fn import_bulk_relationships_calls(&self) -> Arc<AtomicUsize> {
+        self.import_bulk_relationships_calls.clone()
+    }
+
+    /// Returns a live handle to the `WriteRelationships` call counter. Grab
+    /// this *before* moving the mock into [`spawn_permissions_server`].
+    pub fn write_relationships_calls(&self) -> Arc<AtomicUsize> {
+        self.write_relationships_calls.clone()
+    }
+
+    /// Queues a `WriteRelationships` failure: the next call returns `status`
+    /// instead of a response. Used to prove mutations are attempted exactly
+    /// once even on a retryable error.
+    pub fn queue_write_relationships_failure(&self, status: Status) {
+        self.write_relationships_fail
+            .lock()
+            .unwrap()
+            .push_back(status);
+    }
 }
 
 impl Default for MockPermissionsService {
@@ -384,7 +510,11 @@ impl PermissionsService for MockPermissionsService {
             .unwrap()
             .pop_front()
             .unwrap_or_default();
+        let stall = *self.read_relationships_stall.lock().unwrap();
         let stream = async_stream::stream! {
+            if let Some(d) = stall {
+                tokio::time::sleep(d).await;
+            }
             for resp in page {
                 yield Ok(resp);
             }
@@ -396,7 +526,16 @@ impl PermissionsService for MockPermissionsService {
         &self,
         _request: Request<proto::WriteRelationshipsRequest>,
     ) -> Result<Response<proto::WriteRelationshipsResponse>, Status> {
-        unimplemented!("not exercised by the read-stream behavioral tests")
+        self.write_relationships_calls
+            .fetch_add(1, Ordering::SeqCst);
+        if let Some(status) = self.write_relationships_fail.lock().unwrap().pop_front() {
+            return Err(status);
+        }
+        Ok(Response::new(proto::WriteRelationshipsResponse {
+            written_at: Some(proto::ZedToken {
+                token: "rev-default".to_string(),
+            }),
+        }))
     }
 
     async fn delete_relationships(
@@ -427,9 +566,35 @@ impl PermissionsService for MockPermissionsService {
 
     async fn check_permission(
         &self,
-        _request: Request<proto::CheckPermissionRequest>,
+        request: Request<proto::CheckPermissionRequest>,
     ) -> Result<Response<proto::CheckPermissionResponse>, Status> {
-        unimplemented!("not exercised by the read-stream behavioral tests")
+        // Real behavior, unlike the other unexercised RPCs below: this is the
+        // RPC the idiomatic client deliberately never calls (all checks go
+        // through `CheckBulkPermissions`), which is what makes it the honest
+        // subject for the `raw_proto()` escape-hatch test.
+        let authorization = request
+            .metadata()
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        self.check_permission_authorizations
+            .lock()
+            .unwrap()
+            .push(authorization);
+        self.check_permission_requests
+            .lock()
+            .unwrap()
+            .push(request.into_inner());
+        Ok(Response::new(proto::CheckPermissionResponse {
+            checked_at: Some(proto::ZedToken {
+                token: "rev-raw".to_string(),
+            }),
+            permissionship: proto::check_permission_response::Permissionship::HasPermission as i32,
+            partial_caveat_info: None,
+            optional_expires_at: None,
+            debug_trace: None,
+        }))
     }
 
     async fn check_bulk_permissions(
@@ -442,6 +607,13 @@ impl PermissionsService for MockPermissionsService {
             .lock()
             .unwrap()
             .push(request.into_inner());
+        let stall = *self.check_bulk_permissions_stall.lock().unwrap();
+        if let Some(d) = stall {
+            tokio::time::sleep(d).await;
+        }
+        if let Some(status) = self.check_bulk_permissions_fail.lock().unwrap().pop_front() {
+            return Err(status);
+        }
         let resp = self
             .check_bulk_permissions_responses
             .lock()
@@ -501,9 +673,28 @@ impl PermissionsService for MockPermissionsService {
 
     async fn import_bulk_relationships(
         &self,
-        _request: Request<tonic::Streaming<proto::ImportBulkRelationshipsRequest>>,
+        request: Request<tonic::Streaming<proto::ImportBulkRelationshipsRequest>>,
     ) -> Result<Response<proto::ImportBulkRelationshipsResponse>, Status> {
-        unimplemented!("not exercised by the read-stream behavioral tests")
+        self.import_bulk_relationships_calls
+            .fetch_add(1, Ordering::SeqCst);
+
+        // Drain the client-streaming request fully before ever consulting
+        // the stall -- a real server can't respond mid-stream, so a stall
+        // here must be *after* the last chunk, not instead of reading it.
+        let mut stream = request.into_inner();
+        let mut num_loaded: u64 = 0;
+        while let Some(chunk) = stream.message().await? {
+            num_loaded += chunk.relationships.len() as u64;
+        }
+
+        let stall = *self.import_bulk_relationships_stall.lock().unwrap();
+        if let Some(d) = stall {
+            tokio::time::sleep(d).await;
+        }
+
+        Ok(Response::new(proto::ImportBulkRelationshipsResponse {
+            num_loaded,
+        }))
     }
 
     type ExportBulkRelationshipsStream =

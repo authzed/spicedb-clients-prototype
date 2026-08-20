@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from authzed.api.v1 import permission_service_pb2, watch_service_pb2
 
-from spicedb.errors import error_from_status_proto
+from spicedb.errors import SpiceDBError, error_from_status_proto
 from spicedb.types import (
     CheckResult,
     LookupResource,
@@ -19,6 +19,7 @@ from spicedb.types import (
     Permissionship,
     ResolvedSubject,
     Update,
+    WatchEvent,
     _check_permissionship_from_proto,
     _partial_caveat_from_proto,
     _permissionship_from_proto,
@@ -28,6 +29,8 @@ from spicedb.types import (
 
 def check_results(
     resp: permission_service_pb2.CheckBulkPermissionsResponse,
+    expected_count: int,
+    offset: int = 0,
 ) -> list[CheckResult]:
     """Map a bulk-check response to CheckResults, raising on any per-item
     error.
@@ -35,12 +38,42 @@ def check_results(
     CheckBulkPermissionsResponse.checked_at is response-level, not
     per-item — CheckBulkPermissionsResponseItem carries no token of its
     own — so the one token on the response is propagated onto every result.
+
+    ``expected_count`` is the number of items sent in the request. The proto
+    guarantees pairs are returned in request order but says nothing about
+    count, so a response with a different number of pairs would otherwise
+    silently desync results[i] from relationships[i] for every item after
+    the gap -- one resource's answer attributed to another. Raise loudly
+    instead of returning a misaligned-but-"successful" list.
+
+    ``offset`` is this response's start index within the caller's full
+    relationship list, since a large check is split across several requests.
+    The "check item N" message below reports ``offset + i``, not ``i``: the
+    index a caller sees must be the one they can use to look up their own
+    relationship. Reporting the chunk-relative index would attribute the
+    failing item to a different resource entirely.
     """
+    if len(resp.pairs) != expected_count:
+        raise SpiceDBError(
+            f"check_bulk_permissions returned {len(resp.pairs)} pair(s) for "
+            f"{expected_count} request item(s)"
+        )
+
     checked_at = resp.checked_at.token
     results: list[CheckResult] = []
-    for pair in resp.pairs:
+    for i, pair in enumerate(resp.pairs):
         if pair.HasField("error"):
             raise error_from_status_proto(pair.error)
+        if not pair.HasField("item"):
+            # The proto's `response` is a oneof -- a well-behaved server
+            # always sets it to `item` or `error`, so this should be
+            # unreachable in practice. Mirrors spicedb-rust's
+            # malformed-oneof guard: fail loudly instead of falling through
+            # to the item field's default (zero) value.
+            raise SpiceDBError(
+                f"check item {offset + i}: malformed CheckBulkPermissionsPair "
+                "(neither item nor error set)"
+            )
         results.append(
             CheckResult(
                 permissionship=_check_permissionship_from_proto(
@@ -99,8 +132,9 @@ def lookup_subject(
     )
 
 
-def watch_event(resp: watch_service_pb2.WatchResponse) -> tuple[list[Update], str]:
-    return (
-        [Update._from_proto(u) for u in resp.updates],
-        resp.changes_through.token,
+def watch_event(resp: watch_service_pb2.WatchResponse) -> WatchEvent:
+    return WatchEvent(
+        updates=[Update._from_proto(u) for u in resp.updates],
+        changes_through=resp.changes_through.token,
+        is_checkpoint=resp.is_checkpoint,
     )

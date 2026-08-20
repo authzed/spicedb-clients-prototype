@@ -1,0 +1,329 @@
+package spicedbgoproto
+
+import (
+	"context"
+	"net"
+	"sync/atomic"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/test/bufconn"
+
+	v1 "github.com/authzed/spicedb-clients/proto-clients/spicedb-go-proto/gen/authzed/api/v1"
+)
+
+// TestIsLoopbackEndpoint proves the exact set of gRPC targets this package
+// treats as loopback -- the set exempted from WithInsecureAllowRemoteHost
+// by root DESIGN.md, "RULE: Credentials over insecure transport require an
+// explicit opt-in".
+func TestIsLoopbackEndpoint(t *testing.T) {
+	loopback := []string{
+		"localhost:50051",
+		"LOCALHOST:50051",
+		"localhost",
+		"127.0.0.1:50051",
+		"127.0.0.1",
+		"127.55.66.77:50051", // any address in 127.0.0.0/8, not just 127.0.0.1
+		"[::1]:50051",
+		"::1",
+		"unix:/var/run/spicedb.sock",
+		"unix:///var/run/spicedb.sock",
+		// grpc-go routes on the lower-cased scheme (url.Parse lower-cases it),
+		// so an upper-cased unix target reaches the unix resolver just the same
+		// and must be recognized here too.
+		"UNIX:///var/run/spicedb.sock",
+		"Unix:/var/run/spicedb.sock",
+		"passthrough:///localhost:50051",
+		"dns:///127.0.0.1:50051",
+		// unix-abstract is registered against the same grpc-go resolver as
+		// unix, and an abstract socket is equally confined to the kernel.
+		"unix-abstract:spicedb.sock",
+		// A bare bracketed literal with no port. net.SplitHostPort rejects it
+		// on its own; grpc-go's DNS resolver retries with a port appended, and
+		// so does this guard, rather than trimming brackets by hand.
+		"[::1]",
+		"[127.0.0.1]",
+	}
+	for _, endpoint := range loopback {
+		require.True(t, isLoopbackEndpoint(endpoint), "expected %q to be loopback", endpoint)
+	}
+
+	notLoopback := []string{
+		"example.com:443",
+		"staging.internal:443",
+		"10.0.0.5:50051", // private, but not loopback
+		"8.8.8.8:443",
+		"0.0.0.0:50051", // unspecified address, not loopback
+		"passthrough:///evil.example.com:1234",
+		"dns:///spicedb.prod.example.com:443",
+		// Typosquats/lookalikes: a future refactor toward strings.Contains or
+		// strings.HasSuffix on "localhost"/"127.0.0.1" would wrongly treat
+		// these as loopback and reopen a credential leak. These must stay
+		// non-loopback under exact-match host comparison.
+		"localhost.evil.com:443",
+		"127.0.0.1.evil.com:443",
+		"evil-localhost:443",
+	}
+	for _, endpoint := range notLoopback {
+		require.False(t, isLoopbackEndpoint(endpoint), "expected %q to NOT be loopback", endpoint)
+	}
+}
+
+// authorityShiftingEndpoints are targets whose URI authority is not what a
+// naive host:port split reads out of them. This exact set defeated the
+// equivalent guard in this repo's C#, Rust, TypeScript and Java clients: a
+// last-colon (or first-']') split reads a loopback host out of them, while
+// each of those transports parsed the same string as a URI, took
+// "127.0.0.1:443" for userinfo, and connected to evil.com -- shipping the
+// bearer token there in cleartext with the guard reporting "loopback".
+//
+// grpc-go is not fooled by the userinfo forms (its DNS resolver keeps host
+// "127.0.0.1" and then fails on the unparseable port "443@evil.com"), so Go
+// was never exploitable through THAT shape. They stay non-loopback anyway:
+// the guard must fail closed on a target it cannot vouch for, and this
+// fixture is what would catch a future edit that reintroduced a hand-rolled
+// split here.
+//
+// The "dns://<host>/..." entries below are a different matter -- Go was
+// genuinely exploitable through those, and by this guard's own doing. See
+// their comment.
+var authorityShiftingEndpoints = []string{
+	"127.0.0.1:443@evil.com",
+	"[::1]:443@evil.com",
+	"[::1]:0@127.0.0.1:19999",
+	"[localhost]:1@127.0.0.1:19999",
+	"localhost@evil.com",
+	"localhost/../evil.com",
+	"localhost#@evil.com",
+	"localhost?@evil.com",
+	"localhost.",
+	"localhost :50051",
+	"127.0.0.1 :50051",
+	// Scheme-form targets whose authority/path split hides a different host
+	// than the leading component suggests.
+	"passthrough:///127.0.0.1:443@evil.com",
+	"dns:///127.0.0.1:443@evil.com",
+	// Remote authority, remote endpoint.
+	"dns://localhost/evil.example.com:443",
+	// Remote AUTHORITY with a loopback endpoint -- the direction the first
+	// cut of this guard got wrong, because it read only Endpoint() and never
+	// looked at URL.Host. For the dns scheme the authority is the nameserver:
+	// grpc-go hands it to newNetResolver and every lookup for the loopback
+	// endpoint -- including the _grpc_config TXT query whose service config
+	// grpc-go then APPLIES -- is answered by it. Proven with a UDP listener
+	// on loopback: the pre-fix guard accepted these with no opt-in, and one
+	// RPC put a real DNS query on that socket.
+	"dns://evil.com/localhost:50051",
+	"dns://evil.com/localhost",
+	"dns://8.8.8.8:53/localhost:50051",
+	"dns://evil.com/127.0.0.1:50051",
+	// A unix target's authority must be empty; grpc-go's unix resolver
+	// rejects a non-empty host ("invalid (non-empty) authority") outright.
+	"unix://evil.com/var/run/spicedb.sock",
+	"unix-abstract://evil.com/spicedb.sock",
+	// A LOOPBACK authority is refused too, and that is deliberate. It was
+	// briefly allowed on the reasoning that a nameserver on loopback is the
+	// same trust position as the system resolver. It is not: redirecting the
+	// system resolver means editing /etc/hosts or resolv.conf, which needs
+	// root, while binding a high UDP port on loopback needs no privilege at
+	// all. Any unprivileged local process on a shared host or in a
+	// multi-process container can answer the _grpc_config TXT query with a
+	// service config grpc-go APPLIES, and answer the A/AAAA lookup with an
+	// address of its choosing -- and the bearer token then travels there in
+	// cleartext. The endpoint string naming that nameserver is
+	// attacker-supplied, which is the whole thing this guard defends against.
+	// Refusing costs nothing real: "localhost:50051" carries no authority and
+	// "dns:///localhost:50051" has an empty one, so both still work.
+	"dns://localhost/127.0.0.1:50051",
+	"dns://127.0.0.1:9999/localhost:50051",
+	"dns://localhost:53/localhost:50051",
+	"dns://[::1]/localhost:50051",
+	// Bracket surgery: strings.Trim(host, "[]") used to strip any number of
+	// brackets from either end and call all of these loopback.
+	"]127.0.0.1[",
+	"[::1",
+	"::1]",
+}
+
+func TestIsLoopbackEndpointRefusesAuthorityShiftingTargets(t *testing.T) {
+	for _, endpoint := range authorityShiftingEndpoints {
+		require.False(t, isLoopbackEndpoint(endpoint), "expected %q to NOT be loopback", endpoint)
+	}
+}
+
+// TestRefusesAuthorityShiftingEndpointWithoutOptIn is the regression test for
+// the loopback-guard bypass, and it asserts non-transmission rather than
+// "an error was returned": every one of these endpoints must be refused
+// before NewClient builds anything capable of carrying the token, and the
+// real in-process capturing server started here must observe nothing at all.
+// An implementation that dialed, sent the token, and only then returned an
+// error would satisfy a bare require.Error but would fail this.
+func TestRefusesAuthorityShiftingEndpointWithoutOptIn(t *testing.T) {
+	for _, endpoint := range authorityShiftingEndpoints {
+		t.Run(endpoint, func(t *testing.T) {
+			dialer, dialCount, capturedAuth := startCapturingServer(t)
+
+			client, err := NewClient(endpoint, "super-secret-token",
+				WithInsecure(),
+				WithDialOptions(grpc.WithContextDialer(dialer)),
+			)
+
+			require.Error(t, err, "expected %q to be refused", endpoint)
+			require.Nil(t, client)
+			require.Contains(t, err.Error(), endpoint)
+			require.Contains(t, err.Error(), "WithInsecureAllowRemoteHost")
+
+			require.EqualValues(t, 0, dialCount.Load(),
+				"the dialer that would carry the credential to the wire must never be invoked")
+			select {
+			case got := <-capturedAuth:
+				t.Fatalf("bearer token reached a server for refused endpoint %q: %q", endpoint, got)
+			default:
+				// Expected: nothing was ever sent, so nothing was ever captured.
+			}
+		})
+	}
+}
+
+// capturingPermissionsServer records the "authorization" metadata value it
+// observes on each incoming CheckPermission call.
+type capturingPermissionsServer struct {
+	v1.UnimplementedPermissionsServiceServer
+
+	capturedAuth chan string
+}
+
+func (s *capturingPermissionsServer) CheckPermission(ctx context.Context, _ *v1.CheckPermissionRequest) (*v1.CheckPermissionResponse, error) {
+	auth := ""
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		if vals := md.Get("authorization"); len(vals) > 0 {
+			auth = vals[0]
+		}
+	}
+	s.capturedAuth <- auth
+	return &v1.CheckPermissionResponse{
+		Permissionship: v1.CheckPermissionResponse_PERMISSIONSHIP_HAS_PERMISSION,
+	}, nil
+}
+
+// startCapturingServer starts an in-process (bufconn) gRPC server and
+// returns a *counting* dialer for it -- one that records how many times it
+// was actually invoked -- plus the channel of captured "authorization"
+// header values. The counting dialer is what lets
+// TestNewClient_RefusesInsecureNonLoopbackWithoutOptIn prove the guard
+// stops the connection from ever being attempted, not merely that
+// NewClient returned an error.
+func startCapturingServer(t *testing.T) (dialer func(context.Context, string) (net.Conn, error), dialCount *atomic.Int32, capturedAuth chan string) {
+	t.Helper()
+
+	const bufSize = 1024 * 1024
+	lis := bufconn.Listen(bufSize)
+
+	srv := &capturingPermissionsServer{capturedAuth: make(chan string, 8)}
+
+	grpcServer := grpc.NewServer()
+	v1.RegisterPermissionsServiceServer(grpcServer, srv)
+
+	go func() {
+		_ = grpcServer.Serve(lis)
+	}()
+	t.Cleanup(grpcServer.Stop)
+
+	var count atomic.Int32
+	countingDialer := func(ctx context.Context, target string) (net.Conn, error) {
+		count.Add(1)
+		return lis.DialContext(ctx)
+	}
+
+	return countingDialer, &count, srv.capturedAuth
+}
+
+// TestNewClient_RefusesInsecureNonLoopbackWithoutOptIn is the regression
+// test for root DESIGN.md, "RULE: Credentials over insecure transport
+// require an explicit opt-in": constructing a Client with WithInsecure
+// against a non-loopback endpoint, and no WithInsecureAllowRemoteHost, must
+// fail before any credential reaches the wire.
+//
+// The endpoint here ("evil.example.com") isn't merely unreachable -- the
+// dialer that WOULD carry the connection (and, over it, the bearer token)
+// is wired up via WithDialOptions exactly as a real caller's would be, and
+// dialCount proves it was never invoked at all. That is a stronger
+// assertion than "NewClient returned an error": an implementation that
+// dialed, sent the token, and only THEN surfaced an error would still fail
+// a bare error check but would fail this one, because dialCount would be
+// nonzero and capturedAuth would have received the token.
+func TestNewClient_RefusesInsecureNonLoopbackWithoutOptIn(t *testing.T) {
+	dialer, dialCount, capturedAuth := startCapturingServer(t)
+
+	client, err := NewClient("passthrough:///evil.example.com:1234", "super-secret-token",
+		WithInsecure(),
+		WithDialOptions(grpc.WithContextDialer(dialer)),
+	)
+
+	require.Error(t, err)
+	require.Nil(t, client)
+	require.Contains(t, err.Error(), "evil.example.com:1234")
+	require.Contains(t, err.Error(), "WithInsecureAllowRemoteHost")
+
+	require.EqualValues(t, 0, dialCount.Load(), "the dialer that would carry the credential to the wire must never be invoked")
+	select {
+	case got := <-capturedAuth:
+		t.Fatalf("server must never have observed a call, but captured authorization metadata %q", got)
+	default:
+		// Expected: nothing was ever sent, so nothing was ever captured.
+	}
+}
+
+// TestNewClient_LoopbackWorksWithNoOptIn proves the loopback exemption
+// requires no ceremony: an insecure connection to a loopback endpoint
+// succeeds, and actually delivers the bearer token, with no
+// WithInsecureAllowRemoteHost needed.
+func TestNewClient_LoopbackWorksWithNoOptIn(t *testing.T) {
+	dialer, _, capturedAuth := startCapturingServer(t)
+
+	client, err := NewClient("passthrough:///localhost:50051", "test-token",
+		WithInsecure(),
+		WithDialOptions(grpc.WithContextDialer(dialer)),
+	)
+	require.NoError(t, err)
+	require.NotNil(t, client)
+	t.Cleanup(func() { _ = client.Close() })
+
+	_, err = client.PermissionsServiceClient.CheckPermission(context.Background(), &v1.CheckPermissionRequest{
+		Resource:   &v1.ObjectReference{ObjectType: "document", ObjectId: "1"},
+		Permission: "view",
+		Subject:    &v1.SubjectReference{Object: &v1.ObjectReference{ObjectType: "user", ObjectId: "alice"}},
+	})
+	require.NoError(t, err)
+
+	got := <-capturedAuth
+	require.Equal(t, "Bearer test-token", got)
+}
+
+// TestNewClient_InsecureAllowRemoteHostSendsToken proves the named opt-in
+// actually works: with WithInsecureAllowRemoteHost, an insecure connection
+// to a non-loopback endpoint is permitted and the bearer token is sent.
+func TestNewClient_InsecureAllowRemoteHostSendsToken(t *testing.T) {
+	dialer, _, capturedAuth := startCapturingServer(t)
+
+	client, err := NewClient("passthrough:///evil.example.com:1234", "remote-token",
+		WithInsecure(),
+		WithInsecureAllowRemoteHost(),
+		WithDialOptions(grpc.WithContextDialer(dialer)),
+	)
+	require.NoError(t, err)
+	require.NotNil(t, client)
+	t.Cleanup(func() { _ = client.Close() })
+
+	_, err = client.PermissionsServiceClient.CheckPermission(context.Background(), &v1.CheckPermissionRequest{
+		Resource:   &v1.ObjectReference{ObjectType: "document", ObjectId: "1"},
+		Permission: "view",
+		Subject:    &v1.SubjectReference{Object: &v1.ObjectReference{ObjectType: "user", ObjectId: "alice"}},
+	})
+	require.NoError(t, err)
+
+	got := <-capturedAuth
+	require.Equal(t, "Bearer remote-token", got)
+}

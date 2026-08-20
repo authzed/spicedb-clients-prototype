@@ -20,7 +20,13 @@ function assert(condition: boolean, message: string): void {
   }
 }
 
-const client = createSpiceDBClient("localhost:50051", "testtoken", {
+// Endpoint and token come from the environment so the example runs against
+// whichever SpiceDB the caller started; the defaults match
+// docker-compose.test.yml.
+const endpoint = process.env.SPICEDB_ENDPOINT || "localhost:50051";
+const token = process.env.SPICEDB_TOKEN || "testtoken";
+
+const client = createSpiceDBClient(endpoint, token, {
   insecure: true,
 });
 
@@ -43,7 +49,10 @@ txn.touch(relationship("document:readme", "viewer", "user:jimmy"));
 txn.touch(relationship("document:design", "editor", "user:sally"));
 const setupRevision = await client.write(txn);
 
-// Bulk check permissions
+// Bulk check permissions. Inputs over 1,000 checks are split into one
+// CheckBulkPermissions request per 1,000 automatically and the results
+// concatenated in input order -- SpiceDB rejects a single request carrying
+// more than 10,000. Nothing here changes for a larger array.
 const checks: CheckRequest[] = [
   {
     resourceType: "document",
@@ -84,6 +93,25 @@ assert(
   `expected ${bulkRels.length} relationships imported, got ${numLoaded}`,
 );
 
+// The array above is fine when the data is already in memory. For a dataset
+// bigger than memory -- which is what a bulk import is for -- hand in a
+// generator instead: relationships are converted and batched as they are
+// pulled, so only one batch is ever resident. An async generator works the
+// same way, which is what reading from a DB cursor or a file stream looks
+// like in practice.
+function* generatedRels(count: number) {
+  for (let i = 0; i < count; i++) {
+    yield relationship(`document:generated${i}`, "viewer", "user:sally");
+  }
+}
+
+const numGenerated = await client.importBulkRelationships(generatedRels(5));
+console.log(`Bulk-imported ${numGenerated} relationships from a generator`);
+assert(
+  numGenerated === 5n,
+  `expected 5 relationships imported from the generator, got ${numGenerated}`,
+);
+
 // Export all document relationships (includes both the initial write and
 // the bulk import above)
 console.log("\nExporting all document relationships:");
@@ -115,5 +143,8 @@ assert(allAllowed, "expected all permissions granted");
 // leftover relationships (examples run in sequence against one shared
 // SpiceDB instance).
 await client.deleteRelationships({ resourceType: "document" });
+
+// Release the underlying transport now that this example is done with it.
+client.close();
 
 console.log("bulk_operations: PASS");

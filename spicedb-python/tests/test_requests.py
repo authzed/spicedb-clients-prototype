@@ -167,6 +167,40 @@ def test_import_batches_chunks_by_batch_size():
     assert [len(b.relationships) for b in batches] == [1000, 1000, 500]
 
 
+def test_import_batches_accepts_a_generator_without_materializing_it():
+    """`import_batches` must accept ANY iterable, not just a `list` --
+
+    unlike every other bulk/paginated RPC, ImportBulkRelationships is
+    client-streaming: the caller is the one producing an unbounded amount of
+    data, and a caller streaming in millions of relationships from a
+    generator or a DB cursor should never be forced to materialize the whole
+    thing into a `list` first just to call this.
+    """
+    consumed = []
+
+    def gen():
+        for i in range(2500):
+            consumed.append(i)
+            yield Relationship.from_triple(f"document:{i}", "viewer", "user:jimmy")
+
+    batches = req.import_batches(gen(), req.IMPORT_BATCH_SIZE)
+
+    # import_batches itself is a generator: pulling just the FIRST request
+    # must not force the whole 2500-item source to be consumed -- only one
+    # batch's worth (IMPORT_BATCH_SIZE == 1000) should have been pulled.
+    first = next(batches)
+    assert len(first.relationships) == 1000
+    assert len(consumed) == 1000, (
+        "import_batches must consume its source lazily, one batch at a time -- "
+        f"pulling the first request should not have consumed all {len(consumed)} items"
+    )
+
+    # Draining the rest still yields every relationship, in order.
+    remaining = list(batches)
+    assert [len(b.relationships) for b in remaining] == [1000, 500]
+    assert len(consumed) == 2500
+
+
 def test_write_request_carries_updates_and_preconditions():
     txn = Transaction()
     txn.create(Relationship.from_triple("document:a", "viewer", "user:jimmy"))

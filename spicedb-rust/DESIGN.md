@@ -37,6 +37,16 @@ Security-obvious named constructors:
 All constructors are `async` and return `Result<SpiceDBClient, SpiceDBError>`.
 Endpoint and token parameters accept `impl Into<String>` for ergonomics.
 
+Per root DESIGN.md, "RULE: Credentials over insecure transport require an
+explicit opt-in": `.plaintext()`/`new_plaintext` only permit a plaintext
+connection to a loopback endpoint (`localhost`, `127.0.0.0/8`, or `::1`) —
+the local-development case that is the entire reason they exist. A `unix:`
+target is NOT loopback here and is refused outright: tonic dials a URI, so it
+would resolve the DNS name `unix` rather than a socket path. Anything else
+needs `.allow_insecure_remote_credentials()` called explicitly on the builder,
+or `build()` returns
+`SpiceDBError::InvalidArgument` before any channel is created.
+
 **TLS roots.** `new_system_tls` uses tonic's `tls-native-roots` feature and calls
 `ClientTlsConfig::new().with_native_roots()`, so the OS trust store is read at runtime,
 satisfying the root `DESIGN.md` rule *"A system-TLS constructor must reach a real
@@ -50,8 +60,34 @@ roots, not delegating to the runtime's.
 
 The trade-off in this client is therefore accepted deliberately and is not universal: a
 `FROM scratch` image with no OS trust store will fail here, whereas a distroless Python
-or Node image connects fine on its compiled-in bundle. A caller-supplied CA bundle is
-the general remedy and is tracked separately.
+or Node image connects fine on its compiled-in bundle.
+
+A caller-supplied CA bundle is the general remedy, and the Python, TypeScript and Ruby
+clients now have one (`ca_cert=`, `tls: { caCert }`, `new_custom_tls(ca_cert:)`) —
+because on those runtimes the *default* is the wrong trust source for a private CA, and
+the rule above permits that default only because such an escape hatch exists. This
+client has the opposite problem: its default already reads the host's store, so the
+private-CA case works with `new_system_tls` alone.
+
+**Two things remain uncovered here, and no option is offered for either today:**
+
+1. **An image with no OS trust store at all** (`FROM scratch`), which has nothing for
+   `with_native_roots` to read, where a distroless Python or Node image would still
+   connect on its compiled-in bundle.
+2. **Mutual TLS.** There is no way to present a client certificate. This gap is
+   independent of the trust-store one and is *not* closed by `tls-native-roots`: reading
+   the host's roots says nothing about proving this client's own identity to a server
+   that demands one. The Python, TypeScript and Ruby clients each take a client
+   certificate and key alongside the CA (`client_cert=`/`client_key=`,
+   `tls: { clientCert, clientKey }`, `new_custom_tls(client_cert:, client_key:)`); this
+   client takes neither.
+
+`SpiceDBClientBuilder` therefore exposes exactly `.plaintext()`,
+`.allow_insecure_remote_credentials()` and `.default_timeout()` — no CA bundle, no client
+identity — and the module doc on `src/client.rs` says so. It previously claimed "full
+control over TLS configuration", which was never true of any version of this builder.
+Closing either gap means adding options to that builder; the decision on record is to
+state the gaps honestly rather than imply they do not exist.
 
 Do **not** substitute `ClientTlsConfig::with_enabled_roots()`. Its body begins
 `let config = ClientTlsConfig::new()`, discarding `self`, so chaining it after
@@ -80,6 +116,53 @@ integrationTest` convention (`magefile.go`, which runs `cargo test -- --ignored`
 because this test needs a real endpoint on the public internet, not the dockerised local
 SpiceDB that `integrationTest` starts — a local server's self-signed certificate is
 exactly what the platform trust store under test would, correctly, reject.
+
+### Escape hatch: raw proto access
+
+`SpiceDBClient::raw_proto()` returns `&SpiceDBProtoClient` — the four generated tonic
+clients (`permissions`, `schema`, `watch`, `experimental`) this crate makes its own calls
+through. The generated crate is re-exported as `spicedb::spicedb_proto`, so a caller can
+name those types without adding a dependency that could drift to a different version of
+the generated code:
+
+```rust,ignore
+use spicedb::spicedb_proto::authzed::api::v1 as proto;
+
+// Clone: the generated clients take `&mut self`, and a tonic clone shares the
+// same channel rather than opening a second connection.
+let mut permissions = client.raw_proto().permissions.clone();
+let response = permissions.check_permission(request).await?;
+```
+
+Clearly-marked **secondary** API, which is what root DESIGN.md's "What NOT To Do"
+permits: channels, stubs and metadata stay out of the primary surface, and "escape
+hatches for advanced use are acceptable as clearly marked secondary API". It exists so a
+request the idiomatic surface cannot express — an RPC or proto field not wrapped here,
+such as `WriteRelationshipsRequest::optional_transaction_metadata`, or the single-check
+`CheckPermission` RPC that `check_permission()` deliberately routes around — has a
+workaround short of forking the crate.
+
+Four properties, all deliberate:
+
+- **The bearer token comes free.** Each generated client is wrapped in this crate's
+  interceptor, so a raw call is authenticated exactly as an idiomatic one is.
+- **A raw call is a raw call.** No `SpiceDBError` mapping (you handle `tonic::Status`),
+  no retry, and no `default_timeout` — set a deadline on the request yourself.
+- **The connection belongs to the client.** It is released when the `SpiceDBClient`
+  drops; a clone taken from here must not outlive it.
+- **It is an accessor, never a constructor.** It takes no endpoint, token, or transport
+  setting, so channel construction stays on the single guarded path in
+  `SpiceDBClientBuilder::build` and the hatch cannot become a way around root DESIGN.md,
+  "RULE: Credentials over insecure transport require an explicit opt-in".
+
+**This does not close either TLS gap listed above.** The channel already exists by the
+time `raw_proto()` can be called, and TLS is configured before that, so neither the
+`FROM scratch` trust-store gap nor the missing mutual-TLS support is affected. Closing
+those still means adding options to `SpiceDBClientBuilder`, exactly as stated there.
+
+No stability promise beyond tonic's and the generated code's. Setting a per-call deadline
+or reading response metadata means depending on `tonic` (and `prost-types` for well-known
+types) yourself, at versions compatible with the ones this crate builds against.
 
 ### Consistency
 
@@ -258,8 +341,11 @@ is mapped through the same `error::from_grpc_status` used by every other RPC
 in this client, so a per-item `PERMISSION_DENIED` surfaces as
 `SpiceDBError::PermissionDenied`, not a generic fallback.
 `CheckBulkPermissionsResponse.checked_at` is one token for the whole
-response (not per-item), so every `CheckResult` in a batch call shares the
-same `checked_at`.
+response (not per-item), so every `CheckResult` mapped from a given response
+shares the same `checked_at`. `check_permissions` splits an input larger than
+`DEFAULT_CHECK_BATCH_SIZE` into one request per chunk, so the returned `Vec`
+can carry more than one distinct `checked_at` — uniform within a chunk, not
+across the call. See root DESIGN.md, invariant 2 under bulk checks.
 
 ### Streaming and Transparent Cursor Pagination
 
@@ -270,9 +356,9 @@ response. Default page sizes use sensible defaults:
 
 | Method | Default page size | Notes |
 |--------|------------------|-------|
-| `read_relationships` | 512 | cursor-based auto-pagination |
-| `lookup_resources` | 512 | cursor-based auto-pagination |
-| `lookup_subjects` | -- | no cursor support in SpiceDB yet; single streaming call |
+| `read_relationships.rs` | 512 | cursor-based auto-pagination |
+| `lookup_resources.rs` | 512 | cursor-based auto-pagination |
+| `lookup_subjects.rs` | -- | no cursor support in SpiceDB yet; single streaming call |
 | `export_relationships` | 512 | cursor-based auto-pagination |
 | `delete_relationships` | 1,000 | auto-repeats until all matched rels deleted; matches SpiceDB's default `--max-delete-relationships-limit` |
 | `import_relationships` | 1,000 | batches into client-streaming sends |
@@ -349,8 +435,83 @@ matching relationship in one call for single-shot, all-or-nothing semantics.
 
 ### Auto-Retry
 
-Exponential backoff for transient gRPC errors (UNAVAILABLE, RESOURCE_EXHAUSTED,
-ABORTED).
+Automatic retry with jittered exponential backoff, for **reads only**, on
+**`UNAVAILABLE` and `ABORTED`**.
+
+`RESOURCE_EXHAUSTED` is deliberately NOT retryable. In SpiceDB it means
+either memory load-shed — where retrying adds load to an already-overloaded
+server — or a deterministic `MaxDepthExceeded`, which can never succeed and
+whose retries re-run the most expensive class of check several times before
+surfacing the same error. See root `DESIGN.md`, "RULE: Automatic retry is
+for idempotent operations only".
+
+**Mutations are never auto-retried.** `WriteRelationships` carrying
+`OPERATION_CREATE`, or any request with preconditions, is not idempotent: if
+it commits and the response is lost — a rolling restart, a proxy dropping the
+connection — the retry returns `ALREADY_EXISTS`/`FAILED_PRECONDITION` and the
+caller concludes a write failed that in fact succeeded. Writes, deletes,
+schema writes, bulk import, and the counter registration calls therefore
+never enter the retry loop: their errors are mapped to this client's typed
+form and raised on the first attempt. A caller who wants a mutation retried
+must decide that themselves, knowing their own idempotency.
+
+**Timeout shape**: the per-call timeout is a per-*attempt* budget, applied
+fresh to each retry rather than shrinking across them, so a call that
+legitimately needs several retries is not made more likely to fail than one
+that needs none. Worst-case latency for a timeout `t` is therefore
+`t × (retries + 1)` plus backoff, and an auto-paging call spends a fresh `t`
+per page. Root `DESIGN.md`, "On worst-case latency", covers why this differs
+from Go's; a caller needing a true end-to-end bound must impose it above this
+client.
+
+### Deadlines
+
+Every unary method has a `_with_timeout(..., timeout: Duration)` sibling
+(`delete_relationships_with` instead takes `DeleteOptions::with_timeout`),
+mirroring the existing `_with_context` convention. The timeout is set on the
+request via `tonic::Request::set_timeout`. `SpiceDBClient::builder(...)
+.default_timeout(Duration)` overrides the default (30s, see
+`client::DEFAULT_TIMEOUT`) applied to any unary call that doesn't use a
+`_with_timeout` variant — mirroring `authzed-node`'s
+`DEFAULT_DEADLINE_MS = 30_000` (its comment cites `grpc/grpc-node#541`). See
+root DESIGN.md, "RULE: A unary call must have a deadline".
+
+```rust
+let client = SpiceDBClient::builder(endpoint, token)
+    .default_timeout(Duration::from_secs(5))
+    .build()
+    .await?;
+let result = client.check_permission(&full(), "view", &rel).await?;             // bound by the 5s default
+let result = client.check_permission_with_timeout(&full(), "view", &rel, Duration::from_secs(1)).await?; // overrides it
+```
+
+Server-streaming methods (`read_relationships`, `lookup_resources`,
+`lookup_subjects`, `updates`, `export_relationships`) have no `_with_timeout`
+variant and are NOT bound by `default_timeout` — they are long-lived by
+design (`updates` may run for the life of the process), and applying the
+unary default to them would make the stream itself the outage.
+
+`import_relationships` (`ImportBulkRelationships`) is client-streaming, not
+server-streaming, but the same exclusion applies for the mirror-image
+reason: its duration scales with the size of the caller's dataset, not with
+server latency, so no fixed default is correct for it either. Unlike the
+server-streaming methods above, it DOES have a `_with_timeout` sibling
+(`import_relationships_with_timeout`) — there is simply no default to
+override, so `import_relationships` itself is unbounded and
+`import_relationships_with_timeout` is the only way to bound it.
+
+Note for callers reasoning about worst-case latency: the timeout is a
+per-*attempt* budget, applied fresh on each retry, so a call that retries
+can take up to `timeout × (retries + 1)` plus backoff, and an auto-paging
+call (e.g. `delete_relationships_with`) applies the same timeout fresh to
+each page.
+
+tonic's own client-side timeout enforcement (`tonic::transport::Channel`'s
+`GrpcTimeout` middleware, triggered by the `grpc-timeout` header
+`set_timeout` sets) surfaces a purely local timeout as
+`Status::cancelled("Timeout expired")`, not `Status::deadline_exceeded` --
+`error::from_grpc_status` special-cases that exact `(code, message)` pair so
+`SpiceDBError::DeadlineExceeded` is what callers actually see.
 
 ### Performance
 
@@ -374,10 +535,16 @@ ABORTED).
 
 ### `client` module
 
+**Escape hatch:**
+- `raw_proto(&self) -> &SpiceDBProtoClient` -- the generated tonic clients, as secondary
+  API; see "Escape hatch: raw proto access" above
+
 **Constructors:**
 - `SpiceDBClient::new_plaintext(endpoint, token) -> Result<Self, SpiceDBError>`
 - `SpiceDBClient::new_system_tls(endpoint, token) -> Result<Self, SpiceDBError>`
 - `SpiceDBClient::builder(endpoint, token) -> SpiceDBClientBuilder`
+- `SpiceDBClientBuilder::allow_insecure_remote_credentials(self) -> Self` -- explicit opt-in for
+  `.plaintext()` against a non-loopback endpoint
 
 **Checks:**
 - `check_permission(&self, cs, permission, &rel) -> Result<CheckResult, SpiceDBError>`
@@ -420,7 +587,35 @@ ABORTED).
 - `export_relationships(&self, cs, filter) -> impl Stream<Item = Result<Relationship, SpiceDBError>>`
 
 **Watch:**
-- `updates(&self, object_types, start_revision) -> impl Stream<Item = Result<Update, SpiceDBError>>`
+- `updates(&self, object_types) -> impl Stream<Item = Result<WatchEvent, SpiceDBError>>`
+  — watch from head, no checkpoints
+- `updates_with(&self, object_types, &WatchOptions) -> impl Stream<Item = Result<WatchEvent, SpiceDBError>>`
+
+`WatchOptions` follows the same builder shape as `DeleteOptions`:
+
+```rust
+let stream = client.updates_with(
+    &object_types,
+    &WatchOptions::new()
+        .with_start_revision(resume_token)   // resume, instead of from head
+        .with_checkpoints(),                 // WATCH_KIND_INCLUDE_CHECKPOINTS
+);
+```
+
+`with_checkpoints()` requests `WATCH_KIND_INCLUDE_CHECKPOINTS`, recommended behind a proxy
+that aborts idle connections, since a checkpoint keeps the stream alive with no changes to
+report. It is a named builder rather than a positional `bool` for the reason the whole
+options pattern exists here: `client.updates(&types, None, false)` gave a reader no way to
+tell what the literal meant without opening the signature, and this was the only place in
+the client where that was true.
+
+`WatchEvent { updates: Vec<Update>, changes_through: String, is_checkpoint: bool }` is one
+event per `WatchResponse`. `changes_through` is always populated -- proto: "This token can be
+used in a subsequent WatchRequest to resume watching from this point" -- pass it as
+`start_revision` to resume after a dropped stream instead of restarting from the original
+`start_revision` (reprocessing, possibly past the GC window) or from head (silently losing
+every change in the gap). `is_checkpoint` is true for a checkpoint event, which carries no
+`updates`.
 
 **Experimental:**
 - `experimental_register_relationship_counter(&self, name, &filter) -> Result<(), SpiceDBError>`
@@ -470,19 +665,25 @@ ABORTED).
 
 (To be added when examples are implemented)
 
-| Directory | Demonstrates |
+| Example | Demonstrates |
 |-----------|-------------|
-| `check_permission/` | Basic permission check, plus a caveated check that comes back `ConditionalPermission` and is then resolved to a grant via `check_permission_with_context` |
-| `write_relationships/` | Writing relationships with transaction builder |
-| `read_relationships/` | Reading relationships with stream |
-| `lookup_resources/` | Finding resources a subject can access |
-| `lookup_subjects/` | Finding subjects with access to a resource |
-| `watch_changes/` | Watching for relationship changes |
-| `schema_management/` | Reading and writing schema |
-| `bulk_operations/` | Bulk checks and imports |
-| `schema_reflection/` | Schema reflection, computable permissions, dependent relations, diff |
-| `expand_permission_tree/` | Expanding a permission tree and walking the native `PermissionTree` |
-| `relationship_counters/` | Registering, reading, and unregistering relationship counters |
+| `check_permission.rs` | Basic permission check, plus a caveated check that comes back `ConditionalPermission` and is then resolved to a grant via `check_permission_with_context` |
+| `write_relationships.rs` | Writing relationships with transaction builder |
+| `read_relationships.rs` | Reading relationships with stream |
+| `lookup_resources.rs` | Finding resources a subject can access |
+| `lookup_subjects.rs` | Finding subjects with access to a resource |
+| `watch_changes.rs` | Watching for relationship changes with a bounded consumer: subscribe from a known revision, write, consume until that exact update arrives, drop the stream, then resume on a fresh one and require the same update |
+| `schema_management.rs` | Reading and writing schema |
+| `bulk_operations.rs` | Bulk checks and imports |
+| `schema_reflection.rs` | Schema reflection, computable permissions, dependent relations, diff |
+| `expand_permission_tree.rs` | Expanding a permission tree and walking the native `PermissionTree` |
+| `relationship_counters.rs` | Registering, reading, and unregistering relationship counters, polling to a terminal state and asserting an exact count |
+| `call_deadlines.rs` | Constructing a client with `default_timeout`, a per-call `_with_timeout` override, confirming bulk import isn't bounded by the unary default, and proving both deadlines bite against a listener that accepts the connection and never answers |
+| `error_mapping` | Recovering from `OUT_OF_RANGE` (stale ZedToken) and `UNAUTHENTICATED` without parsing a message |
+| `insecure_opt_in` | Why `.plaintext()` is loopback-only, and the named opt-in a remote plaintext host requires |
+| `retry_policy` | Which calls are retried for you and which are not, counted server-side |
+| `unrepresentable_values` | A filter the wire cannot express fails loudly; unknown server enums degrade safely |
+| `raw_escape_hatch.rs` | `raw_proto()` — driving the generated tonic client directly for a proto field (`optional_transaction_metadata`) and an RPC (`CheckPermission`) the idiomatic API does not expose |
 
 ## Changelog
 

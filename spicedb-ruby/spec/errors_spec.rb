@@ -1,6 +1,13 @@
 # frozen_string_literal: true
 
 require_relative '../lib/spicedb'
+# The reason tests below build a Google::Rpc::Status directly, so this spec
+# needs the proto types loaded rather than relying on a sibling spec having
+# required them first -- `rspec spec/errors_spec.rb` on its own must pass.
+# (The library itself does not need this: grpc lazily requires
+# google/rpc/status_pb the first time a rich status trailer shows up.)
+require 'spicedb_proto'
+require 'google/protobuf/well_known_types'
 
 RSpec.describe 'SpiceDB::Errors' do
   describe 'exception hierarchy' do
@@ -52,8 +59,11 @@ RSpec.describe 'SpiceDB::Errors' do
   end
 
   describe 'TRANSIENT_CODES' do
-    it 'includes RESOURCE_EXHAUSTED, ABORTED, and UNAVAILABLE' do
-      expect(SpiceDB::TRANSIENT_CODES).to include(8)  # RESOURCE_EXHAUSTED
+    it 'includes ABORTED and UNAVAILABLE, but NOT RESOURCE_EXHAUSTED' do
+      # RESOURCE_EXHAUSTED must NOT be retried -- inverted from an earlier
+      # assertion that it was included. See DESIGN.md, "Automatic retry is
+      # for idempotent operations only".
+      expect(SpiceDB::TRANSIENT_CODES).not_to include(8) # RESOURCE_EXHAUSTED
       expect(SpiceDB::TRANSIENT_CODES).to include(10) # ABORTED
       expect(SpiceDB::TRANSIENT_CODES).to include(14) # UNAVAILABLE
     end
@@ -95,8 +105,16 @@ RSpec.describe 'SpiceDB::Errors' do
       expect(SpiceDB.transient?(SpiceDB::UnavailableError.new)).to be true
     end
 
-    it 'returns true for resource exhausted errors' do
-      expect(SpiceDB.transient?(SpiceDB::ResourceExhaustedError.new)).to be true
+    it 'returns false for resource exhausted errors' do
+      # Inverted from "returns true" -- RESOURCE_EXHAUSTED must NOT be
+      # retried. In SpiceDB it signals memory load-shed or a deterministic
+      # MaxDepthExceeded, never a transient hiccup.
+      expect(SpiceDB.transient?(SpiceDB::ResourceExhaustedError.new)).to be false
+    end
+
+    it 'returns false for gRPC-like errors with RESOURCE_EXHAUSTED code' do
+      grpc_err = double('grpc_error', code: 8)
+      expect(SpiceDB.transient?(grpc_err)).to be false
     end
 
     it 'returns false for permission denied errors' do
@@ -111,6 +129,45 @@ RSpec.describe 'SpiceDB::Errors' do
     it 'returns false for gRPC-like errors with non-transient codes' do
       grpc_err = double('grpc_error', code: 7)
       expect(SpiceDB.transient?(grpc_err)).to be false
+    end
+
+    it 'returns false for the newly mapped codes' do
+      expect(SpiceDB.transient?(double('grpc_error', code: 11))).to be false # OUT_OF_RANGE
+      expect(SpiceDB.transient?(double('grpc_error', code: 16))).to be false # UNAUTHENTICATED
+    end
+  end
+
+  describe 'newly mapped codes' do
+    it 'maps OUT_OF_RANGE to its own type' do
+      # OUT_OF_RANGE is SpiceDB's code for an expired or garbage-collected
+      # ZedToken. Recovery is mechanical -- drop the token, re-read at full
+      # consistency -- so it must be distinguishable by type rather than by
+      # message. See root DESIGN.md, "RULE: Error mapping must not lose the
+      # server's detail".
+      err = SpiceDB.to_spicedb_error(double('grpc_error', code: 11, details: 'revision no longer available'))
+      expect(err).to be_a(SpiceDB::OutOfRangeError)
+      expect(err).not_to be_a(SpiceDB::InvalidArgumentError)
+      expect(err.message).to eq('revision no longer available')
+    end
+
+    it 'maps UNAUTHENTICATED to its own type' do
+      # A wrong, expired, or rotated token must be distinguishable from an
+      # internal server fault, so a caller can refresh credentials on one and
+      # page someone on the other.
+      err = SpiceDB.to_spicedb_error(double('grpc_error', code: 16, details: 'bad token'))
+      expect(err).to be_a(SpiceDB::UnauthenticatedError)
+      expect(err).not_to be_a(SpiceDB::PermissionDeniedError)
+      expect(err.instance_of?(SpiceDB::Error)).to be false
+    end
+
+    it 'puts both new types in the hierarchy' do
+      expect(SpiceDB::OutOfRangeError.superclass).to eq(SpiceDB::Error)
+      expect(SpiceDB::UnauthenticatedError.superclass).to eq(SpiceDB::Error)
+    end
+
+    it 'maps both codes in GRPC_CODE_TO_ERROR' do
+      expect(SpiceDB::GRPC_CODE_TO_ERROR[11]).to eq(SpiceDB::OutOfRangeError)
+      expect(SpiceDB::GRPC_CODE_TO_ERROR[16]).to eq(SpiceDB::UnauthenticatedError)
     end
   end
 end

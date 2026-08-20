@@ -67,6 +67,20 @@ jobs:
         run: mage -d proto-clients/spicedb-csharp-proto test
       - name: Idiomatic client tests
         run: mage -d spicedb-csharp test
+      # Kept as its own step so a network outage stays distinguishable from a TLS
+      # regression. `dotnet test --filter` reports success when the filter matches
+      # nothing, so the grep for the pass line is what makes a renamed, deleted or
+      # un-traited test fail here instead of going green. Root DESIGN.md, "RULE: A
+      # system-TLS constructor must reach a real server", clause 3.
+      - name: TLS handshake test (requires network)
+        run: |
+          output=$(dotnet test SpiceDB.Client.sln --filter "Category=TlsHandshake" --verbosity normal)
+          echo "$output"
+          echo "$output" | grep -qE "Passed: +1" || {
+            echo "::error::handshake test did not run — was it renamed, removed or un-traited?"
+            exit 1
+          }
+        working-directory: spicedb-csharp
 
   integration:
     needs: paths-filter

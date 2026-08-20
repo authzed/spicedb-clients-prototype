@@ -109,6 +109,56 @@
 
 ### Added
 
+- **2026-08-19: four new examples, one per root `DESIGN.md` RULE that had no executed
+  coverage in any client.** 15 example specs -> 19, 49 rspec examples -> 70, none renamed
+  or removed. Group E Phase 3.
+
+  - `examples/insecure_opt_in` — "RULE: Credentials over insecure transport require an
+    explicit opt-in". Loopback plaintext needs no ceremony; a remote plaintext host is
+    refused at construction, so the token never reaches a socket; and the named
+    `allow_insecure_remote_credentials:` permits it. Five endpoints whose authority could
+    move under URI parsing are each required to be refused — `127.0.0.1:443@evil.com`
+    above all, where a last-colon split reads the host as `127.0.0.1` while the real
+    authority is `evil.com`. Ruby hands its target to gRPC's C-core, which parses it in
+    C++ out of this client's reach, so the rule requires failing closed on these rather
+    than guessing.
+  - `examples/unrepresentable_values` — "RULE: A conversion that cannot preserve meaning
+    must fail", both directions. Unconvertible caveat context is refused with
+    `SpiceDB::InvalidArgumentError` naming the offending key; a filter with `subject_id`
+    and no `subject_type` is refused rather than silently widening, which for
+    `delete_relationships` is the difference between deleting alice's relationships and
+    deleting every relationship on every document. In the other direction, a
+    permissionship this client has never seen must neither raise nor grant.
+  - `examples/error_mapping` — "RULE: Error mapping must not lose the server's detail",
+    written as the two recoveries the rule names: a stale ZedToken surfaces as
+    `SpiceDB::OutOfRangeError`, recovered by dropping the token and re-reading at full
+    consistency; a rotated token surfaces as `SpiceDB::UnauthenticatedError`, distinct
+    from a transport fault. Nothing parses a message.
+  - `examples/retry_policy` — "RULE: Automatic retry is for idempotent operations only",
+    with attempts counted **server-side**, the only way to tell a retry from its absence:
+    at the caller a transparently-retried success and a first-try success are identical. A
+    read failing twice with `UNAVAILABLE` is retried to success in 3 attempts; a write
+    failing the same way is attempted exactly once; `RESOURCE_EXHAUSTED` exactly once even
+    on a read.
+
+  Verified by mutation, 5 of 5 killing their example: disabling the loopback guard;
+  dropping `OUT_OF_RANGE` from the code map; adding `RESOURCE_EXHAUSTED` to
+  `TRANSIENT_CODES`; giving `call_once` a full retry budget; and letting an
+  under-specified filter widen.
+
+  The last three examples drive a `GRPC::RpcServer` stand-in, because neither R5 code is
+  reachable from the real SpiceDB — verified, not assumed: a garbage ZedToken returns
+  `INVALID_ARGUMENT` and the in-memory datastore never collects the revision, and a wrong
+  preshared key returns **`PERMISSION_DENIED`, not `UNAUTHENTICATED`**. `error_mapping`
+  asserts that real behaviour too, so a reader does not write a credential-refresh branch
+  that can never run.
+
+  On the error type raised by the insecure-transport guard: this client raises a plain
+  `ArgumentError`, not `SpiceDB::InvalidArgumentError`. Across the seven clients that
+  question currently has six different answers, so `insecure_opt_in` asserts what **this**
+  client does rather than inventing a seventh — the divergence is recorded in-comment, not
+  papered over.
+
 - **2026-08-19**: The escape hatch `SpiceDB::Client#proto_client` gained the test and example
   it never had. The reader itself is unchanged and predates this entry — what is new is that
   its contract is now pinned: `spec/client_raw_escape_hatch_spec.rb` runs a real

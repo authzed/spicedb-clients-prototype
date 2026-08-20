@@ -718,6 +718,10 @@ See module sections above for the complete API manifest.
 | `schema_management/` | Schema read/write operations |
 | `bulk_operations/` | Bulk checks, `check_all`, `check_any`, and import |
 | `call_deadlines/` | Constructing a client with `default_timeout:`, a per-call `timeout:` override, confirming bulk import isn't bounded by the unary default, and proving both deadlines bite against a listener that accepts the connection and never answers |
+| `error_mapping/` | Recovering from `OUT_OF_RANGE` (stale ZedToken) and `UNAUTHENTICATED` without parsing a message |
+| `insecure_opt_in/` | Why `new_plaintext` is loopback-only, and the named opt-in a remote plaintext host requires |
+| `retry_policy/` | Which calls are retried for you and which are not, counted server-side |
+| `unrepresentable_values/` | Caller data that cannot convert fails loudly, naming the key; unknown server enums degrade safely |
 | `schema_reflection/` | Schema reflection, computable permissions, diffs |
 | `relationship_counters/` | Registering and reading relationship counters, polling to a terminal state and asserting an exact count |
 | `expand_permission_tree/` | Expanding a permission into its native `PermissionTree` (intermediate/leaf nodes, subjects) |

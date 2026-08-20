@@ -16,6 +16,10 @@ concurrency:
 jobs:
   paths-filter:
     runs-on: depot-ubuntu-24.04-arm-small
+    # No job may sit at GitHub's 360-minute default: a hung step should
+    # fail fast and free the runner. The slowest job here runs well under
+    # five minutes, so this is a backstop, not a budget.
+    timeout-minutes: 20
     outputs:
       changed: ${{ steps.filter.outputs.changed }}
     steps:
@@ -36,6 +40,10 @@ jobs:
     needs: paths-filter
     if: needs.paths-filter.outputs.changed == 'true'
     runs-on: depot-ubuntu-24.04-arm-4
+    # No job may sit at GitHub's 360-minute default: a hung step should
+    # fail fast and free the runner. The slowest job here runs well under
+    # five minutes, so this is a backstop, not a budget.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v5
@@ -45,6 +53,7 @@ jobs:
         with:
           enable-cache: true
       - name: Install mage
+        timeout-minutes: 5
         run: go install github.com/magefile/mage@latest
       - name: Install ruff
         run: uv tool install ruff
@@ -58,6 +67,10 @@ jobs:
     needs: paths-filter
     if: needs.paths-filter.outputs.changed == 'true'
     runs-on: depot-ubuntu-24.04-arm-4
+    # No job may sit at GitHub's 360-minute default: a hung step should
+    # fail fast and free the runner. The slowest job here runs well under
+    # five minutes, so this is a backstop, not a budget.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v5
@@ -67,6 +80,7 @@ jobs:
         with:
           enable-cache: true
       - name: Install mage
+        timeout-minutes: 5
         run: go install github.com/magefile/mage@latest
       - name: Sync proto client dev deps
         working-directory: proto-clients/spicedb-python-proto
@@ -83,6 +97,10 @@ jobs:
     needs: paths-filter
     if: needs.paths-filter.outputs.changed == 'true'
     runs-on: depot-ubuntu-24.04-arm-4
+    # No job may sit at GitHub's 360-minute default: a hung step should
+    # fail fast and free the runner. The slowest job here runs well under
+    # five minutes, so this is a backstop, not a budget.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v5
@@ -92,6 +110,7 @@ jobs:
         with:
           enable-cache: true
       - name: Install mage
+        timeout-minutes: 5
         run: go install github.com/magefile/mage@latest
       - name: Sync deps
         working-directory: spicedb-python
@@ -103,6 +122,10 @@ jobs:
     needs: paths-filter
     if: needs.paths-filter.outputs.changed == 'true' && github.event_name == 'pull_request'
     runs-on: depot-ubuntu-24.04-arm-small
+    # No job may sit at GitHub's 360-minute default: a hung step should
+    # fail fast and free the runner. The slowest job here runs well under
+    # five minutes, so this is a backstop, not a budget.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
         with:
@@ -114,6 +137,7 @@ jobs:
         with:
           enable-cache: true
       - name: Install mage
+        timeout-minutes: 5
         run: go install github.com/magefile/mage@latest
       - name: Install griffe
         run: uv tool install griffe

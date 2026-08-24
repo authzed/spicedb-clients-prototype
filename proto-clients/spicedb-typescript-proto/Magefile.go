@@ -16,8 +16,15 @@ const maxRetries = 3
 // claudeAvailable returns true if the claude CLI is installed and usable.
 // Returns false when running in CI (CI env var set) because the claude binary
 // may be present but not authenticated.
+//
+// CI_REGENERATION is the one exception, and it is set by exactly one workflow:
+// .github/workflows/regen-from-api.yaml, which is also the only workflow holding
+// Claude credentials. Every other CI job -- notably meta.yaml's gen-nodiff --
+// must keep taking the false branch here, or `mage gen:all` starts making
+// unreviewed changes inside a check whose whole purpose is asserting that
+// generation produces no diff.
 func claudeAvailable() bool {
-	if os.Getenv("CI") != "" {
+	if os.Getenv("CI") != "" && os.Getenv("CI_REGENERATION") == "" {
 		return false
 	}
 	_, err := exec.LookPath("claude")

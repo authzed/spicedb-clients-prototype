@@ -81,7 +81,7 @@ jobs:
             echo "::error::no BUFTAG supplied by either trigger"
             exit 1
           fi
-          if ! printf '%s' "$tag" | grep -Eq '^[A-Za-z0-9._/-]+$'; then
+          if ! printf '%s' "$tag" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]*$'; then
             echo "::error::BUFTAG contains unexpected characters"
             exit 1
           fi
@@ -94,8 +94,27 @@ jobs:
         with:
           fetch-depth: 0
 
+      # This workflow sets CI_REGENERATION and BUFTAG, but only the Magefile
+      # branch teaches the Magefiles to read them. Merged ahead of that branch,
+      # generation would roll everything back, exit 0, create no PR, and fire
+      # neither Slack notice -- a green run with zero output, indistinguishable
+      # from a legitimate no-op. Fail loudly instead.
+      - name: Assert the Magefile regeneration hooks are present
+        run: |
+          set -e
+          grep -q 'CI_REGENERATION' proto-clients/spicedb-go-proto/Magefile.go \
+            || { echo "::error::CI_REGENERATION gate missing — the Magefile branch has not landed on this base"; exit 1; }
+          grep -q 'bufGenTemplate' Magefile.go \
+            || { echo "::error::BUFTAG pinning helper missing — the Magefile branch has not landed on this base"; exit 1; }
+
       # Toolchain below is lifted from meta.yaml's gen-nodiff job, which runs the
       # same workload. Keep the two in sync.
+      #
+      # Held at v5 deliberately. setup-go v6+ defaults GOTOOLCHAIN=local, so Go
+      # stops fetching the toolchain go.mod asks for and every job that needs a
+      # newer one dies with "go.mod requires go >= 1.25.7 (running go 1.24.13;
+      # GOTOOLCHAIN=local)". Moving to v6/v7 needs explicit toolchain handling,
+      # which is its own change rather than a dependency bump.
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -158,7 +177,9 @@ jobs:
           CI_REGENERATION: "1"
           BUFTAG: ${{ steps.pin.outputs.buftag }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-        run: mage gen:all
+        run: |
+          set -o pipefail
+          mage gen:all 2>&1 | tee /tmp/gen.log
 
       - name: Describe the outcome
         id: state
@@ -169,6 +190,11 @@ jobs:
           DISPATCH_TYPE: ${{ github.event.action }}
         run: |
           set -euo pipefail
+          # mage prints "proto generation failed for: go, ruby" (or the idiomatic
+          # equivalent) to stdout; /tmp/gen.log is the tee'd copy. `|| true`
+          # because grep exits 1 when nothing matched, which is the success case.
+          failed=$(grep -oE '(proto generation|idiomatic client update) failed for: .*' /tmp/gen.log | tr '\n' '; ' || true)
+          echo "failed=${failed:-none reported}" >> "$GITHUB_OUTPUT"
           if [ "$OUTCOME" = "success" ]; then
             echo "draft=false" >> "$GITHUB_OUTPUT"
             echo "labels=automated" >> "$GITHUB_OUTPUT"
@@ -213,6 +239,7 @@ jobs:
             - **Upstream API pin:** `${{ steps.pin.outputs.buftag }}`
             - **Trigger:** `${{ github.event_name }}` / `${{ github.event.action }}`
             - **Generation result:** `${{ steps.regen.outcome }}`
+            - **Failed languages:** `${{ steps.state.outputs.failed }}`
             - **Run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
             Reproduce locally:
@@ -221,8 +248,12 @@ jobs:
             BUFTAG=${{ steps.pin.outputs.buftag }} mage gen:all
             ```
 
+      # Gated on the operation, not merely on a populated number:
+      # create-pull-request closes an existing PR when new base-branch commits
+      # make it unnecessary, and still sets pull-request-number on that path --
+      # which would announce a PR it had just closed as open.
       - name: Notify Slack that a PR is open
-        if: steps.cpr.outputs.pull-request-number != ''
+        if: steps.cpr.outputs.pull-request-operation == 'created' || steps.cpr.outputs.pull-request-operation == 'updated'
         uses: slackapi/slack-github-action@91efab103c0de0a537f72a35f6b8cda0ee76bf0a # v2.1.1
         with:
           webhook: ${{ secrets.SLACK_BUILDS_WEBHOOK_URL }}
@@ -252,6 +283,7 @@ jobs:
                   type: "mrkdwn"
                   text: |
                     :x: Client regeneration failed for API pin `${{ steps.pin.outputs.buftag }}`.
+                    *Failed languages:* `${{ steps.state.outputs.failed }}`
                     Any languages that did generate are in a draft PR labelled `regen-partial`.
                     *Run:* <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}>
 
@@ -260,3 +292,25 @@ jobs:
         run: |
           echo "::error::mage gen:all failed; see the regenerate step above"
           exit 1
+
+      # The generation-failure notice above covers only `mage gen:all`. Checkout,
+      # any toolchain install, App-token minting, and the PR push can all fail a
+      # red job silently -- including the workflow-write rejection this design
+      # relies on as a loud signal. The outcome == 'success' clause keeps this
+      # from double-posting alongside that notice.
+      - name: Notify Slack on any other failure
+        if: failure() && steps.regen.outcome == 'success'
+        uses: slackapi/slack-github-action@91efab103c0de0a537f72a35f6b8cda0ee76bf0a # v2.1.1
+        with:
+          webhook: ${{ secrets.SLACK_BUILDS_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            text: "Client regeneration workflow failed outside generation"
+            blocks:
+              - type: "section"
+                text:
+                  type: "mrkdwn"
+                  text: |
+                    :x: The client regeneration workflow failed outside of `mage gen:all` — checkout, toolchain, token minting, or the PR push.
+                    *API pin:* `${{ steps.pin.outputs.buftag }}`
+                    *Run:* <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}>

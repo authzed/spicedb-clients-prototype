@@ -268,3 +268,54 @@ func commitIfChanged(dir string, msg string) error {
 	}
 	return sh.Run("git", "commit", "-m", msg)
 }
+
+// authzedAPIInput is the exact buf.gen.yaml line naming the upstream API module.
+// It is byte-identical in all six templates that declare it.
+const authzedAPIInput = "- module: buf.build/authzed/api"
+
+// bufGenTemplate writes a copy of dir/buf.gen.yaml with the buf.build/authzed/api
+// input pinned to ref, and returns the path of that temp file. The caller owns
+// removing it.
+//
+// Every other line is copied verbatim. That is the entire point: a positional
+// `buf generate <input>` argument would be simpler, but buf documents that "the
+// inputs here are ignored if an input is specified as a command line argument",
+// which would silently drop spicedb-python-proto's protovalidate input and
+// spicedb-typescript-proto's googleapis input -- the latter being what lets the
+// idiomatic client decode google.rpc.ErrorInfo rather than parse error strings.
+//
+// Returns an error rather than an unpinned template when the authzed input is
+// absent: generating unpinned after the caller explicitly asked for a pin is the
+// dangerous outcome, not a recoverable one.
+func bufGenTemplate(dir string, ref string) (string, error) {
+	src := filepath.Join(dir, "buf.gen.yaml")
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", src, err)
+	}
+
+	lines := strings.Split(string(data), "\n")
+	pinned := 0
+	for i, line := range lines {
+		if strings.TrimSpace(line) != authzedAPIInput {
+			continue
+		}
+		indent := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
+		lines[i] = indent + authzedAPIInput + ":" + ref
+		pinned++
+	}
+	if pinned == 0 {
+		return "", fmt.Errorf("%s declares no %q input to pin", src, authzedAPIInput)
+	}
+
+	f, err := os.CreateTemp("", "buf.gen.*.yaml")
+	if err != nil {
+		return "", fmt.Errorf("create temp template: %w", err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString(strings.Join(lines, "\n")); err != nil {
+		_ = os.Remove(f.Name())
+		return "", fmt.Errorf("write temp template: %w", err)
+	}
+	return f.Name(), nil
+}

@@ -150,3 +150,63 @@ func TestBufPinEnvTemplateLangWritesPinnedTemplate(t *testing.T) {
 		t.Fatalf("cleanup should have removed %s, stat err = %v", path, err)
 	}
 }
+
+// mkClientDirs creates spicedb-<lang> directories inside a fresh temp dir and
+// chdirs into it, so stampLastGeneration tests never write into the real tree.
+func mkClientDirs(t *testing.T, langs ...string) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, l := range langs {
+		if err := os.Mkdir(filepath.Join(dir, "spicedb-"+l), 0o755); err != nil {
+			t.Fatalf("mkdir spicedb-%s: %v", l, err)
+		}
+	}
+	t.Chdir(dir)
+	return dir
+}
+
+func TestStampLastGenerationWritesRefForEveryLanguage(t *testing.T) {
+	langs := []string{"go", "python", "typescript", "csharp", "java", "ruby", "rust"}
+	dir := mkClientDirs(t, langs...)
+
+	if err := stampLastGeneration(langs, "deadbeef"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, l := range langs {
+		path := filepath.Join(dir, "spicedb-"+l, lastGenerationFile)
+		if got := strings.TrimSpace(readAll(t, path)); got != "deadbeef" {
+			t.Fatalf("%s = %q, want %q", path, got, "deadbeef")
+		}
+	}
+}
+
+// The readers strings.TrimSpace the baseline, and every hand-written
+// .last-generation in the tree ends in a newline. Match that byte for byte.
+func TestStampLastGenerationWritesRefPlusTrailingNewline(t *testing.T) {
+	dir := mkClientDirs(t, "go")
+
+	if err := stampLastGeneration([]string{"go"}, "abc123"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	path := filepath.Join(dir, "spicedb-go", lastGenerationFile)
+	if got := readAll(t, path); got != "abc123\n" {
+		t.Fatalf("%s = %q, want %q", path, got, "abc123\n")
+	}
+}
+
+// A missing client directory must surface as an error rather than a silent
+// no-op: silently skipping the stamp is exactly the failure mode this helper
+// exists to end.
+func TestStampLastGenerationErrorsWhenClientDirMissing(t *testing.T) {
+	mkClientDirs(t, "go")
+
+	err := stampLastGeneration([]string{"go", "nonexistent"}, "abc123")
+	if err == nil {
+		t.Fatal("expected an error when a client directory is absent, got nil")
+	}
+	if !strings.Contains(err.Error(), "spicedb-nonexistent") {
+		t.Fatalf("error should name the offending path, got %v", err)
+	}
+}

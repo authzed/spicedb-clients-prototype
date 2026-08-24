@@ -96,6 +96,8 @@ jobs:
       - name: Install mage
         timeout-minutes: 5
         run: go install github.com/magefile/mage@latest
+      - name: Test mage helpers
+        run: go test -tags mage .
       - name: Install pnpm deps
         run: pnpm install --frozen-lockfile
       - name: Build proto package

@@ -273,7 +273,9 @@ BUFTAG=v1.53.0 mage gen:all
 
 Unset, generation uses whatever each `buf.gen.yaml` already declares, which is the
 normal local-development path. Pinning applies through these root targets only;
-`mage -d proto-clients/spicedb-go-proto gen` run directly does not pin.
+`mage -d proto-clients/spicedb-go-proto gen` run directly does not pin — except
+for `spicedb-rust-proto`, which reads `BUFTAG` straight from the environment and
+so pins even when run directly.
 
 `CI_REGENERATION=1` allows the Claude-driven generation steps to run when `CI` is
 set. It is deliberately set by exactly one workflow —

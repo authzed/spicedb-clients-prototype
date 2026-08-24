@@ -17,13 +17,55 @@ var languages = []string{"go", "python", "typescript", "csharp", "java", "ruby",
 
 var apiCompatLanguages = []string{"go", "python", "typescript", "csharp", "java", "rust"}
 
+// lastGenerationFile records, per idiomatic client, the commit its last
+// generation was based on. Each client diffs the proto tier against it.
+const lastGenerationFile = ".last-generation"
+
+// stampLastGeneration writes ref into every idiomatic client's baseline file.
+//
+// It exists because genProtoLangs commits once per language: by the time the
+// idiomatic tier runs, each client's HEAD~1 fallback points at the
+// second-to-last proto commit, so every language except the last one committed
+// sees an empty diff and skips -- silently, with a zero exit. Stamping the real
+// pre-generation SHA makes the baseline mean what its name says.
+func stampLastGeneration(langs []string, ref string) error {
+	for _, l := range langs {
+		path := filepath.Join(fmt.Sprintf("spicedb-%s", l), lastGenerationFile)
+		if err := os.WriteFile(path, []byte(ref+"\n"), 0o644); err != nil {
+			return fmt.Errorf("stamp %s: %w", path, err)
+		}
+	}
+	return nil
+}
+
 type Gen mg.Namespace
 
 // All runs proto generation for all languages, then idiomatic client updates.
 func (Gen) All() error {
+	before, err := sh.Output("git", "rev-parse", "HEAD")
+	if err != nil {
+		return fmt.Errorf("capture pre-generation HEAD: %w", err)
+	}
+	before = strings.TrimSpace(before)
+
 	if err := (Gen{}).Proto(); err != nil {
 		return err
 	}
+
+	after, err := sh.Output("git", "rev-parse", "HEAD")
+	if err != nil {
+		return fmt.Errorf("read post-generation HEAD: %w", err)
+	}
+
+	// Only stamp when the proto tier actually committed. In gen-nodiff CI the
+	// proto tier rolls its output back and commits nothing; stamping there would
+	// dirty seven tracked files and fail the no-diff assertion itself.
+	if strings.TrimSpace(after) != before {
+		if err := stampLastGeneration(languages, before); err != nil {
+			return err
+		}
+	}
+
 	return (Gen{}).Client()
 }
 
@@ -60,6 +102,9 @@ func genProtoLangs(langs []string) error {
 
 		env, cleanup, err := bufPinEnv(dir, l, buftag)
 		if err != nil {
+			// Deliberately hard-return rather than aggregating into failures like a
+			// generation error does: a bad pin is bad for every language, so six
+			// more identical failures add nothing.
 			return fmt.Errorf("could not pin %s to %s: %w", dir, buftag, err)
 		}
 

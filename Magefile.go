@@ -48,13 +48,26 @@ func (Gen) ClientLang(lang string) error {
 }
 
 func genProtoLangs(langs []string) error {
+	buftag := strings.TrimSpace(os.Getenv("BUFTAG"))
+	if buftag != "" {
+		fmt.Printf("==> Pinning upstream API to %s\n", buftag)
+	}
+
 	var failures []string
 	for _, l := range langs {
 		dir := filepath.Join("proto-clients", fmt.Sprintf("spicedb-%s-proto", l))
 		fmt.Printf("\n==> Generating proto client: %s\n", dir)
 
-		if err := runMageIn(dir, "gen"); err != nil {
-			fmt.Printf("==> FAILED: %s: %v\n", dir, err)
+		env, cleanup, err := bufPinEnv(dir, l, buftag)
+		if err != nil {
+			return fmt.Errorf("could not pin %s to %s: %w", dir, buftag, err)
+		}
+
+		genErr := runMageInWithEnv(dir, env, "gen")
+		cleanup()
+
+		if genErr != nil {
+			fmt.Printf("==> FAILED: %s: %v\n", dir, genErr)
 			failures = append(failures, l)
 			continue
 		}
@@ -318,4 +331,35 @@ func bufGenTemplate(dir string, ref string) (string, error) {
 		return "", fmt.Errorf("write temp template: %w", err)
 	}
 	return f.Name(), nil
+}
+
+// bufPinEnv returns the environment a child proto-client mage run needs in order
+// to generate against a pinned upstream API revision, plus a cleanup func the
+// caller must invoke once the child has finished.
+//
+// An empty ref returns an empty environment and a no-op cleanup, which is exactly
+// the behavior before pinning existed -- a developer running `mage gen:all`
+// without BUFTAG set sees no change.
+//
+// spicedb-rust-proto has no buf.gen.yaml; it runs `buf export` against a single
+// positional input, so it takes the ref directly and pins the argument itself.
+// The other six pin via a rewritten template.
+func bufPinEnv(dir string, lang string, ref string) (map[string]string, func(), error) {
+	noop := func() {}
+	if ref == "" {
+		return nil, noop, nil
+	}
+	if lang == "rust" {
+		return map[string]string{"BUFTAG": ref}, noop, nil
+	}
+
+	tmpl, err := bufGenTemplate(dir, ref)
+	if err != nil {
+		return nil, noop, err
+	}
+	return map[string]string{"BUF_TEMPLATE": tmpl}, func() { _ = os.Remove(tmpl) }, nil
+}
+
+func runMageInWithEnv(dir string, env map[string]string, target string) error {
+	return sh.RunWithV(env, "mage", "-d", dir, target)
 }

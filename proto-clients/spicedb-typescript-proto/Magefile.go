@@ -29,7 +29,14 @@ func claudeAvailable() bool {
 // so the working tree stays clean for the nodiff check.
 func Gen() error {
 	fmt.Println("==> Running buf generate...")
-	if err := sh.Run("buf", "generate"); err != nil {
+	// BUF_TEMPLATE is set by the root Magefile's genProtoLangs when BUFTAG pins
+	// the upstream API to an exact BSR revision. Unset means generate from the
+	// checked-in buf.gen.yaml, which is the normal local-development path.
+	genArgs := []string{"generate"}
+	if tmpl := os.Getenv("BUF_TEMPLATE"); tmpl != "" {
+		genArgs = append(genArgs, "--template", tmpl)
+	}
+	if err := sh.Run("buf", genArgs...); err != nil {
 		return fmt.Errorf("buf generate failed: %w", err)
 	}
 

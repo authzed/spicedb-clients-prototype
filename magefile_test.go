@@ -106,3 +106,47 @@ func TestBufGenTemplateErrorsWhenTemplateMissing(t *testing.T) {
 		t.Fatal("expected an error when buf.gen.yaml does not exist, got nil")
 	}
 }
+
+func TestBufPinEnvNoRefIsInert(t *testing.T) {
+	env, cleanup, err := bufPinEnv(templateDir(t, goTemplate), "go", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer cleanup()
+	if len(env) != 0 {
+		t.Fatalf("expected no environment when BUFTAG is unset, got %v", env)
+	}
+}
+
+func TestBufPinEnvRustUsesRawRef(t *testing.T) {
+	env, cleanup, err := bufPinEnv(t.TempDir(), "rust", "abc123")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer cleanup()
+	if env["BUFTAG"] != "abc123" {
+		t.Fatalf("rust should receive BUFTAG verbatim, got %v", env)
+	}
+	if _, ok := env["BUF_TEMPLATE"]; ok {
+		t.Fatalf("rust has no buf.gen.yaml and must not get BUF_TEMPLATE, got %v", env)
+	}
+}
+
+func TestBufPinEnvTemplateLangWritesPinnedTemplate(t *testing.T) {
+	env, cleanup, err := bufPinEnv(templateDir(t, goTemplate), "go", "abc123")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	path := env["BUF_TEMPLATE"]
+	if path == "" {
+		t.Fatalf("expected BUF_TEMPLATE to be set, got %v", env)
+	}
+	if !strings.Contains(readAll(t, path), "buf.build/authzed/api:abc123") {
+		t.Fatalf("template at %s was not pinned", path)
+	}
+
+	cleanup()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("cleanup should have removed %s, stat err = %v", path, err)
+	}
+}

@@ -30,7 +30,14 @@ func claudeAvailable() bool {
 // nodiff check.
 func Gen() error {
 	fmt.Println("==> Exporting protos via buf...")
-	if err := sh.Run("buf", "export", "buf.build/authzed/api", "-o", "proto"); err != nil {
+	// This client has no buf.gen.yaml -- it exports raw protos and generates via
+	// build.rs -- so there is only one input and the positional form is correct
+	// here. BUFTAG is set by the root Magefile's genProtoLangs.
+	exportInput := "buf.build/authzed/api"
+	if ref := os.Getenv("BUFTAG"); ref != "" {
+		exportInput += ":" + ref
+	}
+	if err := sh.Run("buf", "export", exportInput, "-o", "proto"); err != nil {
 		return fmt.Errorf("buf export failed: %w", err)
 	}
 

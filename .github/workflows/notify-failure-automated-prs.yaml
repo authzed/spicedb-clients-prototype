@@ -10,8 +10,19 @@ permissions:
   pull-requests: read
   actions: read
   statuses: read
+# Scoped by LABEL as well as PR number, deliberately. On a partial
+# regeneration the companion workflow applies two labels at once
+# (`automated,regen-partial`), and GitHub fires one `labeled` event per label,
+# so two runs of this workflow are created seconds apart. Workflow-level
+# concurrency is evaluated at run-admission time, BEFORE the job-level `if:`
+# is considered — so with a PR-number-only group the `regen-partial` run would
+# enter the same group, cancel the still-watching `automated` run via
+# cancel-in-progress, and then skip its own job. The watch would die and no
+# Slack alert would ever fire, on exactly the partial-regeneration PRs that
+# most need a human. Including the label name makes that collision
+# structurally impossible.
 concurrency:
-  group: "notify-automated-${{ github.event.pull_request.number }}"
+  group: "notify-automated-${{ github.event.pull_request.number }}-${{ github.event.label.name }}"
   cancel-in-progress: true
 jobs:
   notify:

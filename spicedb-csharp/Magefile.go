@@ -71,14 +71,18 @@ func Gen() error {
 		baseline = []byte("HEAD~1")
 	}
 
-	// Compute proto diff
-	diff, err := sh.Output("git", "diff", strings.TrimSpace(string(baseline)), "--", protoClientDir)
+	// Summarize rather than paste, so a large proto diff cannot blow the context
+	// window. See spicedb-java/Magefile.go for the measured cause and numbers.
+	stat, err := sh.Output("git", "diff", "--stat", strings.TrimSpace(string(baseline)), "--", protoClientDir)
 	if err != nil {
-		// If baseline commit doesn't exist, diff against HEAD~1
-		diff, _ = sh.Output("git", "diff", "HEAD~1", "--", protoClientDir)
+		stat, _ = sh.Output("git", "diff", "--stat", "HEAD~1", "--", protoClientDir)
+	}
+	names, err := sh.Output("git", "diff", "--name-status", strings.TrimSpace(string(baseline)), "--", protoClientDir)
+	if err != nil {
+		names, _ = sh.Output("git", "diff", "--name-status", "HEAD~1", "--", protoClientDir)
 	}
 
-	if diff == "" {
+	if strings.TrimSpace(names) == "" {
 		fmt.Println("==> No proto changes detected, skipping.")
 		return nil
 	}
@@ -89,11 +93,12 @@ func Gen() error {
 	}
 
 	prompt := fmt.Sprintf(
-		"The proto client has changed. Here is the diff:\n\n%s\n\n"+
+		"The proto client has changed.\n\nSummary of changes:\n\n%s\n\nChanged files:\n\n%s\n\n"+
+			"Read the changed files under %s for the details you need. "+
 			"Read ../DESIGN.md and ./DESIGN.md. Update this client accordingly. "+
 			"Ensure all tests still pass. "+
 			"Update DESIGN.md changelog if needed.",
-		diff,
+		stat, names, protoClientDir,
 	)
 
 	fmt.Println("==> Invoking Claude to update idiomatic client...")

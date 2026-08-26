@@ -210,3 +210,35 @@ func TestStampLastGenerationErrorsWhenClientDirMissing(t *testing.T) {
 		t.Fatalf("error should name the offending path, got %v", err)
 	}
 }
+
+// TestClaudePermissionArgsLocalIsUnchanged pins the promise this whole design
+// rests on: a developer running mage locally, with CI_REGENERATION unset,
+// must see exactly the invocation they see today -- no permission flag added
+// on top of runClaudeOutput's unconditional --print.
+func TestClaudePermissionArgsLocalIsUnchanged(t *testing.T) {
+	t.Setenv("CI_REGENERATION", "")
+
+	args := claudePermissionArgs()
+	if args != nil {
+		t.Fatalf("claudePermissionArgs() = %v, want nil when CI_REGENERATION is unset", args)
+	}
+}
+
+// TestClaudePermissionArgsCIRegenerationAddsPermissionFlag reproduces the fix
+// for the defect observed on runs 33010304938 vs 33010790114: without
+// --permission-mode bypassPermissions, headless Claude replies that it lacks
+// write permission, edits nothing, and still exits 0.
+func TestClaudePermissionArgsCIRegenerationAddsPermissionFlag(t *testing.T) {
+	t.Setenv("CI_REGENERATION", "1")
+
+	got := claudePermissionArgs()
+	want := []string{"--permission-mode", "bypassPermissions"}
+	if len(got) != len(want) {
+		t.Fatalf("claudePermissionArgs() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("claudePermissionArgs() = %v, want %v", got, want)
+		}
+	}
+}

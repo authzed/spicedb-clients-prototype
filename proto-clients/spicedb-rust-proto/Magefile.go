@@ -99,9 +99,33 @@ func Test() error {
 	return sh.RunV("cargo", "test")
 }
 
+// claudeArgs returns the CLI arguments for a Claude invocation.
+//
+// Under CI_REGENERATION -- set only by .github/workflows/regen-from-api.yaml,
+// the one workflow holding Claude credentials -- two flags are required that
+// local runs must not get:
+//
+//	--print                              a CI runner has no TTY; the bare
+//	                                     interactive form has never run there
+//	--permission-mode bypassPermissions  without it Claude replies "I don't
+//	                                     have permission to write this file",
+//	                                     edits nothing, and still exits 0 --
+//	                                     so a regeneration reports success and
+//	                                     produces an empty PR (observed on
+//	                                     runs 33010304938 vs 33010790114)
+//
+// The bypass is confined to that workflow, which runs on an ephemeral
+// single-purpose container. Local runs keep normal interactive prompting.
+func claudeArgs() []string {
+	if os.Getenv("CI_REGENERATION") == "" {
+		return nil
+	}
+	return []string{"--print", "--permission-mode", "bypassPermissions"}
+}
+
 // runClaude pipes the prompt to claude via stdin so output streams in real time.
 func runClaude(prompt string) error {
-	cmd := exec.Command("claude")
+	cmd := exec.Command("claude", claudeArgs()...)
 	cmd.Stdin = strings.NewReader(prompt)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

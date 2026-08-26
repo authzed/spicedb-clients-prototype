@@ -296,10 +296,15 @@ jobs:
       # The generation-failure notice above covers only `mage gen:all`. Checkout,
       # any toolchain install, App-token minting, and the PR push can all fail a
       # red job silently -- including the workflow-write rejection this design
-      # relies on as a loud signal. The outcome == 'success' clause keeps this
-      # from double-posting alongside that notice.
+      # relies on as a loud signal. The `!= 'failure'` clause keeps this from
+      # double-posting alongside the generation-failure notice while still
+      # covering the steps that run BEFORE regeneration -- checkout, the
+      # Magefile-hooks assertion, the toolchain installs, and App-token
+      # minting. When one of those fails, the regen step never runs and its
+      # outcome is 'skipped', not 'success', so an == 'success' guard would
+      # silently miss exactly the failures this step exists to report.
       - name: Notify Slack on any other failure
-        if: failure() && steps.regen.outcome == 'success'
+        if: failure() && steps.regen.outcome != 'failure'
         uses: slackapi/slack-github-action@91efab103c0de0a537f72a35f6b8cda0ee76bf0a # v2.1.1
         with:
           webhook: ${{ secrets.SLACK_BUILDS_WEBHOOK_URL }}

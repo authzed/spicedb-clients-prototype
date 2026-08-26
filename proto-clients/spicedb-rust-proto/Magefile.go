@@ -16,8 +16,15 @@ const maxRetries = 3
 // claudeAvailable returns true if the claude CLI is installed and usable.
 // Returns false when running in CI (CI env var set) because the claude binary
 // may be present but not authenticated.
+//
+// CI_REGENERATION is the one exception, and it is set by exactly one workflow:
+// .github/workflows/regen-from-api.yaml, which is also the only workflow holding
+// Claude credentials. Every other CI job -- notably meta.yaml's gen-nodiff --
+// must keep taking the false branch here, or `mage gen:all` starts making
+// unreviewed changes inside a check whose whole purpose is asserting that
+// generation produces no diff.
 func claudeAvailable() bool {
-	if os.Getenv("CI") != "" {
+	if os.Getenv("CI") != "" && os.Getenv("CI_REGENERATION") == "" {
 		return false
 	}
 	_, err := exec.LookPath("claude")
@@ -30,7 +37,14 @@ func claudeAvailable() bool {
 // nodiff check.
 func Gen() error {
 	fmt.Println("==> Exporting protos via buf...")
-	if err := sh.Run("buf", "export", "buf.build/authzed/api", "-o", "proto"); err != nil {
+	// This client has no buf.gen.yaml -- it exports raw protos and generates via
+	// build.rs -- so there is only one input and the positional form is correct
+	// here. BUFTAG is set by the root Magefile's genProtoLangs.
+	exportInput := "buf.build/authzed/api"
+	if ref := os.Getenv("BUFTAG"); ref != "" {
+		exportInput += ":" + ref
+	}
+	if err := sh.Run("buf", "export", exportInput, "-o", "proto"); err != nil {
 		return fmt.Errorf("buf export failed: %w", err)
 	}
 

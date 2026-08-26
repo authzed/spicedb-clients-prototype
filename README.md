@@ -261,6 +261,28 @@ cd spicedb-gen && mage test             # Go unit tests
 cd spicedb-gen && mage integrationTest  # Generate + typecheck + vitest vs SpiceDB
 ```
 
+### Regenerating against a specific API revision
+
+`mage gen:all`, `mage gen:proto`, and `mage gen:protoLang <lang>` honor `BUFTAG`,
+which pins generation to an exact `buf.build/authzed/api` revision — an
+`authzed/api` git SHA, a version tag such as `v1.53.0`, or `main`:
+
+```
+BUFTAG=v1.53.0 mage gen:all
+```
+
+Unset, generation uses whatever each `buf.gen.yaml` already declares, which is the
+normal local-development path. Pinning applies through these root targets only;
+`mage -d proto-clients/spicedb-go-proto gen` run directly does not pin — except
+for `spicedb-rust-proto`, which reads `BUFTAG` straight from the environment and
+so pins even when run directly.
+
+`CI_REGENERATION=1` allows the Claude-driven generation steps to run when `CI` is
+set. It is deliberately set by exactly one workflow —
+`.github/workflows/regen-from-api.yaml` — which is also the only workflow holding
+Claude credentials. Every other CI job must leave it unset so that `meta.yaml`'s
+`gen-nodiff` check keeps asserting that generation produces no diff.
+
 ### Integration Tests
 
 Each idiomatic client has a `mage integrationTest` target that:

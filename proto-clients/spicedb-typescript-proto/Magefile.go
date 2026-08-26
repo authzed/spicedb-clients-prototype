@@ -16,8 +16,15 @@ const maxRetries = 3
 // claudeAvailable returns true if the claude CLI is installed and usable.
 // Returns false when running in CI (CI env var set) because the claude binary
 // may be present but not authenticated.
+//
+// CI_REGENERATION is the one exception, and it is set by exactly one workflow:
+// .github/workflows/regen-from-api.yaml, which is also the only workflow holding
+// Claude credentials. Every other CI job -- notably meta.yaml's gen-nodiff --
+// must keep taking the false branch here, or `mage gen:all` starts making
+// unreviewed changes inside a check whose whole purpose is asserting that
+// generation produces no diff.
 func claudeAvailable() bool {
-	if os.Getenv("CI") != "" {
+	if os.Getenv("CI") != "" && os.Getenv("CI_REGENERATION") == "" {
 		return false
 	}
 	_, err := exec.LookPath("claude")
@@ -29,7 +36,14 @@ func claudeAvailable() bool {
 // so the working tree stays clean for the nodiff check.
 func Gen() error {
 	fmt.Println("==> Running buf generate...")
-	if err := sh.Run("buf", "generate"); err != nil {
+	// BUF_TEMPLATE is set by the root Magefile's genProtoLangs when BUFTAG pins
+	// the upstream API to an exact BSR revision. Unset means generate from the
+	// checked-in buf.gen.yaml, which is the normal local-development path.
+	genArgs := []string{"generate"}
+	if tmpl := os.Getenv("BUF_TEMPLATE"); tmpl != "" {
+		genArgs = append(genArgs, "--template", tmpl)
+	}
+	if err := sh.Run("buf", genArgs...); err != nil {
 		return fmt.Errorf("buf generate failed: %w", err)
 	}
 

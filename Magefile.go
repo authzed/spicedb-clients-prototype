@@ -295,9 +295,31 @@ func update(allowBreak bool) error {
 	return nil
 }
 
+// claudePermissionArgs returns the extra CLI arguments runClaudeOutput must
+// append when CI_REGENERATION is set.
+//
+// CI_REGENERATION is set only by .github/workflows/regen-from-api.yaml, the
+// one workflow holding Claude credentials. Under it, --permission-mode
+// bypassPermissions is required: without it, headless Claude replies that it
+// lacks write permission, edits nothing, and still exits 0 -- so a
+// regeneration reports success and produces an empty PR (observed on runs
+// 33010304938 vs 33010790114). --print itself is unaffected by this gate:
+// runClaudeOutput already passes it unconditionally, since its caller parses
+// stdout as the generated commit message whether this runs locally or in CI.
+//
+// The bypass is confined to that workflow, which runs on an ephemeral
+// single-purpose container.
+func claudePermissionArgs() []string {
+	if os.Getenv("CI_REGENERATION") == "" {
+		return nil
+	}
+	return []string{"--permission-mode", "bypassPermissions"}
+}
+
 // runClaudeOutput pipes a prompt to claude and returns stdout as a string.
 func runClaudeOutput(prompt string) (string, error) {
-	cmd := exec.Command("claude", "--print")
+	args := append([]string{"--print"}, claudePermissionArgs()...)
+	cmd := exec.Command("claude", args...)
 	cmd.Stdin = strings.NewReader(prompt)
 	cmd.Stderr = os.Stderr
 	out, err := cmd.Output()

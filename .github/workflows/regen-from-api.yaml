@@ -1,0 +1,321 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+---
+name: Regenerate clients from API
+on:
+  repository_dispatch:
+    types: [api_main_update, api_release_update]
+  workflow_dispatch:
+    inputs:
+      buftag:
+        description: "BSR ref to pin to: an authzed/api git SHA, a tag such as v1.53.0, or main"
+        required: true
+        type: string
+permissions:
+  contents: read
+# Never cancel in progress: a half-finished generation leaves a partly rewritten
+# tree, and the next run would build on it. Queue instead.
+concurrency:
+  group: regen-from-api
+  cancel-in-progress: false
+jobs:
+  authorize:
+    runs-on: depot-ubuntu-24.04-arm-small
+    timeout-minutes: 10
+    steps:
+      # The App is used rather than GITHUB_TOKEN because reading a collaborator's
+      # permission level requires Administration:read, and the workflow
+      # permissions block has no administration key -- GITHUB_TOKEN structurally
+      # cannot do this check.
+      - uses: actions/create-github-app-token@v3
+        id: app-token
+        with:
+          app-id: ${{ secrets.REGEN_APP_ID }}
+          private-key: ${{ secrets.REGEN_APP_PRIVATE_KEY }}
+
+      # repository_dispatch is authorized by possession of the api repo's
+      # EXTERNAL_REPO_TOKEN, and its actor is a bot rather than a person, so the
+      # admin check applies only to manual runs.
+      - name: Require admin for manual runs
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/github-script@v9
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              username: context.actor,
+            });
+            if (data.permission !== 'admin') {
+              core.setFailed(
+                `${context.actor} has '${data.permission}' on this repository; ` +
+                `regeneration requires admin.`);
+            }
+
+  regen:
+    needs: authorize
+    runs-on: depot-ubuntu-24.04-arm-8
+    environment: client-regen
+    # Every other job in this repo uses 20 minutes, and the repo's convention is
+    # that no job may sit at GitHub's 360-minute default. This one is genuinely
+    # different: seven sequential Claude sessions, each with a build/test/fix
+    # retry loop. Documented exception rather than a silent inheritance of 360.
+    timeout-minutes: 180
+    steps:
+      - name: Mask the Claude credential
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: echo "::add-mask::$CLAUDE_CODE_OAUTH_TOKEN"
+
+      # Payload values are never interpolated into a script body -- they arrive
+      # through env so a crafted ref cannot become shell.
+      - name: Resolve BUFTAG
+        id: pin
+        env:
+          MANUAL_TAG: ${{ inputs.buftag }}
+          DISPATCH_TAG: ${{ github.event.client_payload.BUFTAG }}
+        run: |
+          set -euo pipefail
+          tag="${MANUAL_TAG:-${DISPATCH_TAG:-}}"
+          if [ -z "$tag" ]; then
+            echo "::error::no BUFTAG supplied by either trigger"
+            exit 1
+          fi
+          if ! printf '%s' "$tag" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]*$'; then
+            echo "::error::BUFTAG contains unexpected characters"
+            exit 1
+          fi
+          echo "buftag=$tag" >> "$GITHUB_OUTPUT"
+
+      # fetch-depth: 0 is required. The idiomatic clients' Gen() diffs against the
+      # SHA recorded in .last-generation and falls back to HEAD~1, and apicompat
+      # needs base refs. A shallow clone silently degrades both.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # This workflow sets CI_REGENERATION and BUFTAG, but only the Magefile
+      # branch teaches the Magefiles to read them. Merged ahead of that branch,
+      # generation would roll everything back, exit 0, create no PR, and fire
+      # neither Slack notice -- a green run with zero output, indistinguishable
+      # from a legitimate no-op. Fail loudly instead.
+      - name: Assert the Magefile regeneration hooks are present
+        run: |
+          set -e
+          grep -q 'CI_REGENERATION' proto-clients/spicedb-go-proto/Magefile.go \
+            || { echo "::error::CI_REGENERATION gate missing — the Magefile branch has not landed on this base"; exit 1; }
+          grep -q 'bufGenTemplate' Magefile.go \
+            || { echo "::error::BUFTAG pinning helper missing — the Magefile branch has not landed on this base"; exit 1; }
+
+      # Toolchain below is lifted from meta.yaml's gen-nodiff job, which runs the
+      # same workload. Keep the two in sync.
+      #
+      # Held at v5 deliberately. setup-go v6+ defaults GOTOOLCHAIN=local, so Go
+      # stops fetching the toolchain go.mod asks for and every job that needs a
+      # newer one dies with "go.mod requires go >= 1.25.7 (running go 1.24.13;
+      # GOTOOLCHAIN=local)". Moving to v6/v7 needs explicit toolchain handling,
+      # which is its own change rather than a dependency bump.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+          cache: pnpm
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
+      - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1
+        with:
+          ruby-version: '3.2'
+          bundler-cache: false
+          working-directory: spicedb-ruby
+      - name: Install Ruby deps
+        working-directory: spicedb-ruby
+        run: bundle install
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          workspaces: spicedb-rust
+      - name: Install protoc
+        timeout-minutes: 5
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Install buf
+        uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99 # v1
+      - name: Install mage
+        timeout-minutes: 5
+        run: go install github.com/magefile/mage@latest
+      - name: Install pnpm deps
+        run: pnpm install --frozen-lockfile
+      - name: Build proto package
+        run: pnpm --filter @spicedb/proto build
+
+      - name: Install Claude Code
+        timeout-minutes: 5
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Configure git identity
+        run: |
+          git config user.name "authzed-client-regen[bot]"
+          git config user.email "authzed-client-regen[bot]@users.noreply.github.com"
+
+      # continue-on-error so a partial failure still yields a PR carrying the
+      # languages that did succeed. The job is failed explicitly at the end.
+      - name: Regenerate all clients
+        id: regen
+        continue-on-error: true
+        env:
+          CI_REGENERATION: "1"
+          BUFTAG: ${{ steps.pin.outputs.buftag }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          set -o pipefail
+          mage gen:all 2>&1 | tee /tmp/gen.log
+
+      - name: Describe the outcome
+        id: state
+        env:
+          OUTCOME: ${{ steps.regen.outcome }}
+          BUFTAG: ${{ steps.pin.outputs.buftag }}
+          EVENT: ${{ github.event_name }}
+          DISPATCH_TYPE: ${{ github.event.action }}
+        run: |
+          set -euo pipefail
+          # mage prints "proto generation failed for: go, ruby" (or the idiomatic
+          # equivalent) to stdout; /tmp/gen.log is the tee'd copy. `|| true`
+          # because grep exits 1 when nothing matched, which is the success case.
+          failed=$(grep -oE '(proto generation|idiomatic client update) failed for: .*' /tmp/gen.log | tr '\n' '; ' || true)
+          echo "failed=${failed:-none reported}" >> "$GITHUB_OUTPUT"
+          if [ "$OUTCOME" = "success" ]; then
+            echo "draft=false" >> "$GITHUB_OUTPUT"
+            echo "labels=automated" >> "$GITHUB_OUTPUT"
+            echo "title=chore: regenerate clients for authzed/api@${BUFTAG}" >> "$GITHUB_OUTPUT"
+          else
+            echo "draft=true" >> "$GITHUB_OUTPUT"
+            echo "labels=automated,regen-partial" >> "$GITHUB_OUTPUT"
+            echo "title=chore: PARTIAL regeneration for authzed/api@${BUFTAG}" >> "$GITHUB_OUTPUT"
+          fi
+          # A release dispatch, or a manual run pinned to a version tag, gets its
+          # own branch. Everything else shares the rolling main branch.
+          if [ "$DISPATCH_TYPE" = "api_release_update" ]; then
+            echo "branch=regen/api-${BUFTAG}" >> "$GITHUB_OUTPUT"
+          elif [ "$EVENT" = "workflow_dispatch" ] && printf '%s' "$BUFTAG" | grep -Eq '^v[0-9]'; then
+            echo "branch=regen/api-${BUFTAG}" >> "$GITHUB_OUTPUT"
+          else
+            echo "branch=regen/api-main" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/create-github-app-token@v3
+        id: pr-token
+        with:
+          app-id: ${{ secrets.REGEN_APP_ID }}
+          private-key: ${{ secrets.REGEN_APP_PRIVATE_KEY }}
+
+      # An App token rather than GITHUB_TOKEN: GitHub deliberately does not run
+      # pull_request workflows on PRs opened by GITHUB_TOKEN, and this design
+      # relies on the per-language PR workflows as its correctness gate.
+      - name: Open or update the PR
+        id: cpr
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          token: ${{ steps.pr-token.outputs.token }}
+          branch: ${{ steps.state.outputs.branch }}
+          base: main
+          draft: ${{ steps.state.outputs.draft }}
+          labels: ${{ steps.state.outputs.labels }}
+          title: ${{ steps.state.outputs.title }}
+          body: |
+            Automated client regeneration.
+
+            - **Upstream API pin:** `${{ steps.pin.outputs.buftag }}`
+            - **Trigger:** `${{ github.event_name }}` / `${{ github.event.action }}`
+            - **Generation result:** `${{ steps.regen.outcome }}`
+            - **Failed languages:** `${{ steps.state.outputs.failed }}`
+            - **Run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+            Reproduce locally:
+
+            ```
+            BUFTAG=${{ steps.pin.outputs.buftag }} mage gen:all
+            ```
+
+      # Gated on the operation, not merely on a populated number:
+      # create-pull-request closes an existing PR when new base-branch commits
+      # make it unnecessary, and still sets pull-request-number on that path --
+      # which would announce a PR it had just closed as open.
+      - name: Notify Slack that a PR is open
+        if: steps.cpr.outputs.pull-request-operation == 'created' || steps.cpr.outputs.pull-request-operation == 'updated'
+        uses: slackapi/slack-github-action@91efab103c0de0a537f72a35f6b8cda0ee76bf0a # v2.1.1
+        with:
+          webhook: ${{ secrets.SLACK_BUILDS_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            text: "Client regeneration PR opened"
+            blocks:
+              - type: "section"
+                text:
+                  type: "mrkdwn"
+                  text: |
+                    :package: Client regeneration PR is open (generation: `${{ steps.regen.outcome }}`).
+                    *API pin:* `${{ steps.pin.outputs.buftag }}`
+                    *PR:* <${{ github.server_url }}/${{ github.repository }}/pull/${{ steps.cpr.outputs.pull-request-number }}>
+
+      - name: Notify Slack that regeneration broke
+        if: steps.regen.outcome != 'success'
+        uses: slackapi/slack-github-action@91efab103c0de0a537f72a35f6b8cda0ee76bf0a # v2.1.1
+        with:
+          webhook: ${{ secrets.SLACK_BUILDS_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            text: "Client regeneration failed"
+            blocks:
+              - type: "section"
+                text:
+                  type: "mrkdwn"
+                  text: |
+                    :x: Client regeneration failed for API pin `${{ steps.pin.outputs.buftag }}`.
+                    *Failed languages:* `${{ steps.state.outputs.failed }}`
+                    Any languages that did generate are in a draft PR labelled `regen-partial`.
+                    *Run:* <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}>
+
+      - name: Fail the job if regeneration failed
+        if: steps.regen.outcome != 'success'
+        run: |
+          echo "::error::mage gen:all failed; see the regenerate step above"
+          exit 1
+
+      # The generation-failure notice above covers only `mage gen:all`. Checkout,
+      # any toolchain install, App-token minting, and the PR push can all fail a
+      # red job silently -- including the workflow-write rejection this design
+      # relies on as a loud signal. The `!= 'failure'` clause keeps this from
+      # double-posting alongside the generation-failure notice while still
+      # covering the steps that run BEFORE regeneration -- checkout, the
+      # Magefile-hooks assertion, the toolchain installs, and App-token
+      # minting. When one of those fails, the regen step never runs and its
+      # outcome is 'skipped', not 'success', so an == 'success' guard would
+      # silently miss exactly the failures this step exists to report.
+      - name: Notify Slack on any other failure
+        if: failure() && steps.regen.outcome != 'failure'
+        uses: slackapi/slack-github-action@91efab103c0de0a537f72a35f6b8cda0ee76bf0a # v2.1.1
+        with:
+          webhook: ${{ secrets.SLACK_BUILDS_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            text: "Client regeneration workflow failed outside generation"
+            blocks:
+              - type: "section"
+                text:
+                  type: "mrkdwn"
+                  text: |
+                    :x: The client regeneration workflow failed outside of `mage gen:all` — checkout, toolchain, token minting, or the PR push.
+                    *API pin:* `${{ steps.pin.outputs.buftag }}`
+                    *Run:* <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}>

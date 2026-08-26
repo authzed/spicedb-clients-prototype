@@ -51,7 +51,7 @@ jobs:
       # newer one dies with "go.mod requires go >= 1.25.7 (running go 1.24.13;
       # GOTOOLCHAIN=local)". Moving to v6/v7 needs explicit toolchain handling,
       # which is its own change rather than a dependency bump.
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - uses: actions/setup-dotnet@v6
@@ -73,7 +73,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - uses: actions/setup-dotnet@v6
@@ -111,7 +111,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - uses: actions/setup-dotnet@v6
@@ -135,7 +135,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - uses: actions/setup-dotnet@v6

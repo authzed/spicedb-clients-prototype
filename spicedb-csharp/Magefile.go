@@ -71,12 +71,8 @@ func Gen() error {
 		baseline = []byte("HEAD~1")
 	}
 
-	// Summarize rather than paste. spicedb-java-proto alone produced 263 changed
-	// files and 56,401 changed lines in one regeneration -- 55x the next largest
-	// client -- and pasting that raw diff exceeded the context window outright
-	// ("Prompt is too long", run 33014735194), failing java on every run. Claude
-	// has file access on the runner, so a stat summary plus a name-status list is
-	// smaller AND more useful: it can read whichever files it actually needs.
+	// Summarize rather than paste, so a large proto diff cannot blow the context
+	// window. See spicedb-java/Magefile.go for the measured cause and numbers.
 	stat, err := sh.Output("git", "diff", "--stat", strings.TrimSpace(string(baseline)), "--", protoClientDir)
 	if err != nil {
 		stat, _ = sh.Output("git", "diff", "--stat", "HEAD~1", "--", protoClientDir)

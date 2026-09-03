@@ -75,6 +75,36 @@ RSpec.describe 'SpiceDB::Client lookup native results' do
 
       expect(result.looked_up_at).to eq('zed-lookup-1')
     end
+
+    it 'defaults with_debug to false on the wire request' do
+      resp = Authzed::Api::V1::LookupResourcesResponse.new(
+        resource_object_id: 'doc1',
+        permissionship: :LOOKUP_PERMISSIONSHIP_HAS_PERMISSION,
+        after_result_cursor: Authzed::Api::V1::Cursor.new(token: 'cursor1')
+      )
+      permissions_service = double('permissions_service')
+      expect(permissions_service).to receive(:lookup_resources)
+        .with(having_attributes(with_debug: false)).and_return([resp])
+      proto_client = double('proto_client', permissions: permissions_service)
+      client.instance_variable_set(:@proto_client, proto_client)
+
+      client.lookup_resources(SpiceDB::Consistency.full, 'document', 'view', 'user', 'alice').to_a
+    end
+
+    it 'sets with_debug on the wire request when debug: true is passed' do
+      resp = Authzed::Api::V1::LookupResourcesResponse.new(
+        resource_object_id: 'doc1',
+        permissionship: :LOOKUP_PERMISSIONSHIP_HAS_PERMISSION,
+        after_result_cursor: Authzed::Api::V1::Cursor.new(token: 'cursor1')
+      )
+      permissions_service = double('permissions_service')
+      expect(permissions_service).to receive(:lookup_resources)
+        .with(having_attributes(with_debug: true)).and_return([resp])
+      proto_client = double('proto_client', permissions: permissions_service)
+      client.instance_variable_set(:@proto_client, proto_client)
+
+      client.lookup_resources(SpiceDB::Consistency.full, 'document', 'view', 'user', 'alice', debug: true).to_a
+    end
   end
 
   describe '#lookup_subjects' do

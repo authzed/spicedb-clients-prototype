@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+### Added
+
+- **2026-09-03: `lookup_resources` gains a `debug:` keyword**, reaching a proto field
+  (`LookupResourcesRequest.with_debug`) added upstream that this client previously had no
+  way to set. As of this writing it enables one thing: when a `lookup_resources` call fails
+  by exceeding the maximum permission-check recursion depth, the server attaches additional
+  debug context to the error. There is no new accessor for that context -- it rides the
+  same `google.rpc.ErrorInfo` detail this client already parses onto
+  `SpiceDB::Error#reason`/`#reason_metadata`, so passing the keyword is the only change a
+  caller who wants it needs to make. Purely additive: `lookup_resources` gained a trailing
+  `debug: false` keyword, so every existing call site is unaffected.
+
+  ```ruby
+  client.lookup_resources(consistency, 'document', 'view', 'user', 'alice', debug: true)
+  ```
+
+  Also documented (no code change): the upstream proto now states explicitly that
+  `lookup_resources`/`lookup_subjects` results are **not guaranteed unique** -- the same
+  resource or subject may be streamed more than once, possibly with differing
+  permissionship. A caller needing uniqueness must deduplicate results itself.
+
+  `examples/lookup_resources/` extended to prove `debug:` reaches the wire, against a
+  stand-in `PermissionsService` (the same technique `spec/client_stream_release_spec.rb`
+  uses) -- provoking a genuine depth-exceeded failure would need a deeply recursive schema
+  this example doesn't otherwise need.
+
 ### Fixed
 
 - **2026-08-19: the insecure-remote-host refusal now raises `SpiceDB::InvalidArgumentError`.**

@@ -438,19 +438,30 @@ module SpiceDB
     # results, which caveat context was missing. Cursors are handled
     # transparently.
     #
+    # Results are streamed and NOT guaranteed to be unique: the same resource
+    # may be yielded more than once (e.g. via caveated/conditional results, or
+    # when a limit is set), possibly with differing permissionship. Callers
+    # that require uniqueness must deduplicate results themselves.
+    #
     # @param consistency [SpiceDB::Consistency::Strategy]
     # @param resource_type [String]
     # @param permission [String]
     # @param subject_type [String]
     # @param subject_id [String]
+    # @param debug [Boolean] sets the proto's `with_debug` field -- when a
+    #   call fails by exceeding the maximum permission-check recursion depth,
+    #   asks the server to attach additional debug context to the error. That
+    #   context rides the same `google.rpc.ErrorInfo` detail this client
+    #   already parses onto {SpiceDB::Error#reason}/{SpiceDB::Error#reason_metadata};
+    #   there is no separate accessor for it.
     # @return [Enumerator<SpiceDB::LookupResource>]
-    def lookup_resources(consistency, resource_type, permission, subject_type, subject_id)
+    def lookup_resources(consistency, resource_type, permission, subject_type, subject_id, debug: false)
       Enumerator.new do |yielder|
         cursor = nil
         loop do
           resources, new_cursor, count = with_retry do
             call_lookup_resources(consistency, resource_type, permission, subject_type, subject_id, cursor,
-                                  DEFAULT_LOOKUP_PAGE_SIZE)
+                                  DEFAULT_LOOKUP_PAGE_SIZE, debug: debug)
           end
 
           resources.each { |resource| yielder << resource }
@@ -471,6 +482,10 @@ module SpiceDB
     # those listed in LookupSubject#excluded_subjects. Callers MUST check
     # excluded_subjects before treating a wildcard match as a blanket grant,
     # or they risk granting access to subjects the server explicitly excluded.
+    #
+    # Results are streamed and NOT guaranteed to be unique: the same subject
+    # may be yielded more than once, possibly with differing permissionship.
+    # Callers that require uniqueness must deduplicate results themselves.
     #
     # @param consistency [SpiceDB::Consistency::Strategy]
     # @param resource_type [String]
@@ -1051,7 +1066,8 @@ module SpiceDB
       [revision, complete]
     end
 
-    def call_lookup_resources(consistency, resource_type, permission, subject_type, subject_id, cursor, page_size)
+    def call_lookup_resources(consistency, resource_type, permission, subject_type, subject_id, cursor, page_size,
+                              debug: false)
       req_args = {
         consistency: build_consistency(consistency),
         resource_object_type: resource_type,
@@ -1062,7 +1078,8 @@ module SpiceDB
             object_id: subject_id
           )
         ),
-        optional_limit: page_size
+        optional_limit: page_size,
+        with_debug: debug
       }
       req_args[:optional_cursor] = Authzed::Api::V1::Cursor.new(token: cursor) if cursor
 

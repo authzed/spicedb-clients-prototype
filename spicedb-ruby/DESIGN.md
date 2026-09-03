@@ -350,6 +350,12 @@ against this result.
   `LookupSubject#subject` is a `ResolvedSubject` and
   `LookupSubject#excluded_subjects` is an `Array<ResolvedSubject>`
 
+Results from `lookup_resources`/`lookup_subjects` are streamed and **not
+guaranteed to be unique**: the same resource or subject may be yielded more
+than once (e.g. via caveated/conditional results, or when a limit is set),
+possibly with differing permissionship. Callers that require uniqueness must
+deduplicate results themselves.
+
 Callers MUST check `permissionship` before treating a `LookupResource` as a
 full grant. For `lookup_subjects`, when `subject.subject_id` is the
 wildcard `"*"`, callers MUST check `excluded_subjects` before treating the
@@ -629,7 +635,8 @@ are NOT bound by `default_timeout`; `import_relationships` still accepts
 - `delete_relationships(filter, must_match: [], must_not_match: [], limit: nil, timeout: nil)` → `String` (revision)
 
 **Lookups:**
-- `lookup_resources(consistency, resource_type, permission, subject_type, subject_id)` → `Enumerator<LookupResource>`
+- `lookup_resources(consistency, resource_type, permission, subject_type, subject_id, debug: false)` → `Enumerator<LookupResource>`
+  — `debug: true` sets the proto's `with_debug` field; see "Lookups" above
 - `lookup_subjects(consistency, resource_type, resource_id, permission, subject_type)` → `Enumerator<LookupSubject>`
 
 **Schema:**
@@ -712,7 +719,7 @@ See module sections above for the complete API manifest.
 | `write_relationships/` | Writing relationships with the transaction builder |
 | `delete_relationships/` | Deleting relationships, including guarded deletes with `must_match:`/`must_not_match:` and `limit:` |
 | `read_relationships/` | Reading relationships with an enumerator |
-| `lookup_resources/` | Finding resources a subject can access |
+| `lookup_resources/` | Finding resources a subject can access; `debug:` reaching the wire's `with_debug` field, proven against a stand-in server |
 | `lookup_subjects/` | Finding subjects with access to a resource |
 | `watch_changes/` | Watching for relationship changes with a bounded consumer: subscribe from a known revision, write, consume until that exact update arrives, then `break` |
 | `schema_management/` | Schema read/write operations |

@@ -647,3 +647,75 @@ func TestGenConcurrencyTrimsWhitespace(t *testing.T) {
 		t.Fatalf("genConcurrency() = %d, want 2", got)
 	}
 }
+
+// The API-compat repair prompt is what Claude sees when regeneration breaks a
+// client's public surface. Each assertion below pins a requirement that a
+// rewrite could silently drop while still producing a plausible-looking
+// prompt, so they are checked individually rather than by length.
+
+func TestAPICompatFixPromptIncludesEveryFailingReport(t *testing.T) {
+	prompt := apiCompatFixPrompt([]apiCompatBreak{
+		{lang: "go", report: "- (*Client).Check: changed from func(int) to func(string)"},
+		{lang: "java", report: "japicmp: method removed from Client"},
+	})
+
+	for _, want := range []string{
+		"spicedb-go",
+		"(*Client).Check: changed from func(int) to func(string)",
+		"spicedb-java",
+		"japicmp: method removed from Client",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestAPICompatFixPromptTrimsReports(t *testing.T) {
+	prompt := apiCompatFixPrompt([]apiCompatBreak{
+		{lang: "go", report: "\n\n   the actual break   \n\n"},
+	})
+
+	if !strings.Contains(prompt, "the actual break") {
+		t.Fatalf("prompt missing trimmed report content:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "\n\n\n") {
+		t.Fatalf("prompt carries untrimmed blank runs from the report:\n%s", prompt)
+	}
+}
+
+// The repair has to stay additive, has to be recorded in the changelog the way
+// the existing entries are, and must not be achieved by disabling the gate --
+// that last one matters most, because weakening the check is the cheapest way
+// to make the failure go away.
+func TestAPICompatFixPromptCarriesRequiredInstructions(t *testing.T) {
+	prompt := apiCompatFixPrompt([]apiCompatBreak{{lang: "go", report: "break"}})
+
+	for _, want := range []string{
+		"preserving the existing public API",
+		"additive",
+		"last resort",
+		"CHANGELOG.md",
+		"## Unreleased",
+		"never add a second one",
+		"**YYYY-MM-DD: one-line summary.**",
+		"Do not weaken, skip or disable the compatibility check",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing required instruction %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestAPICompatFixPromptNamesOnlyTheFailingLanguages(t *testing.T) {
+	prompt := apiCompatFixPrompt([]apiCompatBreak{{lang: "rust", report: "cargo-semver-checks: major change"}})
+
+	if !strings.Contains(prompt, "spicedb-rust") {
+		t.Fatalf("prompt missing the failing language:\n%s", prompt)
+	}
+	for _, unwanted := range []string{"spicedb-go", "spicedb-java", "spicedb-python"} {
+		if strings.Contains(prompt, unwanted) {
+			t.Fatalf("prompt names %q, which did not fail:\n%s", unwanted, prompt)
+		}
+	}
+}

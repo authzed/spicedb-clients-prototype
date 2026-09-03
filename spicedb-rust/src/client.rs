@@ -951,6 +951,11 @@ impl SpiceDBClient {
     /// pages of 512 results, lazily fetching the next page only once the
     /// current page has been consumed.
     ///
+    /// Results are **not guaranteed to be unique** — the same resource may be
+    /// yielded more than once (e.g. for caveated/conditional results),
+    /// possibly with differing permissionship. Callers that require
+    /// uniqueness should deduplicate by resource ID.
+    ///
     /// # Streaming
     ///
     /// Returns `impl Stream<Item = Result<LookupResource, SpiceDBError>>`.
@@ -993,6 +998,7 @@ impl SpiceDBClient {
                             optional_limit: DEFAULT_LOOKUP_PAGE_SIZE,
                             optional_cursor: cursor.clone(),
                             context: None,
+                            with_debug: false,
                         })
                         .await
                 })
@@ -1041,6 +1047,10 @@ impl SpiceDBClient {
     /// Unlike `lookup_resources`, `lookup_subjects` does not currently support
     /// cursor-based pagination in SpiceDB — all results stream in a single
     /// server-streaming call.
+    ///
+    /// Results are **not guaranteed to be unique** — the same subject may be
+    /// yielded more than once, possibly with differing permissionship.
+    /// Callers that require uniqueness should deduplicate by subject ID.
     ///
     /// # Streaming
     ///

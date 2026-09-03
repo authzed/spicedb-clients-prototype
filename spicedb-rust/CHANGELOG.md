@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Fixes
+
+- **2026-09-03: fixed a build break from the proto regeneration adding
+  `LookupResourcesRequest.with_debug`.** The new field (requests debug info for
+  max-recursion-depth errors) made `lookup_resources`'s hand-built request literal
+  non-exhaustive, so the crate no longer compiled. It is now set to `false`
+  unconditionally, matching this client's existing precedent of not surfacing debug/trace
+  toggles in the idiomatic surface (`CheckBulkPermissionsRequest.with_tracing` is likewise
+  hardcoded `false`) -- a caller who needs it can reach `LookupResourcesRequest` directly
+  through `raw_proto()`. No public API change.
+- **2026-09-03** (documentation only; no behaviour change): `lookup_resources` and
+  `lookup_subjects` doc comments, and `DESIGN.md`, now note that streamed results are not
+  guaranteed unique -- the same resource/subject may be yielded more than once (e.g. for
+  caveated/conditional results), possibly with differing permissionship. This mirrors new
+  wording added to the upstream proto's `LookupResources`/`LookupSubjects` RPC comments;
+  this client's behavior (it never deduplicated) is unchanged.
+
 ### Added
 
 - **2026-08-19: four new examples, one per root `DESIGN.md` RULE that had no executed

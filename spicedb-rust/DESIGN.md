@@ -373,6 +373,12 @@ carries `excluded_subjects`: when `subject.subject_id` is the wildcard `"*"`, th
 subjects MUST be treated as NOT holding the permission even though the wildcard would
 otherwise suggest a blanket grant.
 
+Results from both streams are **not guaranteed to be unique** -- the proto docs for
+`LookupResources`/`LookupSubjects` note the same resource/subject may be yielded more than
+once (e.g. for caveated/conditional results, or when a limit is set), possibly with
+differing permissionship. A caller that requires uniqueness must deduplicate itself; this
+client does not do so on the caller's behalf.
+
 ### Writes
 
 Every write RPC that has a `ZedToken` in its proto response already returns

@@ -102,8 +102,15 @@ jobs:
       - name: Assert the Magefile regeneration hooks are present
         run: |
           set -e
-          grep -q 'CI_REGENERATION' proto-clients/spicedb-go-proto/Magefile.go \
-            || { echo "::error::CI_REGENERATION gate missing — the Magefile branch has not landed on this base"; exit 1; }
+          # CI_REGENERATION moved out of the per-language Magefiles when the
+          # Claude plumbing was extracted into internal/clauderun, so the gate
+          # is now two facts: the plumbing reads the variable, and the Magefile
+          # is wired to that plumbing. Checking only the Magefile for the
+          # literal string silently became a check of nothing.
+          grep -q 'CI_REGENERATION' internal/clauderun/clauderun.go \
+            || { echo "::error::CI_REGENERATION gate missing from internal/clauderun — the Magefile branch has not landed on this base"; exit 1; }
+          grep -q 'internal/clauderun' proto-clients/spicedb-go-proto/Magefile.go \
+            || { echo "::error::proto Magefile does not use internal/clauderun — the Magefile branch has not landed on this base"; exit 1; }
           grep -q 'bufGenTemplate' Magefile.go \
             || { echo "::error::BUFTAG pinning helper missing — the Magefile branch has not landed on this base"; exit 1; }
 

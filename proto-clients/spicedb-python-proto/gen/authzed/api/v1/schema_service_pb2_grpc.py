@@ -5,7 +5,7 @@ import grpc
 from authzed.api.v1 import schema_service_pb2 as authzed_dot_api_dot_v1_dot_schema__service__pb2
 
 
-class SchemaServiceStub(object):
+class SchemaServiceStub:
     """SchemaService implements operations on a Permissions System's Schema.
     """
 
@@ -47,7 +47,7 @@ class SchemaServiceStub(object):
                 _registered_method=True)
 
 
-class SchemaServiceServicer(object):
+class SchemaServiceServicer:
     """SchemaService implements operations on a Permissions System's Schema.
     """
 
@@ -145,7 +145,7 @@ def add_SchemaServiceServicer_to_server(servicer, server):
 
 
  # This class is part of an EXPERIMENTAL API.
-class SchemaService(object):
+class SchemaService:
     """SchemaService implements operations on a Permissions System's Schema.
     """
 

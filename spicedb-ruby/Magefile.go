@@ -46,6 +46,7 @@ var wantExamples = []string{
 	"expand_permission_tree",
 	"insecure_opt_in",
 	"lookup_resources",
+	"lookup_resources_debug",
 	"lookup_subjects",
 	"raw_escape_hatch",
 	"read_relationships",

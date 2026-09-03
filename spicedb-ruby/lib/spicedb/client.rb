@@ -438,19 +438,33 @@ module SpiceDB
     # results, which caveat context was missing. Cursors are handled
     # transparently.
     #
+    # Results are NOT guaranteed to be unique: the same resource may be
+    # yielded more than once (e.g. across conditional results, or when a
+    # limit is in play), possibly with differing permissionship. Callers
+    # that need uniqueness must deduplicate by resource_id.
+    #
     # @param consistency [SpiceDB::Consistency::Strategy]
     # @param resource_type [String]
     # @param permission [String]
     # @param subject_type [String]
     # @param subject_id [String]
+    # @param with_debug [Boolean] asks the server to attach debug information
+    #   to a failed call's error details, when available. As of this
+    #   client's proto version, SpiceDB populates this only for a
+    #   MaxDepthExceeded failure. The payload gets no dedicated client-native
+    #   field -- the underlying GRPC::BadStatus already survives as the
+    #   raised SpiceDB::Error's `cause`, so it is reached the same way as any
+    #   other status detail: `SpiceDB::ErrorDetails.rich_status(error.cause)`,
+    #   whose `details` unpack to `Authzed::Api::V1::DebugInformation`. See
+    #   examples/lookup_resources_debug.
     # @return [Enumerator<SpiceDB::LookupResource>]
-    def lookup_resources(consistency, resource_type, permission, subject_type, subject_id)
+    def lookup_resources(consistency, resource_type, permission, subject_type, subject_id, with_debug: false)
       Enumerator.new do |yielder|
         cursor = nil
         loop do
           resources, new_cursor, count = with_retry do
             call_lookup_resources(consistency, resource_type, permission, subject_type, subject_id, cursor,
-                                  DEFAULT_LOOKUP_PAGE_SIZE)
+                                  DEFAULT_LOOKUP_PAGE_SIZE, with_debug: with_debug)
           end
 
           resources.each { |resource| yielder << resource }
@@ -465,6 +479,10 @@ module SpiceDB
     # Returns an Enumerator over subjects of the given type that have the
     # specified permission on the resource. Unlike lookup_resources, this does
     # not support cursor-based pagination and streams all results.
+    #
+    # Results are NOT guaranteed to be unique: the same subject may be
+    # yielded more than once, possibly with differing permissionship.
+    # Callers that need uniqueness must deduplicate.
     #
     # When a yielded LookupSubject#subject is the wildcard "*", the server
     # has granted the permission to every subject of subject_type EXCEPT
@@ -1051,7 +1069,8 @@ module SpiceDB
       [revision, complete]
     end
 
-    def call_lookup_resources(consistency, resource_type, permission, subject_type, subject_id, cursor, page_size)
+    def call_lookup_resources(consistency, resource_type, permission, subject_type, subject_id, cursor, page_size,
+                              with_debug: false)
       req_args = {
         consistency: build_consistency(consistency),
         resource_object_type: resource_type,
@@ -1062,7 +1081,8 @@ module SpiceDB
             object_id: subject_id
           )
         ),
-        optional_limit: page_size
+        optional_limit: page_size,
+        with_debug: with_debug
       }
       req_args[:optional_cursor] = Authzed::Api::V1::Cursor.new(token: cursor) if cursor
 

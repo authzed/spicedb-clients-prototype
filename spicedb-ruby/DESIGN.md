@@ -329,6 +329,23 @@ bare ID strings — so callers can't accidentally treat a caveated or
 wildcard-excluded result as a full grant. Mirrors spicedb-go's
 `client/lookup_types.go`.
 
+Neither stream guarantees unique results: the same resource/subject may be
+yielded more than once (e.g. across conditional results, or when a limit is
+in play), possibly with differing permissionship. Callers that need
+uniqueness must deduplicate.
+
+`lookup_resources` takes a trailing `with_debug:` keyword (default `false`),
+tracking the proto's `LookupResourcesRequest.with_debug` field. Setting it
+asks the server to attach a `DebugInformation` detail to a failed call's
+error -- as of this proto version, only for a `MaxDepthExceeded` failure.
+The payload gets no dedicated client-native field: `SpiceDB::Error` already
+preserves the underlying `GRPC::BadStatus` as its `cause` (see "Error
+Handling" below), so it's reached the same way as any other status detail
+-- `SpiceDB::ErrorDetails.rich_status(error.cause).details`, unpacked to
+`Authzed::Api::V1::DebugInformation`. There is no equivalent on
+`lookup_subjects`, because `LookupSubjectsRequest` has no such field. See
+`examples/lookup_resources_debug`.
+
 ```ruby
 SpiceDB::PartialCaveatInfo = Data.define(:missing_required_context)
 SpiceDB::LookupResource    = Data.define(:resource_id, :permissionship, :partial_caveat, :looked_up_at)
@@ -629,7 +646,7 @@ are NOT bound by `default_timeout`; `import_relationships` still accepts
 - `delete_relationships(filter, must_match: [], must_not_match: [], limit: nil, timeout: nil)` → `String` (revision)
 
 **Lookups:**
-- `lookup_resources(consistency, resource_type, permission, subject_type, subject_id)` → `Enumerator<LookupResource>`
+- `lookup_resources(consistency, resource_type, permission, subject_type, subject_id, with_debug: false)` → `Enumerator<LookupResource>`
 - `lookup_subjects(consistency, resource_type, resource_id, permission, subject_type)` → `Enumerator<LookupSubject>`
 
 **Schema:**
@@ -713,6 +730,7 @@ See module sections above for the complete API manifest.
 | `delete_relationships/` | Deleting relationships, including guarded deletes with `must_match:`/`must_not_match:` and `limit:` |
 | `read_relationships/` | Reading relationships with an enumerator |
 | `lookup_resources/` | Finding resources a subject can access |
+| `lookup_resources_debug/` | `lookup_resources`' `with_debug:` option: controls whether a `MaxDepthExceeded` failure carries a `DebugInformation` status detail, and how to read it back through the preserved `GRPC::BadStatus` |
 | `lookup_subjects/` | Finding subjects with access to a resource |
 | `watch_changes/` | Watching for relationship changes with a bounded consumer: subscribe from a known revision, write, consume until that exact update arrives, then `break` |
 | `schema_management/` | Schema read/write operations |

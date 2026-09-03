@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Added
+
+- **2026-09-03: `lookup_resources` gained a trailing `with_debug:` keyword**, tracking the
+  proto's new `LookupResourcesRequest.with_debug` field. Setting it asks the server to attach
+  a `DebugInformation` detail to a failed call's error -- as of this proto version, only for a
+  `MaxDepthExceeded` failure. The payload gets no dedicated client-native field: it rides the
+  `GRPC::BadStatus` every mapped `SpiceDB::Error` already preserves as `cause`, so it's reached
+  the same way as any other status detail (`SpiceDB::ErrorDetails.rich_status(error.cause)`).
+  New example: `examples/lookup_resources_debug`, which stands up a local `GRPC::RpcServer`
+  stand-in (a real SpiceDB cannot be made to hit `MaxDepthExceeded` on demand without dozens of
+  chained schema definitions) and proves both that the option controls whether the detail is
+  attached and how to read it back. Existing call sites are unaffected -- a trailing keyword
+  argument with a default does not break callers that pass none. `lookup_resources` and
+  `lookup_subjects`' doc comments now also note what the regenerated proto client's doc
+  comments already say: results are not guaranteed unique.
+
 ### Fixed
 
 - **2026-08-19: the insecure-remote-host refusal now raises `SpiceDB::InvalidArgumentError`.**

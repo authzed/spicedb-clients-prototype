@@ -3,6 +3,7 @@ package apicompat
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -148,10 +149,15 @@ func TestFilterEmptyPasses(t *testing.T) {
 // fakeAPIDiff puts a stub go-apidiff on PATH that prints stdout and exits with
 // code. It exercises Run's exit-status handling, which is the property that
 // keeps a tool failure from being mistaken for a clean report.
+//
+// The stub also deletes ../UNTRACKED relative to its own working directory,
+// mimicking the real tool: go-apidiff checks commits out in place and wipes
+// every untracked and ignored file in the repository it is pointed at. That is
+// what TestRunIsolatesTheWorkingTree measures.
 func fakeAPIDiff(t *testing.T, stdout string, code int) {
 	t.Helper()
 	dir := t.TempDir()
-	script := fmt.Sprintf("#!/bin/sh\ncat <<'EOF'\n%s\nEOF\necho 'boom' >&2\nexit %d\n", stdout, code)
+	script := fmt.Sprintf("#!/bin/sh\nrm -rf ../UNTRACKED\ncat <<'EOF'\n%s\nEOF\necho 'boom' >&2\nexit %d\n", stdout, code)
 	path := filepath.Join(dir, "go-apidiff")
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("writing stub: %v", err)
@@ -159,7 +165,42 @@ func fakeAPIDiff(t *testing.T, stdout string, code int) {
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
+// repoWithModule creates a throwaway git repository holding one module
+// directory plus an untracked file, and chdirs into the module -- the shape
+// Run is called in, where repoPath is ".." and the module is the caller's
+// working directory. It returns the repository root.
+func repoWithModule(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	mod := filepath.Join(root, "mod")
+	if err := os.MkdirAll(mod, 0o755); err != nil {
+		t.Fatalf("creating module dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(mod, "tracked.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("writing tracked file: %v", err)
+	}
+	for _, args := range [][]string{
+		{"init", "-q"},
+		{"config", "user.email", "t@t.t"},
+		{"config", "user.name", "t"},
+		{"add", "-A"},
+		{"commit", "-qm", "init"},
+	} {
+		cmd := exec.Command("git", append([]string{"-C", root}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	// Untracked, and therefore exactly what the real tool destroys.
+	if err := os.WriteFile(filepath.Join(root, "UNTRACKED"), []byte("keep me"), 0o644); err != nil {
+		t.Fatalf("writing untracked file: %v", err)
+	}
+	t.Chdir(mod)
+	return root
+}
+
 func TestRunExitZeroPasses(t *testing.T) {
+	repoWithModule(t)
 	fakeAPIDiff(t, "", 0)
 	res, err := Run("HEAD~1", "..")
 	if err != nil {
@@ -171,6 +212,7 @@ func TestRunExitZeroPasses(t *testing.T) {
 }
 
 func TestRunExitOneIsClassified(t *testing.T) {
+	repoWithModule(t)
 	fakeAPIDiff(t, report(realLookupResources), 1)
 	res, err := Run("HEAD~1", "..")
 	if err != nil {
@@ -185,6 +227,7 @@ func TestRunExitOneIsClassified(t *testing.T) {
 }
 
 func TestRunExitOneStillBlocksRealBreaks(t *testing.T) {
+	repoWithModule(t)
 	fakeAPIDiff(t, report("Baz: removed"), 1)
 	res, err := Run("HEAD~1", "..")
 	if err != nil {
@@ -201,10 +244,31 @@ func TestRunExitOneStillBlocksRealBreaks(t *testing.T) {
 func TestRunOperationalFailure(t *testing.T) {
 	for _, code := range []int{2, 3} {
 		t.Run(fmt.Sprintf("exit %d", code), func(t *testing.T) {
+			repoWithModule(t)
 			fakeAPIDiff(t, "", code)
 			if _, err := Run("deadbeef", ".."); err == nil {
 				t.Fatal("operational failure must not be suppressed")
 			}
 		})
+	}
+}
+
+// TestRunIsolatesTheWorkingTree is the regression guard for the defect that
+// made the java and typescript gates fail during regeneration. go-apidiff
+// checks commits out in place and wipes every untracked and ignored file in the
+// repository -- tools/japicmp.jar, node_modules/, .venv/ -- and because Go runs
+// first among the language gates, it removed what the later gates needed.
+// Run must therefore point the tool at a scratch clone, never the caller's tree.
+func TestRunIsolatesTheWorkingTree(t *testing.T) {
+	root := repoWithModule(t)
+	fakeAPIDiff(t, "", 0)
+
+	if _, err := Run("HEAD", ".."); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(root, "UNTRACKED")); err != nil {
+		t.Fatalf("go-apidiff was run against the caller's working tree and destroyed an "+
+			"untracked file; it must run against a scratch clone: %v", err)
 	}
 }

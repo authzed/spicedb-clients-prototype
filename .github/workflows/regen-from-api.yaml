@@ -151,6 +151,43 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - name: Install buf
         uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99 # v1
+
+      # The pin arrives as a git SHA (main path), a version tag (release path),
+      # or a branch name such as `main` (manual). Only the last two are BSR
+      # *labels*: buf-action labels by branch and by tag, NOT by git commit SHA.
+      # That is why run 33778594627 failed for all seven clients with
+      #   Failure: resource with name "authzed/api:3fe8742..." was not found
+      # The BSR does know the git commit, but as a commit's source_control_url
+      # rather than as a label -- so map it here, then pin everything to the
+      # resulting immutable BSR commit id. Pinning to the id rather than to a
+      # moving label also guarantees all seven clients generate from exactly one
+      # revision even if another api merge lands mid-run.
+      - name: Resolve the pin to a BSR commit
+        id: bsr
+        env:
+          RAW: ${{ steps.pin.outputs.buftag }}
+        run: |
+          set -euo pipefail
+
+          if buf build "buf.build/authzed/api:$RAW" -o /dev/null >/dev/null 2>&1; then
+            ref="$RAW"
+          else
+            echo "::notice::'$RAW' is not a BSR label; looking it up as a git commit"
+            ref=$(buf registry module commit list buf.build/authzed/api:main --page-size 50 --format json 2>/dev/null \
+                  | python3 -c 'import json,os,sys; raw=os.environ["RAW"]; print(next((c["commit"] for c in json.load(sys.stdin).get("commits",[]) if c.get("source_control_url","").endswith(raw)), ""))')
+            if [ -z "$ref" ]; then
+              echo "::error::Could not resolve $RAW to a BSR commit. buf-action labels by branch and tag, not by git SHA, so a commit SHA resolves only via its source_control_url, and none of the last 50 commits on the main label matches. Most likely the BSR push for this commit has not landed yet."
+              exit 1
+            fi
+          fi
+
+          commit=$(buf registry module commit list "buf.build/authzed/api:$ref" --page-size 1 --format json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["commits"][0]["commit"])')
+          if [ -z "$commit" ]; then
+            echo "::error::Resolved $RAW to ref $ref but could not read its BSR commit id."
+            exit 1
+          fi
+          echo "resolved $RAW -> BSR commit $commit"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
       - name: Install mage
         timeout-minutes: 5
         run: go install github.com/magefile/mage@latest
@@ -175,7 +212,8 @@ jobs:
         continue-on-error: true
         env:
           CI_REGENERATION: "1"
-          BUFTAG: ${{ steps.pin.outputs.buftag }}
+          # The resolved BSR commit, not the raw ref -- see "Resolve the pin".
+          BUFTAG: ${{ steps.bsr.outputs.commit }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
         run: |
           set -o pipefail
@@ -240,12 +278,13 @@ jobs:
             - **Trigger:** `${{ github.event_name }}` / `${{ github.event.action }}`
             - **Generation result:** `${{ steps.regen.outcome }}`
             - **Failed languages:** `${{ steps.state.outputs.failed }}`
+            - **Resolved BSR commit:** `${{ steps.bsr.outputs.commit }}`
             - **Run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
-            Reproduce locally:
+            Reproduce locally, against the exact revision this ran on:
 
             ```
-            BUFTAG=${{ steps.pin.outputs.buftag }} mage gen:all
+            BUFTAG=${{ steps.bsr.outputs.commit }} mage gen:all
             ```
 
       # Gated on the operation, not merely on a populated number:

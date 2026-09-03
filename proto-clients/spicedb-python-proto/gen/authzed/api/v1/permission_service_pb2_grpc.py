@@ -5,7 +5,7 @@ import grpc
 from authzed.api.v1 import permission_service_pb2 as authzed_dot_api_dot_v1_dot_permission__service__pb2
 
 
-class PermissionsServiceStub(object):
+class PermissionsServiceStub:
     """PermissionsService implements a set of RPCs that perform operations on
     relationships and permissions.
     """
@@ -68,7 +68,7 @@ class PermissionsServiceStub(object):
                 _registered_method=True)
 
 
-class PermissionsServiceServicer(object):
+class PermissionsServiceServicer:
     """PermissionsService implements a set of RPCs that perform operations on
     relationships and permissions.
     """
@@ -128,6 +128,11 @@ class PermissionsServiceServicer(object):
     def LookupResources(self, request, context):
         """LookupResources returns all the resources of a given type that a subject
         can access whether via a computed permission or relation membership.
+
+        Results are streamed and **not guaranteed to be unique**: the same resource
+        may be returned more than once (for example via caveated/conditional
+        results, or when a limit is set), possibly with differing permissionship.
+        Callers that require uniqueness should deduplicate results.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -136,6 +141,10 @@ class PermissionsServiceServicer(object):
     def LookupSubjects(self, request, context):
         """LookupSubjects returns all the subjects of a given type that
         have access whether via a computed permission or relation membership.
+
+        Results are streamed and **not guaranteed to be unique**: the same subject
+        may be returned more than once, possibly with differing permissionship.
+        Callers that require uniqueness should deduplicate results.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -224,7 +233,7 @@ def add_PermissionsServiceServicer_to_server(servicer, server):
 
 
  # This class is part of an EXPERIMENTAL API.
-class PermissionsService(object):
+class PermissionsService:
     """PermissionsService implements a set of RPCs that perform operations on
     relationships and permissions.
     """

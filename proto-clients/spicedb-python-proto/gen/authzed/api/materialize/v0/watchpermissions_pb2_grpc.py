@@ -5,7 +5,7 @@ import grpc
 from authzed.api.materialize.v0 import watchpermissions_pb2 as authzed_dot_api_dot_materialize_dot_v0_dot_watchpermissions__pb2
 
 
-class WatchPermissionsServiceStub(object):
+class WatchPermissionsServiceStub:
     """Missing associated documentation comment in .proto file."""
 
     def __init__(self, channel):
@@ -21,7 +21,7 @@ class WatchPermissionsServiceStub(object):
                 _registered_method=True)
 
 
-class WatchPermissionsServiceServicer(object):
+class WatchPermissionsServiceServicer:
     """Missing associated documentation comment in .proto file."""
 
     def WatchPermissions(self, request, context):
@@ -61,7 +61,7 @@ def add_WatchPermissionsServiceServicer_to_server(servicer, server):
 
 
  # This class is part of an EXPERIMENTAL API.
-class WatchPermissionsService(object):
+class WatchPermissionsService:
     """Missing associated documentation comment in .proto file."""
 
     @staticmethod

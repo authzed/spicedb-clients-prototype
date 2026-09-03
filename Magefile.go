@@ -513,6 +513,40 @@ func apiCompatAll(baseRef string) error {
 	return nil
 }
 
+// Gates runs the post-generation gates: API compatibility for every language
+// that has a check, then the repo-wide markdown lint. Each repairs through
+// Claude before it gives up.
+//
+// This is a separate target from gen:all because regeneration runs the two as
+// distinct CI steps. Generation is continue-on-error there, so that a partial
+// failure still yields a PR carrying whatever succeeded -- and the gates have
+// to run against that same tree either way, which they cannot do from inside
+// gen:all. update() calls the same two gates for local runs.
+//
+// Both gates run even when the first fails, so one pass reports everything a
+// reviewer has to deal with rather than only the first problem.
+func Gates(baseRef string) error {
+	var failures []string
+
+	fmt.Println("=== Gate 1/2: API compatibility ===")
+	if err := apiCompatAll(baseRef); err != nil {
+		fmt.Printf("==> GATE FAILED (API compatibility): %v\n", err)
+		failures = append(failures, "API compatibility")
+	}
+
+	fmt.Println("\n=== Gate 2/2: Markdown lint ===")
+	if err := markdownLintWithFix(); err != nil {
+		fmt.Printf("==> GATE FAILED (markdown lint): %v\n", err)
+		failures = append(failures, "markdown lint")
+	}
+
+	if len(failures) > 0 {
+		return fmt.Errorf("post-generation gates failed: %s", strings.Join(failures, ", "))
+	}
+	fmt.Println("\n==> All post-generation gates passed!")
+	return nil
+}
+
 // markdownLintTool is the repo-wide markdown linter. CI runs it bare, so the
 // file set comes entirely from .markdownlint-cli2.yaml rather than from
 // arguments -- its `globs` key overrides anything passed on the command line.

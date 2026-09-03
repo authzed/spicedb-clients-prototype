@@ -7,12 +7,12 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/authzed/spicedb-clients/internal/clauderun"
 	"github.com/magefile/mage/sh"
 )
 
@@ -78,24 +78,6 @@ var wantExamples = []string{
 // bounded consumer, so nothing is skipped.
 var skippedExamples = map[string]string{}
 
-// claudeAvailable returns true if the claude CLI is installed and usable.
-// Returns false when running in CI (CI env var set) because the claude binary
-// may be present but not authenticated.
-//
-// CI_REGENERATION is the one exception, and it is set by exactly one workflow:
-// .github/workflows/regen-from-api.yaml, which is also the only workflow holding
-// Claude credentials. Every other CI job -- notably meta.yaml's gen-nodiff --
-// must keep taking the false branch here, or `mage gen:all` starts making
-// unreviewed changes inside a check whose whole purpose is asserting that
-// generation produces no diff.
-func claudeAvailable() bool {
-	if os.Getenv("CI") != "" && os.Getenv("CI_REGENERATION") == "" {
-		return false
-	}
-	_, err := exec.LookPath("claude")
-	return err == nil
-}
-
 // Gen updates the idiomatic Ruby client based on proto client changes.
 func Gen() error {
 	baseline, err := os.ReadFile(lastGenFile)
@@ -119,7 +101,7 @@ func Gen() error {
 		return nil
 	}
 
-	if !claudeAvailable() {
+	if !clauderun.Available() {
 		fmt.Println("==> claude not available; skipping idiomatic client update (gen-nodiff mode).")
 		return nil
 	}
@@ -134,7 +116,7 @@ func Gen() error {
 	)
 
 	fmt.Println("==> Invoking Claude to update idiomatic client...")
-	if err := runClaude(prompt); err != nil {
+	if err := clauderun.Run(prompt); err != nil {
 		return fmt.Errorf("claude invocation failed: %w", err)
 	}
 
@@ -153,7 +135,7 @@ func Gen() error {
 		}
 
 		fmt.Println("==> Tests failed, asking Claude to fix...")
-		if err := runClaude("Tests failed. Read the test output above and fix the issues."); err != nil {
+		if err := clauderun.Run("Tests failed. Read the test output above and fix the issues."); err != nil {
 			return fmt.Errorf("claude fix invocation failed: %w", err)
 		}
 	}
@@ -431,37 +413,4 @@ func waitForReady(addr string, timeout time.Duration) error {
 		time.Sleep(time.Second)
 	}
 	return fmt.Errorf("SpiceDB not ready at %s after %s", addr, timeout)
-}
-
-// claudeArgs returns the CLI arguments for a Claude invocation.
-//
-// Under CI_REGENERATION -- set only by .github/workflows/regen-from-api.yaml,
-// the one workflow holding Claude credentials -- two flags are required that
-// local runs must not get:
-//
-//	--print                              a CI runner has no TTY; the bare
-//	                                     interactive form has never run there
-//	--permission-mode bypassPermissions  without it Claude replies "I don't
-//	                                     have permission to write this file",
-//	                                     edits nothing, and still exits 0 --
-//	                                     so a regeneration reports success and
-//	                                     produces an empty PR (observed on
-//	                                     runs 33010304938 vs 33010790114)
-//
-// The bypass is confined to that workflow, which runs on an ephemeral
-// single-purpose container. Local runs keep normal interactive prompting.
-func claudeArgs() []string {
-	if os.Getenv("CI_REGENERATION") == "" {
-		return nil
-	}
-	return []string{"--print", "--permission-mode", "bypassPermissions"}
-}
-
-// runClaude pipes the prompt to claude via stdin so output streams in real time.
-func runClaude(prompt string) error {
-	cmd := exec.Command("claude", claudeArgs()...)
-	cmd.Stdin = strings.NewReader(prompt)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
 }

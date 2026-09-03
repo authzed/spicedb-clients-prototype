@@ -171,14 +171,23 @@ jobs:
 
           if buf build "buf.build/authzed/api:$RAW" -o /dev/null >/dev/null 2>&1; then
             ref="$RAW"
+          elif printf '%s' "$RAW" | grep -Eq '^[0-9a-f]{40}$'; then
+            # A git commit SHA. buf-action labels the BSR by branch and by tag,
+            # never by commit SHA, so this can never be a label (run 33778594627
+            # failed on exactly this). Mapping SHA -> BSR commit needs the
+            # source_control_url field, which buf 1.58 returns but the 1.50 that
+            # buf-setup-action pins here does NOT -- and bumping buf is not an
+            # option, because meta.yaml's gen-nodiff runs the same version and a
+            # skew between them would change generated output.
+            #
+            # The dispatch fires immediately after Lint pushes this very commit
+            # to the BSR, so the `main` label points at it. Resolve through main
+            # and let the commit id below make the pin immutable regardless.
+            echo "::notice::$RAW is a git commit SHA, not a BSR label; pinning via the main label"
+            ref=main
           else
-            echo "::notice::'$RAW' is not a BSR label; looking it up as a git commit"
-            ref=$(buf registry module commit list buf.build/authzed/api:main --page-size 50 --format json 2>/dev/null \
-                  | python3 -c 'import json,os,sys; raw=os.environ["RAW"]; print(next((c["commit"] for c in json.load(sys.stdin).get("commits",[]) if c.get("source_control_url","").endswith(raw)), ""))')
-            if [ -z "$ref" ]; then
-              echo "::error::Could not resolve $RAW to a BSR commit. buf-action labels by branch and tag, not by git SHA, so a commit SHA resolves only via its source_control_url, and none of the last 50 commits on the main label matches. Most likely the BSR push for this commit has not landed yet."
-              exit 1
-            fi
+            echo "::error::Could not resolve $RAW. It is neither a BSR label (branch or tag) nor a 40-character git commit SHA."
+            exit 1
           fi
 
           commit=$(buf registry module commit list "buf.build/authzed/api:$ref" --page-size 1 --format json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["commits"][0]["commit"])')
@@ -278,7 +287,7 @@ jobs:
             - **Trigger:** `${{ github.event_name }}` / `${{ github.event.action }}`
             - **Generation result:** `${{ steps.regen.outcome }}`
             - **Failed languages:** `${{ steps.state.outputs.failed }}`
-            - **Resolved BSR commit:** `${{ steps.bsr.outputs.commit }}`
+            - **Resolved BSR commit:** `${{ steps.bsr.outputs.commit }}` (from `${{ steps.pin.outputs.buftag }}`)
             - **Run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
             Reproduce locally, against the exact revision this ran on:

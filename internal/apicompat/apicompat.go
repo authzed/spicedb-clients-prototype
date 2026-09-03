@@ -71,7 +71,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -248,7 +250,14 @@ func splitLastParam(params string) (head, last string) {
 // pipeline then reports success. Run therefore inspects the exit status
 // itself and refuses to suppress anything at or above operationalExitCode.
 func Run(baseRef, repoPath string) (Result, error) {
-	cmd := exec.Command("go-apidiff", baseRef, "--repo-path", repoPath)
+	clone, module, cleanup, err := isolate(repoPath)
+	if err != nil {
+		return Result{}, err
+	}
+	defer cleanup()
+
+	cmd := exec.Command("go-apidiff", baseRef, "--repo-path", clone)
+	cmd.Dir = module
 	out, err := cmd.Output()
 
 	if err != nil {
@@ -264,4 +273,64 @@ func Run(baseRef, repoPath string) (Result, error) {
 		// the report this package exists to classify.
 	}
 	return Filter(strings.NewReader(string(out)))
+}
+
+// isolate copies the repository to a scratch clone and returns the clone's
+// root, the directory inside it corresponding to the caller's module, and a
+// cleanup function.
+//
+// go-apidiff checks commits out in place, using go-git with Force: true, and
+// that wipes every untracked and ignored file in the repository -- not merely
+// in the module under test. Measured on this repository, one run destroys
+// tools/japicmp.jar, spicedb-typescript/node_modules/ and spicedb-python/.venv/.
+// That is survivable when the check runs alone in its own CI job, which is how
+// go.yaml uses it. It is not survivable during regeneration, where every
+// language's gate runs in one shared tree and Go happens to go first: the Go
+// gate passes and then java fails with "japicmp not found" and typescript fails
+// with "Cannot find module 'vitest'", neither of which has anything to do with
+// API compatibility.
+//
+// A linked worktree is not an option -- go-apidiff's go-git cannot resolve
+// objects through one, and fails with "object not found" -- so this clones. The
+// clone is local, so git hardlinks the object store and the copy is cheap.
+func isolate(repoPath string) (clone, module string, cleanup func(), err error) {
+	root, err := filepath.Abs(repoPath)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("resolving repo path: %w", err)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", "", nil, fmt.Errorf("resolving working directory: %w", err)
+	}
+	rel, err := filepath.Rel(root, cwd)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("locating module within the repository: %w", err)
+	}
+
+	// The commit under test is HEAD, so the clone has to be detached at the
+	// same commit: a plain clone checks out the default branch, which is not
+	// necessarily where the caller is.
+	head, err := exec.Command("git", "-C", root, "rev-parse", "HEAD").Output()
+	if err != nil {
+		return "", "", nil, fmt.Errorf("reading HEAD: %w", err)
+	}
+
+	dir, err := os.MkdirTemp("", "apicompat-")
+	if err != nil {
+		return "", "", nil, fmt.Errorf("creating scratch directory: %w", err)
+	}
+	cleanup = func() { _ = os.RemoveAll(dir) }
+
+	clone = filepath.Join(dir, "repo")
+	if out, err := exec.Command("git", "clone", "--quiet", "--no-checkout", root, clone).CombinedOutput(); err != nil {
+		cleanup()
+		return "", "", nil, fmt.Errorf("cloning for isolation: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	if out, err := exec.Command("git", "-C", clone, "checkout", "--quiet", "--detach", strings.TrimSpace(string(head))).CombinedOutput(); err != nil {
+		cleanup()
+		return "", "", nil, fmt.Errorf("checking out %s in the clone: %w: %s",
+			strings.TrimSpace(string(head)), err, strings.TrimSpace(string(out)))
+	}
+
+	return clone, filepath.Join(clone, rel), cleanup, nil
 }

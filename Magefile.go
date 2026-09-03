@@ -228,6 +228,25 @@ func genConcurrency() int {
 	return n
 }
 
+// protoGenConcurrency bounds genProtoLangs' pool, and is deliberately not
+// governed by GEN_CONCURRENCY the way the idiomatic tier is.
+//
+// The proto tier's Gen() calls `buf generate` / `buf export` against the Buf
+// Schema Registry, which rate-limits concurrent callers. Run 33791327423
+// (PR #82) ran genProtoLangs at GEN_CONCURRENCY=4: all four pool workers
+// called `buf generate` within the same 200ms, the BSR returned
+// `resource_exhausted: too many requests` to three of them, and six of
+// seven languages failed within two seconds -- the pool worked exactly as
+// designed, the BSR did not allow it. See
+// https://buf.build/docs/bsr/rate-limits/.
+//
+// The idiomatic tier never touches the BSR (it reads local files and runs
+// Claude/local builds) and is unaffected, so it keeps using
+// GEN_CONCURRENCY. The proto tier is also the shorter of the two (~10min
+// vs. ~35min per the design doc's measurements), so serializing it costs
+// little. If the BSR's limit is ever raised, this is a one-constant change.
+const protoGenConcurrency = 1
+
 // runPool calls fn(i) for every i in [0, n), using at most concurrency
 // goroutines running at once (clamped to [1, n]), and blocks until every
 // call has returned. Each call's error is recorded at its own index, so a
@@ -292,6 +311,13 @@ func failedLangs(langs []string, results []error) []string {
 // finished, iterating langs in its declared order rather than completion
 // order, so a regeneration produces the same commit sequence run to run
 // regardless of which language happened to finish first.
+//
+// The pool here still runs through runPool, the same code as genClientLangs,
+// but bounded by protoGenConcurrency rather than genConcurrency(): this tier
+// hits the Buf Schema Registry and is rate-limited by it (see
+// protoGenConcurrency's doc comment), so it stays serial regardless of
+// GEN_CONCURRENCY. Using the pool at concurrency 1 rather than a hand-rolled
+// serial loop costs nothing and keeps one code path for both tiers.
 func genProtoLangs(langs []string) error {
 	buftag := strings.TrimSpace(os.Getenv("BUFTAG"))
 	if buftag != "" {
@@ -306,7 +332,7 @@ func genProtoLangs(langs []string) error {
 	// the check just after runPool below.
 	pinErrs := make([]error, len(langs))
 
-	results := runPool(len(langs), genConcurrency(), func(i int) error {
+	results := runPool(len(langs), protoGenConcurrency, func(i int) error {
 		l := langs[i]
 		dir := protoClientDirFor(l)
 		fmt.Printf("\n==> Generating proto client: %s\n", dir)
@@ -360,6 +386,11 @@ func genProtoLangs(langs []string) error {
 // langs, then commits each success serially, in langs' order. See
 // genProtoLangs for why generation and commit are two separate phases rather
 // than one concurrent loop.
+//
+// Unlike genProtoLangs, this tier's pool is bounded by genConcurrency()
+// (GEN_CONCURRENCY), not protoGenConcurrency: Gen() here reads local files
+// and runs Claude/local builds, never the Buf Schema Registry, so it isn't
+// subject to the BSR rate limit that forces the proto tier to stay serial.
 func genClientLangs(langs []string) error {
 	results := runPool(len(langs), genConcurrency(), func(i int) error {
 		l := langs[i]

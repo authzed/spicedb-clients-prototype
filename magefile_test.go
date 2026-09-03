@@ -557,6 +557,48 @@ func TestDefaultGenConcurrencyIsFour(t *testing.T) {
 	}
 }
 
+// --- protoGenConcurrency ---
+//
+// Run 33791327423 (PR #82) is the reason these exist: genProtoLangs at
+// concurrency 4 sent four concurrent `buf generate` calls to the Buf Schema
+// Registry, which rate-limited three of them (`resource_exhausted: too many
+// requests`), failing six of seven languages within two seconds. The pool
+// worked exactly as designed -- the BSR does not allow that concurrency.
+// The proto tier now stays serial regardless of GEN_CONCURRENCY, which only
+// governs the idiomatic tier (see genConcurrency's own tests above).
+
+// TestProtoGenConcurrencyIsSerial pins the proto tier's pool bound to 1: it
+// is BSR-rate-limited and must not regress back to running concurrently.
+func TestProtoGenConcurrencyIsSerial(t *testing.T) {
+	if protoGenConcurrency != 1 {
+		t.Fatalf("protoGenConcurrency = %d, want 1 -- the proto tier is BSR-rate-limited and must stay serial (see run 33791327423)", protoGenConcurrency)
+	}
+}
+
+// TestProtoAndClientTiersHaveIndependentConcurrency guards the actual fix:
+// before it, both tiers shared one GEN_CONCURRENCY-derived value, which is
+// exactly what let a BSR-safe idiomatic-tier setting also apply to the
+// BSR-bound proto tier. The two constants must differ.
+func TestProtoAndClientTiersHaveIndependentConcurrency(t *testing.T) {
+	if protoGenConcurrency == defaultGenConcurrency {
+		t.Fatalf("protoGenConcurrency (%d) equals defaultGenConcurrency (%d); these must differ -- "+
+			"the proto tier is BSR-rate-limited (run 33791327423) and must stay serial while the "+
+			"idiomatic tier stays concurrent", protoGenConcurrency, defaultGenConcurrency)
+	}
+}
+
+// TestProtoGenConcurrencyIgnoresGenConcurrencyEnvVar documents that the
+// proto tier's bound is a compile-time constant, not read from
+// GEN_CONCURRENCY: setting that env var (which genClientLangs' pool does
+// read) must not be able to push the proto tier back into concurrent BSR
+// calls.
+func TestProtoGenConcurrencyIgnoresGenConcurrencyEnvVar(t *testing.T) {
+	t.Setenv("GEN_CONCURRENCY", "4")
+	if protoGenConcurrency != 1 {
+		t.Fatalf("protoGenConcurrency = %d, want 1 regardless of GEN_CONCURRENCY", protoGenConcurrency)
+	}
+}
+
 func TestGenConcurrencyParsesOne(t *testing.T) {
 	t.Setenv("GEN_CONCURRENCY", "1")
 	if got := genConcurrency(); got != 1 {

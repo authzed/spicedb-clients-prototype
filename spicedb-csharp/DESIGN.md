@@ -428,6 +428,11 @@ single call, since it's a property of the call, not of the individual
 result. It maps the proto `looked_up_at` field that was previously
 unreachable through the idiomatic client.
 
+**Not guaranteed unique**: a `LookupResourcesAsync`/`LookupSubjectsAsync` stream may yield the
+same resource/subject more than once — e.g. via caveated/conditional results, or when a limit is
+set — possibly with a different `Permissionship` across occurrences. Callers that require
+uniqueness must deduplicate themselves.
+
 **Wildcard exclusions**: when `LookupSubject.Subject.SubjectID` is the
 wildcard `"*"`, the server has granted the permission to every subject of
 `subjectType` EXCEPT those listed in `LookupSubject.ExcludedSubjects`.

@@ -892,6 +892,13 @@ public sealed class SpiceDBClient : IAsyncDisposable
     /// mapped and rethrown instead of retried — see
     /// <see cref="ReadRelationshipsAsync"/> for the full rationale.
     /// </para>
+    /// <para>
+    /// Results are **not guaranteed to be unique**: the same resource may be
+    /// yielded more than once (for example via caveated/conditional results,
+    /// or when a limit is set), possibly with a different
+    /// <see cref="LookupResource.Permissionship"/>. Callers that require
+    /// uniqueness should deduplicate by <see cref="LookupResource.ResourceID"/>.
+    /// </para>
     /// </summary>
     public async IAsyncEnumerable<LookupResource> LookupResourcesAsync(
         ConsistencyStrategy consistency,
@@ -1021,6 +1028,12 @@ public sealed class SpiceDBClient : IAsyncDisposable
     /// has been yielded, a transient error is mapped and rethrown instead of
     /// retried — see <see cref="ReadRelationshipsAsync"/> for the full
     /// rationale.
+    /// </para>
+    /// <para>
+    /// Results are **not guaranteed to be unique**: the same subject may be
+    /// yielded more than once, possibly with a different
+    /// <see cref="ResolvedSubject.Permissionship"/>. Callers that require
+    /// uniqueness should deduplicate by subject ID.
     /// </para>
     /// </summary>
     public async IAsyncEnumerable<LookupSubject> LookupSubjectsAsync(

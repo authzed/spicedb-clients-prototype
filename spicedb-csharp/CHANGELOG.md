@@ -4,6 +4,24 @@
 
 ### Added
 
+- **2026-09-03**: Proto regeneration. No idiomatic API changes; documentation-only and
+  purely-additive proto surface changes:
+  - `LookupResources`/`LookupSubjects` doc comments now state explicitly that streamed results
+    are **not guaranteed to be unique** — the same resource/subject can be yielded more than once
+    (e.g. via caveated/conditional results, or when a limit is set), possibly with a different
+    permissionship across occurrences. `LookupResourcesAsync`/`LookupSubjectsAsync`'s XML doc
+    comments and `DESIGN.md`'s "Lookups" section now carry the same note; callers requiring
+    uniqueness must deduplicate themselves. Behavior is unchanged — this client never
+    deduplicated — only the documentation is new.
+  - `LookupResourcesRequest` gains a new `with_debug` field (enables debug info for maximum
+    recursion depth errors). Left unwrapped, consistent with this client's existing precedent for
+    `CheckPermissionResponse.DebugTrace`/`CheckBulkPermissionsResponseItem.DebugTrace`, both
+    already unwrapped debug-only fields; reachable via `client.RawProto().Permissions` for a
+    caller who wants it.
+  - `Authzed.Api.Materialize.V0.DownloadPermissionSetsResponse` gains an `at_revision` field, and
+    `Core.cs`'s validation constraints were tightened. Neither the `Materialize.V0` service nor
+    `Core.cs`'s affected messages are wrapped by this client.
+
 - **2026-08-19: the insecure-remote-host refusal now throws `InvalidArgumentException`.**
   Root DESIGN.md, "RULE: Credentials over insecure transport require an explicit opt-in", clause 4 (new). The refusal for a plaintext connection to a non-loopback host is a caller
   argument rejected before any connection exists, so it now takes the same

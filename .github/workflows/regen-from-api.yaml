@@ -237,6 +237,15 @@ jobs:
       - name: Install markdownlint-cli2
         timeout-minutes: 5
         run: npm install -g markdownlint-cli2
+      # spicedb-java's apiCompat looks for tools/japicmp.jar, and tools/ is
+      # gitignored, so it has to be fetched. Same source and pinned version as
+      # java.yaml uses.
+      - name: Install japicmp
+        timeout-minutes: 5
+        run: |
+          mkdir -p tools
+          curl -fsSL -o tools/japicmp.jar \
+            "https://repo1.maven.org/maven2/com/github/siom79/japicmp/japicmp/0.23.1/japicmp-0.23.1-jar-with-dependencies.jar"
 
       - name: Configure git identity
         run: |
@@ -265,6 +274,25 @@ jobs:
         run: |
           set -o pipefail
           mage gen:all 2>&1 | tee /tmp/gen.log
+
+      # go-apidiff compares git commits and refuses to run against a dirty
+      # worktree, so the gates cannot measure a tree carrying uncommitted work.
+      # A partial generation leaves exactly that: .last-generation stamps, plus
+      # whatever a language had written before the run that failed reached its
+      # commit. create-pull-request commits that residue into the PR regardless,
+      # so committing it here is not adding anything to the branch -- it is
+      # making the gates measure precisely what ships.
+      - name: Commit any generation residue
+        run: |
+          set -euo pipefail
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "working tree is clean; nothing to commit"
+            exit 0
+          fi
+          echo "committing uncommitted generation residue so the gates can run:"
+          git status --porcelain
+          git add -A
+          git commit -m "chore: generation residue from a partial run"
 
       # The gates cannot live inside gen:all. Generation is continue-on-error so
       # that a partial failure still yields a PR, and the gates must run against

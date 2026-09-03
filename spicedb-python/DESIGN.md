@@ -440,6 +440,13 @@ conditional result is NOT a full grant. When
 wildcard grant — callers MUST check it before treating `"*"` as "every
 subject has access," or they risk over-granting to excluded subjects.
 
+Per the proto's own documented contract for `LookupResources`/
+`LookupSubjects`, results are **not guaranteed to be unique** — the same
+resource or subject may be yielded more than once (e.g. via caveated/
+conditional results), possibly with differing `permissionship`. This client
+does not deduplicate on a caller's behalf; a caller that requires uniqueness
+must do so itself, keyed on `resource_id` / `subject.subject_id`.
+
 `looked_up_at` is identical for every item yielded by a single
 `lookup_resources()`/`lookup_subjects()` call — it's a property of the call,
 not of the individual result — and, like `CheckResult.checked_at`, can be

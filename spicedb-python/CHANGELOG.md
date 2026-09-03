@@ -4,6 +4,25 @@
 
 ### Added
 
+- **2026-09-03** (documentation only): `lookup_resources()`/`lookup_subjects()` docstrings
+  (both `spicedb.sync` and `spicedb.aio`) and `DESIGN.md` now state that streamed results
+  are **not guaranteed to be unique** — the same resource/subject may be yielded more than
+  once, possibly with differing `permissionship`, per an upstream clarification to the
+  `LookupResources`/`LookupSubjects` proto docs. This client does not deduplicate on a
+  caller's behalf; behavior is unchanged, only the contract is now written down. Callers
+  that need uniqueness should dedupe by `resource_id` / `subject.subject_id`.
+
+  This regeneration also bumped the vendored `protobuf` runtime dependency
+  (`proto-clients/spicedb-python-proto`) from 7.34.0 to 7.36.1, and added a new
+  `LookupResourcesRequest.with_debug` field and a materialize-v0
+  `DownloadPermissionSetsResponse.at_revision` field to the proto tier. Neither is wrapped
+  by the idiomatic client: `with_debug` has no corresponding field on
+  `LookupResourcesResponse` to carry a result back through, the same gap that already
+  leaves `CheckPermissionRequest.with_tracing`/`debug_trace` unwrapped; and the
+  `authzed.api.materialize.v0` service this client field belongs to is not part of this
+  client's wrapped surface at all. Both remain reachable via `raw_grpc()` if a caller needs
+  them.
+
 - **2026-08-19: four new examples, one per root `DESIGN.md` RULE that had no executed
   coverage in any client — and one client fix they exposed.** 19 example suites -> 23,
   33 test cases -> 57, none renamed or removed. Group E Phase 3.

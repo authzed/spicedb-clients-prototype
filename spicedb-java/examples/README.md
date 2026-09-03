@@ -69,7 +69,7 @@ still exists under it, and JUnit's class order is not something to rely on.
 | `ConditionalCheckTest` | `CONDITIONAL_PERMISSION` against a live caveated relationship whose context was never supplied — `hasPermission()` must be false |
 | `WriteRelationshipsTest` | Writing relationships with `Transaction` builder |
 | `ReadRelationshipsTest` | Reading relationships with cursor-based auto-pagination |
-| `LookupResourcesTest` | Finding resources a subject can access |
+| `LookupResourcesTest` | Finding resources a subject can access; the `withDebug` overload reaching `LookupResourcesRequest.with_debug` on the wire |
 | `LookupSubjectsTest` | Finding subjects with access to a resource |
 | `WatchChangesTest` | Watching for relationship changes via the watch API |
 | `SchemaManagementTest` | Schema read/write operations |

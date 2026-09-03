@@ -474,7 +474,21 @@ These may change without following the backwards compatibility mandate.
 
 **Lookups:**
 - `lookupResources(Consistency, String resourceType, String permission, String subjectType, String subjectID)` → `Stream<LookupResult.LookupResource>` (each result now also carries `lookedUpAt`, the revision it was computed at)
+- `lookupResources(Consistency, String resourceType, String permission, String subjectType, String subjectID, boolean withDebug)` → `Stream<LookupResult.LookupResource>` — as above, with `withDebug` mapped to the proto's `LookupResourcesRequest.with_debug` field
 - `lookupSubjects(Consistency, String resourceType, String resourceID, String permission, String subjectType)` → `Stream<LookupResult.LookupSubject>` (each result now also carries `lookedUpAt`)
+
+`withDebug` asks the server to attach debug information to an error should one occur — as of this
+writing SpiceDB only populates it for a maximum-recursion-depth error. There is no separate
+accessor for the extra detail: it arrives as additional detail on the underlying
+`StatusRuntimeException`, already reachable as the cause of the mapped `SpiceDBException` per root
+DESIGN.md, "RULE: Error mapping must not lose the server's detail" — a caller who wants it needs
+only to pass `true` and read the thrown exception as usual. It has no effect on a successful
+result and defaults to `false` (the proto's own default) on the four-argument overload.
+
+**Results from `lookupResources`/`lookupSubjects` are streamed and not guaranteed unique.** The
+same resource or subject may be returned more than once (e.g. via caveated/conditional results, or
+when a limit is set), possibly with differing permissionship. A caller that requires uniqueness
+must deduplicate results itself.
 
 **Schema:**
 - `readSchema()` → `SchemaResult` (schema + revision)
@@ -521,7 +535,7 @@ per-example directories — the rows below name the class, matching `examples/RE
 | `ConditionalCheckTest` | `CONDITIONAL_PERMISSION` against a live caveated relationship whose context was never supplied — `hasPermission()` must be false |
 | `WriteRelationshipsTest` | Writing relationships with the `Transaction` builder |
 | `ReadRelationshipsTest` | Reading relationships with cursor-based auto-pagination |
-| `LookupResourcesTest` | Finding resources a subject can access |
+| `LookupResourcesTest` | Finding resources a subject can access; the `withDebug` overload reaching `LookupResourcesRequest.with_debug` on the wire |
 | `LookupSubjectsTest` | Finding subjects with access to a resource |
 | `WatchChangesTest` | Watching for relationship changes |
 | `SchemaManagementTest` | Reading and writing schema |

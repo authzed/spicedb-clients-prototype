@@ -1039,6 +1039,10 @@ public final class SpiceDBClient implements AutoCloseable {
    * on. Each result carries the permissionship (full grant vs conditional on caveat context) and,
    * for conditional results, which caveat context was missing. Cursors are handled transparently.
    *
+   * <p>Results are streamed and not guaranteed to be unique: the same resource may be returned more
+   * than once (e.g. via caveated/conditional results, or when a limit is set), possibly with
+   * differing permissionship. Callers that require uniqueness should deduplicate results.
+   *
    * <p>The returned stream should be closed when done.
    */
   public Stream<LookupResult.LookupResource> lookupResources(
@@ -1047,6 +1051,26 @@ public final class SpiceDBClient implements AutoCloseable {
       String permission,
       String subjectType,
       String subjectID) {
+    return lookupResources(consistency, resourceType, permission, subjectType, subjectID, false);
+  }
+
+  /**
+   * As {@link #lookupResources(Consistency, String, String, String, String)}, with {@code
+   * withDebug} mapped to the proto's {@code LookupResourcesRequest.with_debug} field. When {@code
+   * true}, it asks the server to attach debug information to an error should one occur — as of this
+   * writing SpiceDB only populates it for a maximum-recursion-depth error. There is no separate
+   * accessor for the extra detail: it arrives as additional detail on the underlying {@code
+   * StatusRuntimeException}, already reachable via {@link SpiceDBException}'s cause per root
+   * DESIGN.md, "RULE: Error mapping must not lose the server's detail". It has no effect on a
+   * successful result.
+   */
+  public Stream<LookupResult.LookupResource> lookupResources(
+      Consistency consistency,
+      String resourceType,
+      String permission,
+      String subjectType,
+      String subjectID,
+      boolean withDebug) {
     Context.CancellableContext cancelCtx = Context.current().withCancellation();
     Iterator<LookupResult.LookupResource> iterator =
         new Iterator<>() {
@@ -1086,7 +1110,8 @@ public final class SpiceDBClient implements AutoCloseable {
                                     .setObjectId(subjectID)
                                     .build())
                             .build())
-                    .setOptionalLimit(DEFAULT_LOOKUP_PAGE_SIZE);
+                    .setOptionalLimit(DEFAULT_LOOKUP_PAGE_SIZE)
+                    .setWithDebug(withDebug);
 
             if (cursor != null) {
               reqBuilder.setOptionalCursor(cursor);
@@ -1129,6 +1154,10 @@ public final class SpiceDBClient implements AutoCloseable {
    * Returns a stream over subjects of the given type that have the specified permission on the
    * resource. Unlike lookupResources, this does not use cursor-based pagination (not supported in
    * SpiceDB yet) and streams all results in a single call.
+   *
+   * <p>Results are streamed and not guaranteed to be unique: the same subject may be returned more
+   * than once, possibly with differing permissionship. Callers that require uniqueness should
+   * deduplicate results.
    *
    * <p>When a yielded {@link LookupResult.LookupSubject#subject} is the wildcard {@code "*"}, the
    * server has granted the permission to every subject of the requested subject type EXCEPT those

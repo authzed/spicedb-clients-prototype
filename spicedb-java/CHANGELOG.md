@@ -4,6 +4,37 @@
 
 ### Added
 
+- **2026-09-03: `lookupResources` gains a `boolean withDebug` overload**, reaching the proto's
+  `LookupResourcesRequest.with_debug` field (new upstream). When `true`, it asks the server to
+  attach debug information to an error should one occur — as of this writing SpiceDB only
+  populates it for a maximum-recursion-depth error. No new accessor was needed: that information
+  arrives as additional detail on the underlying `StatusRuntimeException`, already reachable as
+  the cause of the mapped `SpiceDBException` per root DESIGN.md, "RULE: Error mapping must not lose
+  the server's detail". Purely additive — the existing five-argument overload is unchanged and
+  delegates to the new one with `withDebug = false`, matching the proto's own default, so every
+  existing call site is unaffected. `LookupResourcesTest` (examples) and `LookupResultsTest` (lib)
+  extended to prove the flag reaches the wire, the former against a stand-in `PermissionsService`
+  since provoking a real depth-exceeded failure needs a deeply recursive schema the example doesn't
+  otherwise need.
+
+  ```java
+  try (var stream =
+      client.lookupResources(Consistency.full(), "document", "view", "user", "alice", true)) {
+    // a failure here, if caused by exceeding max recursion depth, carries extra detail on the
+    // thrown SpiceDBException's cause
+  }
+  ```
+
+- **2026-09-03: `lookupResources`/`lookupSubjects` Javadoc now documents that results are streamed
+  and not guaranteed unique** (e.g. via caveated/conditional results, or when a limit is set),
+  matching a doc-only clarification upstream. No behavior change — this was already true, just
+  previously unstated in this client's own docs.
+
+  Also from this regeneration: the `WatchPermissionSets` service
+  (`com.authzed.api.materialize.v0`) gained a `DownloadPermissionSetsResponse.at_revision` field,
+  and several `buf.validate` constraints were relaxed on `Core.proto` message descriptors; neither
+  is reachable from this client, which does not wrap the Materialize API.
+
 - **2026-08-19: the insecure-remote-host refusal now throws `InvalidArgumentException`.**
   Root DESIGN.md, "RULE: Credentials over insecure transport require an explicit opt-in", clause 4 (new). The refusal for a plaintext connection to a non-loopback host is a caller
   argument rejected before any connection exists, so it now takes the same

@@ -13,6 +13,7 @@ import build.buf.gen.authzed.api.v1.ResolvedSubject;
 import build.buf.gen.authzed.api.v1.ZedToken;
 import io.grpc.stub.StreamObserver;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
@@ -101,6 +102,58 @@ class LookupResultsTest {
       assertEquals(LookupResult.Permissionship.CONDITIONAL_PERMISSION, result.permissionship());
       assertNotNull(result.partialCaveat());
       assertEquals(List.of("region"), result.partialCaveat().missingRequiredContext());
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // lookupResources — withDebug reaches the wire (LookupResourcesRequest.with_debug)
+  // ---------------------------------------------------------------------
+
+  @Test
+  void lookupResourcesWithDebugOmittedLeavesWithDebugFalseOnTheWire() throws IOException {
+    var gotWithDebug = new ArrayList<Boolean>();
+    var service =
+        new PermissionsServiceGrpc.PermissionsServiceImplBase() {
+          @Override
+          public void lookupResources(
+              LookupResourcesRequest request,
+              StreamObserver<LookupResourcesResponse> responseObserver) {
+            gotWithDebug.add(request.getWithDebug());
+            responseObserver.onCompleted();
+          }
+        };
+
+    try (TestServers servers = TestServers.start(service)) {
+      SpiceDBClient client = servers.client();
+      try (Stream<LookupResult.LookupResource> stream =
+          client.lookupResources(Consistency.full(), "document", "view", "user", "alice")) {
+        stream.toList();
+      }
+      assertEquals(List.of(false), gotWithDebug);
+    }
+  }
+
+  @Test
+  void lookupResourcesWithDebugTrueReachesTheWire() throws IOException {
+    var gotWithDebug = new ArrayList<Boolean>();
+    var service =
+        new PermissionsServiceGrpc.PermissionsServiceImplBase() {
+          @Override
+          public void lookupResources(
+              LookupResourcesRequest request,
+              StreamObserver<LookupResourcesResponse> responseObserver) {
+            gotWithDebug.add(request.getWithDebug());
+            responseObserver.onCompleted();
+          }
+        };
+
+    try (TestServers servers = TestServers.start(service)) {
+      SpiceDBClient client = servers.client();
+      try (Stream<LookupResult.LookupResource> stream =
+          client.lookupResources(Consistency.full(), "document", "view", "user", "alice", true)) {
+        stream.toList();
+      }
+      assertEquals(List.of(true), gotWithDebug);
     }
   }
 

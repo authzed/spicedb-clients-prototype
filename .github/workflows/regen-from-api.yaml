@@ -209,6 +209,28 @@ jobs:
         timeout-minutes: 5
         run: npm install -g @anthropic-ai/claude-code
 
+      # Tooling for the post-generation gates. Each language's own workflow
+      # installs these for its api-compat job; regeneration runs every language
+      # in one job, so it needs all of them. typescript and java need nothing
+      # extra -- pnpm is installed above and gradle is set up with the JDK.
+      - name: Install go-apidiff
+        timeout-minutes: 5
+        run: go install github.com/joelanford/go-apidiff@latest
+      - name: Install griffe
+        timeout-minutes: 5
+        run: uv tool install griffe
+      - name: Install ApiCompat tool
+        timeout-minutes: 5
+        run: dotnet tool install --global Microsoft.DotNet.ApiCompat.Tool
+      # Builds from source, so it is the slow one -- its own workflow allows the
+      # same budget.
+      - name: Install cargo-semver-checks
+        timeout-minutes: 10
+        run: cargo install cargo-semver-checks --locked
+      - name: Install markdownlint-cli2
+        timeout-minutes: 5
+        run: npm install -g markdownlint-cli2
+
       - name: Configure git identity
         run: |
           git config user.name "authzed-client-regen[bot]"
@@ -237,6 +259,21 @@ jobs:
           set -o pipefail
           mage gen:all 2>&1 | tee /tmp/gen.log
 
+      # The gates cannot live inside gen:all. Generation is continue-on-error so
+      # that a partial failure still yields a PR, and the gates must run against
+      # whatever tree that leaves -- so they are a separate step, and separately
+      # continue-on-error for the same reason. Appends to the same gen.log the
+      # summary step reads, so a gate failure reaches the PR description.
+      - name: Run post-generation gates
+        id: gates
+        continue-on-error: true
+        env:
+          CI_REGENERATION: "1"
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          set -o pipefail
+          mage gates "${{ steps.pregen.outputs.sha }}" 2>&1 | tee -a /tmp/gen.log
+
       # Descriptive, not functional: continue-on-error means a failure here
       # never fails the job, and "Compose the PR body" below checks the output
       # file itself rather than trusting this step's outcome, so a failed or
@@ -260,6 +297,7 @@ jobs:
         id: state
         env:
           OUTCOME: ${{ steps.regen.outcome }}
+          GATES: ${{ steps.gates.outcome }}
           BUFTAG: ${{ steps.pin.outputs.buftag }}
           EVENT: ${{ github.event_name }}
           DISPATCH_TYPE: ${{ github.event.action }}
@@ -269,8 +307,17 @@ jobs:
           # equivalent) to stdout; /tmp/gen.log is the tee'd copy. `|| true`
           # because grep exits 1 when nothing matched, which is the success case.
           failed=$(grep -oE '(proto generation|idiomatic client update) failed for: .*' /tmp/gen.log | tr '\n' '; ' || true)
+          # Same treatment for the gates, whose failure line mage prints as
+          # "post-generation gates failed: ...".
+          gatefail=$(grep -oE 'post-generation gates failed: .*' /tmp/gen.log | tr '\n' '; ' || true)
+          if [ -n "$gatefail" ]; then
+            failed="${failed}${gatefail}"
+          fi
           echo "failed=${failed:-none reported}" >> "$GITHUB_OUTPUT"
-          if [ "$OUTCOME" = "success" ]; then
+          # A clean PR requires both generation and the gates to have passed. A
+          # tree that generated fine but no longer compatible, or that fails the
+          # markdown gate, is not something to hand a reviewer as complete.
+          if [ "$OUTCOME" = "success" ] && [ "$GATES" = "success" ]; then
             echo "draft=false" >> "$GITHUB_OUTPUT"
             echo "labels=automated" >> "$GITHUB_OUTPUT"
             echo "title=chore: regenerate clients for authzed/api@${BUFTAG}" >> "$GITHUB_OUTPUT"
@@ -404,6 +451,16 @@ jobs:
         if: steps.regen.outcome != 'success'
         run: |
           echo "::error::mage gen:all failed; see the regenerate step above"
+          exit 1
+
+      # Guarded on regeneration having succeeded so this does not double-report
+      # alongside the notice above: when generation fails the gates run against
+      # a partial tree and are expected to be unhappy, and that is not a second
+      # independent problem to announce.
+      - name: Fail the job if the post-generation gates failed
+        if: steps.regen.outcome == 'success' && steps.gates.outcome != 'success'
+        run: |
+          echo "::error::mage gates failed; see the post-generation gates step above"
           exit 1
 
       # The generation-failure notice above covers only `mage gen:all`. Checkout,

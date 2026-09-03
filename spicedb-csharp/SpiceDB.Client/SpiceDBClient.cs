@@ -893,13 +893,21 @@ public sealed class SpiceDBClient : IAsyncDisposable
     /// <see cref="ReadRelationshipsAsync"/> for the full rationale.
     /// </para>
     /// </summary>
+    /// <param name="withDebug">
+    /// When true, asks the server to attach debug information to an error, if one occurs. As of
+    /// this writing SpiceDB only populates it for a maximum-recursion-depth error, and the
+    /// information arrives as additional detail on the underlying <c>RpcException</c> preserved as
+    /// <see cref="SpiceDBException"/>'s <see cref="Exception.InnerException"/> — this parameter
+    /// does not change anything about a successful result.
+    /// </param>
     public async IAsyncEnumerable<LookupResource> LookupResourcesAsync(
         ConsistencyStrategy consistency,
         string resourceType,
         string permission,
         string subjectType,
         string subjectID,
-        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        [EnumeratorCancellation] CancellationToken cancellationToken = default,
+        bool withDebug = false)
     {
         ArgumentNullException.ThrowIfNull(consistency);
 
@@ -920,6 +928,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
                     },
                 },
                 OptionalLimit = DefaultLookupPageSize,
+                WithDebug = withDebug,
             };
             if (cursor != null)
                 req.OptionalCursor = cursor;

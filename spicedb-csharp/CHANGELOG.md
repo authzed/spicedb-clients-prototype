@@ -4,6 +4,23 @@
 
 ### Added
 
+- **2026-09-03**: `LookupResourcesAsync` gains a new trailing optional `withDebug = false`
+  parameter, reaching the proto's `LookupResourcesRequest.with_debug` field (new upstream). When
+  `true`, it asks the server to attach debug information to an error should one occur — as of this
+  writing SpiceDB only populates it for a maximum-recursion-depth error. No new accessor was
+  needed: that information arrives as additional detail on the underlying `RpcException`, already
+  reachable via `SpiceDBException.InnerException` per root DESIGN.md, "RULE: Error mapping must not
+  lose the server's detail". Purely additive; defaults to `false`, matching the proto's own default,
+  so every existing call site is unaffected.
+
+  Also from this regeneration: the proto docs for `LookupResources`/`LookupSubjects` now state
+  explicitly that streamed results are **not guaranteed unique** (the same resource/subject may
+  recur, possibly with a different `Permissionship`) — documentation of existing server behavior,
+  not a client change, now called out in `DESIGN.md`'s "Lookups" section. The `WatchPermissionSets`
+  service (`Authzed.Api.Materialize.V0`) also gained a `DownloadPermissionSetsResponse.at_revision`
+  field, and several `buf.validate` constraints were relaxed on `Core.proto` message descriptors;
+  neither is reachable from this client, which does not wrap the Materialize API.
+
 - **2026-08-19: the insecure-remote-host refusal now throws `InvalidArgumentException`.**
   Root DESIGN.md, "RULE: Credentials over insecure transport require an explicit opt-in", clause 4 (new). The refusal for a plaintext connection to a non-loopback host is a caller
   argument rejected before any connection exists, so it now takes the same

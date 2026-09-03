@@ -411,8 +411,25 @@ public sealed record ResolvedSubject { SubjectID, Permissionship, PartialCaveat 
 public sealed record LookupSubject { Subject, ExcludedSubjects, LookedUpAt }
 ```
 
-- `LookupResourcesAsync(consistency, resourceType, permission, subjectType, subjectID)` → `IAsyncEnumerable<LookupResource>`
+- `LookupResourcesAsync(consistency, resourceType, permission, subjectType, subjectID, cancellationToken = default, withDebug = false)` → `IAsyncEnumerable<LookupResource>`
 - `LookupSubjectsAsync(consistency, resourceType, resourceID, permission, subjectType)` → `IAsyncEnumerable<LookupSubject>`
+
+`withDebug` maps the proto `LookupResourcesRequest.with_debug` field: when
+true, it asks the server to attach debug information to an error should one
+occur. As of this writing SpiceDB only populates it for a
+maximum-recursion-depth error; the information arrives as additional detail
+on the underlying `RpcException`, already reachable via
+`SpiceDBException.InnerException` per root DESIGN.md, "RULE: Error mapping
+must not lose the server's detail" — no separate accessor was needed. It has
+no effect on a successful result and defaults to `false`, matching the
+proto's default.
+
+**Results are not guaranteed unique.** `LookupResourcesAsync` and
+`LookupSubjectsAsync` may yield the same resource/subject more than once —
+for example across caveated/conditional results, or when a limit is set —
+possibly with a different `Permissionship` on each occurrence. This is
+proto-documented server behavior, not a client-side paging defect; a caller
+that needs a deduplicated set must dedupe on the ID itself.
 
 `Permissionship` MUST be checked before treating a result as a full grant —
 `ConditionalPermission` results depend on caveat context (`PartialCaveat`)

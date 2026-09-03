@@ -114,6 +114,15 @@ export interface LookupResourcesParams {
   context?: Record<string, unknown>;
   limit?: number;
   /**
+   * When true, asks the server to include additional debugging context in
+   * the error it returns for a `MAXIMUM_DEPTH_EXCEEDED` failure -- the only
+   * failure this currently affects. That context arrives the same way any
+   * other server-supplied detail does: as extra keys in the thrown
+   * {@link SpiceDBError.reasonMetadata}. It never changes a successful
+   * result. Defaults to `false`.
+   */
+  debug?: boolean;
+  /**
    * Aborting this releases the underlying stream -- see
    * {@link SpiceDBClient.lookupResources} and root DESIGN.md, "RULE:
    * Abandoning a stream must release it".

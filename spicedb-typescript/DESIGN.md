@@ -342,6 +342,14 @@ lookups never yield `"noPermission"`: a subject/resource pair that lacks the
 permission is simply absent from the stream. Mirrors spicedb-go's
 `client/lookup_types.go`.
 
+`LookupResourcesParams.debug` (`false` by default) sets the proto's
+`with_debug` on the request. It currently affects only one failure mode: a
+`MAXIMUM_DEPTH_EXCEEDED` error, where the server may attach extra context
+beyond the `maximum_depth_allowed` key it always sends. No dedicated field
+carries that extra detail — it arrives the same way `maximum_depth_allowed`
+already does, as additional keys in the thrown `SpiceDBError.reasonMetadata`
+(see Error Handling below). A successful lookup is unaffected either way.
+
 ### Writes
 
 Transaction builder:
@@ -504,7 +512,7 @@ See package sections above.
 | `check_permission/` | Basic permission check, plus a caveated check with no context to show a `conditionalPermission` CheckResult, then resolving that conditional into a grant by supplying the missing context via `CheckOptions` (single-check and bulk) |
 | `write_relationships/` | Writing relationships with transaction builder |
 | `read_relationships/` | Reading relationships with async iterator |
-| `lookup_resources/` | Resource lookup, incl. reading `permissionship`/`partialCaveat` |
+| `lookup_resources/` | Resource lookup, incl. reading `permissionship`/`partialCaveat`, and `params.debug` round-tripping into `reasonMetadata` on a `MAXIMUM_DEPTH_EXCEEDED` failure |
 | `lookup_subjects/` | Subject lookup, incl. wildcard `"*"` + `excludedSubjects` |
 | `watch_changes/` | Watching for changes with a bounded consumer: subscribe, write, consume until the expected update arrives, `abort()`, and require the stream to release |
 | `schema_management/` | Schema read/write |

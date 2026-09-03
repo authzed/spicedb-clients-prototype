@@ -161,6 +161,7 @@ export interface LookupResource {
 export interface LookupResourcesParams {
     // (undocumented)
     context?: Record<string, unknown>;
+    debug?: boolean;
     // (undocumented)
     limit?: number;
     // (undocumented)

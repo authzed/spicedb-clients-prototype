@@ -851,6 +851,10 @@ export class SpiceDBClient {
    * cancellation, tearing down a component. See root DESIGN.md, "RULE:
    * Abandoning a stream must release it".
    *
+   * `params.debug` asks the server for extra context on a
+   * `MAXIMUM_DEPTH_EXCEEDED` failure, surfaced through the thrown error's
+   * `reasonMetadata` -- see {@link LookupResourcesParams.debug}.
+   *
    * @returns An async iterable of {@link LookupResource}.
    */
   async *lookupResources(
@@ -870,6 +874,7 @@ export class SpiceDBClient {
       }),
       context: params.context as JsonObject | undefined,
       optionalLimit: params.limit ?? 0,
+      withDebug: params.debug ?? false,
     });
     let attempt = 0;
     for (;;) {

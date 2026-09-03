@@ -4,6 +4,22 @@
 
 ### Added
 
+- **2026-09-03**: `LookupResourcesParams` gains `debug?: boolean` (proto
+  `LookupResourcesRequest.with_debug`, new in this regeneration). When true,
+  it asks the server to include additional debugging context on a
+  `MAXIMUM_DEPTH_EXCEEDED` failure -- the only failure this currently
+  affects, per the proto's own field comment ("this may be extended in the
+  future"). No new client-side plumbing was needed to surface it: whatever
+  the server attaches lands in the thrown error's existing
+  `SpiceDBError.reasonMetadata` (see the 2026-08-18 error-mapping entry
+  below), the same way `maximum_depth_allowed` already does today. Defaults
+  to `false`; omitting it is byte-identical to before this field existed.
+  `examples/lookup_resources/` gained a stand-in-server case (same technique
+  as `examples/error_mapping/`) proving the flag reaches the wire request and
+  the server's extra metadata key round-trips into `reasonMetadata` — a real
+  `MAXIMUM_DEPTH_EXCEEDED` needs a schema deep enough to overrun the server's
+  recursion limit, which isn't practical to provoke in an example.
+
 - **2026-08-19: the insecure-remote-host refusal now throws `InvalidArgumentError`.**
   Root DESIGN.md, "RULE: Credentials over insecure transport require an explicit opt-in", clause 4 (new). The refusal for a plaintext connection to a non-loopback host is a caller
   argument rejected before any connection exists, so it now takes the same

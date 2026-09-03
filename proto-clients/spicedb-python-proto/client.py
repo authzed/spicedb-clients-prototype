@@ -1,5 +1,6 @@
 import ipaddress
 import re
+import warnings
 
 import grpc
 import grpc.aio
@@ -8,6 +9,50 @@ from authzed.api.v1 import experimental_service_pb2_grpc
 from authzed.api.v1 import permission_service_pb2_grpc
 from authzed.api.v1 import schema_service_pb2_grpc
 from authzed.api.v1 import watch_service_pb2_grpc
+
+# ExperimentalService methods the .proto marks "DEPRECATED: Promoted to
+# <replacement> in the stable API." Keys/values come from those docstrings
+# in gen/authzed/api/v1/experimental_service_pb2_grpc.py.
+_EXPERIMENTAL_DEPRECATED_METHODS = {
+    "BulkImportRelationships": "ImportBulkRelationships",
+    "BulkExportRelationships": "ExportBulkRelationships",
+    "BulkCheckPermission": "CheckBulkPermissions",
+    "ExperimentalReflectSchema": "ReflectSchema",
+    "ExperimentalComputablePermissions": "ComputablePermissions",
+    "ExperimentalDependentRelations": "DependentRelations",
+    "ExperimentalDiffSchema": "DiffSchema",
+}
+
+
+class _DeprecatedMethod:
+    """Proxies a generated stub method, warning once per call.
+
+    Wraps rather than replaces the underlying multicallable so attributes
+    like ``.future()``/``.with_call()`` still work; only ``__call__`` adds
+    the warning.
+    """
+
+    def __init__(self, name: str, replacement: str, wrapped):
+        self._name = name
+        self._replacement = replacement
+        self._wrapped = wrapped
+
+    def __call__(self, *args, **kwargs):
+        warnings.warn(
+            f"{self._name} is deprecated; use {self._replacement} instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self._wrapped(*args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._wrapped, name)
+
+
+def _warn_on_deprecated_methods(stub, deprecated_methods):
+    for name, replacement in deprecated_methods.items():
+        setattr(stub, name, _DeprecatedMethod(name, replacement, getattr(stub, name)))
+    return stub
 
 
 # Characters that can move which part of a target string a URI parser treats
@@ -165,8 +210,9 @@ class Client:
         )
         self.schema = schema_service_pb2_grpc.SchemaServiceStub(self._channel)
         self.watch = watch_service_pb2_grpc.WatchServiceStub(self._channel)
-        self.experimental = experimental_service_pb2_grpc.ExperimentalServiceStub(
-            self._channel
+        self.experimental = _warn_on_deprecated_methods(
+            experimental_service_pb2_grpc.ExperimentalServiceStub(self._channel),
+            _EXPERIMENTAL_DEPRECATED_METHODS,
         )
 
     async def close(self):

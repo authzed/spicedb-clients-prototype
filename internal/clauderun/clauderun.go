@@ -65,7 +65,7 @@ func Available() bool {
 //	--verbose                    required by the CLI when combining --print
 //	                             with --output-format stream-json
 //
-// The NDJSON stream is rendered into readable lines by RenderStream. The
+// The NDJSON stream is rendered into readable lines by renderStream. The
 // bypass and the streaming flags are both confined to that one workflow,
 // which runs on an ephemeral single-purpose container. Local runs keep
 // normal interactive prompting and are untouched by any of this.
@@ -94,9 +94,9 @@ func Run(prompt string) error {
 		return fmt.Errorf("clauderun: start claude: %w", err)
 	}
 
-	// Render concurrently with the process running; RenderStream returns once
+	// Render concurrently with the process running; renderStream returns once
 	// stdout is closed (i.e. once claude exits), so this does not race Wait.
-	RenderStream(stdout, os.Stdout)
+	renderStream(stdout, os.Stdout)
 
 	// The exit code must come from claude, not the renderer: Wait is what
 	// reports it. A renderer that swallowed the stream and returned nil here
@@ -135,7 +135,7 @@ type contentBlock struct {
 }
 
 // maxLineSize bounds how large a single stream-json line is allowed to grow
-// before RenderStream gives up on it. bufio.Scanner's default (64KB) is
+// before renderStream gives up on it. bufio.Scanner's default (64KB) is
 // exceeded by claude's own "system" init event, which enumerates every
 // available tool and is routinely several hundred KB; a few MB comfortably
 // covers that with headroom.
@@ -145,27 +145,21 @@ const maxLineSize = 4 * 1024 * 1024
 // as needed.
 const initialLineSize = 64 * 1024
 
-// RenderStream reads claude's --output-format stream-json NDJSON output from
+// renderStream reads claude's --output-format stream-json NDJSON output from
 // r, one event per line, and writes a human-readable rendering of it to w.
-//
-// It is exported (rather than the more natural unexported renderStream)
-// solely so it can be unit-tested from the root module's magefile_test.go --
-// the repo root is the only place in this tree set up to host Go tests for
-// mage code, and Go visibility rules require an exported symbol for that
-// cross-package test to reach it. Run is the only caller in normal
-// operation; no Magefile calls RenderStream directly.
+// Run is its only caller.
 //
 // Three correctness rules matter more than the formatting:
 //
 //  1. A line that fails to unmarshal is printed verbatim, never dropped. A
 //     previous fix in this repo hid a diagnosable failure behind
 //     2>/dev/null; this is the opposite of that.
-//  2. RenderStream never decides the exit code -- see Run, which calls
+//  2. renderStream never decides the exit code -- see Run, which calls
 //     cmd.Wait() after this returns and returns that error.
 //  3. The scanner buffer is sized up front (see maxLineSize) and
 //     scanner.Err() is checked after the loop, so a line that is too large
 //     produces a clear notice instead of a silent truncation.
-func RenderStream(r io.Reader, w io.Writer) {
+func renderStream(r io.Reader, w io.Writer) {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, initialLineSize), maxLineSize)
 
@@ -220,7 +214,7 @@ func renderAssistant(w io.Writer, evt streamEvent) {
 			if strings.TrimSpace(text) == "" {
 				continue
 			}
-			for _, line := range strings.Split(text, "\n") {
+			for line := range strings.SplitSeq(text, "\n") {
 				fmt.Fprintf(w, "  %s\n", line)
 			}
 		case "tool_use":

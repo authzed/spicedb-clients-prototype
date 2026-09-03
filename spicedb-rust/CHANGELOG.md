@@ -133,6 +133,18 @@
 
 ### Fixes
 
+- **2026-09-03: proto regeneration -- `LookupResourcesRequest.with_debug`.** The proto client
+  added a new field (`with_debug`, debug-only recursion-depth diagnostics in error details) to
+  a message this client already builds by full struct literal, which broke the build outright
+  (`E0063: missing field`). Set to `false` unconditionally, the same posture already taken for
+  `CheckBulkPermissionsRequest.with_tracing` -- neither is exposed as a caller-facing parameter.
+  Everything else in this proto change was validation-annotation cleanup (no field/type impact)
+  or doc-only: `LookupResources`/`LookupSubjects` now say explicitly on the wire that streamed
+  results are not guaranteed unique, which `lookup_resources`/`lookup_subjects`'s doc comments
+  and `DESIGN.md` now say too. The unrelated `DownloadPermissionSetsResponse.at_revision`
+  addition (materialize API) needs no change here: that service has no idiomatic wrapper in
+  this client at all.
+
 - **2026-08-19**: **The clear-before-write delete tolerates one error, not all of them.** It
   swallowed every failure, so an unreachable server or a rotated token read as "nothing to clear"
   and the example carried on to fail somewhere less obvious. Only

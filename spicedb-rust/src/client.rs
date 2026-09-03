@@ -947,6 +947,11 @@ impl SpiceDBClient {
     /// permissionship (full grant vs conditional on caveat context) and, for
     /// conditional results, which caveat context was missing.
     ///
+    /// Results are **not guaranteed to be unique**: the same resource may be
+    /// yielded more than once (for example via caveated results, or when a
+    /// limit spans a page boundary), possibly with differing permissionship.
+    /// Callers that require uniqueness should deduplicate by resource ID.
+    ///
     /// Cursors are handled transparently — the client automatically re-fetches
     /// pages of 512 results, lazily fetching the next page only once the
     /// current page has been consumed.
@@ -993,6 +998,7 @@ impl SpiceDBClient {
                             optional_limit: DEFAULT_LOOKUP_PAGE_SIZE,
                             optional_cursor: cursor.clone(),
                             context: None,
+                            with_debug: false,
                         })
                         .await
                 })
@@ -1030,6 +1036,10 @@ impl SpiceDBClient {
 
     /// Returns a stream of subjects that have the given permission on the
     /// resource.
+    ///
+    /// Results are **not guaranteed to be unique**: the same subject may be
+    /// yielded more than once, possibly with differing permissionship.
+    /// Callers that require uniqueness should deduplicate by subject ID.
     ///
     /// When a yielded [`LookupSubject::subject`] is the wildcard `"*"`, the
     /// server has granted the permission to every subject of `subject_type`

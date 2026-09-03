@@ -373,6 +373,13 @@ carries `excluded_subjects`: when `subject.subject_id` is the wildcard `"*"`, th
 subjects MUST be treated as NOT holding the permission even though the wildcard would
 otherwise suggest a blanket grant.
 
+Neither stream is guaranteed unique -- the proto docs for both RPCs now say so explicitly:
+the same resource/subject may be yielded more than once (caveated results, or a limit that
+splits across a page boundary), possibly with differing `permissionship` on each occurrence.
+A caller that needs a deduplicated set must dedupe by ID itself; this client does not do it
+for them, since collapsing occurrences could silently pick an arbitrary one of two differing
+`permissionship` values.
+
 ### Writes
 
 Every write RPC that has a `ZedToken` in its proto response already returns

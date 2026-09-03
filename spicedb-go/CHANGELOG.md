@@ -4,6 +4,34 @@
 
 ### Added
 
+- **2026-09-03: `LookupResources` gains a `WithLookupResourcesDebug()` option**, reaching a
+  proto field (`LookupResourcesRequest.with_debug`) added upstream that this client
+  previously had no way to set. As of this writing it enables one thing: when a
+  `LookupResources` call fails by exceeding the maximum permission-check recursion depth,
+  the server attaches additional debug context to the error. There is no new accessor for
+  that context -- it rides the same `google.rpc.ErrorInfo` detail this client already parses
+  onto `Error.Reason`/`Error.ReasonMetadata`, so passing the option is the only change a
+  caller who wants it needs to make. Purely additive: `LookupResources` gained a trailing
+  `opts ...LookupResourcesOption` parameter, so every existing call site is unaffected.
+
+  ```go
+  for resource, err := range c.LookupResources(ctx, cs, "document", "view", "user", "alice",
+      client.WithLookupResourcesDebug()) {
+      // a failure here, if caused by exceeding max recursion depth, carries extra
+      // detail in err's ErrorInfo -- same Error.Reason/ReasonMetadata path as always.
+  }
+  ```
+
+  Also documented (no code change): the upstream proto now states explicitly that
+  `LookupResources`/`LookupSubjects` results are **not guaranteed unique** -- the same
+  resource or subject may be streamed more than once, possibly with differing
+  permissionship. A caller needing uniqueness must deduplicate results itself.
+
+  `examples/lookup_resources/` extended to prove the option reaches the wire, against a
+  stand-in `PermissionsService` (the same technique `examples/retry_policy/` uses) --
+  provoking a genuine depth-exceeded failure would need a deeply recursive schema this
+  example doesn't otherwise need.
+
 - **2026-08-19: the insecure-remote-host refusal now matches `ErrInvalidArgument`.**
   Root DESIGN.md, "RULE: Credentials over insecure transport require an explicit opt-in", clause 4 (new). The refusal for a plaintext connection to a non-loopback host is a caller
   argument rejected before any connection exists, so it now takes the same

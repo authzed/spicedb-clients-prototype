@@ -242,6 +242,22 @@ Iterators:
 - `ExportRelationships(...)` → `iter.Seq2[rel.Relationship, error]`
 - `Updates(...)` → `iter.Seq2[client.WatchEvent, error]`
 
+Results from `LookupResources`/`LookupSubjects` are streamed and **not
+guaranteed to be unique**: the same resource or subject may be returned more
+than once (e.g. via caveated/conditional results), possibly with differing
+permissionship. A caller that requires uniqueness must deduplicate results
+itself.
+
+`LookupResources` accepts trailing variadic `LookupResourcesOption`s.
+`WithLookupResourcesDebug()` sets the proto's `with_debug` field, which asks
+SpiceDB to attach additional debug context to the error when the call fails by
+exceeding the maximum permission-check recursion depth — the only case the
+proto uses it for as of this writing. There is no separate accessor for the
+extra detail: it rides the same `google.rpc.ErrorInfo` status detail this
+client already parses onto `Error.Reason`/`Error.ReasonMetadata` (see
+"Error Handling" below), so a caller who wants it needs only to pass the
+option and read the returned error as usual.
+
 `LookupResource` and `LookupSubject` (see `client/lookup_types.go`) are native
 result structs, not bare ID strings — they carry the data a caller needs to
 avoid silently over-granting access:
@@ -579,7 +595,7 @@ See package sections above for the complete API manifest.
 | `check_permission/` | Basic permission check with CheckOne, plus a caveated check with no context to show a Conditional CheckResult |
 | `write_relationships/` | Writing relationships with transaction builder |
 | `read_relationships/` | Reading relationships with iterator |
-| `lookup_resources/` | Finding resources a subject can access |
+| `lookup_resources/` | Finding resources a subject can access; `WithLookupResourcesDebug` reaching the wire `with_debug` field |
 | `lookup_subjects/` | Finding subjects with access to a resource |
 | `watch_changes/` | Watching for relationship changes with a bounded consumer: subscribe, write, consume until the expected update arrives, cancel, and require the stream to release |
 | `call_deadlines/` | Bounding calls with a `context.Context` deadline, proved against a listener that accepts the connection and never answers |

@@ -21,9 +21,14 @@ type lookupStubServer struct {
 
 	lookupResourcesResponses []*v1.LookupResourcesResponse
 	lookupSubjectsResponses  []*v1.LookupSubjectsResponse
+
+	// gotWithDebug records WithDebug from the most recent LookupResources
+	// request, so tests can assert it was set (or not) on the wire.
+	gotWithDebug []bool
 }
 
-func (s *lookupStubServer) LookupResources(_ *v1.LookupResourcesRequest, stream grpc.ServerStreamingServer[v1.LookupResourcesResponse]) error {
+func (s *lookupStubServer) LookupResources(req *v1.LookupResourcesRequest, stream grpc.ServerStreamingServer[v1.LookupResourcesResponse]) error {
+	s.gotWithDebug = append(s.gotWithDebug, req.GetWithDebug())
 	for _, resp := range s.lookupResourcesResponses {
 		if err := stream.Send(resp); err != nil {
 			return err
@@ -118,6 +123,30 @@ func TestLookupResources_YieldsPermissionshipAndPartialCaveat(t *testing.T) {
 	require.Equal(t, PermissionshipConditionalPermission, got[1].Permissionship)
 	require.NotNil(t, got[1].PartialCaveat)
 	require.Equal(t, []string{"ip_address"}, got[1].PartialCaveat.MissingRequiredContext)
+}
+
+// TestLookupResources_WithDebugReachesTheWire proves that
+// WithLookupResourcesDebug sets LookupResourcesRequest.WithDebug, and that
+// omitting it leaves the field false -- the only two states the option can
+// produce.
+func TestLookupResources_WithDebugReachesTheWire(t *testing.T) {
+	stub := &lookupStubServer{
+		lookupResourcesResponses: []*v1.LookupResourcesResponse{
+			{ResourceObjectId: "doc1", Permissionship: v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_HAS_PERMISSION},
+		},
+	}
+	dialer := startLookupStubServer(t, stub)
+	c := newTestClient(t, dialer)
+
+	for _, err := range c.LookupResources(context.Background(), consistency.MinLatency(), "document", "view", "user", "alice") {
+		require.NoError(t, err)
+	}
+	require.Equal(t, []bool{false}, stub.gotWithDebug)
+
+	for _, err := range c.LookupResources(context.Background(), consistency.MinLatency(), "document", "view", "user", "alice", WithLookupResourcesDebug()) {
+		require.NoError(t, err)
+	}
+	require.Equal(t, []bool{false, true}, stub.gotWithDebug)
 }
 
 // TestLookupResources_StreamErrorYieldsZeroValueAndMappedError proves that a

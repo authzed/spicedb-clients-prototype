@@ -214,6 +214,15 @@ jobs:
           git config user.name "authzed-client-regen[bot]"
           git config user.email "authzed-client-regen[bot]@users.noreply.github.com"
 
+      # Gen.Summary takes this as its baseRef parameter below. It must be the
+      # pre-generation HEAD, not origin/main -- the same value Gen.All itself
+      # captures internally for .last-generation stamping -- so captured here,
+      # before gen:all makes any commits, rather than rediscovered afterward a
+      # different way.
+      - name: Capture pre-generation HEAD
+        id: pregen
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
       # continue-on-error so a partial failure still yields a PR carrying the
       # languages that did succeed. The job is failed explicitly at the end.
       - name: Regenerate all clients
@@ -227,6 +236,25 @@ jobs:
         run: |
           set -o pipefail
           mage gen:all 2>&1 | tee /tmp/gen.log
+
+      # Descriptive, not functional: continue-on-error means a failure here
+      # never fails the job, and "Compose the PR body" below checks the output
+      # file itself rather than trusting this step's outcome, so a failed or
+      # empty summary falls back to the provenance-only body further down.
+      #
+      # No `if` gate on steps.regen.outcome: this must run even when
+      # generation partially failed, since a reviewer of a regen-partial PR
+      # needs orientation most. Needs the same CLAUDE_CODE_OAUTH_TOKEN and
+      # CI_REGENERATION as the regenerate step above -- clauderun keys its CI
+      # behavior (bypassed permissions, streamed stream-json output) off
+      # CI_REGENERATION.
+      - name: Summarize the generated changes
+        id: summary
+        continue-on-error: true
+        env:
+          CI_REGENERATION: "1"
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: mage gen:summary "${{ steps.pregen.outputs.sha }}" /tmp/pr-summary.md
 
       - name: Describe the outcome
         id: state
@@ -261,6 +289,57 @@ jobs:
             echo "branch=regen/api-main" >> "$GITHUB_OUTPUT"
           fi
 
+      # Composes /tmp/pr-body.md: Claude's summary first (what a reviewer
+      # wants to read), then the provenance block that used to be the entire
+      # body, unchanged. Written to a file, then passed to create-pull-request
+      # via body-path below, rather than interpolated inline, so the summary
+      # step's output -- arbitrary markdown from a separate mage invocation --
+      # can be spliced in.
+      #
+      # The summary's presence is judged here on the file itself (non-empty,
+      # not all-whitespace) rather than on steps.summary.outcome: "the step
+      # exited 0" and "the file has real content" are different claims, and
+      # Gen.Summary's own contract (Magefile.go) is to error whenever it
+      # hasn't written real content -- so trusting the file is at least as
+      # reliable as trusting the outcome, and it is what actually determines
+      # what gets opened.
+      - name: Compose the PR body
+        id: body
+        env:
+          SUMMARY_FILE: /tmp/pr-summary.md
+          BODY_FILE: /tmp/pr-body.md
+          BUFTAG: ${{ steps.pin.outputs.buftag }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action }}
+          OUTCOME: ${{ steps.regen.outcome }}
+          FAILED: ${{ steps.state.outputs.failed }}
+          BSR_COMMIT: ${{ steps.bsr.outputs.commit }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          {
+            if [ -s "$SUMMARY_FILE" ] && [ -n "$(tr -d '[:space:]' < "$SUMMARY_FILE")" ]; then
+              cat "$SUMMARY_FILE"
+              printf '\n\n'
+            fi
+            cat <<BODY_EOF
+          Automated client regeneration.
+
+          - **Upstream API pin:** \`${BUFTAG}\`
+          - **Trigger:** \`${EVENT_NAME}\` / \`${EVENT_ACTION}\`
+          - **Generation result:** \`${OUTCOME}\`
+          - **Failed languages:** \`${FAILED}\`
+          - **Resolved BSR commit:** \`${BSR_COMMIT}\` (from \`${BUFTAG}\`)
+          - **Run:** ${RUN_URL}
+
+          Reproduce locally, against the exact revision this ran on:
+
+          \`\`\`
+          BUFTAG=${BSR_COMMIT} mage gen:all
+          \`\`\`
+          BODY_EOF
+          } > "$BODY_FILE"
+
       - uses: actions/create-github-app-token@v3
         id: pr-token
         with:
@@ -280,21 +359,7 @@ jobs:
           draft: ${{ steps.state.outputs.draft }}
           labels: ${{ steps.state.outputs.labels }}
           title: ${{ steps.state.outputs.title }}
-          body: |
-            Automated client regeneration.
-
-            - **Upstream API pin:** `${{ steps.pin.outputs.buftag }}`
-            - **Trigger:** `${{ github.event_name }}` / `${{ github.event.action }}`
-            - **Generation result:** `${{ steps.regen.outcome }}`
-            - **Failed languages:** `${{ steps.state.outputs.failed }}`
-            - **Resolved BSR commit:** `${{ steps.bsr.outputs.commit }}` (from `${{ steps.pin.outputs.buftag }}`)
-            - **Run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-
-            Reproduce locally, against the exact revision this ran on:
-
-            ```
-            BUFTAG=${{ steps.bsr.outputs.commit }} mage gen:all
-            ```
+          body-path: /tmp/pr-body.md
 
       # Gated on the operation, not merely on a populated number:
       # create-pull-request closes an existing PR when new base-branch commits

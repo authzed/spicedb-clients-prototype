@@ -3,7 +3,9 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -421,22 +423,117 @@ func genClientLangs(langs []string) error {
 	return nil
 }
 
-func apiCompatAll(baseRef string) error {
-	var failures []string
+// maxCompatRetries bounds how many times Claude is asked to repair an API
+// compatibility break before the run gives up. It matches the build/test retry
+// budget each client's Gen target already uses.
+const maxCompatRetries = 3
+
+// apiCompatBreak is one language's failing compatibility report.
+type apiCompatBreak struct {
+	lang   string
+	report string
+}
+
+// apiCompatOnce runs every language's apiCompat target once, returning the
+// languages that failed along with what they printed.
+func apiCompatOnce(baseRef string) []apiCompatBreak {
+	var breaks []apiCompatBreak
 	for _, l := range apiCompatLanguages {
 		dir := fmt.Sprintf("spicedb-%s", l)
 		fmt.Printf("\n==> Checking API compatibility: %s\n", dir)
-		if err := runMageInWithArgs(dir, "apicompat", baseRef); err != nil {
+		out, err := runMageInCapture(dir, "apicompat", baseRef)
+		if err != nil {
 			fmt.Printf("==> FAILED: %s: %v\n", dir, err)
-			failures = append(failures, l)
+			breaks = append(breaks, apiCompatBreak{lang: l, report: out})
 		}
 	}
+	return breaks
+}
 
-	if len(failures) > 0 {
-		return fmt.Errorf("API compatibility check failed for: %s. Run 'mage updateAllowBreak' to proceed", strings.Join(failures, ", "))
+// apiCompatAll checks every language against baseRef, giving Claude the
+// failing reports and a chance to repair them.
+//
+// Regeneration widens the client surface whenever the upstream API gains
+// something, and that routinely breaks compatibility. Until now such a break
+// failed the whole run here at step 2 -- long after Claude had finished
+// generating, and with nothing telling it what went wrong, so the same break
+// came back on the next run.
+//
+// The repair is committed between attempts, which is also why this loop lives
+// here rather than inside each client's Gen target. go-apidiff compares git
+// commits and refuses to run against a dirty worktree at all ("current git tree
+// is dirty", exit 2), so inside Gen -- where Claude's edits are still
+// uncommitted -- the check could not run, and an uncommitted repair here would
+// not merely go unmeasured, it would make the next attempt fail for an
+// unrelated reason.
+func apiCompatAll(baseRef string) error {
+	for attempt := 1; attempt <= maxCompatRetries; attempt++ {
+		breaks := apiCompatOnce(baseRef)
+		if len(breaks) == 0 {
+			fmt.Println("\n==> All API compatibility checks passed!")
+			return nil
+		}
+
+		langs := make([]string, len(breaks))
+		for i, b := range breaks {
+			langs[i] = b.lang
+		}
+		joined := strings.Join(langs, ", ")
+
+		if !clauderun.Available() {
+			return fmt.Errorf("API compatibility check failed for: %s. Run 'mage updateAllowBreak' to proceed", joined)
+		}
+		if attempt == maxCompatRetries {
+			return fmt.Errorf("API compatibility check failed for: %s after %d repair attempts. Run 'mage updateAllowBreak' to proceed", joined, maxCompatRetries)
+		}
+
+		fmt.Printf("\n==> API compatibility broke in %s; asking Claude to fix (attempt %d/%d)...\n", joined, attempt, maxCompatRetries)
+		if err := clauderun.Run(apiCompatFixPrompt(breaks)); err != nil {
+			return fmt.Errorf("claude fix invocation failed: %w", err)
+		}
+
+		before, err := sh.Output("git", "rev-parse", "HEAD")
+		if err != nil {
+			return fmt.Errorf("reading HEAD before the compatibility fix: %w", err)
+		}
+		if err := commitIfChanged(".", fmt.Sprintf("fix: restore API compatibility in %s", joined)); err != nil {
+			return fmt.Errorf("committing the compatibility fix: %w", err)
+		}
+		after, err := sh.Output("git", "rev-parse", "HEAD")
+		if err != nil {
+			return fmt.Errorf("reading HEAD after the compatibility fix: %w", err)
+		}
+		// Claude edited nothing, so the next attempt would re-run an identical
+		// check and fail identically. Stop now and say why, rather than
+		// spending the remaining attempts to reach the same place.
+		if strings.TrimSpace(before) == strings.TrimSpace(after) {
+			return fmt.Errorf("API compatibility check failed for: %s, and the repair changed nothing. Run 'mage updateAllowBreak' to proceed", joined)
+		}
 	}
-	fmt.Println("\n==> All API compatibility checks passed!")
 	return nil
+}
+
+// apiCompatFixPrompt renders the failing reports, and the rules for repairing
+// them, for Claude.
+func apiCompatFixPrompt(breaks []apiCompatBreak) string {
+	var b strings.Builder
+	b.WriteString("Regenerating the clients broke API compatibility with the previous commit. ")
+	b.WriteString("Each report below is that language's `mage apicompat` output.\n\n")
+	for _, br := range breaks {
+		fmt.Fprintf(&b, "### spicedb-%s\n\n```\n%s\n```\n\n", br.lang, strings.TrimSpace(br.report))
+	}
+	b.WriteString("Fix each break by preserving the existing public API. Prefer an additive " +
+		"change: keep the old signature working and add the new capability alongside it -- an " +
+		"optional or variadic parameter, an overload, or a separate method -- rather than " +
+		"changing or removing what callers already use. Retyping or removing an exported " +
+		"symbol is a last resort.\n\n" +
+		"Record what you change in that client's CHANGELOG.md, under the single existing " +
+		"`## Unreleased` heading -- never add a second one. Put the entry in the right `###` " +
+		"subsection (`Added`, `Changed`, `Fixed`), formatted like the entries already there: " +
+		"a bold `**YYYY-MM-DD: one-line summary.**` followed by an indented paragraph saying " +
+		"what changed and why it matters to a caller.\n\n" +
+		"Do not weaken, skip or disable the compatibility check itself to make it pass.")
+	return b.String()
 }
 
 type Lint mg.Namespace
@@ -598,9 +695,18 @@ func runMageIn(dir string, target string) error {
 	return sh.RunV("mage", "-d", dir, target)
 }
 
-func runMageInWithArgs(dir string, target string, args ...string) error {
+// runMageInCapture runs a mage target and returns its combined output while
+// still streaming it. A failing target's report has to reach Claude verbatim,
+// and sh.RunV only streams, so this keeps both: the operator still watches the
+// log live, and the text survives for the prompt.
+func runMageInCapture(dir string, target string, args ...string) (string, error) {
 	cmdArgs := append([]string{"-d", dir, target}, args...)
-	return sh.RunV("mage", cmdArgs...)
+	cmd := exec.Command("mage", cmdArgs...)
+	var buf bytes.Buffer
+	cmd.Stdout = io.MultiWriter(os.Stdout, &buf)
+	cmd.Stderr = io.MultiWriter(os.Stderr, &buf)
+	err := cmd.Run()
+	return buf.String(), err
 }
 
 // commitIfChanged is the root Magefile's one direct user of git, and the

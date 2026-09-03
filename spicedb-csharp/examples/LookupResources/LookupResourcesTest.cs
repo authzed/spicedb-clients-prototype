@@ -47,4 +47,29 @@ public class LookupResourcesTest
         Assert.Contains("firstdoc", resourceIDs);
         Assert.Contains("seconddoc", resourceIDs);
     }
+
+    [Fact]
+    public async Task LookupResources_WithDebug_StillReturnsResults()
+    {
+        await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
+
+        await client.WriteSchemaAsync(Schema);
+
+        var txn = new Transaction();
+        txn.Touch(Relationship.FromTriple("document", "thirddoc", "viewer", "user", "alice"));
+        await client.WriteAsync(txn);
+
+        // withDebug asks the server to attach debug info (currently limited
+        // to maximum-recursion-depth errors) to the error details of a
+        // failed call. It must not change the results of a call that
+        // succeeds.
+        var resourceIDs = new HashSet<string>();
+        await foreach (var result in client.LookupResourcesAsync(
+            Full(), "document", "view", "user", "alice", withDebug: true))
+        {
+            resourceIDs.Add(result.ResourceID);
+        }
+
+        Assert.Contains("thirddoc", resourceIDs);
+    }
 }

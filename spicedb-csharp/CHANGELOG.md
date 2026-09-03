@@ -4,6 +4,19 @@
 
 ### Added
 
+- **2026-09-03: `LookupResourcesAsync` gains a trailing optional `withDebug` parameter**,
+  reaching the proto's new `LookupResourcesRequest.with_debug` field. When `true`, it asks the
+  server to attach debug information to a failed call's error details — currently limited to
+  maximum-recursion-depth errors — with no effect on a call that succeeds. Defaults to `false`;
+  purely additive, added after the existing `cancellationToken` parameter so no existing
+  positional call site is affected. `LookupSubjectsAsync` has no equivalent parameter because
+  its proto request has no matching field.
+
+  Also documented (no code change): `LookupResourcesAsync`/`LookupSubjectsAsync` streams are not
+  guaranteed to yield unique results — the same resource/subject may be returned more than once,
+  possibly with differing `Permissionship` — per the updated proto doc comments on
+  `LookupResources`/`LookupSubjects`.
+
 - **2026-08-19: the insecure-remote-host refusal now throws `InvalidArgumentException`.**
   Root DESIGN.md, "RULE: Credentials over insecure transport require an explicit opt-in", clause 4 (new). The refusal for a plaintext connection to a non-loopback host is a caller
   argument rejected before any connection exists, so it now takes the same

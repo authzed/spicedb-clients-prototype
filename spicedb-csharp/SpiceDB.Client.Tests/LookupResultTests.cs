@@ -330,4 +330,40 @@ public class LookupResultTests
         results[0].PartialCaveat.Should().NotBeNull();
         results[0].PartialCaveat!.MissingRequiredContext.Should().Equal("ip");
     }
+
+    // ── LookupResourcesAsync(withDebug) reaches the wire ────────────────────
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task LookupResourcesAsync_WithDebug_ReachesRequest(bool withDebug)
+    {
+        var captured = new List<LookupResourcesRequest>();
+
+        var mockPermissions = new Mock<PermissionsService.PermissionsServiceClient>();
+        mockPermissions
+            .Setup(c => c.LookupResources(
+                It.IsAny<LookupResourcesRequest>(),
+                It.IsAny<Metadata>(),
+                It.IsAny<DateTime?>(),
+                It.IsAny<CancellationToken>()))
+            .Callback<LookupResourcesRequest, Metadata, DateTime?, CancellationToken>(
+                (req, _, _, _) => captured.Add(req))
+            .Returns(MakeServerStreamingCall(new FakeStreamReader<LookupResourcesResponse>([])));
+
+        await using var client = new SpiceDBClient(
+            mockPermissions.Object,
+            new Mock<SchemaService.SchemaServiceClient>().Object,
+            new Mock<WatchService.WatchServiceClient>().Object,
+            new Mock<ExperimentalService.ExperimentalServiceClient>().Object);
+
+        await foreach (var _ in client.LookupResourcesAsync(
+            Consistency.Full(), "document", "view", "user", "alice",
+            withDebug: withDebug))
+        {
+        }
+
+        captured.Should().ContainSingle();
+        captured[0].WithDebug.Should().Be(withDebug);
+    }
 }

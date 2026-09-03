@@ -892,14 +892,28 @@ public sealed class SpiceDBClient : IAsyncDisposable
     /// mapped and rethrown instead of retried — see
     /// <see cref="ReadRelationshipsAsync"/> for the full rationale.
     /// </para>
+    /// <para>
+    /// Results are streamed and not guaranteed to be unique: the same
+    /// resource may be returned more than once (for example via
+    /// caveated/conditional results, or when a limit is set), possibly with
+    /// differing <see cref="Permissionship"/>. Callers that require
+    /// uniqueness should deduplicate results.
+    /// </para>
     /// </summary>
+    /// <param name="withDebug">
+    /// If true, asks the server to include debug information when available.
+    /// Currently only enables debugging of maximum recursion depth errors,
+    /// with additional context returned in the error details of the thrown
+    /// <see cref="SpiceDBException"/>.
+    /// </param>
     public async IAsyncEnumerable<LookupResource> LookupResourcesAsync(
         ConsistencyStrategy consistency,
         string resourceType,
         string permission,
         string subjectType,
         string subjectID,
-        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        [EnumeratorCancellation] CancellationToken cancellationToken = default,
+        bool withDebug = false)
     {
         ArgumentNullException.ThrowIfNull(consistency);
 
@@ -920,6 +934,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
                     },
                 },
                 OptionalLimit = DefaultLookupPageSize,
+                WithDebug = withDebug,
             };
             if (cursor != null)
                 req.OptionalCursor = cursor;
@@ -1021,6 +1036,12 @@ public sealed class SpiceDBClient : IAsyncDisposable
     /// has been yielded, a transient error is mapped and rethrown instead of
     /// retried — see <see cref="ReadRelationshipsAsync"/> for the full
     /// rationale.
+    /// </para>
+    /// <para>
+    /// Results are streamed and not guaranteed to be unique: the same
+    /// subject may be returned more than once, possibly with differing
+    /// permissionship. Callers that require uniqueness should deduplicate
+    /// results.
     /// </para>
     /// </summary>
     public async IAsyncEnumerable<LookupSubject> LookupSubjectsAsync(

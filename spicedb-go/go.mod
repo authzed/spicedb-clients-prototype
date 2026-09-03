@@ -13,6 +13,7 @@ require (
 
 require (
 	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.12-20260709200747-435963d16310.1 // indirect
+	github.com/authzed/spicedb-clients v0.0.0
 	github.com/envoyproxy/protoc-gen-validate v1.3.3 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.30.0 // indirect
 	golang.org/x/net v0.57.0 // indirect
@@ -23,3 +24,5 @@ require (
 )
 
 replace github.com/authzed/spicedb-clients/proto-clients/spicedb-go-proto => ../proto-clients/spicedb-go-proto
+
+replace github.com/authzed/spicedb-clients => ..

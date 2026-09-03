@@ -5,31 +5,13 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 
+	"github.com/authzed/spicedb-clients/internal/clauderun"
 	"github.com/magefile/mage/sh"
 )
 
 const maxRetries = 3
-
-// claudeAvailable returns true if the claude CLI is installed and usable.
-// Returns false when running in CI (CI env var set) because the claude binary
-// may be present but not authenticated.
-//
-// CI_REGENERATION is the one exception, and it is set by exactly one workflow:
-// .github/workflows/regen-from-api.yaml, which is also the only workflow holding
-// Claude credentials. Every other CI job -- notably meta.yaml's gen-nodiff --
-// must keep taking the false branch here, or `mage gen:all` starts making
-// unreviewed changes inside a check whose whole purpose is asserting that
-// generation produces no diff.
-func claudeAvailable() bool {
-	if os.Getenv("CI") != "" && os.Getenv("CI_REGENERATION") == "" {
-		return false
-	}
-	_, err := exec.LookPath("claude")
-	return err == nil
-}
 
 // Gen regenerates the TypeScript proto client. If claude is not available (e.g. in
 // gen-nodiff CI), any buf generate changes are rolled back and Gen returns nil
@@ -53,7 +35,7 @@ func Gen() error {
 		return nil
 	}
 
-	if !claudeAvailable() {
+	if !clauderun.Available() {
 		fmt.Println("==> claude not available; rolling back buf generate changes (gen-nodiff mode).")
 		_ = sh.Run("git", "checkout", "--", ".")
 		_ = sh.Run("git", "clean", "-fd", ".")
@@ -66,7 +48,7 @@ func Gen() error {
 	}
 
 	fmt.Println("==> Invoking Claude to add boilerplate...")
-	if err := runClaude(
+	if err := clauderun.Run(
 		"Read DESIGN.md. Review the generated code under src/gen/. " +
 			"Add the additional code specified in the manifest (src/client.ts, src/index.ts, src/__tests__/client.test.ts). " +
 			"Run `pnpm build && pnpm test` to verify. Fix any failures.",
@@ -85,7 +67,7 @@ func Gen() error {
 				return fmt.Errorf("build failed after %d retries", maxRetries)
 			}
 			fmt.Println("==> Build failed, asking Claude to fix...")
-			if err := runClaude("Build failed. Read the build output above and fix the issues."); err != nil {
+			if err := clauderun.Run("Build failed. Read the build output above and fix the issues."); err != nil {
 				return fmt.Errorf("claude fix invocation failed: %w", err)
 			}
 			continue
@@ -105,7 +87,7 @@ func Gen() error {
 		}
 
 		fmt.Println("==> Tests failed, asking Claude to fix...")
-		if err := runClaude("Tests failed. Read the test output above and fix the issues."); err != nil {
+		if err := clauderun.Run("Tests failed. Read the test output above and fix the issues."); err != nil {
 			return fmt.Errorf("claude fix invocation failed: %w", err)
 		}
 	}
@@ -119,37 +101,4 @@ func Test() error {
 		return err
 	}
 	return sh.RunV("pnpm", "test")
-}
-
-// claudeArgs returns the CLI arguments for a Claude invocation.
-//
-// Under CI_REGENERATION -- set only by .github/workflows/regen-from-api.yaml,
-// the one workflow holding Claude credentials -- two flags are required that
-// local runs must not get:
-//
-//	--print                              a CI runner has no TTY; the bare
-//	                                     interactive form has never run there
-//	--permission-mode bypassPermissions  without it Claude replies "I don't
-//	                                     have permission to write this file",
-//	                                     edits nothing, and still exits 0 --
-//	                                     so a regeneration reports success and
-//	                                     produces an empty PR (observed on
-//	                                     runs 33010304938 vs 33010790114)
-//
-// The bypass is confined to that workflow, which runs on an ephemeral
-// single-purpose container. Local runs keep normal interactive prompting.
-func claudeArgs() []string {
-	if os.Getenv("CI_REGENERATION") == "" {
-		return nil
-	}
-	return []string{"--print", "--permission-mode", "bypassPermissions"}
-}
-
-// runClaude pipes the prompt to claude via stdin so output streams in real time.
-func runClaude(prompt string) error {
-	cmd := exec.Command("claude", claudeArgs()...)
-	cmd.Stdin = strings.NewReader(prompt)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
 }

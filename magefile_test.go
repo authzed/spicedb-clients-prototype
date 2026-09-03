@@ -719,3 +719,43 @@ func TestAPICompatFixPromptNamesOnlyTheFailingLanguages(t *testing.T) {
 		}
 	}
 }
+
+// The markdown repair prompt is only reached for violations that survived
+// `--fix`, so its instructions are about judgement rather than mechanics --
+// and, as with the API-compat prompt, about not silencing the rule instead of
+// satisfying it.
+
+func TestMarkdownLintFixPromptIncludesTheReport(t *testing.T) {
+	prompt := markdownLintFixPrompt("README.md:12 MD013/line-length Line too long")
+
+	if !strings.Contains(prompt, "README.md:12 MD013/line-length Line too long") {
+		t.Fatalf("prompt missing the violation report:\n%s", prompt)
+	}
+}
+
+func TestMarkdownLintFixPromptTrimsTheReport(t *testing.T) {
+	prompt := markdownLintFixPrompt("\n\n  README.md:12 MD013  \n\n")
+
+	if !strings.Contains(prompt, "README.md:12 MD013") {
+		t.Fatalf("prompt missing trimmed report content:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "\n\n\n") {
+		t.Fatalf("prompt carries untrimmed blank runs:\n%s", prompt)
+	}
+}
+
+func TestMarkdownLintFixPromptCarriesRequiredInstructions(t *testing.T) {
+	prompt := markdownLintFixPrompt("some violation")
+
+	for _, want := range []string{
+		"--fix",
+		"Keep the prose intact",
+		"never delete content to satisfy",
+		"markdownlint-disable",
+		".markdownlint-cli2.yaml",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing required instruction %q:\n%s", want, prompt)
+		}
+	}
+}

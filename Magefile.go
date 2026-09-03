@@ -513,6 +513,108 @@ func apiCompatAll(baseRef string) error {
 	return nil
 }
 
+// markdownLintTool is the repo-wide markdown linter. CI runs it bare, so the
+// file set comes entirely from .markdownlint-cli2.yaml rather than from
+// arguments -- its `globs` key overrides anything passed on the command line.
+const markdownLintTool = "markdownlint-cli2"
+
+// maxMarkdownRetries bounds how many times Claude is asked to clear the
+// markdown gate.
+const maxMarkdownRetries = 3
+
+// runMarkdownLint runs the linter once over the whole repository, optionally
+// letting it repair what it can, and returns its combined output.
+func runMarkdownLint(fix bool) (string, error) {
+	if _, err := exec.LookPath(markdownLintTool); err != nil {
+		return "", fmt.Errorf("%s not found. Install with: npm install -g %s", markdownLintTool, markdownLintTool)
+	}
+	var args []string
+	if fix {
+		args = append(args, "--fix")
+	}
+	cmd := exec.Command(markdownLintTool, args...)
+	var buf bytes.Buffer
+	cmd.Stdout = io.MultiWriter(os.Stdout, &buf)
+	cmd.Stderr = io.MultiWriter(os.Stderr, &buf)
+	err := cmd.Run()
+	return buf.String(), err
+}
+
+// MarkdownLint checks every markdown file in the repository. It mirrors the
+// markdown-lint CI job exactly -- same tool, same config, no arguments -- so a
+// pass here means a pass there.
+func MarkdownLint() error {
+	fmt.Println("==> Linting Markdown (repo-wide)...")
+	if _, err := runMarkdownLint(false); err != nil {
+		return fmt.Errorf("markdown lint failed: %w", err)
+	}
+	fmt.Println("==> Markdown lint passed!")
+	return nil
+}
+
+// markdownLintWithFix is the regeneration gate: check, then repair.
+//
+// It runs once for the whole repository rather than once per client. The rules
+// are the same for every .md file, the file set lives in a single config, and
+// the clients share files, so seven runs would re-lint the same content seven
+// times.
+//
+// Unlike the API-compat gate this needs no commit between attempts, because
+// markdownlint reads the working tree rather than git history.
+//
+// The tool repairs the mechanical rules itself -- hard tabs, blank lines around
+// headings, list markers -- and those are most of what regeneration produces,
+// so --fix runs before Claude is involved and Claude sees only what survived.
+func markdownLintWithFix() error {
+	fmt.Println("\n==> Linting Markdown (repo-wide)...")
+	out, err := runMarkdownLint(false)
+	if err == nil {
+		fmt.Println("==> Markdown lint passed!")
+		return nil
+	}
+
+	fmt.Println("==> Markdown lint failed; applying --fix...")
+	out, err = runMarkdownLint(true)
+	if err == nil {
+		fmt.Println("==> Markdown lint passed after --fix.")
+		return nil
+	}
+
+	for attempt := 1; attempt <= maxMarkdownRetries; attempt++ {
+		if !clauderun.Available() {
+			return fmt.Errorf("markdown lint failed and claude is unavailable:\n%s", strings.TrimSpace(out))
+		}
+		if attempt == maxMarkdownRetries {
+			return fmt.Errorf("markdown lint still failing after %d repair attempts:\n%s", maxMarkdownRetries, strings.TrimSpace(out))
+		}
+
+		fmt.Printf("==> Asking Claude to fix the remaining markdown violations (attempt %d/%d)...\n", attempt, maxMarkdownRetries)
+		if err := clauderun.Run(markdownLintFixPrompt(out)); err != nil {
+			return fmt.Errorf("claude fix invocation failed: %w", err)
+		}
+
+		out, err = runMarkdownLint(false)
+		if err == nil {
+			fmt.Println("==> Markdown lint passed!")
+			return nil
+		}
+	}
+	return fmt.Errorf("markdown lint still failing:\n%s", strings.TrimSpace(out))
+}
+
+// markdownLintFixPrompt renders the surviving violations for Claude.
+func markdownLintFixPrompt(report string) string {
+	return fmt.Sprintf(
+		"markdownlint-cli2 still reports these violations after `--fix` resolved everything "+
+			"it could mechanically, so each one needs a judgement call.\n\n```\n%s\n```\n\n"+
+			"Fix each violation in the file it names. Keep the prose intact: reflow or "+
+			"restructure only as far as the rule requires, and never delete content to satisfy "+
+			"a rule.\n\n"+
+			"Do not add inline `<!-- markdownlint-disable -->` comments, and do not edit "+
+			".markdownlint-cli2.yaml to silence a rule.",
+		strings.TrimSpace(report))
+}
+
 // apiCompatFixPrompt renders the failing reports, and the rules for repairing
 // them, for Claude.
 func apiCompatFixPrompt(breaks []apiCompatBreak) string {
@@ -622,6 +724,9 @@ func update(allowBreak bool) error {
 	fmt.Println("\n=== Step 4/5: Lint ===")
 	if err := (Lint{}).All(); err != nil {
 		return fmt.Errorf("linting failed: %w", err)
+	}
+	if err := markdownLintWithFix(); err != nil {
+		return err
 	}
 
 	fmt.Println("\n=== Step 5/5: Commit ===")

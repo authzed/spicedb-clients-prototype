@@ -242,3 +242,128 @@ func TestClaudePermissionArgsCIRegenerationAddsPermissionFlag(t *testing.T) {
 		}
 	}
 }
+
+// --- Gen.Summary ---
+
+func TestResolveSummaryPathDefaultsWhenEmpty(t *testing.T) {
+	if got := resolveSummaryPath(""); got != defaultSummaryPath {
+		t.Fatalf("resolveSummaryPath(%q) = %q, want %q", "", got, defaultSummaryPath)
+	}
+}
+
+func TestResolveSummaryPathDefaultsWhenWhitespace(t *testing.T) {
+	if got := resolveSummaryPath("   "); got != defaultSummaryPath {
+		t.Fatalf("resolveSummaryPath(%q) = %q, want %q", "   ", got, defaultSummaryPath)
+	}
+}
+
+func TestResolveSummaryPathKeepsExplicitPath(t *testing.T) {
+	if got := resolveSummaryPath("/tmp/pr-summary.md"); got != "/tmp/pr-summary.md" {
+		t.Fatalf("resolveSummaryPath(explicit) = %q, want unchanged", got)
+	}
+}
+
+// The prompt is the one piece of "which reviewer-facing rules did we actually
+// ask for" logic in this target, and it is pure -- no git, no claude -- so it
+// is tested directly rather than through an end-to-end run.
+func TestSummaryPromptIncludesLogAndStat(t *testing.T) {
+	prompt := summaryPrompt("abc123 gen: regenerate go proto client", "spicedb-go/client.go | 12 +++---", "/tmp/out.md")
+
+	for _, want := range []string{
+		"abc123 gen: regenerate go proto client",
+		"spicedb-go/client.go | 12 +++---",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestSummaryPromptTrimsLogAndStat(t *testing.T) {
+	prompt := summaryPrompt("\n\n  abc123 commit  \n\n", "\n  stat line  \n", "/tmp/out.md")
+
+	if strings.Contains(prompt, "\n\n\n") {
+		t.Fatalf("prompt should not carry the untrimmed blank runs from log/stat:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "abc123 commit") {
+		t.Fatalf("prompt missing trimmed log content:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "stat line") {
+		t.Fatalf("prompt missing trimmed stat content:\n%s", prompt)
+	}
+}
+
+func TestSummaryPromptNamesTheOutputFile(t *testing.T) {
+	prompt := summaryPrompt("log", "stat", "/tmp/pr-summary-42.md")
+	if !strings.Contains(prompt, "/tmp/pr-summary-42.md") {
+		t.Fatalf("prompt does not tell Claude where to write the file:\n%s", prompt)
+	}
+}
+
+// These pin the design's actual requirements for the reviewer-facing content,
+// not just "the function returns a non-empty string" -- a prompt that dropped
+// one of these instructions would still compile and still contain the log
+// and stat, so it needs its own assertion.
+func TestSummaryPromptCarriesRequiredInstructions(t *testing.T) {
+	prompt := summaryPrompt("log", "stat", "out.md")
+
+	for _, want := range []string{
+		"cross-cutting",
+		"public API change",
+		"200-400 words",
+		"ONLY the markdown body",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing required instruction %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestCheckSummaryWrittenErrorsWhenFileMissing(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "does-not-exist.md")
+
+	err := checkSummaryWritten(path)
+	if err == nil {
+		t.Fatal("expected an error when the summary file was never written, got nil")
+	}
+	if !strings.Contains(err.Error(), "did not write") {
+		t.Fatalf("error should distinguish a missing file from an empty one, got: %v", err)
+	}
+}
+
+func TestCheckSummaryWrittenErrorsWhenFileEmpty(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "empty.md")
+	if err := os.WriteFile(path, []byte(""), 0o644); err != nil {
+		t.Fatalf("write empty file: %v", err)
+	}
+
+	err := checkSummaryWritten(path)
+	if err == nil {
+		t.Fatal("expected an error for an empty summary file, got nil")
+	}
+	if !strings.Contains(err.Error(), "empty") {
+		t.Fatalf("error should distinguish an empty file from a missing one, got: %v", err)
+	}
+}
+
+func TestCheckSummaryWrittenErrorsWhenFileWhitespaceOnly(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "whitespace.md")
+	if err := os.WriteFile(path, []byte("\n  \n"), 0o644); err != nil {
+		t.Fatalf("write whitespace-only file: %v", err)
+	}
+
+	if err := checkSummaryWritten(path); err == nil {
+		t.Fatal("expected an error for a whitespace-only summary file, got nil")
+	}
+}
+
+func TestCheckSummaryWrittenPassesWhenFileHasContent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "summary.md")
+	if err := os.WriteFile(path, []byte("## Summary\n\nSomething changed.\n"), 0o644); err != nil {
+		t.Fatalf("write summary file: %v", err)
+	}
+
+	if err := checkSummaryWritten(path); err != nil {
+		t.Fatalf("unexpected error for a non-empty summary file: %v", err)
+	}
+}

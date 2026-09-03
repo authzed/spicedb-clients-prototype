@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/authzed/spicedb-clients/internal/clauderun"
 	"github.com/magefile/mage/mg"
 	"github.com/magefile/mage/sh"
 )
@@ -87,6 +88,113 @@ func (Gen) Client() error {
 // ClientLang updates a single idiomatic client by language name (go, python, typescript, csharp, java, ruby, rust).
 func (Gen) ClientLang(lang string) error {
 	return genClientLangs([]string{lang})
+}
+
+// defaultSummaryPath is where Summary writes when outPath is empty.
+const defaultSummaryPath = ".pr-summary.md"
+
+// Summary asks Claude to write a markdown PR-description summary of what
+// changed between baseRef and HEAD, and writes it to outPath (or
+// defaultSummaryPath, when outPath is empty).
+//
+// baseRef and outPath are both parameters rather than hardcoded, so this is
+// testable and so a human can run it against any range and to any file.
+// baseRef should be the pre-generation HEAD -- the same value Gen.All
+// already captures for .last-generation stamping -- passed in by the
+// caller rather than recomputed here, so there is exactly one notion of
+// "the baseline" across the generation loop.
+//
+// This deliberately never sees the diff itself: PR #79 was 365 files and
+// 152k lines, and pasting a diff that size would blow the context window
+// exactly as spicedb-java-proto's 56,401-line diff once did ("Prompt is too
+// long"). Instead it hands Claude a `git log --oneline` and a
+// `git diff --stat`, both small and bounded, and tells Claude it has file
+// access to read anything it wants more detail on.
+func (Gen) Summary(baseRef, outPath string) error {
+	return writeSummary(baseRef, outPath)
+}
+
+func writeSummary(baseRef, outPath string) error {
+	outPath = resolveSummaryPath(outPath)
+
+	logOut, err := sh.Output("git", "log", "--oneline", baseRef+"..HEAD")
+	if err != nil {
+		return fmt.Errorf("git log %s..HEAD: %w", baseRef, err)
+	}
+
+	statOut, err := sh.Output("git", "diff", "--stat", baseRef+"..HEAD")
+	if err != nil {
+		return fmt.Errorf("git diff --stat %s..HEAD: %w", baseRef, err)
+	}
+
+	if !clauderun.Available() {
+		return fmt.Errorf("claude not available; cannot write a summary to %s", outPath)
+	}
+
+	fmt.Println("==> Invoking Claude to summarize the generated changes...")
+	if err := clauderun.Run(summaryPrompt(logOut, statOut, outPath)); err != nil {
+		return fmt.Errorf("claude invocation failed: %w", err)
+	}
+
+	return checkSummaryWritten(outPath)
+}
+
+// resolveSummaryPath returns outPath unchanged unless it is empty (or
+// whitespace-only), in which case it returns defaultSummaryPath.
+func resolveSummaryPath(outPath string) string {
+	if strings.TrimSpace(outPath) == "" {
+		return defaultSummaryPath
+	}
+	return outPath
+}
+
+// summaryPrompt builds the prompt asking Claude to write a PR-description
+// summary of log/stat -- a `git log --oneline` and `git diff --stat` pair --
+// to outPath. Claude is expected to write the file itself via its own tool
+// access, the same way every per-client Magefile already asks Claude to edit
+// files directly rather than parsing captured stdout: clauderun.Run streams
+// output and returns only an error, so outPath is how the result comes back.
+func summaryPrompt(log, stat, outPath string) string {
+	return fmt.Sprintf(`You are writing the description for an automated pull request that regenerates SpiceDB's client libraries from an upstream API change.
+
+Below is the commit log and the per-file diffstat for this regeneration (the base commit through HEAD). Do not assume this tells you everything: you have full file access in this checkout, so read any file you want more detail on before writing -- but do not try to read a full diff yourself; use the log and stat below plus targeted file reads instead.
+
+Commits:
+
+%s
+
+Diffstat:
+
+%s
+
+Write a PR description for a reviewer who is deciding whether to merge this. Rules:
+
+- Lead with the cross-cutting change when the same change lands in several clients. This is the common case: all seven clients track one upstream proto change, so describe a shared change once, not once per client.
+- Add a per-client note only where a client did something different from the others.
+- Name any public API change explicitly and prominently -- a new or changed method signature, a new parameter, a new public type. Those are what a reviewer must actually judge.
+- Be brief: aim for roughly 200-400 words.
+- Output ONLY the markdown body itself. No preamble, no code fence wrapping the whole thing, no "Here is the summary" framing.
+
+Write that markdown, and nothing else, to the file at %s, overwriting it if it already exists. Do not print the summary to stdout.`,
+		strings.TrimSpace(log), strings.TrimSpace(stat), outPath)
+}
+
+// checkSummaryWritten distinguishes "Claude produced nothing" (outPath was
+// never created) from "Claude produced an empty file" (outPath exists but
+// has no content), so a caller can tell which failure occurred rather than
+// see one generic error.
+func checkSummaryWritten(outPath string) error {
+	data, err := os.ReadFile(outPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("claude did not write a summary to %s", outPath)
+		}
+		return fmt.Errorf("read summary %s: %w", outPath, err)
+	}
+	if strings.TrimSpace(string(data)) == "" {
+		return fmt.Errorf("claude wrote an empty summary to %s", outPath)
+	}
+	return nil
 }
 
 func genProtoLangs(langs []string) error {

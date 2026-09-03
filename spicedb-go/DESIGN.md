@@ -242,6 +242,24 @@ Iterators:
 - `ExportRelationships(...)` → `iter.Seq2[rel.Relationship, error]`
 - `Updates(...)` → `iter.Seq2[client.WatchEvent, error]`
 
+Neither `LookupResources` nor `LookupSubjects` guarantees unique results: the
+same resource/subject may be yielded more than once (e.g. across conditional
+results, or when a limit is in play), possibly with differing
+permissionship. Callers that need uniqueness must deduplicate.
+
+`LookupResources` takes a trailing `opts ...LookupOption` for optional,
+rarely-needed request shaping. Today there is one: `WithDebug()` sets
+`LookupResourcesRequest.with_debug`, asking the server to attach debug
+information to a failed call's error details when available -- as of this
+client's proto version, only for a `MaxDepthExceeded` failure
+(`CodeResourceExhausted`, `Reason` `"ERROR_REASON_MAXIMUM_DEPTH_EXCEEDED"`).
+The payload gets no dedicated client-native field: the gRPC status
+underlying every mapped `*Error` already survives through `errors.Unwrap`
+(see "RULE: Error mapping must not lose the server's detail" in root
+`DESIGN.md`), so it is reached the same way as any other status detail --
+`status.FromError(errors.Unwrap(err)).Details()`, type-asserted to
+`*v1.DebugInformation`. See `examples/lookup_resources_debug`.
+
 `LookupResource` and `LookupSubject` (see `client/lookup_types.go`) are native
 result structs, not bare ID strings — they carry the data a caller needs to
 avoid silently over-granting access:
@@ -580,6 +598,7 @@ See package sections above for the complete API manifest.
 | `write_relationships/` | Writing relationships with transaction builder |
 | `read_relationships/` | Reading relationships with iterator |
 | `lookup_resources/` | Finding resources a subject can access |
+| `lookup_resources_debug/` | `LookupResources`' `WithDebug()` option: controls whether a `MaxDepthExceeded` failure carries a `DebugInformation` status detail, and how to read it back through the preserved gRPC status |
 | `lookup_subjects/` | Finding subjects with access to a resource |
 | `watch_changes/` | Watching for relationship changes with a bounded consumer: subscribe, write, consume until the expected update arrives, cancel, and require the stream to release |
 | `call_deadlines/` | Bounding calls with a `context.Context` deadline, proved against a listener that accepts the connection and never answers |

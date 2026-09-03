@@ -11,13 +11,44 @@ import (
 
 const defaultLookupPageSize = 512
 
+// LookupOption configures an optional aspect of a LookupResources call.
+type LookupOption func(*lookupOptions)
+
+type lookupOptions struct {
+	withDebug bool
+}
+
+// WithDebug asks the server to attach debug information to a failed call's
+// error details, when available. As of this client's proto version, SpiceDB
+// populates this only for a MaxDepthExceeded failure (CodeResourceExhausted
+// with Reason "ERROR_REASON_MAXIMUM_DEPTH_EXCEEDED").
+//
+// The debug payload does not get a dedicated client-native field: root
+// DESIGN.md's "RULE: Error mapping must not lose the server's detail" is
+// already satisfied generically, because the gRPC status underlying every
+// mapped *Error survives through errors.Unwrap. Reach it the same way as any
+// other status detail: status.FromError(errors.Unwrap(err)).Details(), with
+// a type assertion to *v1.DebugInformation. See examples/lookup_resources_debug.
+func WithDebug() LookupOption {
+	return func(o *lookupOptions) {
+		o.withDebug = true
+	}
+}
+
 // LookupResources returns an iterator over resources of the given type that
 // the subject has the specified permission on. Each result carries the
 // permissionship (full grant vs conditional on caveat context) and, for
 // conditional results, which caveat context was missing. Cursors are
 // handled transparently — the client automatically re-fetches pages of 512
-// results.
-func (c *Client) LookupResources(ctx context.Context, cs consistency.Strategy, resourceType, permission, subjectType, subjectID string) iter.Seq2[LookupResource, error] {
+// results. Results are not guaranteed unique: the same resource may be
+// yielded more than once (e.g. across conditional results, or when a limit
+// is in play), possibly with differing permissionship -- callers that need
+// uniqueness must deduplicate.
+func (c *Client) LookupResources(ctx context.Context, cs consistency.Strategy, resourceType, permission, subjectType, subjectID string, opts ...LookupOption) iter.Seq2[LookupResource, error] {
+	var o lookupOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
 	return func(yield func(LookupResource, error) bool) {
 		// Abandoning this iterator -- a `break` in the consuming range
 		// loop, or any early return -- must release the stream. grpc-go's
@@ -45,6 +76,7 @@ func (c *Client) LookupResources(ctx context.Context, cs consistency.Strategy, r
 				},
 				OptionalLimit:  uint32(defaultLookupPageSize),
 				OptionalCursor: cursor,
+				WithDebug:      o.withDebug,
 			})
 			if err != nil {
 				yield(LookupResource{}, mapGRPCError("lookup resources", err))
@@ -84,7 +116,10 @@ func (c *Client) LookupResources(ctx context.Context, cs consistency.Strategy, r
 // LookupSubjects returns an iterator over subjects of the given type that
 // have the specified permission on the resource. Unlike LookupResources,
 // LookupSubjects does not currently support cursor-based pagination in
-// SpiceDB and streams all results in a single server-streaming call.
+// SpiceDB and streams all results in a single server-streaming call. Results
+// are not guaranteed unique: the same subject may be yielded more than once,
+// possibly with differing permissionship -- callers that need uniqueness
+// must deduplicate.
 //
 // When a yielded LookupSubject.Subject is the wildcard "*", the server has
 // granted the permission to every subject of subjectType EXCEPT those

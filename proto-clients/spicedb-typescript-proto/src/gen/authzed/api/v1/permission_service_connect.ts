@@ -95,6 +95,11 @@ export const PermissionsService = {
      * LookupResources returns all the resources of a given type that a subject
      * can access whether via a computed permission or relation membership.
      *
+     * Results are streamed and **not guaranteed to be unique**: the same resource
+     * may be returned more than once (for example via caveated/conditional
+     * results, or when a limit is set), possibly with differing permissionship.
+     * Callers that require uniqueness should deduplicate results.
+     *
      * @generated from rpc authzed.api.v1.PermissionsService.LookupResources
      */
     lookupResources: {
@@ -106,6 +111,10 @@ export const PermissionsService = {
     /**
      * LookupSubjects returns all the subjects of a given type that
      * have access whether via a computed permission or relation membership.
+     *
+     * Results are streamed and **not guaranteed to be unique**: the same subject
+     * may be returned more than once, possibly with differing permissionship.
+     * Callers that require uniqueness should deduplicate results.
      *
      * @generated from rpc authzed.api.v1.PermissionsService.LookupSubjects
      */

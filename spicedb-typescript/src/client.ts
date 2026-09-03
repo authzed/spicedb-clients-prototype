@@ -851,6 +851,12 @@ export class SpiceDBClient {
    * cancellation, tearing down a component. See root DESIGN.md, "RULE:
    * Abandoning a stream must release it".
    *
+   * Results are streamed and **not guaranteed to be unique**: the same
+   * resource may be returned more than once (for example via
+   * caveated/conditional results, or when a limit is set), possibly with
+   * differing permissionship. Callers that require uniqueness should
+   * deduplicate results.
+   *
    * @returns An async iterable of {@link LookupResource}.
    */
   async *lookupResources(
@@ -870,6 +876,7 @@ export class SpiceDBClient {
       }),
       context: params.context as JsonObject | undefined,
       optionalLimit: params.limit ?? 0,
+      withDebug: params.debug ?? false,
     });
     let attempt = 0;
     for (;;) {
@@ -916,6 +923,11 @@ export class SpiceDBClient {
    * to be driven from outside the loop instead -- a timeout, a request
    * cancellation, tearing down a component. See root DESIGN.md, "RULE:
    * Abandoning a stream must release it".
+   *
+   * Results are streamed and **not guaranteed to be unique**: the same
+   * subject may be returned more than once, possibly with differing
+   * permissionship. Callers that require uniqueness should deduplicate
+   * results.
    *
    * @returns An async iterable of {@link LookupSubject}.
    */

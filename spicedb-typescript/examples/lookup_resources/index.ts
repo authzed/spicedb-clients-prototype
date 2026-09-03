@@ -5,12 +5,23 @@
  * how to read the `permissionship` of each result. A permissionship of
  * `"conditionalPermission"` means the match depends on caveat context that
  * wasn't supplied — callers must not treat it as an unconditional grant.
+ *
+ * Also demonstrates `LookupResourcesParams.debug`, which asks SpiceDB to
+ * attach additional debug context to the error when the call fails by
+ * exceeding the maximum permission-check recursion depth. Provoking a real
+ * depth-exceeded failure needs a deeply recursive schema this example
+ * doesn't otherwise need, so a stand-in `PermissionsService` is used instead
+ * to prove the flag reaches the wire as `LookupResourcesRequest.with_debug`.
  */
+import * as http2 from "node:http2";
+import { connectNodeAdapter } from "@connectrpc/connect-node";
+import { LookupPermissionship, PermissionsService } from "@spicedb/proto";
 import {
   createSpiceDBClient,
   Transaction,
   relationship,
   full,
+  minLatency,
 } from "../../src/index.js";
 
 function assert(condition: boolean, message: string): void {
@@ -93,5 +104,74 @@ await client.deleteRelationships({ resourceType: "document" });
 
 // Release the underlying transport now that this example is done with it.
 client.close();
+
+// debug: prove LookupResourcesParams.debug reaches the wire as
+// LookupResourcesRequest.with_debug, against a stand-in PermissionsService
+// that just records what it saw.
+let gotWithDebug = false;
+const debugServer = http2.createServer(
+  connectNodeAdapter({
+    routes: (router) => {
+      router.service(PermissionsService, {
+        lookupResources: async function* (req) {
+          gotWithDebug = req.withDebug;
+          yield {
+            resourceObjectId: "readme",
+            permissionship: LookupPermissionship.HAS_PERMISSION,
+          };
+        },
+      });
+    },
+  }),
+);
+await new Promise<void>((resolve) => debugServer.listen(0, "localhost", () => resolve()));
+const debugServerAddress = debugServer.address();
+assert(
+  debugServerAddress !== null && typeof debugServerAddress !== "string",
+  "expected a TCP address from the stand-in",
+);
+const debugPort = (debugServerAddress as import("node:net").AddressInfo).port;
+
+const debugClient = createSpiceDBClient(`localhost:${debugPort}`, "t", {
+  insecure: true,
+});
+try {
+  for await (const _ of debugClient.lookupResources(
+    {
+      resourceType: "document",
+      permission: "view",
+      subjectType: "user",
+      subjectId: "jimmy",
+    },
+    minLatency(),
+  )) {
+    // draining the stream
+  }
+  assert(
+    !gotWithDebug,
+    "with_debug should be false on the wire when debug is not passed",
+  );
+
+  for await (const _ of debugClient.lookupResources(
+    {
+      resourceType: "document",
+      permission: "view",
+      subjectType: "user",
+      subjectId: "jimmy",
+      debug: true,
+    },
+    minLatency(),
+  )) {
+    // draining the stream
+  }
+  assert(
+    gotWithDebug,
+    "debug: true should have set with_debug on the wire request",
+  );
+  console.log("debug: confirmed LookupResourcesParams.debug reaches the wire");
+} finally {
+  debugClient.close();
+  await new Promise<void>((resolve) => debugServer.close(() => resolve()));
+}
 
 console.log("lookup_resources: PASS");

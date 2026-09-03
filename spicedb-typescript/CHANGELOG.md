@@ -4,6 +4,34 @@
 
 ### Added
 
+- **2026-09-03: `lookupResources` gains a `LookupResourcesParams.debug` flag**, reaching a
+  proto field (`LookupResourcesRequest.with_debug`) added upstream that this client
+  previously had no way to set. As of this writing it enables one thing: when a
+  `lookupResources` call fails by exceeding the maximum permission-check recursion depth,
+  the server attaches additional debug context to the error. There is no new accessor for
+  that context -- it rides the same `google.rpc.ErrorInfo` status detail this client already
+  parses onto `SpiceDBError.reason`/`reasonMetadata`, so setting the flag is the only change
+  a caller who wants it needs to make. Purely additive: `LookupResourcesParams` gained one
+  new optional field, so every existing call site is unaffected. Mirrors spicedb-go's
+  `WithLookupResourcesDebug()`. `examples/lookup_resources` extended to prove the flag
+  reaches the wire against a stand-in `PermissionsService`, since provoking a real
+  depth-exceeded failure needs a deeply recursive schema the example doesn't otherwise need.
+
+  ```typescript
+  for await (const resource of client.lookupResources(
+    { resourceType: "document", permission: "view", subjectType: "user", subjectId: "alice", debug: true },
+    full(),
+  )) {
+    // a failure here, if caused by exceeding max recursion depth, carries extra
+    // context in SpiceDBError.reasonMetadata
+  }
+  ```
+
+- **2026-09-03: `lookupResources`/`lookupSubjects` JSDoc now documents that results are
+  streamed and not guaranteed unique** (e.g. via caveated/conditional results, or when a
+  limit is set), matching a doc-only clarification upstream. No behavior change -- this
+  was already true, just previously unstated in this client's own docs.
+
 - **2026-08-19: the insecure-remote-host refusal now throws `InvalidArgumentError`.**
   Root DESIGN.md, "RULE: Credentials over insecure transport require an explicit opt-in", clause 4 (new). The refusal for a plaintext connection to a non-loopback host is a caller
   argument rejected before any connection exists, so it now takes the same

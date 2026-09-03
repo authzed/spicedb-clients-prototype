@@ -114,6 +114,15 @@ export interface LookupResourcesParams {
   context?: Record<string, unknown>;
   limit?: number;
   /**
+   * Requests that SpiceDB attach additional debug context to the error
+   * returned when this call fails by exceeding the maximum permission-check
+   * recursion depth -- the only case SpiceDB uses this for as of this
+   * writing. There is no separate accessor for the extra detail: it arrives
+   * on the same `google.rpc.ErrorInfo` status detail this client already
+   * surfaces via `SpiceDBError.reason`/`reasonMetadata`.
+   */
+  debug?: boolean;
+  /**
    * Aborting this releases the underlying stream -- see
    * {@link SpiceDBClient.lookupResources} and root DESIGN.md, "RULE:
    * Abandoning a stream must release it".

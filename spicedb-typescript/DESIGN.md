@@ -342,6 +342,22 @@ lookups never yield `"noPermission"`: a subject/resource pair that lacks the
 permission is simply absent from the stream. Mirrors spicedb-go's
 `client/lookup_types.go`.
 
+Results from `lookupResources`/`lookupSubjects` are streamed and **not
+guaranteed to be unique**: the same resource or subject may be returned more
+than once (e.g. via caveated/conditional results, or when a limit is set),
+possibly with differing permissionship. A caller that requires uniqueness
+must deduplicate results itself.
+
+`LookupResourcesParams.debug` sets the proto's `with_debug` field, which asks
+SpiceDB to attach additional debug context to the error when the call fails
+by exceeding the maximum permission-check recursion depth — the only case
+the proto uses it for as of this writing. There is no separate accessor for
+the extra detail: it rides the same `google.rpc.ErrorInfo` status detail this
+client already parses onto `SpiceDBError.reason`/`reasonMetadata` (see
+"Error Handling" below), so a caller who wants it needs only to set the flag
+and read the returned error as usual. Mirrors spicedb-go's
+`WithLookupResourcesDebug()`.
+
 ### Writes
 
 Transaction builder:

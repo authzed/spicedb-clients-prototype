@@ -4,13 +4,15 @@
 
 ### Added
 
-- **2026-09-03: `LookupResourcesAsync` gains a trailing optional `withDebug` parameter**,
-  reaching the proto's new `LookupResourcesRequest.with_debug` field. When `true`, it asks the
-  server to attach debug information to a failed call's error details — currently limited to
-  maximum-recursion-depth errors — with no effect on a call that succeeds. Defaults to `false`;
-  purely additive, added after the existing `cancellationToken` parameter so no existing
-  positional call site is affected. `LookupSubjectsAsync` has no equivalent parameter because
-  its proto request has no matching field.
+- **2026-09-03: `LookupResourcesAsync` gains a `withDebug` overload**, reaching the proto's
+  new `LookupResourcesRequest.with_debug` field. When `true`, it asks the server to attach
+  debug information to a failed call's error details — currently limited to
+  maximum-recursion-depth errors — with no effect on a call that succeeds. The original
+  5-argument overload is unchanged and now forwards to the new one with `withDebug: false`,
+  so already-compiled callers keep resolving correctly; a trailing optional parameter on the
+  existing method would have changed its compiled signature and broken binary compatibility
+  for them. `LookupSubjectsAsync` has no equivalent parameter because its proto request has
+  no matching field.
 
   Also documented (no code change): `LookupResourcesAsync`/`LookupSubjectsAsync` streams are not
   guaranteed to yield unique results — the same resource/subject may be returned more than once,

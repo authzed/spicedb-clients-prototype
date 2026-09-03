@@ -900,6 +900,24 @@ public sealed class SpiceDBClient : IAsyncDisposable
     /// uniqueness should deduplicate results.
     /// </para>
     /// </summary>
+    public IAsyncEnumerable<LookupResource> LookupResourcesAsync(
+        ConsistencyStrategy consistency,
+        string resourceType,
+        string permission,
+        string subjectType,
+        string subjectID,
+        CancellationToken cancellationToken = default)
+    {
+        return LookupResourcesAsync(
+            consistency,
+            resourceType,
+            permission,
+            subjectType,
+            subjectID,
+            withDebug: false,
+            cancellationToken);
+    }
+
     /// <param name="withDebug">
     /// If true, asks the server to include debug information when available.
     /// Currently only enables debugging of maximum recursion depth errors,
@@ -912,8 +930,8 @@ public sealed class SpiceDBClient : IAsyncDisposable
         string permission,
         string subjectType,
         string subjectID,
-        [EnumeratorCancellation] CancellationToken cancellationToken = default,
-        bool withDebug = false)
+        bool withDebug,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(consistency);
 

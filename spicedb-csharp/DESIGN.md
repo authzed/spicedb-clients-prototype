@@ -391,7 +391,8 @@ re-fetches pages using the `AfterResultCursor` from each response.
 Async enumerables:
 
 - `ReadRelationshipsAsync(consistency, filter)` → `IAsyncEnumerable<Relationship>`
-- `LookupResourcesAsync(consistency, resourceType, permission, subjectType, subjectID, cancellationToken = default, withDebug = false)` → `IAsyncEnumerable<LookupResource>`
+- `LookupResourcesAsync(consistency, resourceType, permission, subjectType, subjectID, cancellationToken = default)` → `IAsyncEnumerable<LookupResource>`
+- `LookupResourcesAsync(consistency, resourceType, permission, subjectType, subjectID, withDebug, cancellationToken = default)` → `IAsyncEnumerable<LookupResource>`
 - `LookupSubjectsAsync(consistency, resourceType, resourceID, permission, subjectType)` → `IAsyncEnumerable<LookupSubject>`
 - `ExportRelationshipsAsync(consistency, filter?)` → `IAsyncEnumerable<Relationship>`
 - `UpdatesAsync(objectTypes?, startRevision?, includeCheckpoints?)` → `IAsyncEnumerable<WatchEvent>`
@@ -411,7 +412,8 @@ public sealed record ResolvedSubject { SubjectID, Permissionship, PartialCaveat 
 public sealed record LookupSubject { Subject, ExcludedSubjects, LookedUpAt }
 ```
 
-- `LookupResourcesAsync(consistency, resourceType, permission, subjectType, subjectID, cancellationToken = default, withDebug = false)` → `IAsyncEnumerable<LookupResource>`
+- `LookupResourcesAsync(consistency, resourceType, permission, subjectType, subjectID, cancellationToken = default)` → `IAsyncEnumerable<LookupResource>`
+- `LookupResourcesAsync(consistency, resourceType, permission, subjectType, subjectID, withDebug, cancellationToken = default)` → `IAsyncEnumerable<LookupResource>`
 - `LookupSubjectsAsync(consistency, resourceType, resourceID, permission, subjectType)` → `IAsyncEnumerable<LookupSubject>`
 
 Both streams are **not guaranteed to yield unique results** — the same
@@ -420,12 +422,16 @@ caveated/conditional results, or when `LookupResourcesAsync`'s page limit
 splits a result across pages), possibly with differing `Permissionship`.
 Callers that require uniqueness must deduplicate.
 
-`LookupResourcesAsync`'s trailing `withDebug` parameter maps the proto
+`LookupResourcesAsync`'s `withDebug` overload maps the proto
 `LookupResourcesRequest.with_debug` field: when `true`, it asks the server to
 attach debug information to a failed call's error details — currently limited
-to maximum-recursion-depth errors. It has no effect on a call that succeeds,
-and defaults to `false`. There is no equivalent on `LookupSubjectsAsync`
-because the proto request has no such field.
+to maximum-recursion-depth errors. It has no effect on a call that succeeds.
+It is a separate overload rather than a trailing optional parameter on the
+existing method because C# compiles optional parameters into the call site:
+adding one to an existing method changes that method's compiled signature and
+breaks already-built callers, which a new overload does not. There is no
+equivalent on `LookupSubjectsAsync` because the proto request has no such
+field.
 
 `Permissionship` MUST be checked before treating a result as a full grant —
 `ConditionalPermission` results depend on caveat context (`PartialCaveat`)

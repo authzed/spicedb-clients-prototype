@@ -4,6 +4,20 @@
 
 ### Added
 
+- **2026-09-03: `lookupResources` gained a trailing `boolean withDebug` overload**, tracking
+  the proto's new `LookupResourcesRequest.with_debug` field. Setting it asks the server to
+  attach a `DebugInformation` detail to a failed call's error -- as of this proto version,
+  only for a `MaxDepthExceeded` failure. The payload gets no dedicated client-native field:
+  it rides the gRPC status every mapped `SpiceDBException` already preserves as its `cause`,
+  so it's reached the same way as any other status detail --
+  `StatusProto.fromThrowable(exception.getCause())`. New example: `LookupResourcesDebugTest`,
+  which stands up a local gRPC stand-in (a real SpiceDB cannot be made to hit
+  `MaxDepthExceeded` on demand without dozens of chained schema definitions) and proves both
+  that the option controls whether the detail is attached and how to read it back. The
+  existing five-argument overload is unchanged and delegates to the new one with
+  `withDebug=false`. `lookupResources` and `lookupSubjects`' Javadoc now also note what the
+  regenerated proto client's doc comments already say: results are not guaranteed unique.
+
 - **2026-08-19: the insecure-remote-host refusal now throws `InvalidArgumentException`.**
   Root DESIGN.md, "RULE: Credentials over insecure transport require an explicit opt-in", clause 4 (new). The refusal for a plaintext connection to a non-loopback host is a caller
   argument rejected before any connection exists, so it now takes the same

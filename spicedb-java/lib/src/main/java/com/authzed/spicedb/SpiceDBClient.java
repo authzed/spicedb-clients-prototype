@@ -1039,6 +1039,10 @@ public final class SpiceDBClient implements AutoCloseable {
    * on. Each result carries the permissionship (full grant vs conditional on caveat context) and,
    * for conditional results, which caveat context was missing. Cursors are handled transparently.
    *
+   * <p>Results are not guaranteed unique: the same resource may be yielded more than once (e.g.
+   * across conditional results, or when a limit is in play), possibly with differing
+   * permissionship. Callers that need uniqueness must deduplicate.
+   *
    * <p>The returned stream should be closed when done.
    */
   public Stream<LookupResult.LookupResource> lookupResources(
@@ -1047,6 +1051,30 @@ public final class SpiceDBClient implements AutoCloseable {
       String permission,
       String subjectType,
       String subjectID) {
+    return lookupResources(consistency, resourceType, permission, subjectType, subjectID, false);
+  }
+
+  /**
+   * As {@link #lookupResources(Consistency, String, String, String, String)}, with {@code
+   * withDebug} setting {@code LookupResourcesRequest.with_debug}. Setting it asks the server to
+   * attach a {@code DebugInformation} detail to a failed call's error -- as of this client's proto
+   * version, only for a {@code MaxDepthExceeded} failure ({@code RESOURCE_EXHAUSTED} with reason
+   * {@code ERROR_REASON_MAXIMUM_DEPTH_EXCEEDED}).
+   *
+   * <p>The payload gets no dedicated client-native field: root DESIGN.md's "RULE: Error mapping
+   * must not lose the server's detail" is already satisfied generically, because {@link
+   * ErrorMapper#toSpiceDBException} preserves the underlying {@link io.grpc.StatusRuntimeException}
+   * as the thrown exception's cause. Reach the detail the same way as any other status detail:
+   * {@code io.grpc.protobuf.StatusProto.fromThrowable(exception.getCause())}, then unpack a {@code
+   * DebugInformation} from its details list. See {@code LookupResourcesDebugTest}.
+   */
+  public Stream<LookupResult.LookupResource> lookupResources(
+      Consistency consistency,
+      String resourceType,
+      String permission,
+      String subjectType,
+      String subjectID,
+      boolean withDebug) {
     Context.CancellableContext cancelCtx = Context.current().withCancellation();
     Iterator<LookupResult.LookupResource> iterator =
         new Iterator<>() {
@@ -1086,7 +1114,8 @@ public final class SpiceDBClient implements AutoCloseable {
                                     .setObjectId(subjectID)
                                     .build())
                             .build())
-                    .setOptionalLimit(DEFAULT_LOOKUP_PAGE_SIZE);
+                    .setOptionalLimit(DEFAULT_LOOKUP_PAGE_SIZE)
+                    .setWithDebug(withDebug);
 
             if (cursor != null) {
               reqBuilder.setOptionalCursor(cursor);
@@ -1135,6 +1164,9 @@ public final class SpiceDBClient implements AutoCloseable {
    * listed in {@link LookupResult.LookupSubject#excludedSubjects}. Callers MUST check {@code
    * excludedSubjects} before treating a wildcard match as a blanket grant, or they risk granting
    * access to subjects the server explicitly excluded.
+   *
+   * <p>Results are not guaranteed unique: the same subject may be yielded more than once, possibly
+   * with differing permissionship. Callers that need uniqueness must deduplicate.
    *
    * <p>The returned stream should be closed when done.
    */

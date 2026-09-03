@@ -47,6 +47,7 @@ var wantExamples = []string{
 	"ErrorMappingTest",
 	"ExpandPermissionTreeTest",
 	"InsecureOptInTest",
+	"LookupResourcesDebugTest",
 	"LookupResourcesTest",
 	"LookupSubjectsTest",
 	"RawEscapeHatchTest",

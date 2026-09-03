@@ -248,6 +248,21 @@ re-fetches pages using the `AfterResultCursor` from each response.
 | `readRelationships` | 512 | cursor-based auto-pagination |
 | `lookupResources` | 512 | cursor-based auto-pagination |
 | `lookupSubjects` | — | single streaming call |
+
+Neither `lookupResources` nor `lookupSubjects` guarantees unique results: the same
+resource/subject may be yielded more than once (e.g. across conditional results, or
+when a limit is in play), possibly with differing permissionship. Callers that need
+uniqueness must deduplicate.
+
+`lookupResources` has a trailing `boolean withDebug` overload, tracking the proto's new
+`LookupResourcesRequest.with_debug` field. Setting it asks the server to attach a
+`DebugInformation` detail to a failed call's error -- as of this client's proto version,
+only for a `MaxDepthExceeded` failure (`RESOURCE_EXHAUSTED` with reason
+`ERROR_REASON_MAXIMUM_DEPTH_EXCEEDED`). The payload gets no dedicated client-native
+field: it rides the gRPC status every mapped `SpiceDBException` already preserves as its
+`cause` (see "Error Handling" below), so it's reached the same way as any other status
+detail -- `StatusProto.fromThrowable(exception.getCause())`, unpacking a
+`DebugInformation` from its details list. See `LookupResourcesDebugTest`.
 | `exportRelationships` | 512 | cursor-based auto-pagination |
 | `deleteRelationships` | 1,000 | auto-repeats until all deleted; matches SpiceDB's default `--max-delete-relationships-limit` |
 | `importRelationships` | 1,000 | batches into streaming sends |
@@ -474,6 +489,7 @@ These may change without following the backwards compatibility mandate.
 
 **Lookups:**
 - `lookupResources(Consistency, String resourceType, String permission, String subjectType, String subjectID)` → `Stream<LookupResult.LookupResource>` (each result now also carries `lookedUpAt`, the revision it was computed at)
+- `lookupResources(Consistency, String resourceType, String permission, String subjectType, String subjectID, boolean withDebug)` → `Stream<LookupResult.LookupResource>` — `withDebug` requests a `DebugInformation` detail on a failed call's error (see "Streaming & Transparent Cursor Pagination" above)
 - `lookupSubjects(Consistency, String resourceType, String resourceID, String permission, String subjectType)` → `Stream<LookupResult.LookupSubject>` (each result now also carries `lookedUpAt`)
 
 **Schema:**
@@ -522,6 +538,7 @@ per-example directories — the rows below name the class, matching `examples/RE
 | `WriteRelationshipsTest` | Writing relationships with the `Transaction` builder |
 | `ReadRelationshipsTest` | Reading relationships with cursor-based auto-pagination |
 | `LookupResourcesTest` | Finding resources a subject can access |
+| `LookupResourcesDebugTest` | `lookupResources`' `withDebug` overload: controls whether a `MaxDepthExceeded` failure carries a `DebugInformation` status detail, and how to read it back through the preserved gRPC status |
 | `LookupSubjectsTest` | Finding subjects with access to a resource |
 | `WatchChangesTest` | Watching for relationship changes |
 | `SchemaManagementTest` | Reading and writing schema |

@@ -96,8 +96,13 @@ jobs:
       - name: Install mage
         timeout-minutes: 5
         run: go install github.com/magefile/mage@latest
-      - name: Test mage helpers
-        run: go test -tags mage .
+      # ./... rather than . -- the root package holds the mage helpers, but the
+      # root module also holds internal/clauderun and internal/apicompat, whose
+      # tests no other workflow runs: the go.yaml lint and unit jobs are scoped
+      # to the spicedb-go module. With a bare `.` those packages compiled in CI
+      # but were never tested.
+      - name: Test mage helpers and internal packages
+        run: go test -tags mage ./...
       - name: Install pnpm deps
         run: pnpm install --frozen-lockfile
       - name: Build proto package

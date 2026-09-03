@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/authzed/spicedb-clients/internal/apicompat"
 	"github.com/authzed/spicedb-clients/internal/clauderun"
 	"github.com/authzed/spicedb-clients/internal/gitlock"
 	"github.com/magefile/mage/sh"
@@ -238,15 +239,46 @@ func Lint() error {
 	return sh.RunV("golangci-lint", "run", "./...")
 }
 
+// allowedAPIChangeMarker prefixes each API change this gate accepted but which
+// is still breaking for some consumers. Regeneration greps for it when
+// composing the PR body and changelog, so an accepted change is disclosed
+// rather than silently suppressed.
+const allowedAPIChangeMarker = "API-COMPAT-ALLOWED:"
+
 // ApiCompat checks for breaking API changes against the given base git ref.
+//
+// Appending a trailing variadic option parameter to an existing exported
+// function or concrete method is reported by go-apidiff as incompatible even
+// though every existing call site still compiles, and regeneration does this
+// whenever the upstream API gains an option. internal/apicompat re-classifies
+// exactly that shape and nothing else; see its doc comment for why the
+// allowance is scoped to bare functions and pointer-receiver methods, and for
+// what it deliberately cannot catch.
 func ApiCompat(baseRef string) error {
 	if _, err := exec.LookPath("go-apidiff"); err != nil {
 		return fmt.Errorf("go-apidiff not found. Install with: go install github.com/joelanford/go-apidiff@latest")
 	}
 
 	fmt.Printf("==> Checking Go API compatibility against %s...\n", baseRef)
-	if err := sh.RunV("go-apidiff", baseRef, "--repo-path", ".."); err != nil {
-		return fmt.Errorf("API compatibility check failed: breaking changes detected. Run 'mage updateAllowBreak' to proceed: %w", err)
+	res, err := apicompat.Run(baseRef, "..")
+	if err != nil {
+		return fmt.Errorf("spicedb-go: %w", err)
+	}
+
+	for _, f := range res.Allowed {
+		fmt.Printf("%s %s\n", allowedAPIChangeMarker, f.Line)
+	}
+
+	if !res.OK() {
+		for _, f := range res.Blocked {
+			fmt.Printf("==> BREAKING: %s\n", f.Line)
+		}
+		return fmt.Errorf("API compatibility check failed: %d breaking change(s) detected. Run 'mage updateAllowBreak' to proceed", len(res.Blocked))
+	}
+
+	if len(res.Allowed) > 0 {
+		fmt.Printf("==> spicedb-go: API compatible (%d additive option change(s) accepted; still breaking for callers that write the function type down)\n", len(res.Allowed))
+		return nil
 	}
 	fmt.Println("==> spicedb-go: API compatible")
 	return nil

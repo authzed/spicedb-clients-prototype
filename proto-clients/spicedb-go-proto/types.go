@@ -6,41 +6,41 @@ import (
 
 // Core types re-exported from the generated proto package.
 type (
-	ObjectReference          = v1.ObjectReference
-	SubjectReference         = v1.SubjectReference
-	Relationship             = v1.Relationship
-	RelationshipUpdate       = v1.RelationshipUpdate
-	ContextualizedCaveat     = v1.ContextualizedCaveat
-	ZedToken                 = v1.ZedToken
-	Cursor                   = v1.Cursor
-	PartialCaveatInfo        = v1.PartialCaveatInfo
+	ObjectReference            = v1.ObjectReference
+	SubjectReference           = v1.SubjectReference
+	Relationship               = v1.Relationship
+	RelationshipUpdate         = v1.RelationshipUpdate
+	ContextualizedCaveat       = v1.ContextualizedCaveat
+	ZedToken                   = v1.ZedToken
+	Cursor                     = v1.Cursor
+	PartialCaveatInfo          = v1.PartialCaveatInfo
 	PermissionRelationshipTree = v1.PermissionRelationshipTree
-	AlgebraicSubjectSet      = v1.AlgebraicSubjectSet
-	DirectSubjectSet         = v1.DirectSubjectSet
+	AlgebraicSubjectSet        = v1.AlgebraicSubjectSet
+	DirectSubjectSet           = v1.DirectSubjectSet
 )
 
 // Permission service types.
 type (
-	Consistency                = v1.Consistency
-	RelationshipFilter         = v1.RelationshipFilter
-	SubjectFilter              = v1.SubjectFilter
-	Precondition               = v1.Precondition
-	CheckPermissionRequest     = v1.CheckPermissionRequest
-	CheckPermissionResponse    = v1.CheckPermissionResponse
+	Consistency                     = v1.Consistency
+	RelationshipFilter              = v1.RelationshipFilter
+	SubjectFilter                   = v1.SubjectFilter
+	Precondition                    = v1.Precondition
+	CheckPermissionRequest          = v1.CheckPermissionRequest
+	CheckPermissionResponse         = v1.CheckPermissionResponse
 	CheckBulkPermissionsRequest     = v1.CheckBulkPermissionsRequest
 	CheckBulkPermissionsResponse    = v1.CheckBulkPermissionsResponse
-	ReadRelationshipsRequest   = v1.ReadRelationshipsRequest
-	ReadRelationshipsResponse  = v1.ReadRelationshipsResponse
-	WriteRelationshipsRequest  = v1.WriteRelationshipsRequest
-	WriteRelationshipsResponse = v1.WriteRelationshipsResponse
-	DeleteRelationshipsRequest  = v1.DeleteRelationshipsRequest
-	DeleteRelationshipsResponse = v1.DeleteRelationshipsResponse
-	LookupResourcesRequest     = v1.LookupResourcesRequest
-	LookupResourcesResponse    = v1.LookupResourcesResponse
-	LookupSubjectsRequest      = v1.LookupSubjectsRequest
-	LookupSubjectsResponse     = v1.LookupSubjectsResponse
-	ExpandPermissionTreeRequest  = v1.ExpandPermissionTreeRequest
-	ExpandPermissionTreeResponse = v1.ExpandPermissionTreeResponse
+	ReadRelationshipsRequest        = v1.ReadRelationshipsRequest
+	ReadRelationshipsResponse       = v1.ReadRelationshipsResponse
+	WriteRelationshipsRequest       = v1.WriteRelationshipsRequest
+	WriteRelationshipsResponse      = v1.WriteRelationshipsResponse
+	DeleteRelationshipsRequest      = v1.DeleteRelationshipsRequest
+	DeleteRelationshipsResponse     = v1.DeleteRelationshipsResponse
+	LookupResourcesRequest          = v1.LookupResourcesRequest
+	LookupResourcesResponse         = v1.LookupResourcesResponse
+	LookupSubjectsRequest           = v1.LookupSubjectsRequest
+	LookupSubjectsResponse          = v1.LookupSubjectsResponse
+	ExpandPermissionTreeRequest     = v1.ExpandPermissionTreeRequest
+	ExpandPermissionTreeResponse    = v1.ExpandPermissionTreeResponse
 	ImportBulkRelationshipsRequest  = v1.ImportBulkRelationshipsRequest
 	ImportBulkRelationshipsResponse = v1.ImportBulkRelationshipsResponse
 	ExportBulkRelationshipsRequest  = v1.ExportBulkRelationshipsRequest
@@ -49,10 +49,10 @@ type (
 
 // Schema service types.
 type (
-	ReadSchemaRequest    = v1.ReadSchemaRequest
-	ReadSchemaResponse   = v1.ReadSchemaResponse
-	WriteSchemaRequest   = v1.WriteSchemaRequest
-	WriteSchemaResponse  = v1.WriteSchemaResponse
+	ReadSchemaRequest   = v1.ReadSchemaRequest
+	ReadSchemaResponse  = v1.ReadSchemaResponse
+	WriteSchemaRequest  = v1.WriteSchemaRequest
+	WriteSchemaResponse = v1.WriteSchemaResponse
 )
 
 // Watch service types.

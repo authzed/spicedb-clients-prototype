@@ -5,7 +5,7 @@ import grpc
 from authzed.api.v1 import watch_service_pb2 as authzed_dot_api_dot_v1_dot_watch__service__pb2
 
 
-class WatchServiceStub(object):
+class WatchServiceStub:
     """Missing associated documentation comment in .proto file."""
 
     def __init__(self, channel):
@@ -21,7 +21,7 @@ class WatchServiceStub(object):
                 _registered_method=True)
 
 
-class WatchServiceServicer(object):
+class WatchServiceServicer:
     """Missing associated documentation comment in .proto file."""
 
     def Watch(self, request, context):
@@ -48,7 +48,7 @@ def add_WatchServiceServicer_to_server(servicer, server):
 
 
  # This class is part of an EXPERIMENTAL API.
-class WatchService(object):
+class WatchService:
     """Missing associated documentation comment in .proto file."""
 
     @staticmethod

@@ -12,10 +12,15 @@ config:
 globs:
   - "**/*.md"
 ignores:
-  - "node_modules/**"
+  - "**/node_modules/**"
   - "**/target/**"
   - "**/.venv/**"
   - "**/build/**"
   - "docs/superpowers/**"
+  # Agent working directories. Neither is tracked, so neither exists in a CI
+  # checkout -- but both exist locally, and without these the repo-wide gate
+  # reports over a thousand violations that can never reach the repository.
+  - "**/.superpowers/**"
+  - "**/.claude/**"
   - "proto-clients/**"
   - "spicedb-rust/target/**"

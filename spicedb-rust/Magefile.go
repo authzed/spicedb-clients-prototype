@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/authzed/spicedb-clients/internal/clauderun"
+	"github.com/authzed/spicedb-clients/internal/gitlock"
 	"github.com/magefile/mage/sh"
 )
 
@@ -77,6 +78,32 @@ var libtestResult = regexp.MustCompile(`test result: \w+\. (\d+) passed;`)
 // It now has that bounded consumer, so nothing is skipped.
 var skippedExamples = map[string]string{}
 
+// gitOutput runs `git <args...>` under the repository-wide gitlock and
+// returns its output exactly as sh.Output would, only serialized against the
+// other languages generating concurrently.
+func gitOutput(args ...string) (string, error) {
+	var out string
+	var outErr error
+	if err := gitlock.Do(func() error {
+		out, outErr = sh.Output("git", args...)
+		return nil
+	}); err != nil {
+		return "", err
+	}
+	return out, outErr
+}
+
+// gitRun runs `git <args...>` under the repository-wide gitlock, exactly as
+// sh.Run would, only serialized against the other languages generating
+// concurrently. Unlike the sh.Run calls this replaces, its error must not be
+// discarded: a failed rollback leaves this language's half-generated output
+// in the tree for the root Magefile's commitIfChanged to sweep up.
+func gitRun(args ...string) error {
+	return gitlock.Do(func() error {
+		return sh.Run("git", args...)
+	})
+}
+
 // Gen updates the idiomatic client based on proto client changes.
 func Gen() error {
 	// Read last generation baseline
@@ -87,13 +114,13 @@ func Gen() error {
 
 	// Summarize rather than paste, so a large proto diff cannot blow the context
 	// window. See spicedb-java/Magefile.go for the measured cause and numbers.
-	stat, err := sh.Output("git", "diff", "--stat", strings.TrimSpace(string(baseline)), "--", protoClientDir)
+	stat, err := gitOutput("diff", "--stat", strings.TrimSpace(string(baseline)), "--", protoClientDir)
 	if err != nil {
-		stat, _ = sh.Output("git", "diff", "--stat", "HEAD~1", "--", protoClientDir)
+		stat, _ = gitOutput("diff", "--stat", "HEAD~1", "--", protoClientDir)
 	}
-	names, err := sh.Output("git", "diff", "--name-status", strings.TrimSpace(string(baseline)), "--", protoClientDir)
+	names, err := gitOutput("diff", "--name-status", strings.TrimSpace(string(baseline)), "--", protoClientDir)
 	if err != nil {
-		names, _ = sh.Output("git", "diff", "--name-status", "HEAD~1", "--", protoClientDir)
+		names, _ = gitOutput("diff", "--name-status", "HEAD~1", "--", protoClientDir)
 	}
 
 	if strings.TrimSpace(names) == "" {
@@ -128,7 +155,9 @@ func Gen() error {
 		// Build + clippy + test
 		if err := sh.RunV("cargo", "clippy", "--all-targets", "--", "-D", "warnings"); err != nil {
 			if attempt == maxRetries {
-				_ = sh.Run("git", "checkout", "--", ".")
+				if err := gitRun("checkout", "--", "."); err != nil {
+					return fmt.Errorf("clippy failed after %d retries, and rollback (git checkout) also failed: %w", maxRetries, err)
+				}
 				return fmt.Errorf("clippy failed after %d retries", maxRetries)
 			}
 			fmt.Println("==> Clippy failed, asking Claude to fix...")
@@ -141,14 +170,16 @@ func Gen() error {
 		if err := sh.RunV("cargo", "test"); err == nil {
 			fmt.Println("==> Tests passed!")
 			// Update baseline
-			head, _ := sh.Output("git", "rev-parse", "HEAD")
+			head, _ := gitOutput("rev-parse", "HEAD")
 			_ = os.WriteFile(lastGenFile, []byte(strings.TrimSpace(head)), 0644)
 			return nil
 		}
 
 		if attempt == maxRetries {
 			fmt.Printf("==> Tests failed after %d attempts. Rolling back.\n", maxRetries)
-			_ = sh.Run("git", "checkout", "--", ".")
+			if err := gitRun("checkout", "--", "."); err != nil {
+				return fmt.Errorf("tests failed after %d retries, and rollback (git checkout) also failed: %w", maxRetries, err)
+			}
 			return fmt.Errorf("tests failed after %d retries", maxRetries)
 		}
 

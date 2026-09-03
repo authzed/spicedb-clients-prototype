@@ -7,9 +7,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/authzed/spicedb-clients/internal/clauderun"
+	"github.com/authzed/spicedb-clients/internal/gitlock"
 	"github.com/magefile/mage/mg"
 	"github.com/magefile/mage/sh"
 )
@@ -197,23 +200,154 @@ func checkSummaryWritten(outPath string) error {
 	return nil
 }
 
+// defaultGenConcurrency is used whenever GEN_CONCURRENCY is unset, empty, or
+// not a parseable integer. Chosen per the design doc's "start at 3-4 and
+// tune": the runner this targets (depot-ubuntu-24.04-arm-8) has eight cores
+// for seven languages' worth of heavy build/test retry loops, so 4 gives two
+// rounds per tier rather than one wave of seven contending directly.
+const defaultGenConcurrency = 4
+
+// genConcurrency reads GEN_CONCURRENCY leniently: unset, empty, or anything
+// that fails to parse as an integer falls back to defaultGenConcurrency
+// rather than erroring, and the result is clamped to at least 1. Setting it
+// to 1 reproduces today's strictly-sequential behavior exactly -- that is
+// both the escape hatch if concurrency misbehaves in CI and how this change
+// is validated (see the design doc's Validation section).
+func genConcurrency() int {
+	v := strings.TrimSpace(os.Getenv("GEN_CONCURRENCY"))
+	if v == "" {
+		return defaultGenConcurrency
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return defaultGenConcurrency
+	}
+	if n < 1 {
+		return 1
+	}
+	return n
+}
+
+// protoGenConcurrency bounds genProtoLangs' pool, and is deliberately not
+// governed by GEN_CONCURRENCY the way the idiomatic tier is.
+//
+// The proto tier's Gen() calls `buf generate` / `buf export` against the Buf
+// Schema Registry, which rate-limits concurrent callers. Run 33791327423
+// (PR #82) ran genProtoLangs at GEN_CONCURRENCY=4: all four pool workers
+// called `buf generate` within the same 200ms, the BSR returned
+// `resource_exhausted: too many requests` to three of them, and six of
+// seven languages failed within two seconds -- the pool worked exactly as
+// designed, the BSR did not allow it. See
+// https://buf.build/docs/bsr/rate-limits/.
+//
+// The idiomatic tier never touches the BSR (it reads local files and runs
+// Claude/local builds) and is unaffected, so it keeps using
+// GEN_CONCURRENCY. The proto tier is also the shorter of the two (~10min
+// vs. ~35min per the design doc's measurements), so serializing it costs
+// little. If the BSR's limit is ever raised, this is a one-constant change.
+const protoGenConcurrency = 1
+
+// runPool calls fn(i) for every i in [0, n), using at most concurrency
+// goroutines running at once (clamped to [1, n]), and blocks until every
+// call has returned. Each call's error is recorded at its own index, so a
+// caller can report results in canonical (index) order regardless of which
+// goroutine finished first -- fn(i) is the only thing that runs concurrently
+// here; collecting and reporting results is left entirely to the caller,
+// which does so strictly after runPool returns.
+func runPool(n, concurrency int, fn func(i int) error) []error {
+	if concurrency < 1 {
+		concurrency = 1
+	}
+	if concurrency > n {
+		concurrency = n
+	}
+
+	results := make([]error, n)
+	sem := make(chan struct{}, concurrency)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			results[i] = fn(i)
+		}(i)
+	}
+	wg.Wait()
+	return results
+}
+
+// protoClientDirFor returns the proto-clients directory for a language, the
+// same computation genProtoLangs and bufPinEnv both need.
+func protoClientDirFor(lang string) string {
+	return filepath.Join("proto-clients", fmt.Sprintf("spicedb-%s-proto", lang))
+}
+
+// failedLangs returns the subset of langs whose corresponding entry in
+// results is a non-nil error, in langs' order. Shared by genProtoLangs and
+// genClientLangs so both build their aggregate failure message -- which the
+// regen-from-api workflow greps for verbatim -- in canonical order
+// regardless of which language's worker actually finished first.
+func failedLangs(langs []string, results []error) []string {
+	var failed []string
+	for i, l := range langs {
+		if results[i] != nil {
+			failed = append(failed, l)
+		}
+	}
+	return failed
+}
+
+// genProtoLangs runs proto generation for every language in langs, then
+// commits each success serially, in langs' order.
+//
+// This is a two-phase split, not a single concurrent loop, because git
+// writes cannot be allowed to interleave with generation: phase one
+// (generate) runs the whole language list through a bounded worker pool with
+// no git operations of its own in this loop -- each Gen() still shells out to
+// git internally, but that is serialized by internal/gitlock, not by this
+// function. Phase two (commit) then runs strictly after every worker has
+// finished, iterating langs in its declared order rather than completion
+// order, so a regeneration produces the same commit sequence run to run
+// regardless of which language happened to finish first.
+//
+// The pool here still runs through runPool, the same code as genClientLangs,
+// but bounded by protoGenConcurrency rather than genConcurrency(): this tier
+// hits the Buf Schema Registry and is rate-limited by it (see
+// protoGenConcurrency's doc comment), so it stays serial regardless of
+// GEN_CONCURRENCY. Using the pool at concurrency 1 rather than a hand-rolled
+// serial loop costs nothing and keeps one code path for both tiers.
 func genProtoLangs(langs []string) error {
 	buftag := strings.TrimSpace(os.Getenv("BUFTAG"))
 	if buftag != "" {
 		fmt.Printf("==> Pinning upstream API to %s\n", buftag)
 	}
 
-	var failures []string
-	for _, l := range langs {
-		dir := filepath.Join("proto-clients", fmt.Sprintf("spicedb-%s-proto", l))
+	// pinErrs is populated directly by each worker (each goroutine only ever
+	// writes its own index, so this needs no separate synchronization), and
+	// checked before any commit happens. This is intentionally not part of
+	// the results slice runPool returns: a bad pin must hard-abort the whole
+	// run rather than aggregate like an ordinary generation failure -- see
+	// the check just after runPool below.
+	pinErrs := make([]error, len(langs))
+
+	results := runPool(len(langs), protoGenConcurrency, func(i int) error {
+		l := langs[i]
+		dir := protoClientDirFor(l)
 		fmt.Printf("\n==> Generating proto client: %s\n", dir)
 
 		env, cleanup, err := bufPinEnv(dir, l, buftag)
 		if err != nil {
-			// Deliberately hard-return rather than aggregating into failures like a
-			// generation error does: a bad pin is bad for every language, so six
-			// more identical failures add nothing.
-			return fmt.Errorf("could not pin %s to %s: %w", dir, buftag, err)
+			// A bad pin is bad for every language, so this is recorded
+			// separately from an ordinary generation failure and hard-aborts the
+			// run below rather than aggregating alongside five other identical
+			// failures. It happens inside a worker now, so it cannot simply
+			// return early out of genProtoLangs the way the sequential version
+			// did -- the other workers already dispatched keep running, and the
+			// check below is what stops the run from proceeding to commit.
+			pinErrs[i] = fmt.Errorf("could not pin %s to %s: %w", dir, buftag, err)
+			return err
 		}
 
 		genErr := runMageInWithEnv(dir, env, "gen")
@@ -221,11 +355,22 @@ func genProtoLangs(langs []string) error {
 
 		if genErr != nil {
 			fmt.Printf("==> FAILED: %s: %v\n", dir, genErr)
-			failures = append(failures, l)
+		}
+		return genErr
+	})
+
+	for _, err := range pinErrs {
+		if err != nil {
+			return err
+		}
+	}
+
+	failures := failedLangs(langs, results)
+	for i, l := range langs {
+		if results[i] != nil {
 			continue
 		}
-
-		// Commit proto changes
+		dir := protoClientDirFor(l)
 		if err := commitIfChanged(dir, fmt.Sprintf("gen: regenerate %s proto client", l)); err != nil {
 			fmt.Printf("==> Warning: commit failed for %s: %v\n", dir, err)
 		}
@@ -237,19 +382,34 @@ func genProtoLangs(langs []string) error {
 	return nil
 }
 
+// genClientLangs runs the idiomatic client update for every language in
+// langs, then commits each success serially, in langs' order. See
+// genProtoLangs for why generation and commit are two separate phases rather
+// than one concurrent loop.
+//
+// Unlike genProtoLangs, this tier's pool is bounded by genConcurrency()
+// (GEN_CONCURRENCY), not protoGenConcurrency: Gen() here reads local files
+// and runs Claude/local builds, never the Buf Schema Registry, so it isn't
+// subject to the BSR rate limit that forces the proto tier to stay serial.
 func genClientLangs(langs []string) error {
-	var failures []string
-	for _, l := range langs {
+	results := runPool(len(langs), genConcurrency(), func(i int) error {
+		l := langs[i]
 		dir := fmt.Sprintf("spicedb-%s", l)
 		fmt.Printf("\n==> Updating idiomatic client: %s\n", dir)
 
 		if err := runMageIn(dir, "gen"); err != nil {
 			fmt.Printf("==> FAILED: %s: %v\n", dir, err)
-			failures = append(failures, l)
+			return err
+		}
+		return nil
+	})
+
+	failures := failedLangs(langs, results)
+	for i, l := range langs {
+		if results[i] != nil {
 			continue
 		}
-
-		// Commit idiomatic changes
+		dir := fmt.Sprintf("spicedb-%s", l)
 		if err := commitIfChanged(dir, fmt.Sprintf("gen: update %s idiomatic client", l)); err != nil {
 			fmt.Printf("==> Warning: commit failed for %s: %v\n", dir, err)
 		}
@@ -443,18 +603,27 @@ func runMageInWithArgs(dir string, target string, args ...string) error {
 	return sh.RunV("mage", cmdArgs...)
 }
 
+// commitIfChanged is the root Magefile's one direct user of git, and the
+// only point where concurrently-generated languages' changes actually reach
+// the index. It always ran after generation finished for its language, so it
+// never contended before; now that genProtoLangs/genClientLangs run several
+// languages' Gen() concurrently, this can overlap with another language's
+// own internal git reads and rollback writes, so it goes through gitlock the
+// same as they do.
 func commitIfChanged(dir string, msg string) error {
-	status, err := sh.Output("git", "status", "--porcelain", dir)
-	if err != nil {
-		return err
-	}
-	if strings.TrimSpace(status) == "" {
-		return nil // nothing to commit
-	}
-	if err := sh.Run("git", "add", dir); err != nil {
-		return err
-	}
-	return sh.Run("git", "commit", "-m", msg)
+	return gitlock.Do(func() error {
+		status, err := sh.Output("git", "status", "--porcelain", dir)
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(status) == "" {
+			return nil // nothing to commit
+		}
+		if err := sh.Run("git", "add", dir); err != nil {
+			return err
+		}
+		return sh.Run("git", "commit", "-m", msg)
+	})
 }
 
 // authzedAPIInput is the exact buf.gen.yaml line naming the upstream API module.

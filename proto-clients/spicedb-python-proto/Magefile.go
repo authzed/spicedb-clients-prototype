@@ -8,10 +8,37 @@ import (
 	"strings"
 
 	"github.com/authzed/spicedb-clients/internal/clauderun"
+	"github.com/authzed/spicedb-clients/internal/gitlock"
 	"github.com/magefile/mage/sh"
 )
 
 const maxRetries = 3
+
+// gitOutput runs `git <args...>` under the repository-wide gitlock and
+// returns its output exactly as sh.Output would, only serialized against the
+// other languages generating concurrently.
+func gitOutput(args ...string) (string, error) {
+	var out string
+	var outErr error
+	if err := gitlock.Do(func() error {
+		out, outErr = sh.Output("git", args...)
+		return nil
+	}); err != nil {
+		return "", err
+	}
+	return out, outErr
+}
+
+// gitRun runs `git <args...>` under the repository-wide gitlock, exactly as
+// sh.Run would, only serialized against the other languages generating
+// concurrently. Unlike the sh.Run calls this replaces, its error must not be
+// discarded: a failed rollback leaves this language's half-generated output
+// in the tree for the root Magefile's commitIfChanged to sweep up.
+func gitRun(args ...string) error {
+	return gitlock.Do(func() error {
+		return sh.Run("git", args...)
+	})
+}
 
 // Gen regenerates the Python proto client. If claude is not available (e.g. in
 // gen-nodiff CI), any buf generate changes are rolled back and Gen returns nil
@@ -29,7 +56,7 @@ func Gen() error {
 		return fmt.Errorf("buf generate failed: %w", err)
 	}
 
-	diff, _ := sh.Output("git", "diff", "--name-only", ".")
+	diff, _ := gitOutput("diff", "--name-only", ".")
 	if strings.TrimSpace(diff) == "" {
 		fmt.Println("==> No proto changes detected after buf generate, skipping Claude step.")
 		return nil
@@ -37,8 +64,12 @@ func Gen() error {
 
 	if !clauderun.Available() {
 		fmt.Println("==> claude not available; rolling back buf generate changes (gen-nodiff mode).")
-		_ = sh.Run("git", "checkout", "--", ".")
-		_ = sh.Run("git", "clean", "-fd", ".")
+		if err := gitRun("checkout", "--", "."); err != nil {
+			return fmt.Errorf("claude unavailable and rollback (git checkout) failed, tree may be dirty: %w", err)
+		}
+		if err := gitRun("clean", "-fd", "."); err != nil {
+			return fmt.Errorf("claude unavailable and rollback (git clean) failed, tree may be dirty: %w", err)
+		}
 		return nil
 	}
 
@@ -65,8 +96,12 @@ func Gen() error {
 
 		if attempt == maxRetries {
 			fmt.Printf("==> Tests failed after %d attempts. Rolling back.\n", maxRetries)
-			_ = sh.Run("git", "checkout", "--", ".")
-			_ = sh.Run("git", "clean", "-fd", ".")
+			if err := gitRun("checkout", "--", "."); err != nil {
+				return fmt.Errorf("tests failed after %d retries, and rollback (git checkout) also failed: %w", maxRetries, err)
+			}
+			if err := gitRun("clean", "-fd", "."); err != nil {
+				return fmt.Errorf("tests failed after %d retries, and rollback (git clean) also failed: %w", maxRetries, err)
+			}
 			return fmt.Errorf("tests failed after %d retries", maxRetries)
 		}
 

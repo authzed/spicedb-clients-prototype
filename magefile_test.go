@@ -3,10 +3,14 @@
 package main
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 const goTemplate = `version: v2
@@ -365,5 +369,281 @@ func TestCheckSummaryWrittenPassesWhenFileHasContent(t *testing.T) {
 
 	if err := checkSummaryWritten(path); err != nil {
 		t.Fatalf("unexpected error for a non-empty summary file: %v", err)
+	}
+}
+
+// --- runPool ---
+//
+// These exercise the pool directly, with a synthetic fn -- never mage or
+// claude -- per this task's constraint against shelling out to either in
+// tests. genProtoLangs/genClientLangs are thin wiring over this pool plus
+// bufPinEnv/runMageIn*, which is exactly why the pool itself, and the
+// canonical-order aggregation both callers share (failedLangs), are the
+// testable unit.
+
+// TestPoolNeverExceedsConcurrency is the pool's core bound: however many
+// items it is given, no more than `concurrency` of fn's calls may be
+// in-flight at once. Each call records how many calls were active (including
+// itself) the instant it started; the max observed across the whole run must
+// never exceed the bound.
+func TestPoolNeverExceedsConcurrency(t *testing.T) {
+	const n = 20
+	const concurrency = 4
+
+	var active int32
+	var maxActive int32
+
+	results := runPool(n, concurrency, func(i int) error {
+		cur := atomic.AddInt32(&active, 1)
+		for {
+			m := atomic.LoadInt32(&maxActive)
+			if cur <= m {
+				break
+			}
+			if atomic.CompareAndSwapInt32(&maxActive, m, cur) {
+				break
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+		atomic.AddInt32(&active, -1)
+		return nil
+	})
+
+	if len(results) != n {
+		t.Fatalf("runPool returned %d results, want %d", len(results), n)
+	}
+	if got := atomic.LoadInt32(&maxActive); got > concurrency {
+		t.Fatalf("max concurrent fn calls = %d, want <= %d", got, concurrency)
+	}
+	// The bound should actually be exercised by this input, or the assertion
+	// above would pass vacuously (e.g. if runPool silently ran everything
+	// sequentially).
+	if got := atomic.LoadInt32(&maxActive); got < concurrency {
+		t.Fatalf("max concurrent fn calls = %d, want exactly %d (the pool never used its full bound; "+
+			"either it under-parallelizes or this test is not exercising it)", got, concurrency)
+	}
+}
+
+// TestPoolClampsConcurrencyBelowOne covers concurrency <= 0: runPool must
+// still make progress (treat it as 1), not deadlock or panic on a
+// zero-capacity semaphore channel.
+func TestPoolClampsConcurrencyBelowOne(t *testing.T) {
+	for _, c := range []int{0, -1, -100} {
+		results := runPool(5, c, func(i int) error { return nil })
+		if len(results) != 5 {
+			t.Fatalf("concurrency=%d: runPool returned %d results, want 5", c, len(results))
+		}
+	}
+}
+
+// TestPoolClampsConcurrencyAboveN covers concurrency > n: runPool must not
+// panic (e.g. on an oversized but otherwise harmless semaphore) and must
+// still run every item exactly once.
+func TestPoolClampsConcurrencyAboveN(t *testing.T) {
+	const n = 3
+	var calls int32
+	results := runPool(n, 100, func(i int) error {
+		atomic.AddInt32(&calls, 1)
+		return nil
+	})
+	if len(results) != n {
+		t.Fatalf("runPool returned %d results, want %d", len(results), n)
+	}
+	if got := atomic.LoadInt32(&calls); got != n {
+		t.Fatalf("fn was called %d times, want %d", got, n)
+	}
+}
+
+// TestPoolResultsIndexedByInput proves results[i] always corresponds to
+// fn(i)'s own return value, regardless of the order calls actually complete
+// in. Sleep durations are assigned in reverse of index order, so the first
+// item to finish is the last index and vice versa -- if runPool assigned
+// results by completion order instead of by index, this would catch it.
+func TestPoolResultsIndexedByInput(t *testing.T) {
+	const n = 6
+	sentinel := func(i int) error { return fmt.Errorf("err-%d", i) }
+
+	results := runPool(n, 3, func(i int) error {
+		time.Sleep(time.Duration(n-i) * 5 * time.Millisecond)
+		if i%2 == 0 {
+			return sentinel(i)
+		}
+		return nil
+	})
+
+	for i := 0; i < n; i++ {
+		if i%2 == 0 {
+			want := sentinel(i).Error()
+			if results[i] == nil || results[i].Error() != want {
+				t.Fatalf("results[%d] = %v, want %q", i, results[i], want)
+			}
+		} else if results[i] != nil {
+			t.Fatalf("results[%d] = %v, want nil", i, results[i])
+		}
+	}
+}
+
+// --- failedLangs ---
+//
+// This is the canonical-ordering and aggregate-failure-text guarantee both
+// genProtoLangs and genClientLangs depend on: results are collected into a
+// slice indexed by language, so a regeneration reports failures in langs'
+// declared order regardless of which worker actually finished first -- and
+// the format ("proto generation failed for: go, ruby") is exactly what the
+// regen-from-api workflow greps for, so it must not drift.
+
+func TestFailedLangsPreservesCanonicalOrderRegardlessOfResultOrder(t *testing.T) {
+	langs := []string{"go", "python", "typescript", "csharp", "java", "ruby", "rust"}
+
+	// Simulate completion order csharp, then go, then ruby (indices 3, 0, 5)
+	// by populating results in that order -- but results is indexed by
+	// position in langs, not by arrival, exactly as runPool guarantees.
+	results := make([]error, len(langs))
+	results[3] = errors.New("csharp failed")
+	results[0] = errors.New("go failed")
+	results[5] = errors.New("ruby failed")
+
+	got := failedLangs(langs, results)
+	want := []string{"go", "csharp", "ruby"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("failedLangs() = %v, want %v (langs' declared order, not completion order)", got, want)
+	}
+}
+
+func TestFailedLangsAggregateMessageMatchesExistingFormat(t *testing.T) {
+	langs := []string{"go", "python", "typescript", "csharp", "java", "ruby", "rust"}
+	results := make([]error, len(langs))
+	results[0] = errors.New("boom")
+	results[5] = errors.New("boom")
+
+	got := fmt.Errorf("proto generation failed for: %s", strings.Join(failedLangs(langs, results), ", "))
+	want := "proto generation failed for: go, ruby"
+	if got.Error() != want {
+		t.Fatalf("aggregate error = %q, want %q -- the workflow greps for this exact string", got.Error(), want)
+	}
+
+	gotClient := fmt.Errorf("idiomatic client update failed for: %s", strings.Join(failedLangs(langs, []error{nil, nil, nil, nil, errors.New("x"), nil, nil}), ", "))
+	wantClient := "idiomatic client update failed for: java"
+	if gotClient.Error() != wantClient {
+		t.Fatalf("aggregate error = %q, want %q", gotClient.Error(), wantClient)
+	}
+}
+
+func TestFailedLangsEmptyWhenNoFailures(t *testing.T) {
+	langs := []string{"go", "python"}
+	if got := failedLangs(langs, make([]error, len(langs))); len(got) != 0 {
+		t.Fatalf("failedLangs() = %v, want empty", got)
+	}
+}
+
+// --- genConcurrency ---
+
+// The design doc is explicit that the default is 4 -- pin the literal, not
+// defaultGenConcurrency itself, or this test would pass no matter what that
+// constant were changed to (it would just be comparing the constant to
+// itself). See also TestDefaultGenConcurrencyIsFour.
+func TestGenConcurrencyDefaultsWhenUnset(t *testing.T) {
+	t.Setenv("GEN_CONCURRENCY", "")
+	if got := genConcurrency(); got != 4 {
+		t.Fatalf("genConcurrency() = %d, want default 4", got)
+	}
+}
+
+// TestDefaultGenConcurrencyIsFour pins the constant itself to the design
+// doc's explicit default, independent of genConcurrency's own logic.
+func TestDefaultGenConcurrencyIsFour(t *testing.T) {
+	if defaultGenConcurrency != 4 {
+		t.Fatalf("defaultGenConcurrency = %d, want 4 per the design doc", defaultGenConcurrency)
+	}
+}
+
+// --- protoGenConcurrency ---
+//
+// Run 33791327423 (PR #82) is the reason these exist: genProtoLangs at
+// concurrency 4 sent four concurrent `buf generate` calls to the Buf Schema
+// Registry, which rate-limited three of them (`resource_exhausted: too many
+// requests`), failing six of seven languages within two seconds. The pool
+// worked exactly as designed -- the BSR does not allow that concurrency.
+// The proto tier now stays serial regardless of GEN_CONCURRENCY, which only
+// governs the idiomatic tier (see genConcurrency's own tests above).
+
+// TestProtoGenConcurrencyIsSerial pins the proto tier's pool bound to 1: it
+// is BSR-rate-limited and must not regress back to running concurrently.
+func TestProtoGenConcurrencyIsSerial(t *testing.T) {
+	if protoGenConcurrency != 1 {
+		t.Fatalf("protoGenConcurrency = %d, want 1 -- the proto tier is BSR-rate-limited and must stay serial (see run 33791327423)", protoGenConcurrency)
+	}
+}
+
+// TestProtoAndClientTiersHaveIndependentConcurrency guards the actual fix:
+// before it, both tiers shared one GEN_CONCURRENCY-derived value, which is
+// exactly what let a BSR-safe idiomatic-tier setting also apply to the
+// BSR-bound proto tier. The two constants must differ.
+func TestProtoAndClientTiersHaveIndependentConcurrency(t *testing.T) {
+	if protoGenConcurrency == defaultGenConcurrency {
+		t.Fatalf("protoGenConcurrency (%d) equals defaultGenConcurrency (%d); these must differ -- "+
+			"the proto tier is BSR-rate-limited (run 33791327423) and must stay serial while the "+
+			"idiomatic tier stays concurrent", protoGenConcurrency, defaultGenConcurrency)
+	}
+}
+
+// TestProtoGenConcurrencyIgnoresGenConcurrencyEnvVar documents that the
+// proto tier's bound is a compile-time constant, not read from
+// GEN_CONCURRENCY: setting that env var (which genClientLangs' pool does
+// read) must not be able to push the proto tier back into concurrent BSR
+// calls.
+func TestProtoGenConcurrencyIgnoresGenConcurrencyEnvVar(t *testing.T) {
+	t.Setenv("GEN_CONCURRENCY", "4")
+	if protoGenConcurrency != 1 {
+		t.Fatalf("protoGenConcurrency = %d, want 1 regardless of GEN_CONCURRENCY", protoGenConcurrency)
+	}
+}
+
+func TestGenConcurrencyParsesOne(t *testing.T) {
+	t.Setenv("GEN_CONCURRENCY", "1")
+	if got := genConcurrency(); got != 1 {
+		t.Fatalf("genConcurrency() = %d, want 1", got)
+	}
+}
+
+func TestGenConcurrencyParsesFour(t *testing.T) {
+	t.Setenv("GEN_CONCURRENCY", "4")
+	if got := genConcurrency(); got != 4 {
+		t.Fatalf("genConcurrency() = %d, want 4", got)
+	}
+}
+
+func TestGenConcurrencyParsesArbitraryPositiveValue(t *testing.T) {
+	t.Setenv("GEN_CONCURRENCY", "7")
+	if got := genConcurrency(); got != 7 {
+		t.Fatalf("genConcurrency() = %d, want 7", got)
+	}
+}
+
+func TestGenConcurrencyDefaultsOnGarbage(t *testing.T) {
+	t.Setenv("GEN_CONCURRENCY", "banana")
+	if got := genConcurrency(); got != 4 {
+		t.Fatalf("genConcurrency() = %d, want default 4 for an unparseable value", got)
+	}
+}
+
+func TestGenConcurrencyClampsZeroToOne(t *testing.T) {
+	t.Setenv("GEN_CONCURRENCY", "0")
+	if got := genConcurrency(); got != 1 {
+		t.Fatalf("genConcurrency() = %d, want 1 (clamped)", got)
+	}
+}
+
+func TestGenConcurrencyClampsNegativeToOne(t *testing.T) {
+	t.Setenv("GEN_CONCURRENCY", "-3")
+	if got := genConcurrency(); got != 1 {
+		t.Fatalf("genConcurrency() = %d, want 1 (clamped)", got)
+	}
+}
+
+func TestGenConcurrencyTrimsWhitespace(t *testing.T) {
+	t.Setenv("GEN_CONCURRENCY", "  2  ")
+	if got := genConcurrency(); got != 2 {
+		t.Fatalf("genConcurrency() = %d, want 2", got)
 	}
 }

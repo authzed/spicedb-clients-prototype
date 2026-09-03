@@ -440,6 +440,11 @@ conditional result is NOT a full grant. When
 wildcard grant — callers MUST check it before treating `"*"` as "every
 subject has access," or they risk over-granting to excluded subjects.
 
+Neither stream guarantees uniqueness: the same resource or subject may be
+yielded more than once — e.g. via caveated/conditional results, or when a
+limit is set — possibly with differing permissionship on each yield.
+Callers that require unique results must deduplicate themselves.
+
 `looked_up_at` is identical for every item yielded by a single
 `lookup_resources()`/`lookup_subjects()` call — it's a property of the call,
 not of the individual result — and, like `CheckResult.checked_at`, can be

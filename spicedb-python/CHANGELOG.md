@@ -4,6 +4,25 @@
 
 ### Added
 
+- **2026-09-03** (documentation only): regenerated against an updated
+  `spicedb-python-proto` (protobuf 7.34.0 -> 7.36.1, plus validation-option
+  cleanup and a `PermissionsService` proto docstring update — no field, method,
+  or wire-format changes). The proto docstring update clarifies that
+  `LookupResources`/`LookupSubjects` streams are **not guaranteed to be
+  unique**: the same resource or subject may be yielded more than once (e.g.
+  via caveated/conditional results, or when a limit is set), possibly with
+  differing permissionship on each yield. `lookup_resources()`/
+  `lookup_subjects()` docstrings (both flavors) and this file's Python
+  `DESIGN.md` now say so; callers that require unique results must
+  deduplicate themselves. The proto update also marks several
+  `ExperimentalService` RPCs (`BulkImportRelationships`,
+  `BulkExportRelationships`, `BulkCheckPermission`, `ExperimentalReflectSchema`,
+  `ExperimentalComputablePermissions`, `ExperimentalDependentRelations`,
+  `ExperimentalDiffSchema`) deprecated in favor of their stable
+  `PermissionsService`/`SchemaService` equivalents — this client already used
+  only the stable RPCs for all of these, so no idiomatic-layer deprecation was
+  needed.
+
 - **2026-08-19: four new examples, one per root `DESIGN.md` RULE that had no executed
   coverage in any client — and one client fix they exposed.** 19 example suites -> 23,
   33 test cases -> 57, none renamed or removed. Group E Phase 3.

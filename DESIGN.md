@@ -482,6 +482,41 @@ never succeed.
 Backoff MUST be jittered. Without jitter every client in a fleet retries on the same schedule
 after a restart, converting a recovery into a thundering herd.
 
+## RULE: Every RPC wrapper must have one place to add an option
+
+The upstream API gains optional fields continually -- `LookupResourcesRequest.with_debug`
+arrived exactly this way -- and each one has to land somewhere in every client's public
+surface. Where a client has no designated place for it, the option lands as a new parameter
+or as a new method, and both are compounding mistakes.
+
+A new parameter is not a compatible change in every language. C# substitutes an optional
+parameter's default at the *call site*, so adding one is binary-breaking for every
+already-compiled assembly; Go function types are identical only if both are variadic or
+neither is, so appending `opts ...Option` breaks assignment and any interface a consumer
+declared over the old shape. Regeneration run 33810252060 broke `spicedb-csharp` in
+precisely this way, and would have broken it again on the next option, and the one after.
+
+A new method per option is the same mistake in slow motion. `check_permission`,
+`check_permission_with_context`, `check_permission_with_timeout` is the combinatorial
+beginning of a surface nobody can hold in their head: the third option makes it eight
+methods, and every one of them has to be documented, tested and exampled.
+
+1. **Every RPC wrapper MUST have a single options container per operation**, and a new
+   option MUST be added as a member of that container rather than as a parameter or a
+   method.
+2. **Where the language offers variadic or keyword arguments, those are the container.**
+   Go's `opts ...LookupResourcesOption`, Python and Ruby keyword arguments, and
+   TypeScript's optional trailing `options` object all satisfy this rule as they stand.
+3. **Where it does not, the operation MUST be offered in two forms**: `someApi` for the
+   common case, and `someApiWithOptions` taking the container. The simple call stays
+   simple, and every future option has somewhere to go without another method appearing.
+4. **A client MUST NOT add a per-option method variant.** `...WithContext` and
+   `...WithTimeout` are what this rule replaces; their options belong in the container.
+
+The point is not that a container is prettier. It is that the next optional field the API
+adds must be a one-line change in seven clients, rather than seven separate judgement calls
+about where to put it -- which is how one of them ends up breaking.
+
 ## RULE: A unary call must have a deadline
 
 A wedged SpiceDB — one that accepts the connection but never answers — hangs every caller that

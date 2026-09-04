@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Changed
+
+- **2026-09-04: check and lookup options moved onto `CheckOptions` and `LookupOptions`.**
+  Root DESIGN.md, "RULE: Every RPC wrapper must have one place to add an option" (new).
+  **Breaking.** Each check operation had three overloads — plain, one taking a `Duration`, one
+  taking a context `Map` — which is twelve methods for four operations, and meant a caller could
+  set a timeout *or* a context and **never both**, because no overload accepted the pair. The
+  lookups had picked up a second `lookupResources` overload for `with_debug` on the same trajectory.
+
+  Each operation now has one `...WithOptions` form beside its plain one, taking an immutable
+  `CheckOptions` (`context`, `timeout`) or `LookupOptions` (`debug`) built the way `Filter` is:
+  `CheckOptions.none().withContext(...).withTimeout(...)`. Setting both is now expressible, and
+  the next option upstream adds is a component on an existing record rather than another overload.
+
+  Callers of the plain forms are unaffected. Callers of the `Duration` or `Map` overloads move to
+  `...WithOptions` with the value wrapped.
+
 ### Added
 
 - **2026-09-04: proto client regenerated, plus `lookupResources(..., withDebug)`.** The

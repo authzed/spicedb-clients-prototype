@@ -259,7 +259,7 @@ caveated/conditional results, or when a limit is set — possibly with a differe
 on each occurrence. This client passes that behavior through unchanged; a caller that needs
 uniqueness must deduplicate by `resourceId`/subject ID itself.
 
-`lookupResources` additionally accepts a trailing `boolean withDebug`, defaulting to `false` on the
+`lookupResourcesWithOptions` takes a `LookupOptions` whose `debug()` component defaults to `false` on the
 shorter overload. It asks the server to attach debug information to the error it returns if the
 lookup fails with a maximum-recursion-depth error; it never changes a successful result. This
 client does not decode that payload — it is reachable, undecoded, as the cause of the mapped
@@ -341,7 +341,7 @@ client.
 
 Every unary method has an overload taking a trailing `Duration timeout`
 (`deleteRelationships` instead reads `DeleteOptions.withTimeout(Duration)`),
-mirroring the existing `checkPermission(..., Map<String, Object> context)`
+mirroring the existing `checkPermissionWithOptions(..., CheckOptions)`
 overload convention. The timeout is applied via grpc-java's
 `stub.withDeadlineAfter(millis, TimeUnit.MILLISECONDS)`, called fresh on
 each retry attempt so a retried call gets a full new window per attempt.
@@ -355,7 +355,10 @@ call must have a deadline".
 ```java
 try (var client = SpiceDBClient.createPlaintext("localhost:50051", "token", Duration.ofSeconds(5))) {
     CheckResult r = client.checkPermission(Consistency.full(), "view", rel);                         // bound by the 5s default
-    CheckResult r2 = client.checkPermission(Consistency.full(), "view", rel, Duration.ofSeconds(1));  // overrides it
+    CheckResult r2 =
+        client.checkPermissionWithOptions(
+            Consistency.full(), "view", rel,
+            CheckOptions.none().withTimeout(Duration.ofSeconds(1)));  // overrides it
 }
 ```
 
@@ -470,13 +473,13 @@ These may change without following the backwards compatibility mandate.
 
 **Checks:**
 - `checkPermission(Consistency, String permission, Relationship)` → `CheckResult`
-- `checkPermission(Consistency, String permission, Relationship, Map<String, Object> context)` → `CheckResult`
+- `checkPermissionWithOptions(Consistency, String permission, Relationship, CheckOptions)` → `CheckResult`
 - `checkPermissions(Consistency, String permission, Relationship...)` → `List<CheckResult>`
-- `checkPermissions(Consistency, String permission, Map<String, Object> context, Relationship...)` → `List<CheckResult>`
+- `checkPermissionsWithOptions(Consistency, String permission, CheckOptions, Relationship...)` → `List<CheckResult>`
 - `checkAny(Consistency, String permission, Relationship...)` → `boolean`
-- `checkAny(Consistency, String permission, Map<String, Object> context, Relationship...)` → `boolean`
+- `checkAnyWithOptions(Consistency, String permission, CheckOptions, Relationship...)` → `boolean`
 - `checkAll(Consistency, String permission, Relationship...)` → `boolean`
-- `checkAll(Consistency, String permission, Map<String, Object> context, Relationship...)` → `boolean`
+- `checkAllWithOptions(Consistency, String permission, CheckOptions, Relationship...)` → `boolean`
 
 **Relationships:**
 - `write(Transaction)` → `String` (revision)
@@ -486,7 +489,7 @@ These may change without following the backwards compatibility mandate.
 
 **Lookups:**
 - `lookupResources(Consistency, String resourceType, String permission, String subjectType, String subjectID)` → `Stream<LookupResult.LookupResource>` (each result now also carries `lookedUpAt`, the revision it was computed at)
-- `lookupResources(Consistency, String resourceType, String permission, String subjectType, String subjectID, boolean withDebug)` → `Stream<LookupResult.LookupResource>` — as above, with `withDebug` requesting debug info on a max-recursion-depth error
+- `lookupResourcesWithOptions(Consistency, String resourceType, String permission, String subjectType, String subjectID, LookupOptions)` → `Stream<LookupResult.LookupResource>` — as above, with `withDebug` requesting debug info on a max-recursion-depth error
 - `lookupSubjects(Consistency, String resourceType, String resourceID, String permission, String subjectType)` → `Stream<LookupResult.LookupSubject>` (each result now also carries `lookedUpAt`)
 
 **Schema:**

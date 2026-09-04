@@ -85,7 +85,13 @@ class LookupResultsTest {
     try (TestServers servers = TestServers.start(service)) {
       SpiceDBClient client = servers.client();
       try (Stream<LookupResult.LookupResource> stream =
-          client.lookupResources(Consistency.full(), "document", "view", "user", "alice", true)) {
+          client.lookupResourcesWithOptions(
+              Consistency.full(),
+              "document",
+              "view",
+              "user",
+              "alice",
+              LookupOptions.none().withDebug(true))) {
         stream.toList();
       }
 

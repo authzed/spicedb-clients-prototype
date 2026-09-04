@@ -3,6 +3,7 @@ package com.authzed.spicedb.examples;
 import static com.authzed.spicedb.Consistency.*;
 import static org.assertj.core.api.Assertions.*;
 
+import com.authzed.spicedb.CheckOptions;
 import com.authzed.spicedb.CheckResult;
 import com.authzed.spicedb.Filter;
 import com.authzed.spicedb.Relationship;
@@ -109,11 +110,11 @@ class CallDeadlinesTest {
     client.write(txn, Duration.ofSeconds(2));
 
     CheckResult result =
-        client.checkPermission(
+        client.checkPermissionWithOptions(
             full(),
             "view",
             Relationship.of("document", "readme", "view", "user", "alice"),
-            Duration.ofSeconds(2));
+            CheckOptions.none().withTimeout(Duration.ofSeconds(2)));
     assertThat(result.hasPermission()).isTrue();
   }
 
@@ -194,11 +195,11 @@ class CallDeadlinesTest {
       expectDeadlineToFire(
           "per-call timeout",
           () ->
-              client.checkPermission(
+              client.checkPermissionWithOptions(
                   full(),
                   "view",
                   Relationship.of("document", "readme", "view", "user", "alice"),
-                  WEDGED_TIMEOUT));
+                  CheckOptions.none().withTimeout(WEDGED_TIMEOUT)));
     }
   }
 

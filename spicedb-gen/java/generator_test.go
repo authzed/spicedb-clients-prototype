@@ -158,7 +158,7 @@ func TestCheckSurfacesCheckResult(t *testing.T) {
 
 // TestCheckAcceptsContext verifies the generated TypedClient gains a
 // context-accepting check() overload matching spicedb-java's own
-// checkPermission(Consistency, String, Relationship, Map) shape (spec D3b),
+// checkPermissionWithOptions(Consistency, String, Relationship, CheckOptions) shape (spec D3b),
 // and that the pre-existing 3-arg check() is fixed to route the subject's own
 // caveat context through the CHECK-TIME r.withCheckContext(...) instead of
 // the WRITE-TIME r.withCaveat(...) it was using before -- a genuine
@@ -183,7 +183,7 @@ func TestCheckAcceptsContext(t *testing.T) {
 		"public <S extends Subject> CheckResult check(Consistency c, Permission<S> perm, S subject, Map<String, Object> context) {")
 
 	// Pass-through: context is handed to the 4-arg checkPermission untouched.
-	assert.Contains(t, content, "return client.checkPermission(c, perm.permission(), r, context);")
+	assert.Contains(t, content, "return client.checkPermissionWithOptions(c, perm.permission(), r,")
 
 	// The defect fix: check() must route the subject's own caveat context
 	// through withCheckContext (CHECK-TIME), never withCaveat (WRITE-TIME) --

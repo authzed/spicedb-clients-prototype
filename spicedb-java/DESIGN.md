@@ -253,6 +253,18 @@ re-fetches pages using the `AfterResultCursor` from each response.
 | `importRelationships` | 1,000 | batches into streaming sends |
 | `updates` | — | server-streaming, no pagination needed |
 
+Per the proto's own docs on `LookupResources`/`LookupSubjects`, neither stream is guaranteed to
+yield unique results: the same resource or subject may be returned more than once — e.g. via
+caveated/conditional results, or when a limit is set — possibly with a different `permissionship`
+on each occurrence. This client passes that behavior through unchanged; a caller that needs
+uniqueness must deduplicate by `resourceId`/subject ID itself.
+
+`lookupResources` additionally accepts a trailing `boolean withDebug`, defaulting to `false` on the
+shorter overload. It asks the server to attach debug information to the error it returns if the
+lookup fails with a maximum-recursion-depth error; it never changes a successful result. This
+client does not decode that payload — it is reachable, undecoded, as the cause of the mapped
+`SpiceDBException`.
+
 ### Writes
 
 Transaction builder pattern:
@@ -474,6 +486,7 @@ These may change without following the backwards compatibility mandate.
 
 **Lookups:**
 - `lookupResources(Consistency, String resourceType, String permission, String subjectType, String subjectID)` → `Stream<LookupResult.LookupResource>` (each result now also carries `lookedUpAt`, the revision it was computed at)
+- `lookupResources(Consistency, String resourceType, String permission, String subjectType, String subjectID, boolean withDebug)` → `Stream<LookupResult.LookupResource>` — as above, with `withDebug` requesting debug info on a max-recursion-depth error
 - `lookupSubjects(Consistency, String resourceType, String resourceID, String permission, String subjectType)` → `Stream<LookupResult.LookupSubject>` (each result now also carries `lookedUpAt`)
 
 **Schema:**

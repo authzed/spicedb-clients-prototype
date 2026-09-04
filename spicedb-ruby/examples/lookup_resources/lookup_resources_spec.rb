@@ -23,6 +23,9 @@ RSpec.describe 'LookupResources' do
 
     # Each result is a native SpiceDB::LookupResource, not a bare ID — callers
     # MUST check permissionship before treating a result as a full grant.
+    # Results also aren't guaranteed unique (the same resource_id can be
+    # yielded more than once), which is why this asserts with `include`
+    # rather than an exact-array match.
     expect(results).to all(be_a(SpiceDB::LookupResource))
     expect(results.map(&:permissionship)).to all(eq(:has_permission))
   end

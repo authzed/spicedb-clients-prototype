@@ -438,6 +438,11 @@ module SpiceDB
     # results, which caveat context was missing. Cursors are handled
     # transparently.
     #
+    # Results are not guaranteed to be unique: the same resource_id may be
+    # yielded more than once (e.g. via caveated/conditional results),
+    # possibly with a different permissionship. Callers that require
+    # uniqueness must deduplicate by resource_id themselves.
+    #
     # @param consistency [SpiceDB::Consistency::Strategy]
     # @param resource_type [String]
     # @param permission [String]
@@ -471,6 +476,11 @@ module SpiceDB
     # those listed in LookupSubject#excluded_subjects. Callers MUST check
     # excluded_subjects before treating a wildcard match as a blanket grant,
     # or they risk granting access to subjects the server explicitly excluded.
+    #
+    # Results are not guaranteed to be unique: the same subject may be
+    # yielded more than once, possibly with a different permissionship.
+    # Callers that require uniqueness must deduplicate by subject_id
+    # themselves.
     #
     # @param consistency [SpiceDB::Consistency::Strategy]
     # @param resource_type [String]

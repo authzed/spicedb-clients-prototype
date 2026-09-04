@@ -356,6 +356,11 @@ wildcard `"*"`, callers MUST check `excluded_subjects` before treating the
 wildcard as a blanket grant — the server grants the permission to every
 subject of the requested type EXCEPT those listed there.
 
+Neither stream is guaranteed to yield unique results: the same
+`resource_id`/subject may appear more than once (e.g. via caveated/
+conditional results), possibly with a different `permissionship` each time.
+A caller that needs uniqueness must deduplicate by ID itself.
+
 ### Streaming & Transparent Cursor Pagination
 
 Ruby `Enumerator` for all streaming RPCs. **Cursors are fully internal** —

@@ -893,6 +893,30 @@ public sealed class SpiceDBClient : IAsyncDisposable
     /// <see cref="ReadRelationshipsAsync"/> for the full rationale.
     /// </para>
     /// <para>
+    /// </summary>
+    public IAsyncEnumerable<LookupResource> LookupResourcesAsync(
+        ConsistencyStrategy consistency,
+        string resourceType,
+        string permission,
+        string subjectType,
+        string subjectID,
+        CancellationToken cancellationToken = default)
+        => LookupResourcesAsync(consistency, resourceType, permission, subjectType, subjectID, withDebug: false, cancellationToken);
+
+    /// <summary>
+    /// Returns an async enumerable of resources of the given type that the
+    /// subject has the specified permission on. Each result carries the
+    /// permissionship (full grant vs conditional on caveat context) and, for
+    /// conditional results, which caveat context was missing. Cursors are
+    /// handled transparently with 512-item pages.
+    /// <para>
+    /// Stream/page ESTABLISHMENT is retried on transient errors, with the
+    /// attempt budget reset for each new page. Once any item has been
+    /// yielded from the current page's open stream, a transient error is
+    /// mapped and rethrown instead of retried — see
+    /// <see cref="ReadRelationshipsAsync"/> for the full rationale.
+    /// </para>
+    /// <para>
     /// <paramref name="withDebug"/> asks the server to attach debug information
     /// to the error it returns when this lookup fails with a maximum-recursion-depth
     /// error. It never changes a successful result. This client does not decode
@@ -906,8 +930,8 @@ public sealed class SpiceDBClient : IAsyncDisposable
         string permission,
         string subjectType,
         string subjectID,
-        [EnumeratorCancellation] CancellationToken cancellationToken = default,
-        bool withDebug = false)
+        bool withDebug,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(consistency);
 

@@ -126,6 +126,11 @@ jobs:
   apicompat:
     needs: paths-filter
     if: needs.paths-filter.outputs.changed == 'true' && github.event_name == 'pull_request'
+    # Reads the PR's labels to honour breaking-change-acknowledged; the
+    # workflow-level grant is contents:read, which cannot see them.
+    permissions:
+      contents: read
+      pull-requests: read
     runs-on: depot-ubuntu-24.04-arm-small
     # No job may sit at GitHub's 360-minute default: a hung step should
     # fail fast and free the runner. The slowest job here runs well under
@@ -156,10 +161,30 @@ jobs:
       # and for its own failures, so this cannot suppress only the former. A
       # labelled PR therefore also loses the signal that the check itself
       # broke, which is the cost of keeping the mechanism this simple.
+      # Read the label from the API rather than from github.event. The
+      # pull_request payload is a snapshot taken when the event fired, so a
+      # label added afterwards is invisible to it -- and re-running the job
+      # replays that same stored payload, so a re-run does not see it either.
+      # Adding `labeled` to the workflow's trigger types would fix that by
+      # re-running all of CI on every label change of any kind, which is a lot
+      # of compute for the rare deliberate break. This reads live state, so
+      # labelling and re-running the job is enough.
+      - name: Check for the acknowledgement label
+        id: ack
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh api "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/labels" \
+               --jq '.[].name' | grep -qx 'breaking-change-acknowledged'; then
+            echo "acknowledged=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "acknowledged=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: API compatibility check
-        if: ${{ !contains(github.event.pull_request.labels.*.name, 'breaking-change-acknowledged') }}
+        if: steps.ack.outputs.acknowledged != 'true'
         run: mage -d spicedb-python apiCompat origin/${{ github.base_ref }}
       - name: API compatibility check skipped
-        if: ${{ contains(github.event.pull_request.labels.*.name, 'breaking-change-acknowledged') }}
+        if: steps.ack.outputs.acknowledged == 'true'
         run: |
           echo "::notice::API compatibility check skipped: this PR is labelled breaking-change-acknowledged."

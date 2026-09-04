@@ -759,7 +759,15 @@ The repo uses one GitHub Actions workflow file per language plus `spicedb-gen.ya
 
    The label is per-PR and visible on the PR itself, which is the point — an intentional break
    should be a decision someone took and left a record of, rather than a config toggle that
-   quietly stays on. Removing the label re-runs the check.
+   quietly stays on. Label the PR, then re-run the `apicompat` job; remove the label and re-run
+   to put the check back.
+
+   The job reads the label from the API, not from `github.event`. The `pull_request` payload is
+   a snapshot taken when the event fired, so a label added afterwards is invisible to it — and
+   re-running replays that same stored payload, so a re-run would not see it either. Adding
+   `labeled` to the workflow's trigger types would fix that by re-running all of CI on every
+   label change of any kind, which is a lot of compute for a rare deliberate break. Reading live
+   state costs one API call and needs `pull-requests: read` on the job.
 
    The skip is total rather than selective. `mage apiCompat` exits 1 both for real findings and
    for its own failures, so this cannot suppress only the former; a labelled PR also loses the

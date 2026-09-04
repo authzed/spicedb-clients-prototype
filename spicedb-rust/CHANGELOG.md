@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+### Changed
+
+- **2026-09-04: check options moved onto `CheckOptions`; lookups gained `LookupOptions`.**
+  Root DESIGN.md, "RULE: Every RPC wrapper must have one place to add an option" (new).
+  **Breaking.** Each check operation had three forms — plain, `..._with_context` and
+  `..._with_timeout` — twelve methods across four operations, and a caller could set a context
+  *or* a timeout and **never both**, because no method took the pair. Those eight sibling methods
+  collapse into four `..._with_options` taking `&CheckOptions`.
+
+  `CheckOptions` and `LookupOptions` are `#[non_exhaustive]` and built fluently, so adding a
+  field later is not a breaking change for downstream crates:
+
+  ```rust
+  client.check_permission_with_options(
+      &consistency::full(), "view", &rel,
+      &CheckOptions::new().with_context(ctx).with_timeout(Duration::from_secs(2)),
+  ).await?;
+  ```
+
+  The lookups gain `lookup_resources_with_options`/`lookup_subjects_with_options`, and
+  `with_debug` — previously hardcoded to `false` on the wire — is now reachable through
+  `LookupOptions::with_debug`. `LookupSubjectsRequest` carries no `with_debug`, so that form
+  accepts options for symmetry and future use rather than wiring one today.
+
+  Callers of the plain forms are unaffected. Callers of `..._with_context`/`..._with_timeout`
+  move to `..._with_options` with the value wrapped.
+
 ### Added
 
 - **2026-08-19: four new examples, one per root `DESIGN.md` RULE that had no executed

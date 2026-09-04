@@ -23,6 +23,7 @@ use futures::StreamExt;
 use spicedb::client::SpiceDBClient;
 use spicedb::consistency;
 use spicedb::error::SpiceDBError;
+use spicedb::types::CheckOptions;
 use spicedb::types::{Filter, Relationship};
 use spicedb_proto::authzed::api::v1 as proto;
 
@@ -116,11 +117,11 @@ async fn per_call_timeout_overrides_a_much_larger_client_default() {
     let start = std::time::Instant::now();
     let result = tokio::time::timeout(
         WATCHDOG,
-        client.check_permissions_with_timeout(
+        client.check_permissions_with_options(
             &consistency::full(),
             "view",
             &[rel],
-            Duration::from_millis(200),
+            &CheckOptions::new().with_timeout(Duration::from_millis(200)),
         ),
     )
     .await

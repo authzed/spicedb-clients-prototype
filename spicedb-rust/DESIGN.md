@@ -203,9 +203,9 @@ pub struct Relationship {
 All types derive `Debug, Clone, PartialEq, Eq`.
 
 `check_context` is per-item caveat context used only when this relationship
-is passed to a check call (`check_permission_with_context`/
-`check_permissions_with_context`/`check_any_with_context`/
-`check_all_with_context`) -- see "Checks" below. It is a **different
+is passed to a check call (`check_permission_with_options`/
+`check_permissions_with_options`/`check_any_with_options`/
+`check_all_with_options`) -- see "Checks" below. It is a **different
 concept** from `caveat_context`, which is stored with the relationship as
 part of a write and supplies values for the caveat baked into that specific
 tuple: `check_context` is never sent on a write (`Relationship::to_proto`
@@ -253,16 +253,21 @@ call-level default is fanned out onto every item at request-build time.
 Rust has no default arguments and no overloading, so adding a `context`
 parameter to `check_permission`/`check_permissions`/`check_any`/`check_all`
 directly would break every existing call site. Following this client's
-existing convention for optional call-shaped parameters (an explicit
-`Option<...>` parameter, as `export_relationships`'s `filter: Option<&Filter>`
-already does), each gained a parallel `_with_context` method instead --
-mirroring the shape Go needed for the same reason (Go permits only one
-trailing variadic):
+existing convention for optional call-shaped parameters, each operation has a
+single `_with_options` sibling taking `&CheckOptions`:
 
-- `check_permission_with_context(&self, cs, permission, &rel, context: Option<&HashMap<String, serde_json::Value>>)`
-- `check_permissions_with_context(&self, cs, permission, &[rel], context: Option<&HashMap<String, serde_json::Value>>)`
-- `check_any_with_context(&self, cs, permission, &[rel], context: Option<&HashMap<String, serde_json::Value>>)`
-- `check_all_with_context(&self, cs, permission, &[rel], context: Option<&HashMap<String, serde_json::Value>>)`
+- `check_permission_with_options(&self, cs, permission, &rel, &CheckOptions)`
+- `check_permissions_with_options(&self, cs, permission, &[rel], &CheckOptions)`
+- `check_any_with_options(&self, cs, permission, &[rel], &CheckOptions)`
+- `check_all_with_options(&self, cs, permission, &[rel], &CheckOptions)`
+
+`CheckOptions` is `#[non_exhaustive]` and built fluently --
+`CheckOptions::new().with_context(ctx).with_timeout(d)` -- so a new option is a
+new field rather than a new method. This replaces the earlier
+`_with_context`/`_with_timeout` pair, which was twelve methods across four
+operations and, worse, could express a context *or* a timeout and never both.
+See root DESIGN.md, "RULE: Every RPC wrapper must have one place to add an
+option".
 
 `context` is the call-level default applied to every relationship in the
 call. Per-item context is supplied by building the relationship with
@@ -281,10 +286,9 @@ When neither a call-level nor a per-item context applies to a given item, no
 `context` field is set on that item's wire request (`None`, not an empty
 `Struct`).
 
-The non-context methods (`check_permission`, `check_permissions`,
-`check_any`, `check_all`) are unchanged and delegate to their
-`_with_context` counterpart with `context: None` -- no existing call site
-changed.
+The plain methods (`check_permission`, `check_permissions`, `check_any`,
+`check_all`) are unchanged and delegate to their `_with_options` counterpart
+with `CheckOptions::new()`.
 
 `CheckResult` carries the server's three-valued (four with `Unspecified`)
 answer, not a bare bool:
@@ -466,9 +470,10 @@ client.
 
 ### Deadlines
 
-Every unary method has a `_with_timeout(..., timeout: Duration)` sibling
-(`delete_relationships_with` instead takes `DeleteOptions::with_timeout`),
-mirroring the existing `_with_context` convention. The timeout is set on the
+The check operations take a per-call deadline through
+`CheckOptions::with_timeout`; other unary methods have a `_with_timeout(...,
+timeout: Duration)` sibling (`delete_relationships_with` instead takes
+`DeleteOptions::with_timeout`). The timeout is set on the
 request via `tonic::Request::set_timeout`. `SpiceDBClient::builder(...)
 .default_timeout(Duration)` overrides the default (30s, see
 `client::DEFAULT_TIMEOUT`) applied to any unary call that doesn't use a
@@ -548,13 +553,13 @@ tonic's own client-side timeout enforcement (`tonic::transport::Channel`'s
 
 **Checks:**
 - `check_permission(&self, cs, permission, &rel) -> Result<CheckResult, SpiceDBError>`
-- `check_permission_with_context(&self, cs, permission, &rel, context: Option<&HashMap<String, serde_json::Value>>) -> Result<CheckResult, SpiceDBError>`
+- `check_permission_with_options(&self, cs, permission, &rel, &CheckOptions) -> Result<CheckResult, SpiceDBError>`
 - `check_permissions(&self, cs, permission, &[rel]) -> Result<Vec<CheckResult>, SpiceDBError>`
-- `check_permissions_with_context(&self, cs, permission, &[rel], context: Option<&HashMap<String, serde_json::Value>>) -> Result<Vec<CheckResult>, SpiceDBError>` -- call-level context default, merged key-by-key (item wins) with any per-item `Relationship::with_check_context`
+- `check_permissions_with_options(&self, cs, permission, &[rel], &CheckOptions) -> Result<Vec<CheckResult>, SpiceDBError>` -- call-level context default, merged key-by-key (item wins) with any per-item `Relationship::with_check_context`
 - `check_any(&self, cs, permission, &[rel]) -> Result<bool, SpiceDBError>` -- counts only `has_permission()` results
-- `check_any_with_context(&self, cs, permission, &[rel], context: Option<&HashMap<String, serde_json::Value>>) -> Result<bool, SpiceDBError>`
+- `check_any_with_options(&self, cs, permission, &[rel], &CheckOptions) -> Result<bool, SpiceDBError>`
 - `check_all(&self, cs, permission, &[rel]) -> Result<bool, SpiceDBError>` -- counts only `has_permission()` results
-- `check_all_with_context(&self, cs, permission, &[rel], context: Option<&HashMap<String, serde_json::Value>>) -> Result<bool, SpiceDBError>`
+- `check_all_with_options(&self, cs, permission, &[rel], &CheckOptions) -> Result<bool, SpiceDBError>`
 
 **Relationships:**
 - `write(&self, &txn) -> Result<String, SpiceDBError>`

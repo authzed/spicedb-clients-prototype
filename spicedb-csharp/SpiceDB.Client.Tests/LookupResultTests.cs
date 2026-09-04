@@ -353,8 +353,8 @@ public class LookupResultTests
             new Mock<WatchService.WatchServiceClient>().Object,
             new Mock<ExperimentalService.ExperimentalServiceClient>().Object);
 
-        await foreach (var _ in client.LookupResourcesAsync(
-            Consistency.Full(), "document", "view", "user", "alice", withDebug: true))
+        await foreach (var _ in client.LookupResourcesWithOptionsAsync(
+            Consistency.Full(), "document", "view", "user", "alice", new LookupOptions { WithDebug = true }))
         {
         }
 

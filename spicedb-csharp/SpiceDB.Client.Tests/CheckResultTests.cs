@@ -272,7 +272,7 @@ public class CheckResultTests
     //    below — CheckAllAsync must never reach the server for zero
     //    relationships (the pre-existing `relationships.Length == 0` early
     //    return in CheckPermissionsCoreAsync already guarantees that; this
-    //    guards the boolean CheckAllAsync/CheckAllWithContextAsync return). ──
+    //    guards the boolean CheckAllAsync/CheckAllWithOptionsAsync return). ──
 
     [Fact]
     public async Task CheckAllAsync_ZeroRelationships_ReturnsFalse()
@@ -285,12 +285,12 @@ public class CheckResultTests
     }
 
     [Fact]
-    public async Task CheckAllWithContextAsync_ZeroRelationships_ReturnsFalse()
+    public async Task CheckAllWithOptionsAsync_ZeroRelationships_ReturnsFalse()
     {
         var mockPermissions = new Mock<PermissionsService.PermissionsServiceClient>();
         await using var client = NewClient(mockPermissions.Object);
 
-        var all = await client.CheckAllWithContextAsync(Consistency.Full(), "view", null);
+        var all = await client.CheckAllWithOptionsAsync(Consistency.Full(), "view", new CheckOptions());
         all.Should().BeFalse();
     }
 

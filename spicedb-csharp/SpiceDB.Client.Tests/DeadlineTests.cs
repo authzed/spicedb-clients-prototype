@@ -184,9 +184,9 @@ public class DeadlineTests
         try
         {
             var start = DateTime.UtcNow;
-            Func<Task> act = () => RunWithWatchdogAsync(client.CheckPermissionAsync(
+            Func<Task> act = () => RunWithWatchdogAsync(client.CheckPermissionWithOptionsAsync(
                 Consistency.Full(), "view", Rel(),
-                context: null, timeout: TimeSpan.FromMilliseconds(200)));
+                new CheckOptions { Timeout = TimeSpan.FromMilliseconds(200) }));
 
             await act.Should().ThrowAsync<DeadlineExceededException>();
             var elapsed = DateTime.UtcNow - start;

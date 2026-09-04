@@ -787,20 +787,42 @@ The repo uses one GitHub Actions workflow file per language plus `spicedb-gen.ya
 
 2. **Standard job set per language workflow.** Each language workflow contains: `paths-filter`, `lint`, `unit`, `integration`, and `apicompat` (if the language appears in `apiCompatLanguages` in the root `Magefile.go`). All four work-jobs gate on `paths-filter.outputs.changed == 'true'`. `apicompat` additionally gates on `github.event_name == 'pull_request'` so it has a base ref to diff against.
 
-3. **paths-filter scope.** Each filter must watch the workflow file itself, the language's `proto-clients/spicedb-<lang>-proto/**`, the language's `spicedb-<lang>/**`, root `Magefile.go`, and root `go.mod` / `go.sum`. Workflow edits without filter coverage produce a silently-skipping CI.
+3. **Acknowledging a deliberate break.** `apicompat` is skipped on a pull request labelled
+   `breaking-change-acknowledged`, and prints a notice saying so. Nothing else grants an
+   exception: `mage updateAllowBreak` is a local convenience the CI check never consults, so
+   without the label an intentional break has no route through CI but to merge red.
+
+   The label is per-PR and visible on the PR itself, which is the point — an intentional break
+   should be a decision someone took and left a record of, rather than a config toggle that
+   quietly stays on. Label the PR, then re-run the `apicompat` job; remove the label and re-run
+   to put the check back.
+
+   The job reads the label from the API, not from `github.event`. The `pull_request` payload is
+   a snapshot taken when the event fired, so a label added afterwards is invisible to it — and
+   re-running replays that same stored payload, so a re-run would not see it either. Adding
+   `labeled` to the workflow's trigger types would fix that by re-running all of CI on every
+   label change of any kind, which is a lot of compute for a rare deliberate break. Reading live
+   state costs one API call and needs `pull-requests: read` on the job.
+
+   The skip is total rather than selective. `mage apiCompat` exits 1 both for real findings and
+   for its own failures, so this cannot suppress only the former; a labelled PR also loses the
+   signal that the check itself is broken. That is the cost of keeping the mechanism simple
+   enough to trust, and it is bounded to the one PR carrying the label.
+
+4. **paths-filter scope.** Each filter must watch the workflow file itself, the language's `proto-clients/spicedb-<lang>-proto/**`, the language's `spicedb-<lang>/**`, root `Magefile.go`, and root `go.mod` / `go.sum`. Workflow edits without filter coverage produce a silently-skipping CI.
 
    **A filter must also watch what the job's code is compiled against, not only where that code lives.** `spicedb-gen.yaml` watched `spicedb-gen/**` alone, but the generator's templates emit code importing `spicedb-go/{client,consistency,rel}`, `spicedb-typescript/src`, `spicedb-python/spicedb`, and `spicedb-java/lib/src/main/java`, and every `testdata/` project builds against those live in-repo sources. A signature change in a consumed package could therefore break generation while every generator job skipped and reported green — which is exactly how a dropped-error regression reached review (finding F4). Scope such entries to the packages actually imported; a blanket `spicedb-*/**` runs the suite on every client change and invites someone to revert the whole filter as noise. Note the filter is necessary but not sufficient: pair it with a test that actually fails on the regression, since a discarded return value still compiles.
 
-4. **Runner sizing.** Default to `depot-ubuntu-24.04-arm-4`. Use `arm-small` for trivial steps (paths-filter, apicompat, yaml lint). Use `arm-8` only for cross-cutting work that touches every language (e.g. `meta.gen-nodiff`). Justify any size deviation in a comment.
+5. **Runner sizing.** Default to `depot-ubuntu-24.04-arm-4`. Use `arm-small` for trivial steps (paths-filter, apicompat, yaml lint). Use `arm-8` only for cross-cutting work that touches every language (e.g. `meta.gen-nodiff`). Justify any size deviation in a comment.
 
-5. **Action pinning.** Third-party actions (anything outside `actions/*` and `authzed/*`) pin to commit SHA with `# vX.Y.Z` comment. Dependabot's `github-actions` ecosystem keeps these current.
+6. **Action pinning.** Third-party actions (anything outside `actions/*` and `authzed/*`) pin to commit SHA with `# vX.Y.Z` comment. Dependabot's `github-actions` ecosystem keeps these current.
 
-6. **Integration tests.** Each `mage <lang> integrationTest` target is self-contained — it starts its own docker-compose, runs tests, tears down. CI runs at most one `integrationTest` per job (they all bind `localhost:50051`). Cross-language parallelism is fine because each runner is isolated.
+7. **Integration tests.** Each `mage <lang> integrationTest` target is self-contained — it starts its own docker-compose, runs tests, tears down. CI runs at most one `integrationTest` per job (they all bind `localhost:50051`). Cross-language parallelism is fine because each runner is isolated.
 
-7. **Adding a new language.** Checklist:
+8. **Adding a new language.** Checklist:
    - Create `.github/workflows/<lang>.yaml` from an existing one (Go is a good template if compiled, Python if interpreted).
    - Add the language's directories to `.github/dependabot.yml`.
    - Add a per-language Quick Start in `README.md` (typed if `spicedb-gen` supports it, idiomatic otherwise).
    - Add the language to `languages` (and `apiCompatLanguages` if applicable) in the root `Magefile.go`.
 
-8. **Adding a new job type.** If you find yourself wanting a new kind of check (e.g., security scanning, license check), add it to **every** language workflow at once, document it here, and add a paths-filter clause if it should be skippable.
+9. **Adding a new job type.** If you find yourself wanting a new kind of check (e.g., security scanning, license check), add it to **every** language workflow at once, document it here, and add a paths-filter clause if it should be skippable.

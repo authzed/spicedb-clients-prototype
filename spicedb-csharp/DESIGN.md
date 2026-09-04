@@ -240,13 +240,14 @@ Exposes `V1Updates` and `Preconditions` for advanced use cases.
 All checks use `BulkCheckPermissions` under the hood — there is no production
 call site for the single-item `CheckPermission` RPC.
 
-- `CheckPermissionAsync(consistency, permission, relationship, cancellationToken = default, context = null)` → `Task<CheckResult>`
+- `CheckPermissionAsync(consistency, permission, relationship, cancellationToken = default)` → `Task<CheckResult>`
+- `CheckPermissionWithOptionsAsync(consistency, permission, relationship, options, cancellationToken = default)` → `Task<CheckResult>`
 - `CheckPermissionsAsync(consistency, permission, cancellationToken, params relationships)` → `Task<CheckResult[]>`
-- `CheckPermissionsWithContextAsync(consistency, permission, context, cancellationToken, params relationships)` → `Task<CheckResult[]>`
+- `CheckPermissionsWithOptionsAsync(consistency, permission, options, cancellationToken, params relationships)` → `Task<CheckResult[]>`
 - `CheckAnyAsync(consistency, permission, cancellationToken, params relationships)` → `Task<bool>`
-- `CheckAnyWithContextAsync(consistency, permission, context, cancellationToken, params relationships)` → `Task<bool>`
+- `CheckAnyWithOptionsAsync(consistency, permission, options, cancellationToken, params relationships)` → `Task<bool>`
 - `CheckAllAsync(consistency, permission, cancellationToken, params relationships)` → `Task<bool>`
-- `CheckAllWithContextAsync(consistency, permission, context, cancellationToken, params relationships)` → `Task<bool>`
+- `CheckAllWithOptionsAsync(consistency, permission, options, cancellationToken, params relationships)` → `Task<bool>`
 
 `context` is an optional call-level default caveat context (an
 `IReadOnlyDictionary<string, object>?`) — see "Caveat context" below for the
@@ -316,17 +317,19 @@ field 4) is per-item — `CheckBulkPermissionsRequest` itself has no context
 field — so a call-level default is fanned out onto every item at
 request-build time.
 
-- **Call-level** — a default applied to every relationship in the call.
-  `CheckPermissionsWithContextAsync`/`CheckAnyWithContextAsync`/
-  `CheckAllWithContextAsync` are new methods (not overloads) that add a
-  required `context` parameter ahead of the existing `cancellationToken`;
-  `CheckPermissionAsync` (the single-relationship form, which has no
-  `params` array in the way) instead gets a new **trailing** optional
-  `context = null` parameter on the existing method.
+- **Call-level** — a default applied to every relationship in the call, set
+  as `CheckOptions.Context` and passed to the `...WithOptionsAsync` form of
+  any check. There is one such form per operation rather than a method per
+  option, and a new option is a new property on `CheckOptions`: see root
+  DESIGN.md, "RULE: Every RPC wrapper must have one place to add an option".
+  The older shape — a `...WithContextAsync` method per option, alongside a
+  trailing optional `context = null` parameter on `CheckPermissionAsync` — is
+  what that rule retires: the optional parameter was binary-breaking to add,
+  and the method family grew one member per option.
 - **Per-item** — `Relationship.CheckContext` (set via
   `Relationship.WithCheckContext(context)`) carries context for that one
   relationship's check. It flows through even the plain, unchanged
-  `CheckPermissionsAsync`/`CheckAnyAsync`/`CheckAllAsync` — no `WithContext`
+  `CheckPermissionsAsync`/`CheckAnyAsync`/`CheckAllAsync` — no `WithOptions`
   call is needed just to use per-item context alone.
 
 **Merge rule (key-level, item wins):** each item's context is the
@@ -356,7 +359,7 @@ var relB = Relationship.FromTriple("document", "doc2", "view", "user", "bob")
 
 // relA -> {now: 42, region: "us"} (inherits the call-level default)
 // relB -> {now: 42, region: "eu"} (region overridden, now retained)
-var results = await client.CheckPermissionsWithContextAsync(
+var results = await client.CheckPermissionsWithOptionsAsync(
     consistency, "view", callLevel, default, relA, relB);
 ```
 
@@ -392,7 +395,8 @@ Async enumerables:
 
 - `ReadRelationshipsAsync(consistency, filter)` → `IAsyncEnumerable<Relationship>`
 - `LookupResourcesAsync(consistency, resourceType, permission, subjectType, subjectID)` → `IAsyncEnumerable<LookupResource>`
-- `LookupSubjectsAsync(consistency, resourceType, resourceID, permission, subjectType)` → `IAsyncEnumerable<LookupSubject>`
+- `LookupSubjectsAsync(consistency, resourceType, resourceID, permission, subjectType, cancellationToken = default)` → `IAsyncEnumerable<LookupSubject>`
+- `LookupSubjectsWithOptionsAsync(consistency, resourceType, resourceID, permission, subjectType, options, cancellationToken = default)` → `IAsyncEnumerable<LookupSubject>`
 - `ExportRelationshipsAsync(consistency, filter?)` → `IAsyncEnumerable<Relationship>`
 - `UpdatesAsync(objectTypes?, startRevision?, includeCheckpoints?)` → `IAsyncEnumerable<WatchEvent>`
 
@@ -411,10 +415,11 @@ public sealed record ResolvedSubject { SubjectID, Permissionship, PartialCaveat 
 public sealed record LookupSubject { Subject, ExcludedSubjects, LookedUpAt }
 ```
 
-- `LookupResourcesAsync(consistency, resourceType, permission, subjectType, subjectID, cancellationToken = default, withDebug = false)` → `IAsyncEnumerable<LookupResource>`
-- `LookupSubjectsAsync(consistency, resourceType, resourceID, permission, subjectType)` → `IAsyncEnumerable<LookupSubject>`
+- `LookupResourcesAsync(consistency, resourceType, permission, subjectType, subjectID, cancellationToken = default)` → `IAsyncEnumerable<LookupResource>`
+- `LookupSubjectsAsync(consistency, resourceType, resourceID, permission, subjectType, cancellationToken = default)` → `IAsyncEnumerable<LookupSubject>`
+- `LookupSubjectsWithOptionsAsync(consistency, resourceType, resourceID, permission, subjectType, options, cancellationToken = default)` → `IAsyncEnumerable<LookupSubject>`
 
-`withDebug` maps the proto `LookupResourcesRequest.with_debug` field: it asks
+`LookupOptions.WithDebug` maps the proto `LookupResourcesRequest.with_debug` field: it asks
 the server to attach debug information to the error raised on a
 maximum-recursion-depth failure, and changes nothing about a successful
 result. This client does not decode that payload — it rides the mapped
@@ -600,8 +605,8 @@ comment cites `grpc/grpc-node#541`). See root DESIGN.md, "RULE: A unary
 call must have a deadline".
 
 The six `params Relationship[]` check overloads (`CheckPermissionsAsync`,
-`CheckPermissionsWithContextAsync`, `CheckAnyAsync`, `CheckAnyWithContextAsync`,
-`CheckAllAsync`, `CheckAllWithContextAsync`) deliberately do **not** take a
+`CheckPermissionsWithOptionsAsync`, `CheckAnyAsync`, `CheckAnyWithOptionsAsync`,
+`CheckAllAsync`, `CheckAllWithOptionsAsync`) deliberately do **not** take a
 `timeout` parameter: inserting one ahead of
 the `params` array would silently break any existing positional call site
 passing relationships right after `cancellationToken` (e.g.

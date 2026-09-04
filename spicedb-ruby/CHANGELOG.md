@@ -419,6 +419,14 @@
 
 ### Added
 
+- **2026-09-04: `lookup_resources` and `lookup_subjects` accept a `context:` keyword.**
+  Root DESIGN.md, "RULE: Every RPC wrapper must have one place to add an option" (new).
+  The lookups previously took positional arguments only, so an option added upstream had
+  nowhere to go -- which is how `with_debug` ended up wired differently in every client.
+  Keyword arguments are this client's options container, matching `check_permission`, and
+  `context:` is the first option to use it: caveat context is now sent on the lookups as
+  it already was on checks. Existing positional calls are unaffected.
+
 - **2026-08-19: four new examples, one per root `DESIGN.md` RULE that had no executed
   coverage in any client.** 15 example specs -> 19, 49 rspec examples -> 70, none renamed
   or removed. Group E Phase 3.

@@ -46,10 +46,10 @@ class CheckContextTest {
       SpiceDBClient client = servers.client();
       Map<String, Object> callLevel = Map.of("now", 42);
 
-      client.checkPermissions(
+      client.checkPermissionsWithOptions(
           Consistency.full(),
           "view",
-          callLevel,
+          CheckOptions.none().withContext(callLevel),
           Relationship.of("document", "doc1", "view", "user", "alice"),
           Relationship.of("document", "doc2", "view", "user", "bob"));
 
@@ -106,7 +106,8 @@ class CheckContextTest {
               .withCheckContext(Map.of("region", "eu"));
       Relationship item1 = Relationship.of("document", "doc2", "view", "user", "bob");
 
-      client.checkPermissions(Consistency.full(), "view", callLevel, item0, item1);
+      client.checkPermissionsWithOptions(
+          Consistency.full(), "view", CheckOptions.none().withContext(callLevel), item0, item1);
 
       assertEquals(1, captured.size());
       CheckBulkPermissionsRequest request = captured.get(0);
@@ -152,10 +153,10 @@ class CheckContextTest {
     try (TestServers servers = TestServers.start(capturingService(captured))) {
       SpiceDBClient client = servers.client();
 
-      client.checkPermissions(
+      client.checkPermissionsWithOptions(
           Consistency.full(),
           "view",
-          Map.of(),
+          CheckOptions.none().withContext(Map.of()),
           Relationship.of("document", "doc1", "view", "user", "alice").withCheckContext(Map.of()));
 
       CheckBulkPermissionsRequest request = captured.get(0);
@@ -185,10 +186,10 @@ class CheckContextTest {
       Map<String, Object> nested = Map.of("min", 10, "max", 20);
       Map<String, Object> callLevel = Map.of("range", nested);
 
-      client.checkPermissions(
+      client.checkPermissionsWithOptions(
           Consistency.full(),
           "view",
-          callLevel,
+          CheckOptions.none().withContext(callLevel),
           Relationship.of("document", "doc1", "view", "user", "alice"));
 
       Struct context = captured.get(0).getItems(0).getContext();
@@ -212,10 +213,10 @@ class CheckContextTest {
 
       Map<String, Object> callLevel = Map.of("tags", List.of("a", "b", 3));
 
-      client.checkPermissions(
+      client.checkPermissionsWithOptions(
           Consistency.full(),
           "view",
-          callLevel,
+          CheckOptions.none().withContext(callLevel),
           Relationship.of("document", "doc1", "view", "user", "alice"));
 
       Struct context = captured.get(0).getItems(0).getContext();
@@ -243,10 +244,10 @@ class CheckContextTest {
       Map<String, Object> outer = Map.of("filter", inner);
       Map<String, Object> callLevel = Map.of("query", outer);
 
-      client.checkPermissions(
+      client.checkPermissionsWithOptions(
           Consistency.full(),
           "view",
-          callLevel,
+          CheckOptions.none().withContext(callLevel),
           Relationship.of("document", "doc1", "view", "user", "alice"));
 
       Struct context = captured.get(0).getItems(0).getContext();
@@ -278,10 +279,11 @@ class CheckContextTest {
           assertThrows(
               com.authzed.spicedb.errors.InvalidArgumentException.class,
               () ->
-                  client.checkPermissions(
+                  client.checkPermissionsWithOptions(
                       Consistency.full(),
                       "view",
-                      Map.of("bad_key", new UnrepresentableValue()),
+                      CheckOptions.none()
+                          .withContext(Map.of("bad_key", new UnrepresentableValue())),
                       Relationship.of("document", "doc1", "view", "user", "alice")));
 
       assertTrue(thrown.getMessage().contains("bad_key"), thrown.getMessage());
@@ -303,11 +305,11 @@ class CheckContextTest {
     try (TestServers servers = TestServers.start(capturingService(captured))) {
       SpiceDBClient client = servers.client();
 
-      client.checkPermission(
+      client.checkPermissionWithOptions(
           Consistency.full(),
           "view",
           Relationship.of("document", "doc1", "view", "user", "alice"),
-          Map.of("now", 42));
+          CheckOptions.none().withContext(Map.of("now", 42)));
 
       CheckBulkPermissionsRequest request = captured.get(0);
       assertEquals(expectedStruct(Map.of("now", 42)), request.getItems(0).getContext());
@@ -321,10 +323,10 @@ class CheckContextTest {
       SpiceDBClient client = servers.client();
 
       boolean any =
-          client.checkAny(
+          client.checkAnyWithOptions(
               Consistency.full(),
               "view",
-              Map.of("now", 42),
+              CheckOptions.none().withContext(Map.of("now", 42)),
               Relationship.of("document", "doc1", "view", "user", "alice"));
 
       assertTrue(any);
@@ -340,10 +342,10 @@ class CheckContextTest {
       SpiceDBClient client = servers.client();
 
       boolean all =
-          client.checkAll(
+          client.checkAllWithOptions(
               Consistency.full(),
               "view",
-              Map.of("now", 42),
+              CheckOptions.none().withContext(Map.of("now", 42)),
               Relationship.of("document", "doc1", "view", "user", "alice"));
 
       assertTrue(all);

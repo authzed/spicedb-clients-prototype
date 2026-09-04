@@ -122,7 +122,7 @@ public class CheckPermissionTest
 
         // caveat active(now int) { now < 100 } — 42 satisfies the caveat.
         var context = new Dictionary<string, object> { ["now"] = 42 };
-        var result = await client.CheckPermissionAsync(Full(), "view", rel, default, context);
+        var result = await client.CheckPermissionWithOptionsAsync(Full(), "view", rel, new CheckOptions { Context = context });
 
         Assert.Equal(Permissionship.HasPermission, result.Permissionship);
         Assert.True(result.HasPermission, "supplying the missing 'now' context should resolve the caveat to a grant");
@@ -133,7 +133,7 @@ public class CheckPermissionTest
     {
         // Demonstrates both forms of caveat context together against a live
         // server: a call-level default applied via
-        // CheckPermissionsWithContextAsync, and a per-item override via
+        // CheckPermissionsWithOptionsAsync, and a per-item override via
         // Relationship.WithCheckContext that wins for its own item while a
         // sibling item still falls back to the call-level default.
         await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
@@ -157,8 +157,9 @@ public class CheckPermissionTest
             .FromTriple("document", "per-item-doc", "view", "user", "alice")
             .WithCheckContext(new Dictionary<string, object> { ["now"] = 200 });
 
-        var results = await client.CheckPermissionsWithContextAsync(
-            Full(), "view", callLevelContext, default, relUsingCallLevelDefault, relWithPerItemOverride);
+        var results = await client.CheckPermissionsWithOptionsAsync(
+            Full(), "view", new CheckOptions { Context = callLevelContext }, default,
+            relUsingCallLevelDefault, relWithPerItemOverride);
 
         Assert.True(results[0].HasPermission, "no per-item context, so it inherits the call-level default (now=42 < 100)");
 

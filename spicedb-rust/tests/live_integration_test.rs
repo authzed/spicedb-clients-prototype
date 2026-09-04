@@ -13,6 +13,7 @@
 
 use spicedb::client::SpiceDBClient;
 use spicedb::consistency;
+use spicedb::types::CheckOptions;
 use spicedb::types::{Permissionship, Relationship, Transaction};
 
 const CAVEATED_SCHEMA: &str = r#"definition user {}
@@ -94,11 +95,11 @@ async fn check_permission_with_missing_caveat_context_is_conditional_not_granted
 /// C5: the payoff test for spec D3b. Same caveat schema and relationship as
 /// the test above (server needs `now` and doesn't get it => Conditional),
 /// but this time the caller supplies the missing context via
-/// `check_permission_with_context` — proving `missing_context` is
+/// `check_permission_with_options` — proving `missing_context` is
 /// actionable: a caller can resolve a Conditional into a real grant.
 #[tokio::test]
 #[ignore = "requires a live SpiceDB server (see module docs)"]
-async fn check_permission_with_context_resolves_conditional_to_grant() {
+async fn check_permission_with_options_resolves_conditional_to_grant() {
     let client = SpiceDBClient::new_plaintext(live_endpoint(), live_token())
         .await
         .expect("connect to live SpiceDB");
@@ -134,11 +135,11 @@ async fn check_permission_with_context_resolves_conditional_to_grant() {
     let mut context = std::collections::HashMap::new();
     context.insert("now".to_string(), serde_json::json!(42));
     let granted = client
-        .check_permission_with_context(
+        .check_permission_with_options(
             &consistency::at_least(&revision),
             "view",
             &check_rel,
-            Some(&context),
+            &CheckOptions::new().with_context(context.clone()),
         )
         .await
         .expect("check with context should succeed");

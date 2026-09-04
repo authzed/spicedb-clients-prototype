@@ -152,7 +152,8 @@ public final class Permissions {
             var r = Relationship.of(perm.resourceType(), perm.resourceId(), perm.permission(),
                 subject.definitionName(), subject.id(), subject.subRelation());
             r = r.withCheckContext(subject.caveatContext());
-            return client.checkPermission(c, perm.permission(), r, context);
+            return client.checkPermissionWithOptions(c, perm.permission(), r,
+                CheckOptions.none().withContext(context));
         }
 
         public <S extends Subject> Stream<LookupResult.LookupResource> lookupResources(Consistency c, PermissionRef<S> perm, S subject) {

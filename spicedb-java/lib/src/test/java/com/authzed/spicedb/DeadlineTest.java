@@ -112,7 +112,11 @@ class DeadlineTest {
       Throwable thrown =
           runWithWatchdog(
               () ->
-                  client.checkPermission(Consistency.full(), "view", rel, Duration.ofMillis(200)));
+                  client.checkPermissionWithOptions(
+                      Consistency.full(),
+                      "view",
+                      rel,
+                      CheckOptions.none().withTimeout(Duration.ofMillis(200))));
       long elapsedMs = (System.nanoTime() - start) / 1_000_000;
 
       assertInstanceOf(DeadlineExceededException.class, thrown, "got: " + thrown);
@@ -165,8 +169,11 @@ class DeadlineTest {
       CheckResult result =
           runOrThrow(
               () ->
-                  client.checkPermission(
-                      Consistency.full(), "view", rel, Duration.ofMillis(STALL_MS * 10)));
+                  client.checkPermissionWithOptions(
+                      Consistency.full(),
+                      "view",
+                      rel,
+                      CheckOptions.none().withTimeout(Duration.ofMillis(STALL_MS * 10))));
       long elapsedMs = (System.nanoTime() - start) / 1_000_000;
 
       assertTrue(result.hasPermission(), "expected a HAS_PERMISSION grant, got: " + result);

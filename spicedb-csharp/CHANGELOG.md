@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### Changed
+
+- **2026-09-04: check and lookup options moved onto `CheckOptions` and `LookupOptions`.**
+  Root DESIGN.md, "RULE: Every RPC wrapper must have one place to add an option" (new).
+  **Breaking.** `CheckPermissionsWithContextAsync`, `CheckAnyWithContextAsync` and
+  `CheckAllWithContextAsync` become `...WithOptionsAsync` taking a `CheckOptions`;
+  `CheckPermissionAsync` loses its trailing optional `context` and `timeout` parameters in
+  favour of a new `CheckPermissionWithOptionsAsync`; and the lookups gain
+  `LookupResourcesWithOptionsAsync`/`LookupSubjectsWithOptionsAsync`, with `withDebug`
+  moving off the `LookupResourcesAsync` signature onto `LookupOptions.WithDebug`.
+
+  This client had both shapes the rule retires. A trailing optional parameter is
+  binary-breaking to add in C#, because the compiler substitutes the default at the call
+  site — which is how adding `with_debug` broke this client during regeneration, twice.
+  And a `...WithContextAsync` method per option grows one new method for every option the
+  API ever adds. There is now one options type per operation, and the next optional field
+  upstream adds is a new property on it.
+
+  Callers using only the plain forms are unaffected. Callers using the `...WithContext`
+  forms rename the call and wrap the context: `new CheckOptions { Context = ctx }`.
+
 ### Added
 
 - **2026-09-04: `LookupResourcesAsync` gained a `withDebug` overload**, mapping

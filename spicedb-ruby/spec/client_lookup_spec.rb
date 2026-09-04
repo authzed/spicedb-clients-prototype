@@ -199,4 +199,57 @@ RSpec.describe 'SpiceDB::Client lookup native results' do
       )
     end
   end
+
+  # Keyword arguments are the lookups' options container -- root DESIGN.md,
+  # "RULE: Every RPC wrapper must have one place to add an option". These pin
+  # that the container is actually wired to the request, not merely accepted
+  # and dropped, and that an absent option sends no field at all rather than an
+  # empty Struct.
+  describe 'caveat context' do
+    def capture_request(method, responses)
+      captured = nil
+      permissions_service = double('permissions_service')
+      allow(permissions_service).to receive(method) do |req|
+        captured = req
+        responses
+      end
+      proto_client = double('proto_client', permissions: permissions_service)
+      client.instance_variable_set(:@proto_client, proto_client)
+      -> { captured }
+    end
+
+    it 'sends context supplied to lookup_resources' do
+      captured = capture_request(:lookup_resources, [])
+
+      client.lookup_resources(SpiceDB::Consistency.full, 'document', 'view', 'user', 'alice',
+                              context: { 'region' => 'eu' }).to_a
+
+      expect(captured.call.context.fields['region'].string_value).to eq('eu')
+    end
+
+    it 'sends no context on lookup_resources when none is supplied' do
+      captured = capture_request(:lookup_resources, [])
+
+      client.lookup_resources(SpiceDB::Consistency.full, 'document', 'view', 'user', 'alice').to_a
+
+      expect(captured.call.context).to be_nil
+    end
+
+    it 'sends context supplied to lookup_subjects' do
+      captured = capture_request(:lookup_subjects, [])
+
+      client.lookup_subjects(SpiceDB::Consistency.full, 'document', 'doc1', 'view', 'user',
+                             context: { 'region' => 'eu' }).to_a
+
+      expect(captured.call.context.fields['region'].string_value).to eq('eu')
+    end
+
+    it 'sends no context on lookup_subjects when none is supplied' do
+      captured = capture_request(:lookup_subjects, [])
+
+      client.lookup_subjects(SpiceDB::Consistency.full, 'document', 'doc1', 'view', 'user').to_a
+
+      expect(captured.call.context).to be_nil
+    end
+  end
 end

@@ -102,8 +102,8 @@ public class CheckContextTests
 
         var callLevel = new Dictionary<string, object> { ["now"] = 42, ["region"] = "us" };
 
-        await client.CheckPermissionsWithContextAsync(
-            Consistency.Full(), "view", callLevel, default, rel1, rel2);
+        await client.CheckPermissionsWithOptionsAsync(
+            Consistency.Full(), "view", new CheckOptions { Context = callLevel }, default, rel1, rel2);
 
         captured.Should().ContainSingle();
         var items = captured[0].Items;
@@ -156,8 +156,8 @@ public class CheckContextTests
             .WithCheckContext(new Dictionary<string, object> { ["region"] = "eu" });
         var item1 = Relationship.FromTriple("document", "doc2", "viewer", "user", "bob");
 
-        await client.CheckPermissionsWithContextAsync(
-            Consistency.Full(), "view", callLevel, default, item0, item1);
+        await client.CheckPermissionsWithOptionsAsync(
+            Consistency.Full(), "view", new CheckOptions { Context = callLevel }, default, item0, item1);
 
         captured.Should().ContainSingle();
         var items = captured[0].Items;
@@ -188,8 +188,8 @@ public class CheckContextTests
 
         // Explicit null call-level context via the WithContext overload —
         // equivalent to calling the plain CheckPermissionsAsync.
-        await client.CheckPermissionsWithContextAsync(
-            Consistency.Full(), "view", null, default, rel1, rel2);
+        await client.CheckPermissionsWithOptionsAsync(
+            Consistency.Full(), "view", new CheckOptions(), default, rel1, rel2);
 
         captured.Should().ContainSingle();
         var items = captured[0].Items;
@@ -222,17 +222,17 @@ public class CheckContextTests
         var rel = Relationship.FromTriple("document", "doc1", "viewer", "user", "alice");
         var context = new Dictionary<string, object> { ["now"] = 42 };
 
-        await client.CheckPermissionAsync(Consistency.Full(), "view", rel, default, context);
+        await client.CheckPermissionWithOptionsAsync(Consistency.Full(), "view", rel, new CheckOptions { Context = context });
 
         captured.Should().ContainSingle();
         captured[0].Items[0].Context.Should().Be(AsStruct(("now", 42)));
     }
 
-    // ── CheckAnyWithContextAsync/CheckAllWithContextAsync are aggregates
+    // ── CheckAnyWithOptionsAsync/CheckAllWithOptionsAsync are aggregates
     // ── over the same request-building path and must fan out context too ──
 
     [Fact]
-    public async Task CheckAnyWithContextAsync_FansOutCallLevelContext()
+    public async Task CheckAnyWithOptionsAsync_FansOutCallLevelContext()
     {
         var client = NewClient(out _, out var captured);
 
@@ -240,7 +240,7 @@ public class CheckContextTests
         var rel2 = Relationship.FromTriple("document", "doc2", "viewer", "user", "bob");
         var context = new Dictionary<string, object> { ["now"] = 42 };
 
-        await client.CheckAnyWithContextAsync(Consistency.Full(), "view", context, default, rel1, rel2);
+        await client.CheckAnyWithOptionsAsync(Consistency.Full(), "view", new CheckOptions { Context = context }, default, rel1, rel2);
 
         captured.Should().ContainSingle();
         var items = captured[0].Items;
@@ -256,15 +256,15 @@ public class CheckContextTests
     private sealed class UnrepresentableValue { }
 
     [Fact]
-    public async Task CheckPermissionsWithContextAsync_UnrepresentableContextValue_Throws()
+    public async Task CheckPermissionsWithOptionsAsync_UnrepresentableContextValue_Throws()
     {
         var client = NewClient(out _, out _);
 
         var rel = Relationship.FromTriple("document", "doc1", "viewer", "user", "alice");
         var context = new Dictionary<string, object> { ["bad_key"] = new UnrepresentableValue() };
 
-        var act = async () => await client.CheckPermissionsWithContextAsync(
-            Consistency.Full(), "view", context, default, rel);
+        var act = async () => await client.CheckPermissionsWithOptionsAsync(
+            Consistency.Full(), "view", new CheckOptions { Context = context }, default, rel);
 
         var result = await act.Should().ThrowAsync<InvalidArgumentException>();
         result.Which.Message.Should().Contain("bad_key");
@@ -272,7 +272,7 @@ public class CheckContextTests
     }
 
     [Fact]
-    public async Task CheckAllWithContextAsync_FansOutCallLevelContext()
+    public async Task CheckAllWithOptionsAsync_FansOutCallLevelContext()
     {
         var client = NewClient(out _, out var captured);
 
@@ -280,7 +280,7 @@ public class CheckContextTests
         var rel2 = Relationship.FromTriple("document", "doc2", "viewer", "user", "bob");
         var context = new Dictionary<string, object> { ["now"] = 42 };
 
-        await client.CheckAllWithContextAsync(Consistency.Full(), "view", context, default, rel1, rel2);
+        await client.CheckAllWithOptionsAsync(Consistency.Full(), "view", new CheckOptions { Context = context }, default, rel1, rel2);
 
         captured.Should().ContainSingle();
         var items = captured[0].Items;

@@ -53,11 +53,12 @@ use crate::error::{self, SpiceDBError};
 use crate::types::{
     check_context_to_proto, check_result_from_bulk_item, merge_check_context,
     partial_caveat_from_proto, permission_tree_from_proto, permissionship_from_proto,
-    resolved_subject_from_proto, CheckResult, CountResult, DeleteOptions, ExpandResult, Filter,
-    LookupResource, LookupSubject, Permissionship, Precondition, PreconditionOperation,
-    ReflectSchemaResult, RelationReference, Relationship, ResolvedSubject, SchemaCaveat,
-    SchemaCaveatParameter, SchemaDefinition, SchemaDiff, SchemaPermission, SchemaRelation,
-    Transaction, Update, UpdateOperation, WatchEvent, WatchOptions,
+    resolved_subject_from_proto, CheckOptions, CheckResult, CountResult, DeleteOptions,
+    ExpandResult, Filter, LookupOptions, LookupResource, LookupSubject, Permissionship,
+    Precondition, PreconditionOperation, ReflectSchemaResult, RelationReference, Relationship,
+    ResolvedSubject, SchemaCaveat, SchemaCaveatParameter, SchemaDefinition, SchemaDiff,
+    SchemaPermission, SchemaRelation, Transaction, Update, UpdateOperation, WatchEvent,
+    WatchOptions,
 };
 
 use futures::Stream;
@@ -340,12 +341,12 @@ impl SpiceDBClient {
     /// Prefer [`CheckResult::has_permission`] over comparing `permissionship`
     /// directly for the common case.
     ///
-    /// See [`check_permission_with_context`](Self::check_permission_with_context)
+    /// See [`check_permission_with_options`](Self::check_permission_with_options)
     /// to supply a caveat context for evaluating caveats encountered during
     /// the check; a relationship built with
     /// [`Relationship::with_check_context`] still supplies its own context
     /// through this method (`check_permission` is
-    /// `check_permission_with_context` with no context).
+    /// `check_permission_with_options` with default options).
     ///
     /// # Errors
     ///
@@ -357,67 +358,41 @@ impl SpiceDBClient {
         permission: &str,
         relationship: &Relationship,
     ) -> Result<CheckResult, SpiceDBError> {
-        self.check_permission_with_context(consistency, permission, relationship, None)
-            .await
+        self.check_permission_with_options(
+            consistency,
+            permission,
+            relationship,
+            &CheckOptions::new(),
+        )
+        .await
     }
 
-    /// [`check_permission`](Self::check_permission) with a caveat context.
-    /// Caveat context supplies named values (e.g. `"now"`) that SpiceDB
-    /// needs to evaluate a caveat expression encountered during the check;
-    /// without it, a caveated match comes back as
-    /// `Permissionship::ConditionalPermission` instead of a grant, and
-    /// `CheckResult::missing_context` names what was needed.
+    /// [`check_permission`](Self::check_permission) with call-level options.
     ///
-    /// If `relationship` was built with [`Relationship::with_check_context`],
-    /// its context is merged with `context` per the key-level merge rule
-    /// documented on
-    /// [`check_permissions_with_context`](Self::check_permissions_with_context):
-    /// the relationship's keys win on conflict, and any `context` keys it
-    /// doesn't specify are retained. Pass `None` for no context (equivalent
-    /// to [`check_permission`](Self::check_permission)).
+    /// Context and timeout are fields on [`CheckOptions`] rather than separate
+    /// methods, so both can be set on one call — the `..._with_context` and
+    /// `..._with_timeout` pair this replaces could express either and never
+    /// both. See root DESIGN.md, "RULE: Every RPC wrapper must have one place
+    /// to add an option".
     ///
     /// # Errors
     ///
     /// Returns [`SpiceDBError`] if the gRPC call fails.
     #[must_use = "check results should not be silently discarded"]
-    pub async fn check_permission_with_context(
+    pub async fn check_permission_with_options(
         &self,
         consistency: &Strategy,
         permission: &str,
         relationship: &Relationship,
-        context: Option<&HashMap<String, serde_json::Value>>,
+        options: &CheckOptions,
     ) -> Result<CheckResult, SpiceDBError> {
         let mut results = self
             .check_permissions_impl(
                 consistency,
                 permission,
                 std::slice::from_ref(relationship),
-                context,
-                None,
-            )
-            .await?;
-        Ok(results.remove(0))
-    }
-
-    /// [`check_permission`](Self::check_permission) with a per-call timeout
-    /// that overrides the client's `default_timeout` (seconds bounding this
-    /// call). See root DESIGN.md, "RULE: A unary call must have a
-    /// deadline".
-    #[must_use = "check results should not be silently discarded"]
-    pub async fn check_permission_with_timeout(
-        &self,
-        consistency: &Strategy,
-        permission: &str,
-        relationship: &Relationship,
-        timeout: Duration,
-    ) -> Result<CheckResult, SpiceDBError> {
-        let mut results = self
-            .check_permissions_impl(
-                consistency,
-                permission,
-                std::slice::from_ref(relationship),
-                None,
-                Some(timeout),
+                options.context.as_ref(),
+                options.timeout,
             )
             .await?;
         Ok(results.remove(0))
@@ -433,7 +408,7 @@ impl SpiceDBClient {
     /// enough to be split therefore carries more than one `checked_at`
     /// across the returned `Vec`, not one for the whole call.
     ///
-    /// See [`check_permissions_with_context`](Self::check_permissions_with_context)
+    /// See [`check_permissions_with_options`](Self::check_permissions_with_options)
     /// to supply a call-level caveat context default; a relationship built
     /// with [`Relationship::with_check_context`] still supplies its own
     /// per-item context through this method.
@@ -443,59 +418,39 @@ impl SpiceDBClient {
         permission: &str,
         relationships: &[Relationship],
     ) -> Result<Vec<CheckResult>, SpiceDBError> {
-        self.check_permissions_with_context(consistency, permission, relationships, None)
-            .await
+        self.check_permissions_with_options(
+            consistency,
+            permission,
+            relationships,
+            &CheckOptions::new(),
+        )
+        .await
     }
 
-    /// [`check_permissions`](Self::check_permissions) with a call-level
-    /// default caveat context applied to every relationship in
-    /// `relationships`.
+    /// [`check_permissions`](Self::check_permissions) with call-level options.
+    /// See [`check_permission_with_options`](Self::check_permission_with_options).
     ///
-    /// A relationship built with [`Relationship::with_check_context`]
-    /// overrides `context` on a per-key basis for that one relationship: the
-    /// item's keys win on conflict, and any call-level keys the item doesn't
-    /// specify are retained. For example, a call-level
-    /// `{now: 42, region: "us"}` plus a per-item `{region: "eu"}` sends
-    /// `{now: 42, region: "eu"}` for that item, while a sibling item with no
-    /// per-item context still gets the untouched call-level default. Pass
-    /// `None` for no call-level default (equivalent to
-    /// [`check_permissions`](Self::check_permissions)).
+    /// # Errors
     ///
-    /// When neither a call-level nor a per-item context applies to a given
-    /// item, no `context` field is set on that item's wire request — never
-    /// an empty `Struct`.
-    ///
-    /// `CheckBulkPermissionsRequest` has no call-level context field on the
-    /// wire (only `CheckBulkPermissionsRequestItem.context`, one per item),
-    /// so `context` is fanned out onto every item at request-build time
-    /// rather than sent once for the whole batch.
-    pub async fn check_permissions_with_context(
+    /// Returns [`SpiceDBError`] if the gRPC call fails.
+    pub async fn check_permissions_with_options(
         &self,
         consistency: &Strategy,
         permission: &str,
         relationships: &[Relationship],
-        context: Option<&HashMap<String, serde_json::Value>>,
+        options: &CheckOptions,
     ) -> Result<Vec<CheckResult>, SpiceDBError> {
-        self.check_permissions_impl(consistency, permission, relationships, context, None)
-            .await
+        self.check_permissions_impl(
+            consistency,
+            permission,
+            relationships,
+            options.context.as_ref(),
+            options.timeout,
+        )
+        .await
     }
 
-    /// [`check_permissions`](Self::check_permissions) with a per-call
-    /// timeout that overrides the client's `default_timeout` (seconds
-    /// bounding this call). See root DESIGN.md, "RULE: A unary call must
-    /// have a deadline".
-    pub async fn check_permissions_with_timeout(
-        &self,
-        consistency: &Strategy,
-        permission: &str,
-        relationships: &[Relationship],
-        timeout: Duration,
-    ) -> Result<Vec<CheckResult>, SpiceDBError> {
-        self.check_permissions_impl(consistency, permission, relationships, None, Some(timeout))
-            .await
-    }
-
-    /// Shared implementation behind [`check_permissions_with_context`](Self::check_permissions_with_context)
+    /// Shared implementation behind [`check_permissions_with_options`](Self::check_permissions_with_options)
     /// and [`check_permissions_with_timeout`](Self::check_permissions_with_timeout).
     async fn check_permissions_impl(
         &self,
@@ -617,38 +572,31 @@ impl SpiceDBClient {
         permission: &str,
         relationships: &[Relationship],
     ) -> Result<bool, SpiceDBError> {
-        self.check_any_with_context(consistency, permission, relationships, None)
+        self.check_any_with_options(consistency, permission, relationships, &CheckOptions::new())
             .await
     }
 
-    /// [`check_any`](Self::check_any) with a call-level default caveat
-    /// context (see
-    /// [`check_permissions_with_context`](Self::check_permissions_with_context)
-    /// for the merge rule with any per-item context).
-    pub async fn check_any_with_context(
+    /// [`check_any`](Self::check_any) with call-level options. See
+    /// [`check_permission_with_options`](Self::check_permission_with_options).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpiceDBError`] if the gRPC call fails.
+    pub async fn check_any_with_options(
         &self,
         consistency: &Strategy,
         permission: &str,
         relationships: &[Relationship],
-        context: Option<&HashMap<String, serde_json::Value>>,
+        options: &CheckOptions,
     ) -> Result<bool, SpiceDBError> {
         let results = self
-            .check_permissions_impl(consistency, permission, relationships, context, None)
-            .await?;
-        Ok(results.iter().any(CheckResult::has_permission))
-    }
-
-    /// [`check_any`](Self::check_any) with a per-call timeout that
-    /// overrides the client's `default_timeout`.
-    pub async fn check_any_with_timeout(
-        &self,
-        consistency: &Strategy,
-        permission: &str,
-        relationships: &[Relationship],
-        timeout: Duration,
-    ) -> Result<bool, SpiceDBError> {
-        let results = self
-            .check_permissions_impl(consistency, permission, relationships, None, Some(timeout))
+            .check_permissions_impl(
+                consistency,
+                permission,
+                relationships,
+                options.context.as_ref(),
+                options.timeout,
+            )
             .await?;
         Ok(results.iter().any(CheckResult::has_permission))
     }
@@ -663,53 +611,35 @@ impl SpiceDBClient {
         permission: &str,
         relationships: &[Relationship],
     ) -> Result<bool, SpiceDBError> {
-        self.check_all_with_context(consistency, permission, relationships, None)
+        self.check_all_with_options(consistency, permission, relationships, &CheckOptions::new())
             .await
     }
 
-    /// [`check_all`](Self::check_all) with a call-level default caveat
-    /// context (see
-    /// [`check_permissions_with_context`](Self::check_permissions_with_context)
-    /// for the merge rule with any per-item context).
+    /// [`check_all`](Self::check_all) with call-level options. See
+    /// [`check_permission_with_options`](Self::check_permission_with_options).
     ///
-    /// Returns `false`, not the vacuous `true` that `Iterator::all` yields
-    /// on an empty sequence, when `relationships` is empty -- "no checks to
-    /// run" is not "all checks passed".
-    pub async fn check_all_with_context(
+    /// # Errors
+    ///
+    /// Returns [`SpiceDBError`] if the gRPC call fails.
+    pub async fn check_all_with_options(
         &self,
         consistency: &Strategy,
         permission: &str,
         relationships: &[Relationship],
-        context: Option<&HashMap<String, serde_json::Value>>,
+        options: &CheckOptions,
     ) -> Result<bool, SpiceDBError> {
         if relationships.is_empty() {
             return Ok(false);
         }
 
         let results = self
-            .check_permissions_impl(consistency, permission, relationships, context, None)
-            .await?;
-        Ok(results.iter().all(CheckResult::has_permission))
-    }
-
-    /// [`check_all`](Self::check_all) with a per-call timeout that
-    /// overrides the client's `default_timeout`.
-    ///
-    /// Returns `false`, not the vacuous `true` an empty sequence would
-    /// otherwise yield, when `relationships` is empty.
-    pub async fn check_all_with_timeout(
-        &self,
-        consistency: &Strategy,
-        permission: &str,
-        relationships: &[Relationship],
-        timeout: Duration,
-    ) -> Result<bool, SpiceDBError> {
-        if relationships.is_empty() {
-            return Ok(false);
-        }
-
-        let results = self
-            .check_permissions_impl(consistency, permission, relationships, None, Some(timeout))
+            .check_permissions_impl(
+                consistency,
+                permission,
+                relationships,
+                options.context.as_ref(),
+                options.timeout,
+            )
             .await?;
         Ok(results.iter().all(CheckResult::has_permission))
     }
@@ -942,6 +872,28 @@ impl SpiceDBClient {
     // Lookups
     // -----------------------------------------------------------------------
 
+    /// Streams resources of `resource_type` on which `subject` holds `permission`.
+    ///
+    /// See [`lookup_resources_with_options`](Self::lookup_resources_with_options) for the
+    /// options-taking form.
+    pub fn lookup_resources(
+        &self,
+        consistency: &Strategy,
+        resource_type: &str,
+        permission: &str,
+        subject_type: &str,
+        subject_id: &str,
+    ) -> impl Stream<Item = Result<LookupResource, SpiceDBError>> + 'static {
+        self.lookup_resources_with_options(
+            consistency,
+            resource_type,
+            permission,
+            subject_type,
+            subject_id,
+            &LookupOptions::new(),
+        )
+    }
+
     /// Returns a stream of resources that the subject has the given
     /// permission on. Each yielded [`LookupResource`] carries the
     /// permissionship (full grant vs conditional on caveat context) and, for
@@ -962,13 +914,14 @@ impl SpiceDBClient {
     /// Items are yielded incrementally as they arrive from the server.
     /// Consume with [`StreamExt::next`](futures::StreamExt::next) (pin it
     /// first, e.g. `tokio::pin!`).
-    pub fn lookup_resources(
+    pub fn lookup_resources_with_options(
         &self,
         consistency: &Strategy,
         resource_type: &str,
         permission: &str,
         subject_type: &str,
         subject_id: &str,
+        options: &LookupOptions,
     ) -> impl Stream<Item = Result<LookupResource, SpiceDBError>> + 'static {
         let consistency = consistency.to_proto();
         let resource_type = resource_type.to_string();
@@ -976,6 +929,7 @@ impl SpiceDBClient {
         let subject_type = subject_type.to_string();
         let subject_id = subject_id.to_string();
         let perms = self.proto.permissions.clone();
+        let with_debug = options.with_debug;
 
         async_stream::try_stream! {
             let mut cursor: Option<proto::Cursor> = None;
@@ -998,7 +952,7 @@ impl SpiceDBClient {
                             optional_limit: DEFAULT_LOOKUP_PAGE_SIZE,
                             optional_cursor: cursor.clone(),
                             context: None,
-                            with_debug: false,
+                            with_debug,
                         })
                         .await
                 })
@@ -1034,6 +988,28 @@ impl SpiceDBClient {
         }
     }
 
+    /// Streams subjects of `subject_type` holding `permission` on the resource.
+    ///
+    /// See [`lookup_subjects_with_options`](Self::lookup_subjects_with_options) for the
+    /// options-taking form.
+    pub fn lookup_subjects(
+        &self,
+        consistency: &Strategy,
+        resource_type: &str,
+        resource_id: &str,
+        permission: &str,
+        subject_type: &str,
+    ) -> impl Stream<Item = Result<LookupSubject, SpiceDBError>> + 'static {
+        self.lookup_subjects_with_options(
+            consistency,
+            resource_type,
+            resource_id,
+            permission,
+            subject_type,
+            &LookupOptions::new(),
+        )
+    }
+
     /// Returns a stream of subjects that have the given permission on the
     /// resource.
     ///
@@ -1059,13 +1035,19 @@ impl SpiceDBClient {
     /// Items are yielded incrementally as they arrive from the server.
     /// Consume with [`StreamExt::next`](futures::StreamExt::next) (pin it
     /// first, e.g. `tokio::pin!`).
-    pub fn lookup_subjects(
+    pub fn lookup_subjects_with_options(
         &self,
         consistency: &Strategy,
         resource_type: &str,
         resource_id: &str,
         permission: &str,
         subject_type: &str,
+        // LookupSubjects has no option of its own yet: LookupSubjectsRequest
+        // carries no with_debug. The form exists so the next option upstream
+        // adds is a field on LookupOptions rather than another method here --
+        // root DESIGN.md, "RULE: Every RPC wrapper must have one place to add
+        // an option".
+        _options: &LookupOptions,
     ) -> impl Stream<Item = Result<LookupSubject, SpiceDBError>> + 'static {
         let consistency = consistency.to_proto();
         let resource_type = resource_type.to_string();
@@ -2152,7 +2134,7 @@ where
 /// Builds the `CheckBulkPermissionsRequestItem`s for a chunk of
 /// relationships, merging call-level and per-item check-time caveat context
 /// per the key-level merge rule (see
-/// [`SpiceDBClient::check_permissions_with_context`]). A free function (no
+/// [`SpiceDBClient::check_permissions_with_options`]). A free function (no
 /// `&self` needed) so it's directly unit-testable without a mock server.
 fn build_check_items(
     permission: &str,

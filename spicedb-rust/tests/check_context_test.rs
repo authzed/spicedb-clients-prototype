@@ -16,6 +16,7 @@ use std::collections::HashMap;
 
 use spicedb::client::SpiceDBClient;
 use spicedb::consistency;
+use spicedb::types::CheckOptions;
 use spicedb::types::Relationship;
 use spicedb_proto::authzed::api::v1 as proto;
 
@@ -106,7 +107,12 @@ async fn c1_call_level_context_reaches_every_item() {
     context.insert("now".to_string(), serde_json::json!(42.0));
 
     client
-        .check_permissions_with_context(&consistency::full(), "view", &[r1, r2], Some(&context))
+        .check_permissions_with_options(
+            &consistency::full(),
+            "view",
+            &[r1, r2],
+            &CheckOptions::new().with_context(context.clone()),
+        )
         .await
         .expect("check should succeed");
 
@@ -198,11 +204,11 @@ async fn c3_merges_call_level_and_per_item_context() {
     call_ctx.insert("region".to_string(), serde_json::json!("us"));
 
     client
-        .check_permissions_with_context(
+        .check_permissions_with_options(
             &consistency::full(),
             "view",
             &[sibling, overridden],
-            Some(&call_ctx),
+            &CheckOptions::new().with_context(call_ctx.clone()),
         )
         .await
         .expect("check should succeed");
@@ -245,7 +251,12 @@ async fn c4_no_context_supplied_sets_no_context_field() {
     let r2 = Relationship::new("document", "2", "view", "user", "bob", "").unwrap();
 
     client
-        .check_permissions_with_context(&consistency::full(), "view", &[r1, r2], None)
+        .check_permissions_with_options(
+            &consistency::full(),
+            "view",
+            &[r1, r2],
+            &CheckOptions::new(),
+        )
         .await
         .expect("check should succeed");
 
@@ -327,7 +338,7 @@ async fn existing_check_methods_stay_unchanged_and_set_no_context() {
 }
 
 // ---------------------------------------------------------------------------
-// Delegation sanity: the _with_context variants of check_permission/
+// Delegation sanity: the _with_options variants of check_permission/
 // check_any/check_all must actually forward call-level context to the wire,
 // not just accept the parameter and drop it.
 // ---------------------------------------------------------------------------
@@ -344,7 +355,12 @@ async fn with_context_variants_forward_call_level_context_to_wire() {
         let (client, _addr) = client_with_mock(mock).await;
         let r = Relationship::new("document", "1", "view", "user", "alice", "").unwrap();
         let _ = client
-            .check_permission_with_context(&consistency::full(), "view", &r, Some(&want))
+            .check_permission_with_options(
+                &consistency::full(),
+                "view",
+                &r,
+                &CheckOptions::new().with_context(want.clone()),
+            )
             .await
             .expect("check should succeed");
         let reqs = requests.lock().unwrap();
@@ -362,7 +378,12 @@ async fn with_context_variants_forward_call_level_context_to_wire() {
         let r1 = Relationship::new("document", "1", "view", "user", "alice", "").unwrap();
         let r2 = Relationship::new("document", "2", "view", "user", "bob", "").unwrap();
         let _ = client
-            .check_any_with_context(&consistency::full(), "view", &[r1, r2], Some(&want))
+            .check_any_with_options(
+                &consistency::full(),
+                "view",
+                &[r1, r2],
+                &CheckOptions::new().with_context(want.clone()),
+            )
             .await
             .expect("check should succeed");
         let reqs = requests.lock().unwrap();
@@ -379,7 +400,12 @@ async fn with_context_variants_forward_call_level_context_to_wire() {
         let r1 = Relationship::new("document", "1", "view", "user", "alice", "").unwrap();
         let r2 = Relationship::new("document", "2", "view", "user", "bob", "").unwrap();
         let _ = client
-            .check_all_with_context(&consistency::full(), "view", &[r1, r2], Some(&want))
+            .check_all_with_options(
+                &consistency::full(),
+                "view",
+                &[r1, r2],
+                &CheckOptions::new().with_context(want.clone()),
+            )
             .await
             .expect("check should succeed");
         let reqs = requests.lock().unwrap();

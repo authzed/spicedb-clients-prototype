@@ -469,7 +469,7 @@ async fn check_permissions_errors_when_response_has_fewer_pairs_than_request_ite
 // unconditionally, which panics ("removal index (is 0) should be < len (is
 // 0)") -- inside the caller's task, on the authorization hot path -- when
 // the server returns zero pairs for a one-item request. The length guard
-// added to check_permissions_with_context above (proven by the previous
+// added to check_permissions_with_options above (proven by the previous
 // test) now rejects a zero-pair response before check_permission ever
 // reaches `results.remove(0)`, making the panic unreachable. This test
 // proves that path returns a typed error instead of panicking the caller's

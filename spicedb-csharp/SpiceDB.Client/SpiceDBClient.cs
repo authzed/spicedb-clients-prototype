@@ -337,7 +337,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
     /// This overload sends no call-level default caveat context. Any
     /// relationship built with <see cref="Relationship.WithCheckContext"/>
     /// still supplies its own per-item context through this method — see
-    /// <see cref="CheckPermissionsWithContextAsync"/> for a call-level
+    /// <see cref="CheckPermissionsWithOptionsAsync"/> for a call-level
     /// default and the exact per-key merge rule with per-item context.
     /// </para>
     /// <para>
@@ -419,20 +419,20 @@ public sealed class SpiceDBClient : IAsyncDisposable
     /// representation (never an empty <c>Struct</c>).
     /// </para>
     /// </summary>
-    public async Task<CheckResult[]> CheckPermissionsWithContextAsync(
+    public async Task<CheckResult[]> CheckPermissionsWithOptionsAsync(
         ConsistencyStrategy consistency,
         string permission,
-        IReadOnlyDictionary<string, object>? context,
+        CheckOptions options,
         CancellationToken cancellationToken = default,
         params Relationship[] relationships) =>
-        await CheckPermissionsCoreAsync(consistency, permission, context, cancellationToken, null, relationships);
+        await CheckPermissionsCoreAsync(consistency, permission, options?.Context, cancellationToken, options?.Timeout, relationships);
 
     /// <summary>
     /// Shared implementation behind <see cref="CheckPermissionsAsync"/>,
-    /// <see cref="CheckPermissionsWithContextAsync"/>,
+    /// <see cref="CheckPermissionsWithOptionsAsync"/>,
     /// <see cref="CheckPermissionAsync"/>, <see cref="CheckAnyAsync"/>/
-    /// <see cref="CheckAnyWithContextAsync"/>, and
-    /// <see cref="CheckAllAsync"/>/<see cref="CheckAllWithContextAsync"/> —
+    /// <see cref="CheckAnyWithOptionsAsync"/>, and
+    /// <see cref="CheckAllAsync"/>/<see cref="CheckAllWithOptionsAsync"/> —
     /// all of them are aggregates or pass-throughs over the same
     /// CheckBulkPermissions request, so the request-building, per-item
     /// context merge, and response-mapping logic lives here once.
@@ -569,7 +569,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
     /// Checks a single permission and returns its <see cref="CheckResult"/>.
     /// <paramref name="context"/> is an optional caveat context supplied for
     /// this one check — see
-    /// <see cref="CheckPermissionsWithContextAsync"/> for the merge rule
+    /// <see cref="CheckPermissionsWithOptionsAsync"/> for the merge rule
     /// with any per-item context on <paramref name="relationship"/> itself
     /// (via <see cref="Relationship.WithCheckContext"/>); for a single check
     /// this mostly reads as "either supplies context," but it keeps the same
@@ -579,11 +579,28 @@ public sealed class SpiceDBClient : IAsyncDisposable
         ConsistencyStrategy consistency,
         string permission,
         Relationship relationship,
-        CancellationToken cancellationToken = default,
-        IReadOnlyDictionary<string, object>? context = null,
-        TimeSpan? timeout = null)
+        CancellationToken cancellationToken = default)
     {
-        var results = await CheckPermissionsCoreAsync(consistency, permission, context, cancellationToken, timeout, [relationship]);
+        var results = await CheckPermissionsCoreAsync(consistency, permission, null, cancellationToken, null, [relationship]);
+        return results[0];
+    }
+
+    /// <summary>
+    /// <see cref="CheckPermissionAsync"/> with call-level options. Caveat
+    /// context and a per-call deadline live on <see cref="CheckOptions"/>
+    /// rather than on this signature, so that the next option added upstream
+    /// is a new property there and not a new parameter here. See root
+    /// DESIGN.md, "RULE: Every RPC wrapper must have one place to add an
+    /// option".
+    /// </summary>
+    public async Task<CheckResult> CheckPermissionWithOptionsAsync(
+        ConsistencyStrategy consistency,
+        string permission,
+        Relationship relationship,
+        CheckOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        var results = await CheckPermissionsCoreAsync(consistency, permission, options?.Context, cancellationToken, options?.Timeout, [relationship]);
         return results[0];
     }
 
@@ -605,17 +622,17 @@ public sealed class SpiceDBClient : IAsyncDisposable
 
     /// <summary>
     /// <see cref="CheckAnyAsync"/> with a call-level default caveat context
-    /// (see <see cref="CheckPermissionsWithContextAsync"/> for the merge
+    /// (see <see cref="CheckPermissionsWithOptionsAsync"/> for the merge
     /// rule with any per-item context).
     /// </summary>
-    public async Task<bool> CheckAnyWithContextAsync(
+    public async Task<bool> CheckAnyWithOptionsAsync(
         ConsistencyStrategy consistency,
         string permission,
-        IReadOnlyDictionary<string, object>? context,
+        CheckOptions options,
         CancellationToken cancellationToken = default,
         params Relationship[] relationships)
     {
-        var results = await CheckPermissionsCoreAsync(consistency, permission, context, cancellationToken, null, relationships);
+        var results = await CheckPermissionsCoreAsync(consistency, permission, options?.Context, cancellationToken, options?.Timeout, relationships);
         return results.Any(r => r.HasPermission);
     }
 
@@ -644,13 +661,13 @@ public sealed class SpiceDBClient : IAsyncDisposable
 
     /// <summary>
     /// <see cref="CheckAllAsync"/> with a call-level default caveat context
-    /// (see <see cref="CheckPermissionsWithContextAsync"/> for the merge
+    /// (see <see cref="CheckPermissionsWithOptionsAsync"/> for the merge
     /// rule with any per-item context).
     /// </summary>
-    public async Task<bool> CheckAllWithContextAsync(
+    public async Task<bool> CheckAllWithOptionsAsync(
         ConsistencyStrategy consistency,
         string permission,
-        IReadOnlyDictionary<string, object>? context,
+        CheckOptions options,
         CancellationToken cancellationToken = default,
         params Relationship[] relationships)
     {
@@ -660,7 +677,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
         if (relationships.Length == 0)
             return false;
 
-        var results = await CheckPermissionsCoreAsync(consistency, permission, context, cancellationToken, null, relationships);
+        var results = await CheckPermissionsCoreAsync(consistency, permission, options?.Context, cancellationToken, options?.Timeout, relationships);
         return results.All(r => r.HasPermission);
     }
 
@@ -901,7 +918,8 @@ public sealed class SpiceDBClient : IAsyncDisposable
         string subjectType,
         string subjectID,
         CancellationToken cancellationToken = default)
-        => LookupResourcesAsync(consistency, resourceType, permission, subjectType, subjectID, withDebug: false, cancellationToken);
+        => LookupResourcesWithOptionsAsync(consistency, resourceType, permission, subjectType, subjectID,
+            new LookupOptions(), cancellationToken);
 
     /// <summary>
     /// Returns an async enumerable of resources of the given type that the
@@ -917,20 +935,28 @@ public sealed class SpiceDBClient : IAsyncDisposable
     /// <see cref="ReadRelationshipsAsync"/> for the full rationale.
     /// </para>
     /// <para>
-    /// <paramref name="withDebug"/> asks the server to attach debug information
+    /// <see cref="LookupOptions.WithDebug"/> asks the server to attach debug information
     /// to the error it returns when this lookup fails with a maximum-recursion-depth
     /// error. It never changes a successful result. This client does not decode
     /// that debug payload — recover the mapped <see cref="RpcException"/> from
     /// <see cref="SpiceDBException.InnerException"/> to read it.
     /// </para>
     /// </summary>
-    public async IAsyncEnumerable<LookupResource> LookupResourcesAsync(
+    /// <summary>
+    /// <see cref="LookupResourcesAsync"/> with call-level options. Options
+    /// live on <see cref="LookupOptions"/> rather than on this signature: when
+    /// <c>with_debug</c> arrived upstream with nowhere to go it became a
+    /// required positional parameter here, breaking every existing caller for
+    /// the sake of one optional field. See root DESIGN.md, "RULE: Every RPC
+    /// wrapper must have one place to add an option".
+    /// </summary>
+    public async IAsyncEnumerable<LookupResource> LookupResourcesWithOptionsAsync(
         ConsistencyStrategy consistency,
         string resourceType,
         string permission,
         string subjectType,
         string subjectID,
-        bool withDebug,
+        LookupOptions options,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(consistency);
@@ -952,7 +978,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
                     },
                 },
                 OptionalLimit = DefaultLookupPageSize,
-                WithDebug = withDebug,
+                WithDebug = options?.WithDebug ?? false,
             };
             if (cursor != null)
                 req.OptionalCursor = cursor;
@@ -1056,12 +1082,28 @@ public sealed class SpiceDBClient : IAsyncDisposable
     /// rationale.
     /// </para>
     /// </summary>
-    public async IAsyncEnumerable<LookupSubject> LookupSubjectsAsync(
+    public IAsyncEnumerable<LookupSubject> LookupSubjectsAsync(
         ConsistencyStrategy consistency,
         string resourceType,
         string resourceID,
         string permission,
         string subjectType,
+        CancellationToken cancellationToken = default) =>
+        LookupSubjectsWithOptionsAsync(consistency, resourceType, resourceID, permission, subjectType,
+            new LookupOptions(), cancellationToken);
+
+    /// <summary>
+    /// <see cref="LookupSubjectsAsync"/> with call-level options. See
+    /// <see cref="LookupResourcesWithOptionsAsync"/> for why options live on
+    /// <see cref="LookupOptions"/> rather than on the signature.
+    /// </summary>
+    public async IAsyncEnumerable<LookupSubject> LookupSubjectsWithOptionsAsync(
+        ConsistencyStrategy consistency,
+        string resourceType,
+        string resourceID,
+        string permission,
+        string subjectType,
+        LookupOptions options,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(consistency);

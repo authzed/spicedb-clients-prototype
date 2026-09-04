@@ -449,13 +449,17 @@ module SpiceDB
     # @param subject_type [String]
     # @param subject_id [String]
     # @return [Enumerator<SpiceDB::LookupResource>]
-    def lookup_resources(consistency, resource_type, permission, subject_type, subject_id)
+    # Keyword arguments are this operation's options container: a new option is
+    # a new keyword, never a new positional parameter or a second method. See
+    # root DESIGN.md, "RULE: Every RPC wrapper must have one place to add an
+    # option".
+    def lookup_resources(consistency, resource_type, permission, subject_type, subject_id, context: nil)
       Enumerator.new do |yielder|
         cursor = nil
         loop do
           resources, new_cursor, count = with_retry do
             call_lookup_resources(consistency, resource_type, permission, subject_type, subject_id, cursor,
-                                  DEFAULT_LOOKUP_PAGE_SIZE)
+                                  DEFAULT_LOOKUP_PAGE_SIZE, context: context)
           end
 
           resources.each { |resource| yielder << resource }
@@ -488,7 +492,10 @@ module SpiceDB
     # @param permission [String]
     # @param subject_type [String]
     # @return [Enumerator<SpiceDB::LookupSubject>]
-    def lookup_subjects(consistency, resource_type, resource_id, permission, subject_type)
+    # Keyword arguments are this operation's options container -- see
+    # lookup_resources above, and root DESIGN.md, "RULE: Every RPC wrapper must
+    # have one place to add an option".
+    def lookup_subjects(consistency, resource_type, resource_id, permission, subject_type, context: nil)
       require_proto_client!
       Enumerator.new do |yielder|
         # Establishment retry only -- see {SpiceDB::Retrying#with_establishment_retry}.
@@ -499,7 +506,8 @@ module SpiceDB
         # since a transient failure while OPENING the stream has delivered
         # nothing to replay -- and the other six clients all retry it.
         with_establishment_retry do |progress|
-          call_lookup_subjects(consistency, resource_type, resource_id, permission, subject_type) do |subject|
+          call_lookup_subjects(consistency, resource_type, resource_id, permission, subject_type,
+                               context: context) do |subject|
             yielder << subject
             progress.call
           end
@@ -1061,7 +1069,8 @@ module SpiceDB
       [revision, complete]
     end
 
-    def call_lookup_resources(consistency, resource_type, permission, subject_type, subject_id, cursor, page_size)
+    def call_lookup_resources(consistency, resource_type, permission, subject_type, subject_id, cursor, page_size,
+                              context: nil)
       req_args = {
         consistency: build_consistency(consistency),
         resource_object_type: resource_type,
@@ -1075,6 +1084,9 @@ module SpiceDB
         optional_limit: page_size
       }
       req_args[:optional_cursor] = Authzed::Api::V1::Cursor.new(token: cursor) if cursor
+
+      struct = check_context_to_struct(context)
+      req_args[:context] = struct if struct
 
       resources = []
       new_cursor = nil
@@ -1091,8 +1103,8 @@ module SpiceDB
       [resources, new_cursor, count]
     end
 
-    def call_lookup_subjects(consistency, resource_type, resource_id, permission, subject_type)
-      req = Authzed::Api::V1::LookupSubjectsRequest.new(
+    def call_lookup_subjects(consistency, resource_type, resource_id, permission, subject_type, context: nil)
+      req_args = {
         consistency: build_consistency(consistency),
         resource: Authzed::Api::V1::ObjectReference.new(
           object_type: resource_type,
@@ -1100,7 +1112,12 @@ module SpiceDB
         ),
         permission: permission,
         subject_object_type: subject_type
-      )
+      }
+
+      struct = check_context_to_struct(context)
+      req_args[:context] = struct if struct
+
+      req = Authzed::Api::V1::LookupSubjectsRequest.new(**req_args)
 
       @proto_client.permissions.lookup_subjects(req).each do |resp|
         yield lookup_subject_from_proto(resp)

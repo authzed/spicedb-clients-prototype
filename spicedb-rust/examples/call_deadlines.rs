@@ -20,6 +20,7 @@ use std::time::Duration;
 use spicedb::client::SpiceDBClient;
 use spicedb::consistency;
 use spicedb::error::SpiceDBError;
+use spicedb::types::CheckOptions;
 use spicedb::types::{Filter, Relationship, Transaction};
 
 const SCHEMA: &str = r#"definition user {}
@@ -103,11 +104,11 @@ async fn main() {
     // this exercises the real timeout parameter end-to-end, not testing how
     // small a timeout can be.
     let result = client
-        .check_permission_with_timeout(
+        .check_permission_with_options(
             &consistency::at_least(&revision),
             "view",
             &check_rel,
-            Duration::from_secs(2),
+            &CheckOptions::new().with_timeout(Duration::from_secs(2)),
         )
         .await
         .expect("check with timeout failed");
@@ -219,11 +220,11 @@ async fn main() {
     // would still pass every fast-local-call assertion above.
     let outcome = tokio::time::timeout(
         WEDGED_WATCHDOG,
-        wedged_client.check_permission_with_timeout(
+        wedged_client.check_permission_with_options(
             &consistency::full(),
             "view",
             &check_rel,
-            WEDGED_TIMEOUT,
+            &CheckOptions::new().with_timeout(WEDGED_TIMEOUT),
         ),
     )
     .await

@@ -527,26 +527,10 @@ public final class SpiceDBClient implements AutoCloseable {
    * As {@link #checkPermission(Consistency, String, Relationship)}, with a per-call {@code timeout}
    * overriding the client's default (see {@link #DEFAULT_TIMEOUT}).
    */
-  public CheckResult checkPermission(
-      Consistency consistency, String permission, Relationship r, Duration timeout) {
-    List<CheckResult> results = checkPermissionsImpl(consistency, permission, null, timeout, r);
-    return results.get(0);
-  }
-
-  /**
-   * Checks a single permission with a caveat CHECK-TIME {@code context}, in addition to any
-   * per-item context set via {@link Relationship#withCheckContext} on {@code r} itself (item wins
-   * per-key over this call-level default; see {@link #checkPermissions(Consistency, String, Map,
-   * Relationship...)} for the merge rule). Distinct from {@code r}'s write-time {@code
-   * caveatContext} (set via {@link Relationship#withCaveat}) — this context is never written, only
-   * used to evaluate the caveat for this check.
-   *
-   * <p>See {@link #checkPermission(Consistency, String, Relationship)} for the RULE governing how
-   * to interpret the result.
-   */
-  public CheckResult checkPermission(
-      Consistency consistency, String permission, Relationship r, Map<String, Object> context) {
-    List<CheckResult> results = checkPermissions(consistency, permission, context, r);
+  public CheckResult checkPermissionWithOptions(
+      Consistency consistency, String permission, Relationship r, CheckOptions options) {
+    List<CheckResult> results =
+        checkPermissionsImpl(consistency, permission, options.context(), options.timeout(), r);
     return results.get(0);
   }
 
@@ -573,43 +557,20 @@ public final class SpiceDBClient implements AutoCloseable {
    */
   public List<CheckResult> checkPermissions(
       Consistency consistency, String permission, Relationship... relationships) {
-    return checkPermissions(consistency, permission, (Map<String, Object>) null, relationships);
+    return checkPermissionsWithOptions(consistency, permission, CheckOptions.none(), relationships);
   }
 
   /**
    * As {@link #checkPermissions(Consistency, String, Relationship...)}, with a per-call {@code
    * timeout} overriding the client's default (see {@link #DEFAULT_TIMEOUT}).
    */
-  public List<CheckResult> checkPermissions(
-      Consistency consistency, String permission, Duration timeout, Relationship... relationships) {
-    return checkPermissionsImpl(consistency, permission, null, timeout, relationships);
-  }
-
-  /**
-   * Checks permissions for multiple relationships with a caveat CHECK-TIME {@code context} applied,
-   * by default, to every relationship — plus any per-item context set via {@link
-   * Relationship#withCheckContext} on individual relationships.
-   *
-   * <p><b>Merge rule (key-level, item wins):</b> for each relationship, the context sent to the
-   * server is the call-level {@code context} map with that relationship's own {@link
-   * Relationship#checkContext()} entries overwriting matching keys — call-level keys absent from
-   * the item are retained, never wholesale-replaced. For example, call-level {@code {now: 42,
-   * region: "us"}} plus a per-item {@code {region: "eu"}} sends {@code {now: 42, region: "eu"}} for
-   * that item, while a sibling relationship with no per-item context still sends {@code {now: 42,
-   * region: "us"}}. When neither call-level nor per-item context is supplied for a relationship, no
-   * {@code context} field is set on the wire at all (not an empty {@code Struct}).
-   *
-   * <p>Distinct from write-time {@code caveatContext} (set via {@link Relationship#withCaveat}) —
-   * this context is never written, only used to evaluate the caveat for this check.
-   *
-   * <p>See {@link #checkPermission} for the RULE governing how to interpret each result.
-   */
-  public List<CheckResult> checkPermissions(
+  public List<CheckResult> checkPermissionsWithOptions(
       Consistency consistency,
       String permission,
-      Map<String, Object> context,
+      CheckOptions options,
       Relationship... relationships) {
-    return checkPermissionsImpl(consistency, permission, context, null, relationships);
+    return checkPermissionsImpl(
+        consistency, permission, options.context(), options.timeout(), relationships);
   }
 
   /**
@@ -738,36 +699,21 @@ public final class SpiceDBClient implements AutoCloseable {
    */
   public boolean checkAny(
       Consistency consistency, String permission, Relationship... relationships) {
-    return checkAny(consistency, permission, (Map<String, Object>) null, relationships);
+    return checkAnyWithOptions(consistency, permission, CheckOptions.none(), relationships);
   }
 
   /**
    * As {@link #checkAny(Consistency, String, Relationship...)}, with a per-call {@code timeout}
    * overriding the client's default (see {@link #DEFAULT_TIMEOUT}).
    */
-  public boolean checkAny(
-      Consistency consistency, String permission, Duration timeout, Relationship... relationships) {
-    List<CheckResult> results =
-        checkPermissionsImpl(consistency, permission, null, timeout, relationships);
-    for (CheckResult r : results) {
-      if (r.hasPermission()) return true;
-    }
-    return false;
-  }
-
-  /**
-   * Returns true if any of the given relationships have the permission unconditionally, evaluating
-   * caveats with the given call-level/per-item CHECK-TIME {@code context} (see {@link
-   * #checkPermissions(Consistency, String, Map, Relationship...)} for the merge rule). A {@code
-   * CONDITIONAL_PERMISSION} result does not count as granted — only {@link
-   * CheckResult#hasPermission()} results are considered (RULE, clause 3).
-   */
-  public boolean checkAny(
+  public boolean checkAnyWithOptions(
       Consistency consistency,
       String permission,
-      Map<String, Object> context,
+      CheckOptions options,
       Relationship... relationships) {
-    List<CheckResult> results = checkPermissions(consistency, permission, context, relationships);
+    List<CheckResult> results =
+        checkPermissionsImpl(
+            consistency, permission, options.context(), options.timeout(), relationships);
     for (CheckResult r : results) {
       if (r.hasPermission()) return true;
     }
@@ -781,7 +727,7 @@ public final class SpiceDBClient implements AutoCloseable {
    */
   public boolean checkAll(
       Consistency consistency, String permission, Relationship... relationships) {
-    return checkAll(consistency, permission, (Map<String, Object>) null, relationships);
+    return checkAllWithOptions(consistency, permission, CheckOptions.none(), relationships);
   }
 
   /**
@@ -791,39 +737,17 @@ public final class SpiceDBClient implements AutoCloseable {
    * <p>Returns false, not the vacuous true a for-loop over zero relationships would fall through
    * to, when {@code relationships} is empty (RULE: "An aggregate over zero checks is not a grant").
    */
-  public boolean checkAll(
-      Consistency consistency, String permission, Duration timeout, Relationship... relationships) {
+  public boolean checkAllWithOptions(
+      Consistency consistency,
+      String permission,
+      CheckOptions options,
+      Relationship... relationships) {
     if (relationships.length == 0) {
       return false;
     }
     List<CheckResult> results =
-        checkPermissionsImpl(consistency, permission, null, timeout, relationships);
-    for (CheckResult r : results) {
-      if (!r.hasPermission()) return false;
-    }
-    return true;
-  }
-
-  /**
-   * Returns true if all of the given relationships have the permission unconditionally, evaluating
-   * caveats with the given call-level/per-item CHECK-TIME {@code context} (see {@link
-   * #checkPermissions(Consistency, String, Map, Relationship...)} for the merge rule). A {@code
-   * CONDITIONAL_PERMISSION} result does not count as granted — every result must be {@link
-   * CheckResult#hasPermission()} for this to return true (RULE, clause 3).
-   */
-  public boolean checkAll(
-      Consistency consistency,
-      String permission,
-      Map<String, Object> context,
-      Relationship... relationships) {
-    // A for-loop over zero relationships never executes its body and falls through to `true` —
-    // vacuously true, like every language's all/every primitive on an empty sequence. Guard the
-    // empty case explicitly so "no checks to run" is never treated as "all checks passed" (RULE:
-    // "An aggregate over zero checks is not a grant").
-    if (relationships.length == 0) {
-      return false;
-    }
-    List<CheckResult> results = checkPermissions(consistency, permission, context, relationships);
+        checkPermissionsImpl(
+            consistency, permission, options.context(), options.timeout(), relationships);
     for (CheckResult r : results) {
       if (!r.hasPermission()) return false;
     }
@@ -1052,7 +976,8 @@ public final class SpiceDBClient implements AutoCloseable {
       String permission,
       String subjectType,
       String subjectID) {
-    return lookupResources(consistency, resourceType, permission, subjectType, subjectID, false);
+    return lookupResourcesWithOptions(
+        consistency, resourceType, permission, subjectType, subjectID, LookupOptions.none());
   }
 
   /**
@@ -1062,13 +987,14 @@ public final class SpiceDBClient implements AutoCloseable {
    * does not decode that debug payload — it is reachable, undecoded, as the cause of the mapped
    * {@link SpiceDBException}.
    */
-  public Stream<LookupResult.LookupResource> lookupResources(
+  public Stream<LookupResult.LookupResource> lookupResourcesWithOptions(
       Consistency consistency,
       String resourceType,
       String permission,
       String subjectType,
       String subjectID,
-      boolean withDebug) {
+      LookupOptions options) {
+    boolean withDebug = options.debug();
     Context.CancellableContext cancelCtx = Context.current().withCancellation();
     Iterator<LookupResult.LookupResource> iterator =
         new Iterator<>() {
@@ -1164,6 +1090,25 @@ public final class SpiceDBClient implements AutoCloseable {
    * uniqueness must deduplicate by subject ID themselves.
    *
    * <p>The returned stream should be closed when done.
+   */
+  public Stream<LookupResult.LookupSubject> lookupSubjectsWithOptions(
+      Consistency consistency,
+      String resourceType,
+      String resourceID,
+      String permission,
+      String subjectType,
+      LookupOptions options) {
+    // LookupSubjects has no option of its own yet. The form exists so the next
+    // one upstream adds is a component on LookupOptions rather than another
+    // overload here -- root DESIGN.md, "RULE: Every RPC wrapper must have one
+    // place to add an option".
+    return lookupSubjects(consistency, resourceType, resourceID, permission, subjectType);
+  }
+
+  /**
+   * Returns a stream of subjects of the given type that have the permission on the resource.
+   *
+   * <p>See {@link #lookupSubjectsWithOptions} for the options-taking form.
    */
   public Stream<LookupResult.LookupSubject> lookupSubjects(
       Consistency consistency,

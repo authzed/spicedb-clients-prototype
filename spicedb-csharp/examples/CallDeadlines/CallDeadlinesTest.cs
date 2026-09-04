@@ -82,8 +82,8 @@ public class CallDeadlinesTest
         // this exercises the real timeout parameter end-to-end, not testing
         // how small a timeout can be.
         var rel = Relationship.FromTriple("document", "readme", "view", "user", "alice");
-        var result = await client.CheckPermissionAsync(
-            Full(), "view", rel, timeout: TimeSpan.FromSeconds(2));
+        var result = await client.CheckPermissionWithOptionsAsync(
+            Full(), "view", rel, new CheckOptions { Timeout = TimeSpan.FromSeconds(2) });
         Assert.True(result.HasPermission, "expected alice to have view permission");
     }
 
@@ -164,7 +164,7 @@ public class CallDeadlinesTest
         var rel = Relationship.FromTriple("document", "readme", "view", "user", "alice");
         await ExpectDeadlineToFireAsync(
             "per-call timeout",
-            () => client.CheckPermissionAsync(Full(), "view", rel, timeout: WedgedTimeout));
+            () => client.CheckPermissionWithOptionsAsync(Full(), "view", rel, new CheckOptions { Timeout = WedgedTimeout }));
     }
 
     /// <summary>

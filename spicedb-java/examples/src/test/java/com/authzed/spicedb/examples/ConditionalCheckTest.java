@@ -3,6 +3,7 @@ package com.authzed.spicedb.examples;
 import static com.authzed.spicedb.Consistency.*;
 import static org.assertj.core.api.Assertions.*;
 
+import com.authzed.spicedb.CheckOptions;
 import com.authzed.spicedb.CheckResult;
 import com.authzed.spicedb.Filter;
 import com.authzed.spicedb.LookupResult;
@@ -91,11 +92,11 @@ class ConditionalCheckTest extends SpiceDBIntegrationTest {
   @Test
   void check_with_context_supplied_at_check_time_resolves_to_a_grant() {
     CheckResult result =
-        client.checkPermission(
+        client.checkPermissionWithOptions(
             full(),
             "view",
             Relationship.of("doc", "firstdoc", "view", "user", "alice"),
-            Map.of("now", 42));
+            CheckOptions.none().withContext(Map.of("now", 42)));
 
     assertThat(result.permissionship()).isEqualTo(LookupResult.Permissionship.HAS_PERMISSION);
     assertThat(result.hasPermission()).isTrue();
@@ -116,7 +117,8 @@ class ConditionalCheckTest extends SpiceDBIntegrationTest {
             .withCheckContext(Map.of("now", 42));
 
     List<CheckResult> results =
-        client.checkPermissions(full(), "view", Map.of("now", 200), overridden);
+        client.checkPermissionsWithOptions(
+            full(), "view", CheckOptions.none().withContext(Map.of("now", 200)), overridden);
 
     assertThat(results).hasSize(1);
     assertThat(results.get(0).hasPermission())

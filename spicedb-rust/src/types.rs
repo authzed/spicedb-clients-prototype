@@ -28,9 +28,9 @@ pub struct Relationship {
     pub caveat_context: Option<HashMap<String, serde_json::Value>>,
     pub expiration: Option<DateTime<Utc>>,
     /// Per-item caveat context used only when this relationship is passed to
-    /// a check call (`check_permission_with_context`/
-    /// `check_permissions_with_context`/`check_any_with_context`/
-    /// `check_all_with_context`).
+    /// a check call (`check_permission_with_options`/
+    /// `check_permissions_with_options`/`check_any_with_options`/
+    /// `check_all_with_options`).
     ///
     /// This is a **different concept** from `caveat_context`, which is
     /// stored with the relationship as part of a write and supplies values
@@ -152,7 +152,7 @@ impl Relationship {
     /// for check calls. See the `check_context` field doc for how this
     /// differs from [`with_caveat`](Self::with_caveat)'s context.
     ///
-    /// When a call-level default is also supplied to the `_with_context`
+    /// When a call-level default is also supplied to the `_with_options`
     /// check method, the two are merged key by key: this item's keys win on
     /// conflict, and any call-level keys not present here are retained. For
     /// example, a call-level `{now: 42, region: "us"}` plus a per-item
@@ -1992,5 +1992,84 @@ mod tests {
             .map(|(k, v)| (k.clone(), prost_value_to_json(v)))
             .collect();
         assert_eq!(round_tripped, ctx);
+    }
+}
+
+/// Call-level options for the permission-check operations.
+///
+/// This type exists so that a new check option is a new field here rather than
+/// a new method. Before it, each check operation had three forms — plain,
+/// `..._with_context` and `..._with_timeout` — which is twelve methods for four
+/// operations, and meant a caller could set a context *or* a timeout and never
+/// both, because no method accepted the pair. See root DESIGN.md, "RULE: Every
+/// RPC wrapper must have one place to add an option".
+///
+/// `#[non_exhaustive]` is the point: it stops downstream crates constructing
+/// this with a struct literal, so adding a field later is not a breaking
+/// change. Build it with [`CheckOptions::new`] and the `with_*` methods.
+///
+/// ```no_run
+/// # use spicedb::types::CheckOptions;
+/// # use std::time::Duration;
+/// let options = CheckOptions::new().with_timeout(Duration::from_secs(2));
+/// ```
+#[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
+pub struct CheckOptions {
+    /// Call-level caveat context, applied to every relationship the call
+    /// evaluates and merged key-by-key with each relationship's own context,
+    /// where the relationship's own value wins for keys present in both.
+    pub context: Option<std::collections::HashMap<String, serde_json::Value>>,
+    /// Deadline for this call, overriding the client's default. `None` applies
+    /// that default rather than removing the bound — see root DESIGN.md,
+    /// "RULE: A unary call must have a deadline".
+    pub timeout: Option<std::time::Duration>,
+}
+
+impl CheckOptions {
+    /// Options with nothing set: the client's defaults apply.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Sets the call-level caveat context.
+    pub fn with_context(
+        mut self,
+        context: std::collections::HashMap<String, serde_json::Value>,
+    ) -> Self {
+        self.context = Some(context);
+        self
+    }
+
+    /// Sets a per-call deadline, overriding the client's default.
+    pub fn with_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.timeout = Some(timeout);
+        self
+    }
+}
+
+/// Call-level options for the lookup operations.
+///
+/// See [`CheckOptions`] for why this type exists and why it is
+/// `#[non_exhaustive]`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct LookupOptions {
+    /// Asks the server to attach debug information to the error raised when the
+    /// lookup fails by exceeding the maximum dispatch depth. It has no effect
+    /// on a successful call, and none on any other failure.
+    pub with_debug: bool,
+}
+
+impl LookupOptions {
+    /// Options with nothing set: the client's defaults apply.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Asks the server for debug information on a dispatch-depth failure.
+    pub fn with_debug(mut self, with_debug: bool) -> Self {
+        self.with_debug = with_debug;
+        self
     }
 }

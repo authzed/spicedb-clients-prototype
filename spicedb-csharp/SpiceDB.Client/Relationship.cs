@@ -33,7 +33,7 @@ public sealed record Relationship
     /// record round-trips through <c>WriteAsync</c>.
     /// <para>
     /// When a call-level default context is also supplied to a check call
-    /// (see <c>SpiceDBClient.CheckPermissionsWithContextAsync</c> and
+    /// (see <c>SpiceDBClient.CheckPermissionsWithOptionsAsync</c> and
     /// siblings), the two are merged key by key: this relationship's own
     /// keys win on conflict, and call-level keys this relationship doesn't
     /// specify are retained unchanged.

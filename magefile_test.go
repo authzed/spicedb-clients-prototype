@@ -759,3 +759,75 @@ func TestMarkdownLintFixPromptCarriesRequiredInstructions(t *testing.T) {
 		}
 	}
 }
+
+// Per-language output is buffered and flushed as one block so that a parallel
+// generation phase stays readable; these pin the shape of that block. A failure
+// must not be hidden behind a collapsed group -- the reason a run failed should
+// be visible without anyone expanding anything.
+
+func TestLogBlockCollapsesSuccessUnderActions(t *testing.T) {
+	block := logBlock("spicedb-go", "generated fine\n", false, true)
+
+	if !strings.HasPrefix(block, "::group::spicedb-go\n") {
+		t.Fatalf("success should open a collapsible group:\n%s", block)
+	}
+	if !strings.HasSuffix(block, "::endgroup::\n") {
+		t.Fatalf("success group is not closed:\n%s", block)
+	}
+	if !strings.Contains(block, "generated fine") {
+		t.Fatalf("block dropped the output:\n%s", block)
+	}
+}
+
+func TestLogBlockLeavesFailureExpanded(t *testing.T) {
+	block := logBlock("spicedb-java", "japicmp not found\n", true, true)
+
+	if strings.Contains(block, "::group::") {
+		t.Fatalf("a failure must not be collapsed behind a group:\n%s", block)
+	}
+	for _, want := range []string{"spicedb-java", "FAILED", "japicmp not found"} {
+		if !strings.Contains(block, want) {
+			t.Fatalf("failure block missing %q:\n%s", want, block)
+		}
+	}
+}
+
+func TestLogBlockPlainOutsideActions(t *testing.T) {
+	block := logBlock("spicedb-go", "output", false, false)
+
+	if strings.Contains(block, "::group::") {
+		t.Fatalf("group markers are Actions-only, they are noise in a local run:\n%s", block)
+	}
+	if !strings.Contains(block, "spicedb-go") || !strings.Contains(block, "output") {
+		t.Fatalf("plain block missing name or output:\n%s", block)
+	}
+}
+
+// The heartbeat names what it is waiting on, longest-running first, so that the
+// language holding a phase up reads first rather than being buried.
+func TestProgressRunningSortsLongestFirst(t *testing.T) {
+	p := newProgress()
+	p.begin("spicedb-go")
+	time.Sleep(20 * time.Millisecond)
+	p.begin("spicedb-rust")
+
+	running := p.running()
+	if len(running) != 2 {
+		t.Fatalf("running = %v, want 2 entries", running)
+	}
+	if !strings.HasPrefix(running[0], "spicedb-go") {
+		t.Fatalf("longest-running language should sort first, got %v", running)
+	}
+}
+
+func TestProgressDoneRemovesTheLanguage(t *testing.T) {
+	p := newProgress()
+	p.begin("spicedb-go")
+	p.begin("spicedb-java")
+	p.done("spicedb-go")
+
+	running := p.running()
+	if len(running) != 1 || !strings.HasPrefix(running[0], "spicedb-java") {
+		t.Fatalf("running = %v, want only spicedb-java", running)
+	}
+}

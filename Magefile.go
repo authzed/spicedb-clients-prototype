@@ -9,9 +9,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/authzed/spicedb-clients/internal/clauderun"
 	"github.com/authzed/spicedb-clients/internal/gitlock"
@@ -352,6 +354,10 @@ func genProtoLangs(langs []string) error {
 			return err
 		}
 
+		// Streamed rather than buffered like the idiomatic tier: this pool is
+		// bounded to protoGenConcurrency workers, so nothing interleaves and
+		// live output is worth more than collapsibility. Raising that bound
+		// means adopting genClientLangs' langLog here too.
 		genErr := runMageInWithEnv(dir, env, "gen")
 		cleanup()
 
@@ -394,12 +400,22 @@ func genProtoLangs(langs []string) error {
 // and runs Claude/local builds, never the Buf Schema Registry, so it isn't
 // subject to the BSR rate limit that forces the proto tier to stay serial.
 func genClientLangs(langs []string) error {
+	log := &langLog{}
+	prog := newProgress()
+	stop := heartbeat(heartbeatInterval, prog.running)
+	defer stop()
+
 	results := runPool(len(langs), genConcurrency(), func(i int) error {
 		l := langs[i]
 		dir := fmt.Sprintf("spicedb-%s", l)
-		fmt.Printf("\n==> Updating idiomatic client: %s\n", dir)
+		fmt.Printf("==> Updating idiomatic client: %s\n", dir)
 
-		if err := runMageIn(dir, "gen"); err != nil {
+		prog.begin(dir)
+		out, err := runMageInQuiet(dir, "gen")
+		prog.done(dir)
+
+		log.flush(dir, out, err != nil)
+		if err != nil {
 			fmt.Printf("==> FAILED: %s: %v\n", dir, err)
 			return err
 		}
@@ -833,6 +849,124 @@ func runClaudeOutput(prompt string) (string, error) {
 func runMageIn(dir string, target string) error {
 	return sh.RunV("mage", "-d", dir, target)
 }
+
+// runMageInQuiet runs a mage target and returns its combined output without
+// streaming it, leaving the caller to decide when to print. That choice is what
+// keeps a parallel phase readable: four workers writing to one stdout produce a
+// log in which no language's story can be followed end to end.
+func runMageInQuiet(dir string, target string, args ...string) (string, error) {
+	cmdArgs := append([]string{"-d", dir, target}, args...)
+	cmd := exec.Command("mage", cmdArgs...)
+	var buf bytes.Buffer
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+	err := cmd.Run()
+	return buf.String(), err
+}
+
+// langLog serialises per-language output so that concurrently generated
+// languages are printed one whole block at a time rather than interleaved.
+type langLog struct{ mu sync.Mutex }
+
+// flush prints one language's output as a single uninterrupted block.
+//
+// A success is wrapped in a GitHub Actions group, which renders collapsed, so
+// the log reads as a list of languages to expand on demand. A failure is left
+// ungrouped: the reason a run failed should be visible without anyone having to
+// click into it.
+func (l *langLog) flush(name, out string, failed bool) {
+	block := logBlock(name, out, failed, os.Getenv("GITHUB_ACTIONS") == "true")
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	fmt.Print(block)
+}
+
+// logBlock renders one language's captured output. It is separate from flush so
+// the formatting decisions can be tested without capturing stdout.
+func logBlock(name, out string, failed, inActions bool) string {
+	body := strings.TrimRight(out, "\n")
+	switch {
+	case failed:
+		return fmt.Sprintf("\n==> %s FAILED\n%s\n", name, body)
+	case inActions:
+		return fmt.Sprintf("::group::%s\n%s\n::endgroup::\n", name, body)
+	default:
+		return fmt.Sprintf("\n==> %s\n%s\n", name, body)
+	}
+}
+
+// progress tracks which languages are in flight, so a long phase can report
+// what it is waiting on rather than merely that it is alive.
+type progress struct {
+	mu    sync.Mutex
+	start map[string]time.Time
+}
+
+func newProgress() *progress { return &progress{start: map[string]time.Time{}} }
+
+func (p *progress) begin(name string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.start[name] = time.Now()
+}
+
+func (p *progress) done(name string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.start, name)
+}
+
+// running renders the in-flight languages with how long each has been going,
+// sorted longest-first so whatever is holding the phase up reads first.
+func (p *progress) running() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	type entry struct {
+		name string
+		age  time.Duration
+	}
+	entries := make([]entry, 0, len(p.start))
+	for name, t := range p.start {
+		entries = append(entries, entry{name, time.Since(t)})
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].age > entries[j].age })
+	out := make([]string, len(entries))
+	for i, e := range entries {
+		out[i] = fmt.Sprintf("%s (%s)", e.name, e.age.Round(time.Second))
+	}
+	return out
+}
+
+// heartbeat reports what is still running every interval until the returned
+// stop function is called. With per-language output buffered, this is the only
+// liveness signal a long phase emits -- and naming the languages makes it
+// useful for more than that, since a language stuck for twenty minutes is
+// indistinguishable from a healthy one if all you print is a dot.
+func heartbeat(interval time.Duration, running func() []string) (stop func()) {
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		started := time.Now()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				if r := running(); len(r) > 0 {
+					fmt.Printf("==> still running after %s: %s\n",
+						time.Since(started).Round(time.Second), strings.Join(r, ", "))
+				}
+			}
+		}
+	}()
+	return func() { close(done) }
+}
+
+// heartbeatInterval is how often a generation phase reports what it is waiting
+// on. Short enough that a watcher can tell the job is alive, long enough that
+// it adds a handful of lines to a forty-minute run rather than hundreds.
+const heartbeatInterval = 30 * time.Second
 
 // runMageInCapture runs a mage target and returns its combined output while
 // still streaming it. A failing target's report has to reach Claude verbatim,

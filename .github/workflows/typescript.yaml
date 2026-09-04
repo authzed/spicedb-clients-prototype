@@ -157,5 +157,20 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Build proto package
         run: pnpm --filter @spicedb/proto build
+      # A deliberate break is acknowledged by labelling the PR
+      # `breaking-change-acknowledged`, which skips this step. The label is
+      # deliberately per-PR and visible on the PR itself: an intentional break
+      # should be a decision someone took and left a record of, not a silent
+      # config toggle. Removing the label re-runs the check.
+      #
+      # The skip is total, not selective -- mage returns 1 both for findings
+      # and for its own failures, so this cannot suppress only the former. A
+      # labelled PR therefore also loses the signal that the check itself
+      # broke, which is the cost of keeping the mechanism this simple.
       - name: API compatibility check
+        if: ${{ !contains(github.event.pull_request.labels.*.name, 'breaking-change-acknowledged') }}
         run: mage -d spicedb-typescript apiCompat origin/${{ github.base_ref }}
+      - name: API compatibility check skipped
+        if: ${{ contains(github.event.pull_request.labels.*.name, 'breaking-change-acknowledged') }}
+        run: |
+          echo "::notice::API compatibility check skipped: this PR is labelled breaking-change-acknowledged."

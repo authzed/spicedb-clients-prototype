@@ -342,6 +342,13 @@ lookups never yield `"noPermission"`: a subject/resource pair that lacks the
 permission is simply absent from the stream. Mirrors spicedb-go's
 `client/lookup_types.go`.
 
+Neither stream is guaranteed unique: the same resource/subject may be
+yielded more than once (e.g. via caveated/conditional results, or when a
+limit is set), possibly with differing `permissionship`. Callers that need
+uniqueness must deduplicate themselves — this client does not do it for
+them, since the last-seen `permissionship` is not necessarily the right one
+to keep.
+
 ### Writes
 
 Transaction builder:

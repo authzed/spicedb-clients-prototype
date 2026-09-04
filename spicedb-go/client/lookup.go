@@ -11,13 +11,39 @@ import (
 
 const defaultLookupPageSize = 512
 
+// LookupResourcesOption configures an optional aspect of a LookupResources
+// call.
+type LookupResourcesOption func(*lookupResourcesOptions)
+
+type lookupResourcesOptions struct {
+	withDebug bool
+}
+
+// WithLookupResourcesDebug requests that the server attach additional
+// diagnostic detail when a LookupResources call fails because it exceeded
+// SpiceDB's maximum dispatch depth -- the same failure a deeply recursive or
+// too-deep schema produces on a check, surfaced here as a
+// CodeFailedPrecondition *Error whose Reason is
+// "ERROR_REASON_MAXIMUM_DEPTH_EXCEEDED" (see root DESIGN.md, "RULE: Error
+// mapping must not lose the server's detail"). With this option set, that
+// error's ReasonMetadata gains a "dispatch_traversal_trace" key describing
+// the traversal that hit the limit; without it, ReasonMetadata is empty for
+// this failure. It has no effect on a call that does not hit the limit.
+func WithLookupResourcesDebug() LookupResourcesOption {
+	return func(o *lookupResourcesOptions) { o.withDebug = true }
+}
+
 // LookupResources returns an iterator over resources of the given type that
 // the subject has the specified permission on. Each result carries the
 // permissionship (full grant vs conditional on caveat context) and, for
 // conditional results, which caveat context was missing. Cursors are
 // handled transparently — the client automatically re-fetches pages of 512
 // results.
-func (c *Client) LookupResources(ctx context.Context, cs consistency.Strategy, resourceType, permission, subjectType, subjectID string) iter.Seq2[LookupResource, error] {
+func (c *Client) LookupResources(ctx context.Context, cs consistency.Strategy, resourceType, permission, subjectType, subjectID string, opts ...LookupResourcesOption) iter.Seq2[LookupResource, error] {
+	var o lookupResourcesOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
 	return func(yield func(LookupResource, error) bool) {
 		// Abandoning this iterator -- a `break` in the consuming range
 		// loop, or any early return -- must release the stream. grpc-go's
@@ -45,6 +71,7 @@ func (c *Client) LookupResources(ctx context.Context, cs consistency.Strategy, r
 				},
 				OptionalLimit:  uint32(defaultLookupPageSize),
 				OptionalCursor: cursor,
+				WithDebug:      o.withDebug,
 			})
 			if err != nil {
 				yield(LookupResource{}, mapGRPCError("lookup resources", err))

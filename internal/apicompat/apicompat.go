@@ -250,13 +250,13 @@ func splitLastParam(params string) (head, last string) {
 // pipeline then reports success. Run therefore inspects the exit status
 // itself and refuses to suppress anything at or above operationalExitCode.
 func Run(baseRef, repoPath string) (Result, error) {
-	clone, module, cleanup, err := isolate(repoPath)
+	clone, module, base, cleanup, err := isolate(repoPath, baseRef)
 	if err != nil {
 		return Result{}, err
 	}
 	defer cleanup()
 
-	cmd := exec.Command("go-apidiff", baseRef, "--repo-path", clone)
+	cmd := exec.Command("go-apidiff", base, "--repo-path", clone)
 	cmd.Dir = module
 	out, err := cmd.Output()
 
@@ -293,18 +293,18 @@ func Run(baseRef, repoPath string) (Result, error) {
 // A linked worktree is not an option -- go-apidiff's go-git cannot resolve
 // objects through one, and fails with "object not found" -- so this clones. The
 // clone is local, so git hardlinks the object store and the copy is cheap.
-func isolate(repoPath string) (clone, module string, cleanup func(), err error) {
+func isolate(repoPath, baseRef string) (clone, module, base string, cleanup func(), err error) {
 	root, err := filepath.Abs(repoPath)
 	if err != nil {
-		return "", "", nil, fmt.Errorf("resolving repo path: %w", err)
+		return "", "", "", nil, fmt.Errorf("resolving repo path: %w", err)
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
-		return "", "", nil, fmt.Errorf("resolving working directory: %w", err)
+		return "", "", "", nil, fmt.Errorf("resolving working directory: %w", err)
 	}
 	rel, err := filepath.Rel(root, cwd)
 	if err != nil {
-		return "", "", nil, fmt.Errorf("locating module within the repository: %w", err)
+		return "", "", "", nil, fmt.Errorf("locating module within the repository: %w", err)
 	}
 
 	// The commit under test is HEAD, so the clone has to be detached at the
@@ -312,25 +312,50 @@ func isolate(repoPath string) (clone, module string, cleanup func(), err error) 
 	// necessarily where the caller is.
 	head, err := exec.Command("git", "-C", root, "rev-parse", "HEAD").Output()
 	if err != nil {
-		return "", "", nil, fmt.Errorf("reading HEAD: %w", err)
+		return "", "", "", nil, fmt.Errorf("reading HEAD: %w", err)
 	}
 
 	dir, err := os.MkdirTemp("", "apicompat-")
 	if err != nil {
-		return "", "", nil, fmt.Errorf("creating scratch directory: %w", err)
+		return "", "", "", nil, fmt.Errorf("creating scratch directory: %w", err)
 	}
 	cleanup = func() { _ = os.RemoveAll(dir) }
 
 	clone = filepath.Join(dir, "repo")
 	if out, err := exec.Command("git", "clone", "--quiet", "--no-checkout", root, clone).CombinedOutput(); err != nil {
 		cleanup()
-		return "", "", nil, fmt.Errorf("cloning for isolation: %w: %s", err, strings.TrimSpace(string(out)))
+		return "", "", "", nil, fmt.Errorf("cloning for isolation: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	if out, err := exec.Command("git", "-C", clone, "checkout", "--quiet", "--detach", strings.TrimSpace(string(head))).CombinedOutput(); err != nil {
 		cleanup()
-		return "", "", nil, fmt.Errorf("checking out %s in the clone: %w: %s",
+		return "", "", "", nil, fmt.Errorf("checking out %s in the clone: %w: %s",
 			strings.TrimSpace(string(head)), err, strings.TrimSpace(string(out)))
 	}
 
-	return clone, filepath.Join(clone, rel), cleanup, nil
+	// git clone maps the source's *local branches* into the clone's origin/*,
+	// and copies only the objects those reach. A CI checkout is detached with
+	// no local branches at all -- actions/checkout leaves the base as the
+	// remote-tracking ref origin/main -- so a plain clone of it resolves
+	// neither the ref nor, in the worst case, the objects behind it. That is
+	// how the first version of this failed: "could not get hash for
+	// origin/main: reference not found".
+	//
+	// Copying the source's whole ref namespace fixes both halves: the names
+	// resolve, and every object they reach comes with them.
+	if out, err := exec.Command("git", "-C", clone, "fetch", "--force", "--tags", root,
+		"+refs/heads/*:refs/heads/*", "+refs/remotes/*:refs/remotes/*").CombinedOutput(); err != nil {
+		cleanup()
+		return "", "", "", nil, fmt.Errorf("copying refs into the clone: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+
+	// Resolve the base in the source rather than trusting the name to mean the
+	// same thing inside the clone. go-apidiff is then given a commit id, which
+	// cannot be ambiguous.
+	resolved, err := exec.Command("git", "-C", root, "rev-parse", baseRef).Output()
+	if err != nil {
+		cleanup()
+		return "", "", "", nil, fmt.Errorf("resolving %s: %w", baseRef, err)
+	}
+
+	return clone, filepath.Join(clone, rel), strings.TrimSpace(string(resolved)), cleanup, nil
 }

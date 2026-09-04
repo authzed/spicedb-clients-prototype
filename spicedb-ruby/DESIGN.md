@@ -736,3 +736,38 @@ See module sections above for the complete API manifest.
 ## Changelog
 
 See [CHANGELOG.md](CHANGELOG.md) for release notes.
+
+## API compatibility
+
+This client has no `apiCompat` target and does not appear in `apiCompatLanguages`, alone among
+the seven. That is a deferral, not an impossibility. The other six clients each have a tool
+(`go-apidiff`, `griffe`, `api-extractor`, `Microsoft.DotNet.ApiCompat.Tool`, `japicmp`,
+`cargo-semver-checks`); Ruby's equivalent exists and was verified against this client:
+
+```sh
+rbs prototype runtime -r ./lib/spicedb 'SpiceDB::*'   # signatures, nothing hand-written
+rbs diff --type-name T --before sig-base --after sig-new
+```
+
+It catches method removal, positional arity changes, required-keyword addition, keyword removal,
+public-to-private narrowing, and `Data.define` member changes. Two sharp edges make it more than
+a one-liner, and are why it is not wired up yet:
+
+- **`rbs diff` exits 0 even when it reports breaking changes.** A gate must test whether the
+  output is empty, not the exit status.
+- **Pure additions are reported like breaks.** Rows whose `before` column is `-` must be filtered
+  or every added method fails the build.
+
+Use `rbs prototype runtime`, not `rbs prototype rb`: the static generator renders `Data.define`
+constants as bare `untyped`, and this client has 27 of them across `client.rb`, `filter.rb`,
+`relationship.rb` and `consistency.rb` — most of its public surface.
+
+`rbs diff` is also marked experimental, with no output-compatibility guarantee, so wiring it up
+means pinning the `rbs` version.
+
+Until then, a breaking change here is caught by the test suite and by review rather than by a
+gate, which is weaker: treat the public surface in `lib/spicedb/client.rb` as unguarded.
+
+Options follow root DESIGN.md, "RULE: Every RPC wrapper must have one place to add an option":
+keyword arguments are this client's options container, so a new option is a new keyword and
+never a new positional parameter or a second method.

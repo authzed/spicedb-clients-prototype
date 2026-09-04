@@ -157,7 +157,28 @@ func TestFilterEmptyPasses(t *testing.T) {
 func fakeAPIDiff(t *testing.T, stdout string, code int) {
 	t.Helper()
 	dir := t.TempDir()
-	script := fmt.Sprintf("#!/bin/sh\nrm -rf ../UNTRACKED\ncat <<'EOF'\n%s\nEOF\necho 'boom' >&2\nexit %d\n", stdout, code)
+	// Faithful on the two dimensions that matter: it resolves the base ref in
+	// the repository it was pointed at, failing with go-apidiff's own exit 2
+	// and message when it cannot, and it deletes untracked files there.
+	script := fmt.Sprintf(`#!/bin/sh
+base=""; repo="."
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --repo-path) repo="$2"; shift 2 ;;
+    *) if [ -z "$base" ]; then base="$1"; fi; shift ;;
+  esac
+done
+if ! git -C "$repo" rev-parse --verify "$base" >/dev/null 2>&1; then
+  echo "failed to lookup git commit hashes: could not get hash for \"$base\": reference not found" >&2
+  exit 2
+fi
+rm -rf ../UNTRACKED
+cat <<'APIDIFFOUT'
+%s
+APIDIFFOUT
+echo 'boom' >&2
+exit %d
+`, stdout, code)
 	path := filepath.Join(dir, "go-apidiff")
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("writing stub: %v", err)
@@ -179,12 +200,14 @@ func repoWithModule(t *testing.T) string {
 	if err := os.WriteFile(filepath.Join(mod, "tracked.txt"), []byte("x"), 0o644); err != nil {
 		t.Fatalf("writing tracked file: %v", err)
 	}
+	// Two commits, so that HEAD~1 -- the shape a real caller passes -- resolves.
 	for _, args := range [][]string{
 		{"init", "-q"},
 		{"config", "user.email", "t@t.t"},
 		{"config", "user.name", "t"},
 		{"add", "-A"},
-		{"commit", "-qm", "init"},
+		{"commit", "-qm", "first"},
+		{"commit", "-qm", "second", "--allow-empty"},
 	} {
 		cmd := exec.Command("git", append([]string{"-C", root}, args...)...)
 		if out, err := cmd.CombinedOutput(); err != nil {
@@ -270,5 +293,73 @@ func TestRunIsolatesTheWorkingTree(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, "UNTRACKED")); err != nil {
 		t.Fatalf("go-apidiff was run against the caller's working tree and destroyed an "+
 			"untracked file; it must run against a scratch clone: %v", err)
+	}
+}
+
+// git creates the shape a CI checkout has: a detached HEAD with no local
+// branches, where the base is only reachable as a remote-tracking ref.
+func gitIn(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v: %s", args, err, out)
+	}
+}
+
+// TestRunResolvesARemoteTrackingBase is the regression guard for the first
+// version of the scratch clone, which failed in CI with "could not get hash for
+// origin/main: reference not found".
+//
+// git clone maps the source's local branches into the clone's origin/*, and
+// copies only the objects those reach. actions/checkout leaves a detached HEAD
+// with no local branches at all, so a plain clone of it resolves neither
+// origin/main nor necessarily the objects behind it -- while the source repo
+// resolves it perfectly well, which is what makes the failure invisible
+// locally.
+func TestRunResolvesARemoteTrackingBase(t *testing.T) {
+	tmp := t.TempDir()
+	upstream := filepath.Join(tmp, "upstream.git")
+	work := filepath.Join(tmp, "work")
+	ci := filepath.Join(tmp, "ci")
+
+	if out, err := exec.Command("git", "init", "-q", "--bare", upstream).CombinedOutput(); err != nil {
+		t.Fatalf("init bare: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "clone", "-q", upstream, work).CombinedOutput(); err != nil {
+		t.Fatalf("clone work: %v: %s", err, out)
+	}
+	gitIn(t, work, "config", "user.email", "t@t.t")
+	gitIn(t, work, "config", "user.name", "t")
+	if err := os.MkdirAll(filepath.Join(work, "mod"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(work, "mod", "tracked.txt"), []byte("one"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	gitIn(t, work, "add", "-A")
+	gitIn(t, work, "commit", "-qm", "one")
+	gitIn(t, work, "push", "-q", "origin", "HEAD:main")
+
+	if out, err := exec.Command("git", "clone", "-q", upstream, ci).CombinedOutput(); err != nil {
+		t.Fatalf("clone ci: %v: %s", err, out)
+	}
+	// Exactly what actions/checkout leaves behind: detached, no local branches,
+	// with the base reachable only as refs/remotes/origin/main.
+	gitIn(t, ci, "checkout", "-q", "--detach", "origin/main")
+	for _, b := range []string{"main", "master"} {
+		// Whichever the local default was; absent is fine.
+		_ = exec.Command("git", "-C", ci, "branch", "-q", "-D", b).Run()
+	}
+	if out, err := exec.Command("git", "-C", ci, "for-each-ref", "--format=%(refname)", "refs/heads").Output(); err != nil {
+		t.Fatalf("listing local branches: %v", err)
+	} else if strings.TrimSpace(string(out)) != "" {
+		t.Fatalf("test setup did not reproduce a branchless checkout: %s", out)
+	}
+
+	fakeAPIDiff(t, "", 0)
+	t.Chdir(filepath.Join(ci, "mod"))
+
+	if _, err := Run("origin/main", ".."); err != nil {
+		t.Fatalf("a remote-tracking base must resolve inside the scratch clone: %v", err)
 	}
 }

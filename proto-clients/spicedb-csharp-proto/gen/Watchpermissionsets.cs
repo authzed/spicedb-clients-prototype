@@ -81,23 +81,25 @@ namespace Authzed.Api.Materialize.V0 {
             "UGVybWlzc2lvbnMiawodRG93bmxvYWRQZXJtaXNzaW9uU2V0c1JlcXVlc3QS",
             "SgoUb3B0aW9uYWxfYXRfcmV2aXNpb24YASABKAsyGC5hdXRoemVkLmFwaS52",
             "MS5aZWRUb2tlblISb3B0aW9uYWxBdFJldmlzaW9uIiwKBEZpbGUSEgoEbmFt",
-            "ZRgBIAEoCVIEbmFtZRIQCgN1cmwYAiABKAlSA3VybCKSAQoeRG93bmxvYWRQ",
+            "ZRgBIAEoCVIEbmFtZRIQCgN1cmwYAiABKAlSA3VybCLNAQoeRG93bmxvYWRQ",
             "ZXJtaXNzaW9uU2V0c1Jlc3BvbnNlEjYKBWZpbGVzGAEgAygLMiAuYXV0aHpl",
             "ZC5hcGkubWF0ZXJpYWxpemUudjAuRmlsZVIFZmlsZXMSOAoJdGltZXN0YW1w",
             "GAIgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcFIJdGltZXN0YW1w",
-            "Ms0DChpXYXRjaFBlcm1pc3Npb25TZXRzU2VydmljZRKKAQoTV2F0Y2hQZXJt",
-            "aXNzaW9uU2V0cxI2LmF1dGh6ZWQuYXBpLm1hdGVyaWFsaXplLnYwLldhdGNo",
-            "UGVybWlzc2lvblNldHNSZXF1ZXN0GjcuYXV0aHplZC5hcGkubWF0ZXJpYWxp",
-            "emUudjAuV2F0Y2hQZXJtaXNzaW9uU2V0c1Jlc3BvbnNlIgAwARKNAQoUTG9v",
-            "a3VwUGVybWlzc2lvblNldHMSNy5hdXRoemVkLmFwaS5tYXRlcmlhbGl6ZS52",
-            "MC5Mb29rdXBQZXJtaXNzaW9uU2V0c1JlcXVlc3QaOC5hdXRoemVkLmFwaS5t",
-            "YXRlcmlhbGl6ZS52MC5Mb29rdXBQZXJtaXNzaW9uU2V0c1Jlc3BvbnNlIgAw",
-            "ARKRAQoWRG93bmxvYWRQZXJtaXNzaW9uU2V0cxI5LmF1dGh6ZWQuYXBpLm1h",
-            "dGVyaWFsaXplLnYwLkRvd25sb2FkUGVybWlzc2lvblNldHNSZXF1ZXN0Gjou",
+            "EjkKC2F0X3JldmlzaW9uGAMgASgLMhguYXV0aHplZC5hcGkudjEuWmVkVG9r",
+            "ZW5SCmF0UmV2aXNpb24yzQMKGldhdGNoUGVybWlzc2lvblNldHNTZXJ2aWNl",
+            "EooBChNXYXRjaFBlcm1pc3Npb25TZXRzEjYuYXV0aHplZC5hcGkubWF0ZXJp",
+            "YWxpemUudjAuV2F0Y2hQZXJtaXNzaW9uU2V0c1JlcXVlc3QaNy5hdXRoemVk",
+            "LmFwaS5tYXRlcmlhbGl6ZS52MC5XYXRjaFBlcm1pc3Npb25TZXRzUmVzcG9u",
+            "c2UiADABEo0BChRMb29rdXBQZXJtaXNzaW9uU2V0cxI3LmF1dGh6ZWQuYXBp",
+            "Lm1hdGVyaWFsaXplLnYwLkxvb2t1cFBlcm1pc3Npb25TZXRzUmVxdWVzdBo4",
+            "LmF1dGh6ZWQuYXBpLm1hdGVyaWFsaXplLnYwLkxvb2t1cFBlcm1pc3Npb25T",
+            "ZXRzUmVzcG9uc2UiADABEpEBChZEb3dubG9hZFBlcm1pc3Npb25TZXRzEjku",
             "YXV0aHplZC5hcGkubWF0ZXJpYWxpemUudjAuRG93bmxvYWRQZXJtaXNzaW9u",
-            "U2V0c1Jlc3BvbnNlIgBCYgoeY29tLmF1dGh6ZWQuYXBpLm1hdGVyaWFsaXpl",
-            "LnYwUAFaPmdpdGh1Yi5jb20vYXV0aHplZC9hdXRoemVkLWdvL3Byb3RvL2F1",
-            "dGh6ZWQvYXBpL21hdGVyaWFsaXplL3YwYgZwcm90bzM="));
+            "U2V0c1JlcXVlc3QaOi5hdXRoemVkLmFwaS5tYXRlcmlhbGl6ZS52MC5Eb3du",
+            "bG9hZFBlcm1pc3Npb25TZXRzUmVzcG9uc2UiAEJiCh5jb20uYXV0aHplZC5h",
+            "cGkubWF0ZXJpYWxpemUudjBQAVo+Z2l0aHViLmNvbS9hdXRoemVkL2F1dGh6",
+            "ZWQtZ28vcHJvdG8vYXV0aHplZC9hcGkvbWF0ZXJpYWxpemUvdjBiBnByb3Rv",
+            "Mw=="));
       descriptor = pbr::FileDescriptor.FromGeneratedCode(descriptorData,
           new pbr::FileDescriptor[] { global::Authzed.Api.Materialize.V0.WatchpermissionsReflection.Descriptor, global::Authzed.Api.V1.CoreReflection.Descriptor, global::Google.Protobuf.WellKnownTypes.TimestampReflection.Descriptor, },
           new pbr::GeneratedClrTypeInfo(null, null, new pbr::GeneratedClrTypeInfo[] {
@@ -113,7 +115,7 @@ namespace Authzed.Api.Materialize.V0 {
             new pbr::GeneratedClrTypeInfo(typeof(global::Authzed.Api.Materialize.V0.BreakingSchemaChange), global::Authzed.Api.Materialize.V0.BreakingSchemaChange.Parser, new[]{ "ChangeAt", "AffectedPermissions" }, null, null, null, null),
             new pbr::GeneratedClrTypeInfo(typeof(global::Authzed.Api.Materialize.V0.DownloadPermissionSetsRequest), global::Authzed.Api.Materialize.V0.DownloadPermissionSetsRequest.Parser, new[]{ "OptionalAtRevision" }, null, null, null, null),
             new pbr::GeneratedClrTypeInfo(typeof(global::Authzed.Api.Materialize.V0.File), global::Authzed.Api.Materialize.V0.File.Parser, new[]{ "Name", "Url" }, null, null, null, null),
-            new pbr::GeneratedClrTypeInfo(typeof(global::Authzed.Api.Materialize.V0.DownloadPermissionSetsResponse), global::Authzed.Api.Materialize.V0.DownloadPermissionSetsResponse.Parser, new[]{ "Files", "Timestamp" }, null, null, null, null)
+            new pbr::GeneratedClrTypeInfo(typeof(global::Authzed.Api.Materialize.V0.DownloadPermissionSetsResponse), global::Authzed.Api.Materialize.V0.DownloadPermissionSetsResponse.Parser, new[]{ "Files", "Timestamp", "AtRevision" }, null, null, null, null)
           }));
     }
     #endregion
@@ -3695,6 +3697,7 @@ namespace Authzed.Api.Materialize.V0 {
     public DownloadPermissionSetsResponse(DownloadPermissionSetsResponse other) : this() {
       files_ = other.files_.Clone();
       timestamp_ = other.timestamp_ != null ? other.timestamp_.Clone() : null;
+      atRevision_ = other.atRevision_ != null ? other.atRevision_.Clone() : null;
       _unknownFields = pb::UnknownFieldSet.Clone(other._unknownFields);
     }
 
@@ -3733,6 +3736,24 @@ namespace Authzed.Api.Materialize.V0 {
       }
     }
 
+    /// <summary>Field number for the "at_revision" field.</summary>
+    public const int AtRevisionFieldNumber = 3;
+    private global::Authzed.Api.V1.ZedToken atRevision_;
+    /// <summary>
+    /// at_revision is the snapshot revision the returned files were produced at,
+    /// encoded as a ZedToken. Consumers should pass this token to
+    /// WatchPermissionSets as optional_starting_after to resume the stream
+    /// immediately after the snapshot without leaving gaps in event history.
+    /// </summary>
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public global::Authzed.Api.V1.ZedToken AtRevision {
+      get { return atRevision_; }
+      set {
+        atRevision_ = value;
+      }
+    }
+
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
     [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
     public override bool Equals(object other) {
@@ -3750,6 +3771,7 @@ namespace Authzed.Api.Materialize.V0 {
       }
       if(!files_.Equals(other.files_)) return false;
       if (!object.Equals(Timestamp, other.Timestamp)) return false;
+      if (!object.Equals(AtRevision, other.AtRevision)) return false;
       return Equals(_unknownFields, other._unknownFields);
     }
 
@@ -3759,6 +3781,7 @@ namespace Authzed.Api.Materialize.V0 {
       int hash = 1;
       hash ^= files_.GetHashCode();
       if (timestamp_ != null) hash ^= Timestamp.GetHashCode();
+      if (atRevision_ != null) hash ^= AtRevision.GetHashCode();
       if (_unknownFields != null) {
         hash ^= _unknownFields.GetHashCode();
       }
@@ -3782,6 +3805,10 @@ namespace Authzed.Api.Materialize.V0 {
         output.WriteRawTag(18);
         output.WriteMessage(Timestamp);
       }
+      if (atRevision_ != null) {
+        output.WriteRawTag(26);
+        output.WriteMessage(AtRevision);
+      }
       if (_unknownFields != null) {
         _unknownFields.WriteTo(output);
       }
@@ -3797,6 +3824,10 @@ namespace Authzed.Api.Materialize.V0 {
         output.WriteRawTag(18);
         output.WriteMessage(Timestamp);
       }
+      if (atRevision_ != null) {
+        output.WriteRawTag(26);
+        output.WriteMessage(AtRevision);
+      }
       if (_unknownFields != null) {
         _unknownFields.WriteTo(ref output);
       }
@@ -3810,6 +3841,9 @@ namespace Authzed.Api.Materialize.V0 {
       size += files_.CalculateSize(_repeated_files_codec);
       if (timestamp_ != null) {
         size += 1 + pb::CodedOutputStream.ComputeMessageSize(Timestamp);
+      }
+      if (atRevision_ != null) {
+        size += 1 + pb::CodedOutputStream.ComputeMessageSize(AtRevision);
       }
       if (_unknownFields != null) {
         size += _unknownFields.CalculateSize();
@@ -3829,6 +3863,12 @@ namespace Authzed.Api.Materialize.V0 {
           Timestamp = new global::Google.Protobuf.WellKnownTypes.Timestamp();
         }
         Timestamp.MergeFrom(other.Timestamp);
+      }
+      if (other.atRevision_ != null) {
+        if (atRevision_ == null) {
+          AtRevision = new global::Authzed.Api.V1.ZedToken();
+        }
+        AtRevision.MergeFrom(other.AtRevision);
       }
       _unknownFields = pb::UnknownFieldSet.MergeFrom(_unknownFields, other._unknownFields);
     }
@@ -3860,6 +3900,13 @@ namespace Authzed.Api.Materialize.V0 {
             input.ReadMessage(Timestamp);
             break;
           }
+          case 26: {
+            if (atRevision_ == null) {
+              AtRevision = new global::Authzed.Api.V1.ZedToken();
+            }
+            input.ReadMessage(AtRevision);
+            break;
+          }
         }
       }
     #endif
@@ -3888,6 +3935,13 @@ namespace Authzed.Api.Materialize.V0 {
               Timestamp = new global::Google.Protobuf.WellKnownTypes.Timestamp();
             }
             input.ReadMessage(Timestamp);
+            break;
+          }
+          case 26: {
+            if (atRevision_ == null) {
+              AtRevision = new global::Authzed.Api.V1.ZedToken();
+            }
+            input.ReadMessage(AtRevision);
             break;
           }
         }

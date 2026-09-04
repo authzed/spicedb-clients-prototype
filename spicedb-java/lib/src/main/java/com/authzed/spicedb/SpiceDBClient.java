@@ -1039,6 +1039,11 @@ public final class SpiceDBClient implements AutoCloseable {
    * on. Each result carries the permissionship (full grant vs conditional on caveat context) and,
    * for conditional results, which caveat context was missing. Cursors are handled transparently.
    *
+   * <p>Results are <b>not guaranteed to be unique</b>: the same {@code resourceId} may be yielded
+   * more than once — for example via caveated/conditional results — possibly with a different
+   * {@code permissionship} on each occurrence. Callers that require uniqueness must deduplicate by
+   * {@code resourceId} themselves.
+   *
    * <p>The returned stream should be closed when done.
    */
   public Stream<LookupResult.LookupResource> lookupResources(
@@ -1047,6 +1052,23 @@ public final class SpiceDBClient implements AutoCloseable {
       String permission,
       String subjectType,
       String subjectID) {
+    return lookupResources(consistency, resourceType, permission, subjectType, subjectID, false);
+  }
+
+  /**
+   * As {@link #lookupResources(Consistency, String, String, String, String)}, with {@code
+   * withDebug} asking the server to attach debug information to the error it returns if this lookup
+   * fails with a maximum-recursion-depth error. It never changes a successful result. This client
+   * does not decode that debug payload — it is reachable, undecoded, as the cause of the mapped
+   * {@link SpiceDBException}.
+   */
+  public Stream<LookupResult.LookupResource> lookupResources(
+      Consistency consistency,
+      String resourceType,
+      String permission,
+      String subjectType,
+      String subjectID,
+      boolean withDebug) {
     Context.CancellableContext cancelCtx = Context.current().withCancellation();
     Iterator<LookupResult.LookupResource> iterator =
         new Iterator<>() {
@@ -1086,7 +1108,8 @@ public final class SpiceDBClient implements AutoCloseable {
                                     .setObjectId(subjectID)
                                     .build())
                             .build())
-                    .setOptionalLimit(DEFAULT_LOOKUP_PAGE_SIZE);
+                    .setOptionalLimit(DEFAULT_LOOKUP_PAGE_SIZE)
+                    .setWithDebug(withDebug);
 
             if (cursor != null) {
               reqBuilder.setOptionalCursor(cursor);
@@ -1135,6 +1158,10 @@ public final class SpiceDBClient implements AutoCloseable {
    * listed in {@link LookupResult.LookupSubject#excludedSubjects}. Callers MUST check {@code
    * excludedSubjects} before treating a wildcard match as a blanket grant, or they risk granting
    * access to subjects the server explicitly excluded.
+   *
+   * <p>Results are <b>not guaranteed to be unique</b>: the same subject may be yielded more than
+   * once, possibly with a different {@code permissionship} on each occurrence. Callers that require
+   * uniqueness must deduplicate by subject ID themselves.
    *
    * <p>The returned stream should be closed when done.
    */

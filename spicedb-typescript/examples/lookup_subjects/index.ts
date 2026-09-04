@@ -90,6 +90,9 @@ assert(sawWildcard, "expected a wildcard (*) subject in results");
 assert(excludedIds.has("eve"), "expected eve to be excluded from the wildcard grant");
 
 // bob has view via `editor`, independent of the wildcard/banned rule.
+// Results aren't guaranteed unique (the same subject can be yielded more
+// than once), so callers that need uniqueness dedupe themselves -- a Set
+// here.
 const found = new Set<string>();
 for await (const result of client.lookupSubjects(
   {

@@ -411,8 +411,16 @@ public sealed record ResolvedSubject { SubjectID, Permissionship, PartialCaveat 
 public sealed record LookupSubject { Subject, ExcludedSubjects, LookedUpAt }
 ```
 
-- `LookupResourcesAsync(consistency, resourceType, permission, subjectType, subjectID)` → `IAsyncEnumerable<LookupResource>`
+- `LookupResourcesAsync(consistency, resourceType, permission, subjectType, subjectID, cancellationToken = default, withDebug = false)` → `IAsyncEnumerable<LookupResource>`
 - `LookupSubjectsAsync(consistency, resourceType, resourceID, permission, subjectType)` → `IAsyncEnumerable<LookupSubject>`
+
+`withDebug` maps the proto `LookupResourcesRequest.with_debug` field: it asks
+the server to attach debug information to the error raised on a
+maximum-recursion-depth failure, and changes nothing about a successful
+result. This client does not decode that payload — it rides the mapped
+`SpiceDBException.InnerException` (the original `RpcException`) for a caller
+who wants to read it. A trailing optional parameter, not an overload, per the
+same reasoning as `CheckPermissionAsync`'s trailing `context` parameter below.
 
 `Permissionship` MUST be checked before treating a result as a full grant —
 `ConditionalPermission` results depend on caveat context (`PartialCaveat`)

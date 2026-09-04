@@ -242,6 +242,20 @@ Iterators:
 - `ExportRelationships(...)` → `iter.Seq2[rel.Relationship, error]`
 - `Updates(...)` → `iter.Seq2[client.WatchEvent, error]`
 
+Results from `LookupResources`/`LookupSubjects` are **not guaranteed unique** — the
+proto's own doc comment on both RPCs notes that the same resource or subject may be
+streamed more than once, e.g. under a caveated/conditional result or when a limit is
+set, possibly with differing `Permissionship`. Neither this client nor SpiceDB
+deduplicates; a caller that needs uniqueness must do so itself.
+
+`LookupResources` accepts a trailing `opts ...LookupResourcesOption`.
+`WithLookupResourcesDebug()` sets the proto's `with_debug` field, which asks the
+server to attach a `dispatch_traversal_trace` key to `ReasonMetadata` when the call
+fails with `Reason == "ERROR_REASON_MAXIMUM_DEPTH_EXCEEDED"` (a `CodeFailedPrecondition`
+`*client.Error` — see "Error Handling" below). As of this writing SpiceDB honors
+`with_debug` only on this RPC; the option has no effect elsewhere and no effect on a
+call that does not hit the depth limit.
+
 `LookupResource` and `LookupSubject` (see `client/lookup_types.go`) are native
 result structs, not bare ID strings — they carry the data a caller needs to
 avoid silently over-granting access:
@@ -579,7 +593,7 @@ See package sections above for the complete API manifest.
 | `check_permission/` | Basic permission check with CheckOne, plus a caveated check with no context to show a Conditional CheckResult |
 | `write_relationships/` | Writing relationships with transaction builder |
 | `read_relationships/` | Reading relationships with iterator |
-| `lookup_resources/` | Finding resources a subject can access |
+| `lookup_resources/` | Finding resources a subject can access, plus `WithLookupResourcesDebug` -- a deep `parent` chain forces the maximum-dispatch-depth failure, and the traversal trace it attaches to `ReasonMetadata` is present only when the option is set |
 | `lookup_subjects/` | Finding subjects with access to a resource |
 | `watch_changes/` | Watching for relationship changes with a bounded consumer: subscribe, write, consume until the expected update arrives, cancel, and require the stream to release |
 | `call_deadlines/` | Bounding calls with a `context.Context` deadline, proved against a listener that accepts the connection and never answers |

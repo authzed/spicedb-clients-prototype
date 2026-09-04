@@ -13,6 +13,7 @@ import build.buf.gen.authzed.api.v1.ResolvedSubject;
 import build.buf.gen.authzed.api.v1.ZedToken;
 import io.grpc.stub.StreamObserver;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
@@ -64,6 +65,58 @@ class LookupResultsTest {
       assertEquals(LookupResult.Permissionship.HAS_PERMISSION, result.permissionship());
       assertNull(result.partialCaveat());
       assertEquals("lookup-rev-1", result.lookedUpAt());
+    }
+  }
+
+  @Test
+  void lookupResourcesWithDebugSetsRequestFlag() throws IOException {
+    var captured = new ArrayList<LookupResourcesRequest>();
+    var service =
+        new PermissionsServiceGrpc.PermissionsServiceImplBase() {
+          @Override
+          public void lookupResources(
+              LookupResourcesRequest request,
+              StreamObserver<LookupResourcesResponse> responseObserver) {
+            captured.add(request);
+            responseObserver.onCompleted();
+          }
+        };
+
+    try (TestServers servers = TestServers.start(service)) {
+      SpiceDBClient client = servers.client();
+      try (Stream<LookupResult.LookupResource> stream =
+          client.lookupResources(Consistency.full(), "document", "view", "user", "alice", true)) {
+        stream.toList();
+      }
+
+      assertEquals(1, captured.size());
+      assertTrue(captured.get(0).getWithDebug());
+    }
+  }
+
+  @Test
+  void lookupResourcesDefaultsWithDebugToFalse() throws IOException {
+    var captured = new ArrayList<LookupResourcesRequest>();
+    var service =
+        new PermissionsServiceGrpc.PermissionsServiceImplBase() {
+          @Override
+          public void lookupResources(
+              LookupResourcesRequest request,
+              StreamObserver<LookupResourcesResponse> responseObserver) {
+            captured.add(request);
+            responseObserver.onCompleted();
+          }
+        };
+
+    try (TestServers servers = TestServers.start(service)) {
+      SpiceDBClient client = servers.client();
+      try (Stream<LookupResult.LookupResource> stream =
+          client.lookupResources(Consistency.full(), "document", "view", "user", "alice")) {
+        stream.toList();
+      }
+
+      assertEquals(1, captured.size());
+      assertFalse(captured.get(0).getWithDebug());
     }
   }
 

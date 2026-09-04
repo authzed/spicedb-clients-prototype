@@ -714,6 +714,23 @@
 
 ### Documentation
 
+- **2026-09-04: `lookup_resources`/`lookup_subjects` docs now state their streams are not
+  guaranteed unique.** Proto regen picked up an upstream clarification on
+  `PermissionsService.LookupResources`/`LookupSubjects`: the same resource or subject may be
+  yielded more than once (e.g. via caveated/conditional results, or when a limit is set),
+  possibly with a different `permissionship`, and a caller needing uniqueness must
+  deduplicate itself. This client already left dedup to the caller — nothing to fix — but
+  the YARD docs for both methods and DESIGN.md's "Lookups" section now say so explicitly,
+  and the `lookup_resources`/`lookup_subjects` examples comment on why they assert with
+  `include` rather than an exact-array match. No API change.
+
+  This regen also added `LookupResourcesRequest#with_debug` (a bool enabling
+  recursion-depth debug info on error) and `DownloadPermissionSetsResponse#at_revision` (on
+  the `materialize` API, which this client does not wrap). Left both unwrapped: this client
+  does not expose the sibling `with_tracing`/`debug_trace` fields on any other RPC either,
+  so adding debug output for exactly one call would be an inconsistent, one-off surface
+  rather than a real feature.
+
 - **2026-08-18**: Pinned and documented stream release. Root DESIGN.md, "RULE: Abandoning a stream
   must release it", requires that stopping early actually tells the server to stop, and this client
   had no evidence either way: it contains no explicit cancel anywhere (a grep for "cancel" under

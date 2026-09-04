@@ -4,6 +4,22 @@
 
 ### Added
 
+- **2026-09-04: `lookupResources`/`lookupSubjects` docs now state their streams are not
+  guaranteed unique.** Proto regen picked up an upstream clarification on
+  `PermissionsService.LookupResources`/`LookupSubjects`: the same resource or subject may be
+  yielded more than once (e.g. via caveated/conditional results, or when a limit is set),
+  possibly with differing `permissionship`, and a caller needing uniqueness must deduplicate
+  itself. This client already left dedup to the caller — nothing to fix — but the JSDoc for
+  both methods and DESIGN.md's "Lookup Results" section now say so explicitly, and the
+  `lookup_resources`/`lookup_subjects` examples comment on why they collect results into a
+  `Set`. No API change.
+
+  This regen also added `LookupResourcesRequest.withDebug` (a bool enabling recursion-depth
+  debug info on error) and `DownloadPermissionSetsResponse.atRevision` (on the `materialize`
+  API, which this client does not wrap). Left both unwrapped: this client does not expose the
+  sibling `with_tracing`/`debug_trace` fields on any other RPC either, so adding debug output
+  for exactly one call would be an inconsistent, one-off surface rather than a real feature.
+
 - **2026-08-19: the insecure-remote-host refusal now throws `InvalidArgumentError`.**
   Root DESIGN.md, "RULE: Credentials over insecure transport require an explicit opt-in", clause 4 (new). The refusal for a plaintext connection to a non-loopback host is a caller
   argument rejected before any connection exists, so it now takes the same

@@ -844,6 +844,11 @@ export class SpiceDBClient {
    * result was computed at. Callers MUST check `permissionship` before
    * treating a result as a full grant.
    *
+   * Results are **not guaranteed to be unique**: the same `resourceId` may be
+   * yielded more than once — for example via caveated/conditional results, or
+   * when `params.limit` is set — possibly with differing `permissionship`.
+   * Callers that require uniqueness must deduplicate.
+   *
    * Stopping early releases the underlying stream: a `for await` `break`
    * resumes this generator through `.return()`, whose `finally` aborts the
    * call's internal controller. Pass `params.signal` when the release has
@@ -909,6 +914,10 @@ export class SpiceDBClient {
    * `excludedSubjects` before treating a wildcard match as a blanket grant,
    * or they risk granting access to subjects the server explicitly excluded.
    * `lookedUpAt` carries the revision the result was computed at.
+   *
+   * Results are **not guaranteed to be unique**: the same subject may be
+   * yielded more than once, possibly with differing `permissionship`.
+   * Callers that require uniqueness must deduplicate.
    *
    * Stopping early releases the underlying stream: a `for await` `break`
    * resumes this generator through `.return()`, whose `finally` aborts the

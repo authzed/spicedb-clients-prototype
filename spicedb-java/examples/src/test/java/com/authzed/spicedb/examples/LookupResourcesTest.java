@@ -37,6 +37,10 @@ class LookupResourcesTest extends SpiceDBIntegrationTest {
 
     // Every result carries a permissionship — callers must check it before treating a
     // CONDITIONAL_PERMISSION result as a full grant (see wildcard/caveat-aware examples).
+    //
+    // Results also aren't guaranteed unique: the same resourceId can be yielded more than
+    // once (e.g. via caveated/conditional results), possibly with a different permissionship
+    // each time. A caller that needs uniqueness must deduplicate by resourceId itself.
     assertThat(results)
         .allSatisfy(
             r ->

@@ -5,7 +5,7 @@ import grpc
 from authzed.api.materialize.v0 import relationships_pb2 as authzed_dot_api_dot_materialize_dot_v0_dot_relationships__pb2
 
 
-class RelationshipsServiceStub(object):
+class RelationshipsServiceStub:
     """Missing associated documentation comment in .proto file."""
 
     def __init__(self, channel):
@@ -21,7 +21,7 @@ class RelationshipsServiceStub(object):
                 _registered_method=True)
 
 
-class RelationshipsServiceServicer(object):
+class RelationshipsServiceServicer:
     """Missing associated documentation comment in .proto file."""
 
     def ExperimentalCountRelationshipsByFilter(self, request, context):
@@ -47,7 +47,7 @@ def add_RelationshipsServiceServicer_to_server(servicer, server):
 
 
  # This class is part of an EXPERIMENTAL API.
-class RelationshipsService(object):
+class RelationshipsService:
     """Missing associated documentation comment in .proto file."""
 
     @staticmethod

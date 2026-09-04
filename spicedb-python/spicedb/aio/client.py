@@ -590,6 +590,11 @@ class SpiceDBClient:
         results, which caveat context was missing. Callers MUST check
         ``permissionship`` before treating a result as a full grant.
         Handles pagination automatically.
+
+        Results are not guaranteed to be unique: the same resource may be
+        yielded more than once (e.g. via caveated/conditional results),
+        possibly with a different ``permissionship``. Callers that require
+        uniqueness must deduplicate by ``resource_id`` themselves.
         """
         self._ensure_channel()
         subj_ref = _requests.subject_reference(subject)
@@ -659,6 +664,11 @@ class SpiceDBClient:
         ``excluded_subjects``. Callers MUST check ``excluded_subjects``
         before treating a wildcard match as a blanket grant, or they risk
         granting access to subjects the server explicitly excluded.
+
+        Results are not guaranteed to be unique: the same subject may be
+        yielded more than once, possibly with a different
+        ``permissionship``. Callers that require uniqueness must
+        deduplicate by subject id themselves.
         """
         self._ensure_channel()
         ctx_struct = _requests.context_struct(context)

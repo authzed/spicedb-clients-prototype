@@ -318,6 +318,18 @@
   # rel_b's item is checked with {"now": 42, "region": "us"} (call-level default, unmodified)
   ```
 
+### Changed
+
+- **2026-09-04: proto client regenerated** (`protobuf` 7.34.0 -> 7.36.1; no other dependency
+  changes). No new fields, messages, or RPCs reach this client — the `authzed.api.materialize.v0`
+  package gained a field, but no idiomatic client (including this one) wraps that service. The one
+  behavior-relevant change is upstream doc: `PermissionsService`'s `LookupResources`/
+  `LookupSubjects` RPCs are now documented as **not** guaranteeing unique results (the same
+  resource/subject may be yielded more than once, possibly with a different `permissionship`).
+  This was already true of the wire behavior; `lookup_resources()`/`lookup_subjects()` docstrings
+  and this client's `DESIGN.md` Streaming section now say so explicitly. No code changes were
+  needed.
+
 ### Fixed
 
 - **2026-08-19**: **The clear-before-write delete tolerates one error, not all of them.** It

@@ -5,7 +5,7 @@ import grpc
 from authzed.api.v1 import experimental_service_pb2 as authzed_dot_api_dot_v1_dot_experimental__service__pb2
 
 
-class ExperimentalServiceStub(object):
+class ExperimentalServiceStub:
     """ExperimentalService exposes a number of APIs that are currently being
     prototyped and tested for future inclusion in the stable API.
     """
@@ -68,7 +68,7 @@ class ExperimentalServiceStub(object):
                 _registered_method=True)
 
 
-class ExperimentalServiceServicer(object):
+class ExperimentalServiceServicer:
     """ExperimentalService exposes a number of APIs that are currently being
     prototyped and tested for future inclusion in the stable API.
     """
@@ -205,7 +205,7 @@ def add_ExperimentalServiceServicer_to_server(servicer, server):
 
 
  # This class is part of an EXPERIMENTAL API.
-class ExperimentalService(object):
+class ExperimentalService:
     """ExperimentalService exposes a number of APIs that are currently being
     prototyped and tested for future inclusion in the stable API.
     """

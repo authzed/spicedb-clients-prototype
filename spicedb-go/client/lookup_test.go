@@ -21,9 +21,15 @@ type lookupStubServer struct {
 
 	lookupResourcesResponses []*v1.LookupResourcesResponse
 	lookupSubjectsResponses  []*v1.LookupSubjectsResponse
+
+	// lastLookupResourcesRequest records the most recent request this stub
+	// received, so tests can assert on fields the client sets that never
+	// appear in a response (e.g. WithDebug).
+	lastLookupResourcesRequest *v1.LookupResourcesRequest
 }
 
-func (s *lookupStubServer) LookupResources(_ *v1.LookupResourcesRequest, stream grpc.ServerStreamingServer[v1.LookupResourcesResponse]) error {
+func (s *lookupStubServer) LookupResources(req *v1.LookupResourcesRequest, stream grpc.ServerStreamingServer[v1.LookupResourcesResponse]) error {
+	s.lastLookupResourcesRequest = req
 	for _, resp := range s.lookupResourcesResponses {
 		if err := stream.Send(resp); err != nil {
 			return err
@@ -303,4 +309,24 @@ func TestLookupSubjects_StreamErrorYieldsZeroValueAndMappedError(t *testing.T) {
 
 	require.Equal(t, 1, yields)
 	require.Error(t, gotErr)
+}
+
+// TestLookupResources_WithDebugSetsRequestField proves WithLookupResourcesDebug
+// sets LookupResourcesRequest.WithDebug, and that omitting it leaves the
+// field false -- the default before this option existed, so a caller that
+// never touches it keeps sending exactly the request it always has.
+func TestLookupResources_WithDebugSetsRequestField(t *testing.T) {
+	stub := &lookupStubServer{}
+	dialer := startLookupStubServer(t, stub)
+	c := newTestClient(t, dialer)
+
+	for range c.LookupResources(context.Background(), consistency.MinLatency(), "document", "view", "user", "alice") {
+	}
+	require.NotNil(t, stub.lastLookupResourcesRequest)
+	require.False(t, stub.lastLookupResourcesRequest.GetWithDebug())
+
+	for range c.LookupResources(context.Background(), consistency.MinLatency(), "document", "view", "user", "alice", WithLookupResourcesDebug()) {
+	}
+	require.NotNil(t, stub.lastLookupResourcesRequest)
+	require.True(t, stub.lastLookupResourcesRequest.GetWithDebug())
 }

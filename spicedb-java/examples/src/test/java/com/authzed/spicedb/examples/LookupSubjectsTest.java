@@ -38,6 +38,10 @@ class LookupSubjectsTest extends SpiceDBIntegrationTest {
     // None of these are wildcard matches, so excludedSubjects is always empty here — see the
     // lookupSubjects entry in DESIGN.md for the wildcard case callers MUST handle: a "*" subject's
     // excludedSubjects lists subjects NOT actually granted, despite the wildcard match.
+    //
+    // Results also aren't guaranteed unique: the same subject can be yielded more than once,
+    // possibly with a different permissionship each time. A caller that needs uniqueness must
+    // deduplicate by subject ID itself.
     assertThat(results).allSatisfy(r -> assertThat(r.excludedSubjects()).isEmpty());
     List<String> subjectIDs = results.stream().map(r -> r.subject().subjectId()).toList();
     assertThat(subjectIDs).containsExactlyInAnyOrder("alice", "bob", "charlie");

@@ -4,6 +4,36 @@
 
 ### Added
 
+- **2026-09-04: `LookupResources` gains a `WithLookupResourcesDebug` option**, wrapping the
+  proto's new `LookupResourcesRequest.with_debug` field. When a `LookupResources` call fails
+  because it exceeds SpiceDB's maximum dispatch depth -- surfaced as a `CodeFailedPrecondition`
+  `*client.Error` whose `Reason` is `"ERROR_REASON_MAXIMUM_DEPTH_EXCEEDED"` -- setting this
+  option makes the server attach a `dispatch_traversal_trace` key to that error's
+  `ReasonMetadata`, describing the traversal that hit the limit. Without it, `ReasonMetadata` is
+  empty for this failure, same as before. It has no effect on a call that does not hit the limit,
+  and no effect on any other method: SpiceDB currently honors `with_debug` only on this RPC.
+
+  ```go
+  for resource, err := range c.LookupResources(ctx, cs, "node", "view", "user", "alice",
+      client.WithLookupResourcesDebug()) {
+      if err != nil {
+          var spicedbErr *client.Error
+          if errors.As(err, &spicedbErr) && spicedbErr.Reason == "ERROR_REASON_MAXIMUM_DEPTH_EXCEEDED" {
+              log.Printf("traversal trace: %s", spicedbErr.ReasonMetadata["dispatch_traversal_trace"])
+          }
+      }
+  }
+  ```
+
+  Purely additive: `LookupResources` grows a trailing variadic `opts ...LookupResourcesOption`
+  parameter, which every existing call site (none of which pass it) is unaffected by. No new
+  example directory -- `examples/lookup_resources/` now also builds a 100-node `parent` chain
+  deep enough to force SpiceDB past its default maximum dispatch depth, and asserts the traversal
+  trace is present with the option and absent without it. Also updated: `LookupResourcesRequest`
+  and `LookupSubjectsRequest` proto doc comments now note that streamed results are not
+  guaranteed unique (a resource/subject may repeat, e.g. under a caveated result or a limit) --
+  informational, no client behavior changed by it, since neither call ever deduplicated.
+
 - **2026-08-19: the insecure-remote-host refusal now matches `ErrInvalidArgument`.**
   Root DESIGN.md, "RULE: Credentials over insecure transport require an explicit opt-in", clause 4 (new). The refusal for a plaintext connection to a non-loopback host is a caller
   argument rejected before any connection exists, so it now takes the same

@@ -49,7 +49,9 @@ txn.touch(relationship("document:readme", "viewer", "user:jimmy"));
 txn.touch(relationship("document:design", "editor", "user:jimmy"));
 await client.write(txn);
 
-// Find all documents that user:jimmy can view
+// Find all documents that user:jimmy can view. Results aren't guaranteed
+// unique (the same resourceId can be yielded more than once), so callers
+// that need uniqueness dedupe themselves -- a Set here.
 console.log("Documents user:jimmy can view:");
 const found = new Set<string>();
 for await (const resource of client.lookupResources(

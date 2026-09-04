@@ -4,6 +4,29 @@
 
 ### Added
 
+- **2026-09-04: proto client regenerated, plus `lookupResources(..., withDebug)`.** The
+  checked-in `proto-clients/spicedb-java-proto/gen` mirror is populated for the first time in
+  this repo, but the compiled dependency (the `build.buf.gen:authzed_api_*` BSR artifacts `lib`
+  actually builds against) was already current — this client compiled unchanged against it
+  before this regen. The two behavior-relevant changes:
+
+  - `LookupResourcesRequest` gained `with_debug` (a bool enabling recursion-depth debug info on
+    a failed lookup). `lookupResources` gained a new overload with a trailing `boolean
+    withDebug` (default `false` on the shorter form), matching this client's existing
+    trailing-parameter-overload convention (e.g. `checkPermission`'s `context` overload). It
+    never changes a successful result and is not decoded by this client — it rides the mapped
+    `SpiceDBException`'s cause for a caller who wants to read it.
+  - `LookupResources`/`LookupSubjects` are now documented upstream as **not** guaranteeing
+    unique results (the same resource/subject may be yielded more than once, possibly with a
+    different `permissionship`). This was already true of the wire behavior; `lookupResources`/
+    `lookupSubjects` Javadoc and this client's `DESIGN.md` now say so explicitly. No behavior
+    change.
+
+  Also unchanged: the regen added the whole `authzed.api.materialize.v0` package (a
+  `RelationshipsService`/`WatchPermissionsService`/`WatchPermissionSetsService` trio) and a new
+  `DownloadPermissionSetsResponse.at_revision` field on it. This client does not wrap that
+  service, matching every other idiomatic client in this repo — it remains out of scope.
+
 - **2026-08-19: the insecure-remote-host refusal now throws `InvalidArgumentException`.**
   Root DESIGN.md, "RULE: Credentials over insecure transport require an explicit opt-in", clause 4 (new). The refusal for a plaintext connection to a non-loopback host is a caller
   argument rejected before any connection exists, so it now takes the same

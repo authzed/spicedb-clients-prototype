@@ -22,7 +22,9 @@ RSpec.describe 'LookupSubjects' do
     expect(subject_ids).to include('bob')
 
     # Each result is a native SpiceDB::LookupSubject wrapping a resolved
-    # subject — not a bare ID.
+    # subject — not a bare ID. Results also aren't guaranteed unique (the
+    # same subject can be yielded more than once), which is why this
+    # asserts with `include` rather than an exact-array match.
     expect(results).to all(be_a(SpiceDB::LookupSubject))
     expect(results.map { |r| r.subject.permissionship }).to all(eq(:has_permission))
   end

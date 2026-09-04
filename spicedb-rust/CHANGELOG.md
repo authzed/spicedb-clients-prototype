@@ -133,6 +133,16 @@
 
 ### Fixes
 
+- **2026-09-04** (proto regen; no public API change): `LookupResourcesRequest` gained a new
+  `with_debug` field (debug info for `MaxDepthExceeded` errors, surfaced in error details).
+  `lookup_resources` now sets it to `false` explicitly, the same way `with_tracing` is
+  hardcoded to `false` on `CheckBulkPermissionsRequest` — a debug knob left off the primary
+  surface, reachable through `raw_proto()` for a caller who wants it. Also: `lookup_resources`
+  and `lookup_subjects`' doc comments now note that results are **not guaranteed unique** —
+  the server may yield the same resource/subject more than once (e.g. via caveated results),
+  possibly with differing `permissionship` — matching the updated proto docs. No behavior
+  changed; only the field default and the doc comments.
+
 - **2026-08-19**: **The clear-before-write delete tolerates one error, not all of them.** It
   swallowed every failure, so an unreachable server or a rotated token read as "nothing to clear"
   and the example carried on to fail somewhere less obvious. Only

@@ -338,16 +338,28 @@ jobs:
           DISPATCH_TYPE: ${{ github.event.action }}
         run: |
           set -euo pipefail
-          # mage prints "proto generation failed for: go, ruby" (or the idiomatic
-          # equivalent) to stdout; /tmp/gen.log is the tee'd copy. `|| true`
-          # because grep exits 1 when nothing matched, which is the success case.
-          failed=$(grep -oE '(proto generation|idiomatic client update) failed for: .*' /tmp/gen.log | tr '\n' '; ' || true)
-          # Same treatment for the gates, whose failure line mage prints as
-          # "post-generation gates failed: ...".
-          gatefail=$(grep -oE 'post-generation gates failed: .*' /tmp/gen.log | tr '\n' '; ' || true)
+          # mage reports an aggregate failure as a line of its own, prefixed
+          # Error:, and /tmp/gen.log is the tee'd copy of its stdout.
+          #
+          # Both patterns are anchored to the start of a line and end in a
+          # restricted character class, which matters more than it looks. The
+          # log also carries Claude's streamed output, and Claude reads files --
+          # including this workflow -- so a file's entire contents can arrive as
+          # one very long line. An unanchored `.*` then matches the phrase
+          # inside this very comment and captures the rest of that line: run
+          # 33831405538 put 65KB of this file into its own PR description, on a
+          # run where nothing had failed at all.
+          #
+          # `|| true` because grep exits 1 when nothing matched, which is the
+          # success case.
+          failed=$(grep -oE '^Error: (proto generation|idiomatic client update) failed for: [a-z, ]+$' /tmp/gen.log | tr '\n' '; ' || true)
+          gatefail=$(grep -oE '^Error: post-generation gates failed: [A-Za-z, ]+$' /tmp/gen.log | tr '\n' '; ' || true)
           if [ -n "$gatefail" ]; then
             failed="${failed}${gatefail}"
           fi
+          # Belt and braces: a description is a summary, so cap the field no
+          # matter what matched.
+          failed=$(printf '%s' "${failed:-}" | cut -c1-400)
           echo "failed=${failed:-none reported}" >> "$GITHUB_OUTPUT"
           # A clean PR requires both generation and the gates to have passed. A
           # tree that generated fine but no longer compatible, or that fails the

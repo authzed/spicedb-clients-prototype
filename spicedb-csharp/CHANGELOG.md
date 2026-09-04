@@ -4,6 +4,17 @@
 
 ### Added
 
+- **2026-09-04: `LookupResourcesAsync` gained a trailing optional `withDebug`
+  parameter**, mapping the proto client regen's new `LookupResourcesRequest.with_debug`
+  field. It asks the server to attach debug information to a
+  maximum-recursion-depth error and changes nothing about a successful result;
+  this client does not decode that payload, so recover it from the mapped
+  `SpiceDBException.InnerException` (the original `RpcException`) if needed.
+  Same regen also touched `Core.cs`/`ExperimentalService.cs` (validation-only,
+  no C# surface change) and added an `at_revision` field to the Materialize
+  service's `DownloadPermissionSetsResponse` (`Watchpermissionsets.cs`) — that
+  service is not wrapped by this client and remains out of scope.
+
 - **2026-08-19: the insecure-remote-host refusal now throws `InvalidArgumentException`.**
   Root DESIGN.md, "RULE: Credentials over insecure transport require an explicit opt-in", clause 4 (new). The refusal for a plaintext connection to a non-loopback host is a caller
   argument rejected before any connection exists, so it now takes the same

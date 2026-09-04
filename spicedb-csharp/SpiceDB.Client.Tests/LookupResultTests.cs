@@ -330,4 +330,35 @@ public class LookupResultTests
         results[0].PartialCaveat.Should().NotBeNull();
         results[0].PartialCaveat!.MissingRequiredContext.Should().Equal("ip");
     }
+
+    [Fact]
+    public async Task LookupResourcesAsync_WithDebugTrue_SetsRequestFlag()
+    {
+        LookupResourcesRequest? captured = null;
+
+        var mockPermissions = new Mock<PermissionsService.PermissionsServiceClient>();
+        mockPermissions
+            .Setup(c => c.LookupResources(
+                It.IsAny<LookupResourcesRequest>(),
+                It.IsAny<Metadata>(),
+                It.IsAny<DateTime?>(),
+                It.IsAny<CancellationToken>()))
+            .Callback<LookupResourcesRequest, Metadata, DateTime?, CancellationToken>(
+                (req, _, _, _) => captured = req)
+            .Returns(MakeServerStreamingCall(new FakeStreamReader<LookupResourcesResponse>([])));
+
+        await using var client = new SpiceDBClient(
+            mockPermissions.Object,
+            new Mock<SchemaService.SchemaServiceClient>().Object,
+            new Mock<WatchService.WatchServiceClient>().Object,
+            new Mock<ExperimentalService.ExperimentalServiceClient>().Object);
+
+        await foreach (var _ in client.LookupResourcesAsync(
+            Consistency.Full(), "document", "view", "user", "alice", withDebug: true))
+        {
+        }
+
+        captured.Should().NotBeNull();
+        captured!.WithDebug.Should().BeTrue();
+    }
 }

@@ -892,6 +892,13 @@ public sealed class SpiceDBClient : IAsyncDisposable
     /// mapped and rethrown instead of retried — see
     /// <see cref="ReadRelationshipsAsync"/> for the full rationale.
     /// </para>
+    /// <para>
+    /// <paramref name="withDebug"/> asks the server to attach debug information
+    /// to the error it returns when this lookup fails with a maximum-recursion-depth
+    /// error. It never changes a successful result. This client does not decode
+    /// that debug payload — recover the mapped <see cref="RpcException"/> from
+    /// <see cref="SpiceDBException.InnerException"/> to read it.
+    /// </para>
     /// </summary>
     public async IAsyncEnumerable<LookupResource> LookupResourcesAsync(
         ConsistencyStrategy consistency,
@@ -899,7 +906,8 @@ public sealed class SpiceDBClient : IAsyncDisposable
         string permission,
         string subjectType,
         string subjectID,
-        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        [EnumeratorCancellation] CancellationToken cancellationToken = default,
+        bool withDebug = false)
     {
         ArgumentNullException.ThrowIfNull(consistency);
 
@@ -920,6 +928,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
                     },
                 },
                 OptionalLimit = DefaultLookupPageSize,
+                WithDebug = withDebug,
             };
             if (cursor != null)
                 req.OptionalCursor = cursor;

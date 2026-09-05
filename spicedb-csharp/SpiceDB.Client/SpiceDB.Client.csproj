@@ -11,7 +11,7 @@
 
   <ItemGroup>
     <PackageReference Include="Grpc.Net.Client" Version="2.83.0" />
-    <PackageReference Include="Google.Protobuf" Version="3.35.1" />
+    <PackageReference Include="Google.Protobuf" Version="3.36.1" />
     <PackageReference Include="Grpc.Core.Api" Version="2.83.0" />
     <!-- google.rpc.Status/ErrorInfo and Status.GetDetail<T>(). Referenced
          explicitly rather than relied on transitively, because Errors.cs reads
@@ -21,7 +21,7 @@
          ToRpcException(). gRPC's own implementation of the
          grpc-status-details-bin trailer, used instead of reading and writing
          that trailer by hand. -->
-    <PackageReference Include="Grpc.StatusProto" Version="2.67.*" />
+    <PackageReference Include="Grpc.StatusProto" Version="2.83.*" />
   </ItemGroup>
 
   <!-- Reference the proto-generated client project -->

@@ -83,6 +83,34 @@ func gitRunV(args ...string) error {
 }
 
 // Gen updates the idiomatic client based on proto client changes.
+// optionsInstruction is spelled out in the prompt rather than left to
+// ./DESIGN.md because this exact mistake has been made twice by regeneration.
+// Both times the upstream API gained an optional field, and both times it
+// landed on a public signature: first as a trailing optional parameter, then --
+// repairing that -- as a required positional parameter plus a compatibility
+// overload. C# substitutes an optional parameter's default at the call site, so
+// the first was binary-breaking for every already-compiled assembly, and the
+// second broke callers outright.
+const optionsInstruction = "A new option on an existing operation is a NEW PROPERTY on that " +
+	"operation's options class (CheckOptions, LookupOptions), read by the existing " +
+	"...WithOptionsAsync method. Do not add a parameter to any public method, optional or " +
+	"otherwise: C# bakes an optional parameter's default into the call site, so adding one is a " +
+	"binary-breaking change for every already-compiled assembly. Do not add a per-option method " +
+	"variant either (...WithContextAsync and friends are what this replaces). If an operation has " +
+	"no options class yet, add one modelled on CheckOptions and give the operation a " +
+	"...WithOptionsAsync form beside its plain one; CancellationToken stays its own trailing " +
+	"parameter. See root DESIGN.md, \"RULE: Every RPC wrapper must have one place to add an " +
+	"option\", and ./DESIGN.md, \"Where a new option goes\"."
+
+// changelogInstruction names CHANGELOG.md explicitly: the previous wording said
+// "update DESIGN.md changelog", and the changelog is not in DESIGN.md.
+const changelogInstruction = "Record what you changed in CHANGELOG.md -- not DESIGN.md -- under " +
+	"the single existing \"## Unreleased\" heading. Never add a second one. Put the entry in the " +
+	"right \"###\" subsection (Added, Changed, Fixed), formatted like the entries already there: " +
+	"a bold \"**YYYY-MM-DD: one-line summary.**\" followed by an indented paragraph saying what " +
+	"changed and why it matters to a caller. Update DESIGN.md itself only when the design changed, " +
+	"not merely to note the change."
+
 func Gen() error {
 	// Read last generation baseline
 	baseline, err := os.ReadFile(lastGenFile)
@@ -115,8 +143,9 @@ func Gen() error {
 		"The proto client has changed.\n\nSummary of changes:\n\n%s\n\nChanged files:\n\n%s\n\n"+
 			"Read the changed files under %s for the details you need. "+
 			"Read ../DESIGN.md and ./DESIGN.md. Update this client accordingly. "+
-			"Ensure all tests still pass. "+
-			"Update DESIGN.md changelog if needed.",
+			"Ensure all tests still pass.\n\n"+
+			optionsInstruction+"\n\n"+
+			changelogInstruction,
 		stat, names, protoClientDir,
 	)
 

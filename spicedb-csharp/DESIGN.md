@@ -12,6 +12,41 @@ compatibility mandate. This document takes precedence for C#-specific decisions.
 The API should make the correct thing easy and the wrong thing hard. Users
 should fall into correct usage patterns by default.
 
+### Where a new option goes
+
+**A new option on an existing operation is a new property on that operation's
+options class — never a new parameter, and never a new method.** `CheckOptions`
+carries `Context` and `Timeout`; `LookupOptions` carries `WithDebug`. Each
+operation exposes a plain form and one `...WithOptionsAsync` form that reads
+them.
+
+This matters more in C# than in most languages, and it has broken this client
+twice. **C# substitutes an optional parameter's default at the call site**, so
+adding `int foo = 0` to a public method is a binary-breaking change for every
+already-compiled assembly — the caller keeps passing the old default until it is
+recompiled. `with_debug` arrived upstream, landed here as a trailing optional
+parameter, and broke the api-compat gate; the repair made it a *required*
+positional parameter plus a compatibility overload, which broke callers a second
+way and left an overload family behind.
+
+A method per option is the same mistake spread over time.
+`CheckPermissionsAsync` / `CheckPermissionsWithContextAsync` grows one new member
+for every option the API ever adds, each needing its own doc, test and example.
+
+So, when the upstream API gains an optional field:
+
+1. Add a property to the relevant options class.
+2. Read it in the existing `...WithOptionsAsync` method.
+3. Leave every public signature alone.
+
+If an operation has no options class yet, add one modelled on `CheckOptions`,
+and give the operation a `...WithOptionsAsync` form beside its plain one.
+`CancellationToken` stays its own trailing parameter, per .NET convention,
+rather than moving onto the options class.
+
+See root DESIGN.md, "RULE: Every RPC wrapper must have one place to add an
+option".
+
 ### Namespace & Project Structure
 
 Single namespace: `SpiceDB.Client`

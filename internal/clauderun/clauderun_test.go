@@ -78,17 +78,89 @@ func TestRenderStreamMalformedLineEchoedVerbatim(t *testing.T) {
 	}
 }
 
-// TestRenderStreamSkipsSystemAndRateLimitEvents covers the two event types
-// that carry no useful information for a human watching CI logs: "system"
-// (init/hook events, which are enormous) and "rate_limit_event".
-func TestRenderStreamSkipsSystemAndRateLimitEvents(t *testing.T) {
-	input := `{"type":"system","subtype":"init","tools":["a","b","c"]}` + "\n" +
-		`{"type":"rate_limit_event","detail":"..."}` + "\n"
+// TestRenderStreamDropsSystemEventBulk covers what is still skipped from a
+// system event. The tool list, working directory and hook wiring are large and
+// say nothing about what a run did; only the model is kept, by
+// TestRenderStreamRecordsTheModel.
+//
+// This test previously asserted that "rate_limit_event" was skipped too. That
+// was wrong, and the cost was concrete: run 33810252060 hit its quota as seven
+// simultaneous failures with nothing in the log leading up to them, because the
+// only warning had been dropped here.
+func TestRenderStreamDropsSystemEventBulk(t *testing.T) {
+	input := `{"type":"system","subtype":"init","tools":["a","b","c"],"cwd":"/w","model":"m"}` + "\n"
 
 	var out bytes.Buffer
 	renderStream(strings.NewReader(input), &out)
 
-	if got := out.String(); got != "" {
-		t.Fatalf("renderStream(%q) = %q, want no output for system/rate_limit_event lines", input, got)
+	got := out.String()
+	for _, unwanted := range []string{`"a"`, `"b"`, `"c"`, "/w", "tools"} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("renderStream leaked %q from a system event: %q", unwanted, got)
+		}
+	}
+}
+
+// The "system" and "rate_limit_event" types were both dropped wholesale. That
+// cost two things worth having: the model a run used, which nothing else
+// records, and any warning that a quota window was about to end. These pin the
+// narrow slice of each that is now kept.
+
+func TestRenderStreamRecordsTheModel(t *testing.T) {
+	input := `{"type":"system","subtype":"init","model":"claude-opus-5","tools":["Bash","Read"],"cwd":"/w"}` + "\n"
+
+	var out bytes.Buffer
+	renderStream(strings.NewReader(input), &out)
+
+	got := out.String()
+	if !strings.Contains(got, "claude-opus-5") {
+		t.Fatalf("renderStream(%q) = %q, want the model recorded", input, got)
+	}
+	// The rest of an init event is large and says nothing about the run.
+	for _, unwanted := range []string{"Bash", "/w"} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("renderStream leaked %q from the init event: %q", unwanted, got)
+		}
+	}
+}
+
+func TestRenderStreamIgnoresNonInitSystemEvents(t *testing.T) {
+	input := `{"type":"system","subtype":"hook","hook":"PreToolUse","payload":"noise"}` + "\n"
+
+	var out bytes.Buffer
+	renderStream(strings.NewReader(input), &out)
+
+	if got := strings.TrimSpace(out.String()); got != "" {
+		t.Fatalf("a non-init system event should render nothing, got %q", got)
+	}
+}
+
+// A system init that carries no model must print nothing rather than a bare
+// "model:" with an empty value.
+func TestRenderStreamOmitsAnAbsentModel(t *testing.T) {
+	input := `{"type":"system","subtype":"init","tools":[]}` + "\n"
+
+	var out bytes.Buffer
+	renderStream(strings.NewReader(input), &out)
+
+	if got := strings.TrimSpace(out.String()); got != "" {
+		t.Fatalf("an init event without a model should render nothing, got %q", got)
+	}
+}
+
+// Rate-limit events are the only advance warning that a quota window is
+// running out. Dropping them is why run 33810252060 hit the limit as seven
+// simultaneous failures with nothing in the log leading up to them.
+func TestRenderStreamSurfacesRateLimitEvents(t *testing.T) {
+	input := `{"type":"rate_limit_event","status":"approaching","resets_at":"2026-09-04T02:50:00Z"}` + "\n"
+
+	var out bytes.Buffer
+	renderStream(strings.NewReader(input), &out)
+
+	got := out.String()
+	for _, want := range []string{"rate_limit_event", "approaching", "2026-09-04T02:50:00Z"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("rate-limit event must reach the log; %q missing from %q", want, got)
+		}
 	}
 }

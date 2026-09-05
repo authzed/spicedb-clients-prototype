@@ -111,6 +111,13 @@ type streamEvent struct {
 	Type    string        `json:"type"`
 	Message *assistantMsg `json:"message,omitempty"`
 
+	// Model is carried by the "system"/"init" event. It is the single most
+	// important determinant of what a regeneration produces, and until this
+	// was recorded no run's output could be attributed to a model at all --
+	// the pipeline pins the upstream API commit precisely and left this,
+	// which matters more, unlogged.
+	Model string `json:"model,omitempty"`
+
 	// result fields
 	Subtype      string  `json:"subtype,omitempty"`
 	NumTurns     int     `json:"num_turns,omitempty"`
@@ -178,9 +185,16 @@ func renderStream(r io.Reader, w io.Writer) {
 		}
 
 		switch evt.Type {
-		case "system", "rate_limit_event":
-			// Init and hook events: enormous, uninteresting, intentionally
-			// skipped.
+		case "system":
+			renderSystem(w, evt)
+		case "rate_limit_event":
+			// Printed verbatim rather than parsed. This is the only advance
+			// warning that a quota window is running out, and dropping it is
+			// why regeneration run 33810252060 met the limit as seven
+			// simultaneous failures with nothing in the log leading up to
+			// them. The event's shape is not documented, so printing it whole
+			// is both the honest and the robust choice.
+			fmt.Fprintln(w, line)
 		case "assistant":
 			renderAssistant(w, evt)
 		case "result":
@@ -263,6 +277,16 @@ func truncate(s string, n int) string {
 }
 
 // renderResult writes the "result" event's summary line.
+// renderSystem prints the one field of the init event worth keeping. The rest
+// of a system event -- the tool list, the working directory, hook wiring -- is
+// large and says nothing about what the run did, which is why the whole event
+// used to be skipped along with it.
+func renderSystem(w io.Writer, evt streamEvent) {
+	if evt.Subtype == "init" && evt.Model != "" {
+		fmt.Fprintf(w, "  == model: %s\n", evt.Model)
+	}
+}
+
 func renderResult(w io.Writer, evt streamEvent) {
 	seconds := float64(evt.DurationMS) / 1000.0
 	fmt.Fprintf(w, "  == %s | %d turns | %.0fs | $%.4f\n", evt.Subtype, evt.NumTurns, seconds, evt.TotalCostUSD)

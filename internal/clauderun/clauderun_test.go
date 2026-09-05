@@ -165,45 +165,42 @@ func TestRenderStreamSurfacesRateLimitEvents(t *testing.T) {
 	}
 }
 
-// The model is pinned in one place so that generation is reproducible and a
-// CLI default change cannot silently alter seven clients' output. These pin
-// that single place: its default, its override, and that every invocation
-// actually carries the flag.
+// Nothing is pinned by default -- the CLI picks a model per task -- but the
+// choice lives in one place and CLAUDE_MODEL can pin it for a run. These cover
+// both states, including that an unpinned run passes no --model flag at all.
 
-func TestModelDefaultsToTheePinnedModel(t *testing.T) {
+func TestModelUnpinnedByDefault(t *testing.T) {
 	t.Setenv(ModelEnv, "")
 
-	if got := Model(); got != DefaultModel {
-		t.Fatalf("Model() = %q, want the pinned default %q", got, DefaultModel)
+	if got := Model(); got != "" {
+		t.Fatalf("Model() = %q, want empty so the CLI chooses", got)
 	}
-	if DefaultModel == "" {
-		t.Fatal("DefaultModel must name a model; an empty pin is the unpinned state this prevents")
+	if args := ModelArgs(); len(args) != 0 {
+		t.Fatalf("ModelArgs() = %v, want nothing spliced into the command", args)
 	}
 }
 
-func TestModelEnvOverridesTheDefault(t *testing.T) {
-	t.Setenv(ModelEnv, "claude-sonnet-5")
+func TestModelEnvPinsTheModel(t *testing.T) {
+	t.Setenv(ModelEnv, "claude-opus-5")
 
-	if got := Model(); got != "claude-sonnet-5" {
-		t.Fatalf("Model() = %q, want the %s override to win", got, ModelEnv)
+	if got := Model(); got != "claude-opus-5" {
+		t.Fatalf("Model() = %q, want the %s pin to win", got, ModelEnv)
+	}
+	args := ModelArgs()
+	if len(args) != 2 || args[0] != "--model" || args[1] != "claude-opus-5" {
+		t.Fatalf("ModelArgs() = %v, want [--model claude-opus-5]", args)
 	}
 }
 
 // Whitespace-only is treated as unset: a CI expression that resolves to an
 // empty string would otherwise pin the model to " " and fail the run.
-func TestModelIgnoresABlankOverride(t *testing.T) {
+func TestModelIgnoresABlankPin(t *testing.T) {
 	t.Setenv(ModelEnv, "   ")
 
-	if got := Model(); got != DefaultModel {
-		t.Fatalf("Model() = %q, want a blank override ignored in favour of %q", got, DefaultModel)
+	if got := Model(); got != "" {
+		t.Fatalf("Model() = %q, want a blank pin ignored", got)
 	}
-}
-
-func TestModelArgsCarryTheFlag(t *testing.T) {
-	t.Setenv(ModelEnv, "claude-haiku-4-5-20251001")
-
-	args := ModelArgs()
-	if len(args) != 2 || args[0] != "--model" || args[1] != "claude-haiku-4-5-20251001" {
-		t.Fatalf("ModelArgs() = %v, want [--model claude-haiku-4-5-20251001]", args)
+	if args := ModelArgs(); len(args) != 0 {
+		t.Fatalf("ModelArgs() = %v, want a blank pin to splice nothing", args)
 	}
 }

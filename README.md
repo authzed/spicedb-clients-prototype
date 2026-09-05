@@ -283,16 +283,16 @@ set. It is deliberately set by exactly one workflow —
 Claude credentials. Every other CI job must leave it unset so that `meta.yaml`'s
 `gen-nodiff` check keeps asserting that generation produces no diff.
 
-`CLAUDE_MODEL` overrides the model those steps run on. It defaults to
-`claude-opus-5`, pinned in one place — `DefaultModel` in
-`internal/clauderun/clauderun.go` — and every Claude invocation in this
-repository passes it. Generation is meant to be reproducible: the pipeline
-already pins the upstream API commit exactly and prints the command to repeat a
-run, and the model shapes the generated code more than the proto pin does, so a
-CLI default that changed underneath us would silently change seven clients'
-output with nothing in the record to explain it. Set `CLAUDE_MODEL` to try a
-different model against one run, or to hold an older one if a new default
-generates worse code.
+`CLAUDE_MODEL` pins the model those steps run on. Unset -- the default -- nothing
+is pinned and the CLI selects a model per task, spending a cheaper one on simple
+work and reserving the expensive one for the parts that need it.
+
+Reproducibility comes from the record rather than from a pin: every run logs the
+model it chose (`== model: ...`), so a past run can be reproduced by reading that
+line back and setting `CLAUDE_MODEL` to it. Set it also to hold one model steady
+while comparing output. It is decided in one place, `Model` in
+`internal/clauderun/clauderun.go`, and every Claude invocation in this repository
+goes through it.
 
 ### Integration Tests
 

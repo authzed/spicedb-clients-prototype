@@ -21,22 +21,24 @@ import (
 	"strings"
 )
 
-// DefaultModel is the model every Claude invocation in this repository runs
-// on. It is pinned rather than left to the CLI's default because generation is
-// meant to be reproducible: the pipeline already pins the upstream API commit
-// exactly and prints the command to repeat a run, and the model shapes the
-// generated code more than the proto pin does. A CLI default that changed
-// underneath us would silently change seven clients' output with nothing in
-// the record to explain it.
-const DefaultModel = "claude-opus-5"
+// DefaultModel is empty on purpose: by default nothing is pinned and the CLI
+// selects a model per task, which lets it spend a cheaper one on simple work
+// and reserve the expensive one for the parts that need it.
+//
+// Pinning was tried and deliberately reverted. Reproducibility does not
+// actually require it: renderStream records the model each run chose, so a run
+// can be reproduced by reading that line back and setting ModelEnv to it. The
+// record is what makes a run repeatable; the pin only made every run identical,
+// which is a different and more expensive property.
+const DefaultModel = ""
 
-// ModelEnv overrides DefaultModel for a single run without a code change --
-// useful for trying a different model against one regeneration, and for
-// pinning an older one if a new default turns out to generate worse code.
+// ModelEnv pins the model for a run, overriding the CLI's own choice. Set it to
+// reproduce a specific past run -- the model that run used is in its log -- or
+// to hold a particular model while comparing output.
 const ModelEnv = "CLAUDE_MODEL"
 
-// Model reports the model Claude should run on: ModelEnv when set, otherwise
-// DefaultModel. This is the one place either is decided; every invocation in
+// Model reports the pinned model, or "" when nothing is pinned and the CLI
+// should choose. This is the one place that is decided; every invocation in
 // this repository goes through ModelArgs.
 func Model() string {
 	if m := strings.TrimSpace(os.Getenv(ModelEnv)); m != "" {
@@ -45,10 +47,14 @@ func Model() string {
 	return DefaultModel
 }
 
-// ModelArgs returns the CLI flags that pin the model, for splicing into an
-// exec.Command argument list.
+// ModelArgs returns the CLI flags that pin the model, or nothing when no model
+// is pinned. Splicing an empty slice into an argument list is a no-op, so
+// callers need no special case.
 func ModelArgs() []string {
-	return []string{"--model", Model()}
+	if m := Model(); m != "" {
+		return []string{"--model", m}
+	}
+	return nil
 }
 
 // Available reports whether the claude CLI can be invoked and is expected to

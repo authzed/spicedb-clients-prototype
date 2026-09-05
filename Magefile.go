@@ -839,6 +839,7 @@ func claudePermissionArgs() []string {
 // runClaudeOutput pipes a prompt to claude and returns stdout as a string.
 func runClaudeOutput(prompt string) (string, error) {
 	args := append([]string{"--print"}, claudePermissionArgs()...)
+	args = append(args, clauderun.ModelArgs()...)
 	cmd := exec.Command("claude", args...)
 	cmd.Stdin = strings.NewReader(prompt)
 	cmd.Stderr = os.Stderr

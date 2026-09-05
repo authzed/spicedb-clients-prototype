@@ -21,6 +21,36 @@ import (
 	"strings"
 )
 
+// DefaultModel is the model every Claude invocation in this repository runs
+// on. It is pinned rather than left to the CLI's default because generation is
+// meant to be reproducible: the pipeline already pins the upstream API commit
+// exactly and prints the command to repeat a run, and the model shapes the
+// generated code more than the proto pin does. A CLI default that changed
+// underneath us would silently change seven clients' output with nothing in
+// the record to explain it.
+const DefaultModel = "claude-opus-5"
+
+// ModelEnv overrides DefaultModel for a single run without a code change --
+// useful for trying a different model against one regeneration, and for
+// pinning an older one if a new default turns out to generate worse code.
+const ModelEnv = "CLAUDE_MODEL"
+
+// Model reports the model Claude should run on: ModelEnv when set, otherwise
+// DefaultModel. This is the one place either is decided; every invocation in
+// this repository goes through ModelArgs.
+func Model() string {
+	if m := strings.TrimSpace(os.Getenv(ModelEnv)); m != "" {
+		return m
+	}
+	return DefaultModel
+}
+
+// ModelArgs returns the CLI flags that pin the model, for splicing into an
+// exec.Command argument list.
+func ModelArgs() []string {
+	return []string{"--model", Model()}
+}
+
 // Available reports whether the claude CLI can be invoked and is expected to
 // be authenticated.
 //
@@ -71,17 +101,18 @@ func Available() bool {
 // normal interactive prompting and are untouched by any of this.
 func Run(prompt string) error {
 	if os.Getenv("CI_REGENERATION") == "" {
-		cmd := exec.Command("claude")
+		cmd := exec.Command("claude", ModelArgs()...)
 		cmd.Stdin = strings.NewReader(prompt)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		return cmd.Run()
 	}
 
-	cmd := exec.Command("claude",
+	args := append([]string{
 		"--print", "--permission-mode", "bypassPermissions",
 		"--output-format", "stream-json", "--verbose",
-	)
+	}, ModelArgs()...)
+	cmd := exec.Command("claude", args...)
 	cmd.Stdin = strings.NewReader(prompt)
 	cmd.Stderr = os.Stderr
 

@@ -164,3 +164,46 @@ func TestRenderStreamSurfacesRateLimitEvents(t *testing.T) {
 		}
 	}
 }
+
+// The model is pinned in one place so that generation is reproducible and a
+// CLI default change cannot silently alter seven clients' output. These pin
+// that single place: its default, its override, and that every invocation
+// actually carries the flag.
+
+func TestModelDefaultsToTheePinnedModel(t *testing.T) {
+	t.Setenv(ModelEnv, "")
+
+	if got := Model(); got != DefaultModel {
+		t.Fatalf("Model() = %q, want the pinned default %q", got, DefaultModel)
+	}
+	if DefaultModel == "" {
+		t.Fatal("DefaultModel must name a model; an empty pin is the unpinned state this prevents")
+	}
+}
+
+func TestModelEnvOverridesTheDefault(t *testing.T) {
+	t.Setenv(ModelEnv, "claude-sonnet-5")
+
+	if got := Model(); got != "claude-sonnet-5" {
+		t.Fatalf("Model() = %q, want the %s override to win", got, ModelEnv)
+	}
+}
+
+// Whitespace-only is treated as unset: a CI expression that resolves to an
+// empty string would otherwise pin the model to " " and fail the run.
+func TestModelIgnoresABlankOverride(t *testing.T) {
+	t.Setenv(ModelEnv, "   ")
+
+	if got := Model(); got != DefaultModel {
+		t.Fatalf("Model() = %q, want a blank override ignored in favour of %q", got, DefaultModel)
+	}
+}
+
+func TestModelArgsCarryTheFlag(t *testing.T) {
+	t.Setenv(ModelEnv, "claude-haiku-4-5-20251001")
+
+	args := ModelArgs()
+	if len(args) != 2 || args[0] != "--model" || args[1] != "claude-haiku-4-5-20251001" {
+		t.Fatalf("ModelArgs() = %v, want [--model claude-haiku-4-5-20251001]", args)
+	}
+}

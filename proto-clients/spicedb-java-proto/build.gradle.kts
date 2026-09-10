@@ -31,8 +31,8 @@ sourceSets {
 
 dependencies {
     // BSR Generated SDKs — pre-built proto stubs with all transitive deps resolved
-    api("build.buf.gen:authzed_api_protocolbuffers_java:35.1.0.1.20260521180231.55aa23d533a3")
-    api("build.buf.gen:authzed_api_grpc_java:1.83.1.1.20260521180231.55aa23d533a3")
+    api("build.buf.gen:authzed_api_protocolbuffers_java:35.1.0.1.20260910223853.ef1e37672e4b")
+    api("build.buf.gen:authzed_api_grpc_java:1.83.1.1.20260910223853.ef1e37672e4b")
 
     // Single source of truth for the gRPC stack -- see DESIGN.md "Invariants". Every
     // io.grpc:* coordinate below is deliberately versionless so a partial bump is

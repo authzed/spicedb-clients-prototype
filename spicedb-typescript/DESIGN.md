@@ -369,6 +369,75 @@ loaded) with no revision, because `ImportBulkRelationshipsResponse` carries
 no `ZedToken` field at all — the proto itself gives the client nothing to
 expose there, not a client-side gap.
 
+#### Deletions
+
+`deleteRelationships(filter, options?)` reaches the proto's
+`optionalPreconditions`/`optionalLimit`/`optionalCursor` fields via
+`DeleteOptions`:
+
+```typescript
+await client.deleteRelationships(filter, {
+  mustMatch: [precondition],
+  mustNotMatch: [otherPrecondition],
+  limit: 500,
+});
+```
+
+`mustMatch`/`mustNotMatch` are per-request preconditions the server
+evaluates before deleting anything — the call fails (deleting nothing) if a
+precondition isn't satisfied. No options given means the request is
+unchanged from before: no preconditions, no limit.
+
+By default (`autoPage` unset/`false`, unchanged from before this client's
+proto gained `DeleteRelationshipsRequest.optionalCursor`/
+`DeleteRelationshipsResponse.afterResultCursor`), this client does not
+auto-page a delete across multiple RPCs when the match set exceeds a single
+server-side page. Supplying `limit` bounds a single call to deleting at most
+that many relationships; when more relationships match than `limit`, the
+server requires `optionalAllowPartialDeletions` to permit that (otherwise it
+rejects the call outright), so this client sets it automatically whenever
+`limit` is given. Callers that need to delete more than `limit` matches must
+call again with the same filter to continue.
+
+```typescript
+// deletes every match, looping internally
+const revision = await client.deleteRelationships(filter, { autoPage: true });
+```
+
+`autoPage: true` closes that gap: it loops internally, feeding each
+response's `afterResultCursor` back in as the next request's
+`optionalCursor` — the same transparent-cursor approach `readRelationships`
+uses — until `deletionProgress` stops being `PARTIAL`, mirroring
+spicedb-go's `DeleteRelationships` (`client/relationships.go`), which
+auto-pages unconditionally. It is opt-in here, not the default, because it
+changes what a single call means: with `autoPage: true`, `limit` stops being
+a cap on the total deleted and becomes the per-page size (default 1,000,
+matching spicedb-go's `defaultDeletePageSize`) — a caller relying on the
+`autoPage: false` contract (bounded, single-RPC, partial-deletion-then-
+manual-continue) must not have that silently replaced by an unbounded loop
+that can now delete far more than `limit` in one call. Preconditions are a
+per-request proto field, so on a multi-page `autoPage: true` delete they are
+re-evaluated by the server on every page: a guarded delete that starts
+successfully can still fail partway through if the guarded state changes
+between pages, after earlier pages already committed.
+
+`options.cursor` seeds the very first request's `optionalCursor` — useful to
+resume a deletion from a cursor obtained some other way (an interrupted
+`autoPage: true` run, or a raw call via `client.raw()`); it is not the
+normal way to drive `autoPage: true`, which threads its own cursor between
+pages internally. Whether a response ever carries a resumption cursor is
+datastore-specific: a datastore that does not support cursored deletion
+simply never populates `afterResultCursor`, and the next page is requested
+with no cursor, re-evaluating the filter against what remains — the loop
+still terminates correctly, just without the ordered-scan optimization.
+
+Stopping the `autoPage: true` loop is driven by an explicit check for
+`deletionProgress === PARTIAL`, not its complement: an unrecognized future
+`DeletionProgress` value stops the loop rather than being treated as "still
+partial", so a client that predates a new wire value degrades to returning
+early rather than looping forever. See root DESIGN.md, "RULE: A conversion
+that cannot preserve meaning must fail", clause 2.
+
 #### Bulk import takes any iterable
 
 `importBulkRelationships(relationships)` accepts
@@ -510,6 +579,7 @@ See package sections above.
 |-----------|-------------|
 | `check_permission/` | Basic permission check, plus a caveated check with no context to show a `conditionalPermission` CheckResult, then resolving that conditional into a grant by supplying the missing context via `CheckOptions` (single-check and bulk) |
 | `write_relationships/` | Writing relationships with transaction builder |
+| `delete_relationships_autopage/` | `deleteRelationships({ limit, autoPage })`: the default bounded/single-page behavior is unchanged, and `autoPage: true` loops internally until every match is gone |
 | `read_relationships/` | Reading relationships with async iterator |
 | `lookup_resources/` | Resource lookup, incl. reading `permissionship`/`partialCaveat` |
 | `lookup_subjects/` | Subject lookup, incl. wildcard `"*"` + `excludedSubjects` |

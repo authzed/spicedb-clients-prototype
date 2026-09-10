@@ -66,6 +66,9 @@ to fail".
   filters.
 - `write_relationships/` — the `Transaction` builder: create, touch, delete,
   and preconditions.
+- `delete_relationships_autopage/` — `deleteRelationships({ limit, autoPage })`:
+  confirms the default (no `autoPage`) still stops after one bounded page,
+  then shows `autoPage: true` looping internally until every match is gone.
 - `schema_management/` — reading and writing the SpiceDB schema.
 - `call_deadlines/` — `defaultTimeoutMs` on `createSpiceDBClient`, a per-call
   `timeoutMs` override, confirming bulk import isn't bounded by the unary

@@ -319,4 +319,19 @@ describe("toProtoDeleteRelationshipsRequest()", () => {
       }),
     ).toThrow(InvalidArgumentError);
   });
+
+  it("leaves optionalCursor unset when no cursor is given", () => {
+    const req = toProtoDeleteRelationshipsRequest({
+      resourceType: "document",
+    });
+    expect(req.optionalCursor).toBeUndefined();
+  });
+
+  it("threads options.cursor into optionalCursor", () => {
+    const req = toProtoDeleteRelationshipsRequest(
+      { resourceType: "document" },
+      { limit: 100, cursor: "opaque-cursor-token" },
+    );
+    expect(req.optionalCursor?.token).toBe("opaque-cursor-token");
+  });
 });

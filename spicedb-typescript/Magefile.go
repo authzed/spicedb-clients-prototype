@@ -40,6 +40,7 @@ var wantExamples = []string{
 	"call_deadlines",
 	"check_permission",
 	"custom_tls",
+	"delete_relationships_autopage",
 	"error_mapping",
 	"expand_permission_tree",
 	"insecure_opt_in",

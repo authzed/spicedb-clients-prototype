@@ -676,6 +676,64 @@ class TestDeleteRelationships:
         assert request.optional_limit == 0
         assert request.optional_allow_partial_deletions is False
 
+    async def test_auto_page_false_makes_a_single_call_on_partial_progress(
+        self, make_client
+    ):
+        """Default behavior (auto_page=False) must be unchanged: even a
+        PARTIAL response is returned as-is, with no follow-up call."""
+        client = make_client()
+        response = permission_service_pb2.DeleteRelationshipsResponse(
+            deleted_at=core_pb2.ZedToken(token="page1"),
+            deletion_progress=permission_service_pb2.DeleteRelationshipsResponse.DELETION_PROGRESS_PARTIAL,
+        )
+        client._permissions.DeleteRelationships = AsyncMock(return_value=response)
+        f = Filter(resource_type="document", resource_id="1")
+
+        revision = await client.delete_relationships(f, limit=10)
+
+        assert revision == "page1"
+        client._permissions.DeleteRelationships.assert_awaited_once()
+
+    async def test_auto_page_loops_until_complete_using_cursor(self, make_client):
+        client = make_client()
+        cursor_a = core_pb2.Cursor(token="a")
+        responses = [
+            permission_service_pb2.DeleteRelationshipsResponse(
+                deleted_at=core_pb2.ZedToken(token="page1"),
+                deletion_progress=permission_service_pb2.DeleteRelationshipsResponse.DELETION_PROGRESS_PARTIAL,
+                after_result_cursor=cursor_a,
+            ),
+            permission_service_pb2.DeleteRelationshipsResponse(
+                deleted_at=core_pb2.ZedToken(token="page2"),
+                deletion_progress=permission_service_pb2.DeleteRelationshipsResponse.DELETION_PROGRESS_COMPLETE,
+            ),
+        ]
+        client._permissions.DeleteRelationships = AsyncMock(side_effect=responses)
+        f = Filter(resource_type="document", resource_id="1")
+
+        revision = await client.delete_relationships(f, limit=5, auto_page=True)
+
+        assert revision == "page2"
+        assert client._permissions.DeleteRelationships.await_count == 2
+        first_request = client._permissions.DeleteRelationships.await_args_list[0].args[0]
+        second_request = client._permissions.DeleteRelationships.await_args_list[1].args[0]
+        assert first_request.optional_limit == 5
+        assert first_request.optional_allow_partial_deletions is True
+        assert not first_request.HasField("optional_cursor")
+        assert second_request.optional_cursor == cursor_a
+
+    async def test_auto_page_defaults_page_size_when_no_limit_given(
+        self, make_client
+    ):
+        client = self._client(make_client)
+        f = Filter(resource_type="document", resource_id="1")
+
+        await client.delete_relationships(f, auto_page=True)
+
+        request = client._permissions.DeleteRelationships.await_args.args[0]
+        assert request.optional_limit == 1000
+        assert request.optional_allow_partial_deletions is True
+
 
 # ── Streaming establishment retry (RB4) ─────────────────────────────────
 #

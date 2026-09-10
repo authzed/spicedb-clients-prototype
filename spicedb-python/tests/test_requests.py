@@ -145,6 +145,19 @@ def test_delete_request_sets_partial_deletions_only_when_limit_given():
     assert with_limit.optional_allow_partial_deletions is True
 
 
+def test_delete_request_sets_cursor_when_given():
+    from authzed.api.v1 import core_pb2
+
+    f = Filter(resource_type="document")
+    cursor = core_pb2.Cursor(token="abc")
+
+    without = req.delete_relationships_request(f, None, None, 10)
+    assert without.HasField("optional_cursor") is False
+
+    with_cursor = req.delete_relationships_request(f, None, None, 10, cursor)
+    assert with_cursor.optional_cursor == cursor
+
+
 def test_delete_request_builds_both_precondition_kinds():
     from authzed.api.v1 import permission_service_pb2 as psp
 

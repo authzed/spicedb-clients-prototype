@@ -26,6 +26,10 @@ from spicedb.types import Filter, Relationship, Transaction, context_to_struct
 DEFAULT_PAGE_SIZE = 512
 IMPORT_BATCH_SIZE = 1000
 
+# Per-page size for delete_relationships(auto_page=True), mirroring
+# spicedb-go's defaultDeletePageSize (client/relationships.go).
+DEFAULT_DELETE_PAGE_SIZE = 1000
+
 # How many items go into a single CheckBulkPermissions request.
 #
 # SpiceDB rejects a request carrying more items than ``maxBulkCheckCount``
@@ -202,6 +206,7 @@ def delete_relationships_request(
     must_match: list[Filter] | None,
     must_not_match: list[Filter] | None,
     limit: int | None,
+    cursor: core_pb2.Cursor | None = None,
 ) -> permission_service_pb2.DeleteRelationshipsRequest:
     preconditions = [
         permission_service_pb2.Precondition(
@@ -221,6 +226,7 @@ def delete_relationships_request(
         optional_preconditions=preconditions,
         optional_limit=limit if limit is not None else 0,
         optional_allow_partial_deletions=limit is not None,
+        optional_cursor=cursor,
     )
 
 

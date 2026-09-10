@@ -1,7 +1,9 @@
-"""Example: Deleting relationships with optional preconditions and limit.
+"""Example: Deleting relationships with optional preconditions, limit, and
+auto-paging.
 
 Demonstrates delete_relationships with must_match/must_not_match
-preconditions (guarded deletes) and a limit override.
+preconditions (guarded deletes), a limit override, and auto_page for
+deleting more matches than a single page allows.
 """
 
 import pytest
@@ -107,8 +109,9 @@ async def test_delete_with_limit(client: SpiceDBClient):
             full(),
         )
     ]
-    # Only one of the three relationships was deleted (limit=1); this client
-    # does not yet auto-page deletes across multiple RPCs.
+    # Only one of the three relationships was deleted (limit=1); without
+    # auto_page=True (see test_delete_with_auto_page below), this client does
+    # not loop to delete the rest.
     assert len(remaining) == 2
 
     # Clean up the rest so later tests that write a narrower schema aren't
@@ -116,3 +119,33 @@ async def test_delete_with_limit(client: SpiceDBClient):
     await client.delete_relationships(
         Filter(resource_type="document", resource_id="limited")
     )
+
+
+async def test_delete_with_auto_page(client: SpiceDBClient):
+    txn = Transaction()
+    for name in ("carol", "dave", "erin"):
+        txn.touch(
+            Relationship.from_triple("document:auto-paged", "viewer", f"user:{name}")
+        )
+    await client.write(txn)
+
+    # limit=1 forces three pages; auto_page=True loops internally -- using
+    # the cursor SpiceDB returns on each PARTIAL response -- until every
+    # match is gone, rather than requiring three separate calls.
+    revision = await client.delete_relationships(
+        Filter(resource_type="document", resource_id="auto-paged", relation="viewer"),
+        limit=1,
+        auto_page=True,
+    )
+    assert revision
+
+    remaining = [
+        rel
+        async for rel in client.read_relationships(
+            Filter(
+                resource_type="document", resource_id="auto-paged", relation="viewer"
+            ),
+            full(),
+        )
+    ]
+    assert remaining == []

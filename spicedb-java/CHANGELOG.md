@@ -21,6 +21,23 @@
 
 ### Added
 
+- **2026-09-10: proto client regenerated — `deleteRelationships` now resumes with a cursor when
+  the server hands one back.** `DeleteRelationshipsRequest` gained `optional_cursor` and
+  `DeleteRelationshipsResponse` gained `after_result_cursor`, the same cursor-handoff shape
+  `ReadRelationshipsRequest`/`LookupResourcesRequest` already use. The auto-paging delete loop in
+  `deleteRelationships(Filter, DeleteOptions)` now threads a `DELETION_PROGRESS_PARTIAL`
+  response's `after_result_cursor` onto the next page's `optional_cursor`, so a datastore that
+  supports cursored deletion does not re-examine relationships an earlier page already deleted.
+  Entirely internal — the cursor never appears in either `deleteRelationships` overload's
+  signature — and backward compatible: a datastore that never populates `after_result_cursor`
+  falls back to the pre-existing behavior of sending no cursor and re-evaluating the filter
+  against what remains. New tests in `DeleteRelationshipsOptionsTest`:
+  `cursorFromPartialResponseIsSentOnTheNextPage` and `noCursorIsSentWhenServerNeverReturnsOne`.
+
+  The rest of the regen (`LookupSubjectsResponse`'s shifted `@deprecated ... l=NNN` line numbers,
+  `PermissionService.java`'s descriptor bytes) is line-number churn from the new fields landing
+  earlier in `permission_service.proto` — no other behavior change.
+
 - **2026-09-04: proto client regenerated, plus `lookupResources(..., withDebug)`.** The
   checked-in `proto-clients/spicedb-java-proto/gen` mirror is populated for the first time in
   this repo, but the compiled dependency (the `build.buf.gen:authzed_api_*` BSR artifacts `lib`

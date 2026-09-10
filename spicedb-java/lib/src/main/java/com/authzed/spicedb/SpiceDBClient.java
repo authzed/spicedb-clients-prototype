@@ -908,6 +908,14 @@ public final class SpiceDBClient implements AutoCloseable {
    * Deletes all relationships matching the given filter, guarded by optional preconditions and with
    * an optional page-size override supplied via {@code options}. Returns the revision of the final
    * deletion. See {@link DeleteOptions} for precondition/paging semantics.
+   *
+   * <p>Pages are threaded together with {@code DeleteRelationshipsResponse.after_result_cursor} /
+   * {@code DeleteRelationshipsRequest.optional_cursor} when the server returns one, the same
+   * cursor-handoff shape {@link #readRelationships} and {@link #lookupResources} use, so a
+   * datastore that supports it does not re-examine relationships already deleted by an earlier
+   * page. This is entirely transparent — the cursor never appears in this method's signature.
+   * Datastores that do not populate {@code after_result_cursor} keep working exactly as before: the
+   * next page is requested with no cursor and re-evaluates the filter against what remains.
    */
   public String deleteRelationships(Filter filter, DeleteOptions options) {
     var preconditions = new ArrayList<Precondition>();
@@ -925,24 +933,29 @@ public final class SpiceDBClient implements AutoCloseable {
     long timeoutMs = effectiveTimeout(options.timeout()).toMillis();
 
     String revision = "";
+    Cursor cursor = null;
     while (true) {
+      var reqBuilder =
+          DeleteRelationshipsRequest.newBuilder()
+              .setRelationshipFilter(toRelationshipFilter(filter))
+              .addAllOptionalPreconditions(preconditions)
+              .setOptionalLimit(pageSize)
+              .setOptionalAllowPartialDeletions(true);
+      if (cursor != null) {
+        reqBuilder.setOptionalCursor(cursor);
+      }
       DeleteRelationshipsResponse resp =
           callOnce(
               () ->
                   permissionsStub
                       .withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS)
-                      .deleteRelationships(
-                          DeleteRelationshipsRequest.newBuilder()
-                              .setRelationshipFilter(toRelationshipFilter(filter))
-                              .addAllOptionalPreconditions(preconditions)
-                              .setOptionalLimit(pageSize)
-                              .setOptionalAllowPartialDeletions(true)
-                              .build()));
+                      .deleteRelationships(reqBuilder.build()));
       revision = resp.getDeletedAt().getToken();
       if (resp.getDeletionProgress()
           == DeleteRelationshipsResponse.DeletionProgress.DELETION_PROGRESS_COMPLETE) {
         return revision;
       }
+      cursor = resp.hasAfterResultCursor() ? resp.getAfterResultCursor() : null;
     }
   }
 

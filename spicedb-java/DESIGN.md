@@ -249,7 +249,7 @@ re-fetches pages using the `AfterResultCursor` from each response.
 | `lookupResources` | 512 | cursor-based auto-pagination |
 | `lookupSubjects` | — | single streaming call |
 | `exportRelationships` | 512 | cursor-based auto-pagination |
-| `deleteRelationships` | 1,000 | auto-repeats until all deleted; matches SpiceDB's default `--max-delete-relationships-limit` |
+| `deleteRelationships` | 1,000 | auto-repeats until all deleted; matches SpiceDB's default `--max-delete-relationships-limit`; cursor-resumed when the server returns one |
 | `importRelationships` | 1,000 | batches into streaming sends |
 | `updates` | — | server-streaming, no pagination needed |
 
@@ -285,6 +285,16 @@ limit of 1,000 per RPC call (matches SpiceDB's default
 `--max-delete-relationships-limit`, so the default works against a stock
 server). It repeats until the server reports all matching relationships are
 deleted. Returns the final revision.
+
+Pagination is cursor-based when the server supports it: a partial-progress
+response's `after_result_cursor` is threaded onto the next page's
+`optional_cursor`, the same handoff `readRelationships`/`lookupResources` use,
+so a datastore that can resume an ordered deletion does not re-examine
+relationships an earlier page already deleted. This is entirely internal —
+the cursor never appears in `deleteRelationships`'s signature. A datastore
+that does not populate `after_result_cursor` falls back to what this client
+always did: the next page carries no cursor and re-evaluates the filter
+against whatever still matches.
 
 `deleteRelationships(Filter, DeleteOptions)` additionally accepts optional
 MUST_MATCH/MUST_NOT_MATCH preconditions and a per-request page-size override,

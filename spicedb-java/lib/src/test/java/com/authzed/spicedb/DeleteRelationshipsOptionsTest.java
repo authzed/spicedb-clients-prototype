@@ -2,6 +2,7 @@ package com.authzed.spicedb;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import build.buf.gen.authzed.api.v1.Cursor;
 import build.buf.gen.authzed.api.v1.DeleteRelationshipsRequest;
 import build.buf.gen.authzed.api.v1.DeleteRelationshipsResponse;
 import build.buf.gen.authzed.api.v1.PermissionsServiceGrpc;
@@ -312,6 +313,82 @@ class DeleteRelationshipsOptionsTest {
         assertEquals(
             Precondition.Operation.OPERATION_MUST_MATCH,
             req.getOptionalPreconditions(0).getOperation());
+      }
+    }
+  }
+
+  /**
+   * Mock service that reports PARTIAL progress with an {@code after_result_cursor} on the first
+   * call, COMPLETE with no cursor on the second.
+   */
+  private static final class CursoredTwoPageService
+      extends PermissionsServiceGrpc.PermissionsServiceImplBase {
+    static final Cursor PAGE_1_CURSOR = Cursor.newBuilder().setToken("cursor-after-page-1").build();
+    final List<DeleteRelationshipsRequest> captured = new ArrayList<>();
+
+    @Override
+    public void deleteRelationships(
+        DeleteRelationshipsRequest request,
+        StreamObserver<DeleteRelationshipsResponse> responseObserver) {
+      captured.add(request);
+      boolean isFirst = captured.size() == 1;
+      var respBuilder =
+          DeleteRelationshipsResponse.newBuilder()
+              .setDeletedAt(ZedToken.newBuilder().setToken("rev-" + captured.size()).build())
+              .setDeletionProgress(
+                  isFirst
+                      ? DeleteRelationshipsResponse.DeletionProgress.DELETION_PROGRESS_PARTIAL
+                      : DeleteRelationshipsResponse.DeletionProgress.DELETION_PROGRESS_COMPLETE);
+      if (isFirst) {
+        respBuilder.setAfterResultCursor(PAGE_1_CURSOR);
+      }
+      responseObserver.onNext(respBuilder.build());
+      responseObserver.onCompleted();
+    }
+  }
+
+  /**
+   * When the server hands back {@code after_result_cursor}, the next page's request carries it as
+   * {@code optional_cursor} — the same cursor-handoff shape {@code readRelationships}/{@code
+   * lookupResources} already use — so a datastore that supports cursored deletion does not
+   * re-examine relationships an earlier page already deleted. The first request must carry no
+   * cursor at all, since none exists yet.
+   */
+  @Test
+  void cursorFromPartialResponseIsSentOnTheNextPage() throws IOException {
+    var service = new CursoredTwoPageService();
+
+    try (TestServers servers = TestServers.start(service)) {
+      SpiceDBClient client = servers.client();
+      String revision =
+          client.deleteRelationships(FILTER, SpiceDBClient.DeleteOptions.none().withLimit(5));
+
+      assertEquals("rev-2", revision);
+      assertEquals(2, service.captured.size());
+      assertFalse(
+          service.captured.get(0).hasOptionalCursor(), "no cursor exists yet for the first page");
+      assertTrue(service.captured.get(1).hasOptionalCursor());
+      assertEquals(
+          CursoredTwoPageService.PAGE_1_CURSOR, service.captured.get(1).getOptionalCursor());
+    }
+  }
+
+  /**
+   * Companion to the above: a datastore that never populates {@code after_result_cursor} (the
+   * {@link TwoPageService} case) must not have a cursor invented for it — every page's request
+   * carries no cursor, and pagination falls back to re-evaluating the filter against what remains.
+   */
+  @Test
+  void noCursorIsSentWhenServerNeverReturnsOne() throws IOException {
+    var service = new TwoPageService();
+
+    try (TestServers servers = TestServers.start(service)) {
+      SpiceDBClient client = servers.client();
+      client.deleteRelationships(FILTER, SpiceDBClient.DeleteOptions.none().withLimit(5));
+
+      assertEquals(2, service.captured.size());
+      for (DeleteRelationshipsRequest req : service.captured) {
+        assertFalse(req.hasOptionalCursor());
       }
     }
   }

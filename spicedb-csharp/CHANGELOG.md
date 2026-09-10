@@ -25,6 +25,27 @@
 
 ### Added
 
+- **2026-09-10: `DeleteRelationshipsWithOptionsAsync` and `DeleteRelationshipsOptions`**,
+  mapping the proto client regen's new `DeleteRelationshipsRequest.optional_cursor` /
+  `DeleteRelationshipsResponse.after_result_cursor` fields. `DeleteRelationshipsAsync` had
+  no options class yet, so per root DESIGN.md, "RULE: Every RPC wrapper must have one place
+  to add an option", the new field landed as `DeleteRelationshipsOptions.Cursor` behind a
+  new `...WithOptionsAsync` form rather than a parameter on the existing method.
+  `DeleteRelationshipsOptions` also carries `MustMatch`/`MustNotMatch`/`Limit` (the same
+  knobs the plain overload already took) and a per-page `Timeout`, so the next option this
+  operation gains has one property to become rather than a new parameter or method.
+
+  Both auto-paging forms now also thread `after_result_cursor` from each response into the
+  next page's `optional_cursor` transparently, the same pattern `ReadRelationshipsAsync`
+  already uses — a datastore that supports cursored deletion gets a faster, non-repeating
+  scan across pages for free, with no change in behavior for one that doesn't. `Cursor`
+  itself is for a caller resuming a deletion that was left incomplete by a call driven
+  through `RawProto()` (e.g. after a process restart) — since both `DeleteRelationshipsAsync`
+  and `DeleteRelationshipsWithOptionsAsync` always run themselves to completion, neither can
+  hand a resumable cursor back to a caller, only accept one obtained another way. Existing
+  `DeleteRelationshipsAsync` callers are unaffected: no cursor is sent unless
+  `DeleteRelationshipsWithOptionsAsync` is called with one.
+
 - **2026-09-04: `LookupResourcesAsync` gained a `withDebug` overload**, mapping
   the proto client regen's new `LookupResourcesRequest.with_debug` field. It
   asks the server to attach debug information to a maximum-recursion-depth

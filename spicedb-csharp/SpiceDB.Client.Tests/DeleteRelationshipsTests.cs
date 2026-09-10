@@ -7,6 +7,10 @@
 // keeps working (partial deletions stay allowed, same as the no-options
 // default). Uses the Moq'd gRPC client seam also used by
 // StreamingErrorMappingTests/LookupResultTests.
+//
+// Also covers DeleteRelationshipsWithOptionsAsync/DeleteRelationshipsOptions
+// (same knobs plus `Cursor`, which reaches `optional_cursor`) and the
+// auto-paging loop's transparent use of `after_result_cursor` between pages.
 
 using Authzed.Api.V1;
 using FluentAssertions;
@@ -174,6 +178,101 @@ public class DeleteRelationshipsTests
         await using var client = NewClient(mock.Object);
 
         var act = async () => await client.DeleteRelationshipsAsync(null!);
+
+        await act.Should().ThrowAsync<ArgumentNullException>();
+    }
+
+    // ── DeleteRelationshipsWithOptionsAsync mirrors the plain overload ─────
+
+    [Fact]
+    public async Task WithOptions_NullOptions_PreservesDefaultBehavior()
+    {
+        var captured = new List<DeleteRelationshipsRequest>();
+        var mock = MockThatCaptures(captured, CompleteResponse("rev1"));
+        await using var client = NewClient(mock.Object);
+
+        var revision = await client.DeleteRelationshipsWithOptionsAsync(new Filter("document"), null!);
+
+        revision.Should().Be("rev1");
+        captured.Should().HaveCount(1);
+        captured[0].OptionalPreconditions.Should().BeEmpty();
+        captured[0].OptionalLimit.Should().Be(1_000u);
+        captured[0].OptionalAllowPartialDeletions.Should().BeTrue();
+        captured[0].OptionalCursor.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task WithOptions_MustMatchMustNotMatchAndLimit_BehaveLikePlainOverload()
+    {
+        var captured = new List<DeleteRelationshipsRequest>();
+        var mock = MockThatCaptures(captured, CompleteResponse());
+        await using var client = NewClient(mock.Object);
+
+        var guard = new Filter("document").WithResourceID("doc1");
+        var forbidden = new Filter("document").WithResourceID("doc2");
+
+        await client.DeleteRelationshipsWithOptionsAsync(
+            new Filter("document"),
+            new DeleteRelationshipsOptions
+            {
+                MustMatch = [guard],
+                MustNotMatch = [forbidden],
+                Limit = 5,
+            });
+
+        captured.Should().HaveCount(1);
+        captured[0].OptionalLimit.Should().Be(5u);
+        var preconditions = captured[0].OptionalPreconditions;
+        preconditions.Should().HaveCount(2);
+        preconditions[0].Operation.Should().Be(Precondition.Types.Operation.MustMatch);
+        preconditions[1].Operation.Should().Be(Precondition.Types.Operation.MustNotMatch);
+    }
+
+    // ── Cursor option seeds the first page; AfterResultCursor threads pages ─
+
+    [Fact]
+    public async Task WithOptions_Cursor_SeedsFirstRequestsOptionalCursor()
+    {
+        var captured = new List<DeleteRelationshipsRequest>();
+        var mock = MockThatCaptures(captured, CompleteResponse());
+        await using var client = NewClient(mock.Object);
+
+        await client.DeleteRelationshipsWithOptionsAsync(
+            new Filter("document"),
+            new DeleteRelationshipsOptions { Cursor = "resume-token" });
+
+        captured.Should().HaveCount(1);
+        captured[0].OptionalCursor.Should().NotBeNull();
+        captured[0].OptionalCursor.Token.Should().Be("resume-token");
+    }
+
+    [Fact]
+    public async Task MultiPageDelete_ThreadsAfterResultCursorIntoNextPagesOptionalCursor()
+    {
+        var captured = new List<DeleteRelationshipsRequest>();
+        var partial = PartialResponse("rev-p1");
+        partial.AfterResultCursor = new Cursor { Token = "server-issued-cursor" };
+        var mock = MockThatCaptures(captured, partial, CompleteResponse("rev-final"));
+        await using var client = NewClient(mock.Object);
+
+        var revision = await client.DeleteRelationshipsAsync(new Filter("document"), limit: 2);
+
+        revision.Should().Be("rev-final");
+        captured.Should().HaveCount(2);
+        captured[0].OptionalCursor.Should().BeNull();
+        captured[1].OptionalCursor.Should().NotBeNull();
+        captured[1].OptionalCursor.Token.Should().Be("server-issued-cursor");
+    }
+
+    // ── null filter still throws on the WithOptions overload ───────────────
+
+    [Fact]
+    public async Task WithOptions_NullFilter_Throws()
+    {
+        var mock = new Mock<PermissionsService.PermissionsServiceClient>();
+        await using var client = NewClient(mock.Object);
+
+        var act = async () => await client.DeleteRelationshipsWithOptionsAsync(null!, new DeleteRelationshipsOptions());
 
         await act.Should().ThrowAsync<ArgumentNullException>();
     }

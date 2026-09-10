@@ -31,6 +31,30 @@
 
 ### Added
 
+- **2026-09-10: `DeleteOptions::cursor`/`with_cursor`**, mapping the proto client regen's new
+  `DeleteRelationshipsRequest.optional_cursor` / `DeleteRelationshipsResponse.after_result_cursor`
+  fields. Two changes, both backwards compatible:
+
+  - `delete_relationships`/`delete_relationships_with`'s existing auto-paging loop now threads
+    each response's `after_result_cursor` into the next page's `optional_cursor` internally — the
+    same transparent-continuation pattern `read_relationships` already uses — so a datastore that
+    supports cursored deletion resumes an ordered scan across pages instead of re-examining
+    relationships already deleted by earlier pages. A datastore that doesn't support it (e.g. the
+    in-memory engine this repo's examples run against) simply never populates the field, and the
+    loop behaves exactly as it did before this field existed.
+  - `DeleteOptions` gained a `cursor: Option<String>` field and `with_cursor` builder, seeding the
+    very first page's `optional_cursor`. This is for resuming a deletion left incomplete by an
+    earlier call — since both `delete_relationships` and `delete_relationships_with` always run
+    themselves to completion, neither can hand a resumable cursor back to a caller; `with_cursor`
+    is for a cursor obtained another way, e.g. from a partial deletion driven through
+    [`raw_proto`](src/client.rs) that was interrupted. Only datastores whose deletion can be
+    ordered and resumed honor a supplied cursor; others reject the request. Leaving it unset
+    (including via `delete_relationships`) starts a new deletion, identical to today.
+
+  `examples/bulk_operations.rs`'s cleanup now overrides the page size down to 20 against 103
+  matching relationships, forcing the auto-paging loop to repeat several times, and asserts
+  nothing is left afterward — exercising the changed loop against a real server.
+
 - **2026-08-19: four new examples, one per root `DESIGN.md` RULE that had no executed
   coverage in any client.** 13 examples -> 17, none renamed or removed. Group E Phase 3,
   and the last of the seven clients.

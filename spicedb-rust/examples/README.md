@@ -66,7 +66,7 @@ to fail".
 | `lookup_subjects` | Finding subjects with access to a resource |
 | `watch_changes` | Watching for relationship changes with a bounded consumer: subscribe, write, consume until the expected update arrives, drop the stream, then resume on a fresh one |
 | `schema_management` | Schema read/write |
-| `bulk_operations` | Bulk checks, imports, and exports |
+| `bulk_operations` | Bulk checks, imports, and exports; paged cleanup with `DeleteOptions::with_limit` forcing the auto-paging delete loop to repeat and confirming nothing is left behind |
 | `schema_reflection` | Schema reflection, computable permissions, diffs |
 | `expand_permission_tree` | Expanding a permission tree and walking the native `PermissionTree` |
 | `relationship_counters` | Experimental relationship counters |

@@ -593,6 +593,15 @@ pub struct DeleteOptions {
     /// page's call). `None` uses the client default. See root DESIGN.md,
     /// "RULE: A unary call must have a deadline".
     pub timeout: Option<std::time::Duration>,
+    /// Resumes a deletion left incomplete by an earlier call, from the
+    /// opaque cursor it returned. `delete_relationships`/
+    /// `delete_relationships_with` always run themselves to completion and
+    /// never hand a cursor back, so this is only reachable via a partial
+    /// deletion driven through [`raw_proto`](crate::client::SpiceDBClient::raw_proto)
+    /// (e.g. one interrupted by a process restart). Only datastores whose
+    /// deletion can be ordered and resumed honor a supplied cursor; others
+    /// reject the request. `None` (the default) starts a new deletion.
+    pub cursor: Option<String>,
 }
 
 impl DeleteOptions {
@@ -624,6 +633,13 @@ impl DeleteOptions {
     /// Overrides the client's `default_timeout` for each page's call.
     pub fn with_timeout(mut self, timeout: std::time::Duration) -> Self {
         self.timeout = Some(timeout);
+        self
+    }
+
+    /// Resumes a deletion from a cursor obtained another way (see the
+    /// [`cursor`](DeleteOptions::cursor) field docs).
+    pub fn with_cursor(mut self, cursor: impl Into<String>) -> Self {
+        self.cursor = Some(cursor.into());
         self
     }
 

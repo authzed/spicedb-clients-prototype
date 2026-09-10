@@ -427,6 +427,37 @@ matching relationship in one call for single-shot, all-or-nothing semantics.
 `delete_relationships(filter)` remains the ergonomic no-options path
 (equivalent to `delete_relationships_with(filter, &DeleteOptions::default())`).
 
+**Cursor threading.** Both auto-paging methods thread the server's
+`after_result_cursor` from each response into the next page's
+`optional_cursor` internally — the same transparent-continuation pattern
+`read_relationships` uses for `ReadRelationshipsRequest.optional_cursor` — so
+a datastore that supports cursored deletion resumes an ordered scan across
+pages instead of re-examining relationships earlier pages already deleted. A
+datastore that doesn't support it (SpiceDB's in-memory engine, which this
+repo's examples and tests run against) never populates the field, and the
+loop behaves exactly as it did before this field existed: re-sending the same
+filter, which still finds only the relationships still remaining.
+
+`DeleteOptions::cursor`/`with_cursor` is a distinct, caller-supplied knob on
+top of that internal threading: since `delete_relationships`/
+`delete_relationships_with` always run themselves to completion, neither can
+ever hand a resumable cursor back to a caller. `cursor` seeds the *first*
+page's `optional_cursor`, for a caller who obtained one another way — a
+partial deletion driven through
+[`raw_proto`](#escape-hatch-raw-proto-access) that was interrupted (process
+restart, deliberate early stop) — and wants this client to auto-page the
+rest to completion from that point:
+
+```rust
+let options = DeleteOptions::new().with_cursor(saved_cursor_token);
+let revision = client.delete_relationships_with(&filter, &options).await?;
+```
+
+Only datastores whose deletion can be ordered and resumed honor a supplied
+cursor; others reject the request with an error. Leaving `cursor` unset
+(including via the plain `delete_relationships`) starts a new deletion,
+identical to before this field existed.
+
 ### Error Handling
 
 - `SpiceDBError` enum with `thiserror` for all errors
@@ -643,7 +674,7 @@ every change in the gap). `is_checkpoint` is true for a checkpoint event, which 
 - `Filter` struct + builder methods
 - `Transaction` struct + `create`/`touch`/`delete`/`must_not_match`/`must_match`
 - `Precondition`, `PreconditionOperation`
-- `DeleteOptions` struct (`must_match`, `must_not_match`, `limit`) + `with_must_match`/`with_must_not_match`/`with_limit` builder methods -- used by `delete_relationships_with`
+- `DeleteOptions` struct (`must_match`, `must_not_match`, `limit`, `cursor`) + `with_must_match`/`with_must_not_match`/`with_limit`/`with_cursor` builder methods -- used by `delete_relationships_with`
 - `Update`, `UpdateOperation`
 - `CheckResult` (`#[must_use]`; `permissionship`, `missing_context`, `checked_at`, `has_permission()`)
 - `Permissionship` (`Unspecified` / `NoPermission` / `HasPermission` / `ConditionalPermission` --
@@ -679,7 +710,7 @@ every change in the gap). `is_checkpoint` is true for a checkpoint event, which 
 | `lookup_subjects.rs` | Finding subjects with access to a resource |
 | `watch_changes.rs` | Watching for relationship changes with a bounded consumer: subscribe from a known revision, write, consume until that exact update arrives, drop the stream, then resume on a fresh one and require the same update |
 | `schema_management.rs` | Reading and writing schema |
-| `bulk_operations.rs` | Bulk checks and imports |
+| `bulk_operations.rs` | Bulk checks and imports; paged cleanup with `DeleteOptions::with_limit` forcing the auto-paging delete loop to repeat, asserting nothing is left behind |
 | `schema_reflection.rs` | Schema reflection, computable permissions, dependent relations, diff |
 | `expand_permission_tree.rs` | Expanding a permission tree and walking the native `PermissionTree` |
 | `relationship_counters.rs` | Registering, reading, and unregistering relationship counters, polling to a terminal state and asserting an exact count |

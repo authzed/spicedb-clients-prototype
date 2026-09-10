@@ -560,6 +560,7 @@ impl PermissionsService for MockPermissionsService {
                 deletion_progress: proto::delete_relationships_response::DeletionProgress::Complete
                     as i32,
                 relationships_deleted_count: 0,
+                after_result_cursor: None,
             });
         Ok(Response::new(resp))
     }

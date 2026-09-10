@@ -269,3 +269,38 @@ func TestDeleteRelationships_AutoPaging_ResendsPreconditionsEveryCall(t *testing
 		require.Equal(t, guardProto, preconditions[0].GetFilter())
 	}
 }
+
+// TestDeleteRelationships_AutoPaging_UsesAfterResultCursorAsNextCursor proves
+// that when the server reports a PARTIAL deletion along with an
+// AfterResultCursor, the client's next call carries that cursor as
+// OptionalCursor -- resuming where the previous page left off rather than
+// re-scanning from the start -- and that the very first call in a delete
+// carries no cursor at all.
+func TestDeleteRelationships_AutoPaging_UsesAfterResultCursorAsNextCursor(t *testing.T) {
+	firstCursor := &v1.Cursor{Token: "cursor-after-first-page"}
+	stub := &deleteStubServer{
+		responses: []*v1.DeleteRelationshipsResponse{
+			{
+				DeletedAt:         &v1.ZedToken{Token: "rev-partial"},
+				DeletionProgress:  v1.DeleteRelationshipsResponse_DELETION_PROGRESS_PARTIAL,
+				AfterResultCursor: firstCursor,
+			},
+			{
+				DeletedAt:        &v1.ZedToken{Token: "rev-complete"},
+				DeletionProgress: v1.DeleteRelationshipsResponse_DELETION_PROGRESS_COMPLETE,
+			},
+		},
+	}
+	dialer := startDeleteStubServer(t, stub)
+	c := newTestClient(t, dialer)
+
+	filter := rel.NewFilter("document").WithResourceID("firstdoc")
+
+	revision, err := c.DeleteRelationships(context.Background(), filter)
+	require.NoError(t, err)
+	require.Equal(t, "rev-complete", revision)
+
+	require.Len(t, stub.requests, 2)
+	require.Nil(t, stub.requests[0].GetOptionalCursor(), "first call must not send a cursor")
+	require.Equal(t, firstCursor.GetToken(), stub.requests[1].GetOptionalCursor().GetToken(), "second call must resume from the cursor the first response returned")
+}

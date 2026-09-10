@@ -4,6 +4,18 @@
 
 ### Added
 
+- **2026-09-10: `DeleteRelationships`' auto-paging loop now uses cursor-based resumption.**
+  The proto's `DeleteRelationshipsRequest` gained `optional_cursor` and
+  `DeleteRelationshipsResponse` gained `after_result_cursor` (mirroring the cursor fields
+  `ReadRelationships`/`LookupResources`/`ExportRelationships` already had). Previously, when a
+  delete spanned multiple pages, the client just repeated the same filter and relied on already-deleted
+  relationships no longer matching it. Now, each `DELETION_PROGRESS_PARTIAL` response's
+  `AfterResultCursor` is sent back as the next call's `OptionalCursor`, so the server resumes after
+  what it already deleted instead of re-scanning from the start. This is an internal
+  implementation change only -- `DeleteRelationships`' signature, default page size (1,000), and
+  observable behavior (revision returned, preconditions re-sent per page) are unchanged, consistent
+  with this client's "cursors are fully internal" rule for every other paginated call.
+
 - **2026-09-04: `LookupResources` gains a `WithLookupResourcesDebug` option**, wrapping the
   proto's new `LookupResourcesRequest.with_debug` field. When a `LookupResources` call fails
   because it exceeds SpiceDB's maximum dispatch depth -- surfaced as a `CodeFailedPrecondition`

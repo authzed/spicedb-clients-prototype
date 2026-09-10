@@ -165,7 +165,11 @@ func WithDeleteLimit(n uint32) DeleteOption {
 
 // DeleteRelationships deletes all relationships matching the given filter.
 // Large result sets are automatically paged in batches of 1,000 (override
-// with WithDeleteLimit). Returns the revision of the final deletion.
+// with WithDeleteLimit), using the AfterResultCursor SpiceDB returns on a
+// PARTIAL response as the OptionalCursor for the next page -- the same
+// transparent-cursor approach ReadRelationships uses, so later pages resume
+// after the last one instead of re-scanning already-deleted relationships.
+// Returns the revision of the final deletion.
 //
 // WithDeleteMustMatch/WithDeleteMustNotMatch add preconditions that guard
 // the delete: if a precondition fails, the server rejects that call and
@@ -205,12 +209,14 @@ func (c *Client) DeleteRelationships(ctx context.Context, f rel.Filter, opts ...
 		limit = o.limit
 	}
 
+	var cursor *v1.Cursor
 	for {
 		resp, err := c.psc.DeleteRelationships(ctx, &v1.DeleteRelationshipsRequest{
 			RelationshipFilter:            filterProto,
 			OptionalPreconditions:         o.preconditions,
 			OptionalLimit:                 limit,
 			OptionalAllowPartialDeletions: true,
+			OptionalCursor:                cursor,
 		})
 		if err != nil {
 			return "", mapGRPCError("delete relationships", err)
@@ -221,5 +227,6 @@ func (c *Client) DeleteRelationships(ctx context.Context, f rel.Filter, opts ...
 		if resp.GetDeletionProgress() == v1.DeleteRelationshipsResponse_DELETION_PROGRESS_COMPLETE {
 			return revision, nil
 		}
+		cursor = resp.GetAfterResultCursor()
 	}
 }

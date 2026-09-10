@@ -392,7 +392,13 @@ module SpiceDB
     end
 
     # Deletes all relationships matching the given filter. Large result sets
-    # are automatically paged in batches of 1,000 (override with `limit:`).
+    # are automatically paged in batches of 1,000 (override with `limit:`),
+    # using the `after_result_cursor` a PARTIAL response carries as the
+    # `optional_cursor` for the next page -- the same transparent-cursor
+    # approach `read_relationships` uses -- so later pages resume after the
+    # last one instead of re-scanning already-deleted relationships. This is
+    # an internal implementation detail: signature, default page size, and
+    # observable behavior are unchanged.
     #
     # `must_match:`/`must_not_match:` add preconditions that guard the
     # delete: if a precondition fails, the server rejects that call and
@@ -420,12 +426,15 @@ module SpiceDB
       t = effective_timeout(timeout)
 
       revision = nil
+      cursor = nil
       loop do
-        rev, complete = call_once do
-          call_delete_relationships(filter, page_size, preconditions, t)
+        rev, complete, new_cursor = call_once do
+          call_delete_relationships(filter, page_size, preconditions, cursor, t)
         end
         revision = rev
         break if complete
+
+        cursor = new_cursor
       end
       revision
     end
@@ -1053,20 +1062,24 @@ module SpiceDB
       [relationships, new_cursor, count]
     end
 
-    def call_delete_relationships(filter, page_size, preconditions, timeout_seconds)
+    def call_delete_relationships(filter, page_size, preconditions, cursor, timeout_seconds)
+      req_args = {
+        relationship_filter: filter_to_proto(filter),
+        optional_preconditions: build_preconditions(preconditions),
+        optional_limit: page_size,
+        optional_allow_partial_deletions: true
+      }
+      req_args[:optional_cursor] = Authzed::Api::V1::Cursor.new(token: cursor) if cursor
+
       resp = @proto_client.permissions.delete_relationships(
-        Authzed::Api::V1::DeleteRelationshipsRequest.new(
-          relationship_filter: filter_to_proto(filter),
-          optional_preconditions: build_preconditions(preconditions),
-          optional_limit: page_size,
-          optional_allow_partial_deletions: true
-        ),
+        Authzed::Api::V1::DeleteRelationshipsRequest.new(**req_args),
         deadline: deadline_for(timeout_seconds)
       )
 
       revision = resp.deleted_at.token
       complete = resp.deletion_progress == :DELETION_PROGRESS_COMPLETE
-      [revision, complete]
+      new_cursor = complete ? nil : resp.after_result_cursor&.token
+      [revision, complete, new_cursor]
     end
 
     def call_lookup_resources(consistency, resource_type, permission, subject_type, subject_id, cursor, page_size,

@@ -4,6 +4,20 @@
 
 ### Fixed
 
+- **2026-09-10: `delete_relationships`' auto-paging loop now uses cursor-based resumption.**
+  The proto's `DeleteRelationshipsRequest` gained `optional_cursor` and
+  `DeleteRelationshipsResponse` gained `after_result_cursor` (mirroring the cursor fields
+  `read_relationships`/`lookup_resources`/`export_relationships` already had). Previously, when a
+  delete spanned multiple pages, the client just repeated the same filter and relied on
+  already-deleted relationships no longer matching it. Now, each `DELETION_PROGRESS_PARTIAL`
+  response's `after_result_cursor` is sent back as the next call's `optional_cursor`, so the server
+  resumes after what it already deleted instead of re-scanning from the start. A datastore that
+  doesn't populate `after_result_cursor` on a PARTIAL response degrades to the previous behavior.
+  This is an internal implementation change only -- `delete_relationships`' signature, default page
+  size (1,000), and observable behavior (revision returned, preconditions re-sent per page) are
+  unchanged, consistent with this client's "cursors are fully internal" rule for every other
+  paginated call.
+
 - **2026-08-19: the insecure-remote-host refusal now raises `SpiceDB::InvalidArgumentError`.**
   Root DESIGN.md, "RULE: Credentials over insecure transport require an explicit opt-in",
   clause 4 (new). The refusal for a plaintext connection to a non-loopback host is a caller

@@ -195,7 +195,8 @@ RSpec.describe 'SpiceDB::Client#delete_relationships preconditions and limit' do
     it 're-sends the same preconditions on every page (server re-evaluates per page)' do
       partial_response = Authzed::Api::V1::DeleteRelationshipsResponse.new(
         deleted_at: Authzed::Api::V1::ZedToken.new(token: 'rev-partial'),
-        deletion_progress: :DELETION_PROGRESS_PARTIAL
+        deletion_progress: :DELETION_PROGRESS_PARTIAL,
+        after_result_cursor: Authzed::Api::V1::Cursor.new(token: 'cursor-1')
       )
       complete_response = Authzed::Api::V1::DeleteRelationshipsResponse.new(
         deleted_at: Authzed::Api::V1::ZedToken.new(token: 'rev-complete'),
@@ -221,6 +222,34 @@ RSpec.describe 'SpiceDB::Client#delete_relationships preconditions and limit' do
       expect(requests[1].optional_preconditions.length).to eq(1)
       expect(requests[0].optional_limit).to eq(1)
       expect(requests[1].optional_limit).to eq(1)
+    end
+
+    it 'sends no cursor on the first page, then the prior PARTIAL response`s after_result_cursor on the next' do
+      partial_response = Authzed::Api::V1::DeleteRelationshipsResponse.new(
+        deleted_at: Authzed::Api::V1::ZedToken.new(token: 'rev-partial'),
+        deletion_progress: :DELETION_PROGRESS_PARTIAL,
+        after_result_cursor: Authzed::Api::V1::Cursor.new(token: 'cursor-1')
+      )
+      complete_response = Authzed::Api::V1::DeleteRelationshipsResponse.new(
+        deleted_at: Authzed::Api::V1::ZedToken.new(token: 'rev-complete'),
+        deletion_progress: :DELETION_PROGRESS_COMPLETE
+      )
+
+      requests = []
+      permissions_service = double('permissions_service')
+      responses = [partial_response, complete_response]
+      allow(permissions_service).to receive(:delete_relationships) do |req|
+        requests << req
+        responses.shift
+      end
+      proto_client = double('proto_client', permissions: permissions_service)
+      client.instance_variable_set(:@proto_client, proto_client)
+
+      client.delete_relationships(filter, limit: 1)
+
+      expect(requests.length).to eq(2)
+      expect(requests[0].optional_cursor).to be_nil
+      expect(requests[1].optional_cursor).to eq(Authzed::Api::V1::Cursor.new(token: 'cursor-1'))
     end
   end
 end

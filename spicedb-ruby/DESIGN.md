@@ -374,7 +374,7 @@ defaults:
 | `lookup_resources` | 512 | cursor-based auto-pagination |
 | `lookup_subjects` | — | single streaming call |
 | `export_relationships` | 512 | cursor-based auto-pagination |
-| `delete_relationships` | 1,000 | auto-repeats until all deleted; matches SpiceDB's default `--max-delete-relationships-limit` |
+| `delete_relationships` | 1,000 | cursor-based auto-pagination (each PARTIAL response's `after_result_cursor` becomes the next call's `optional_cursor`); auto-repeats until all deleted; matches SpiceDB's default `--max-delete-relationships-limit` |
 | `import_relationships` | 1,000 | batches into streaming sends |
 | `updates` | — | server-streaming, no pagination |
 
@@ -478,6 +478,17 @@ limit of 1,000 per RPC call (override with `limit:`; matches SpiceDB's
 default `--max-delete-relationships-limit`, so the default works against a
 stock server). It repeats until the server reports all matching
 relationships are deleted. Returns the final revision.
+
+Like the streaming reads above, paging is cursor-based and fully internal: a
+`DELETION_PROGRESS_PARTIAL` response carries an `after_result_cursor`, which
+the client sends back as `optional_cursor` on the next call so the server
+resumes after the relationships it already deleted instead of re-scanning
+matches from the start. The very first call in a delete sends no cursor. A
+datastore that doesn't populate `after_result_cursor` on a PARTIAL response
+degrades to the pre-cursor behavior — the next page is sent with no cursor
+and re-evaluates the filter against what remains. This is an internal
+implementation detail: signature, default page size, and observable behavior
+(revision returned, preconditions re-sent per page) are unchanged.
 
 Optional `must_match:`/`must_not_match:` keyword args add preconditions that
 guard the delete, mirroring `Transaction#must_match`/`#must_not_match`:

@@ -224,6 +224,68 @@ private static final long serialVersionUID = 0L;
     return optionalTransactionMetadata_ == null ? com.google.protobuf.Struct.getDefaultInstance() : optionalTransactionMetadata_;
   }
 
+  public static final int OPTIONAL_CURSOR_FIELD_NUMBER = 6;
+  private com.authzed.api.v1.Cursor optionalCursor_;
+  /**
+   * <pre>
+   * optional_cursor, if specified, indicates the cursor after which deletion should resume. It is used to
+   * continue a batched, partial deletion where a previous call left off, by passing back the
+   * after_result_cursor returned on the previous DeleteRelationshipsResponse.
+   *
+   * A cursor allows a large deletion to be performed as a series of calls without re-examining the
+   * relationships already deleted by earlier calls. It therefore requires optional_limit and
+   * optional_allow_partial_deletions to be set, and is only supported by datastores whose deletion can be
+   * ordered and resumed; datastores that do not support cursored deletion will return an error if a cursor
+   * is provided.
+   * </pre>
+   *
+   * <code>.authzed.api.v1.Cursor optional_cursor = 6 [json_name = "optionalCursor"];</code>
+   * @return Whether the optionalCursor field is set.
+   */
+  @java.lang.Override
+  public boolean hasOptionalCursor() {
+    return ((bitField0_ & 0x00000004) != 0);
+  }
+  /**
+   * <pre>
+   * optional_cursor, if specified, indicates the cursor after which deletion should resume. It is used to
+   * continue a batched, partial deletion where a previous call left off, by passing back the
+   * after_result_cursor returned on the previous DeleteRelationshipsResponse.
+   *
+   * A cursor allows a large deletion to be performed as a series of calls without re-examining the
+   * relationships already deleted by earlier calls. It therefore requires optional_limit and
+   * optional_allow_partial_deletions to be set, and is only supported by datastores whose deletion can be
+   * ordered and resumed; datastores that do not support cursored deletion will return an error if a cursor
+   * is provided.
+   * </pre>
+   *
+   * <code>.authzed.api.v1.Cursor optional_cursor = 6 [json_name = "optionalCursor"];</code>
+   * @return The optionalCursor.
+   */
+  @java.lang.Override
+  public com.authzed.api.v1.Cursor getOptionalCursor() {
+    return optionalCursor_ == null ? com.authzed.api.v1.Cursor.getDefaultInstance() : optionalCursor_;
+  }
+  /**
+   * <pre>
+   * optional_cursor, if specified, indicates the cursor after which deletion should resume. It is used to
+   * continue a batched, partial deletion where a previous call left off, by passing back the
+   * after_result_cursor returned on the previous DeleteRelationshipsResponse.
+   *
+   * A cursor allows a large deletion to be performed as a series of calls without re-examining the
+   * relationships already deleted by earlier calls. It therefore requires optional_limit and
+   * optional_allow_partial_deletions to be set, and is only supported by datastores whose deletion can be
+   * ordered and resumed; datastores that do not support cursored deletion will return an error if a cursor
+   * is provided.
+   * </pre>
+   *
+   * <code>.authzed.api.v1.Cursor optional_cursor = 6 [json_name = "optionalCursor"];</code>
+   */
+  @java.lang.Override
+  public com.authzed.api.v1.CursorOrBuilder getOptionalCursorOrBuilder() {
+    return optionalCursor_ == null ? com.authzed.api.v1.Cursor.getDefaultInstance() : optionalCursor_;
+  }
+
   private byte memoizedIsInitialized = -1;
   @java.lang.Override
   public final boolean isInitialized() {
@@ -253,6 +315,9 @@ private static final long serialVersionUID = 0L;
     if (((bitField0_ & 0x00000002) != 0)) {
       output.writeMessage(5, getOptionalTransactionMetadata());
     }
+    if (((bitField0_ & 0x00000004) != 0)) {
+      output.writeMessage(6, getOptionalCursor());
+    }
     getUnknownFields().writeTo(output);
   }
   private int computeSerializedSize_0() {
@@ -281,6 +346,10 @@ private static final long serialVersionUID = 0L;
     if (((bitField0_ & 0x00000002) != 0)) {
       size += com.google.protobuf.CodedOutputStream
         .computeMessageSize(5, getOptionalTransactionMetadata());
+    }
+    if (((bitField0_ & 0x00000004) != 0)) {
+      size += com.google.protobuf.CodedOutputStream
+        .computeMessageSize(6, getOptionalCursor());
     }
     return size;
   }
@@ -322,6 +391,11 @@ private static final long serialVersionUID = 0L;
       if (!getOptionalTransactionMetadata()
           .equals(other.getOptionalTransactionMetadata())) return false;
     }
+    if (hasOptionalCursor() != other.hasOptionalCursor()) return false;
+    if (hasOptionalCursor()) {
+      if (!getOptionalCursor()
+          .equals(other.getOptionalCursor())) return false;
+    }
     if (!getUnknownFields().equals(other.getUnknownFields())) return false;
     return true;
   }
@@ -349,6 +423,10 @@ private static final long serialVersionUID = 0L;
     if (hasOptionalTransactionMetadata()) {
       hash = (37 * hash) + OPTIONAL_TRANSACTION_METADATA_FIELD_NUMBER;
       hash = (53 * hash) + getOptionalTransactionMetadata().hashCode();
+    }
+    if (hasOptionalCursor()) {
+      hash = (37 * hash) + OPTIONAL_CURSOR_FIELD_NUMBER;
+      hash = (53 * hash) + getOptionalCursor().hashCode();
     }
     hash = (29 * hash) + getUnknownFields().hashCode();
     memoizedHashCode = hash;
@@ -491,6 +569,7 @@ private static final long serialVersionUID = 0L;
         internalGetRelationshipFilterFieldBuilder();
         internalGetOptionalPreconditionsFieldBuilder();
         internalGetOptionalTransactionMetadataFieldBuilder();
+        internalGetOptionalCursorFieldBuilder();
       }
     }
     @java.lang.Override
@@ -515,6 +594,11 @@ private static final long serialVersionUID = 0L;
       if (optionalTransactionMetadataBuilder_ != null) {
         optionalTransactionMetadataBuilder_.dispose();
         optionalTransactionMetadataBuilder_ = null;
+      }
+      optionalCursor_ = null;
+      if (optionalCursorBuilder_ != null) {
+        optionalCursorBuilder_.dispose();
+        optionalCursorBuilder_ = null;
       }
       return this;
     }
@@ -581,6 +665,12 @@ private static final long serialVersionUID = 0L;
             : optionalTransactionMetadataBuilder_.build();
         to_bitField0_ |= 0x00000002;
       }
+      if (((from_bitField0_ & 0x00000020) != 0)) {
+        result.optionalCursor_ = optionalCursorBuilder_ == null
+            ? optionalCursor_
+            : optionalCursorBuilder_.build();
+        to_bitField0_ |= 0x00000004;
+      }
       result.bitField0_ |= to_bitField0_;
     }
 
@@ -633,6 +723,9 @@ private static final long serialVersionUID = 0L;
       }
       if (other.hasOptionalTransactionMetadata()) {
         mergeOptionalTransactionMetadata(other.getOptionalTransactionMetadata());
+      }
+      if (other.hasOptionalCursor()) {
+        mergeOptionalCursor(other.getOptionalCursor());
       }
       this.mergeUnknownFields(other.getUnknownFields());
       onChanged();
@@ -695,6 +788,13 @@ private static final long serialVersionUID = 0L;
               bitField0_ |= 0x00000010;
               break;
             } // case 42
+            case 50: {
+              input.readMessage(
+                  internalGetOptionalCursorFieldBuilder().getBuilder(),
+                  extensionRegistry);
+              bitField0_ |= 0x00000020;
+              break;
+            } // case 50
             default: {
               if (!super.parseUnknownField(input, extensionRegistry, tag)) {
                 done = true; // was an endgroup tag
@@ -1411,6 +1511,233 @@ private static final long serialVersionUID = 0L;
         optionalTransactionMetadata_ = null;
       }
       return optionalTransactionMetadataBuilder_;
+    }
+
+    private com.authzed.api.v1.Cursor optionalCursor_;
+    private com.google.protobuf.SingleFieldBuilder<
+        com.authzed.api.v1.Cursor, com.authzed.api.v1.Cursor.Builder, com.authzed.api.v1.CursorOrBuilder> optionalCursorBuilder_;
+    /**
+     * <pre>
+     * optional_cursor, if specified, indicates the cursor after which deletion should resume. It is used to
+     * continue a batched, partial deletion where a previous call left off, by passing back the
+     * after_result_cursor returned on the previous DeleteRelationshipsResponse.
+     *
+     * A cursor allows a large deletion to be performed as a series of calls without re-examining the
+     * relationships already deleted by earlier calls. It therefore requires optional_limit and
+     * optional_allow_partial_deletions to be set, and is only supported by datastores whose deletion can be
+     * ordered and resumed; datastores that do not support cursored deletion will return an error if a cursor
+     * is provided.
+     * </pre>
+     *
+     * <code>.authzed.api.v1.Cursor optional_cursor = 6 [json_name = "optionalCursor"];</code>
+     * @return Whether the optionalCursor field is set.
+     */
+    public boolean hasOptionalCursor() {
+      return ((bitField0_ & 0x00000020) != 0);
+    }
+    /**
+     * <pre>
+     * optional_cursor, if specified, indicates the cursor after which deletion should resume. It is used to
+     * continue a batched, partial deletion where a previous call left off, by passing back the
+     * after_result_cursor returned on the previous DeleteRelationshipsResponse.
+     *
+     * A cursor allows a large deletion to be performed as a series of calls without re-examining the
+     * relationships already deleted by earlier calls. It therefore requires optional_limit and
+     * optional_allow_partial_deletions to be set, and is only supported by datastores whose deletion can be
+     * ordered and resumed; datastores that do not support cursored deletion will return an error if a cursor
+     * is provided.
+     * </pre>
+     *
+     * <code>.authzed.api.v1.Cursor optional_cursor = 6 [json_name = "optionalCursor"];</code>
+     * @return The optionalCursor.
+     */
+    public com.authzed.api.v1.Cursor getOptionalCursor() {
+      if (optionalCursorBuilder_ == null) {
+        return optionalCursor_ == null ? com.authzed.api.v1.Cursor.getDefaultInstance() : optionalCursor_;
+      } else {
+        return optionalCursorBuilder_.getMessage();
+      }
+    }
+    /**
+     * <pre>
+     * optional_cursor, if specified, indicates the cursor after which deletion should resume. It is used to
+     * continue a batched, partial deletion where a previous call left off, by passing back the
+     * after_result_cursor returned on the previous DeleteRelationshipsResponse.
+     *
+     * A cursor allows a large deletion to be performed as a series of calls without re-examining the
+     * relationships already deleted by earlier calls. It therefore requires optional_limit and
+     * optional_allow_partial_deletions to be set, and is only supported by datastores whose deletion can be
+     * ordered and resumed; datastores that do not support cursored deletion will return an error if a cursor
+     * is provided.
+     * </pre>
+     *
+     * <code>.authzed.api.v1.Cursor optional_cursor = 6 [json_name = "optionalCursor"];</code>
+     */
+    public Builder setOptionalCursor(com.authzed.api.v1.Cursor value) {
+      if (optionalCursorBuilder_ == null) {
+        java.util.Objects.requireNonNull(value);
+        optionalCursor_ = value;
+      } else {
+        optionalCursorBuilder_.setMessage(value);
+      }
+      bitField0_ |= 0x00000020;
+      onChanged();
+      return this;
+    }
+    /**
+     * <pre>
+     * optional_cursor, if specified, indicates the cursor after which deletion should resume. It is used to
+     * continue a batched, partial deletion where a previous call left off, by passing back the
+     * after_result_cursor returned on the previous DeleteRelationshipsResponse.
+     *
+     * A cursor allows a large deletion to be performed as a series of calls without re-examining the
+     * relationships already deleted by earlier calls. It therefore requires optional_limit and
+     * optional_allow_partial_deletions to be set, and is only supported by datastores whose deletion can be
+     * ordered and resumed; datastores that do not support cursored deletion will return an error if a cursor
+     * is provided.
+     * </pre>
+     *
+     * <code>.authzed.api.v1.Cursor optional_cursor = 6 [json_name = "optionalCursor"];</code>
+     */
+    public Builder setOptionalCursor(
+        com.authzed.api.v1.Cursor.Builder builderForValue) {
+      if (optionalCursorBuilder_ == null) {
+        optionalCursor_ = builderForValue.build();
+      } else {
+        optionalCursorBuilder_.setMessage(builderForValue.build());
+      }
+      bitField0_ |= 0x00000020;
+      onChanged();
+      return this;
+    }
+    /**
+     * <pre>
+     * optional_cursor, if specified, indicates the cursor after which deletion should resume. It is used to
+     * continue a batched, partial deletion where a previous call left off, by passing back the
+     * after_result_cursor returned on the previous DeleteRelationshipsResponse.
+     *
+     * A cursor allows a large deletion to be performed as a series of calls without re-examining the
+     * relationships already deleted by earlier calls. It therefore requires optional_limit and
+     * optional_allow_partial_deletions to be set, and is only supported by datastores whose deletion can be
+     * ordered and resumed; datastores that do not support cursored deletion will return an error if a cursor
+     * is provided.
+     * </pre>
+     *
+     * <code>.authzed.api.v1.Cursor optional_cursor = 6 [json_name = "optionalCursor"];</code>
+     */
+    public Builder mergeOptionalCursor(com.authzed.api.v1.Cursor value) {
+      if (optionalCursorBuilder_ == null) {
+        if (((bitField0_ & 0x00000020) != 0) &&
+          optionalCursor_ != null &&
+          optionalCursor_ != com.authzed.api.v1.Cursor.getDefaultInstance()) {
+          getOptionalCursorBuilder().mergeFrom(value);
+        } else {
+          optionalCursor_ = value;
+        }
+      } else {
+        optionalCursorBuilder_.mergeFrom(value);
+      }
+      if (optionalCursor_ != null) {
+        bitField0_ |= 0x00000020;
+        onChanged();
+      }
+      return this;
+    }
+    /**
+     * <pre>
+     * optional_cursor, if specified, indicates the cursor after which deletion should resume. It is used to
+     * continue a batched, partial deletion where a previous call left off, by passing back the
+     * after_result_cursor returned on the previous DeleteRelationshipsResponse.
+     *
+     * A cursor allows a large deletion to be performed as a series of calls without re-examining the
+     * relationships already deleted by earlier calls. It therefore requires optional_limit and
+     * optional_allow_partial_deletions to be set, and is only supported by datastores whose deletion can be
+     * ordered and resumed; datastores that do not support cursored deletion will return an error if a cursor
+     * is provided.
+     * </pre>
+     *
+     * <code>.authzed.api.v1.Cursor optional_cursor = 6 [json_name = "optionalCursor"];</code>
+     */
+    public Builder clearOptionalCursor() {
+      bitField0_ = (bitField0_ & ~0x00000020);
+      optionalCursor_ = null;
+      if (optionalCursorBuilder_ != null) {
+        optionalCursorBuilder_.dispose();
+        optionalCursorBuilder_ = null;
+      }
+      onChanged();
+      return this;
+    }
+    /**
+     * <pre>
+     * optional_cursor, if specified, indicates the cursor after which deletion should resume. It is used to
+     * continue a batched, partial deletion where a previous call left off, by passing back the
+     * after_result_cursor returned on the previous DeleteRelationshipsResponse.
+     *
+     * A cursor allows a large deletion to be performed as a series of calls without re-examining the
+     * relationships already deleted by earlier calls. It therefore requires optional_limit and
+     * optional_allow_partial_deletions to be set, and is only supported by datastores whose deletion can be
+     * ordered and resumed; datastores that do not support cursored deletion will return an error if a cursor
+     * is provided.
+     * </pre>
+     *
+     * <code>.authzed.api.v1.Cursor optional_cursor = 6 [json_name = "optionalCursor"];</code>
+     */
+    public com.authzed.api.v1.Cursor.Builder getOptionalCursorBuilder() {
+      bitField0_ |= 0x00000020;
+      onChanged();
+      return internalGetOptionalCursorFieldBuilder().getBuilder();
+    }
+    /**
+     * <pre>
+     * optional_cursor, if specified, indicates the cursor after which deletion should resume. It is used to
+     * continue a batched, partial deletion where a previous call left off, by passing back the
+     * after_result_cursor returned on the previous DeleteRelationshipsResponse.
+     *
+     * A cursor allows a large deletion to be performed as a series of calls without re-examining the
+     * relationships already deleted by earlier calls. It therefore requires optional_limit and
+     * optional_allow_partial_deletions to be set, and is only supported by datastores whose deletion can be
+     * ordered and resumed; datastores that do not support cursored deletion will return an error if a cursor
+     * is provided.
+     * </pre>
+     *
+     * <code>.authzed.api.v1.Cursor optional_cursor = 6 [json_name = "optionalCursor"];</code>
+     */
+    public com.authzed.api.v1.CursorOrBuilder getOptionalCursorOrBuilder() {
+      if (optionalCursorBuilder_ != null) {
+        return optionalCursorBuilder_.getMessageOrBuilder();
+      } else {
+        return optionalCursor_ == null ?
+            com.authzed.api.v1.Cursor.getDefaultInstance() : optionalCursor_;
+      }
+    }
+    /**
+     * <pre>
+     * optional_cursor, if specified, indicates the cursor after which deletion should resume. It is used to
+     * continue a batched, partial deletion where a previous call left off, by passing back the
+     * after_result_cursor returned on the previous DeleteRelationshipsResponse.
+     *
+     * A cursor allows a large deletion to be performed as a series of calls without re-examining the
+     * relationships already deleted by earlier calls. It therefore requires optional_limit and
+     * optional_allow_partial_deletions to be set, and is only supported by datastores whose deletion can be
+     * ordered and resumed; datastores that do not support cursored deletion will return an error if a cursor
+     * is provided.
+     * </pre>
+     *
+     * <code>.authzed.api.v1.Cursor optional_cursor = 6 [json_name = "optionalCursor"];</code>
+     */
+    private com.google.protobuf.SingleFieldBuilder<
+        com.authzed.api.v1.Cursor, com.authzed.api.v1.Cursor.Builder, com.authzed.api.v1.CursorOrBuilder> 
+        internalGetOptionalCursorFieldBuilder() {
+      if (optionalCursorBuilder_ == null) {
+        optionalCursorBuilder_ = new com.google.protobuf.SingleFieldBuilder<
+            com.authzed.api.v1.Cursor, com.authzed.api.v1.Cursor.Builder, com.authzed.api.v1.CursorOrBuilder>(
+                getOptionalCursor(),
+                getParentForChildren(),
+                isClean());
+        optionalCursor_ = null;
+      }
+      return optionalCursorBuilder_;
     }
 
     // @@protoc_insertion_point(builder_scope:authzed.api.v1.DeleteRelationshipsRequest)

@@ -34,7 +34,7 @@ public interface LookupSubjectsResponseOrBuilder extends
    *
    * <code>string subject_object_id = 2 [json_name = "subjectObjectId", deprecated = true];</code>
    * @deprecated authzed.api.v1.LookupSubjectsResponse.subject_object_id is deprecated.
-   *     See authzed/api/v1/permission_service.proto;l=892
+   *     See authzed/api/v1/permission_service.proto;l=910
    * @return The subjectObjectId.
    */
   @java.lang.Deprecated java.lang.String getSubjectObjectId();
@@ -47,7 +47,7 @@ public interface LookupSubjectsResponseOrBuilder extends
    *
    * <code>string subject_object_id = 2 [json_name = "subjectObjectId", deprecated = true];</code>
    * @deprecated authzed.api.v1.LookupSubjectsResponse.subject_object_id is deprecated.
-   *     See authzed/api/v1/permission_service.proto;l=892
+   *     See authzed/api/v1/permission_service.proto;l=910
    * @return The bytes for subjectObjectId.
    */
   @java.lang.Deprecated com.google.protobuf.ByteString
@@ -63,7 +63,7 @@ public interface LookupSubjectsResponseOrBuilder extends
    *
    * <code>repeated string excluded_subject_ids = 3 [json_name = "excludedSubjectIds", deprecated = true];</code>
    * @deprecated authzed.api.v1.LookupSubjectsResponse.excluded_subject_ids is deprecated.
-   *     See authzed/api/v1/permission_service.proto;l=898
+   *     See authzed/api/v1/permission_service.proto;l=916
    * @return A list containing the excludedSubjectIds.
    */
   @java.lang.Deprecated java.util.List<java.lang.String>
@@ -78,7 +78,7 @@ public interface LookupSubjectsResponseOrBuilder extends
    *
    * <code>repeated string excluded_subject_ids = 3 [json_name = "excludedSubjectIds", deprecated = true];</code>
    * @deprecated authzed.api.v1.LookupSubjectsResponse.excluded_subject_ids is deprecated.
-   *     See authzed/api/v1/permission_service.proto;l=898
+   *     See authzed/api/v1/permission_service.proto;l=916
    * @return The count of excludedSubjectIds.
    */
   @java.lang.Deprecated int getExcludedSubjectIdsCount();
@@ -92,7 +92,7 @@ public interface LookupSubjectsResponseOrBuilder extends
    *
    * <code>repeated string excluded_subject_ids = 3 [json_name = "excludedSubjectIds", deprecated = true];</code>
    * @deprecated authzed.api.v1.LookupSubjectsResponse.excluded_subject_ids is deprecated.
-   *     See authzed/api/v1/permission_service.proto;l=898
+   *     See authzed/api/v1/permission_service.proto;l=916
    * @param index The index of the element to return.
    * @return The excludedSubjectIds at the given index.
    */
@@ -107,7 +107,7 @@ public interface LookupSubjectsResponseOrBuilder extends
    *
    * <code>repeated string excluded_subject_ids = 3 [json_name = "excludedSubjectIds", deprecated = true];</code>
    * @deprecated authzed.api.v1.LookupSubjectsResponse.excluded_subject_ids is deprecated.
-   *     See authzed/api/v1/permission_service.proto;l=898
+   *     See authzed/api/v1/permission_service.proto;l=916
    * @param index The index of the value to return.
    * @return The bytes of the excludedSubjectIds at the given index.
    */
@@ -122,7 +122,7 @@ public interface LookupSubjectsResponseOrBuilder extends
    *
    * <code>.authzed.api.v1.LookupPermissionship permissionship = 4 [json_name = "permissionship", deprecated = true, (.validate.rules) = { ... }</code>
    * @deprecated authzed.api.v1.LookupSubjectsResponse.permissionship is deprecated.
-   *     See authzed/api/v1/permission_service.proto;l=902
+   *     See authzed/api/v1/permission_service.proto;l=920
    * @return The enum numeric value on the wire for permissionship.
    */
   @java.lang.Deprecated int getPermissionshipValue();
@@ -134,7 +134,7 @@ public interface LookupSubjectsResponseOrBuilder extends
    *
    * <code>.authzed.api.v1.LookupPermissionship permissionship = 4 [json_name = "permissionship", deprecated = true, (.validate.rules) = { ... }</code>
    * @deprecated authzed.api.v1.LookupSubjectsResponse.permissionship is deprecated.
-   *     See authzed/api/v1/permission_service.proto;l=902
+   *     See authzed/api/v1/permission_service.proto;l=920
    * @return The permissionship.
    */
   @java.lang.Deprecated com.authzed.api.v1.LookupPermissionship getPermissionship();
@@ -147,7 +147,7 @@ public interface LookupSubjectsResponseOrBuilder extends
    *
    * <code>.authzed.api.v1.PartialCaveatInfo partial_caveat_info = 5 [json_name = "partialCaveatInfo", deprecated = true, (.validate.rules) = { ... }</code>
    * @deprecated authzed.api.v1.LookupSubjectsResponse.partial_caveat_info is deprecated.
-   *     See authzed/api/v1/permission_service.proto;l=916
+   *     See authzed/api/v1/permission_service.proto;l=934
    * @return Whether the partialCaveatInfo field is set.
    */
   @java.lang.Deprecated boolean hasPartialCaveatInfo();
@@ -159,7 +159,7 @@ public interface LookupSubjectsResponseOrBuilder extends
    *
    * <code>.authzed.api.v1.PartialCaveatInfo partial_caveat_info = 5 [json_name = "partialCaveatInfo", deprecated = true, (.validate.rules) = { ... }</code>
    * @deprecated authzed.api.v1.LookupSubjectsResponse.partial_caveat_info is deprecated.
-   *     See authzed/api/v1/permission_service.proto;l=916
+   *     See authzed/api/v1/permission_service.proto;l=934
    * @return The partialCaveatInfo.
    */
   @java.lang.Deprecated com.authzed.api.v1.PartialCaveatInfo getPartialCaveatInfo();

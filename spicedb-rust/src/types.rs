@@ -601,7 +601,7 @@ pub struct DeleteOptions {
     /// (e.g. one interrupted by a process restart). Only datastores whose
     /// deletion can be ordered and resumed honor a supplied cursor; others
     /// reject the request. `None` (the default) starts a new deletion.
-    pub cursor: Option<String>,
+    cursor: Option<String>,
 }
 
 impl DeleteOptions {

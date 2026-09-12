@@ -493,6 +493,7 @@ pub struct WatchEvent {
 ///     .with_checkpoints();
 /// ```
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct WatchOptions {
     /// Resume from this revision instead of from head. Pass a
     /// [`WatchEvent::changes_through`] from a previous stream to pick up
@@ -579,6 +580,7 @@ pub enum PreconditionOperation {
 /// delete, pair the precondition with [`DeleteOptions::with_limit`] set large
 /// enough to cover every matching relationship in one call.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct DeleteOptions {
     /// Filters that must each match at least one existing relationship for
     /// the delete to proceed.
@@ -601,7 +603,7 @@ pub struct DeleteOptions {
     /// (e.g. one interrupted by a process restart). Only datastores whose
     /// deletion can be ordered and resumed honor a supplied cursor; others
     /// reject the request. `None` (the default) starts a new deletion.
-    cursor: Option<String>,
+    pub cursor: Option<String>,
 }
 
 impl DeleteOptions {

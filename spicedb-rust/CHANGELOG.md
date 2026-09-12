@@ -4,6 +4,26 @@
 
 ### Changed
 
+- **2026-09-11: `DeleteOptions` and `WatchOptions` are `#[non_exhaustive]`, and
+  `DeleteOptions.cursor` is public.** Root DESIGN.md, "RULE: Every RPC wrapper must have one
+  place to add an option". **Breaking**, deliberately and once.
+
+  Regeneration added `cursor` to `DeleteOptions` as a private field. That did not compile --
+  Rust privacy is module-scoped, so `client.rs` could not read a field private to `types.rs`
+  -- and it was a breaking change besides: `cargo-semver-checks` reported
+  `constructible_struct_adds_field`, because adding any field to a struct that downstream
+  could build with a literal breaks every such literal.
+
+  `cursor` is now `pub`, like its four sibling fields, which fixes the build. Both options
+  structs are now `#[non_exhaustive]`, which is itself a one-time break
+  (`struct_marked_non_exhaustive`) and is the point: it takes the break once so that no
+  future field added to either struct is breaking at all. `CheckOptions` and `LookupOptions`
+  were given the same treatment when they were introduced; these two predate it.
+
+  No caller is affected in practice: every use in this repository already builds them with
+  `DeleteOptions::new()`/`::default()` and the `with_*` methods, and there are no struct
+  literals to migrate.
+
 - **2026-09-04: check options moved onto `CheckOptions`; lookups gained `LookupOptions`.**
   Root DESIGN.md, "RULE: Every RPC wrapper must have one place to add an option" (new).
   **Breaking.** Each check operation had three forms — plain, `..._with_context` and

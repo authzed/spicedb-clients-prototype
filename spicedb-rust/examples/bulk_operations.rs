@@ -6,7 +6,7 @@ use futures::StreamExt;
 use spicedb::client::SpiceDBClient;
 use spicedb::consistency;
 use spicedb::error::SpiceDBError;
-use spicedb::types::{Filter, Relationship, Transaction};
+use spicedb::types::{DeleteOptions, Filter, Relationship, Transaction};
 
 const SCHEMA: &str = r#"definition user {}
 
@@ -184,9 +184,34 @@ async fn main() {
     );
 
     // Clean up so later examples that write a narrower schema aren't blocked by
-    // leftover relationships.
+    // leftover relationships. This store has 103 matching relationships
+    // (three viewers of document:report plus the hundred imported above), so
+    // a page size of 20 forces `delete_relationships_with`'s auto-paging loop
+    // to repeat several times rather than complete in one call -- exercising
+    // the same loop that now threads each response's `after_result_cursor`
+    // into the next page's `optional_cursor` (mirroring
+    // `read_relationships`'s transparent-continuation pattern, see
+    // `DeleteOptions` docs). Asserting nothing is left afterward means a
+    // loop that stopped early -- because paging broke, or because it choked
+    // on the cursor field this datastore never actually populates -- fails
+    // here instead of silently leaving relationships behind.
     client
-        .delete_relationships(&Filter::new("document"))
+        .delete_relationships_with(
+            &Filter::new("document"),
+            &DeleteOptions::new().with_limit(20),
+        )
         .await
-        .expect("cleanup failed");
+        .expect("paged cleanup failed");
+
+    let stream = client.export_relationships(&consistency::full(), None);
+    tokio::pin!(stream);
+    let mut remaining = Vec::new();
+    while let Some(rel) = stream.next().await {
+        remaining.push(rel.expect("export after cleanup failed"));
+    }
+    assert!(
+        remaining.is_empty(),
+        "expected no document relationships to remain after paged cleanup, found {}",
+        remaining.len()
+    );
 }

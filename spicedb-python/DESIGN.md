@@ -586,10 +586,10 @@ the proto at all, so there is nothing to expose.
 
 ### Deletions
 
-`delete_relationships(filter, *, must_match=None, must_not_match=None, limit=None)`
-reaches the proto's `optional_preconditions`/`optional_limit` fields, mirroring
-`spicedb-go`'s `WithDeleteMustMatch`/`WithDeleteMustNotMatch`/`WithDeleteLimit`
-(`spicedb-go/client/relationships.go`):
+`delete_relationships(filter, *, must_match=None, must_not_match=None, limit=None, auto_page=False)`
+reaches the proto's `optional_preconditions`/`optional_limit`/`optional_cursor`
+fields, mirroring `spicedb-go`'s `WithDeleteMustMatch`/`WithDeleteMustNotMatch`/
+`WithDeleteLimit` (`spicedb-go/client/relationships.go`):
 
 ```python
 # aio
@@ -614,15 +614,42 @@ revision = client.delete_relationships(
 call (deleting nothing) if a precondition isn't satisfied. No options given
 means the request is unchanged from before: no preconditions, no limit.
 
-Unlike `spicedb-go`'s `DeleteRelationships`, this client does not yet
+By default (`auto_page=False`, unchanged from before this client's proto
+gained `DeleteRelationshipsRequest.optional_cursor`/
+`DeleteRelationshipsResponse.after_result_cursor`), this client does not
 auto-page a delete across multiple RPCs when the match set exceeds a single
-server-side page — that gap is pre-existing and out of scope for this
-addition. Supplying `limit` bounds a single call to deleting at most that
-many relationships; when more relationships match than `limit`, the server
-requires `optional_allow_partial_deletions` to permit that (otherwise it
-rejects the call outright), so this client sets it automatically whenever
+server-side page. Supplying `limit` bounds a single call to deleting at most
+that many relationships; when more relationships match than `limit`, the
+server requires `optional_allow_partial_deletions` to permit that (otherwise
+it rejects the call outright), so this client sets it automatically whenever
 `limit` is given. Callers that need to delete more than `limit` matches must
 call again with the same filter to continue.
+
+```python
+# aio — deletes every match, looping internally
+revision = await client.delete_relationships(filter, auto_page=True)
+
+# sync — identical signature, no `await`
+revision = client.delete_relationships(filter, auto_page=True)
+```
+
+`auto_page=True` closes that gap: it loops internally, feeding each
+response's `after_result_cursor` back in as the next request's
+`optional_cursor` — the same transparent-cursor approach
+`read_relationships` uses — until `deletion_progress` comes back COMPLETE,
+mirroring `spicedb-go`'s `DeleteRelationships`, which auto-pages
+unconditionally. It is opt-in here, not the default, because it changes what
+a single call means: with `auto_page=True`, `limit` stops being a cap on the
+total deleted and becomes the per-page size (default 1,000, matching
+`spicedb-go`'s `defaultDeletePageSize`) — a caller relying on the
+`auto_page=False` contract (bounded, single-RPC, partial-deletion-then-
+manual-continue) must not have that silently replaced by an unbounded loop
+that can now delete far more than `limit` in one call. Preconditions are a
+per-request proto field, so on a multi-page `auto_page=True` delete they are
+re-evaluated by the server on every page, exactly as in `spicedb-go`: a
+guarded delete that starts successfully can still fail partway through if
+the guarded state changes between pages, after earlier pages already
+committed.
 
 ### Deadlines
 

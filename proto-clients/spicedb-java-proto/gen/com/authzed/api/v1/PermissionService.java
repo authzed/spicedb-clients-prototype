@@ -258,7 +258,7 @@ public final class PermissionService extends com.google.protobuf.GeneratedFile {
       "otobuf.StructB\016\372B\005\212\001\002\020\000\272H\003\310\001\000R\033optionalT" +
       "ransactionMetadata\"U\n\032WriteRelationships" +
       "Response\0227\n\nwritten_at\030\001 \001(\0132\030.authzed.a" +
-      "pi.v1.ZedTokenR\twrittenAt\"\322\003\n\032DeleteRela" +
+      "pi.v1.ZedTokenR\twrittenAt\"\223\004\n\032DeleteRela" +
       "tionshipsRequest\022c\n\023relationship_filter\030" +
       "\001 \001(\0132\".authzed.api.v1.RelationshipFilte" +
       "rB\016\372B\005\212\001\002\020\001\272H\003\310\001\001R\022relationshipFilter\022b\n" +
@@ -270,228 +270,232 @@ public final class PermissionService extends com.google.protobuf.GeneratedFile {
       "onalAllowPartialDeletions\022k\n\035optional_tr" +
       "ansaction_metadata\030\005 \001(\0132\027.google.protob" +
       "uf.StructB\016\372B\005\212\001\002\020\000\272H\003\310\001\000R\033optionalTrans" +
-      "actionMetadata\"\367\002\n\033DeleteRelationshipsRe" +
-      "sponse\0227\n\ndeleted_at\030\001 \001(\0132\030.authzed.api" +
-      ".v1.ZedTokenR\tdeletedAt\022i\n\021deletion_prog" +
-      "ress\030\002 \001(\0162<.authzed.api.v1.DeleteRelati" +
-      "onshipsResponse.DeletionProgressR\020deleti" +
-      "onProgress\022>\n\033relationships_deleted_coun" +
-      "t\030\003 \001(\004R\031relationshipsDeletedCount\"t\n\020De" +
-      "letionProgress\022!\n\035DELETION_PROGRESS_UNSP" +
-      "ECIFIED\020\000\022\036\n\032DELETION_PROGRESS_COMPLETE\020" +
-      "\001\022\035\n\031DELETION_PROGRESS_PARTIAL\020\002\"\314\003\n\026Che" +
-      "ckPermissionRequest\022=\n\013consistency\030\001 \001(\013" +
-      "2\033.authzed.api.v1.ConsistencyR\013consisten" +
-      "cy\022K\n\010resource\030\002 \001(\0132\037.authzed.api.v1.Ob" +
-      "jectReferenceB\016\372B\005\212\001\002\020\001\272H\003\310\001\001R\010resource\022" +
-      "t\n\npermission\030\003 \001(\tBT\372B\'r%(@2!^([a-z][a-" +
-      "z0-9_]{1,62}[a-z0-9])?$\272H\'r%(@2!^([a-z][" +
-      "a-z0-9_]{1,62}[a-z0-9])?$R\npermission\022J\n" +
-      "\007subject\030\004 \001(\0132 .authzed.api.v1.SubjectR" +
-      "eferenceB\016\372B\005\212\001\002\020\001\272H\003\310\001\001R\007subject\022A\n\007con" +
-      "text\030\005 \001(\0132\027.google.protobuf.StructB\016\372B\005" +
-      "\212\001\002\020\000\272H\003\310\001\000R\007context\022!\n\014with_tracing\030\006 \001" +
-      "(\010R\013withTracing\"\355\004\n\027CheckPermissionRespo" +
-      "nse\022G\n\nchecked_at\030\001 \001(\0132\030.authzed.api.v1" +
-      ".ZedTokenB\016\372B\005\212\001\002\020\000\272H\003\310\001\000R\tcheckedAt\022t\n\016" +
-      "permissionship\030\002 \001(\01626.authzed.api.v1.Ch" +
-      "eckPermissionResponse.PermissionshipB\024\372B" +
-      "\007\202\001\004\020\001 \000\272H\007\202\001\004\020\001 \000R\016permissionship\022a\n\023pa" +
-      "rtial_caveat_info\030\003 \001(\0132!.authzed.api.v1" +
-      ".PartialCaveatInfoB\016\372B\005\212\001\002\020\000\272H\003\310\001\000R\021part" +
-      "ialCaveatInfo\022A\n\013debug_trace\030\004 \001(\0132 .aut" +
-      "hzed.api.v1.DebugInformationR\ndebugTrace" +
-      "\022J\n\023optional_expires_at\030\005 \001(\0132\032.google.p" +
-      "rotobuf.TimestampR\021optionalExpiresAt\"\240\001\n" +
-      "\016Permissionship\022\036\n\032PERMISSIONSHIP_UNSPEC" +
-      "IFIED\020\000\022 \n\034PERMISSIONSHIP_NO_PERMISSION\020" +
-      "\001\022!\n\035PERMISSIONSHIP_HAS_PERMISSION\020\002\022)\n%" +
-      "PERMISSIONSHIP_CONDITIONAL_PERMISSION\020\003\"" +
-      "\325\001\n\033CheckBulkPermissionsRequest\022=\n\013consi" +
-      "stency\030\001 \001(\0132\033.authzed.api.v1.Consistenc" +
-      "yR\013consistency\022T\n\005items\030\002 \003(\0132/.authzed." +
-      "api.v1.CheckBulkPermissionsRequestItemB\r" +
-      "\372B\n\222\001\007\"\005\212\001\002\020\001R\005items\022!\n\014with_tracing\030\003 \001" +
-      "(\010R\013withTracing\"\363\002\n\037CheckBulkPermissions" +
-      "RequestItem\022K\n\010resource\030\001 \001(\0132\037.authzed." +
-      "api.v1.ObjectReferenceB\016\372B\005\212\001\002\020\001\272H\003\310\001\001R\010" +
-      "resource\022t\n\npermission\030\002 \001(\tBT\372B\'r%(@2!^" +
-      "([a-z][a-z0-9_]{1,62}[a-z0-9])?$\272H\'r%(@2" +
-      "!^([a-z][a-z0-9_]{1,62}[a-z0-9])?$R\nperm" +
-      "ission\022J\n\007subject\030\003 \001(\0132 .authzed.api.v1" +
-      ".SubjectReferenceB\016\372B\005\212\001\002\020\001\272H\003\310\001\001R\007subje" +
-      "ct\022A\n\007context\030\004 \001(\0132\027.google.protobuf.St" +
-      "ructB\016\372B\005\212\001\002\020\000\272H\003\310\001\000R\007context\"\266\001\n\034CheckB" +
-      "ulkPermissionsResponse\022G\n\nchecked_at\030\001 \001" +
-      "(\0132\030.authzed.api.v1.ZedTokenB\016\372B\005\212\001\002\020\000\272H" +
-      "\003\310\001\000R\tcheckedAt\022M\n\005pairs\030\002 \003(\0132(.authzed" +
-      ".api.v1.CheckBulkPermissionsPairB\r\372B\n\222\001\007" +
-      "\"\005\212\001\002\020\001R\005pairs\"\345\001\n\030CheckBulkPermissionsP" +
-      "air\022I\n\007request\030\001 \001(\0132/.authzed.api.v1.Ch" +
-      "eckBulkPermissionsRequestItemR\007request\022F" +
-      "\n\004item\030\002 \001(\01320.authzed.api.v1.CheckBulkP" +
-      "ermissionsResponseItemH\000R\004item\022*\n\005error\030" +
-      "\003 \001(\0132\022.google.rpc.StatusH\000R\005errorB\n\n\010re" +
-      "sponse\"\276\002\n CheckBulkPermissionsResponseI" +
-      "tem\022t\n\016permissionship\030\001 \001(\01626.authzed.ap" +
-      "i.v1.CheckPermissionResponse.Permissions" +
-      "hipB\024\372B\007\202\001\004\020\001 \000\272H\007\202\001\004\020\001 \000R\016permissionshi" +
-      "p\022a\n\023partial_caveat_info\030\002 \001(\0132!.authzed" +
-      ".api.v1.PartialCaveatInfoB\016\372B\005\212\001\002\020\000\272H\003\310\001" +
-      "\000R\021partialCaveatInfo\022A\n\013debug_trace\030\003 \001(" +
-      "\0132 .authzed.api.v1.DebugInformationR\ndeb" +
-      "ugTrace\"\237\002\n\033ExpandPermissionTreeRequest\022" +
-      "=\n\013consistency\030\001 \001(\0132\033.authzed.api.v1.Co" +
-      "nsistencyR\013consistency\022K\n\010resource\030\002 \001(\013" +
-      "2\037.authzed.api.v1.ObjectReferenceB\016\372B\005\212\001" +
-      "\002\020\001\272H\003\310\001\001R\010resource\022t\n\npermission\030\003 \001(\tB" +
-      "T\372B\'r%(@2!^([a-z][a-z0-9_]{1,62}[a-z0-9]" +
-      ")?$\272H\'r%(@2!^([a-z][a-z0-9_]{1,62}[a-z0-" +
-      "9])?$R\npermission\"\242\001\n\034ExpandPermissionTr" +
-      "eeResponse\0229\n\013expanded_at\030\001 \001(\0132\030.authze" +
-      "d.api.v1.ZedTokenR\nexpandedAt\022G\n\ttree_ro" +
-      "ot\030\002 \001(\0132*.authzed.api.v1.PermissionRela" +
-      "tionshipTreeR\010treeRoot\"\263\005\n\026LookupResourc" +
-      "esRequest\022=\n\013consistency\030\001 \001(\0132\033.authzed" +
-      ".api.v1.ConsistencyR\013consistency\022\303\001\n\024res" +
-      "ource_object_type\030\002 \001(\tB\220\001\372BErC(\200\0012>^([a" +
-      "-z][a-z0-9_]{1,61}[a-z0-9]/)*[a-z][a-z0-" +
-      "9_]{1,62}[a-z0-9]$\272HErC(\200\0012>^([a-z][a-z0" +
-      "-9_]{1,61}[a-z0-9]/)*[a-z][a-z0-9_]{1,62" +
-      "}[a-z0-9]$R\022resourceObjectType\022n\n\npermis" +
-      "sion\030\003 \001(\tBN\372B$r\"(@2\036^[a-z][a-z0-9_]{1,6" +
-      "2}[a-z0-9]$\272H$r\"(@2\036^[a-z][a-z0-9_]{1,62" +
-      "}[a-z0-9]$R\npermission\022J\n\007subject\030\004 \001(\0132" +
-      " .authzed.api.v1.SubjectReferenceB\016\372B\005\212\001" +
-      "\002\020\001\272H\003\310\001\001R\007subject\022A\n\007context\030\005 \001(\0132\027.go" +
-      "ogle.protobuf.StructB\016\372B\005\212\001\002\020\000\272H\003\310\001\000R\007co" +
-      "ntext\0225\n\016optional_limit\030\006 \001(\rB\016\372B\004*\002(\000\272H" +
-      "\004*\002(\000R\roptionalLimit\022?\n\017optional_cursor\030" +
-      "\007 \001(\0132\026.authzed.api.v1.CursorR\016optionalC" +
-      "ursor\022\035\n\nwith_debug\030\010 \001(\010R\twithDebug\"\222\003\n" +
-      "\027LookupResourcesResponse\022:\n\014looked_up_at" +
-      "\030\001 \001(\0132\030.authzed.api.v1.ZedTokenR\nlooked" +
-      "UpAt\022,\n\022resource_object_id\030\002 \001(\tR\020resour" +
-      "ceObjectId\022b\n\016permissionship\030\003 \001(\0162$.aut" +
-      "hzed.api.v1.LookupPermissionshipB\024\372B\007\202\001\004" +
-      "\020\001 \000\272H\007\202\001\004\020\001 \000R\016permissionship\022a\n\023partia" +
-      "l_caveat_info\030\004 \001(\0132!.authzed.api.v1.Par" +
-      "tialCaveatInfoB\016\372B\005\212\001\002\020\000\272H\003\310\001\000R\021partialC" +
-      "aveatInfo\022F\n\023after_result_cursor\030\005 \001(\0132\026" +
-      ".authzed.api.v1.CursorR\021afterResultCurso" +
-      "r\"\234\010\n\025LookupSubjectsRequest\022=\n\013consisten" +
-      "cy\030\001 \001(\0132\033.authzed.api.v1.ConsistencyR\013c" +
-      "onsistency\022K\n\010resource\030\002 \001(\0132\037.authzed.a" +
-      "pi.v1.ObjectReferenceB\016\372B\005\212\001\002\020\001\272H\003\310\001\001R\010r" +
-      "esource\022t\n\npermission\030\003 \001(\tBT\372B\'r%(@2!^(" +
-      "[a-z][a-z0-9_]{1,62}[a-z0-9])?$\272H\'r%(@2!" +
-      "^([a-z][a-z0-9_]{1,62}[a-z0-9])?$R\npermi" +
-      "ssion\022\301\001\n\023subject_object_type\030\004 \001(\tB\220\001\372B" +
-      "ErC(\200\0012>^([a-z][a-z0-9_]{1,61}[a-z0-9]/)" +
-      "*[a-z][a-z0-9_]{1,62}[a-z0-9]$\272HErC(\200\0012>" +
-      "^([a-z][a-z0-9_]{1,61}[a-z0-9]/)*[a-z][a" +
-      "-z0-9_]{1,62}[a-z0-9]$R\021subjectObjectTyp" +
-      "e\022\220\001\n\031optional_subject_relation\030\005 \001(\tBT\372" +
-      "B\'r%(@2!^([a-z][a-z0-9_]{1,62}[a-z0-9])?" +
-      "$\272H\'r%(@2!^([a-z][a-z0-9_]{1,62}[a-z0-9]" +
-      ")?$R\027optionalSubjectRelation\022A\n\007context\030" +
-      "\006 \001(\0132\027.google.protobuf.StructB\016\372B\005\212\001\002\020\000" +
-      "\272H\003\310\001\000R\007context\022F\n\027optional_concrete_lim" +
-      "it\030\007 \001(\rB\016\372B\004*\002(\000\272H\004*\002(\000R\025optionalConcre" +
-      "teLimit\022?\n\017optional_cursor\030\010 \001(\0132\026.authz" +
-      "ed.api.v1.CursorR\016optionalCursor\022]\n\017wild" +
-      "card_option\030\t \001(\01624.authzed.api.v1.Looku" +
-      "pSubjectsRequest.WildcardOptionR\016wildcar" +
-      "dOption\"\177\n\016WildcardOption\022\037\n\033WILDCARD_OP" +
-      "TION_UNSPECIFIED\020\000\022%\n!WILDCARD_OPTION_IN" +
-      "CLUDE_WILDCARDS\020\001\022%\n!WILDCARD_OPTION_EXC" +
-      "LUDE_WILDCARDS\020\002\"\326\004\n\026LookupSubjectsRespo" +
-      "nse\022:\n\014looked_up_at\030\001 \001(\0132\030.authzed.api." +
-      "v1.ZedTokenR\nlookedUpAt\022.\n\021subject_objec" +
-      "t_id\030\002 \001(\tB\002\030\001R\017subjectObjectId\0224\n\024exclu" +
-      "ded_subject_ids\030\003 \003(\tB\002\030\001R\022excludedSubje" +
-      "ctIds\022d\n\016permissionship\030\004 \001(\0162$.authzed." +
-      "api.v1.LookupPermissionshipB\026\030\001\372B\007\202\001\004\020\001 " +
-      "\000\272H\007\202\001\004\020\001 \000R\016permissionship\022c\n\023partial_c" +
-      "aveat_info\030\005 \001(\0132!.authzed.api.v1.Partia" +
-      "lCaveatInfoB\020\030\001\372B\005\212\001\002\020\000\272H\003\310\001\000R\021partialCa" +
-      "veatInfo\0229\n\007subject\030\006 \001(\0132\037.authzed.api." +
-      "v1.ResolvedSubjectR\007subject\022L\n\021excluded_" +
-      "subjects\030\007 \003(\0132\037.authzed.api.v1.Resolved" +
-      "SubjectR\020excludedSubjects\022F\n\023after_resul" +
-      "t_cursor\030\010 \001(\0132\026.authzed.api.v1.CursorR\021" +
-      "afterResultCursor\"\204\002\n\017ResolvedSubject\022*\n" +
-      "\021subject_object_id\030\001 \001(\tR\017subjectObjectI" +
-      "d\022b\n\016permissionship\030\002 \001(\0162$.authzed.api." +
-      "v1.LookupPermissionshipB\024\372B\007\202\001\004\020\001 \000\272H\007\202\001" +
-      "\004\020\001 \000R\016permissionship\022a\n\023partial_caveat_" +
-      "info\030\003 \001(\0132!.authzed.api.v1.PartialCavea" +
-      "tInfoB\016\372B\005\212\001\002\020\000\272H\003\310\001\000R\021partialCaveatInfo" +
-      "\"s\n\036ImportBulkRelationshipsRequest\022Q\n\rre" +
-      "lationships\030\001 \003(\0132\034.authzed.api.v1.Relat" +
-      "ionshipB\r\372B\n\222\001\007\"\005\212\001\002\020\001R\rrelationships\"@\n" +
-      "\037ImportBulkRelationshipsResponse\022\035\n\nnum_" +
-      "loaded\030\001 \001(\004R\tnumLoaded\"\275\002\n\036ExportBulkRe" +
-      "lationshipsRequest\022=\n\013consistency\030\001 \001(\0132" +
-      "\033.authzed.api.v1.ConsistencyR\013consistenc" +
-      "y\0225\n\016optional_limit\030\002 \001(\rB\016\372B\004*\002(\000\272H\004*\002(" +
-      "\000R\roptionalLimit\022?\n\017optional_cursor\030\003 \001(" +
-      "\0132\026.authzed.api.v1.CursorR\016optionalCurso" +
-      "r\022d\n\034optional_relationship_filter\030\004 \001(\0132" +
-      "\".authzed.api.v1.RelationshipFilterR\032opt" +
-      "ionalRelationshipFilter\"\255\001\n\037ExportBulkRe" +
-      "lationshipsResponse\022F\n\023after_result_curs" +
-      "or\030\001 \001(\0132\026.authzed.api.v1.CursorR\021afterR" +
-      "esultCursor\022B\n\rrelationships\030\002 \003(\0132\034.aut" +
-      "hzed.api.v1.RelationshipR\rrelationships*" +
-      "\231\001\n\024LookupPermissionship\022%\n!LOOKUP_PERMI" +
-      "SSIONSHIP_UNSPECIFIED\020\000\022(\n$LOOKUP_PERMIS" +
-      "SIONSHIP_HAS_PERMISSION\020\001\0220\n,LOOKUP_PERM" +
-      "ISSIONSHIP_CONDITIONAL_PERMISSION\020\0022\212\r\n\022" +
-      "PermissionsService\022\235\001\n\021ReadRelationships" +
-      "\022(.authzed.api.v1.ReadRelationshipsReque" +
-      "st\032).authzed.api.v1.ReadRelationshipsRes" +
-      "ponse\"1\222A\r\n\013Permissions\202\323\344\223\002\033\"\026/v1/relat" +
-      "ionships/read:\001*0\001\022\237\001\n\022WriteRelationship" +
-      "s\022).authzed.api.v1.WriteRelationshipsReq" +
-      "uest\032*.authzed.api.v1.WriteRelationships" +
-      "Response\"2\222A\r\n\013Permissions\202\323\344\223\002\034\"\027/v1/re" +
-      "lationships/write:\001*\022\243\001\n\023DeleteRelations" +
-      "hips\022*.authzed.api.v1.DeleteRelationship" +
-      "sRequest\032+.authzed.api.v1.DeleteRelation" +
-      "shipsResponse\"3\222A\r\n\013Permissions\202\323\344\223\002\035\"\030/" +
-      "v1/relationships/delete:\001*\022\224\001\n\017CheckPerm" +
-      "ission\022&.authzed.api.v1.CheckPermissionR" +
-      "equest\032\'.authzed.api.v1.CheckPermissionR" +
-      "esponse\"0\222A\r\n\013Permissions\202\323\344\223\002\032\"\025/v1/per" +
-      "missions/check:\001*\022\247\001\n\024CheckBulkPermissio" +
-      "ns\022+.authzed.api.v1.CheckBulkPermissions" +
-      "Request\032,.authzed.api.v1.CheckBulkPermis" +
-      "sionsResponse\"4\222A\r\n\013Permissions\202\323\344\223\002\036\"\031/" +
-      "v1/permissions/checkbulk:\001*\022\244\001\n\024ExpandPe" +
-      "rmissionTree\022+.authzed.api.v1.ExpandPerm" +
-      "issionTreeRequest\032,.authzed.api.v1.Expan" +
-      "dPermissionTreeResponse\"1\222A\r\n\013Permission" +
-      "s\202\323\344\223\002\033\"\026/v1/permissions/expand:\001*\022\232\001\n\017L" +
-      "ookupResources\022&.authzed.api.v1.LookupRe" +
-      "sourcesRequest\032\'.authzed.api.v1.LookupRe" +
-      "sourcesResponse\"4\222A\r\n\013Permissions\202\323\344\223\002\036\"" +
-      "\031/v1/permissions/resources:\001*0\001\022\226\001\n\016Look" +
-      "upSubjects\022%.authzed.api.v1.LookupSubjec" +
-      "tsRequest\032&.authzed.api.v1.LookupSubject" +
-      "sResponse\"3\222A\r\n\013Permissions\202\323\344\223\002\035\"\030/v1/p" +
-      "ermissions/subjects:\001*0\001\022\265\001\n\027ImportBulkR" +
-      "elationships\022..authzed.api.v1.ImportBulk" +
-      "RelationshipsRequest\032/.authzed.api.v1.Im" +
-      "portBulkRelationshipsResponse\"7\222A\r\n\013Perm" +
-      "issions\202\323\344\223\002!\"\034/v1/relationships/importb" +
-      "ulk:\001*(\001\022\265\001\n\027ExportBulkRelationships\022..a" +
-      "uthzed.api.v1.ExportBulkRelationshipsReq" +
-      "uest\032/.authzed.api.v1.ExportBulkRelation" +
-      "shipsResponse\"7\222A\r\n\013Permissions\202\323\344\223\002!\"\034/" +
-      "v1/relationships/exportbulk:\001*0\001BJ\n\022com." +
-      "authzed.api.v1P\001Z2github.com/authzed/aut" +
-      "hzed-go/proto/authzed/api/v1b\006proto3"
+      "actionMetadata\022?\n\017optional_cursor\030\006 \001(\0132" +
+      "\026.authzed.api.v1.CursorR\016optionalCursor\"" +
+      "\277\003\n\033DeleteRelationshipsResponse\0227\n\ndelet" +
+      "ed_at\030\001 \001(\0132\030.authzed.api.v1.ZedTokenR\td" +
+      "eletedAt\022i\n\021deletion_progress\030\002 \001(\0162<.au" +
+      "thzed.api.v1.DeleteRelationshipsResponse" +
+      ".DeletionProgressR\020deletionProgress\022>\n\033r" +
+      "elationships_deleted_count\030\003 \001(\004R\031relati" +
+      "onshipsDeletedCount\022F\n\023after_result_curs" +
+      "or\030\004 \001(\0132\026.authzed.api.v1.CursorR\021afterR" +
+      "esultCursor\"t\n\020DeletionProgress\022!\n\035DELET" +
+      "ION_PROGRESS_UNSPECIFIED\020\000\022\036\n\032DELETION_P" +
+      "ROGRESS_COMPLETE\020\001\022\035\n\031DELETION_PROGRESS_" +
+      "PARTIAL\020\002\"\314\003\n\026CheckPermissionRequest\022=\n\013" +
+      "consistency\030\001 \001(\0132\033.authzed.api.v1.Consi" +
+      "stencyR\013consistency\022K\n\010resource\030\002 \001(\0132\037." +
+      "authzed.api.v1.ObjectReferenceB\016\372B\005\212\001\002\020\001" +
+      "\272H\003\310\001\001R\010resource\022t\n\npermission\030\003 \001(\tBT\372B" +
+      "\'r%(@2!^([a-z][a-z0-9_]{1,62}[a-z0-9])?$" +
+      "\272H\'r%(@2!^([a-z][a-z0-9_]{1,62}[a-z0-9])" +
+      "?$R\npermission\022J\n\007subject\030\004 \001(\0132 .authze" +
+      "d.api.v1.SubjectReferenceB\016\372B\005\212\001\002\020\001\272H\003\310\001" +
+      "\001R\007subject\022A\n\007context\030\005 \001(\0132\027.google.pro" +
+      "tobuf.StructB\016\372B\005\212\001\002\020\000\272H\003\310\001\000R\007context\022!\n" +
+      "\014with_tracing\030\006 \001(\010R\013withTracing\"\355\004\n\027Che" +
+      "ckPermissionResponse\022G\n\nchecked_at\030\001 \001(\013" +
+      "2\030.authzed.api.v1.ZedTokenB\016\372B\005\212\001\002\020\000\272H\003\310" +
+      "\001\000R\tcheckedAt\022t\n\016permissionship\030\002 \001(\01626." +
+      "authzed.api.v1.CheckPermissionResponse.P" +
+      "ermissionshipB\024\372B\007\202\001\004\020\001 \000\272H\007\202\001\004\020\001 \000R\016per" +
+      "missionship\022a\n\023partial_caveat_info\030\003 \001(\013" +
+      "2!.authzed.api.v1.PartialCaveatInfoB\016\372B\005" +
+      "\212\001\002\020\000\272H\003\310\001\000R\021partialCaveatInfo\022A\n\013debug_" +
+      "trace\030\004 \001(\0132 .authzed.api.v1.DebugInform" +
+      "ationR\ndebugTrace\022J\n\023optional_expires_at" +
+      "\030\005 \001(\0132\032.google.protobuf.TimestampR\021opti" +
+      "onalExpiresAt\"\240\001\n\016Permissionship\022\036\n\032PERM" +
+      "ISSIONSHIP_UNSPECIFIED\020\000\022 \n\034PERMISSIONSH" +
+      "IP_NO_PERMISSION\020\001\022!\n\035PERMISSIONSHIP_HAS" +
+      "_PERMISSION\020\002\022)\n%PERMISSIONSHIP_CONDITIO" +
+      "NAL_PERMISSION\020\003\"\325\001\n\033CheckBulkPermission" +
+      "sRequest\022=\n\013consistency\030\001 \001(\0132\033.authzed." +
+      "api.v1.ConsistencyR\013consistency\022T\n\005items" +
+      "\030\002 \003(\0132/.authzed.api.v1.CheckBulkPermiss" +
+      "ionsRequestItemB\r\372B\n\222\001\007\"\005\212\001\002\020\001R\005items\022!\n" +
+      "\014with_tracing\030\003 \001(\010R\013withTracing\"\363\002\n\037Che" +
+      "ckBulkPermissionsRequestItem\022K\n\010resource" +
+      "\030\001 \001(\0132\037.authzed.api.v1.ObjectReferenceB" +
+      "\016\372B\005\212\001\002\020\001\272H\003\310\001\001R\010resource\022t\n\npermission\030" +
+      "\002 \001(\tBT\372B\'r%(@2!^([a-z][a-z0-9_]{1,62}[a" +
+      "-z0-9])?$\272H\'r%(@2!^([a-z][a-z0-9_]{1,62}" +
+      "[a-z0-9])?$R\npermission\022J\n\007subject\030\003 \001(\013" +
+      "2 .authzed.api.v1.SubjectReferenceB\016\372B\005\212" +
+      "\001\002\020\001\272H\003\310\001\001R\007subject\022A\n\007context\030\004 \001(\0132\027.g" +
+      "oogle.protobuf.StructB\016\372B\005\212\001\002\020\000\272H\003\310\001\000R\007c" +
+      "ontext\"\266\001\n\034CheckBulkPermissionsResponse\022" +
+      "G\n\nchecked_at\030\001 \001(\0132\030.authzed.api.v1.Zed" +
+      "TokenB\016\372B\005\212\001\002\020\000\272H\003\310\001\000R\tcheckedAt\022M\n\005pair" +
+      "s\030\002 \003(\0132(.authzed.api.v1.CheckBulkPermis" +
+      "sionsPairB\r\372B\n\222\001\007\"\005\212\001\002\020\001R\005pairs\"\345\001\n\030Chec" +
+      "kBulkPermissionsPair\022I\n\007request\030\001 \001(\0132/." +
+      "authzed.api.v1.CheckBulkPermissionsReque" +
+      "stItemR\007request\022F\n\004item\030\002 \001(\01320.authzed." +
+      "api.v1.CheckBulkPermissionsResponseItemH" +
+      "\000R\004item\022*\n\005error\030\003 \001(\0132\022.google.rpc.Stat" +
+      "usH\000R\005errorB\n\n\010response\"\276\002\n CheckBulkPer" +
+      "missionsResponseItem\022t\n\016permissionship\030\001" +
+      " \001(\01626.authzed.api.v1.CheckPermissionRes" +
+      "ponse.PermissionshipB\024\372B\007\202\001\004\020\001 \000\272H\007\202\001\004\020\001" +
+      " \000R\016permissionship\022a\n\023partial_caveat_inf" +
+      "o\030\002 \001(\0132!.authzed.api.v1.PartialCaveatIn" +
+      "foB\016\372B\005\212\001\002\020\000\272H\003\310\001\000R\021partialCaveatInfo\022A\n" +
+      "\013debug_trace\030\003 \001(\0132 .authzed.api.v1.Debu" +
+      "gInformationR\ndebugTrace\"\237\002\n\033ExpandPermi" +
+      "ssionTreeRequest\022=\n\013consistency\030\001 \001(\0132\033." +
+      "authzed.api.v1.ConsistencyR\013consistency\022" +
+      "K\n\010resource\030\002 \001(\0132\037.authzed.api.v1.Objec" +
+      "tReferenceB\016\372B\005\212\001\002\020\001\272H\003\310\001\001R\010resource\022t\n\n" +
+      "permission\030\003 \001(\tBT\372B\'r%(@2!^([a-z][a-z0-" +
+      "9_]{1,62}[a-z0-9])?$\272H\'r%(@2!^([a-z][a-z" +
+      "0-9_]{1,62}[a-z0-9])?$R\npermission\"\242\001\n\034E" +
+      "xpandPermissionTreeResponse\0229\n\013expanded_" +
+      "at\030\001 \001(\0132\030.authzed.api.v1.ZedTokenR\nexpa" +
+      "ndedAt\022G\n\ttree_root\030\002 \001(\0132*.authzed.api." +
+      "v1.PermissionRelationshipTreeR\010treeRoot\"" +
+      "\263\005\n\026LookupResourcesRequest\022=\n\013consistenc" +
+      "y\030\001 \001(\0132\033.authzed.api.v1.ConsistencyR\013co" +
+      "nsistency\022\303\001\n\024resource_object_type\030\002 \001(\t" +
+      "B\220\001\372BErC(\200\0012>^([a-z][a-z0-9_]{1,61}[a-z0" +
+      "-9]/)*[a-z][a-z0-9_]{1,62}[a-z0-9]$\272HErC" +
+      "(\200\0012>^([a-z][a-z0-9_]{1,61}[a-z0-9]/)*[a" +
+      "-z][a-z0-9_]{1,62}[a-z0-9]$R\022resourceObj" +
+      "ectType\022n\n\npermission\030\003 \001(\tBN\372B$r\"(@2\036^[" +
+      "a-z][a-z0-9_]{1,62}[a-z0-9]$\272H$r\"(@2\036^[a" +
+      "-z][a-z0-9_]{1,62}[a-z0-9]$R\npermission\022" +
+      "J\n\007subject\030\004 \001(\0132 .authzed.api.v1.Subjec" +
+      "tReferenceB\016\372B\005\212\001\002\020\001\272H\003\310\001\001R\007subject\022A\n\007c" +
+      "ontext\030\005 \001(\0132\027.google.protobuf.StructB\016\372" +
+      "B\005\212\001\002\020\000\272H\003\310\001\000R\007context\0225\n\016optional_limit" +
+      "\030\006 \001(\rB\016\372B\004*\002(\000\272H\004*\002(\000R\roptionalLimit\022?\n" +
+      "\017optional_cursor\030\007 \001(\0132\026.authzed.api.v1." +
+      "CursorR\016optionalCursor\022\035\n\nwith_debug\030\010 \001" +
+      "(\010R\twithDebug\"\222\003\n\027LookupResourcesRespons" +
+      "e\022:\n\014looked_up_at\030\001 \001(\0132\030.authzed.api.v1" +
+      ".ZedTokenR\nlookedUpAt\022,\n\022resource_object" +
+      "_id\030\002 \001(\tR\020resourceObjectId\022b\n\016permissio" +
+      "nship\030\003 \001(\0162$.authzed.api.v1.LookupPermi" +
+      "ssionshipB\024\372B\007\202\001\004\020\001 \000\272H\007\202\001\004\020\001 \000R\016permiss" +
+      "ionship\022a\n\023partial_caveat_info\030\004 \001(\0132!.a" +
+      "uthzed.api.v1.PartialCaveatInfoB\016\372B\005\212\001\002\020" +
+      "\000\272H\003\310\001\000R\021partialCaveatInfo\022F\n\023after_resu" +
+      "lt_cursor\030\005 \001(\0132\026.authzed.api.v1.CursorR" +
+      "\021afterResultCursor\"\234\010\n\025LookupSubjectsReq" +
+      "uest\022=\n\013consistency\030\001 \001(\0132\033.authzed.api." +
+      "v1.ConsistencyR\013consistency\022K\n\010resource\030" +
+      "\002 \001(\0132\037.authzed.api.v1.ObjectReferenceB\016" +
+      "\372B\005\212\001\002\020\001\272H\003\310\001\001R\010resource\022t\n\npermission\030\003" +
+      " \001(\tBT\372B\'r%(@2!^([a-z][a-z0-9_]{1,62}[a-" +
+      "z0-9])?$\272H\'r%(@2!^([a-z][a-z0-9_]{1,62}[" +
+      "a-z0-9])?$R\npermission\022\301\001\n\023subject_objec" +
+      "t_type\030\004 \001(\tB\220\001\372BErC(\200\0012>^([a-z][a-z0-9_" +
+      "]{1,61}[a-z0-9]/)*[a-z][a-z0-9_]{1,62}[a" +
+      "-z0-9]$\272HErC(\200\0012>^([a-z][a-z0-9_]{1,61}[" +
+      "a-z0-9]/)*[a-z][a-z0-9_]{1,62}[a-z0-9]$R" +
+      "\021subjectObjectType\022\220\001\n\031optional_subject_" +
+      "relation\030\005 \001(\tBT\372B\'r%(@2!^([a-z][a-z0-9_" +
+      "]{1,62}[a-z0-9])?$\272H\'r%(@2!^([a-z][a-z0-" +
+      "9_]{1,62}[a-z0-9])?$R\027optionalSubjectRel" +
+      "ation\022A\n\007context\030\006 \001(\0132\027.google.protobuf" +
+      ".StructB\016\372B\005\212\001\002\020\000\272H\003\310\001\000R\007context\022F\n\027opti" +
+      "onal_concrete_limit\030\007 \001(\rB\016\372B\004*\002(\000\272H\004*\002(" +
+      "\000R\025optionalConcreteLimit\022?\n\017optional_cur" +
+      "sor\030\010 \001(\0132\026.authzed.api.v1.CursorR\016optio" +
+      "nalCursor\022]\n\017wildcard_option\030\t \001(\01624.aut" +
+      "hzed.api.v1.LookupSubjectsRequest.Wildca" +
+      "rdOptionR\016wildcardOption\"\177\n\016WildcardOpti" +
+      "on\022\037\n\033WILDCARD_OPTION_UNSPECIFIED\020\000\022%\n!W" +
+      "ILDCARD_OPTION_INCLUDE_WILDCARDS\020\001\022%\n!WI" +
+      "LDCARD_OPTION_EXCLUDE_WILDCARDS\020\002\"\326\004\n\026Lo" +
+      "okupSubjectsResponse\022:\n\014looked_up_at\030\001 \001" +
+      "(\0132\030.authzed.api.v1.ZedTokenR\nlookedUpAt" +
+      "\022.\n\021subject_object_id\030\002 \001(\tB\002\030\001R\017subject" +
+      "ObjectId\0224\n\024excluded_subject_ids\030\003 \003(\tB\002" +
+      "\030\001R\022excludedSubjectIds\022d\n\016permissionship" +
+      "\030\004 \001(\0162$.authzed.api.v1.LookupPermission" +
+      "shipB\026\030\001\372B\007\202\001\004\020\001 \000\272H\007\202\001\004\020\001 \000R\016permission" +
+      "ship\022c\n\023partial_caveat_info\030\005 \001(\0132!.auth" +
+      "zed.api.v1.PartialCaveatInfoB\020\030\001\372B\005\212\001\002\020\000" +
+      "\272H\003\310\001\000R\021partialCaveatInfo\0229\n\007subject\030\006 \001" +
+      "(\0132\037.authzed.api.v1.ResolvedSubjectR\007sub" +
+      "ject\022L\n\021excluded_subjects\030\007 \003(\0132\037.authze" +
+      "d.api.v1.ResolvedSubjectR\020excludedSubjec" +
+      "ts\022F\n\023after_result_cursor\030\010 \001(\0132\026.authze" +
+      "d.api.v1.CursorR\021afterResultCursor\"\204\002\n\017R" +
+      "esolvedSubject\022*\n\021subject_object_id\030\001 \001(" +
+      "\tR\017subjectObjectId\022b\n\016permissionship\030\002 \001" +
+      "(\0162$.authzed.api.v1.LookupPermissionship" +
+      "B\024\372B\007\202\001\004\020\001 \000\272H\007\202\001\004\020\001 \000R\016permissionship\022a" +
+      "\n\023partial_caveat_info\030\003 \001(\0132!.authzed.ap" +
+      "i.v1.PartialCaveatInfoB\016\372B\005\212\001\002\020\000\272H\003\310\001\000R\021" +
+      "partialCaveatInfo\"s\n\036ImportBulkRelations" +
+      "hipsRequest\022Q\n\rrelationships\030\001 \003(\0132\034.aut" +
+      "hzed.api.v1.RelationshipB\r\372B\n\222\001\007\"\005\212\001\002\020\001R" +
+      "\rrelationships\"@\n\037ImportBulkRelationship" +
+      "sResponse\022\035\n\nnum_loaded\030\001 \001(\004R\tnumLoaded" +
+      "\"\275\002\n\036ExportBulkRelationshipsRequest\022=\n\013c" +
+      "onsistency\030\001 \001(\0132\033.authzed.api.v1.Consis" +
+      "tencyR\013consistency\0225\n\016optional_limit\030\002 \001" +
+      "(\rB\016\372B\004*\002(\000\272H\004*\002(\000R\roptionalLimit\022?\n\017opt" +
+      "ional_cursor\030\003 \001(\0132\026.authzed.api.v1.Curs" +
+      "orR\016optionalCursor\022d\n\034optional_relations" +
+      "hip_filter\030\004 \001(\0132\".authzed.api.v1.Relati" +
+      "onshipFilterR\032optionalRelationshipFilter" +
+      "\"\255\001\n\037ExportBulkRelationshipsResponse\022F\n\023" +
+      "after_result_cursor\030\001 \001(\0132\026.authzed.api." +
+      "v1.CursorR\021afterResultCursor\022B\n\rrelation" +
+      "ships\030\002 \003(\0132\034.authzed.api.v1.Relationshi" +
+      "pR\rrelationships*\231\001\n\024LookupPermissionshi" +
+      "p\022%\n!LOOKUP_PERMISSIONSHIP_UNSPECIFIED\020\000" +
+      "\022(\n$LOOKUP_PERMISSIONSHIP_HAS_PERMISSION" +
+      "\020\001\0220\n,LOOKUP_PERMISSIONSHIP_CONDITIONAL_" +
+      "PERMISSION\020\0022\212\r\n\022PermissionsService\022\235\001\n\021" +
+      "ReadRelationships\022(.authzed.api.v1.ReadR" +
+      "elationshipsRequest\032).authzed.api.v1.Rea" +
+      "dRelationshipsResponse\"1\222A\r\n\013Permissions" +
+      "\202\323\344\223\002\033\"\026/v1/relationships/read:\001*0\001\022\237\001\n\022" +
+      "WriteRelationships\022).authzed.api.v1.Writ" +
+      "eRelationshipsRequest\032*.authzed.api.v1.W" +
+      "riteRelationshipsResponse\"2\222A\r\n\013Permissi" +
+      "ons\202\323\344\223\002\034\"\027/v1/relationships/write:\001*\022\243\001" +
+      "\n\023DeleteRelationships\022*.authzed.api.v1.D" +
+      "eleteRelationshipsRequest\032+.authzed.api." +
+      "v1.DeleteRelationshipsResponse\"3\222A\r\n\013Per" +
+      "missions\202\323\344\223\002\035\"\030/v1/relationships/delete" +
+      ":\001*\022\224\001\n\017CheckPermission\022&.authzed.api.v1" +
+      ".CheckPermissionRequest\032\'.authzed.api.v1" +
+      ".CheckPermissionResponse\"0\222A\r\n\013Permissio" +
+      "ns\202\323\344\223\002\032\"\025/v1/permissions/check:\001*\022\247\001\n\024C" +
+      "heckBulkPermissions\022+.authzed.api.v1.Che" +
+      "ckBulkPermissionsRequest\032,.authzed.api.v" +
+      "1.CheckBulkPermissionsResponse\"4\222A\r\n\013Per" +
+      "missions\202\323\344\223\002\036\"\031/v1/permissions/checkbul" +
+      "k:\001*\022\244\001\n\024ExpandPermissionTree\022+.authzed." +
+      "api.v1.ExpandPermissionTreeRequest\032,.aut" +
+      "hzed.api.v1.ExpandPermissionTreeResponse" +
+      "\"1\222A\r\n\013Permissions\202\323\344\223\002\033\"\026/v1/permission" +
+      "s/expand:\001*\022\232\001\n\017LookupResources\022&.authze" +
+      "d.api.v1.LookupResourcesRequest\032\'.authze" +
+      "d.api.v1.LookupResourcesResponse\"4\222A\r\n\013P" +
+      "ermissions\202\323\344\223\002\036\"\031/v1/permissions/resour" +
+      "ces:\001*0\001\022\226\001\n\016LookupSubjects\022%.authzed.ap" +
+      "i.v1.LookupSubjectsRequest\032&.authzed.api" +
+      ".v1.LookupSubjectsResponse\"3\222A\r\n\013Permiss" +
+      "ions\202\323\344\223\002\035\"\030/v1/permissions/subjects:\001*0" +
+      "\001\022\265\001\n\027ImportBulkRelationships\022..authzed." +
+      "api.v1.ImportBulkRelationshipsRequest\032/." +
+      "authzed.api.v1.ImportBulkRelationshipsRe" +
+      "sponse\"7\222A\r\n\013Permissions\202\323\344\223\002!\"\034/v1/rela" +
+      "tionships/importbulk:\001*(\001\022\265\001\n\027ExportBulk" +
+      "Relationships\022..authzed.api.v1.ExportBul" +
+      "kRelationshipsRequest\032/.authzed.api.v1.E" +
+      "xportBulkRelationshipsResponse\"7\222A\r\n\013Per" +
+      "missions\202\323\344\223\002!\"\034/v1/relationships/export" +
+      "bulk:\001*0\001BJ\n\022com.authzed.api.v1P\001Z2githu" +
+      "b.com/authzed/authzed-go/proto/authzed/a" +
+      "pi/v1b\006proto3"
     };
     descriptor = com.google.protobuf.Descriptors.FileDescriptor
       .internalBuildGeneratedFileFrom(descriptorData,
@@ -565,13 +569,13 @@ public final class PermissionService extends com.google.protobuf.GeneratedFile {
     internal_static_authzed_api_v1_DeleteRelationshipsRequest_fieldAccessorTable = new
       com.google.protobuf.GeneratedMessage.FieldAccessorTable(
         internal_static_authzed_api_v1_DeleteRelationshipsRequest_descriptor,
-        new java.lang.String[] { "RelationshipFilter", "OptionalPreconditions", "OptionalLimit", "OptionalAllowPartialDeletions", "OptionalTransactionMetadata", });
+        new java.lang.String[] { "RelationshipFilter", "OptionalPreconditions", "OptionalLimit", "OptionalAllowPartialDeletions", "OptionalTransactionMetadata", "OptionalCursor", });
     internal_static_authzed_api_v1_DeleteRelationshipsResponse_descriptor =
       getDescriptor().getMessageType(9);
     internal_static_authzed_api_v1_DeleteRelationshipsResponse_fieldAccessorTable = new
       com.google.protobuf.GeneratedMessage.FieldAccessorTable(
         internal_static_authzed_api_v1_DeleteRelationshipsResponse_descriptor,
-        new java.lang.String[] { "DeletedAt", "DeletionProgress", "RelationshipsDeletedCount", });
+        new java.lang.String[] { "DeletedAt", "DeletionProgress", "RelationshipsDeletedCount", "AfterResultCursor", });
     internal_static_authzed_api_v1_CheckPermissionRequest_descriptor =
       getDescriptor().getMessageType(10);
     internal_static_authzed_api_v1_CheckPermissionRequest_fieldAccessorTable = new

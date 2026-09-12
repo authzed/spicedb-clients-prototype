@@ -98,6 +98,21 @@ describe("mutation retry safety", () => {
     expect(fn).toHaveBeenCalledTimes(1);
   });
 
+  it("attempts deleteRelationships({ autoPage: true }) exactly once per page, not retried, on a retryable error", async () => {
+    const fn = vi.fn().mockRejectedValue(transientErr());
+    const client = clientWithFakeProto({
+      permissions: { deleteRelationships: fn },
+    });
+
+    await expect(
+      client.deleteRelationships(
+        { resourceType: "document" },
+        { limit: 1000, autoPage: true },
+      ),
+    ).rejects.toBeInstanceOf(UnavailableError);
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
   it("attempts writeSchema() exactly once on a retryable error", async () => {
     const fn = vi.fn().mockRejectedValue(transientErr());
     const client = clientWithFakeProto({ schema: { writeSchema: fn } });

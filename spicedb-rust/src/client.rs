@@ -827,6 +827,14 @@ impl SpiceDBClient {
     /// preconditions that guard the delete: if a precondition fails, the
     /// server rejects that call and deletes nothing for it. See
     /// [`DeleteOptions`]'s docs for how preconditions interact with paging.
+    ///
+    /// Each page after the first threads the server's `after_result_cursor`
+    /// into the next page's `optional_cursor` — the same transparent-
+    /// continuation pattern [`read_relationships`](Self::read_relationships)
+    /// uses — so a datastore that supports cursored deletion resumes after
+    /// the last page instead of re-scanning already-deleted relationships.
+    /// [`DeleteOptions::cursor`] seeds the very first page, for resuming a
+    /// deletion left incomplete by an earlier call.
     pub async fn delete_relationships_with(
         &self,
         filter: &Filter,
@@ -836,6 +844,8 @@ impl SpiceDBClient {
         let filter = filter.to_proto()?;
         let limit = options.limit.unwrap_or(DEFAULT_DELETE_PAGE_SIZE);
         let timeout = self.effective_timeout(options.timeout);
+        let mut cursor: Option<proto::Cursor> =
+            options.cursor.clone().map(|token| proto::Cursor { token });
 
         loop {
             let resp = self
@@ -846,6 +856,7 @@ impl SpiceDBClient {
                         optional_allow_partial_deletions: true,
                         optional_preconditions: preconditions.clone(),
                         optional_transaction_metadata: None,
+                        optional_cursor: cursor.clone(),
                     });
                     request.set_timeout(timeout);
                     self.proto
@@ -865,6 +876,7 @@ impl SpiceDBClient {
             {
                 return Ok(revision);
             }
+            cursor = inner.after_result_cursor;
         }
     }
 

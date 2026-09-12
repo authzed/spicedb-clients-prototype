@@ -4,6 +4,24 @@
 
 ### Added
 
+- **2026-09-10: `deleteRelationships(filter, { autoPage: true })`, unlocked by the proto
+  regeneration bringing `DeleteRelationshipsRequest.optionalCursor`/
+  `DeleteRelationshipsResponse.afterResultCursor` into this client.** Previously, a
+  `limit`-bounded delete with more matches than `limit` required the caller to re-issue
+  the same call manually — this client did not auto-page. `autoPage: true` closes that
+  gap by looping internally, feeding `afterResultCursor` back in as `optionalCursor` for
+  the next page until `deletionProgress` stops being `PARTIAL`, mirroring spicedb-go's
+  `DeleteRelationships` (`client/relationships.go`), which auto-pages unconditionally.
+  Opt-in, defaulting to unset/`false`, because it changes what `limit` means (a per-page
+  size instead of a cap on the total deleted) — every existing
+  `deleteRelationships(filter, { limit })` call site keeps its exact prior behavior.
+  `DeleteOptions` also gains `cursor`, to seed the very first request's `optionalCursor`
+  when resuming a deletion from a cursor obtained some other way. New example
+  `delete_relationships_autopage/` exercises both: the default bounded/single-page
+  behavior is unchanged, and `autoPage: true` deletes everything that remains. See
+  `DESIGN.md`, "Deletions". No breaking change — both new fields are optional additions
+  to `DeleteOptions`, and `deleteRelationships`'s return type is unchanged.
+
 - **2026-09-04: `lookupResources`/`lookupSubjects` docs now state their streams are not
   guaranteed unique.** Proto regen picked up an upstream clarification on
   `PermissionsService.LookupResources`/`LookupSubjects`: the same resource or subject may be

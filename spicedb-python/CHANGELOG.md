@@ -4,6 +4,19 @@
 
 ### Added
 
+- **2026-09-10: `delete_relationships(..., auto_page=True)`, unlocked by the proto
+  regeneration bringing `DeleteRelationshipsRequest.optional_cursor`/
+  `DeleteRelationshipsResponse.after_result_cursor` into this client.** Previously
+  documented as a known gap ("this client does not yet auto-page a delete") — a
+  `limit`-bounded delete with more matches than `limit` required the caller to
+  re-issue the same call manually. `auto_page=True` closes it by looping internally,
+  feeding `after_result_cursor` back in as `optional_cursor` for the next page until
+  `deletion_progress` is COMPLETE, mirroring `spicedb-go`'s `DeleteRelationships`
+  (`client/relationships.go`), which auto-pages unconditionally. Opt-in, defaulting to
+  `False`, because it changes what `limit` means (a per-page size instead of a cap on
+  the total deleted) — existing `delete_relationships(filter, limit=...)` call sites
+  keep their exact prior behavior. See `DESIGN.md`, "Deletions".
+
 - **2026-08-19: four new examples, one per root `DESIGN.md` RULE that had no executed
   coverage in any client — and one client fix they exposed.** 19 example suites -> 23,
   33 test cases -> 57, none renamed or removed. Group E Phase 3.
@@ -319,6 +332,12 @@
   ```
 
 ### Changed
+
+- **2026-09-10: proto client regenerated.** `DeleteRelationshipsRequest` gained
+  `optional_cursor` (field 6) and `DeleteRelationshipsResponse` gained
+  `after_result_cursor` (field 4), both `Cursor`-typed — the same resumable-deletion
+  support `spicedb-go`'s `DeleteRelationships` already relies on. See "Added" above for
+  the resulting `delete_relationships(..., auto_page=True)`.
 
 - **2026-09-04: proto client regenerated** (`protobuf` 7.34.0 -> 7.36.1; no other dependency
   changes). No new fields, messages, or RPCs reach this client — the `authzed.api.materialize.v0`

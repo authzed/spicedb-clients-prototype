@@ -28,16 +28,30 @@ fn complete_response(token: &str) -> proto::DeleteRelationshipsResponse {
         }),
         deletion_progress: proto::delete_relationships_response::DeletionProgress::Complete as i32,
         relationships_deleted_count: 0,
+        after_result_cursor: None,
     }
 }
 
 fn partial_response(token: &str) -> proto::DeleteRelationshipsResponse {
+    partial_response_with_cursor(token, None)
+}
+
+/// Like [`partial_response`], but with an `after_result_cursor` attached --
+/// what a datastore that supports cursored deletion returns on a
+/// `DELETION_PROGRESS_PARTIAL` page.
+fn partial_response_with_cursor(
+    token: &str,
+    after_result_cursor: Option<&str>,
+) -> proto::DeleteRelationshipsResponse {
     proto::DeleteRelationshipsResponse {
         deleted_at: Some(proto::ZedToken {
             token: token.to_string(),
         }),
         deletion_progress: proto::delete_relationships_response::DeletionProgress::Partial as i32,
         relationships_deleted_count: 0,
+        after_result_cursor: after_result_cursor.map(|token| proto::Cursor {
+            token: token.to_string(),
+        }),
     }
 }
 
@@ -414,4 +428,127 @@ async fn delete_relationships_with_pages_until_complete() {
         assert!(req.optional_preconditions.is_empty());
         assert!(req.optional_allow_partial_deletions);
     }
+}
+
+// ---------------------------------------------------------------------------
+// delete_relationships_with — cursor threading (optional_cursor / after_result_cursor)
+// ---------------------------------------------------------------------------
+
+/// The auto-paging loop must thread each response's `after_result_cursor`
+/// into the *next* page's `optional_cursor`, so a datastore that supports
+/// cursored deletion resumes rather than re-scanning from the start on every
+/// page.
+#[tokio::test]
+async fn delete_relationships_with_threads_after_result_cursor_between_pages() {
+    let mock = MockPermissionsService::new();
+    mock.push_delete_relationships_response(partial_response_with_cursor(
+        "rev-page1",
+        Some("cursor-1"),
+    ));
+    mock.push_delete_relationships_response(partial_response_with_cursor(
+        "rev-page2",
+        Some("cursor-2"),
+    ));
+    mock.push_delete_relationships_response(complete_response("rev-final"));
+    let requests = mock.delete_relationships_requests();
+
+    let addr = spawn_permissions_server(mock).await;
+    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
+        .await
+        .expect("client should connect to mock server");
+
+    let filter = Filter::new("document");
+    let options = DeleteOptions::new().with_limit(10);
+
+    let revision = client
+        .delete_relationships_with(&filter, &options)
+        .await
+        .expect("delete should succeed");
+    assert_eq!(revision, "rev-final");
+
+    let seen = requests.lock().unwrap().clone();
+    assert_eq!(seen.len(), 3);
+    assert_eq!(
+        seen[0].optional_cursor, None,
+        "first page must not send a cursor when none was supplied via options"
+    );
+    assert_eq!(
+        seen[1].optional_cursor,
+        Some(proto::Cursor {
+            token: "cursor-1".to_string()
+        }),
+        "second page must resume from the first page's after_result_cursor"
+    );
+    assert_eq!(
+        seen[2].optional_cursor,
+        Some(proto::Cursor {
+            token: "cursor-2".to_string()
+        }),
+        "third page must resume from the second page's after_result_cursor"
+    );
+}
+
+/// A datastore that doesn't support cursored deletion never populates
+/// `after_result_cursor`, so the loop must degrade to the original
+/// re-send-the-same-filter behavior instead of sending a stale or empty
+/// cursor.
+#[tokio::test]
+async fn delete_relationships_with_omits_cursor_when_server_never_returns_one() {
+    let mock = MockPermissionsService::new();
+    mock.push_delete_relationships_response(partial_response("rev-page1"));
+    mock.push_delete_relationships_response(complete_response("rev-final"));
+    let requests = mock.delete_relationships_requests();
+
+    let addr = spawn_permissions_server(mock).await;
+    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
+        .await
+        .expect("client should connect to mock server");
+
+    let filter = Filter::new("document");
+    let options = DeleteOptions::new().with_limit(10);
+
+    client
+        .delete_relationships_with(&filter, &options)
+        .await
+        .expect("delete should succeed");
+
+    let seen = requests.lock().unwrap().clone();
+    assert_eq!(seen.len(), 2);
+    assert_eq!(seen[0].optional_cursor, None);
+    assert_eq!(
+        seen[1].optional_cursor, None,
+        "no cursor was ever returned by the server, so none should be sent on the next page"
+    );
+}
+
+/// `DeleteOptions::with_cursor` seeds the very first page's `optional_cursor`
+/// -- the resume path for a deletion left incomplete by an earlier call.
+#[tokio::test]
+async fn delete_relationships_with_cursor_option_seeds_first_page() {
+    let mock = MockPermissionsService::new();
+    mock.push_delete_relationships_response(complete_response("rev-final"));
+    let requests = mock.delete_relationships_requests();
+
+    let addr = spawn_permissions_server(mock).await;
+    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
+        .await
+        .expect("client should connect to mock server");
+
+    let filter = Filter::new("document");
+    let options = DeleteOptions::new().with_cursor("resume-from-here");
+
+    let revision = client
+        .delete_relationships_with(&filter, &options)
+        .await
+        .expect("delete should succeed");
+    assert_eq!(revision, "rev-final");
+
+    let seen = requests.lock().unwrap().clone();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(
+        seen[0].optional_cursor,
+        Some(proto::Cursor {
+            token: "resume-from-here".to_string()
+        })
+    );
 }

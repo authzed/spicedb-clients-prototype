@@ -32,6 +32,7 @@ import {
   RelationshipSchema,
   ZedTokenSchema,
   RelationshipUpdate_Operation,
+  DeleteRelationshipsResponse_DeletionProgress,
 } from "@spicedb/proto";
 
 import { Consistency } from "./consistency.js";
@@ -227,6 +228,14 @@ const IMPORT_BATCH_SIZE = 1000;
  * @internal
  */
 const CHECK_BATCH_SIZE = 1000;
+
+/**
+ * Default per-page size for `deleteRelationships(..., { autoPage: true })`,
+ * used when `options.limit` is not given. Matches spicedb-go's
+ * `defaultDeletePageSize` (client/relationships.go).
+ * @internal
+ */
+const DELETE_PAGE_SIZE = 1000;
 
 /**
  * Converts a caller's relationship sequence into the request stream
@@ -811,25 +820,62 @@ export class SpiceDBClient {
    * more relationships match the filter than `limit`, only `limit` of them
    * are deleted by this call (the server requires
    * `optionalAllowPartialDeletions`, which this sets automatically whenever
-   * `limit` is given, to permit that). Unlike spicedb-go's
-   * `WithDeleteLimit`, this does not auto-page — it does not loop to delete
-   * every match when the match count exceeds `limit`; call again with the
-   * same filter to continue deleting what remains.
+   * `limit` is given, to permit that). By default (`options.autoPage`
+   * unset) this does not auto-page — call again with the same filter to
+   * continue deleting what remains.
    *
-   * @returns The revision at which the deletion was committed.
+   * `options.autoPage: true` closes that gap: it loops internally, feeding
+   * each response's cursor back in as the next request's `optionalCursor`
+   * — the same transparent-cursor approach {@link SpiceDBClient.readRelationships}
+   * uses — until every match is deleted, mirroring spicedb-go's
+   * `DeleteRelationships` (client/relationships.go), which auto-pages
+   * unconditionally. It is opt-in here because it changes what `limit`
+   * means (a per-page size instead of a cap on the total deleted) and what
+   * a single call can do; a caller relying on the default bounded,
+   * single-RPC behavior must not have that silently replaced by an
+   * unbounded loop.
+   *
+   * @returns The revision at which the deletion was committed (the final
+   * page's, when `options.autoPage` is `true`).
    */
   async deleteRelationships(
     filter: RelationshipFilterOptions,
     options?: DeleteOptions,
   ): Promise<string> {
     const timeoutMs = this.effectiveTimeoutMs(options?.timeoutMs);
-    return this.callOnce(async () => {
-      const resp = await this.proto.permissions.deleteRelationships(
-        toProtoDeleteRelationshipsRequest(filter, options),
-        { timeoutMs },
+    if (!options?.autoPage) {
+      return this.callOnce(async () => {
+        const resp = await this.proto.permissions.deleteRelationships(
+          toProtoDeleteRelationshipsRequest(filter, options),
+          { timeoutMs },
+        );
+        return resp.deletedAt?.token ?? "";
+      });
+    }
+
+    const pageSize = options.limit ?? DELETE_PAGE_SIZE;
+    let cursor = options.cursor;
+    let revision = "";
+    for (;;) {
+      const resp = await this.callOnce(() =>
+        this.proto.permissions.deleteRelationships(
+          toProtoDeleteRelationshipsRequest(filter, {
+            ...options,
+            limit: pageSize,
+            cursor,
+          }),
+          { timeoutMs },
+        ),
       );
-      return resp.deletedAt?.token ?? "";
-    });
+      revision = resp.deletedAt?.token ?? "";
+      if (
+        resp.deletionProgress !==
+        DeleteRelationshipsResponse_DeletionProgress.PARTIAL
+      ) {
+        return revision;
+      }
+      cursor = resp.afterResultCursor?.token;
+    }
   }
 
   // ---------------------------------------------------------------------------

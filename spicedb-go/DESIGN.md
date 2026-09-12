@@ -230,7 +230,7 @@ use sensible defaults:
 | `LookupResources` | 512 | cursor-based auto-pagination |
 | `LookupSubjects` | — | no cursor support in SpiceDB yet; single streaming call |
 | `ExportRelationships` | 512 | cursor-based auto-pagination |
-| `DeleteRelationships` | 1,000 | auto-repeats until all matched rels deleted; override via `WithDeleteLimit`; matches SpiceDB's default `--max-delete-relationships-limit` |
+| `DeleteRelationships` | 1,000 | cursor-based auto-pagination (each PARTIAL response's `AfterResultCursor` becomes the next call's `OptionalCursor`); repeats until all matched rels deleted; override via `WithDeleteLimit`; matches SpiceDB's default `--max-delete-relationships-limit` |
 | `CheckIter` | 1,000 | batches input rels into bulk check calls |
 | `ImportRelationships` | 1,000 | batches into client-streaming sends |
 | `Updates` | — | server-streaming, no pagination needed |
@@ -432,6 +432,12 @@ limit of 1,000 per RPC call (matches SpiceDB's default
 `--max-delete-relationships-limit`, so the default works against a stock
 server). It repeats until the server reports all matching relationships are
 deleted. Returns the final revision.
+
+Like the streaming reads above, paging is cursor-based and fully internal: a
+`DELETION_PROGRESS_PARTIAL` response carries an `AfterResultCursor`, which the
+client sends back as `OptionalCursor` on the next call so the server resumes
+after the relationships it already deleted instead of re-scanning matches
+from the start. The very first call in a delete sends no cursor.
 
 Optional functional options (`DeleteOption`) reach the proto fields that were
 previously unreachable — `optional_preconditions` and `optional_limit`:

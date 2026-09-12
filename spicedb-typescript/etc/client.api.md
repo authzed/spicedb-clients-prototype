@@ -94,6 +94,8 @@ export class DeadlineExceededError extends SpiceDBError {
 
 // @public
 export interface DeleteOptions {
+    autoPage?: boolean;
+    cursor?: string;
     limit?: number;
     mustMatch?: RelationshipFilterOptions[];
     mustNotMatch?: RelationshipFilterOptions[];

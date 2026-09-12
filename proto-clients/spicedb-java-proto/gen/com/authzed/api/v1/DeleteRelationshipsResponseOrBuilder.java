@@ -65,4 +65,43 @@ public interface DeleteRelationshipsResponseOrBuilder extends
    * @return The relationshipsDeletedCount.
    */
   long getRelationshipsDeletedCount();
+
+  /**
+   * <pre>
+   * after_result_cursor holds a cursor that can be used to resume the deletion after the relationships
+   * deleted by this call, by supplying it as the optional_cursor on a subsequent DeleteRelationshipsRequest.
+   *
+   * It is populated only when deletion_progress is DELETION_PROGRESS_PARTIAL and the datastore supports
+   * cursored deletion; it is unset once DELETION_PROGRESS_COMPLETE is returned.
+   * </pre>
+   *
+   * <code>.authzed.api.v1.Cursor after_result_cursor = 4 [json_name = "afterResultCursor"];</code>
+   * @return Whether the afterResultCursor field is set.
+   */
+  boolean hasAfterResultCursor();
+  /**
+   * <pre>
+   * after_result_cursor holds a cursor that can be used to resume the deletion after the relationships
+   * deleted by this call, by supplying it as the optional_cursor on a subsequent DeleteRelationshipsRequest.
+   *
+   * It is populated only when deletion_progress is DELETION_PROGRESS_PARTIAL and the datastore supports
+   * cursored deletion; it is unset once DELETION_PROGRESS_COMPLETE is returned.
+   * </pre>
+   *
+   * <code>.authzed.api.v1.Cursor after_result_cursor = 4 [json_name = "afterResultCursor"];</code>
+   * @return The afterResultCursor.
+   */
+  com.authzed.api.v1.Cursor getAfterResultCursor();
+  /**
+   * <pre>
+   * after_result_cursor holds a cursor that can be used to resume the deletion after the relationships
+   * deleted by this call, by supplying it as the optional_cursor on a subsequent DeleteRelationshipsRequest.
+   *
+   * It is populated only when deletion_progress is DELETION_PROGRESS_PARTIAL and the datastore supports
+   * cursored deletion; it is unset once DELETION_PROGRESS_COMPLETE is returned.
+   * </pre>
+   *
+   * <code>.authzed.api.v1.Cursor after_result_cursor = 4 [json_name = "afterResultCursor"];</code>
+   */
+  com.authzed.api.v1.CursorOrBuilder getAfterResultCursorOrBuilder();
 }

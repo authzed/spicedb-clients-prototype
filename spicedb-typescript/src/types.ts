@@ -17,6 +17,7 @@ import {
   Precondition_Operation,
   type DeleteRelationshipsRequest as ProtoDeleteRelationshipsRequest,
   DeleteRelationshipsRequestSchema,
+  CursorSchema,
   type PermissionRelationshipTree as ProtoPermissionRelationshipTree,
   AlgebraicSubjectSet_Operation,
   type ReflectionDefinition as ProtoReflectionDefinition,
@@ -90,13 +91,48 @@ export interface DeleteOptions {
    * match the filter than `limit`, only `limit` of them are deleted by this
    * call (setting `limit` automatically allows this partial deletion on the
    * server, since the server otherwise rejects a limited delete found to
-   * span more matches than the limit). This does not auto-page — call again
-   * with the same filter to continue deleting what remains.
+   * span more matches than the limit).
+   *
+   * By default (`autoPage` unset/`false`) this does not auto-page — call
+   * again with the same filter to continue deleting what remains. With
+   * `autoPage: true`, `limit` instead becomes the per-page size of an
+   * internal loop that deletes everything — see `autoPage` below.
    */
   limit?: number;
   /**
+   * Seeds `optionalCursor` on the first request this call sends, resuming a
+   * deletion from a cursor obtained some other way — typically a previous
+   * `autoPage: true` call that was interrupted (a crashed process, a timeout)
+   * partway through, or a raw call made via {@link SpiceDBClient.raw}.
+   * Ignored unless the datastore supports cursored deletion, in which case
+   * an unrecognized or stale cursor is rejected by the server. Not needed for
+   * the common case: a fresh `autoPage: true` call threads its own cursor
+   * between pages internally.
+   */
+  cursor?: string;
+  /**
+   * When `true`, loops internally — using `limit` as the per-page size
+   * (default 1,000) rather than a cap on the total deleted — until every
+   * relationship matching the filter is gone, feeding each response's
+   * cursor back in as the next request's `optionalCursor` when the
+   * datastore supports cursored deletion. Mirrors spicedb-go's
+   * `DeleteRelationships` (`client/relationships.go`), which auto-pages
+   * unconditionally; here it is opt-in because it changes what `limit`
+   * means and what a single call can do, and a caller relying on the
+   * default bounded, single-RPC, partial-deletion-then-manual-continue
+   * behavior must not have that silently replaced by an unbounded loop.
+   *
+   * Preconditions are a per-request proto field, so on a multi-page
+   * `autoPage: true` delete they are re-evaluated by the server on every
+   * page: a guarded delete that starts successfully can still fail partway
+   * through if the guarded state changes between pages, after earlier
+   * pages already committed.
+   */
+  autoPage?: boolean;
+  /**
    * Milliseconds bounding this call, overriding the client's
-   * `defaultTimeoutMs`. See root DESIGN.md, "RULE: A unary call must have a
+   * `defaultTimeoutMs`. Applied fresh to each page when `autoPage` is
+   * `true` — see root DESIGN.md, "RULE: A unary call must have a
    * deadline".
    */
   timeoutMs?: number;
@@ -808,6 +844,10 @@ export function toProtoDeleteRelationshipsRequest(
     optionalPreconditions: toProtoDeletePreconditions(options),
     optionalLimit: options?.limit ?? 0,
     optionalAllowPartialDeletions: options?.limit !== undefined,
+    optionalCursor:
+      options?.cursor !== undefined
+        ? create(CursorSchema, { token: options.cursor })
+        : undefined,
   });
 }
 

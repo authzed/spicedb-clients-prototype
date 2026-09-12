@@ -730,6 +730,7 @@ class SpiceDBClient:
         must_match: list[Filter] | None = None,
         must_not_match: list[Filter] | None = None,
         limit: int | None = None,
+        auto_page: bool = False,
         timeout: float | None = None,
     ) -> str:
         """Delete relationships matching the filter. Returns the revision string.
@@ -743,27 +744,60 @@ class SpiceDBClient:
         more relationships match the filter than ``limit``, only ``limit`` of
         them are deleted by this call (the server requires
         ``optional_allow_partial_deletions``, which this sets automatically
-        whenever ``limit`` is given, to permit that). Unlike spicedb-go's
-        `WithDeleteLimit`, this does not auto-page — it does not loop to
-        delete every match when the match count exceeds ``limit``; call again
-        with the same filter to continue deleting what remains.
+        whenever ``limit`` is given, to permit that). By default (``auto_page``
+        False) this does not auto-page — it does not loop to delete every
+        match when the match count exceeds ``limit``; call again with the
+        same filter to continue deleting what remains.
+
+        ``auto_page``, if True, loops internally — using the
+        ``after_result_cursor`` SpiceDB returns on a PARTIAL response as the
+        ``optional_cursor`` for the next page, the same transparent-cursor
+        approach ``read_relationships`` uses — until ``deletion_progress`` is
+        COMPLETE, mirroring spicedb-go's `DeleteRelationships`
+        (`client/relationships.go`). In this mode ``limit`` becomes the
+        per-page size (defaulting to 1,000, matching spicedb-go's
+        `defaultDeletePageSize`) rather than a cap on the total deleted, and
+        the returned revision is that of the final page.
 
         ``timeout`` (seconds) bounds this call, overriding the client's
-        ``default_timeout``.
+        ``default_timeout``. Applied fresh to each page when ``auto_page`` is
+        True.
         """
         self._ensure_channel()
-        request = _requests.delete_relationships_request(
-            filter, must_match, must_not_match, limit
-        )
         t = self._effective_timeout(timeout)
 
-        async def _call() -> permission_service_pb2.DeleteRelationshipsResponse:
-            return await self._permissions.DeleteRelationships(
-                request, timeout=t, metadata=self._metadata
+        if not auto_page:
+            request = _requests.delete_relationships_request(
+                filter, must_match, must_not_match, limit
             )
 
-        resp = await self._call_once(_call)
-        return resp.deleted_at.token
+            async def _call() -> permission_service_pb2.DeleteRelationshipsResponse:
+                return await self._permissions.DeleteRelationships(
+                    request, timeout=t, metadata=self._metadata
+                )
+
+            resp = await self._call_once(_call)
+            return resp.deleted_at.token
+
+        page_size = limit if limit is not None else _requests.DEFAULT_DELETE_PAGE_SIZE
+        cursor = None
+        while True:
+            request = _requests.delete_relationships_request(
+                filter, must_match, must_not_match, page_size, cursor
+            )
+
+            async def _call() -> permission_service_pb2.DeleteRelationshipsResponse:
+                return await self._permissions.DeleteRelationships(
+                    request, timeout=t, metadata=self._metadata
+                )
+
+            resp = await self._call_once(_call)
+            if (
+                resp.deletion_progress
+                != permission_service_pb2.DeleteRelationshipsResponse.DELETION_PROGRESS_PARTIAL
+            ):
+                return resp.deleted_at.token
+            cursor = resp.after_result_cursor
 
     # ── Schema ──────────────────────────────────────────────────────
 

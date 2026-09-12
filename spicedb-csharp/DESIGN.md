@@ -493,12 +493,13 @@ populate the non-deprecated `subject`/`excluded_subjects` fields.
 ### Deletions
 
 - `DeleteRelationshipsAsync(filter, mustMatch?, mustNotMatch?, limit?)` → `Task<string>` (revision)
+- `DeleteRelationshipsWithOptionsAsync(filter, options)` → `Task<string>` (revision)
 
 Automatically pages through large result sets using a limit of 1,000 per RPC
-call (override with `limit`; matches SpiceDB's default
-`--max-delete-relationships-limit`, so the default works against a stock
-server). Repeats until the server reports all matching relationships are
-deleted.
+call (override with `limit`/`DeleteRelationshipsOptions.Limit`; matches
+SpiceDB's default `--max-delete-relationships-limit`, so the default works
+against a stock server). Repeats until the server reports all matching
+relationships are deleted.
 
 Optional parameters reach the proto fields that were previously unreachable —
 `optional_preconditions` and `optional_limit`:
@@ -524,6 +525,41 @@ delete, pair a precondition with `limit` set high enough to cover every
 matching relationship in one call. No optional parameters given means
 unchanged default behavior: no preconditions, 1,000-item page size, partial
 deletions allowed (so auto-paging keeps working).
+
+`DeleteRelationshipsAsync` had no options class before `optional_cursor`
+arrived upstream, so per "Where a new option goes", above,
+`DeleteRelationshipsWithOptionsAsync` was added beside it rather than growing
+`DeleteRelationshipsAsync`'s parameter list further.
+`DeleteRelationshipsOptions` carries the same knobs as the plain overload
+(`MustMatch`, `MustNotMatch`, `Limit`) plus `Cursor` and a per-page `Timeout`,
+so the next option this operation gains is a property there, not a new
+parameter on either method.
+
+Both forms already thread the server's `after_result_cursor` from each
+response into the next page's `optional_cursor` internally — the same
+transparent-continuation pattern `ReadRelationshipsAsync` uses — so a
+datastore that supports cursored deletion gets a faster, non-repeating scan
+for free, with no observable change for one that doesn't (it simply never
+populates the field, so the next page omits `optional_cursor` and the loop
+behaves exactly as it did before this field existed).
+
+`DeleteRelationshipsOptions.Cursor` is a distinct, caller-supplied knob on top
+of that: since both auto-paging forms always run to completion themselves,
+neither can ever hand a resumable cursor back to a caller. `Cursor` exists for
+a caller who obtained one another way — a partial deletion driven through
+`RawProto()` that was interrupted (process restart, deliberate early stop) —
+and wants this client to auto-page the rest to completion from that point
+rather than re-issuing raw calls by hand:
+
+```csharp
+var revision = await client.DeleteRelationshipsWithOptionsAsync(
+    filter,
+    new DeleteRelationshipsOptions { Cursor = savedCursorToken });
+```
+
+Only datastores whose deletion can be ordered and resumed honor a supplied
+cursor; others reject the request. Leaving `Cursor` `null` (including via the
+plain `DeleteRelationshipsAsync`) starts a new deletion, identical to today.
 
 ### Schema
 

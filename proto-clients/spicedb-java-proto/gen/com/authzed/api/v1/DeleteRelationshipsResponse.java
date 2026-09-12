@@ -279,6 +279,56 @@ private static final long serialVersionUID = 0L;
     return relationshipsDeletedCount_;
   }
 
+  public static final int AFTER_RESULT_CURSOR_FIELD_NUMBER = 4;
+  private com.authzed.api.v1.Cursor afterResultCursor_;
+  /**
+   * <pre>
+   * after_result_cursor holds a cursor that can be used to resume the deletion after the relationships
+   * deleted by this call, by supplying it as the optional_cursor on a subsequent DeleteRelationshipsRequest.
+   *
+   * It is populated only when deletion_progress is DELETION_PROGRESS_PARTIAL and the datastore supports
+   * cursored deletion; it is unset once DELETION_PROGRESS_COMPLETE is returned.
+   * </pre>
+   *
+   * <code>.authzed.api.v1.Cursor after_result_cursor = 4 [json_name = "afterResultCursor"];</code>
+   * @return Whether the afterResultCursor field is set.
+   */
+  @java.lang.Override
+  public boolean hasAfterResultCursor() {
+    return ((bitField0_ & 0x00000002) != 0);
+  }
+  /**
+   * <pre>
+   * after_result_cursor holds a cursor that can be used to resume the deletion after the relationships
+   * deleted by this call, by supplying it as the optional_cursor on a subsequent DeleteRelationshipsRequest.
+   *
+   * It is populated only when deletion_progress is DELETION_PROGRESS_PARTIAL and the datastore supports
+   * cursored deletion; it is unset once DELETION_PROGRESS_COMPLETE is returned.
+   * </pre>
+   *
+   * <code>.authzed.api.v1.Cursor after_result_cursor = 4 [json_name = "afterResultCursor"];</code>
+   * @return The afterResultCursor.
+   */
+  @java.lang.Override
+  public com.authzed.api.v1.Cursor getAfterResultCursor() {
+    return afterResultCursor_ == null ? com.authzed.api.v1.Cursor.getDefaultInstance() : afterResultCursor_;
+  }
+  /**
+   * <pre>
+   * after_result_cursor holds a cursor that can be used to resume the deletion after the relationships
+   * deleted by this call, by supplying it as the optional_cursor on a subsequent DeleteRelationshipsRequest.
+   *
+   * It is populated only when deletion_progress is DELETION_PROGRESS_PARTIAL and the datastore supports
+   * cursored deletion; it is unset once DELETION_PROGRESS_COMPLETE is returned.
+   * </pre>
+   *
+   * <code>.authzed.api.v1.Cursor after_result_cursor = 4 [json_name = "afterResultCursor"];</code>
+   */
+  @java.lang.Override
+  public com.authzed.api.v1.CursorOrBuilder getAfterResultCursorOrBuilder() {
+    return afterResultCursor_ == null ? com.authzed.api.v1.Cursor.getDefaultInstance() : afterResultCursor_;
+  }
+
   private byte memoizedIsInitialized = -1;
   @java.lang.Override
   public final boolean isInitialized() {
@@ -302,6 +352,9 @@ private static final long serialVersionUID = 0L;
     if (relationshipsDeletedCount_ != 0L) {
       output.writeUInt64(3, relationshipsDeletedCount_);
     }
+    if (((bitField0_ & 0x00000002) != 0)) {
+      output.writeMessage(4, getAfterResultCursor());
+    }
     getUnknownFields().writeTo(output);
   }
   private int computeSerializedSize_0() {
@@ -317,6 +370,10 @@ private static final long serialVersionUID = 0L;
     if (relationshipsDeletedCount_ != 0L) {
       size += com.google.protobuf.CodedOutputStream
         .computeUInt64Size(3, relationshipsDeletedCount_);
+    }
+    if (((bitField0_ & 0x00000002) != 0)) {
+      size += com.google.protobuf.CodedOutputStream
+        .computeMessageSize(4, getAfterResultCursor());
     }
     return size;
   }
@@ -350,6 +407,11 @@ private static final long serialVersionUID = 0L;
     if (deletionProgress_ != other.deletionProgress_) return false;
     if (getRelationshipsDeletedCount()
         != other.getRelationshipsDeletedCount()) return false;
+    if (hasAfterResultCursor() != other.hasAfterResultCursor()) return false;
+    if (hasAfterResultCursor()) {
+      if (!getAfterResultCursor()
+          .equals(other.getAfterResultCursor())) return false;
+    }
     if (!getUnknownFields().equals(other.getUnknownFields())) return false;
     return true;
   }
@@ -370,6 +432,10 @@ private static final long serialVersionUID = 0L;
     hash = (37 * hash) + RELATIONSHIPS_DELETED_COUNT_FIELD_NUMBER;
     hash = (53 * hash) + com.google.protobuf.Internal.hashLong(
         getRelationshipsDeletedCount());
+    if (hasAfterResultCursor()) {
+      hash = (37 * hash) + AFTER_RESULT_CURSOR_FIELD_NUMBER;
+      hash = (53 * hash) + getAfterResultCursor().hashCode();
+    }
     hash = (29 * hash) + getUnknownFields().hashCode();
     memoizedHashCode = hash;
     return hash;
@@ -501,6 +567,7 @@ private static final long serialVersionUID = 0L;
       if (com.google.protobuf.GeneratedMessage
               .alwaysUseFieldBuilders) {
         internalGetDeletedAtFieldBuilder();
+        internalGetAfterResultCursorFieldBuilder();
       }
     }
     @java.lang.Override
@@ -514,6 +581,11 @@ private static final long serialVersionUID = 0L;
       }
       deletionProgress_ = 0;
       relationshipsDeletedCount_ = 0L;
+      afterResultCursor_ = null;
+      if (afterResultCursorBuilder_ != null) {
+        afterResultCursorBuilder_.dispose();
+        afterResultCursorBuilder_ = null;
+      }
       return this;
     }
 
@@ -560,6 +632,12 @@ private static final long serialVersionUID = 0L;
       if (((from_bitField0_ & 0x00000004) != 0)) {
         result.relationshipsDeletedCount_ = relationshipsDeletedCount_;
       }
+      if (((from_bitField0_ & 0x00000008) != 0)) {
+        result.afterResultCursor_ = afterResultCursorBuilder_ == null
+            ? afterResultCursor_
+            : afterResultCursorBuilder_.build();
+        to_bitField0_ |= 0x00000002;
+      }
       result.bitField0_ |= to_bitField0_;
     }
 
@@ -583,6 +661,9 @@ private static final long serialVersionUID = 0L;
       }
       if (other.getRelationshipsDeletedCount() != 0L) {
         setRelationshipsDeletedCount(other.getRelationshipsDeletedCount());
+      }
+      if (other.hasAfterResultCursor()) {
+        mergeAfterResultCursor(other.getAfterResultCursor());
       }
       this.mergeUnknownFields(other.getUnknownFields());
       onChanged();
@@ -625,6 +706,13 @@ private static final long serialVersionUID = 0L;
               bitField0_ |= 0x00000004;
               break;
             } // case 24
+            case 34: {
+              input.readMessage(
+                  internalGetAfterResultCursorFieldBuilder().getBuilder(),
+                  extensionRegistry);
+              bitField0_ |= 0x00000008;
+              break;
+            } // case 34
             default: {
               if (!super.parseUnknownField(input, extensionRegistry, tag)) {
                 done = true; // was an endgroup tag
@@ -911,6 +999,197 @@ private static final long serialVersionUID = 0L;
       relationshipsDeletedCount_ = 0L;
       onChanged();
       return this;
+    }
+
+    private com.authzed.api.v1.Cursor afterResultCursor_;
+    private com.google.protobuf.SingleFieldBuilder<
+        com.authzed.api.v1.Cursor, com.authzed.api.v1.Cursor.Builder, com.authzed.api.v1.CursorOrBuilder> afterResultCursorBuilder_;
+    /**
+     * <pre>
+     * after_result_cursor holds a cursor that can be used to resume the deletion after the relationships
+     * deleted by this call, by supplying it as the optional_cursor on a subsequent DeleteRelationshipsRequest.
+     *
+     * It is populated only when deletion_progress is DELETION_PROGRESS_PARTIAL and the datastore supports
+     * cursored deletion; it is unset once DELETION_PROGRESS_COMPLETE is returned.
+     * </pre>
+     *
+     * <code>.authzed.api.v1.Cursor after_result_cursor = 4 [json_name = "afterResultCursor"];</code>
+     * @return Whether the afterResultCursor field is set.
+     */
+    public boolean hasAfterResultCursor() {
+      return ((bitField0_ & 0x00000008) != 0);
+    }
+    /**
+     * <pre>
+     * after_result_cursor holds a cursor that can be used to resume the deletion after the relationships
+     * deleted by this call, by supplying it as the optional_cursor on a subsequent DeleteRelationshipsRequest.
+     *
+     * It is populated only when deletion_progress is DELETION_PROGRESS_PARTIAL and the datastore supports
+     * cursored deletion; it is unset once DELETION_PROGRESS_COMPLETE is returned.
+     * </pre>
+     *
+     * <code>.authzed.api.v1.Cursor after_result_cursor = 4 [json_name = "afterResultCursor"];</code>
+     * @return The afterResultCursor.
+     */
+    public com.authzed.api.v1.Cursor getAfterResultCursor() {
+      if (afterResultCursorBuilder_ == null) {
+        return afterResultCursor_ == null ? com.authzed.api.v1.Cursor.getDefaultInstance() : afterResultCursor_;
+      } else {
+        return afterResultCursorBuilder_.getMessage();
+      }
+    }
+    /**
+     * <pre>
+     * after_result_cursor holds a cursor that can be used to resume the deletion after the relationships
+     * deleted by this call, by supplying it as the optional_cursor on a subsequent DeleteRelationshipsRequest.
+     *
+     * It is populated only when deletion_progress is DELETION_PROGRESS_PARTIAL and the datastore supports
+     * cursored deletion; it is unset once DELETION_PROGRESS_COMPLETE is returned.
+     * </pre>
+     *
+     * <code>.authzed.api.v1.Cursor after_result_cursor = 4 [json_name = "afterResultCursor"];</code>
+     */
+    public Builder setAfterResultCursor(com.authzed.api.v1.Cursor value) {
+      if (afterResultCursorBuilder_ == null) {
+        java.util.Objects.requireNonNull(value);
+        afterResultCursor_ = value;
+      } else {
+        afterResultCursorBuilder_.setMessage(value);
+      }
+      bitField0_ |= 0x00000008;
+      onChanged();
+      return this;
+    }
+    /**
+     * <pre>
+     * after_result_cursor holds a cursor that can be used to resume the deletion after the relationships
+     * deleted by this call, by supplying it as the optional_cursor on a subsequent DeleteRelationshipsRequest.
+     *
+     * It is populated only when deletion_progress is DELETION_PROGRESS_PARTIAL and the datastore supports
+     * cursored deletion; it is unset once DELETION_PROGRESS_COMPLETE is returned.
+     * </pre>
+     *
+     * <code>.authzed.api.v1.Cursor after_result_cursor = 4 [json_name = "afterResultCursor"];</code>
+     */
+    public Builder setAfterResultCursor(
+        com.authzed.api.v1.Cursor.Builder builderForValue) {
+      if (afterResultCursorBuilder_ == null) {
+        afterResultCursor_ = builderForValue.build();
+      } else {
+        afterResultCursorBuilder_.setMessage(builderForValue.build());
+      }
+      bitField0_ |= 0x00000008;
+      onChanged();
+      return this;
+    }
+    /**
+     * <pre>
+     * after_result_cursor holds a cursor that can be used to resume the deletion after the relationships
+     * deleted by this call, by supplying it as the optional_cursor on a subsequent DeleteRelationshipsRequest.
+     *
+     * It is populated only when deletion_progress is DELETION_PROGRESS_PARTIAL and the datastore supports
+     * cursored deletion; it is unset once DELETION_PROGRESS_COMPLETE is returned.
+     * </pre>
+     *
+     * <code>.authzed.api.v1.Cursor after_result_cursor = 4 [json_name = "afterResultCursor"];</code>
+     */
+    public Builder mergeAfterResultCursor(com.authzed.api.v1.Cursor value) {
+      if (afterResultCursorBuilder_ == null) {
+        if (((bitField0_ & 0x00000008) != 0) &&
+          afterResultCursor_ != null &&
+          afterResultCursor_ != com.authzed.api.v1.Cursor.getDefaultInstance()) {
+          getAfterResultCursorBuilder().mergeFrom(value);
+        } else {
+          afterResultCursor_ = value;
+        }
+      } else {
+        afterResultCursorBuilder_.mergeFrom(value);
+      }
+      if (afterResultCursor_ != null) {
+        bitField0_ |= 0x00000008;
+        onChanged();
+      }
+      return this;
+    }
+    /**
+     * <pre>
+     * after_result_cursor holds a cursor that can be used to resume the deletion after the relationships
+     * deleted by this call, by supplying it as the optional_cursor on a subsequent DeleteRelationshipsRequest.
+     *
+     * It is populated only when deletion_progress is DELETION_PROGRESS_PARTIAL and the datastore supports
+     * cursored deletion; it is unset once DELETION_PROGRESS_COMPLETE is returned.
+     * </pre>
+     *
+     * <code>.authzed.api.v1.Cursor after_result_cursor = 4 [json_name = "afterResultCursor"];</code>
+     */
+    public Builder clearAfterResultCursor() {
+      bitField0_ = (bitField0_ & ~0x00000008);
+      afterResultCursor_ = null;
+      if (afterResultCursorBuilder_ != null) {
+        afterResultCursorBuilder_.dispose();
+        afterResultCursorBuilder_ = null;
+      }
+      onChanged();
+      return this;
+    }
+    /**
+     * <pre>
+     * after_result_cursor holds a cursor that can be used to resume the deletion after the relationships
+     * deleted by this call, by supplying it as the optional_cursor on a subsequent DeleteRelationshipsRequest.
+     *
+     * It is populated only when deletion_progress is DELETION_PROGRESS_PARTIAL and the datastore supports
+     * cursored deletion; it is unset once DELETION_PROGRESS_COMPLETE is returned.
+     * </pre>
+     *
+     * <code>.authzed.api.v1.Cursor after_result_cursor = 4 [json_name = "afterResultCursor"];</code>
+     */
+    public com.authzed.api.v1.Cursor.Builder getAfterResultCursorBuilder() {
+      bitField0_ |= 0x00000008;
+      onChanged();
+      return internalGetAfterResultCursorFieldBuilder().getBuilder();
+    }
+    /**
+     * <pre>
+     * after_result_cursor holds a cursor that can be used to resume the deletion after the relationships
+     * deleted by this call, by supplying it as the optional_cursor on a subsequent DeleteRelationshipsRequest.
+     *
+     * It is populated only when deletion_progress is DELETION_PROGRESS_PARTIAL and the datastore supports
+     * cursored deletion; it is unset once DELETION_PROGRESS_COMPLETE is returned.
+     * </pre>
+     *
+     * <code>.authzed.api.v1.Cursor after_result_cursor = 4 [json_name = "afterResultCursor"];</code>
+     */
+    public com.authzed.api.v1.CursorOrBuilder getAfterResultCursorOrBuilder() {
+      if (afterResultCursorBuilder_ != null) {
+        return afterResultCursorBuilder_.getMessageOrBuilder();
+      } else {
+        return afterResultCursor_ == null ?
+            com.authzed.api.v1.Cursor.getDefaultInstance() : afterResultCursor_;
+      }
+    }
+    /**
+     * <pre>
+     * after_result_cursor holds a cursor that can be used to resume the deletion after the relationships
+     * deleted by this call, by supplying it as the optional_cursor on a subsequent DeleteRelationshipsRequest.
+     *
+     * It is populated only when deletion_progress is DELETION_PROGRESS_PARTIAL and the datastore supports
+     * cursored deletion; it is unset once DELETION_PROGRESS_COMPLETE is returned.
+     * </pre>
+     *
+     * <code>.authzed.api.v1.Cursor after_result_cursor = 4 [json_name = "afterResultCursor"];</code>
+     */
+    private com.google.protobuf.SingleFieldBuilder<
+        com.authzed.api.v1.Cursor, com.authzed.api.v1.Cursor.Builder, com.authzed.api.v1.CursorOrBuilder> 
+        internalGetAfterResultCursorFieldBuilder() {
+      if (afterResultCursorBuilder_ == null) {
+        afterResultCursorBuilder_ = new com.google.protobuf.SingleFieldBuilder<
+            com.authzed.api.v1.Cursor, com.authzed.api.v1.Cursor.Builder, com.authzed.api.v1.CursorOrBuilder>(
+                getAfterResultCursor(),
+                getParentForChildren(),
+                isClean());
+        afterResultCursor_ = null;
+      }
+      return afterResultCursorBuilder_;
     }
 
     // @@protoc_insertion_point(builder_scope:authzed.api.v1.DeleteRelationshipsResponse)

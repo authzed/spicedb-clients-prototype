@@ -853,6 +853,35 @@ public sealed class SpiceDBClient : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(filter);
 
+        var preconditions = BuildDeletePreconditions(mustMatch, mustNotMatch);
+        return await DeleteRelationshipsCoreAsync(
+            filter, preconditions, limit ?? DefaultDeletePageSize, cursorToken: null, cancellationToken, timeout);
+    }
+
+    /// <summary>
+    /// <see cref="DeleteRelationshipsAsync"/> with call-level options.
+    /// <paramref name="options"/> carries every optional knob — preconditions,
+    /// page size, a resumption cursor, and a per-page deadline — so that the
+    /// next option this operation gains is a new property on
+    /// <see cref="DeleteRelationshipsOptions"/> rather than a new parameter
+    /// here. See root DESIGN.md, "RULE: Every RPC wrapper must have one place
+    /// to add an option".
+    /// </summary>
+    public async Task<string> DeleteRelationshipsWithOptionsAsync(
+        Filter filter,
+        DeleteRelationshipsOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(filter);
+
+        var preconditions = BuildDeletePreconditions(options?.MustMatch, options?.MustNotMatch);
+        return await DeleteRelationshipsCoreAsync(
+            filter, preconditions, options?.Limit ?? DefaultDeletePageSize, options?.Cursor, cancellationToken, options?.Timeout);
+    }
+
+    private static List<Precondition> BuildDeletePreconditions(
+        IReadOnlyList<Filter>? mustMatch, IReadOnlyList<Filter>? mustNotMatch)
+    {
         var preconditions = new List<Precondition>();
         if (mustMatch != null)
         {
@@ -864,8 +893,36 @@ public sealed class SpiceDBClient : IAsyncDisposable
             foreach (var f in mustNotMatch)
                 preconditions.Add(Transaction.BuildPrecondition(Precondition.Types.Operation.MustNotMatch, f));
         }
+        return preconditions;
+    }
 
-        uint pageSize = limit ?? DefaultDeletePageSize;
+    /// <summary>
+    /// Shared implementation behind <see cref="DeleteRelationshipsAsync"/> and
+    /// <see cref="DeleteRelationshipsWithOptionsAsync"/>. Loops, re-sending
+    /// <paramref name="preconditions"/> on every page, until the server
+    /// reports <see cref="DeleteRelationshipsResponse.Types.DeletionProgress.Complete"/>.
+    /// <para>
+    /// <paramref name="cursorToken"/> seeds the first request's
+    /// <c>optional_cursor</c> (non-null only via
+    /// <see cref="DeleteRelationshipsWithOptionsAsync"/>, to resume a
+    /// deletion left incomplete by an earlier call); every subsequent
+    /// request threads the previous response's <c>after_result_cursor</c>
+    /// instead, the same transparent-continuation pattern
+    /// <see cref="ReadRelationshipsAsync"/> uses. A datastore that doesn't
+    /// support cursored deletion simply never populates that field, so the
+    /// next request omits <c>optional_cursor</c> and this degrades to the
+    /// original re-send-the-same-filter behavior.
+    /// </para>
+    /// </summary>
+    private async Task<string> DeleteRelationshipsCoreAsync(
+        Filter filter,
+        List<Precondition> preconditions,
+        uint pageSize,
+        string? cursorToken,
+        CancellationToken cancellationToken,
+        TimeSpan? timeout)
+    {
+        Cursor? cursor = string.IsNullOrEmpty(cursorToken) ? null : new Cursor { Token = cursorToken };
 
         string revision = "";
         while (true)
@@ -878,6 +935,8 @@ public sealed class SpiceDBClient : IAsyncDisposable
             };
             if (preconditions.Count > 0)
                 req.OptionalPreconditions.AddRange(preconditions);
+            if (cursor != null)
+                req.OptionalCursor = cursor;
 
             var resp = await CallOnceAsync(async () =>
                 await _permissions.DeleteRelationshipsAsync(
@@ -886,6 +945,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
                     cancellationToken: cancellationToken));
 
             revision = resp.DeletedAt?.Token ?? "";
+            cursor = resp.AfterResultCursor;
 
             if (resp.DeletionProgress == DeleteRelationshipsResponse.Types.DeletionProgress.Complete)
                 return revision;

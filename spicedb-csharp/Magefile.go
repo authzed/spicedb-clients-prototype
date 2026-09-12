@@ -102,15 +102,6 @@ const optionsInstruction = "A new option on an existing operation is a NEW PROPE
 	"parameter. See root DESIGN.md, \"RULE: Every RPC wrapper must have one place to add an " +
 	"option\", and ./DESIGN.md, \"Where a new option goes\"."
 
-// changelogInstruction names CHANGELOG.md explicitly: the previous wording said
-// "update DESIGN.md changelog", and the changelog is not in DESIGN.md.
-const changelogInstruction = "Record what you changed in CHANGELOG.md -- not DESIGN.md -- under " +
-	"the single existing \"## Unreleased\" heading. Never add a second one. Put the entry in the " +
-	"right \"###\" subsection (Added, Changed, Fixed), formatted like the entries already there: " +
-	"a bold \"**YYYY-MM-DD: one-line summary.**\" followed by an indented paragraph saying what " +
-	"changed and why it matters to a caller. Update DESIGN.md itself only when the design changed, " +
-	"not merely to note the change."
-
 func Gen() error {
 	// Read last generation baseline
 	baseline, err := os.ReadFile(lastGenFile)
@@ -145,7 +136,7 @@ func Gen() error {
 			"Read ../DESIGN.md and ./DESIGN.md. Update this client accordingly. "+
 			"Ensure all tests still pass.\n\n"+
 			optionsInstruction+"\n\n"+
-			changelogInstruction,
+			clauderun.ChangelogInstruction,
 		stat, names, protoClientDir,
 	)
 

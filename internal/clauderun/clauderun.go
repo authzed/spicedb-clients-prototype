@@ -21,6 +21,28 @@ import (
 	"strings"
 )
 
+// ChangelogInstruction is the changelog convention every client's generation
+// prompt carries.
+//
+// It lives here because it was identical in all seven Magefiles and wrong in
+// all seven: it said "Update DESIGN.md changelog if needed", and the changelog
+// is CHANGELOG.md, which is not mentioned in DESIGN.md at all. Seven byte-for-
+// byte copies of one instruction is the duplication this package was extracted
+// to stop -- see the package comment.
+//
+// The "add to the existing subsection" clause is not padding. Writing a second
+// "### Added" beside one already under "## Unreleased" produces valid-looking
+// markdown that MD024/no-duplicate-heading rejects, and it is a mistake made
+// twice by hand while writing entries for this repository before it was written
+// down here.
+const ChangelogInstruction = "Record what you changed in CHANGELOG.md -- not DESIGN.md -- under " +
+	"the single existing \"## Unreleased\" heading. Never add a second \"## Unreleased\", and " +
+	"never add a second \"### Added\"/\"### Changed\"/\"### Fixed\" beside one that is already " +
+	"there: put your entry in the subsection that exists. Format it like the entries around it -- " +
+	"a bold \"**YYYY-MM-DD: one-line summary.**\" followed by an indented paragraph saying what " +
+	"changed and why it matters to a caller. Update DESIGN.md itself only when the design changed, " +
+	"not merely to note the change."
+
 // DefaultModel is empty on purpose: by default nothing is pinned and the CLI
 // selects a model per task, which lets it spend a cheaper one on simple work
 // and reserve the expensive one for the parts that need it.

@@ -38,7 +38,7 @@ dependencies {
     // io.grpc:* coordinate below is deliberately versionless so a partial bump is
     // structurally impossible. This version must equal the gRPC version the BSR stubs
     // above are generated against (the leading component of their BSR version string).
-    api(platform("io.grpc:grpc-bom:1.83.1"))
+    api(platform("io.grpc:grpc-bom:1.84.0"))
 
     api("io.grpc:grpc-netty-shaded")
     api("io.grpc:grpc-protobuf")

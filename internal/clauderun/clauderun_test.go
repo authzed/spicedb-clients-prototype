@@ -204,3 +204,29 @@ func TestModelIgnoresABlankPin(t *testing.T) {
 		t.Fatalf("ModelArgs() = %v, want a blank pin to splice nothing", args)
 	}
 }
+
+// The changelog instruction is one string used by all seven clients' generation
+// prompts, and it was wrong in all seven before it lived here. These pin the
+// parts that were wrong or easy to get wrong.
+func TestChangelogInstructionNamesTheRightFile(t *testing.T) {
+	for _, want := range []string{
+		"CHANGELOG.md",
+		"not DESIGN.md",
+		"## Unreleased",
+		"Never add a second",
+		"### Added",
+		"the subsection that exists",
+		"**YYYY-MM-DD: one-line summary.**",
+	} {
+		if !strings.Contains(ChangelogInstruction, want) {
+			t.Fatalf("ChangelogInstruction missing %q:\n%s", want, ChangelogInstruction)
+		}
+	}
+}
+
+// The original wording sent Claude to the wrong file entirely.
+func TestChangelogInstructionDoesNotRepeatTheOldMistake(t *testing.T) {
+	if strings.Contains(ChangelogInstruction, "DESIGN.md changelog") {
+		t.Fatalf("ChangelogInstruction still points at a changelog inside DESIGN.md:\n%s", ChangelogInstruction)
+	}
+}

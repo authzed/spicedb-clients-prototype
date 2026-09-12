@@ -137,8 +137,8 @@ func Gen() error {
 		"The proto client has changed.\n\nSummary of changes:\n\n%s\n\nChanged files:\n\n%s\n\n"+
 			"Read the changed files under %s for the details you need. "+
 			"Read ../DESIGN.md and ./DESIGN.md. Update this client accordingly. "+
-			"Ensure all examples still work. Add new examples for new functionality. "+
-			"Update DESIGN.md changelog if needed.",
+			"Ensure all examples still work. Add new examples for new functionality.\n\n"+
+			clauderun.ChangelogInstruction,
 		stat, names, protoClientDir,
 	)
 

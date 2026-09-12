@@ -505,7 +505,30 @@ func apiCompatAll(baseRef string) error {
 
 		fmt.Printf("\n==> API compatibility broke in %s; asking Claude to fix (attempt %d/%d)...\n", joined, attempt, maxCompatRetries)
 		if err := clauderun.Run(apiCompatFixPrompt(breaks)); err != nil {
-			return fmt.Errorf("claude fix invocation failed: %w", err)
+			// A repair that died partway through has still edited the tree, and
+			// everything from generation is already committed by this point, so
+			// whatever is uncommitted now is exactly the half-finished fix.
+			// Leaving it is how run 34538493104 shipped a Rust client that did
+			// not compile: Claude made a field private to satisfy the compat
+			// gate, its own invocation then failed, and create-pull-request
+			// swept the partial edit into the PR.
+			if rbErr := discardRepair(); rbErr != nil {
+				return fmt.Errorf("claude fix invocation failed (%v), and discarding the partial repair also failed: %w", err, rbErr)
+			}
+			return fmt.Errorf("claude fix invocation failed, partial repair discarded: %w", err)
+		}
+
+		// A repair is an edit like any other and has to earn its place. The
+		// per-language Gen targets re-run build and tests after Claude edits;
+		// this loop used to re-run only the compatibility check, so a fix that
+		// restored compatibility while breaking the build was committed and
+		// shipped. Rust privacy is module-scoped, which makes "just make the
+		// field private" exactly that kind of fix.
+		if err := verifyRepair(langs); err != nil {
+			if rbErr := discardRepair(); rbErr != nil {
+				return fmt.Errorf("the repair did not build (%v), and discarding it also failed: %w", err, rbErr)
+			}
+			return fmt.Errorf("the repair did not build, and was discarded: %w", err)
 		}
 
 		before, err := sh.Output("git", "rev-parse", "HEAD")
@@ -663,6 +686,46 @@ func markdownLintFixPrompt(report string) string {
 			"Do not add inline `<!-- markdownlint-disable -->` comments, and do not edit "+
 			".markdownlint-cli2.yaml to silence a rule.",
 		strings.TrimSpace(report))
+}
+
+// verifyRepair re-runs each repaired language's own test target, which builds
+// the client. A compatibility fix that does not compile is worse than the break
+// it was fixing, and only the language's own toolchain can tell -- the
+// compatibility tools cannot: cargo-semver-checks reads rustdoc JSON, and
+// rustdoc does not type-check function bodies, so it reported a clean build of
+// a crate that `cargo build` rejects.
+func verifyRepair(langs []string) error {
+	var failures []string
+	for _, l := range langs {
+		dir := fmt.Sprintf("spicedb-%s", l)
+		fmt.Printf("==> Verifying the repair still builds: %s\n", dir)
+		if out, err := runMageInQuiet(dir, "test"); err != nil {
+			fmt.Printf("==> REPAIR BROKE %s:\n%s\n", dir, strings.TrimSpace(out))
+			failures = append(failures, l)
+		}
+	}
+	if len(failures) > 0 {
+		return fmt.Errorf("%s no longer build after the repair", strings.Join(failures, ", "))
+	}
+	return nil
+}
+
+// discardRepair returns the tree to HEAD, dropping an uncommitted repair.
+//
+// Everything generation produced is committed before the gates run, so anything
+// uncommitted at this point belongs to the repair and nothing else is lost.
+// Untracked files are removed too, since a repair can add one; ignored files
+// are left alone, because the gate tooling itself lives in some of them.
+func discardRepair() error {
+	return gitlock.Do(func() error {
+		if err := sh.Run("git", "checkout", "--", "."); err != nil {
+			return fmt.Errorf("restoring tracked files: %w", err)
+		}
+		if err := sh.Run("git", "clean", "-fd"); err != nil {
+			return fmt.Errorf("removing files the repair added: %w", err)
+		}
+		return nil
+	})
 }
 
 // apiCompatFixPrompt renders the failing reports, and the rules for repairing

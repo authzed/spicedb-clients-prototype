@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -829,5 +830,125 @@ func TestProgressDoneRemovesTheLanguage(t *testing.T) {
 	running := p.running()
 	if len(running) != 1 || !strings.HasPrefix(running[0], "spicedb-java") {
 		t.Fatalf("running = %v, want only spicedb-java", running)
+	}
+}
+
+// A compatibility repair is an edit like any other: it has to build, and if it
+// dies partway through it must not be left behind for create-pull-request to
+// sweep into the PR. Run 34538493104 shipped a Rust client that did not compile
+// because neither held.
+
+func gitInit(t *testing.T, dir string) {
+	t.Helper()
+	for _, args := range [][]string{
+		{"init", "-q"},
+		{"config", "user.email", "t@t.t"},
+		{"config", "user.name", "t"},
+	} {
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+}
+
+func gitCommitAll(t *testing.T, dir, msg string) {
+	t.Helper()
+	for _, args := range [][]string{{"add", "-A"}, {"commit", "-qm", msg}} {
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+}
+
+func TestDiscardRepairRestoresTheTree(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+	if err := os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("original"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	gitCommitAll(t, dir, "base")
+	t.Chdir(dir)
+
+	// What a half-finished repair leaves behind.
+	if err := os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("half-edited"), 0o644); err != nil {
+		t.Fatalf("edit: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "added.txt"), []byte("new"), 0o644); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+
+	if err := discardRepair(); err != nil {
+		t.Fatalf("discardRepair: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(dir, "tracked.txt"))
+	if err != nil || string(got) != "original" {
+		t.Fatalf("tracked file = %q (err %v), want it restored to \"original\"", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "added.txt")); !os.IsNotExist(err) {
+		t.Fatal("a file the repair added should not survive being discarded")
+	}
+}
+
+// Ignored files must survive. The api-compat tooling itself lives in some of
+// them -- tools/japicmp.jar is gitignored and fetched by CI -- and deleting it
+// mid-run is exactly the failure that made an earlier regeneration report
+// "japicmp not found" for reasons unrelated to any API change.
+func TestDiscardRepairLeavesIgnoredFilesAlone(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("tools/\n"), 0o644); err != nil {
+		t.Fatalf("write gitignore: %v", err)
+	}
+	gitCommitAll(t, dir, "base")
+	if err := os.MkdirAll(filepath.Join(dir, "tools"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "tools", "japicmp.jar"), []byte("jar"), 0o644); err != nil {
+		t.Fatalf("write jar: %v", err)
+	}
+	t.Chdir(dir)
+
+	if err := discardRepair(); err != nil {
+		t.Fatalf("discardRepair: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, "tools", "japicmp.jar")); err != nil {
+		t.Fatalf("an ignored file was removed by discardRepair: %v", err)
+	}
+}
+
+// verifyRepair runs each repaired language's own test target, because only the
+// language's toolchain can tell whether the fix compiles: cargo-semver-checks
+// reads rustdoc JSON, and rustdoc does not type-check function bodies, so it
+// reported a clean build of a crate cargo build rejects.
+func TestVerifyRepairFailsWhenTheLanguageDoesNotBuild(t *testing.T) {
+	dir := t.TempDir()
+	script := "#!/bin/sh\necho 'error[E0616]: field is private' >&2\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(dir, "mage"), []byte(script), 0o755); err != nil {
+		t.Fatalf("stub: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	err := verifyRepair([]string{"rust"})
+	if err == nil {
+		t.Fatal("a repair that does not build must fail verification")
+	}
+	if !strings.Contains(err.Error(), "rust") {
+		t.Fatalf("error should name the language that broke, got %q", err)
+	}
+}
+
+func TestVerifyRepairPassesWhenEverythingBuilds(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "mage"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("stub: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	if err := verifyRepair([]string{"rust", "go"}); err != nil {
+		t.Fatalf("verifyRepair: %v", err)
 	}
 }

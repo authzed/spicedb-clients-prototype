@@ -367,6 +367,15 @@
 
 ### Fixed
 
+- **2026-09-16** (documentation only): `RoaringLookupResourcesResult.cardinality`'s doc comment
+  referenced `{@link bitmap}`, an unqualified name api-extractor could not resolve to the sibling
+  `bitmap` property -- it needs the enclosing interface named, as every other cross-reference in
+  this file already does. Left unfixed, `mage apicompat` failed even after the API report was
+  updated to accept the new `experimentalRoaringLookupResources` surface, since API Extractor
+  treats an unresolved `@link` as a warning and this project's `apicompat` check does not
+  distinguish a warning from an error. Now reads `{@link RoaringLookupResourcesResult.bitmap}`.
+  No API change.
+
 - **2026-08-19**: **The example set is pinned by name, not by count.** `wantExampleCount` passed
   unchanged when an example directory was *renamed* -- only deletion was caught, and a manifest
   can drift from disk with no signal. `wantExamples` now lists every example by name and is

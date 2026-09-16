@@ -211,7 +211,7 @@ export interface RoaringLookupResourcesParams {
  */
 export interface RoaringLookupResourcesResult {
   bitmap: Uint8Array;
-  /** The number of resource IDs encoded in {@link bitmap}. */
+  /** The number of resource IDs encoded in {@link RoaringLookupResourcesResult.bitmap}. */
   cardinality: bigint;
   /** The revision this lookup was performed at. */
   revision: string;

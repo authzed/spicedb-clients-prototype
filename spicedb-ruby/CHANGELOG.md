@@ -433,6 +433,19 @@
 
 ### Added
 
+- **2026-09-16: proto client regenerated** (added
+  `authzed.api.materialize.v0.RoaringLookupResourcesService`, a new service with one RPC,
+  `ExperimentalRoaringLookupResources`, returning a roaring64-encoded bitmap of accessible
+  resource IDs, for feeding a search index such as OpenSearch directly). No code change
+  here: this client wraps `PermissionsService`, `SchemaService`, `WatchService`, and
+  `ExperimentalService` (all in the `authzed.api.v1` package) and has never wrapped the
+  sibling `authzed.api.materialize.v0` package -- the three services already in
+  `gen/authzed/api/materialize/v0` before this regen (`Relationships`, `WatchPermissions`,
+  `WatchPermissionSets`) were likewise never surfaced (see the 2026-09-04 entry under
+  "Documentation" below). Consistent with `spicedb-go`, `spicedb-python`, `spicedb-java`,
+  and `spicedb-csharp`'s handling of this same regen: no idiomatic client wraps that
+  service. `bundle exec rspec` passes unchanged.
+
 - **2026-09-04: `lookup_resources` and `lookup_subjects` accept a `context:` keyword.**
   Root DESIGN.md, "RULE: Every RPC wrapper must have one place to add an option" (new).
   The lookups previously took positional arguments only, so an option added upstream had

@@ -4,6 +4,19 @@
 
 ### Changed
 
+- **2026-09-16: proto client regenerated** (added
+  `authzed.api.materialize.v0.RoaringLookupResourcesService`, a new service with one RPC,
+  `ExperimentalRoaringLookupResources`, returning a roaring64-encoded bitmap of accessible
+  resource IDs, for feeding a search index such as OpenSearch directly). No code change
+  here: `proto-clients/spicedb-rust-proto`'s `SpiceDBProtoClient` wraps
+  `permissions`/`schema`/`watch`/`experimental` (all from the `authzed.api.v1` package) and
+  has never wrapped the sibling `authzed.api.materialize.v0` package -- the three services
+  already in that package before this regen (`RelationshipsService`,
+  `WatchPermissionsService`, `WatchPermissionSetsService`) were likewise never surfaced by
+  either the proto client or this one. Consistent with `spicedb-go`, `spicedb-python`,
+  `spicedb-java`, and `spicedb-csharp`'s handling of this same regen: no idiomatic client
+  wraps that service. `cargo test` and `cargo clippy` pass unchanged.
+
 - **2026-09-11: `DeleteOptions` and `WatchOptions` are `#[non_exhaustive]`, and
   `DeleteOptions.cursor` is public.** Root DESIGN.md, "RULE: Every RPC wrapper must have one
   place to add an option". **Breaking**, deliberately and once.

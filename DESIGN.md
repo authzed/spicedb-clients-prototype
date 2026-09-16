@@ -723,7 +723,7 @@ clients have both.
   `spicedb.aio.SpiceDBClient`, returning `spicedb.raw.RawGrpc` (the live channel plus the
   bearer-token metadata, since this client authenticates per call).
 - **TypeScript** — *accessor:* `SpiceDBClient.raw()`, returning the `SpiceDBProtoClient`
-  with the four generated Connect clients.
+  with the five generated Connect clients.
 - **Rust** — *accessor:* `SpiceDBClient::raw_proto()`, returning `&SpiceDBProtoClient`;
   the generated crate is re-exported as `spicedb::spicedb_proto` so callers can name its
   types.

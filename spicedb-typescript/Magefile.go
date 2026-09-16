@@ -49,6 +49,7 @@ var wantExamples = []string{
 	"raw_escape_hatch",
 	"read_relationships",
 	"retry_policy",
+	"roaring_lookup_resources",
 	"schema_management",
 	"unrepresentable_values",
 	"watch_changes",

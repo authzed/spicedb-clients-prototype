@@ -28,6 +28,8 @@ export {
   type DependentRelationsParams,
   type RelationReference,
   type RelationshipCountResult,
+  type RoaringLookupResourcesParams,
+  type RoaringLookupResourcesResult,
   type TreeOperation,
   type ObjectRef,
   type SubjectRef,

@@ -25,6 +25,7 @@ import {
   ExperimentalRegisterRelationshipCounterRequestSchema,
   ExperimentalCountRelationshipsRequestSchema,
   ExperimentalUnregisterRelationshipCounterRequestSchema,
+  ExperimentalRoaringLookupResourcesRequestSchema,
   WatchRequestSchema,
   WatchKind,
   ObjectReferenceSchema,
@@ -56,6 +57,8 @@ import {
   type DependentRelationsParams,
   type RelationReference,
   type RelationshipCountResult,
+  type RoaringLookupResourcesParams,
+  type RoaringLookupResourcesResult,
   type Transaction,
   type DeleteOptions,
   type PermissionTree,
@@ -73,6 +76,7 @@ import {
   fromProtoSchemaDiff,
   fromProtoLookupResource,
   fromProtoLookupSubject,
+  fromProtoRoaringLookupResourcesResponse,
   checkResultFromProto,
   checkResultFromBulkItem,
   mergeCheckContext,
@@ -305,9 +309,9 @@ export class SpiceDBClient {
   }
 
   /**
-   * Escape hatch: the underlying `SpiceDBProtoClient`, with the four generated
-   * Connect clients (`permissions`, `schema`, `watch`, `experimental`) this
-   * client makes its own calls through.
+   * Escape hatch: the underlying `SpiceDBProtoClient`, with the five generated
+   * Connect clients (`permissions`, `schema`, `watch`, `experimental`,
+   * `materialize`) this client makes its own calls through.
    *
    * Clearly-marked **secondary** API. Root DESIGN.md's "What NOT To Do" keeps
    * channels, stubs and metadata out of the primary surface and permits exactly
@@ -1380,6 +1384,57 @@ export class SpiceDBClient {
         }),
         { timeoutMs },
       );
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Experimental: Roaring Lookup Resources
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Returns a roaring64 bitmap of the resource object IDs of
+   * `params.resourceType` on which the given subject has the given
+   * permission -- for bulk export into a search index that supports
+   * roaring-bitmap terms queries (e.g. Base64-encoded into OpenSearch's
+   * `"value_type": "bitmap"` query). See {@link RoaringLookupResourcesResult}
+   * for the shape of the response; this client does not decode the bitmap.
+   *
+   * Every resource object ID of `params.resourceType` must be a canonical
+   * decimal integer that fits in 44 bits (at most 17592186044415); the call
+   * fails with a `FailedPreconditionError` rather than returning a partial
+   * bitmap if any object ID violates that.
+   *
+   * The whole bitmap returns in a single unary message, and most gRPC
+   * clients default to refusing messages larger than 4 MiB. Roaring is
+   * compact, but a result of more than roughly 400,000 widely-spread IDs can
+   * exceed that default. `cardinality` on the result tells you how large a
+   * result was once received; no server-side result limit is applied.
+   *
+   * @experimental This API may change without following backwards compatibility rules.
+   */
+  async experimentalRoaringLookupResources(
+    params: RoaringLookupResourcesParams,
+    consistency: Consistency,
+  ): Promise<RoaringLookupResourcesResult> {
+    const timeoutMs = this.effectiveTimeoutMs(params.timeoutMs);
+    return this.withRetry(async () => {
+      const resp =
+        await this.proto.materialize.experimentalRoaringLookupResources(
+          create(ExperimentalRoaringLookupResourcesRequestSchema, {
+            consistency: consistency._toProto(),
+            resourceObjectType: params.resourceType,
+            permission: params.permission,
+            subject: create(SubjectReferenceSchema, {
+              object: create(ObjectReferenceSchema, {
+                objectType: params.subjectType,
+                objectId: params.subjectId,
+              }),
+              optionalRelation: params.subjectRelation ?? "",
+            }),
+          }),
+          { timeoutMs },
+        );
+      return fromProtoRoaringLookupResourcesResponse(resp);
     });
   }
 

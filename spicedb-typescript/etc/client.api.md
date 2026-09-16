@@ -358,6 +358,29 @@ export class ResourceExhaustedError extends SpiceDBError {
 }
 
 // @public
+export interface RoaringLookupResourcesParams {
+    // (undocumented)
+    permission: string;
+    // (undocumented)
+    resourceType: string;
+    // (undocumented)
+    subjectId: string;
+    // (undocumented)
+    subjectRelation?: string;
+    // (undocumented)
+    subjectType: string;
+    timeoutMs?: number;
+}
+
+// @public
+export interface RoaringLookupResourcesResult {
+    // (undocumented)
+    bitmap: Uint8Array;
+    cardinality: bigint;
+    revision: string;
+}
+
+// @public
 export interface SchemaCaveat {
     // (undocumented)
     comment: string;
@@ -467,6 +490,7 @@ export class SpiceDBClient {
     experimentalRegisterRelationshipCounter(name: string, filter: RelationshipFilterOptions, options?: {
         timeoutMs?: number;
     }): Promise<void>;
+    experimentalRoaringLookupResources(params: RoaringLookupResourcesParams, consistency: Consistency): Promise<RoaringLookupResourcesResult>;
     experimentalUnregisterRelationshipCounter(name: string, options?: {
         timeoutMs?: number;
     }): Promise<void>;

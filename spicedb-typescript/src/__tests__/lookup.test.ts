@@ -7,6 +7,7 @@ import {
   PartialCaveatInfoSchema,
   LookupPermissionship,
   ZedTokenSchema,
+  ExperimentalRoaringLookupResourcesResponseSchema,
 } from "@spicedb/proto";
 import {
   permissionshipFromProto,
@@ -14,6 +15,7 @@ import {
   resolvedSubjectFromProto,
   fromProtoLookupResource,
   fromProtoLookupSubject,
+  fromProtoRoaringLookupResourcesResponse,
 } from "../types.js";
 
 describe("permissionshipFromProto()", () => {
@@ -214,5 +216,29 @@ describe("fromProtoLookupSubject()", () => {
       lookedUpAt: create(ZedTokenSchema, { token: "rev-99" }),
     });
     expect(fromProtoLookupSubject(resp).lookedUpAt).toBe("rev-99");
+  });
+});
+
+describe("fromProtoRoaringLookupResourcesResponse()", () => {
+  it("maps bitmap, cardinality, and the at_revision token", () => {
+    const bitmap = new Uint8Array([1, 2, 3]);
+    const resp = create(ExperimentalRoaringLookupResourcesResponseSchema, {
+      bitmap,
+      cardinality: 42n,
+      atRevision: create(ZedTokenSchema, { token: "rev-1" }),
+    });
+    expect(fromProtoRoaringLookupResourcesResponse(resp)).toEqual({
+      bitmap,
+      cardinality: 42n,
+      revision: "rev-1",
+    });
+  });
+
+  it("defaults revision to an empty string when at_revision is unset", () => {
+    const resp = create(ExperimentalRoaringLookupResourcesResponseSchema, {
+      bitmap: new Uint8Array(),
+      cardinality: 0n,
+    });
+    expect(fromProtoRoaringLookupResourcesResponse(resp).revision).toBe("");
   });
 });

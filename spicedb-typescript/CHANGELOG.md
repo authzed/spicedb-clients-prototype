@@ -4,6 +4,29 @@
 
 ### Added
 
+- **2026-09-16: `experimentalRoaringLookupResources`, wrapping the new
+  `authzed.api.materialize.v0.RoaringLookupResourcesService`.** Proto regen added this
+  service and its generated files under `materialize/v0/`; `SpiceDBProtoClient` now
+  exposes it as a fifth Connect client, `materialize`, alongside `permissions`/`schema`/
+  `watch`/`experimental` (`raw()` picks this up for free). The RPC returns a roaring64
+  bitmap of the resource object IDs a subject has a permission on, for bulk export into a
+  search index that supports roaring-bitmap terms queries (e.g. Base64-encoded into
+  OpenSearch's `"value_type": "bitmap"` query) — this client hands back the bitmap as raw
+  bytes plus `cardinality` (`bigint`, matching the wire's `uint64`) and `revision`, and does
+  not decode it. Every resource object ID of the requested type must be a canonical decimal
+  integer that fits in 44 bits, or the call fails with `FailedPreconditionError` rather than
+  returning a partial bitmap. Marked `@experimental` and prefixed per DESIGN.md's
+  "Experimental API Naming Convention", since the service itself is documented experimental
+  and may change. New example `roaring_lookup_resources/` exercises the response mapping
+  and the `FailedPreconditionError` case against a stand-in server, because the SpiceDB
+  image `docker-compose.test.yml` starts does not implement this service yet (verified
+  directly: it currently returns `UNIMPLEMENTED`). This is the first API this client wraps
+  from the `materialize` package — a prior regen (2026-09-04) left
+  `DownloadPermissionSetsResponse.atRevision` on that same package unwrapped as a one-off
+  field addition; `RoaringLookupResources` is a whole new RPC with its own contract, not a
+  field on an existing call, so it gets full idiomatic treatment instead. No breaking
+  change — a new method and new exported types only.
+
 - **2026-09-10: `deleteRelationships(filter, { autoPage: true })`, unlocked by the proto
   regeneration bringing `DeleteRelationshipsRequest.optionalCursor`/
   `DeleteRelationshipsResponse.afterResultCursor` into this client.** Previously, a
@@ -343,6 +366,15 @@
   ```
 
 ### Fixed
+
+- **2026-09-16** (documentation only): `RoaringLookupResourcesResult.cardinality`'s doc comment
+  referenced `{@link bitmap}`, an unqualified name api-extractor could not resolve to the sibling
+  `bitmap` property -- it needs the enclosing interface named, as every other cross-reference in
+  this file already does. Left unfixed, `mage apicompat` failed even after the API report was
+  updated to accept the new `experimentalRoaringLookupResources` surface, since API Extractor
+  treats an unresolved `@link` as a warning and this project's `apicompat` check does not
+  distinguish a warning from an error. Now reads `{@link RoaringLookupResourcesResult.bitmap}`.
+  No API change.
 
 - **2026-08-19**: **The example set is pinned by name, not by count.** `wantExampleCount` passed
   unchanged when an example directory was *renamed* -- only deletion was caught, and a manifest

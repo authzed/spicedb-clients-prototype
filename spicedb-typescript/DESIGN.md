@@ -114,9 +114,9 @@ server", clause 3 warns about one layer up.
 
 ### Escape hatch: raw proto access
 
-`client.raw()` returns the underlying `SpiceDBProtoClient` — the four generated
-Connect clients (`permissions`, `schema`, `watch`, `experimental`) this library
-makes its own calls through:
+`client.raw()` returns the underlying `SpiceDBProtoClient` — the five generated
+Connect clients (`permissions`, `schema`, `watch`, `experimental`,
+`materialize`) this library makes its own calls through:
 
 ```typescript
 const { permissionship } = await client.raw().permissions.checkPermission({
@@ -569,6 +569,39 @@ Methods wrapping experimental proto APIs MUST be prefixed with `experimental`
 promotion, add the unprefixed method and mark the prefixed one as
 `@deprecated`.
 
+### Experimental: Roaring Lookup Resources
+
+`experimentalRoaringLookupResources(params, consistency)` wraps
+`authzed.api.materialize.v0.RoaringLookupResourcesService`, a separate
+generated service from the `authzed.api.v1.ExperimentalService` the other
+`experimental*` methods use — `SpiceDBProtoClient` exposes it as its own
+`materialize` client alongside `permissions`/`schema`/`watch`/`experimental`.
+It returns a roaring64 bitmap of the resource object IDs a subject has a
+permission on, meant for bulk export into a search index that supports
+roaring-bitmap terms queries (e.g. Base64-encoded into OpenSearch's
+`"value_type": "bitmap"` query):
+
+```typescript
+const { bitmap, cardinality, revision } =
+  await client.experimentalRoaringLookupResources(
+    {
+      resourceType: "document",
+      permission: "view",
+      subjectType: "user",
+      subjectId: "jimmy",
+    },
+    full(),
+  );
+```
+
+This client does not decode the bitmap — it is handed back as raw bytes for
+the caller to consume with a roaring-bitmap library or to Base64-encode
+directly. Every resource object ID of `resourceType` must be a canonical
+decimal integer that fits in 44 bits, or the call fails with
+`FailedPreconditionError` rather than returning a partial bitmap.
+`cardinality` is a `bigint`, matching the wire's `uint64` — the same
+precision-preserving choice as `importBulkRelationships`'s return value.
+
 ## Public API Surface
 
 See package sections above.
@@ -594,6 +627,7 @@ See package sections above.
 | `unrepresentable_values/` | Caller data that cannot convert fails loudly; unknown server enums degrade safely |
 | `custom_tls/` | Reaching a SpiceDB behind a private CA with `tls.caCert`, and mutual TLS with `tls.clientCert`/`tls.clientKey`. Brings up its own TLS-terminated endpoint |
 | `raw_escape_hatch/` | `raw()` — driving the generated Connect client directly for a proto field (`optionalTransactionMetadata`) and an RPC (`CheckPermission`) the idiomatic API does not expose |
+| `roaring_lookup_resources/` | `experimentalRoaringLookupResources`: bitmap/cardinality/revision mapping, and the `FailedPreconditionError` a non-canonical resource object ID produces. Brings up its own stand-in server -- the shared SpiceDB image does not implement this service yet |
 
 ## Typed Client Generation
 

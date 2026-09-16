@@ -47,5 +47,6 @@ describe("SpiceDBClient", () => {
     expect(typeof client.experimentalRegisterRelationshipCounter).toBe("function");
     expect(typeof client.experimentalCountRelationships).toBe("function");
     expect(typeof client.experimentalUnregisterRelationshipCounter).toBe("function");
+    expect(typeof client.experimentalRoaringLookupResources).toBe("function");
   });
 });

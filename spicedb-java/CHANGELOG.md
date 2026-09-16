@@ -21,6 +21,17 @@
 
 ### Added
 
+- **2026-09-16: proto client regenerated.** The `authzed.api.materialize.v0` package gained a
+  new `RoaringLookupResourcesService` (one RPC, `ExperimentalRoaringLookupResources`, returning
+  a roaring64-encoded bitmap of accessible resource IDs) in `gen/.../ExperimentalRoaringLookupResources{Request,Response}.java` /
+  `RoaringLookupResourcesServiceGrpc.java`. No idiomatic surface change: both
+  `proto-clients/spicedb-java-proto`'s `SpiceDBProtoClient` and this client wrap only
+  `PermissionsService`, `SchemaService`, `WatchService`, and `ExperimentalService` from the `v1`
+  package, and have never wrapped the sibling `materialize` package — consistent with
+  `spicedb-go` and `spicedb-csharp`'s handling of the same regen, and with `spicedb-python` and
+  `spicedb-ruby`'s handling of earlier `materialize` growth. `gradle spotlessCheck :lib:test`
+  passes unchanged.
+
 - **2026-09-10: proto client regenerated — `deleteRelationships` now resumes with a cursor when
   the server hands one back.** `DeleteRelationshipsRequest` gained `optional_cursor` and
   `DeleteRelationshipsResponse` gained `after_result_cursor`, the same cursor-handoff shape

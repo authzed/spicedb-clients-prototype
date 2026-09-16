@@ -32,6 +32,7 @@ import {
   type CheckPermissionResponse as ProtoCheckPermissionResponse,
   type CheckBulkPermissionsResponseItem as ProtoCheckBulkPermissionsResponseItem,
   CheckPermissionResponse_Permissionship,
+  type ExperimentalRoaringLookupResourcesResponse as ProtoExperimentalRoaringLookupResourcesResponse,
 } from "@spicedb/proto";
 import { timestampFromDate } from "@bufbuild/protobuf/wkt";
 import { InvalidArgumentError } from "./errors.js";
@@ -174,6 +175,46 @@ export interface LookupSubjectsParams {
    * Abandoning a stream must release it".
    */
   signal?: AbortSignal;
+}
+
+/**
+ * Parameters for {@link SpiceDBClient.experimentalRoaringLookupResources}.
+ *
+ * @experimental This API may change without following backwards
+ * compatibility rules.
+ */
+export interface RoaringLookupResourcesParams {
+  resourceType: string;
+  permission: string;
+  subjectType: string;
+  subjectId: string;
+  subjectRelation?: string;
+  /**
+   * Milliseconds bounding this call, overriding the client's
+   * `defaultTimeoutMs` -- see root DESIGN.md, "RULE: A unary call must have
+   * a deadline".
+   */
+  timeoutMs?: number;
+}
+
+/**
+ * The result of {@link SpiceDBClient.experimentalRoaringLookupResources}: a
+ * roaring64 bitmap of the resource object IDs (as 44-bit integers) on which
+ * the given subject has the given permission, in RoaringFormatSpec 64-bit
+ * portable format. This client does not decode the bitmap -- it is returned
+ * as raw bytes for the caller to consume with a roaring-bitmap library, or
+ * to Base64-encode directly into an OpenSearch `"value_type": "bitmap"`
+ * terms query.
+ *
+ * @experimental This API may change without following backwards
+ * compatibility rules.
+ */
+export interface RoaringLookupResourcesResult {
+  bitmap: Uint8Array;
+  /** The number of resource IDs encoded in {@link bitmap}. */
+  cardinality: bigint;
+  /** The revision this lookup was performed at. */
+  revision: string;
 }
 
 /**
@@ -1238,6 +1279,21 @@ export function fromProtoLookupResource(
     permissionship: permissionshipFromProto(resp.permissionship),
     partialCaveat: partialCaveatFromProto(resp.partialCaveatInfo),
     lookedUpAt: resp.lookedUpAt?.token ?? "",
+  };
+}
+
+/**
+ * Maps a proto `ExperimentalRoaringLookupResourcesResponse` to its native
+ * equivalent.
+ * @internal
+ */
+export function fromProtoRoaringLookupResourcesResponse(
+  resp: ProtoExperimentalRoaringLookupResourcesResponse,
+): RoaringLookupResourcesResult {
+  return {
+    bitmap: resp.bitmap,
+    cardinality: resp.cardinality,
+    revision: resp.atRevision?.token ?? "",
   };
 }
 

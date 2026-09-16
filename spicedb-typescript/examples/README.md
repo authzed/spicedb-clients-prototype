@@ -89,9 +89,13 @@ to fail".
   RPC, then handing the same connection back to the idiomatic API.
 - `custom_tls/` — reaching a SpiceDB behind a private CA with `tls.caCert`,
   and mutual TLS with `tls.clientCert`/`tls.clientKey`. Brings up its own
-  TLS-terminated endpoint — the only example that does not use the shared
-  SpiceDB at `localhost:50051`, since a plaintext server has nothing to say
-  about trust material.
+  TLS-terminated endpoint, since a plaintext server has nothing to say about
+  trust material.
+- `roaring_lookup_resources/` — `experimentalRoaringLookupResources`: the
+  bitmap/cardinality/revision response mapping, and the
+  `FailedPreconditionError` a non-canonical resource object ID produces.
+  Brings up its own stand-in server, since the SpiceDB image
+  `docker-compose.test.yml` starts does not implement this service yet.
 - `watch_changes/` — watching for relationship changes via the Watch API, with
   a bounded consumer: subscribe from a known revision, write the update it is
   waiting for, consume until that exact update arrives, `abort()` the stream,

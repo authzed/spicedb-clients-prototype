@@ -4,6 +4,31 @@
 
 ### Added
 
+- **2026-09-16: proto client regenerated** (added
+  `authzed.api.materialize.v0.RoaringLookupResourcesService`, a new service with one RPC,
+  `ExperimentalRoaringLookupResources`, returning a roaring64-encoded bitmap of accessible
+  resource IDs). No code change here, and this is a deliberate divergence from
+  `spicedb-python` and `spicedb-typescript`, which did wire the new service into their
+  clients this same regen: importing `gen/authzed/api/materialize/v0` from anywhere in this
+  module reproducibly **panics** at process init with `proto: file "authzed/api/v1/core.proto"
+  is already registered`. The three files already in that package before this regen
+  (`relationships.pb.go`, `watchpermissions.pb.go`, `watchpermissionsets.pb.go`) import
+  `v1 "github.com/authzed/authzed-go/proto/authzed/api/v1"` -- the external upstream module --
+  while the new `roaringlookupresources.pb.go`, and every other generated file in this repo,
+  import this repo's own `gen/authzed/api/v1`. Both packages embed a file descriptor for
+  `authzed/api/v1/core.proto`, and protobuf-go's global registry refuses a second registration
+  of the same file path, so the first binary that links both -- which any idiomatic wrapper
+  around `RoaringLookupResourcesServiceClient` must, since building the request needs this
+  client's own `v1.SubjectReference` -- panics before `main` runs, taking every test in the
+  binary down with it, not just the new code. Confirmed by adding a bare blank import of the
+  package to `proto-clients/spicedb-go-proto` and running `go test ./...`; reverting the import
+  restores a clean pass. This is a defect in the already-generated (not this regen's) `gen/`
+  files under `proto-clients/spicedb-go-proto`, which `proto-clients/spicedb-go-proto/DESIGN.md`
+  forbids hand-editing, and a buf-generation config fix is out of scope here. This client
+  therefore still wraps only `PermissionsService`, `SchemaService`, `WatchService`, and
+  `ExperimentalService` (see `proto-clients/spicedb-go-proto/DESIGN.md`), same as before this
+  regen. `go test ./...` and `go build ./examples/...` both pass unchanged.
+
 - **2026-09-10: `DeleteRelationships`' auto-paging loop now uses cursor-based resumption.**
   The proto's `DeleteRelationshipsRequest` gained `optional_cursor` and
   `DeleteRelationshipsResponse` gained `after_result_cursor` (mirroring the cursor fields

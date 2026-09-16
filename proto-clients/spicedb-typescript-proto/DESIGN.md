@@ -21,6 +21,8 @@ Create `src/client.ts` with:
    - `schema` — SchemaService client
    - `watch` — WatchService client
    - `experimental` — ExperimentalService client
+   - `materialize` — RoaringLookupResourcesService client (package
+     `authzed.api.materialize.v0`, EXPERIMENTAL)
 
 2. **`createClient(endpoint: string, token: string, options?: ClientOptions)`**
    — factory function that creates a transport with bearer token headers and

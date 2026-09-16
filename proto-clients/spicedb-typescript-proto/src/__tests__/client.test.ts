@@ -11,6 +11,7 @@ describe("createSpiceDBClient", () => {
     expect(client.schema).toBeDefined();
     expect(client.watch).toBeDefined();
     expect(client.experimental).toBeDefined();
+    expect(client.materialize).toBeDefined();
   });
 
   it("applies custom options", () => {

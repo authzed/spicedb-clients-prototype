@@ -12,6 +12,7 @@ export { PermissionsService } from "./gen/authzed/api/v1/permission_service_pb.j
 export { SchemaService } from "./gen/authzed/api/v1/schema_service_pb.js";
 export { WatchService } from "./gen/authzed/api/v1/watch_service_pb.js";
 export { ExperimentalService } from "./gen/authzed/api/v1/experimental_service_pb.js";
+export { RoaringLookupResourcesService } from "./gen/authzed/api/materialize/v0/roaringlookupresources_pb.js";
 
 // Error detail types. `google.rpc.ErrorInfo` is how SpiceDB attaches a
 // structured `ErrorReason` -- and the metadata behind it -- to a failed RPC's
@@ -32,3 +33,4 @@ export * from "./gen/authzed/api/v1/permission_service_pb.js";
 export * from "./gen/authzed/api/v1/schema_service_pb.js";
 export * from "./gen/authzed/api/v1/watch_service_pb.js";
 export * from "./gen/authzed/api/v1/experimental_service_pb.js";
+export * from "./gen/authzed/api/materialize/v0/roaringlookupresources_pb.js";

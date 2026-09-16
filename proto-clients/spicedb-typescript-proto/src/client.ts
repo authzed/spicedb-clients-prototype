@@ -5,6 +5,7 @@ import { PermissionsService } from "./gen/authzed/api/v1/permission_service_pb.j
 import { SchemaService } from "./gen/authzed/api/v1/schema_service_pb.js";
 import { WatchService } from "./gen/authzed/api/v1/watch_service_pb.js";
 import { ExperimentalService } from "./gen/authzed/api/v1/experimental_service_pb.js";
+import { RoaringLookupResourcesService } from "./gen/authzed/api/materialize/v0/roaringlookupresources_pb.js";
 
 /**
  * Caller-supplied TLS trust material for the secure path.
@@ -237,6 +238,7 @@ export class SpiceDBProtoClient {
   readonly schema: Client<typeof SchemaService>;
   readonly watch: Client<typeof WatchService>;
   readonly experimental: Client<typeof ExperimentalService>;
+  readonly materialize: Client<typeof RoaringLookupResourcesService>;
 
   private readonly sessionManager?: Http2SessionManager;
   private closed = false;
@@ -250,6 +252,7 @@ export class SpiceDBProtoClient {
     this.schema = createClient(SchemaService, transport);
     this.watch = createClient(WatchService, transport);
     this.experimental = createClient(ExperimentalService, transport);
+    this.materialize = createClient(RoaringLookupResourcesService, transport);
     this.sessionManager = sessionManager;
   }
 

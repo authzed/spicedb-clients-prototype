@@ -23,6 +23,15 @@
   Callers using only the plain forms are unaffected. Callers using the `...WithContext`
   forms rename the call and wrap the context: `new CheckOptions { Context = ctx }`.
 
+- **2026-09-16: proto client regenerated.** The `authzed.api.materialize.v0` package gained
+  a new `RoaringLookupResourcesService` (one RPC, `ExperimentalRoaringLookupResources`,
+  returning a roaring64 bitmap of accessible resource IDs) in
+  `gen/Roaringlookupresources.cs` / `gen/RoaringlookupresourcesGrpc.cs`. No idiomatic surface
+  change: `SpiceDBProtoClient` wraps exactly the four services named in
+  `proto-clients/spicedb-csharp-proto/DESIGN.md` (`Permissions`, `Schema`, `Watch`,
+  `Experimental`), and the materialize package has never been one of them — matching every
+  other idiomatic client in this repo, which also leave it unwrapped.
+
 ### Added
 
 - **2026-09-10: `DeleteRelationshipsWithOptionsAsync` and `DeleteRelationshipsOptions`**,

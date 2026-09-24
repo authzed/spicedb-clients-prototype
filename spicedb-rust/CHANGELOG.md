@@ -51,6 +51,37 @@
 
 ### Added
 
+- **2026-09-24: `experimental_roaring_lookup_resources`/`_with_timeout`**, wrapping the proto
+  regen's new `authzed.api.materialize.v0.RoaringLookupResourcesService`
+  (`ExperimentalRoaringLookupResources` RPC). Returns a `RoaringLookupResourcesResult`
+  (`bitmap: Vec<u8>`, `cardinality: u64`, `at_revision: String`) — a roaring64 bitmap
+  (RoaringFormatSpec 64-bit portable format) of the resource object IDs a subject has a
+  permission on, meant for a caller to feed directly into a search index (e.g. OpenSearch's
+  `bitmap` term query) rather than to decode client-side, which this method does not attempt.
+  Every resource object ID of the requested type must be a canonical decimal integer that fits
+  in 44 bits, or the call fails with `SpiceDBError::FailedPrecondition` rather than returning a
+  partial bitmap.
+
+  `SpiceDBProtoClient` gained a fifth generated service client, `materialize`
+  (`RoaringLookupResourcesServiceClient`), alongside `permissions`/`schema`/`watch`/
+  `experimental` — `raw_proto()`'s doc comment is updated accordingly. The same
+  `authzed.api.materialize.v0` package also defines `RelationshipsService`/
+  `WatchPermissionsService`/`WatchPermissionsSetsService`, which remain unwrapped: those exist
+  for Materialize's own internal sync, not for a gRPC caller of this client.
+
+  This is a read, so it goes through the existing retry path, and takes a call-level
+  `_with_timeout` override rather than a full options container — the same shape as
+  `experimental_count_relationships`, since the only optional add-on here is a timeout. The
+  real SpiceDB the integration job starts does not yet serve this RPC (verified: a direct call
+  against it returns `Unimplemented`), so the new example
+  (`examples/roaring_lookup_resources.rs`) exercises the request/response mapping against an
+  in-process stand-in implementing the generated `RoaringLookupResourcesService` trait, the
+  same approach `error_mapping`/`retry_policy`/`insecure_opt_in` already use for server
+  behavior the real container cannot be made to produce.
+
+  Marked experimental (root DESIGN.md, "API Coverage"): it may change without following the
+  backwards compatibility mandate.
+
 - **2026-09-10: `DeleteOptions::cursor`/`with_cursor`**, mapping the proto client regen's new
   `DeleteRelationshipsRequest.optional_cursor` / `DeleteRelationshipsResponse.after_result_cursor`
   fields. Two changes, both backwards compatible:

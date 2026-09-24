@@ -119,9 +119,9 @@ exactly what the platform trust store under test would, correctly, reject.
 
 ### Escape hatch: raw proto access
 
-`SpiceDBClient::raw_proto()` returns `&SpiceDBProtoClient` — the four generated tonic
-clients (`permissions`, `schema`, `watch`, `experimental`) this crate makes its own calls
-through. The generated crate is re-exported as `spicedb::spicedb_proto`, so a caller can
+`SpiceDBClient::raw_proto()` returns `&SpiceDBProtoClient` — the five generated tonic
+clients (`permissions`, `schema`, `watch`, `experimental`, `materialize`) this crate makes
+its own calls through. The generated crate is re-exported as `spicedb::spicedb_proto`, so a caller can
 name those types without adding a dependency that could drift to a different version of
 the generated code:
 
@@ -657,6 +657,10 @@ every change in the gap). `is_checkpoint` is true for a checkpoint event, which 
 - `experimental_register_relationship_counter(&self, name, &filter) -> Result<(), SpiceDBError>`
 - `experimental_count_relationships(&self, name) -> Result<Option<CountResult>, SpiceDBError>`
 - `experimental_unregister_relationship_counter(&self, name) -> Result<(), SpiceDBError>`
+- `experimental_roaring_lookup_resources(&self, cs, resource_type, permission, subject_type, subject_id) -> Result<RoaringLookupResourcesResult, SpiceDBError>`
+  -- wraps `authzed.api.materialize.v0.RoaringLookupResourcesService`; returns a roaring64
+  bitmap of resource object IDs, undecoded, for a caller to feed to a search index
+- `experimental_roaring_lookup_resources_with_timeout(&self, cs, resource_type, permission, subject_type, subject_id, timeout) -> Result<RoaringLookupResourcesResult, SpiceDBError>`
 
 ### `consistency` module
 
@@ -690,6 +694,7 @@ every change in the gap). `is_checkpoint` is true for a checkpoint event, which 
   `IntermediateNode` (`operation: TreeOperation`, `children: Vec<PermissionTree>`), `LeafNode`
   (`subjects: Vec<SubjectRef>`), `TreeOperation`, `ObjectRef`, `SubjectRef`
 - `CountResult`
+- `RoaringLookupResourcesResult` (`bitmap: Vec<u8>`, `cardinality: u64`, `at_revision: String`)
 
 ### `error` module
 
@@ -720,6 +725,7 @@ every change in the gap). `is_checkpoint` is true for a checkpoint event, which 
 | `retry_policy` | Which calls are retried for you and which are not, counted server-side |
 | `unrepresentable_values` | A filter the wire cannot express fails loudly; unknown server enums degrade safely |
 | `raw_escape_hatch.rs` | `raw_proto()` — driving the generated tonic client directly for a proto field (`optional_transaction_metadata`) and an RPC (`CheckPermission`) the idiomatic API does not expose |
+| `roaring_lookup_resources.rs` | `experimental_roaring_lookup_resources`/`_with_timeout` — request/response mapping (bitmap bytes, cardinality, ZedToken) and the `FAILED_PRECONDITION` a non-canonical resource object ID produces, driven against an in-process stand-in since the real integration container does not yet serve this RPC |
 
 ## Changelog
 

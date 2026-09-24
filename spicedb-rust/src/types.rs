@@ -961,6 +961,20 @@ pub struct CountResult {
     pub revision: String,
 }
 
+/// The result of an experimental roaring lookup resources call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoaringLookupResourcesResult {
+    /// The roaring64 bitmap, in RoaringFormatSpec 64-bit portable format, of
+    /// the resource object IDs accessible to the subject. The IDs are the
+    /// object IDs from the relationships themselves, as 44-bit integers --
+    /// this client does not decode the bitmap.
+    pub bitmap: Vec<u8>,
+    /// The number of resource IDs in `bitmap`.
+    pub cardinality: u64,
+    /// The ZedToken revision the lookup was performed at.
+    pub at_revision: String,
+}
+
 /// Indicates whether a check or lookup result reflects a full grant, a full
 /// denial, or is conditional on caveat context that was not fully evaluated
 /// by the server. Callers MUST check this before treating a result as a full

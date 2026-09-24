@@ -34,6 +34,10 @@ The `src/client.rs` file provides:
    - `schema` — SchemaServiceClient
    - `watch` — WatchServiceClient
    - `experimental` — ExperimentalServiceClient
+   - `materialize` — RoaringLookupResourcesServiceClient (`authzed.api.materialize.v0`;
+     the package also defines `RelationshipsService`/`WatchPermissionsService`/
+     `WatchPermissionsSetsService`, which this crate does not wrap — those exist for
+     Materialize's own internal sync, not for a gRPC caller)
 
 2. **`SpiceDBProtoClient::new(endpoint, token, insecure)`** — async constructor
    that:

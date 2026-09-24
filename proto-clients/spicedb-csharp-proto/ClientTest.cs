@@ -19,6 +19,7 @@ public class ClientTest
         Assert.NotNull(client.Schema);
         Assert.NotNull(client.Watch);
         Assert.NotNull(client.Experimental);
+        Assert.NotNull(client.Materialize);
     }
 
     [Fact]
@@ -30,6 +31,7 @@ public class ClientTest
         Assert.NotNull(client.Schema);
         Assert.NotNull(client.Watch);
         Assert.NotNull(client.Experimental);
+        Assert.NotNull(client.Materialize);
     }
 
     [Fact]

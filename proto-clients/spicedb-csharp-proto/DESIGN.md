@@ -27,6 +27,8 @@ Create a `Client.cs` file in the package root with:
    - `Schema` — `SchemaService.SchemaServiceClient`
    - `Watch` — `WatchService.WatchServiceClient`
    - `Experimental` — `ExperimentalService.ExperimentalServiceClient`
+   - `Materialize` — `RoaringLookupResourcesService.RoaringLookupResourcesServiceClient`
+     (`Authzed.Api.Materialize.V0`, a separate generated package from the other four)
 
 2. **Constructor: `SpiceDBProtoClient(string endpoint, string token, bool insecure = false,
    bool allowInsecureRemoteCredentials = false)`** — creates a `GrpcChannel` with:

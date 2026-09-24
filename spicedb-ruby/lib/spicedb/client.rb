@@ -23,6 +23,15 @@ module SpiceDB
   PermissionTree = Data.define(:expanded_object, :expanded_relation, :intermediate, :leaf)
   ExpandResult = Data.define(:tree, :revision)
   CountResult = Data.define(:relationship_count, :revision, :still_calculating)
+  # Result of #experimental_roaring_lookup_resources. `bitmap` is the raw
+  # roaring64 bitmap bytes (RoaringFormatSpec 64-bit portable format) -- this
+  # client does not decode it, since the IDs it encodes are meant to be
+  # consumed directly by a search index (e.g. OpenSearch's `bitmap` term
+  # query), not iterated in Ruby. `cardinality` is the number of resource IDs
+  # the bitmap encodes, so a caller can see how large a result they got
+  # without decoding it. `at_revision` is the ZedToken (String) the lookup
+  # was evaluated against.
+  RoaringLookupResourcesResult = Data.define(:bitmap, :cardinality, :at_revision)
   # A relationship mutation observed via #watch. `operation` is one of
   # :create, :touch, :delete, or :unspecified. :unspecified means the server
   # sent an operation this client does not recognize — either
@@ -115,6 +124,12 @@ module SpiceDB
     # (the #updates/#call_watch request-building and response-mapping
     # helpers) come from here -- see {SpiceDB::WatchMapping}'s module doc.
     include SpiceDB::WatchMapping
+
+    # call_roaring_lookup_resources (the
+    # #experimental_roaring_lookup_resources request-building and
+    # response-mapping helper) comes from here -- see
+    # {SpiceDB::RoaringLookup}'s module doc.
+    include SpiceDB::RoaringLookup
 
     # new_plaintext, new_system_tls, and new_custom_tls come from here --
     # extended, not included, since they are class methods. See
@@ -744,6 +759,39 @@ module SpiceDB
     def experimental_unregister_relationship_counter(name, timeout: nil)
       call_once { call_unregister_relationship_counter(name, effective_timeout(timeout)) }
       nil
+    end
+
+    # Returns a roaring64 bitmap of the resource object IDs of +resource_type+
+    # on which the given subject has +permission+. Every resource object ID of
+    # +resource_type+ must be a canonical decimal integer that fits in 44 bits
+    # (at most 17592186044415) -- a non-canonical ID (e.g. "007" instead of
+    # "7") makes the call fail with {SpiceDB::FailedPreconditionError} rather
+    # than returning a partial bitmap.
+    #
+    # This is a read, so it goes through {#with_retry} like any other lookup.
+    # The whole bitmap comes back in a single unary response, and most gRPC
+    # clients refuse a message larger than 4 MiB by default -- a result of
+    # more than roughly 400,000 widely-spread IDs can exceed that and fail on
+    # this side with {SpiceDB::ResourceExhaustedError}.
+    # {SpiceDB::RoaringLookupResourcesResult#cardinality} tells the caller how
+    # large a result they got.
+    #
+    # @note Experimental: wraps SpiceDB's RoaringLookupResourcesService and may change without following the backwards-compatibility mandate.
+    #
+    # @param consistency [SpiceDB::Consistency::Strategy]
+    # @param resource_type [String]
+    # @param permission [String]
+    # @param subject_type [String]
+    # @param subject_id [String]
+    # @param timeout [Numeric, nil] seconds bounding this call, overriding
+    #   the client's default_timeout
+    # @return [SpiceDB::RoaringLookupResourcesResult]
+    def experimental_roaring_lookup_resources(consistency, resource_type, permission, subject_type, subject_id,
+                                              timeout: nil)
+      with_retry do
+        call_roaring_lookup_resources(consistency, resource_type, permission, subject_type, subject_id,
+                                      effective_timeout(timeout))
+      end
     end
 
     private

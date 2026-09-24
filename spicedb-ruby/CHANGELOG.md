@@ -433,6 +433,24 @@
 
 ### Added
 
+- **2026-09-24: `experimental_roaring_lookup_resources` wraps the new materialize-tier
+  `RoaringLookupResourcesService`.** Returns a `SpiceDB::RoaringLookupResourcesResult`
+  (`bitmap`, `cardinality`, `at_revision`) carrying a roaring64 bitmap
+  (RoaringFormatSpec 64-bit portable format) of the resource object IDs of a given type
+  on which a subject has a permission -- meant to be handed directly to a search index
+  (e.g. OpenSearch's `bitmap` term query), not decoded by this client. Every resource
+  object ID of the requested type must be a canonical decimal integer that fits in 44
+  bits, or the call fails with `SpiceDB::FailedPreconditionError` rather than returning
+  a partial bitmap. This RPC lives in a separate generated proto package
+  (`authzed.api.materialize.v0`) from the rest of the API, so `SpiceDBProto::Client`
+  gained a fifth stub, `#materialize`, alongside `#permissions`/`#schema`/`#watch`/
+  `#experimental`. Read-only, so it retries like any other lookup; the whole bitmap
+  comes back in one unary response, so a result of more than roughly 400,000
+  widely-spread IDs can exceed the default 4 MiB gRPC message limit and fail on this
+  side with `SpiceDB::ResourceExhaustedError` -- `cardinality` tells a caller how large
+  a result they got. Experimental: may change without following the
+  backwards-compatibility mandate.
+
 - **2026-09-04: `lookup_resources` and `lookup_subjects` accept a `context:` keyword.**
   Root DESIGN.md, "RULE: Every RPC wrapper must have one place to add an option" (new).
   The lookups previously took positional arguments only, so an option added upstream had

@@ -681,11 +681,28 @@ gap). `is_checkpoint` is true for a checkpoint event, which carries no `updates`
 - `experimental_register_relationship_counter(name, filter, timeout: nil)` → `nil`
 - `experimental_count_relationships(name, timeout: nil)` → `CountResult`
 - `experimental_unregister_relationship_counter(name, timeout: nil)` → `nil`
+- `experimental_roaring_lookup_resources(consistency, resource_type, permission, subject_type, subject_id, timeout: nil)` → `RoaringLookupResourcesResult`
+  — a roaring64 bitmap (RoaringFormatSpec 64-bit portable format) of the resource object
+  IDs of `resource_type` the subject has `permission` on, meant to be handed to a search
+  index (e.g. OpenSearch's `bitmap` term query) rather than decoded by this client.
+  `RoaringLookupResourcesResult` carries `bitmap` (the raw bytes), `cardinality` (the
+  number of IDs encoded, so a caller can see how large a result they got without
+  decoding it), and `at_revision` (the ZedToken). Every resource object ID of
+  `resource_type` must be a canonical decimal integer that fits in 44 bits, or the call
+  fails with `FailedPreconditionError` rather than returning a partial bitmap. Unlike
+  the other experimental methods, this wraps `RoaringLookupResourcesService` — a
+  separate generated proto package (`authzed.api.materialize.v0`) from
+  `authzed.api.v1`, so it goes through `@proto_client.materialize` rather than
+  `@proto_client.experimental`. Read-only, so it goes through `#with_retry` like any
+  other lookup, unlike the counter methods above (mutations, `#call_once`). The request
+  building and response mapping live in `SpiceDB::RoaringLookup`
+  (`lib/spicedb/roaring_lookup.rb`), extracted out of `Client` the same way
+  `WatchMapping` was, to stay under the `Metrics/ClassLength` ceiling.
 
 ### Escape Hatches
 
 `client.proto_client` returns the underlying `SpiceDBProto::Client` — the
-`permissions`/`schema`/`watch`/`experimental` stubs this gem makes its own calls through:
+`permissions`/`schema`/`watch`/`experimental`/`materialize` stubs this gem makes its own calls through:
 
 ```ruby
 response = client.proto_client.permissions.check_permission(request)
@@ -742,7 +759,8 @@ See module sections above for the complete API manifest.
 | `relationship_counters/` | Registering and reading relationship counters, polling to a terminal state and asserting an exact count |
 | `expand_permission_tree/` | Expanding a permission into its native `PermissionTree` (intermediate/leaf nodes, subjects) |
 | `raw_escape_hatch/` | `#proto_client` — driving the generated stub directly for a proto field (`optional_transaction_metadata`) and an RPC (`CheckPermission`) the idiomatic API does not expose |
-| `custom_tls/` | Reaching a SpiceDB behind a private CA with `new_custom_tls(ca_cert:)`, and mutual TLS with `client_cert:`/`client_key:`. Brings up its own TLS-terminated endpoint — the only example tagged `:no_spicedb` |
+| `custom_tls/` | Reaching a SpiceDB behind a private CA with `new_custom_tls(ca_cert:)`, and mutual TLS with `client_cert:`/`client_key:`. Brings up its own TLS-terminated endpoint, one of two examples tagged `:no_spicedb` |
+| `roaring_lookup_resources/` | `experimental_roaring_lookup_resources` — bitmap/cardinality/revision on success, `FailedPreconditionError` for a non-canonical resource object ID. Brings up its own `RoaringLookupResourcesService` stand-in (the other `:no_spicedb` example): `authzed/spicedb:latest`, the image the integration job starts, does not yet serve this RPC (verified via gRPC reflection, not assumed) |
 
 ## Changelog
 
@@ -770,7 +788,7 @@ a one-liner, and are why it is not wired up yet:
   or every added method fails the build.
 
 Use `rbs prototype runtime`, not `rbs prototype rb`: the static generator renders `Data.define`
-constants as bare `untyped`, and this client has 27 of them across `client.rb`, `filter.rb`,
+constants as bare `untyped`, and this client has 28 of them across `client.rb`, `filter.rb`,
 `relationship.rb` and `consistency.rb` — most of its public surface.
 
 `rbs diff` is also marked experimental, with no output-compatibility guarantee, so wiring it up

@@ -1,5 +1,6 @@
 import ipaddress
 import re
+import warnings
 
 import grpc
 import grpc.aio
@@ -8,6 +9,38 @@ from authzed.api.v1 import experimental_service_pb2_grpc
 from authzed.api.v1 import permission_service_pb2_grpc
 from authzed.api.v1 import schema_service_pb2_grpc
 from authzed.api.v1 import watch_service_pb2_grpc
+
+# authzed/api/v1/experimental_service.proto marks these RPCs
+# `option deprecated = true`, each promoted to a stable-API equivalent; see
+# DESIGN.md, "Deprecation Handling".
+_DEPRECATED_EXPERIMENTAL_METHODS = {
+    "BulkImportRelationships": "PermissionsService.ImportBulkRelationships",
+    "BulkExportRelationships": "PermissionsService.ExportBulkRelationships",
+    "BulkCheckPermission": "PermissionsService.CheckBulkPermissions",
+    "ExperimentalReflectSchema": "SchemaService.ReflectSchema",
+    "ExperimentalComputablePermissions": "SchemaService.ComputablePermissions",
+    "ExperimentalDependentRelations": "SchemaService.DependentRelations",
+    "ExperimentalDiffSchema": "SchemaService.DiffSchema",
+}
+
+
+def _warn_on_call(method_name, replacement, original):
+    def wrapper(*args, **kwargs):
+        warnings.warn(
+            f"ExperimentalService.{method_name} is deprecated; use "
+            f"{replacement} instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return original(*args, **kwargs)
+
+    return wrapper
+
+
+def _wrap_deprecated_experimental_methods(stub):
+    for method_name, replacement in _DEPRECATED_EXPERIMENTAL_METHODS.items():
+        original = getattr(stub, method_name)
+        setattr(stub, method_name, _warn_on_call(method_name, replacement, original))
 
 
 # Characters that can move which part of a target string a URI parser treats
@@ -168,6 +201,7 @@ class Client:
         self.experimental = experimental_service_pb2_grpc.ExperimentalServiceStub(
             self._channel
         )
+        _wrap_deprecated_experimental_methods(self.experimental)
 
     async def close(self):
         await self._channel.close()

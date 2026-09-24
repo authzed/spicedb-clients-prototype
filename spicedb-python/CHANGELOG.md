@@ -333,6 +333,25 @@
 
 ### Changed
 
+- **2026-09-24: proto client regenerated** (`protobuf` 7.36.1 -> 7.36.2; this client's
+  own `uv.lock` re-pinned to match, since the regenerated gencode refuses to load
+  against the older runtime). `ExperimentalService.BulkImportRelationships`,
+  `BulkExportRelationships`, `BulkCheckPermission`, `ExperimentalReflectSchema`,
+  `ExperimentalComputablePermissions`, `ExperimentalDependentRelations`, and
+  `ExperimentalDiffSchema` are now `option deprecated = true` in the proto, each
+  promoted to a stable, non-experimental equivalent
+  (`PermissionsService.ImportBulkRelationships`/`ExportBulkRelationships`/
+  `CheckBulkPermissions`, `SchemaService.ReflectSchema`/`ComputablePermissions`/
+  `DependentRelations`/`DiffSchema`). This client already called only the stable
+  equivalents — never the `ExperimentalService` methods above — so no call site
+  changed. `reflect_schema()`/`diff_schema()` had carried a stale "Experimental:"
+  docstring prefix from when `SchemaService.ReflectSchema`/`DiffSchema` were newer
+  additions; that prefix is removed now that the proto formally confirms these are the
+  blessed, non-experimental path (`computable_permissions()`/`dependent_relations()`
+  already had no such prefix). `authzed.api.materialize.v0` gained a
+  `RoaringLookupResources` service; per the 2026-09-04 entry below, no idiomatic
+  client — including this one — wraps that package, so nothing here changes for it.
+
 - **2026-09-10: proto client regenerated.** `DeleteRelationshipsRequest` gained
   `optional_cursor` (field 6) and `DeleteRelationshipsResponse` gained
   `after_result_cursor` (field 4), both `Cursor`-typed — the same resumable-deletion

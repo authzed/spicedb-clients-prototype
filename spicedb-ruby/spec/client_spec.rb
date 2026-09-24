@@ -231,5 +231,6 @@ RSpec.describe SpiceDB::Client do
     it { expect(client).to respond_to(:experimental_register_relationship_counter) }
     it { expect(client).to respond_to(:experimental_count_relationships) }
     it { expect(client).to respond_to(:experimental_unregister_relationship_counter) }
+    it { expect(client).to respond_to(:experimental_roaring_lookup_resources) }
   end
 end

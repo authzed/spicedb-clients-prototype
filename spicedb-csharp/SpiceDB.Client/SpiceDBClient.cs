@@ -7,6 +7,10 @@ using Google.Protobuf.WellKnownTypes;
 using Google.Rpc;
 using Grpc.Core;
 using Grpc.Net.Client;
+// Not `using`'d: Authzed.Api.Materialize.V0's own `Cursor` message collides
+// with Authzed.Api.V1.Cursor, used throughout this file for pagination. The
+// handful of Materialize types below are referenced fully-qualified instead.
+using MaterializeV0 = Authzed.Api.Materialize.V0;
 
 // Exposes internal helpers (e.g. the proto -> native PermissionTree mapper)
 // to the test assembly without making them part of the public API surface.
@@ -114,6 +118,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
     private readonly SchemaService.SchemaServiceClient _schema;
     private readonly WatchService.WatchServiceClient _watch;
     private readonly ExperimentalService.ExperimentalServiceClient _experimental;
+    private readonly MaterializeV0.RoaringLookupResourcesService.RoaringLookupResourcesServiceClient _materialize;
     private readonly TimeSpan _defaultTimeout;
 
     private SpiceDBClient(SpiceDBProtoClient protoClient, TimeSpan defaultTimeout)
@@ -123,6 +128,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
         _schema = protoClient.Schema;
         _watch = protoClient.Watch;
         _experimental = protoClient.Experimental;
+        _materialize = protoClient.Materialize;
         _defaultTimeout = defaultTimeout;
     }
 
@@ -137,6 +143,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
         SchemaService.SchemaServiceClient schema,
         WatchService.WatchServiceClient watch,
         ExperimentalService.ExperimentalServiceClient experimental,
+        MaterializeV0.RoaringLookupResourcesService.RoaringLookupResourcesServiceClient? materialize = null,
         TimeSpan? defaultTimeout = null)
     {
         _protoClient = null;
@@ -144,6 +151,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
         _schema = schema;
         _watch = watch;
         _experimental = experimental;
+        _materialize = materialize!;
         _defaultTimeout = defaultTimeout ?? DefaultTimeout;
     }
 
@@ -255,9 +263,9 @@ public sealed class SpiceDBClient : IAsyncDisposable
     }
 
     /// <summary>
-    /// Escape hatch: the underlying <see cref="SpiceDBProtoClient"/>, with the four
+    /// Escape hatch: the underlying <see cref="SpiceDBProtoClient"/>, with the five
     /// generated gRPC service clients (<c>Permissions</c>, <c>Schema</c>, <c>Watch</c>,
-    /// <c>Experimental</c>) this client makes its own calls through.
+    /// <c>Experimental</c>, <c>Materialize</c>) this client makes its own calls through.
     /// <para>
     /// Clearly-marked <b>secondary</b> API. Root DESIGN.md's "What NOT To Do" keeps
     /// channels, stubs and metadata out of the primary surface and permits exactly this —
@@ -1874,6 +1882,69 @@ public sealed class SpiceDBClient : IAsyncDisposable
     }
 
     // ──────────────────────────────────────────────────────────────────────
+    // Experimental — Roaring Lookup Resources
+    // ──────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Returns a roaring64 bitmap (RoaringFormatSpec 64-bit portable format) of the
+    /// resource object IDs of <paramref name="resourceType"/> on which the given
+    /// subject has <paramref name="permission"/>. Every resource object ID of
+    /// <paramref name="resourceType"/> must be a canonical decimal integer that fits
+    /// in 44 bits, or the call fails with <see cref="FailedPreconditionException"/>.
+    /// <para>
+    /// Read-only, so it is retried like any other read. The whole bitmap comes back
+    /// in one unary response, and most gRPC clients refuse a message over 4 MiB by
+    /// default — a result of more than roughly 400,000 widely-spread IDs can exceed
+    /// that and fail on this side with <see cref="ResourceExhaustedException"/>.
+    /// <see cref="RoaringLookupResourcesResult.Cardinality"/> tells the caller how
+    /// large a result they got; raise <c>GrpcChannelOptions.MaxReceiveMessageSize</c>
+    /// (via <see cref="CreateFromChannel"/>) to match the largest result expected.
+    /// </para>
+    /// <para>
+    /// <b>Experimental:</b> This API may change without following the backwards
+    /// compatibility mandate.
+    /// </para>
+    /// </summary>
+    public async Task<RoaringLookupResourcesResult> ExperimentalRoaringLookupResourcesAsync(
+        ConsistencyStrategy consistency,
+        string resourceType,
+        string permission,
+        string subjectType,
+        string subjectID,
+        CancellationToken cancellationToken = default,
+        TimeSpan? timeout = null)
+    {
+        ArgumentNullException.ThrowIfNull(consistency);
+
+        var resp = await RetryAsync(async () =>
+            await _materialize.ExperimentalRoaringLookupResourcesAsync(
+                new MaterializeV0.ExperimentalRoaringLookupResourcesRequest
+                {
+                    Consistency = consistency.V1Consistency,
+                    ResourceObjectType = resourceType,
+                    Permission = permission,
+                    Subject = new SubjectReference
+                    {
+                        Object = new ObjectReference
+                        {
+                            ObjectType = subjectType,
+                            ObjectId = subjectID,
+                        },
+                    },
+                },
+                deadline: EffectiveDeadline(timeout),
+                cancellationToken: cancellationToken),
+            cancellationToken);
+
+        return new RoaringLookupResourcesResult
+        {
+            Bitmap = resp.Bitmap.ToByteArray(),
+            Cardinality = resp.Cardinality,
+            AtRevision = resp.AtRevision?.Token ?? "",
+        };
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
     // Internals
     // ──────────────────────────────────────────────────────────────────────
 
@@ -2440,4 +2511,24 @@ public sealed record CountResult
 {
     public ulong RelationshipCount { get; init; }
     public string Revision { get; init; } = "";
+}
+
+/// <summary>
+/// Holds the result of <see cref="SpiceDBClient.ExperimentalRoaringLookupResourcesAsync"/>.
+/// </summary>
+public sealed record RoaringLookupResourcesResult
+{
+    /// <summary>
+    /// The roaring64 bitmap, in RoaringFormatSpec 64-bit portable format, of the
+    /// resource object IDs accessible to the subject. IDs are the object IDs from
+    /// the relationships themselves, as 44-bit integers -- this client does not
+    /// decode the bitmap.
+    /// </summary>
+    public byte[] Bitmap { get; init; } = [];
+
+    /// <summary>The number of resource IDs in <see cref="Bitmap"/>.</summary>
+    public ulong Cardinality { get; init; }
+
+    /// <summary>The ZedToken revision the lookup was performed at.</summary>
+    public string AtRevision { get; init; } = "";
 }

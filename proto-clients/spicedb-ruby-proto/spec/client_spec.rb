@@ -18,31 +18,44 @@ RSpec.describe SpiceDBProto::Client do
     Authzed.const_set(:Api, Module.new) unless defined?(::Authzed::Api)
     Authzed::Api.const_set(:V1, Module.new) unless defined?(::Authzed::Api::V1)
 
+    stub_class = Class.new do
+      attr_reader :host, :channel
+
+      def initialize(host, creds = nil, **kwargs)
+        @host = host
+        @channel = kwargs[:channel_override]
+      end
+    end
+
     %w[PermissionsService SchemaService WatchService ExperimentalService].each do |svc|
       unless Authzed::Api::V1.const_defined?(svc)
         svc_mod = Module.new
-        stub_class = Class.new do
-          attr_reader :host, :channel
-
-          def initialize(host, creds = nil, **kwargs)
-            @host = host
-            @channel = kwargs[:channel_override]
-          end
-        end
         svc_mod.const_set(:Stub, stub_class)
         Authzed::Api::V1.const_set(svc, svc_mod)
       end
     end
+
+    # RoaringLookupResourcesService lives in a separate generated package
+    # (authzed.api.materialize.v0) from the four above (authzed.api.v1).
+    Authzed.const_set(:Api, Module.new) unless defined?(::Authzed::Api)
+    Authzed::Api.const_set(:Materialize, Module.new) unless defined?(::Authzed::Api::Materialize)
+    Authzed::Api::Materialize.const_set(:V0, Module.new) unless defined?(::Authzed::Api::Materialize::V0)
+    unless Authzed::Api::Materialize::V0.const_defined?(:RoaringLookupResourcesService)
+      svc_mod = Module.new
+      svc_mod.const_set(:Stub, stub_class)
+      Authzed::Api::Materialize::V0.const_set(:RoaringLookupResourcesService, svc_mod)
+    end
   end
 
   describe "#initialize" do
-    it "creates all four service stubs with insecure channel" do
+    it "creates all five service stubs with insecure channel" do
       client = described_class.new("localhost:50051", "test-token", insecure: true)
 
       expect(client.permissions).to be_a(Authzed::Api::V1::PermissionsService::Stub)
       expect(client.schema).to be_a(Authzed::Api::V1::SchemaService::Stub)
       expect(client.watch).to be_a(Authzed::Api::V1::WatchService::Stub)
       expect(client.experimental).to be_a(Authzed::Api::V1::ExperimentalService::Stub)
+      expect(client.materialize).to be_a(Authzed::Api::Materialize::V0::RoaringLookupResourcesService::Stub)
     end
 
     it "sets the endpoint on each stub" do

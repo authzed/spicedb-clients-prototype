@@ -46,6 +46,14 @@ module SpiceDBProto
     # @return [Authzed::Api::V1::ExperimentalService::Stub]
     attr_reader :experimental
 
+    # @return [Authzed::Api::Materialize::V0::RoaringLookupResourcesService::Stub]
+    #   Generated from authzed.api.materialize.v0, a separate proto package from
+    #   the other four stubs above (authzed.api.v1) -- see ExperimentalRoaringLookupResources
+    #   in that package's proto source. Named for the service it wraps rather than
+    #   grouped under +experimental+, since it is a distinct generated package with its
+    #   own stub class, not another RPC on Authzed::Api::V1::ExperimentalService::Stub.
+    attr_reader :materialize
+
     # Creates a new SpiceDB proto client.
     #
     # @param endpoint [String] host:port of the SpiceDB server
@@ -150,6 +158,9 @@ module SpiceDBProto
         endpoint, nil, **stub_opts
       )
       @experimental = Authzed::Api::V1::ExperimentalService::Stub.new(
+        endpoint, nil, **stub_opts
+      )
+      @materialize = Authzed::Api::Materialize::V0::RoaringLookupResourcesService::Stub.new(
         endpoint, nil, **stub_opts
       )
     end

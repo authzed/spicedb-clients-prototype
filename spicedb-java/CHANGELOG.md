@@ -21,6 +21,19 @@
 
 ### Added
 
+- **2026-09-24: proto client regenerated — `RoaringLookupResourcesService` added to
+  `authzed.api.materialize.v0`.** The regen adds one new RPC,
+  `ExperimentalRoaringLookupResources`, to the same `materialize` package as the
+  `RelationshipsService`/`WatchPermissionsService`/`WatchPermissionSetsService` trio this
+  client already does not wrap. It returns a roaring64 bitmap of the resource IDs a subject
+  can access, for callers indexing SpiceDB results into a search engine; consuming it usefully
+  means decoding a roaring bitmap, which is out of scope for anything this client's other
+  methods do. Left unwrapped for the same reason the rest of `materialize` is: it remains out
+  of scope, not a client-side gap, and every other idiomatic client in this repo makes the same
+  call. The rest of the regen is a protobuf compiler patch bump (4.36.1 -> 4.36.2) reflected in
+  generated-file headers/descriptors across `com.authzed.api.v1`/`com.authzed.api.materialize.v0`
+  — no functional change there either. No code changes.
+
 - **2026-09-10: proto client regenerated — `deleteRelationships` now resumes with a cursor when
   the server hands one back.** `DeleteRelationshipsRequest` gained `optional_cursor` and
   `DeleteRelationshipsResponse` gained `after_result_cursor`, the same cursor-handoff shape

@@ -137,9 +137,9 @@ transfer ownership; the caller disposes it at application shutdown.
 
 ### Escape hatch: raw proto access
 
-`client.RawProto()` returns the underlying `SpiceDBProtoClient` — the four generated
-service clients (`Permissions`, `Schema`, `Watch`, `Experimental`) this library makes its
-own calls through:
+`client.RawProto()` returns the underlying `SpiceDBProtoClient` — the five generated
+service clients (`Permissions`, `Schema`, `Watch`, `Experimental`, `Materialize`) this
+library makes its own calls through:
 
 ```csharp
 var response = await client.RawProto().Permissions.CheckPermissionAsync(request);
@@ -607,6 +607,39 @@ All experimental methods are marked with XML doc `<b>Experimental:</b>` notes.
 - `ExperimentalCountRelationshipsAsync(name)` → `Task<(CountResult?, bool StillCalculating)>`
 - `ExperimentalUnregisterRelationshipCounterAsync(name)` → `Task`
 
+### Experimental — Roaring Lookup Resources
+
+- `ExperimentalRoaringLookupResourcesAsync(consistency, resourceType, permission, subjectType, subjectID, cancellationToken = default, timeout = null)` → `Task<RoaringLookupResourcesResult>`
+
+Wraps the materialize-tier `RoaringLookupResourcesService` (`Authzed.Api.Materialize.V0`,
+a separate generated package from the other four services — see `SpiceDBProtoClient.Materialize`
+under "Escape hatch: raw proto access"), not the `authzed.api.v1.ExperimentalService` the other
+three experimental methods above use. Read-only, so it goes through the same retry path as
+every other read.
+
+```csharp
+public sealed record RoaringLookupResourcesResult
+{
+    public byte[] Bitmap { get; init; } = [];
+    public ulong Cardinality { get; init; }
+    public string AtRevision { get; init; } = "";
+}
+```
+
+`Bitmap` is the roaring64 bitmap (RoaringFormatSpec 64-bit portable format) of the resource
+object IDs the subject has the permission on, copied out of the proto `ByteString` into a
+plain `byte[]` — this client does not decode roaring itself, matching "No protobuf types in
+the public API" in root DESIGN.md's "What NOT To Do". No options class: every field on the
+underlying request (`consistency`, `resourceObjectType`, `permission`, `subject`) is required,
+so — unlike `CheckOptions`/`LookupOptions` — there is currently nothing optional to carry one.
+Per "Where a new option goes", above, the first optional field this RPC gains upstream gets an
+options class and a `...WithOptionsAsync` form beside the plain method, the same way
+`DeleteRelationshipsWithOptionsAsync` was added once `optional_cursor` arrived.
+
+A non-canonical resource object ID (see the RPC's own doc comment in
+`RoaringlookupresourcesGrpc.cs`) fails the call with `FailedPreconditionException` rather than
+returning a partial bitmap.
+
 ### Error Handling
 
 Exception hierarchy rooted at `SpiceDBException`:
@@ -741,6 +774,7 @@ public sealed record LookupResource { ResourceID, Permissionship, PartialCaveat,
 public sealed record ResolvedSubject { SubjectID, Permissionship, PartialCaveat }
 public sealed record LookupSubject { Subject, ExcludedSubjects, LookedUpAt }
 public sealed record CheckResult { Permissionship, MissingContext, CheckedAt, HasPermission }
+public sealed record RoaringLookupResourcesResult { Bitmap, Cardinality, AtRevision }
 ```
 
 ### Escape Hatches
@@ -749,7 +783,7 @@ public sealed record CheckResult { Permissionship, MissingContext, CheckedAt, Ha
 - `Transaction.V1Updates` / `Transaction.Preconditions` — exposes underlying proto updates
 - `SpiceDBClient.CreateFromChannel(channel, key)` — use existing GrpcChannel.
   The channel stays caller-owned: `DisposeAsync` does not dispose it.
-- `SpiceDBClient.RawProto()` — the underlying `SpiceDBProtoClient` and its four generated
+- `SpiceDBClient.RawProto()` — the underlying `SpiceDBProtoClient` and its five generated
   service clients, for an RPC or proto field the idiomatic API does not wrap
 
 ## Examples Manifest
@@ -773,6 +807,7 @@ public sealed record CheckResult { Permissionship, MissingContext, CheckedAt, Ha
 | `RelationshipCounters/` | Relationship counter registration and counting |
 | `ExpandPermissionTree/` | Expanding a permission into its native `PermissionTree` of subjects |
 | `RawEscapeHatch/` | `RawProto()` — driving the generated service client directly for a proto field (`OptionalTransactionMetadata`) and an RPC (`CheckPermission`) the idiomatic API does not expose |
+| `RoaringLookupResources/` | `ExperimentalRoaringLookupResourcesAsync` — bitmap/cardinality/revision mapping and the `FAILED_PRECONDITION` a non-canonical resource ID produces, against a stand-in server (this RPC is not yet served by the SpiceDB the integration job starts) |
 
 ## Changelog
 

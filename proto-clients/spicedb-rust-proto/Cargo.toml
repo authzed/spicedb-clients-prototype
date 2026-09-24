@@ -19,6 +19,7 @@ tokio = { version = "1", features = ["full"] }
 [build-dependencies]
 tonic-build = "0.12"
 glob = "0.3"
+protoc-bin-vendored = "3.2.0"
 
 [dev-dependencies]
 # Only for the insecure-host-guard integration test's in-process capturing

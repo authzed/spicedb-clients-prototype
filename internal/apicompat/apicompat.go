@@ -321,8 +321,18 @@ func isolate(repoPath, baseRef string) (clone, module, base string, cleanup func
 	}
 	cleanup = func() { _ = os.RemoveAll(dir) }
 
+	// gc.auto and maintenance.auto are disabled in the clone itself (git clone
+	// -c writes them into the new repository's config, so they also govern the
+	// fetch below): this repository's default branch drags in dozens of
+	// dependabot and feature branches, and the object volume from fetching all
+	// of them is enough to cross git's automatic gc threshold. Left enabled,
+	// that auto-gc opportunistically writes a multi-pack-index, which go-git
+	// -- go-apidiff's git implementation -- cannot always resolve objects
+	// through, failing checkout of the new commit with "object not found" even
+	// though the commit and its objects are all present.
 	clone = filepath.Join(dir, "repo")
-	if out, err := exec.Command("git", "clone", "--quiet", "--no-checkout", root, clone).CombinedOutput(); err != nil {
+	if out, err := exec.Command("git", "clone", "--quiet", "--no-checkout",
+		"-c", "gc.auto=0", "-c", "maintenance.auto=false", root, clone).CombinedOutput(); err != nil {
 		cleanup()
 		return "", "", "", nil, fmt.Errorf("cloning for isolation: %w: %s", err, strings.TrimSpace(string(out)))
 	}

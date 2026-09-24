@@ -41,6 +41,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ErrorMapping", "examples\Er
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RetryPolicy", "examples\RetryPolicy\RetryPolicy.csproj", "{AE08C8D9-09AB-4E3A-8771-E16473099E30}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RoaringLookupResources", "examples\RoaringLookupResources\RoaringLookupResources.csproj", "{6586CC01-0516-4047-B9DD-9DFEC5D51F52}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -267,6 +269,18 @@ Global
 		{AE08C8D9-09AB-4E3A-8771-E16473099E30}.Release|x64.Build.0 = Release|Any CPU
 		{AE08C8D9-09AB-4E3A-8771-E16473099E30}.Release|x86.ActiveCfg = Release|Any CPU
 		{AE08C8D9-09AB-4E3A-8771-E16473099E30}.Release|x86.Build.0 = Release|Any CPU
+		{6586CC01-0516-4047-B9DD-9DFEC5D51F52}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{6586CC01-0516-4047-B9DD-9DFEC5D51F52}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{6586CC01-0516-4047-B9DD-9DFEC5D51F52}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{6586CC01-0516-4047-B9DD-9DFEC5D51F52}.Debug|x64.Build.0 = Debug|Any CPU
+		{6586CC01-0516-4047-B9DD-9DFEC5D51F52}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{6586CC01-0516-4047-B9DD-9DFEC5D51F52}.Debug|x86.Build.0 = Debug|Any CPU
+		{6586CC01-0516-4047-B9DD-9DFEC5D51F52}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{6586CC01-0516-4047-B9DD-9DFEC5D51F52}.Release|Any CPU.Build.0 = Release|Any CPU
+		{6586CC01-0516-4047-B9DD-9DFEC5D51F52}.Release|x64.ActiveCfg = Release|Any CPU
+		{6586CC01-0516-4047-B9DD-9DFEC5D51F52}.Release|x64.Build.0 = Release|Any CPU
+		{6586CC01-0516-4047-B9DD-9DFEC5D51F52}.Release|x86.ActiveCfg = Release|Any CPU
+		{6586CC01-0516-4047-B9DD-9DFEC5D51F52}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -277,5 +291,6 @@ Global
 		{75CFC259-F11E-4F81-AC8D-567F5D2702B1} = {B36A84DF-456D-A817-6EDD-3EC3E7F6E11F}
 		{DEFFE226-8BC9-43BD-B21D-4C713BB847D2} = {B36A84DF-456D-A817-6EDD-3EC3E7F6E11F}
 		{AE08C8D9-09AB-4E3A-8771-E16473099E30} = {B36A84DF-456D-A817-6EDD-3EC3E7F6E11F}
+		{6586CC01-0516-4047-B9DD-9DFEC5D51F52} = {B36A84DF-456D-A817-6EDD-3EC3E7F6E11F}
 	EndGlobalSection
 EndGlobal

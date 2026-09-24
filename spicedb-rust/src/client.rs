@@ -56,13 +56,14 @@ use crate::types::{
     resolved_subject_from_proto, CheckOptions, CheckResult, CountResult, DeleteOptions,
     ExpandResult, Filter, LookupOptions, LookupResource, LookupSubject, Permissionship,
     Precondition, PreconditionOperation, ReflectSchemaResult, RelationReference, Relationship,
-    ResolvedSubject, SchemaCaveat, SchemaCaveatParameter, SchemaDefinition, SchemaDiff,
-    SchemaPermission, SchemaRelation, Transaction, Update, UpdateOperation, WatchEvent,
-    WatchOptions,
+    ResolvedSubject, RoaringLookupResourcesResult, SchemaCaveat, SchemaCaveatParameter,
+    SchemaDefinition, SchemaDiff, SchemaPermission, SchemaRelation, Transaction, Update,
+    UpdateOperation, WatchEvent, WatchOptions,
 };
 
 use futures::Stream;
 
+use spicedb_proto::authzed::api::materialize::v0 as materialize_proto;
 use spicedb_proto::authzed::api::v1 as proto;
 use spicedb_proto::SpiceDBProtoClient;
 
@@ -243,9 +244,10 @@ impl SpiceDBClient {
         }
     }
 
-    /// Escape hatch: the underlying [`SpiceDBProtoClient`], holding the four
+    /// Escape hatch: the underlying [`SpiceDBProtoClient`], holding the five
     /// generated tonic clients (`permissions`, `schema`, `watch`,
-    /// `experimental`) this client makes its own calls through.
+    /// `experimental`, `materialize`) this client makes its own calls
+    /// through.
     ///
     /// Clearly-marked **secondary** API. Root DESIGN.md's "What NOT To Do"
     /// keeps channels, stubs and metadata out of the primary surface and
@@ -2060,6 +2062,115 @@ impl SpiceDBClient {
         .await?;
 
         Ok(())
+    }
+
+    /// Returns a roaring64 bitmap (RoaringFormatSpec 64-bit portable format) of
+    /// the resource object IDs of `resource_type` on which the given subject
+    /// has `permission`. The IDs are the resource object IDs exactly as they
+    /// appear in the relationships -- this method does not decode the bitmap.
+    ///
+    /// Every resource object ID of `resource_type` must be a canonical decimal
+    /// integer that fits in 44 bits (at most `2^44 - 1`), or the call fails
+    /// with [`SpiceDBError::FailedPrecondition`] rather than returning a
+    /// partial bitmap.
+    ///
+    /// This is a read, so it is retried like any other read (see
+    /// [`SpiceDBClient::retry`]). The whole bitmap comes back in a single
+    /// unary response, and most gRPC clients refuse a message larger than
+    /// 4 MiB by default -- a result of more than roughly 400,000
+    /// widely-spread IDs can exceed that and fail on this side with
+    /// [`SpiceDBError::ResourceExhausted`].
+    /// [`RoaringLookupResourcesResult::cardinality`] tells the caller how
+    /// large a result they got, so they can size their channel's receive
+    /// limit to match.
+    ///
+    /// # Experimental
+    ///
+    /// This API is experimental and may change without following the
+    /// backwards compatibility mandate.
+    pub async fn experimental_roaring_lookup_resources(
+        &self,
+        consistency: &Strategy,
+        resource_type: &str,
+        permission: &str,
+        subject_type: &str,
+        subject_id: &str,
+    ) -> Result<RoaringLookupResourcesResult, SpiceDBError> {
+        self.experimental_roaring_lookup_resources_impl(
+            consistency,
+            resource_type,
+            permission,
+            subject_type,
+            subject_id,
+            None,
+        )
+        .await
+    }
+
+    /// [`experimental_roaring_lookup_resources`](Self::experimental_roaring_lookup_resources)
+    /// with a per-call timeout that overrides the client's `default_timeout`.
+    pub async fn experimental_roaring_lookup_resources_with_timeout(
+        &self,
+        consistency: &Strategy,
+        resource_type: &str,
+        permission: &str,
+        subject_type: &str,
+        subject_id: &str,
+        timeout: Duration,
+    ) -> Result<RoaringLookupResourcesResult, SpiceDBError> {
+        self.experimental_roaring_lookup_resources_impl(
+            consistency,
+            resource_type,
+            permission,
+            subject_type,
+            subject_id,
+            Some(timeout),
+        )
+        .await
+    }
+
+    async fn experimental_roaring_lookup_resources_impl(
+        &self,
+        consistency: &Strategy,
+        resource_type: &str,
+        permission: &str,
+        subject_type: &str,
+        subject_id: &str,
+        timeout: Option<Duration>,
+    ) -> Result<RoaringLookupResourcesResult, SpiceDBError> {
+        let timeout = self.effective_timeout(timeout);
+        let consistency = consistency.to_proto();
+        let resp = self
+            .retry(|| async {
+                let mut request = tonic::Request::new(
+                    materialize_proto::ExperimentalRoaringLookupResourcesRequest {
+                        consistency: Some(consistency.clone()),
+                        resource_object_type: resource_type.to_string(),
+                        permission: permission.to_string(),
+                        subject: Some(proto::SubjectReference {
+                            object: Some(proto::ObjectReference {
+                                object_type: subject_type.to_string(),
+                                object_id: subject_id.to_string(),
+                            }),
+                            optional_relation: String::new(),
+                        }),
+                    },
+                );
+                request.set_timeout(timeout);
+                self.proto
+                    .materialize
+                    .clone()
+                    .experimental_roaring_lookup_resources(request)
+                    .await
+            })
+            .await?;
+
+        let inner = resp.into_inner();
+        Ok(RoaringLookupResourcesResult {
+            bitmap: inner.bitmap,
+            cardinality: inner.cardinality,
+            at_revision: inner.at_revision.map(|z| z.token).unwrap_or_default(),
+        })
     }
 
     // -----------------------------------------------------------------------

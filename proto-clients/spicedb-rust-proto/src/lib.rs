@@ -12,7 +12,8 @@
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     let client = SpiceDBProtoClient::new("grpc.authzed.com:443", "my-token", false).await?;
-//!     // Use client.permissions, client.schema, client.watch, client.experimental
+//!     // Use client.permissions, client.schema, client.watch, client.experimental,
+//!     // client.materialize
 //!     Ok(())
 //! }
 //! ```
@@ -31,6 +32,11 @@ pub mod authzed {
     pub mod api {
         pub mod v1 {
             tonic::include_proto!("authzed.api.v1");
+        }
+        pub mod materialize {
+            pub mod v0 {
+                tonic::include_proto!("authzed.api.materialize.v0");
+            }
         }
     }
 }

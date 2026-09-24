@@ -19,12 +19,17 @@ Create a `lib/spicedb_proto/client.rb` file with:
    - `Authzed::Api::V1::SchemaService::Stub`
    - `Authzed::Api::V1::WatchService::Stub`
    - `Authzed::Api::V1::ExperimentalService::Stub`
+   - `Authzed::Api::Materialize::V0::RoaringLookupResourcesService::Stub` -- generated
+     from `authzed.api.materialize.v0`, a separate proto package from the other four
+     (`authzed.api.v1`). Exposed as `#materialize`, named for the service it wraps
+     rather than folded into `#experimental`, since it is a distinct generated stub
+     class rather than another RPC on `ExperimentalService::Stub`.
 
 2. **`#initialize(endpoint, token, insecure: false, ca_cert: nil, client_cert: nil,
    client_key: nil)`** -- constructor that:
    - Creates a `GRPC::Core::Channel` with appropriate credentials
    - Injects the bearer token via call credentials (secure) or interceptor (insecure)
-   - Builds all four service stubs
+   - Builds all five service stubs
 
    `ca_cert`/`client_cert`/`client_key` are PEM strings carrying caller-supplied
    TLS trust material, passed to
@@ -64,7 +69,7 @@ Use `rspec` for all assertions.
 
 Create `spec/client_spec.rb` with:
 
-1. **Constructor test** -- verify `Client.new` creates a client with all four
+1. **Constructor test** -- verify `Client.new` creates a client with all five
    service stubs populated (using fake stub classes since gen/ is empty)
 2. **Close test** -- verify `#close` does not raise
 3. **Interceptor test** -- verify `BearerTokenInterceptor` merges auth metadata

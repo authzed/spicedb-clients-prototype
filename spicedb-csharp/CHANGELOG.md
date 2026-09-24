@@ -25,6 +25,22 @@
 
 ### Added
 
+- **2026-09-24: `ExperimentalRoaringLookupResourcesAsync` and `RoaringLookupResourcesResult`**,
+  wrapping the proto client regen's new `authzed.api.materialize.v0.RoaringLookupResourcesService`
+  (`Roaringlookupresources.cs`/`RoaringlookupresourcesGrpc.cs`) — a bitmap-shaped alternative to
+  `LookupResourcesAsync` that returns a roaring64 bitmap of resource object IDs a subject has a
+  permission on, instead of one item per result. `SpiceDBProtoClient` gained a fifth generated
+  service client, `Materialize`, alongside `Permissions`/`Schema`/`Watch`/`Experimental` (also
+  reachable through `RawProto()`), since this RPC lives in a separate generated package from the
+  other four. The returned `Bitmap` is a plain `byte[]` copied out of the proto `ByteString` —
+  this client does not decode roaring itself — and a non-canonical resource object ID surfaces as
+  `FailedPreconditionException` rather than a partial bitmap. No options class: every field on the
+  request is required today, so there is nothing optional yet for one to hold; the first optional
+  field this RPC gains upstream gets one, per root DESIGN.md, "RULE: Every RPC wrapper must have
+  one place to add an option". The rest of the Materialize service (relationships / watch
+  permissions / watch permission sets) remains unwrapped and out of scope, as noted below for the
+  2026-09-04 regen.
+
 - **2026-09-10: `DeleteRelationshipsWithOptionsAsync` and `DeleteRelationshipsOptions`**,
   mapping the proto client regen's new `DeleteRelationshipsRequest.optional_cursor` /
   `DeleteRelationshipsResponse.after_result_cursor` fields. `DeleteRelationshipsAsync` had

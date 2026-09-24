@@ -56,6 +56,7 @@ var wantExamples = []string{
 	"read_relationships",
 	"relationship_counters",
 	"retry_policy",
+	"roaring_lookup_resources",
 	"schema_management",
 	"schema_reflection",
 	"unrepresentable_values",

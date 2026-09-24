@@ -5,6 +5,7 @@ use tonic::metadata::MetadataValue;
 use tonic::service::Interceptor;
 use tonic::transport::{Channel, ClientTlsConfig, Endpoint, Uri};
 
+use crate::authzed::api::materialize::v0 as materialize_v0;
 use crate::authzed::api::v1;
 
 /// Errors returned by [`SpiceDBProtoClient::new`] / [`SpiceDBProtoClient::new_with_options`].
@@ -211,6 +212,7 @@ pub type InterceptedService =
 /// - `schema` — SchemaService (ReadSchema, WriteSchema)
 /// - `watch` — WatchService (Watch)
 /// - `experimental` — ExperimentalService (BulkCheckPermission, etc.)
+/// - `materialize` — RoaringLookupResourcesService (ExperimentalRoaringLookupResources)
 ///
 /// # Example
 ///
@@ -229,6 +231,7 @@ pub struct SpiceDBProtoClient {
     pub watch: v1::watch_service_client::WatchServiceClient<InterceptedService>,
     pub experimental:
         v1::experimental_service_client::ExperimentalServiceClient<InterceptedService>,
+    pub materialize: materialize_v0::roaring_lookup_resources_service_client::RoaringLookupResourcesServiceClient<InterceptedService>,
 }
 
 impl SpiceDBProtoClient {
@@ -381,13 +384,17 @@ impl SpiceDBProtoClient {
             v1::permissions_service_client::PermissionsServiceClient::new(svc.clone());
         let schema = v1::schema_service_client::SchemaServiceClient::new(svc.clone());
         let watch = v1::watch_service_client::WatchServiceClient::new(svc.clone());
-        let experimental = v1::experimental_service_client::ExperimentalServiceClient::new(svc);
+        let experimental =
+            v1::experimental_service_client::ExperimentalServiceClient::new(svc.clone());
+        let materialize =
+            materialize_v0::roaring_lookup_resources_service_client::RoaringLookupResourcesServiceClient::new(svc);
 
         Ok(Self {
             permissions,
             schema,
             watch,
             experimental,
+            materialize,
         })
     }
 }

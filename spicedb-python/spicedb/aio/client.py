@@ -1070,7 +1070,7 @@ class SpiceDBClient:
 
         await self._call_once(_call)
 
-    # ── Experimental: Schema Reflection ─────────────────────────────
+    # ── Schema Reflection ────────────────────────────────────────────
 
     async def reflect_schema(
         self,
@@ -1079,8 +1079,7 @@ class SpiceDBClient:
         filters: list[str] | None = None,
         timeout: float | None = None,
     ) -> ReflectSchemaResult:
-        """Experimental: Reflect the schema, returning its definitions and
-        caveats.
+        """Reflect the schema, returning its definitions and caveats.
 
         `timeout` (seconds) bounds this call, overriding the client's
         `default_timeout`."""
@@ -1103,7 +1102,7 @@ class SpiceDBClient:
         *,
         timeout: float | None = None,
     ) -> list[SchemaDiff]:
-        """Experimental: Diff two schemas, returning the list of differences.
+        """Diff two schemas, returning the list of differences.
 
         `timeout` (seconds) bounds this call, overriding the client's
         `default_timeout`."""

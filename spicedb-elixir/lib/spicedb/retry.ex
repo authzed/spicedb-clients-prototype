@@ -5,6 +5,14 @@ defmodule SpiceDB.Retry do
 
   @type kind :: :read | :mutation
 
+  # grpc 1.0.5's Mint adapter collapses any transport-level failure (e.g. a
+  # connection reset mid-handshake) into this exact message prefix on a
+  # GRPC.RPCError with status `unknown`, discarding the original error's
+  # structure. See deps/grpc/lib/grpc/client/adapters/mint.ex,
+  # `handle_errors_receive_data/2`.
+  @transport_failure_prefix "error occurred while receiving data: "
+  @unknown_status GRPC.Status.unknown()
+
   @spec run(Client.t(), kind(), (-> {:ok, result} | {:error, term()})) ::
           {:ok, result} | {:error, SpiceDB.Error.any_error()}
         when result: term()
@@ -37,6 +45,13 @@ defmodule SpiceDB.Retry do
   def retryable?(_error), do: false
 
   @spec normalize(term()) :: SpiceDB.Error.any_error()
+  def normalize(%GRPC.RPCError{status: @unknown_status, message: message})
+      when byte_size(message) >= byte_size(@transport_failure_prefix) and
+             binary_part(message, 0, byte_size(@transport_failure_prefix)) ==
+               @transport_failure_prefix do
+    %SpiceDB.UnavailableError{message: message}
+  end
+
   def normalize(%GRPC.RPCError{} = error), do: SpiceDB.Error.from_grpc_status(error)
   def normalize(%Google.Rpc.Status{} = status), do: SpiceDB.Error.from_grpc_status(status)
 

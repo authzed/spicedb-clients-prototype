@@ -343,6 +343,24 @@ offers no non-raising write primitive -- not something this client can fix
 without wrapping the dependency's raise, which the team has decided against
 doing blindly.
 
+**A third gap, on the read side, is a misclassification rather than a raise.**
+`handle_errors_receive_data/2` (`deps/grpc/lib/grpc/client/adapters/mint.ex:270-276`)
+collapses any transport-level failure on a unary or client-streaming
+call -- a connection reset, a TLS alert that arrives after the client
+considers the handshake done -- into a `GRPC.RPCError` with status
+`unknown` and `message: "error occurred while receiving data: " <>
+inspect(response)`, discarding the original error's structure. The gRPC
+status-code spec reserves `UNAVAILABLE` for exactly this case (the
+transport could not complete the call), not `UNKNOWN`. This client
+recovers the intended status in `SpiceDB.Retry.normalize/1`, matching on
+that fixed message prefix rather than `inspect/1`-ing every possible
+transport error, since the prefix is grpc-elixir's own construction-site
+literal and not free text from the underlying error. **The upstream fix**,
+if grpc-elixir wants to close this gap: return `GRPC.Status.unavailable()`
+from `handle_errors_receive_data/2` and keep the original error in the
+`GRPC.RPCError` struct's `:details` field instead of inspecting it into
+`:message`.
+
 ### Writes
 
 Transaction builder, pipe-friendly:

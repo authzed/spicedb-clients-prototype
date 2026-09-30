@@ -140,4 +140,26 @@ defmodule SpiceDB.RetryTest do
     assert {:error, %SpiceDB.UnavailableError{}} =
              SpiceDB.new_plaintext("127.0.0.1:#{StandIn.free_port()}", "t")
   end
+
+  test "a mid-handshake transport failure reported as UNKNOWN by grpc-elixir's Mint adapter becomes UnavailableError" do
+    # This is the exact shape produced by handle_errors_receive_data/2 in
+    # deps/grpc/lib/grpc/client/adapters/mint.ex (grpc 1.0.5) when the
+    # connection closes before a response arrives, e.g. a TLS 1.3
+    # certificate_required alert that lands after the handshake completes.
+    error = %GRPC.RPCError{
+      status: GRPC.Status.unknown(),
+      message:
+        "error occurred while receiving data: " <>
+          inspect({:error, %Mint.TransportError{reason: :closed}})
+    }
+
+    assert %SpiceDB.UnavailableError{message: message} = SpiceDB.Retry.normalize(error)
+    assert message == error.message
+  end
+
+  test "a plain UNKNOWN status that did not come from that Mint code path stays SpiceDB.Error" do
+    error = %GRPC.RPCError{status: GRPC.Status.unknown(), message: "server panicked"}
+
+    assert %SpiceDB.Error{code: 2, message: "server panicked"} = SpiceDB.Retry.normalize(error)
+  end
 end

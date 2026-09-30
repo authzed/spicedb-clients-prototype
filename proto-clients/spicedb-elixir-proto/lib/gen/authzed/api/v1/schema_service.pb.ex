@@ -1,5 +1,7 @@
 defmodule Authzed.Api.V1.SchemaService.Service do
-  @moduledoc false
+  @moduledoc """
+  SchemaService implements operations on a Permissions System's Schema.
+  """
 
   use GRPC.Service, name: "authzed.api.v1.SchemaService", protoc_gen_elixir_version: "0.17.0"
 
@@ -12,7 +14,5 @@ defmodule Authzed.Api.V1.SchemaService.Service do
 end
 
 defmodule Authzed.Api.V1.SchemaService.Stub do
-  @moduledoc false
-
   use GRPC.Stub, service: Authzed.Api.V1.SchemaService.Service
 end

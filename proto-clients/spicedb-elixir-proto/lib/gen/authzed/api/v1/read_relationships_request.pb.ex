@@ -1,5 +1,8 @@
 defmodule Authzed.Api.V1.ReadRelationshipsRequest do
-  @moduledoc false
+  @moduledoc """
+  ReadRelationshipsRequest specifies one or more filters used to read matching
+  relationships within the system.
+  """
 
   use Protobuf,
     full_name: "authzed.api.v1.ReadRelationshipsRequest",

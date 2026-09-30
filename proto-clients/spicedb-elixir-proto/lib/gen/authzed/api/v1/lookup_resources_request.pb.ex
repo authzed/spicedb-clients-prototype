@@ -1,5 +1,9 @@
 defmodule Authzed.Api.V1.LookupResourcesRequest do
-  @moduledoc false
+  @moduledoc """
+  LookupResourcesRequest performs a lookup of all resources of a particular
+  kind on which the subject has the specified permission or the relation in
+  which the subject exists, streaming back the IDs of those resources.
+  """
 
   use Protobuf,
     full_name: "authzed.api.v1.LookupResourcesRequest",

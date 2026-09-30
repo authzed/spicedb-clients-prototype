@@ -1,5 +1,10 @@
 defmodule Authzed.Api.V1.SubjectFilter do
-  @moduledoc false
+  @moduledoc """
+  SubjectFilter specifies a filter on the subject of a relationship.
+
+  subject_type is required and all other fields are optional, and will not
+  impose any additional requirements if left unspecified.
+  """
 
   use Protobuf,
     full_name: "authzed.api.v1.SubjectFilter",

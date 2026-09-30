@@ -1,5 +1,8 @@
 defmodule Authzed.Api.V1.CheckPermissionRequest do
-  @moduledoc false
+  @moduledoc """
+  CheckPermissionRequest issues a check on whether a subject has a permission
+  or is a member of a relation, on a specific resource.
+  """
 
   use Protobuf,
     full_name: "authzed.api.v1.CheckPermissionRequest",

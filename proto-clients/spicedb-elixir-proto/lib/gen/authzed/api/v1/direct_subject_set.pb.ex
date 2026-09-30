@@ -1,5 +1,7 @@
 defmodule Authzed.Api.V1.DirectSubjectSet do
-  @moduledoc false
+  @moduledoc """
+  DirectSubjectSet is a subject set which is simply a collection of subjects.
+  """
 
   use Protobuf,
     full_name: "authzed.api.v1.DirectSubjectSet",

@@ -1,5 +1,7 @@
 defmodule Authzed.Api.V1.CaveatEvalInfo do
-  @moduledoc false
+  @moduledoc """
+  CaveatEvalInfo holds information about a caveat expression that was evaluated.
+  """
 
   use Protobuf,
     full_name: "authzed.api.v1.CaveatEvalInfo",

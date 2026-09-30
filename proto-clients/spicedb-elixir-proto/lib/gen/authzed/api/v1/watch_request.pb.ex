@@ -1,5 +1,8 @@
 defmodule Authzed.Api.V1.WatchRequest do
-  @moduledoc false
+  @moduledoc """
+  WatchRequest specifies what mutations to watch for, and an optional start point for when to start
+  watching.
+  """
 
   use Protobuf,
     full_name: "authzed.api.v1.WatchRequest",

@@ -1,5 +1,8 @@
 defmodule Authzed.Api.V1.PartialCaveatInfo do
-  @moduledoc false
+  @moduledoc """
+  PartialCaveatInfo carries information necessary for the client to take action
+  in the event a response contains a partially evaluated caveat
+  """
 
   use Protobuf,
     full_name: "authzed.api.v1.PartialCaveatInfo",

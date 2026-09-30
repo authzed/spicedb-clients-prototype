@@ -1,5 +1,11 @@
 defmodule Authzed.Api.V1.DeleteRelationshipsRequest do
-  @moduledoc false
+  @moduledoc """
+  DeleteRelationshipsRequest specifies which Relationships should be deleted,
+  requesting the delete of *ALL* relationships that match the specified
+  filters. If the optional_preconditions parameter is included, all of the
+  specified preconditions must also be satisfied before the delete will be
+  executed.
+  """
 
   use Protobuf,
     full_name: "authzed.api.v1.DeleteRelationshipsRequest",

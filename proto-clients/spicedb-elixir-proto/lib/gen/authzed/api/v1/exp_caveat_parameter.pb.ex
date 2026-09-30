@@ -1,5 +1,7 @@
 defmodule Authzed.Api.V1.ExpCaveatParameter do
-  @moduledoc false
+  @moduledoc """
+  ExpCaveatParameter is the representation of a parameter in a caveat.
+  """
 
   use Protobuf,
     full_name: "authzed.api.v1.ExpCaveatParameter",

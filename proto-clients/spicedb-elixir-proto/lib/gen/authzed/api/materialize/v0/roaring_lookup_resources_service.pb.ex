@@ -1,6 +1,4 @@
 defmodule Authzed.Api.Materialize.V0.RoaringLookupResourcesService.Service do
-  @moduledoc false
-
   use GRPC.Service,
     name: "authzed.api.materialize.v0.RoaringLookupResourcesService",
     protoc_gen_elixir_version: "0.17.0"
@@ -9,7 +7,5 @@ defmodule Authzed.Api.Materialize.V0.RoaringLookupResourcesService.Service do
 end
 
 defmodule Authzed.Api.Materialize.V0.RoaringLookupResourcesService.Stub do
-  @moduledoc false
-
   use GRPC.Stub, service: Authzed.Api.Materialize.V0.RoaringLookupResourcesService.Service
 end

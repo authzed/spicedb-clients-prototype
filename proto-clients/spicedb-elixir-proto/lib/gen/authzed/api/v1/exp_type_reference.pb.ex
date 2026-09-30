@@ -1,5 +1,7 @@
 defmodule Authzed.Api.V1.ExpTypeReference do
-  @moduledoc false
+  @moduledoc """
+  ExpTypeReference is the representation of a type reference in the schema.
+  """
 
   use Protobuf,
     full_name: "authzed.api.v1.ExpTypeReference",

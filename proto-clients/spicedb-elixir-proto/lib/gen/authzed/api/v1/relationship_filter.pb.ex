@@ -1,5 +1,15 @@
 defmodule Authzed.Api.V1.RelationshipFilter do
-  @moduledoc false
+  @moduledoc """
+  RelationshipFilter is a collection of filters which when applied to a
+  relationship will return relationships that have exactly matching fields.
+
+  All fields are optional and if left unspecified will not filter relationships,
+  but at least one field must be specified.
+
+  NOTE: The performance of the API will be affected by the selection of fields
+  on which to filter. If a field is not indexed, the performance of the API
+  can be significantly slower.
+  """
 
   use Protobuf,
     full_name: "authzed.api.v1.RelationshipFilter",

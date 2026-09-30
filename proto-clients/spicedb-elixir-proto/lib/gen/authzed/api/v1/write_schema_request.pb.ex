@@ -1,5 +1,8 @@
 defmodule Authzed.Api.V1.WriteSchemaRequest do
-  @moduledoc false
+  @moduledoc """
+  WriteSchemaRequest is the required data used to "upsert" the Schema of a
+  Permissions System.
+  """
 
   use Protobuf,
     full_name: "authzed.api.v1.WriteSchemaRequest",

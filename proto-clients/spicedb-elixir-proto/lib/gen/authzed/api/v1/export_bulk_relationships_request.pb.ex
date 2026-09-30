@@ -1,5 +1,8 @@
 defmodule Authzed.Api.V1.ExportBulkRelationshipsRequest do
-  @moduledoc false
+  @moduledoc """
+  ExportBulkRelationshipsRequest represents a resumable request for
+  all relationships from the server.
+  """
 
   use Protobuf,
     full_name: "authzed.api.v1.ExportBulkRelationshipsRequest",

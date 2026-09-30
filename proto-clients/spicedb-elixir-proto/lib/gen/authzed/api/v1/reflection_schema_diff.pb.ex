@@ -1,5 +1,7 @@
 defmodule Authzed.Api.V1.ReflectionSchemaDiff do
-  @moduledoc false
+  @moduledoc """
+  ReflectionSchemaDiff is the representation of a diff between two schemas.
+  """
 
   use Protobuf,
     full_name: "authzed.api.v1.ReflectionSchemaDiff",

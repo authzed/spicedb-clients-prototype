@@ -1,5 +1,8 @@
 defmodule Authzed.Api.V1.Cursor do
-  @moduledoc false
+  @moduledoc """
+  Cursor is used to provide resumption of listing between calls to APIs
+  such as LookupResources.
+  """
 
   use Protobuf,
     full_name: "authzed.api.v1.Cursor",

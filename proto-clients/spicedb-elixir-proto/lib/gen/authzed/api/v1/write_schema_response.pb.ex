@@ -1,5 +1,8 @@
 defmodule Authzed.Api.V1.WriteSchemaResponse do
-  @moduledoc false
+  @moduledoc """
+  WriteSchemaResponse is the resulting data after having written a Schema to
+  a Permissions System.
+  """
 
   use Protobuf,
     full_name: "authzed.api.v1.WriteSchemaResponse",

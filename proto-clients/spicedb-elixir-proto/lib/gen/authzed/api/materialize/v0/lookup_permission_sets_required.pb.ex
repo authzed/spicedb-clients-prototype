@@ -1,5 +1,9 @@
 defmodule Authzed.Api.Materialize.V0.LookupPermissionSetsRequired do
-  @moduledoc false
+  @moduledoc """
+  LookupPermissionSetsRequired is a signal that the consumer should perform a LookupPermissionSets call because
+  the permission set snapshot needs to be rebuilt from scratch. This typically happens when the origin SpiceDB
+  cluster has seen its schema changed, see BreakingSchemaChange event.
+  """
 
   use Protobuf,
     full_name: "authzed.api.materialize.v0.LookupPermissionSetsRequired",

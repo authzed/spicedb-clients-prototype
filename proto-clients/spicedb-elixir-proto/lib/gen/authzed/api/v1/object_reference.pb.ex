@@ -1,5 +1,7 @@
 defmodule Authzed.Api.V1.ObjectReference do
-  @moduledoc false
+  @moduledoc """
+  ObjectReference is used to refer to a specific object in the system.
+  """
 
   use Protobuf,
     full_name: "authzed.api.v1.ObjectReference",

@@ -1,5 +1,9 @@
 defmodule Authzed.Api.V1.SubjectReference do
-  @moduledoc false
+  @moduledoc """
+  SubjectReference is used for referring to the subject portion of a
+  Relationship. The relation component is optional and is used for defining a
+  sub-relation on the subject, e.g. group:123#members
+  """
 
   use Protobuf,
     full_name: "authzed.api.v1.SubjectReference",

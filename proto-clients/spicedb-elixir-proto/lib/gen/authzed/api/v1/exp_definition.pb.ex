@@ -1,5 +1,7 @@
 defmodule Authzed.Api.V1.ExpDefinition do
-  @moduledoc false
+  @moduledoc """
+  ExpDefinition is the representation of a definition in the schema.
+  """
 
   use Protobuf,
     full_name: "authzed.api.v1.ExpDefinition",

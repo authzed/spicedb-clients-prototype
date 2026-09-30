@@ -1,5 +1,9 @@
 defmodule Authzed.Api.V1.ReadRelationshipsResponse do
-  @moduledoc false
+  @moduledoc """
+  ReadRelationshipsResponse contains a Relationship found that matches the
+  specified relationship filter(s). A instance of this response message will
+  be streamed to the client for each relationship found.
+  """
 
   use Protobuf,
     full_name: "authzed.api.v1.ReadRelationshipsResponse",

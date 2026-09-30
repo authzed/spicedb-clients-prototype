@@ -1,6 +1,4 @@
 defmodule Authzed.Api.Materialize.V0.MemberReference do
-  @moduledoc false
-
   use Protobuf,
     full_name: "authzed.api.materialize.v0.MemberReference",
     protoc_gen_elixir_version: "0.17.0",

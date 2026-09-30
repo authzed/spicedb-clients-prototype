@@ -1,5 +1,7 @@
 defmodule Authzed.Api.V1.ReflectionRelationReference do
-  @moduledoc false
+  @moduledoc """
+  ReflectionRelationReference is a reference to a relation or permission in the schema.
+  """
 
   use Protobuf,
     full_name: "authzed.api.v1.ReflectionRelationReference",

@@ -1,5 +1,7 @@
 defmodule Authzed.Api.V1.ExpSchemaDiff do
-  @moduledoc false
+  @moduledoc """
+  ExpSchemaDiff is the representation of a diff between two schemas.
+  """
 
   use Protobuf,
     full_name: "authzed.api.v1.ExpSchemaDiff",

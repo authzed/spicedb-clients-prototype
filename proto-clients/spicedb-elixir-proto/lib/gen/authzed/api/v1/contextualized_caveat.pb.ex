@@ -1,5 +1,9 @@
 defmodule Authzed.Api.V1.ContextualizedCaveat do
-  @moduledoc false
+  @moduledoc """
+  ContextualizedCaveat represents a reference to a caveat to be used by caveated relationships.
+  The context consists of key-value pairs that will be injected at evaluation time.
+  The keys must match the arguments defined on the caveat in the schema.
+  """
 
   use Protobuf,
     full_name: "authzed.api.v1.ContextualizedCaveat",

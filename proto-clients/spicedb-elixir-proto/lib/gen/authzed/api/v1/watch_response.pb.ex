@@ -1,5 +1,10 @@
 defmodule Authzed.Api.V1.WatchResponse do
-  @moduledoc false
+  @moduledoc """
+  WatchResponse contains all mutation events in ascending timestamp order.
+  This excludes relationships that were deleted because they expired.
+  The response includes a field that can be used to resume
+  watching from that point.
+  """
 
   use Protobuf,
     full_name: "authzed.api.v1.WatchResponse",

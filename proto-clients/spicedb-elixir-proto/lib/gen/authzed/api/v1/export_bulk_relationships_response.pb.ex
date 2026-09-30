@@ -1,5 +1,10 @@
 defmodule Authzed.Api.V1.ExportBulkRelationshipsResponse do
-  @moduledoc false
+  @moduledoc """
+  ExportBulkRelationshipsResponse is one page in a stream of relationship
+  groups that meet the criteria specified by the originating request. The
+  server will continue to stream back relationship groups as quickly as it can
+  until all relationships have been transmitted back.
+  """
 
   use Protobuf,
     full_name: "authzed.api.v1.ExportBulkRelationshipsResponse",

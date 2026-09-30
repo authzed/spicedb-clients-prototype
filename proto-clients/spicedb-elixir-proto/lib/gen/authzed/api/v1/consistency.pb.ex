@@ -1,5 +1,9 @@
 defmodule Authzed.Api.V1.Consistency do
-  @moduledoc false
+  @moduledoc """
+  Consistency will define how a request is handled by the backend.
+  By defining a consistency requirement, and a token at which those
+  requirements should be applied, where applicable.
+  """
 
   use Protobuf,
     full_name: "authzed.api.v1.Consistency",

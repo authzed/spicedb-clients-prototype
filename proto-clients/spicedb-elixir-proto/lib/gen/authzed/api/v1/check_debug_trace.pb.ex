@@ -1,5 +1,8 @@
 defmodule Authzed.Api.V1.CheckDebugTrace do
-  @moduledoc false
+  @moduledoc """
+  CheckDebugTrace is a recursive trace of the requests made for resolving a CheckPermission
+  API call.
+  """
 
   use Protobuf,
     full_name: "authzed.api.v1.CheckDebugTrace",

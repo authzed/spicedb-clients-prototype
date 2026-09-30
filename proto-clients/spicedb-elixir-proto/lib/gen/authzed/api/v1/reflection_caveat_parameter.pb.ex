@@ -1,5 +1,7 @@
 defmodule Authzed.Api.V1.ReflectionCaveatParameter do
-  @moduledoc false
+  @moduledoc """
+  ReflectionCaveatParameter is the representation of a parameter in a caveat.
+  """
 
   use Protobuf,
     full_name: "authzed.api.v1.ReflectionCaveatParameter",

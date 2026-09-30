@@ -1,5 +1,9 @@
 defmodule Authzed.Api.V1.LookupSubjectsRequest do
-  @moduledoc false
+  @moduledoc """
+  LookupSubjectsRequest performs a lookup of all subjects of a particular
+  kind for which the subject has the specified permission or the relation in
+  which the subject exists, streaming back the IDs of those subjects.
+  """
 
   use Protobuf,
     full_name: "authzed.api.v1.LookupSubjectsRequest",

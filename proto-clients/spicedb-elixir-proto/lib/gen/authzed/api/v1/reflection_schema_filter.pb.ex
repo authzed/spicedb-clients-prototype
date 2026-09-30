@@ -1,5 +1,7 @@
 defmodule Authzed.Api.V1.ReflectionSchemaFilter do
-  @moduledoc false
+  @moduledoc """
+  ReflectionSchemaFilter is a filter that can be applied to the schema on reflection.
+  """
 
   use Protobuf,
     full_name: "authzed.api.v1.ReflectionSchemaFilter",

@@ -1,6 +1,4 @@
 defmodule Authzed.Api.V1.ReadCounterValue do
-  @moduledoc false
-
   use Protobuf,
     full_name: "authzed.api.v1.ReadCounterValue",
     protoc_gen_elixir_version: "0.17.0",

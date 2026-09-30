@@ -1,5 +1,7 @@
 defmodule Authzed.Api.V1.ExpRelation do
-  @moduledoc false
+  @moduledoc """
+  ExpRelation is the representation of a relation in the schema.
+  """
 
   use Protobuf,
     full_name: "authzed.api.v1.ExpRelation",

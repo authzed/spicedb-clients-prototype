@@ -1,5 +1,8 @@
 defmodule Authzed.Api.V1.ErrorReason do
-  @moduledoc false
+  @moduledoc """
+  Defines the supported values for `google.rpc.ErrorInfo.reason` for the
+  `authzed.com` error domain.
+  """
 
   use Protobuf,
     enum: true,

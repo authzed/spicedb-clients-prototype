@@ -1,6 +1,4 @@
 defmodule Authzed.Api.V1.ExperimentalDiffSchemaResponse do
-  @moduledoc false
-
   use Protobuf,
     full_name: "authzed.api.v1.ExperimentalDiffSchemaResponse",
     protoc_gen_elixir_version: "0.17.0",

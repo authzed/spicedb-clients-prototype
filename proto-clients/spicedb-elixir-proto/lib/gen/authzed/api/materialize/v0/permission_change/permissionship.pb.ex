@@ -1,6 +1,4 @@
 defmodule Authzed.Api.Materialize.V0.PermissionChange.Permissionship do
-  @moduledoc false
-
   use Protobuf,
     enum: true,
     full_name: "authzed.api.materialize.v0.PermissionChange.Permissionship",

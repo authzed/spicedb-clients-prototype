@@ -1,5 +1,8 @@
 defmodule Authzed.Api.V1.PermissionRelationshipTree do
-  @moduledoc false
+  @moduledoc """
+  PermissionRelationshipTree is used for representing a tree of a resource and
+  its permission relationships with other objects.
+  """
 
   use Protobuf,
     full_name: "authzed.api.v1.PermissionRelationshipTree",

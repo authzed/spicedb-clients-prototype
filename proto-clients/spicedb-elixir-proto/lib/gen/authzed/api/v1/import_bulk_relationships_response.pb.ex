@@ -1,5 +1,8 @@
 defmodule Authzed.Api.V1.ImportBulkRelationshipsResponse do
-  @moduledoc false
+  @moduledoc """
+  ImportBulkRelationshipsResponse is returned on successful completion of the
+  bulk load stream, and contains the total number of relationships loaded.
+  """
 
   use Protobuf,
     full_name: "authzed.api.v1.ImportBulkRelationshipsResponse",

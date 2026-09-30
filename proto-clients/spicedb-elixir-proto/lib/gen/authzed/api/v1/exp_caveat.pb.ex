@@ -1,5 +1,7 @@
 defmodule Authzed.Api.V1.ExpCaveat do
-  @moduledoc false
+  @moduledoc """
+  ExpCaveat is the representation of a caveat in the schema.
+  """
 
   use Protobuf,
     full_name: "authzed.api.v1.ExpCaveat",

@@ -1,5 +1,8 @@
 defmodule Authzed.Api.V1.LookupResourcesResponse do
-  @moduledoc false
+  @moduledoc """
+  LookupResourcesResponse contains a single matching resource object ID for the
+  requested object type, permission, and subject.
+  """
 
   use Protobuf,
     full_name: "authzed.api.v1.LookupResourcesResponse",

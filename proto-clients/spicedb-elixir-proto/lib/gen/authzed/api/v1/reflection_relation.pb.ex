@@ -1,5 +1,7 @@
 defmodule Authzed.Api.V1.ReflectionRelation do
-  @moduledoc false
+  @moduledoc """
+  ReflectionRelation is the representation of a relation in the schema.
+  """
 
   use Protobuf,
     full_name: "authzed.api.v1.ReflectionRelation",

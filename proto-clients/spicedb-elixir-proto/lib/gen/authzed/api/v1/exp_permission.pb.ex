@@ -1,5 +1,7 @@
 defmodule Authzed.Api.V1.ExpPermission do
-  @moduledoc false
+  @moduledoc """
+  ExpPermission is the representation of a permission in the schema.
+  """
 
   use Protobuf,
     full_name: "authzed.api.v1.ExpPermission",

@@ -1,5 +1,12 @@
 defmodule Authzed.Api.V1.DebugInformation do
-  @moduledoc false
+  @moduledoc """
+  DebugInformation defines debug information returned by an API call in a footer when
+  requested with a specific debugging header.
+
+  The specific debug information returned will depend on the type of the API call made.
+
+  See the github.com/authzed/authzed-go project for the specific header and footer names.
+  """
 
   use Protobuf,
     full_name: "authzed.api.v1.DebugInformation",

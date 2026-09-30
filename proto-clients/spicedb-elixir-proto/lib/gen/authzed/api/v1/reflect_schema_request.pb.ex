@@ -1,5 +1,7 @@
 defmodule Authzed.Api.V1.ReflectSchemaRequest do
-  @moduledoc false
+  @moduledoc """
+  Reflection types ////////////////////////////////////////////
+  """
 
   use Protobuf,
     full_name: "authzed.api.v1.ReflectSchemaRequest",

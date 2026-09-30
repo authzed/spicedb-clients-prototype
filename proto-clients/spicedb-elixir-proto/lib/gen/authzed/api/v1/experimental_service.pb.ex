@@ -1,5 +1,8 @@
 defmodule Authzed.Api.V1.ExperimentalService.Service do
-  @moduledoc false
+  @moduledoc """
+  ExperimentalService exposes a number of APIs that are currently being
+  prototyped and tested for future inclusion in the stable API.
+  """
 
   use GRPC.Service,
     name: "authzed.api.v1.ExperimentalService",
@@ -18,7 +21,5 @@ defmodule Authzed.Api.V1.ExperimentalService.Service do
 end
 
 defmodule Authzed.Api.V1.ExperimentalService.Stub do
-  @moduledoc false
-
   use GRPC.Stub, service: Authzed.Api.V1.ExperimentalService.Service
 end

@@ -1,5 +1,7 @@
 defmodule Authzed.Api.V1.LookupPermissionship do
-  @moduledoc false
+  @moduledoc """
+  LookupPermissionship represents whether a Lookup response was partially evaluated or not
+  """
 
   use Protobuf,
     enum: true,

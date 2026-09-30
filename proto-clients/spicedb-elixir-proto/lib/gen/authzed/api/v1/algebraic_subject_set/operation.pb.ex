@@ -1,6 +1,4 @@
 defmodule Authzed.Api.V1.AlgebraicSubjectSet.Operation do
-  @moduledoc false
-
   use Protobuf,
     enum: true,
     full_name: "authzed.api.v1.AlgebraicSubjectSet.Operation",

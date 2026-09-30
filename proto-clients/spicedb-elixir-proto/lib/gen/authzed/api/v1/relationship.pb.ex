@@ -1,5 +1,9 @@
 defmodule Authzed.Api.V1.Relationship do
-  @moduledoc false
+  @moduledoc """
+  Relationship specifies how a resource relates to a subject. Relationships
+  form the data for the graph over which all permissions questions are
+  answered.
+  """
 
   use Protobuf,
     full_name: "authzed.api.v1.Relationship",

@@ -1,5 +1,7 @@
 defmodule Authzed.Api.V1.ReadSchemaRequest do
-  @moduledoc false
+  @moduledoc """
+  ReadSchemaRequest returns the schema from the database.
+  """
 
   use Protobuf,
     full_name: "authzed.api.v1.ReadSchemaRequest",

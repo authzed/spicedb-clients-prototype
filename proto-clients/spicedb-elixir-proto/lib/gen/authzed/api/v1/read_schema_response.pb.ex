@@ -1,5 +1,8 @@
 defmodule Authzed.Api.V1.ReadSchemaResponse do
-  @moduledoc false
+  @moduledoc """
+  ReadSchemaResponse is the resulting data after having read the Object
+  Definitions from a Schema.
+  """
 
   use Protobuf,
     full_name: "authzed.api.v1.ReadSchemaResponse",

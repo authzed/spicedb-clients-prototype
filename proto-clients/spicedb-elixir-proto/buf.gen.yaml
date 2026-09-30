@@ -22,5 +22,10 @@ plugins:
       # protoc-gen-elixir 0.17.0's generator.ex. This opt switches to one file
       # per generated Elixir module instead, named from the module alone.
       - one_file_per_module=true
+      # Without this, every generated module and struct gets `@moduledoc
+      # false`, discarding the proto source comments entirely -- confirmed
+      # against TrogonStack/protoc-gen's generator.go, which only emits
+      # @moduledoc from the proto comment when this opt is set.
+      - include_docs=true
 inputs:
   - module: buf.build/authzed/api

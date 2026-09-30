@@ -1,5 +1,7 @@
 defmodule Authzed.Api.V1.BulkCheckPermissionRequest do
-  @moduledoc false
+  @moduledoc """
+  NOTE: Deprecated now that BulkCheckPermission has been promoted to the stable API as "CheckBulkPermission".
+  """
 
   use Protobuf,
     full_name: "authzed.api.v1.BulkCheckPermissionRequest",

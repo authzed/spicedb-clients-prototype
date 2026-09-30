@@ -1,5 +1,13 @@
 defmodule Authzed.Api.V1.ExpandPermissionTreeRequest do
-  @moduledoc false
+  @moduledoc """
+  ExpandPermissionTreeRequest returns a tree representing the expansion of all
+  relationships found accessible from a permission or relation on a particular
+  resource.
+
+  ExpandPermissionTreeRequest is typically used to determine the full set of
+  subjects with a permission, along with the relationships that grant said
+  access.
+  """
 
   use Protobuf,
     full_name: "authzed.api.v1.ExpandPermissionTreeRequest",

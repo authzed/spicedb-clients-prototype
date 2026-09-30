@@ -1,5 +1,8 @@
 defmodule Authzed.Api.V1.LookupSubjectsResponse do
-  @moduledoc false
+  @moduledoc """
+  LookupSubjectsResponse contains a single matching subject object ID for the
+  requested subject object type on the permission or relation.
+  """
 
   use Protobuf,
     full_name: "authzed.api.v1.LookupSubjectsResponse",

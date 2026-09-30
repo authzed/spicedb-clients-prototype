@@ -1,5 +1,8 @@
 defmodule Authzed.Api.V1.PermissionsService.Service do
-  @moduledoc false
+  @moduledoc """
+  PermissionsService implements a set of RPCs that perform operations on
+  relationships and permissions.
+  """
 
   use GRPC.Service, name: "authzed.api.v1.PermissionsService", protoc_gen_elixir_version: "0.17.0"
 
@@ -16,7 +19,5 @@ defmodule Authzed.Api.V1.PermissionsService.Service do
 end
 
 defmodule Authzed.Api.V1.PermissionsService.Stub do
-  @moduledoc false
-
   use GRPC.Stub, service: Authzed.Api.V1.PermissionsService.Service
 end

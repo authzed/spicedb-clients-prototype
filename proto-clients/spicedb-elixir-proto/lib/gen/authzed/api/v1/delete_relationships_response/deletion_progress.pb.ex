@@ -1,6 +1,4 @@
 defmodule Authzed.Api.V1.DeleteRelationshipsResponse.DeletionProgress do
-  @moduledoc false
-
   use Protobuf,
     enum: true,
     full_name: "authzed.api.v1.DeleteRelationshipsResponse.DeletionProgress",

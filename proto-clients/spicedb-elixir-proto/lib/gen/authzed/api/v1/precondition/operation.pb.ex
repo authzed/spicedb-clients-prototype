@@ -1,6 +1,4 @@
 defmodule Authzed.Api.V1.Precondition.Operation do
-  @moduledoc false
-
   use Protobuf,
     enum: true,
     full_name: "authzed.api.v1.Precondition.Operation",

@@ -1,5 +1,7 @@
 defmodule Authzed.Api.V1.ResolvedSubject do
-  @moduledoc false
+  @moduledoc """
+  ResolvedSubject is a single subject resolved within LookupSubjects.
+  """
 
   use Protobuf,
     full_name: "authzed.api.v1.ResolvedSubject",

@@ -1,5 +1,7 @@
 defmodule Authzed.Api.V1.ReflectionTypeReference do
-  @moduledoc false
+  @moduledoc """
+  ReflectionTypeReference is the representation of a type reference in the schema.
+  """
 
   use Protobuf,
     full_name: "authzed.api.v1.ReflectionTypeReference",

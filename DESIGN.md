@@ -34,6 +34,7 @@ Language-appropriate deprecation mechanisms:
 - **Java**: `@Deprecated` annotation + `@deprecated` Javadoc tag
 - **Ruby**: `warn "[DEPRECATION] ..."` in method body
 - **Rust**: `#[deprecated(note = "Use XYZ instead")]` attribute
+- **Elixir**: `@deprecated "Use XYZ instead"` module attribute + `IO.warn("[DEPRECATION] ...")` at the call site
 
 Deprecated methods must remain functional until removed from the proto definitions.
 

@@ -219,6 +219,7 @@ proto-clients/               # buf-generated proto clients (internal)
   spicedb-java-proto/
   spicedb-ruby-proto/
   spicedb-rust-proto/
+  spicedb-elixir-proto/
 spicedb-go/                  # Idiomatic Go client
 spicedb-python/              # Idiomatic Python client
 spicedb-typescript/          # Idiomatic TypeScript client
@@ -237,7 +238,7 @@ spicedb-gen/                 # Type-safe client code generator
 
 ## Development
 
-Requires: [Mage](https://magefile.org), [Go 1.24+](https://go.dev), [Python 3.11+](https://python.org) with [uv](https://docs.astral.sh/uv/), [Node.js](https://nodejs.org) with [pnpm](https://pnpm.io), [.NET 8+](https://dotnet.microsoft.com), [Java 17+](https://openjdk.org) with [Gradle](https://gradle.org), [Ruby 3.2+](https://ruby-lang.org) with [Bundler](https://bundler.io), [Rust](https://rustup.rs), [Docker](https://docker.com)
+Requires: [Mage](https://magefile.org), [Go 1.24+](https://go.dev), [Python 3.11+](https://python.org) with [uv](https://docs.astral.sh/uv/), [Node.js](https://nodejs.org) with [pnpm](https://pnpm.io), [.NET 8+](https://dotnet.microsoft.com), [Java 17+](https://openjdk.org) with [Gradle](https://gradle.org), [Ruby 3.2+](https://ruby-lang.org) with [Bundler](https://bundler.io), [Rust](https://rustup.rs), [Elixir 1.16+](https://elixir-lang.org) with [Erlang/OTP 25+](https://www.erlang.org), [Docker](https://docker.com)
 
 ### Mage targets
 

@@ -21,7 +21,11 @@ import (
 	"github.com/magefile/mage/sh"
 )
 
-var languages = []string{"go", "python", "typescript", "csharp", "java", "ruby", "rust"}
+// elixir has a proto-clients/spicedb-elixir-proto tier but no spicedb-elixir
+// idiomatic tier yet, so aggregate idiomatic-tier targets (Gen.Client,
+// Lint.All, Test) fail for it until that tier exists -- see each target's own
+// handling of a missing idiomatic directory.
+var languages = []string{"go", "python", "typescript", "csharp", "java", "ruby", "rust", "elixir"}
 
 var apiCompatLanguages = []string{"go", "python", "typescript", "csharp", "java", "rust"}
 
@@ -82,7 +86,7 @@ func (Gen) Proto() error {
 	return genProtoLangs(languages)
 }
 
-// ProtoLang regenerates a single proto client by language name (go, python, typescript, csharp, java, ruby, rust).
+// ProtoLang regenerates a single proto client by language name (go, python, typescript, csharp, java, ruby, rust, elixir).
 func (Gen) ProtoLang(lang string) error {
 	return genProtoLangs([]string{lang})
 }
@@ -207,8 +211,8 @@ func checkSummaryWritten(outPath string) error {
 // defaultGenConcurrency is used whenever GEN_CONCURRENCY is unset, empty, or
 // not a parseable integer. Chosen per the design doc's "start at 3-4 and
 // tune": the runner this targets (depot-ubuntu-24.04-arm-8) has eight cores
-// for seven languages' worth of heavy build/test retry loops, so 4 gives two
-// rounds per tier rather than one wave of seven contending directly.
+// for eight languages' worth of heavy build/test retry loops, so 4 gives two
+// rounds per tier rather than one wave of eight contending directly.
 const defaultGenConcurrency = 4
 
 // genConcurrency reads GEN_CONCURRENCY leniently: unset, empty, or anything

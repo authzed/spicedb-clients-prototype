@@ -1,0 +1,128 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+---
+name: Elixir
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: ["*"]
+  merge_group:
+    types: [checks_requested]
+permissions:
+  contents: read
+concurrency:
+  group: "elixir-${{ github.event.pull_request.number || github.sha }}"
+  cancel-in-progress: true
+jobs:
+  paths-filter:
+    runs-on: depot-ubuntu-24.04-arm-small
+    # No job may sit at GitHub's 360-minute default: a hung step should
+    # fail fast and free the runner. The slowest job here runs well under
+    # five minutes, so this is a backstop, not a budget.
+    timeout-minutes: 20
+    outputs:
+      changed: ${{ steps.filter.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v3
+        id: filter
+        with:
+          filters: |
+            changed:
+              - '.github/workflows/elixir.yaml'
+              - 'Magefile.go'
+              - 'go.mod'
+              - 'go.sum'
+              - 'proto-clients/spicedb-elixir-proto/**'
+              - 'spicedb-elixir/**'
+
+  lint:
+    needs: paths-filter
+    if: needs.paths-filter.outputs.changed == 'true'
+    runs-on: depot-ubuntu-24.04-arm-4
+    # No job may sit at GitHub's 360-minute default: a hung step should
+    # fail fast and free the runner. The slowest job here runs well under
+    # five minutes, so this is a backstop, not a budget.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      # Held at v5 deliberately. setup-go v6+ defaults GOTOOLCHAIN=local, so Go
+      # stops fetching the toolchain go.mod asks for and every job that needs a
+      # newer one dies with "go.mod requires go >= 1.25.7 (running go 1.24.13;
+      # GOTOOLCHAIN=local)". Moving to v6/v7 needs explicit toolchain handling,
+      # which is its own change rather than a dependency bump.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          otp-version: '27'
+          elixir-version: '1.18'
+      - name: Install Elixir deps
+        working-directory: spicedb-elixir
+        run: mix deps.get
+      - name: Install mage
+        timeout-minutes: 5
+        run: go install github.com/magefile/mage@latest
+      - name: Lint
+        run: mage -d spicedb-elixir lint
+
+  unit:
+    needs: paths-filter
+    if: needs.paths-filter.outputs.changed == 'true'
+    runs-on: depot-ubuntu-24.04-arm-4
+    # No job may sit at GitHub's 360-minute default: a hung step should
+    # fail fast and free the runner. The slowest job here runs well under
+    # five minutes, so this is a backstop, not a budget.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          otp-version: '27'
+          elixir-version: '1.18'
+      - name: Install Elixir deps (idiomatic client)
+        working-directory: spicedb-elixir
+        run: mix deps.get
+      - name: Install Elixir deps (proto client)
+        working-directory: proto-clients/spicedb-elixir-proto
+        run: mix deps.get
+      - name: Install mage
+        timeout-minutes: 5
+        run: go install github.com/magefile/mage@latest
+      - name: Proto client tests
+        run: mage -d proto-clients/spicedb-elixir-proto test
+      - name: Idiomatic client tests
+        run: mage -d spicedb-elixir test
+
+  integration:
+    needs: paths-filter
+    if: needs.paths-filter.outputs.changed == 'true'
+    runs-on: depot-ubuntu-24.04-arm-4
+    # No job may sit at GitHub's 360-minute default: a hung step should
+    # fail fast and free the runner. The slowest job here runs well under
+    # five minutes, so this is a backstop, not a budget.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          otp-version: '27'
+          elixir-version: '1.18'
+      - name: Install Elixir deps (idiomatic client)
+        working-directory: spicedb-elixir
+        run: mix deps.get
+      - name: Install Elixir deps (proto client)
+        working-directory: proto-clients/spicedb-elixir-proto
+        run: mix deps.get
+      - name: Install mage
+        timeout-minutes: 5
+        run: go install github.com/magefile/mage@latest
+      - name: Integration test
+        run: mage -d spicedb-elixir integrationTest

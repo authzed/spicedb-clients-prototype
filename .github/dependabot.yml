@@ -22,6 +22,7 @@ updates:
       - /spicedb-java
       - /spicedb-ruby
       - /spicedb-rust
+      - /spicedb-elixir
       - /proto-clients/spicedb-go-proto
       - /proto-clients/spicedb-python-proto
       - /proto-clients/spicedb-typescript-proto
@@ -29,6 +30,7 @@ updates:
       - /proto-clients/spicedb-java-proto
       - /proto-clients/spicedb-ruby-proto
       - /proto-clients/spicedb-rust-proto
+      - /proto-clients/spicedb-elixir-proto
     schedule:
       interval: weekly
     groups:
@@ -101,4 +103,15 @@ updates:
       interval: weekly
     groups:
       cargo:
+        patterns: ["*"]
+
+  # Elixir (Hex)
+  - package-ecosystem: hex
+    directories:
+      - /proto-clients/spicedb-elixir-proto
+      - /spicedb-elixir
+    schedule:
+      interval: weekly
+    groups:
+      hex:
         patterns: ["*"]

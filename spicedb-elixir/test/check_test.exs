@@ -1,9 +1,11 @@
 defmodule SpiceDB.CheckTest do
-  use ExUnit.Case, async: true
+  # grpc-elixir's Mint adapter is unreliable under many concurrent short-lived
+  # connections; serialize this file rather than risk flaky failures.
+  use ExUnit.Case, async: false
 
   alias Authzed.Api.V1
   alias SpiceDB.{CheckResult, Consistency, Relationship}
-  alias SpiceDB.Test.FakeTransport
+  alias SpiceDB.Test.Forwarder
 
   @rel Relationship.from_triple("document", "d", "viewer", "user", "alice")
 
@@ -15,6 +17,14 @@ defmodule SpiceDB.CheckTest do
     }
   end
 
+  defp client(handler) do
+    Forwarder.client!(V1.PermissionsService.Service, %{CheckPermission: :unary}, handler)
+  end
+
+  defp bulk_client(handler) do
+    Forwarder.client!(V1.PermissionsService.Service, %{CheckBulkPermissions: :unary}, handler)
+  end
+
   describe "check_permission/5" do
     test "maps each permissionship, and only :has_permission is a grant" do
       for {wire, mapped, granted} <- [
@@ -24,7 +34,7 @@ defmodule SpiceDB.CheckTest do
             {:PERMISSIONSHIP_UNSPECIFIED, :unspecified, false},
             {4242, :unspecified, false}
           ] do
-        client = FakeTransport.client(fn :CheckPermission, _ -> {:ok, check_response(wire)} end)
+        client = client(fn :CheckPermission, _ -> {:ok, check_response(wire)} end)
         {:ok, result} = SpiceDB.check_permission(client, Consistency.full(), "view", @rel)
         assert result.permissionship == mapped
         assert CheckResult.has_permission?(result) == granted
@@ -34,7 +44,7 @@ defmodule SpiceDB.CheckTest do
 
     test "reports missing caveat context" do
       client =
-        FakeTransport.client(fn _, _ ->
+        client(fn _, _ ->
           {:ok, check_response(:PERMISSIONSHIP_CONDITIONAL_PERMISSION, ["now"])}
         end)
 
@@ -43,8 +53,7 @@ defmodule SpiceDB.CheckTest do
     end
 
     test "sends the relationship's resource and subject, and the permission" do
-      client =
-        FakeTransport.client(fn _, _ -> {:ok, check_response(:PERMISSIONSHIP_NO_PERMISSION)} end)
+      client = client(fn _, _ -> {:ok, check_response(:PERMISSIONSHIP_NO_PERMISSION)} end)
 
       rel = Relationship.from_triple("document", "d", "viewer", "group", "eng", "member")
       SpiceDB.check_permission(client, Consistency.min_latency(), "edit", rel)
@@ -59,8 +68,7 @@ defmodule SpiceDB.CheckTest do
     end
 
     test "merges call and relationship context, the relationship winning per key" do
-      client =
-        FakeTransport.client(fn _, _ -> {:ok, check_response(:PERMISSIONSHIP_NO_PERMISSION)} end)
+      client = client(fn _, _ -> {:ok, check_response(:PERMISSIONSHIP_NO_PERMISSION)} end)
 
       rel = Relationship.with_check_context(@rel, %{"a" => 1, b: "item"})
 
@@ -78,7 +86,7 @@ defmodule SpiceDB.CheckTest do
     end
 
     test "rejects a non-Consistency value without sending" do
-      client = FakeTransport.client(fn _, _ -> flunk("sent") end)
+      client = client(fn _, _ -> flunk("sent") end)
 
       assert {:error, %SpiceDB.InvalidArgumentError{}} =
                SpiceDB.check_permission(client, :full, "view", @rel)
@@ -86,7 +94,7 @@ defmodule SpiceDB.CheckTest do
 
     test "the bang variant raises the typed error" do
       client =
-        FakeTransport.client(fn _, _ ->
+        client(fn _, _ ->
           {:error, %GRPC.RPCError{status: 5, message: "gone"}}
         end)
 
@@ -119,7 +127,7 @@ defmodule SpiceDB.CheckTest do
         for i <- 1..2500, do: Relationship.from_triple("document", "#{i}", "viewer", "user", "u")
 
       client =
-        FakeTransport.client(
+        bulk_client(
           bulk_handler(fn item ->
             if rem(String.to_integer(item.resource.object_id), 2) == 0,
               do: :PERMISSIONSHIP_HAS_PERMISSION,
@@ -147,7 +155,7 @@ defmodule SpiceDB.CheckTest do
 
     test "a per-item error fails the call with that item's typed error" do
       client =
-        FakeTransport.client(fn _, _ ->
+        bulk_client(fn _, _ ->
           {:ok,
            %V1.CheckBulkPermissionsResponse{
              pairs: [
@@ -164,7 +172,7 @@ defmodule SpiceDB.CheckTest do
 
     test "a pair count that does not match the request is an error" do
       client =
-        FakeTransport.client(fn _, _ -> {:ok, %V1.CheckBulkPermissionsResponse{pairs: []}} end)
+        bulk_client(fn _, _ -> {:ok, %V1.CheckBulkPermissionsResponse{pairs: []}} end)
 
       assert {:error, %SpiceDB.Error{message: message}} =
                SpiceDB.check_permissions(client, Consistency.full(), "view", [@rel])
@@ -174,7 +182,7 @@ defmodule SpiceDB.CheckTest do
 
     test "a pair with neither item nor error is an error" do
       client =
-        FakeTransport.client(fn _, _ ->
+        bulk_client(fn _, _ ->
           {:ok, %V1.CheckBulkPermissionsResponse{pairs: [%V1.CheckBulkPermissionsPair{}]}}
         end)
 
@@ -183,21 +191,20 @@ defmodule SpiceDB.CheckTest do
     end
 
     test "an empty list sends nothing" do
-      client = FakeTransport.client(fn _, _ -> flunk("sent") end)
+      client = bulk_client(fn _, _ -> flunk("sent") end)
       assert {:ok, []} = SpiceDB.check_permissions(client, Consistency.full(), "view", [])
     end
   end
 
   describe "check_any/5 and check_all/5" do
     test "an empty list is false for both, and sends nothing" do
-      client = FakeTransport.client(fn _, _ -> flunk("sent") end)
+      client = bulk_client(fn _, _ -> flunk("sent") end)
       assert {:ok, false} = SpiceDB.check_any(client, Consistency.full(), "view", [])
       assert {:ok, false} = SpiceDB.check_all(client, Consistency.full(), "view", [])
     end
 
     test "a conditional result counts as no grant" do
-      client =
-        FakeTransport.client(bulk_handler(fn _ -> :PERMISSIONSHIP_CONDITIONAL_PERMISSION end))
+      client = bulk_client(bulk_handler(fn _ -> :PERMISSIONSHIP_CONDITIONAL_PERMISSION end))
 
       assert {:ok, false} = SpiceDB.check_any(client, Consistency.full(), "view", [@rel])
       assert {:ok, false} = SpiceDB.check_all(client, Consistency.full(), "view", [@rel])
@@ -207,7 +214,7 @@ defmodule SpiceDB.CheckTest do
       rels = [@rel, Relationship.from_triple("document", "e", "viewer", "user", "bob")]
 
       client =
-        FakeTransport.client(
+        bulk_client(
           bulk_handler(fn item ->
             if item.resource.object_id == "d",
               do: :PERMISSIONSHIP_HAS_PERMISSION,

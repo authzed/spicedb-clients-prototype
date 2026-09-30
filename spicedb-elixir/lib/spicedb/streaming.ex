@@ -24,8 +24,7 @@ defmodule SpiceDB.Streaming do
 
       start = fn -> state(first_page(claimed, first, client, spec), nil) end
 
-      {:ok,
-       Stream.resource(start, &step(client, spec, &1), fn state -> release(client, state) end)}
+      {:ok, Stream.resource(start, &step(client, spec, &1), &release/1)}
     end
   end
 
@@ -35,29 +34,27 @@ defmodule SpiceDB.Streaming do
       else: establish!(client, spec, nil)
   end
 
-  defp state({handle, buffer}, cursor),
-    do: %{handle: handle, buffer: buffer, cursor: cursor, count: 0}
+  defp state({puller, buffer}, cursor),
+    do: %{puller: puller, buffer: buffer, cursor: cursor, count: 0}
 
   defp step(_client, spec, %{buffer: [msg | rest]} = state),
     do: emit(spec, msg, %{state | buffer: rest})
 
-  defp step(_client, _spec, %{handle: nil} = state), do: {:halt, state}
+  defp step(_client, _spec, %{puller: nil} = state), do: {:halt, state}
 
-  defp step(client, spec, %{handle: handle} = state) do
-    case client.transport.next(handle) do
-      {:ok, msg, handle} ->
-        emit(spec, msg, %{state | handle: handle})
+  defp step(client, spec, %{puller: puller} = state) do
+    case pull(puller) do
+      {:item, {:ok, msg}, puller} ->
+        emit(spec, msg, %{state | puller: puller})
 
-      {:done, handle} ->
+      :done ->
         if more_pages?(spec, state) do
-          client.transport.cancel(handle)
           {[], state(establish!(client, spec, state.cursor), state.cursor)}
         else
-          {:halt, %{state | handle: handle}}
+          {:halt, %{state | puller: nil}}
         end
 
-      {:error, failure, handle} ->
-        client.transport.cancel(handle)
+      {:item, {:error, failure}, _puller} ->
         raise Retry.normalize(failure)
     end
   end
@@ -73,8 +70,8 @@ defmodule SpiceDB.Streaming do
   defp more_pages?(%{page_size: size}, %{count: count, cursor: cursor}),
     do: count >= size and cursor != nil
 
-  defp release(_client, %{handle: nil}), do: :ok
-  defp release(client, %{handle: handle}), do: client.transport.cancel(handle)
+  # No handle exists to cancel a server-streaming call; see DESIGN.md's "Stream lifecycle" section.
+  defp release(_state), do: :ok
 
   defp establish!(client, spec, cursor) do
     case establish(client, spec, cursor) do
@@ -91,23 +88,46 @@ defmodule SpiceDB.Streaming do
   defp open_page(client, spec, cursor) do
     request = spec.request.(cursor)
 
-    with {:ok, handle} <-
-           client.transport.open_stream(client.conn, spec.service, spec.rpc, request) do
-      if spec.prefetch, do: prefetch(client, handle), else: {:ok, {handle, []}}
+    with {:ok, enumerable} <- call_stream(client.conn, spec.service, spec.rpc, request) do
+      puller = {:cont, enumerable}
+      if spec.prefetch, do: prefetch(puller), else: {:ok, {puller, []}}
     end
   end
 
-  defp prefetch(client, handle) do
-    case client.transport.next(handle) do
-      {:ok, msg, handle} ->
-        {:ok, {handle, [msg]}}
+  defp call_stream(conn, service, rpc, request) do
+    apply(stub_module(service), stub_function(rpc), [conn, request, []])
+  end
 
-      {:done, handle} ->
-        {:ok, {handle, []}}
-
-      {:error, failure, handle} ->
-        client.transport.cancel(handle)
-        {:error, failure}
+  defp prefetch(puller) do
+    case pull(puller) do
+      :done -> {:ok, {nil, []}}
+      {:item, {:ok, msg}, puller} -> {:ok, {puller, [msg]}}
+      {:item, {:error, failure}, _puller} -> {:error, failure}
     end
+  end
+
+  defp pull({:cont, enumerable}), do: pull_result(reduce_step(enumerable))
+  defp pull({:suspended, continuation}), do: pull_result(continuation.({:cont, []}))
+
+  defp pull_result({:done, []}), do: :done
+
+  defp pull_result({:suspended, [item], continuation}),
+    do: {:item, item, {:suspended, continuation}}
+
+  defp reduce_step(enumerable),
+    do: Enumerable.reduce(enumerable, {:cont, []}, fn item, _acc -> {:suspend, [item]} end)
+
+  defp stub_module(service) do
+    service
+    |> Module.split()
+    |> List.replace_at(-1, "Stub")
+    |> Module.concat()
+  end
+
+  defp stub_function(rpc) do
+    rpc
+    |> Atom.to_string()
+    |> Macro.underscore()
+    |> String.to_existing_atom()
   end
 end

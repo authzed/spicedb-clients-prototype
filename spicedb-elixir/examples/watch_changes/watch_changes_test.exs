@@ -84,15 +84,10 @@ defmodule SpiceDB.Examples.WatchChangesTest do
     assert Enum.any?(seen, &(&1.updates != [] and not &1.is_checkpoint))
   end
 
-  test "surfaces a bad start revision as a typed error on first enumeration", %{client: client} do
-    assert {:ok, events} = SpiceDB.watch(client, ["document"], start_revision: "not-a-token")
+  test "surfaces a bad start revision as a typed error from the call itself", %{client: client} do
+    assert {:error, %SpiceDB.InvalidArgumentError{code: 3, message: message}} =
+             SpiceDB.watch(client, ["document"], start_revision: "not-a-token")
 
-    raised =
-      assert_raise SpiceDB.InvalidArgumentError, fn ->
-        within(@watch_timeout, fn -> Enum.take(events, 1) end)
-      end
-
-    assert raised.code == 3
-    assert raised.message =~ "start revision"
+    assert message =~ "start revision"
   end
 end

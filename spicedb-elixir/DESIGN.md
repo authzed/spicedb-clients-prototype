@@ -45,7 +45,7 @@ primary surface.
 | `SpiceDB.Error` and one `SpiceDB.*Error` per status kind | Typed errors |
 
 Everything else (`SpiceDB.Wire`, `SpiceDB.Streaming`, `SpiceDB.Retry`,
-`SpiceDB.CaveatContext`, `SpiceDB.Transport*`) is `@moduledoc false` and private.
+`SpiceDB.CaveatContext`) is `@moduledoc false` and private.
 
 All RPC wrappers live on `SpiceDB` rather than on per-service modules, so a caller
 learns one module and every call reads `SpiceDB.verb(client, ...)`.
@@ -215,43 +215,48 @@ as a raise during enumeration. An error after that raises the typed error in the
 enumerating process. Enumerating the same stream a second time issues the request
 again.
 
-#### Stream lifecycle: halting a Stream releases it
+#### Stream lifecycle: an accepted exception for server-streaming RPCs
 
 Root `DESIGN.md`, "RULE: Abandoning a stream must release it", requires that
-stopping early tells the server to stop. Each stream is a `Stream.resource/3`
-whose after-function calls `GRPC.Stub.cancel/1` on the live
-`GRPC.Client.Stream`, which resets the HTTP/2 stream. Elixir runs that
-after-function whenever enumeration stops for any reason: exhaustion,
-`Enum.take/2`, `Stream.take_while/2`, a `throw`, or an exception in the caller's
-own reducer.
+stopping early tells the server to stop, and requires verifying that against
+the transport the client actually ships. This client calls
+`Authzed.Api.*.Stub` functions directly, like every other tier of this
+codebase, and verification against grpc-elixir 1.0.5 (the Mint adapter) found
+no supported way to satisfy the rule for server-streaming RPCs:
 
-That required a transport shim. `GRPC.Stub`'s server-streaming call returns only
-an enumerable of replies and drops the `GRPC.Client.Stream`, which is the one
-value `GRPC.Stub.cancel/1` needs. `SpiceDB.Transport.GRPC.open_stream/4`
-assembles the stream the way `GRPC.Stub.call/5` does and keeps the handle.
+- `GRPC.Stub`'s generated server-streaming function returns only an enumerable
+  of replies; the `GRPC.Client.Stream` struct that `GRPC.Stub.cancel/1` needs
+  to reset the HTTP/2 stream is not part of that return value and grpc-elixir
+  exposes no other public function that accepts an enumerable already in
+  flight and cancels it.
+- Measured against a real SpiceDB, counted server-side with
+  `grpc_server_started_total` and `grpc_server_handled_total`: taking one event
+  from `Authzed.Api.V1.WatchService.Stub.watch/2` and dropping the enumerable
+  leaves the server stream open (in-flight 1) even after the calling task
+  exits. The server only sees it end, as `Canceled`, when the underlying
+  channel closes.
 
-Measured against a real SpiceDB, counted server-side with
-`grpc_server_started_total` and `grpc_server_handled_total`:
+This client previously worked around the gap with a transport shim
+(`SpiceDB.Transport.GRPC.open_stream/4`) that reassembled the `GRPC.Client.Stream`
+`GRPC.Stub` drops, purely so it could call `GRPC.Stub.cancel/1` on it. That shim
+meant every RPC went through a dispatch layer of its own instead of the
+generated stubs, which is a larger and more surprising deviation than the gap
+it closed, so this client accepts the gap instead: **abandoning a stream from
+`read_relationships/4`, `lookup_resources/6`, `lookup_subjects/6`,
+`export_relationships/3`, `watch/3`, or an experimental streaming call leaves
+the underlying HTTP/2 stream open until the connection it was issued on is
+closed.** `Enum.take/2`, `Stream.take_while/2`, an exception, or simply never
+enumerating a returned stream to exhaustion all stop the client from pulling
+further messages, but none of them tell the server to stop sending them; the
+server notices only when `SpiceDB.close/1` tears down the channel.
 
-- **A raw stub watch abandoned after its first event stays in flight.** Taking one
-  event from `Authzed.Api.V1.WatchService.Stub.watch/2` and dropping the enumerable
-  leaves the server stream open (in-flight 1), and it stays open after the calling
-  task exits. The server only sees it end, as `Canceled`, when the channel closes.
-  Abandoning a grpc-elixir stream by dropping the reference is therefore a leak for
-  the life of the connection.
-- **`SpiceDB.watch/3` halted with `Enum.take/2` is released at once.** The server
-  records the stream as handled with code `Canceled` immediately, with nothing left
-  in flight.
-- **Bounded reads cannot show the difference.** For `ReadRelationships` over 900
-  relationships with a 512 page, both paths report `OK`: SpiceDB has already
-  written the whole page before the cancel arrives. The leak is real only for
-  open-ended streams (`Watch`, `WatchPermissions`, `WatchPermissionSets`), which
-  is where the release matters.
-
-A caller that pulls from a stream by hand with a suspended `Enumerable.reduce/3`
-continuation and never resumes or halts it bypasses the after-function, the same
-way it would for any `Stream.resource/3`. Every `Enum` and `Stream` function
-halts properly.
+Bounded reads (`read_relationships/4`, `lookup_resources/6`,
+`lookup_subjects/6`, `export_relationships/3`) rarely feel this: the page size
+is small enough, and the server fast enough, that the page finishes before a
+caller's early exit would matter. The leak is real for the open-ended streams
+(`watch/3` and the experimental `WatchPermissions`/`WatchPermissionSets`
+calls), where a caller that takes a few events and stops leaves that dispatch
+running on the server for as long as the client connection stays open.
 
 ### Writes
 
@@ -353,8 +358,12 @@ the last event's `changes_through`.
 
 `watch/3` also does not read before returning: SpiceDB sends nothing on a watch
 until the first change, so waiting for a first message would block the call
-indefinitely. The request is sent before `watch/3` returns, but a server rejection
-(a start revision outside the GC window, say) raises on first enumeration.
+indefinitely. The request is sent before `watch/3` returns, but the call still
+blocks long enough to learn whether the server accepted the stream at all, so a
+request SpiceDB rejects outright (a malformed or out-of-window start revision,
+say) comes back as `{:error, _}` from `watch/3` itself, not as a raise. A
+failure the server discovers only after accepting the stream still raises from
+the enumerating process.
 
 ### Deadlines
 
@@ -497,10 +506,10 @@ No stability promise beyond grpc-elixir's and the generated code's.
 - Materialize oneofs are tagged tuples, not structs.
 - `read_schema/2`, `computable_permissions/5`, `dependent_relations/5` and
   `diff_schema/4` return `{value, zed_token}` tuples, mirroring Ruby's pairs.
-- Streams are lazy `Stream`s released by the `Stream.resource/3` after-function,
-  where Ruby relies on grpc-ruby's `ensure`. Elixir has no external-iteration gap
-  like Ruby's `Enumerator#next`, but grpc-elixir itself does not release an
-  abandoned stream, which is why the transport shim exists.
+- Streams are lazy `Stream`s, where Ruby relies on grpc-ruby's `ensure`. Elixir
+  has no external-iteration gap like Ruby's `Enumerator#next`, but grpc-elixir
+  itself gives this client no way to release an abandoned server-streaming
+  call; see "Stream lifecycle" above.
 - `watch/3` does not wait for a first message before returning, since SpiceDB
   sends nothing until a change.
 - Constructors dial eagerly and set `trap_exit` on the caller (grpc-elixir

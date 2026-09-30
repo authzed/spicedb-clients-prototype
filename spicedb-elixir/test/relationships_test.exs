@@ -1,15 +1,33 @@
 defmodule SpiceDB.RelationshipsTest do
-  use ExUnit.Case, async: true
+  # grpc-elixir's Mint adapter is unreliable under many concurrent short-lived
+  # connections; serialize this file rather than risk flaky failures.
+  use ExUnit.Case, async: false
 
   alias Authzed.Api.V1
   alias SpiceDB.{Filter, Relationship, Transaction}
-  alias SpiceDB.Test.FakeTransport
+  alias SpiceDB.Test.Forwarder
 
   @rel Relationship.from_triple("document", "d", "viewer", "user", "alice")
 
+  defp write_client(handler) do
+    Forwarder.client!(V1.PermissionsService.Service, %{WriteRelationships: :unary}, handler)
+  end
+
+  defp delete_client(handler) do
+    Forwarder.client!(V1.PermissionsService.Service, %{DeleteRelationships: :unary}, handler)
+  end
+
+  defp import_client(handler) do
+    Forwarder.client!(
+      V1.PermissionsService.Service,
+      %{ImportBulkRelationships: :client_stream},
+      handler
+    )
+  end
+
   test "write_relationships sends updates and preconditions and returns the revision" do
     client =
-      FakeTransport.client(fn :WriteRelationships, _ ->
+      write_client(fn :WriteRelationships, _ ->
         {:ok, %V1.WriteRelationshipsResponse{written_at: %V1.ZedToken{token: "w"}}}
       end)
 
@@ -26,7 +44,7 @@ defmodule SpiceDB.RelationshipsTest do
   end
 
   test "caveats and expiration go over the wire" do
-    client = FakeTransport.client(fn _, _ -> {:ok, %V1.WriteRelationshipsResponse{}} end)
+    client = write_client(fn _, _ -> {:ok, %V1.WriteRelationshipsResponse{}} end)
     at = ~U[2030-01-01 00:00:00.000000Z]
     rel = @rel |> Relationship.with_caveat("c", %{"n" => 1}) |> Relationship.with_expiration(at)
     SpiceDB.write_relationships(client, Transaction.touch(Transaction.new(), rel))
@@ -41,7 +59,7 @@ defmodule SpiceDB.RelationshipsTest do
     counter = :counters.new(1, [])
 
     client =
-      FakeTransport.client(fn :DeleteRelationships, _ ->
+      delete_client(fn :DeleteRelationships, _ ->
         :counters.add(counter, 1, 1)
         n = :counters.get(counter, 1)
 
@@ -80,7 +98,7 @@ defmodule SpiceDB.RelationshipsTest do
   end
 
   test "a filter with subject parts but no subject type is refused before sending" do
-    client = FakeTransport.client(fn _, _ -> flunk("sent") end)
+    client = delete_client(fn _, _ -> flunk("sent") end)
     filter = Filter.new("document") |> Filter.with_subject_id("alice")
 
     assert {:error, %SpiceDB.InvalidArgumentError{message: message}} =
@@ -91,7 +109,7 @@ defmodule SpiceDB.RelationshipsTest do
 
   test "import_relationships consumes a lazy enumerable in batches of 1000" do
     client =
-      FakeTransport.client(fn :ImportBulkRelationships, reqs ->
+      import_client(fn :ImportBulkRelationships, reqs ->
         {:ok,
          %V1.ImportBulkRelationshipsResponse{
            num_loaded: Enum.sum(Enum.map(reqs, &length(&1.relationships)))
@@ -102,7 +120,7 @@ defmodule SpiceDB.RelationshipsTest do
       Stream.map(1..2500, &Relationship.from_triple("document", "#{&1}", "viewer", "user", "u"))
 
     assert {:ok, 2500} = SpiceDB.import_relationships(client, rels)
-    assert_received {:client_stream, :ImportBulkRelationships, reqs, [timeout: :infinity]}
+    assert_received {:client_stream, :ImportBulkRelationships, reqs, nil}
     assert Enum.map(reqs, &length(&1.relationships)) == [1000, 1000, 500]
   end
 

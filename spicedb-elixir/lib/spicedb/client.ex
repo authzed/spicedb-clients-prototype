@@ -8,9 +8,8 @@ defmodule SpiceDB.Client do
   freely between processes. Close it with `SpiceDB.close/1`.
   """
 
-  @enforce_keys [:transport, :conn]
+  @enforce_keys [:conn]
   defstruct [
-    :transport,
     :conn,
     proto_client: nil,
     default_timeout: 30_000,
@@ -19,7 +18,6 @@ defmodule SpiceDB.Client do
   ]
 
   @type t :: %__MODULE__{
-          transport: module(),
           conn: term(),
           proto_client: SpicedbProto.Client.t() | nil,
           default_timeout: timeout(),

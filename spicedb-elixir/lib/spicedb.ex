@@ -158,12 +158,6 @@ defmodule SpiceDB do
   @spec new_custom_tls!(String.t(), String.t(), keyword()) :: client()
   def new_custom_tls!(endpoint, token, opts), do: bang(new_custom_tls(endpoint, token, opts))
 
-  @doc false
-  @spec new_with_transport(module(), term(), keyword()) :: client()
-  def new_with_transport(transport, conn, opts \\ []) do
-    struct!(Client, [transport: transport, conn: conn] ++ opts)
-  end
-
   @doc "Closes the connection. The client must not be used afterwards."
   @spec close(client()) :: :ok
   def close(%Client{proto_client: nil}), do: :ok
@@ -187,7 +181,6 @@ defmodule SpiceDB do
       {:ok, proto} ->
         {:ok,
          %Client{
-           transport: SpiceDB.Transport.GRPC,
            conn: proto.channel,
            proto_client: proto,
            default_timeout: Keyword.get(opts, :default_timeout, 30_000)
@@ -821,7 +814,7 @@ defmodule SpiceDB do
 
   defp import_batches(client, batches, timeout) do
     with {:ok, resp} <-
-           client.transport.client_stream(
+           client_stream(
              client.conn,
              V1.PermissionsService.Service,
              :ImportBulkRelationships,
@@ -831,6 +824,48 @@ defmodule SpiceDB do
       {:ok, resp.num_loaded}
     end
   end
+
+  defp client_stream(conn, service, rpc, requests, opts) do
+    {timeout, stub_opts} = Keyword.pop(opts, :timeout, :infinity)
+    deadline = deadline(timeout)
+    stub_opts = if timeout == :infinity, do: stub_opts, else: [{:timeout, timeout} | stub_opts]
+    stream = apply(stub_module(service), stub_function(rpc), [conn, stub_opts])
+
+    try do
+      Enum.each(requests, &GRPC.Stub.send_request(stream, &1))
+      GRPC.Stub.end_stream(stream)
+    rescue
+      MatchError ->
+        :reset
+
+      e ->
+        GRPC.Stub.cancel(stream)
+        reraise e, __STACKTRACE__
+    end
+
+    await_client_stream(stream, deadline)
+  end
+
+  defp await_client_stream(stream, :infinity), do: GRPC.Stub.recv(stream)
+
+  defp await_client_stream(stream, deadline) do
+    task = Task.async(fn -> GRPC.Stub.recv(stream) end)
+    remaining = max(deadline - System.monotonic_time(:millisecond), 0)
+
+    case Task.yield(task, remaining) || Task.shutdown(task, :brutal_kill) do
+      {:ok, result} ->
+        result
+
+      _timed_out ->
+        GRPC.Stub.cancel(stream)
+
+        {:error,
+         GRPC.RPCError.exception(GRPC.Status.deadline_exceeded(), "client-side deadline exceeded")}
+    end
+  end
+
+  defp deadline(:infinity), do: :infinity
+  defp deadline(ms) when is_integer(ms), do: System.monotonic_time(:millisecond) + ms
 
   @doc "Like `import_relationships/3`, but raises."
   @spec import_relationships!(client(), Enumerable.t(Relationship.t()), keyword()) ::
@@ -882,8 +917,10 @@ defmodule SpiceDB do
   new watch at the last event's `changes_through`.
 
   Unlike the other streams, a watch returns `{:ok, stream}` without waiting
-  for the server, which sends nothing until the first change. An error from
-  the server (a bad revision, say) therefore raises on first enumeration.
+  for the server, which sends nothing until the first change. A request the
+  server rejects outright (a bad revision, say) comes back as `{:error, _}`
+  from this call instead; a failure the server discovers only after accepting
+  the stream raises on first enumeration.
 
   Options:
 
@@ -1702,7 +1739,21 @@ defmodule SpiceDB do
 
   defp call(client, service, rpc, request, opts) do
     timeout = Keyword.get(opts, :timeout) || client.default_timeout
-    client.transport.unary(client.conn, service, rpc, request, timeout: timeout)
+    apply(stub_module(service), stub_function(rpc), [client.conn, request, [timeout: timeout]])
+  end
+
+  defp stub_module(service) do
+    service
+    |> Module.split()
+    |> List.replace_at(-1, "Stub")
+    |> Module.concat()
+  end
+
+  defp stub_function(rpc) do
+    rpc
+    |> Atom.to_string()
+    |> Macro.underscore()
+    |> String.to_existing_atom()
   end
 
   defp guarded(fun) do

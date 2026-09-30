@@ -29,12 +29,6 @@ defmodule SpiceDB.ConnectionTest do
     assert_raise ArgumentError, fn -> SpiceDB.new_plaintext("localhost:1", "t", bogus: 1) end
   end
 
-  test "proto_client/1 exposes the wrapped proto client" do
-    client = SpiceDB.new_with_transport(SpiceDB.Test.FakeTransport, %{})
-    assert SpiceDB.proto_client(client) == nil
-    assert SpiceDB.close(client) == :ok
-  end
-
   defp test_cert do
     %{cert: der, key: key} = :public_key.pkix_test_root_cert(~c"test", [])
     {key, :public_key.pem_encode([{:Certificate, der, :not_encrypted}])}

@@ -25,6 +25,38 @@ defmodule SpiceDB.ConnectionTest do
              SpiceDB.new_custom_tls("localhost:1", "t", ca_cert: cert, client_cert: cert)
   end
 
+  test "well-paired but malformed client cert/key material is refused" do
+    {_key, cert} = test_cert()
+
+    # Well-paired (both present, so the presence/pairing check passes) but
+    # garbled: a "CERTIFICATE REQUEST" block decodes to a shape client.ex's
+    # decode_cert/1 does not recognize, so the proto tier returns
+    # SpicedbProto.InvalidTlsMaterialError instead of letting a bare pattern
+    # match raise. This client maps that to InvalidArgumentError the same way
+    # it maps InsecureRemoteHostError.
+    malformed_client_cert = """
+    -----BEGIN CERTIFICATE REQUEST-----
+    bm90IGEgcmVhbCBjZXJ0
+    -----END CERTIFICATE REQUEST-----
+    """
+
+    malformed_client_key = """
+    -----BEGIN RSA PRIVATE KEY-----
+    Proc-Type: 4,ENCRYPTED
+    DEK-Info: AES-128-CBC,0123456789ABCDEF0123456789ABCDEF
+
+    bm90IGEgcmVhbCBrZXk=
+    -----END RSA PRIVATE KEY-----
+    """
+
+    assert {:error, %SpiceDB.InvalidArgumentError{}} =
+             SpiceDB.new_custom_tls("localhost:1", "t",
+               ca_cert: cert,
+               client_cert: malformed_client_cert,
+               client_key: malformed_client_key
+             )
+  end
+
   test "unknown options are rejected" do
     assert_raise ArgumentError, fn -> SpiceDB.new_plaintext("localhost:1", "t", bogus: 1) end
   end

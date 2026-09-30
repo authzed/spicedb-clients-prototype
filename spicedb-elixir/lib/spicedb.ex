@@ -206,6 +206,9 @@ defmodule SpiceDB do
       {:error, %SpicedbProto.InsecureRemoteHostError{} = e} ->
         {:error, %SpiceDB.InvalidArgumentError{message: Exception.message(e)}}
 
+      {:error, %SpicedbProto.InvalidTlsMaterialError{} = e} ->
+        {:error, %SpiceDB.InvalidArgumentError{message: Exception.message(e)}}
+
       {:error, reason} ->
         {:error, Retry.normalize(reason)}
     end

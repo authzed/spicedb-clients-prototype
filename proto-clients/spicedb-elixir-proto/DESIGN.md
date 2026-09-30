@@ -131,6 +131,21 @@ Create a `lib/spicedb_proto/client.ex` file with:
    See root DESIGN.md, "RULE: Credentials over insecure transport require an
    explicit opt-in", clause 4.
 
+6. **`SpicedbProto.InvalidTlsMaterialError`** -- returned by `connect/3` as
+   `{:error, %SpicedbProto.InvalidTlsMaterialError{}}` when `ca_cert`,
+   `client_cert`, or `client_key` is present and well-paired (has already
+   passed `validate_tls_material!/4`) but its PEM content cannot be decoded
+   into the certificate or private key shape `build_credential/3` expects --
+   an encrypted private key, a PEM block of the wrong type, or a PEM string
+   holding zero or more than one block where exactly one is expected.
+   `:public_key.pem_decode/1` itself never raises; this error is what
+   `connect/3` returns instead of letting the decoding step's own bare
+   pattern-matches raise `MatchError`/`CaseClauseError` on a shape they don't
+   recognize. A distinct exception struct, for the same reason as
+   `InsecureRemoteHostError`: so the idiomatic client can match this refusal
+   without also catching the presence/pairing errors `validate_tls_material!/4`
+   still raises.
+
 ### Default TLS Trust Source
 
 Root DESIGN.md, "RULE: A system-TLS constructor must reach a real server",
@@ -206,6 +221,12 @@ Create `test/spicedb_proto/client_test.exs` with:
    `ca_cert`/`client_cert`/`client_key` raises `ArgumentError` before any network
    call; `client_cert` without `client_key` (and the reverse) raises
    `ArgumentError`.
+4. **Malformed TLS material** -- a well-paired `client_cert`/`client_key`
+   (passes the presence/pairing check above) whose PEM content decodes to a
+   shape `build_credential/3` does not recognize (a PEM block of the wrong
+   type, or an encrypted private key) returns
+   `{:error, %InvalidTlsMaterialError{}}` rather than raising
+   `MatchError`/`CaseClauseError`.
 
 The handshake proof for the default-TLS-trust-source path (an actual completed TLS
 handshake against a reachable server) is deferred to the idiomatic client's tests,

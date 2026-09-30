@@ -14,6 +14,25 @@ defmodule SpicedbProto.InsecureRemoteHostError do
   defexception [:message]
 end
 
+defmodule SpicedbProto.InvalidTlsMaterialError do
+  @moduledoc """
+  Returned as `{:error, %SpicedbProto.InvalidTlsMaterialError{}}` by
+  `SpicedbProto.Client.connect/3` when the PEM content supplied for
+  `ca_cert`, `client_cert`, or `client_key` is present and well-paired (has
+  already passed `validate_tls_material!/4`) but cannot be decoded into the
+  certificate or private key shape this client expects.
+
+  `:public_key.pem_decode/1` itself never raises -- it returns a plain list,
+  and decoding one of its entries into a usable certificate or key is this
+  client's own job. This error is what that job returns instead of raising
+  when an entry does not have the expected shape: an encrypted private key,
+  a PEM block of the wrong type (a certificate request where a certificate
+  was expected, say), or a PEM string holding zero or more than one block
+  where exactly one is expected.
+  """
+  defexception [:message]
+end
+
 defmodule SpicedbProto.Client do
   @moduledoc """
   Wraps a gRPC channel to a SpiceDB server.
@@ -95,11 +114,18 @@ defmodule SpicedbProto.Client do
   `{:error, %SpicedbProto.InsecureRemoteHostError{}}` if `insecure: true`,
   `endpoint` is not loopback, and `allow_insecure_remote_credentials` is
   false -- checked before any channel or credential is built, so the token
-  can never reach the wire for a rejected combination. Raises `ArgumentError`
-  if `insecure: true` and any of `:ca_cert`/`:client_cert`/`:client_key` is
-  supplied, since a plaintext channel performs no handshake to apply them to;
-  or if exactly one of `:client_cert`/`:client_key` is supplied. That raise
-  also happens before any channel or credential is built.
+  can never reach the wire for a rejected combination. Also returns
+  `{:error, %SpicedbProto.InvalidTlsMaterialError{}}` if `ca_cert`,
+  `client_cert`, or `client_key` is present but its PEM content cannot be
+  decoded into the certificate or private key shape expected (an encrypted
+  private key, or a PEM block of the wrong type, for example) -- checked
+  after the presence/pairing validation below passes, and before any channel
+  is built. Like `InsecureRemoteHostError`, this is *returned*, not raised.
+  Raises `ArgumentError` if `insecure: true` and any of
+  `:ca_cert`/`:client_cert`/`:client_key` is supplied, since a plaintext
+  channel performs no handshake to apply them to; or if exactly one of
+  `:client_cert`/`:client_key` is supplied. That raise also happens before
+  any channel or credential is built.
   """
   @spec connect(String.t(), String.t(), keyword()) :: {:ok, t()} | {:error, term()}
   def connect(endpoint, token, opts \\ []) do
@@ -127,17 +153,24 @@ defmodule SpicedbProto.Client do
         headers: %{"authorization" => "Bearer #{token}"}
       ]
 
-      connect_opts =
-        if insecure do
-          connect_opts
-        else
-          Keyword.put(connect_opts, :cred, build_credential(ca_cert, client_cert, client_key))
-        end
+      if insecure do
+        do_connect(endpoint, connect_opts)
+      else
+        case build_credential(ca_cert, client_cert, client_key) do
+          {:ok, credential} ->
+            do_connect(endpoint, Keyword.put(connect_opts, :cred, credential))
 
-      case GRPC.Stub.connect(normalize_endpoint(endpoint), connect_opts) do
-        {:ok, channel} -> {:ok, %__MODULE__{channel: channel}}
-        {:error, reason} -> {:error, reason}
+          {:error, %SpicedbProto.InvalidTlsMaterialError{}} = error ->
+            error
+        end
       end
+    end
+  end
+
+  defp do_connect(endpoint, connect_opts) do
+    case GRPC.Stub.connect(normalize_endpoint(endpoint), connect_opts) do
+      {:ok, channel} -> {:ok, %__MODULE__{channel: channel}}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -160,43 +193,84 @@ defmodule SpicedbProto.Client do
   end
 
   defp build_credential(nil, nil, nil) do
-    Credential.new(ssl: default_ssl_opts())
+    {:ok, Credential.new(ssl: default_ssl_opts())}
   end
 
   defp build_credential(ca_cert, client_cert, client_key) do
-    ssl_opts = default_ssl_opts()
+    with {:ok, ssl_opts} <- put_cacerts(default_ssl_opts(), ca_cert),
+         {:ok, ssl_opts} <- put_client_cert(ssl_opts, client_cert),
+         {:ok, ssl_opts} <- put_client_key(ssl_opts, client_key) do
+      {:ok, Credential.new(ssl: ssl_opts)}
+    end
+  end
 
-    ssl_opts =
-      if ca_cert, do: Keyword.put(ssl_opts, :cacerts, decode_certs(ca_cert)), else: ssl_opts
+  defp put_cacerts(ssl_opts, nil), do: {:ok, ssl_opts}
 
-    ssl_opts =
-      if client_cert, do: Keyword.put(ssl_opts, :cert, decode_cert(client_cert)), else: ssl_opts
+  defp put_cacerts(ssl_opts, ca_cert) do
+    with {:ok, ders} <- decode_certs(:ca_cert, ca_cert) do
+      {:ok, Keyword.put(ssl_opts, :cacerts, ders)}
+    end
+  end
 
-    ssl_opts =
-      if client_key, do: Keyword.put(ssl_opts, :key, decode_key(client_key)), else: ssl_opts
+  defp put_client_cert(ssl_opts, nil), do: {:ok, ssl_opts}
 
-    Credential.new(ssl: ssl_opts)
+  defp put_client_cert(ssl_opts, client_cert) do
+    with {:ok, der} <- decode_cert(:client_cert, client_cert) do
+      {:ok, Keyword.put(ssl_opts, :cert, der)}
+    end
+  end
+
+  defp put_client_key(ssl_opts, nil), do: {:ok, ssl_opts}
+
+  defp put_client_key(ssl_opts, client_key) do
+    with {:ok, key} <- decode_key(:client_key, client_key) do
+      {:ok, Keyword.put(ssl_opts, :key, key)}
+    end
   end
 
   defp default_ssl_opts do
     [cacerts: :public_key.cacerts_get(), verify: :verify_peer, depth: 99]
   end
 
-  defp decode_certs(pem) do
+  defp decode_certs(option, pem) do
     pem
     |> :public_key.pem_decode()
-    |> Enum.map(fn {:Certificate, der, :not_encrypted} -> der end)
-  end
-
-  defp decode_cert(pem) do
-    [{:Certificate, der, :not_encrypted}] = :public_key.pem_decode(pem)
-    der
-  end
-
-  defp decode_key(pem) do
-    case :public_key.pem_decode(pem) do
-      [{type, der, :not_encrypted}] -> {type, der}
+    |> Enum.reduce_while({:ok, []}, fn
+      {:Certificate, der, :not_encrypted}, {:ok, ders} -> {:cont, {:ok, [der | ders]}}
+      other, _acc -> {:halt, {:error, invalid_tls_material_error(option, "certificate", other)}}
+    end)
+    |> case do
+      {:ok, ders} -> {:ok, Enum.reverse(ders)}
+      {:error, _} = error -> error
     end
+  end
+
+  defp decode_cert(option, pem) do
+    case :public_key.pem_decode(pem) do
+      [{:Certificate, der, :not_encrypted}] ->
+        {:ok, der}
+
+      other ->
+        {:error, invalid_tls_material_error(option, "certificate", other)}
+    end
+  end
+
+  defp decode_key(option, pem) do
+    case :public_key.pem_decode(pem) do
+      [{type, der, :not_encrypted}] ->
+        {:ok, {type, der}}
+
+      other ->
+        {:error, invalid_tls_material_error(option, "private key", other)}
+    end
+  end
+
+  defp invalid_tls_material_error(option, kind, decoded) do
+    %SpicedbProto.InvalidTlsMaterialError{
+      message:
+        "spicedb: #{option} could not be decoded as a #{kind}: :public_key.pem_decode/1 returned " <>
+          "#{inspect(decoded)}, expected exactly one PEM block with no encryption"
+    }
   end
 
   # Refuses a TLS configuration this client cannot honour. Called before any

@@ -3,6 +3,7 @@ defmodule SpicedbProto.ClientTest do
 
   alias SpicedbProto.Client
   alias SpicedbProto.InsecureRemoteHostError
+  alias SpicedbProto.InvalidTlsMaterialError
 
   # Authority-shifting targets: endpoints whose URI authority is not what a naive
   # host:port split reads out of them. This exact set defeated the equivalent guard
@@ -149,6 +150,48 @@ defmodule SpicedbProto.ClientTest do
       assert_raise ArgumentError, ~r/client_cert/, fn ->
         Client.connect("spicedb.example.com:443", "token", client_key: "pem")
       end
+    end
+  end
+
+  describe "malformed TLS material" do
+    # Well-paired (both present, so validate_tls_material!/4's presence/pairing
+    # check passes) but garbled: :public_key.pem_decode/1 never raises -- it
+    # happily returns a plain list for both of these -- but neither entry has
+    # the shape client.ex's decode_cert/1 and decode_key/1 expect. A
+    # "CERTIFICATE REQUEST" PEM block decodes to {:CertificationRequest, _,
+    # :not_encrypted} (wrong atom tag, so decode_cert/1's bare match used to
+    # raise MatchError), and an encrypted "RSA PRIVATE KEY" block decodes to
+    # {:RSAPrivateKey, _, {cipher, iv}} (the third element is a 2-tuple, not
+    # the atom :not_encrypted, so decode_key/1's one-clause case used to raise
+    # CaseClauseError). Verified empirically against this exact PEM content
+    # before writing this test: a base64-garbled but otherwise well-formed
+    # CERTIFICATE or PRIVATE KEY block (matching type, :not_encrypted) decodes
+    # into the expected shape and does NOT exercise the crash -- pem_decode
+    # does not validate DER content, only the block's own header -- so this
+    # test deliberately uses the wrong block type/encryption header instead.
+    @malformed_client_cert """
+    -----BEGIN CERTIFICATE REQUEST-----
+    bm90IGEgcmVhbCBjZXJ0
+    -----END CERTIFICATE REQUEST-----
+    """
+
+    @malformed_client_key """
+    -----BEGIN RSA PRIVATE KEY-----
+    Proc-Type: 4,ENCRYPTED
+    DEK-Info: AES-128-CBC,0123456789ABCDEF0123456789ABCDEF
+
+    bm90IGEgcmVhbCBrZXk=
+    -----END RSA PRIVATE KEY-----
+    """
+
+    test "returns an error instead of crashing on a malformed client_cert" do
+      assert {:error, %InvalidTlsMaterialError{message: message}} =
+               Client.connect("spicedb.example.com:443", "token",
+                 client_cert: @malformed_client_cert,
+                 client_key: @malformed_client_key
+               )
+
+      assert message =~ ~r/client_cert/
     end
   end
 

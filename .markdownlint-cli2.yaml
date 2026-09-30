@@ -16,6 +16,7 @@ ignores:
   - "**/target/**"
   - "**/.venv/**"
   - "**/build/**"
+  - "**/deps/**"
   - "docs/superpowers/**"
   # Agent working directories. Neither is tracked, so neither exists in a CI
   # checkout -- but both exist locally, and without these the repo-wide gate

@@ -130,6 +130,12 @@ covered by a test that **completes a real TLS handshake**.
      and `createSpiceDBClient`, threaded to `Http2SessionManager`'s session options.
    - **Ruby** — `SpiceDB::Client.new_custom_tls(endpoint, token, ca_cert:, client_cert:,
      client_key:)`.
+   - **Elixir**: `SpiceDB.new_custom_tls(endpoint, token, ca_cert:, client_cert:,
+     client_key:)` (PEM strings, threaded to the proto tier's `connect/3`).
+     `new_system_tls` does not delegate to grpc-elixir's own bundled `CAStore` default,
+     which is not operator-writable; the proto tier builds its default credential from
+     `:public_key.cacerts_get/0`, the OS trust store, instead. See
+     `proto-clients/spicedb-elixir-proto/DESIGN.md`.
    - **Rust** — none. Not required by the clause above, since tonic's `tls-native-roots`
      reads the OS trust store at runtime and an operator-installed CA is therefore already
      honoured by `new_system_tls`. Two gaps remain and are stated plainly in
@@ -169,7 +175,7 @@ shippable, and no amount of green CI substitutes for one honest handshake.
 
 ## RULE: Credentials over insecure transport require an explicit opt-in
 
-All seven clients send their bearer token to any host over plaintext with no host check
+All eight clients send their bearer token to any host over plaintext with no host check
 whatsoever. An exhaustive search for `127.0.0.1`, `loopback`, and `localhost` across every
 client and every proto tier turned up only doc-comment samples — zero runtime conditionals
 anywhere.
@@ -185,12 +191,13 @@ own refusal to attach call credentials to an insecure channel, with a comment ex
   credentials can't carry call credentials over a plaintext channel"* — grpc-ruby's C-core
   actually raises on the composed path, so the bypass avoids a hard failure.
 
-Python, Java, TypeScript, and Rust never engage a checked mechanism at all: plain metadata or
-headers is the only path their underlying libraries offer for an insecure channel, so there is
-no refusal for them to defeat — the guard was simply never built. gRPC's refusal to attach call
-credentials to an insecure channel exists precisely to prevent this. Routing around it —
-deliberately, as in the three clients above, or by omission, as in the other four — is what
-this rule now governs.
+Python, Java, TypeScript, Rust, and Elixir never engage a checked mechanism at all: plain
+metadata or headers is the only path their underlying libraries offer for an insecure channel
+(Elixir attaches the bearer token via the channel-level `:headers` option grpc-elixir merges
+into every request, not a composed call-credentials mechanism), so there is no refusal for them
+to defeat — the guard was simply never built. gRPC's refusal to attach call credentials to an
+insecure channel exists precisely to prevent this. Routing around it — deliberately, as in the
+three clients above, or by omission, as in the other five — is what this rule now governs.
 
 1. **A client MUST NOT send credentials over an insecure transport to a non-loopback host
    unless the caller has explicitly opted in through a named parameter.** Named means a
@@ -747,6 +754,8 @@ clients have both.
   "the underlying proto client for advanced use cases", whose `permissions`/`schema`/
   `watch`/`experimental`/`materialize` stubs are already authenticated (composed call
   credentials on the secure path, a `BearerTokenInterceptor` on the plaintext one).
+- **Elixir**: *accessor:* `SpiceDB.proto_client/1`, returning the connected
+  `SpicedbProto.Client` struct built by the constructor that created this client.
 
 Three constraints bind all of them:
 
@@ -754,10 +763,10 @@ Three constraints bind all of them:
    channel, stub, or client is fine; growing a parameter for an endpoint, token, or
    transport setting is not — that would be a new path that builds a connection, and
    **RULE: Credentials over insecure transport require an explicit opt-in** is enforced
-   on the paths that already do (one each in Go, Python, TypeScript, Rust, C# and Ruby;
-   Java has three — `SpiceDBClient.java`'s plaintext, custom and system-TLS factories,
-   with the guard on the first two and the third TLS-only by construction). Each client's
-   tests pin this directly, by asserting the accessor takes no arguments.
+   on the paths that already do (one each in Go, Python, TypeScript, Rust, C#, Ruby and
+   Elixir; Java has three — `SpiceDBClient.java`'s plaintext, custom and system-TLS
+   factories, with the guard on the first two and the third TLS-only by construction).
+   Each client's tests pin this directly, by asserting the accessor takes no arguments.
 
    **The configuration hatches carry a disclosure, and it is not decoration.** A guard
    that recognizes named options cannot see what an arbitrary builder callback or dial

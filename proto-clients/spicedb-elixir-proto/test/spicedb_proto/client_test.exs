@@ -77,15 +77,17 @@ defmodule SpicedbProto.ClientTest do
 
   describe "insecure host guard" do
     test "refuses a non-loopback endpoint without the opt-in" do
-      assert_raise InsecureRemoteHostError, ~r/evil\.example\.com:1234/, fn ->
-        Client.connect("evil.example.com:1234", "super-secret-token", insecure: true)
-      end
+      assert {:error, %InsecureRemoteHostError{message: message}} =
+               Client.connect("evil.example.com:1234", "super-secret-token", insecure: true)
+
+      assert message =~ ~r/evil\.example\.com:1234/
     end
 
     test "names the opt-in in the error message" do
-      assert_raise InsecureRemoteHostError, ~r/allow_insecure_remote_credentials/, fn ->
-        Client.connect("evil.example.com:1234", "super-secret-token", insecure: true)
-      end
+      assert {:error, %InsecureRemoteHostError{message: message}} =
+               Client.connect("evil.example.com:1234", "super-secret-token", insecure: true)
+
+      assert message =~ ~r/allow_insecure_remote_credentials/
     end
 
     test "allows a loopback endpoint with no opt-in, and actually carries the token" do
@@ -111,9 +113,10 @@ defmodule SpicedbProto.ClientTest do
   describe "authority-shifting endpoint guard" do
     for endpoint <- @authority_shifting_endpoints do
       test "refuses #{inspect(endpoint)}" do
-        assert_raise InsecureRemoteHostError, ~r/allow_insecure_remote_credentials/, fn ->
-          Client.connect(unquote(endpoint), "super-secret-token", insecure: true)
-        end
+        assert {:error, %InsecureRemoteHostError{message: message}} =
+                 Client.connect(unquote(endpoint), "super-secret-token", insecure: true)
+
+        assert message =~ ~r/allow_insecure_remote_credentials/
       end
     end
   end
@@ -130,9 +133,10 @@ defmodule SpicedbProto.ClientTest do
     end
 
     test "still refuses a non-loopback insecure endpoint first, with material in hand" do
-      assert_raise InsecureRemoteHostError, ~r/allow_insecure_remote_credentials/, fn ->
-        Client.connect("evil.example.com:1234", "token", insecure: true, ca_cert: "pem")
-      end
+      assert {:error, %InsecureRemoteHostError{message: message}} =
+               Client.connect("evil.example.com:1234", "token", insecure: true, ca_cert: "pem")
+
+      assert message =~ ~r/allow_insecure_remote_credentials/
     end
 
     test "refuses a client certificate without its key" do

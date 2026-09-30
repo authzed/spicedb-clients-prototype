@@ -3,20 +3,32 @@ defmodule SpiceDB.CaveatContext do
 
   alias Google.Protobuf.{ListValue, Struct, Value}
 
-  @spec merge(map() | nil, map() | nil) :: map() | nil
-  def merge(nil, nil), do: nil
-  def merge(call, item), do: Map.merge(stringify_keys(call), stringify_keys(item))
+  @spec merge(map() | nil, map() | nil) ::
+          {:ok, map() | nil} | {:error, SpiceDB.InvalidArgumentError.t()}
+  def merge(nil, nil), do: {:ok, nil}
 
-  @spec to_struct(map() | nil) :: Struct.t() | nil
-  def to_struct(nil), do: nil
+  def merge(call, item) do
+    with {:ok, call_map} <- stringify_keys(call),
+         {:ok, item_map} <- stringify_keys(item) do
+      {:ok, Map.merge(call_map, item_map)}
+    end
+  end
+
+  @spec to_struct(map() | nil) ::
+          {:ok, Struct.t() | nil} | {:error, SpiceDB.InvalidArgumentError.t()}
+  def to_struct(nil), do: {:ok, nil}
 
   def to_struct(context) when is_map(context) and not is_struct(context) do
-    %Struct{fields: Map.new(context, fn {key, value} -> field(key, value, []) end)}
+    with {:ok, fields} <- reduce_fields(context, []) do
+      {:ok, %Struct{fields: fields}}
+    end
   end
 
   def to_struct(other) do
-    raise SpiceDB.InvalidArgumentError,
-      message: "caveat context must be a map, got: #{inspect(other)}"
+    {:error,
+     %SpiceDB.InvalidArgumentError{
+       message: "caveat context must be a map, got: #{inspect(other)}"
+     }}
   end
 
   @spec from_struct(Struct.t() | nil) :: map() | nil
@@ -25,49 +37,80 @@ defmodule SpiceDB.CaveatContext do
   def from_struct(%Struct{fields: fields}),
     do: Map.new(fields, fn {k, v} -> {k, from_value(v)} end)
 
-  defp stringify_keys(nil), do: %{}
-  defp stringify_keys(map), do: Map.new(map, fn {key, value} -> {key_name(key), value} end)
+  defp stringify_keys(nil), do: {:ok, %{}}
+
+  defp stringify_keys(map) do
+    Enum.reduce_while(map, {:ok, %{}}, fn {key, value}, {:ok, acc} ->
+      case key_name(key) do
+        {:ok, name} -> {:cont, {:ok, Map.put(acc, name, value)}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp reduce_fields(map, path) do
+    Enum.reduce_while(map, {:ok, %{}}, fn {key, value}, {:ok, acc} ->
+      case field(key, value, path) do
+        {:ok, {name, v}} -> {:cont, {:ok, Map.put(acc, name, v)}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+  end
 
   defp field(key, value, path) do
-    name = key_name(key)
-    {name, to_value(value, [name | path])}
+    with {:ok, name} <- key_name(key),
+         {:ok, v} <- to_value(value, [name | path]) do
+      {:ok, {name, v}}
+    end
   end
 
-  defp key_name(key) when is_binary(key), do: key
-  defp key_name(key) when is_atom(key) and not is_nil(key), do: Atom.to_string(key)
+  defp key_name(key) when is_binary(key), do: {:ok, key}
+  defp key_name(key) when is_atom(key) and not is_nil(key), do: {:ok, Atom.to_string(key)}
 
   defp key_name(key) do
-    raise SpiceDB.InvalidArgumentError,
-      message: "caveat context keys must be strings or atoms, got: #{inspect(key)}"
+    {:error,
+     %SpiceDB.InvalidArgumentError{
+       message: "caveat context keys must be strings or atoms, got: #{inspect(key)}"
+     }}
   end
 
-  defp to_value(%Value{} = value, _path), do: value
-  defp to_value(%Struct{} = struct, _path), do: %Value{kind: {:struct_value, struct}}
-  defp to_value(%ListValue{} = list, _path), do: %Value{kind: {:list_value, list}}
-  defp to_value(nil, _path), do: %Value{kind: {:null_value, :NULL_VALUE}}
-  defp to_value(bool, _path) when is_boolean(bool), do: %Value{kind: {:bool_value, bool}}
+  defp to_value(%Value{} = value, _path), do: {:ok, value}
+  defp to_value(%Struct{} = struct, _path), do: {:ok, %Value{kind: {:struct_value, struct}}}
+  defp to_value(%ListValue{} = list, _path), do: {:ok, %Value{kind: {:list_value, list}}}
+  defp to_value(nil, _path), do: {:ok, %Value{kind: {:null_value, :NULL_VALUE}}}
+  defp to_value(bool, _path) when is_boolean(bool), do: {:ok, %Value{kind: {:bool_value, bool}}}
 
   defp to_value(number, _path) when is_number(number),
-    do: %Value{kind: {:number_value, number / 1}}
+    do: {:ok, %Value{kind: {:number_value, number / 1}}}
 
   defp to_value(string, path) when is_binary(string) do
     if String.valid?(string),
-      do: %Value{kind: {:string_value, string}},
+      do: {:ok, %Value{kind: {:string_value, string}}},
       else: unsupported(path, "a binary that is not valid UTF-8")
   end
 
   defp to_value(list, path) when is_list(list) do
-    values =
-      list
-      |> Enum.with_index()
-      |> Enum.map(fn {item, index} -> to_value(item, ["[#{index}]" | path]) end)
+    list
+    |> Enum.with_index()
+    |> Enum.reduce_while({:ok, []}, fn {item, index}, {:ok, acc} ->
+      case to_value(item, ["[#{index}]" | path]) do
+        {:ok, v} -> {:cont, {:ok, [v | acc]}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, values} ->
+        {:ok, %Value{kind: {:list_value, %ListValue{values: Enum.reverse(values)}}}}
 
-    %Value{kind: {:list_value, %ListValue{values: values}}}
+      error ->
+        error
+    end
   end
 
   defp to_value(map, path) when is_map(map) and not is_struct(map) do
-    fields = Map.new(map, fn {key, value} -> field(key, value, path) end)
-    %Value{kind: {:struct_value, %Struct{fields: fields}}}
+    with {:ok, fields} <- reduce_fields(map, path) do
+      {:ok, %Value{kind: {:struct_value, %Struct{fields: fields}}}}
+    end
   end
 
   defp to_value(other, path), do: unsupported(path, inspect(other))
@@ -75,10 +118,12 @@ defmodule SpiceDB.CaveatContext do
   defp unsupported(path, what) do
     key = path |> Enum.reverse() |> Enum.join(".") |> String.replace(".[", "[")
 
-    raise SpiceDB.InvalidArgumentError,
-      message:
-        "caveat context key #{inspect(key)}: unsupported value #{what}; " <>
-          "use nil, a boolean, a number, a string, a list, a map, or a Google.Protobuf.Value"
+    {:error,
+     %SpiceDB.InvalidArgumentError{
+       message:
+         "caveat context key #{inspect(key)}: unsupported value #{what}; " <>
+           "use nil, a boolean, a number, a string, a list, a map, or a Google.Protobuf.Value"
+     }}
   end
 
   defp from_value(%Value{kind: kind}), do: decode_kind(kind)

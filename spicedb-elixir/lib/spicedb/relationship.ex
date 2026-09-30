@@ -65,22 +65,20 @@ defmodule SpiceDB.Relationship do
         subject_id,
         subject_relation \\ ""
       ) do
-    if Enum.any?([resource_type, resource_id, resource_relation], &blank?/1) do
-      raise SpiceDB.InvalidArgumentError, message: "resource type, id, and relation are required"
-    end
+    case validate_triple(resource_type, resource_id, resource_relation, subject_type, subject_id) do
+      :ok ->
+        %__MODULE__{
+          resource_type: resource_type,
+          resource_id: resource_id,
+          resource_relation: resource_relation,
+          subject_type: subject_type,
+          subject_id: subject_id,
+          subject_relation: subject_relation || ""
+        }
 
-    if Enum.any?([subject_type, subject_id], &blank?/1) do
-      raise SpiceDB.InvalidArgumentError, message: "subject type and id are required"
+      {:error, error} ->
+        raise error
     end
-
-    %__MODULE__{
-      resource_type: resource_type,
-      resource_id: resource_id,
-      resource_relation: resource_relation,
-      subject_type: subject_type,
-      subject_id: subject_id,
-      subject_relation: subject_relation || ""
-    }
   end
 
   @doc """
@@ -95,7 +93,15 @@ defmodule SpiceDB.Relationship do
            split(resource_object, ":", "missing ':' in resource type:id"),
          {subject_object, subject_relation} <- split_optional(subject),
          {:ok, subject_type, subject_id} <-
-           split(subject_object, ":", "missing ':' in subject type:id") do
+           split(subject_object, ":", "missing ':' in subject type:id"),
+         :ok <-
+           validate_triple(
+             resource_type,
+             resource_id,
+             resource_relation,
+             subject_type,
+             subject_id
+           ) do
       {:ok,
        from_triple(
          resource_type,
@@ -106,8 +112,6 @@ defmodule SpiceDB.Relationship do
          subject_relation
        )}
     end
-  rescue
-    e in SpiceDB.InvalidArgumentError -> {:error, e}
   end
 
   @doc "Like `from_tuple/1`, but raises `SpiceDB.InvalidArgumentError`."
@@ -146,8 +150,11 @@ defmodule SpiceDB.Relationship do
 
   defp split(string, separator, problem) do
     case String.split(string, separator, parts: 2) do
-      [left, right] -> {:ok, left, right}
-      _other -> raise SpiceDB.InvalidArgumentError, message: "invalid tuple format: #{problem}"
+      [left, right] ->
+        {:ok, left, right}
+
+      _other ->
+        {:error, %SpiceDB.InvalidArgumentError{message: "invalid tuple format: #{problem}"}}
     end
   end
 
@@ -155,6 +162,20 @@ defmodule SpiceDB.Relationship do
     case String.split(subject, "#", parts: 2) do
       [object, relation] -> {object, relation}
       [object] -> {object, ""}
+    end
+  end
+
+  defp validate_triple(resource_type, resource_id, resource_relation, subject_type, subject_id) do
+    cond do
+      Enum.any?([resource_type, resource_id, resource_relation], &blank?/1) ->
+        {:error,
+         %SpiceDB.InvalidArgumentError{message: "resource type, id, and relation are required"}}
+
+      Enum.any?([subject_type, subject_id], &blank?/1) ->
+        {:error, %SpiceDB.InvalidArgumentError{message: "subject type and id are required"}}
+
+      true ->
+        :ok
     end
   end
 

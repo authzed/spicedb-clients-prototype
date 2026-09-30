@@ -5,26 +5,26 @@ defmodule SpiceDB.CaveatContextTest do
   alias SpiceDB.CaveatContext
 
   test "no context on either side sends none" do
-    assert CaveatContext.merge(nil, nil) == nil
-    assert CaveatContext.to_struct(nil) == nil
+    assert CaveatContext.merge(nil, nil) == {:ok, nil}
+    assert CaveatContext.to_struct(nil) == {:ok, nil}
   end
 
   test "the item wins over the call per key, with atom and string keys unified" do
-    assert CaveatContext.merge(%{a: 1, b: 2}, %{"b" => 3}) == %{"a" => 1, "b" => 3}
-    assert CaveatContext.merge(nil, %{x: 1}) == %{"x" => 1}
-    assert CaveatContext.merge(%{x: 1}, nil) == %{"x" => 1}
+    assert CaveatContext.merge(%{a: 1, b: 2}, %{"b" => 3}) == {:ok, %{"a" => 1, "b" => 3}}
+    assert CaveatContext.merge(nil, %{x: 1}) == {:ok, %{"x" => 1}}
+    assert CaveatContext.merge(%{x: 1}, nil) == {:ok, %{"x" => 1}}
   end
 
   test "encodes native terms" do
-    struct =
-      CaveatContext.to_struct(%{
-        "n" => nil,
-        "b" => false,
-        "i" => 3,
-        "s" => "x",
-        "l" => [1, "a"],
-        "m" => %{k: 2.5}
-      })
+    assert {:ok, struct} =
+             CaveatContext.to_struct(%{
+               "n" => nil,
+               "b" => false,
+               "i" => 3,
+               "s" => "x",
+               "l" => [1, "a"],
+               "m" => %{k: 2.5}
+             })
 
     assert struct.fields["n"].kind == {:null_value, :NULL_VALUE}
     assert struct.fields["b"].kind == {:bool_value, false}
@@ -36,24 +36,25 @@ defmodule SpiceDB.CaveatContextTest do
 
   test "passes typed protobuf values through unchanged" do
     value = %Value{kind: {:string_value, "typed"}}
-    assert CaveatContext.to_struct(%{"v" => value}).fields["v"] == value
+    assert {:ok, struct} = CaveatContext.to_struct(%{"v" => value})
+    assert struct.fields["v"] == value
   end
 
-  test "an unrepresentable value raises naming the key path" do
+  test "an unrepresentable value is refused naming the key path" do
     for {context, path} <- [
           {%{"t" => {:a, :b}}, "t"},
           {%{"outer" => %{"inner" => [1, self()]}}, "outer.inner[1]"},
           {%{"bytes" => <<0xFF, 0xFE>>}, "bytes"}
         ] do
-      error =
-        assert_raise SpiceDB.InvalidArgumentError, fn -> CaveatContext.to_struct(context) end
+      assert {:error, %SpiceDB.InvalidArgumentError{message: message}} =
+               CaveatContext.to_struct(context)
 
-      assert error.message =~ ~s("#{path}")
+      assert message =~ ~s("#{path}")
     end
   end
 
   test "decodes back to native terms, numbers as floats" do
-    assert CaveatContext.from_struct(CaveatContext.to_struct(%{"a" => [1, %{"b" => true}]})) ==
-             %{"a" => [1.0, %{"b" => true}]}
+    {:ok, struct} = CaveatContext.to_struct(%{"a" => [1, %{"b" => true}]})
+    assert CaveatContext.from_struct(struct) == %{"a" => [1.0, %{"b" => true}]}
   end
 end

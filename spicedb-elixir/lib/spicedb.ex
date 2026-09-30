@@ -141,17 +141,34 @@ defmodule SpiceDB do
   @spec new_custom_tls(String.t(), String.t(), keyword()) :: result(client())
   def new_custom_tls(endpoint, token, opts) do
     opts = Keyword.validate!(opts, [:ca_cert, :client_cert, :client_key | @connect_opts])
+    ca_cert = Keyword.get(opts, :ca_cert)
+    client_cert = Keyword.get(opts, :client_cert)
+    client_key = Keyword.get(opts, :client_key)
 
-    guarded(fn ->
-      ca_cert = Keyword.get(opts, :ca_cert)
+    cond do
+      not (is_binary(ca_cert) and certificates?(ca_cert)) ->
+        {:error,
+         %SpiceDB.InvalidArgumentError{
+           message:
+             "new_custom_tls requires ca_cert: a PEM string holding at least one certificate"
+         }}
 
-      unless is_binary(ca_cert) and certificates?(ca_cert) do
-        invalid!("new_custom_tls requires ca_cert: a PEM string holding at least one certificate")
-      end
+      is_nil(client_cert) != is_nil(client_key) ->
+        {present, missing} =
+          if is_nil(client_key),
+            do: {:client_cert, :client_key},
+            else: {:client_key, :client_cert}
 
-      tls = Keyword.take(opts, [:ca_cert, :client_cert, :client_key])
-      connect(endpoint, token, opts, tls)
-    end)
+        {:error,
+         %SpiceDB.InvalidArgumentError{
+           message:
+             "new_custom_tls: #{present} was supplied without #{missing}: mutual TLS needs both halves of the client identity"
+         }}
+
+      true ->
+        tls = Keyword.take(opts, [:ca_cert, :client_cert, :client_key])
+        connect(endpoint, token, opts, tls)
+    end
   end
 
   @doc "Like `new_custom_tls/3`, but raises."
@@ -186,18 +203,12 @@ defmodule SpiceDB do
            default_timeout: Keyword.get(opts, :default_timeout, 30_000)
          }}
 
+      {:error, %SpicedbProto.InsecureRemoteHostError{} = e} ->
+        {:error, %SpiceDB.InvalidArgumentError{message: Exception.message(e)}}
+
       {:error, reason} ->
         {:error, Retry.normalize(reason)}
     end
-  rescue
-    e in SpicedbProto.InsecureRemoteHostError ->
-      {:error, %SpiceDB.InvalidArgumentError{message: Exception.message(e)}}
-
-    e in [ArgumentError, MatchError, CaseClauseError] ->
-      {:error,
-       %SpiceDB.InvalidArgumentError{
-         message: "invalid connection options: " <> Exception.message(e)
-       }}
   end
 
   defp certificates?(pem) do
@@ -226,13 +237,14 @@ defmodule SpiceDB do
       ) do
     opts = Keyword.validate!(opts, [:context, :timeout])
 
-    guarded(fn ->
+    with {:ok, proto_consistency} <- Wire.consistency(consistency),
+         {:ok, context} <- check_context(opts, rel) do
       request = %V1.CheckPermissionRequest{
-        consistency: Wire.consistency(consistency),
+        consistency: proto_consistency,
         resource: %V1.ObjectReference{object_type: rel.resource_type, object_id: rel.resource_id},
         permission: permission,
         subject: subject_of(rel),
-        context: check_context(opts, rel)
+        context: context
       }
 
       with {:ok, resp} <-
@@ -244,7 +256,7 @@ defmodule SpiceDB do
            checked_at: Wire.token_string(resp.checked_at)
          }}
       end
-    end)
+    end
   end
 
   @doc "Like `check_permission/5`, but raises."
@@ -267,9 +279,7 @@ defmodule SpiceDB do
       when is_list(relationships) do
     opts = Keyword.validate!(opts, [:context, :timeout])
 
-    guarded(fn ->
-      proto_consistency = Wire.consistency(consistency)
-
+    with {:ok, proto_consistency} <- Wire.consistency(consistency) do
       relationships
       |> Enum.chunk_every(@check_batch_size)
       |> Enum.reduce_while(
@@ -280,7 +290,7 @@ defmodule SpiceDB do
         {:ok, chunks} -> {:ok, chunks |> Enum.reverse() |> Enum.concat()}
         error -> error
       end
-    end)
+    end
   end
 
   defp check_next_chunk(chunk, {:ok, acc}, client, consistency, permission, opts) do
@@ -337,25 +347,32 @@ defmodule SpiceDB do
     do: bang(check_all(client, consistency, permission, relationships, opts))
 
   defp check_chunk(client, consistency, permission, chunk, opts) do
-    items =
-      Enum.map(chunk, fn rel ->
-        %V1.CheckBulkPermissionsRequestItem{
-          resource: %V1.ObjectReference{
-            object_type: rel.resource_type,
-            object_id: rel.resource_id
-          },
-          permission: permission,
-          subject: subject_of(rel),
-          context: check_context(opts, rel)
-        }
-      end)
+    with {:ok, items} <- build_check_items(chunk, permission, opts) do
+      request = %V1.CheckBulkPermissionsRequest{consistency: consistency, items: items}
+      Retry.run(client, :read, fn -> send_check_chunk(client, request, opts, length(items)) end)
+    end
+  end
 
-    request = %V1.CheckBulkPermissionsRequest{consistency: consistency, items: items}
+  defp send_check_chunk(client, request, opts, expected) do
+    with {:ok, resp} <-
+           call(client, V1.PermissionsService.Service, :CheckBulkPermissions, request, opts) do
+      bulk_results(resp, expected)
+    end
+  end
 
-    Retry.run(client, :read, fn ->
-      with {:ok, resp} <-
-             call(client, V1.PermissionsService.Service, :CheckBulkPermissions, request, opts) do
-        bulk_results(resp, length(items))
+  defp build_check_items(chunk, permission, opts) do
+    map_ok(chunk, fn rel ->
+      with {:ok, context} <- check_context(opts, rel) do
+        {:ok,
+         %V1.CheckBulkPermissionsRequestItem{
+           resource: %V1.ObjectReference{
+             object_type: rel.resource_type,
+             object_id: rel.resource_id
+           },
+           permission: permission,
+           subject: subject_of(rel),
+           context: context
+         }}
       end
     end)
   end
@@ -399,7 +416,9 @@ defmodule SpiceDB do
   end
 
   defp check_context(opts, %Relationship{check_context: item}) do
-    opts |> Keyword.get(:context) |> CaveatContext.merge(item) |> CaveatContext.to_struct()
+    with {:ok, merged} <- opts |> Keyword.get(:context) |> CaveatContext.merge(item) do
+      CaveatContext.to_struct(merged)
+    end
   end
 
   defp subject_of(%Relationship{} = rel) do
@@ -421,10 +440,11 @@ defmodule SpiceDB do
   def write_relationships(%Client{} = client, %Transaction{} = txn, opts \\ []) do
     opts = Keyword.validate!(opts, [:timeout])
 
-    guarded(fn ->
+    with {:ok, updates} <- map_ok(txn.updates, &Wire.update/1),
+         {:ok, preconditions} <- map_ok(txn.preconditions, &Wire.precondition/1) do
       request = %V1.WriteRelationshipsRequest{
-        updates: Enum.map(txn.updates, &Wire.update/1),
-        optional_preconditions: Enum.map(txn.preconditions, &Wire.precondition/1)
+        updates: updates,
+        optional_preconditions: preconditions
       }
 
       with {:ok, resp} <-
@@ -438,7 +458,7 @@ defmodule SpiceDB do
              ) do
         {:ok, Wire.token_string(resp.written_at)}
       end
-    end)
+    end
   end
 
   @doc "Like `write_relationships/3`, but raises."
@@ -455,10 +475,11 @@ defmodule SpiceDB do
   def read_relationships(%Client{} = client, consistency, %Filter{} = filter, opts \\ []) do
     Keyword.validate!(opts, [])
 
-    guarded(fn ->
+    with {:ok, proto_consistency} <- Wire.consistency(consistency),
+         {:ok, proto_filter} <- Wire.filter(filter) do
       base = %V1.ReadRelationshipsRequest{
-        consistency: Wire.consistency(consistency),
-        relationship_filter: Wire.filter(filter),
+        consistency: proto_consistency,
+        relationship_filter: proto_filter,
         optional_limit: @read_page_size
       }
 
@@ -470,7 +491,7 @@ defmodule SpiceDB do
         cursor: & &1.after_result_cursor,
         page_size: @read_page_size
       })
-    end)
+    end
   end
 
   @doc "Like `read_relationships/4`, but raises."
@@ -498,20 +519,19 @@ defmodule SpiceDB do
   def delete_relationships(%Client{} = client, %Filter{} = filter, opts \\ []) do
     opts = Keyword.validate!(opts, [:timeout, :limit, must_match: [], must_not_match: []])
 
-    guarded(fn ->
-      preconditions =
-        Enum.map(opts[:must_match], &Wire.precondition({:must_match, &1})) ++
-          Enum.map(opts[:must_not_match], &Wire.precondition({:must_not_match, &1}))
-
+    with {:ok, proto_filter} <- Wire.filter(filter),
+         {:ok, must_match} <- map_ok(opts[:must_match], &Wire.precondition({:must_match, &1})),
+         {:ok, must_not_match} <-
+           map_ok(opts[:must_not_match], &Wire.precondition({:must_not_match, &1})) do
       request = %V1.DeleteRelationshipsRequest{
-        relationship_filter: Wire.filter(filter),
-        optional_preconditions: preconditions,
+        relationship_filter: proto_filter,
+        optional_preconditions: must_match ++ must_not_match,
         optional_limit: opts[:limit] || @delete_page_size,
         optional_allow_partial_deletions: true
       }
 
       delete_pages(client, request, opts)
-    end)
+    end
   end
 
   @doc "Like `delete_relationships/3`, but raises."
@@ -568,13 +588,14 @@ defmodule SpiceDB do
       ) do
     opts = Keyword.validate!(opts, [:context])
 
-    guarded(fn ->
+    with {:ok, proto_consistency} <- Wire.consistency(consistency),
+         {:ok, context} <- CaveatContext.to_struct(opts[:context]) do
       base = %V1.LookupResourcesRequest{
-        consistency: Wire.consistency(consistency),
+        consistency: proto_consistency,
         resource_object_type: resource_type,
         permission: permission,
         subject: Wire.subject(subject),
-        context: CaveatContext.to_struct(opts[:context]),
+        context: context,
         optional_limit: @lookup_page_size
       }
 
@@ -586,7 +607,7 @@ defmodule SpiceDB do
         cursor: & &1.after_result_cursor,
         page_size: @lookup_page_size
       })
-    end)
+    end
   end
 
   @doc "Like `lookup_resources/6`, but raises."
@@ -639,14 +660,15 @@ defmodule SpiceDB do
       ) do
     opts = Keyword.validate!(opts, [:context, :subject_relation])
 
-    guarded(fn ->
+    with {:ok, proto_consistency} <- Wire.consistency(consistency),
+         {:ok, context} <- CaveatContext.to_struct(opts[:context]) do
       request = %V1.LookupSubjectsRequest{
-        consistency: Wire.consistency(consistency),
+        consistency: proto_consistency,
         resource: Wire.object(resource),
         permission: permission,
         subject_object_type: subject_type,
         optional_subject_relation: opts[:subject_relation] || "",
-        context: CaveatContext.to_struct(opts[:context])
+        context: context
       }
 
       Streaming.open(client, %{
@@ -655,7 +677,7 @@ defmodule SpiceDB do
         request: fn _cursor -> request end,
         map: &[lookup_subject(&1)]
       })
-    end)
+    end
   end
 
   @doc "Like `lookup_subjects/6`, but raises."
@@ -717,9 +739,9 @@ defmodule SpiceDB do
       ) do
     opts = Keyword.validate!(opts, [:timeout])
 
-    guarded(fn ->
+    with {:ok, proto_consistency} <- Wire.consistency(consistency) do
       request = %V1.ExpandPermissionTreeRequest{
-        consistency: Wire.consistency(consistency),
+        consistency: proto_consistency,
         resource: Wire.object(resource),
         permission: permission
       }
@@ -739,7 +761,7 @@ defmodule SpiceDB do
            revision: Wire.token_string(resp.expanded_at)
          }}
       end
-    end)
+    end
   end
 
   @doc "Like `expand_permission_tree/5`, but raises."
@@ -801,15 +823,12 @@ defmodule SpiceDB do
   def import_relationships(%Client{} = client, relationships, opts \\ []) do
     opts = Keyword.validate!(opts, timeout: :infinity)
 
-    guarded(fn ->
-      batches =
-        relationships
-        |> Stream.map(&Wire.relationship/1)
-        |> Stream.chunk_every(@import_batch_size)
-        |> Stream.map(&%V1.ImportBulkRelationshipsRequest{relationships: &1})
+    batches =
+      relationships
+      |> Stream.map(&Wire.relationship/1)
+      |> Stream.chunk_every(@import_batch_size)
 
-      Retry.run(client, :mutation, fn -> import_batches(client, batches, opts[:timeout]) end)
-    end)
+    Retry.run(client, :mutation, fn -> import_batches(client, batches, opts[:timeout]) end)
   end
 
   defp import_batches(client, batches, timeout) do
@@ -825,25 +844,37 @@ defmodule SpiceDB do
     end
   end
 
-  defp client_stream(conn, service, rpc, requests, opts) do
+  defp client_stream(conn, service, rpc, chunks, opts) do
     {timeout, stub_opts} = Keyword.pop(opts, :timeout, :infinity)
     deadline = deadline(timeout)
     stub_opts = if timeout == :infinity, do: stub_opts, else: [{:timeout, timeout} | stub_opts]
     stream = apply(stub_module(service), stub_function(rpc), [conn, stub_opts])
 
-    try do
-      Enum.each(requests, &GRPC.Stub.send_request(stream, &1))
-      GRPC.Stub.end_stream(stream)
-    rescue
-      MatchError ->
-        :reset
+    case send_chunks(stream, chunks) do
+      :ok ->
+        GRPC.Stub.end_stream(stream)
+        await_client_stream(stream, deadline)
 
-      e ->
+      {:error, _} = error ->
         GRPC.Stub.cancel(stream)
-        reraise e, __STACKTRACE__
+        error
     end
+  end
 
-    await_client_stream(stream, deadline)
+  defp send_chunks(stream, chunks) do
+    Enum.reduce_while(chunks, :ok, fn chunk, :ok ->
+      case map_ok(chunk, & &1) do
+        {:ok, relationships} ->
+          GRPC.Stub.send_request(stream, %V1.ImportBulkRelationshipsRequest{
+            relationships: relationships
+          })
+
+          {:cont, :ok}
+
+        {:error, _} = error ->
+          {:halt, error}
+      end
+    end)
   end
 
   defp await_client_stream(stream, :infinity), do: GRPC.Stub.recv(stream)
@@ -883,11 +914,12 @@ defmodule SpiceDB do
   def export_relationships(%Client{} = client, consistency, opts \\ []) do
     opts = Keyword.validate!(opts, [:filter])
 
-    guarded(fn ->
+    with {:ok, proto_consistency} <- Wire.consistency(consistency),
+         {:ok, proto_filter} <- optional_filter(opts[:filter]) do
       base = %V1.ExportBulkRelationshipsRequest{
-        consistency: Wire.consistency(consistency),
+        consistency: proto_consistency,
         optional_limit: @export_page_size,
-        optional_relationship_filter: opts[:filter] && Wire.filter(opts[:filter])
+        optional_relationship_filter: proto_filter
       }
 
       Streaming.open(client, %{
@@ -898,8 +930,11 @@ defmodule SpiceDB do
         cursor: & &1.after_result_cursor,
         page_size: @export_page_size
       })
-    end)
+    end
   end
+
+  defp optional_filter(nil), do: {:ok, nil}
+  defp optional_filter(filter), do: Wire.filter(filter)
 
   @doc "Like `export_relationships/3`, but raises."
   @spec export_relationships!(client(), Consistency.t(), keyword()) ::
@@ -932,11 +967,11 @@ defmodule SpiceDB do
   def watch(%Client{} = client, object_types, opts \\ []) when is_list(object_types) do
     opts = Keyword.validate!(opts, [:start_revision, include_checkpoints: false, filters: []])
 
-    guarded(fn ->
+    with {:ok, filters} <- map_ok(opts[:filters], &Wire.filter/1) do
       request = %V1.WatchRequest{
         optional_object_types: object_types,
         optional_start_cursor: Wire.token(opts[:start_revision]),
-        optional_relationship_filters: Enum.map(opts[:filters], &Wire.filter/1),
+        optional_relationship_filters: filters,
         optional_update_kinds:
           if(opts[:include_checkpoints],
             do: [:WATCH_KIND_INCLUDE_RELATIONSHIP_UPDATES, :WATCH_KIND_INCLUDE_CHECKPOINTS],
@@ -952,7 +987,7 @@ defmodule SpiceDB do
         retry: false,
         prefetch: false
       })
-    end)
+    end
   end
 
   @doc "Like `watch/3`, but raises."
@@ -1038,8 +1073,8 @@ defmodule SpiceDB do
   def reflect_schema(%Client{} = client, consistency, opts \\ []) do
     opts = Keyword.validate!(opts, [:timeout])
 
-    guarded(fn ->
-      request = %V1.ReflectSchemaRequest{consistency: Wire.consistency(consistency)}
+    with {:ok, proto_consistency} <- Wire.consistency(consistency) do
+      request = %V1.ReflectSchemaRequest{consistency: proto_consistency}
 
       with {:ok, resp} <-
              unary(client, :read, V1.SchemaService.Service, :ReflectSchema, request, opts) do
@@ -1050,7 +1085,7 @@ defmodule SpiceDB do
            revision: Wire.token_string(resp.read_at)
          }}
       end
-    end)
+    end
   end
 
   @doc "Like `reflect_schema/3`, but raises."
@@ -1115,19 +1150,26 @@ defmodule SpiceDB do
       ) do
     opts = Keyword.validate!(opts, [:timeout, :definition_filter])
 
-    guarded(fn ->
+    with {:ok, proto_consistency} <- Wire.consistency(consistency) do
       request = %V1.ComputablePermissionsRequest{
-        consistency: Wire.consistency(consistency),
+        consistency: proto_consistency,
         definition_name: definition_name,
         relation_name: relation_name,
         optional_definition_name_filter: opts[:definition_filter] || ""
       }
 
       with {:ok, resp} <-
-             unary(client, :read, V1.SchemaService.Service, :ComputablePermissions, request, opts) do
+             unary(
+               client,
+               :read,
+               V1.SchemaService.Service,
+               :ComputablePermissions,
+               request,
+               opts
+             ) do
         {:ok, Enum.map(resp.permissions, &relation_reference/1)}
       end
-    end)
+    end
   end
 
   @doc "Like `computable_permissions/5`, but raises."
@@ -1153,9 +1195,9 @@ defmodule SpiceDB do
       ) do
     opts = Keyword.validate!(opts, [:timeout])
 
-    guarded(fn ->
+    with {:ok, proto_consistency} <- Wire.consistency(consistency) do
       request = %V1.DependentRelationsRequest{
-        consistency: Wire.consistency(consistency),
+        consistency: proto_consistency,
         definition_name: definition_name,
         permission_name: permission_name
       }
@@ -1164,7 +1206,7 @@ defmodule SpiceDB do
              unary(client, :read, V1.SchemaService.Service, :DependentRelations, request, opts) do
         {:ok, Enum.map(resp.relations, &relation_reference/1)}
       end
-    end)
+    end
   end
 
   @doc "Like `dependent_relations/5`, but raises."
@@ -1191,9 +1233,9 @@ defmodule SpiceDB do
   def diff_schema(%Client{} = client, consistency, comparison_schema, opts \\ []) do
     opts = Keyword.validate!(opts, [:timeout])
 
-    guarded(fn ->
+    with {:ok, proto_consistency} <- Wire.consistency(consistency) do
       request = %V1.DiffSchemaRequest{
-        consistency: Wire.consistency(consistency),
+        consistency: proto_consistency,
         comparison_schema: comparison_schema
       }
 
@@ -1201,7 +1243,7 @@ defmodule SpiceDB do
              unary(client, :read, V1.SchemaService.Service, :DiffSchema, request, opts) do
         {:ok, Enum.map(resp.diffs, &schema_diff/1)}
       end
-    end)
+    end
   end
 
   @doc "Like `diff_schema/4`, but raises."
@@ -1283,10 +1325,10 @@ defmodule SpiceDB do
       ) do
     opts = Keyword.validate!(opts, [:timeout])
 
-    guarded(fn ->
+    with {:ok, proto_filter} <- Wire.filter(filter) do
       request = %V1.ExperimentalRegisterRelationshipCounterRequest{
         name: name,
-        relationship_filter: Wire.filter(filter)
+        relationship_filter: proto_filter
       }
 
       with {:ok, _resp} <-
@@ -1299,7 +1341,7 @@ defmodule SpiceDB do
                opts
              ),
            do: :ok
-    end)
+    end
   end
 
   @doc "Like `experimental_register_relationship_counter/4`, but raises."
@@ -1393,9 +1435,9 @@ defmodule SpiceDB do
       ) do
     opts = Keyword.validate!(opts, [:timeout])
 
-    guarded(fn ->
+    with {:ok, proto_filter} <- Wire.filter(filter) do
       request = %M.ExperimentalCountRelationshipsByFilterRequest{
-        relationship_filter: Wire.filter(filter)
+        relationship_filter: proto_filter
       }
 
       with {:ok, resp} <-
@@ -1413,7 +1455,7 @@ defmodule SpiceDB do
            revision: Wire.token_string(resp.read_at)
          }}
       end
-    end)
+    end
   end
 
   @doc "Like `experimental_count_relationships_by_filter/3`, but raises."
@@ -1446,9 +1488,9 @@ defmodule SpiceDB do
       ) do
     opts = Keyword.validate!(opts, [:timeout])
 
-    guarded(fn ->
+    with {:ok, proto_consistency} <- Wire.consistency(consistency) do
       request = %M.ExperimentalRoaringLookupResourcesRequest{
-        consistency: Wire.consistency(consistency),
+        consistency: proto_consistency,
         resource_object_type: resource_type,
         permission: permission,
         subject: Wire.subject(subject)
@@ -1470,7 +1512,7 @@ defmodule SpiceDB do
            at_revision: Wire.token_string(resp.at_revision)
          }}
       end
-    end)
+    end
   end
 
   @doc "Like `experimental_roaring_lookup_resources/6`, but raises."
@@ -1756,15 +1798,21 @@ defmodule SpiceDB do
     |> String.to_existing_atom()
   end
 
-  defp guarded(fun) do
-    fun.()
-  rescue
-    e in SpiceDB.InvalidArgumentError -> {:error, e}
-  end
-
-  defp invalid!(message), do: raise(SpiceDB.InvalidArgumentError, message: message)
-
   defp bang(:ok), do: :ok
   defp bang({:ok, value}), do: value
   defp bang({:error, error}), do: raise(error)
+
+  defp map_ok(list, fun) do
+    list
+    |> Enum.reduce_while({:ok, []}, fn item, {:ok, acc} ->
+      case fun.(item) do
+        {:ok, value} -> {:cont, {:ok, [value | acc]}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, values} -> {:ok, Enum.reverse(values)}
+      error -> error
+    end
+  end
 end

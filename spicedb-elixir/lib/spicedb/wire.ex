@@ -16,23 +16,26 @@ defmodule SpiceDB.Wire do
     SubjectRef
   }
 
-  @spec consistency(Consistency.t()) :: V1.Consistency.t()
+  @spec consistency(Consistency.t()) ::
+          {:ok, V1.Consistency.t()} | {:error, SpiceDB.InvalidArgumentError.t()}
   def consistency(%Consistency{type: :full}),
-    do: %V1.Consistency{requirement: {:fully_consistent, true}}
+    do: {:ok, %V1.Consistency{requirement: {:fully_consistent, true}}}
 
   def consistency(%Consistency{type: :min_latency}),
-    do: %V1.Consistency{requirement: {:minimize_latency, true}}
+    do: {:ok, %V1.Consistency{requirement: {:minimize_latency, true}}}
 
   def consistency(%Consistency{type: :at_least, revision: rev}),
-    do: %V1.Consistency{requirement: {:at_least_as_fresh, %V1.ZedToken{token: rev}}}
+    do: {:ok, %V1.Consistency{requirement: {:at_least_as_fresh, %V1.ZedToken{token: rev}}}}
 
   def consistency(%Consistency{type: :snapshot, revision: rev}),
-    do: %V1.Consistency{requirement: {:at_exact_snapshot, %V1.ZedToken{token: rev}}}
+    do: {:ok, %V1.Consistency{requirement: {:at_exact_snapshot, %V1.ZedToken{token: rev}}}}
 
   def consistency(other) do
-    raise SpiceDB.InvalidArgumentError,
-      message:
-        "expected a SpiceDB.Consistency, got: #{inspect(other)}; use SpiceDB.Consistency.full/0 and friends"
+    {:error,
+     %SpiceDB.InvalidArgumentError{
+       message:
+         "expected a SpiceDB.Consistency, got: #{inspect(other)}; use SpiceDB.Consistency.full/0 and friends"
+     }}
   end
 
   @spec token(String.t() | nil) :: V1.ZedToken.t() | nil
@@ -56,24 +59,35 @@ defmodule SpiceDB.Wire do
     }
   end
 
-  @spec relationship(Relationship.t()) :: V1.Relationship.t()
+  @spec relationship(Relationship.t()) ::
+          {:ok, V1.Relationship.t()} | {:error, SpiceDB.InvalidArgumentError.t()}
   def relationship(%Relationship{} = rel) do
-    %V1.Relationship{
-      resource: %V1.ObjectReference{object_type: rel.resource_type, object_id: rel.resource_id},
-      relation: rel.resource_relation,
-      subject: %V1.SubjectReference{
-        object: %V1.ObjectReference{object_type: rel.subject_type, object_id: rel.subject_id},
-        optional_relation: rel.subject_relation || ""
-      },
-      optional_caveat: caveat(rel.caveat_name, rel.caveat_context),
-      optional_expires_at: timestamp(rel.expiration)
-    }
+    with {:ok, caveat} <- caveat(rel.caveat_name, rel.caveat_context),
+         {:ok, expires_at} <- timestamp(rel.expiration) do
+      {:ok,
+       %V1.Relationship{
+         resource: %V1.ObjectReference{
+           object_type: rel.resource_type,
+           object_id: rel.resource_id
+         },
+         relation: rel.resource_relation,
+         subject: %V1.SubjectReference{
+           object: %V1.ObjectReference{object_type: rel.subject_type, object_id: rel.subject_id},
+           optional_relation: rel.subject_relation || ""
+         },
+         optional_caveat: caveat,
+         optional_expires_at: expires_at
+       }}
+    end
   end
 
-  defp caveat(name, _context) when name in [nil, ""], do: nil
+  defp caveat(name, _context) when name in [nil, ""], do: {:ok, nil}
 
-  defp caveat(name, context),
-    do: %V1.ContextualizedCaveat{caveat_name: name, context: CaveatContext.to_struct(context)}
+  defp caveat(name, context) do
+    with {:ok, struct} <- CaveatContext.to_struct(context) do
+      {:ok, %V1.ContextualizedCaveat{caveat_name: name, context: struct}}
+    end
+  end
 
   @spec relationship_from_proto(V1.Relationship.t()) :: Relationship.t()
   def relationship_from_proto(%V1.Relationship{} = rel) do
@@ -101,50 +115,71 @@ defmodule SpiceDB.Wire do
   defp caveat_from_proto(%V1.ContextualizedCaveat{caveat_name: name, context: context}),
     do: {name, CaveatContext.from_struct(context)}
 
-  @spec filter(Filter.t()) :: V1.RelationshipFilter.t()
+  @spec filter(Filter.t()) ::
+          {:ok, V1.RelationshipFilter.t()} | {:error, SpiceDB.InvalidArgumentError.t()}
   def filter(%Filter{} = f) do
-    %V1.RelationshipFilter{
-      resource_type: f.resource_type,
-      optional_resource_id: f.resource_id || "",
-      optional_resource_id_prefix: f.resource_id_prefix || "",
-      optional_relation: f.relation || "",
-      optional_subject_filter: subject_filter(f)
-    }
+    with {:ok, sf} <- subject_filter(f) do
+      {:ok,
+       %V1.RelationshipFilter{
+         resource_type: f.resource_type,
+         optional_resource_id: f.resource_id || "",
+         optional_resource_id_prefix: f.resource_id_prefix || "",
+         optional_relation: f.relation || "",
+         optional_subject_filter: sf
+       }}
+    end
   end
 
   def filter(other) do
-    raise SpiceDB.InvalidArgumentError,
-      message: "expected a SpiceDB.Filter, got: #{inspect(other)}"
+    {:error,
+     %SpiceDB.InvalidArgumentError{message: "expected a SpiceDB.Filter, got: #{inspect(other)}"}}
   end
 
   defp subject_filter(%Filter{subject_type: type} = f) when type in [nil, ""] do
-    for {field, value} <- [subject_id: f.subject_id, subject_relation: f.subject_relation],
-        value not in [nil, ""] do
-      raise SpiceDB.InvalidArgumentError,
-        message:
-          "Filter has #{field} set without subject_type -- call with_subject_type before with_#{field}."
-    end
+    case Enum.find([subject_id: f.subject_id, subject_relation: f.subject_relation], fn {_field,
+                                                                                         value} ->
+           value not in [nil, ""]
+         end) do
+      nil ->
+        {:ok, nil}
 
-    nil
+      {field, _value} ->
+        {:error,
+         %SpiceDB.InvalidArgumentError{
+           message:
+             "Filter has #{field} set without subject_type -- call with_subject_type before with_#{field}."
+         }}
+    end
   end
 
   defp subject_filter(%Filter{} = f) do
-    %V1.SubjectFilter{
-      subject_type: f.subject_type,
-      optional_subject_id: f.subject_id || "",
-      optional_relation:
-        if(f.subject_relation, do: %V1.SubjectFilter.RelationFilter{relation: f.subject_relation})
-    }
+    {:ok,
+     %V1.SubjectFilter{
+       subject_type: f.subject_type,
+       optional_subject_id: f.subject_id || "",
+       optional_relation:
+         if(f.subject_relation,
+           do: %V1.SubjectFilter.RelationFilter{relation: f.subject_relation}
+         )
+     }}
   end
 
-  @spec precondition({:must_match | :must_not_match, Filter.t()}) :: V1.Precondition.t()
-  def precondition({:must_match, f}),
-    do: %V1.Precondition{operation: :OPERATION_MUST_MATCH, filter: filter(f)}
+  @spec precondition({:must_match | :must_not_match, Filter.t()}) ::
+          {:ok, V1.Precondition.t()} | {:error, SpiceDB.InvalidArgumentError.t()}
+  def precondition({:must_match, f}) do
+    with {:ok, proto_filter} <- filter(f) do
+      {:ok, %V1.Precondition{operation: :OPERATION_MUST_MATCH, filter: proto_filter}}
+    end
+  end
 
-  def precondition({:must_not_match, f}),
-    do: %V1.Precondition{operation: :OPERATION_MUST_NOT_MATCH, filter: filter(f)}
+  def precondition({:must_not_match, f}) do
+    with {:ok, proto_filter} <- filter(f) do
+      {:ok, %V1.Precondition{operation: :OPERATION_MUST_NOT_MATCH, filter: proto_filter}}
+    end
+  end
 
-  @spec update({:create | :touch | :delete, Relationship.t()}) :: V1.RelationshipUpdate.t()
+  @spec update({:create | :touch | :delete, Relationship.t()}) ::
+          {:ok, V1.RelationshipUpdate.t()} | {:error, SpiceDB.InvalidArgumentError.t()}
   def update({op, rel}) do
     operation =
       case op do
@@ -153,7 +188,9 @@ defmodule SpiceDB.Wire do
         :delete -> :OPERATION_DELETE
       end
 
-    %V1.RelationshipUpdate{operation: operation, relationship: relationship(rel)}
+    with {:ok, proto_rel} <- relationship(rel) do
+      {:ok, %V1.RelationshipUpdate{operation: operation, relationship: proto_rel}}
+    end
   end
 
   @check_permissionship %{
@@ -206,21 +243,25 @@ defmodule SpiceDB.Wire do
   def object_from_proto(%V1.ObjectReference{object_type: t, object_id: id}),
     do: ObjectRef.new(t, id)
 
-  @spec timestamp(DateTime.t() | nil) :: Google.Protobuf.Timestamp.t() | nil
-  def timestamp(nil), do: nil
+  @spec timestamp(DateTime.t() | nil) ::
+          {:ok, Google.Protobuf.Timestamp.t() | nil} | {:error, SpiceDB.InvalidArgumentError.t()}
+  def timestamp(nil), do: {:ok, nil}
 
   def timestamp(%DateTime{} = dt) do
     micros = DateTime.to_unix(dt, :microsecond)
 
-    %Google.Protobuf.Timestamp{
-      seconds: Integer.floor_div(micros, 1_000_000),
-      nanos: Integer.mod(micros, 1_000_000) * 1_000
-    }
+    {:ok,
+     %Google.Protobuf.Timestamp{
+       seconds: Integer.floor_div(micros, 1_000_000),
+       nanos: Integer.mod(micros, 1_000_000) * 1_000
+     }}
   end
 
   def timestamp(other) do
-    raise SpiceDB.InvalidArgumentError,
-      message: "expiration must be a DateTime, got: #{inspect(other)}"
+    {:error,
+     %SpiceDB.InvalidArgumentError{
+       message: "expiration must be a DateTime, got: #{inspect(other)}"
+     }}
   end
 
   @spec datetime(Google.Protobuf.Timestamp.t() | nil) :: DateTime.t() | nil

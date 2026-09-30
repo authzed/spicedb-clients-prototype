@@ -142,7 +142,7 @@ defmodule SpiceDB.ErrorDetails do
     info = ErrorInfo.decode(value)
     %{reason: info.reason, domain: info.domain, metadata: Map.new(info.metadata)}
   rescue
-    _malformed -> nil
+    _e in Protobuf.DecodeError -> nil
   end
 
   defp empty, do: %{reason: "", domain: "", metadata: %{}}

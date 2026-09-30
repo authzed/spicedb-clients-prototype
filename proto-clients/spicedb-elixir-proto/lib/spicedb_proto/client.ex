@@ -1,10 +1,12 @@
 defmodule SpicedbProto.InsecureRemoteHostError do
   @moduledoc """
-  Raised when a plaintext connection to a non-loopback endpoint is requested
-  without `allow_insecure_remote_credentials: true`.
+  Returned as `{:error, %SpicedbProto.InsecureRemoteHostError{}}` by
+  `SpicedbProto.Client.connect/3` when a plaintext connection to a
+  non-loopback endpoint is requested without
+  `allow_insecure_remote_credentials: true`.
 
-  A distinct exception rather than a bare `ArgumentError` so the idiomatic
-  client can rescue this refusal without also catching the TLS trust-material
+  A distinct exception struct rather than a bare term so the idiomatic
+  client can match this refusal without also catching the TLS trust-material
   validation errors `SpicedbProto.Client.connect/3` raises for unrelated
   reasons. See root DESIGN.md, "RULE: Credentials over insecure transport
   require an explicit opt-in", clause 4.
@@ -89,16 +91,15 @@ defmodule SpicedbProto.Client do
       * `:client_key` - PEM private key for `:client_cert`. Must be supplied
         together with it.
 
-  Returns `{:ok, client}` or `{:error, reason}`.
-
-  Raises `SpicedbProto.InsecureRemoteHostError` if `insecure: true`,
+  Returns `{:ok, client}` or `{:error, reason}`. Returns
+  `{:error, %SpicedbProto.InsecureRemoteHostError{}}` if `insecure: true`,
   `endpoint` is not loopback, and `allow_insecure_remote_credentials` is
-  false. Raises `ArgumentError` if `insecure: true` and any of
-  `:ca_cert`/`:client_cert`/`:client_key` is supplied, since a plaintext
-  channel performs no handshake to apply them to; or if exactly one of
-  `:client_cert`/`:client_key` is supplied. Both are raised before any
-  channel or credential is built, so the token can never reach the wire for a
-  rejected combination.
+  false -- checked before any channel or credential is built, so the token
+  can never reach the wire for a rejected combination. Raises `ArgumentError`
+  if `insecure: true` and any of `:ca_cert`/`:client_cert`/`:client_key` is
+  supplied, since a plaintext channel performs no handshake to apply them to;
+  or if exactly one of `:client_cert`/`:client_key` is supplied. That raise
+  also happens before any channel or credential is built.
   """
   @spec connect(String.t(), String.t(), keyword()) :: {:ok, t()} | {:error, term()}
   def connect(endpoint, token, opts \\ []) do
@@ -112,28 +113,31 @@ defmodule SpicedbProto.Client do
     client_key = Keyword.get(opts, :client_key)
 
     if insecure && !allow_insecure_remote_credentials && !loopback_endpoint?(endpoint) do
-      raise SpicedbProto.InsecureRemoteHostError,
-            "spicedb: refusing to send credentials over an insecure (plaintext) connection to non-loopback endpoint #{inspect(endpoint)}: " <>
-              "use TLS (pass insecure: false), or pass allow_insecure_remote_credentials: true if you intend to send a bearer token in cleartext to a remote host"
-    end
+      {:error,
+       %SpicedbProto.InsecureRemoteHostError{
+         message:
+           "spicedb: refusing to send credentials over an insecure (plaintext) connection to non-loopback endpoint #{inspect(endpoint)}: " <>
+             "use TLS (pass insecure: false), or pass allow_insecure_remote_credentials: true if you intend to send a bearer token in cleartext to a remote host"
+       }}
+    else
+      validate_tls_material!(insecure, ca_cert, client_cert, client_key)
 
-    validate_tls_material!(insecure, ca_cert, client_cert, client_key)
+      connect_opts = [
+        adapter: @default_adapter,
+        headers: %{"authorization" => "Bearer #{token}"}
+      ]
 
-    connect_opts = [
-      adapter: @default_adapter,
-      headers: %{"authorization" => "Bearer #{token}"}
-    ]
+      connect_opts =
+        if insecure do
+          connect_opts
+        else
+          Keyword.put(connect_opts, :cred, build_credential(ca_cert, client_cert, client_key))
+        end
 
-    connect_opts =
-      if insecure do
-        connect_opts
-      else
-        Keyword.put(connect_opts, :cred, build_credential(ca_cert, client_cert, client_key))
+      case GRPC.Stub.connect(normalize_endpoint(endpoint), connect_opts) do
+        {:ok, channel} -> {:ok, %__MODULE__{channel: channel}}
+        {:error, reason} -> {:error, reason}
       end
-
-    case GRPC.Stub.connect(normalize_endpoint(endpoint), connect_opts) do
-      {:ok, channel} -> {:ok, %__MODULE__{channel: channel}}
-      {:error, reason} -> {:error, reason}
     end
   end
 

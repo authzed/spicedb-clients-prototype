@@ -121,14 +121,15 @@ Create a `lib/spicedb_proto/client.ex` file with:
 
 4. **`loopback_endpoint?/1`** -- see "Loopback Guard" below.
 
-5. **`SpicedbProto.InsecureRemoteHostError`** -- raised by `connect/3`, before any
-   channel or credential is built, when `insecure: true`, the endpoint is not
-   loopback, and `allow_insecure_remote_credentials` is not `true`. A distinct
-   exception (not a bare `ArgumentError`) so the idiomatic client can rescue this
-   refusal without also catching the TLS trust-material validation errors
-   `connect/3` raises for unrelated reasons -- mirrors Ruby's
-   `InsecureRemoteHostError`. See root DESIGN.md, "RULE: Credentials over insecure
-   transport require an explicit opt-in", clause 4.
+5. **`SpicedbProto.InsecureRemoteHostError`** -- returned by `connect/3` as
+   `{:error, %SpicedbProto.InsecureRemoteHostError{}}`, before any channel or
+   credential is built, when `insecure: true`, the endpoint is not loopback,
+   and `allow_insecure_remote_credentials` is not `true`. A distinct exception
+   struct (not a bare term) so the idiomatic client can match this refusal
+   without also catching the TLS trust-material validation errors `connect/3`
+   raises for unrelated reasons -- mirrors Ruby's `InsecureRemoteHostError`.
+   See root DESIGN.md, "RULE: Credentials over insecure transport require an
+   explicit opt-in", clause 4.
 
 ### Default TLS Trust Source
 
@@ -190,11 +191,14 @@ Create `test/spicedb_proto/client_test.exs` with:
    the authority-shifting fixture set (`127.0.0.1:443@evil.com` and its variants)
    that defeated the equivalent guard in this repo's C#, Rust, TypeScript and Java
    clients.
-2. **Insecure host guard** -- `connect/3` raises `InsecureRemoteHostError` for a
-   non-loopback endpoint without the opt-in (asserted with `assert_raise`, which
-   proves no network call preceded the raise, since the guard runs before
-   `GRPC.Stub.connect/2` is ever called), and succeeds -- carrying the token into
-   the resulting channel's `headers` -- for a loopback endpoint or with the opt-in.
+2. **Insecure host guard** -- `connect/3` returns
+   `{:error, %InsecureRemoteHostError{}}` for a non-loopback endpoint without the
+   opt-in (asserted with a pattern match on the returned tuple against a
+   non-resolvable endpoint, which proves no network call preceded the check,
+   since the guard runs before `GRPC.Stub.connect/2` is ever called -- a real
+   dial attempt would not return synchronously as this exact tuple), and
+   succeeds -- carrying the token into the resulting channel's `headers` -- for
+   a loopback endpoint or with the opt-in.
    The token-carrying assertion drives a real local TCP listener (no real SpiceDB
    server needed) so the check reads the actual `%GRPC.Channel{}` grpc-elixir
    returns, not a value this test constructs itself.

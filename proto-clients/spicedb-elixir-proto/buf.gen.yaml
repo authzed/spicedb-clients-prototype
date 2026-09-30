@@ -1,0 +1,26 @@
+version: v2
+# No buf.build remote plugin exists for Elixir (verified against the live BSR
+# with `buf registry plugin info` -- every guessed community plugin name came
+# back "does not exist"). protoc-gen-elixir generates both message and gRPC
+# service code from one invocation via the `plugins=grpc` opt, unlike the
+# other languages here that need separate message/service remote plugins.
+# protoc-gen-elixir here is github.com/TrogonStack/protoc-gen's Go
+# reimplementation, pinned in this directory's go.mod via a `tool` directive --
+# see DESIGN.md. `go tool` resolves and builds it on demand, so there's no
+# PATH setup or separate install step (contrast the other languages' remote
+# plugins, which buf fetches itself).
+plugins:
+  - local: [go, tool, protoc-gen-elixir]
+    out: lib/gen
+    opt:
+      - plugins=grpc
+      # Without this, protoc-gen-elixir's default one-file-per-proto-file mode
+      # names each output file `<underscored base_module>/<proto file path>`,
+      # which duplicates the path whenever a .proto file's own directory
+      # already mirrors its package (the near-universal convention, and true
+      # of every authzed.api.* file here) -- verified directly against
+      # protoc-gen-elixir 0.17.0's generator.ex. This opt switches to one file
+      # per generated Elixir module instead, named from the module alone.
+      - one_file_per_module=true
+inputs:
+  - module: buf.build/authzed/api

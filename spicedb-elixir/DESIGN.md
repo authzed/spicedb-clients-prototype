@@ -217,24 +217,59 @@ again.
 
 #### Stream lifecycle: an accepted exception for server-streaming RPCs
 
-Root `DESIGN.md`, "RULE: Abandoning a stream must release it", requires that
-stopping early tells the server to stop, and requires verifying that against
-the transport the client actually ships. This client calls
-`Authzed.Api.*.Stub` functions directly, like every other tier of this
-codebase, and verification against grpc-elixir 1.0.5 (the Mint adapter) found
-no supported way to satisfy the rule for server-streaming RPCs:
+Root `DESIGN.md`, "RULE: Abandoning a stream must release it" (lines 611-617
+at the time of writing), states two MUSTs: (1) expose cancellation on every
+streaming call, and (2) the transport MUST actually release the stream on
+abandonment. **This client does not currently meet rule 2 for
+server-streaming RPCs.** Rule 1 is met -- every returned stream is a plain
+`Stream` a caller can stop consuming with `Enum.take/2`, an exception, or
+simply abandoning it -- but stopping never reaches the server, for the
+reasons below.
 
-- `GRPC.Stub`'s generated server-streaming function returns only an enumerable
-  of replies; the `GRPC.Client.Stream` struct that `GRPC.Stub.cancel/1` needs
-  to reset the HTTP/2 stream is not part of that return value and grpc-elixir
-  exposes no other public function that accepts an enumerable already in
-  flight and cancels it.
-- Measured against a real SpiceDB, counted server-side with
-  `grpc_server_started_total` and `grpc_server_handled_total`: taking one event
-  from `Authzed.Api.V1.WatchService.Stub.watch/2` and dropping the enumerable
-  leaves the server stream open (in-flight 1) even after the calling task
-  exits. The server only sees it end, as `Canceled`, when the underlying
-  channel closes.
+Source-level basis, read directly against vendored grpc 1.0.5
+(`deps/grpc/lib/grpc/stub.ex`):
+
+- The `GRPC.Stub` `__using__` macro (`stub.ex:85-168`) classifies each RPC by
+  **request**-stream-ness, not response-stream-ness. `req_stream: true`
+  (client-streaming, e.g. `ImportBulkRelationships`) gets a `call/3` that
+  returns the raw `%GRPC.Client.Stream{}` for manual `send_request`/`recv`/
+  `cancel` -- fully public, fully cancel-able, and what
+  `import_relationships/3` uses. `req_stream: false` (includes
+  server-streaming, e.g. `ReadRelationships`, `Watch`) gets a convenience
+  function that calls `GRPC.Stub.call/5` (`stub.ex:290-347`, dispatching to
+  `do_call/4` at `stub.ex:349-383`) and returns only `{:ok, Enumerable.t}`
+  straight to the caller -- the intermediate `%GRPC.Client.Stream{}` is never
+  exposed.
+- `GRPC.Stub.recv/2`'s doc comment (`stub.ex:426-467`) confirms that
+  enumerable is built with `Stream.unfold/2`, which has no `after`/cleanup
+  hook (unlike `Stream.resource/3`) -- so halting the enumerable for any
+  reason (exhaustion, `Enum.take/2`, an exception, simple abandonment) never
+  runs any release logic, by construction.
+- `GRPC.Stub.cancel/1` (`stub.ex:419`) requires a populated
+  `%GRPC.Client.Stream{}` whose `payload.response` holds a live
+  `request_ref` -- state that only exists inside the private execution path
+  of `do_call/4` for the server-streaming case, structurally unreachable from
+  the public API.
+- Live evidence against a real `authzed/spicedb:latest` container (memory
+  datastore, `--metrics-addr :9090`), two independent runs: calling
+  `Authzed.Api.V1.WatchService.Stub.watch/3` directly, taking exactly one
+  event with `Enum.take(stream, 1)`, then abandoning the enumerable while the
+  channel stayed open left `grpc_server_started_total{Watch}=1` and
+  `grpc_server_handled_total{Watch}=0` indefinitely -- the dispatch never
+  resolved. Only once the whole Mint connection process died did the server
+  eventually log the RPC as `handled` with `grpc.code: Canceled`, and only
+  after 28288ms in the first run and 34158ms in the second -- consistent with
+  an HTTP/2 idle-timeout-scale detection, not an explicit cancel signal.
+
+**The upstream fix**, if grpc-elixir wants to close this gap: build the
+server-streaming enumerable with `Stream.resource/3` instead of
+`Stream.unfold/2`, with an `after` callback that calls the adapter's
+`cancel/1` on the request's `request_ref`. `Stream.resource/3`'s `after`
+function runs on every halt reason, which is exactly the hook
+`GRPC.Stub.cancel/1` needs a caller-visible trigger for; `Stream.unfold/2`
+offers no such hook at all. This client cannot make that change itself
+without rebuilding `GRPC.Client.Stream`/touching adapter internals, which is
+the shim this client explicitly rejects below.
 
 This client previously worked around the gap with a transport shim
 (`SpiceDB.Transport.GRPC.open_stream/4`) that reassembled the `GRPC.Client.Stream`
@@ -257,6 +292,56 @@ caller's early exit would matter. The leak is real for the open-ended streams
 (`watch/3` and the experimental `WatchPermissions`/`WatchPermissionSets`
 calls), where a caller that takes a few events and stops leaves that dispatch
 running on the server for as long as the client connection stays open.
+
+**A second, related gap sits on the write side of the same transport, and it
+is a genuine dependency raise rather than this client's own choice.**
+`client_stream/5` (private, in `lib/spicedb.ex`, the client-streaming helper
+`import_relationships/3`'s bulk-import RPC goes through) sends each batch
+with `GRPC.Stub.send_request/2`. On the Mint adapter that reaches
+`send_data/3` (vendored grpc 1.0.5, `deps/grpc/lib/grpc/client/adapters/mint.ex:111-123`),
+whose body is:
+
+```elixir
+:ok = ConnectionProcess.stream_request_body(pid, request_ref, data)
+```
+
+at `mint.ex:120` -- a bare match with no fallback clause. `stream_request_body/3`
+(`deps/grpc/lib/grpc/client/adapters/mint/connection_process/connection_process.ex:53-55`)
+is a `GenServer.call` whose reply is not always synchronous with the Mint
+write: the handler for a non-`:eof` chunk
+(`handle_call({:stream_body, request_ref, body}, from, state)`, lines 167-172)
+enqueues the chunk and defers the reply to
+`handle_continue(:process_request_stream_queue, ...)` (lines 220-237). From
+there, three verified paths reply `{:error, reason}` rather than `:ok`:
+
+- `chunk_body_and_enqueue_rest/2`'s `{:error, conn, error}` branch, line 347:
+  `GenServer.reply(from, {:error, error})`, when `Mint.HTTP.stream_request_body/3`
+  fails on a chunk split across more than one HTTP/2 window.
+- `stream_body_and_reply/2`'s `{:error, conn, error}` branch, line 371: the
+  same reply, when the single-chunk write fails outright.
+- `finish_all_pending_requests/1`, line 431:
+  `GenServer.reply(from, {:error, @connection_closed_error})` (the string "the
+  connection is closed", defined at line 18) for any chunk still queued when
+  the connection process itself shuts down -- the case a reset or a closed
+  socket mid-import actually produces.
+
+Any of those three makes `stream_request_body/3`'s `GenServer.call` return
+`{:error, _}`, which means the bare `:ok = ConnectionProcess.stream_request_body(pid, request_ref, data)`
+at `mint.ex:120` raises `MatchError` on that path. This is not this client's
+own control-flow choice, the way the exceptions this client rescues elsewhere
+are -- it is grpc-elixir's own client-streaming send primitive, and there is
+no other public function on `GRPC.Stub` for sending a request-stream chunk
+that returns `{:error, _}` instead of raising.
+
+`client_stream/5` does not currently guard against this: a connection reset
+or close mid-import raises `MatchError` in the process that called
+`import_relationships/3` (or, worse, the process that received the batch
+`Task`, depending on caller structure) rather than returning `{:error, _}`
+from the call. This is a known, accepted gap in the same category as the
+stream-cancellation one above -- grpc-elixir's client-streaming send path
+offers no non-raising write primitive -- not something this client can fix
+without wrapping the dependency's raise, which the team has decided against
+doing blindly.
 
 ### Writes
 

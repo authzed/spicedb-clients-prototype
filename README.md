@@ -3,11 +3,11 @@
 > ⚠️ **PROTOTYPE — Not for production use.**
 > These clients are in early development. APIs, types, and behaviors may change or break at any time, and bugs are expected. Do not rely on anything in this repo for production workloads. If you experiment with a client, pin to a specific commit and budget time for breakage.
 
-Monorepo of idiomatic SpiceDB client libraries for Go, Python, TypeScript, C#, Java, Ruby, and Rust — plus [`spicedb-gen`](spicedb-gen/), a type-safe code generator that produces compile-time-checked wrappers from a `.zed` schema.
+Monorepo of idiomatic SpiceDB client libraries for Go, Python, TypeScript, C#, Java, Ruby, Rust, and Elixir — plus [`spicedb-gen`](spicedb-gen/), a type-safe code generator that produces compile-time-checked wrappers from a `.zed` schema.
 
 ## Getting Started
 
-Pick your language. Languages where `spicedb-gen` supports typed wrappers (**Go**, **TypeScript**, **Java**, **Python**) use the **typed client** examples — invalid permission checks, wrong subject types, and typos in resource names become compile-time errors. The remaining languages (**C#**, **Ruby**, **Rust**) use the **idiomatic client** directly.
+Pick your language. Languages where `spicedb-gen` supports typed wrappers (**Go**, **TypeScript**, **Java**, **Python**) use the **typed client** examples — invalid permission checks, wrong subject types, and typos in resource names become compile-time errors. The remaining languages (**C#**, **Ruby**, **Rust**, **Elixir**) use the **idiomatic client** directly.
 
 > **A check never returns a bare boolean.** Every client's check surface returns a
 > `CheckResult` carrying a three-valued `permissionship`, the caveat context the
@@ -208,6 +208,23 @@ let result = client.check_permission(&consistency::at_least(&revision), "view", 
 if result.has_permission() { ... }
 ```
 
+### Elixir (idiomatic)
+
+```elixir
+{:ok, client} = SpiceDB.new_plaintext("localhost:50051", "somerandomkeyhere")
+
+rel = SpiceDB.Relationship.from_triple("document", "readme", "viewer", "user", "alice")
+txn = SpiceDB.Transaction.new() |> SpiceDB.Transaction.touch(rel)
+{:ok, revision} = SpiceDB.write_relationships(client, txn)
+
+# check_permission returns {:ok, %SpiceDB.CheckResult{}}, never a bare
+# boolean. Go through has_permission?/1 -- every Elixir value but nil/false
+# is truthy, so matching on the result directly would grant on a
+# conditional the server never actually evaluated.
+{:ok, result} = SpiceDB.check_permission(client, SpiceDB.Consistency.at_least(revision), "view", rel)
+SpiceDB.CheckResult.has_permission?(result)
+```
+
 ## Structure
 
 ```
@@ -219,6 +236,7 @@ proto-clients/               # buf-generated proto clients (internal)
   spicedb-java-proto/
   spicedb-ruby-proto/
   spicedb-rust-proto/
+  spicedb-elixir-proto/
 spicedb-go/                  # Idiomatic Go client
 spicedb-python/              # Idiomatic Python client
 spicedb-typescript/          # Idiomatic TypeScript client
@@ -226,6 +244,7 @@ spicedb-csharp/              # Idiomatic C# client
 spicedb-java/                # Idiomatic Java client
 spicedb-ruby/                # Idiomatic Ruby client
 spicedb-rust/                # Idiomatic Rust client
+spicedb-elixir/              # Idiomatic Elixir client
 spicedb-gen/                 # Type-safe client code generator
 ```
 
@@ -237,7 +256,7 @@ spicedb-gen/                 # Type-safe client code generator
 
 ## Development
 
-Requires: [Mage](https://magefile.org), [Go 1.24+](https://go.dev), [Python 3.11+](https://python.org) with [uv](https://docs.astral.sh/uv/), [Node.js](https://nodejs.org) with [pnpm](https://pnpm.io), [.NET 8+](https://dotnet.microsoft.com), [Java 17+](https://openjdk.org) with [Gradle](https://gradle.org), [Ruby 3.2+](https://ruby-lang.org) with [Bundler](https://bundler.io), [Rust](https://rustup.rs), [Docker](https://docker.com)
+Requires: [Mage](https://magefile.org), [Go 1.24+](https://go.dev), [Python 3.11+](https://python.org) with [uv](https://docs.astral.sh/uv/), [Node.js](https://nodejs.org) with [pnpm](https://pnpm.io), [.NET 8+](https://dotnet.microsoft.com), [Java 17+](https://openjdk.org) with [Gradle](https://gradle.org), [Ruby 3.2+](https://ruby-lang.org) with [Bundler](https://bundler.io), [Rust](https://rustup.rs), [Elixir 1.16+](https://elixir-lang.org) with [Erlang/OTP 25+](https://www.erlang.org), [Docker](https://docker.com)
 
 ### Mage targets
 
@@ -309,6 +328,7 @@ cd spicedb-csharp && mage integrationTest
 cd spicedb-java && mage integrationTest
 cd spicedb-ruby && mage integrationTest
 cd spicedb-rust && mage integrationTest
+cd spicedb-elixir && mage integrationTest
 cd spicedb-gen && mage integrationTest
 ```
 
@@ -339,3 +359,4 @@ Use `mage updateAllowBreak` to skip compatibility checks when breaking changes a
 | Java       | spotless          | `gradle spotlessCheck`           |
 | Ruby       | rubocop           | `bundle exec rubocop`            |
 | Rust       | clippy + rustfmt  | `cargo clippy && cargo fmt --check` |
+| Elixir     | credo + dialyzer  | `mix credo --strict && mix dialyzer` |

@@ -23,10 +23,6 @@ using SpiceDB.Client;
 using Xunit;
 using static SpiceDB.Client.Tests.StreamingTestHelpers;
 
-// FluentAssertions 8 introduced FluentAssertions.Value, which collides with the
-// protobuf well-known type; these tests only ever mean the protobuf one.
-using Value = Google.Protobuf.WellKnownTypes.Value;
-
 namespace SpiceDB.Client.Tests;
 
 public class CheckContextTests

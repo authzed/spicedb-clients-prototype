@@ -69,6 +69,13 @@ updates:
     groups:
       nuget:
         patterns: ["*"]
+    ignore:
+      # FluentAssertions is pinned to the 7.x line deliberately: 7.2.2 is the
+      # last Apache-2.0 release; 8.x relicenses to a commercial (Xceed) licence.
+      # That is a licensing decision, not a dependency bump. See
+      # spicedb-csharp/DESIGN.md.
+      - dependency-name: "FluentAssertions"
+        versions: [">=8.0.0"]
 
   # Java (Gradle)
   - package-ecosystem: gradle

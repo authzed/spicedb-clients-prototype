@@ -14,9 +14,7 @@ module SpiceDB
       super
     end
   end
-  # rubocop:disable Lint/DataDefineOverride -- :object_id mirrors the wire field and Go's ObjectRef.ObjectID; overriding Kernel#object_id is safe here since Data uses field-based ==/hash
-  ObjectRef = Data.define(:object_type, :object_id)
-  # rubocop:enable Lint/DataDefineOverride
+  ObjectRef = Data.define(:object_type, :object_id) # rubocop:disable Lint/DataDefineOverride -- :object_id mirrors the wire field and Go's ObjectRef.ObjectID; overriding Kernel#object_id is safe here since Data uses field-based ==/hash
   SubjectRef = Data.define(:subject_type, :subject_id, :optional_relation)
   IntermediateNode = Data.define(:operation, :children)
   LeafNode = Data.define(:subjects)

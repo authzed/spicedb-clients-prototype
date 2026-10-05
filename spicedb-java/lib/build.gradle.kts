@@ -13,7 +13,7 @@ dependencies {
     // platform would not govern the `api` coordinates below. Keep this version equal to
     // the one the BSR gRPC stubs are generated against -- see spicedb-java-proto's
     // DESIGN.md "Invariants".
-    api(platform("io.grpc:grpc-bom:1.83.1"))
+    api(platform("io.grpc:grpc-bom:1.84.0"))
 
     api("io.grpc:grpc-api")
     implementation("io.grpc:grpc-stub")

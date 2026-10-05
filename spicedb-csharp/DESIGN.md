@@ -61,6 +61,15 @@ Types (Relationship, Filter, Transaction, ConsistencyStrategy) are independent
 of the client. Users can construct relationships and filters without creating a
 client instance.
 
+**RULE: FluentAssertions stays on the 7.x line (7.2.2).** 7.2.2 is the last
+Apache-2.0 release; FluentAssertions 8.x relicenses to a commercial (Xceed)
+licence — its nuspec switches from an Apache-2.0 licence expression to a licence
+file. That is a licensing decision, not a version bump, so an automated
+dependency update must never carry it to 8.x on its own. The pin lives in
+`SpiceDB.Client.Tests.csproj` (with a comment) and is enforced against
+regressions by a Dependabot `ignore` for `FluentAssertions >= 8.0.0` in
+`.github/dependabot.yml`.
+
 ### Constructors
 
 Security-obvious named constructors:

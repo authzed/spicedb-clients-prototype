@@ -3,10 +3,6 @@ using Google.Protobuf.WellKnownTypes;
 using SpiceDB.Client;
 using Xunit;
 
-// FluentAssertions 8 introduced FluentAssertions.Value, which collides with the
-// protobuf well-known type; these tests only ever mean the protobuf one.
-using Value = Google.Protobuf.WellKnownTypes.Value;
-
 namespace SpiceDB.Client.Tests;
 
 public class RelationshipTests

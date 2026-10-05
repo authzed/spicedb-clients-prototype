@@ -1,6 +1,6 @@
 module github.com/authzed/spicedb-clients/spicedb-gen/testdata/go
 
-go 1.26.5
+go 1.26.6
 
 require (
 	github.com/authzed/spicedb-clients/spicedb-go v0.0.0

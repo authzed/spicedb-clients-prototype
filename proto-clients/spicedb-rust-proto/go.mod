@@ -1,6 +1,6 @@
 module github.com/authzed/spicedb-clients/proto-clients/spicedb-rust-proto
 
-go 1.26.5
+go 1.26.6
 
 require (
 	github.com/authzed/spicedb-clients v0.0.0-00010101000000-000000000000

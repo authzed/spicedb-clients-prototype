@@ -54,7 +54,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - uses: ruby/setup-ruby@14594264cd68ce8a2345dd349bc3d138a4ef85c8 # v1
+      - uses: ruby/setup-ruby@e81a8fa391b11a595c1b7ed84177cc0fe02faf83 # v1
         with:
           ruby-version: '3.2'
           bundler-cache: false
@@ -81,7 +81,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - uses: ruby/setup-ruby@14594264cd68ce8a2345dd349bc3d138a4ef85c8 # v1
+      - uses: ruby/setup-ruby@e81a8fa391b11a595c1b7ed84177cc0fe02faf83 # v1
         with:
           ruby-version: '3.2'
           bundler-cache: false
@@ -89,7 +89,7 @@ jobs:
       - name: Install Ruby deps (idiomatic client)
         working-directory: spicedb-ruby
         run: bundle install
-      - uses: ruby/setup-ruby@14594264cd68ce8a2345dd349bc3d138a4ef85c8 # v1
+      - uses: ruby/setup-ruby@e81a8fa391b11a595c1b7ed84177cc0fe02faf83 # v1
         with:
           ruby-version: '3.2'
           bundler-cache: false
@@ -118,7 +118,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - uses: ruby/setup-ruby@14594264cd68ce8a2345dd349bc3d138a4ef85c8 # v1
+      - uses: ruby/setup-ruby@e81a8fa391b11a595c1b7ed84177cc0fe02faf83 # v1
         with:
           ruby-version: '3.2'
           bundler-cache: false
@@ -126,7 +126,7 @@ jobs:
       - name: Install Ruby deps (idiomatic client)
         working-directory: spicedb-ruby
         run: bundle install
-      - uses: ruby/setup-ruby@14594264cd68ce8a2345dd349bc3d138a4ef85c8 # v1
+      - uses: ruby/setup-ruby@e81a8fa391b11a595c1b7ed84177cc0fe02faf83 # v1
         with:
           ruby-version: '3.2'
           bundler-cache: false

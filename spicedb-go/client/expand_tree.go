@@ -2,16 +2,10 @@ package client
 
 import (
 	v1 "github.com/authzed/spicedb-clients/proto-clients/spicedb-go-proto/gen/authzed/api/v1"
+	"github.com/authzed/spicedb-clients/spicedb-go/rel"
 )
 
-// ObjectRef identifies a resource or subject object.
-type ObjectRef struct {
-	ObjectType string
-	ObjectID   string
-}
-
-// TreeOperation is the set operation combining an intermediate node's children.
-type TreeOperation int
+type TreeOperation uint8
 
 const (
 	TreeOperationUnspecified TreeOperation = iota
@@ -20,76 +14,53 @@ const (
 	TreeOperationExclusion
 )
 
-// SubjectRef is a subject with access at a leaf of the tree.
-type SubjectRef struct {
-	SubjectType      string
-	SubjectID        string
-	OptionalRelation string // empty if none
-}
+type PermissionTreeKind uint8
 
-// IntermediateNode combines child subtrees with a set operation.
-type IntermediateNode struct {
-	Operation TreeOperation
-	Children  []PermissionTree
-}
+const (
+	PermissionTreeUnknown PermissionTreeKind = iota
+	PermissionTreeIntermediate
+	PermissionTreeLeaf
+)
 
-// LeafNode holds the concrete subjects at a leaf.
-type LeafNode struct {
-	Subjects []SubjectRef
-}
-
-// PermissionTree is a native node of an expanded permission tree. Exactly one
-// of Intermediate or Leaf is non-nil.
+// PermissionTree is an opaque tagged tree. Its zero value is Unknown.
 type PermissionTree struct {
-	ExpandedObject   ObjectRef
-	ExpandedRelation string
-	Intermediate     *IntermediateNode
-	Leaf             *LeafNode
+	kind             PermissionTreeKind
+	expandedObject   rel.ObjectRef
+	expandedRelation string
+	operation        TreeOperation
+	children         []PermissionTree
+	subjects         []rel.SubjectRef
 }
 
-// toPermissionTree recursively maps a proto PermissionRelationshipTree to its
-// native representation. A nil input maps to a zero-value PermissionTree.
-func toPermissionTree(t *v1.PermissionRelationshipTree) PermissionTree {
-	if t == nil {
+func (t PermissionTree) Kind() PermissionTreeKind      { return t.kind }
+func (t PermissionTree) ExpandedObject() rel.ObjectRef { return t.expandedObject }
+func (t PermissionTree) ExpandedRelation() string      { return t.expandedRelation }
+func (t PermissionTree) Operation() TreeOperation      { return t.operation }
+func (t PermissionTree) Children() []PermissionTree {
+	return append([]PermissionTree(nil), t.children...)
+}
+func (t PermissionTree) Subjects() []rel.SubjectRef {
+	return append([]rel.SubjectRef(nil), t.subjects...)
+}
+func toPermissionTree(p *v1.PermissionRelationshipTree) PermissionTree {
+	if p == nil {
 		return PermissionTree{}
 	}
-
-	tree := PermissionTree{
-		ExpandedObject: ObjectRef{
-			ObjectType: t.GetExpandedObject().GetObjectType(),
-			ObjectID:   t.GetExpandedObject().GetObjectId(),
-		},
-		ExpandedRelation: t.GetExpandedRelation(),
-	}
-
-	if intermediate := t.GetIntermediate(); intermediate != nil {
-		children := make([]PermissionTree, 0, len(intermediate.GetChildren()))
-		for _, child := range intermediate.GetChildren() {
-			children = append(children, toPermissionTree(child))
+	t := PermissionTree{expandedObject: nativeObject(p.GetExpandedObject()), expandedRelation: p.GetExpandedRelation()}
+	if inner := p.GetIntermediate(); inner != nil {
+		t.kind = PermissionTreeIntermediate
+		t.operation = toTreeOperation(inner.GetOperation())
+		for _, c := range inner.GetChildren() {
+			t.children = append(t.children, toPermissionTree(c))
 		}
-		tree.Intermediate = &IntermediateNode{
-			Operation: toTreeOperation(intermediate.GetOperation()),
-			Children:  children,
+	} else if leaf := p.GetLeaf(); leaf != nil {
+		t.kind = PermissionTreeLeaf
+		for _, s := range leaf.GetSubjects() {
+			t.subjects = append(t.subjects, nativeSubject(s))
 		}
 	}
-
-	if leaf := t.GetLeaf(); leaf != nil {
-		subjects := make([]SubjectRef, 0, len(leaf.GetSubjects()))
-		for _, subject := range leaf.GetSubjects() {
-			subjects = append(subjects, SubjectRef{
-				SubjectType:      subject.GetObject().GetObjectType(),
-				SubjectID:        subject.GetObject().GetObjectId(),
-				OptionalRelation: subject.GetOptionalRelation(),
-			})
-		}
-		tree.Leaf = &LeafNode{Subjects: subjects}
-	}
-
-	return tree
+	return t
 }
-
-// toTreeOperation maps the proto algebraic set operation to its native
-// equivalent.
 func toTreeOperation(op v1.AlgebraicSubjectSet_Operation) TreeOperation {
 	switch op {
 	case v1.AlgebraicSubjectSet_OPERATION_UNION:

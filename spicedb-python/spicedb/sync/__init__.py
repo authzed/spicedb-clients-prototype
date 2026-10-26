@@ -1,23 +1,6 @@
-"""Synchronous SpiceDB client.
-
-Use this flavor from synchronous applications -- Django, Flask, scripts, batch
-jobs. It needs no event loop::
-
-    from spicedb.sync import SpiceDBClient
-
-    client = SpiceDBClient("localhost:50051", token="t", insecure=True)
-    result = client.check_permission(full(), rel)
-    if result.has_permission:  # True only for a full grant, never a Conditional
-        ...
-
-For a plaintext connection to anything other than a loopback endpoint, see
-SpiceDBClient's docstring on `allow_insecure_remote_credentials` and root
-DESIGN.md, "RULE: Credentials over insecure transport require an explicit
-opt-in".
-
-Async callers want `spicedb.aio` instead.
-"""
+"""Sync SpiceDB client and its owned stream type."""
 
 from spicedb.sync.client import SpiceDBClient
+from spicedb._streams import Stream
 
-__all__ = ["SpiceDBClient"]
+__all__ = ["SpiceDBClient", "Stream"]

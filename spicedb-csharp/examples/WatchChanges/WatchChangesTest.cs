@@ -27,27 +27,26 @@ public class WatchChangesTest
         // already-identical relationship is not a change, and SpiceDB emits no
         // watch event for it.
         await SpiceDBTestServer.ClearDocumentRelationshipsAsync(client);
-        await client.WriteSchemaAsync(Schema);
+        await client.WriteSchemaAsync(Schema, null, default);
 
         // Write a relationship to get a starting revision
         var txn = new Transaction();
-        txn.Touch(Relationship.FromTriple("document", "firstdoc", "viewer", "user", "alice"));
-        var revision = await client.WriteAsync(txn);
+        txn.Touch(new Relationship(new ObjectRef("document", "firstdoc"), "viewer", new SubjectRef(new ObjectRef("user", "alice"))));
+        var revision = (await client.WriteAsync(txn, null, default)).Revision;
 
         // Write another relationship that we expect to see in the watch stream
         var txn2 = new Transaction();
-        txn2.Touch(Relationship.FromTriple("document", "seconddoc", "editor", "user", "bob"));
-        await client.WriteAsync(txn2);
+        txn2.Touch(new Relationship(new ObjectRef("document", "seconddoc"), "editor", new SubjectRef(new ObjectRef("user", "bob"))));
+        await client.WriteAsync(txn2, null, default);
 
         // Watch for changes starting from the first revision
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         var updates = new List<RelationshipUpdate>();
-        string? resumeToken = null;
+        ZedToken? resumeToken = null;
 
         try
         {
-            await foreach (var evt in client.UpdatesAsync(
-                objectTypes: ["document"], startRevision: revision, cancellationToken: cts.Token))
+            await foreach (var evt in client.UpdatesAsync([], revision, new WatchOptions { RelationshipFilters = [new Filter("document")], Content = WatchContent.Relationships }, cts.Token))
             {
                 // evt.ChangesThrough is a resume point: keep it and pass it as
                 // startRevision on a later UpdatesAsync call to pick back up
@@ -72,18 +71,18 @@ public class WatchChangesTest
         // earlier example left behind.
         Assert.NotEmpty(updates);
         var update = Assert.Single(updates);
-        Assert.Equal("document", update.Relationship.ResourceType);
-        Assert.Equal("seconddoc", update.Relationship.ResourceID);
-        Assert.Equal("editor", update.Relationship.ResourceRelation);
-        Assert.Equal("user", update.Relationship.SubjectType);
-        Assert.Equal("bob", update.Relationship.SubjectID);
+        Assert.Equal("document", update.Relationship.Resource.ObjectType);
+        Assert.Equal("seconddoc", update.Relationship.Resource.ObjectId);
+        Assert.Equal("editor", update.Relationship.Relation);
+        Assert.Equal("user", update.Relationship.Subject.Object.ObjectType);
+        Assert.Equal("bob", update.Relationship.Subject.Object.ObjectId);
         // TOUCH is a write, so it can only be the mapping for an explicit
         // OPERATION_TOUCH -- never a default an unrecognized operation falls
         // into.
         Assert.True(
             update.Operation is UpdateOperation.Create or UpdateOperation.Touch,
             $"expected a Create or Touch for the relationship just written, got {update.Operation}");
-        Assert.False(string.IsNullOrEmpty(resumeToken));
+        Assert.False(string.IsNullOrEmpty(resumeToken?.Value));
 
         await SpiceDBTestServer.ClearDocumentRelationshipsAsync(client);
     }
@@ -108,18 +107,17 @@ public class WatchChangesTest
         //
         // What IS this client's responsibility -- and what the final assertion
         // pins -- is that abandoning the stream surfaces as the native
-        // CancelledException instead of leaking a raw Grpc.Core.RpcException
+        // OperationCanceledException instead of leaking a raw Grpc.Core.RpcException
         // out of the streaming path. That one does fail when broken.
         // See root DESIGN.md, "RULE: Abandoning a stream must release it".
         await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
         await SpiceDBTestServer.ClearDocumentRelationshipsAsync(client);
-        await client.WriteSchemaAsync(Schema);
+        await client.WriteSchemaAsync(Schema, null, default);
 
         using var cts = new CancellationTokenSource();
         var consumer = Task.Run(async () =>
         {
-            await foreach (var _ in client.UpdatesAsync(
-                objectTypes: ["document"], cancellationToken: cts.Token))
+            await foreach (var _ in client.UpdatesAsync([], null, new WatchOptions { RelationshipFilters = [new Filter("document")], Content = WatchContent.Relationships }, cts.Token))
             {
                 // Consume forever; only the cancellation below ends this.
             }
@@ -135,9 +133,10 @@ public class WatchChangesTest
             "the watch consumer was still running 10s after its token was cancelled: " +
             "abandoning the stream did not stop it");
         // The native error type, not the raw gRPC one: a cancelled stream
-        // surfaces as SpiceDB.Client.CancelledException. This is the assertion
+        // surfaces as OperationCanceledException. This is the assertion
         // in this test that a plausible mutation can break.
-        await Assert.ThrowsAsync<CancelledException>(() => consumer);
+        var cancellation = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => consumer);
+        Assert.Equal(cts.Token, cancellation.CancellationToken);
     }
 
     [Fact]
@@ -152,7 +151,7 @@ public class WatchChangesTest
         // resume point" from "here are changes".
         await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
         await SpiceDBTestServer.ClearDocumentRelationshipsAsync(client);
-        await client.WriteSchemaAsync(Schema);
+        await client.WriteSchemaAsync(Schema, null, default);
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var seenCheckpoint = false;
@@ -162,8 +161,7 @@ public class WatchChangesTest
         {
             try
             {
-                await foreach (var evt in client.UpdatesAsync(
-                    objectTypes: ["document"], includeCheckpoints: true, cancellationToken: cts.Token))
+                await foreach (var evt in client.UpdatesAsync([], null, new WatchOptions { RelationshipFilters = [new Filter("document")], Content = WatchContent.Relationships | WatchContent.Checkpoints }, cts.Token))
                 {
                     if (evt.IsCheckpoint)
                         seenCheckpoint = true;
@@ -182,8 +180,8 @@ public class WatchChangesTest
 
         await Task.Delay(100); // let the watch start
         var txn = new Transaction();
-        txn.Touch(Relationship.FromTriple("document", "thirddoc", "viewer", "user", "carol"));
-        await client.WriteAsync(txn);
+        txn.Touch(new Relationship(new ObjectRef("document", "thirddoc"), "viewer", new SubjectRef(new ObjectRef("user", "carol"))));
+        await client.WriteAsync(txn, null, default);
 
         await watchTask;
 

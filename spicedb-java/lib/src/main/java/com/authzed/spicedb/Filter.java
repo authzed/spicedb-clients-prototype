@@ -1,7 +1,5 @@
 package com.authzed.spicedb;
 
-import java.util.Objects;
-
 /**
  * An immutable filter for matching SpiceDB relationships.
  *
@@ -10,7 +8,7 @@ import java.util.Objects;
  *
  * <pre>{@code
  * Filter filter = Filter.of("document")
- *     .withResourceID("doc1")
+ *     .withResourceId("doc1")
  *     .withRelation("viewer")
  *     .withSubjectType("user");
  * }</pre>
@@ -22,7 +20,23 @@ public record Filter(
     String relation,
     String subjectType,
     String subjectID,
-    String subjectRelation) {
+    SubjectRelationFilter subjectRelation) {
+
+  public Filter {
+    JsonContext.required(resourceType, "resourceType");
+    if (resourceID != null
+        && !resourceID.isEmpty()
+        && resourceIDPrefix != null
+        && !resourceIDPrefix.isEmpty())
+      throw new com.authzed.spicedb.errors.InvalidArgumentException(
+          "resource ID and prefix are mutually exclusive");
+    if (subjectRelation == null) subjectRelation = SubjectRelationFilter.any();
+    if ((subjectID != null && !subjectID.isEmpty()
+            || !(subjectRelation instanceof SubjectRelationFilter.Any))
+        && (subjectType == null || subjectType.isEmpty()))
+      throw new com.authzed.spicedb.errors.InvalidArgumentException(
+          "subject constraint requires subjectType");
+  }
 
   /**
    * Creates a filter that matches relationships of the given resource type.
@@ -30,21 +44,22 @@ public record Filter(
    * @throws IllegalArgumentException if resourceType is null or empty
    */
   public static Filter of(String resourceType) {
-    Objects.requireNonNull(resourceType, "resourceType must not be null");
+    JsonContext.required(resourceType, "resourceType");
     if (resourceType.isEmpty()) {
-      throw new IllegalArgumentException("resourceType must not be empty");
+      throw new com.authzed.spicedb.errors.InvalidArgumentException(
+          "resourceType must not be empty");
     }
-    return new Filter(resourceType, "", "", "", "", "", "");
+    return new Filter(resourceType, "", "", "", "", "", SubjectRelationFilter.any());
   }
 
   /** Narrows the filter to a specific resource ID. */
-  public Filter withResourceID(String id) {
+  public Filter withResourceId(String id) {
     return new Filter(
         resourceType, id, resourceIDPrefix, relation, subjectType, subjectID, subjectRelation);
   }
 
   /** Narrows the filter to resource IDs with the given prefix. */
-  public Filter withResourceIDPrefix(String prefix) {
+  public Filter withResourceIdPrefix(String prefix) {
     return new Filter(
         resourceType, resourceID, prefix, relation, subjectType, subjectID, subjectRelation);
   }
@@ -62,13 +77,13 @@ public record Filter(
   }
 
   /** Narrows the filter to a specific subject ID. */
-  public Filter withSubjectID(String id) {
+  public Filter withSubjectId(String id) {
     return new Filter(
         resourceType, resourceID, resourceIDPrefix, relation, subjectType, id, subjectRelation);
   }
 
   /** Narrows the filter to a specific subject relation. */
-  public Filter withSubjectRelation(String rel) {
+  public Filter withSubjectRelation(SubjectRelationFilter rel) {
     return new Filter(
         resourceType, resourceID, resourceIDPrefix, relation, subjectType, subjectID, rel);
   }

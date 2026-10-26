@@ -8,13 +8,13 @@ enforces this (`CheckBulkPermissionsRequest.items` carries only a per-item
 `required` rule, not a collection-size rule), so the client is what has to
 split large inputs.
 """
+from spicedb import TransportSecurity
 
+from spicedb import PermissionCheck
 from unittest import mock
 from unittest.mock import AsyncMock
-
 import pytest
 from authzed.api.v1 import core_pb2, permission_service_pb2
-
 import spicedb.aio
 import spicedb.sync
 from spicedb import Relationship
@@ -41,19 +41,21 @@ def echo_response(request, short_by=0, malformed_local=None):
     `short_by` drops that many pairs off the end, exercising the pair-count
     guard.
     """
-    items = request.items[: len(request.items) - short_by] if short_by else request.items
+    items = (
+        request.items[: len(request.items) - short_by] if short_by else request.items
+    )
 
     def pair(i, item):
         if malformed_local == i:
-            # `response` oneof left unset entirely.
-            return permission_service_pb2.CheckBulkPermissionsPair()
+            return permission_service_pb2.CheckBulkPermissionsPair(request=item)
         return permission_service_pb2.CheckBulkPermissionsPair(
+            request=item,
             item=permission_service_pb2.CheckBulkPermissionsResponseItem(
                 permissionship=permission_service_pb2.CheckPermissionResponse.PERMISSIONSHIP_HAS_PERMISSION,
                 partial_caveat_info=core_pb2.PartialCaveatInfo(
                     missing_required_context=[item.resource.object_id]
                 ),
-            )
+            ),
         )
 
     return permission_service_pb2.CheckBulkPermissionsResponse(
@@ -99,7 +101,7 @@ def make_sync_client():
 
     def _make(**kw):
         c = spicedb.sync.SpiceDBClient(
-            "localhost:50051", token="t", insecure=True, **kw
+            "localhost:50051", token="t", transport_security=TransportSecurity.PLAINTEXT, **kw
         )
         c._ensure_channel()
         created.append(c)
@@ -115,9 +117,7 @@ async def make_aio_client():
     created = []
 
     def _make(**kw):
-        c = spicedb.aio.SpiceDBClient(
-            "localhost:50051", token="t", insecure=True, **kw
-        )
+        c = spicedb.aio.SpiceDBClient("localhost:50051", token="t", transport_security=TransportSecurity.PLAINTEXT, **kw)
         c._ensure_channel()
         created.append(c)
         return c
@@ -138,9 +138,9 @@ class TestSyncCheckChunking:
         client = make_sync_client()
         recorder = _Recorder()
         client._permissions.CheckBulkPermissions = recorder.sync_stub()
-
-        results = client.check_permissions(full(), *numbered_rels(TOTAL))
-
+        results = client.check_bulk(
+            [*_checks(numbered_rels(TOTAL))], consistency=full()
+        )
         assert len(results) == TOTAL
         assert recorder.sizes == EXPECTED_SIZES
 
@@ -151,9 +151,9 @@ class TestSyncCheckChunking:
         client = make_sync_client()
         recorder = _Recorder()
         client._permissions.CheckBulkPermissions = recorder.sync_stub()
-
-        results = client.check_permissions(full(), *numbered_rels(TOTAL))
-
+        results = client.check_bulk(
+            [*_checks(numbered_rels(TOTAL))], consistency=full()
+        )
         assert [r.missing_context[0] for r in results] == [
             f"{i:05d}" for i in range(TOTAL)
         ]
@@ -165,9 +165,7 @@ class TestSyncCheckChunking:
         client = make_sync_client()
         recorder = _Recorder()
         client._permissions.CheckBulkPermissions = recorder.sync_stub()
-
-        results = client.check_permissions(full(), *numbered_rels(n))
-
+        results = client.check_bulk([*_checks(numbered_rels(n))], consistency=full())
         assert len(results) == n
         assert recorder.sizes == [n]
 
@@ -177,8 +175,7 @@ class TestSyncCheckChunking:
         client = make_sync_client()
         recorder = _Recorder()
         client._permissions.CheckBulkPermissions = recorder.sync_stub()
-
-        assert client.check_permissions(full()) == []
+        assert client.check_bulk([], consistency=full()) == []
         assert recorder.sizes == []
 
     def test_check_all_on_empty_input_is_false_and_sends_no_request(
@@ -189,8 +186,7 @@ class TestSyncCheckChunking:
         client = make_sync_client()
         recorder = _Recorder()
         client._permissions.CheckBulkPermissions = recorder.sync_stub()
-
-        assert client.check_all(full()) is False
+        assert _aggregate(client.check_bulk([], consistency=full()), True) is False
         assert recorder.sizes == []
 
     def test_length_guard_fires_on_a_later_chunk(self, make_sync_client):
@@ -199,14 +195,10 @@ class TestSyncCheckChunking:
         client = make_sync_client()
         recorder = _Recorder(short_at=1)
         client._permissions.CheckBulkPermissions = recorder.sync_stub()
-
         with pytest.raises(SpiceDBError) as excinfo:
-            client.check_permissions(full(), *numbered_rels(TOTAL))
-
+            client.check_bulk([*_checks(numbered_rels(TOTAL))], consistency=full())
         assert "999 pair(s)" in str(excinfo.value)
         assert f"{CHECK_BATCH_SIZE} request item(s)" in str(excinfo.value)
-        # Two requests went out before the guard fired -- proof the failure
-        # was detected on the second chunk, not on the whole input up front.
         assert recorder.sizes == [CHECK_BATCH_SIZE, CHECK_BATCH_SIZE]
 
     def test_malformed_pair_reports_the_callers_absolute_index(self, make_sync_client):
@@ -223,10 +215,10 @@ class TestSyncCheckChunking:
         client = make_sync_client()
         recorder = _Recorder(malformed_at_absolute=failing)
         client._permissions.CheckBulkPermissions = recorder.sync_stub()
-
         with pytest.raises(SpiceDBError) as excinfo:
-            client.check_permissions(full(), *numbered_rels(CHECK_BATCH_SIZE * 2))
-
+            client.check_bulk(
+                [*_checks(numbered_rels(CHECK_BATCH_SIZE * 2))], consistency=full()
+            )
         assert f"check item {failing}:" in str(excinfo.value)
         assert "check item 3:" not in str(excinfo.value)
 
@@ -236,9 +228,9 @@ class TestAioCheckChunking:
         client = make_aio_client()
         recorder = _Recorder()
         client._permissions.CheckBulkPermissions = recorder.aio_stub()
-
-        results = await client.check_permissions(full(), *numbered_rels(TOTAL))
-
+        results = await client.check_bulk(
+            [*_checks(numbered_rels(TOTAL))], consistency=full()
+        )
         assert len(results) == TOTAL
         assert recorder.sizes == EXPECTED_SIZES
 
@@ -246,9 +238,9 @@ class TestAioCheckChunking:
         client = make_aio_client()
         recorder = _Recorder()
         client._permissions.CheckBulkPermissions = recorder.aio_stub()
-
-        results = await client.check_permissions(full(), *numbered_rels(TOTAL))
-
+        results = await client.check_bulk(
+            [*_checks(numbered_rels(TOTAL))], consistency=full()
+        )
         assert [r.missing_context[0] for r in results] == [
             f"{i:05d}" for i in range(TOTAL)
         ]
@@ -258,9 +250,9 @@ class TestAioCheckChunking:
         client = make_aio_client()
         recorder = _Recorder()
         client._permissions.CheckBulkPermissions = recorder.aio_stub()
-
-        results = await client.check_permissions(full(), *numbered_rels(n))
-
+        results = await client.check_bulk(
+            [*_checks(numbered_rels(n))], consistency=full()
+        )
         assert len(results) == n
         assert recorder.sizes == [n]
 
@@ -268,8 +260,7 @@ class TestAioCheckChunking:
         client = make_aio_client()
         recorder = _Recorder()
         client._permissions.CheckBulkPermissions = recorder.aio_stub()
-
-        assert await client.check_permissions(full()) == []
+        assert await client.check_bulk([], consistency=full()) == []
         assert recorder.sizes == []
 
     async def test_check_all_on_empty_input_is_false_and_sends_no_request(
@@ -278,30 +269,47 @@ class TestAioCheckChunking:
         client = make_aio_client()
         recorder = _Recorder()
         client._permissions.CheckBulkPermissions = recorder.aio_stub()
-
-        assert await client.check_all(full()) is False
+        assert (
+            _aggregate(await client.check_bulk([], consistency=full()), True) is False
+        )
         assert recorder.sizes == []
 
     async def test_length_guard_fires_on_a_later_chunk(self, make_aio_client):
         client = make_aio_client()
         recorder = _Recorder(short_at=1)
         client._permissions.CheckBulkPermissions = recorder.aio_stub()
-
         with pytest.raises(SpiceDBError) as excinfo:
-            await client.check_permissions(full(), *numbered_rels(TOTAL))
-
+            await client.check_bulk(
+                [*_checks(numbered_rels(TOTAL))], consistency=full()
+            )
         assert "999 pair(s)" in str(excinfo.value)
         assert f"{CHECK_BATCH_SIZE} request item(s)" in str(excinfo.value)
         assert recorder.sizes == [CHECK_BATCH_SIZE, CHECK_BATCH_SIZE]
 
-    async def test_malformed_pair_reports_the_callers_absolute_index(self, make_aio_client):
+    async def test_malformed_pair_reports_the_callers_absolute_index(
+        self, make_aio_client
+    ):
         failing = CHECK_BATCH_SIZE + 3
         client = make_aio_client()
         recorder = _Recorder(malformed_at_absolute=failing)
         client._permissions.CheckBulkPermissions = recorder.aio_stub()
-
         with pytest.raises(SpiceDBError) as excinfo:
-            await client.check_permissions(full(), *numbered_rels(CHECK_BATCH_SIZE * 2))
-
+            await client.check_bulk(
+                [*_checks(numbered_rels(CHECK_BATCH_SIZE * 2))], consistency=full()
+            )
         assert f"check item {failing}:" in str(excinfo.value)
         assert "check item 3:" not in str(excinfo.value)
+
+
+def _check(value):
+    if isinstance(value, PermissionCheck):
+        return value
+    return PermissionCheck(value.resource, value.relation, value.subject)
+
+
+def _checks(values):
+    return [_check(value) for value in values]
+
+
+def _aggregate(values, every=False):
+    return bool(values) and (all(values) if every else any(values))

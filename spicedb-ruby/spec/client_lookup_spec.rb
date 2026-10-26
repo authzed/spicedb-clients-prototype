@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative '../lib/spicedb'
+require_relative 'support/native_helpers'
 require 'spicedb_proto'
 
 # Mirrors spicedb-go's client/lookup_types.go + lookup.go: lookup_resources
@@ -16,7 +17,7 @@ RSpec.describe 'SpiceDB::Client lookup native results' do
   # shape the real streaming call returns).
   def stub_lookup_resources(responses)
     permissions_service = double('permissions_service')
-    allow(permissions_service).to receive(:lookup_resources).and_return(responses)
+    allow(permissions_service).to receive(:lookup_resources).and_return(FixtureOperation.new(responses))
     proto_client = double('proto_client', permissions: permissions_service)
     client.instance_variable_set(:@proto_client, proto_client)
   end
@@ -25,7 +26,7 @@ RSpec.describe 'SpiceDB::Client lookup native results' do
   # array of proto LookupSubjectsResponse.
   def stub_lookup_subjects(responses)
     permissions_service = double('permissions_service')
-    allow(permissions_service).to receive(:lookup_subjects).and_return(responses)
+    allow(permissions_service).to receive(:lookup_subjects).and_return(FixtureOperation.new(responses))
     proto_client = double('proto_client', permissions: permissions_service)
     client.instance_variable_set(:@proto_client, proto_client)
   end
@@ -39,11 +40,13 @@ RSpec.describe 'SpiceDB::Client lookup native results' do
       )
       stub_lookup_resources([resp])
 
-      results = client.lookup_resources(SpiceDB::Consistency.full, 'document', 'view', 'user', 'alice').to_a
+      results = client.lookup_resources(resource_type: 'document', permission: 'view',
+                                        subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user',
+                                                                                                        object_id: 'alice')), consistency: SpiceDB::Consistency.full).to_a
 
       expect(results).to eq(
         [SpiceDB::LookupResource.new(resource_id: 'doc1', permissionship: :has_permission, partial_caveat: nil,
-                                     looked_up_at: '')]
+                                     looked_up_at: nil)]
       )
     end
 
@@ -56,7 +59,9 @@ RSpec.describe 'SpiceDB::Client lookup native results' do
       )
       stub_lookup_resources([resp])
 
-      result = client.lookup_resources(SpiceDB::Consistency.full, 'document', 'view', 'user', 'alice').first
+      result = client.lookup_resources(resource_type: 'document', permission: 'view',
+                                       subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user',
+                                                                                                       object_id: 'alice')), consistency: SpiceDB::Consistency.full).first
 
       expect(result.permissionship).to eq(:conditional_permission)
       expect(result.partial_caveat).to eq(SpiceDB::PartialCaveatInfo.new(missing_required_context: ['ip_address']))
@@ -71,9 +76,11 @@ RSpec.describe 'SpiceDB::Client lookup native results' do
       )
       stub_lookup_resources([resp])
 
-      result = client.lookup_resources(SpiceDB::Consistency.full, 'document', 'view', 'user', 'alice').first
+      result = client.lookup_resources(resource_type: 'document', permission: 'view',
+                                       subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user',
+                                                                                                       object_id: 'alice')), consistency: SpiceDB::Consistency.full).first
 
-      expect(result.looked_up_at).to eq('zed-lookup-1')
+      expect(result.looked_up_at).to eq(SpiceDB::ZedToken.new('zed-lookup-1'))
     end
   end
 
@@ -92,7 +99,8 @@ RSpec.describe 'SpiceDB::Client lookup native results' do
       )
       stub_lookup_subjects([resp])
 
-      result = client.lookup_subjects(SpiceDB::Consistency.full, 'document', 'doc1', 'view', 'user').first
+      result = client.lookup_subjects(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'doc1'), permission: 'view', subject_type: 'user',
+                                      consistency: SpiceDB::Consistency.full).first
 
       expect(result).to be_a(SpiceDB::LookupSubject)
       expect(result.subject.subject_id).to eq('*')
@@ -108,7 +116,8 @@ RSpec.describe 'SpiceDB::Client lookup native results' do
       )
       stub_lookup_subjects([resp])
 
-      result = client.lookup_subjects(SpiceDB::Consistency.full, 'document', 'doc1', 'view', 'user').first
+      result = client.lookup_subjects(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'doc1'), permission: 'view', subject_type: 'user',
+                                      consistency: SpiceDB::Consistency.full).first
 
       expect(result.excluded_subjects).to eq(
         [
@@ -126,7 +135,8 @@ RSpec.describe 'SpiceDB::Client lookup native results' do
       )
       stub_lookup_subjects([resp])
 
-      result = client.lookup_subjects(SpiceDB::Consistency.full, 'document', 'doc1', 'view', 'user').first
+      result = client.lookup_subjects(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'doc1'), permission: 'view', subject_type: 'user',
+                                      consistency: SpiceDB::Consistency.full).first
 
       expect(result.subject).to eq(
         SpiceDB::ResolvedSubject.new(
@@ -145,7 +155,8 @@ RSpec.describe 'SpiceDB::Client lookup native results' do
       )
       stub_lookup_subjects([resp])
 
-      result = client.lookup_subjects(SpiceDB::Consistency.full, 'document', 'doc1', 'view', 'user').first
+      result = client.lookup_subjects(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'doc1'), permission: 'view', subject_type: 'user',
+                                      consistency: SpiceDB::Consistency.full).first
 
       expect(result.excluded_subjects).to eq([])
     end
@@ -158,9 +169,10 @@ RSpec.describe 'SpiceDB::Client lookup native results' do
       )
       stub_lookup_subjects([resp])
 
-      result = client.lookup_subjects(SpiceDB::Consistency.full, 'document', 'doc1', 'view', 'user').first
+      result = client.lookup_subjects(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'doc1'), permission: 'view', subject_type: 'user',
+                                      consistency: SpiceDB::Consistency.full).first
 
-      expect(result.looked_up_at).to eq('zed-lookup-2')
+      expect(result.looked_up_at).to eq(SpiceDB::ZedToken.new('zed-lookup-2'))
     end
   end
 
@@ -199,6 +211,10 @@ RSpec.describe 'SpiceDB::Client lookup native results' do
       )
     end
   end
+end
+
+RSpec.describe 'SpiceDB::Client lookup context' do
+  let(:client) { SpiceDB::Client.new_plaintext('localhost:50051', 'testtoken') }
 
   # Keyword arguments are the lookups' options container -- root DESIGN.md,
   # "RULE: Every RPC wrapper must have one place to add an option". These pin
@@ -211,7 +227,7 @@ RSpec.describe 'SpiceDB::Client lookup native results' do
       permissions_service = double('permissions_service')
       allow(permissions_service).to receive(method) do |req|
         captured = req
-        responses
+        FixtureOperation.new(responses)
       end
       proto_client = double('proto_client', permissions: permissions_service)
       client.instance_variable_set(:@proto_client, proto_client)
@@ -221,8 +237,9 @@ RSpec.describe 'SpiceDB::Client lookup native results' do
     it 'sends context supplied to lookup_resources' do
       captured = capture_request(:lookup_resources, [])
 
-      client.lookup_resources(SpiceDB::Consistency.full, 'document', 'view', 'user', 'alice',
-                              context: { 'region' => 'eu' }).to_a
+      client.lookup_resources(resource_type: 'document', permission: 'view',
+                              subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: 'alice')),
+                              consistency: SpiceDB::Consistency.full, context: { 'region' => 'eu' }).to_a
 
       expect(captured.call.context.fields['region'].string_value).to eq('eu')
     end
@@ -230,7 +247,9 @@ RSpec.describe 'SpiceDB::Client lookup native results' do
     it 'sends no context on lookup_resources when none is supplied' do
       captured = capture_request(:lookup_resources, [])
 
-      client.lookup_resources(SpiceDB::Consistency.full, 'document', 'view', 'user', 'alice').to_a
+      client.lookup_resources(resource_type: 'document', permission: 'view',
+                              subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: 'alice')),
+                              consistency: SpiceDB::Consistency.full).to_a
 
       expect(captured.call.context).to be_nil
     end
@@ -238,8 +257,8 @@ RSpec.describe 'SpiceDB::Client lookup native results' do
     it 'sends context supplied to lookup_subjects' do
       captured = capture_request(:lookup_subjects, [])
 
-      client.lookup_subjects(SpiceDB::Consistency.full, 'document', 'doc1', 'view', 'user',
-                             context: { 'region' => 'eu' }).to_a
+      client.lookup_subjects(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'doc1'), permission: 'view', subject_type: 'user',
+                             consistency: SpiceDB::Consistency.full, context: { 'region' => 'eu' }).to_a
 
       expect(captured.call.context.fields['region'].string_value).to eq('eu')
     end
@@ -247,7 +266,8 @@ RSpec.describe 'SpiceDB::Client lookup native results' do
     it 'sends no context on lookup_subjects when none is supplied' do
       captured = capture_request(:lookup_subjects, [])
 
-      client.lookup_subjects(SpiceDB::Consistency.full, 'document', 'doc1', 'view', 'user').to_a
+      client.lookup_subjects(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'doc1'), permission: 'view', subject_type: 'user',
+                             consistency: SpiceDB::Consistency.full).to_a
 
       expect(captured.call.context).to be_nil
     end

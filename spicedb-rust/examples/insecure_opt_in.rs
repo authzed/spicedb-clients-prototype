@@ -9,7 +9,7 @@
 //! signalling that it happened. So `.plaintext()` is loopback-only, and reaching
 //! a remote host over plaintext takes a second, separately-named builder option
 //! the caller cannot supply by accident:
-//! `.allow_insecure_remote_credentials()`.
+//! `.remote_credentials_policy(spicedb::RemoteCredentialsPolicy::AllowInsecureRemote)`.
 //!
 //! The sharpest case is the last one. The rule requires the guard's answer to be
 //! *the transport's* answer -- here `http::Uri`, what tonic parses with --
@@ -39,9 +39,13 @@ async fn main() {
     // The case the rule deliberately leaves ergonomic: a token on a loopback
     // socket never leaves the machine, so requiring ceremony here would only
     // train developers to reach for the opt-in reflexively.
-    let client = SpiceDBClient::new_plaintext(endpoint(), token())
-        .await
-        .expect("loopback plaintext must be allowed with no opt-in");
+    let client = SpiceDBClient::new_plaintext(
+        endpoint(),
+        token(),
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("loopback plaintext must be allowed with no opt-in");
 
     // Prove the client is usable, not merely constructed.
     //
@@ -51,7 +55,12 @@ async fn main() {
     // it, so clear first -- an earlier example leaving document:firstdoc#editor
     // behind is enough to fail this outright, which is exactly how it failed the
     // first time this example ran in the full suite rather than alone.
-    match client.delete_relationships(&Filter::new("document")).await {
+    match client
+        .delete_all_relationships_non_atomic(spicedb::DeleteAllRequest::new(
+            (Filter::new("document")).clone(),
+        ))
+        .await
+    {
         Ok(_) => {}
         // No `document` definition in the live schema yet: nothing to clear.
         // Only that error is tolerated -- an unreachable server or a bad token
@@ -62,9 +71,7 @@ async fn main() {
     }
 
     client
-        .write_schema(
-            "definition user {}\n\ndefinition document {\n\trelation viewer: user\n\tpermission view = viewer\n}",
-        )
+        .write_schema(spicedb::WriteSchemaRequest::new("definition user {}\n\ndefinition document {\n\trelation viewer: user\n\tpermission view = viewer\n}"))
         .await
         .expect("loopback plaintext client should reach SpiceDB");
     println!("loopback plaintext: allowed with no opt-in, and works");
@@ -74,7 +81,12 @@ async fn main() {
     // The refusal happens while building, so the token never reaches a socket.
     // This is not about whether the host exists -- example.com is refused
     // because it is not loopback, full stop.
-    let refused = SpiceDBClient::new_plaintext("example.com:50051", token()).await;
+    let refused = SpiceDBClient::new_plaintext(
+        "example.com:50051",
+        token(),
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await;
     // `expect_err` would need SpiceDBClient: Debug, which it deliberately is not
     // (it holds channels and a token), so match instead.
     let err = match refused {
@@ -101,10 +113,17 @@ async fn main() {
     // both jobs.
     SpiceDBClient::builder("example.com:50051", token())
         .plaintext()
-        .allow_insecure_remote_credentials()
+        .remote_credentials_policy(spicedb::RemoteCredentialsPolicy::AllowInsecureRemote)
         .build()
         .await
         .expect("the named opt-in should permit remote plaintext");
+    SpiceDBClient::new_plaintext(
+        "192.0.2.1:50051",
+        token(),
+        spicedb::RemoteCredentialsPolicy::AllowInsecureRemote,
+    )
+    .await
+    .expect("the constructor exposes the same explicit opt-in");
     println!("remote plaintext, explicit opt-in: allowed");
 
     // ── 4. Endpoints whose authority could move under URI parsing ────────
@@ -118,7 +137,13 @@ async fn main() {
         "127.0.0.1:50051?x=evil.com",
         "127.0.0.1:50051#evil.com",
     ] {
-        let err = match SpiceDBClient::new_plaintext(spoof, token()).await {
+        let err = match SpiceDBClient::new_plaintext(
+            spoof,
+            token(),
+            spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+        )
+        .await
+        {
             Ok(_) => panic!(
                 "SECURITY: {spoof} was accepted as loopback -- the guard is splitting the \
                  string instead of asking the transport's parser"

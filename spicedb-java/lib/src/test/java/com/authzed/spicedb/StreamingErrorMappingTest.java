@@ -79,7 +79,11 @@ class StreamingErrorMappingTest {
     try (TestServers servers = TestServers.start(service)) {
       SpiceDBClient client = servers.client();
       try (Stream<LookupResult.LookupResource> stream =
-          client.lookupResources(Consistency.full(), "document", "view", "user", "alice")) {
+          client.lookupResources(
+              Consistency.full(),
+              "document",
+              "view",
+              SubjectRef.direct(new ObjectRef("user", "alice")))) {
         assertThrows(NotFoundException.class, () -> stream.forEach(r -> {}));
       }
     }
@@ -107,7 +111,13 @@ class StreamingErrorMappingTest {
       // mapped error surfaces from the call itself rather than from later stream iteration.
       assertThrows(
           NotFoundException.class,
-          () -> client.lookupSubjects(Consistency.full(), "document", "doc1", "view", "user"));
+          () -> {
+            try (var stream =
+                client.lookupSubjects(
+                    Consistency.full(), new ObjectRef("document", "doc1"), "view", "user")) {
+              stream.toList();
+            }
+          });
     }
   }
 
@@ -154,7 +164,10 @@ class StreamingErrorMappingTest {
                             .setOperation(RelationshipUpdate.Operation.OPERATION_TOUCH)
                             .setRelationship(
                                 SpiceDBClient.toProtoRelationship(
-                                    Relationship.of("document", "doc1", "viewer", "user", "alice")))
+                                    Relationship.of(
+                                        new ObjectRef("document", "doc1"),
+                                        "viewer",
+                                        SubjectRef.direct(new ObjectRef("user", "alice")))))
                             .build())
                     .build());
             responseObserver.onError(
@@ -169,7 +182,7 @@ class StreamingErrorMappingTest {
 
         assertTrue(iterator.hasNext());
         SpiceDBClient.WatchEvent first = iterator.next();
-        assertEquals("doc1", first.updates().get(0).relationship().resourceID());
+        assertEquals("doc1", first.updates().get(0).relationship().resource().objectId());
 
         assertThrows(NotFoundException.class, iterator::hasNext);
       }

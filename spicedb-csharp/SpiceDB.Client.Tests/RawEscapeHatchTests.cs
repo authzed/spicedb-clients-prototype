@@ -46,7 +46,7 @@ public class RawEscapeHatchTests
             return Task.FromResult(new CheckPermissionResponse
             {
                 Permissionship = CheckPermissionResponse.Types.Permissionship.HasPermission,
-                CheckedAt = new ZedToken { Token = "rev-raw" },
+                CheckedAt = new Authzed.Api.V1.ZedToken { Token = "rev-raw" },
             });
         }
 
@@ -55,10 +55,11 @@ public class RawEscapeHatchTests
         {
             Authorizations.Add(context.RequestHeaders.GetValue("authorization") ?? "");
             var response = new CheckBulkPermissionsResponse();
-            foreach (var _ in request.Items)
+            foreach (var item in request.Items)
             {
                 response.Pairs.Add(new CheckBulkPermissionsPair
                 {
+                    Request = item.Clone(),
                     Item = new CheckBulkPermissionsResponseItem
                     {
                         Permissionship = CheckPermissionResponse.Types.Permissionship.HasPermission,
@@ -145,9 +146,7 @@ public class RawEscapeHatchTests
             // Not a second connection built behind the caller's back.
             client.RawProto().Should().BeSameAs(client.RawProto());
 
-            var idiomatic = await client.CheckPermissionAsync(
-                SpiceDB.Client.Consistency.Full(), "view",
-                Relationship.FromTriple("document", "readme", "view", "user", "jimmy"));
+            var idiomatic = await client.CheckAsync(new PermissionCheck(new Relationship(new ObjectRef("document", "readme"), "view", new SubjectRef(new ObjectRef("user", "jimmy"))).Resource, "view", new Relationship(new ObjectRef("document", "readme"), "view", new SubjectRef(new ObjectRef("user", "jimmy"))).Subject, SpiceDB.Client.Consistency.Full()), null, default);
             idiomatic.HasPermission.Should().BeTrue();
 
             await client.RawProto().Permissions.CheckPermissionAsync(Request());
@@ -201,6 +200,6 @@ public class RawEscapeHatchTests
         // And the guard still refuses what it always did.
         var act = () => SpiceDBClient.CreatePlaintext("evil.example.com:50051", Token);
         act.Should().Throw<InvalidArgumentException>()
-            .WithMessage("*allowInsecureRemoteCredentials*");
+            .WithMessage("*RemotePlaintextCredentials.Allow*");
     }
 }

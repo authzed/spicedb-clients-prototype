@@ -64,7 +64,7 @@ def require_tls_material_usable(
 
     Two refusals, both fail-closed:
 
-    1. **TLS material with `insecure=True`.** A plaintext channel has no
+    1. **TLS material with `transport_security=TransportSecurity.PLAINTEXT`.** A plaintext channel has no
        handshake to apply trust material to, so grpc would silently ignore all
        three arguments and send everything -- including the bearer token -- in
        cleartext, while the call site reads as though TLS were configured. That
@@ -96,10 +96,10 @@ def require_tls_material_usable(
             if value is not None
         )
         raise InvalidArgumentError(
-            f"spicedb: refusing to build a client with insecure=True and TLS material "
+            f"spicedb: refusing to build a client with transport_security=TransportSecurity.PLAINTEXT and TLS material "
             f"({supplied}): a plaintext connection performs no TLS handshake, so the "
             f"material would be ignored and everything -- including the bearer token -- "
-            f"would be sent in cleartext. Drop insecure=True to use TLS, or drop the TLS "
+            f"would be sent in cleartext. Drop transport_security=TransportSecurity.PLAINTEXT to use TLS, or drop the TLS "
             f"material to connect in plaintext"
         )
 

@@ -1,4 +1,5 @@
 package com.authzed.spicedb.gen.test;
+import com.authzed.spicedb.*;
 
 import com.authzed.spicedb.Filter;
 import com.authzed.spicedb.LookupResult;
@@ -55,9 +56,9 @@ class PermissionsTest {
 
     @BeforeAll
     static void setUpClient() {
-        rawClient = SpiceDBClient.createPlaintext("localhost:50051", "somerandomkeyhere");
-        rawClient.writeSchema(SCHEMA);
+        rawClient = SpiceDBClient.createPlaintext(System.getenv().getOrDefault("SPICEDB_ENDPOINT", "localhost:50051"), "somerandomkeyhere");
         tc = new TypedClient(rawClient);
+        tc.writeSchema(SCHEMA);
     }
 
     @AfterAll
@@ -69,15 +70,15 @@ class PermissionsTest {
 
     @BeforeEach
     void cleanUp() {
-        rawClient.deleteRelationships(Filter.of("document"));
-        rawClient.deleteRelationships(Filter.of("team"));
+        tc.deleteAllRelationshipsNonAtomic(Filter.of("document"));
+        tc.deleteAllRelationshipsNonAtomic(Filter.of("team"));
     }
 
     // --- Touch + Check (base) ---
 
     @Test
     void user_viewer_can_view() {
-        tc.touch(Document("readme").viewer(User("alice")));
+        tc.touch(List.of(Document("readme").viewer(User("alice"))));
 
         boolean allowed = tc.check(full(), Document("readme").view(), User("alice")).hasPermission();
         assertThat(allowed).isTrue();
@@ -85,7 +86,7 @@ class PermissionsTest {
 
     @Test
     void user_viewer_cannot_edit() {
-        tc.touch(Document("readme").viewer(User("alice")));
+        tc.touch(List.of(Document("readme").viewer(User("alice"))));
 
         boolean allowed = tc.check(full(), Document("readme").edit(), User("alice")).hasPermission();
         assertThat(allowed).isFalse();
@@ -93,7 +94,7 @@ class PermissionsTest {
 
     @Test
     void user_editor_can_edit_and_view() {
-        tc.touch(Document("readme").editor(User("bob")));
+        tc.touch(List.of(Document("readme").editor(User("bob"))));
 
         assertThat(tc.check(full(), Document("readme").edit(), User("bob")).hasPermission()).isTrue();
         assertThat(tc.check(full(), Document("readme").view(), User("bob")).hasPermission()).isTrue();
@@ -101,7 +102,7 @@ class PermissionsTest {
 
     @Test
     void user_owner_can_delete() {
-        tc.touch(Document("readme").owner(User("charlie")));
+        tc.touch(List.of(Document("readme").owner(User("charlie"))));
 
         assertThat(tc.check(full(), Document("readme").delete(), User("charlie")).hasPermission()).isTrue();
         assertThat(tc.check(full(), Document("readme").edit(), User("charlie")).hasPermission()).isTrue();
@@ -112,9 +113,9 @@ class PermissionsTest {
 
     @Test
     void caveated_viewer_with_ip_range() {
-        tc.touch(Document("readme").viewer(
+        tc.touch(List.of(Document("readme").viewer(
             User("alice").withIpRange(new IpRangeContext().withAllowedCidr("0.0.0.0/0"))
-        ));
+        )));
 
         // Caveated permission check — SpiceDB evaluates the caveat.
         boolean allowed = tc.check(full(), Document("readme").view(), User("alice")).hasPermission();
@@ -129,16 +130,16 @@ class PermissionsTest {
         // (or, worse, a grant). hasPermission() must be false either way, but the
         // *reason* must be observable via permissionship()/missingContext() — that
         // observability is exactly what a boolean-returning check() would destroy.
-        tc.touch(Document("readme").viewer(
+        tc.touch(List.of(Document("readme").viewer(
             User("frank").withIpRange(new IpRangeContext())
-        ));
+        )));
 
         var result = tc.check(full(), Document("readme").view(), User("frank"));
 
         assertThat(result.hasPermission()).isFalse();
-        assertThat(result.permissionship()).isEqualTo(LookupResult.Permissionship.CONDITIONAL_PERMISSION);
+        assertThat(result.permissionship()).isEqualTo(Permissionship.CONDITIONAL_PERMISSION);
         assertThat(result.missingContext()).contains("allowed_cidr");
-        assertThat(result.checkedAt()).isNotBlank();
+        assertThat(result.checkedAt().value()).isNotBlank();
     }
 
     @Test
@@ -148,15 +149,14 @@ class PermissionsTest {
         // the missing caveat context is supplied at CHECK time via the new
         // check(..., Map) overload, instead of only being observable via
         // missingContext().
-        tc.touch(Document("readme").viewer(
+        tc.touch(List.of(Document("readme").viewer(
             User("grace").withIpRange(new IpRangeContext())
-        ));
+        )));
 
-        var result = tc.check(
-            full(), Document("readme").view(), User("grace"), Map.of("allowed_cidr", "0.0.0.0/0"));
+        var result = tc.check(full(), Document("readme").view(), User("grace"), CheckOptions.builder().context(Map.of("allowed_cidr", "0.0.0.0/0")).build());
 
         assertThat(result.hasPermission()).isTrue();
-        assertThat(result.permissionship()).isEqualTo(LookupResult.Permissionship.HAS_PERMISSION);
+        assertThat(result.permissionship()).isEqualTo(Permissionship.HAS_PERMISSION);
     }
 
     @Test
@@ -168,9 +168,9 @@ class PermissionsTest {
         // template used before, which spicedb-java's checkItemFromRel never
         // reads and was therefore silently inert. No context is supplied at
         // write time here, so this only passes if withCheckContext is wired up.
-        tc.touch(Document("readme").viewer(
+        tc.touch(List.of(Document("readme").viewer(
             User("henry").withIpRange(new IpRangeContext())
-        ));
+        )));
 
         var result = tc.check(
             full(),
@@ -178,17 +178,14 @@ class PermissionsTest {
             User("henry").withIpRange(new IpRangeContext().withAllowedCidr("0.0.0.0/0")));
 
         assertThat(result.hasPermission()).isTrue();
-        assertThat(result.permissionship()).isEqualTo(LookupResult.Permissionship.HAS_PERMISSION);
+        assertThat(result.permissionship()).isEqualTo(Permissionship.HAS_PERMISSION);
     }
 
     // --- Touch + Check (sub-ref) ---
 
     @Test
     void team_member_can_view_via_subref() {
-        tc.touch(
-            Team("eng").forMember(User("alice")),
-            Document("readme").viewer(Team("eng").member())
-        );
+        tc.touch(List.of(Team("eng").forMember(User("alice")), Document("readme").viewer(Team("eng").member())));
 
         assertThat(tc.check(full(), Document("readme").view(), User("alice")).hasPermission()).isTrue();
     }
@@ -197,13 +194,9 @@ class PermissionsTest {
 
     @Test
     void lookup_resources_finds_viewable_docs() {
-        tc.touch(
-            Document("doc1").viewer(User("alice")),
-            Document("doc2").editor(User("alice")),
-            Document("doc3").owner(User("bob"))
-        );
+        tc.touch(List.of(Document("doc1").viewer(User("alice")), Document("doc2").editor(User("alice")), Document("doc3").owner(User("bob"))));
 
-        List<String> resources = tc.lookupResources(full(), Document_View, User("alice"))
+        List<String> resources = tc.lookupResources(full(), Document_View, User("alice"), com.authzed.spicedb.LookupOptions.builder().permissionshipFilter(com.authzed.spicedb.LookupPermissionshipFilter.HAS_PERMISSION_ONLY).build())
             .map(LookupResult.LookupResource::resourceId)
             .collect(Collectors.toList());
 
@@ -212,13 +205,9 @@ class PermissionsTest {
 
     @Test
     void lookup_resources_finds_editable_docs() {
-        tc.touch(
-            Document("doc1").viewer(User("alice")),
-            Document("doc2").editor(User("alice")),
-            Document("doc3").owner(User("alice"))
-        );
+        tc.touch(List.of(Document("doc1").viewer(User("alice")), Document("doc2").editor(User("alice")), Document("doc3").owner(User("alice"))));
 
-        List<String> resources = tc.lookupResources(full(), Document_Edit, User("alice"))
+        List<String> resources = tc.lookupResources(full(), Document_Edit, User("alice"), com.authzed.spicedb.LookupOptions.builder().permissionshipFilter(com.authzed.spicedb.LookupPermissionshipFilter.HAS_PERMISSION_ONLY).build())
             .map(LookupResult.LookupResource::resourceId)
             .collect(Collectors.toList());
 
@@ -229,13 +218,11 @@ class PermissionsTest {
 
     @Test
     void lookup_subjects_finds_viewers() {
-        tc.touch(
-            Document("readme").viewer(User("alice")),
-            Document("readme").editor(User("bob")),
-            Document("readme").owner(User("charlie"))
-        );
+        tc.touch(List.of(Document("readme").viewer(User("alice")), Document("readme").editor(User("bob")), Document("readme").owner(User("charlie"))));
 
         List<String> subjects = tc.lookupSubjects(full(), Document("readme").view(), UserType)
+            .filter(ls -> ls.subject().permissionship() == com.authzed.spicedb.Permissionship.HAS_PERMISSION)
+            .filter(ls -> !ls.subject().subjectId().equals("*") && ls.excludedSubjects().isEmpty())
             .map(ls -> ls.subject().subjectId())
             .collect(Collectors.toList());
 
@@ -244,16 +231,23 @@ class PermissionsTest {
 
     @Test
     void lookup_subjects_finds_only_editors() {
-        tc.touch(
-            Document("readme").viewer(User("alice")),
-            Document("readme").editor(User("bob")),
-            Document("readme").owner(User("charlie"))
-        );
+        tc.touch(List.of(Document("readme").viewer(User("alice")), Document("readme").editor(User("bob")), Document("readme").owner(User("charlie"))));
 
         List<String> subjects = tc.lookupSubjects(full(), Document("readme").edit(), UserType)
+            .filter(ls -> ls.subject().permissionship() == com.authzed.spicedb.Permissionship.HAS_PERMISSION)
+            .filter(ls -> !ls.subject().subjectId().equals("*") && ls.excludedSubjects().isEmpty())
             .map(ls -> ls.subject().subjectId())
             .collect(Collectors.toList());
 
         assertThat(subjects).containsExactlyInAnyOrder("bob", "charlie");
+    }
+    @Test
+    void tracing_is_forwarded_to_real_server() {
+        tc.touch(List.of(Document("trace").viewer(User("alice"))));
+        var result=tc.check(full(),Document("trace").view(),User("alice"),CheckOptions.builder().tracing(com.authzed.spicedb.CheckTracing.ENABLED).timeout(java.time.Duration.ofSeconds(2)).build());
+        assertThat(result.hasPermission()).isTrue();
+        assertThat(result.debugTrace()).isNotNull();
+        assertThat(result.debugTrace().schemaUsed()).contains("definition document");
+        assertThat(result.debugTrace().check().resource()).isEqualTo(new ObjectRef("document","trace"));
     }
 }

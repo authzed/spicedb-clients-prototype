@@ -7,7 +7,10 @@ import org.junit.jupiter.api.Test;
 class TransactionTest {
 
   private static final Relationship REL =
-      Relationship.of("document", "doc1", "viewer", "user", "alice");
+      Relationship.of(
+          new ObjectRef("document", "doc1"),
+          "viewer",
+          SubjectRef.direct(new ObjectRef("user", "alice")));
 
   @Test
   void emptyTransactionIsEmpty() {
@@ -43,7 +46,11 @@ class TransactionTest {
 
   @Test
   void multipleMutationsPreserveOrder() {
-    Relationship r2 = Relationship.of("document", "doc2", "editor", "user", "bob");
+    Relationship r2 =
+        Relationship.of(
+            new ObjectRef("document", "doc2"),
+            "editor",
+            SubjectRef.direct(new ObjectRef("user", "bob")));
     Transaction txn = new Transaction();
     txn.create(REL);
     txn.touch(r2);
@@ -58,7 +65,7 @@ class TransactionTest {
   @Test
   void mustNotMatchAddsPrecondition() {
     Transaction txn = new Transaction();
-    Filter f = Filter.of("document").withResourceID("doc1");
+    Filter f = Filter.of("document").withResourceId("doc1");
     txn.mustNotMatch(f);
 
     assertEquals(1, txn.preconditions().size());
@@ -70,7 +77,7 @@ class TransactionTest {
   @Test
   void mustMatchAddsPrecondition() {
     Transaction txn = new Transaction();
-    Filter f = Filter.of("document").withResourceID("doc1");
+    Filter f = Filter.of("document").withResourceId("doc1");
     txn.mustMatch(f);
 
     assertEquals(1, txn.preconditions().size());

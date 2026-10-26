@@ -4,6 +4,67 @@
 
 ### Changed
 
+- **BREAKING CHANGE — named behavioral options.** Replace `Tracing = true`
+  with `Tracing = CheckTracing.Enabled`, lookup `Debug = true` with
+  `Debug = LookupDebug.Enabled`, and watch boolean selectors with
+  `Content = WatchContent.Relationships | WatchContent.Checkpoints` (add
+  `WatchContent.SchemaUpdates` as needed). Undefined enum values are rejected.
+- Replace `AllowInsecureRemoteCredentials = true` with
+  `RemotePlaintextCredentials = RemotePlaintextCredentials.Allow` in
+  `ClientOptions` to explicitly permit authenticated remote plaintext through
+  `CreatePlaintext` or `CreateFromChannel`. The default policy rejects it.
+- All revision APIs use opaque native `ZedToken` values. Construct with
+  `new ZedToken(text)` and persist with `.Value` or `.ToString()` losslessly;
+  credentials and pagination cursors remain distinct.
+
+- **BREAKING CHANGE — 2026-10-26 prototype API reset.** Replaced the previous
+  positional/`WithOptions` check family with `CheckAsync(PermissionCheck, options,
+  cancellationToken)` and collection-based `CheckBulkAsync`, `CheckAnyAsync`, and
+  `CheckAllAsync`. Singular checks now call `CheckPermission`; opt-in
+  `CheckOptions.Tracing` returns complete native recursive debug information.
+  Superseded prototype aliases are removed. The earlier migration entries below
+  describe historical prototypes, not compatibility overloads retained today.
+- `ObjectRef`, `SubjectRef`, opaque `ZedToken`, and explicit `Consistency` are native
+  values. Relationships contain only stored tuple data; check context belongs on
+  `PermissionCheck`. Options and results recursively snapshot collections/JSON.
+- Every operation uses one options parameter and trailing `CancellationToken`.
+  Unary retries, bulk chunks and delete-all pages share one monotonic total
+  deadline (30 seconds by default). Caller cancellation stays native; streams and
+  imports have optional explicit lifetime timeouts and deterministic disposal.
+- Deletion is explicitly bounded (`DeleteRelationshipsAsync(filter, limit)`, one
+  RPC) or complete (`DeleteAllRelationshipsNonAtomicAsync(filter, options)`). Interruptions
+  preserve acknowledged progress. Subject filters distinguish `Any`, `Direct`,
+  and `Named`, and exact relationship filters retain subject-set identity.
+- All materialize RPCs are available with native models; deprecated
+  `WatchPermissions` remains raw-only. Schema reflection/diff payloads, watch
+  metadata, check expiration, and delete metadata preserve protocol data.
+- Borrowed channel credential checks use the transport's parsed address and fail
+  closed when it cannot be inspected. Channels remain caller-owned.
+
+  Before:
+  ```csharp
+  var tuple = Relationship.FromTriple("document", "one", "viewer", "user", "alice")
+      .WithCheckContext(context);
+  var result = await client.CheckPermissionWithOptionsAsync(
+      Consistency.AtLeast("revision"), "view", tuple, new CheckOptions(), ct);
+  await client.DeleteRelationshipsAsync(tuple.ToFilter()); // implicitly all pages
+  ```
+
+  After:
+  ```csharp
+  var tuple = new Relationship(new ObjectRef("document", "one"), "viewer",
+      SubjectRef.Direct(new ObjectRef("user", "alice")));
+  var check = new PermissionCheck(tuple.Resource, "view", tuple.Subject,
+      Consistency.AtLeast(new ZedToken("revision")), context);
+  var result = await client.CheckAsync(check,
+      new CheckOptions { Tracing = CheckTracing.Enabled, Timeout = TimeSpan.FromSeconds(2) }, ct);
+  var page = await client.DeleteRelationshipsAsync(tuple.ToFilter(), 100, cancellationToken: ct);
+  var all = await client.DeleteAllRelationshipsNonAtomicAsync(tuple.ToFilter(),
+      new DeleteAllOptions { PageSize = 100 }, ct);
+  var directOnly = new Filter("document").WithSubjectType("user")
+      .WithSubjectRelation(SubjectRelationFilter.Direct);
+  ```
+
 - **2026-09-04: check and lookup options moved onto `CheckOptions` and `LookupOptions`.**
   Root DESIGN.md, "RULE: Every RPC wrapper must have one place to add an option" (new).
   **Breaking.** `CheckPermissionsWithContextAsync`, `CheckAnyWithContextAsync` and
@@ -24,6 +85,8 @@
   forms rename the call and wrap the context: `new CheckOptions { Context = ctx }`.
 
 ### Added
+
+- Add a fluent `PermissionCheck` builder with required-field validation and immutable context snapshots.
 
 - **2026-09-24: `ExperimentalRoaringLookupResourcesAsync` and `RoaringLookupResourcesResult`**,
   wrapping the proto client regen's new `authzed.api.materialize.v0.RoaringLookupResourcesService`
@@ -1003,3 +1066,13 @@ Initial release of the idiomatic C# SpiceDB client.
 - **`IAsyncDisposable`**: proper async resource cleanup
 - **10 examples** covering all major API surfaces, doubling as xUnit integration tests
 - **Targets .NET 8+**
+
+- Add optional client-side LookupResources permissionship filtering, retaining all results by default. Filtered limits count unconditional grants across pages; LookupSubjects rejects the resource-only option. Update safe lookup examples.
+
+- Relationship writes now return native `WriteResult` containing the revision instead of a bare token. Read its revision field when constructing consistency or watch options.
+
+- Rename the unbounded deletion helper to `DeleteAllRelationshipsNonAtomicAsync` with no compatibility alias. Each batch is transactional, but completed batches remain committed on later failure or cancellation. Native `DeleteResult` now exposes `Revision` for the revision token.
+- Add `Exception.GetDeleteProgress()` for typed access to deletion progress on client and native cancellation exceptions, preserving cancellation identity and token.
+- Forward nonempty deletion response cursors to subsequent batches, omit empty cursors on the wire, and retain acknowledged cursor values in results and failure progress.
+
+- Expose watch relationship filters through `WatchOptions.RelationshipFilters`, preserving immutable snapshots and full native filter constraints. Reject simultaneous object-type and relationship filters locally; update watch examples to use relationship filters.

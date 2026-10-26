@@ -12,45 +12,45 @@ public class FilterTests
         var filter = new Filter("document");
 
         filter.ResourceType.Should().Be("document");
-        filter.ResourceID.Should().BeNull();
-        filter.ResourceIDPrefix.Should().BeNull();
+        filter.ResourceId.Should().BeNull();
+        filter.ResourceIdPrefix.Should().BeNull();
         filter.Relation.Should().BeNull();
         filter.SubjectType.Should().BeNull();
-        filter.SubjectID.Should().BeNull();
-        filter.SubjectRelation.Should().BeNull();
+        filter.SubjectId.Should().BeNull();
+        filter.SubjectRelation.Should().Be(SubjectRelationFilter.Any);
     }
 
     [Fact]
     public void Constructor_ThrowsOnEmptyResourceType()
     {
         var act = () => new Filter("");
-        act.Should().Throw<ArgumentException>();
+        act.Should().Throw<InvalidArgumentException>();
     }
 
     [Fact]
     public void Constructor_ThrowsOnNullResourceType()
     {
         var act = () => new Filter(null!);
-        act.Should().Throw<ArgumentException>();
+        act.Should().Throw<InvalidArgumentException>();
     }
 
     [Fact]
     public void WithResourceID_ReturnsNewFilter()
     {
         var original = new Filter("document");
-        var withId = original.WithResourceID("doc1");
+        var withId = original.WithResourceId("doc1");
 
-        original.ResourceID.Should().BeNull(); // original unchanged
-        withId.ResourceID.Should().Be("doc1");
+        original.ResourceId.Should().BeNull(); // original unchanged
+        withId.ResourceId.Should().Be("doc1");
         withId.ResourceType.Should().Be("document");
     }
 
     [Fact]
     public void WithResourceIDPrefix_ReturnsNewFilter()
     {
-        var filter = new Filter("document").WithResourceIDPrefix("test-");
+        var filter = new Filter("document").WithResourceIdPrefix("test-");
 
-        filter.ResourceIDPrefix.Should().Be("test-");
+        filter.ResourceIdPrefix.Should().Be("test-");
     }
 
     [Fact]
@@ -72,35 +72,35 @@ public class FilterTests
     [Fact]
     public void WithSubjectID_ReturnsNewFilter()
     {
-        var filter = new Filter("document").WithSubjectID("alice");
+        var filter = new Filter("document").WithSubjectId("alice");
 
-        filter.SubjectID.Should().Be("alice");
+        filter.SubjectId.Should().Be("alice");
     }
 
     [Fact]
     public void WithSubjectRelation_ReturnsNewFilter()
     {
-        var filter = new Filter("document").WithSubjectRelation("member");
+        var filter = new Filter("document").WithSubjectRelation(SubjectRelationFilter.Named("member"));
 
-        filter.SubjectRelation.Should().Be("member");
+        filter.SubjectRelation.Should().Be(SubjectRelationFilter.Named("member"));
     }
 
     [Fact]
     public void Chaining_AllMethods()
     {
         var filter = new Filter("document")
-            .WithResourceID("doc1")
+            .WithResourceId("doc1")
             .WithRelation("viewer")
             .WithSubjectType("user")
-            .WithSubjectID("alice")
-            .WithSubjectRelation("member");
+            .WithSubjectId("alice")
+            .WithSubjectRelation(SubjectRelationFilter.Named("member"));
 
         filter.ResourceType.Should().Be("document");
-        filter.ResourceID.Should().Be("doc1");
+        filter.ResourceId.Should().Be("doc1");
         filter.Relation.Should().Be("viewer");
         filter.SubjectType.Should().Be("user");
-        filter.SubjectID.Should().Be("alice");
-        filter.SubjectRelation.Should().Be("member");
+        filter.SubjectId.Should().Be("alice");
+        filter.SubjectRelation.Should().Be(SubjectRelationFilter.Named("member"));
     }
 
     [Fact]
@@ -118,7 +118,7 @@ public class FilterTests
     [Fact]
     public void ToProto_WithResourceID()
     {
-        var proto = new Filter("document").WithResourceID("doc1").ToProto();
+        var proto = new Filter("document").WithResourceId("doc1").ToProto();
 
         proto.OptionalResourceId.Should().Be("doc1");
     }
@@ -126,7 +126,7 @@ public class FilterTests
     [Fact]
     public void ToProto_WithResourceIDPrefix()
     {
-        var proto = new Filter("document").WithResourceIDPrefix("test-").ToProto();
+        var proto = new Filter("document").WithResourceIdPrefix("test-").ToProto();
 
         proto.OptionalResourceIdPrefix.Should().Be("test-");
     }
@@ -144,7 +144,7 @@ public class FilterTests
     {
         var proto = new Filter("document")
             .WithSubjectType("user")
-            .WithSubjectID("alice")
+            .WithSubjectId("alice")
             .ToProto();
 
         proto.OptionalSubjectFilter.Should().NotBeNull();
@@ -157,7 +157,7 @@ public class FilterTests
     {
         var proto = new Filter("document")
             .WithSubjectType("group")
-            .WithSubjectRelation("member")
+            .WithSubjectRelation(SubjectRelationFilter.Named("member"))
             .ToProto();
 
         proto.OptionalSubjectFilter.Should().NotBeNull();
@@ -171,21 +171,21 @@ public class FilterTests
         // The wire cannot express a subject ID without a subject type
         // (SubjectFilter.subject_type is required) -- silently dropping the
         // constraint instead would widen a filter like
-        // new Filter("document").WithSubjectID("alice") into "every subject
+        // new Filter("document").WithSubjectId("alice") into "every subject
         // on every document," which a caller using it with
         // DeleteRelationshipsAsync would not expect. Must throw naming the
         // missing field instead of silently building an unconstrained filter.
-        var act = () => new Filter("document").WithSubjectID("alice").ToProto();
+        var act = () => new Filter("document").WithSubjectId("alice").ToProto();
 
         var thrown = act.Should().Throw<InvalidArgumentException>().Which;
-        thrown.Message.Should().Contain(nameof(Filter.SubjectID));
+        thrown.Message.Should().Contain(nameof(Filter.SubjectId));
         thrown.Message.Should().Contain(nameof(Filter.SubjectType));
     }
 
     [Fact]
     public void ToProto_SubjectRelationWithoutSubjectType_Throws()
     {
-        var act = () => new Filter("document").WithSubjectRelation("member").ToProto();
+        var act = () => new Filter("document").WithSubjectRelation(SubjectRelationFilter.Named("member")).ToProto();
 
         var thrown = act.Should().Throw<InvalidArgumentException>().Which;
         thrown.Message.Should().Contain(nameof(Filter.SubjectRelation));
@@ -198,7 +198,7 @@ public class FilterTests
         // Companion to the two throw cases above -- proves the valid
         // combination (SubjectType supplied alongside SubjectID) still
         // works and is not accidentally caught by the new guard.
-        var proto = new Filter("document").WithSubjectType("user").WithSubjectID("alice").ToProto();
+        var proto = new Filter("document").WithSubjectType("user").WithSubjectId("alice").ToProto();
 
         proto.OptionalSubjectFilter.Should().NotBeNull();
         proto.OptionalSubjectFilter.SubjectType.Should().Be("user");
@@ -208,8 +208,8 @@ public class FilterTests
     [Fact]
     public void Filter_IsImmutableRecord()
     {
-        var a = new Filter("document").WithResourceID("doc1");
-        var b = new Filter("document").WithResourceID("doc1");
+        var a = new Filter("document").WithResourceId("doc1");
+        var b = new Filter("document").WithResourceId("doc1");
 
         a.Should().Be(b);
     }

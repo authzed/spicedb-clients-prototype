@@ -25,7 +25,7 @@ module SpiceDB
   #   @return [Hash{String=>String}] the specifics behind the reason, such as
   #     which precondition failed
   class Error < StandardError
-    attr_reader :reason, :reason_domain, :reason_metadata
+    attr_reader :delete_progress, :input_index, :reason, :reason_domain, :reason_metadata
 
     def initialize(message = nil, reason: '', reason_domain: '', reason_metadata: {})
       super(message)

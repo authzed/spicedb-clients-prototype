@@ -1,26 +1,141 @@
 package com.authzed.spicedb;
 
-/**
- * Immutable call-level options for the lookup operations.
- *
- * <p>This type exists so that a new lookup option is a new component here rather than a new
- * overload. {@code with_debug} arrived upstream with nowhere to go and became a second {@code
- * lookupResources} overload; the option after it would have needed a third. See root DESIGN.md,
- * "RULE: Every RPC wrapper must have one place to add an option".
- *
- * @param debug asks the server to attach debug information to the error raised when the lookup
- *     fails by exceeding the maximum dispatch depth. It has no effect on a successful call, and
- *     none on any other failure.
- */
-public record LookupOptions(boolean debug) {
+import java.time.Duration;
+import java.util.*;
 
-  /** Options with nothing set: the client's defaults apply. */
-  public static LookupOptions none() {
-    return new LookupOptions(false);
+public final class LookupOptions {
+  private final LookupPermissionshipFilter permissionshipFilter;
+  private final Duration timeout;
+  private final Map<String, Object> context;
+  private final LookupDebug debug;
+  private final int pageSize;
+  private final long limit;
+  private final String subjectRelation;
+
+  private LookupOptions(Builder b) {
+    this.permissionshipFilter = b.permissionshipFilter;
+    if (permissionshipFilter == null)
+      throw new com.authzed.spicedb.errors.InvalidArgumentException(
+          "permissionshipFilter must not be null");
+    this.subjectRelation = b.subjectRelation;
+    if (subjectRelation != null) {
+      JsonContext.required(subjectRelation, "subjectRelation");
+      if (subjectRelation.equals("..."))
+        throw new com.authzed.spicedb.errors.InvalidArgumentException(
+            "direct subject relation is null");
+    }
+    this.timeout = b.timeout;
+    if (timeout != null && (timeout.isZero() || timeout.isNegative()))
+      throw new com.authzed.spicedb.errors.InvalidArgumentException("timeout must be positive");
+    this.context = JsonContext.snapshot(b.context);
+    this.debug = b.debug;
+    if (debug == null)
+      throw new com.authzed.spicedb.errors.InvalidArgumentException("debug must not be null");
+    this.pageSize = b.pageSize;
+    if (pageSize <= 0)
+      throw new com.authzed.spicedb.errors.InvalidArgumentException("pageSize must be positive");
+    this.limit = b.limit;
+    if (limit < 0)
+      throw new com.authzed.spicedb.errors.InvalidArgumentException("limit must not be negative");
   }
 
-  /** Returns a copy asking the server for debug information on a depth failure. */
-  public LookupOptions withDebug(boolean debug) {
-    return new LookupOptions(debug);
+  public String subjectRelation() {
+    return subjectRelation;
+  }
+
+  public Builder toBuilder() {
+    return builder()
+        .permissionshipFilter(permissionshipFilter)
+        .timeout(timeout)
+        .context(context)
+        .debug(debug)
+        .pageSize(pageSize)
+        .limit(limit)
+        .subjectRelation(subjectRelation);
+  }
+
+  public static Builder builder() {
+    return new Builder();
+  }
+
+  public LookupPermissionshipFilter permissionshipFilter() {
+    return permissionshipFilter;
+  }
+
+  public Duration timeout() {
+    return timeout;
+  }
+
+  public Map<String, Object> context() {
+    return context;
+  }
+
+  public LookupDebug debug() {
+    return debug;
+  }
+
+  public int pageSize() {
+    return pageSize;
+  }
+
+  public long limit() {
+    return limit;
+  }
+
+  public static final class Builder {
+    private Builder() {}
+
+    private String subjectRelation;
+
+    public Builder subjectRelation(String value) {
+      this.subjectRelation = value;
+      return this;
+    }
+
+    private LookupPermissionshipFilter permissionshipFilter = LookupPermissionshipFilter.ALL;
+
+    public Builder permissionshipFilter(LookupPermissionshipFilter value) {
+      this.permissionshipFilter = value;
+      return this;
+    }
+
+    private Duration timeout = null;
+
+    public Builder timeout(Duration value) {
+      this.timeout = value;
+      return this;
+    }
+
+    private Map<String, Object> context = null;
+
+    public Builder context(Map<String, Object> value) {
+      this.context = JsonContext.snapshot(value);
+      return this;
+    }
+
+    private LookupDebug debug = LookupDebug.DISABLED;
+
+    public Builder debug(LookupDebug value) {
+      this.debug = value;
+      return this;
+    }
+
+    private int pageSize = 512;
+
+    public Builder pageSize(int value) {
+      this.pageSize = value;
+      return this;
+    }
+
+    private long limit = 0;
+
+    public Builder limit(long value) {
+      this.limit = value;
+      return this;
+    }
+
+    public LookupOptions build() {
+      return new LookupOptions(this);
+    }
   }
 }

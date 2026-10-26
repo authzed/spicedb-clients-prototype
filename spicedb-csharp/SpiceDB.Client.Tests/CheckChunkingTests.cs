@@ -77,17 +77,18 @@ public class CheckChunkingTests
                 ? req.Items.Take(req.Items.Count - 1)
                 : req.Items).ToList();
 
-            var resp = new CheckBulkPermissionsResponse { CheckedAt = new ZedToken { Token = "tok" } };
+            var resp = new CheckBulkPermissionsResponse { CheckedAt = new Authzed.Api.V1.ZedToken { Token = "tok" } };
             for (var i = 0; i < items.Count; i++)
             {
                 if (MalformedAtAbsolute == numberBase + i)
                 {
                     // Neither Item nor Error set — the oneof left empty.
-                    resp.Pairs.Add(new CheckBulkPermissionsPair());
+                    resp.Pairs.Add(new CheckBulkPermissionsPair { Request = items[i].Clone() });
                     continue;
                 }
                 resp.Pairs.Add(new CheckBulkPermissionsPair
                 {
+                    Request = items[i].Clone(),
                     Item = new CheckBulkPermissionsResponseItem
                     {
                         Permissionship = CheckPermissionResponse.Types.Permissionship.HasPermission,
@@ -105,7 +106,7 @@ public class CheckChunkingTests
     /// <summary>n relationships whose resource IDs are their zero-padded index.</summary>
     private static Relationship[] NumberedRels(int n) =>
         [.. Enumerable.Range(0, n).Select(i =>
-            Relationship.FromTriple("document", i.ToString("D5"), "view", "user", "alice"))];
+            new Relationship(new ObjectRef("document", i.ToString("D5")), "view", new SubjectRef(new ObjectRef("user", "alice"))))];
 
     [Fact]
     public async Task CheckPermissionsAsync_OversizedInput_IsSplitIntoChunks()
@@ -113,8 +114,7 @@ public class CheckChunkingTests
         var recorder = new Recorder();
         await using var client = NewClient(recorder.Mock().Object);
 
-        var results = await client.CheckPermissionsAsync(
-            Consistency.Full(), "view", default, NumberedRels(Total));
+        var results = await client.CheckBulkAsync(NumberedRels(Total).Select(r => new PermissionCheck(r.Resource, "view", r.Subject, Consistency.Full())).ToArray(), null, default);
 
         results.Should().HaveCount(Total);
         recorder.Sizes.Should().Equal(CheckBatchSize, CheckBatchSize, 7);
@@ -129,8 +129,7 @@ public class CheckChunkingTests
         var recorder = new Recorder();
         await using var client = NewClient(recorder.Mock().Object);
 
-        var results = await client.CheckPermissionsAsync(
-            Consistency.Full(), "view", default, NumberedRels(Total));
+        var results = await client.CheckBulkAsync(NumberedRels(Total).Select(r => new PermissionCheck(r.Resource, "view", r.Subject, Consistency.Full())).ToArray(), null, default);
 
         results.Select(r => r.MissingContext[0])
             .Should().Equal(Enumerable.Range(0, Total).Select(i => i.ToString("D5")));
@@ -146,8 +145,7 @@ public class CheckChunkingTests
         var recorder = new Recorder();
         await using var client = NewClient(recorder.Mock().Object);
 
-        var results = await client.CheckPermissionsAsync(
-            Consistency.Full(), "view", default, NumberedRels(n));
+        var results = await client.CheckBulkAsync(NumberedRels(n).Select(r => new PermissionCheck(r.Resource, "view", r.Subject, Consistency.Full())).ToArray(), null, default);
 
         results.Should().HaveCount(n);
         recorder.Sizes.Should().Equal(n);
@@ -161,7 +159,7 @@ public class CheckChunkingTests
         var recorder = new Recorder();
         await using var client = NewClient(recorder.Mock().Object);
 
-        var results = await client.CheckPermissionsAsync(Consistency.Full(), "view");
+        var results = await client.CheckBulkAsync([], null, default);
 
         results.Should().BeEmpty();
         recorder.Sizes.Should().BeEmpty();
@@ -177,8 +175,7 @@ public class CheckChunkingTests
         var recorder = new Recorder { ShortAtRequest = 1 };
         await using var client = NewClient(recorder.Mock().Object);
 
-        var act = async () => await client.CheckPermissionsAsync(
-            Consistency.Full(), "view", default, NumberedRels(Total));
+        var act = async () => await client.CheckBulkAsync(NumberedRels(Total).Select(r => new PermissionCheck(r.Resource, "view", r.Subject, Consistency.Full())).ToArray(), null, default);
 
         (await act.Should().ThrowAsync<SpiceDBException>())
             .WithMessage("*999 pair(s) for 1000 request item(s)*");
@@ -199,8 +196,7 @@ public class CheckChunkingTests
         var recorder = new Recorder { MalformedAtAbsolute = failing };
         await using var client = NewClient(recorder.Mock().Object);
 
-        var act = async () => await client.CheckPermissionsAsync(
-            Consistency.Full(), "view", default, NumberedRels(CheckBatchSize * 2));
+        var act = async () => await client.CheckBulkAsync(NumberedRels(CheckBatchSize * 2).Select(r => new PermissionCheck(r.Resource, "view", r.Subject, Consistency.Full())).ToArray(), null, default);
 
         var thrown = await act.Should().ThrowAsync<SpiceDBException>();
         thrown.Which.Message.Should().Contain($"check item {failing}:");

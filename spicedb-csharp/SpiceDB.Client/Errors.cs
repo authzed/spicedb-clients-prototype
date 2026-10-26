@@ -27,6 +27,8 @@ public class SpiceDBException : Exception
     /// server-supplied, and root DESIGN.md's "RULE: A conversion that cannot preserve meaning must
     /// fail" requires server-supplied unknowns to degrade safely rather than throw.</para>
     /// </summary>
+    public DeleteProgress? DeleteProgress { get; internal set; }
+    public int? InputIndex { get; internal set; }
     public string Reason { get; }
 
     /// <summary>Who produced the reason. SpiceDB uses <c>"authzed.com"</c>.</summary>
@@ -47,8 +49,8 @@ public class SpiceDBException : Exception
         Reason = info?.Reason ?? string.Empty;
         ReasonDomain = info?.Domain ?? string.Empty;
         ReasonMetadata = info is null
-            ? new Dictionary<string, string>()
-            : new Dictionary<string, string>(info.Metadata);
+            ? new System.Collections.ObjectModel.ReadOnlyDictionary<string, string>(new Dictionary<string, string>())
+            : new System.Collections.ObjectModel.ReadOnlyDictionary<string, string>(new Dictionary<string, string>(info.Metadata));
     }
 
     /// <summary>
@@ -170,7 +172,7 @@ public sealed class OutOfRangeException : SpiceDBException
 /// <summary>
 /// Maps gRPC RpcException status codes to typed SpiceDB exceptions.
 /// </summary>
-public static class ErrorMapper
+internal static class ErrorMapper
 {
     // ResourceExhausted is deliberately excluded. In SpiceDB it signals
     // either memory load-shed (retrying adds load to an already-overloaded

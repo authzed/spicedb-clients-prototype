@@ -45,10 +45,10 @@ public class StreamingEstablishmentRetryTests
         await using var client = NewClient(permissions: mockPermissions.Object);
 
         var got = new List<Relationship>();
-        await foreach (var r in client.ReadRelationshipsAsync(Consistency.Full(), new Filter("document")))
+        await foreach (var r in client.ReadRelationshipsAsync(Consistency.Full(), new Filter("document"), null, default))
             got.Add(r);
 
-        got.Select(r => r.ResourceID).Should().Equal("doc1");
+        got.Select(r => r.Resource.ObjectId).Should().Equal("doc1");
         script.CallCount.Should().Be(2); // one failed open + one successful open
     }
 
@@ -72,12 +72,12 @@ public class StreamingEstablishmentRetryTests
         var got = new List<Relationship>();
         var act = async () =>
         {
-            await foreach (var r in client.ReadRelationshipsAsync(Consistency.Full(), new Filter("document")))
+            await foreach (var r in client.ReadRelationshipsAsync(Consistency.Full(), new Filter("document"), null, default))
                 got.Add(r);
         };
 
         await act.Should().ThrowAsync<UnavailableException>();
-        got.Select(r => r.ResourceID).Should().Equal("doc1"); // the pre-error item was still yielded
+        got.Select(r => r.Resource.ObjectId).Should().Equal("doc1"); // the pre-error item was still yielded
         script.CallCount.Should().Be(1); // no re-open — a retry here would have replayed doc1
     }
 
@@ -104,7 +104,7 @@ public class StreamingEstablishmentRetryTests
 
         var act = async () =>
         {
-            await foreach (var _ in client.ReadRelationshipsAsync(Consistency.Full(), new Filter("document")))
+            await foreach (var _ in client.ReadRelationshipsAsync(Consistency.Full(), new Filter("document"), null, default))
             {
             }
         };
@@ -139,7 +139,7 @@ public class StreamingEstablishmentRetryTests
         await using var client = NewClient(permissions: mockPermissions.Object);
 
         var got = new List<LookupResource>();
-        await foreach (var r in client.LookupResourcesAsync(Consistency.Full(), "document", "view", "user", "alice"))
+        await foreach (var r in client.LookupResourcesAsync(Consistency.Full(), "document", "view", new SubjectRef(new ObjectRef("user", "alice")), null, default))
             got.Add(r);
 
         got.Select(r => r.ResourceID).Should().Equal("doc1");
@@ -173,7 +173,7 @@ public class StreamingEstablishmentRetryTests
         var got = new List<LookupResource>();
         var act = async () =>
         {
-            await foreach (var r in client.LookupResourcesAsync(Consistency.Full(), "document", "view", "user", "alice"))
+            await foreach (var r in client.LookupResourcesAsync(Consistency.Full(), "document", "view", new SubjectRef(new ObjectRef("user", "alice")), null, default))
                 got.Add(r);
         };
 
@@ -206,7 +206,7 @@ public class StreamingEstablishmentRetryTests
         await using var client = NewClient(permissions: mockPermissions.Object);
 
         var got = new List<LookupSubject>();
-        await foreach (var s in client.LookupSubjectsAsync(Consistency.Full(), "document", "doc1", "view", "user"))
+        await foreach (var s in client.LookupSubjectsAsync(Consistency.Full(), new ObjectRef("document", "doc1"), "view", "user", null, default))
             got.Add(s);
 
         got.Select(s => s.Subject.SubjectID).Should().Equal("alice");
@@ -238,7 +238,7 @@ public class StreamingEstablishmentRetryTests
         var got = new List<LookupSubject>();
         var act = async () =>
         {
-            await foreach (var s in client.LookupSubjectsAsync(Consistency.Full(), "document", "doc1", "view", "user"))
+            await foreach (var s in client.LookupSubjectsAsync(Consistency.Full(), new ObjectRef("document", "doc1"), "view", "user", null, default))
                 got.Add(s);
         };
 
@@ -272,10 +272,10 @@ public class StreamingEstablishmentRetryTests
         await using var client = NewClient(permissions: mockPermissions.Object);
 
         var got = new List<Relationship>();
-        await foreach (var r in client.ExportRelationshipsAsync(Consistency.Full()))
+        await foreach (var r in client.ExportRelationshipsAsync(Consistency.Full(), new Filter("document"), null, default))
             got.Add(r);
 
-        got.Select(r => r.ResourceID).Should().Equal("doc1");
+        got.Select(r => r.Resource.ObjectId).Should().Equal("doc1");
         script.CallCount.Should().Be(2);
     }
 
@@ -305,12 +305,12 @@ public class StreamingEstablishmentRetryTests
         var got = new List<Relationship>();
         var act = async () =>
         {
-            await foreach (var r in client.ExportRelationshipsAsync(Consistency.Full()))
+            await foreach (var r in client.ExportRelationshipsAsync(Consistency.Full(), new Filter("document"), null, default))
                 got.Add(r);
         };
 
         await act.Should().ThrowAsync<UnavailableException>();
-        got.Select(r => r.ResourceID).Should().Equal("doc1");
+        got.Select(r => r.Resource.ObjectId).Should().Equal("doc1");
         script.CallCount.Should().Be(1);
     }
 
@@ -338,11 +338,11 @@ public class StreamingEstablishmentRetryTests
         await using var client = NewClient(watch: mockWatch.Object);
 
         var events = new List<WatchEvent>();
-        await foreach (var e in client.UpdatesAsync())
+        await foreach (var e in client.UpdatesAsync([], null, new WatchOptions { Content = WatchContent.Relationships }, default))
             events.Add(e);
 
         var got = events.SelectMany(e => e.Updates).ToList();
-        got.Select(u => u.Relationship.ResourceID).Should().Equal("doc1");
+        got.Select(u => u.Relationship.Resource.ObjectId).Should().Equal("doc1");
         script.CallCount.Should().Be(2);
     }
 
@@ -371,13 +371,13 @@ public class StreamingEstablishmentRetryTests
         var events = new List<WatchEvent>();
         var act = async () =>
         {
-            await foreach (var e in client.UpdatesAsync())
+            await foreach (var e in client.UpdatesAsync([], null, new WatchOptions { Content = WatchContent.Relationships }, default))
                 events.Add(e);
         };
 
         await act.Should().ThrowAsync<UnavailableException>();
         var got = events.SelectMany(e => e.Updates).ToList();
-        got.Select(u => u.Relationship.ResourceID).Should().Equal("doc1");
+        got.Select(u => u.Relationship.Resource.ObjectId).Should().Equal("doc1");
         script.CallCount.Should().Be(1);
     }
 

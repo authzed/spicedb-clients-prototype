@@ -40,9 +40,8 @@ The examples share one server, so each clears the `document` relationships
 refuses a `WriteSchema` that drops a relation while a relationship still exists
 under it, so what a previous example left behind is the next example's problem
 -- and a cleanup at exit does nothing when the example that should have run it
-failed first, which turns one genuine failure into several spurious ones. The
-delete is deliberately unchecked: on a fresh server there is no `document`
-definition yet, which is not a failure.
+failed first, which turns one genuine failure into several spurious ones. Cleanup uses explicit `delete_all_relationships_non_atomic(DeleteAllRequest::new(...))`
+and tolerates only the unknown-definition precondition on a fresh server.
 
 ## What runs in CI
 
@@ -76,3 +75,17 @@ to fail".
 | `insecure_opt_in` | Why `.plaintext()` is loopback-only, and the named opt-in a remote plaintext host requires |
 | `retry_policy` | Which calls are retried for you and which are not, counted server-side |
 | `unrepresentable_values` | A filter the wire cannot express fails loudly; unknown server enums degrade safely |
+
+## Canonical requests
+
+Every example uses the approved request-shaped API. Singular checks take
+`PermissionCheck` (including explicit consistency) and return `CheckResult`.
+`check_permission` is the example filename; its API call is `client.check(...)`.
+That example enables tracing and asserts that the live server supplies a schema
+and check tree. Bulk checks take `BulkCheckRequest`; aggregate grants explicitly
+with `has_permission()` and reject empty aggregates where appropriate.
+
+Writes and schema writes return a result with a native `ZedToken` revision.
+Deletion distinguishes bounded `DeleteRequest` from explicit `DeleteAllRequest`.
+All stream values own their transport handles and release them on drop. The
+18 example names remain reconciled by `mage checkExamples`; none is skipped.

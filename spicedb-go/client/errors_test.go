@@ -15,7 +15,6 @@ import (
 
 	v1 "github.com/authzed/spicedb-clients/proto-clients/spicedb-go-proto/gen/authzed/api/v1"
 	"github.com/authzed/spicedb-clients/spicedb-go/consistency"
-	"github.com/authzed/spicedb-clients/spicedb-go/rel"
 )
 
 // allErrorSentinels lists every sentinel mapGRPCError can produce, used to
@@ -157,7 +156,7 @@ func TestReadRelationships_StreamErrorIsMappedToNativeError(t *testing.T) {
 		WithInsecure(),
 		// bufnet is an in-memory bufconn dial target, not a real network
 		// destination -- unrelated to what this test exercises.
-		WithInsecureAllowRemoteHost(),
+		WithRemotePlaintextCredentials(RemotePlaintextAllowed),
 		WithDialOptions(grpc.WithContextDialer(dialer)),
 	)
 	require.NoError(t, err)
@@ -166,7 +165,7 @@ func TestReadRelationships_StreamErrorIsMappedToNativeError(t *testing.T) {
 		gotErr error
 		yields int
 	)
-	for _, iterErr := range c.ReadRelationships(context.Background(), consistency.MinLatency(), rel.NewFilter("document")) {
+	for _, iterErr := range c.ReadRelationships(context.Background(), ReadRelationshipsRequest{Consistency: consistency.MinLatency(), Filter: testFilter("document")}) {
 		yields++
 		if iterErr != nil {
 			gotErr = iterErr
@@ -300,4 +299,23 @@ func TestMapGRPCError_UnauthenticatedIsNotInternal(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, CodeUnauthenticated, nativeErr.Code)
 	require.NotEqual(t, CodeInternal, nativeErr.Code)
+}
+
+func TestAllRemainingStatusCategoriesHaveStableSentinels(t *testing.T) {
+	for _, tc := range []struct {
+		code     codes.Code
+		sentinel error
+		native   ErrorCode
+	}{{codes.Unknown, ErrUnknown, CodeUnknown}, {codes.Aborted, ErrAborted, CodeAborted}, {codes.Internal, ErrInternal, CodeInternal}, {codes.Unimplemented, ErrUnimplemented, CodeUnimplemented}, {codes.DataLoss, ErrDataLoss, CodeDataLoss}} {
+		source := status.Error(tc.code, "source")
+		e := mapGRPCError("operation", source)
+		require.ErrorIs(t, e, tc.sentinel)
+		require.ErrorIs(t, e, source)
+		var native *Error
+		require.ErrorAs(t, e, &native)
+		require.Equal(t, tc.native, native.Code)
+		if tc.code != codes.Unknown {
+			require.NotEqual(t, "Unknown", native.Code.String())
+		}
+	}
 }

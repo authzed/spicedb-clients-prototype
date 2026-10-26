@@ -31,7 +31,7 @@ func main() {
 	ctx := context.Background()
 
 	// Setup: write schema
-	_, err = c.WriteSchema(ctx, `definition user {}
+	_, err = c.WriteSchema(ctx, client.WriteSchemaRequest{Schema: `definition user {}
 
 definition document {
 	relation viewer: user
@@ -40,13 +40,13 @@ definition document {
 	permission view = viewer + editor + owner
 	permission edit = editor + owner
 	permission delete = owner
-}`)
+}`})
 	if err != nil {
 		log.Fatalf("write schema failed: %v", err)
 	}
 
 	// Reflect the current schema
-	result, err := c.ReflectSchema(ctx, consistency.Full())
+	result, err := c.ReflectSchema(ctx, client.ReflectSchemaRequest{Consistency: consistency.Full()})
 	if err != nil {
 		log.Fatalf("reflect schema failed: %v", err)
 	}
@@ -79,15 +79,16 @@ definition document {
 	// Relations and permissions are distinct lists: a reflection that conflated
 	// them would put `view` in Relations, which the two checks above catch
 	// together but neither catches alone.
-	if result.Revision == "" {
+	if result.Revision.String() == "" {
 		log.Fatalf("expected a non-empty revision from ReflectSchema")
 	}
 
 	// Find computable permissions for a relation
-	perms, revision, err := c.ComputablePermissions(ctx, consistency.Full(), "document", "viewer")
+	permissionsResult, err := c.ComputablePermissions(ctx, client.ComputablePermissionsRequest{Consistency: consistency.Full(), DefinitionName: "document", RelationName: "viewer"})
 	if err != nil {
 		log.Fatalf("computable permissions failed: %v", err)
 	}
+	perms, revision := permissionsResult.Permissions, permissionsResult.Revision
 	fmt.Printf("\ncomputable permissions for document#viewer (revision: %s):\n", revision)
 	for _, p := range perms {
 		fmt.Printf("  %s#%s (is_permission=%v)\n", p.DefinitionName, p.RelationName, p.IsPermission)
@@ -101,15 +102,17 @@ definition document {
 	if !perms[0].IsPermission {
 		log.Fatalf("expected document#view to be reported as a permission, not a relation")
 	}
-	if revision == "" {
+	if revision.String() == "" {
 		log.Fatalf("expected a non-empty revision from ComputablePermissions")
 	}
 
 	// Find dependent relations for a permission
-	deps, revision, err := c.DependentRelations(ctx, consistency.Full(), "document", "view")
+	dependenciesResult, err := c.DependentRelations(ctx, client.DependentRelationsRequest{Consistency: consistency.Full(), DefinitionName: "document", PermissionName: "view"})
 	if err != nil {
 		log.Fatalf("dependent relations failed: %v", err)
 	}
+	deps := dependenciesResult.Relations
+	revision = dependenciesResult.Revision
 	fmt.Printf("\ndependent relations for document#view (revision: %s):\n", revision)
 	for _, d := range deps {
 		fmt.Printf("  %s#%s\n", d.DefinitionName, d.RelationName)
@@ -120,7 +123,7 @@ definition document {
 		log.Fatalf("expected dependent relations of document#view to be "+
 			"[document#editor document#owner document#viewer], got %v", got)
 	}
-	if revision == "" {
+	if revision.String() == "" {
 		log.Fatalf("expected a non-empty revision from DependentRelations")
 	}
 
@@ -137,10 +140,12 @@ definition document {
 	permission delete = owner + admin
 	permission manage = admin
 }`
-	diffs, revision, err := c.DiffSchema(ctx, consistency.Full(), newSchema)
+	diffResult, err := c.DiffSchema(ctx, client.DiffSchemaRequest{Consistency: consistency.Full(), ComparisonSchema: newSchema})
 	if err != nil {
 		log.Fatalf("diff schema failed: %v", err)
 	}
+	diffs := diffResult.Diffs
+	revision = diffResult.Revision
 	fmt.Printf("\nschema diffs (revision: %s):\n", revision)
 	for _, d := range diffs {
 		fmt.Printf("  %s", d.Kind)
@@ -176,7 +181,7 @@ definition document {
 				"does not cover what the server sent (all diffs: %v)", diffs)
 		}
 	}
-	if revision == "" {
+	if revision.String() == "" {
 		log.Fatalf("expected a non-empty revision from DiffSchema")
 	}
 }
@@ -230,5 +235,7 @@ func referenceNames(refs []client.RelationReference) []string {
 }
 
 func hasDiff(diffs []client.SchemaDiff, want client.SchemaDiff) bool {
-	return slices.Contains(diffs, want)
+	return slices.ContainsFunc(diffs, func(got client.SchemaDiff) bool {
+		return got.Kind == want.Kind && got.DefinitionName == want.DefinitionName && got.RelationName == want.RelationName && got.PermissionName == want.PermissionName && got.CaveatName == want.CaveatName
+	})
 }

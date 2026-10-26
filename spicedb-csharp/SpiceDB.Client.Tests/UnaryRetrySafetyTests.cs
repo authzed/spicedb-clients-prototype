@@ -35,7 +35,7 @@ public class UnaryRetrySafetyTests
             new Mock<ExperimentalService.ExperimentalServiceClient>().Object);
 
     private static Relationship SampleRelationship() =>
-        Relationship.FromTriple("document", "readme", "viewer", "user", "jimmy");
+        new Relationship(new ObjectRef("document", "readme"), "viewer", new SubjectRef(new ObjectRef("user", "jimmy")));
 
     // ── Reads retry ──────────────────────────────────────────────────────
 
@@ -60,7 +60,7 @@ public class UnaryRetrySafetyTests
 
         await using var client = NewClient(schema: mockSchema.Object);
 
-        var (schema, _) = await client.ReadSchemaAsync();
+        var (schema, _) = await client.ReadSchemaAsync(null, default);
 
         schema.Should().Be("definition user {}");
         callCount.Should().Be(2, "a transient error on a read must be retried");
@@ -85,7 +85,7 @@ public class UnaryRetrySafetyTests
 
         await using var client = NewClient(schema: mockSchema.Object);
 
-        var act = async () => await client.ReadSchemaAsync();
+        var act = async () => await client.ReadSchemaAsync(null, default);
 
         await act.Should().ThrowAsync<ResourceExhaustedException>();
         callCount.Should().Be(1, "RESOURCE_EXHAUSTED must never be retried");
@@ -114,7 +114,7 @@ public class UnaryRetrySafetyTests
         var txn = new Transaction();
         txn.Create(SampleRelationship());
 
-        var act = async () => await client.WriteAsync(txn);
+        var act = async () => await client.WriteAsync(txn, null, default);
 
         await act.Should().ThrowAsync<UnavailableException>();
         callCount.Should().Be(1, "a mutation must be attempted exactly once, even on a retryable error");
@@ -141,7 +141,7 @@ public class UnaryRetrySafetyTests
         var txn = new Transaction();
         txn.Create(SampleRelationship());
 
-        var act = async () => await client.WriteAsync(txn);
+        var act = async () => await client.WriteAsync(txn, null, default);
 
         await act.Should().ThrowAsync<ResourceExhaustedException>();
         callCount.Should().Be(1);

@@ -28,15 +28,17 @@ RSpec.describe 'SpiceDB::Client#experimental_roaring_lookup_resources' do
     )
     stub_roaring_lookup_resources(response)
 
-    result = client.experimental_roaring_lookup_resources(
-      SpiceDB::Consistency.full, 'document', 'view', 'user', 'alice'
-    )
+    result = client.experimental_roaring_lookup_resources(resource_type: 'document', permission: 'view',
+                                                          subject: SpiceDB::SubjectRef.new(
+                                                            object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: 'alice')
+                                                          ),
+                                                          consistency: SpiceDB::Consistency.full)
 
     expect(result).to eq(
       SpiceDB::RoaringLookupResourcesResult.new(
         bitmap: "\x01\x02\x03".b,
         cardinality: 3,
-        at_revision: 'zed-roaring-1'
+        at_revision: SpiceDB::ZedToken.new('zed-roaring-1')
       )
     )
   end
@@ -56,7 +58,10 @@ RSpec.describe 'SpiceDB::Client#experimental_roaring_lookup_resources' do
     proto_client = double('proto_client', materialize: materialize_service)
     client.instance_variable_set(:@proto_client, proto_client)
 
-    client.experimental_roaring_lookup_resources(SpiceDB::Consistency.full, 'document', 'view', 'user', 'alice')
+    client.experimental_roaring_lookup_resources(resource_type: 'document', permission: 'view',
+                                                 subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user',
+                                                                                                                 object_id: 'alice')),
+                                                 consistency: SpiceDB::Consistency.full)
 
     expect(captured_request.resource_object_type).to eq('document')
     expect(captured_request.permission).to eq('view')

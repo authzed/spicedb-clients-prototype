@@ -1,9 +1,10 @@
+import { TransportSecurity } from "../../src/index.js";
 /**
  * Example: Call deadlines
  *
  * Demonstrates the client-level `defaultTimeoutMs` option on the documented
  * `createSpiceDBClient` factory, a per-call `timeoutMs` override, and that
- * bulk import (`importBulkRelationships`) is a client-streaming call that is
+ * bulk import (`importRelationships`) is a client-streaming call that is
  * NOT bounded by `defaultTimeoutMs` -- see root DESIGN.md, "RULE: A unary
  * call must have a deadline".
  *
@@ -17,24 +18,13 @@
  */
 import { createServer, type Server } from "node:net";
 import { once } from "node:events";
-import {
-  createSpiceDBClient,
-  DeadlineExceededError,
-  FailedPreconditionError,
-  Transaction,
-  relationship,
-  full,
-  type Relationship,
-  type CheckRequest,
-} from "../../src/index.js";
-
+import { createSpiceDBClient, DeadlineExceededError, FailedPreconditionError, Transaction, relationship, full, type Relationship, type CheckRequest, } from "../../src/index.js";
 function assert(condition: boolean, message: string): void {
-  if (!condition) {
-    console.error(`ASSERTION FAILED: ${message}`);
-    process.exit(1);
-  }
+    if (!condition) {
+        console.error(`ASSERTION FAILED: ${message}`);
+        process.exit(1);
+    }
 }
-
 // defaultTimeoutMs applies to every unary call that doesn't pass its own
 // timeoutMs. This is the documented, real construction path -- not a mock --
 // so a signature drift here (e.g. the option silently disappearing from
@@ -45,12 +35,10 @@ function assert(condition: boolean, message: string): void {
 // docker-compose.test.yml.
 const endpoint = process.env.SPICEDB_ENDPOINT || "localhost:50051";
 const token = process.env.SPICEDB_TOKEN || "testtoken";
-
 const client = createSpiceDBClient(endpoint, token, {
-  insecure: true,
-  defaultTimeoutMs: 5000,
+    transportSecurity: TransportSecurity.Plaintext,
+    defaultTimeoutMs: 5000
 });
-
 // The schema below is narrower than the one most examples write, and they all
 // share one SpiceDB. SpiceDB refuses a WriteSchema that drops a relation while
 // a relationship still exists under it, so clear before writing, not after: an
@@ -58,13 +46,15 @@ const client = createSpiceDBClient(endpoint, token, {
 // this outright. Exactly one error is tolerated -- on a fresh server there is
 // no `document` definition yet, which SpiceDB reports as FailedPrecondition.
 try {
-  await client.deleteRelationships({ resourceType: "document" });
-} catch (err) {
-  if (!(err instanceof FailedPreconditionError)) {
-    throw err;
-  }
+    await client.deleteRelationships({ resourceType: "document" }, {
+        limit: 1000
+    });
 }
-
+catch (err) {
+    if (!(err instanceof FailedPreconditionError)) {
+        throw err;
+    }
+}
 await client.writeSchema(`
 definition user {}
 
@@ -73,78 +63,82 @@ definition document {
   permission view = viewer
 }
 `);
-
 const txn = new Transaction();
 txn.touch(relationship("document:readme", "viewer", "user:alice"));
 await client.write(txn);
-
 // Bound by the 5s default set above.
 const check: CheckRequest = {
-  resourceType: "document",
-  resourceId: "readme",
-  permission: "view",
-  subjectType: "user",
-  subjectId: "alice",
+    permission: "view",
+    resource: {
+        objectType: "document",
+        objectId: "readme"
+    },
+    subject: {
+        object: {
+            objectType: "user",
+            objectId: "alice"
+        }
+    },
+    consistency: full()
 };
-const result = await client.checkPermission(full(), check);
-console.log(
-  `user:alice can view document:readme (default timeout): ${result.hasPermission()}`,
-);
+const result = await client.check({
+    ...check,
+    consistency: full()
+});
+console.log(`user:alice can view document:readme (default timeout): ${result.hasPermission()}`);
 assert(result.hasPermission(), "expected alice to have view permission");
-
 // A per-call timeoutMs overrides the client default for this one call. 2s
 // is generous for a real call against a local SpiceDB -- this exercises the
 // real timeoutMs option end-to-end, not testing how small a timeout can be.
-const overriddenResult = await client.checkPermission(full(), check, {
-  timeoutMs: 2000,
+const overriddenResult = await client.check({
+    ...check,
+    consistency: full()
+}, {
+    timeoutMs: 2000
 });
-console.log(
-  `user:alice can view document:readme (2s per-call timeout): ${overriddenResult.hasPermission()}`,
-);
-assert(
-  overriddenResult.hasPermission(),
-  "expected alice to have view permission",
-);
-
-// importBulkRelationships (client-streaming) is explicitly excluded from
+console.log(`user:alice can view document:readme (2s per-call timeout): ${overriddenResult.hasPermission()}`);
+assert(overriddenResult.hasPermission(), "expected alice to have view permission");
+// importRelationships (client-streaming) is explicitly excluded from
 // defaultTimeoutMs: its duration scales with the size of the caller's
 // dataset, not with server latency. Calling it with no timeoutMs at all --
 // as below -- must still succeed; if a future change accidentally routed the
 // unary default into this call, a large enough import would start failing
 // with DeadlineExceededError well before it finished.
 const importRels: Relationship[] = Array.from({ length: 50 }, (_, i) => ({
-  resourceType: "document",
-  resourceId: `bulk-${i}`,
-  resourceRelation: "viewer",
-  subjectType: "user",
-  subjectId: "alice",
+    resource: {
+        objectType: "document",
+        objectId: `bulk-${i}`
+    },
+    relation: "viewer",
+    subject: {
+        object: {
+            objectType: "user",
+            objectId: "alice"
+        }
+    }
 }));
-const numLoaded = await client.importBulkRelationships(importRels);
+const numLoaded = await client.importRelationships(importRels);
 console.log(`imported ${numLoaded} relationships with no timeout bound`);
 assert(numLoaded === 50n, "expected 50 relationships imported");
-
 // A caller-supplied timeoutMs on the same client-streaming call must still
 // be honored -- the exclusion is from the *default*, not from the ability to
 // bound the call at all.
-const moreImportRels: Relationship[] = Array.from(
-  { length: 50 },
-  (_, i) => ({
-    resourceType: "document",
-    resourceId: `bulk2-${i}`,
-    resourceRelation: "viewer",
-    subjectType: "user",
-    subjectId: "alice",
-  }),
-);
-const numLoadedBounded = await client.importBulkRelationships(
-  moreImportRels,
-  { timeoutMs: 30000 },
-);
-console.log(
-  `imported ${numLoadedBounded} relationships with an explicit 30s timeout`,
-);
+const moreImportRels: Relationship[] = Array.from({ length: 50 }, (_, i) => ({
+    resource: {
+        objectType: "document",
+        objectId: `bulk2-${i}`
+    },
+    relation: "viewer",
+    subject: {
+        object: {
+            objectType: "user",
+            objectId: "alice"
+        }
+    }
+}));
+const numLoadedBounded = await client.importRelationships(moreImportRels, { timeoutMs: 30000 });
+console.log(`imported ${numLoadedBounded} relationships with an explicit 30s timeout`);
 assert(numLoadedBounded === 50n, "expected 50 relationships imported");
-
 // ---------------------------------------------------------------------------
 // The case the rule is about: a server that never answers.
 //
@@ -154,99 +148,66 @@ assert(numLoadedBounded === 50n, "expected 50 relationships imported");
 // and it is why "the connection worked" is not a bound. Everything above this
 // point passes whether or not `timeoutMs` reaches the wire; this does not.
 // ---------------------------------------------------------------------------
-const WEDGED_TIMEOUT_MS = 2_000;
-
+const WEDGED_TIMEOUT_MS = 2000;
 const wedged: Server = createServer((socket) => {
-  // Hold the connection open and send nothing, ever.
-  socket.on("error", () => {});
+    // Hold the connection open and send nothing, ever.
+    socket.on("error", () => { });
 });
 wedged.listen(0, "127.0.0.1");
 await once(wedged, "listening");
 const wedgedAddress = wedged.address();
 if (wedgedAddress === null || typeof wedgedAddress === "string") {
-  console.error("ASSERTION FAILED: could not determine the wedged listener's port");
-  process.exit(1);
+    console.error("ASSERTION FAILED: could not determine the wedged listener's port");
+    process.exit(1);
 }
-
-const wedgedClient = createSpiceDBClient(
-  `127.0.0.1:${wedgedAddress.port}`,
-  token,
-  { insecure: true, defaultTimeoutMs: WEDGED_TIMEOUT_MS },
-);
-
+const wedgedClient = createSpiceDBClient(`127.0.0.1:${wedgedAddress.port}`, token, { transportSecurity: TransportSecurity.Plaintext, defaultTimeoutMs: WEDGED_TIMEOUT_MS });
 // The call runs behind a watchdog. If the timeout never reaches the wire -- a
 // client that accepted `defaultTimeoutMs` and never attached it, say -- this
 // call does not return at all, and an example that simply awaited it would
 // hang the CI job rather than fail it.
 const watchdog = new Promise<never>((_resolve, reject) => {
-  const timer = setTimeout(
-    () =>
-      reject(
-        new Error(
-          `a call with a ${WEDGED_TIMEOUT_MS}ms timeout had not returned after ` +
-            `${WEDGED_TIMEOUT_MS + 15_000}ms against a server that never answers: ` +
-            `the caller's timeout is not reaching the RPC`,
-        ),
-      ),
-    WEDGED_TIMEOUT_MS + 15_000,
-  );
-  timer.unref?.();
+    const timer = setTimeout(() => reject(new Error(`a call with a ${WEDGED_TIMEOUT_MS}ms timeout had not returned after ` +
+        `${WEDGED_TIMEOUT_MS + 15000}ms against a server that never answers: ` +
+        `the caller's timeout is not reaching the RPC`)), WEDGED_TIMEOUT_MS + 15000);
+    timer.unref?.();
 });
-
 const startedAt = Date.now();
 const wedgedOutcome = await Promise.race([
-  wedgedClient.checkPermission(full(), check).then(
-    () => undefined,
-    (err: unknown) => err,
-  ),
-  watchdog,
+    wedgedClient.check({
+        ...check,
+        consistency: full()
+    }).then(() => undefined, (err: unknown) => err),
+    watchdog,
 ]);
 const elapsedMs = Date.now() - startedAt;
-
 console.log(`wedged server: ${String(wedgedOutcome)} after ${elapsedMs}ms`);
-
 // The specific error matters. "An error occurred" would also be satisfied by
 // an UnavailableError from a refused connection -- which is what this would
 // degrade into if the listener above stopped accepting, and which says
 // nothing at all about deadlines.
-assert(
-  wedgedOutcome instanceof DeadlineExceededError,
-  `expected DeadlineExceededError from the wedged server, got: ${String(wedgedOutcome)}`,
-);
-
+assert(wedgedOutcome instanceof DeadlineExceededError, `expected DeadlineExceededError from the wedged server, got: ${String(wedgedOutcome)}`);
 // And it has to expire on the caller's schedule. The client retries transient
 // failures, so the bound here allows for the retry budget rather than pinning
 // a single attempt.
-assert(
-  elapsedMs < WEDGED_TIMEOUT_MS + 15_000,
-  `the ${WEDGED_TIMEOUT_MS}ms timeout took ${elapsedMs}ms to fire: the caller's timeout is not bounding the call`,
-);
-
+assert(elapsedMs < WEDGED_TIMEOUT_MS + 15000, `the ${WEDGED_TIMEOUT_MS}ms timeout took ${elapsedMs}ms to fire: the caller's timeout is not bounding the call`);
 // A per-call `timeoutMs` must bite the same way, overriding the client
 // default rather than being quietly ignored on the per-call path.
 const perCallOutcome = await Promise.race([
-  wedgedClient
-    .checkPermission(full(), check, { timeoutMs: 1_000 })
-    .then(
-      () => undefined,
-      (err: unknown) => err,
-    ),
-  watchdog,
+    wedgedClient.check({
+        ...check,
+        consistency: full()
+    }, { timeoutMs: 1000 }).then(() => undefined, (err: unknown) => err),
+    watchdog,
 ]);
-assert(
-  perCallOutcome instanceof DeadlineExceededError,
-  `expected a per-call timeoutMs to expire against the wedged server, got: ${String(perCallOutcome)}`,
-);
-
+assert(perCallOutcome instanceof DeadlineExceededError, `expected a per-call timeoutMs to expire against the wedged server, got: ${String(perCallOutcome)}`);
 wedgedClient.close();
 wedged.close();
-
 // Clean up so later examples that write a narrower schema aren't blocked by
 // leftover relationships (examples run in sequence against one shared
 // SpiceDB instance).
-await client.deleteRelationships({ resourceType: "document" });
-
+await client.deleteRelationships({ resourceType: "document" }, {
+    limit: 1000
+});
 // Release the underlying transport now that this example is done with it.
 client.close();
-
 console.log("call_deadlines: PASS");

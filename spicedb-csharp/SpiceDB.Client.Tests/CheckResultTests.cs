@@ -29,7 +29,7 @@ public class CheckResultTests
     [InlineData(Permissionship.ConditionalPermission, false)]
     public void HasPermission_TrueOnlyForHasPermission(Permissionship permissionship, bool expected)
     {
-        var result = new CheckResult { Permissionship = permissionship };
+        var result = new CheckResult(permissionship, [], default);
         result.HasPermission.Should().Be(expected);
     }
 
@@ -99,7 +99,7 @@ public class CheckResultTests
 
         var result = SpiceDBClient.ToCheckResult(item, "zed-token-123");
 
-        result.CheckedAt.Should().Be("zed-token-123");
+        result.CheckedAt.Value.Should().Be("zed-token-123");
     }
 
     // ── End-to-end: CheckPermissionsAsync/CheckPermissionAsync surface
@@ -121,7 +121,13 @@ public class CheckResultTests
                 It.IsAny<Metadata>(),
                 It.IsAny<DateTime?>(),
                 It.IsAny<CancellationToken>()))
-            .Returns(MakeUnaryCall(response));
+            .Returns((CheckBulkPermissionsRequest request, Metadata _, DateTime? _, CancellationToken _) =>
+            {
+                var echoed = response.Clone();
+                for (var i = 0; i < Math.Min(echoed.Pairs.Count, request.Items.Count); i++)
+                    echoed.Pairs[i].Request = request.Items[i].Clone();
+                return MakeUnaryCall(echoed);
+            });
         return mock;
     }
 
@@ -130,7 +136,7 @@ public class CheckResultTests
     {
         var resp = new CheckBulkPermissionsResponse
         {
-            CheckedAt = new ZedToken { Token = "tok-abc" },
+            CheckedAt = new Authzed.Api.V1.ZedToken { Token = "tok-abc" },
             Pairs =
             {
                 new CheckBulkPermissionsPair
@@ -150,13 +156,13 @@ public class CheckResultTests
         var mockPermissions = MockCheckBulk(resp);
         await using var client = NewClient(mockPermissions.Object);
 
-        var rel = Relationship.FromTriple("document", "doc1", "viewer", "user", "alice");
-        var result = await client.CheckPermissionAsync(Consistency.Full(), "view", rel);
+        var rel = new Relationship(new ObjectRef("document", "doc1"), "viewer", new SubjectRef(new ObjectRef("user", "alice")));
+        var result = (await client.CheckBulkAsync([new PermissionCheck(rel.Resource, "view", rel.Subject, Consistency.Full())], null, default))[0];
 
         result.Permissionship.Should().Be(Permissionship.ConditionalPermission);
         result.HasPermission.Should().BeFalse();
         result.MissingContext.Should().Equal("now");
-        result.CheckedAt.Should().Be("tok-abc");
+        result.CheckedAt.Value.Should().Be("tok-abc");
     }
 
     [Fact]
@@ -166,7 +172,7 @@ public class CheckResultTests
         // propagate that one token to every result.
         var resp = new CheckBulkPermissionsResponse
         {
-            CheckedAt = new ZedToken { Token = "shared-token" },
+            CheckedAt = new Authzed.Api.V1.ZedToken { Token = "shared-token" },
             Pairs =
             {
                 new CheckBulkPermissionsPair
@@ -185,15 +191,15 @@ public class CheckResultTests
 
         var rels = new[]
         {
-            Relationship.FromTriple("document", "doc1", "viewer", "user", "alice"),
-            Relationship.FromTriple("document", "doc2", "viewer", "user", "bob"),
+            new Relationship(new ObjectRef("document", "doc1"), "viewer", new SubjectRef(new ObjectRef("user", "alice"))),
+            new Relationship(new ObjectRef("document", "doc2"), "viewer", new SubjectRef(new ObjectRef("user", "bob"))),
         };
 
-        var results = await client.CheckPermissionsAsync(Consistency.Full(), "view", default, rels);
+        var results = await client.CheckBulkAsync(rels.Select(r => new PermissionCheck(r.Resource, "view", r.Subject, Consistency.Full())).ToArray(), null, default);
 
         results.Should().HaveCount(2);
-        results[0].CheckedAt.Should().Be("shared-token");
-        results[1].CheckedAt.Should().Be("shared-token");
+        results[0].CheckedAt.Value.Should().Be("shared-token");
+        results[1].CheckedAt.Value.Should().Be("shared-token");
     }
 
     // ── Aggregate clause: CheckAny/CheckAll count only HasPermission ────────
@@ -203,7 +209,7 @@ public class CheckResultTests
     {
         var resp = new CheckBulkPermissionsResponse
         {
-            CheckedAt = new ZedToken { Token = "tok" },
+            CheckedAt = new Authzed.Api.V1.ZedToken { Token = "tok" },
             Pairs =
             {
                 new CheckBulkPermissionsPair
@@ -222,11 +228,11 @@ public class CheckResultTests
 
         var rels = new[]
         {
-            Relationship.FromTriple("document", "doc1", "viewer", "user", "alice"),
-            Relationship.FromTriple("document", "doc2", "viewer", "user", "bob"),
+            new Relationship(new ObjectRef("document", "doc1"), "viewer", new SubjectRef(new ObjectRef("user", "alice"))),
+            new Relationship(new ObjectRef("document", "doc2"), "viewer", new SubjectRef(new ObjectRef("user", "bob"))),
         };
 
-        var any = await client.CheckAnyAsync(Consistency.Full(), "view", default, rels);
+        var any = await client.CheckAnyAsync(rels.Select(r => new PermissionCheck(r.Resource, "view", r.Subject, Consistency.Full())).ToArray(), null, default);
         any.Should().BeFalse();
     }
 
@@ -235,7 +241,7 @@ public class CheckResultTests
     {
         var resp = new CheckBulkPermissionsResponse
         {
-            CheckedAt = new ZedToken { Token = "tok" },
+            CheckedAt = new Authzed.Api.V1.ZedToken { Token = "tok" },
             Pairs =
             {
                 new CheckBulkPermissionsPair
@@ -254,11 +260,11 @@ public class CheckResultTests
 
         var rels = new[]
         {
-            Relationship.FromTriple("document", "doc1", "viewer", "user", "alice"),
-            Relationship.FromTriple("document", "doc2", "viewer", "user", "bob"),
+            new Relationship(new ObjectRef("document", "doc1"), "viewer", new SubjectRef(new ObjectRef("user", "alice"))),
+            new Relationship(new ObjectRef("document", "doc2"), "viewer", new SubjectRef(new ObjectRef("user", "bob"))),
         };
 
-        var all = await client.CheckAllAsync(Consistency.Full(), "view", default, rels);
+        var all = await client.CheckAllAsync(rels.Select(r => new PermissionCheck(r.Resource, "view", r.Subject, Consistency.Full())).ToArray(), null, default);
         all.Should().BeFalse();
     }
 
@@ -280,7 +286,7 @@ public class CheckResultTests
         var mockPermissions = new Mock<PermissionsService.PermissionsServiceClient>();
         await using var client = NewClient(mockPermissions.Object);
 
-        var all = await client.CheckAllAsync(Consistency.Full(), "view");
+        var all = await client.CheckAllAsync([], null, default);
         all.Should().BeFalse();
     }
 
@@ -290,7 +296,7 @@ public class CheckResultTests
         var mockPermissions = new Mock<PermissionsService.PermissionsServiceClient>();
         await using var client = NewClient(mockPermissions.Object);
 
-        var all = await client.CheckAllWithOptionsAsync(Consistency.Full(), "view", new CheckOptions());
+        var all = await client.CheckAllAsync([], new CheckOptions(), default);
         all.Should().BeFalse();
     }
 
@@ -314,8 +320,8 @@ public class CheckResultTests
         var mockPermissions = MockCheckBulk(resp);
         await using var client = NewClient(mockPermissions.Object);
 
-        var rel = Relationship.FromTriple("document", "doc1", "viewer", "user", "alice");
-        var act = async () => await client.CheckPermissionAsync(Consistency.Full(), "view", rel);
+        var rel = new Relationship(new ObjectRef("document", "doc1"), "viewer", new SubjectRef(new ObjectRef("user", "alice")));
+        var act = async () => (await client.CheckBulkAsync([new PermissionCheck(rel.Resource, "view", rel.Subject, Consistency.Full())], null, default))[0];
 
         // Must be the SPECIFIC typed exception — not merely assignable to
         // SpiceDBException, which the pre-fix base-type throw would also
@@ -346,8 +352,8 @@ public class CheckResultTests
         var mockPermissions = MockCheckBulk(resp);
         await using var client = NewClient(mockPermissions.Object);
 
-        var rel = Relationship.FromTriple("document", "doc1", "viewer", "user", "alice");
-        var act = async () => await client.CheckPermissionAsync(Consistency.Full(), "view", rel);
+        var rel = new Relationship(new ObjectRef("document", "doc1"), "viewer", new SubjectRef(new ObjectRef("user", "alice")));
+        var act = async () => (await client.CheckBulkAsync([new PermissionCheck(rel.Resource, "view", rel.Subject, Consistency.Full())], null, default))[0];
 
         await act.Should().ThrowExactlyAsync<NotFoundException>();
     }
@@ -381,8 +387,8 @@ public class CheckResultTests
         var mockPermissions = MockCheckBulk(resp);
         await using var client = NewClient(mockPermissions.Object);
 
-        var rel = Relationship.FromTriple("document", "doc1", "viewer", "user", "alice");
-        var act = async () => await client.CheckPermissionAsync(Consistency.Full(), "view", rel);
+        var rel = new Relationship(new ObjectRef("document", "doc1"), "viewer", new SubjectRef(new ObjectRef("user", "alice")));
+        var act = async () => (await client.CheckBulkAsync([new PermissionCheck(rel.Resource, "view", rel.Subject, Consistency.Full())], null, default))[0];
 
         var result = await act.Should().ThrowExactlyAsync<ResourceExhaustedException>();
         result.Which.Reason.Should().Be("ERROR_REASON_MAXIMUM_DEPTH_EXCEEDED");
@@ -417,9 +423,9 @@ public class CheckResultTests
         var mockPermissions = MockCheckBulk(resp);
         await using var client = NewClient(mockPermissions.Object);
 
-        var rel1 = Relationship.FromTriple("document", "doc1", "viewer", "user", "alice");
-        var rel2 = Relationship.FromTriple("document", "doc2", "viewer", "user", "bob");
-        var act = async () => await client.CheckPermissionsAsync(Consistency.Full(), "view", default, rel1, rel2);
+        var rel1 = new Relationship(new ObjectRef("document", "doc1"), "viewer", new SubjectRef(new ObjectRef("user", "alice")));
+        var rel2 = new Relationship(new ObjectRef("document", "doc2"), "viewer", new SubjectRef(new ObjectRef("user", "bob")));
+        var act = async () => await client.CheckBulkAsync([new PermissionCheck(rel1.Resource, "view", rel1.Subject, Consistency.Full()), new PermissionCheck(rel2.Resource, "view", rel2.Subject, Consistency.Full())], null, default);
 
         var result = await act.Should().ThrowExactlyAsync<SpiceDBException>();
         result.Which.Message.Should().Contain("1").And.Contain("2");
@@ -439,8 +445,8 @@ public class CheckResultTests
         var mockPermissions = MockCheckBulk(resp);
         await using var client = NewClient(mockPermissions.Object);
 
-        var rel = Relationship.FromTriple("document", "doc1", "viewer", "user", "alice");
-        var act = async () => await client.CheckPermissionAsync(Consistency.Full(), "view", rel);
+        var rel = new Relationship(new ObjectRef("document", "doc1"), "viewer", new SubjectRef(new ObjectRef("user", "alice")));
+        var act = async () => (await client.CheckBulkAsync([new PermissionCheck(rel.Resource, "view", rel.Subject, Consistency.Full())], null, default))[0];
 
         var result = await act.Should().ThrowExactlyAsync<SpiceDBException>();
         result.Which.Message.Should().Contain("check item 0");
@@ -451,7 +457,7 @@ public class CheckResultTests
     [Fact]
     public void LookupResource_DefaultsLookedUpAtToEmpty()
     {
-        new LookupResource().LookedUpAt.Should().BeEmpty();
+        new LookupResource().LookedUpAt.Value.Should().BeEmpty();
     }
 
     [Fact]
@@ -461,7 +467,7 @@ public class CheckResultTests
         {
             ResourceObjectId = "doc1",
             Permissionship = LookupPermissionship.HasPermission,
-            LookedUpAt = new ZedToken { Token = "lookup-tok" },
+            LookedUpAt = new Authzed.Api.V1.ZedToken { Token = "lookup-tok" },
         };
 
         var mockPermissions = new Mock<PermissionsService.PermissionsServiceClient>();
@@ -476,13 +482,12 @@ public class CheckResultTests
         await using var client = NewClient(mockPermissions.Object);
 
         var results = new List<LookupResource>();
-        await foreach (var result in client.LookupResourcesAsync(
-            Consistency.Full(), "document", "view", "user", "alice"))
+        await foreach (var result in client.LookupResourcesAsync(Consistency.Full(), "document", "view", new SubjectRef(new ObjectRef("user", "alice")), null, default))
         {
             results.Add(result);
         }
 
         results.Should().ContainSingle();
-        results[0].LookedUpAt.Should().Be("lookup-tok");
+        results[0].LookedUpAt.Value.Should().Be("lookup-tok");
     }
 }

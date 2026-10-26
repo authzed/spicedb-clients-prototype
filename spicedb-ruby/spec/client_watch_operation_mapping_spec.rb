@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative '../lib/spicedb'
+require_relative 'support/native_helpers'
 require 'spicedb_proto'
 require 'grpc'
 
@@ -47,7 +48,7 @@ RSpec.describe 'SpiceDB::Client#updates operation mapping' do
     end
 
     watch_service = double('watch_service')
-    allow(watch_service).to receive(:watch).and_return(responses)
+    allow(watch_service).to receive(:watch).and_return(FixtureOperation.new(responses))
 
     proto_client = double('proto_client', watch: watch_service)
     client.instance_variable_set(:@proto_client, proto_client)
@@ -56,12 +57,12 @@ RSpec.describe 'SpiceDB::Client#updates operation mapping' do
   it 'maps :OPERATION_UNSPECIFIED to :unspecified, not :touch' do
     stub_watch_updates([[:OPERATION_UNSPECIFIED, 'alice']])
 
-    got = client.updates(['document']).flat_map(&:updates)
+    got = client.watch(object_types: ['document']).flat_map(&:updates)
 
     expect(got.length).to eq(1)
     expect(got.first.operation).to eq(:unspecified)
     expect(got.first.operation).not_to eq(:touch)
-    expect(got.first.relationship.subject_id).to eq('alice')
+    expect(got.first.relationship.subject.object.object_id).to eq('alice')
   end
 
   it 'maps an unknown future operation value to :unspecified, not :touch' do
@@ -70,11 +71,11 @@ RSpec.describe 'SpiceDB::Client#updates operation mapping' do
     # surfaces an unknown enum value as its raw Integer rather than a Symbol.
     stub_watch_updates([[9999, 'bob']])
 
-    got = client.updates(['document']).flat_map(&:updates)
+    got = client.watch(object_types: ['document']).flat_map(&:updates)
 
     expect(got.length).to eq(1)
     expect(got.first.operation).to eq(:unspecified)
-    expect(got.first.relationship.subject_id).to eq('bob')
+    expect(got.first.relationship.subject.object.object_id).to eq('bob')
   end
 
   it 'still maps the three recognized operations to themselves' do
@@ -84,9 +85,9 @@ RSpec.describe 'SpiceDB::Client#updates operation mapping' do
                          [:OPERATION_DELETE, 'erin']
                        ])
 
-    got = client.updates(['document']).flat_map(&:updates)
+    got = client.watch(object_types: ['document']).flat_map(&:updates)
 
     expect(got.map(&:operation)).to eq(%i[create touch delete])
-    expect(got.map { |u| u.relationship.subject_id }).to eq(%w[carol dave erin])
+    expect(got.map { |u| u.relationship.subject.object.object_id }).to eq(%w[carol dave erin])
   end
 end

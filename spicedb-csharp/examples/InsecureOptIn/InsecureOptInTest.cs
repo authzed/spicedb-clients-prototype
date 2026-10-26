@@ -35,8 +35,7 @@ public class InsecureOptInTest
         // The case the rule deliberately leaves ergonomic: a token on a loopback socket
         // never leaves the machine, so requiring ceremony here would only train
         // developers to reach for the opt-in reflexively.
-        await using var client = SpiceDBClient.CreatePlaintext(
-            SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
+        await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
 
         // Prove the client is usable, not merely constructed: the channel connects
         // lazily, so a constructor returning a client that could not talk to anything
@@ -53,7 +52,7 @@ public class InsecureOptInTest
                 relation viewer: user
                 permission view = viewer
             }
-            """);
+            """, null, default);
     }
 
     [Fact]
@@ -69,7 +68,7 @@ public class InsecureOptInTest
         var ex = Assert.Throws<InvalidArgumentException>(
             () => SpiceDBClient.CreatePlaintext("example.com:50051", SpiceDBTestServer.Token));
         Assert.Contains("example.com:50051", ex.Message);
-        Assert.Contains("allowInsecureRemoteCredentials", ex.Message);
+        Assert.Contains("RemotePlaintextCredentials.Allow", ex.Message);
     }
 
     [Fact]
@@ -78,8 +77,7 @@ public class InsecureOptInTest
         // Two arguments, not one, and that separation is the point: selecting the
         // plaintext transport and accepting the credential exposure that follows are
         // different decisions, and clause 1 forbids one boolean from doing both jobs.
-        await using var client = SpiceDBClient.CreatePlaintext(
-            "example.com:50051", SpiceDBTestServer.Token, allowInsecureRemoteCredentials: true);
+        await using var client = SpiceDBClient.CreatePlaintext("example.com:50051", SpiceDBTestServer.Token, new ClientOptions { RemotePlaintextCredentials = RemotePlaintextCredentials.Allow });
         Assert.NotNull(client);
     }
 

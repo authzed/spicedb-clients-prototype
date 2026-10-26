@@ -24,7 +24,8 @@ RSpec.describe 'SpiceDB::Client caveat context write path' do
   let(:client) { SpiceDB::Client.new_plaintext('localhost:50051', 'testtoken') }
 
   def relationship_with_context(context)
-    SpiceDB::Relationship.from_triple('document', 'doc1', 'viewer', 'user', 'alice')
+    SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'doc1'), relation: 'viewer',
+                              subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: 'alice'), relation: nil))
                          .with_caveat('only_bizhours', context)
   end
 
@@ -92,14 +93,14 @@ RSpec.describe 'SpiceDB::Client caveat context write path' do
     proto = client.send(:relationship_to_proto, original)
     restored = client.send(:relationship_from_proto, proto)
 
-    expect(restored.caveat_context['a_string']).to eq('hello')
-    expect(restored.caveat_context['an_int']).to eq(42.0)
-    expect(restored.caveat_context['a_float']).to eq(3.5)
-    expect(restored.caveat_context['a_bool']).to be(true)
-    expect(restored.caveat_context).to have_key('a_null')
-    expect(restored.caveat_context['a_null']).to be_nil
-    expect(restored.caveat_context['a_map']).to eq({ 'nested' => 'value' })
-    expect(restored.caveat_context['a_list']).to eq(['one', 2.0, false])
+    expect(restored.caveat.context['a_string']).to eq('hello')
+    expect(restored.caveat.context['an_int']).to eq(42.0)
+    expect(restored.caveat.context['a_float']).to eq(3.5)
+    expect(restored.caveat.context['a_bool']).to be(true)
+    expect(restored.caveat.context).to have_key('a_null')
+    expect(restored.caveat.context['a_null']).to be_nil
+    expect(restored.caveat.context['a_map']).to eq({ 'nested' => 'value' })
+    expect(restored.caveat.context['a_list']).to eq(['one', 2.0, false])
   end
 
   it 'raises SpiceDB::InvalidArgumentError naming the offending key for an unrepresentable value' do
@@ -107,11 +108,12 @@ RSpec.describe 'SpiceDB::Client caveat context write path' do
 
     expect do
       client.send(:relationship_to_proto, relationship_with_context(context))
-    end.to raise_error(SpiceDB::InvalidArgumentError, /"bad"/)
+    end.to raise_error(SpiceDB::InvalidArgumentError, /context.bad/)
   end
 
   it 'sets no context field on the wire when the caveat has no context' do
-    rel = SpiceDB::Relationship.from_triple('document', 'doc1', 'viewer', 'user', 'alice')
+    rel = SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'doc1'), relation: 'viewer',
+                                    subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: 'alice'), relation: nil))
                                .with_caveat('always_true')
 
     proto = client.send(:relationship_to_proto, rel)
@@ -145,7 +147,7 @@ RSpec.describe 'SpiceDB::CaveatContext write/check converter convergence' do
   end
 
   it 'produces identical Structs from both names for the same input' do
-    context = { 'count' => 42, :flag => true, 'none' => nil,
+    context = { 'count' => 42, 'flag' => true, 'none' => nil,
                 'nested' => { 'a' => [1, 'x'] } }
 
     expect(SpiceDB::CaveatContext.caveat_context_to_struct(context))
@@ -156,8 +158,8 @@ RSpec.describe 'SpiceDB::CaveatContext write/check converter convergence' do
     context = { 'bad' => Object.new }
 
     expect { SpiceDB::CaveatContext.caveat_context_to_struct(context) }
-      .to raise_error(SpiceDB::InvalidArgumentError, /"bad"/)
+      .to raise_error(SpiceDB::InvalidArgumentError, /context.bad/)
     expect { SpiceDB::CaveatContext.check_context_to_struct(context) }
-      .to raise_error(SpiceDB::InvalidArgumentError, /"bad"/)
+      .to raise_error(SpiceDB::InvalidArgumentError, /context.bad/)
   end
 end

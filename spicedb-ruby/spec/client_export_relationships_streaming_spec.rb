@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative '../lib/spicedb'
+require_relative 'support/native_helpers'
 require 'spicedb_proto'
 require 'grpc'
 require 'timeout'
@@ -64,7 +65,7 @@ RSpec.describe 'SpiceDB::Client#export_relationships streaming' do
   it 'yields the first relationship without waiting for the (still-open) server stream to finish' do
     stream = NeverEndingExportStream.new(export_response('doc1', 'cursor-1'))
     permissions_service = double('permissions_service')
-    allow(permissions_service).to receive(:export_bulk_relationships).and_return(stream)
+    allow(permissions_service).to receive(:export_bulk_relationships).and_return(FixtureOperation.new(stream))
     client.instance_variable_set(
       :@proto_client, double('proto_client', permissions: permissions_service)
     )
@@ -72,13 +73,13 @@ RSpec.describe 'SpiceDB::Client#export_relationships streaming' do
     first = nil
     begin
       Timeout.timeout(5) do
-        first = client.export_relationships(SpiceDB::Consistency.full).first
+        first = client.export_relationships(nil, consistency: SpiceDB::Consistency.full).first
       end
     rescue Timeout::Error
       raise 'export_relationships did not yield its first item within 5s -- it is buffering ' \
             'the whole (never-completing) stream before yielding anything'
     end
 
-    expect(first.resource_id).to eq('doc1')
+    expect(first.resource.object_id).to eq('doc1')
   end
 end

@@ -43,6 +43,8 @@ public class DeadlineTests
 
     private sealed class StallingPermissionsService : PermissionsService.PermissionsServiceBase
     {
+        public override async Task<CheckPermissionResponse> CheckPermission(CheckPermissionRequest request, ServerCallContext context)
+        { await WaitOutStallOrCancellation(context.CancellationToken); return new(); }
         public override async Task<CheckBulkPermissionsResponse> CheckBulkPermissions(
             CheckBulkPermissionsRequest request, ServerCallContext context)
         {
@@ -127,13 +129,13 @@ public class DeadlineTests
         var address = addressFeature.Addresses.First();
 
         var channel = GrpcChannel.ForAddress(address);
-        var client = SpiceDBClient.CreateFromChannel(channel, "test-token", defaultTimeout);
+        var client = SpiceDBClient.CreateFromChannel(channel, "test-token", new ClientOptions { DefaultTimeout = defaultTimeout });
 
         return (app, client);
     }
 
     private static Relationship Rel() =>
-        Relationship.FromTriple("document", "doc1", "view", "user", "alice");
+        new Relationship(new ObjectRef("document", "doc1"), "view", new SubjectRef(new ObjectRef("user", "alice")));
 
     /// <summary>
     /// Waits for <paramref name="task"/> up to <see cref="WatchdogTimeout"/>. Throws a
@@ -160,7 +162,7 @@ public class DeadlineTests
         try
         {
             var start = DateTime.UtcNow;
-            Func<Task> act = () => RunWithWatchdogAsync(client.CheckPermissionAsync(Consistency.Full(), "view", Rel()));
+            Func<Task> act = () => RunWithWatchdogAsync(client.CheckAsync(new PermissionCheck(Rel().Resource, "view", Rel().Subject, Consistency.Full()), null, default));
 
             await act.Should().ThrowAsync<DeadlineExceededException>();
             var elapsed = DateTime.UtcNow - start;
@@ -184,9 +186,7 @@ public class DeadlineTests
         try
         {
             var start = DateTime.UtcNow;
-            Func<Task> act = () => RunWithWatchdogAsync(client.CheckPermissionWithOptionsAsync(
-                Consistency.Full(), "view", Rel(),
-                new CheckOptions { Timeout = TimeSpan.FromMilliseconds(200) }));
+            Func<Task> act = () => RunWithWatchdogAsync(client.CheckAsync(new PermissionCheck(Rel().Resource, "view", Rel().Subject, Consistency.Full()), new CheckOptions { Timeout = TimeSpan.FromMilliseconds(200) }, default));
 
             await act.Should().ThrowAsync<DeadlineExceededException>();
             var elapsed = DateTime.UtcNow - start;
@@ -214,7 +214,7 @@ public class DeadlineTests
             var collectTask = Task.Run(async () =>
             {
                 var items = new List<Relationship>();
-                await foreach (var rel in client.ReadRelationshipsAsync(Consistency.Full(), new Filter("document")))
+                await foreach (var rel in client.ReadRelationshipsAsync(Consistency.Full(), new Filter("document"), null, default))
                 {
                     items.Add(rel);
                 }
@@ -228,7 +228,7 @@ public class DeadlineTests
             var items = await collectTask;
             var elapsed = DateTime.UtcNow - start;
 
-            items.Should().ContainSingle().Which.ResourceID.Should().Be("a");
+            items.Should().ContainSingle().Which.Resource.ObjectId.Should().Be("a");
             elapsed.Should().BeGreaterThanOrEqualTo(TimeSpan.FromMilliseconds(StallMs),
                 "the stream must outlive the tiny unary default, not get cut off by it");
         }
@@ -252,7 +252,7 @@ public class DeadlineTests
         try
         {
             var start = DateTime.UtcNow;
-            var numLoaded = await RunWithWatchdogAsync(client.ImportRelationshipsAsync(ToAsyncEnumerable(Rel())));
+            var numLoaded = await RunWithWatchdogAsync(client.ImportRelationshipsAsync(ToAsyncEnumerable(Rel()), null, default));
             var elapsed = DateTime.UtcNow - start;
 
             numLoaded.Should().Be(1);
@@ -276,7 +276,7 @@ public class DeadlineTests
         {
             var start = DateTime.UtcNow;
             Func<Task> act = () => RunWithWatchdogAsync(
-                client.ImportRelationshipsAsync(ToAsyncEnumerable(Rel()), timeout: TimeSpan.FromMilliseconds(200)));
+                client.ImportRelationshipsAsync(ToAsyncEnumerable(Rel()), new ImportOptions { Timeout = TimeSpan.FromMilliseconds(200) }, default));
 
             await act.Should().ThrowAsync<DeadlineExceededException>();
             var elapsed = DateTime.UtcNow - start;
@@ -302,7 +302,7 @@ public class DeadlineTests
         try
         {
             using var cts = new CancellationTokenSource();
-            var callTask = client.CheckPermissionAsync(Consistency.Full(), "view", Rel(), cts.Token);
+            var callTask = client.CheckAsync(new PermissionCheck(Rel().Resource, "view", Rel().Subject, Consistency.Full()), null, cts.Token);
 
             // Give the call a moment to actually reach the server (as opposed to cancelling before
             // it's even dispatched, which wouldn't prove mid-flight cancellation).

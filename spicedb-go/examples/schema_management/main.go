@@ -15,6 +15,8 @@ import (
 	"os"
 	"strings"
 
+	"github.com/authzed/spicedb-clients/spicedb-go/examples/internal/exampleutil"
+
 	"github.com/authzed/spicedb-clients/spicedb-go/client"
 	"github.com/authzed/spicedb-clients/spicedb-go/rel"
 )
@@ -79,32 +81,33 @@ func main() {
 	// still exists under it, and this example replaces one relation with
 	// another twice. Clear first so the rewrite below is about schema, not
 	// about what an earlier example left behind.
-	if _, err := c.WriteSchema(ctx, sharedSchema); err != nil {
+	if _, err := c.WriteSchema(ctx, client.WriteSchemaRequest{Schema: sharedSchema}); err != nil {
 		log.Fatalf("write schema failed: %v", err)
 	}
-	if _, err := c.DeleteRelationships(ctx, rel.NewFilter("document")); err != nil {
+	if _, err := c.DeleteAllRelationshipsNonAtomic(ctx, client.DeleteAllRequest{Filter: exampleutil.Must(rel.NewFilter("document"))}); err != nil {
 		log.Fatalf("clearing document relationships failed: %v", err)
 	}
 
 	// Write a schema
-	revision, err := c.WriteSchema(ctx, schemaWithAuditor)
+	revision, err := c.WriteSchema(ctx, client.WriteSchemaRequest{Schema: schemaWithAuditor})
 	if err != nil {
 		log.Fatalf("write schema failed: %v", err)
 	}
-	fmt.Printf("wrote schema at revision: %s\n", revision)
-	if revision == "" {
+	fmt.Printf("wrote schema at revision: %s\n", revision.Revision)
+	if revision.Revision.String() == "" {
 		log.Fatalf("expected non-empty revision")
 	}
 
 	// Read the schema back
-	readSchema, readRevision, err := c.ReadSchema(ctx)
+	readResult, err := c.ReadSchema(ctx, client.ReadSchemaRequest{})
 	if err != nil {
 		log.Fatalf("read schema failed: %v", err)
 	}
-	fmt.Printf("read schema at revision %s:\n%s\n", readRevision, readSchema)
-	if readRevision == "" {
+	fmt.Printf("read schema at revision %s:\n%s\n", readResult.Revision, readResult.Schema)
+	if readResult.Revision.String() == "" {
 		log.Fatalf("expected a non-empty revision from ReadSchema")
 	}
+	readSchema, readRevision := readResult.Schema, readResult.Revision
 	// Both definitions round-trip. These two are weak on their own -- every
 	// example writes both strings into the same shared SpiceDB -- which is why
 	// the relation-level assertions below exist; they are kept because they
@@ -125,14 +128,15 @@ func main() {
 	// Rewrite the schema, changing exactly one relation, and read it back
 	// again. The second read is what distinguishes "ReadSchema returns the
 	// current schema" from "ReadSchema returns something schema-shaped".
-	if _, err := c.WriteSchema(ctx, schemaWithArchivist); err != nil {
+	if _, err := c.WriteSchema(ctx, client.WriteSchemaRequest{Schema: schemaWithArchivist}); err != nil {
 		log.Fatalf("second write schema failed: %v", err)
 	}
 
-	rewritten, rewrittenRevision, err := c.ReadSchema(ctx)
+	rewriteResult, err := c.ReadSchema(ctx, client.ReadSchemaRequest{})
 	if err != nil {
 		log.Fatalf("second read schema failed: %v", err)
 	}
+	rewritten, rewrittenRevision := rewriteResult.Schema, rewriteResult.Revision
 	if !strings.Contains(rewritten, "relation archivist") {
 		log.Fatalf("expected the rewritten schema to contain `relation archivist`, got:\n%s", rewritten)
 	}
@@ -147,7 +151,7 @@ func main() {
 
 	// Leave the shared schema in place for the examples that run after this
 	// one (they all run in sequence against one SpiceDB).
-	if _, err := c.WriteSchema(ctx, sharedSchema); err != nil {
+	if _, err := c.WriteSchema(ctx, client.WriteSchemaRequest{Schema: sharedSchema}); err != nil {
 		log.Fatalf("restoring the shared schema failed: %v", err)
 	}
 }

@@ -5,33 +5,44 @@ import (
 
 	v1 "github.com/authzed/spicedb-clients/proto-clients/spicedb-go-proto/gen/authzed/api/v1"
 	"github.com/authzed/spicedb-clients/spicedb-go/consistency"
+	"github.com/authzed/spicedb-clients/spicedb-go/rel"
 )
 
-// ExpandResult holds the result of a permission tree expansion.
-type ExpandResult struct {
-	// Tree is the root of the expanded permission tree, as a native
-	// PermissionTree (see expand_tree.go).
+type ExpandPermissionTreeRequest struct {
+	Resource    rel.ObjectRef
+	Permission  string
+	Consistency consistency.Strategy
+}
+type ExpandPermissionTreeResult struct {
 	Tree     PermissionTree
-	Revision string
+	Revision consistency.ZedToken
 }
 
-// ExpandPermissionTree expands the permission tree for the given resource and
-// permission, returning the full tree of subjects with access.
-func (c *Client) ExpandPermissionTree(ctx context.Context, cs consistency.Strategy, resourceType, resourceID, permission string) (*ExpandResult, error) {
-	resp, err := c.psc.ExpandPermissionTree(ctx, &v1.ExpandPermissionTreeRequest{
-		Consistency: cs.V1Consistency,
-		Resource: &v1.ObjectReference{
-			ObjectType: resourceType,
-			ObjectId:   resourceID,
-		},
-		Permission: permission,
-	})
-	if err != nil {
-		return nil, mapGRPCError("expand permission tree", err)
+func (c *Client) ExpandPermissionTree(ctx context.Context, request ExpandPermissionTreeRequest, opts ...ExpandPermissionTreeOption) (ExpandPermissionTreeResult, error) {
+	o := operationOptions{}
+	for _, opt := range opts {
+		opt(&o)
 	}
-
-	return &ExpandResult{
-		Tree:     toPermissionTree(resp.GetTreeRoot()),
-		Revision: resp.GetExpandedAt().GetToken(),
-	}, nil
+	ctx, cancel, e := c.operation(ctx, o, false)
+	if e != nil {
+		return ExpandPermissionTreeResult{}, e
+	}
+	defer cancel()
+	cs, e := strategy(request.Consistency)
+	if e != nil {
+		return ExpandPermissionTreeResult{}, e
+	}
+	if e := request.Resource.Validate(); e != nil {
+		return ExpandPermissionTreeResult{}, invalid("resource: %s", e)
+	}
+	if request.Permission == "" {
+		return ExpandPermissionTreeResult{}, invalid("permission required")
+	}
+	resp, e := retry(ctx, "expand permission tree", func() (*v1.ExpandPermissionTreeResponse, error) {
+		return c.psc.ExpandPermissionTree(ctx, &v1.ExpandPermissionTreeRequest{Consistency: cs, Resource: object(request.Resource), Permission: request.Permission})
+	})
+	if e != nil {
+		return ExpandPermissionTreeResult{}, e
+	}
+	return ExpandPermissionTreeResult{toPermissionTree(resp.GetTreeRoot()), consistency.NewZedToken(resp.GetExpandedAt().GetToken())}, nil
 }

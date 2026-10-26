@@ -2,192 +2,163 @@ package client
 
 import (
 	"context"
-	"io"
 	"iter"
 
 	v1 "github.com/authzed/spicedb-clients/proto-clients/spicedb-go-proto/gen/authzed/api/v1"
 	"github.com/authzed/spicedb-clients/spicedb-go/consistency"
+	"github.com/authzed/spicedb-clients/spicedb-go/rel"
 )
 
 const defaultLookupPageSize = 512
 
-// LookupResourcesOption configures an optional aspect of a LookupResources
-// call.
-type LookupResourcesOption func(*lookupResourcesOptions)
-
-type lookupResourcesOptions struct {
-	withDebug bool
+type LookupResourcesRequest struct {
+	ResourceType, Permission string
+	Subject                  rel.SubjectRef
+	Consistency              consistency.Strategy
 }
 
-// WithLookupResourcesDebug requests that the server attach additional
-// diagnostic detail when a LookupResources call fails because it exceeded
-// SpiceDB's maximum dispatch depth -- the same failure a deeply recursive or
-// too-deep schema produces on a check, surfaced here as a
-// CodeFailedPrecondition *Error whose Reason is
-// "ERROR_REASON_MAXIMUM_DEPTH_EXCEEDED" (see root DESIGN.md, "RULE: Error
-// mapping must not lose the server's detail"). With this option set, that
-// error's ReasonMetadata gains a "dispatch_traversal_trace" key describing
-// the traversal that hit the limit; without it, ReasonMetadata is empty for
-// this failure. It has no effect on a call that does not hit the limit.
-func WithLookupResourcesDebug() LookupResourcesOption {
-	return func(o *lookupResourcesOptions) { o.withDebug = true }
-}
-
-// LookupResources returns an iterator over resources of the given type that
-// the subject has the specified permission on. Each result carries the
-// permissionship (full grant vs conditional on caveat context) and, for
-// conditional results, which caveat context was missing. Cursors are
-// handled transparently — the client automatically re-fetches pages of 512
-// results.
-func (c *Client) LookupResources(ctx context.Context, cs consistency.Strategy, resourceType, permission, subjectType, subjectID string, opts ...LookupResourcesOption) iter.Seq2[LookupResource, error] {
-	var o lookupResourcesOptions
+func (c *Client) LookupResources(ctx context.Context, request LookupResourcesRequest, opts ...LookupResourcesOption) iter.Seq2[LookupResource, error] {
+	o := operationOptions{pageSize: defaultLookupPageSize}
 	for _, opt := range opts {
 		opt(&o)
 	}
+	initialConsistency, ce := strategy(request.Consistency)
+	ctxStruct, je := contextStruct(o.checkContext)
+	if request.ResourceType == "" || request.Permission == "" || request.Subject.Validate() != nil {
+		ce = invalid("resource type, permission and valid subject required")
+	}
 	return func(yield func(LookupResource, error) bool) {
-		// Abandoning this iterator -- a `break` in the consuming range
-		// loop, or any early return -- must release the stream. grpc-go's
-		// ClientConn.NewStream contract is explicit: unless the context is
-		// cancelled, Close is called, or RecvMsg drains to a non-nil error,
-		// "a goroutine and a context will be leaked", and SpiceDB keeps the
-		// server-side dispatch open for as long as the connection lives.
-		// Cancelling on the way out covers every exit path, including the
-		// early return taken when the consumer breaks. See root DESIGN.md,
-		// "RULE: Abandoning a stream must release it".
-		ctx, cancel := context.WithCancel(ctx)
+		cs := initialConsistency
+		ctx, cancel, e := c.operation(ctx, o, true)
+		if e != nil {
+			yield(LookupResource{}, e)
+			return
+		}
 		defer cancel()
-
-		var cursor *v1.Cursor
+		if ce != nil {
+			yield(LookupResource{}, ce)
+			return
+		}
+		if je != nil {
+			yield(LookupResource{}, je)
+			return
+		}
+		var cur *v1.Cursor
+		var total uint64
+		exposed := false
 		for {
-			stream, err := c.psc.LookupResources(ctx, &v1.LookupResourcesRequest{
-				Consistency:        cs.V1Consistency,
-				ResourceObjectType: resourceType,
-				Permission:         permission,
-				Subject: &v1.SubjectReference{
-					Object: &v1.ObjectReference{
-						ObjectType: subjectType,
-						ObjectId:   subjectID,
-					},
-				},
-				OptionalLimit:  uint32(defaultLookupPageSize),
-				OptionalCursor: cursor,
-				WithDebug:      o.withDebug,
-			})
-			if err != nil {
-				yield(LookupResource{}, mapGRPCError("lookup resources", err))
-				return
+			size := o.pageSize
+			if o.limit > 0 {
+				size = uint32(min(uint64(size), o.limit-total))
 			}
-
-			var count int
-			for {
-				resp, err := stream.Recv()
-				if err == io.EOF {
-					break
-				}
-				if err != nil {
-					yield(LookupResource{}, mapGRPCError("lookup resources", err))
+			req := &v1.LookupResourcesRequest{Consistency: cs, ResourceObjectType: request.ResourceType, Permission: request.Permission, Subject: subject(request.Subject), Context: ctxStruct, OptionalLimit: size, OptionalCursor: cur, WithDebug: o.debug}
+			pageCtx, pageCancel := context.WithCancel(ctx)
+			count := uint32(0)
+			prev := cur.GetToken()
+			for resp, e := range receive(pageCtx, "lookup resources", !exposed, func(ctx context.Context) (receiver[*v1.LookupResourcesResponse], error) {
+				return c.psc.LookupResources(ctx, req)
+			}) {
+				if e != nil {
+					pageCancel()
+					yield(LookupResource{}, e)
 					return
 				}
 				count++
-				cursor = resp.GetAfterResultCursor()
-				result := LookupResource{
-					ResourceID:     resp.GetResourceObjectId(),
-					Permissionship: permissionshipFromProto(resp.GetPermissionship()),
-					PartialCaveat:  partialCaveatFromProto(resp.GetPartialCaveatInfo()),
-					LookedUpAt:     resp.GetLookedUpAt().GetToken(),
+				cur = resp.GetAfterResultCursor()
+				if !exposed && resp.GetLookedUpAt().GetToken() != "" {
+					cs, _ = strategy(consistency.Snapshot(consistency.NewZedToken(resp.GetLookedUpAt().GetToken())))
 				}
-				if !yield(result, nil) {
+				exposed = true
+				if o.lookupPermissionshipFilter == LookupHasPermissionOnly && resp.GetPermissionship() != v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_HAS_PERMISSION {
+					continue
+				}
+				total++
+				r := LookupResource{ResourceID: resp.GetResourceObjectId(), Permissionship: permissionshipFromProto(resp.GetPermissionship()), PartialCaveat: partialCaveatFromProto(resp.GetPartialCaveatInfo()), LookedUpAt: consistency.NewZedToken(resp.GetLookedUpAt().GetToken())}
+				if !yield(r, nil) {
+					pageCancel()
+					return
+				}
+				if o.limit > 0 && total >= o.limit {
+					pageCancel()
 					return
 				}
 			}
-
-			if count < defaultLookupPageSize {
+			pageCancel()
+			if count < size {
+				return
+			}
+			if cur.GetToken() == "" || cur.GetToken() == prev {
+				yield(LookupResource{}, &Error{Code: CodeInternal, Message: "spicedb: lookup page did not advance cursor"})
 				return
 			}
 		}
 	}
 }
 
-// LookupSubjects returns an iterator over subjects of the given type that
-// have the specified permission on the resource. Unlike LookupResources,
-// LookupSubjects does not currently support cursor-based pagination in
-// SpiceDB and streams all results in a single server-streaming call.
-//
-// When a yielded LookupSubject.Subject is the wildcard "*", the server has
-// granted the permission to every subject of subjectType EXCEPT those
-// listed in LookupSubject.ExcludedSubjects. Callers MUST check
-// ExcludedSubjects before treating a wildcard match as a blanket grant, or
-// they risk granting access to subjects the server explicitly excluded.
-func (c *Client) LookupSubjects(ctx context.Context, cs consistency.Strategy, resourceType, resourceID, permission, subjectType string) iter.Seq2[LookupSubject, error] {
-	return func(yield func(LookupSubject, error) bool) {
-		// Abandoning this iterator -- a `break` in the consuming range
-		// loop, or any early return -- must release the stream. grpc-go's
-		// ClientConn.NewStream contract is explicit: unless the context is
-		// cancelled, Close is called, or RecvMsg drains to a non-nil error,
-		// "a goroutine and a context will be leaked", and SpiceDB keeps the
-		// server-side dispatch open for as long as the connection lives.
-		// Cancelling on the way out covers every exit path, including the
-		// early return taken when the consumer breaks. See root DESIGN.md,
-		// "RULE: Abandoning a stream must release it".
-		ctx, cancel := context.WithCancel(ctx)
-		defer cancel()
+type LookupSubjectsRequest struct {
+	Resource                rel.ObjectRef
+	Permission, SubjectType string
+	Consistency             consistency.Strategy
+}
 
-		stream, err := c.psc.LookupSubjects(ctx, &v1.LookupSubjectsRequest{
-			Consistency: cs.V1Consistency,
-			Resource: &v1.ObjectReference{
-				ObjectType: resourceType,
-				ObjectId:   resourceID,
-			},
-			Permission:        permission,
-			SubjectObjectType: subjectType,
-		})
-		if err != nil {
-			yield(LookupSubject{}, mapGRPCError("lookup subjects", err))
+// LookupSubjects returns wildcard exclusions verbatim. Callers must evaluate exclusions before granting a wildcard.
+// This wrapper consumes a single stream and does not invent subject cursors.
+func (c *Client) LookupSubjects(ctx context.Context, request LookupSubjectsRequest, opts ...LookupSubjectsOption) iter.Seq2[LookupSubject, error] {
+	o := operationOptions{}
+	for _, opt := range opts {
+		opt(&o)
+	}
+	initialConsistency, ce := strategy(request.Consistency)
+	ctxStruct, je := contextStruct(o.checkContext)
+	if request.Resource.Validate() != nil || request.Permission == "" || request.SubjectType == "" {
+		ce = invalid("valid resource, permission and subject type required")
+	}
+	return func(yield func(LookupSubject, error) bool) {
+		cs := initialConsistency
+		ctx, cancel, e := c.operation(ctx, o, true)
+		if e != nil {
+			yield(LookupSubject{}, e)
 			return
 		}
-
-		for {
-			resp, err := stream.Recv()
-			if err == io.EOF {
+		defer cancel()
+		if ce != nil {
+			yield(LookupSubject{}, ce)
+			return
+		}
+		if je != nil {
+			yield(LookupSubject{}, je)
+			return
+		}
+		req := &v1.LookupSubjectsRequest{Consistency: cs, Resource: object(request.Resource), Permission: request.Permission, SubjectObjectType: request.SubjectType, OptionalSubjectRelation: o.subjectRelation, Context: ctxStruct}
+		if o.limit > 0 && o.limit <= uint64(^uint32(0)) {
+			req.OptionalConcreteLimit = uint32(o.limit)
+		}
+		var count uint64
+		for resp, e := range receive(ctx, "lookup subjects", true, func(ctx context.Context) (receiver[*v1.LookupSubjectsResponse], error) {
+			return c.psc.LookupSubjects(ctx, req)
+		}) {
+			if e != nil {
+				yield(LookupSubject{}, e)
 				return
 			}
-			if err != nil {
-				yield(LookupSubject{}, mapGRPCError("lookup subjects", err))
-				return
+			s := resolvedSubjectFromProto(resp.GetSubject())
+			if s.SubjectID == "" {
+				s = ResolvedSubject{SubjectID: resp.GetSubjectObjectId(), Permissionship: permissionshipFromProto(resp.GetPermissionship()), PartialCaveat: partialCaveatFromProto(resp.GetPartialCaveatInfo())} //nolint:staticcheck // Support older server response fields.
 			}
-
-			subject := resolvedSubjectFromProto(resp.GetSubject())
-			if subject.SubjectID == "" {
-				// Fall back to the deprecated top-level fields for servers that
-				// don't yet populate the non-deprecated `subject` field.
-				subject = ResolvedSubject{
-					SubjectID:      resp.GetSubjectObjectId(),                           //nolint:staticcheck
-					Permissionship: permissionshipFromProto(resp.GetPermissionship()),   //nolint:staticcheck
-					PartialCaveat:  partialCaveatFromProto(resp.GetPartialCaveatInfo()), //nolint:staticcheck
-				}
-			}
-
 			var excluded []ResolvedSubject
-			if protoExcluded := resp.GetExcludedSubjects(); len(protoExcluded) > 0 {
-				excluded = make([]ResolvedSubject, 0, len(protoExcluded))
-				for _, e := range protoExcluded {
-					excluded = append(excluded, resolvedSubjectFromProto(e))
-				}
-			} else if ids := resp.GetExcludedSubjectIds(); len(ids) > 0 { //nolint:staticcheck
-				// Fall back to the deprecated excluded_subject_ids field, which
-				// carries only IDs (no permissionship/caveat info).
-				excluded = make([]ResolvedSubject, 0, len(ids))
-				for _, id := range ids {
+			for _, p := range resp.GetExcludedSubjects() {
+				excluded = append(excluded, resolvedSubjectFromProto(p))
+			}
+			if len(excluded) == 0 {
+				for _, id := range resp.GetExcludedSubjectIds() { //nolint:staticcheck // Support older server response fields.
 					excluded = append(excluded, ResolvedSubject{SubjectID: id})
 				}
 			}
-
-			result := LookupSubject{
-				Subject:          subject,
-				ExcludedSubjects: excluded,
-				LookedUpAt:       resp.GetLookedUpAt().GetToken(),
+			count++
+			if !yield(LookupSubject{Subject: s, ExcludedSubjects: excluded, LookedUpAt: consistency.NewZedToken(resp.GetLookedUpAt().GetToken())}, nil) {
+				return
 			}
-			if !yield(result, nil) {
+			if o.limit > 0 && count >= o.limit {
 				return
 			}
 		}

@@ -4,7 +4,7 @@ using Xunit;
 //
 // This is the only test in this assembly, so what it asserts is the entirety of
 // the counter feature's example coverage. It used to sleep two seconds and then
-// wrap every assertion in `if (!stillCalculating)`, which asserts nothing at all
+// wrap every assertion in `if (!result.StillCalculating)`, which asserts nothing at all
 // on a slow run -- and nothing on ANY run if the stillCalculating mapping is
 // inverted, which is the likeliest bug on that exact field. A 100%-broken
 // counter feature shipped green. It now polls to a terminal state, with a
@@ -45,26 +45,26 @@ public class RelationshipCountersTest
         // before it -- a "non-zero" assertion passes on leftovers even when this
         // example's writes never landed.
         await SpiceDBTestServer.ClearDocumentRelationshipsAsync(client);
-        await client.WriteSchemaAsync(Schema);
+        await client.WriteSchemaAsync(Schema, null, default);
 
         var txn = new Transaction();
-        txn.Touch(Relationship.FromTriple("document", "firstdoc", "viewer", "user", "alice"));
-        txn.Touch(Relationship.FromTriple("document", "seconddoc", "viewer", "user", "bob"));
+        txn.Touch(new Relationship(new ObjectRef("document", "firstdoc"), "viewer", new SubjectRef(new ObjectRef("user", "alice"))));
+        txn.Touch(new Relationship(new ObjectRef("document", "seconddoc"), "viewer", new SubjectRef(new ObjectRef("user", "bob"))));
         // An `editor` the counter's filter must NOT count. Without a
         // relationship the filter has to exclude, a counter that ignored the
         // relation filter entirely would still report the expected number.
-        txn.Touch(Relationship.FromTriple("document", "firstdoc", "editor", "user", "carol"));
-        await client.WriteAsync(txn);
+        txn.Touch(new Relationship(new ObjectRef("document", "firstdoc"), "editor", new SubjectRef(new ObjectRef("user", "carol"))));
+        await client.WriteAsync(txn, null, default);
 
         // Unregister any existing counter from a prior run (ignore errors)
         var counterName = "csharp_document_viewers";
         var filter = new Filter("document").WithRelation("viewer");
 
-        try { await client.ExperimentalUnregisterRelationshipCounterAsync(counterName); }
+        try { await client.ExperimentalUnregisterRelationshipCounterAsync(counterName, null, default); }
         catch (FailedPreconditionException) { /* not registered yet */ }
 
         // Register a counter
-        await client.ExperimentalRegisterRelationshipCounterAsync(counterName, filter);
+        await client.ExperimentalRegisterRelationshipCounterAsync(counterName, filter, null, default);
 
         var result = await SettledCounterAsync(client, counterName);
 
@@ -74,16 +74,16 @@ public class RelationshipCountersTest
         // count of three, which is what ignoring the relation filter would
         // produce.
         Assert.Equal(2u, result.RelationshipCount);
-        Assert.NotEmpty(result.Revision);
+        Assert.NotEmpty(result.Revision.Value);
 
         // Unregister the counter
-        await client.ExperimentalUnregisterRelationshipCounterAsync(counterName);
+        await client.ExperimentalUnregisterRelationshipCounterAsync(counterName, null, default);
 
         // Unregistering has to actually remove it: reading a counter that is
         // not registered is an error, so a no-op unregister would leave this
         // call succeeding.
         await Assert.ThrowsAsync<FailedPreconditionException>(
-            () => client.ExperimentalCountRelationshipsAsync(counterName));
+            () => client.ExperimentalCountRelationshipsAsync(counterName, null, default));
 
         await SpiceDBTestServer.ClearDocumentRelationshipsAsync(client);
     }
@@ -97,8 +97,8 @@ public class RelationshipCountersTest
         var deadline = DateTime.UtcNow + CounterTimeout;
         while (true)
         {
-            var (result, stillCalculating) = await client.ExperimentalCountRelationshipsAsync(counterName);
-            if (!stillCalculating)
+            var result = await client.ExperimentalCountRelationshipsAsync(counterName, null, default);
+            if (!result.StillCalculating)
             {
                 Assert.NotNull(result);
                 return result!;

@@ -11,6 +11,8 @@ import (
 	"os"
 	"time"
 
+	"github.com/authzed/spicedb-clients/spicedb-go/examples/internal/exampleutil"
+
 	"github.com/authzed/spicedb-clients/spicedb-go/client"
 	"github.com/authzed/spicedb-clients/spicedb-go/rel"
 )
@@ -40,7 +42,7 @@ func main() {
 	ctx := context.Background()
 
 	// Setup: write schema and data
-	_, err = c.WriteSchema(ctx, `definition user {}
+	_, err = c.WriteSchema(ctx, client.WriteSchemaRequest{Schema: `definition user {}
 
 definition document {
 	relation viewer: user
@@ -49,7 +51,7 @@ definition document {
 	permission view = viewer + editor + owner
 	permission edit = editor + owner
 	permission delete = owner
-}`)
+}`})
 	if err != nil {
 		log.Fatalf("write schema failed: %v", err)
 	}
@@ -58,34 +60,34 @@ definition document {
 	// this example controls rather than "whatever the examples before it left
 	// behind". A "non-zero" assertion passes against leftovers even when this
 	// example's own writes never landed.
-	if _, err := c.DeleteRelationships(ctx, rel.NewFilter("document")); err != nil {
+	if _, err := c.DeleteAllRelationshipsNonAtomic(ctx, client.DeleteAllRequest{Filter: exampleutil.Must(rel.NewFilter("document"))}); err != nil {
 		log.Fatalf("clearing document relationships failed: %v", err)
 	}
 
 	var txn rel.Txn
-	if err := txn.Touch(rel.MustFromTriple("document", "firstdoc", "viewer", "user", "alice", "")); err != nil {
+	if err := txn.Touch(exampleutil.Must(rel.NewRelationship(exampleutil.Object("document", "firstdoc"), "viewer", exampleutil.Subject(exampleutil.Object("user", "alice"), "")))); err != nil {
 		log.Fatalf("failed to add relationship to transaction: %v", err)
 	}
-	if err := txn.Touch(rel.MustFromTriple("document", "seconddoc", "viewer", "user", "bob", "")); err != nil {
+	if err := txn.Touch(exampleutil.Must(rel.NewRelationship(exampleutil.Object("document", "seconddoc"), "viewer", exampleutil.Subject(exampleutil.Object("user", "bob"), "")))); err != nil {
 		log.Fatalf("failed to add relationship to transaction: %v", err)
 	}
 	// An `editor` relationship the counter's filter must NOT count. Without a
 	// relationship the filter has to exclude, a counter that ignored the
 	// relation filter entirely would still report the expected number.
-	if err := txn.Touch(rel.MustFromTriple("document", "firstdoc", "editor", "user", "carol", "")); err != nil {
+	if err := txn.Touch(exampleutil.Must(rel.NewRelationship(exampleutil.Object("document", "firstdoc"), "editor", exampleutil.Subject(exampleutil.Object("user", "carol"), "")))); err != nil {
 		log.Fatalf("failed to add relationship to transaction: %v", err)
 	}
-	_, err = c.Write(ctx, txn)
+	_, err = c.Write(ctx, client.WriteRequest{Transaction: txn})
 	if err != nil {
 		log.Fatalf("write relationships failed: %v", err)
 	}
 
 	// Unregister any existing counter from a prior run (ignore errors)
-	filter := rel.NewFilter("document").WithRelation("viewer")
-	_ = c.UnregisterRelationshipCounter(ctx, "document_viewers")
+	filter := exampleutil.Must(rel.NewFilter("document")).WithRelation("viewer")
+	_, _ = c.UnregisterRelationshipCounter(ctx, client.UnregisterRelationshipCounterRequest{Name: "document_viewers"})
 
 	// Register a counter for all document viewer relationships
-	err = c.RegisterRelationshipCounter(ctx, "document_viewers", filter)
+	_, err = c.RegisterRelationshipCounter(ctx, client.RegisterRelationshipCounterRequest{Name: "document_viewers", Filter: filter})
 	if err != nil {
 		log.Fatalf("register counter failed: %v", err)
 	}
@@ -97,17 +99,15 @@ definition document {
 	// stillCalculating mapping is inverted, which is the likeliest bug on that
 	// exact field. Here the timeout fails the example rather than skipping the
 	// assertions.
-	var result *client.CountResult
+	var result client.CountRelationshipsResult
 	deadline := time.Now().Add(counterTimeout)
 	for {
-		r, stillCalculating, err := c.CountRelationships(ctx, "document_viewers")
+		r, err := c.CountRelationships(ctx, client.CountRelationshipsRequest{Name: "document_viewers"})
 		if err != nil {
 			log.Fatalf("count relationships failed: %v", err)
 		}
-		if !stillCalculating {
-			if r == nil {
-				log.Fatalf("counter reported settled but returned no result")
-			}
+		if !r.StillCalculating {
+
 			result = r
 			break
 		}
@@ -129,12 +129,12 @@ definition document {
 		log.Fatalf("expected the counter to report exactly 2 document viewers, got %d",
 			result.RelationshipCount)
 	}
-	if result.Revision == "" {
+	if result.Revision.String() == "" {
 		log.Fatalf("expected a non-empty revision on the settled counter")
 	}
 
 	// Unregister the counter when done
-	err = c.UnregisterRelationshipCounter(ctx, "document_viewers")
+	_, err = c.UnregisterRelationshipCounter(ctx, client.UnregisterRelationshipCounterRequest{Name: "document_viewers"})
 	if err != nil {
 		log.Fatalf("unregister counter failed: %v", err)
 	}
@@ -143,7 +143,7 @@ definition document {
 	// Unregistering has to actually remove it: reading a counter that is not
 	// registered is an error, so a no-op unregister would leave this call
 	// succeeding.
-	if _, _, err := c.CountRelationships(ctx, "document_viewers"); err == nil {
+	if _, err := c.CountRelationships(ctx, client.CountRelationshipsRequest{Name: "document_viewers"}); err == nil {
 		log.Fatalf("expected reading the unregistered counter to fail, but it succeeded")
 	} else if !errors.Is(err, client.ErrFailedPrecondition) {
 		log.Fatalf("expected client.ErrFailedPrecondition after unregistering, got: %v", err)
@@ -152,7 +152,7 @@ definition document {
 	// Clean up so later examples that write a narrower schema aren't blocked
 	// by leftover relationships (examples run in sequence against one shared
 	// SpiceDB instance).
-	if _, err := c.DeleteRelationships(ctx, rel.NewFilter("document")); err != nil {
+	if _, err := c.DeleteAllRelationshipsNonAtomic(ctx, client.DeleteAllRequest{Filter: exampleutil.Must(rel.NewFilter("document"))}); err != nil {
 		log.Fatalf("cleanup failed: %v", err)
 	}
 }

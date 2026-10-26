@@ -43,7 +43,7 @@ class WatchResumabilityTest {
       try (Stream<SpiceDBClient.WatchEvent> stream = client.updates(List.of("document"), null)) {
         List<SpiceDBClient.WatchEvent> events = stream.toList();
         assertEquals(1, events.size());
-        assertEquals("resume-me", events.get(0).changesThrough());
+        assertEquals("resume-me", events.get(0).changesThrough().value());
       }
     }
   }
@@ -86,7 +86,12 @@ class WatchResumabilityTest {
     try (TestServers servers = TestServers.start(service)) {
       SpiceDBClient client = servers.client();
       try (Stream<SpiceDBClient.WatchEvent> stream =
-          client.updates(List.of("document"), null, true)) {
+          client.updates(
+              List.of("document"),
+              null,
+              WatchOptions.builder()
+                  .content(com.authzed.spicedb.WatchContent.RELATIONSHIPS_AND_CHECKPOINTS)
+                  .build())) {
         stream.toList();
       }
     }
@@ -118,7 +123,10 @@ class WatchResumabilityTest {
                             .setOperation(RelationshipUpdate.Operation.OPERATION_TOUCH)
                             .setRelationship(
                                 SpiceDBClient.toProtoRelationship(
-                                    Relationship.of("document", "doc1", "viewer", "user", "alice")))
+                                    Relationship.of(
+                                        new ObjectRef("document", "doc1"),
+                                        "viewer",
+                                        SubjectRef.direct(new ObjectRef("user", "alice")))))
                             .build())
                     .build());
             responseObserver.onCompleted();
@@ -128,20 +136,25 @@ class WatchResumabilityTest {
     try (TestServers servers = TestServers.start(service)) {
       SpiceDBClient client = servers.client();
       try (Stream<SpiceDBClient.WatchEvent> stream =
-          client.updates(List.of("document"), null, true)) {
+          client.updates(
+              List.of("document"),
+              null,
+              WatchOptions.builder()
+                  .content(com.authzed.spicedb.WatchContent.RELATIONSHIPS_AND_CHECKPOINTS)
+                  .build())) {
         Iterator<SpiceDBClient.WatchEvent> iterator = stream.iterator();
 
         assertTrue(iterator.hasNext());
         SpiceDBClient.WatchEvent checkpoint = iterator.next();
         assertTrue(checkpoint.isCheckpoint());
         assertTrue(checkpoint.updates().isEmpty());
-        assertEquals("checkpoint-rev", checkpoint.changesThrough());
+        assertEquals("checkpoint-rev", checkpoint.changesThrough().value());
 
         assertTrue(iterator.hasNext());
         SpiceDBClient.WatchEvent update = iterator.next();
         assertFalse(update.isCheckpoint());
         assertEquals(1, update.updates().size());
-        assertEquals("update-rev", update.changesThrough());
+        assertEquals("update-rev", update.changesThrough().value());
 
         assertFalse(iterator.hasNext());
       }

@@ -1,78 +1,166 @@
-"""Idiomatic types for SpiceDB relationships, filters, and transactions."""
+"""Native immutable request and result values. Transaction is a mutable builder."""
 
 from __future__ import annotations
+from spicedb.token import ZedToken, _token_string
 
-from dataclasses import dataclass, field
-from datetime import datetime
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field, fields
+from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import Any
-
+from math import isfinite
+from types import MappingProxyType
+from typing import TypeAlias
 from authzed.api.v1 import core_pb2, permission_service_pb2, schema_service_pb2
 from google.protobuf import struct_pb2, timestamp_pb2
 from google.protobuf.message import Message
-
 from spicedb.errors import InvalidArgumentError
 
+JSONValue: TypeAlias = (
+    None | bool | str | int | float | Sequence["JSONValue"] | Mapping[str, "JSONValue"]
+)
+JSONObject: TypeAlias = Mapping[str, JSONValue]
 
-def context_to_struct(context: dict[str, Any], what: str) -> struct_pb2.Struct:
-    """Convert caller-supplied context to a protobuf ``Struct``, key by key.
 
-    ``Struct.update`` converts the whole mapping in one call and, on an
-    unrepresentable value, raises a bare ``ValueError("Unexpected type")`` --
-    not a client error, and with no indication of which key was at fault. A
-    caller with a large context map would have to bisect it.
+def _snapshot(value):
+    if isinstance(value, Mapping):
+        return MappingProxyType({k: _snapshot(v) for k, v in value.items()})
+    if isinstance(value, Sequence) and (not isinstance(value, (str, bytes, bytearray))):
+        return tuple((_snapshot(v) for v in value))
+    return value
 
-    Root DESIGN.md, "RULE: A conversion that cannot preserve meaning must
-    fail", clause 1: caller-supplied data the client cannot represent must
-    raise a typed error *naming what could not be converted*. Converting one
-    key at a time is what makes naming it possible.
-    """
-    s = struct_pb2.Struct()
-    for key, value in context.items():
+
+def _freeze(self) -> None:
+    for item in fields(self):
+        object.__setattr__(self, item.name, _snapshot(getattr(self, item.name)))
+
+
+def _json(value, path, active=None):
+    if active is None:
+        active = set()
+    if value is None or isinstance(value, (str, bool)):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
         try:
-            s[key] = value
-        except (ValueError, TypeError) as exc:
-            raise InvalidArgumentError(
-                f"{what} key {key!r} holds a value that cannot be converted to "
-                f"protobuf: {value!r} (of type {type(value).__name__}). Caveat "
-                "context must contain only JSON-representable values."
-            ) from exc
-    return s
+            valid = isfinite(value) and (
+                not isinstance(value, int) or int(float(value)) == value
+            )
+        except (OverflowError, ValueError):
+            valid = False
+        if valid:
+            return value
+    if isinstance(value, Mapping) or (
+        isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray))
+    ):
+        identity = id(value)
+        if identity in active:
+            raise InvalidArgumentError(f"{path}: cyclic JSON collection")
+        active.add(identity)
+        try:
+            if isinstance(value, Mapping):
+                result = {}
+                for key, item in value.items():
+                    if not isinstance(key, str):
+                        raise InvalidArgumentError(
+                            f"{path}: JSON key {key!r} must be a string"
+                        )
+                    result[key] = _json(item, f"{path}.{key}", active)
+                return result
+            return [
+                _json(item, f"{path}[{index}]", active)
+                for index, item in enumerate(value)
+            ]
+        finally:
+            active.remove(identity)
+    raise InvalidArgumentError(
+        f"{path}: cannot represent {type(value).__name__} as JSON"
+    )
+
+
+def context_to_struct(context: JSONObject, what: str) -> struct_pb2.Struct:
+    converted = _json(context, what)
+    if not isinstance(converted, dict):
+        raise InvalidArgumentError(f"{what}: must be a JSON object")
+    result = struct_pb2.Struct()
+    result.update(converted)
+    return result
+
+
+def context_from_struct(context: struct_pb2.Struct) -> JSONObject:
+
+    def convert(v):
+        kind = v.WhichOneof("kind")
+        if kind == "null_value":
+            return None
+        if kind == "struct_value":
+            return {k: convert(x) for k, x in v.struct_value.fields.items()}
+        if kind == "list_value":
+            return [convert(x) for x in v.list_value.values]
+        return getattr(v, kind) if kind else None
+
+    return _snapshot({k: convert(v) for k, v in context.fields.items()})
+
+
+@dataclass(frozen=True)
+class ObjectRef:
+    object_type: str
+    object_id: str
+
+    def _to_proto(self):
+        return core_pb2.ObjectReference(
+            object_type=self.object_type, object_id=self.object_id
+        )
+
+    def __post_init__(self) -> None:
+        _freeze(self)
+
+
+@dataclass(frozen=True)
+class SubjectRef:
+    object: ObjectRef
+    relation: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.relation == "":
+            raise InvalidArgumentError("subject.relation: must be nonempty or None")
+        _freeze(self)
+
+    def _to_proto(self):
+        return core_pb2.SubjectReference(
+            object=self.object._to_proto(), optional_relation=self.relation or ""
+        )
+
+
+@dataclass(frozen=True)
+class Caveat:
+    name: str
+    context: JSONObject | None = None
+
+    def __post_init__(self) -> None:
+        if self.context is not None:
+            context_to_struct(self.context, "caveat.context")
+        _freeze(self)
+
+
+@dataclass(frozen=True)
+class PermissionCheck:
+    resource: ObjectRef
+    permission: str
+    subject: SubjectRef
+    context: JSONObject | None = None
+
+    def __post_init__(self) -> None:
+        if self.context is not None:
+            context_to_struct(self.context, "check.context")
+        _freeze(self)
 
 
 @dataclass(frozen=True)
 class Relationship:
-    """An immutable representation of a SpiceDB relationship.
-
-    ``caveat_name``/``caveat_context`` describe a caveat carried BY the
-    relationship: they are written to the server (``_to_proto()`` embeds
-    them in ``core_pb2.Relationship.optional_caveat``) and evaluated
-    whenever anything checks against this stored relationship in the
-    future.
-
-    ``check_context`` is a different, check-time-only concept and must not
-    be conflated with ``caveat_context``. It has no wire representation on
-    ``core_pb2.Relationship`` at all -- ``_to_proto()``/``_from_proto()``
-    never read or set it, so it is never written to the server and never
-    round-trips through a write. It only matters when this ``Relationship``
-    is passed as one of the items to
-    ``SpiceDBClient.check_permission()``/``check_permissions()``: there, it
-    supplies (or overrides) caveat context for THIS ONE check, merged
-    key-by-key with those methods' call-level ``context=`` keyword (this
-    item's keys win on conflict; call-level keys the item doesn't mention
-    are retained -- see ``spicedb._requests.check_bulk_request``).
-    """
-
-    resource_type: str
-    resource_id: str
-    resource_relation: str
-    subject_type: str
-    subject_id: str
-    subject_relation: str = ""
-    caveat_name: str | None = None
-    caveat_context: dict[str, Any] | None = None
+    resource: ObjectRef
+    relation: str
+    subject: SubjectRef
+    caveat: Caveat | None = None
     expiration: datetime | None = None
-    check_context: dict[str, Any] | None = None
 
     @classmethod
     def from_triple(
@@ -81,37 +169,25 @@ class Relationship:
         relation: str,
         subject: str,
         *,
-        caveat_name: str | None = None,
-        caveat_context: dict[str, Any] | None = None,
+        caveat: Caveat | None = None,
         expiration: datetime | None = None,
-        check_context: dict[str, Any] | None = None,
     ) -> Relationship:
-        """Create a Relationship from 'type:id', 'relation', 'type:id' strings.
-
-        Optionally, the subject string can include a relation as 'type:id#relation'.
-
-        ``check_context`` is check-time-only per-item caveat context -- see
-        the class docstring; it is distinct from ``caveat_context``, which is
-        written into the relationship at write time.
-        """
-        res_type, res_id = resource.split(":", 1)
-        if "#" in subject:
-            subj_ref, subj_rel = subject.rsplit("#", 1)
-        else:
-            subj_ref = subject
-            subj_rel = ""
-        subj_type, subj_id = subj_ref.split(":", 1)
+        try:
+            rt, ri = resource.split(":", 1)
+            subj, sep, sr = subject.partition("#")
+            st, si = subj.split(":", 1)
+            if not all((rt, ri, relation, st, si)) or (sep and (not sr)):
+                raise ValueError()
+        except ValueError as e:
+            raise InvalidArgumentError(
+                "relationship: expected type:id, relation, type:id[#relation]"
+            ) from e
         return cls(
-            resource_type=res_type,
-            resource_id=res_id,
-            resource_relation=relation,
-            subject_type=subj_type,
-            subject_id=subj_id,
-            subject_relation=subj_rel,
-            caveat_name=caveat_name,
-            caveat_context=caveat_context,
-            expiration=expiration,
-            check_context=check_context,
+            ObjectRef(rt, ri),
+            relation,
+            SubjectRef(ObjectRef(st, si), sr if sep else None),
+            caveat,
+            expiration,
         )
 
     @classmethod
@@ -120,85 +196,187 @@ class Relationship:
         resource_and_relation: str,
         subject: str,
         *,
-        caveat_name: str | None = None,
-        caveat_context: dict[str, Any] | None = None,
+        caveat: Caveat | None = None,
         expiration: datetime | None = None,
-        check_context: dict[str, Any] | None = None,
     ) -> Relationship:
-        """Create from 'type:id#relation' and 'type:id' (or 'type:id#relation').
-
-        ``check_context`` is check-time-only per-item caveat context -- see
-        the class docstring; it is distinct from ``caveat_context``, which is
-        written into the relationship at write time.
-        """
-        res_ref, relation = resource_and_relation.rsplit("#", 1)
+        try:
+            resource, relation = resource_and_relation.rsplit("#", 1)
+        except ValueError as e:
+            raise InvalidArgumentError("relationship: expected type:id#relation") from e
         return cls.from_triple(
-            res_ref,
-            relation,
-            subject,
-            caveat_name=caveat_name,
-            caveat_context=caveat_context,
-            expiration=expiration,
-            check_context=check_context,
+            resource, relation, subject, caveat=caveat, expiration=expiration
         )
 
-    def _to_proto(self) -> core_pb2.Relationship:
-        """Convert to proto Relationship."""
-        resource = core_pb2.ObjectReference(
-            object_type=self.resource_type,
-            object_id=self.resource_id,
+    def to_filter(self) -> Filter:
+        relation = (
+            SubjectRelationFilter.direct()
+            if self.subject.relation is None
+            else SubjectRelationFilter.named(self.subject.relation)
         )
-        subject = core_pb2.SubjectReference(
-            object=core_pb2.ObjectReference(
-                object_type=self.subject_type,
-                object_id=self.subject_id,
+        return Filter(
+            self.resource.object_type,
+            resource_id=self.resource.object_id,
+            relation=self.relation,
+            subject=SubjectFilter(
+                self.subject.object.object_type,
+                subject_id=self.subject.object.object_id,
+                relation=relation,
             ),
-            optional_relation=self.subject_relation,
         )
+
+    def _to_proto(self):
         caveat = None
-        if self.caveat_name is not None:
-            ctx = None
-            if self.caveat_context is not None:
-                ctx = context_to_struct(self.caveat_context, "caveat context")
+        if self.caveat:
             caveat = core_pb2.ContextualizedCaveat(
-                caveat_name=self.caveat_name,
-                context=ctx,
+                caveat_name=self.caveat.name,
+                context=None
+                if self.caveat.context is None
+                else context_to_struct(self.caveat.context, "caveat.context"),
             )
-        expires_at = None
+        ts = None
         if self.expiration is not None:
-            expires_at = timestamp_pb2.Timestamp()
-            expires_at.FromDatetime(self.expiration)
+            ts = timestamp_pb2.Timestamp()
+            ts.FromDatetime(self.expiration)
         return core_pb2.Relationship(
-            resource=resource,
-            relation=self.resource_relation,
-            subject=subject,
+            resource=self.resource._to_proto(),
+            relation=self.relation,
+            subject=self.subject._to_proto(),
             optional_caveat=caveat,
-            optional_expires_at=expires_at,
+            optional_expires_at=ts,
         )
 
     @classmethod
-    def _from_proto(cls, proto: core_pb2.Relationship) -> Relationship:
-        """Create from a proto Relationship."""
-        caveat_name = None
-        caveat_context = None
-        if proto.HasField("optional_caveat") and proto.optional_caveat.caveat_name:
-            caveat_name = proto.optional_caveat.caveat_name
-            if proto.optional_caveat.HasField("context"):
-                caveat_context = dict(proto.optional_caveat.context)
-        expiration = None
-        if proto.HasField("optional_expires_at"):
-            expiration = proto.optional_expires_at.ToDatetime()
-        return cls(
-            resource_type=proto.resource.object_type,
-            resource_id=proto.resource.object_id,
-            resource_relation=proto.relation,
-            subject_type=proto.subject.object.object_type,
-            subject_id=proto.subject.object.object_id,
-            subject_relation=proto.subject.optional_relation,
-            caveat_name=caveat_name,
-            caveat_context=caveat_context,
-            expiration=expiration,
+    def _from_proto(cls, p):
+        caveat = (
+            Caveat(
+                p.optional_caveat.caveat_name,
+                context_from_struct(p.optional_caveat.context)
+                if p.optional_caveat.HasField("context")
+                else None,
+            )
+            if p.HasField("optional_caveat")
+            else None
         )
+        return cls(
+            ObjectRef(p.resource.object_type, p.resource.object_id),
+            p.relation,
+            SubjectRef(
+                ObjectRef(p.subject.object.object_type, p.subject.object.object_id),
+                p.subject.optional_relation or None,
+            ),
+            caveat,
+            p.optional_expires_at.ToDatetime(tzinfo=timezone.utc)
+            if p.HasField("optional_expires_at")
+            else None,
+        )
+
+    def __post_init__(self) -> None:
+        _freeze(self)
+
+
+class SubjectRelationMode(Enum):
+    ANY = "any"
+    DIRECT = "direct"
+    NAMED = "named"
+
+
+@dataclass(frozen=True)
+class SubjectRelationFilter:
+    kind: SubjectRelationMode = SubjectRelationMode.ANY
+    name: str | None = None
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.kind, SubjectRelationMode)
+            or (self.kind == SubjectRelationMode.NAMED and (not self.name))
+            or (self.kind != SubjectRelationMode.NAMED and self.name is not None)
+        ):
+            raise InvalidArgumentError("subject.relation: invalid relation filter")
+        _freeze(self)
+
+    @classmethod
+    def any(cls) -> SubjectRelationFilter:
+        return cls()
+
+    @classmethod
+    def direct(cls) -> SubjectRelationFilter:
+        return cls(SubjectRelationMode.DIRECT)
+
+    @classmethod
+    def named(cls, name: str) -> SubjectRelationFilter:
+        return cls(SubjectRelationMode.NAMED, name)
+
+
+@dataclass(frozen=True)
+class SubjectFilter:
+    subject_type: str
+    subject_id: str | None = field(default=None, kw_only=True)
+    relation: SubjectRelationFilter = field(
+        default_factory=SubjectRelationFilter.any, kw_only=True
+    )
+
+    def __post_init__(self) -> None:
+        if not self.subject_type:
+            raise InvalidArgumentError("subject.subject_type: required")
+        _freeze(self)
+
+    def _to_proto(self):
+        rel = (
+            None
+            if self.relation.kind == SubjectRelationMode.ANY
+            else permission_service_pb2.SubjectFilter.RelationFilter(
+                relation=self.relation.name or ""
+            )
+        )
+        return permission_service_pb2.SubjectFilter(
+            subject_type=self.subject_type,
+            optional_subject_id=self.subject_id or "",
+            optional_relation=rel,
+        )
+
+
+@dataclass(frozen=True)
+class Filter:
+    resource_type: str
+    resource_id: str | None = field(default=None, kw_only=True)
+    resource_id_prefix: str | None = field(default=None, kw_only=True)
+    relation: str | None = field(default=None, kw_only=True)
+    subject: SubjectFilter | None = field(default=None, kw_only=True)
+
+    def __post_init__(self) -> None:
+        if self.resource_id is not None and self.resource_id_prefix is not None:
+            raise InvalidArgumentError(
+                "filter.resource_id and resource_id_prefix are mutually exclusive"
+            )
+        _freeze(self)
+
+    def _to_proto(self):
+        return permission_service_pb2.RelationshipFilter(
+            resource_type=self.resource_type,
+            optional_resource_id=self.resource_id or "",
+            optional_resource_id_prefix=self.resource_id_prefix or "",
+            optional_relation=self.relation or "",
+            optional_subject_filter=self.subject._to_proto() if self.subject else None,
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class SchemaFilter:
+    definition_name: str | None = None
+    caveat_name: str | None = None
+    relation_name: str | None = None
+    permission_name: str | None = None
+
+    def _to_proto(self):
+        return schema_service_pb2.ReflectionSchemaFilter(
+            optional_definition_name_filter=self.definition_name or "",
+            optional_caveat_name_filter=self.caveat_name or "",
+            optional_relation_name_filter=self.relation_name or "",
+            optional_permission_name_filter=self.permission_name or "",
+        )
+
+    def __post_init__(self) -> None:
+        _freeze(self)
 
 
 class UpdateOperation(Enum):
@@ -233,6 +411,9 @@ class Update:
             operation=op, relationship=Relationship._from_proto(u.relationship)
         )
 
+    def __post_init__(self) -> None:
+        _freeze(self)
+
 
 @dataclass(frozen=True)
 class WatchEvent:
@@ -247,67 +428,18 @@ class WatchEvent:
     A checkpoint event (`is_checkpoint=True`) carries no `updates` -- it
     exists only to advertise a fresh resume point and, behind a proxy that
     aborts idle connections, to keep the stream alive. Request checkpoints
-    with `watch(include_checkpoints=True)`.
+    with `watch(content=(WatchContent.RELATIONSHIPS, WatchContent.CHECKPOINTS))`.
     """
 
-    updates: list[Update]
-    changes_through: str
+    updates: Sequence[Update]
+    changes_through: ZedToken
     is_checkpoint: bool = False
+    transaction_metadata: JSONObject | None = None
+    schema_updated: bool = False
+    full_revision_metadata: Sequence[JSONObject] = ()
 
-
-@dataclass(frozen=True)
-class Filter:
-    """A filter for matching relationships."""
-
-    resource_type: str
-    resource_id: str = ""
-    resource_id_prefix: str = ""
-    relation: str = ""
-    subject_type: str = ""
-    subject_id: str = ""
-    subject_relation: str = ""
-
-    def _to_proto(self) -> permission_service_pb2.RelationshipFilter:
-        """Convert to proto RelationshipFilter.
-
-        Raises ``InvalidArgumentError`` if ``subject_id`` or
-        ``subject_relation`` is set without ``subject_type``. The wire's
-        ``SubjectFilter.subject_type`` is a required field, so there is no
-        way to express a subject ID/relation constraint without it, which
-        makes silently dropping the constraint the one unsafe resolution: a
-        caller who wrote ``Filter("document", subject_id="alice")``,
-        expecting to narrow to alice's relationships, would instead match
-        every subject on every document -- e.g. ``delete_relationships``
-        would delete every relationship on every document, not just
-        alice's. See root DESIGN.md, "RULE: A conversion that cannot
-        preserve meaning must fail", clause 1.
-        """
-        subject_filter = None
-        if self.subject_type:
-            rel_filter = None
-            if self.subject_relation:
-                rel_filter = permission_service_pb2.SubjectFilter.RelationFilter(
-                    relation=self.subject_relation,
-                )
-            subject_filter = permission_service_pb2.SubjectFilter(
-                subject_type=self.subject_type,
-                optional_subject_id=self.subject_id,
-                optional_relation=rel_filter,
-            )
-        elif self.subject_id or self.subject_relation:
-            missing = "subject_relation" if not self.subject_id else "subject_id"
-            raise InvalidArgumentError(
-                f"Filter has {missing} set without subject_type. The wire format "
-                "requires subject_type whenever a subject constraint is present -- "
-                f"set subject_type before setting {missing}."
-            )
-        return permission_service_pb2.RelationshipFilter(
-            resource_type=self.resource_type,
-            optional_resource_id=self.resource_id,
-            optional_resource_id_prefix=self.resource_id_prefix,
-            optional_relation=self.relation,
-            optional_subject_filter=subject_filter,
-        )
+    def __post_init__(self) -> None:
+        _freeze(self)
 
 
 @dataclass
@@ -382,35 +514,24 @@ class TreeOperation(Enum):
 
 
 @dataclass(frozen=True)
-class ObjectRef:
-    """Identifies a resource or subject object."""
-
-    object_type: str
-    object_id: str
-
-
-@dataclass(frozen=True)
-class SubjectRef:
-    """A subject with access at a leaf of a `PermissionTree`."""
-
-    subject_type: str
-    subject_id: str
-    optional_relation: str = ""
-
-
-@dataclass(frozen=True)
 class IntermediateNode:
     """Combines child subtrees with a set operation."""
 
     operation: TreeOperation
-    children: list["PermissionTree"]
+    children: Sequence["PermissionTree"]
+
+    def __post_init__(self) -> None:
+        _freeze(self)
 
 
 @dataclass(frozen=True)
 class LeafNode:
     """Holds the concrete subjects at a leaf of a `PermissionTree`."""
 
-    subjects: list[SubjectRef]
+    subjects: Sequence[SubjectRef]
+
+    def __post_init__(self) -> None:
+        _freeze(self)
 
 
 @dataclass(frozen=True)
@@ -424,6 +545,9 @@ class PermissionTree:
     expanded_relation: str
     intermediate: IntermediateNode | None = None
     leaf: LeafNode | None = None
+
+    def __post_init__(self) -> None:
+        _freeze(self)
 
 
 _TREE_OPERATION_MAP = {
@@ -450,20 +574,17 @@ def _permission_tree_from_proto(
                 _permission_tree_from_proto(child) for child in t.intermediate.children
             ],
         )
-
     leaf = None
     if t.HasField("leaf"):
         leaf = LeafNode(
             subjects=[
                 SubjectRef(
-                    subject_type=s.object.object_type,
-                    subject_id=s.object.object_id,
-                    optional_relation=s.optional_relation,
+                    object=ObjectRef(s.object.object_type, s.object.object_id),
+                    relation=s.optional_relation or None,
                 )
                 for s in t.leaf.subjects
             ]
         )
-
     return PermissionTree(
         expanded_object=ObjectRef(
             object_type=t.expanded_object.object_type,
@@ -475,12 +596,26 @@ def _permission_tree_from_proto(
     )
 
 
-# ── Schema reflection / diff ──────────────────────────────────────────
-#
-# Mirrors spicedb-go's native schema types and mappers
-# (spicedb-go/client/schema.go): ReflectSchemaResult, SchemaDefinition,
-# SchemaRelation, SchemaPermission, SchemaCaveat, SchemaCaveatParameter,
-# SchemaDiff, and RelationReference.
+@dataclass(frozen=True)
+class SchemaTypeReference:
+    subject_definition_name: str
+    caveat_name: str | None = None
+    is_terminal_subject: bool = False
+    relation_name: str | None = None
+    is_public_wildcard: bool = False
+
+    def __post_init__(self) -> None:
+        _freeze(self)
+
+    @classmethod
+    def _from_proto(cls, value):
+        return cls(
+            value.subject_definition_name,
+            value.optional_caveat_name or None,
+            value.is_terminal_subject,
+            value.optional_relation_name or None,
+            value.is_public_wildcard,
+        )
 
 
 @dataclass(frozen=True)
@@ -490,6 +625,7 @@ class SchemaRelation:
     name: str
     comment: str
     parent_definition_name: str
+    subject_types: Sequence[SchemaTypeReference] = ()
 
     @classmethod
     def _from_proto(
@@ -500,7 +636,16 @@ class SchemaRelation:
             name=proto.name,
             comment=proto.comment,
             parent_definition_name=proto.parent_definition_name,
+            subject_types=tuple(
+                (
+                    SchemaTypeReference._from_proto(value)
+                    for value in proto.subject_types
+                )
+            ),
         )
+
+    def __post_init__(self) -> None:
+        _freeze(self)
 
 
 @dataclass(frozen=True)
@@ -522,6 +667,9 @@ class SchemaPermission:
             parent_definition_name=proto.parent_definition_name,
         )
 
+    def __post_init__(self) -> None:
+        _freeze(self)
+
 
 @dataclass(frozen=True)
 class SchemaCaveatParameter:
@@ -542,6 +690,9 @@ class SchemaCaveatParameter:
             parent_caveat_name=proto.parent_caveat_name,
         )
 
+    def __post_init__(self) -> None:
+        _freeze(self)
+
 
 @dataclass(frozen=True)
 class SchemaDefinition:
@@ -550,8 +701,8 @@ class SchemaDefinition:
 
     name: str
     comment: str
-    relations: list[SchemaRelation]
-    permissions: list[SchemaPermission]
+    relations: Sequence[SchemaRelation]
+    permissions: Sequence[SchemaPermission]
 
     @classmethod
     def _from_proto(
@@ -565,6 +716,9 @@ class SchemaDefinition:
             permissions=[SchemaPermission._from_proto(p) for p in proto.permissions],
         )
 
+    def __post_init__(self) -> None:
+        _freeze(self)
+
 
 @dataclass(frozen=True)
 class SchemaCaveat:
@@ -573,7 +727,7 @@ class SchemaCaveat:
     name: str
     comment: str
     expression: str
-    parameters: list[SchemaCaveatParameter]
+    parameters: Sequence[SchemaCaveatParameter]
 
     @classmethod
     def _from_proto(cls, proto: schema_service_pb2.ReflectionCaveat) -> "SchemaCaveat":
@@ -585,14 +739,17 @@ class SchemaCaveat:
             parameters=[SchemaCaveatParameter._from_proto(p) for p in proto.parameters],
         )
 
+    def __post_init__(self) -> None:
+        _freeze(self)
+
 
 @dataclass(frozen=True)
 class ReflectSchemaResult:
     """The result of a schema reflection call."""
 
-    definitions: list[SchemaDefinition]
-    caveats: list[SchemaCaveat]
-    revision: str
+    definitions: Sequence[SchemaDefinition]
+    caveats: Sequence[SchemaCaveat]
+    revision: ZedToken
 
     @classmethod
     def _from_proto(
@@ -602,8 +759,11 @@ class ReflectSchemaResult:
         return cls(
             definitions=[SchemaDefinition._from_proto(d) for d in proto.definitions],
             caveats=[SchemaCaveat._from_proto(c) for c in proto.caveats],
-            revision=proto.read_at.token,
+            revision=ZedToken(proto.read_at.token),
         )
+
+    def __post_init__(self) -> None:
+        _freeze(self)
 
 
 @dataclass(frozen=True)
@@ -629,6 +789,9 @@ class RelationReference:
             is_permission=proto.is_permission,
         )
 
+    def __post_init__(self) -> None:
+        _freeze(self)
+
 
 @dataclass(frozen=True)
 class SchemaDiff:
@@ -649,11 +812,25 @@ class SchemaDiff:
     relation_name: str = ""
     permission_name: str = ""
     caveat_name: str = ""
+    details: JSONObject = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        _freeze(self)
 
 
 def _schema_diff_from_proto(
     proto: schema_service_pb2.ReflectionSchemaDiff,
 ) -> SchemaDiff:
+    from dataclasses import replace
+    from google.protobuf.json_format import MessageToDict
+
+    summary = _schema_diff_summary(proto)
+    return replace(
+        summary, details=MessageToDict(proto, preserving_proto_field_name=True)
+    )
+
+
+def _schema_diff_summary(proto: schema_service_pb2.ReflectionSchemaDiff) -> SchemaDiff:
     """Map a single proto ReflectionSchemaDiff to its native representation.
     Mirrors spicedb-go's `schemaDiffFromProto` (client/schema.go).
     """
@@ -746,20 +923,6 @@ def _schema_diff_from_proto(
     return SchemaDiff(kind="unknown")
 
 
-# ── Lookup results ─────────────────────────────────────────────────────
-#
-# Mirrors spicedb-go's native lookup types and mappers
-# (spicedb-go/client/lookup_types.go): Permissionship, PartialCaveatInfo,
-# LookupResource, ResolvedSubject, LookupSubject.
-#
-# Note on the nil-handling difference from Go: Go's mappers take nilable
-# pointers (`*v1.PartialCaveatInfo`) and return nil for a nil input. Python
-# protobuf message fields are never `None` on attribute access — an unset
-# submessage returns a default (zero-value) instance — so
-# `_partial_caveat_from_proto` instead takes the *containing* message and
-# uses `HasField` to detect presence.
-
-
 class Permissionship(Enum):
     """Whether a check or lookup result reflects a full grant, a full
     denial, or is conditional on caveat context that was not fully evaluated
@@ -788,9 +951,7 @@ class Permissionship(Enum):
 
 _PERMISSIONSHIP_MAP = {
     permission_service_pb2.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION: Permissionship.HAS_PERMISSION,
-    permission_service_pb2.LOOKUP_PERMISSIONSHIP_CONDITIONAL_PERMISSION: (
-        Permissionship.CONDITIONAL_PERMISSION
-    ),
+    permission_service_pb2.LOOKUP_PERMISSIONSHIP_CONDITIONAL_PERMISSION: Permissionship.CONDITIONAL_PERMISSION,
 }
 
 
@@ -802,15 +963,9 @@ def _permissionship_from_proto(v: int) -> Permissionship:
 
 
 _CHECK_PERMISSIONSHIP_MAP = {
-    permission_service_pb2.CheckPermissionResponse.PERMISSIONSHIP_HAS_PERMISSION: (
-        Permissionship.HAS_PERMISSION
-    ),
-    permission_service_pb2.CheckPermissionResponse.PERMISSIONSHIP_CONDITIONAL_PERMISSION: (
-        Permissionship.CONDITIONAL_PERMISSION
-    ),
-    permission_service_pb2.CheckPermissionResponse.PERMISSIONSHIP_NO_PERMISSION: (
-        Permissionship.NO_PERMISSION
-    ),
+    permission_service_pb2.CheckPermissionResponse.PERMISSIONSHIP_HAS_PERMISSION: Permissionship.HAS_PERMISSION,
+    permission_service_pb2.CheckPermissionResponse.PERMISSIONSHIP_CONDITIONAL_PERMISSION: Permissionship.CONDITIONAL_PERMISSION,
+    permission_service_pb2.CheckPermissionResponse.PERMISSIONSHIP_NO_PERMISSION: Permissionship.NO_PERMISSION,
 }
 
 
@@ -828,7 +983,10 @@ class PartialCaveatInfo:
     """Caveat context that was missing to fully evaluate a conditional
     result."""
 
-    missing_required_context: list[str]
+    missing_required_context: Sequence[str]
+
+    def __post_init__(self) -> None:
+        _freeze(self)
 
 
 def _partial_caveat_from_proto(parent: Message) -> PartialCaveatInfo | None:
@@ -852,14 +1010,11 @@ class LookupResource:
 
     resource_id: str
     permissionship: Permissionship
-    partial_caveat: PartialCaveatInfo | None = (
-        None  # non-None when Permissionship is Conditional
-    )
-    # The revision this result was computed at. Identical for every item
-    # yielded by a single lookup_resources() call -- it is a property of the
-    # call, not of the individual resource. Thread it into at_least() to make
-    # a later read observe this lookup (read-your-writes for lookups).
-    looked_up_at: str = ""
+    partial_caveat: PartialCaveatInfo | None = None
+    looked_up_at: ZedToken = ZedToken("")
+
+    def __post_init__(self) -> None:
+        _freeze(self)
 
 
 @dataclass(frozen=True)
@@ -871,13 +1026,10 @@ class CheckResult:
     """
 
     permissionship: Permissionship
-    # The caveat context keys the server needed and did not receive. Empty
-    # unless permissionship is CONDITIONAL_PERMISSION.
-    missing_context: list[str]
-    # The revision this check was evaluated at. Thread it into at_least() to
-    # make a later read observe this check (and everything it observed) --
-    # read-your-writes for checks.
-    checked_at: str
+    missing_context: Sequence[str]
+    checked_at: ZedToken
+    debug_trace: DebugInformation | None = None
+    expiration: datetime | None = None
 
     @property
     def has_permission(self) -> bool:
@@ -895,6 +1047,9 @@ class CheckResult:
         """
         return self.has_permission
 
+    def __post_init__(self) -> None:
+        _freeze(self)
+
 
 @dataclass(frozen=True)
 class ResolvedSubject:
@@ -906,6 +1061,9 @@ class ResolvedSubject:
     permissionship: Permissionship
     partial_caveat: PartialCaveatInfo | None = None
 
+    def __post_init__(self) -> None:
+        _freeze(self)
+
 
 @dataclass(frozen=True)
 class LookupSubject:
@@ -916,11 +1074,11 @@ class LookupSubject:
     otherwise suggest they do."""
 
     subject: ResolvedSubject
-    excluded_subjects: list[ResolvedSubject]
-    # The revision this result was computed at. Identical for every item
-    # yielded by a single lookup_subjects() call -- it is a property of the
-    # call, not of the individual subject.
-    looked_up_at: str = ""
+    excluded_subjects: Sequence[ResolvedSubject]
+    looked_up_at: ZedToken = ZedToken("")
+
+    def __post_init__(self) -> None:
+        _freeze(self)
 
 
 def _resolved_subject_from_proto(
@@ -933,3 +1091,316 @@ def _resolved_subject_from_proto(
         permissionship=_permissionship_from_proto(v.permissionship),
         partial_caveat=_partial_caveat_from_proto(v),
     )
+
+
+class DeleteProgress(Enum):
+    UNSPECIFIED = 0
+    COMPLETE = 1
+    PARTIAL = 2
+
+
+@dataclass(frozen=True)
+class DeleteResult:
+    revision: ZedToken
+    deleted_count: int
+    progress: DeleteProgress
+    cursor: str | None = None
+
+    def __post_init__(self) -> None:
+        _freeze(self)
+
+
+@dataclass(frozen=True)
+class WriteResult:
+    """Result of a relationship transaction, with its committed revision."""
+
+    revision: ZedToken
+
+    def __post_init__(self) -> None:
+        _token_string(self.revision)
+
+
+@dataclass(frozen=True)
+class SchemaResult:
+    schema: str
+    revision: ZedToken
+
+    def __post_init__(self) -> None:
+        _freeze(self)
+
+
+@dataclass(frozen=True)
+class ExpandResult:
+    tree: PermissionTree
+    revision: ZedToken
+
+    def __post_init__(self) -> None:
+        _freeze(self)
+
+
+@dataclass(frozen=True)
+class RelationsResult:
+    relations: Sequence[RelationReference]
+    revision: ZedToken
+
+    def __post_init__(self) -> None:
+        _freeze(self)
+
+
+@dataclass(frozen=True)
+class SchemaDiffResult:
+    diffs: Sequence[SchemaDiff]
+    revision: ZedToken
+
+    def __post_init__(self) -> None:
+        _freeze(self)
+
+
+@dataclass(frozen=True)
+class CountResult:
+    count: int | None
+    revision: ZedToken | None
+    still_calculating: bool = False
+
+    def __post_init__(self) -> None:
+        _freeze(self)
+
+
+@dataclass(frozen=True)
+class RoaringLookupResourcesResult:
+    bitmap: bytes
+    cardinality: int
+    revision: ZedToken
+
+    def __post_init__(self) -> None:
+        _freeze(self)
+
+
+class PermissionType(Enum):
+    UNSPECIFIED = 0
+    RELATION = 1
+    PERMISSION = 2
+
+
+class CaveatResult(Enum):
+    UNSPECIFIED = 0
+    UNEVALUATED = 1
+    FALSE = 2
+    TRUE = 3
+    MISSING_SOME_CONTEXT = 4
+
+
+@dataclass(frozen=True)
+class CaveatEvaluation:
+    expression: str
+    result: CaveatResult
+    context: JSONObject | None
+    missing_context: Sequence[str]
+    caveat_name: str
+
+    def __post_init__(self) -> None:
+        _freeze(self)
+
+
+@dataclass(frozen=True)
+class CheckDebugTrace:
+    resource: ObjectRef
+    permission: str
+    permission_type: PermissionType
+    subject: SubjectRef
+    result: Permissionship
+    caveat_evaluation: CaveatEvaluation | None
+    duration: timedelta | None
+    was_cached_result: bool | None
+    sub_problems: Sequence[CheckDebugTrace] | None
+    expiration: datetime | None
+    trace_operation_id: str
+    source: str
+
+    def __post_init__(self) -> None:
+        _freeze(self)
+
+
+@dataclass(frozen=True)
+class DebugInformation:
+    check: CheckDebugTrace | None
+    schema_used: str
+
+    def __post_init__(self) -> None:
+        _freeze(self)
+
+
+def _safe_enum(cls, value):
+    try:
+        return cls(value)
+    except ValueError:
+        return cls(0)
+
+
+def _debug_trace(p):
+    c = p.caveat_evaluation_info
+    caveat = (
+        CaveatEvaluation(
+            c.expression,
+            _safe_enum(CaveatResult, c.result),
+            context_from_struct(c.context) if c.HasField("context") else None,
+            tuple(c.partial_caveat_info.missing_required_context),
+            c.caveat_name,
+        )
+        if p.HasField("caveat_evaluation_info")
+        else None
+    )
+    return CheckDebugTrace(
+        ObjectRef(p.resource.object_type, p.resource.object_id),
+        p.permission,
+        _safe_enum(PermissionType, p.permission_type),
+        SubjectRef(
+            ObjectRef(p.subject.object.object_type, p.subject.object.object_id),
+            p.subject.optional_relation or None,
+        ),
+        _check_permissionship_from_proto(p.result),
+        caveat,
+        p.duration.ToTimedelta() if p.HasField("duration") else None,
+        p.was_cached_result if p.HasField("was_cached_result") else None,
+        tuple((_debug_trace(x) for x in p.sub_problems.traces))
+        if p.HasField("sub_problems")
+        else None,
+        p.optional_expires_at.ToDatetime(tzinfo=timezone.utc)
+        if p.HasField("optional_expires_at")
+        else None,
+        p.trace_operation_id,
+        p.source,
+    )
+
+
+def _debug_information(parent):
+    if not parent.HasField("debug_trace"):
+        return None
+    p = parent.debug_trace
+    return DebugInformation(
+        _debug_trace(p.check) if p.HasField("check") else None, p.schema_used
+    )
+
+
+@dataclass(frozen=True)
+class PermissionSetCursor:
+    limit: int = 0
+    token: ZedToken | None = None
+    starting_index: int = 0
+    completed_members: bool = False
+    starting_key: str = ""
+    cursor: str = ""
+
+    def __post_init__(self) -> None:
+        for name in ("limit", "starting_index"):
+            value = getattr(self, name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or not 0 <= value <= 0xFFFFFFFF
+            ):
+                raise InvalidArgumentError(f"cursor.{name}: expected uint32")
+        _freeze(self)
+
+    def _to_proto(self):
+        from authzed.api.materialize.v0 import watchpermissionsets_pb2 as sets
+
+        return sets.Cursor(
+            limit=self.limit,
+            token=core_pb2.ZedToken(token=_token_string(self.token))
+            if self.token is not None
+            else None,
+            starting_index=self.starting_index,
+            completed_members=self.completed_members,
+            starting_key=self.starting_key,
+            cursor=self.cursor,
+        )
+
+
+@dataclass(frozen=True)
+class PermissionSetRef:
+    object: ObjectRef
+    permission_or_relation: str
+
+
+@dataclass(frozen=True)
+class PermissionSetMember:
+    object: ObjectRef
+    permission_or_relation: str | None = None
+
+
+class PermissionSetOperation(Enum):
+    UNSPECIFIED = 0
+    ADDED = 1
+    REMOVED = 2
+
+
+@dataclass(frozen=True)
+class PermissionSetChange:
+    revision: ZedToken
+    operation: PermissionSetOperation
+    parent: PermissionSetRef | None
+    child: PermissionSetRef | PermissionSetMember | None
+
+
+@dataclass(frozen=True)
+class PermissionSetCheckpoint:
+    revision: ZedToken
+
+
+@dataclass(frozen=True)
+class PermissionSetsLookupRequired:
+    revision: ZedToken
+
+
+@dataclass(frozen=True)
+class WatchedPermission:
+    resource_type: str
+    permission: str
+    subject_type: str
+    subject_relation: str | None = None
+
+
+@dataclass(frozen=True)
+class PermissionSetSchemaChange:
+    revision: ZedToken
+    affected_permissions: Sequence[WatchedPermission]
+
+    def __post_init__(self) -> None:
+        _freeze(self)
+
+
+@dataclass(frozen=True)
+class UnknownPermissionSetEvent:
+    """The server supplied an unknown or absent response variant."""
+
+
+PermissionSetEvent: TypeAlias = (
+    PermissionSetChange
+    | PermissionSetCheckpoint
+    | PermissionSetsLookupRequired
+    | PermissionSetSchemaChange
+    | UnknownPermissionSetEvent
+)
+
+
+@dataclass(frozen=True)
+class PermissionSetLookup:
+    change: PermissionSetChange | None
+    cursor: PermissionSetCursor | None
+
+
+@dataclass(frozen=True)
+class PermissionSetFile:
+    name: str
+    url: str
+
+
+@dataclass(frozen=True)
+class PermissionSetDownload:
+    files: Sequence[PermissionSetFile]
+    timestamp: datetime | None
+    revision: ZedToken
+
+    def __post_init__(self) -> None:
+        _freeze(self)

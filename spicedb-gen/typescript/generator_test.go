@@ -14,6 +14,21 @@ func TestLanguage(t *testing.T) {
 	assert.Equal(t, "typescript", g.Language())
 }
 
+func TestCanonicalRequestsAndDirectStreams(t *testing.T) {
+	s, err := schema.ParseFile("../testdata/sample.zed")
+	require.NoError(t, err)
+	files, err := (&Generator{}).Generate(s, nil)
+	require.NoError(t, err)
+	output := string(files[0].Content)
+	assert.Contains(t, output, "return this.client.check({")
+	assert.Contains(t, output, "consistency: c,")
+	assert.NotContains(t, output, "Promise<AsyncIterableIterator<")
+	assert.NotContains(t, output, "async lookupResources(")
+	assert.Contains(t, output, "options?: LookupResourcesOptions): AsyncIterableIterator<LookupResource>")
+	assert.Contains(t, output, "type WriteResult,")
+	assert.Contains(t, output, "...requestOptions,")
+}
+
 func TestGenerateSampleSchema(t *testing.T) {
 	s, err := schema.ParseFile("../testdata/sample.zed")
 	require.NoError(t, err)
@@ -75,7 +90,7 @@ func TestGenerateSampleSchema(t *testing.T) {
 	assert.Contains(t, output, `async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "delete" }, s: UserRef, options?: CheckOptions): Promise<CheckResult>;`)
 
 	// Check implementation
-	assert.Contains(t, output, `return this.client.checkPermission(c, {`)
+	assert.Contains(t, output, `return this.client.check({`)
 
 	// Write operations
 	assert.Contains(t, output, `async touch(`)
@@ -83,10 +98,10 @@ func TestGenerateSampleSchema(t *testing.T) {
 	assert.Contains(t, output, `async delete(`)
 
 	// LookupResources overloads
-	assert.Contains(t, output, `async lookupResources(c: Consistency, p: { _type: "document"; _permission: "view" }, s: UserRef | UserIpRangeRef | UserTimeWindowRef | TeamMemberRef): Promise<AsyncIterableIterator<LookupResource>>;`)
+	assert.Contains(t, output, `lookupResources(c: Consistency, p: { _type: "document"; _permission: "view" }, s: UserRef | UserIpRangeRef | UserTimeWindowRef | TeamMemberRef, options?: LookupResourcesOptions): AsyncIterableIterator<LookupResource>;`)
 
 	// LookupSubjects overloads
-	assert.Contains(t, output, `async lookupSubjects(c: Consistency, p: { _type: "document"; _id: string; _permission: "view" }`)
+	assert.Contains(t, output, `lookupSubjects(c: Consistency, p: { _type: "document"; _id: string; _permission: "view" }`)
 
 	// ReadRelationships
 	assert.Contains(t, output, `readRelationships(`)
@@ -108,16 +123,16 @@ func TestGenerateSampleSchema(t *testing.T) {
 	// _caveatContext holds the RAW-schema-keyed converted context (see
 	// TestCaveatContextPreservesRawNames), not the camelCase IpRangeContext/
 	// TimeWindowContext interface shape the caveat method's PARAMETER uses.
-	assert.Contains(t, output, `type UserIpRangeRef = { _type: "user"; _id: string; _caveat: "ip_range"; _caveatContext: Record<string, unknown> };`)
-	assert.Contains(t, output, `type UserTimeWindowRef = { _type: "user"; _id: string; _caveat: "time_window"; _caveatContext: Record<string, unknown> };`)
+	assert.Contains(t, output, `type UserIpRangeRef = { _type: "user"; _id: string; _caveat: "ip_range"; _caveatContext: JSONObject };`)
+	assert.Contains(t, output, `type UserTimeWindowRef = { _type: "user"; _id: string; _caveat: "time_window"; _caveatContext: JSONObject };`)
 
 	// Caveat methods on User factory
 	assert.Contains(t, output, `withIpRange: (ctx: IpRangeContext): UserIpRangeRef`)
 	assert.Contains(t, output, `withTimeWindow: (ctx: TimeWindowContext): UserTimeWindowRef`)
 
-	// Write operations include caveat fields (caveatContext cast as any for JsonObject compatibility)
-	assert.Contains(t, output, `caveatName: r._subject._caveat`)
-	assert.Contains(t, output, `caveatContext: r._subject._caveatContext as any`)
+	// Write operations preserve native stored caveat data
+	assert.Contains(t, output, `name: r._subject._caveat`)
+	assert.Contains(t, output, `context: r._subject._caveatContext`)
 
 	// Generated file header
 	assert.Contains(t, output, `DO NOT EDIT`)
@@ -147,9 +162,8 @@ func TestCheckSurfacesCheckResult(t *testing.T) {
 
 	output := string(files[0].Content)
 
-	// CheckResult must be imported as a value (not type-only) from the client
-	// package, matching how it's exported from spicedb-typescript's index.ts.
-	assert.Contains(t, output, "    CheckResult,\n")
+	// The generated facade only uses CheckResult as a type.
+	assert.Contains(t, output, "    type CheckResult,\n")
 
 	// Overload declarations — exact signature per permission, returning
 	// Promise<CheckResult>.
@@ -158,7 +172,7 @@ func TestCheckSurfacesCheckResult(t *testing.T) {
 	assert.Contains(t, output, `async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "delete" }, s: UserRef, options?: CheckOptions): Promise<CheckResult>;`)
 
 	// Dispatching implementation — exact signature, returning Promise<CheckResult>.
-	assert.Contains(t, output, `async check(c: Consistency, p: { _type: string; _id: string; _permission: string }, s: { _type: string; _id: string; _relation?: string; _caveat?: string; _caveatContext?: Record<string, any> }, options?: CheckOptions): Promise<CheckResult> {`)
+	assert.Contains(t, output, `async check(c: Consistency, p: { _type: string; _id: string; _permission: string }, s: { _type: string; _id: string; _relation?: string; _caveat?: string; _caveatContext?: JSONObject }, options?: CheckOptions): Promise<CheckResult> {`)
 
 	// The old Promise<boolean> forms must be entirely gone. Asserting merely
 	// that the string "CheckResult" appears somewhere would pass even on a
@@ -171,7 +185,7 @@ func TestCheckSurfacesCheckResult(t *testing.T) {
 	// untouched, not re-collapsed to a boolean inside the generated wrapper —
 	// which would silently reintroduce the exact bug CheckResult exists to
 	// fix, hidden inside generated code users don't read.
-	assert.Contains(t, output, "return this.client.checkPermission(c, {")
+	assert.Contains(t, output, "return this.client.check({")
 }
 
 // TestCheckAcceptsContext verifies the generated `check` method — both its
@@ -202,13 +216,13 @@ func TestCheckAcceptsContext(t *testing.T) {
 	assert.Contains(t, output, `async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "delete" }, s: UserRef, options?: CheckOptions): Promise<CheckResult>;`)
 
 	// Dispatching implementation — exact signature, with the new parameter.
-	assert.Contains(t, output, `async check(c: Consistency, p: { _type: string; _id: string; _permission: string }, s: { _type: string; _id: string; _relation?: string; _caveat?: string; _caveatContext?: Record<string, any> }, options?: CheckOptions): Promise<CheckResult> {`)
+	assert.Contains(t, output, `async check(c: Consistency, p: { _type: string; _id: string; _permission: string }, s: { _type: string; _id: string; _relation?: string; _caveat?: string; _caveatContext?: JSONObject }, options?: CheckOptions): Promise<CheckResult> {`)
 
 	// The OLD context-less forms must be entirely gone — guards against a
 	// regression that adds the parameter to only some declarations.
 	assert.NotContains(t, output, `s: UserRef | UserIpRangeRef | UserTimeWindowRef | TeamMemberRef): Promise<CheckResult>;`)
 	assert.NotContains(t, output, `p: { _type: "document"; _id: string; _permission: "edit" }, s: UserRef): Promise<CheckResult>;`)
-	assert.NotContains(t, output, `_caveatContext?: Record<string, any> }): Promise<CheckResult> {`)
+	assert.NotContains(t, output, `_caveatContext?: JSONObject }): Promise<CheckResult> {`)
 
 	// options is actually threaded through to the underlying client call, not
 	// silently dropped — a signature-only assertion would pass even if the
@@ -377,7 +391,9 @@ func TestCelTypeToTS(t *testing.T) {
 	assert.Equal(t, "boolean", celTypeToTS("bool"))
 	assert.Equal(t, "string", celTypeToTS("duration"))
 	assert.Equal(t, "string", celTypeToTS("timestamp"))
-	assert.Equal(t, "unknown", celTypeToTS("foo"))
+	assert.Equal(t, "JSONValue", celTypeToTS("foo"))
+	assert.Equal(t, "JSONObject", celTypeToTS("map"))
+	assert.Equal(t, "readonly JSONValue[]", celTypeToTS("list"))
 }
 
 func TestBuildSubjectUnionWithCaveats(t *testing.T) {

@@ -2,6 +2,7 @@
 package {{.Package}};
 
 import com.authzed.spicedb.*;
+import com.authzed.spicedb.SpiceDBClient.*;
 import java.util.*;
 import java.util.stream.Stream;
 
@@ -134,69 +135,117 @@ public final class Permissions {
 {{end}}
     // --- TypedClient ---
 
-    public static final class TypedClient {
+    public static final class TypedClient implements AutoCloseable {
         private final SpiceDBClient client;
-
-        public TypedClient(SpiceDBClient client) { this.client = client; }
-
+        private final boolean ownsClient;
+        public TypedClient(SpiceDBClient client) { this(client, false); }
+        public TypedClient(SpiceDBClient client, boolean ownsClient) { this.client = Objects.requireNonNull(client); this.ownsClient = ownsClient; }
+        public static TypedClient createPlaintext(String endpoint, String token) { return createPlaintext(endpoint, token, ClientOptions.builder().build()); }
+        /** Remote plaintext credentials require ClientOptions.remotePlaintextCredentials(RemotePlaintextCredentials.ALLOW). */
+        public static TypedClient createPlaintext(String endpoint, String token, ClientOptions options) { return new TypedClient(SpiceDBClient.createPlaintext(endpoint, token, options), true); }
+        public static TypedClient createSystemTls(String endpoint, String token) { return createSystemTls(endpoint, token, ClientOptions.builder().build()); }
+        public static TypedClient createSystemTls(String endpoint, String token, ClientOptions options) { return new TypedClient(SpiceDBClient.createSystemTls(endpoint, token, options), true); }
         public SpiceDBClient client() { return client; }
+        @Override public void close() { if (ownsClient) client.close(); }
 
+        // Native capabilities retain their options, results, errors, and stream identity.
+        public List<CheckResult> checkBulk(Collection<PermissionCheck> requests) { return client.checkBulk(requests); }
+        public List<CheckResult> checkBulk(Collection<PermissionCheck> requests, CheckOptions options) { return client.checkBulk(requests, options); }
+        public boolean checkAny(Collection<PermissionCheck> requests) { return client.checkAny(requests); }
+        public boolean checkAny(Collection<PermissionCheck> requests, CheckOptions options) { return client.checkAny(requests, options); }
+        public boolean checkAll(Collection<PermissionCheck> requests) { return client.checkAll(requests); }
+        public boolean checkAll(Collection<PermissionCheck> requests, CheckOptions options) { return client.checkAll(requests, options); }
+        public WriteResult write(Transaction txn) { return client.write(txn); }
+        public WriteResult write(Transaction txn, WriteOptions options) { return client.write(txn, options); }
+        public Stream<Relationship> readRelationships(Consistency consistency, Filter filter) { return client.readRelationships(consistency, filter); }
+        public Stream<Relationship> readRelationships(Consistency consistency, Filter filter, ReadOptions options) { return client.readRelationships(consistency, filter, options); }
+        public DeleteResult deleteRelationships(Filter filter, int limit) { return client.deleteRelationships(filter, limit); }
+        public DeleteResult deleteRelationships(Filter filter, int limit, DeleteOptions options) { return client.deleteRelationships(filter, limit, options); }
+        public DeleteResult deleteAllRelationshipsNonAtomic(Filter filter) { return client.deleteAllRelationshipsNonAtomic(filter); }
+        public DeleteResult deleteAllRelationshipsNonAtomic(Filter filter, DeleteAllOptions options) { return client.deleteAllRelationshipsNonAtomic(filter, options); }
+        public SchemaResult readSchema() { return client.readSchema(); }
+        public SchemaResult readSchema(CallOptions options) { return client.readSchema(options); }
+        public ZedToken writeSchema(String schema) { return client.writeSchema(schema); }
+        public ZedToken writeSchema(String schema, CallOptions options) { return client.writeSchema(schema, options); }
+        public ReflectSchemaResult reflectSchema(Consistency consistency) { return client.reflectSchema(consistency); }
+        public ReflectSchemaResult reflectSchema(Consistency consistency, CallOptions options) { return client.reflectSchema(consistency, options); }
+        public ComputablePermissionsResult computablePermissions(Consistency consistency, String definitionName, String relationName) { return client.computablePermissions(consistency, definitionName, relationName); }
+        public ComputablePermissionsResult computablePermissions(Consistency consistency, String definitionName, String relationName, CallOptions options) { return client.computablePermissions(consistency, definitionName, relationName, options); }
+        public DependentRelationsResult dependentRelations(Consistency consistency, String definitionName, String permissionName) { return client.dependentRelations(consistency, definitionName, permissionName); }
+        public DependentRelationsResult dependentRelations(Consistency consistency, String definitionName, String permissionName, CallOptions options) { return client.dependentRelations(consistency, definitionName, permissionName, options); }
+        public DiffSchemaResult diffSchema(Consistency consistency, String comparisonSchema) { return client.diffSchema(consistency, comparisonSchema); }
+        public DiffSchemaResult diffSchema(Consistency consistency, String comparisonSchema, CallOptions options) { return client.diffSchema(consistency, comparisonSchema, options); }
+        public ExpandResult expandPermissionTree(Consistency consistency, ObjectRef resource, String permission) { return client.expandPermissionTree(consistency, resource, permission); }
+        public ExpandResult expandPermissionTree(Consistency consistency, ObjectRef resource, String permission, CallOptions options) { return client.expandPermissionTree(consistency, resource, permission, options); }
+        public long importRelationships(Iterable<Relationship> relationships) { return client.importRelationships(relationships); }
+        public long importRelationships(Iterable<Relationship> relationships, ImportOptions options) { return client.importRelationships(relationships, options); }
+        public Stream<Relationship> exportRelationships(Consistency consistency, Filter filter) { return client.exportRelationships(consistency, filter); }
+        public Stream<Relationship> exportRelationships(Consistency consistency, Filter filter, ExportOptions options) { return client.exportRelationships(consistency, filter, options); }
+        public Stream<WatchEvent> updates(List<String> objectTypes, ZedToken startRevision) { return client.updates(objectTypes, startRevision); }
+        public Stream<WatchEvent> updates(List<String> objectTypes, ZedToken startRevision, WatchOptions options) { return client.updates(objectTypes, startRevision, options); }
+        public void experimentalRegisterRelationshipCounter(String name, Filter filter) { client.experimentalRegisterRelationshipCounter(name, filter); }
+        public void experimentalRegisterRelationshipCounter(String name, Filter filter, CallOptions options) { client.experimentalRegisterRelationshipCounter(name, filter, options); }
+        public CountResult experimentalCountRelationships(String name) { return client.experimentalCountRelationships(name); }
+        public CountResult experimentalCountRelationships(String name, CallOptions options) { return client.experimentalCountRelationships(name, options); }
+        public void experimentalUnregisterRelationshipCounter(String name) { client.experimentalUnregisterRelationshipCounter(name); }
+        public void experimentalUnregisterRelationshipCounter(String name, CallOptions options) { client.experimentalUnregisterRelationshipCounter(name, options); }
+        public Materialize.RoaringLookupResourcesResult experimentalRoaringLookupResources(Consistency consistency, String resourceType, String permission, SubjectRef subject) { return client.experimentalRoaringLookupResources(consistency, resourceType, permission, subject); }
+        public Materialize.RoaringLookupResourcesResult experimentalRoaringLookupResources(Consistency consistency, String resourceType, String permission, SubjectRef subject, LookupOptions options) { return client.experimentalRoaringLookupResources(consistency, resourceType, permission, subject, options); }
+        public CountResult experimentalCountRelationshipsByFilter(Filter filter) { return client.experimentalCountRelationshipsByFilter(filter); }
+        public CountResult experimentalCountRelationshipsByFilter(Filter filter, CallOptions options) { return client.experimentalCountRelationshipsByFilter(filter, options); }
+        public Stream<Materialize.PermissionSetEvent> experimentalWatchPermissionSets(ZedToken startRevision) { return client.experimentalWatchPermissionSets(startRevision); }
+        public Stream<Materialize.PermissionSetEvent> experimentalWatchPermissionSets(ZedToken startRevision, CallOptions options) { return client.experimentalWatchPermissionSets(startRevision, options); }
+        public Stream<Materialize.LookupPermissionSet> experimentalLookupPermissionSets(ZedToken atRevision) { return client.experimentalLookupPermissionSets(atRevision); }
+        public Stream<Materialize.LookupPermissionSet> experimentalLookupPermissionSets(ZedToken atRevision, PermissionSetOptions options) { return client.experimentalLookupPermissionSets(atRevision, options); }
+        public Materialize.DownloadPermissionSetsResult experimentalDownloadPermissionSets(ZedToken atRevision) { return client.experimentalDownloadPermissionSets(atRevision); }
+        public Materialize.DownloadPermissionSetsResult experimentalDownloadPermissionSets(ZedToken atRevision, CallOptions options) { return client.experimentalDownloadPermissionSets(atRevision, options); }
+        public io.grpc.Channel rawChannel() { return client.rawChannel(); }
+
+        private static SubjectRef subjectRef(Subject subject) {
+            var object = new ObjectRef(subject.definitionName(), subject.id());
+            return subject.subRelation().isEmpty() ? SubjectRef.direct(object) : SubjectRef.named(object, subject.subRelation());
+        }
         public <S extends Subject> CheckResult check(Consistency c, Permission<S> perm, S subject) {
-            var r = Relationship.of(perm.resourceType(), perm.resourceId(), perm.permission(),
-                subject.definitionName(), subject.id(), subject.subRelation());
-            r = r.withCheckContext(subject.caveatContext());
-            return client.checkPermission(c, perm.permission(), r);
+            return check(c, perm, subject, CheckOptions.builder().build());
         }
-
-        public <S extends Subject> CheckResult check(Consistency c, Permission<S> perm, S subject, Map<String, Object> context) {
-            var r = Relationship.of(perm.resourceType(), perm.resourceId(), perm.permission(),
-                subject.definitionName(), subject.id(), subject.subRelation());
-            r = r.withCheckContext(subject.caveatContext());
-            return client.checkPermissionWithOptions(c, perm.permission(), r,
-                CheckOptions.none().withContext(context));
+        public <S extends Subject> CheckResult check(Consistency c, Permission<S> perm, S subject, CheckOptions options) {
+            var request = new PermissionCheck(new ObjectRef(perm.resourceType(), perm.resourceId()), perm.permission(), subjectRef(subject), c, subject.caveatContext());
+            return client.check(request, options);
         }
-
         public <S extends Subject> Stream<LookupResult.LookupResource> lookupResources(Consistency c, PermissionRef<S> perm, S subject) {
-            return client.lookupResources(c, perm.resourceType(), perm.permission(),
-                subject.definitionName(), subject.id());
+            return lookupResources(c, perm, subject, LookupOptions.builder().build());
         }
-
+        public <S extends Subject> Stream<LookupResult.LookupResource> lookupResources(Consistency c, PermissionRef<S> perm, S subject, LookupOptions options) {
+            return client.lookupResources(c, perm.resourceType(), perm.permission(), subjectRef(subject), options);
+        }
         public <S extends Subject> Stream<LookupResult.LookupSubject> lookupSubjects(Consistency c, Permission<S> perm, S subject) {
-            return client.lookupSubjects(c, perm.resourceType(), perm.resourceId(), perm.permission(),
-                subject.definitionName());
+            return lookupSubjects(c, perm, subject, LookupOptions.builder().build());
         }
-
-        public String touch(TypedRelationship... rels) {
-            var txn = new Transaction();
-            for (var r : rels) {
-                var rel = Relationship.of(r.resourceType(), r.resourceId(), r.relation(),
-                    r.subjectType(), r.subjectId(), r.subjectRelation());
-                if (!r.caveatName().isEmpty()) rel = rel.withCaveat(r.caveatName(), r.caveatContext());
-                txn.touch(rel);
-            }
-            return client.write(txn);
+        public <S extends Subject> Stream<LookupResult.LookupSubject> lookupSubjects(Consistency c, Permission<S> perm, S subject, LookupOptions options) {
+            Objects.requireNonNull(options, "options");
+            var relation = subject.subRelation().isEmpty() ? null : subject.subRelation();
+            if (options.subjectRelation() != null && !Objects.equals(options.subjectRelation(), relation))
+                throw new com.authzed.spicedb.errors.InvalidArgumentException("subjectRelation conflicts with the schema-derived subject");
+            return client.lookupSubjects(c, new ObjectRef(perm.resourceType(), perm.resourceId()), perm.permission(), subject.definitionName(), options.toBuilder().subjectRelation(relation).build());
         }
-
-        public String create(TypedRelationship... rels) {
-            var txn = new Transaction();
-            for (var r : rels) {
-                var rel = Relationship.of(r.resourceType(), r.resourceId(), r.relation(),
-                    r.subjectType(), r.subjectId(), r.subjectRelation());
-                if (!r.caveatName().isEmpty()) rel = rel.withCaveat(r.caveatName(), r.caveatContext());
-                txn.create(rel);
-            }
-            return client.write(txn);
+        private static Relationship relationship(TypedRelationship r) {
+            var object = new ObjectRef(r.subjectType(), r.subjectId());
+            var subject = r.subjectRelation().isEmpty() ? SubjectRef.direct(object) : SubjectRef.named(object, r.subjectRelation());
+            var rel = Relationship.of(new ObjectRef(r.resourceType(), r.resourceId()), r.relation(), subject);
+            if (!r.caveatName().isEmpty()) rel = rel.withCaveat(r.caveatName(), r.caveatContext());
+            return rel;
         }
-
-        public String delete(TypedRelationship... rels) {
-            var txn = new Transaction();
-            for (var r : rels) {
-                var rel = Relationship.of(r.resourceType(), r.resourceId(), r.relation(),
-                    r.subjectType(), r.subjectId(), r.subjectRelation());
-                if (!r.caveatName().isEmpty()) rel = rel.withCaveat(r.caveatName(), r.caveatContext());
-                txn.delete(rel);
-            }
-            return client.write(txn);
+        public WriteResult touch(Collection<TypedRelationship> rels) { return touch(rels, WriteOptions.builder().build()); }
+        public WriteResult touch(Collection<TypedRelationship> rels, WriteOptions options) {
+            var txn = new Transaction(); for (var r : List.copyOf(rels)) txn.touch(relationship(r)); return client.write(txn, options);
+        }
+        public WriteResult create(Collection<TypedRelationship> rels) { return create(rels, WriteOptions.builder().build()); }
+        public WriteResult create(Collection<TypedRelationship> rels, WriteOptions options) {
+            var txn = new Transaction(); for (var r : List.copyOf(rels)) txn.create(relationship(r)); return client.write(txn, options);
+        }
+        public WriteResult delete(Collection<TypedRelationship> rels) { return delete(rels, WriteOptions.builder().build()); }
+        public WriteResult delete(Collection<TypedRelationship> rels, WriteOptions options) {
+            var txn = new Transaction(); for (var r : List.copyOf(rels)) txn.delete(relationship(r)); return client.write(txn, options);
         }
     }
 }

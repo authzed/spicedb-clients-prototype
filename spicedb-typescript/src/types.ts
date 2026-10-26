@@ -1,1211 +1,740 @@
-import { create, type JsonObject } from "@bufbuild/protobuf";
-import {
-  type Relationship as ProtoRelationship,
-  RelationshipSchema,
-  ObjectReferenceSchema,
-  SubjectReferenceSchema,
-  ContextualizedCaveatSchema,
-  type RelationshipUpdate as ProtoRelationshipUpdate,
-  RelationshipUpdateSchema,
-  RelationshipUpdate_Operation,
-  type RelationshipFilter as ProtoRelationshipFilter,
-  RelationshipFilterSchema,
-  SubjectFilterSchema,
-  SubjectFilter_RelationFilterSchema,
-  type Precondition as ProtoPrecondition,
-  PreconditionSchema,
-  Precondition_Operation,
-  type DeleteRelationshipsRequest as ProtoDeleteRelationshipsRequest,
-  DeleteRelationshipsRequestSchema,
-  CursorSchema,
-  type PermissionRelationshipTree as ProtoPermissionRelationshipTree,
-  AlgebraicSubjectSet_Operation,
-  type ReflectionDefinition as ProtoReflectionDefinition,
-  type ReflectionCaveat as ProtoReflectionCaveat,
-  type ReflectionRelationReference as ProtoReflectionRelationReference,
-  type ReflectionSchemaDiff as ProtoReflectionSchemaDiff,
-  type PartialCaveatInfo as ProtoPartialCaveatInfo,
-  type ResolvedSubject as ProtoResolvedSubject,
-  type LookupResourcesResponse as ProtoLookupResourcesResponse,
-  type LookupSubjectsResponse as ProtoLookupSubjectsResponse,
-  LookupPermissionship,
-  type CheckPermissionResponse as ProtoCheckPermissionResponse,
-  type CheckBulkPermissionsResponseItem as ProtoCheckBulkPermissionsResponseItem,
-  CheckPermissionResponse_Permissionship,
-} from "@spicedb/proto";
+import { SubjectRelationKind } from "./modes.js";
+import { create, clone, type JsonObject } from "@bufbuild/protobuf";
 import { timestampFromDate } from "@bufbuild/protobuf/wkt";
+import { type Relationship as ProtoRelationship, RelationshipSchema, ObjectReferenceSchema, SubjectReferenceSchema, ContextualizedCaveatSchema, RelationshipUpdateSchema, RelationshipUpdate_Operation, type RelationshipFilter as ProtoRelationshipFilter, RelationshipFilterSchema, SubjectFilterSchema, SubjectFilter_RelationFilterSchema, type Precondition as ProtoPrecondition, PreconditionSchema, Precondition_Operation, DeleteRelationshipsRequestSchema, CursorSchema, type PermissionRelationshipTree as ProtoPermissionRelationshipTree, AlgebraicSubjectSet_Operation, type ReflectionDefinition as ProtoReflectionDefinition, type ReflectionCaveat as ProtoReflectionCaveat, type ReflectionRelationReference as ProtoReflectionRelationReference, type ReflectionSchemaDiff as ProtoReflectionSchemaDiff, type PartialCaveatInfo as ProtoPartialCaveatInfo, type ResolvedSubject as ProtoResolvedSubject, type LookupResourcesResponse as ProtoLookupResourcesResponse, type LookupSubjectsResponse as ProtoLookupSubjectsResponse, LookupPermissionship, type CheckPermissionResponse as ProtoCheckPermissionResponse, type CheckBulkPermissionsResponseItem as ProtoCheckBulkPermissionsResponseItem, } from "@spicedb/proto";
+import { Consistency } from "./consistency.js";
 import { InvalidArgumentError } from "./errors.js";
-
-/**
- * Represents a relationship between a resource and a subject.
- */
-export interface Relationship {
-  resourceType: string;
-  resourceId: string;
-  resourceRelation: string;
-  subjectType: string;
-  subjectId: string;
-  subjectRelation?: string;
-  caveatName?: string;
-  caveatContext?: Record<string, unknown>;
-  expiration?: Date;
+export type JSONValue = null | boolean | number | string | JSONObject | readonly JSONValue[];
+export interface JSONObject {
+    readonly [key: string]: JSONValue;
 }
-
-/**
- * Filter for querying relationships.
- */
-export interface RelationshipFilterOptions {
-  resourceType: string;
-  resourceId?: string;
-  resourceIdPrefix?: string;
-  resourceRelation?: string;
-  subjectType?: string;
-  subjectId?: string;
-  subjectRelation?: string;
-}
-
-/**
- * Options for {@link SpiceDBClient.deleteRelationships}: preconditions that
- * guard the delete, and an optional limit on how many relationships a single
- * call deletes.
- *
- * Mirrors spicedb-go's `WithDeleteMustMatch`/`WithDeleteMustNotMatch`/
- * `WithDeleteLimit` (client/relationships.go) and spicedb-python's
- * `delete_relationships` keyword arguments.
- */
-export interface DeleteOptions {
-  /**
-   * Preconditions requiring at least one relationship matching each filter
-   * to exist at evaluation time. If any `mustMatch` filter has no matches,
-   * the server rejects the delete and deletes nothing.
-   */
-  mustMatch?: RelationshipFilterOptions[];
-  /**
-   * Preconditions requiring that no relationship matches each filter at
-   * evaluation time. If any `mustNotMatch` filter has a match, the server
-   * rejects the delete and deletes nothing.
-   */
-  mustNotMatch?: RelationshipFilterOptions[];
-  /**
-   * Bounds how many relationships this call deletes. If more relationships
-   * match the filter than `limit`, only `limit` of them are deleted by this
-   * call (setting `limit` automatically allows this partial deletion on the
-   * server, since the server otherwise rejects a limited delete found to
-   * span more matches than the limit).
-   *
-   * By default (`autoPage` unset/`false`) this does not auto-page — call
-   * again with the same filter to continue deleting what remains. With
-   * `autoPage: true`, `limit` instead becomes the per-page size of an
-   * internal loop that deletes everything — see `autoPage` below.
-   */
-  limit?: number;
-  /**
-   * Seeds `optionalCursor` on the first request this call sends, resuming a
-   * deletion from a cursor obtained some other way — typically a previous
-   * `autoPage: true` call that was interrupted (a crashed process, a timeout)
-   * partway through, or a raw call made via {@link SpiceDBClient.raw}.
-   * Ignored unless the datastore supports cursored deletion, in which case
-   * an unrecognized or stale cursor is rejected by the server. Not needed for
-   * the common case: a fresh `autoPage: true` call threads its own cursor
-   * between pages internally.
-   */
-  cursor?: string;
-  /**
-   * When `true`, loops internally — using `limit` as the per-page size
-   * (default 1,000) rather than a cap on the total deleted — until every
-   * relationship matching the filter is gone, feeding each response's
-   * cursor back in as the next request's `optionalCursor` when the
-   * datastore supports cursored deletion. Mirrors spicedb-go's
-   * `DeleteRelationships` (`client/relationships.go`), which auto-pages
-   * unconditionally; here it is opt-in because it changes what `limit`
-   * means and what a single call can do, and a caller relying on the
-   * default bounded, single-RPC, partial-deletion-then-manual-continue
-   * behavior must not have that silently replaced by an unbounded loop.
-   *
-   * Preconditions are a per-request proto field, so on a multi-page
-   * `autoPage: true` delete they are re-evaluated by the server on every
-   * page: a guarded delete that starts successfully can still fail partway
-   * through if the guarded state changes between pages, after earlier
-   * pages already committed.
-   */
-  autoPage?: boolean;
-  /**
-   * Milliseconds bounding this call, overriding the client's
-   * `defaultTimeoutMs`. Applied fresh to each page when `autoPage` is
-   * `true` — see root DESIGN.md, "RULE: A unary call must have a
-   * deadline".
-   */
-  timeoutMs?: number;
-}
-
-/**
- * Parameters for looking up resources.
- */
-export interface LookupResourcesParams {
-  resourceType: string;
-  permission: string;
-  subjectType: string;
-  subjectId: string;
-  subjectRelation?: string;
-  context?: Record<string, unknown>;
-  limit?: number;
-  /**
-   * Aborting this releases the underlying stream -- see
-   * {@link SpiceDBClient.lookupResources} and root DESIGN.md, "RULE:
-   * Abandoning a stream must release it".
-   */
-  signal?: AbortSignal;
-}
-
-/**
- * Parameters for looking up subjects.
- */
-export interface LookupSubjectsParams {
-  resourceType: string;
-  resourceId: string;
-  permission: string;
-  subjectType: string;
-  subjectRelation?: string;
-  context?: Record<string, unknown>;
-  limit?: number;
-  /**
-   * Aborting this releases the underlying stream -- see
-   * {@link SpiceDBClient.lookupSubjects} and root DESIGN.md, "RULE:
-   * Abandoning a stream must release it".
-   */
-  signal?: AbortSignal;
-}
-
-/**
- * A check to perform on a resource/permission/subject combination.
- */
-export interface CheckRequest {
-  resourceType: string;
-  resourceId: string;
-  permission: string;
-  subjectType: string;
-  subjectId: string;
-  subjectRelation?: string;
-  context?: Record<string, unknown>;
-}
-
-/**
- * Call-level defaults for `checkPermission`, `checkPermissions`,
- * `checkAny`, and `checkAll` on `SpiceDBClient`.
- */
-export interface CheckOptions {
-  /**
-   * Default caveat context applied to every check that this call evaluates.
-   * Merged key-by-key with each individual check's own
-   * {@link CheckRequest.context} — for any key present in both, the check's
-   * own value wins; default keys the check does not override are retained.
-   * This is a key-level merge, NOT a wholesale replacement: a check
-   * supplying one key does not drop the other default keys. If neither this
-   * default nor the check's own `context` is supplied, no context field is
-   * set on the request (never an empty Struct).
-   *
-   * @example
-   * ```typescript
-   * // Both items get `now`; the second item's own `region` wins over the
-   * // default for that key alone.
-   * await client.checkPermissions(
-   *   full(),
-   *   [check1, { ...check2, context: { region: "eu" } }],
-   *   { context: { now: 42, region: "us" } },
-   * );
-   * ```
-   */
-  context?: Record<string, unknown>;
-  /**
-   * Milliseconds bounding **each request** this call makes, overriding the
-   * client's `defaultTimeoutMs`. See root DESIGN.md, "RULE: A unary call must
-   * have a deadline".
-   *
-   * A bulk check over more than 1,000 items is split into one request per
-   * 1,000, and this deadline — and the retry budget — applies to each of them
-   * independently, not to the call as a whole. Worst-case wall time for `n`
-   * checks is therefore `ceil(n / 1000) * timeoutMs`. That is deliberate: a
-   * single deadline spanning every chunk would make a large check fail purely
-   * for being large, and a retry budget shared across chunks would let one
-   * flaky chunk exhaust the allowance for the rest. Size the value per
-   * request, and impose a whole-operation bound yourself if you need one —
-   * `CheckOptions` accepts no `signal`, so the `AbortSignal` the streaming
-   * surfaces take is not available here.
-   */
-  timeoutMs?: number;
-}
-
-/**
- * A change event from the Watch API.
- */
-export interface WatchChange {
-  /**
-   * The kind of mutation this change represents.
-   *
-   * `"unspecified"` means the server sent an operation this client does not
-   * recognize — either `OPERATION_UNSPECIFIED` on the wire, or a future
-   * operation value added after this client shipped. Never treat it as a
-   * write: a cache or index mirror consuming the watch stream that upserts on
-   * an unrecognized operation could turn a delete it doesn't understand into a
-   * silent write. Handle it explicitly (re-read the relationship, or fail the
-   * mirror closed) rather than falling through to a default branch.
-   */
-  operation: "create" | "touch" | "delete" | "unspecified";
-  relationship: Relationship;
-}
-
-/**
- * A watch event containing changes and metadata.
- */
-export interface WatchEvent {
-  changes: WatchChange[];
-  /**
-   * The point in time this event is current through. Pass it as
-   * `WatchOptions.startRevision` on a later `watch()` call to resume after a
-   * dropped stream, instead of restarting from the original revision
-   * (reprocessing everything since, possibly past the GC window) or from
-   * head (silently losing every change in the gap).
-   */
-  revision: string;
-  metadata?: Record<string, unknown>;
-  schemaUpdated: boolean;
-  /**
-   * True for a checkpoint event, which carries no `changes` -- it exists
-   * only to advertise a fresh `revision` and, behind a proxy that aborts
-   * idle connections, to keep the stream alive. Only sent when
-   * `WatchOptions.includeCheckpoints` is set. Check this before assuming an
-   * event with no `changes` means nothing happened.
-   */
-  isCheckpoint: boolean;
-}
-
-/**
- * Options for watching changes.
- */
-export interface WatchOptions {
-  objectTypes?: string[];
-  startRevision?: string;
-  /**
-   * Also request periodic checkpoint events (`WatchEvent.isCheckpoint`, no
-   * `changes`). Recommended if this SpiceDB instance is running behind a
-   * proxy that aborts idle connections, since a checkpoint keeps the stream
-   * alive even when there are no changes to report.
-   */
-  includeCheckpoints?: boolean;
-  /**
-   * Aborting this releases the underlying stream -- see
-   * {@link SpiceDBClient.watch} and root DESIGN.md, "RULE: Abandoning a
-   * stream must release it".
-   */
-  signal?: AbortSignal;
-}
-
-/**
- * Parameters for expanding a permission tree.
- */
-export interface ExpandPermissionTreeParams {
-  resourceType: string;
-  resourceId: string;
-  permission: string;
-  /**
-   * Milliseconds bounding this call, overriding the client's
-   * `defaultTimeoutMs`. See root DESIGN.md, "RULE: A unary call must have a
-   * deadline".
-   */
-  timeoutMs?: number;
-}
-
-/**
- * Parameters for reflecting the schema.
- */
-export interface ReflectSchemaOptions {
-  definitionNameFilter?: string;
-  caveatNameFilter?: string;
-  relationNameFilter?: string;
-  permissionNameFilter?: string;
-  /**
-   * Milliseconds bounding this call, overriding the client's
-   * `defaultTimeoutMs`. See root DESIGN.md, "RULE: A unary call must have a
-   * deadline".
-   */
-  timeoutMs?: number;
-}
-
-/**
- * Parameters for computing computable permissions.
- */
-export interface ComputablePermissionsParams {
-  definitionName: string;
-  relationName: string;
-  definitionNameFilter?: string;
-  /**
-   * Milliseconds bounding this call, overriding the client's
-   * `defaultTimeoutMs`. See root DESIGN.md, "RULE: A unary call must have a
-   * deadline".
-   */
-  timeoutMs?: number;
-}
-
-/**
- * Parameters for finding dependent relations.
- */
-export interface DependentRelationsParams {
-  definitionName: string;
-  permissionName: string;
-  /**
-   * Milliseconds bounding this call, overriding the client's
-   * `defaultTimeoutMs`. See root DESIGN.md, "RULE: A unary call must have a
-   * deadline".
-   */
-  timeoutMs?: number;
-}
-
-/**
- * A relation reference returned by schema reflection.
- */
-export interface RelationReference {
-  definitionName: string;
-  relationName: string;
-  isPermission: boolean;
-}
-
-// ---------------------------------------------------------------------------
-// Expand tree (mirrors spicedb-go/client/expand_tree.go)
-// ---------------------------------------------------------------------------
-
-/**
- * The set operation combining an {@link IntermediateNode}'s children.
- */
-export type TreeOperation =
-  | "unspecified"
-  | "union"
-  | "intersection"
-  | "exclusion";
-
-/**
- * Identifies a resource or subject object.
- */
+export { ZedToken } from "./token.js";
+import { ZedToken, serverToken } from "./token.js";
+import type { Tracing, LookupDebug, LookupPermissionshipFilter, Wildcards, WatchContent } from "./modes.js";
 export interface ObjectRef {
-  objectType: string;
-  objectId: string;
+    readonly objectType: string;
+    readonly objectId: string;
 }
-
-/**
- * A subject with access at a leaf of a {@link PermissionTree}.
- */
 export interface SubjectRef {
-  subjectType: string;
-  subjectId: string;
-  optionalRelation: string;
+    readonly object: ObjectRef;
+    readonly relation?: string;
 }
-
-/**
- * Combines child subtrees with a set operation.
- */
-export interface IntermediateNode {
-  operation: TreeOperation;
-  children: PermissionTree[];
+export interface Caveat {
+    readonly name: string;
+    readonly context?: JSONObject;
 }
-
-/**
- * Holds the concrete subjects at a leaf of a {@link PermissionTree}.
- */
-export interface LeafNode {
-  subjects: SubjectRef[];
+export interface Relationship {
+    readonly resource: ObjectRef;
+    readonly relation: string;
+    readonly subject: SubjectRef;
+    readonly caveat?: Caveat;
+    readonly expiration?: Date;
 }
-
-/**
- * A native node of an expanded permission tree. Exactly one of
- * `intermediate` or `leaf` is set.
- */
+export interface CheckRequest {
+    readonly resource: ObjectRef;
+    readonly permission: string;
+    readonly subject: SubjectRef;
+    readonly consistency: Consistency;
+    readonly context?: JSONObject;
+}
+export type SubjectRelationFilter = {
+    readonly kind: SubjectRelationKind.Any;
+} | {
+    readonly kind: SubjectRelationKind.Direct;
+} | {
+    readonly kind: SubjectRelationKind.Named;
+    readonly relation: string;
+};
+export interface SubjectFilter {
+    readonly subjectType: string;
+    readonly subjectId?: string;
+    readonly relation?: SubjectRelationFilter;
+}
+export interface RelationshipFilter {
+    readonly resourceType: string;
+    readonly resourceId?: string;
+    readonly resourceIdPrefix?: string;
+    readonly relation?: string;
+    readonly subject?: SubjectFilter;
+}
+export interface CallOptions {
+    readonly signal?: AbortSignal;
+    readonly timeoutMs?: number;
+}
+export interface CheckOptions extends CallOptions {
+    readonly context?: JSONObject;
+    readonly tracing?: Tracing;
+}
+export interface Preconditions {
+    readonly mustMatch?: readonly RelationshipFilter[];
+    readonly mustNotMatch?: readonly RelationshipFilter[];
+}
+export interface DeleteOptions extends CallOptions, Preconditions {
+    readonly limit: number;
+    readonly cursor?: string;
+}
+export interface DeleteAllOptions extends CallOptions, Preconditions {
+    readonly pageSize?: number;
+    readonly cursor?: string;
+}
+export interface DeleteResult {
+    readonly revision: ZedToken;
+    readonly deletedCount: bigint;
+    readonly cursor?: string;
+    readonly progress: "complete" | "partial" | "unspecified";
+}
+/** The result of an atomic relationship write. */
+export interface WriteResult {
+    readonly revision: ZedToken;
+}
+export interface ReadRelationshipsRequest {
+    readonly filter: RelationshipFilter;
+    readonly consistency: Consistency;
+    readonly pageSize?: number;
+    readonly cursor?: string;
+}
+export interface LookupResourcesRequest {
+    /** Client-side filtering; limits count yielded matches. Defaults to All. */
+    readonly permissionshipFilter?: LookupPermissionshipFilter;
+    readonly resourceType: string;
+    readonly permission: string;
+    readonly subject: SubjectRef;
+    readonly consistency: Consistency;
+    readonly context?: JSONObject;
+    readonly limit?: number;
+    readonly pageSize?: number;
+    readonly debug?: LookupDebug;
+    readonly cursor?: string;
+}
+export interface LookupSubjectsRequest {
+    readonly resource: ObjectRef;
+    readonly permission: string;
+    readonly subjectType: string;
+    readonly consistency: Consistency;
+    readonly subjectRelation?: string;
+    readonly context?: JSONObject;
+    readonly limit?: number;
+    readonly cursor?: string;
+    readonly wildcards?: Wildcards;
+}
+export interface ExpandPermissionTreeRequest {
+    readonly resource: ObjectRef;
+    readonly permission: string;
+    readonly consistency: Consistency;
+}
+export interface SchemaFilter {
+    readonly definitionName?: string;
+    readonly caveatName?: string;
+    readonly relationName?: string;
+    readonly permissionName?: string;
+}
+export interface ReflectSchemaRequest {
+    readonly consistency: Consistency;
+    readonly filters?: readonly SchemaFilter[];
+}
+export interface ComputablePermissionsRequest {
+    readonly definitionName: string;
+    readonly relationName: string;
+    readonly consistency: Consistency;
+    readonly definitionNameFilter?: string;
+}
+export interface DependentRelationsRequest {
+    readonly definitionName: string;
+    readonly permissionName: string;
+    readonly consistency: Consistency;
+}
+export interface DiffSchemaRequest {
+    readonly comparisonSchema: string;
+    readonly consistency: Consistency;
+}
+export interface ExportRelationshipsRequest {
+    readonly consistency: Consistency;
+    readonly filter?: RelationshipFilter;
+    readonly pageSize?: number;
+    readonly cursor?: string;
+}
+export interface WatchRequest {
+    readonly objectTypes?: readonly string[];
+    readonly startRevision?: ZedToken;
+    readonly content?: readonly WatchContent[];
+    readonly relationshipFilters?: readonly RelationshipFilter[];
+}
+/** @experimental */
+export interface RoaringLookupResourcesRequest {
+    readonly resourceType: string;
+    readonly permission: string;
+    readonly subject: SubjectRef;
+    readonly consistency: Consistency;
+}
+/** @experimental */
+export interface RoaringLookupResourcesResult {
+    readonly bitmap: Uint8Array;
+    readonly cardinality: bigint;
+    readonly revision: ZedToken;
+}
+export interface WatchChange {
+    readonly operation: "create" | "touch" | "delete" | "unspecified";
+    readonly relationship: Relationship;
+}
+export interface WatchEvent {
+    readonly updates: readonly WatchChange[];
+    readonly changesThrough: ZedToken;
+    readonly metadata?: JSONObject;
+    readonly schemaUpdated: boolean;
+    readonly isCheckpoint: boolean;
+}
+export type TreeOperation = "unspecified" | "union" | "intersection" | "exclusion";
+export type PermissionTreeNode = {
+    readonly kind: "intermediate";
+    readonly operation: TreeOperation;
+    readonly children: readonly PermissionTree[];
+} | {
+    readonly kind: "leaf";
+    readonly subjects: readonly SubjectRef[];
+} | {
+    readonly kind: "unspecified";
+};
 export interface PermissionTree {
-  expandedObject: ObjectRef;
-  expandedRelation: string;
-  intermediate?: IntermediateNode;
-  leaf?: LeafNode;
+    readonly expandedObject: ObjectRef;
+    readonly expandedRelation: string;
+    readonly node: PermissionTreeNode;
 }
-
-// ---------------------------------------------------------------------------
-// Schema reflection / diff (mirrors spicedb-go/client/schema.go)
-// ---------------------------------------------------------------------------
-
-/**
- * A parameter of a caveat.
- */
+export interface ExpandResult {
+    readonly treeRoot: PermissionTree;
+    readonly revision: ZedToken;
+}
 export interface SchemaCaveatParameter {
-  name: string;
-  type: string;
-  parentCaveatName: string;
+    readonly name: string;
+    readonly type: string;
+    readonly parentCaveatName: string;
 }
-
-/**
- * A caveat defined in a SpiceDB schema.
- */
 export interface SchemaCaveat {
-  name: string;
-  comment: string;
-  expression: string;
-  parameters: SchemaCaveatParameter[];
+    readonly name: string;
+    readonly comment: string;
+    readonly expression: string;
+    readonly parameters: readonly SchemaCaveatParameter[];
 }
-
-/**
- * A relation within a schema definition.
- */
+export interface SchemaTypeReference {
+    readonly subjectDefinitionName: string;
+    readonly caveatName?: string;
+    readonly type: {
+        readonly kind: "terminal";
+        readonly terminal: boolean;
+    } | {
+        readonly kind: "relation";
+        readonly relation: string;
+    } | {
+        readonly kind: "wildcard";
+        readonly wildcard: boolean;
+    } | {
+        readonly kind: "unspecified";
+    };
+}
 export interface SchemaRelation {
-  name: string;
-  comment: string;
-  parentDefinitionName: string;
+    readonly name: string;
+    readonly comment: string;
+    readonly parentDefinitionName: string;
+    readonly subjectTypes: readonly SchemaTypeReference[];
 }
-
-/**
- * A permission within a schema definition.
- */
 export interface SchemaPermission {
-  name: string;
-  comment: string;
-  parentDefinitionName: string;
+    readonly name: string;
+    readonly comment: string;
+    readonly parentDefinitionName: string;
 }
-
-/**
- * A definition in a SpiceDB schema, including its relations and permissions.
- */
 export interface SchemaDefinition {
-  name: string;
-  comment: string;
-  relations: SchemaRelation[];
-  permissions: SchemaPermission[];
+    readonly name: string;
+    readonly comment: string;
+    readonly relations: readonly SchemaRelation[];
+    readonly permissions: readonly SchemaPermission[];
 }
-
-/**
- * The result of a schema reflection call.
- */
 export interface ReflectSchemaResult {
-  definitions: SchemaDefinition[];
-  caveats: SchemaCaveat[];
-  revision: string;
+    readonly definitions: readonly SchemaDefinition[];
+    readonly caveats: readonly SchemaCaveat[];
+    readonly revision: ZedToken;
 }
-
-/**
- * A single difference between two schemas.
- *
- * `kind` is a human-readable description of the diff type (e.g.
- * `"definition_added"`, `"relation_removed"`, `"permission_expr_changed"`)
- * and the associated fields contain the details:
- * - `definitionName` is set for definition and relation/permission-level diffs.
- * - `relationName` is set for relation-level diffs.
- * - `permissionName` is set for permission-level diffs.
- * - `caveatName` is set for caveat-level diffs.
- */
+export interface RelationReference {
+    readonly definitionName: string;
+    readonly relationName: string;
+    readonly isPermission: boolean;
+}
+export interface RelationsResult {
+    readonly relations: readonly RelationReference[];
+    readonly revision: ZedToken;
+}
+export interface SchemaResult {
+    readonly schema: string;
+    readonly revision: ZedToken;
+}
 export interface SchemaDiff {
-  kind: string;
-  definitionName: string;
-  relationName: string;
-  permissionName: string;
-  caveatName: string;
+    readonly kind: string;
+    readonly definitionName: string;
+    readonly relationName: string;
+    readonly permissionName: string;
+    readonly caveatName: string;
+    readonly definition?: SchemaDefinition;
+    readonly relation?: SchemaRelation;
+    readonly permission?: SchemaPermission;
+    readonly caveat?: SchemaCaveat;
+    readonly parameter?: SchemaCaveatParameter;
+    readonly changedSubjectType?: SchemaTypeReference;
+    readonly previousType?: string;
 }
-
-/**
- * Result of counting relationships.
- * @experimental
- */
+export interface SchemaDiffResult {
+    readonly diffs: readonly SchemaDiff[];
+    readonly revision: ZedToken;
+}
+/** @experimental */
 export interface RelationshipCountResult {
-  stillCalculating: boolean;
-  count?: number;
-  revision?: string;
+    readonly stillCalculating: boolean;
+    readonly count?: bigint;
+    readonly revision?: ZedToken;
 }
-
-/**
- * Transaction builder for batching relationship mutations.
- */
-export class Transaction {
-  /** @internal */
-  readonly updates: ProtoRelationshipUpdate[] = [];
-  /** @internal */
-  readonly preconditions: ProtoPrecondition[] = [];
-  /** @internal */
-  metadata?: Record<string, unknown>;
-
-  /**
-   * Creates a relationship. Fails if it already exists.
-   */
-  create(rel: Relationship): this {
-    this.updates.push(
-      create(RelationshipUpdateSchema, {
-        operation: RelationshipUpdate_Operation.CREATE,
-        relationship: toProtoRelationship(rel),
-      }),
-    );
-    return this;
-  }
-
-  /**
-   * Upserts a relationship. Does not fail if it already exists.
-   */
-  touch(rel: Relationship): this {
-    this.updates.push(
-      create(RelationshipUpdateSchema, {
-        operation: RelationshipUpdate_Operation.TOUCH,
-        relationship: toProtoRelationship(rel),
-      }),
-    );
-    return this;
-  }
-
-  /**
-   * Deletes a relationship. No-ops if it doesn't exist.
-   */
-  delete(rel: Relationship): this {
-    this.updates.push(
-      create(RelationshipUpdateSchema, {
-        operation: RelationshipUpdate_Operation.DELETE,
-        relationship: toProtoRelationship(rel),
-      }),
-    );
-    return this;
-  }
-
-  /**
-   * Adds a precondition that no relationships match the given filter.
-   * The transaction will fail if any matching relationships exist.
-   */
-  mustNotMatch(filter: RelationshipFilterOptions): this {
-    this.preconditions.push(
-      toProtoPrecondition(Precondition_Operation.MUST_NOT_MATCH, filter),
-    );
-    return this;
-  }
-
-  /**
-   * Adds a precondition that at least one relationship matches the given filter.
-   * The transaction will fail if no matching relationships exist.
-   */
-  mustMatch(filter: RelationshipFilterOptions): this {
-    this.preconditions.push(
-      toProtoPrecondition(Precondition_Operation.MUST_MATCH, filter),
-    );
-    return this;
-  }
-
-  /**
-   * Sets optional transaction metadata that will be included in watch events.
-   */
-  withMetadata(meta: Record<string, unknown>): this {
-    this.metadata = meta;
-    return this;
-  }
+export type Permissionship = "unspecified" | "hasPermission" | "conditionalPermission" | "noPermission";
+export interface PartialCaveatInfo {
+    readonly missingRequiredContext: readonly string[];
 }
-
-/**
- * Creates a Relationship from a "type:id" resource, relation, and "type:id" subject.
- *
- * @example
- * ```typescript
- * const rel = relationship("document:readme", "viewer", "user:jimmy");
- * ```
- */
-export function relationship(
-  resource: string,
-  relation: string,
-  subject: string,
-): Relationship {
-  const [resourceType, resourceId] = parseRef(resource, "resource");
-  const [subjectType, subjectId, subjectRelation] = parseSubjectRef(subject);
-  return {
-    resourceType,
-    resourceId,
-    resourceRelation: relation,
-    subjectType,
-    subjectId,
-    subjectRelation,
-  };
+export interface LookupResource {
+    readonly resourceId: string;
+    readonly permissionship: Permissionship;
+    readonly partialCaveat?: PartialCaveatInfo;
+    readonly lookedUpAt: ZedToken;
 }
-
-/**
- * Creates a Relationship from a "type:id#relation" tuple string and a "type:id" subject.
- *
- * @example
- * ```typescript
- * const rel = relationshipFromTuple("document:readme#viewer", "user:jimmy");
- * ```
- */
-export function relationshipFromTuple(
-  resourceTuple: string,
-  subject: string,
-): Relationship {
-  const hashIdx = resourceTuple.indexOf("#");
-  if (hashIdx === -1) {
-    throw new Error(
-      `Invalid resource tuple: "${resourceTuple}" — expected "type:id#relation"`,
-    );
-  }
-  const resourceRef = resourceTuple.substring(0, hashIdx);
-  const relation = resourceTuple.substring(hashIdx + 1);
-  return relationship(resourceRef, relation, subject);
+export interface ResolvedSubject {
+    readonly subjectId: string;
+    readonly permissionship: Permissionship;
+    readonly partialCaveat?: PartialCaveatInfo;
 }
-
-function parseRef(ref: string, label: string): [string, string] {
-  const colonIdx = ref.indexOf(":");
-  if (colonIdx === -1) {
-    throw new Error(
-      `Invalid ${label} reference: "${ref}" — expected "type:id"`,
-    );
-  }
-  return [ref.substring(0, colonIdx), ref.substring(colonIdx + 1)];
+export interface LookupSubject {
+    readonly subject: ResolvedSubject;
+    readonly excludedSubjects: readonly ResolvedSubject[];
+    readonly lookedUpAt: ZedToken;
 }
-
-function parseSubjectRef(
-  ref: string,
-): [string, string, string | undefined] {
-  const colonIdx = ref.indexOf(":");
-  if (colonIdx === -1) {
-    throw new Error(
-      `Invalid subject reference: "${ref}" — expected "type:id" or "type:id#relation"`,
-    );
-  }
-  const subjectType = ref.substring(0, colonIdx);
-  const rest = ref.substring(colonIdx + 1);
-  const hashIdx = rest.indexOf("#");
-  if (hashIdx === -1) {
-    return [subjectType, rest, undefined];
-  }
-  return [subjectType, rest.substring(0, hashIdx), rest.substring(hashIdx + 1)];
+export interface CaveatEvaluation {
+    readonly expression: string;
+    readonly result: "unspecified" | "unevaluated" | "false" | "true" | "missingContext";
+    readonly context?: JSONObject;
+    readonly missingContext: readonly string[];
+    readonly caveatName: string;
 }
-
+export type TraceResolution = {
+    readonly kind: "cached";
+    readonly cached: boolean;
+} | {
+    readonly kind: "subproblems";
+    readonly traces: readonly CheckDebugTrace[];
+} | {
+    readonly kind: "unspecified";
+};
+export interface CheckDebugTrace {
+    readonly resource?: ObjectRef;
+    readonly permission: string;
+    readonly permissionType: "unspecified" | "relation" | "permission";
+    readonly subject?: SubjectRef;
+    readonly result: Permissionship;
+    readonly caveatEvaluation?: CaveatEvaluation;
+    /** Exact signed nanoseconds, avoiding floating-point duration loss. */
+    readonly durationNs?: bigint;
+    readonly resolution: TraceResolution;
+    readonly expiration?: Date;
+    readonly traceOperationId: string;
+    readonly source: string;
+}
+export interface DebugInformation {
+    readonly schemaUsed: string;
+    readonly check?: CheckDebugTrace;
+}
+export class CheckResult {
+    readonly missingContext: readonly string[];
+    readonly debugTrace?: DebugInformation;
+    readonly expiration?: Date;
+    constructor(readonly permissionship: Permissionship, missingContext: readonly string[], readonly checkedAt: ZedToken, debugTrace?: DebugInformation, expiration?: Date) {
+        this.missingContext = immutableSnapshot(missingContext);
+        this.debugTrace = debugTrace === undefined ? undefined : immutableSnapshot(debugTrace);
+        this.expiration = expiration === undefined ? undefined : immutableSnapshot(expiration);
+        Object.freeze(this);
+    }
+    hasPermission(): boolean { return this.permissionship === "hasPermission"; }
+}
+/** @internal Deep copy collection ownership at the API boundary. */
+export function immutableSnapshot<T>(value: T): T {
+    if (value === null || typeof value !== "object" || value instanceof Consistency || value instanceof ZedToken)
+        return value;
+    if (value instanceof Date) {
+        if (!Number.isFinite(value.getTime()))
+            throw new InvalidArgumentError("expiration must be a valid Date");
+        const date = new Date(value.getTime());
+        for (const name of Object.getOwnPropertyNames(Date.prototype)) {
+            if (name.startsWith("set"))
+                Object.defineProperty(date, name, { value: () => { throw new TypeError("Date snapshot is immutable"); } });
+        }
+        return Object.freeze(date) as T;
+    }
+    if (value instanceof Uint8Array)
+        return value.slice() as T;
+    if (Array.isArray(value))
+        return Object.freeze(value.map(v => immutableSnapshot(v))) as T;
+    const copy: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value))
+        Object.defineProperty(copy, k, { value: immutableSnapshot(v), enumerable: true });
+    return Object.freeze(copy) as T;
+}
+/** @internal Validate native JSON before protobuf conversion, reporting the full offending path. */
+export function jsonSnapshot(value: unknown, path = "context"): JSONObject {
+    const active = new Set<object>();
+    function visit(v: unknown, key: string): JSONValue {
+        if (v === null || typeof v === "string" || typeof v === "boolean")
+            return v;
+        if (typeof v === "number" && Number.isFinite(v))
+            return v;
+        if (typeof v !== "object" || v === null)
+            throw new InvalidArgumentError(`${key}: unsupported JSON value`);
+        if (active.has(v))
+            throw new InvalidArgumentError(`${key}: cyclic JSON value`);
+        if (!Array.isArray(v) && Object.getPrototypeOf(v) !== Object.prototype && Object.getPrototypeOf(v) !== null)
+            throw new InvalidArgumentError(`${key}: unsupported JSON object`);
+        if (Object.getOwnPropertySymbols(v).length)
+            throw new InvalidArgumentError(`${key}: symbol JSON key`);
+        active.add(v);
+        let result: JSONValue;
+        if (Array.isArray(v))
+            result = Object.freeze(Array.from(v, (item, i) => visit(item, `${key}[${i}]`)));
+        else {
+            const resultObject: Record<string, JSONValue> = {};
+            for (const [k, item] of Object.entries(v))
+                Object.defineProperty(resultObject, k, { value: visit(item, `${key}.${k}`), enumerable: true });
+            result = Object.freeze(resultObject);
+        }
+        active.delete(v);
+        return result;
+    }
+    if (value === null || typeof value !== "object" || Array.isArray(value))
+        throw new InvalidArgumentError(`${path}: expected a JSON object`);
+    return visit(value, path) as JSONObject;
+}
+/** @internal */
+export function mergeCheckContext(defaults?: JSONObject, item?: JSONObject): JsonObject | undefined {
+    if (defaults === undefined && item === undefined)
+        return undefined;
+    return jsonSnapshot({ ...(defaults === undefined ? {} : jsonSnapshot(defaults, "options.context")), ...(item === undefined ? {} : jsonSnapshot(item)) }) as JsonObject;
+}
+/** @internal */
+export function protoSubject(subject: SubjectRef) {
+    if (!subject?.object)
+        throw new InvalidArgumentError("subject.object is required");
+    if (subject.relation !== undefined && !subject.relation)
+        throw new InvalidArgumentError("subject.relation must be nonempty when present");
+    return create(SubjectReferenceSchema, { object: subject.object, optionalRelation: subject.relation ?? "" });
+}
+/** @internal */
+export function nativeSubject(subject: {
+    object?: ObjectRef;
+    optionalRelation: string;
+}): SubjectRef {
+    return immutableSnapshot({ object: subject.object ? { objectType: subject.object.objectType, objectId: subject.object.objectId } : { objectType: "", objectId: "" }, ...(subject.optionalRelation ? { relation: subject.optionalRelation } : {}) });
+}
 /** @internal */
 export function toProtoRelationship(rel: Relationship): ProtoRelationship {
-  const proto = create(RelationshipSchema, {
-    resource: create(ObjectReferenceSchema, {
-      objectType: rel.resourceType,
-      objectId: rel.resourceId,
-    }),
-    relation: rel.resourceRelation,
-    subject: create(SubjectReferenceSchema, {
-      object: create(ObjectReferenceSchema, {
-        objectType: rel.subjectType,
-        objectId: rel.subjectId,
-      }),
-      optionalRelation: rel.subjectRelation ?? "",
-    }),
-  });
-
-  if (rel.caveatName) {
-    proto.optionalCaveat = create(ContextualizedCaveatSchema, {
-      caveatName: rel.caveatName,
-      // Internal cast: the proto Struct field requires JsonObject; the
-      // public field is the native Record<string, unknown>.
-      context: rel.caveatContext as JsonObject | undefined,
-    });
-  }
-
-  if (rel.expiration) {
-    proto.optionalExpiresAt = timestampFromDate(rel.expiration);
-  }
-
-  return proto;
+    if (!rel.resource || !rel.subject || !rel.relation)
+        throw new InvalidArgumentError("relationship requires resource, relation, and subject");
+    if (rel.expiration !== undefined && (!(rel.expiration instanceof Date) || !Number.isFinite(rel.expiration.getTime())))
+        throw new InvalidArgumentError("expiration must be a valid Date");
+    return create(RelationshipSchema, { resource: rel.resource, relation: rel.relation, subject: protoSubject(rel.subject), optionalCaveat: rel.caveat ? create(ContextualizedCaveatSchema, { caveatName: rel.caveat.name, context: rel.caveat.context === undefined ? undefined : jsonSnapshot(rel.caveat.context, "caveat.context") as JsonObject }) : undefined, optionalExpiresAt: rel.expiration === undefined ? undefined : timestampFromDate(rel.expiration) });
 }
-
 /** @internal */
-export function fromProtoRelationship(
-  proto: ProtoRelationship,
-): Relationship {
-  const rel: Relationship = {
-    resourceType: proto.resource?.objectType ?? "",
-    resourceId: proto.resource?.objectId ?? "",
-    resourceRelation: proto.relation,
-    subjectType: proto.subject?.object?.objectType ?? "",
-    subjectId: proto.subject?.object?.objectId ?? "",
-  };
-
-  if (proto.subject?.optionalRelation) {
-    rel.subjectRelation = proto.subject.optionalRelation;
-  }
-
-  if (proto.optionalCaveat?.caveatName) {
-    rel.caveatName = proto.optionalCaveat.caveatName;
-    if (proto.optionalCaveat.context) {
-      rel.caveatContext = proto.optionalCaveat.context;
-    }
-  }
-
-  if (proto.optionalExpiresAt) {
-    rel.expiration = new Date(
-      Number(proto.optionalExpiresAt.seconds) * 1000 +
-        proto.optionalExpiresAt.nanos / 1_000_000,
-    );
-  }
-
-  return rel;
+export function fromProtoRelationship(rel: ProtoRelationship): Relationship {
+    return immutableSnapshot({ resource: { objectType: rel.resource?.objectType ?? "", objectId: rel.resource?.objectId ?? "" }, relation: rel.relation,
+        subject: nativeSubject(rel.subject ?? { optionalRelation: "" }),
+        ...(rel.optionalCaveat ? { caveat: { name: rel.optionalCaveat.caveatName, ...(rel.optionalCaveat.context === undefined ? {} : { context: jsonSnapshot(rel.optionalCaveat.context, "caveat.context") }) } } : {}),
+        ...(rel.optionalExpiresAt ? { expiration: new Date(Number(rel.optionalExpiresAt.seconds) * 1000 + rel.optionalExpiresAt.nanos / 1e6) } : {}) });
 }
-
-/**
- * Converts filter options to a proto RelationshipFilter.
- *
- * @throws {InvalidArgumentError} if `subjectId` or `subjectRelation` is set
- * without `subjectType`. The wire's `SubjectFilter.subjectType` is a
- * required field, so there is no way to express a subject ID/relation
- * constraint without it, which makes silently dropping the constraint the
- * one unsafe resolution: a caller who wrote `{ resourceType: "document",
- * subjectId: "alice" }`, expecting to narrow to alice's relationships,
- * would instead match every subject on every document — e.g.
- * `deleteRelationships` would delete every relationship on every document,
- * not just alice's. See root DESIGN.md, "RULE: A conversion that cannot
- * preserve meaning must fail", clause 1.
- *
- * @internal
- */
-export function toProtoRelationshipFilter(
-  filter: RelationshipFilterOptions,
-): ProtoRelationshipFilter {
-  const proto = create(RelationshipFilterSchema, {
-    resourceType: filter.resourceType,
-    optionalResourceId: filter.resourceId ?? "",
-    optionalResourceIdPrefix: filter.resourceIdPrefix ?? "",
-    optionalRelation: filter.resourceRelation ?? "",
-  });
-
-  if (filter.subjectType) {
-    const subjectFilter = create(SubjectFilterSchema, {
-      subjectType: filter.subjectType,
-      optionalSubjectId: filter.subjectId ?? "",
-    });
-    if (filter.subjectRelation) {
-      subjectFilter.optionalRelation = create(
-        SubjectFilter_RelationFilterSchema,
-        {
-          relation: filter.subjectRelation,
-        },
-      );
-    }
-    proto.optionalSubjectFilter = subjectFilter;
-  } else if (filter.subjectId || filter.subjectRelation) {
-    const missing = filter.subjectId ? "subjectId" : "subjectRelation";
-    throw new InvalidArgumentError(
-      `Filter has ${missing} set without subjectType. The wire format ` +
-        `requires subjectType whenever a subject constraint is present -- ` +
-        `set subjectType before setting ${missing}.`,
-    );
-  }
-
-  return proto;
-}
-
-/**
- * Builds a Precondition proto from an operation and filter. Shared by
- * {@link Transaction}'s `mustMatch`/`mustNotMatch` and
- * {@link toProtoDeletePreconditions} so both build preconditions identically.
- *
- * @internal
- */
-export function toProtoPrecondition(
-  operation: Precondition_Operation,
-  filter: RelationshipFilterOptions,
-): ProtoPrecondition {
-  return create(PreconditionSchema, {
-    operation,
-    filter: toProtoRelationshipFilter(filter),
-  });
-}
-
-/**
- * Builds the `optionalPreconditions` array for a delete request from
- * {@link DeleteOptions}: `mustMatch` filters first, then `mustNotMatch`
- * filters, mirroring spicedb-python's `delete_relationships`.
- *
- * @internal
- */
-export function toProtoDeletePreconditions(
-  options?: DeleteOptions,
-): ProtoPrecondition[] {
-  return [
-    ...(options?.mustMatch ?? []).map((filter) =>
-      toProtoPrecondition(Precondition_Operation.MUST_MATCH, filter),
-    ),
-    ...(options?.mustNotMatch ?? []).map((filter) =>
-      toProtoPrecondition(Precondition_Operation.MUST_NOT_MATCH, filter),
-    ),
-  ];
-}
-
-/**
- * Builds a DeleteRelationshipsRequest proto from a filter and
- * {@link DeleteOptions}. `optionalAllowPartialDeletions` is set whenever
- * `limit` is provided — the server otherwise rejects a limited delete that
- * finds more matches than the limit. Exported for testing the request shape
- * directly; the client sends exactly what this returns.
- *
- * @internal
- */
-export function toProtoDeleteRelationshipsRequest(
-  filter: RelationshipFilterOptions,
-  options?: DeleteOptions,
-): ProtoDeleteRelationshipsRequest {
-  return create(DeleteRelationshipsRequestSchema, {
-    relationshipFilter: toProtoRelationshipFilter(filter),
-    optionalPreconditions: toProtoDeletePreconditions(options),
-    optionalLimit: options?.limit ?? 0,
-    optionalAllowPartialDeletions: options?.limit !== undefined,
-    optionalCursor:
-      options?.cursor !== undefined
-        ? create(CursorSchema, { token: options.cursor })
-        : undefined,
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Expand tree mappers (mirror spicedb-go's toPermissionTree / toTreeOperation,
-// client/expand_tree.go)
-// ---------------------------------------------------------------------------
-
-/** @internal */
-export function toTreeOperation(
-  op: AlgebraicSubjectSet_Operation,
-): TreeOperation {
-  switch (op) {
-    case AlgebraicSubjectSet_Operation.UNION:
-      return "union";
-    case AlgebraicSubjectSet_Operation.INTERSECTION:
-      return "intersection";
-    case AlgebraicSubjectSet_Operation.EXCLUSION:
-      return "exclusion";
-    default:
-      return "unspecified";
-  }
-}
-
-/**
- * Recursively maps a proto PermissionRelationshipTree to its native
- * representation. An undefined input maps to a zero-value PermissionTree.
- * @internal
- */
-export function fromProtoPermissionTree(
-  t?: ProtoPermissionRelationshipTree,
-): PermissionTree {
-  if (!t) {
-    return { expandedObject: { objectType: "", objectId: "" }, expandedRelation: "" };
-  }
-
-  const tree: PermissionTree = {
-    expandedObject: {
-      objectType: t.expandedObject?.objectType ?? "",
-      objectId: t.expandedObject?.objectId ?? "",
-    },
-    expandedRelation: t.expandedRelation,
-  };
-
-  if (t.treeType.case === "intermediate") {
-    tree.intermediate = {
-      operation: toTreeOperation(t.treeType.value.operation),
-      children: t.treeType.value.children.map((child) =>
-        fromProtoPermissionTree(child),
-      ),
+export function relationship(resource: string, relation: string, subject: string): Relationship {
+    const parse = (value: string): ObjectRef => {
+        const i = value.indexOf(":");
+        if (i < 1 || i === value.length - 1)
+            throw new InvalidArgumentError(`invalid object reference: ${value}`);
+        return { objectType: value.slice(0, i), objectId: value.slice(i + 1) };
     };
-  }
-
-  if (t.treeType.case === "leaf") {
-    tree.leaf = {
-      subjects: t.treeType.value.subjects.map((subject) => ({
-        subjectType: subject.object?.objectType ?? "",
-        subjectId: subject.object?.objectId ?? "",
-        optionalRelation: subject.optionalRelation,
-      })),
-    };
-  }
-
-  return tree;
+    const i = subject.indexOf("#");
+    return immutableSnapshot({ resource: parse(resource), relation, subject: { object: parse(i < 0 ? subject : subject.slice(0, i)), ...(i < 0 ? {} : { relation: subject.slice(i + 1) }) } });
 }
-
-// ---------------------------------------------------------------------------
-// Schema reflection / diff mappers (mirror spicedb-go's client/schema.go)
-// ---------------------------------------------------------------------------
-
+export function relationshipFromTuple(tuple: string, subject: string): Relationship {
+    const i = tuple.indexOf("#");
+    if (i < 1)
+        throw new InvalidArgumentError(`invalid resource tuple: ${tuple}`);
+    return relationship(tuple.slice(0, i), tuple.slice(i + 1), subject);
+}
+export function relationshipToFilter(rel: Relationship): RelationshipFilter {
+    return immutableSnapshot({ resourceType: rel.resource.objectType, resourceId: rel.resource.objectId, relation: rel.relation, subject: { subjectType: rel.subject.object.objectType, subjectId: rel.subject.object.objectId, relation: rel.subject.relation === undefined ? { kind: SubjectRelationKind.Direct } : { kind: SubjectRelationKind.Named, relation: rel.subject.relation } } });
+}
 /** @internal */
-export function fromProtoSchemaDefinition(
-  def: ProtoReflectionDefinition,
-): SchemaDefinition {
-  return {
-    name: def.name,
-    comment: def.comment,
-    relations: def.relations.map((rel) => ({
-      name: rel.name,
-      comment: rel.comment,
-      parentDefinitionName: rel.parentDefinitionName,
-    })),
-    permissions: def.permissions.map((perm) => ({
-      name: perm.name,
-      comment: perm.comment,
-      parentDefinitionName: perm.parentDefinitionName,
-    })),
-  };
+export function toProtoRelationshipFilter(filter: RelationshipFilter): ProtoRelationshipFilter {
+    if (!filter.resourceType)
+        throw new InvalidArgumentError("filter.resourceType is required");
+    if (filter.resourceId !== undefined && filter.resourceIdPrefix !== undefined)
+        throw new InvalidArgumentError("filter.resourceId and resourceIdPrefix cannot be combined");
+    const subject = filter.subject;
+    if (subject && !subject.subjectType)
+        throw new InvalidArgumentError("filter.subject.subjectType is required");
+    const relation = subject?.relation;
+    if (relation?.kind === SubjectRelationKind.Named && !relation.relation)
+        throw new InvalidArgumentError("filter.subject.relation must be nonempty for named");
+    if (relation && !Object.values(SubjectRelationKind).includes(relation.kind))
+        throw new InvalidArgumentError("invalid subject relation filter");
+    return create(RelationshipFilterSchema, { resourceType: filter.resourceType, optionalResourceId: filter.resourceId ?? "", optionalResourceIdPrefix: filter.resourceIdPrefix ?? "", optionalRelation: filter.relation ?? "",
+        optionalSubjectFilter: subject ? create(SubjectFilterSchema, { subjectType: subject.subjectType, optionalSubjectId: subject.subjectId ?? "", optionalRelation: relation === undefined || relation.kind === SubjectRelationKind.Any ? undefined : create(SubjectFilter_RelationFilterSchema, { relation: relation.kind === SubjectRelationKind.Direct ? "" : relation.relation }) }) : undefined });
 }
-
+/** @internal */
+export function toProtoPrecondition(operation: Precondition_Operation, filter: RelationshipFilter): ProtoPrecondition { return create(PreconditionSchema, { operation, filter: toProtoRelationshipFilter(filter) }); }
+/** @internal */
+export function toProtoDeletePreconditions(options?: Preconditions): ProtoPrecondition[] { return [...(options?.mustMatch ?? []).map(f => toProtoPrecondition(Precondition_Operation.MUST_MATCH, f)), ...(options?.mustNotMatch ?? []).map(f => toProtoPrecondition(Precondition_Operation.MUST_NOT_MATCH, f))]; }
+/** @internal */
+export function positiveLimit(value: number, field: string): number {
+    if (!Number.isInteger(value) || value <= 0 || value > 0xffffffff)
+        throw new InvalidArgumentError(`${field} must be a positive uint32 integer`);
+    return value;
+}
+/** @internal */
+export function toProtoDeleteRelationshipsRequest(filter: RelationshipFilter, options: DeleteOptions) {
+    if (!options)
+        throw new InvalidArgumentError("deleteRelationships options.limit is required");
+    return create(DeleteRelationshipsRequestSchema, { relationshipFilter: toProtoRelationshipFilter(filter), optionalPreconditions: toProtoDeletePreconditions(options), optionalLimit: positiveLimit(options.limit, "limit"), optionalAllowPartialDeletions: true, optionalCursor: options.cursor ? create(CursorSchema, { token: options.cursor }) : undefined });
+}
+/** Explicitly mutable transaction builder. Each append snapshots caller-owned values. */
+export class Transaction {
+    /** @internal */ private _updates: ReturnType<typeof makeUpdate>[] = [];
+    /** @internal */ private _preconditions: ProtoPrecondition[] = [];
+    /** @internal */ private _metadata?: JSONObject;
+    create(rel: Relationship): this { this._updates.push(makeUpdate(RelationshipUpdate_Operation.CREATE, rel)); return this; }
+    touch(rel: Relationship): this { this._updates.push(makeUpdate(RelationshipUpdate_Operation.TOUCH, rel)); return this; }
+    delete(rel: Relationship): this { this._updates.push(makeUpdate(RelationshipUpdate_Operation.DELETE, rel)); return this; }
+    mustMatch(filter: RelationshipFilter): this { this._preconditions.push(toProtoPrecondition(Precondition_Operation.MUST_MATCH, filter)); return this; }
+    mustNotMatch(filter: RelationshipFilter): this { this._preconditions.push(toProtoPrecondition(Precondition_Operation.MUST_NOT_MATCH, filter)); return this; }
+    withMetadata(metadata: JSONObject): this { this._metadata = jsonSnapshot(metadata, "metadata"); return this; }
+    /** @internal */ _build() { return { updates: this._updates.map(u => clone(RelationshipUpdateSchema, u)), optionalPreconditions: this._preconditions.map(p => clone(PreconditionSchema, p)), optionalTransactionMetadata: this._metadata as JsonObject | undefined }; }
+}
+function makeUpdate(operation: RelationshipUpdate_Operation, rel: Relationship) { return create(RelationshipUpdateSchema, { operation, relationship: toProtoRelationship(rel) }); }
+/** @internal */
+export function toTreeOperation(op: AlgebraicSubjectSet_Operation): TreeOperation { return (["unspecified", "union", "intersection", "exclusion"] as const)[op] ?? "unspecified"; }
+/** @internal */
+export function fromProtoPermissionTree(t?: ProtoPermissionRelationshipTree): PermissionTree {
+    return immutableSnapshot({ expandedObject: { objectType: t?.expandedObject?.objectType ?? "", objectId: t?.expandedObject?.objectId ?? "" }, expandedRelation: t?.expandedRelation ?? "", node: t?.treeType.case === "intermediate" ? { kind: "intermediate", operation: toTreeOperation(t.treeType.value.operation), children: t.treeType.value.children.map(fromProtoPermissionTree) } : t?.treeType.case === "leaf" ? { kind: "leaf", subjects: t.treeType.value.subjects.map(nativeSubject) } : { kind: "unspecified" } });
+}
+/** @internal */
+export function fromProtoSchemaDefinition(def: ProtoReflectionDefinition): SchemaDefinition {
+    return {
+        name: def.name,
+        comment: def.comment,
+        relations: def.relations.map((rel) => ({
+            name: rel.name,
+            comment: rel.comment,
+            parentDefinitionName: rel.parentDefinitionName,
+            subjectTypes: rel.subjectTypes.map(fromProtoTypeReference),
+        })),
+        permissions: def.permissions.map((perm) => ({
+            name: perm.name,
+            comment: perm.comment,
+            parentDefinitionName: perm.parentDefinitionName,
+        })),
+    };
+}
 /** @internal */
 export function fromProtoSchemaCaveat(cav: ProtoReflectionCaveat): SchemaCaveat {
-  return {
-    name: cav.name,
-    comment: cav.comment,
-    expression: cav.expression,
-    parameters: cav.parameters.map((param) => ({
-      name: param.name,
-      type: param.type,
-      parentCaveatName: param.parentCaveatName,
-    })),
-  };
+    return {
+        name: cav.name,
+        comment: cav.comment,
+        expression: cav.expression,
+        parameters: cav.parameters.map((param) => ({
+            name: param.name,
+            type: param.type,
+            parentCaveatName: param.parentCaveatName,
+        })),
+    };
 }
-
 /** @internal */
-export function fromProtoRelationReference(
-  ref: ProtoReflectionRelationReference,
-): RelationReference {
-  return {
-    definitionName: ref.definitionName,
-    relationName: ref.relationName,
-    isPermission: ref.isPermission,
-  };
+export function fromProtoRelationReference(ref: ProtoReflectionRelationReference): RelationReference {
+    return {
+        definitionName: ref.definitionName,
+        relationName: ref.relationName,
+        isPermission: ref.isPermission,
+    };
 }
-
 /**
  * Maps a single proto ReflectionSchemaDiff to its native representation.
  * Mirrors spicedb-go's `schemaDiffFromProto` (client/schema.go).
  * @internal
  */
-export function fromProtoSchemaDiff(d: ProtoReflectionSchemaDiff): SchemaDiff {
-  const base: SchemaDiff = {
-    kind: "unknown",
-    definitionName: "",
-    relationName: "",
-    permissionName: "",
-    caveatName: "",
-  };
-
-  switch (d.diff.case) {
-    case "definitionAdded":
-      return { ...base, kind: "definition_added", definitionName: d.diff.value.name };
-    case "definitionRemoved":
-      return { ...base, kind: "definition_removed", definitionName: d.diff.value.name };
-    case "definitionDocCommentChanged":
-      return {
-        ...base,
-        kind: "definition_doc_comment_changed",
-        definitionName: d.diff.value.name,
-      };
-    case "relationAdded":
-      return {
-        ...base,
-        kind: "relation_added",
-        definitionName: d.diff.value.parentDefinitionName,
-        relationName: d.diff.value.name,
-      };
-    case "relationRemoved":
-      return {
-        ...base,
-        kind: "relation_removed",
-        definitionName: d.diff.value.parentDefinitionName,
-        relationName: d.diff.value.name,
-      };
-    case "relationDocCommentChanged":
-      return {
-        ...base,
-        kind: "relation_doc_comment_changed",
-        definitionName: d.diff.value.parentDefinitionName,
-        relationName: d.diff.value.name,
-      };
-    case "relationSubjectTypeAdded":
-      return {
-        ...base,
-        kind: "relation_subject_type_added",
-        definitionName: d.diff.value.relation?.parentDefinitionName ?? "",
-        relationName: d.diff.value.relation?.name ?? "",
-      };
-    case "relationSubjectTypeRemoved":
-      return {
-        ...base,
-        kind: "relation_subject_type_removed",
-        definitionName: d.diff.value.relation?.parentDefinitionName ?? "",
-        relationName: d.diff.value.relation?.name ?? "",
-      };
-    case "permissionAdded":
-      return {
-        ...base,
-        kind: "permission_added",
-        definitionName: d.diff.value.parentDefinitionName,
-        permissionName: d.diff.value.name,
-      };
-    case "permissionRemoved":
-      return {
-        ...base,
-        kind: "permission_removed",
-        definitionName: d.diff.value.parentDefinitionName,
-        permissionName: d.diff.value.name,
-      };
-    case "permissionDocCommentChanged":
-      return {
-        ...base,
-        kind: "permission_doc_comment_changed",
-        definitionName: d.diff.value.parentDefinitionName,
-        permissionName: d.diff.value.name,
-      };
-    case "permissionExprChanged":
-      return {
-        ...base,
-        kind: "permission_expr_changed",
-        definitionName: d.diff.value.parentDefinitionName,
-        permissionName: d.diff.value.name,
-      };
-    case "caveatAdded":
-      return { ...base, kind: "caveat_added", caveatName: d.diff.value.name };
-    case "caveatRemoved":
-      return { ...base, kind: "caveat_removed", caveatName: d.diff.value.name };
-    case "caveatDocCommentChanged":
-      return {
-        ...base,
-        kind: "caveat_doc_comment_changed",
-        caveatName: d.diff.value.name,
-      };
-    case "caveatExprChanged":
-      return { ...base, kind: "caveat_expr_changed", caveatName: d.diff.value.name };
-    case "caveatParameterAdded":
-      return {
-        ...base,
-        kind: "caveat_parameter_added",
-        caveatName: d.diff.value.parentCaveatName,
-      };
-    case "caveatParameterRemoved":
-      return {
-        ...base,
-        kind: "caveat_parameter_removed",
-        caveatName: d.diff.value.parentCaveatName,
-      };
-    case "caveatParameterTypeChanged":
-      return {
-        ...base,
-        kind: "caveat_parameter_type_changed",
-        caveatName: d.diff.value.parameter?.parentCaveatName ?? "",
-      };
-    default:
-      return base;
-  }
+function schemaDiffSummary(d: ProtoReflectionSchemaDiff): SchemaDiff {
+    const base: SchemaDiff = {
+        kind: "unknown",
+        definitionName: "",
+        relationName: "",
+        permissionName: "",
+        caveatName: "",
+    };
+    switch (d.diff.case) {
+        case "definitionAdded":
+            return { ...base, kind: "definition_added", definitionName: d.diff.value.name };
+        case "definitionRemoved":
+            return { ...base, kind: "definition_removed", definitionName: d.diff.value.name };
+        case "definitionDocCommentChanged":
+            return {
+                ...base,
+                kind: "definition_doc_comment_changed",
+                definitionName: d.diff.value.name,
+            };
+        case "relationAdded":
+            return {
+                ...base,
+                kind: "relation_added",
+                definitionName: d.diff.value.parentDefinitionName,
+                relationName: d.diff.value.name,
+            };
+        case "relationRemoved":
+            return {
+                ...base,
+                kind: "relation_removed",
+                definitionName: d.diff.value.parentDefinitionName,
+                relationName: d.diff.value.name,
+            };
+        case "relationDocCommentChanged":
+            return {
+                ...base,
+                kind: "relation_doc_comment_changed",
+                definitionName: d.diff.value.parentDefinitionName,
+                relationName: d.diff.value.name,
+            };
+        case "relationSubjectTypeAdded":
+            return {
+                ...base,
+                kind: "relation_subject_type_added",
+                definitionName: d.diff.value.relation?.parentDefinitionName ?? "",
+                relationName: d.diff.value.relation?.name ?? "",
+            };
+        case "relationSubjectTypeRemoved":
+            return {
+                ...base,
+                kind: "relation_subject_type_removed",
+                definitionName: d.diff.value.relation?.parentDefinitionName ?? "",
+                relationName: d.diff.value.relation?.name ?? "",
+            };
+        case "permissionAdded":
+            return {
+                ...base,
+                kind: "permission_added",
+                definitionName: d.diff.value.parentDefinitionName,
+                permissionName: d.diff.value.name,
+            };
+        case "permissionRemoved":
+            return {
+                ...base,
+                kind: "permission_removed",
+                definitionName: d.diff.value.parentDefinitionName,
+                permissionName: d.diff.value.name,
+            };
+        case "permissionDocCommentChanged":
+            return {
+                ...base,
+                kind: "permission_doc_comment_changed",
+                definitionName: d.diff.value.parentDefinitionName,
+                permissionName: d.diff.value.name,
+            };
+        case "permissionExprChanged":
+            return {
+                ...base,
+                kind: "permission_expr_changed",
+                definitionName: d.diff.value.parentDefinitionName,
+                permissionName: d.diff.value.name,
+            };
+        case "caveatAdded":
+            return { ...base, kind: "caveat_added", caveatName: d.diff.value.name };
+        case "caveatRemoved":
+            return { ...base, kind: "caveat_removed", caveatName: d.diff.value.name };
+        case "caveatDocCommentChanged":
+            return {
+                ...base,
+                kind: "caveat_doc_comment_changed",
+                caveatName: d.diff.value.name,
+            };
+        case "caveatExprChanged":
+            return { ...base, kind: "caveat_expr_changed", caveatName: d.diff.value.name };
+        case "caveatParameterAdded":
+            return {
+                ...base,
+                kind: "caveat_parameter_added",
+                caveatName: d.diff.value.parentCaveatName,
+            };
+        case "caveatParameterRemoved":
+            return {
+                ...base,
+                kind: "caveat_parameter_removed",
+                caveatName: d.diff.value.parentCaveatName,
+            };
+        case "caveatParameterTypeChanged":
+            return {
+                ...base,
+                kind: "caveat_parameter_type_changed",
+                caveatName: d.diff.value.parameter?.parentCaveatName ?? "",
+            };
+        default:
+            return base;
+    }
 }
-
-// ---------------------------------------------------------------------------
-// Lookup results (mirrors spicedb-go's native lookup types and mappers,
-// client/lookup_types.go: Permissionship, PartialCaveatInfo, LookupResource,
-// ResolvedSubject, LookupSubject)
-// ---------------------------------------------------------------------------
-
-/**
- * Whether a check or lookup result reflects a full grant, a full denial, or
- * is conditional on caveat context that was not fully evaluated by the
- * server. Callers MUST check this before treating a result as a full grant —
- * a `"conditionalPermission"` result may resolve to false once the missing
- * caveat context is supplied.
- *
- * This type serves both the check surface ({@link CheckResult}) and the
- * lookup surface ({@link LookupResource}, {@link ResolvedSubject}). Lookups
- * never yield `"noPermission"`: a subject/resource pair that lacks the
- * permission is simply absent from a lookup stream rather than being yielded
- * with that permissionship. `"noPermission"` only appears on
- * {@link CheckResult}, where the server is answering a question about one
- * specific pair and "no" is itself an answer.
- *
- * `"noPermission"` was added after the three pre-existing values (not
- * inserted before them) so that any code depending on the historical
- * ordering of this union is unaffected. Mirrors spicedb-go's
- * `Permissionship`/`PermissionshipNoPermission` (client/lookup_types.go).
- */
-export type Permissionship =
-  | "unspecified"
-  | "hasPermission"
-  | "conditionalPermission"
-  | "noPermission";
-
-/**
- * Caveat context that was missing to fully evaluate a conditional result.
- */
-export interface PartialCaveatInfo {
-  missingRequiredContext: string[];
+/** @internal */
+export function fromProtoTypeReference(value: ProtoReflectionDefinition["relations"][number]["subjectTypes"][number]): SchemaTypeReference {
+    return immutableSnapshot({ subjectDefinitionName: value.subjectDefinitionName, ...(value.optionalCaveatName ? { caveatName: value.optionalCaveatName } : {}), type: value.typeref.case === "isTerminalSubject" ? { kind: "terminal", terminal: value.typeref.value } : value.typeref.case === "optionalRelationName" ? { kind: "relation", relation: value.typeref.value } : value.typeref.case === "isPublicWildcard" ? { kind: "wildcard", wildcard: value.typeref.value } : { kind: "unspecified" } });
 }
-
-/**
- * One result from {@link SpiceDBClient.lookupResources}.
- */
-export interface LookupResource {
-  resourceId: string;
-  permissionship: Permissionship;
-  /** Set when `permissionship` is `"conditionalPermission"`. */
-  partialCaveat?: PartialCaveatInfo;
-  /**
-   * The revision this result was computed at. Identical for every item
-   * yielded by a single {@link SpiceDBClient.lookupResources} call — it is a
-   * property of the call, not of the individual resource. Thread it into
-   * `atLeast()`/`atLeastOrFull()` for read-your-writes on a later call.
-   */
-  lookedUpAt: string;
+function nativeRelation(value: ProtoReflectionDefinition["relations"][number]): SchemaRelation { return immutableSnapshot({ name: value.name, comment: value.comment, parentDefinitionName: value.parentDefinitionName, subjectTypes: value.subjectTypes.map(fromProtoTypeReference) }); }
+function nativeParameter(value: ProtoReflectionCaveat["parameters"][number]): SchemaCaveatParameter { return { name: value.name, type: value.type, parentCaveatName: value.parentCaveatName }; }
+/** @internal */
+export function fromProtoSchemaDiff(value: ProtoReflectionSchemaDiff): SchemaDiff {
+    const summary = schemaDiffSummary(value);
+    const d = value.diff;
+    switch (d.case) {
+        case "definitionAdded":
+        case "definitionRemoved":
+        case "definitionDocCommentChanged": return immutableSnapshot({ ...summary, definition: fromProtoSchemaDefinition(d.value) });
+        case "relationAdded":
+        case "relationRemoved":
+        case "relationDocCommentChanged": return immutableSnapshot({ ...summary, relation: nativeRelation(d.value) });
+        case "relationSubjectTypeAdded":
+        case "relationSubjectTypeRemoved": return immutableSnapshot({ ...summary, ...(d.value.relation ? { relation: nativeRelation(d.value.relation) } : {}), ...(d.value.changedSubjectType ? { changedSubjectType: fromProtoTypeReference(d.value.changedSubjectType) } : {}) });
+        case "permissionAdded":
+        case "permissionRemoved":
+        case "permissionDocCommentChanged":
+        case "permissionExprChanged": return immutableSnapshot({ ...summary, permission: { name: d.value.name, comment: d.value.comment, parentDefinitionName: d.value.parentDefinitionName } });
+        case "caveatAdded":
+        case "caveatRemoved":
+        case "caveatDocCommentChanged":
+        case "caveatExprChanged": return immutableSnapshot({ ...summary, caveat: fromProtoSchemaCaveat(d.value) });
+        case "caveatParameterAdded":
+        case "caveatParameterRemoved": return immutableSnapshot({ ...summary, parameter: nativeParameter(d.value) });
+        case "caveatParameterTypeChanged": return immutableSnapshot({ ...summary, ...(d.value.parameter ? { parameter: nativeParameter(d.value.parameter) } : {}), previousType: d.value.previousType });
+        default: return immutableSnapshot(summary);
+    }
 }
-
-/**
- * A subject resolved by {@link SpiceDBClient.lookupSubjects} — either the
- * matched subject, or (when found in {@link LookupSubject.excludedSubjects})
- * a subject excluded from a wildcard match.
- */
-export interface ResolvedSubject {
-  subjectId: string;
-  permissionship: Permissionship;
-  partialCaveat?: PartialCaveatInfo;
+/** @internal */
+export function permissionshipFromProto(v: LookupPermissionship): Permissionship {
+    switch (v) {
+        case LookupPermissionship.HAS_PERMISSION:
+            return "hasPermission";
+        case LookupPermissionship.CONDITIONAL_PERMISSION:
+            return "conditionalPermission";
+        default:
+            return "unspecified";
+    }
 }
-
-/**
- * One result from {@link SpiceDBClient.lookupSubjects}. When
- * `subject.subjectId` is the wildcard `"*"`, `excludedSubjects` lists
- * subjects excluded from that wildcard grant — callers MUST treat those
- * subjects as NOT having the permission, even though the wildcard would
- * otherwise suggest they do.
- */
-export interface LookupSubject {
-  subject: ResolvedSubject;
-  excludedSubjects: ResolvedSubject[];
-  /**
-   * The revision this result was computed at. Identical for every item
-   * yielded by a single {@link SpiceDBClient.lookupSubjects} call — it is a
-   * property of the call, not of the individual subject. Thread it into
-   * `atLeast()`/`atLeastOrFull()` for read-your-writes on a later call.
-   */
-  lookedUpAt: string;
-}
-
-/**
- * Maps the proto `LookupPermissionship` enum to its native equivalent.
- * Unrecognized values map to `"unspecified"`. Mirrors spicedb-go's
- * `permissionshipFromProto` (client/lookup_types.go).
- * @internal
- */
-export function permissionshipFromProto(
-  v: LookupPermissionship,
-): Permissionship {
-  switch (v) {
-    case LookupPermissionship.HAS_PERMISSION:
-      return "hasPermission";
-    case LookupPermissionship.CONDITIONAL_PERMISSION:
-      return "conditionalPermission";
-    default:
-      return "unspecified";
-  }
-}
-
 /**
  * Maps a proto `PartialCaveatInfo` to its native equivalent. An undefined
  * input maps to undefined. Mirrors spicedb-go's `partialCaveatFromProto`
  * (client/lookup_types.go).
  * @internal
  */
-export function partialCaveatFromProto(
-  v?: ProtoPartialCaveatInfo,
-): PartialCaveatInfo | undefined {
-  if (!v) {
-    return undefined;
-  }
-  return { missingRequiredContext: v.missingRequiredContext };
+export function partialCaveatFromProto(v?: ProtoPartialCaveatInfo): PartialCaveatInfo | undefined {
+    if (!v) {
+        return undefined;
+    }
+    return { missingRequiredContext: v.missingRequiredContext };
 }
-
 /**
  * Maps a proto `ResolvedSubject` to its native equivalent. An undefined
  * input maps to a zero-value `ResolvedSubject` (empty `subjectId`), which
@@ -1214,33 +743,25 @@ export function partialCaveatFromProto(
  * (client/lookup_types.go).
  * @internal
  */
-export function resolvedSubjectFromProto(
-  v?: ProtoResolvedSubject,
-): ResolvedSubject {
-  return {
-    subjectId: v?.subjectObjectId ?? "",
-    permissionship: permissionshipFromProto(
-      v?.permissionship ?? LookupPermissionship.UNSPECIFIED,
-    ),
-    partialCaveat: partialCaveatFromProto(v?.partialCaveatInfo),
-  };
+export function resolvedSubjectFromProto(v?: ProtoResolvedSubject): ResolvedSubject {
+    return {
+        subjectId: v?.subjectObjectId ?? "",
+        permissionship: permissionshipFromProto(v?.permissionship ?? LookupPermissionship.UNSPECIFIED),
+        partialCaveat: partialCaveatFromProto(v?.partialCaveatInfo),
+    };
 }
-
 /**
  * Maps a proto `LookupResourcesResponse` to its native equivalent.
  * @internal
  */
-export function fromProtoLookupResource(
-  resp: ProtoLookupResourcesResponse,
-): LookupResource {
-  return {
-    resourceId: resp.resourceObjectId,
-    permissionship: permissionshipFromProto(resp.permissionship),
-    partialCaveat: partialCaveatFromProto(resp.partialCaveatInfo),
-    lookedUpAt: resp.lookedUpAt?.token ?? "",
-  };
+export function fromProtoLookupResource(resp: ProtoLookupResourcesResponse): LookupResource {
+    return {
+        resourceId: resp.resourceObjectId,
+        permissionship: permissionshipFromProto(resp.permissionship),
+        partialCaveat: partialCaveatFromProto(resp.partialCaveatInfo),
+        lookedUpAt: serverToken(resp.lookedUpAt?.token),
+    };
 }
-
 /**
  * Maps a proto `LookupSubjectsResponse` to its native equivalent, falling
  * back to the deprecated top-level `subjectObjectId`/`permissionship`/
@@ -1250,164 +771,139 @@ export function fromProtoLookupResource(
  * body (client/lookup.go).
  * @internal
  */
-export function fromProtoLookupSubject(
-  resp: ProtoLookupSubjectsResponse,
-): LookupSubject {
-  let subject = resolvedSubjectFromProto(resp.subject);
-  if (!subject.subjectId) {
-    // Fall back to the deprecated top-level fields for servers that don't
-    // yet populate the non-deprecated `subject` field.
-    subject = {
-      subjectId: resp.subjectObjectId,
-      permissionship: permissionshipFromProto(resp.permissionship),
-      partialCaveat: partialCaveatFromProto(resp.partialCaveatInfo),
+export function fromProtoLookupSubject(resp: ProtoLookupSubjectsResponse): LookupSubject {
+    let subject = resolvedSubjectFromProto(resp.subject);
+    if (!subject.subjectId) {
+        // Fall back to the deprecated top-level fields for servers that don't
+        // yet populate the non-deprecated `subject` field.
+        subject = {
+            subjectId: resp.subjectObjectId,
+            permissionship: permissionshipFromProto(resp.permissionship),
+            partialCaveat: partialCaveatFromProto(resp.partialCaveatInfo),
+        };
+    }
+    let excludedSubjects: ResolvedSubject[] = [];
+    if (resp.excludedSubjects.length > 0) {
+        excludedSubjects = resp.excludedSubjects.map((e) => resolvedSubjectFromProto(e));
+    }
+    else if (resp.excludedSubjectIds.length > 0) {
+        // Fall back to the deprecated excluded_subject_ids field, which carries
+        // only IDs (no permissionship/caveat info).
+        excludedSubjects = resp.excludedSubjectIds.map((id) => ({
+            subjectId: id,
+            permissionship: "unspecified" as const,
+        }));
+    }
+    return { subject, excludedSubjects, lookedUpAt: serverToken(resp.lookedUpAt?.token) };
+}
+/** @internal */
+export function checkPermissionshipFromProto(v: number): Permissionship { return (["unspecified", "noPermission", "hasPermission", "conditionalPermission"] as const)[v] ?? "unspecified"; }
+type ProtoDebug = NonNullable<ProtoCheckPermissionResponse["debugTrace"]>;
+type ProtoTrace = NonNullable<ProtoDebug["check"]>;
+/** @internal */
+export function fromProtoDebugInformation(value?: ProtoDebug): DebugInformation | undefined { return value === undefined ? undefined : immutableSnapshot({ schemaUsed: value.schemaUsed, ...(value.check ? { check: fromProtoCheckTrace(value.check) } : {}) }); }
+function fromProtoCheckTrace(value: ProtoTrace): CheckDebugTrace {
+    const caveat = value.caveatEvaluationInfo;
+    return immutableSnapshot({
+        ...(value.resource ? { resource: { objectType: value.resource.objectType, objectId: value.resource.objectId } } : {}),
+        permission: value.permission, permissionType: (["unspecified", "relation", "permission"] as const)[value.permissionType] ?? "unspecified",
+        ...(value.subject ? { subject: nativeSubject(value.subject) } : {}), result: checkPermissionshipFromProto(value.result),
+        ...(caveat ? { caveatEvaluation: { expression: caveat.expression, result: (["unspecified", "unevaluated", "false", "true", "missingContext"] as const)[caveat.result] ?? "unspecified", ...(caveat.context === undefined ? {} : { context: jsonSnapshot(caveat.context) }), missingContext: [...(caveat.partialCaveatInfo?.missingRequiredContext ?? [])], caveatName: caveat.caveatName } } : {}),
+        ...(value.duration ? { durationNs: value.duration.seconds * 1000000000n + BigInt(value.duration.nanos) } : {}),
+        resolution: value.resolution.case === "wasCachedResult" ? { kind: "cached", cached: value.resolution.value } : value.resolution.case === "subProblems" ? { kind: "subproblems", traces: value.resolution.value.traces.map(fromProtoCheckTrace) } : { kind: "unspecified" },
+        ...(value.optionalExpiresAt ? { expiration: new Date(Number(value.optionalExpiresAt.seconds) * 1000 + value.optionalExpiresAt.nanos / 1e6) } : {}), traceOperationId: value.traceOperationId, source: value.source
+    });
+}
+/** @internal */
+export function checkResultFromProto(resp: ProtoCheckPermissionResponse): CheckResult { return new CheckResult(checkPermissionshipFromProto(resp.permissionship), resp.partialCaveatInfo?.missingRequiredContext ?? [], serverToken(resp.checkedAt?.token), fromProtoDebugInformation(resp.debugTrace), resp.optionalExpiresAt ? new Date(Number(resp.optionalExpiresAt.seconds) * 1000 + resp.optionalExpiresAt.nanos / 1e6) : undefined); }
+/** @internal */
+export function checkResultFromBulkItem(item: ProtoCheckBulkPermissionsResponseItem, revision: ZedToken): CheckResult { return new CheckResult(checkPermissionshipFromProto(item.permissionship), item.partialCaveatInfo?.missingRequiredContext ?? [], revision, fromProtoDebugInformation(item.debugTrace)); }
+/** @experimental A resumable permission-set cursor. Every wire field is preserved. */
+export interface PermissionSetCursor {
+    readonly limit: number;
+    readonly token?: ZedToken;
+    readonly startingIndex: number;
+    readonly completedMembers: boolean;
+    readonly startingKey: string;
+    readonly cursor: string;
+}
+/** @experimental */
+export interface PermissionSetReference {
+    readonly object: ObjectRef;
+    readonly permissionOrRelation: string;
+}
+/** @experimental */
+export interface PermissionSetMember {
+    readonly object: ObjectRef;
+    readonly permissionOrRelation?: string;
+}
+/** @experimental */
+export interface PermissionSetChange {
+    readonly revision: ZedToken;
+    readonly operation: "added" | "removed" | "unspecified";
+    readonly parentSet?: PermissionSetReference;
+    readonly child: {
+        readonly kind: "set";
+        readonly set: PermissionSetReference;
+    } | {
+        readonly kind: "member";
+        readonly member: PermissionSetMember;
+    } | {
+        readonly kind: "unspecified";
     };
-  }
-
-  let excludedSubjects: ResolvedSubject[] = [];
-  if (resp.excludedSubjects.length > 0) {
-    excludedSubjects = resp.excludedSubjects.map((e) =>
-      resolvedSubjectFromProto(e),
-    );
-  } else if (resp.excludedSubjectIds.length > 0) {
-    // Fall back to the deprecated excluded_subject_ids field, which carries
-    // only IDs (no permissionship/caveat info).
-    excludedSubjects = resp.excludedSubjectIds.map((id) => ({
-      subjectId: id,
-      permissionship: "unspecified" as const,
-    }));
-  }
-
-  return { subject, excludedSubjects, lookedUpAt: resp.lookedUpAt?.token ?? "" };
 }
-
-// ---------------------------------------------------------------------------
-// Check results (mirrors spicedb-go's native check types and mappers,
-// client/check_types.go: CheckResult, checkPermissionshipFromProto,
-// checkResultFromProto, checkResultFromBulkItem)
-// ---------------------------------------------------------------------------
-
-/**
- * The outcome of a permission check. `permissionship` carries the server's
- * answer; a `"conditionalPermission"` result means the server needed caveat
- * context that was not supplied in the check's `context` and is NOT a
- * grant — prefer {@link CheckResult.hasPermission} over comparing
- * `permissionship` directly for the common case.
- *
- * A class (rather than a plain object, unlike {@link LookupResource}) so
- * that `hasPermission()` travels with the data instead of requiring a
- * separate helper import at every call site — the same reasoning that makes
- * {@link Transaction} and `Consistency` classes elsewhere in this file.
- */
-export class CheckResult {
-  constructor(
-    /** The server's answer. Prefer `hasPermission()` for the common case. */
-    readonly permissionship: Permissionship,
-    /**
-     * Caveat context keys the server needed and did not receive. Empty
-     * unless `permissionship` is `"conditionalPermission"`.
-     */
-    readonly missingContext: string[],
-    /**
-     * The revision this check was evaluated at. Thread it into
-     * `atLeast()`/`atLeastOrFull()` to make a later read observe this check
-     * (and everything it observed) — read-your-writes for checks.
-     */
-    readonly checkedAt: string,
-  ) {}
-
-  /**
-   * Whether the subject has the permission outright. `false` for a
-   * `"conditionalPermission"` result: the server could not evaluate the
-   * caveat, so treating it as a grant would authorize on an unevaluated
-   * condition. This is the ONLY case that returns `true` — `"noPermission"`,
-   * `"unspecified"`, and `"conditionalPermission"` are all `false`.
-   */
-  hasPermission(): boolean {
-    return this.permissionship === "hasPermission";
-  }
+/** @experimental */
+export interface WatchedPermission {
+    readonly resourceType: string;
+    readonly permission: string;
+    readonly subjectType: string;
+    readonly subjectRelation?: string;
 }
-
-/**
- * Merges a call-level default caveat context ({@link CheckOptions.context})
- * with a single check's own item-level context
- * ({@link CheckRequest.context}): a key-level merge where the item's own
- * value wins on conflict and default keys the item does not override are
- * retained — NOT a wholesale replacement, which would silently drop every
- * default key an item didn't happen to mention. Returns `undefined` (never
- * an empty object) when neither is supplied, so no context field is set on
- * the wire. Shared by {@link SpiceDBClient.checkPermission} and the
- * `CheckBulkPermissions`-backed surfaces (`checkPermissions`/`checkAny`/
- * `checkAll`) so both build the merged context identically.
- * @internal
- */
-export function mergeCheckContext(
-  defaultContext: Record<string, unknown> | undefined,
-  itemContext: Record<string, unknown> | undefined,
-): JsonObject | undefined {
-  if (!defaultContext && !itemContext) {
-    return undefined;
-  }
-  return { ...defaultContext, ...itemContext } as JsonObject;
+/** @experimental */
+export interface WatchPermissionSetsRequest {
+    readonly startRevision?: ZedToken;
 }
-
-/**
- * Maps the proto `CheckPermissionResponse.Permissionship` enum (which,
- * unlike `LookupPermissionship`, has a `NO_PERMISSION` value) to its native
- * equivalent. Unrecognized values map to `"unspecified"`. Mirrors
- * spicedb-go's `checkPermissionshipFromProto` (client/check_types.go).
- * @internal
- */
-export function checkPermissionshipFromProto(
-  v: CheckPermissionResponse_Permissionship,
-): Permissionship {
-  switch (v) {
-    case CheckPermissionResponse_Permissionship.HAS_PERMISSION:
-      return "hasPermission";
-    case CheckPermissionResponse_Permissionship.CONDITIONAL_PERMISSION:
-      return "conditionalPermission";
-    case CheckPermissionResponse_Permissionship.NO_PERMISSION:
-      return "noPermission";
-    default:
-      return "unspecified";
-  }
+/** @experimental */
+export type PermissionSetEvent = {
+    readonly kind: "change";
+    readonly change: PermissionSetChange;
+} | {
+    readonly kind: "completedRevision";
+    readonly revision: ZedToken;
+} | {
+    readonly kind: "lookupRequired";
+    readonly revision: ZedToken;
+} | {
+    readonly kind: "breakingSchemaChange";
+    readonly revision: ZedToken;
+    readonly affectedPermissions: readonly WatchedPermission[];
+} | {
+    readonly kind: "unspecified";
+};
+/** @experimental */
+export interface LookupPermissionSetsRequest {
+    readonly revision?: ZedToken;
+    readonly cursor?: PermissionSetCursor;
+    readonly pageSize?: number;
+    readonly limit?: number;
 }
-
-/**
- * Maps a proto `CheckPermissionResponse` (the response from a single,
- * non-bulk `CheckPermission` RPC) to a native {@link CheckResult}. Uses the
- * response's own `checked_at` directly. Mirrors spicedb-go's
- * `checkResultFromProto` (client/check_types.go).
- * @internal
- */
-export function checkResultFromProto(
-  resp: ProtoCheckPermissionResponse,
-): CheckResult {
-  return new CheckResult(
-    checkPermissionshipFromProto(resp.permissionship),
-    resp.partialCaveatInfo?.missingRequiredContext ?? [],
-    resp.checkedAt?.token ?? "",
-  );
+/** @experimental */
+export interface LookupPermissionSet {
+    readonly change?: PermissionSetChange;
+    readonly cursor?: PermissionSetCursor;
 }
-
-/**
- * Maps a proto `CheckBulkPermissionsResponseItem` (one pair's successful
- * result from a `CheckBulkPermissions` call) to a native {@link CheckResult}.
- * `CheckBulkPermissionsResponseItem` carries the same
- * permissionship/partial-caveat-info fields as `CheckPermissionResponse`,
- * but has no per-item `checked_at` of its own — the token lives once on the
- * enclosing `CheckBulkPermissionsResponse` and applies to every pair in it,
- * so callers pass it in as `responseCheckedAt` to propagate onto each item.
- * Mirrors spicedb-go's `checkResultFromBulkItem` (client/check_types.go).
- * @internal
- */
-export function checkResultFromBulkItem(
-  item: ProtoCheckBulkPermissionsResponseItem,
-  responseCheckedAt: string,
-): CheckResult {
-  return new CheckResult(
-    checkPermissionshipFromProto(item.permissionship),
-    item.partialCaveatInfo?.missingRequiredContext ?? [],
-    responseCheckedAt,
-  );
+/** @experimental */
+export interface DownloadPermissionSetsRequest {
+    readonly revision?: ZedToken;
+}
+/** @experimental */
+export interface PermissionSetFile {
+    readonly name: string;
+    readonly url: string;
+}
+/** @experimental Download URLs are returned without fetching their content. */
+export interface DownloadPermissionSetsResult {
+    readonly files: readonly PermissionSetFile[];
+    readonly timestamp?: Date;
+    readonly revision: ZedToken;
 }

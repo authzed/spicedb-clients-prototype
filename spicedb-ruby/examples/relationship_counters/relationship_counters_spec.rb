@@ -31,12 +31,17 @@ RSpec.describe 'RelationshipCounters' do
     client.write_schema(TEST_SCHEMA)
 
     txn = SpiceDB::Transaction.new
-    txn.touch(SpiceDB::Relationship.from_triple('document', 'firstdoc', 'viewer', 'user', 'alice'))
-    txn.touch(SpiceDB::Relationship.from_triple('document', 'seconddoc', 'viewer', 'user', 'bob'))
+    txn.touch(SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'firstdoc'), relation: 'viewer',
+                                        subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user',
+                                                                                                        object_id: 'alice'), relation: nil)))
+    txn.touch(SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'seconddoc'), relation: 'viewer',
+                                        subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: 'bob'), relation: nil)))
     # An `editor` the counter's filter must NOT count. Without a relationship
     # the filter has to exclude, a counter that ignored the relation filter
     # entirely would still report the expected number.
-    txn.touch(SpiceDB::Relationship.from_triple('document', 'firstdoc', 'editor', 'user', 'carol'))
+    txn.touch(SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'firstdoc'), relation: 'editor',
+                                        subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user',
+                                                                                                        object_id: 'carol'), relation: nil)))
     client.write(txn)
   end
 
@@ -51,7 +56,7 @@ RSpec.describe 'RelationshipCounters' do
 
     expect(result).to be_a(SpiceDB::CountResult)
     expect(result.still_calculating).to be false
-    expect(result.revision).not_to be_empty
+    expect(result.revision.to_s).not_to be_empty
 
     # Exactly the two viewer relationships written above, and not the editor.
     # A count of zero -- registration silently no-op'ing, or the value never
@@ -85,7 +90,7 @@ RSpec.describe 'RelationshipCounters' do
 
     expect(result).to be_a(SpiceDB::CountResult)
     expect(result.still_calculating).to be false
-    expect(result.revision).not_to be_empty
+    expect(result.revision.to_s).not_to be_empty
     expect(result.relationship_count).to eq(2)
 
     # Cleanup

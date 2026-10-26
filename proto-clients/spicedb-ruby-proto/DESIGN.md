@@ -1,5 +1,7 @@
 # spicedb-ruby-proto -- Design Manifest
 
+- The [root design](../../DESIGN.md) defines shared semantics, RPC coverage, security, and verification.
+
 This is the Ruby proto client for SpiceDB. It wraps buf-generated gRPC stubs
 with minimal boilerplate for connection setup and authentication.
 
@@ -25,11 +27,14 @@ Create a `lib/spicedb_proto/client.rb` file with:
      rather than folded into `#experimental`, since it is a distinct generated stub
      class rather than another RPC on `ExperimentalService::Stub`.
 
+   - `Authzed::Api::Materialize::V0::RelationshipsService::Stub` as `#materialize_relationships`.
+   - `Authzed::Api::Materialize::V0::WatchPermissionSetsService::Stub` as `#permission_sets`.
+
 2. **`#initialize(endpoint, token, insecure: false, ca_cert: nil, client_cert: nil,
    client_key: nil)`** -- constructor that:
    - Creates a `GRPC::Core::Channel` with appropriate credentials
    - Injects the bearer token via call credentials (secure) or interceptor (insecure)
-   - Builds all five service stubs
+   - Builds all seven service stubs
 
    `ca_cert`/`client_cert`/`client_key` are PEM strings carrying caller-supplied
    TLS trust material, passed to
@@ -93,3 +98,27 @@ Any methods or fields marked deprecated in the proto definitions must carry
 
 - No business logic -- only plumbing (connection, auth)
 - Generated files under `lib/gen/` are never modified
+
+## 2026-10-26 transport contract
+
+The constructor also accepts `allow_insecure_remote_credentials: false`, with
+remote plaintext credentials refused unless the caller explicitly supplies
+true. Keep the opt-in distinct from insecure:. Fail closed on ambiguous
+endpoint syntax before creating a channel. This applies to every construction
+path and the authenticated stubs exposed through the idiomatic raw accessor.
+
+Every wrapped server-streaming RPC must expose a live cancellable operation,
+including when a consumer pauses after next. Closing a wrapper or the owned
+channel cancels that operation even while a read is blocked; an Enumerable
+wrapper that only exits its local loop is insufficient. Preserve composed call
+credentials/plaintext interceptor metadata when obtaining an operation handle
+(for example through return_op:), not only when calling each directly.
+
+Forward the remaining deadline and metadata to every RPC shape. The idiomatic
+layer owns total budgets, retries, paging, and native errors; this layer adds
+no hidden retries or fresh per-attempt timeout. Verify authentication and actual
+server-side cancellation on the operation-handle path as well as ordinary calls.
+
+The handwritten client exposes authenticated `materialize_relationships`
+(RelationshipsService) and `permission_sets` (WatchPermissionSetsService), sharing
+the existing owned channel and bearer-token handling with `materialize`.

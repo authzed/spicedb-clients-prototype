@@ -9,7 +9,7 @@ RSpec.describe SpiceDB::Filter do
       expect(f.resource_type).to eq('document')
       expect(f.resource_id).to be_nil
       expect(f.relation).to be_nil
-      expect(f.subject_type).to be_nil
+      expect(f.subject&.subject_type).to be_nil
     end
 
     it 'is frozen (immutable)' do
@@ -42,22 +42,23 @@ RSpec.describe SpiceDB::Filter do
 
   describe '#with_subject_type' do
     it 'returns a new filter with the subject type set' do
-      f = described_class.new(resource_type: 'document').with_subject_type('user')
-      expect(f.subject_type).to eq('user')
+      f = described_class.new(resource_type: 'document').with_subject(SpiceDB::SubjectFilter.new(subject_type: 'user'))
+      expect(f.subject&.subject_type).to eq('user')
     end
   end
 
   describe '#with_subject_id' do
     it 'returns a new filter with the subject ID set' do
-      f = described_class.new(resource_type: 'document').with_subject_id('alice')
-      expect(f.subject_id).to eq('alice')
+      f = described_class.new(resource_type: 'document').with_subject(SpiceDB::SubjectFilter.new(subject_type: 'user', subject_id: 'alice'))
+      expect(f.subject.subject_id).to eq('alice')
     end
   end
 
   describe '#with_subject_relation' do
     it 'returns a new filter with the subject relation set' do
-      f = described_class.new(resource_type: 'document').with_subject_relation('member')
-      expect(f.subject_relation).to eq('member')
+      f = described_class.new(resource_type: 'document').with_subject(SpiceDB::SubjectFilter.new(subject_type: 'group',
+                                                                                                 relation: SpiceDB::SubjectRelationFilter.named('member')))
+      expect(f.subject.relation.name).to eq('member')
     end
   end
 
@@ -66,14 +67,13 @@ RSpec.describe SpiceDB::Filter do
       f = described_class.new(resource_type: 'document')
                          .with_resource_id('doc1')
                          .with_relation('viewer')
-                         .with_subject_type('user')
-                         .with_subject_id('alice')
+                         .with_subject(SpiceDB::SubjectFilter.new(subject_type: 'user', subject_id: 'alice'))
 
       expect(f.resource_type).to eq('document')
       expect(f.resource_id).to eq('doc1')
       expect(f.relation).to eq('viewer')
-      expect(f.subject_type).to eq('user')
-      expect(f.subject_id).to eq('alice')
+      expect(f.subject&.subject_type).to eq('user')
+      expect(f.subject.subject_id).to eq('alice')
     end
 
     it 'does not mutate previous filters' do

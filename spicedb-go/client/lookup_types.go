@@ -2,6 +2,7 @@ package client
 
 import (
 	v1 "github.com/authzed/spicedb-clients/proto-clients/spicedb-go-proto/gen/authzed/api/v1"
+	"github.com/authzed/spicedb-clients/spicedb-go/consistency"
 )
 
 // Permissionship indicates whether a check or lookup result reflects a full
@@ -59,7 +60,7 @@ type LookupResource struct {
 	// LookedUpAt is the revision this result was computed at. It is identical
 	// for every item yielded by a single LookupResources call — it is a
 	// property of the call, not of the individual resource.
-	LookedUpAt string
+	LookedUpAt consistency.ZedToken
 }
 
 // ResolvedSubject is a subject resolved by LookupSubjects — either the
@@ -81,7 +82,7 @@ type LookupSubject struct {
 	// LookedUpAt is the revision this result was computed at. It is identical
 	// for every item yielded by a single LookupSubjects call — it is a
 	// property of the call, not of the individual subject.
-	LookedUpAt string
+	LookedUpAt consistency.ZedToken
 }
 
 // permissionshipFromProto maps the proto LookupPermissionship enum to its
@@ -103,7 +104,7 @@ func partialCaveatFromProto(v *v1.PartialCaveatInfo) *PartialCaveatInfo {
 	if v == nil {
 		return nil
 	}
-	return &PartialCaveatInfo{MissingRequiredContext: v.GetMissingRequiredContext()}
+	return &PartialCaveatInfo{MissingRequiredContext: append([]string(nil), v.GetMissingRequiredContext()...)}
 }
 
 // resolvedSubjectFromProto maps a proto ResolvedSubject to its native

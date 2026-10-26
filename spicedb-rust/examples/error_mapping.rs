@@ -31,7 +31,7 @@ use spicedb::error::SpiceDBError;
 use spicedb::types::Relationship;
 
 fn doc() -> Relationship {
-    Relationship::new("document", "readme", "view", "user", "alice", "")
+    spicedb::Relationship::from_tuple("document:readme#view@user:alice")
         .expect("invalid relationship")
 }
 
@@ -39,12 +39,21 @@ fn doc() -> Relationship {
 async fn main() {
     // ── 1. OUT_OF_RANGE: discard the stale token, re-read at full ────────
     let (addr, _) = common::spawn(CheckBehavior::GrantUnlessStaleToken).await;
-    let client = SpiceDBClient::new_plaintext(format!("{addr}"), "some-token")
-        .await
-        .expect("connect to the stand-in");
+    let client = SpiceDBClient::new_plaintext(
+        format!("{addr}"),
+        "some-token",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("connect to the stand-in");
 
     let err = client
-        .check_permission(&consistency::at_least(STALE_TOKEN), "view", &doc())
+        .check(spicedb::PermissionCheck::new(
+            doc().resource().clone(),
+            "view",
+            doc().subject().clone(),
+            (consistency::at_least((STALE_TOKEN).into())).clone(),
+        ))
         .await
         .expect_err("a check pinned to a collected ZedToken must fail");
     assert!(
@@ -56,7 +65,12 @@ async fn main() {
     // The recovery the rule calls mechanical, in full: drop the token, re-read
     // at full consistency. Nothing here parses a message.
     let result = client
-        .check_permission(&consistency::full(), "view", &doc())
+        .check(spicedb::PermissionCheck::new(
+            doc().resource().clone(),
+            "view",
+            doc().subject().clone(),
+            (consistency::full()).clone(),
+        ))
         .await
         .expect("re-reading at full consistency is the documented recovery and must succeed");
     assert!(result.has_permission(), "the re-read should have granted");
@@ -64,12 +78,21 @@ async fn main() {
 
     // ── 2. UNAUTHENTICATED: refresh credentials, do not page anyone ──────
     let (auth_addr, _) = common::spawn(CheckBehavior::Unauthenticated).await;
-    let auth_client = SpiceDBClient::new_plaintext(format!("{auth_addr}"), "rotated-token")
-        .await
-        .expect("connect to the stand-in");
+    let auth_client = SpiceDBClient::new_plaintext(
+        format!("{auth_addr}"),
+        "rotated-token",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("connect to the stand-in");
 
     let err = auth_client
-        .check_permission(&consistency::full(), "view", &doc())
+        .check(spicedb::PermissionCheck::new(
+            doc().resource().clone(),
+            "view",
+            doc().subject().clone(),
+            (consistency::full()).clone(),
+        ))
         .await
         .expect_err("a rejected token must fail");
     assert!(
@@ -90,11 +113,15 @@ async fn main() {
     // otherwise is how a credential-refresh branch ends up unreachable.
     let endpoint =
         std::env::var("SPICEDB_ENDPOINT").unwrap_or_else(|_| "localhost:50051".to_string());
-    let bad = SpiceDBClient::new_plaintext(endpoint, "definitely-the-wrong-key")
-        .await
-        .expect("connect to SpiceDB");
+    let bad = SpiceDBClient::new_plaintext(
+        endpoint,
+        "definitely-the-wrong-key",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("connect to SpiceDB");
     let err = bad
-        .read_schema()
+        .read_schema(spicedb::ReadSchemaRequest::new())
         .await
         .expect_err("a wrong preshared key must fail");
     assert!(

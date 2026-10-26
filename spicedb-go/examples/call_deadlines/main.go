@@ -27,6 +27,8 @@ import (
 	"os"
 	"time"
 
+	"github.com/authzed/spicedb-clients/spicedb-go/examples/internal/exampleutil"
+
 	"github.com/authzed/spicedb-clients/spicedb-go/client"
 	"github.com/authzed/spicedb-clients/spicedb-go/consistency"
 	"github.com/authzed/spicedb-clients/spicedb-go/rel"
@@ -57,7 +59,7 @@ func main() {
 	setupCtx, cancelSetup := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancelSetup()
 
-	if _, err := c.WriteSchema(setupCtx, `definition user {}
+	if _, err := c.WriteSchema(setupCtx, client.WriteSchemaRequest{Schema: `definition user {}
 
 definition document {
 	relation viewer: user
@@ -66,19 +68,19 @@ definition document {
 	permission view = viewer + editor + owner
 	permission edit = editor + owner
 	permission delete = owner
-}`); err != nil {
+}`}); err != nil {
 		log.Fatalf("write schema failed: %v", err)
 	}
 
-	if _, err := c.DeleteRelationships(setupCtx, rel.NewFilter("document")); err != nil {
+	if _, err := c.DeleteAllRelationshipsNonAtomic(setupCtx, client.DeleteAllRequest{Filter: exampleutil.Must(rel.NewFilter("document"))}); err != nil {
 		log.Fatalf("clearing document relationships failed: %v", err)
 	}
 
 	var txn rel.Txn
-	if err := txn.Touch(rel.MustFromTriple("document", "readme", "viewer", "user", "alice", "")); err != nil {
+	if err := txn.Touch(exampleutil.Must(rel.NewRelationship(exampleutil.Object("document", "readme"), "viewer", exampleutil.Subject(exampleutil.Object("user", "alice"), "")))); err != nil {
 		log.Fatalf("failed to add relationship to transaction: %v", err)
 	}
-	revision, err := c.Write(setupCtx, txn)
+	revision, err := c.Write(setupCtx, client.WriteRequest{Transaction: txn})
 	if err != nil {
 		log.Fatalf("write relationships failed: %v", err)
 	}
@@ -86,8 +88,7 @@ definition document {
 	checkCtx, cancelCheck := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancelCheck()
 
-	result, err := c.CheckOne(checkCtx, consistency.AtLeast(revision), "view",
-		rel.MustFromTriple("document", "readme", "view", "user", "alice", ""))
+	result, err := c.Check(checkCtx, client.PermissionCheck{Resource: exampleutil.Object("document", "readme"), Subject: exampleutil.Subject(exampleutil.Object("user", "alice"), ""), Permission: "view", Consistency: consistency.AtLeast(revision.Revision)})
 	if err != nil {
 		log.Fatalf("check failed: %v", err)
 	}
@@ -129,8 +130,7 @@ definition document {
 	wedgedResult := make(chan callResult, 1)
 	go func() {
 		started := time.Now()
-		_, err := wedgedClient.CheckOne(wedgedCtx, consistency.Full(), "view",
-			rel.MustFromTriple("document", "readme", "view", "user", "alice", ""))
+		_, err := wedgedClient.Check(wedgedCtx, client.PermissionCheck{Resource: exampleutil.Object("document", "readme"), Subject: exampleutil.Subject(exampleutil.Object("user", "alice"), ""), Permission: "view", Consistency: consistency.Full()})
 		wedgedResult <- callResult{err: err, elapsed: time.Since(started)}
 	}()
 
@@ -175,7 +175,7 @@ definition document {
 	// budget covers retries and pages, so there is nothing left to spend.
 	expired, cancelExpired := context.WithTimeout(context.Background(), 0)
 	defer cancelExpired()
-	if _, err := wedgedClient.DeleteRelationships(expired, rel.NewFilter("document")); !errors.Is(err, client.ErrDeadlineExceeded) {
+	if _, err := wedgedClient.DeleteAllRelationshipsNonAtomic(expired, client.DeleteAllRequest{Filter: exampleutil.Must(rel.NewFilter("document"))}); !errors.Is(err, client.ErrDeadlineExceeded) {
 		log.Fatalf("expected an already-expired context to fail the call with "+
 			"client.ErrDeadlineExceeded, got: %v", err)
 	}
@@ -189,20 +189,20 @@ definition document {
 	importCtx, cancelImport := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancelImport()
 
-	numLoaded, err := c.ImportRelationships(importCtx, func(yield func(rel.Relationship) bool) {
+	numLoaded, err := c.ImportRelationships(importCtx, client.ImportRelationshipsRequest{Relationships: func(yield func(rel.Relationship) bool) {
 		for i := range 50 {
-			r := rel.MustFromTriple("document", fmt.Sprintf("bulk-%d", i), "viewer", "user", "alice", "")
+			r := exampleutil.Must(rel.NewRelationship(exampleutil.Must(rel.NewObject("document", fmt.Sprintf("bulk-%d", i))), "viewer", exampleutil.Subject(exampleutil.Object("user", "alice"), "")))
 			if !yield(r) {
 				return
 			}
 		}
-	})
+	}})
 	if err != nil {
 		log.Fatalf("bulk import failed: %v", err)
 	}
-	fmt.Printf("imported %d relationships under an explicit 60s budget\n", numLoaded)
-	if numLoaded != 50 {
-		log.Fatalf("expected 50 relationships imported, got %d", numLoaded)
+	fmt.Printf("imported %d relationships under an explicit 60s budget\n", numLoaded.ImportedCount)
+	if numLoaded.ImportedCount != 50 {
+		log.Fatalf("expected 50 relationships imported, got %d", numLoaded.ImportedCount)
 	}
 
 	// Clean up so later examples that write a narrower schema aren't blocked
@@ -210,7 +210,7 @@ definition document {
 	// SpiceDB instance).
 	cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancelCleanup()
-	if _, err := c.DeleteRelationships(cleanupCtx, rel.NewFilter("document")); err != nil {
+	if _, err := c.DeleteAllRelationshipsNonAtomic(cleanupCtx, client.DeleteAllRequest{Filter: exampleutil.Must(rel.NewFilter("document"))}); err != nil {
 		log.Fatalf("cleanup failed: %v", err)
 	}
 }

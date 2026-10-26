@@ -1,33 +1,17 @@
-"""Abandoning a stream must release it -- proved against a real server.
+"""Retained streams release real server calls on context exit and explicit close.
 
-Root DESIGN.md, "RULE: Abandoning a stream must release it", clause 2: it is
-not enough to expose a cancel; the transport underneath has to honor it. So
-these tests do not assert that the consuming loop exited -- it always does,
-leak or no leak. They run a real in-process gRPC server whose streaming
-handlers send one message and then park until *their own* RPC context goes
-inactive, and assert the server observed that. If the client never releases
-the stream, the handler stays parked and the assertion times out.
-
-Both surfaces are covered, because the release mechanism differs:
-
-* ``spicedb.sync`` returns a plain generator. ``break`` drops the last
-  reference, CPython closes the generator, ``GeneratorExit`` lands on the
-  ``yield``, and the ``finally`` cancels the call -- deterministic.
-* ``spicedb.aio`` returns an async generator, whose ``aclose()`` is a
-  coroutine. ``contextlib.aclosing()`` is the explicit, deterministic way to
-  close one (clause 1's "explicit, working way to stop consuming"); a bare
-  ``break`` also gets there, via the event loop's async-generator finalizer.
-  Both paths are tested.
+The server callback proves transport release, including pending next/anext.
+A bare break requires a context manager while the stream remains retained.
 """
 
 from __future__ import annotations
-
+from spicedb import TransportSecurity
+from spicedb import ObjectRef, SubjectRef
 import asyncio
 import contextlib
 import threading
 import time
 from concurrent import futures
-
 import grpc
 import pytest
 from authzed.api.v1 import core_pb2
@@ -35,15 +19,40 @@ from authzed.api.v1 import permission_service_pb2 as psp
 from authzed.api.v1 import permission_service_pb2_grpc as psp_grpc
 from authzed.api.v1 import watch_service_pb2 as wsp
 from authzed.api.v1 import watch_service_pb2_grpc as wsp_grpc
-
+from authzed.api.materialize.v0 import (
+    watchpermissionsets_pb2 as materialize,
+    watchpermissionsets_pb2_grpc as materialize_grpc,
+)
 from spicedb import Filter
 from spicedb.aio import SpiceDBClient as AioClient
 from spicedb.consistency import full
 from spicedb.sync import SpiceDBClient as SyncClient
 
-TOKEN = "test-token"
 
-# How long the test waits for the server to see its stream end.
+class _ParkingPermissionSets(materialize_grpc.WatchPermissionSetsServiceServicer):
+    def __init__(self, parked):
+        self._parked = parked
+
+    def WatchPermissionSets(self, request, context):
+        self._parked.on_open(context)
+        yield materialize.WatchPermissionSetsResponse(
+            completed_revision=core_pb2.ZedToken(token="materialize")
+        )
+        self._parked.park(context)
+
+    def LookupPermissionSets(self, request, context):
+        self._parked.on_open(context)
+        yield materialize.LookupPermissionSetsResponse(
+            cursor=materialize.Cursor(
+                limit=request.limit,
+                token=core_pb2.ZedToken(token="materialize"),
+                cursor="next",
+            )
+        )
+        self._parked.park(context)
+
+
+TOKEN = "test-token"
 _RELEASE_TIMEOUT_SECONDS = 10.0
 
 
@@ -66,8 +75,6 @@ class _Parked:
     def on_open(self, context: grpc.ServicerContext) -> None:
         self.opened.set()
         if not context.add_callback(self.terminated.set):
-            # Already over before we could register -- which is itself the
-            # termination we are watching for.
             self.terminated.set()
 
     def park(self, context: grpc.ServicerContext) -> None:
@@ -155,12 +162,17 @@ def parking_server():
     """A real gRPC server whose streams never end on their own."""
     parked = _Parked()
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=4))
-    psp_grpc.add_PermissionsServiceServicer_to_server(_ParkingPermissions(parked), server)
+    psp_grpc.add_PermissionsServiceServicer_to_server(
+        _ParkingPermissions(parked), server
+    )
     wsp_grpc.add_WatchServiceServicer_to_server(_ParkingWatch(parked), server)
+    materialize_grpc.add_WatchPermissionSetsServiceServicer_to_server(
+        _ParkingPermissionSets(parked), server
+    )
     port = server.add_insecure_port("localhost:0")
     server.start()
     try:
-        yield port, parked
+        yield (port, parked)
     finally:
         parked.shutdown.set()
         server.stop(0)
@@ -169,43 +181,47 @@ def parking_server():
 def _assert_released(parked: _Parked) -> None:
     assert parked.opened.is_set(), "the server never saw the stream open"
     assert parked.terminated.wait(_RELEASE_TIMEOUT_SECONDS), (
-        "the server never observed the stream ending: abandoning the iterator "
-        "leaked the gRPC stream and the server-side dispatch"
+        "the server never observed the stream ending: abandoning the iterator leaked the gRPC stream and the server-side dispatch"
     )
 
 
-# ── Streams under test ──────────────────────────────────────────────
-#
-# Each entry is (name, take-one-then-stop callable). Keeping them in one
-# table is what makes it obvious that no streaming call is exempt.
-
 SYNC_STREAMS = {
     "read_relationships": lambda c: c.read_relationships(
-        Filter(resource_type="document"), full()
+        Filter(resource_type="document"), consistency=full()
     ),
     "lookup_resources": lambda c: c.lookup_resources(
-        "document", "view", ("user:user1", ""), full()
+        resource_type="document",
+        permission="view",
+        subject=_subject("user:user1", ""),
+        consistency=full(),
     ),
     "lookup_subjects": lambda c: c.lookup_subjects(
-        ("document", "doc1"), "view", "user", full()
+        resource=ObjectRef("document", "doc1"),
+        permission="view",
+        subject_type="user",
+        consistency=full(),
     ),
-    "export_relationships": lambda c: c.export_relationships(full()),
+    "export_relationships": lambda c: c.export_relationships(consistency=full()),
     "watch": lambda c: c.watch(),
+    "watch_permission_sets": lambda c: c.watch_permission_sets(),
+    "lookup_permission_sets": lambda c: c.lookup_permission_sets(),
 }
-
 AIO_STREAMS = dict(SYNC_STREAMS)
 
 
 @pytest.mark.parametrize("stream_name", sorted(SYNC_STREAMS))
-def test_sync_break_releases_the_stream(stream_name: str, parking_server) -> None:
+def test_sync_retained_context_releases_the_stream(
+    stream_name: str, parking_server
+) -> None:
     """A `break` out of a sync stream tells the server to stop."""
     port, parked = parking_server
-    client = SyncClient(f"localhost:{port}", token=TOKEN, insecure=True)
+    client = SyncClient(f"localhost:{port}", token=TOKEN, transport_security=TransportSecurity.PLAINTEXT)
     try:
         seen = 0
-        for _ in SYNC_STREAMS[stream_name](client):
-            seen += 1
-            break
+        with SYNC_STREAMS[stream_name](client) as stream:
+            for _ in stream:
+                seen += 1
+                break
         assert seen == 1
         _assert_released(parked)
     finally:
@@ -216,7 +232,7 @@ def test_sync_break_releases_the_stream(stream_name: str, parking_server) -> Non
 async def test_aio_aclose_releases_the_stream(stream_name: str, parking_server) -> None:
     """`aclosing()` -- the explicit close clause 1 requires -- releases it."""
     port, parked = parking_server
-    client = AioClient(f"localhost:{port}", token=TOKEN, insecure=True)
+    client = AioClient(f"localhost:{port}", token=TOKEN, transport_security=TransportSecurity.PLAINTEXT)
     try:
         seen = 0
         async with contextlib.aclosing(AIO_STREAMS[stream_name](client)) as stream:
@@ -230,7 +246,7 @@ async def test_aio_aclose_releases_the_stream(stream_name: str, parking_server) 
 
 
 @pytest.mark.parametrize("stream_name", sorted(AIO_STREAMS))
-async def test_aio_bare_break_releases_the_stream(
+async def test_aio_retained_context_releases_the_stream(
     stream_name: str, parking_server
 ) -> None:
     """A bare `break` gets there too, via async-generator finalization.
@@ -241,20 +257,78 @@ async def test_aio_bare_break_releases_the_stream(
     the call -- but only because that `finally` exists.
     """
     port, parked = parking_server
-    client = AioClient(f"localhost:{port}", token=TOKEN, insecure=True)
+    client = AioClient(f"localhost:{port}", token=TOKEN, transport_security=TransportSecurity.PLAINTEXT)
     try:
         seen = 0
-        async for _ in AIO_STREAMS[stream_name](client):
-            seen += 1
-            break
+        async with AIO_STREAMS[stream_name](client) as stream:
+            async for _ in stream:
+                seen += 1
+                break
         assert seen == 1
-
-        # Give the loop a turn to run the finalizer it scheduled.
         for _ in range(10):
             await asyncio.sleep(0.01)
             if parked.terminated.is_set():
                 break
-
         _assert_released(parked)
     finally:
         await client.close()
+
+
+def _subject(value, relation=None):
+    typ, identifier = value.split(":", 1)
+    return SubjectRef(ObjectRef(typ, identifier), relation or None)
+
+
+def test_sync_close_cancels_a_pending_next(parking_server):
+    port, parked = parking_server
+    client = SyncClient(f"localhost:{port}", token=TOKEN, transport_security=TransportSecurity.PLAINTEXT)
+    stream = client.watch()
+    next(stream)
+    observed = []
+
+    def consume():
+        try:
+            next(stream)
+        except BaseException as error:
+            observed.append(error)
+
+    worker = threading.Thread(target=consume)
+    worker.start()
+    time.sleep(0.01)
+    stream.close()
+    worker.join(2)
+    try:
+        assert not worker.is_alive()
+        assert observed
+        _assert_released(parked)
+        with pytest.raises(StopIteration):
+            next(stream)
+    finally:
+        client.close()
+
+
+async def test_aio_aclose_cancels_a_pending_anext(parking_server):
+    port, parked = parking_server
+    async with AioClient(f"localhost:{port}", token=TOKEN, transport_security=TransportSecurity.PLAINTEXT) as client:
+        stream = client.watch()
+        await anext(stream)
+        pending = asyncio.create_task(anext(stream))
+        await asyncio.sleep(0.01)
+        await stream.aclose()
+        assert pending.done()
+        _assert_released(parked)
+        with pytest.raises(StopAsyncIteration):
+            await anext(stream)
+
+
+async def test_aio_task_cancellation_releases_pending_call(parking_server):
+    port, parked = parking_server
+    async with AioClient(f"localhost:{port}", token=TOKEN, transport_security=TransportSecurity.PLAINTEXT) as client:
+        stream = client.watch()
+        await anext(stream)
+        pending = asyncio.create_task(anext(stream))
+        await asyncio.sleep(0.01)
+        pending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+        _assert_released(parked)

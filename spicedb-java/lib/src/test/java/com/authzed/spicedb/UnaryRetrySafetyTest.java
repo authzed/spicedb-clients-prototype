@@ -37,7 +37,10 @@ import org.junit.jupiter.api.Test;
 class UnaryRetrySafetyTest {
 
   private static Relationship aRelationship() {
-    return Relationship.of("document", "doc1", "viewer", "user", "alice");
+    return Relationship.of(
+        new ObjectRef("document", "doc1"),
+        "viewer",
+        SubjectRef.direct(new ObjectRef("user", "alice")));
   }
 
   // ---------------------------------------------------------------------

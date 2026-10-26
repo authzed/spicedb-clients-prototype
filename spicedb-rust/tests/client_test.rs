@@ -3,7 +3,6 @@ mod support;
 use spicedb::client::SpiceDBClient;
 use spicedb::consistency;
 use spicedb::error::SpiceDBError;
-use spicedb::types::Relationship;
 use spicedb_proto::authzed::api::v1 as proto;
 use std::error::Error;
 
@@ -57,7 +56,12 @@ async fn transport_failure_keeps_a_source_chain_to_the_io_error() {
 
 #[tokio::test]
 async fn test_new_plaintext_creates_client() {
-    let client = SpiceDBClient::new_plaintext("localhost:50051", "testtoken").await;
+    let client = SpiceDBClient::new_plaintext(
+        "localhost:50051",
+        "testtoken",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await;
     assert!(client.is_ok());
 }
 
@@ -137,8 +141,8 @@ mod insecure_host_guard {
 
         match result {
             Err(SpiceDBError::InvalidArgument(msg)) => {
-                assert!(msg.contains("evil.example.com:1234"), "{msg}");
-                assert!(msg.contains("allow_insecure_remote_credentials"), "{msg}");
+                assert!(msg.contains("remote plaintext"), "{msg}");
+                assert!(msg.contains("AllowInsecureRemote"), "{msg}");
             }
             Err(other) => panic!("expected SpiceDBError::InvalidArgument, got {other:?}"),
             Ok(_) => panic!(
@@ -150,7 +154,7 @@ mod insecure_host_guard {
     /// The bypass shapes, at the public entry point. The proto tier holds the
     /// full fixture set and the over-the-wire "token never sent" proof; these
     /// are the ones that must not slip through `new_plaintext` itself, which
-    /// takes no options at all and so offers a caller no way to opt in.
+    /// uses the explicit LoopbackOnly policy.
     #[tokio::test]
     async fn new_plaintext_refuses_endpoints_whose_uri_authority_shifts_the_host() {
         for endpoint in [
@@ -159,9 +163,15 @@ mod insecure_host_guard {
             "[::1]:0@127.0.0.1:19999",
             "localhost@evil.com",
         ] {
-            match SpiceDBClient::new_plaintext(endpoint, "super-secret-token").await {
+            match SpiceDBClient::new_plaintext(
+                endpoint,
+                "super-secret-token",
+                spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+            )
+            .await
+            {
                 Err(SpiceDBError::InvalidArgument(msg)) => {
-                    assert!(msg.contains("allow_insecure_remote_credentials"), "{msg}");
+                    assert!(msg.contains("AllowInsecureRemote"), "{msg}");
                 }
                 Err(other) => panic!("expected InvalidArgument for {endpoint:?}, got {other:?}"),
                 Ok(_) => panic!("expected {endpoint:?} to be refused"),
@@ -176,7 +186,12 @@ mod insecure_host_guard {
     #[tokio::test]
     async fn new_plaintext_accepts_bare_ipv6_loopback() {
         for endpoint in ["::1", "[::1]", "[::1]:50051"] {
-            let result = SpiceDBClient::new_plaintext(endpoint, "testtoken").await;
+            let result = SpiceDBClient::new_plaintext(
+                endpoint,
+                "testtoken",
+                spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+            )
+            .await;
             assert!(
                 result.is_ok(),
                 "bare IPv6 loopback {endpoint:?} must construct a client, got {:?}",
@@ -188,7 +203,13 @@ mod insecure_host_guard {
     /// A multi-byte character must not panic out of the constructor.
     #[tokio::test]
     async fn new_plaintext_returns_err_for_multibyte_endpoint() {
-        match SpiceDBClient::new_plaintext("abcdé.example.com:443", "testtoken").await {
+        match SpiceDBClient::new_plaintext(
+            "abcdé.example.com:443",
+            "testtoken",
+            spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+        )
+        .await
+        {
             Err(SpiceDBError::InvalidArgument(_)) => {}
             Err(other) => panic!("expected InvalidArgument, got {other:?}"),
             Ok(_) => panic!("expected a multi-byte non-loopback endpoint to be refused"),
@@ -200,7 +221,13 @@ mod insecure_host_guard {
     /// through the public entry point, not panic out of it.
     #[tokio::test]
     async fn new_plaintext_returns_err_for_a_token_that_cannot_be_a_header() {
-        match SpiceDBClient::new_plaintext("localhost:50051", "secret-from-file\n").await {
+        match SpiceDBClient::new_plaintext(
+            "localhost:50051",
+            "secret-from-file\n",
+            spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+        )
+        .await
+        {
             Err(SpiceDBError::InvalidArgument(msg)) => {
                 assert!(msg.contains("HTTP header"), "{msg}");
             }
@@ -214,7 +241,13 @@ mod insecure_host_guard {
     #[tokio::test]
     async fn new_plaintext_refuses_unix_socket_targets() {
         for endpoint in ["unix:/var/run/spicedb.sock", "unix:///var/run/spicedb.sock"] {
-            match SpiceDBClient::new_plaintext(endpoint, "super-secret-token").await {
+            match SpiceDBClient::new_plaintext(
+                endpoint,
+                "super-secret-token",
+                spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+            )
+            .await
+            {
                 Err(SpiceDBError::InvalidArgument(msg)) => {
                     assert!(msg.contains("unix-domain-socket"), "{msg}");
                 }
@@ -254,10 +287,22 @@ mod insecure_host_guard {
             .await
             .expect("loopback endpoint must not require the opt-in");
 
-        let rel = Relationship::new("document", "1", "view", "user", "alice", "")
+        let rel = spicedb::Relationship::from_tuple("document:1#view@user:alice")
             .expect("valid relationship");
         client
-            .check_permissions(&consistency::full(), "view", &[rel])
+            .check_bulk(spicedb::BulkCheckRequest::new(
+                [rel]
+                    .iter()
+                    .map(|r| {
+                        spicedb::PermissionCheck::new(
+                            (r).resource().clone(),
+                            "view",
+                            (r).subject().clone(),
+                            (consistency::full()).clone(),
+                        )
+                    })
+                    .collect(),
+            ))
             .await
             .expect("call against the real mock server must succeed");
 
@@ -280,7 +325,7 @@ mod insecure_host_guard {
     async fn allow_insecure_remote_credentials_permits_non_loopback_construction() {
         let client = SpiceDBClient::builder("192.0.2.1:1234", "remote-token")
             .plaintext()
-            .allow_insecure_remote_credentials()
+            .remote_credentials_policy(spicedb::RemoteCredentialsPolicy::AllowInsecureRemote)
             .build()
             .await;
 

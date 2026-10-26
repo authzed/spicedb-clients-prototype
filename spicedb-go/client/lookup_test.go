@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"net"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -21,6 +22,8 @@ type lookupStubServer struct {
 
 	lookupResourcesResponses []*v1.LookupResourcesResponse
 	lookupSubjectsResponses  []*v1.LookupSubjectsResponse
+	paginate                 bool
+	cursors                  []string
 
 	// lastLookupResourcesRequest records the most recent request this stub
 	// received, so tests can assert on fields the client sets that never
@@ -30,7 +33,14 @@ type lookupStubServer struct {
 
 func (s *lookupStubServer) LookupResources(req *v1.LookupResourcesRequest, stream grpc.ServerStreamingServer[v1.LookupResourcesResponse]) error {
 	s.lastLookupResourcesRequest = req
-	for _, resp := range s.lookupResourcesResponses {
+	responses := s.lookupResourcesResponses
+	if s.paginate {
+		s.cursors = append(s.cursors, req.GetOptionalCursor().GetToken())
+		start, _ := strconv.Atoi(req.GetOptionalCursor().GetToken())
+		end := min(len(responses), start+int(req.GetOptionalLimit()))
+		responses = responses[start:end]
+	}
+	for _, resp := range responses {
 		if err := stream.Send(resp); err != nil {
 			return err
 		}
@@ -78,7 +88,7 @@ func newTestClient(t *testing.T, dialer func(context.Context, string) (net.Conn,
 		WithInsecure(),
 		// bufnet is an in-memory bufconn dial target, not a real network
 		// destination -- unrelated to what this test exercises.
-		WithInsecureAllowRemoteHost(),
+		WithRemotePlaintextCredentials(RemotePlaintextAllowed),
 		WithDialOptions(grpc.WithContextDialer(dialer)),
 	)
 	require.NoError(t, err)
@@ -109,7 +119,7 @@ func TestLookupResources_YieldsPermissionshipAndPartialCaveat(t *testing.T) {
 	c := newTestClient(t, dialer)
 
 	var got []LookupResource
-	for r, err := range c.LookupResources(context.Background(), consistency.MinLatency(), "document", "view", "user", "alice") {
+	for r, err := range c.LookupResources(context.Background(), LookupResourcesRequest{Consistency: consistency.MinLatency(), ResourceType: "document", Permission: "view", Subject: testSubject("user", "alice", "")}) {
 		require.NoError(t, err)
 		got = append(got, r)
 	}
@@ -142,7 +152,7 @@ func TestLookupResources_StreamErrorYieldsZeroValueAndMappedError(t *testing.T) 
 		yields int
 		gotErr error
 	)
-	for r, err := range c.LookupResources(context.Background(), consistency.MinLatency(), "document", "view", "user", "alice") {
+	for r, err := range c.LookupResources(context.Background(), LookupResourcesRequest{Consistency: consistency.MinLatency(), ResourceType: "document", Permission: "view", Subject: testSubject("user", "alice", "")}) {
 		yields++
 		require.Equal(t, LookupResource{}, r)
 		gotErr = err
@@ -183,7 +193,7 @@ func TestLookupSubjects_WildcardSubjectExposesExcludedSubjects(t *testing.T) {
 	c := newTestClient(t, dialer)
 
 	var got []LookupSubject
-	for s, err := range c.LookupSubjects(context.Background(), consistency.MinLatency(), "document", "doc1", "view", "user") {
+	for s, err := range c.LookupSubjects(context.Background(), LookupSubjectsRequest{Consistency: consistency.MinLatency(), Resource: testObject("document", "doc1"), Permission: "view", SubjectType: "user"}) {
 		require.NoError(t, err)
 		got = append(got, s)
 	}
@@ -214,7 +224,7 @@ func TestLookupSubjects_NonWildcardHasNoExcludedSubjects(t *testing.T) {
 	c := newTestClient(t, dialer)
 
 	var got []LookupSubject
-	for s, err := range c.LookupSubjects(context.Background(), consistency.MinLatency(), "document", "doc1", "view", "user") {
+	for s, err := range c.LookupSubjects(context.Background(), LookupSubjectsRequest{Consistency: consistency.MinLatency(), Resource: testObject("document", "doc1"), Permission: "view", SubjectType: "user"}) {
 		require.NoError(t, err)
 		got = append(got, s)
 	}
@@ -241,7 +251,7 @@ func TestLookupSubjects_FallsBackToDeprecatedFields(t *testing.T) {
 	c := newTestClient(t, dialer)
 
 	var got []LookupSubject
-	for s, err := range c.LookupSubjects(context.Background(), consistency.MinLatency(), "document", "doc1", "view", "user") {
+	for s, err := range c.LookupSubjects(context.Background(), LookupSubjectsRequest{Consistency: consistency.MinLatency(), Resource: testObject("document", "doc1"), Permission: "view", SubjectType: "user"}) {
 		require.NoError(t, err)
 		got = append(got, s)
 	}
@@ -277,7 +287,7 @@ func TestLookupSubjects_ExcludedSubjectsFallsBackToDeprecatedIds(t *testing.T) {
 	c := newTestClient(t, dialer)
 
 	var got []LookupSubject
-	for s, err := range c.LookupSubjects(context.Background(), consistency.MinLatency(), "document", "doc1", "view", "user") {
+	for s, err := range c.LookupSubjects(context.Background(), LookupSubjectsRequest{Consistency: consistency.MinLatency(), Resource: testObject("document", "doc1"), Permission: "view", SubjectType: "user"}) {
 		require.NoError(t, err)
 		got = append(got, s)
 	}
@@ -301,7 +311,7 @@ func TestLookupSubjects_StreamErrorYieldsZeroValueAndMappedError(t *testing.T) {
 		yields int
 		gotErr error
 	)
-	for s, err := range c.LookupSubjects(context.Background(), consistency.MinLatency(), "document", "doc1", "view", "user") {
+	for s, err := range c.LookupSubjects(context.Background(), LookupSubjectsRequest{Consistency: consistency.MinLatency(), Resource: testObject("document", "doc1"), Permission: "view", SubjectType: "user"}) {
 		yields++
 		require.Equal(t, LookupSubject{}, s)
 		gotErr = err
@@ -320,13 +330,48 @@ func TestLookupResources_WithDebugSetsRequestField(t *testing.T) {
 	dialer := startLookupStubServer(t, stub)
 	c := newTestClient(t, dialer)
 
-	for range c.LookupResources(context.Background(), consistency.MinLatency(), "document", "view", "user", "alice") {
+	for range c.LookupResources(context.Background(), LookupResourcesRequest{Consistency: consistency.MinLatency(), ResourceType: "document", Permission: "view", Subject: testSubject("user", "alice", "")}) {
 	}
 	require.NotNil(t, stub.lastLookupResourcesRequest)
 	require.False(t, stub.lastLookupResourcesRequest.GetWithDebug())
 
-	for range c.LookupResources(context.Background(), consistency.MinLatency(), "document", "view", "user", "alice", WithLookupResourcesDebug()) {
+	for range c.LookupResources(context.Background(), LookupResourcesRequest{Consistency: consistency.MinLatency(), ResourceType: "document", Permission: "view", Subject: testSubject("user", "alice", "")}, WithLookupResourcesDebug(DebugEnabled)) {
 	}
 	require.NotNil(t, stub.lastLookupResourcesRequest)
 	require.True(t, stub.lastLookupResourcesRequest.GetWithDebug())
+}
+
+func TestLookupResourcesPermissionshipFilter(t *testing.T) {
+	for _, mode := range []LookupPermissionshipFilter{LookupAll, LookupHasPermissionOnly} {
+		t.Run(strconv.Itoa(int(mode)), func(t *testing.T) {
+			responses := []*v1.LookupResourcesResponse{}
+			for i, permission := range []v1.LookupPermissionship{2, 0, 99, 1, 2, 1, 1} {
+				responses = append(responses, &v1.LookupResourcesResponse{ResourceObjectId: strconv.Itoa(i), Permissionship: permission, AfterResultCursor: &v1.Cursor{Token: strconv.Itoa(i + 1)}, LookedUpAt: &v1.ZedToken{Token: "snapshot"}})
+			}
+			stub := &lookupStubServer{lookupResourcesResponses: responses, paginate: true}
+			c := newTestClient(t, startLookupStubServer(t, stub))
+			t.Cleanup(func() { require.NoError(t, c.Close()) })
+			opts := []LookupResourcesOption{WithLookupResourcesPageSize(2), WithLookupResourcesLimit(2)}
+			if mode != LookupAll {
+				opts = append(opts, WithLookupResourcesPermissionshipFilter(mode))
+			}
+			var ids []string
+			for result, err := range c.LookupResources(context.Background(), LookupResourcesRequest{Consistency: consistency.Full(), ResourceType: "document", Permission: "view", Subject: testSubject("user", "alice", "")}, opts...) {
+				require.NoError(t, err)
+				ids = append(ids, result.ResourceID)
+			}
+			if mode == LookupAll {
+				require.Equal(t, []string{"0", "1"}, ids)
+			} else {
+				require.Equal(t, []string{"3", "5"}, ids)
+				require.Equal(t, []string{"", "2", "4", "5"}, stub.cursors)
+			}
+		})
+	}
+}
+
+func TestLookupResourcesRejectsUnknownPermissionshipFilter(t *testing.T) {
+	o := operationOptions{}
+	WithLookupResourcesPermissionshipFilter(LookupPermissionshipFilter(99))(&o)
+	require.Error(t, o.err)
 }

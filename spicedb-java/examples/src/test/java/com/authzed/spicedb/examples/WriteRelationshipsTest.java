@@ -3,6 +3,7 @@ package com.authzed.spicedb.examples;
 import static com.authzed.spicedb.Consistency.*;
 import static org.assertj.core.api.Assertions.*;
 
+import com.authzed.spicedb.*;
 import com.authzed.spicedb.Filter;
 import com.authzed.spicedb.Relationship;
 import com.authzed.spicedb.Transaction;
@@ -18,34 +19,46 @@ class WriteRelationshipsTest extends SpiceDBIntegrationTest {
 
   @BeforeEach
   void setUp() {
-    client.deleteRelationships(Filter.of("document"));
+    client.deleteAllRelationshipsNonAtomic(Filter.of("document"));
   }
 
   @Test
   void touch_creates_relationships_and_returns_revision() {
     var txn = new Transaction();
-    txn.touch(Relationship.of("document", "firstdoc", "viewer", "user", "alice"));
-    txn.touch(Relationship.of("document", "firstdoc", "editor", "user", "bob"));
+    txn.touch(
+        Relationship.of(
+            new ObjectRef("document", "firstdoc"),
+            "viewer",
+            SubjectRef.direct(new ObjectRef("user", "alice"))));
+    txn.touch(
+        Relationship.of(
+            new ObjectRef("document", "firstdoc"),
+            "editor",
+            SubjectRef.direct(new ObjectRef("user", "bob"))));
 
-    String revision = client.write(txn);
+    ZedToken revision = client.write(txn).revision();
 
-    assertThat(revision).isNotEmpty();
+    assertThat(revision.value()).isNotEmpty();
   }
 
   @Test
   void precondition_mustNotMatch_succeeds_when_no_match() {
     var txn = new Transaction();
-    txn.touch(Relationship.of("document", "firstdoc", "viewer", "user", "alice"));
+    txn.touch(
+        Relationship.of(
+            new ObjectRef("document", "firstdoc"),
+            "viewer",
+            SubjectRef.direct(new ObjectRef("user", "alice"))));
     txn.mustNotMatch(
         Filter.of("document")
-            .withResourceID("firstdoc")
+            .withResourceId("firstdoc")
             .withRelation("owner")
             .withSubjectType("user")
-            .withSubjectID("mallory"));
+            .withSubjectId("mallory"));
 
-    String revision = client.write(txn);
+    ZedToken revision = client.write(txn).revision();
 
-    assertThat(revision).isNotEmpty();
+    assertThat(revision.value()).isNotEmpty();
   }
 
   /**
@@ -57,13 +70,17 @@ class WriteRelationshipsTest extends SpiceDBIntegrationTest {
   @Test
   void precondition_failure_carries_the_reason_and_its_metadata() {
     var txn = new Transaction();
-    txn.touch(Relationship.of("document", "seconddoc", "viewer", "user", "alice"));
+    txn.touch(
+        Relationship.of(
+            new ObjectRef("document", "seconddoc"),
+            "viewer",
+            SubjectRef.direct(new ObjectRef("user", "alice"))));
     txn.mustMatch(
         Filter.of("document")
-            .withResourceID("firstdoc")
+            .withResourceId("firstdoc")
             .withRelation("owner")
             .withSubjectType("user")
-            .withSubjectID("nobody"));
+            .withSubjectId("nobody"));
 
     Throwable thrown = catchThrowable(() -> client.write(txn));
 
@@ -78,21 +95,29 @@ class WriteRelationshipsTest extends SpiceDBIntegrationTest {
   void delete_removes_relationship() {
     // First create
     var create = new Transaction();
-    create.touch(Relationship.of("document", "deldoc", "viewer", "user", "charlie"));
+    create.touch(
+        Relationship.of(
+            new ObjectRef("document", "deldoc"),
+            "viewer",
+            SubjectRef.direct(new ObjectRef("user", "charlie"))));
     client.write(create);
 
     // Then delete
     var del = new Transaction();
-    del.delete(Relationship.of("document", "deldoc", "viewer", "user", "charlie"));
-    String revision = client.write(del);
+    del.delete(
+        Relationship.of(
+            new ObjectRef("document", "deldoc"),
+            "viewer",
+            SubjectRef.direct(new ObjectRef("user", "charlie"))));
+    ZedToken revision = client.write(del).revision();
 
-    assertThat(revision).isNotEmpty();
+    assertThat(revision.value()).isNotEmpty();
 
     // Verify it's gone
     long count =
         client
             .readRelationships(
-                full(), Filter.of("document").withResourceID("deldoc").withRelation("viewer"))
+                full(), Filter.of("document").withResourceId("deldoc").withRelation("viewer"))
             .count();
     assertThat(count).isZero();
   }

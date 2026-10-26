@@ -3,7 +3,9 @@
 These exercise the shared core directly, so they cover BOTH the sync and async
 clients at once. Nothing here touches a channel.
 """
+from spicedb import ZedToken
 
+from spicedb import ObjectRef, SubjectRef, PermissionCheck
 from spicedb import Filter, Relationship, Transaction
 from spicedb import _requests as req
 from spicedb.consistency import at_least, full
@@ -21,14 +23,14 @@ def test_context_struct_populates_fields():
 
 def test_subject_reference_from_relationship():
     rel = Relationship.from_triple("document:readme", "viewer", "user:jimmy")
-    ref = req.subject_reference(rel)
+    ref = req.subject_reference(rel.subject)
     assert ref.object.object_type == "user"
     assert ref.object.object_id == "jimmy"
     assert ref.optional_relation == ""
 
 
 def test_subject_reference_from_tuple_splits_on_first_colon():
-    ref = req.subject_reference(("group:eng:west", "member"))
+    ref = req.subject_reference(_subject("group:eng:west", "member"))
     assert ref.object.object_type == "group"
     assert ref.object.object_id == "eng:west"
     assert ref.optional_relation == "member"
@@ -39,7 +41,7 @@ def test_check_bulk_request_builds_one_item_per_relationship():
         Relationship.from_triple("document:a", "view", "user:jimmy"),
         Relationship.from_triple("document:b", "view", "user:jimmy"),
     ]
-    r = req.check_bulk_request(full(), rels, None)
+    r = req.check_bulk_request(full(), _checks(rels), None)
     assert len(r.items) == 2
     assert r.items[0].resource.object_id == "a"
     assert r.items[0].permission == "view"
@@ -58,7 +60,7 @@ def test_check_bulk_request_carries_at_least_as_fresh_token():
     overwriting it.
     """
     rels = [Relationship.from_triple("document:a", "view", "user:jimmy")]
-    r = req.check_bulk_request(at_least("cafebabe"), rels, None)
+    r = req.check_bulk_request(at_least(ZedToken("cafebabe")), _checks(rels), None)
     assert r.consistency.at_least_as_fresh.token == "cafebabe"
 
 
@@ -68,7 +70,7 @@ def test_check_bulk_request_call_level_context_reaches_every_item():
         Relationship.from_triple("document:a", "view", "user:jimmy"),
         Relationship.from_triple("document:b", "view", "user:jimmy"),
     ]
-    r = req.check_bulk_request(full(), rels, {"now": 42, "region": "us"})
+    r = req.check_bulk_request(full(), _checks(rels), {"now": 42, "region": "us"})
     assert dict(r.items[0].context) == {"now": 42, "region": "us"}
     assert dict(r.items[1].context) == {"now": 42, "region": "us"}
 
@@ -77,12 +79,13 @@ def test_check_bulk_request_per_item_context_reaches_only_that_item():
     """C2: a per-item check_context override reaches only that item; a
     sibling item with no override gets no context field at all."""
     rels = [
-        Relationship.from_triple(
-            "document:a", "view", "user:jimmy", check_context={"region": "eu"}
+        _check_context(
+            Relationship.from_triple("document:a", "view", "user:jimmy"),
+            {"region": "eu"},
         ),
         Relationship.from_triple("document:b", "view", "user:jimmy"),
     ]
-    r = req.check_bulk_request(full(), rels, None)
+    r = req.check_bulk_request(full(), _checks(rels), None)
     assert dict(r.items[0].context) == {"region": "eu"}
     assert not r.items[1].HasField("context")
 
@@ -98,12 +101,13 @@ def test_check_bulk_request_merges_call_level_and_per_item_context():
     the merge rule.
     """
     rels = [
-        Relationship.from_triple(
-            "document:a", "view", "user:jimmy", check_context={"region": "eu"}
+        _check_context(
+            Relationship.from_triple("document:a", "view", "user:jimmy"),
+            {"region": "eu"},
         ),
         Relationship.from_triple("document:b", "view", "user:jimmy"),
     ]
-    r = req.check_bulk_request(full(), rels, {"now": 42, "region": "us"})
+    r = req.check_bulk_request(full(), _checks(rels), {"now": 42, "region": "us"})
     assert dict(r.items[0].context) == {"now": 42, "region": "eu"}
     assert dict(r.items[1].context) == {"now": 42, "region": "us"}
 
@@ -112,7 +116,7 @@ def test_check_bulk_request_no_context_supplied_leaves_field_unset():
     """C4: neither call-level nor per-item context supplied -> no `context`
     field set on the wire (not an empty Struct)."""
     rels = [Relationship.from_triple("document:a", "view", "user:jimmy")]
-    r = req.check_bulk_request(full(), rels, None)
+    r = req.check_bulk_request(full(), _checks(rels), None)
     assert not r.items[0].HasField("context")
 
 
@@ -120,9 +124,15 @@ def test_lookup_resources_request_carries_at_least_as_fresh_token():
     """Same round-trip as above, for the lookup_resources() request builder
     -- examples/read_your_writes/ threads at_least(written_at) through this
     path too."""
-    subj_ref = req.subject_reference(("user:alice", ""))
+    subj_ref = req.subject_reference(_subject("user:alice", ""))
     r = req.lookup_resources_request(
-        "document", "view", subj_ref, None, at_least("cafebabe"), req.DEFAULT_PAGE_SIZE, None
+        "document",
+        "view",
+        subj_ref,
+        None,
+        at_least(ZedToken("cafebabe")),
+        req.DEFAULT_PAGE_SIZE,
+        None,
     )
     assert r.consistency.at_least_as_fresh.token == "cafebabe"
 
@@ -139,7 +149,6 @@ def test_delete_request_sets_partial_deletions_only_when_limit_given():
     without = req.delete_relationships_request(f, None, None, None)
     assert without.optional_limit == 0
     assert without.optional_allow_partial_deletions is False
-
     with_limit = req.delete_relationships_request(f, None, None, 10)
     assert with_limit.optional_limit == 10
     assert with_limit.optional_allow_partial_deletions is True
@@ -150,10 +159,8 @@ def test_delete_request_sets_cursor_when_given():
 
     f = Filter(resource_type="document")
     cursor = core_pb2.Cursor(token="abc")
-
     without = req.delete_relationships_request(f, None, None, 10)
     assert without.HasField("optional_cursor") is False
-
     with_cursor = req.delete_relationships_request(f, None, None, 10, cursor)
     assert with_cursor.optional_cursor == cursor
 
@@ -197,18 +204,11 @@ def test_import_batches_accepts_a_generator_without_materializing_it():
             yield Relationship.from_triple(f"document:{i}", "viewer", "user:jimmy")
 
     batches = req.import_batches(gen(), req.IMPORT_BATCH_SIZE)
-
-    # import_batches itself is a generator: pulling just the FIRST request
-    # must not force the whole 2500-item source to be consumed -- only one
-    # batch's worth (IMPORT_BATCH_SIZE == 1000) should have been pulled.
     first = next(batches)
     assert len(first.relationships) == 1000
     assert len(consumed) == 1000, (
-        "import_batches must consume its source lazily, one batch at a time -- "
-        f"pulling the first request should not have consumed all {len(consumed)} items"
+        f"import_batches must consume its source lazily, one batch at a time -- pulling the first request should not have consumed all {len(consumed)} items"
     )
-
-    # Draining the rest still yields every relationship, in order.
     remaining = list(batches)
     assert [len(b.relationships) for b in remaining] == [1000, 500]
     assert len(consumed) == 2500
@@ -219,3 +219,22 @@ def test_write_request_carries_updates_and_preconditions():
     txn.create(Relationship.from_triple("document:a", "viewer", "user:jimmy"))
     r = req.write_request(txn)
     assert len(r.updates) == 1
+
+
+def _check(value):
+    if isinstance(value, PermissionCheck):
+        return value
+    return PermissionCheck(value.resource, value.relation, value.subject)
+
+
+def _checks(values):
+    return [_check(value) for value in values]
+
+
+def _subject(value, relation=None):
+    typ, identifier = value.split(":", 1)
+    return SubjectRef(ObjectRef(typ, identifier), relation or None)
+
+
+def _check_context(value, context):
+    return PermissionCheck(value.resource, value.relation, value.subject, context)

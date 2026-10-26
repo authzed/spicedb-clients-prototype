@@ -16,9 +16,9 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 
 /**
- * Tests for {@link SpiceDBClient#deleteRelationships(Filter, SpiceDBClient.DeleteOptions)} —
- * optional preconditions (must-match/must-not-match) and per-request page-size limit, threaded into
- * the auto-paging delete loop. Mirrors {@code spicedb-go}'s {@code client/relationships.go} {@code
+ * Tests for {@link SpiceDBClient#deleteRelationships(Filter, DeleteAllOptions)} — optional
+ * preconditions (must-match/must-not-match) and per-request page-size limit, threaded into the
+ * auto-paging delete loop. Mirrors {@code spicedb-go}'s {@code client/relationships.go} {@code
  * WithDeleteMustMatch}/{@code WithDeleteMustNotMatch}/{@code WithDeleteLimit}.
  *
  * <p>Uses the in-process gRPC harness ({@link TestServers}) with a mock {@code PermissionsService}
@@ -27,7 +27,7 @@ import org.junit.jupiter.api.Test;
  */
 class DeleteRelationshipsOptionsTest {
 
-  private static final Filter FILTER = Filter.of("document").withResourceID("doc1");
+  private static final Filter FILTER = Filter.of("document").withResourceId("doc1");
 
   /** Mock service that records every request and always completes in a single page. */
   private static final class CapturingSingleCompleteService
@@ -54,7 +54,7 @@ class DeleteRelationshipsOptionsTest {
     var service = new CapturingSingleCompleteService();
     try (TestServers servers = TestServers.start(service)) {
       SpiceDBClient client = servers.client();
-      String revision = client.deleteRelationships(FILTER);
+      var revision = client.deleteAllRelationshipsNonAtomic(FILTER).revision().value();
 
       assertEquals("rev-1", revision);
       assertEquals(1, service.captured.size());
@@ -72,7 +72,11 @@ class DeleteRelationshipsOptionsTest {
     var service = new CapturingSingleCompleteService();
     try (TestServers servers = TestServers.start(service)) {
       SpiceDBClient client = servers.client();
-      String revision = client.deleteRelationships(FILTER, SpiceDBClient.DeleteOptions.none());
+      var revision =
+          client
+              .deleteAllRelationshipsNonAtomic(FILTER, DeleteAllOptions.builder().build())
+              .revision()
+              .value();
 
       assertEquals("rev-1", revision);
       DeleteRelationshipsRequest req = service.captured.get(0);
@@ -91,34 +95,17 @@ class DeleteRelationshipsOptionsTest {
    * subject's. It must now throw before any RPC is attempted, instead of silently widening.
    */
   @Test
-  void deleteRelationshipsThrowsWhenFilterSubjectIDHasNoSubjectType() throws IOException {
-    var service = new CapturingSingleCompleteService();
-    Filter badFilter = Filter.of("document").withSubjectID("alice");
-
-    try (TestServers servers = TestServers.start(service)) {
-      SpiceDBClient client = servers.client();
-      InvalidArgumentException e =
-          assertThrows(InvalidArgumentException.class, () -> client.deleteRelationships(badFilter));
-      assertTrue(e.getMessage().contains("subjectID"));
-      assertTrue(e.getMessage().contains("subjectType"));
-      assertEquals(0, service.captured.size(), "no request should reach the server");
-    }
+  void deleteRelationshipsThrowsWhenFilterSubjectIDHasNoSubjectType() {
+    assertThrows(
+        InvalidArgumentException.class, () -> Filter.of("document").withSubjectId("alice"));
   }
 
   /** {@code subjectRelation} counterpart of the above. */
   @Test
-  void deleteRelationshipsThrowsWhenFilterSubjectRelationHasNoSubjectType() throws IOException {
-    var service = new CapturingSingleCompleteService();
-    Filter badFilter = Filter.of("document").withSubjectRelation("member");
-
-    try (TestServers servers = TestServers.start(service)) {
-      SpiceDBClient client = servers.client();
-      InvalidArgumentException e =
-          assertThrows(InvalidArgumentException.class, () -> client.deleteRelationships(badFilter));
-      assertTrue(e.getMessage().contains("subjectRelation"));
-      assertTrue(e.getMessage().contains("subjectType"));
-      assertEquals(0, service.captured.size(), "no request should reach the server");
-    }
+  void deleteRelationshipsThrowsWhenFilterSubjectRelationHasNoSubjectType() {
+    assertThrows(
+        InvalidArgumentException.class,
+        () -> Filter.of("document").withSubjectRelation(SubjectRelationFilter.named("member")));
   }
 
   /**
@@ -127,17 +114,9 @@ class DeleteRelationshipsOptionsTest {
    * no request sent.
    */
   @Test
-  void deleteRelationshipsThrowsWhenMustMatchFilterSubjectIDHasNoSubjectType() throws IOException {
-    var service = new CapturingSingleCompleteService();
-    Filter badGuard = Filter.of("document").withSubjectID("alice");
-
-    try (TestServers servers = TestServers.start(service)) {
-      SpiceDBClient client = servers.client();
-      var options = SpiceDBClient.DeleteOptions.none().withMustMatch(badGuard);
-      assertThrows(
-          InvalidArgumentException.class, () -> client.deleteRelationships(FILTER, options));
-      assertEquals(0, service.captured.size(), "no request should reach the server");
-    }
+  void deleteRelationshipsThrowsWhenMustMatchFilterSubjectIDHasNoSubjectType() {
+    assertThrows(
+        InvalidArgumentException.class, () -> Filter.of("document").withSubjectId("alice"));
   }
 
   /**
@@ -151,7 +130,7 @@ class DeleteRelationshipsOptionsTest {
 
     try (TestServers servers = TestServers.start(service)) {
       SpiceDBClient client = servers.client();
-      client.deleteRelationships(filter);
+      client.deleteAllRelationshipsNonAtomic(filter);
 
       DeleteRelationshipsRequest req = service.captured.get(0);
       assertEquals("user", req.getRelationshipFilter().getOptionalSubjectFilter().getSubjectType());
@@ -164,11 +143,11 @@ class DeleteRelationshipsOptionsTest {
   @Test
   void deleteRelationshipsSendsSubjectTypeAndIDWithoutThrowing() throws IOException {
     var service = new CapturingSingleCompleteService();
-    Filter filter = Filter.of("document").withSubjectType("user").withSubjectID("alice");
+    Filter filter = Filter.of("document").withSubjectType("user").withSubjectId("alice");
 
     try (TestServers servers = TestServers.start(service)) {
       SpiceDBClient client = servers.client();
-      client.deleteRelationships(filter);
+      client.deleteAllRelationshipsNonAtomic(filter);
 
       DeleteRelationshipsRequest req = service.captured.get(0);
       assertEquals("user", req.getRelationshipFilter().getOptionalSubjectFilter().getSubjectType());
@@ -180,12 +159,12 @@ class DeleteRelationshipsOptionsTest {
   @Test
   void mustMatchAddsMustMatchPrecondition() throws IOException {
     var service = new CapturingSingleCompleteService();
-    Filter existsFilter = Filter.of("document").withResourceID("doc1").withRelation("owner");
+    Filter existsFilter = Filter.of("document").withResourceId("doc1").withRelation("owner");
 
     try (TestServers servers = TestServers.start(service)) {
       SpiceDBClient client = servers.client();
-      var options = SpiceDBClient.DeleteOptions.none().withMustMatch(existsFilter);
-      client.deleteRelationships(FILTER, options);
+      var options = DeleteAllOptions.builder().mustMatch(java.util.List.of(existsFilter)).build();
+      client.deleteAllRelationshipsNonAtomic(FILTER, options);
 
       DeleteRelationshipsRequest req = service.captured.get(0);
       assertEquals(1, req.getOptionalPreconditionsCount());
@@ -200,12 +179,13 @@ class DeleteRelationshipsOptionsTest {
   @Test
   void mustNotMatchAddsMustNotMatchPrecondition() throws IOException {
     var service = new CapturingSingleCompleteService();
-    Filter absentFilter = Filter.of("document").withResourceID("doc1").withRelation("banned");
+    Filter absentFilter = Filter.of("document").withResourceId("doc1").withRelation("banned");
 
     try (TestServers servers = TestServers.start(service)) {
       SpiceDBClient client = servers.client();
-      var options = SpiceDBClient.DeleteOptions.none().withMustNotMatch(absentFilter);
-      client.deleteRelationships(FILTER, options);
+      var options =
+          DeleteAllOptions.builder().mustNotMatch(java.util.List.of(absentFilter)).build();
+      client.deleteAllRelationshipsNonAtomic(FILTER, options);
 
       DeleteRelationshipsRequest req = service.captured.get(0);
       assertEquals(1, req.getOptionalPreconditionsCount());
@@ -218,17 +198,18 @@ class DeleteRelationshipsOptionsTest {
   @Test
   void combinedMustMatchMustNotMatchAndLimitAreAllSent() throws IOException {
     var service = new CapturingSingleCompleteService();
-    Filter mustFilter = Filter.of("document").withResourceID("doc1").withRelation("owner");
-    Filter mustNotFilter = Filter.of("document").withResourceID("doc1").withRelation("banned");
+    Filter mustFilter = Filter.of("document").withResourceId("doc1").withRelation("owner");
+    Filter mustNotFilter = Filter.of("document").withResourceId("doc1").withRelation("banned");
 
     try (TestServers servers = TestServers.start(service)) {
       SpiceDBClient client = servers.client();
       var options =
-          SpiceDBClient.DeleteOptions.none()
-              .withMustMatch(mustFilter)
-              .withMustNotMatch(mustNotFilter)
-              .withLimit(250);
-      client.deleteRelationships(FILTER, options);
+          DeleteAllOptions.builder()
+              .mustMatch(java.util.List.of(mustFilter))
+              .mustNotMatch(java.util.List.of(mustNotFilter))
+              .pageSize(250)
+              .build();
+      client.deleteAllRelationshipsNonAtomic(FILTER, options);
 
       DeleteRelationshipsRequest req = service.captured.get(0);
       assertEquals(250, req.getOptionalLimit());
@@ -245,13 +226,13 @@ class DeleteRelationshipsOptionsTest {
   @Test
   void multiplePreconditionsOfSameKindAccumulate() throws IOException {
     var service = new CapturingSingleCompleteService();
-    Filter f1 = Filter.of("document").withResourceID("doc1").withRelation("owner");
-    Filter f2 = Filter.of("document").withResourceID("doc1").withRelation("editor");
+    Filter f1 = Filter.of("document").withResourceId("doc1").withRelation("owner");
+    Filter f2 = Filter.of("document").withResourceId("doc1").withRelation("editor");
 
     try (TestServers servers = TestServers.start(service)) {
       SpiceDBClient client = servers.client();
-      var options = SpiceDBClient.DeleteOptions.none().withMustMatch(f1).withMustMatch(f2);
-      client.deleteRelationships(FILTER, options);
+      var options = DeleteAllOptions.builder().mustMatch(java.util.List.of(f1, f2)).build();
+      client.deleteAllRelationshipsNonAtomic(FILTER, options);
 
       DeleteRelationshipsRequest req = service.captured.get(0);
       assertEquals(2, req.getOptionalPreconditionsCount());
@@ -265,7 +246,8 @@ class DeleteRelationshipsOptionsTest {
     var service = new CapturingSingleCompleteService();
     try (TestServers servers = TestServers.start(service)) {
       SpiceDBClient client = servers.client();
-      client.deleteRelationships(FILTER, SpiceDBClient.DeleteOptions.none().withLimit(1));
+      client.deleteAllRelationshipsNonAtomic(
+          FILTER, DeleteAllOptions.builder().pageSize(1).build());
 
       DeleteRelationshipsRequest req = service.captured.get(0);
       assertEquals(1, req.getOptionalLimit());
@@ -298,12 +280,13 @@ class DeleteRelationshipsOptionsTest {
   @Test
   void preconditionsAndLimitAreReSentOnEveryPageOfAMultiPageDelete() throws IOException {
     var service = new TwoPageService();
-    Filter mustFilter = Filter.of("document").withResourceID("doc1").withRelation("owner");
+    Filter mustFilter = Filter.of("document").withResourceId("doc1").withRelation("owner");
 
     try (TestServers servers = TestServers.start(service)) {
       SpiceDBClient client = servers.client();
-      var options = SpiceDBClient.DeleteOptions.none().withMustMatch(mustFilter).withLimit(5);
-      String revision = client.deleteRelationships(FILTER, options);
+      var options =
+          DeleteAllOptions.builder().mustMatch(java.util.List.of(mustFilter)).pageSize(5).build();
+      var revision = client.deleteAllRelationshipsNonAtomic(FILTER, options).revision().value();
 
       assertEquals("rev-2", revision);
       assertEquals(2, service.captured.size());
@@ -361,7 +344,11 @@ class DeleteRelationshipsOptionsTest {
     try (TestServers servers = TestServers.start(service)) {
       SpiceDBClient client = servers.client();
       String revision =
-          client.deleteRelationships(FILTER, SpiceDBClient.DeleteOptions.none().withLimit(5));
+          client
+              .deleteAllRelationshipsNonAtomic(
+                  FILTER, DeleteAllOptions.builder().pageSize(5).build())
+              .revision()
+              .value();
 
       assertEquals("rev-2", revision);
       assertEquals(2, service.captured.size());
@@ -384,7 +371,8 @@ class DeleteRelationshipsOptionsTest {
 
     try (TestServers servers = TestServers.start(service)) {
       SpiceDBClient client = servers.client();
-      client.deleteRelationships(FILTER, SpiceDBClient.DeleteOptions.none().withLimit(5));
+      client.deleteAllRelationshipsNonAtomic(
+          FILTER, DeleteAllOptions.builder().pageSize(5).build());
 
       assertEquals(2, service.captured.size());
       for (DeleteRelationshipsRequest req : service.captured) {
@@ -396,17 +384,19 @@ class DeleteRelationshipsOptionsTest {
   @Test
   void limitMustBePositive() {
     assertThrows(
-        IllegalArgumentException.class, () -> SpiceDBClient.DeleteOptions.none().withLimit(0));
+        com.authzed.spicedb.errors.InvalidArgumentException.class,
+        () -> DeleteAllOptions.builder().pageSize(0).build());
     assertThrows(
-        IllegalArgumentException.class, () -> SpiceDBClient.DeleteOptions.none().withLimit(-1));
+        com.authzed.spicedb.errors.InvalidArgumentException.class,
+        () -> DeleteAllOptions.builder().pageSize(-1).build());
   }
 
   @Test
   void noneHasEmptyPreconditionsAndNullLimit() {
-    var options = SpiceDBClient.DeleteOptions.none();
+    var options = DeleteAllOptions.builder().build();
     assertTrue(options.mustMatch().isEmpty());
     assertTrue(options.mustNotMatch().isEmpty());
-    assertNull(options.limit());
+    assertEquals(1000, options.pageSize());
   }
 
   /**
@@ -418,21 +408,27 @@ class DeleteRelationshipsOptionsTest {
    */
   @Test
   void threeArgConstructorStillWorksAndMeansNoTimeout() {
-    var mustMatch = List.of(Filter.of("document").withResourceID("doc1"));
-    var mustNotMatch = List.of(Filter.of("document").withResourceID("doc2"));
+    var mustMatch = List.of(Filter.of("document").withResourceId("doc1"));
+    var mustNotMatch = List.of(Filter.of("document").withResourceId("doc2"));
 
-    var options = new SpiceDBClient.DeleteOptions(mustMatch, mustNotMatch, 500);
+    var options =
+        DeleteAllOptions.builder()
+            .mustMatch(mustMatch)
+            .mustNotMatch(mustNotMatch)
+            .pageSize(500)
+            .build();
 
     assertEquals(mustMatch, options.mustMatch());
     assertEquals(mustNotMatch, options.mustNotMatch());
-    assertEquals(500, options.limit());
+    assertEquals(500, options.pageSize());
     assertNull(options.timeout(), "three-arg form must mean no per-call deadline");
 
     // It must delegate to the canonical constructor, so normalization and validation still apply.
-    var nulls = new SpiceDBClient.DeleteOptions(null, null, null);
+    var nulls = DeleteAllOptions.builder().build();
     assertTrue(nulls.mustMatch().isEmpty());
     assertTrue(nulls.mustNotMatch().isEmpty());
     assertThrows(
-        IllegalArgumentException.class, () -> new SpiceDBClient.DeleteOptions(null, null, 0));
+        com.authzed.spicedb.errors.InvalidArgumentException.class,
+        () -> DeleteAllOptions.builder().pageSize(0).build());
   }
 }

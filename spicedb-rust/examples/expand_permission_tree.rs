@@ -6,7 +6,7 @@
 use spicedb::client::SpiceDBClient;
 use spicedb::consistency;
 use spicedb::error::SpiceDBError;
-use spicedb::types::{Filter, PermissionTree, Relationship, Transaction, TreeOperation};
+use spicedb::types::{Filter, PermissionTree, Transaction, TreeOperation};
 
 const SCHEMA: &str = r#"definition user {}
 
@@ -22,15 +22,21 @@ definition document {
 /// Recursively walks a `PermissionTree`, collecting the `(subject_type,
 /// subject_id)` pairs found at every leaf node.
 fn collect_leaf_subjects(tree: &PermissionTree, out: &mut Vec<(String, String)>) {
-    if let Some(leaf) = &tree.leaf {
-        for subject in &leaf.subjects {
-            out.push((subject.subject_type.clone(), subject.subject_id.clone()));
+    match tree {
+        PermissionTree::Leaf { subjects, .. } => {
+            for subject in subjects {
+                out.push((
+                    subject.object().object_type().into(),
+                    subject.object().object_id().into(),
+                ));
+            }
         }
-    }
-    if let Some(intermediate) = &tree.intermediate {
-        for child in &intermediate.children {
-            collect_leaf_subjects(child, out);
+        PermissionTree::Intermediate { children, .. } => {
+            for child in children {
+                collect_leaf_subjects(child, out);
+            }
         }
+        _ => {}
     }
 }
 
@@ -43,9 +49,13 @@ async fn main() {
         std::env::var("SPICEDB_ENDPOINT").unwrap_or_else(|_| "localhost:50051".to_string());
     let token = std::env::var("SPICEDB_TOKEN").unwrap_or_else(|_| "testtoken".to_string());
 
-    let client = SpiceDBClient::new_plaintext(endpoint, token)
-        .await
-        .expect("failed to create client");
+    let client = SpiceDBClient::new_plaintext(
+        endpoint,
+        token,
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("failed to create client");
 
     // Clear before writing the schema, not after using it. Every example runs
     // against one SpiceDB and writes a whole schema, and SpiceDB refuses a
@@ -58,38 +68,42 @@ async fn main() {
     // definition yet, which SpiceDB reports as FailedPrecondition
     // (ERROR_REASON_UNKNOWN_DEFINITION). Anything else -- an unreachable
     // server, a bad token -- must still fail the example.
-    match client.delete_relationships(&Filter::new("document")).await {
+    match client
+        .delete_all_relationships_non_atomic(spicedb::DeleteAllRequest::new(
+            (Filter::new("document")).clone(),
+        ))
+        .await
+    {
         Ok(_) | Err(SpiceDBError::FailedPrecondition(_)) => {}
         Err(e) => panic!("cleanup before schema write failed: {e:?}"),
     }
 
     // Write schema
     client
-        .write_schema(SCHEMA)
+        .write_schema(spicedb::WriteSchemaRequest::new(SCHEMA))
         .await
         .expect("write schema failed");
 
     // Write test data: alice is a viewer, bob is an editor of firstdoc
-    let alice_viewer = Relationship::new("document", "firstdoc", "viewer", "user", "alice", "")
+    let alice_viewer = spicedb::Relationship::from_tuple("document:firstdoc#viewer@user:alice")
         .expect("invalid relationship");
-    let bob_editor = Relationship::new("document", "firstdoc", "editor", "user", "bob", "")
+    let bob_editor = spicedb::Relationship::from_tuple("document:firstdoc#editor@user:bob")
         .expect("invalid relationship");
     let mut txn = Transaction::new();
     txn.touch(&alice_viewer);
     txn.touch(&bob_editor);
     let revision = client
-        .write(&txn)
+        .write(spicedb::WriteRequest::new((txn).clone()))
         .await
         .expect("write relationships failed");
 
     // Expand the "view" permission tree for firstdoc
     let result = client
-        .expand_permission_tree(
-            &consistency::at_least(&revision),
-            "document",
-            "firstdoc",
+        .expand_permission_tree(spicedb::ExpandPermissionTreeRequest::new(
+            spicedb::ObjectRef::new("document", "firstdoc").unwrap(),
             "view",
-        )
+            (consistency::at_least((&revision.revision).into())).clone(),
+        ))
         .await
         .expect("expand permission tree failed");
 
@@ -97,31 +111,24 @@ async fn main() {
         "expanded document:firstdoc#view at revision: {}",
         result.revision
     );
-    assert!(!result.revision.is_empty(), "expected non-empty revision");
+    assert!(
+        !result.revision.as_ref().is_empty(),
+        "expected non-empty revision"
+    );
 
     let tree = &result.tree;
 
-    // The root node describes the expanded object/relation.
-    println!(
-        "root: {}:{}#{}",
-        tree.expanded_object.object_type, tree.expanded_object.object_id, tree.expanded_relation,
-    );
-    assert_eq!(tree.expanded_object.object_type, "document");
-    assert_eq!(tree.expanded_object.object_id, "firstdoc");
-
-    // "view" is defined as `viewer + editor + owner`, a union of three
-    // relations, so the root is an intermediate node.
-    let intermediate = tree
-        .intermediate
-        .as_ref()
-        .expect("expected the root node to be an intermediate node");
-    println!(
-        "root operation: {:?} ({} children)",
-        intermediate.operation,
-        intermediate.children.len()
-    );
-    assert_eq!(intermediate.operation, TreeOperation::Union);
-    assert!(tree.leaf.is_none(), "intermediate and leaf are exclusive");
+    let PermissionTree::Intermediate {
+        expanded_object,
+        operation,
+        ..
+    } = tree
+    else {
+        panic!("expected intermediate root")
+    };
+    assert_eq!(expanded_object.object_type(), "document");
+    assert_eq!(expanded_object.object_id(), "firstdoc");
+    assert_eq!(*operation, TreeOperation::Union);
 
     // Walk the full tree and collect every subject found at a leaf.
     let mut subjects = Vec::new();

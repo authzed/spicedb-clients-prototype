@@ -34,7 +34,7 @@ use common::CheckBehavior;
 use spicedb::client::SpiceDBClient;
 use spicedb::consistency;
 use spicedb::error::SpiceDBError;
-use spicedb::types::{Filter, Relationship};
+use spicedb::types::Filter;
 
 #[tokio::main]
 async fn main() {
@@ -47,14 +47,20 @@ async fn main() {
     let endpoint =
         std::env::var("SPICEDB_ENDPOINT").unwrap_or_else(|_| "localhost:50051".to_string());
     let token = std::env::var("SPICEDB_TOKEN").unwrap_or_else(|_| "somerandomkeyhere".to_string());
-    let live = SpiceDBClient::new_plaintext(endpoint, token)
-        .await
-        .expect("connect to SpiceDB");
+    let live = SpiceDBClient::new_plaintext(
+        endpoint,
+        token,
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("connect to SpiceDB");
 
     // The filter is rejected before a request is built, so nothing reaches the
     // server: this is the caller-facing surface, not an internal helper.
     let err = live
-        .delete_relationships(&Filter::new("document").with_subject_id("alice"))
+        .delete_all_relationships_non_atomic(spicedb::DeleteAllRequest::new(
+            (Filter::new("document").with_subject_id("alice")).clone(),
+        ))
         .await
         .expect_err(
             "a filter whose subject constraint the wire cannot express must fail, not widen",
@@ -76,11 +82,12 @@ async fn main() {
 
     // The same filter with the missing piece supplied converts fine, which is
     // what makes the check above a real constraint rather than a blanket ban.
-    live.delete_relationships(
-        &Filter::new("document")
+    live.delete_all_relationships_non_atomic(spicedb::DeleteAllRequest::new(
+        (Filter::new("document")
             .with_subject_type("user")
-            .with_subject_id("alice"),
-    )
+            .with_subject_id("alice"))
+        .clone(),
+    ))
     .await
     .expect("a fully-specified subject filter must convert");
     println!("...and converts once subject_type is supplied");
@@ -89,14 +96,18 @@ async fn main() {
     //
     // The opposite posture. This must not raise, and must not be a grant.
     let (addr, _) = common::spawn(CheckBehavior::UnknownPermissionship).await;
-    let client = SpiceDBClient::new_plaintext(format!("{addr}"), "some-token")
-        .await
-        .expect("connect to the stand-in");
+    let client = SpiceDBClient::new_plaintext(
+        format!("{addr}"),
+        "some-token",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("connect to the stand-in");
 
-    let rel = Relationship::new("document", "readme", "view", "user", "alice", "")
+    let rel = spicedb::Relationship::from_tuple("document:readme#view@user:alice")
         .expect("invalid relationship");
     let result = client
-        .check_permission(&consistency::full(), "view", &rel)
+        .check(spicedb::PermissionCheck::new(rel.resource().clone(), "view", rel.subject().clone(), (consistency::full()).clone()))
         .await
         .expect("an unrecognised server enum must not raise -- that would turn a SpiceDB upgrade into a client-side outage");
 

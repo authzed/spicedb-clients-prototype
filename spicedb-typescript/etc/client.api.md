@@ -12,114 +12,236 @@ export class AlreadyExistsError extends SpiceDBError {
     constructor(message: string, options?: SpiceDBErrorOptions);
 }
 
-// @public
-export function atLeast(revision: string): Consistency;
+// @public (undocumented)
+export function atLeast(revision: ZedToken): Consistency;
 
-// @public
-export function atLeastOrFull(revision: string): Consistency;
+// @public (undocumented)
+export function atLeastOrFull(revision: ZedToken | undefined): Consistency;
 
-// @public
-export function atLeastOrMinLatency(revision: string): Consistency;
+// @public (undocumented)
+export function atLeastOrMinLatency(revision: ZedToken | undefined): Consistency;
+
+// @public (undocumented)
+export interface CallOptions {
+    // (undocumented)
+    readonly signal?: AbortSignal;
+    // (undocumented)
+    readonly timeoutMs?: number;
+}
 
 // @public
 export class CancelledError extends SpiceDBError {
     constructor(message: string, options?: SpiceDBErrorOptions);
 }
 
-// @public
-export interface CheckOptions {
-    context?: Record<string, unknown>;
-    timeoutMs?: number;
+// @public (undocumented)
+export interface Caveat {
+    // (undocumented)
+    readonly context?: JSONObject;
+    // (undocumented)
+    readonly name: string;
 }
 
-// @public
+// @public (undocumented)
+export interface CaveatEvaluation {
+    // (undocumented)
+    readonly caveatName: string;
+    // (undocumented)
+    readonly context?: JSONObject;
+    // (undocumented)
+    readonly expression: string;
+    // (undocumented)
+    readonly missingContext: readonly string[];
+    // (undocumented)
+    readonly result: "unspecified" | "unevaluated" | "false" | "true" | "missingContext";
+}
+
+// @public (undocumented)
+export interface CheckDebugTrace {
+    // (undocumented)
+    readonly caveatEvaluation?: CaveatEvaluation;
+    readonly durationNs?: bigint;
+    // (undocumented)
+    readonly expiration?: Date;
+    // (undocumented)
+    readonly permission: string;
+    // (undocumented)
+    readonly permissionType: "unspecified" | "relation" | "permission";
+    // (undocumented)
+    readonly resolution: TraceResolution;
+    // (undocumented)
+    readonly resource?: ObjectRef;
+    // (undocumented)
+    readonly result: Permissionship;
+    // (undocumented)
+    readonly source: string;
+    // (undocumented)
+    readonly subject?: SubjectRef;
+    // (undocumented)
+    readonly traceOperationId: string;
+}
+
+// @public (undocumented)
+export interface CheckOptions extends CallOptions {
+    // (undocumented)
+    readonly context?: JSONObject;
+    // (undocumented)
+    readonly tracing?: Tracing;
+}
+
+// @public (undocumented)
 export interface CheckRequest {
     // (undocumented)
-    context?: Record<string, unknown>;
+    readonly consistency: Consistency;
     // (undocumented)
-    permission: string;
+    readonly context?: JSONObject;
     // (undocumented)
-    resourceId: string;
+    readonly permission: string;
     // (undocumented)
-    resourceType: string;
+    readonly resource: ObjectRef;
     // (undocumented)
-    subjectId: string;
-    // (undocumented)
-    subjectRelation?: string;
-    // (undocumented)
-    subjectType: string;
+    readonly subject: SubjectRef;
 }
 
-// @public
+// @public (undocumented)
 export class CheckResult {
-    constructor(
-    permissionship: Permissionship,
-    missingContext: string[],
-    checkedAt: string);
-    readonly checkedAt: string;
+    constructor(permissionship: Permissionship, missingContext: readonly string[], checkedAt: ZedToken, debugTrace?: DebugInformation, expiration?: Date);
+    // (undocumented)
+    readonly checkedAt: ZedToken;
+    // (undocumented)
+    readonly debugTrace?: DebugInformation;
+    // (undocumented)
+    readonly expiration?: Date;
+    // (undocumented)
     hasPermission(): boolean;
-    readonly missingContext: string[];
+    // (undocumented)
+    readonly missingContext: readonly string[];
+    // (undocumented)
     readonly permissionship: Permissionship;
 }
 
-// @public
-export interface ComputablePermissionsParams {
+// @public (undocumented)
+export interface ComputablePermissionsRequest {
     // (undocumented)
-    definitionName: string;
+    readonly consistency: Consistency;
     // (undocumented)
-    definitionNameFilter?: string;
+    readonly definitionName: string;
     // (undocumented)
-    relationName: string;
-    timeoutMs?: number;
+    readonly definitionNameFilter?: string;
+    // (undocumented)
+    readonly relationName: string;
 }
 
 // @public
 export class Consistency {
 }
 
-// @public
-export function createSpiceDBClient(endpoint: string, token: string, options?: {
-    insecure?: boolean;
-    allowInsecureRemoteCredentials?: boolean;
-    tls?: TlsOptions;
-    headers?: Record<string, string>;
-    maxRetries?: number;
-    defaultTimeoutMs?: number;
-}): SpiceDBClient;
+// @public (undocumented)
+export function createSpiceDBClient(endpoint: string, token: string, options?: Omit<SpiceDBClientOptions, "endpoint" | "token">): SpiceDBClient;
 
 // @public
 export class DeadlineExceededError extends SpiceDBError {
     constructor(message: string, options?: SpiceDBErrorOptions);
 }
 
-// @public
-export interface DeleteOptions {
-    autoPage?: boolean;
-    cursor?: string;
-    limit?: number;
-    mustMatch?: RelationshipFilterOptions[];
-    mustNotMatch?: RelationshipFilterOptions[];
-    timeoutMs?: number;
+// @public (undocumented)
+export interface DebugInformation {
+    // (undocumented)
+    readonly check?: CheckDebugTrace;
+    // (undocumented)
+    readonly schemaUsed: string;
+}
+
+// @public (undocumented)
+export interface DeleteAllOptions extends CallOptions, Preconditions {
+    // (undocumented)
+    readonly cursor?: string;
+    // (undocumented)
+    readonly pageSize?: number;
+}
+
+// @public (undocumented)
+export interface DeleteOptions extends CallOptions, Preconditions {
+    // (undocumented)
+    readonly cursor?: string;
+    // (undocumented)
+    readonly limit: number;
+}
+
+// @public (undocumented)
+export interface DeleteResult {
+    // (undocumented)
+    readonly cursor?: string;
+    // (undocumented)
+    readonly deletedCount: bigint;
+    // (undocumented)
+    readonly progress: "complete" | "partial" | "unspecified";
+    // (undocumented)
+    readonly revision: ZedToken;
+}
+
+// @public (undocumented)
+export interface DependentRelationsRequest {
+    // (undocumented)
+    readonly consistency: Consistency;
+    // (undocumented)
+    readonly definitionName: string;
+    // (undocumented)
+    readonly permissionName: string;
+}
+
+// @public (undocumented)
+export interface DiffSchemaRequest {
+    // (undocumented)
+    readonly comparisonSchema: string;
+    // (undocumented)
+    readonly consistency: Consistency;
+}
+
+// @public (undocumented)
+export interface DownloadPermissionSetsRequest {
+    // (undocumented)
+    readonly revision?: ZedToken;
 }
 
 // @public
-export interface DependentRelationsParams {
+export interface DownloadPermissionSetsResult {
     // (undocumented)
-    definitionName: string;
+    readonly files: readonly PermissionSetFile[];
     // (undocumented)
-    permissionName: string;
-    timeoutMs?: number;
+    readonly revision: ZedToken;
+    // (undocumented)
+    readonly timestamp?: Date;
 }
 
-// @public
-export interface ExpandPermissionTreeParams {
+// @public (undocumented)
+export interface ExpandPermissionTreeRequest {
     // (undocumented)
-    permission: string;
+    readonly consistency: Consistency;
     // (undocumented)
-    resourceId: string;
+    readonly permission: string;
     // (undocumented)
-    resourceType: string;
-    timeoutMs?: number;
+    readonly resource: ObjectRef;
+}
+
+// @public (undocumented)
+export interface ExpandResult {
+    // (undocumented)
+    readonly revision: ZedToken;
+    // (undocumented)
+    readonly treeRoot: PermissionTree;
+}
+
+// @public (undocumented)
+export interface ExportRelationshipsRequest {
+    // (undocumented)
+    readonly consistency: Consistency;
+    // (undocumented)
+    readonly cursor?: string;
+    // (undocumented)
+    readonly filter?: RelationshipFilter;
+    // (undocumented)
+    readonly pageSize?: number;
 }
 
 // @public
@@ -127,86 +249,127 @@ export class FailedPreconditionError extends SpiceDBError {
     constructor(message: string, options?: SpiceDBErrorOptions);
 }
 
-// @public
+// @public (undocumented)
 export function full(): Consistency;
-
-// @public
-export interface IntermediateNode {
-    // (undocumented)
-    children: PermissionTree[];
-    // (undocumented)
-    operation: TreeOperation;
-}
 
 // @public
 export class InvalidArgumentError extends SpiceDBError {
     constructor(message: string, options?: SpiceDBErrorOptions);
 }
 
-// @public
-export interface LeafNode {
+// @public (undocumented)
+export interface JSONObject {
     // (undocumented)
-    subjects: SubjectRef[];
+    readonly [key: string]: JSONValue;
 }
 
-// @public
+// @public (undocumented)
+export type JSONValue = null | boolean | number | string | JSONObject | readonly JSONValue[];
+
+// @public (undocumented)
+export enum LookupDebug {
+    // (undocumented)
+    Disabled = "disabled",
+    // (undocumented)
+    Enabled = "enabled"
+}
+
+// @public (undocumented)
+export interface LookupPermissionSet {
+    // (undocumented)
+    readonly change?: PermissionSetChange;
+    // (undocumented)
+    readonly cursor?: PermissionSetCursor;
+}
+
+// @public (undocumented)
+export interface LookupPermissionSetsRequest {
+    // (undocumented)
+    readonly cursor?: PermissionSetCursor;
+    // (undocumented)
+    readonly limit?: number;
+    // (undocumented)
+    readonly pageSize?: number;
+    // (undocumented)
+    readonly revision?: ZedToken;
+}
+
+// @public (undocumented)
+export enum LookupPermissionshipFilter {
+    // (undocumented)
+    All = "all",
+    // (undocumented)
+    HasPermissionOnly = "hasPermissionOnly"
+}
+
+// @public (undocumented)
 export interface LookupResource {
-    lookedUpAt: string;
-    partialCaveat?: PartialCaveatInfo;
     // (undocumented)
-    permissionship: Permissionship;
+    readonly lookedUpAt: ZedToken;
     // (undocumented)
-    resourceId: string;
+    readonly partialCaveat?: PartialCaveatInfo;
+    // (undocumented)
+    readonly permissionship: Permissionship;
+    // (undocumented)
+    readonly resourceId: string;
 }
 
-// @public
-export interface LookupResourcesParams {
+// @public (undocumented)
+export interface LookupResourcesRequest {
     // (undocumented)
-    context?: Record<string, unknown>;
+    readonly consistency: Consistency;
     // (undocumented)
-    limit?: number;
+    readonly context?: JSONObject;
     // (undocumented)
-    permission: string;
+    readonly cursor?: string;
     // (undocumented)
-    resourceType: string;
-    signal?: AbortSignal;
+    readonly debug?: LookupDebug;
     // (undocumented)
-    subjectId: string;
+    readonly limit?: number;
     // (undocumented)
-    subjectRelation?: string;
+    readonly pageSize?: number;
     // (undocumented)
-    subjectType: string;
+    readonly permission: string;
+    readonly permissionshipFilter?: LookupPermissionshipFilter;
+    // (undocumented)
+    readonly resourceType: string;
+    // (undocumented)
+    readonly subject: SubjectRef;
 }
 
-// @public
+// @public (undocumented)
 export interface LookupSubject {
     // (undocumented)
-    excludedSubjects: ResolvedSubject[];
-    lookedUpAt: string;
+    readonly excludedSubjects: readonly ResolvedSubject[];
     // (undocumented)
-    subject: ResolvedSubject;
+    readonly lookedUpAt: ZedToken;
+    // (undocumented)
+    readonly subject: ResolvedSubject;
 }
 
-// @public
-export interface LookupSubjectsParams {
+// @public (undocumented)
+export interface LookupSubjectsRequest {
     // (undocumented)
-    context?: Record<string, unknown>;
+    readonly consistency: Consistency;
     // (undocumented)
-    limit?: number;
+    readonly context?: JSONObject;
     // (undocumented)
-    permission: string;
+    readonly cursor?: string;
     // (undocumented)
-    resourceId: string;
+    readonly limit?: number;
     // (undocumented)
-    resourceType: string;
-    signal?: AbortSignal;
+    readonly permission: string;
     // (undocumented)
-    subjectRelation?: string;
+    readonly resource: ObjectRef;
     // (undocumented)
-    subjectType: string;
+    readonly subjectRelation?: string;
+    // (undocumented)
+    readonly subjectType: string;
+    // (undocumented)
+    readonly wildcards?: Wildcards;
 }
 
-// @public
+// @public (undocumented)
 export function minLatency(): Consistency;
 
 // @public
@@ -214,12 +377,21 @@ export class NotFoundError extends SpiceDBError {
     constructor(message: string, options?: SpiceDBErrorOptions);
 }
 
-// @public
+// @public (undocumented)
 export interface ObjectRef {
     // (undocumented)
-    objectId: string;
+    readonly objectId: string;
     // (undocumented)
-    objectType: string;
+    readonly objectType: string;
+}
+
+// @public
+export class OperationAbortError extends DOMException {
+    constructor(reason: unknown);
+    // (undocumented)
+    readonly cause: unknown;
+    // (undocumented)
+    readonly deleteProgress?: DeleteResult;
 }
 
 // @public
@@ -227,10 +399,10 @@ export class OutOfRangeError extends SpiceDBError {
     constructor(message: string, options?: SpiceDBErrorOptions);
 }
 
-// @public
+// @public (undocumented)
 export interface PartialCaveatInfo {
     // (undocumented)
-    missingRequiredContext: string[];
+    readonly missingRequiredContext: readonly string[];
 }
 
 // @public
@@ -238,118 +410,228 @@ export class PermissionDeniedError extends SpiceDBError {
     constructor(message: string, options?: SpiceDBErrorOptions);
 }
 
+// @public (undocumented)
+export interface PermissionSetChange {
+    // (undocumented)
+    readonly child: {
+        readonly kind: "set";
+        readonly set: PermissionSetReference;
+    } | {
+        readonly kind: "member";
+        readonly member: PermissionSetMember;
+    } | {
+        readonly kind: "unspecified";
+    };
+    // (undocumented)
+    readonly operation: "added" | "removed" | "unspecified";
+    // (undocumented)
+    readonly parentSet?: PermissionSetReference;
+    // (undocumented)
+    readonly revision: ZedToken;
+}
+
 // @public
+export interface PermissionSetCursor {
+    // (undocumented)
+    readonly completedMembers: boolean;
+    // (undocumented)
+    readonly cursor: string;
+    // (undocumented)
+    readonly limit: number;
+    // (undocumented)
+    readonly startingIndex: number;
+    // (undocumented)
+    readonly startingKey: string;
+    // (undocumented)
+    readonly token?: ZedToken;
+}
+
+// @public (undocumented)
+export type PermissionSetEvent = {
+    readonly kind: "change";
+    readonly change: PermissionSetChange;
+} | {
+    readonly kind: "completedRevision";
+    readonly revision: ZedToken;
+} | {
+    readonly kind: "lookupRequired";
+    readonly revision: ZedToken;
+} | {
+    readonly kind: "breakingSchemaChange";
+    readonly revision: ZedToken;
+    readonly affectedPermissions: readonly WatchedPermission[];
+} | {
+    readonly kind: "unspecified";
+};
+
+// @public (undocumented)
+export interface PermissionSetFile {
+    // (undocumented)
+    readonly name: string;
+    // (undocumented)
+    readonly url: string;
+}
+
+// @public (undocumented)
+export interface PermissionSetMember {
+    // (undocumented)
+    readonly object: ObjectRef;
+    // (undocumented)
+    readonly permissionOrRelation?: string;
+}
+
+// @public (undocumented)
+export interface PermissionSetReference {
+    // (undocumented)
+    readonly object: ObjectRef;
+    // (undocumented)
+    readonly permissionOrRelation: string;
+}
+
+// @public (undocumented)
 export type Permissionship = "unspecified" | "hasPermission" | "conditionalPermission" | "noPermission";
 
-// @public
+// @public (undocumented)
 export interface PermissionTree {
     // (undocumented)
-    expandedObject: ObjectRef;
+    readonly expandedObject: ObjectRef;
     // (undocumented)
-    expandedRelation: string;
+    readonly expandedRelation: string;
     // (undocumented)
-    intermediate?: IntermediateNode;
-    // (undocumented)
-    leaf?: LeafNode;
+    readonly node: PermissionTreeNode;
 }
 
-// @public
-export interface ReflectSchemaOptions {
+// @public (undocumented)
+export type PermissionTreeNode = {
+    readonly kind: "intermediate";
+    readonly operation: TreeOperation;
+    readonly children: readonly PermissionTree[];
+} | {
+    readonly kind: "leaf";
+    readonly subjects: readonly SubjectRef[];
+} | {
+    readonly kind: "unspecified";
+};
+
+// @public (undocumented)
+export interface Preconditions {
     // (undocumented)
-    caveatNameFilter?: string;
+    readonly mustMatch?: readonly RelationshipFilter[];
     // (undocumented)
-    definitionNameFilter?: string;
-    // (undocumented)
-    permissionNameFilter?: string;
-    // (undocumented)
-    relationNameFilter?: string;
-    timeoutMs?: number;
+    readonly mustNotMatch?: readonly RelationshipFilter[];
 }
 
-// @public
+// @public (undocumented)
+export interface ReadRelationshipsRequest {
+    // (undocumented)
+    readonly consistency: Consistency;
+    // (undocumented)
+    readonly cursor?: string;
+    // (undocumented)
+    readonly filter: RelationshipFilter;
+    // (undocumented)
+    readonly pageSize?: number;
+}
+
+// @public (undocumented)
+export interface ReflectSchemaRequest {
+    // (undocumented)
+    readonly consistency: Consistency;
+    // (undocumented)
+    readonly filters?: readonly SchemaFilter[];
+}
+
+// @public (undocumented)
 export interface ReflectSchemaResult {
     // (undocumented)
-    caveats: SchemaCaveat[];
+    readonly caveats: readonly SchemaCaveat[];
     // (undocumented)
-    definitions: SchemaDefinition[];
+    readonly definitions: readonly SchemaDefinition[];
     // (undocumented)
-    revision: string;
+    readonly revision: ZedToken;
 }
 
-// @public
+// @public (undocumented)
 export interface RelationReference {
     // (undocumented)
-    definitionName: string;
+    readonly definitionName: string;
     // (undocumented)
-    isPermission: boolean;
+    readonly isPermission: boolean;
     // (undocumented)
-    relationName: string;
+    readonly relationName: string;
 }
 
-// @public
+// @public (undocumented)
 export interface Relationship {
     // (undocumented)
-    caveatContext?: Record<string, unknown>;
+    readonly caveat?: Caveat;
     // (undocumented)
-    caveatName?: string;
+    readonly expiration?: Date;
     // (undocumented)
-    expiration?: Date;
+    readonly relation: string;
     // (undocumented)
-    resourceId: string;
+    readonly resource: ObjectRef;
     // (undocumented)
-    resourceRelation: string;
-    // (undocumented)
-    resourceType: string;
-    // (undocumented)
-    subjectId: string;
-    // (undocumented)
-    subjectRelation?: string;
-    // (undocumented)
-    subjectType: string;
+    readonly subject: SubjectRef;
 }
 
-// @public
+// @public (undocumented)
 export function relationship(resource: string, relation: string, subject: string): Relationship;
 
-// @public
+// @public (undocumented)
 export interface RelationshipCountResult {
     // (undocumented)
-    count?: number;
+    readonly count?: bigint;
     // (undocumented)
-    revision?: string;
+    readonly revision?: ZedToken;
     // (undocumented)
-    stillCalculating: boolean;
+    readonly stillCalculating: boolean;
 }
 
-// @public
-export interface RelationshipFilterOptions {
+// @public (undocumented)
+export interface RelationshipFilter {
     // (undocumented)
-    resourceId?: string;
+    readonly relation?: string;
     // (undocumented)
-    resourceIdPrefix?: string;
+    readonly resourceId?: string;
     // (undocumented)
-    resourceRelation?: string;
+    readonly resourceIdPrefix?: string;
     // (undocumented)
-    resourceType: string;
+    readonly resourceType: string;
     // (undocumented)
-    subjectId?: string;
-    // (undocumented)
-    subjectRelation?: string;
-    // (undocumented)
-    subjectType?: string;
+    readonly subject?: SubjectFilter;
 }
 
-// @public
-export function relationshipFromTuple(resourceTuple: string, subject: string): Relationship;
+// @public (undocumented)
+export function relationshipFromTuple(tuple: string, subject: string): Relationship;
 
-// @public
+// @public (undocumented)
+export function relationshipToFilter(rel: Relationship): RelationshipFilter;
+
+// @public (undocumented)
+export interface RelationsResult {
+    // (undocumented)
+    readonly relations: readonly RelationReference[];
+    // (undocumented)
+    readonly revision: ZedToken;
+}
+
+// @public (undocumented)
+export enum RemoteCredentials {
+    // (undocumented)
+    AllowPlaintext = "allowPlaintext",
+    // (undocumented)
+    LoopbackOnly = "loopbackOnly"
+}
+
+// @public (undocumented)
 export interface ResolvedSubject {
     // (undocumented)
-    partialCaveat?: PartialCaveatInfo;
+    readonly partialCaveat?: PartialCaveatInfo;
     // (undocumented)
-    permissionship: Permissionship;
+    readonly permissionship: Permissionship;
     // (undocumented)
-    subjectId: string;
+    readonly subjectId: string;
 }
 
 // @public
@@ -357,207 +639,344 @@ export class ResourceExhaustedError extends SpiceDBError {
     constructor(message: string, options?: SpiceDBErrorOptions);
 }
 
-// @public
+// @public (undocumented)
+export interface RoaringLookupResourcesRequest {
+    // (undocumented)
+    readonly consistency: Consistency;
+    // (undocumented)
+    readonly permission: string;
+    // (undocumented)
+    readonly resourceType: string;
+    // (undocumented)
+    readonly subject: SubjectRef;
+}
+
+// @public (undocumented)
+export interface RoaringLookupResourcesResult {
+    // (undocumented)
+    readonly bitmap: Uint8Array;
+    // (undocumented)
+    readonly cardinality: bigint;
+    // (undocumented)
+    readonly revision: ZedToken;
+}
+
+// @public (undocumented)
 export interface SchemaCaveat {
     // (undocumented)
-    comment: string;
+    readonly comment: string;
     // (undocumented)
-    expression: string;
+    readonly expression: string;
     // (undocumented)
-    name: string;
+    readonly name: string;
     // (undocumented)
-    parameters: SchemaCaveatParameter[];
+    readonly parameters: readonly SchemaCaveatParameter[];
 }
 
-// @public
+// @public (undocumented)
 export interface SchemaCaveatParameter {
     // (undocumented)
-    name: string;
+    readonly name: string;
     // (undocumented)
-    parentCaveatName: string;
+    readonly parentCaveatName: string;
     // (undocumented)
-    type: string;
+    readonly type: string;
 }
 
-// @public
+// @public (undocumented)
 export interface SchemaDefinition {
     // (undocumented)
-    comment: string;
+    readonly comment: string;
     // (undocumented)
-    name: string;
+    readonly name: string;
     // (undocumented)
-    permissions: SchemaPermission[];
+    readonly permissions: readonly SchemaPermission[];
     // (undocumented)
-    relations: SchemaRelation[];
+    readonly relations: readonly SchemaRelation[];
 }
 
-// @public
+// @public (undocumented)
 export interface SchemaDiff {
     // (undocumented)
-    caveatName: string;
+    readonly caveat?: SchemaCaveat;
     // (undocumented)
-    definitionName: string;
+    readonly caveatName: string;
     // (undocumented)
-    kind: string;
+    readonly changedSubjectType?: SchemaTypeReference;
     // (undocumented)
-    permissionName: string;
+    readonly definition?: SchemaDefinition;
     // (undocumented)
-    relationName: string;
+    readonly definitionName: string;
+    // (undocumented)
+    readonly kind: string;
+    // (undocumented)
+    readonly parameter?: SchemaCaveatParameter;
+    // (undocumented)
+    readonly permission?: SchemaPermission;
+    // (undocumented)
+    readonly permissionName: string;
+    // (undocumented)
+    readonly previousType?: string;
+    // (undocumented)
+    readonly relation?: SchemaRelation;
+    // (undocumented)
+    readonly relationName: string;
 }
 
-// @public
+// @public (undocumented)
+export interface SchemaDiffResult {
+    // (undocumented)
+    readonly diffs: readonly SchemaDiff[];
+    // (undocumented)
+    readonly revision: ZedToken;
+}
+
+// @public (undocumented)
+export interface SchemaFilter {
+    // (undocumented)
+    readonly caveatName?: string;
+    // (undocumented)
+    readonly definitionName?: string;
+    // (undocumented)
+    readonly permissionName?: string;
+    // (undocumented)
+    readonly relationName?: string;
+}
+
+// @public (undocumented)
 export interface SchemaPermission {
     // (undocumented)
-    comment: string;
+    readonly comment: string;
     // (undocumented)
-    name: string;
+    readonly name: string;
     // (undocumented)
-    parentDefinitionName: string;
+    readonly parentDefinitionName: string;
 }
 
-// @public
+// @public (undocumented)
 export interface SchemaRelation {
     // (undocumented)
-    comment: string;
+    readonly comment: string;
     // (undocumented)
-    name: string;
+    readonly name: string;
     // (undocumented)
-    parentDefinitionName: string;
+    readonly parentDefinitionName: string;
+    // (undocumented)
+    readonly subjectTypes: readonly SchemaTypeReference[];
 }
 
-// @public
-export function snapshot(revision: string): Consistency;
+// @public (undocumented)
+export interface SchemaResult {
+    // (undocumented)
+    readonly revision: ZedToken;
+    // (undocumented)
+    readonly schema: string;
+}
+
+// @public (undocumented)
+export interface SchemaTypeReference {
+    // (undocumented)
+    readonly caveatName?: string;
+    // (undocumented)
+    readonly subjectDefinitionName: string;
+    // (undocumented)
+    readonly type: {
+        readonly kind: "terminal";
+        readonly terminal: boolean;
+    } | {
+        readonly kind: "relation";
+        readonly relation: string;
+    } | {
+        readonly kind: "wildcard";
+        readonly wildcard: boolean;
+    } | {
+        readonly kind: "unspecified";
+    };
+}
+
+// @public (undocumented)
+export function snapshot(revision: ZedToken): Consistency;
 
 // @public
 export class SpiceDBClient {
     constructor(options: SpiceDBClientOptions);
-    checkAll(consistency: Consistency, ...checks: CheckRequest[]): Promise<boolean>;
     // (undocumented)
-    checkAll(consistency: Consistency, checks: CheckRequest[], options?: CheckOptions): Promise<boolean>;
-    checkAny(consistency: Consistency, ...checks: CheckRequest[]): Promise<boolean>;
+    check(request: CheckRequest, options?: CheckOptions): Promise<CheckResult>;
     // (undocumented)
-    checkAny(consistency: Consistency, checks: CheckRequest[], options?: CheckOptions): Promise<boolean>;
-    checkPermission(consistency: Consistency, check: CheckRequest, options?: CheckOptions): Promise<CheckResult>;
-    checkPermissions(consistency: Consistency, ...checks: CheckRequest[]): Promise<CheckResult[]>;
+    checkBulk(requests: readonly CheckRequest[], options?: CheckOptions): Promise<readonly CheckResult[]>;
     // (undocumented)
-    checkPermissions(consistency: Consistency, checks: CheckRequest[], options?: CheckOptions): Promise<CheckResult[]>;
     close(): void;
-    computablePermissions(consistency: Consistency, params: ComputablePermissionsParams): Promise<{
-        permissions: RelationReference[];
-        revision: string;
-    }>;
-    deleteRelationships(filter: RelationshipFilterOptions, options?: DeleteOptions): Promise<string>;
-    dependentRelations(consistency: Consistency, params: DependentRelationsParams): Promise<{
-        relations: RelationReference[];
-        revision: string;
-    }>;
-    diffSchema(consistency: Consistency, comparisonSchema: string, options?: {
-        timeoutMs?: number;
-    }): Promise<{
-        diffs: SchemaDiff[];
-        revision: string;
-    }>;
-    expandPermissionTree(consistency: Consistency, params: ExpandPermissionTreeParams): Promise<{
-        expandedAt: string;
-        treeRoot: PermissionTree;
-    }>;
-    experimentalCountRelationships(name: string, options?: {
-        timeoutMs?: number;
-    }): Promise<RelationshipCountResult>;
-    experimentalRegisterRelationshipCounter(name: string, filter: RelationshipFilterOptions, options?: {
-        timeoutMs?: number;
-    }): Promise<void>;
-    experimentalUnregisterRelationshipCounter(name: string, options?: {
-        timeoutMs?: number;
-    }): Promise<void>;
-    exportBulkRelationships(consistency: Consistency, filter?: RelationshipFilterOptions, options?: {
-        signal?: AbortSignal;
-    }): AsyncIterableIterator<Relationship>;
-    importBulkRelationships(relationships: Iterable<Relationship> | AsyncIterable<Relationship>, options?: {
-        timeoutMs?: number;
-    }): Promise<bigint>;
-    lookupResources(params: LookupResourcesParams, consistency: Consistency): AsyncIterableIterator<LookupResource>;
-    lookupSubjects(params: LookupSubjectsParams, consistency: Consistency): AsyncIterableIterator<LookupSubject>;
+    // (undocumented)
+    computablePermissions(request: ComputablePermissionsRequest, options?: CallOptions): Promise<RelationsResult>;
+    // (undocumented)
+    deleteAllRelationshipsNonAtomic(filter: RelationshipFilter, options?: DeleteAllOptions): Promise<DeleteResult>;
+    // (undocumented)
+    deleteRelationships(filter: RelationshipFilter, options: DeleteOptions): Promise<DeleteResult>;
+    // (undocumented)
+    dependentRelations(request: DependentRelationsRequest, options?: CallOptions): Promise<RelationsResult>;
+    // (undocumented)
+    diffSchema(request: DiffSchemaRequest, options?: CallOptions): Promise<SchemaDiffResult>;
+    // (undocumented)
+    expandPermissionTree(request: ExpandPermissionTreeRequest, options?: CallOptions): Promise<ExpandResult>;
+    // (undocumented)
+    experimentalCountRelationships(name: string, options?: CallOptions): Promise<RelationshipCountResult>;
+    experimentalCountRelationshipsByFilter(filter: RelationshipFilter, options?: CallOptions): Promise<RelationshipCountResult>;
+    experimentalDownloadPermissionSets(request?: DownloadPermissionSetsRequest, options?: CallOptions): Promise<DownloadPermissionSetsResult>;
+    experimentalLookupPermissionSets(request: LookupPermissionSetsRequest, options?: CallOptions): AsyncIterableIterator<LookupPermissionSet>;
+    // (undocumented)
+    experimentalRegisterRelationshipCounter(name: string, filter: RelationshipFilter, options?: CallOptions): Promise<void>;
+    experimentalRoaringLookupResources(request: RoaringLookupResourcesRequest, options?: CallOptions): Promise<RoaringLookupResourcesResult>;
+    // (undocumented)
+    experimentalUnregisterRelationshipCounter(name: string, options?: CallOptions): Promise<void>;
+    experimentalWatchPermissionSets(request?: WatchPermissionSetsRequest, options?: CallOptions): AsyncIterableIterator<PermissionSetEvent>;
+    // (undocumented)
+    exportRelationships(request: ExportRelationshipsRequest, options?: CallOptions): AsyncIterableIterator<Relationship>;
+    // (undocumented)
+    importRelationships(relationships: Iterable<Relationship> | AsyncIterable<Relationship>, options?: CallOptions): Promise<bigint>;
+    // (undocumented)
+    lookupResources(request: LookupResourcesRequest, options?: CallOptions): AsyncIterableIterator<LookupResource>;
+    // (undocumented)
+    lookupSubjects(request: LookupSubjectsRequest, options?: CallOptions): AsyncIterableIterator<LookupSubject>;
     raw(): SpiceDBProtoClient;
-    readRelationships(filter: RelationshipFilterOptions, consistency: Consistency, options?: {
-        signal?: AbortSignal;
-    }): AsyncIterableIterator<Relationship>;
-    readSchema(options?: {
-        timeoutMs?: number;
-    }): Promise<{
-        schema: string;
-        revision: string;
-    }>;
-    reflectSchema(consistency: Consistency, options?: ReflectSchemaOptions): Promise<{
-        definitions: SchemaDefinition[];
-        caveats: SchemaCaveat[];
-        revision: string;
-    }>;
-    watch(options?: WatchOptions): AsyncIterableIterator<WatchEvent>;
-    write(txn: Transaction, options?: {
-        timeoutMs?: number;
-    }): Promise<string>;
-    writeSchema(schema: string, options?: {
-        timeoutMs?: number;
-    }): Promise<string>;
+    // (undocumented)
+    readRelationships(request: ReadRelationshipsRequest, options?: CallOptions): AsyncIterableIterator<Relationship>;
+    // (undocumented)
+    readSchema(options?: CallOptions): Promise<SchemaResult>;
+    // (undocumented)
+    reflectSchema(request: ReflectSchemaRequest, options?: CallOptions): Promise<ReflectSchemaResult>;
+    // (undocumented)
+    watch(request?: WatchRequest, options?: CallOptions): AsyncIterableIterator<WatchEvent>;
+    // (undocumented)
+    write(transaction: Transaction, options?: CallOptions): Promise<WriteResult>;
+    // (undocumented)
+    writeSchema(schema: string, options?: CallOptions): Promise<ZedToken>;
 }
 
-// @public
+// @public (undocumented)
 export interface SpiceDBClientOptions {
-    allowInsecureRemoteCredentials?: boolean;
-    defaultTimeoutMs?: number;
     // (undocumented)
-    endpoint: string;
+    readonly defaultTimeoutMs?: number;
     // (undocumented)
-    headers?: Record<string, string>;
-    insecure?: boolean;
+    readonly endpoint: string;
     // (undocumented)
-    maxRetries?: number;
-    tls?: TlsOptions;
+    readonly headers?: Readonly<Record<string, string>>;
     // (undocumented)
-    token: string;
+    readonly maxRetries?: number;
+    // (undocumented)
+    readonly remoteCredentials?: RemoteCredentials;
+    // (undocumented)
+    readonly tls?: TlsOptions;
+    // (undocumented)
+    readonly token: string;
+    // (undocumented)
+    readonly transportSecurity?: TransportSecurity;
 }
 
 // @public
 export class SpiceDBError extends Error {
     constructor(message: string, options?: SpiceDBErrorOptions);
+    // (undocumented)
+    readonly deleteProgress?: DeleteResult;
+    // (undocumented)
+    readonly inputIndex?: number;
     readonly reason: string;
     readonly reasonDomain: string;
-    readonly reasonMetadata: Record<string, string>;
+    readonly reasonMetadata: Readonly<Record<string, string>>;
 }
 
 // @public
 export interface SpiceDBErrorOptions extends ErrorOptions {
     reason?: string;
     reasonDomain?: string;
-    reasonMetadata?: Record<string, string>;
+    reasonMetadata?: Readonly<Record<string, string>>;
 }
 
 export { SpiceDBProtoClient }
 
-// @public
+// @public (undocumented)
+export interface SubjectFilter {
+    // (undocumented)
+    readonly relation?: SubjectRelationFilter;
+    // (undocumented)
+    readonly subjectId?: string;
+    // (undocumented)
+    readonly subjectType: string;
+}
+
+// @public (undocumented)
 export interface SubjectRef {
     // (undocumented)
-    optionalRelation: string;
+    readonly object: ObjectRef;
     // (undocumented)
-    subjectId: string;
+    readonly relation?: string;
+}
+
+// @public (undocumented)
+export type SubjectRelationFilter = {
+    readonly kind: SubjectRelationKind.Any;
+} | {
+    readonly kind: SubjectRelationKind.Direct;
+} | {
+    readonly kind: SubjectRelationKind.Named;
+    readonly relation: string;
+};
+
+// @public (undocumented)
+export enum SubjectRelationKind {
     // (undocumented)
-    subjectType: string;
+    Any = "any",
+    // (undocumented)
+    Direct = "direct",
+    // (undocumented)
+    Named = "named"
 }
 
 export { TlsOptions }
 
-// @public
-export class Transaction {
-    create(rel: Relationship): this;
-    delete(rel: Relationship): this;
-    mustMatch(filter: RelationshipFilterOptions): this;
-    mustNotMatch(filter: RelationshipFilterOptions): this;
-    touch(rel: Relationship): this;
-    withMetadata(meta: Record<string, unknown>): this;
+// @public (undocumented)
+export type TraceResolution = {
+    readonly kind: "cached";
+    readonly cached: boolean;
+} | {
+    readonly kind: "subproblems";
+    readonly traces: readonly CheckDebugTrace[];
+} | {
+    readonly kind: "unspecified";
+};
+
+// @public (undocumented)
+export enum Tracing {
+    // (undocumented)
+    Disabled = "disabled",
+    // (undocumented)
+    Enabled = "enabled"
 }
 
 // @public
+export class Transaction {
+    // (undocumented)
+    create(rel: Relationship): this;
+    // (undocumented)
+    delete(rel: Relationship): this;
+    // (undocumented)
+    mustMatch(filter: RelationshipFilter): this;
+    // (undocumented)
+    mustNotMatch(filter: RelationshipFilter): this;
+    // (undocumented)
+    touch(rel: Relationship): this;
+    // (undocumented)
+    withMetadata(metadata: JSONObject): this;
+}
+
+// @public (undocumented)
+export enum TransportSecurity {
+    // (undocumented)
+    Plaintext = "plaintext",
+    // (undocumented)
+    Tls = "tls"
+}
+
+// @public (undocumented)
 export type TreeOperation = "unspecified" | "union" | "intersection" | "exclusion";
 
 // @public
@@ -570,33 +989,93 @@ export class UnavailableError extends SpiceDBError {
     constructor(message: string, options?: SpiceDBErrorOptions);
 }
 
-// @public
+// @public (undocumented)
 export interface WatchChange {
-    operation: "create" | "touch" | "delete" | "unspecified";
     // (undocumented)
-    relationship: Relationship;
+    readonly operation: "create" | "touch" | "delete" | "unspecified";
+    // (undocumented)
+    readonly relationship: Relationship;
 }
 
-// @public
+// @public (undocumented)
+export enum WatchContent {
+    // (undocumented)
+    Checkpoints = "checkpoints",
+    // (undocumented)
+    Relationships = "relationships",
+    // (undocumented)
+    Schema = "schema"
+}
+
+// @public (undocumented)
+export interface WatchedPermission {
+    // (undocumented)
+    readonly permission: string;
+    // (undocumented)
+    readonly resourceType: string;
+    // (undocumented)
+    readonly subjectRelation?: string;
+    // (undocumented)
+    readonly subjectType: string;
+}
+
+// @public (undocumented)
 export interface WatchEvent {
     // (undocumented)
-    changes: WatchChange[];
-    isCheckpoint: boolean;
+    readonly changesThrough: ZedToken;
     // (undocumented)
-    metadata?: Record<string, unknown>;
-    revision: string;
+    readonly isCheckpoint: boolean;
     // (undocumented)
-    schemaUpdated: boolean;
+    readonly metadata?: JSONObject;
+    // (undocumented)
+    readonly schemaUpdated: boolean;
+    // (undocumented)
+    readonly updates: readonly WatchChange[];
+}
+
+// @public (undocumented)
+export interface WatchPermissionSetsRequest {
+    // (undocumented)
+    readonly startRevision?: ZedToken;
+}
+
+// @public (undocumented)
+export interface WatchRequest {
+    // (undocumented)
+    readonly content?: readonly WatchContent[];
+    // (undocumented)
+    readonly objectTypes?: readonly string[];
+    // (undocumented)
+    readonly relationshipFilters?: readonly RelationshipFilter[];
+    // (undocumented)
+    readonly startRevision?: ZedToken;
+}
+
+// @public (undocumented)
+export enum Wildcards {
+    // (undocumented)
+    Default = "default",
+    // (undocumented)
+    Exclude = "exclude",
+    // (undocumented)
+    Include = "include"
 }
 
 // @public
-export interface WatchOptions {
-    includeCheckpoints?: boolean;
+export interface WriteResult {
     // (undocumented)
-    objectTypes?: string[];
-    signal?: AbortSignal;
+    readonly revision: ZedToken;
+}
+
+// @public
+export class ZedToken {
+    constructor(value: string);
     // (undocumented)
-    startRevision?: string;
+    equals(other: ZedToken): boolean;
+    // (undocumented)
+    toJSON(): string;
+    // (undocumented)
+    toString(): string;
 }
 
 // (No @packageDocumentation comment for this package)

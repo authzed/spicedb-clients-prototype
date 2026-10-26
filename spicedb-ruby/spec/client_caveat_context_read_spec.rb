@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative '../lib/spicedb'
+require_relative 'support/native_helpers'
 require 'spicedb_proto'
 
 # Read-path coverage for write-time caveat context.
@@ -60,13 +61,13 @@ RSpec.describe 'SpiceDB::Client caveat context read path' do
 
     rel = client.send(:relationship_from_proto, caveated_proto(struct))
 
-    expect(rel.caveat_name).to eq('only_bizhours')
-    expect(rel.caveat_context['a_string']).to eq('hello')
-    expect(rel.caveat_context['a_number']).to eq(42.0)
-    expect(rel.caveat_context['a_bool']).to be(true)
-    expect(rel.caveat_context['a_null']).to be_nil
-    expect(rel.caveat_context['a_struct']).to eq({ 'inner' => 'deep' })
-    expect(rel.caveat_context['a_list']).to eq([1.0, 'two'])
+    expect(rel.caveat&.name).to eq('only_bizhours')
+    expect(rel.caveat.context['a_string']).to eq('hello')
+    expect(rel.caveat.context['a_number']).to eq(42.0)
+    expect(rel.caveat.context['a_bool']).to be(true)
+    expect(rel.caveat.context['a_null']).to be_nil
+    expect(rel.caveat.context['a_struct']).to eq({ 'inner' => 'deep' })
+    expect(rel.caveat.context['a_list']).to eq([1.0, 'two'])
   end
 
   it 'does not collapse non-string values to empty strings' do
@@ -74,15 +75,15 @@ RSpec.describe 'SpiceDB::Client caveat context read path' do
 
     rel = client.send(:relationship_from_proto, caveated_proto(struct))
 
-    expect(rel.caveat_context['n']).not_to eq('')
-    expect(rel.caveat_context['n']).to eq(7.0)
+    expect(rel.caveat.context['n']).not_to eq('')
+    expect(rel.caveat.context['n']).to eq(7.0)
   end
 
   it 'reads a caveat with an empty context' do
     rel = client.send(:relationship_from_proto, caveated_proto(Google::Protobuf::Struct.new))
 
-    expect(rel.caveat_name).to eq('only_bizhours')
-    expect(rel.caveat_context).to eq({})
+    expect(rel.caveat&.name).to eq('only_bizhours')
+    expect(rel.caveat&.context).to eq({})
   end
 
   # The three examples above call the private converter directly. This one drives it
@@ -98,17 +99,14 @@ RSpec.describe 'SpiceDB::Client caveat context read path' do
     )
 
     permissions_service = double('permissions_service')
-    allow(permissions_service).to receive(:read_relationships).and_return([response])
+    allow(permissions_service).to receive(:read_relationships).and_return(FixtureOperation.new([response]))
     client.instance_variable_set(
       :@proto_client, double('proto_client', permissions: permissions_service)
     )
 
-    results = client.read_relationships(
-      SpiceDB::Consistency.full,
-      SpiceDB::Filter.new(resource_type: 'document')
-    ).to_a
+    results = client.read_relationships(SpiceDB::Filter.new(resource_type: 'document'), consistency: SpiceDB::Consistency.full).to_a
 
     expect(results.length).to eq(1)
-    expect(results.first.caveat_context['n']).to eq(7.0)
+    expect(results.first.caveat.context['n']).to eq(7.0)
   end
 end

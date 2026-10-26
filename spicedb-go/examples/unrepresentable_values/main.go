@@ -28,6 +28,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/authzed/spicedb-clients/spicedb-go/examples/internal/exampleutil"
+
 	"google.golang.org/grpc"
 
 	v1 "github.com/authzed/spicedb-clients/proto-clients/spicedb-go-proto/gen/authzed/api/v1"
@@ -67,17 +69,15 @@ func main() {
 	// A Go channel has no protobuf representation. The rule's answer is to
 	// fail, loudly, naming the offending key -- not to drop it, which would
 	// leave a caveat evaluating against context the caller believes it sent.
-	r, err := rel.FromTriple("document", "readme", "viewer", "user", "alice", "")
+	r, err := rel.NewRelationship(exampleutil.Object("document", "readme"), "viewer", exampleutil.Subject(exampleutil.Object("user", "alice"), ""))
 	if err != nil {
 		log.Fatalf("build relationship: %v", err)
 	}
-	withBadContext := r.WithCaveat("only_on_tuesday", map[string]any{
+	_, err = r.WithCaveat("only_on_tuesday", map[string]any{
 		"day":      "tuesday",
 		"impostor": make(chan int),
 	})
 
-	var txn rel.Txn
-	err = txn.Touch(withBadContext)
 	if err == nil {
 		log.Fatal("caveat context holding an unconvertible value must not be accepted silently")
 	}
@@ -97,7 +97,7 @@ func main() {
 	// format simply drops it, so the filter silently WIDENS. Applied to
 	// DeleteRelationships that is the difference between deleting alice's
 	// relationships and deleting every relationship on every document.
-	_, err = rel.NewFilter("document").WithSubjectID("alice").ToProto()
+	err = exampleutil.Must(rel.NewFilter("document")).WithSubjectID("alice").Validate()
 	if err == nil {
 		log.Fatal("a filter whose subject constraint the wire cannot express must fail, not widen")
 	}
@@ -108,7 +108,7 @@ func main() {
 
 	// The same filter with the missing piece supplied converts fine, which is
 	// what makes the check above a real constraint rather than a blanket ban.
-	if _, err := rel.NewFilter("document").WithSubjectType("user").WithSubjectID("alice").ToProto(); err != nil {
+	if err := exampleutil.Must(rel.NewFilter("document")).WithSubjectType("user").WithSubjectID("alice").Validate(); err != nil {
 		log.Fatalf("a fully-specified subject filter must convert: %v", err)
 	}
 	fmt.Println("...and converts once SubjectType is supplied")
@@ -134,11 +134,11 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	check, err := rel.FromTriple("document", "readme", "view", "user", "alice", "")
+	check, err := rel.NewRelationship(exampleutil.Object("document", "readme"), "view", exampleutil.Subject(exampleutil.Object("user", "alice"), ""))
 	if err != nil {
 		log.Fatalf("build relationship: %v", err)
 	}
-	res, err := c.CheckOne(ctx, consistency.Full(), "view", check)
+	res, err := c.Check(ctx, client.PermissionCheck{Resource: (check).Resource(), Subject: (check).Subject(), Permission: "view", Consistency: consistency.Full()})
 	if err != nil {
 		log.Fatalf("an unrecognised server enum must not raise -- that would turn a SpiceDB "+
 			"upgrade into a client-side outage: %v", err)
@@ -149,4 +149,13 @@ func main() {
 	fmt.Println("unknown server permissionship: no error, and not a grant")
 
 	fmt.Println("unrepresentable_values: caller data fails loudly, server data degrades safely")
+}
+
+func (s *futureServer) CheckPermission(ctx context.Context, r *v1.CheckPermissionRequest) (*v1.CheckPermissionResponse, error) {
+	response, e := s.CheckBulkPermissions(ctx, &v1.CheckBulkPermissionsRequest{Consistency: r.Consistency, Items: []*v1.CheckBulkPermissionsRequestItem{{Resource: r.Resource, Permission: r.Permission, Subject: r.Subject, Context: r.Context}}})
+	if e != nil {
+		return nil, e
+	}
+	item := response.Pairs[0].GetItem()
+	return &v1.CheckPermissionResponse{Permissionship: item.Permissionship, PartialCaveatInfo: item.PartialCaveatInfo, CheckedAt: response.CheckedAt}, nil
 }

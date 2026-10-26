@@ -2,7 +2,47 @@
 
 ## Unreleased
 
+- Resource lookups accept `permissionshipFilter: LookupPermissionshipFilter.HasPermissionOnly` to exclude conditional and unknown results locally. The default is `All`; limits count yielded matches.
+
+### Changed
+
+- Watch examples use `relationshipFilters` for type-only and richer scopes.
+  Regression coverage verifies multiple filters, immutable snapshots and rejection
+  of mixed object-type/relationship-filter selectors.
+
+
+- Rename `deleteAllRelationships` to `deleteAllRelationshipsNonAtomic` to make
+  batch-level atomicity explicit. Before: `client.deleteAllRelationships(filter)`.
+  After: `client.deleteAllRelationshipsNonAtomic(filter)`. Completed batches
+  remain committed if a later batch fails or the operation is cancelled.
+
+
+- Relationship writes and generated `touch`/`create`/`delete` return `WriteResult`.
+  Before: `const revision = await client.write(txn)`.
+  After: `const { revision } = await client.write(txn)`.
+
 ### Added
+
+- Generated clients expose all native capabilities directly, including
+  `deleteAllRelationshipsNonAtomic`, `watch`, bulk checks, schema, import/export,
+  counters and materialize. Existing typed lookup/read methods forward all options.
+  Before: `tc.client.deleteAllRelationshipsNonAtomic(filter)`.
+  After: `tc.deleteAllRelationshipsNonAtomic(filter)`.
+
+
+- **2026-10-26:** Dedicated immutable runtime `ZedToken` values replace branded
+  strings. Construct stored revisions with `new ZedToken(text)` and serialize
+  with `token.toString()`/`toJSON()`; all native results retain the type.
+- **2026-10-26:** Behavioral choices use exported `Tracing`, `LookupDebug`,
+  `Wildcards`, `WatchContent`, `TransportSecurity`, and `RemoteCredentials` enums.
+  For example, `{ tracing: true }` becomes `{ tracing: Tracing.Enabled }`;
+  `{ insecure: true, allowInsecureRemoteCredentials: true }` becomes
+  `{ transportSecurity: TransportSecurity.Plaintext, remoteCredentials: RemoteCredentials.AllowPlaintext }`.
+  Watch content is a readonly array of named enum choices. Invalid modes fail before RPCs.
+
+- **2026-10-26:** Singular results retain expiration independently of tracing.
+  Bulk checks reject missing or mismatched echoed requests; delete-all rejects
+  unknown completion states while retaining acknowledged progress.
 
 - **2026-09-24: proto client regenerated — `RoaringLookupResourcesService` added to
   `authzed.api.materialize.v0`.** The regen adds one new RPC,
@@ -734,6 +774,69 @@
   intended to be public.
 
 ### Breaking Changes
+
+- **BREAKING CHANGE — 2026-10-26 prototype API reset.** Canonical `check` and
+  `checkBulk` replace `checkPermission`, `checkPermissions`, `checkAny`, and
+  `checkAll`. Requests contain nested `resource`/`subject` references and required
+  consistency; persisted relationships contain `relation` and optional `caveat`,
+  never evaluation context. `ZedToken` is an opaque branded string constructed
+  with `zedToken()`; optional consistency fallbacks take `undefined`.
+
+  ```typescript
+  // Before
+  await client.checkPermission(full(), {
+    resourceType: "document", resourceId: "readme", permission: "view",
+    subjectType: "user", subjectId: "jimmy",
+  });
+  // After: returns a CheckResult, with an explicit grant predicate.
+  const check = {
+    resource: { objectType: "document", objectId: "readme" },
+    permission: "view",
+    subject: { object: { objectType: "user", objectId: "jimmy" } },
+    consistency: full(),
+  };
+  const result = await client.check(check, { tracing: true, signal });
+  if (result.hasPermission()) { /* unconditional grant */ }
+  const results = await client.checkBulk([check], { timeoutMs: 5000 });
+  const all = results.length > 0 && results.every(r => r.hasPermission());
+  ```
+
+- **BREAKING CHANGE:** every operation accepts `CallOptions`; cancellation produces
+  a native `AbortError` DOMException whose `cause` is `signal.reason`. Unary
+  timeouts are one monotonic total budget across retries, chunks, and pages.
+  Streams return `AsyncIterableIterator` directly and release active HTTP/2 calls
+  on break, manual return, pending-next cancellation, deadline, or client close.
+  Watch never reconnects automatically. Import/export are named
+  `importRelationships`/`exportRelationships`.
+
+- **BREAKING CHANGE:** bounded `deleteRelationships(filter, { limit })` requires a
+  positive total bound and returns `DeleteResult` with revision, bigint count,
+  completion, and optional cursor. `deleteAllRelationships(filter, { pageSize })`
+  replaces `autoPage: true`; errors and native cancellation retain acknowledged
+  cumulative `deleteProgress`. Subject filters distinguish Any, Direct, and Named.
+
+  ```typescript
+  // Before: limit changed meaning when autoPage was true.
+  await client.deleteRelationships(filter, { limit: 100, autoPage: true });
+  // After: separate operations make the bound explicit.
+  const page = await client.deleteRelationships(filter, { limit: 100 });
+  const all = await client.deleteAllRelationships(filter, { pageSize: 100 });
+  const exact = relationshipToFilter(relationship("document:a", "viewer", "user:a"));
+  // exact.subject.relation is { kind: "direct" }, preserving tuple identity.
+  ```
+
+- Check tracing now forwards `with_tracing` on singular/bulk RPCs and returns
+  native recursive diagnostic trees, schema, caveat JSON, exact bigint durations,
+  resolution presence, expiration, operation IDs, and source. Unknown values
+  remain non-granting. Reflection preserves subject types and complete diff
+  payloads. Experimental roaring lookup preserves bitmap bytes, bigint cardinality,
+  and revision on the existing authenticated connection. Filtered counts and native
+  permission-set watch/lookup/download wrappers cover every nondeprecated Materialize
+  RPC, retaining full cursor state, change events, file URLs and snapshot timestamps.
+  Deprecated WatchPermissions remains available through the raw accessor. All records snapshot
+  caller-owned nested values; invalid JSON reports its offending path.
+
+
 
 - **2026-08-18** (behavioral; new option): per root DESIGN.md, "RULE: Credentials over insecure
   transport require an explicit opt-in" -- `createSpiceDBClient(..., { insecure: true })` (both

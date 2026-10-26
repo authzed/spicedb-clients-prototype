@@ -3,6 +3,7 @@ package com.authzed.spicedb.examples;
 import static com.authzed.spicedb.Consistency.*;
 import static org.assertj.core.api.Assertions.*;
 
+import com.authzed.spicedb.*;
 import com.authzed.spicedb.SpiceDBClient.ComputablePermissionsResult;
 import com.authzed.spicedb.SpiceDBClient.DependentRelationsResult;
 import com.authzed.spicedb.SpiceDBClient.DiffSchemaResult;
@@ -20,7 +21,7 @@ class SchemaReflectionTest extends SpiceDBIntegrationTest {
   void reflect_schema_returns_definitions() {
     ReflectSchemaResult result = client.reflectSchema(full());
 
-    assertThat(result.revision()).isNotEmpty();
+    assertThat(result.revision().value()).isNotEmpty();
     assertThat(result.definitions()).hasSizeGreaterThanOrEqualTo(2);
 
     SchemaDefinition docDef =
@@ -41,7 +42,7 @@ class SchemaReflectionTest extends SpiceDBIntegrationTest {
   void computable_permissions_for_viewer_relation() {
     ComputablePermissionsResult result = client.computablePermissions(full(), "document", "viewer");
 
-    assertThat(result.revision()).isNotEmpty();
+    assertThat(result.revision().value()).isNotEmpty();
     assertThat(result.permissions()).isNotEmpty();
     assertThat(result.permissions()).extracting("relationName").contains("view");
   }
@@ -50,7 +51,7 @@ class SchemaReflectionTest extends SpiceDBIntegrationTest {
   void dependent_relations_for_view_permission() {
     DependentRelationsResult result = client.dependentRelations(full(), "document", "view");
 
-    assertThat(result.revision()).isNotEmpty();
+    assertThat(result.revision().value()).isNotEmpty();
     assertThat(result.relations()).isNotEmpty();
     assertThat(result.relations()).extracting("relationName").contains("viewer", "editor", "owner");
   }
@@ -74,7 +75,7 @@ class SchemaReflectionTest extends SpiceDBIntegrationTest {
 
     DiffSchemaResult result = client.diffSchema(full(), newSchema);
 
-    assertThat(result.revision()).isNotEmpty();
+    assertThat(result.revision().value()).isNotEmpty();
     assertThat(result.diffs()).isNotEmpty();
   }
 }

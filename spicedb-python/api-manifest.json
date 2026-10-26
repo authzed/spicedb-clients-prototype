@@ -1,0 +1,443 @@
+{
+  "approved_breaking_reset": "2026-10-26",
+  "clients": {
+    "aio": {
+      "constructor": "(endpoint: 'str', *, token: 'str', transport_security: 'TransportSecurity' = <TransportSecurity.TLS: 'tls'>, remote_credentials: 'RemoteCredentials' = <RemoteCredentials.REJECT: 'reject'>, ca_cert: 'bytes | None' = None, client_cert: 'bytes | None' = None, client_key: 'bytes | None' = None, default_timeout: 'float' = 30.0, max_retries: 'int' = 3) -> 'None'",
+      "operations": {
+        "check": "(self, check: 'PermissionCheck', *, consistency: 'Consistency', context: 'JSONObject | None' = None, tracing: 'Tracing' = <Tracing.DISABLED: False>, timeout: 'float | None' = None) -> 'CheckResult'",
+        "check_bulk": "(self, checks: 'Sequence[PermissionCheck]', *, consistency: 'Consistency', context: 'JSONObject | None' = None, tracing: 'Tracing' = <Tracing.DISABLED: False>, timeout: 'float | None' = None) -> 'list[CheckResult]'",
+        "close": "(self) -> 'None'",
+        "computable_permissions": "(self, *, definition_name: 'str', relation_name: 'str', consistency: 'Consistency', definition_name_filter: 'str | None' = None, timeout: 'float | None' = None) -> 'RelationsResult'",
+        "delete_all_relationships_non_atomic": "(self, filter: 'Filter', *, page_size: 'int' = 1000, must_match: 'Sequence[Filter]' = (), must_not_match: 'Sequence[Filter]' = (), metadata: 'JSONObject | None' = None, timeout: 'float | None' = None) -> 'DeleteResult'",
+        "delete_relationships": "(self, filter: 'Filter', *, limit: 'int', must_match: 'Sequence[Filter]' = (), must_not_match: 'Sequence[Filter]' = (), metadata: 'JSONObject | None' = None, timeout: 'float | None' = None) -> 'DeleteResult'",
+        "dependent_relations": "(self, *, definition_name: 'str', permission_name: 'str', consistency: 'Consistency', timeout: 'float | None' = None) -> 'RelationsResult'",
+        "diff_schema": "(self, comparison_schema: 'str', *, consistency: 'Consistency', timeout: 'float | None' = None) -> 'SchemaDiffResult'",
+        "download_permission_sets": "(self, *, at_revision: 'ZedToken | None' = None, timeout: 'float | None' = None) -> 'PermissionSetDownload'",
+        "expand_permission_tree": "(self, *, resource: 'ObjectRef', permission: 'str', consistency: 'Consistency', timeout: 'float | None' = None) -> 'ExpandResult'",
+        "experimental_count_relationships": "(self, name: 'str', *, timeout: 'float | None' = None) -> 'CountResult'",
+        "experimental_count_relationships_by_filter": "(self, filter: 'Filter', *, timeout: 'float | None' = None) -> 'CountResult'",
+        "experimental_register_relationship_counter": "(self, name: 'str', filter: 'Filter', *, timeout: 'float | None' = None) -> 'None'",
+        "experimental_roaring_lookup_resources": "(self, *, resource_type: 'str', permission: 'str', subject: 'SubjectRef', consistency: 'Consistency', timeout: 'float | None' = None) -> 'RoaringLookupResourcesResult'",
+        "experimental_unregister_relationship_counter": "(self, name: 'str', *, timeout: 'float | None' = None) -> 'None'",
+        "export_relationships": "(self, filter: 'Filter | None' = None, *, consistency: 'Consistency', page_size: 'int' = 1000, timeout: 'float | None' = None) -> 'AsyncStream[Relationship]'",
+        "import_relationships": "(self, relationships: 'Iterable[Relationship] | AsyncIterable[Relationship]', *, timeout: 'float | None' = None) -> 'int'",
+        "lookup_permission_sets": "(self, *, limit: 'int' = 1000, at_revision: 'ZedToken | None' = None, cursor: 'PermissionSetCursor | None' = None, timeout: 'float | None' = None) -> 'AsyncStream[PermissionSetLookup]'",
+        "lookup_resources": "(self, *, resource_type: 'str', permission: 'str', subject: 'SubjectRef', consistency: 'Consistency', context: 'JSONObject | None' = None, permissionship_filter: 'LookupPermissionshipFilter' = <LookupPermissionshipFilter.ALL: 'all'>, limit: 'int | None' = None, page_size: 'int' = 1000, debug: 'LookupDebug' = <LookupDebug.DISABLED: False>, timeout: 'float | None' = None) -> 'AsyncStream[LookupResource]'",
+        "lookup_subjects": "(self, *, resource: 'ObjectRef', permission: 'str', subject_type: 'str', consistency: 'Consistency', subject_relation: 'str | None' = None, context: 'JSONObject | None' = None, page_size: 'int | None' = None, limit: 'int | None' = None, wildcards: 'Wildcards' = <Wildcards.DEFAULT: 0>, timeout: 'float | None' = None) -> 'AsyncStream[LookupSubject]'",
+        "raw_grpc": "(self) -> 'RawGrpc'",
+        "read_relationships": "(self, filter: 'Filter', *, consistency: 'Consistency', page_size: 'int' = 1000, timeout: 'float | None' = None) -> 'AsyncStream[Relationship]'",
+        "read_schema": "(self, *, timeout: 'float | None' = None) -> 'SchemaResult'",
+        "reflect_schema": "(self, *, consistency: 'Consistency', filters: 'Sequence[SchemaFilter]' = (), timeout: 'float | None' = None) -> 'ReflectSchemaResult'",
+        "watch": "(self, object_types: 'Sequence[str]' = (), *, start_revision: 'ZedToken | None' = None, content: 'Sequence[WatchContent]' = (<WatchContent.RELATIONSHIPS: 1>,), filters: 'Sequence[Filter]' = (), timeout: 'float | None' = None) -> 'AsyncStream[WatchEvent]'",
+        "watch_permission_sets": "(self, *, start_revision: 'ZedToken | None' = None, timeout: 'float | None' = None) -> 'AsyncStream[PermissionSetEvent]'",
+        "write": "(self, transaction: 'Transaction', *, metadata: 'JSONObject | None' = None, timeout: 'float | None' = None) -> 'WriteResult'",
+        "write_schema": "(self, schema: 'str', *, timeout: 'float | None' = None) -> 'ZedToken'"
+      }
+    },
+    "sync": {
+      "constructor": "(endpoint: 'str', *, token: 'str', transport_security: 'TransportSecurity' = <TransportSecurity.TLS: 'tls'>, remote_credentials: 'RemoteCredentials' = <RemoteCredentials.REJECT: 'reject'>, ca_cert: 'bytes | None' = None, client_cert: 'bytes | None' = None, client_key: 'bytes | None' = None, default_timeout: 'float' = 30.0, max_retries: 'int' = 3) -> 'None'",
+      "operations": {
+        "check": "(self, check: 'PermissionCheck', *, consistency: 'Consistency', context: 'JSONObject | None' = None, tracing: 'Tracing' = <Tracing.DISABLED: False>, timeout: 'float | None' = None) -> 'CheckResult'",
+        "check_bulk": "(self, checks: 'Sequence[PermissionCheck]', *, consistency: 'Consistency', context: 'JSONObject | None' = None, tracing: 'Tracing' = <Tracing.DISABLED: False>, timeout: 'float | None' = None) -> 'list[CheckResult]'",
+        "close": "(self) -> 'None'",
+        "computable_permissions": "(self, *, definition_name: 'str', relation_name: 'str', consistency: 'Consistency', definition_name_filter: 'str | None' = None, timeout: 'float | None' = None) -> 'RelationsResult'",
+        "delete_all_relationships_non_atomic": "(self, filter: 'Filter', *, page_size: 'int' = 1000, must_match: 'Sequence[Filter]' = (), must_not_match: 'Sequence[Filter]' = (), metadata: 'JSONObject | None' = None, timeout: 'float | None' = None) -> 'DeleteResult'",
+        "delete_relationships": "(self, filter: 'Filter', *, limit: 'int', must_match: 'Sequence[Filter]' = (), must_not_match: 'Sequence[Filter]' = (), metadata: 'JSONObject | None' = None, timeout: 'float | None' = None) -> 'DeleteResult'",
+        "dependent_relations": "(self, *, definition_name: 'str', permission_name: 'str', consistency: 'Consistency', timeout: 'float | None' = None) -> 'RelationsResult'",
+        "diff_schema": "(self, comparison_schema: 'str', *, consistency: 'Consistency', timeout: 'float | None' = None) -> 'SchemaDiffResult'",
+        "download_permission_sets": "(self, *, at_revision: 'ZedToken | None' = None, timeout: 'float | None' = None) -> 'PermissionSetDownload'",
+        "expand_permission_tree": "(self, *, resource: 'ObjectRef', permission: 'str', consistency: 'Consistency', timeout: 'float | None' = None) -> 'ExpandResult'",
+        "experimental_count_relationships": "(self, name: 'str', *, timeout: 'float | None' = None) -> 'CountResult'",
+        "experimental_count_relationships_by_filter": "(self, filter: 'Filter', *, timeout: 'float | None' = None) -> 'CountResult'",
+        "experimental_register_relationship_counter": "(self, name: 'str', filter: 'Filter', *, timeout: 'float | None' = None) -> 'None'",
+        "experimental_roaring_lookup_resources": "(self, *, resource_type: 'str', permission: 'str', subject: 'SubjectRef', consistency: 'Consistency', timeout: 'float | None' = None) -> 'RoaringLookupResourcesResult'",
+        "experimental_unregister_relationship_counter": "(self, name: 'str', *, timeout: 'float | None' = None) -> 'None'",
+        "export_relationships": "(self, filter: 'Filter | None' = None, *, consistency: 'Consistency', page_size: 'int' = 1000, timeout: 'float | None' = None) -> 'Stream[Relationship]'",
+        "import_relationships": "(self, relationships: 'Iterable[Relationship]', *, timeout: 'float | None' = None) -> 'int'",
+        "lookup_permission_sets": "(self, *, limit: 'int' = 1000, at_revision: 'ZedToken | None' = None, cursor: 'PermissionSetCursor | None' = None, timeout: 'float | None' = None) -> 'Stream[PermissionSetLookup]'",
+        "lookup_resources": "(self, *, resource_type: 'str', permission: 'str', subject: 'SubjectRef', consistency: 'Consistency', context: 'JSONObject | None' = None, permissionship_filter: 'LookupPermissionshipFilter' = <LookupPermissionshipFilter.ALL: 'all'>, limit: 'int | None' = None, page_size: 'int' = 1000, debug: 'LookupDebug' = <LookupDebug.DISABLED: False>, timeout: 'float | None' = None) -> 'Stream[LookupResource]'",
+        "lookup_subjects": "(self, *, resource: 'ObjectRef', permission: 'str', subject_type: 'str', consistency: 'Consistency', subject_relation: 'str | None' = None, context: 'JSONObject | None' = None, page_size: 'int | None' = None, limit: 'int | None' = None, wildcards: 'Wildcards' = <Wildcards.DEFAULT: 0>, timeout: 'float | None' = None) -> 'Stream[LookupSubject]'",
+        "raw_grpc": "(self) -> 'RawGrpc'",
+        "read_relationships": "(self, filter: 'Filter', *, consistency: 'Consistency', page_size: 'int' = 1000, timeout: 'float | None' = None) -> 'Stream[Relationship]'",
+        "read_schema": "(self, *, timeout: 'float | None' = None) -> 'SchemaResult'",
+        "reflect_schema": "(self, *, consistency: 'Consistency', filters: 'Sequence[SchemaFilter]' = (), timeout: 'float | None' = None) -> 'ReflectSchemaResult'",
+        "watch": "(self, object_types: 'Sequence[str]' = (), *, start_revision: 'ZedToken | None' = None, content: 'Sequence[WatchContent]' = (<WatchContent.RELATIONSHIPS: 1>,), filters: 'Sequence[Filter]' = (), timeout: 'float | None' = None) -> 'Stream[WatchEvent]'",
+        "watch_permission_sets": "(self, *, start_revision: 'ZedToken | None' = None, timeout: 'float | None' = None) -> 'Stream[PermissionSetEvent]'",
+        "write": "(self, transaction: 'Transaction', *, metadata: 'JSONObject | None' = None, timeout: 'float | None' = None) -> 'WriteResult'",
+        "write_schema": "(self, schema: 'str', *, timeout: 'float | None' = None) -> 'ZedToken'"
+      }
+    }
+  },
+  "exports": [
+    "AlreadyExistsError",
+    "AsyncStream",
+    "CancelledError",
+    "Caveat",
+    "CaveatEvaluation",
+    "CaveatResult",
+    "CheckDebugTrace",
+    "CheckResult",
+    "Consistency",
+    "ConsistencyMode",
+    "CountResult",
+    "DeadlineExceededError",
+    "DebugInformation",
+    "DeleteProgress",
+    "DeleteResult",
+    "EventLoopBindingError",
+    "ExpandResult",
+    "FailedPreconditionError",
+    "Filter",
+    "IntermediateNode",
+    "InvalidArgumentError",
+    "JSONObject",
+    "JSONValue",
+    "LeafNode",
+    "LookupDebug",
+    "LookupPermissionshipFilter",
+    "LookupResource",
+    "LookupSubject",
+    "NotFoundError",
+    "ObjectRef",
+    "OutOfRangeError",
+    "PartialCaveatInfo",
+    "PermissionCheck",
+    "PermissionDeniedError",
+    "PermissionSetChange",
+    "PermissionSetCheckpoint",
+    "PermissionSetCursor",
+    "PermissionSetDownload",
+    "PermissionSetEvent",
+    "PermissionSetFile",
+    "PermissionSetLookup",
+    "PermissionSetMember",
+    "PermissionSetOperation",
+    "PermissionSetRef",
+    "PermissionSetSchemaChange",
+    "PermissionSetsLookupRequired",
+    "PermissionTree",
+    "PermissionType",
+    "Permissionship",
+    "ReflectSchemaResult",
+    "RelationReference",
+    "RelationsResult",
+    "Relationship",
+    "RemoteCredentials",
+    "ResolvedSubject",
+    "ResourceExhaustedError",
+    "RoaringLookupResourcesResult",
+    "SchemaCaveat",
+    "SchemaCaveatParameter",
+    "SchemaDefinition",
+    "SchemaDiff",
+    "SchemaDiffResult",
+    "SchemaFilter",
+    "SchemaPermission",
+    "SchemaRelation",
+    "SchemaResult",
+    "SchemaTypeReference",
+    "SpiceDBError",
+    "Stream",
+    "SubjectFilter",
+    "SubjectRef",
+    "SubjectRelationFilter",
+    "SubjectRelationMode",
+    "Tracing",
+    "Transaction",
+    "TransportSecurity",
+    "TreeOperation",
+    "UnauthenticatedError",
+    "UnavailableError",
+    "UnknownPermissionSetEvent",
+    "Update",
+    "UpdateOperation",
+    "WatchContent",
+    "WatchEvent",
+    "WatchedPermission",
+    "Wildcards",
+    "WriteResult",
+    "ZedToken",
+    "at_least",
+    "at_least_or_full",
+    "at_least_or_min_latency",
+    "full",
+    "min_latency",
+    "snapshot"
+  ],
+  "records": {
+    "Caveat": {
+      "context": "JSONObject | None",
+      "name": "str"
+    },
+    "CaveatEvaluation": {
+      "caveat_name": "str",
+      "context": "JSONObject | None",
+      "expression": "str",
+      "missing_context": "Sequence[str]",
+      "result": "CaveatResult"
+    },
+    "CheckDebugTrace": {
+      "caveat_evaluation": "CaveatEvaluation | None",
+      "duration": "timedelta | None",
+      "expiration": "datetime | None",
+      "permission": "str",
+      "permission_type": "PermissionType",
+      "resource": "ObjectRef",
+      "result": "Permissionship",
+      "source": "str",
+      "sub_problems": "Sequence[CheckDebugTrace] | None",
+      "subject": "SubjectRef",
+      "trace_operation_id": "str",
+      "was_cached_result": "bool | None"
+    },
+    "CheckResult": {
+      "checked_at": "ZedToken",
+      "debug_trace": "DebugInformation | None",
+      "expiration": "datetime | None",
+      "missing_context": "Sequence[str]",
+      "permissionship": "Permissionship"
+    },
+    "Consistency": {
+      "strategy": "ConsistencyMode",
+      "token": "ZedToken | None"
+    },
+    "CountResult": {
+      "count": "int | None",
+      "revision": "ZedToken | None",
+      "still_calculating": "bool"
+    },
+    "DebugInformation": {
+      "check": "CheckDebugTrace | None",
+      "schema_used": "str"
+    },
+    "DeleteResult": {
+      "cursor": "str | None",
+      "deleted_count": "int",
+      "progress": "DeleteProgress",
+      "revision": "ZedToken"
+    },
+    "ExpandResult": {
+      "revision": "ZedToken",
+      "tree": "PermissionTree"
+    },
+    "Filter": {
+      "relation": "str | None",
+      "resource_id": "str | None",
+      "resource_id_prefix": "str | None",
+      "resource_type": "str",
+      "subject": "SubjectFilter | None"
+    },
+    "IntermediateNode": {
+      "children": "Sequence['PermissionTree']",
+      "operation": "TreeOperation"
+    },
+    "LeafNode": {
+      "subjects": "Sequence[SubjectRef]"
+    },
+    "LookupResource": {
+      "looked_up_at": "ZedToken",
+      "partial_caveat": "PartialCaveatInfo | None",
+      "permissionship": "Permissionship",
+      "resource_id": "str"
+    },
+    "LookupSubject": {
+      "excluded_subjects": "Sequence[ResolvedSubject]",
+      "looked_up_at": "ZedToken",
+      "subject": "ResolvedSubject"
+    },
+    "ObjectRef": {
+      "object_id": "str",
+      "object_type": "str"
+    },
+    "PartialCaveatInfo": {
+      "missing_required_context": "Sequence[str]"
+    },
+    "PermissionCheck": {
+      "context": "JSONObject | None",
+      "permission": "str",
+      "resource": "ObjectRef",
+      "subject": "SubjectRef"
+    },
+    "PermissionSetChange": {
+      "child": "PermissionSetRef | PermissionSetMember | None",
+      "operation": "PermissionSetOperation",
+      "parent": "PermissionSetRef | None",
+      "revision": "ZedToken"
+    },
+    "PermissionSetCheckpoint": {
+      "revision": "ZedToken"
+    },
+    "PermissionSetCursor": {
+      "completed_members": "bool",
+      "cursor": "str",
+      "limit": "int",
+      "starting_index": "int",
+      "starting_key": "str",
+      "token": "ZedToken | None"
+    },
+    "PermissionSetDownload": {
+      "files": "Sequence[PermissionSetFile]",
+      "revision": "ZedToken",
+      "timestamp": "datetime | None"
+    },
+    "PermissionSetFile": {
+      "name": "str",
+      "url": "str"
+    },
+    "PermissionSetLookup": {
+      "change": "PermissionSetChange | None",
+      "cursor": "PermissionSetCursor | None"
+    },
+    "PermissionSetMember": {
+      "object": "ObjectRef",
+      "permission_or_relation": "str | None"
+    },
+    "PermissionSetRef": {
+      "object": "ObjectRef",
+      "permission_or_relation": "str"
+    },
+    "PermissionSetSchemaChange": {
+      "affected_permissions": "Sequence[WatchedPermission]",
+      "revision": "ZedToken"
+    },
+    "PermissionSetsLookupRequired": {
+      "revision": "ZedToken"
+    },
+    "PermissionTree": {
+      "expanded_object": "ObjectRef",
+      "expanded_relation": "str",
+      "intermediate": "IntermediateNode | None",
+      "leaf": "LeafNode | None"
+    },
+    "ReflectSchemaResult": {
+      "caveats": "Sequence[SchemaCaveat]",
+      "definitions": "Sequence[SchemaDefinition]",
+      "revision": "ZedToken"
+    },
+    "RelationReference": {
+      "definition_name": "str",
+      "is_permission": "bool",
+      "relation_name": "str"
+    },
+    "RelationsResult": {
+      "relations": "Sequence[RelationReference]",
+      "revision": "ZedToken"
+    },
+    "Relationship": {
+      "caveat": "Caveat | None",
+      "expiration": "datetime | None",
+      "relation": "str",
+      "resource": "ObjectRef",
+      "subject": "SubjectRef"
+    },
+    "ResolvedSubject": {
+      "partial_caveat": "PartialCaveatInfo | None",
+      "permissionship": "Permissionship",
+      "subject_id": "str"
+    },
+    "RoaringLookupResourcesResult": {
+      "bitmap": "bytes",
+      "cardinality": "int",
+      "revision": "ZedToken"
+    },
+    "SchemaCaveat": {
+      "comment": "str",
+      "expression": "str",
+      "name": "str",
+      "parameters": "Sequence[SchemaCaveatParameter]"
+    },
+    "SchemaCaveatParameter": {
+      "name": "str",
+      "parent_caveat_name": "str",
+      "type": "str"
+    },
+    "SchemaDefinition": {
+      "comment": "str",
+      "name": "str",
+      "permissions": "Sequence[SchemaPermission]",
+      "relations": "Sequence[SchemaRelation]"
+    },
+    "SchemaDiff": {
+      "caveat_name": "str",
+      "definition_name": "str",
+      "details": "JSONObject",
+      "kind": "str",
+      "permission_name": "str",
+      "relation_name": "str"
+    },
+    "SchemaDiffResult": {
+      "diffs": "Sequence[SchemaDiff]",
+      "revision": "ZedToken"
+    },
+    "SchemaFilter": {
+      "caveat_name": "str | None",
+      "definition_name": "str | None",
+      "permission_name": "str | None",
+      "relation_name": "str | None"
+    },
+    "SchemaPermission": {
+      "comment": "str",
+      "name": "str",
+      "parent_definition_name": "str"
+    },
+    "SchemaRelation": {
+      "comment": "str",
+      "name": "str",
+      "parent_definition_name": "str",
+      "subject_types": "Sequence[SchemaTypeReference]"
+    },
+    "SchemaResult": {
+      "revision": "ZedToken",
+      "schema": "str"
+    },
+    "SchemaTypeReference": {
+      "caveat_name": "str | None",
+      "is_public_wildcard": "bool",
+      "is_terminal_subject": "bool",
+      "relation_name": "str | None",
+      "subject_definition_name": "str"
+    },
+    "SubjectFilter": {
+      "relation": "SubjectRelationFilter",
+      "subject_id": "str | None",
+      "subject_type": "str"
+    },
+    "SubjectRef": {
+      "object": "ObjectRef",
+      "relation": "str | None"
+    },
+    "SubjectRelationFilter": {
+      "kind": "SubjectRelationMode",
+      "name": "str | None"
+    },
+    "Transaction": {
+      "_preconditions": "list[permission_service_pb2.Precondition]",
+      "_updates": "list[core_pb2.RelationshipUpdate]"
+    },
+    "UnknownPermissionSetEvent": {},
+    "Update": {
+      "operation": "UpdateOperation",
+      "relationship": "Relationship"
+    },
+    "WatchEvent": {
+      "changes_through": "ZedToken",
+      "full_revision_metadata": "Sequence[JSONObject]",
+      "is_checkpoint": "bool",
+      "schema_updated": "bool",
+      "transaction_metadata": "JSONObject | None",
+      "updates": "Sequence[Update]"
+    },
+    "WatchedPermission": {
+      "permission": "str",
+      "resource_type": "str",
+      "subject_relation": "str | None",
+      "subject_type": "str"
+    },
+    "WriteResult": {
+      "revision": "ZedToken"
+    },
+    "ZedToken": {
+      "_value": "<class 'str'>"
+    }
+  }
+}

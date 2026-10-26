@@ -3,6 +3,7 @@ package com.authzed.spicedb.examples;
 import static com.authzed.spicedb.Consistency.*;
 import static org.assertj.core.api.Assertions.*;
 
+import com.authzed.spicedb.*;
 import com.authzed.spicedb.Filter;
 import com.authzed.spicedb.LookupResult;
 import com.authzed.spicedb.Relationship;
@@ -19,19 +20,32 @@ class LookupSubjectsTest extends SpiceDBIntegrationTest {
 
   @BeforeEach
   void setUp() {
-    client.deleteRelationships(Filter.of("document"));
+    client.deleteAllRelationshipsNonAtomic(Filter.of("document"));
 
     var txn = new Transaction();
-    txn.touch(Relationship.of("document", "firstdoc", "viewer", "user", "alice"));
-    txn.touch(Relationship.of("document", "firstdoc", "editor", "user", "bob"));
-    txn.touch(Relationship.of("document", "firstdoc", "owner", "user", "charlie"));
+    txn.touch(
+        Relationship.of(
+            new ObjectRef("document", "firstdoc"),
+            "viewer",
+            SubjectRef.direct(new ObjectRef("user", "alice"))));
+    txn.touch(
+        Relationship.of(
+            new ObjectRef("document", "firstdoc"),
+            "editor",
+            SubjectRef.direct(new ObjectRef("user", "bob"))));
+    txn.touch(
+        Relationship.of(
+            new ObjectRef("document", "firstdoc"),
+            "owner",
+            SubjectRef.direct(new ObjectRef("user", "charlie"))));
     client.write(txn);
   }
 
   @Test
   void all_three_users_can_view() {
     List<LookupResult.LookupSubject> results;
-    try (var stream = client.lookupSubjects(full(), "document", "firstdoc", "view", "user")) {
+    try (var stream =
+        client.lookupSubjects(full(), new ObjectRef("document", "firstdoc"), "view", "user")) {
       results = stream.toList();
     }
 
@@ -43,15 +57,26 @@ class LookupSubjectsTest extends SpiceDBIntegrationTest {
     // possibly with a different permissionship each time. A caller that needs uniqueness must
     // deduplicate by subject ID itself.
     assertThat(results).allSatisfy(r -> assertThat(r.excludedSubjects()).isEmpty());
-    List<String> subjectIDs = results.stream().map(r -> r.subject().subjectId()).toList();
+    List<String> subjectIDs =
+        results.stream()
+            .filter(r -> r.subject().permissionship() == Permissionship.HAS_PERMISSION)
+            .filter(r -> !r.subject().subjectId().equals("*") && r.excludedSubjects().isEmpty())
+            .map(r -> r.subject().subjectId())
+            .toList();
     assertThat(subjectIDs).containsExactlyInAnyOrder("alice", "bob", "charlie");
   }
 
   @Test
   void only_bob_and_charlie_can_edit() {
     List<String> subjectIDs;
-    try (var stream = client.lookupSubjects(full(), "document", "firstdoc", "edit", "user")) {
-      subjectIDs = stream.map(r -> r.subject().subjectId()).toList();
+    try (var stream =
+        client.lookupSubjects(full(), new ObjectRef("document", "firstdoc"), "edit", "user")) {
+      subjectIDs =
+          stream
+              .filter(r -> r.subject().permissionship() == Permissionship.HAS_PERMISSION)
+              .filter(r -> !r.subject().subjectId().equals("*") && r.excludedSubjects().isEmpty())
+              .map(r -> r.subject().subjectId())
+              .toList();
     }
 
     assertThat(subjectIDs).containsExactlyInAnyOrder("bob", "charlie");
@@ -60,8 +85,14 @@ class LookupSubjectsTest extends SpiceDBIntegrationTest {
   @Test
   void only_charlie_can_delete() {
     List<String> subjectIDs;
-    try (var stream = client.lookupSubjects(full(), "document", "firstdoc", "delete", "user")) {
-      subjectIDs = stream.map(r -> r.subject().subjectId()).toList();
+    try (var stream =
+        client.lookupSubjects(full(), new ObjectRef("document", "firstdoc"), "delete", "user")) {
+      subjectIDs =
+          stream
+              .filter(r -> r.subject().permissionship() == Permissionship.HAS_PERMISSION)
+              .filter(r -> !r.subject().subjectId().equals("*") && r.excludedSubjects().isEmpty())
+              .map(r -> r.subject().subjectId())
+              .toList();
     }
 
     assertThat(subjectIDs).containsExactly("charlie");

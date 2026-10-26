@@ -44,7 +44,7 @@ RSpec.configure do |config|
       # `document` definition yet, which SpiceDB reports as FAILED_PRECONDITION
       # (ERROR_REASON_UNKNOWN_DEFINITION). Anything else must still fail.
       begin
-        client.delete_relationships(SpiceDB::Filter.new(resource_type: 'document'))
+        client.delete_all_relationships_non_atomic(SpiceDB::Filter.new(resource_type: 'document'))
       rescue SpiceDB::FailedPreconditionError # rubocop:disable Lint/SuppressedException
       end
       client.write_schema(TEST_SCHEMA)

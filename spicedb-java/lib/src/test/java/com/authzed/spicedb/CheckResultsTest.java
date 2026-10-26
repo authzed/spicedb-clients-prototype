@@ -47,19 +47,19 @@ class CheckResultsTest {
     return Stream.of(
         Arguments.of(
             CheckPermissionResponse.Permissionship.PERMISSIONSHIP_HAS_PERMISSION,
-            LookupResult.Permissionship.HAS_PERMISSION,
+            Permissionship.HAS_PERMISSION,
             true),
         Arguments.of(
             CheckPermissionResponse.Permissionship.PERMISSIONSHIP_NO_PERMISSION,
-            LookupResult.Permissionship.NO_PERMISSION,
+            Permissionship.NO_PERMISSION,
             false),
         Arguments.of(
             CheckPermissionResponse.Permissionship.PERMISSIONSHIP_CONDITIONAL_PERMISSION,
-            LookupResult.Permissionship.CONDITIONAL_PERMISSION,
+            Permissionship.CONDITIONAL_PERMISSION,
             false),
         Arguments.of(
             CheckPermissionResponse.Permissionship.PERMISSIONSHIP_UNSPECIFIED,
-            LookupResult.Permissionship.UNSPECIFIED,
+            Permissionship.UNSPECIFIED,
             false));
   }
 
@@ -67,7 +67,7 @@ class CheckResultsTest {
   @MethodSource("permissionshipCases")
   void hasPermissionTrueOnlyForHasPermission(
       CheckPermissionResponse.Permissionship protoPermissionship,
-      LookupResult.Permissionship expectedPermissionship,
+      Permissionship expectedPermissionship,
       boolean expectedHasPermission)
       throws IOException {
     var service = bulkCheckReturning(protoPermissionship, null, "rev-t1");
@@ -75,10 +75,17 @@ class CheckResultsTest {
     try (TestServers servers = TestServers.start(service)) {
       SpiceDBClient client = servers.client();
       CheckResult result =
-          client.checkPermission(
-              Consistency.full(),
-              "view",
-              Relationship.of("document", "doc1", "view", "user", "alice"));
+          client
+              .checkBulk(
+                  java.util.List.of(
+                      TestRequests.check(
+                          Relationship.of(
+                              new ObjectRef("document", "doc1"),
+                              "view",
+                              SubjectRef.direct(new ObjectRef("user", "alice"))),
+                          "view",
+                          Consistency.full())))
+              .get(0);
 
       assertEquals(expectedPermissionship, result.permissionship());
       assertEquals(expectedHasPermission, result.hasPermission());
@@ -101,10 +108,17 @@ class CheckResultsTest {
     try (TestServers servers = TestServers.start(service)) {
       SpiceDBClient client = servers.client();
       CheckResult result =
-          client.checkPermission(
-              Consistency.full(),
-              "view",
-              Relationship.of("document", "doc1", "view", "user", "alice"));
+          client
+              .checkBulk(
+                  java.util.List.of(
+                      TestRequests.check(
+                          Relationship.of(
+                              new ObjectRef("document", "doc1"),
+                              "view",
+                              SubjectRef.direct(new ObjectRef("user", "alice"))),
+                          "view",
+                          Consistency.full())))
+              .get(0);
 
       assertEquals(List.of("region", "now"), result.missingContext());
       assertFalse(result.hasPermission());
@@ -120,10 +134,17 @@ class CheckResultsTest {
     try (TestServers servers = TestServers.start(service)) {
       SpiceDBClient client = servers.client();
       CheckResult result =
-          client.checkPermission(
-              Consistency.full(),
-              "view",
-              Relationship.of("document", "doc1", "view", "user", "alice"));
+          client
+              .checkBulk(
+                  java.util.List.of(
+                      TestRequests.check(
+                          Relationship.of(
+                              new ObjectRef("document", "doc1"),
+                              "view",
+                              SubjectRef.direct(new ObjectRef("user", "alice"))),
+                          "view",
+                          Consistency.full())))
+              .get(0);
 
       assertEquals(List.of(), result.missingContext());
     }
@@ -146,12 +167,19 @@ class CheckResultsTest {
     try (TestServers servers = TestServers.start(service)) {
       SpiceDBClient client = servers.client();
       CheckResult result =
-          client.checkPermission(
-              Consistency.full(),
-              "view",
-              Relationship.of("document", "doc1", "view", "user", "alice"));
+          client
+              .checkBulk(
+                  java.util.List.of(
+                      TestRequests.check(
+                          Relationship.of(
+                              new ObjectRef("document", "doc1"),
+                              "view",
+                              SubjectRef.direct(new ObjectRef("user", "alice"))),
+                          "view",
+                          Consistency.full())))
+              .get(0);
 
-      assertEquals("rev-checked-at-123", result.checkedAt());
+      assertEquals("rev-checked-at-123", result.checkedAt().value());
     }
   }
 
@@ -168,6 +196,7 @@ class CheckResultsTest {
                     .setCheckedAt(ZedToken.newBuilder().setToken("rev-shared").build())
                     .addPairs(
                         CheckBulkPermissionsPair.newBuilder()
+                            .setRequest(request.getItems(0))
                             .setItem(
                                 CheckBulkPermissionsResponseItem.newBuilder()
                                     .setPermissionship(
@@ -177,6 +206,7 @@ class CheckResultsTest {
                             .build())
                     .addPairs(
                         CheckBulkPermissionsPair.newBuilder()
+                            .setRequest(request.getItems(1))
                             .setItem(
                                 CheckBulkPermissionsResponseItem.newBuilder()
                                     .setPermissionship(
@@ -192,15 +222,26 @@ class CheckResultsTest {
     try (TestServers servers = TestServers.start(service)) {
       SpiceDBClient client = servers.client();
       List<CheckResult> results =
-          client.checkPermissions(
-              Consistency.full(),
-              "view",
-              Relationship.of("document", "doc1", "view", "user", "alice"),
-              Relationship.of("document", "doc2", "view", "user", "bob"));
+          client.checkBulk(
+              java.util.List.of(
+                  TestRequests.check(
+                      Relationship.of(
+                          new ObjectRef("document", "doc1"),
+                          "view",
+                          SubjectRef.direct(new ObjectRef("user", "alice"))),
+                      "view",
+                      Consistency.full()),
+                  TestRequests.check(
+                      Relationship.of(
+                          new ObjectRef("document", "doc2"),
+                          "view",
+                          SubjectRef.direct(new ObjectRef("user", "bob"))),
+                      "view",
+                      Consistency.full())));
 
       assertEquals(2, results.size());
-      assertEquals("rev-shared", results.get(0).checkedAt());
-      assertEquals("rev-shared", results.get(1).checkedAt());
+      assertEquals("rev-shared", results.get(0).checkedAt().value());
+      assertEquals("rev-shared", results.get(1).checkedAt().value());
     }
   }
 
@@ -223,6 +264,7 @@ class CheckResultsTest {
                     .setCheckedAt(ZedToken.newBuilder().setToken("rev-err").build())
                     .addPairs(
                         CheckBulkPermissionsPair.newBuilder()
+                            .setRequest(request.getItems(0))
                             .setItem(
                                 CheckBulkPermissionsResponseItem.newBuilder()
                                     .setPermissionship(
@@ -232,6 +274,7 @@ class CheckResultsTest {
                             .build())
                     .addPairs(
                         CheckBulkPermissionsPair.newBuilder()
+                            .setRequest(request.getItems(1))
                             .setError(
                                 build.buf.gen.google.rpc.Status.newBuilder()
                                     .setCode(Status.Code.PERMISSION_DENIED.value())
@@ -250,11 +293,22 @@ class CheckResultsTest {
           assertThrows(
               PermissionDeniedException.class,
               () ->
-                  client.checkPermissions(
-                      Consistency.full(),
-                      "view",
-                      Relationship.of("document", "doc1", "view", "user", "alice"),
-                      Relationship.of("document", "doc2", "view", "user", "bob")));
+                  client.checkBulk(
+                      java.util.List.of(
+                          TestRequests.check(
+                              Relationship.of(
+                                  new ObjectRef("document", "doc1"),
+                                  "view",
+                                  SubjectRef.direct(new ObjectRef("user", "alice"))),
+                              "view",
+                              Consistency.full()),
+                          TestRequests.check(
+                              Relationship.of(
+                                  new ObjectRef("document", "doc2"),
+                                  "view",
+                                  SubjectRef.direct(new ObjectRef("user", "bob"))),
+                              "view",
+                              Consistency.full()))));
 
       // The typed exception subtype (PermissionDeniedException, not the base SpiceDBException)
       // proves the per-item error code is routed through ErrorMapper.
@@ -294,6 +348,7 @@ class CheckResultsTest {
                     .setCheckedAt(ZedToken.newBuilder().setToken("rev-err").build())
                     .addPairs(
                         CheckBulkPermissionsPair.newBuilder()
+                            .setRequest(request.getItems(0))
                             .setError(
                                 build.buf.gen.google.rpc.Status.newBuilder()
                                     .setCode(Status.Code.RESOURCE_EXHAUSTED.value())
@@ -315,10 +370,15 @@ class CheckResultsTest {
           assertThrows(
               ResourceExhaustedException.class,
               () ->
-                  client.checkPermissions(
-                      Consistency.full(),
-                      "view",
-                      Relationship.of("document", "doc1", "view", "user", "alice")));
+                  client.checkBulk(
+                      java.util.List.of(
+                          TestRequests.check(
+                              Relationship.of(
+                                  new ObjectRef("document", "doc1"),
+                                  "view",
+                                  SubjectRef.direct(new ObjectRef("user", "alice"))),
+                              "view",
+                              Consistency.full()))));
 
       assertEquals("ERROR_REASON_MAXIMUM_DEPTH_EXCEEDED", ex.getReason());
       assertEquals("authzed.com", ex.getReasonDomain());
@@ -344,6 +404,7 @@ class CheckResultsTest {
                     .setCheckedAt(ZedToken.newBuilder().setToken("rev-any").build())
                     .addPairs(
                         CheckBulkPermissionsPair.newBuilder()
+                            .setRequest(request.getItems(0))
                             .setItem(
                                 CheckBulkPermissionsResponseItem.newBuilder()
                                     .setPermissionship(
@@ -353,6 +414,7 @@ class CheckResultsTest {
                             .build())
                     .addPairs(
                         CheckBulkPermissionsPair.newBuilder()
+                            .setRequest(request.getItems(1))
                             .setItem(
                                 CheckBulkPermissionsResponseItem.newBuilder()
                                     .setPermissionship(
@@ -369,10 +431,21 @@ class CheckResultsTest {
       SpiceDBClient client = servers.client();
       boolean anyGranted =
           client.checkAny(
-              Consistency.full(),
-              "view",
-              Relationship.of("document", "doc1", "view", "user", "alice"),
-              Relationship.of("document", "doc2", "view", "user", "bob"));
+              java.util.List.of(
+                  TestRequests.check(
+                      Relationship.of(
+                          new ObjectRef("document", "doc1"),
+                          "view",
+                          SubjectRef.direct(new ObjectRef("user", "alice"))),
+                      "view",
+                      Consistency.full()),
+                  TestRequests.check(
+                      Relationship.of(
+                          new ObjectRef("document", "doc2"),
+                          "view",
+                          SubjectRef.direct(new ObjectRef("user", "bob"))),
+                      "view",
+                      Consistency.full())));
 
       assertFalse(anyGranted, "a CONDITIONAL_PERMISSION result must not count as a grant");
     }
@@ -406,7 +479,7 @@ class CheckResultsTest {
 
     try (TestServers servers = TestServers.start(service)) {
       SpiceDBClient client = servers.client();
-      boolean allGranted = client.checkAll(Consistency.full(), "view");
+      boolean allGranted = client.checkAll(java.util.List.of());
 
       assertFalse(
           allGranted, "checkAll must return false, not vacuously true, for zero relationships");
@@ -436,6 +509,7 @@ class CheckResultsTest {
                     .setCheckedAt(ZedToken.newBuilder().setToken("rev-short").build())
                     .addPairs(
                         CheckBulkPermissionsPair.newBuilder()
+                            .setRequest(request.getItems(0))
                             .setItem(
                                 CheckBulkPermissionsResponseItem.newBuilder()
                                     .setPermissionship(
@@ -455,11 +529,22 @@ class CheckResultsTest {
           assertThrows(
               com.authzed.spicedb.errors.SpiceDBException.class,
               () ->
-                  client.checkPermissions(
-                      Consistency.full(),
-                      "view",
-                      Relationship.of("document", "doc1", "view", "user", "alice"),
-                      Relationship.of("document", "doc2", "view", "user", "bob")));
+                  client.checkBulk(
+                      java.util.List.of(
+                          TestRequests.check(
+                              Relationship.of(
+                                  new ObjectRef("document", "doc1"),
+                                  "view",
+                                  SubjectRef.direct(new ObjectRef("user", "alice"))),
+                              "view",
+                              Consistency.full()),
+                          TestRequests.check(
+                              Relationship.of(
+                                  new ObjectRef("document", "doc2"),
+                                  "view",
+                                  SubjectRef.direct(new ObjectRef("user", "bob"))),
+                              "view",
+                              Consistency.full()))));
 
       assertTrue(
           ex.getMessage().contains("1") && ex.getMessage().contains("2"),
@@ -482,7 +567,10 @@ class CheckResultsTest {
             responseObserver.onNext(
                 CheckBulkPermissionsResponse.newBuilder()
                     .setCheckedAt(ZedToken.newBuilder().setToken("rev-malformed").build())
-                    .addPairs(CheckBulkPermissionsPair.newBuilder().build())
+                    .addPairs(
+                        CheckBulkPermissionsPair.newBuilder()
+                            .setRequest(request.getItems(0))
+                            .build())
                     .build());
             responseObserver.onCompleted();
           }
@@ -495,10 +583,15 @@ class CheckResultsTest {
           assertThrows(
               com.authzed.spicedb.errors.SpiceDBException.class,
               () ->
-                  client.checkPermissions(
-                      Consistency.full(),
-                      "view",
-                      Relationship.of("document", "doc1", "view", "user", "alice")));
+                  client.checkBulk(
+                      java.util.List.of(
+                          TestRequests.check(
+                              Relationship.of(
+                                  new ObjectRef("document", "doc1"),
+                                  "view",
+                                  SubjectRef.direct(new ObjectRef("user", "alice"))),
+                              "view",
+                              Consistency.full()))));
 
       assertTrue(
           ex.getMessage().contains("check item 0"),
@@ -528,7 +621,11 @@ class CheckResultsTest {
         responseObserver.onNext(
             CheckBulkPermissionsResponse.newBuilder()
                 .setCheckedAt(ZedToken.newBuilder().setToken(checkedAtToken).build())
-                .addPairs(CheckBulkPermissionsPair.newBuilder().setItem(itemBuilder).build())
+                .addPairs(
+                    CheckBulkPermissionsPair.newBuilder()
+                        .setRequest(request.getItems(0))
+                        .setItem(itemBuilder)
+                        .build())
                 .build());
         responseObserver.onCompleted();
       }

@@ -45,6 +45,8 @@ import (
 	"os"
 	"time"
 
+	"github.com/authzed/spicedb-clients/spicedb-go/examples/internal/exampleutil"
+
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -115,7 +117,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	doc, err := rel.FromTriple("document", "readme", "view", "user", "alice", "")
+	doc, err := rel.NewRelationship(exampleutil.Object("document", "readme"), "view", exampleutil.Subject(exampleutil.Object("user", "alice"), ""))
 	if err != nil {
 		log.Fatalf("build relationship: %v", err)
 	}
@@ -132,7 +134,7 @@ func main() {
 	}
 	defer func() { _ = c.Close() }()
 
-	_, err = c.CheckOne(ctx, consistency.AtLeast(staleToken), "view", doc)
+	_, err = c.Check(ctx, client.PermissionCheck{Resource: (doc).Resource(), Subject: (doc).Subject(), Permission: "view", Consistency: consistency.AtLeast(consistency.NewZedToken(staleToken))})
 	if !errors.Is(err, client.ErrOutOfRange) {
 		log.Fatalf("a check pinned to a collected ZedToken must surface as ErrOutOfRange, "+
 			"not a generic failure a caller has to string-match: got %v", err)
@@ -146,7 +148,7 @@ func main() {
 
 	// The recovery the rule calls mechanical, in full: drop the token, re-read
 	// at full consistency. Nothing here parses a message.
-	res, err := c.CheckOne(ctx, consistency.Full(), "view", doc)
+	res, err := c.Check(ctx, client.PermissionCheck{Resource: (doc).Resource(), Subject: (doc).Subject(), Permission: "view", Consistency: consistency.Full()})
 	if err != nil {
 		log.Fatalf("re-reading at full consistency is the documented recovery and must succeed: %v", err)
 	}
@@ -167,7 +169,7 @@ func main() {
 	}
 	defer func() { _ = ac.Close() }()
 
-	_, err = ac.CheckOne(ctx, consistency.Full(), "view", doc)
+	_, err = ac.Check(ctx, client.PermissionCheck{Resource: (doc).Resource(), Subject: (doc).Subject(), Permission: "view", Consistency: consistency.Full()})
 	if !errors.Is(err, client.ErrUnauthenticated) {
 		log.Fatalf("a rejected token must be distinguishable from an internal fault: got %v", err)
 	}
@@ -191,11 +193,29 @@ func main() {
 	}
 	defer func() { _ = bad.Close() }()
 
-	if _, _, err := bad.ReadSchema(ctx); !errors.Is(err, client.ErrPermissionDenied) {
+	if _, err := bad.ReadSchema(ctx, client.ReadSchemaRequest{}); !errors.Is(err, client.ErrPermissionDenied) {
 		log.Fatalf("SpiceDB rejects a bad preshared key with PERMISSION_DENIED; if this now "+
 			"reports something else, this example's guidance is stale and must be updated: %v", err)
 	}
 	fmt.Println("real SpiceDB, wrong preshared key: ErrPermissionDenied (not ErrUnauthenticated)")
 
 	fmt.Println("error_mapping: both recoveries work without parsing a message")
+}
+
+func (s *standIn) CheckPermission(ctx context.Context, r *v1.CheckPermissionRequest) (*v1.CheckPermissionResponse, error) {
+	response, e := s.CheckBulkPermissions(ctx, &v1.CheckBulkPermissionsRequest{Consistency: r.Consistency, Items: []*v1.CheckBulkPermissionsRequestItem{{Resource: r.Resource, Permission: r.Permission, Subject: r.Subject, Context: r.Context}}})
+	if e != nil {
+		return nil, e
+	}
+	item := response.Pairs[0].GetItem()
+	return &v1.CheckPermissionResponse{Permissionship: item.Permissionship, PartialCaveatInfo: item.PartialCaveatInfo, CheckedAt: response.CheckedAt}, nil
+}
+
+func (s *unauthenticatedServer) CheckPermission(ctx context.Context, r *v1.CheckPermissionRequest) (*v1.CheckPermissionResponse, error) {
+	response, e := s.CheckBulkPermissions(ctx, &v1.CheckBulkPermissionsRequest{Consistency: r.Consistency, Items: []*v1.CheckBulkPermissionsRequestItem{{Resource: r.Resource, Permission: r.Permission, Subject: r.Subject, Context: r.Context}}})
+	if e != nil {
+		return nil, e
+	}
+	item := response.Pairs[0].GetItem()
+	return &v1.CheckPermissionResponse{Permissionship: item.Permissionship, PartialCaveatInfo: item.PartialCaveatInfo, CheckedAt: response.CheckedAt}, nil
 }

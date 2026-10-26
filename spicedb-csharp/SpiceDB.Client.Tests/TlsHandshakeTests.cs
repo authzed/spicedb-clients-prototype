@@ -84,7 +84,7 @@ public class TlsHandshakeTests
             // The channel is lazy, so the constructor proves nothing by itself. This RPC
             // is what forces the connection, and with it the handshake — clause 2:
             // "where the constructor is lazy, force the connection inside the test".
-            await client.ReadSchemaAsync(timeout: TimeSpan.FromSeconds(30));
+            await client.ReadSchemaAsync(new CallOptions { Timeout = TimeSpan.FromSeconds(30) }, default);
             return; // a successful RPC is, a fortiori, a completed handshake
         }
         catch (Exception ex)
@@ -93,6 +93,11 @@ public class TlsHandshakeTests
             // inside an RpcException, and this client maps that again, so the certificate
             // detail lives several levels down from the message on top.
             detail = Flatten(ex).ToLowerInvariant();
+            var rpc = ex.InnerException as Grpc.Core.RpcException;
+            Assert.NotNull(rpc);
+            Assert.True(rpc!.StatusCode is Grpc.Core.StatusCode.Unauthenticated or Grpc.Core.StatusCode.PermissionDenied or Grpc.Core.StatusCode.Unimplemented
+                || rpc.Status.Detail.Contains("no healthy upstream", StringComparison.OrdinalIgnoreCase),
+                $"A handshake must receive an upstream gRPC reply, not a local timeout or connection failure: {detail}");
         }
 
         foreach (var signature in TrustStoreFailureSignatures)

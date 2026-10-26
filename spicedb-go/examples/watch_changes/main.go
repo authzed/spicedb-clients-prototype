@@ -28,6 +28,8 @@ import (
 	"os"
 	"time"
 
+	"github.com/authzed/spicedb-clients/spicedb-go/examples/internal/exampleutil"
+
 	"github.com/authzed/spicedb-clients/spicedb-go/client"
 	"github.com/authzed/spicedb-clients/spicedb-go/rel"
 )
@@ -62,7 +64,7 @@ func main() {
 
 	// The same schema the other examples write, so this example does not
 	// narrow it out from under them (they share one SpiceDB).
-	if _, err := c.WriteSchema(ctx, `definition user {}
+	if _, err := c.WriteSchema(ctx, client.WriteSchemaRequest{Schema: `definition user {}
 
 definition document {
 	relation viewer: user
@@ -71,7 +73,7 @@ definition document {
 	permission view = viewer + editor + owner
 	permission edit = editor + owner
 	permission delete = owner
-}`); err != nil {
+}`}); err != nil {
 		log.Fatalf("write schema failed: %v", err)
 	}
 
@@ -79,7 +81,7 @@ definition document {
 	// already exists, unchanged, is not a change: SpiceDB emits no watch event
 	// for it. Leaving a previous run's data in place would therefore make this
 	// example wait for an update the server has no reason to send.
-	if _, err := c.DeleteRelationships(ctx, rel.NewFilter("document")); err != nil {
+	if _, err := c.DeleteAllRelationshipsNonAtomic(ctx, client.DeleteAllRequest{Filter: exampleutil.Must(rel.NewFilter("document"))}); err != nil {
 		log.Fatalf("clearing document relationships failed: %v", err)
 	}
 
@@ -87,10 +89,10 @@ definition document {
 	// cannot replay whatever earlier examples left behind and cannot miss the
 	// write made below.
 	var seed rel.Txn
-	if err := seed.Touch(rel.MustFromTriple("document", "watched", "viewer", "user", "seed", "")); err != nil {
+	if err := seed.Touch(exampleutil.Must(rel.NewRelationship(exampleutil.Object("document", "watched"), "viewer", exampleutil.Subject(exampleutil.Object("user", "seed"), "")))); err != nil {
 		log.Fatalf("failed to add relationship to transaction: %v", err)
 	}
-	startRevision, err := c.Write(ctx, seed)
+	startRevision, err := c.Write(ctx, client.WriteRequest{Transaction: seed})
 	if err != nil {
 		log.Fatalf("seed write failed: %v", err)
 	}
@@ -109,12 +111,12 @@ definition document {
 	go func() {
 		var iterErr error
 
-		// client.WithIncludeCheckpoints() asks the server for periodic
+		// client.WithUpdatesCheckpoints(client.CheckpointsIncluded) asks the server for periodic
 		// checkpoint events in addition to relationship updates --
 		// recommended if this SpiceDB instance is running behind a proxy that
 		// aborts idle connections, since a checkpoint keeps the stream alive
 		// even when there are no changes.
-		for event, err := range c.Updates(watchCtx, []string{"document"}, startRevision, client.WithIncludeCheckpoints()) {
+		for event, err := range c.Updates(watchCtx, client.UpdatesRequest{Filters: []rel.Filter{exampleutil.Must(rel.NewFilter("document"))}}, client.WithUpdatesStart(startRevision.Revision), client.WithUpdatesCheckpoints(client.CheckpointsIncluded)) {
 			if err != nil {
 				iterErr = err
 				break
@@ -134,7 +136,7 @@ definition document {
 					break
 				}
 				select {
-				case checkpointSeen <- event.ChangesThrough:
+				case checkpointSeen <- event.ChangesThrough.String():
 				default:
 				}
 				fmt.Printf("CHECKPOINT: revision=%s\n", event.ChangesThrough)
@@ -158,10 +160,10 @@ definition document {
 				}
 				fmt.Printf("%s: %s (through %s)\n", opName, update.Relationship.String(), event.ChangesThrough)
 
-				if update.Relationship.ResourceType == "document" &&
-					update.Relationship.ResourceID == "watched" &&
-					update.Relationship.ResourceRelation == "editor" &&
-					update.Relationship.SubjectID == "bob" {
+				if update.Relationship.Resource().Type() == "document" &&
+					update.Relationship.Resource().ID() == "watched" &&
+					update.Relationship.Relation() == "editor" &&
+					update.Relationship.Subject().Object().ID() == "bob" {
 					select {
 					case observed <- update:
 					default:
@@ -175,10 +177,10 @@ definition document {
 
 	// The write the consumer above is waiting for.
 	var txn rel.Txn
-	if err := txn.Touch(rel.MustFromTriple("document", "watched", "editor", "user", "bob", "")); err != nil {
+	if err := txn.Touch(exampleutil.Must(rel.NewRelationship(exampleutil.Object("document", "watched"), "editor", exampleutil.Subject(exampleutil.Object("user", "bob"), "")))); err != nil {
 		log.Fatalf("failed to add relationship to transaction: %v", err)
 	}
-	if _, err := c.Write(ctx, txn); err != nil {
+	if _, err := c.Write(ctx, client.WriteRequest{Transaction: txn}); err != nil {
 		log.Fatalf("write relationships failed: %v", err)
 	}
 
@@ -195,7 +197,7 @@ definition document {
 	if update.Operation != rel.UpdateOperationTouch && update.Operation != rel.UpdateOperationCreate {
 		log.Fatalf("expected a CREATE or TOUCH for the relationship just written, got %v", update.Operation)
 	}
-	if got := update.Relationship.SubjectType; got != "user" {
+	if got := update.Relationship.Subject().Object().Type(); got != "user" {
 		log.Fatalf("expected subject type \"user\", got %q", got)
 	}
 	fmt.Printf("observed the expected update: %s\n", update.Relationship.String())
@@ -235,7 +237,7 @@ definition document {
 	// Clean up so later examples that write a narrower schema aren't blocked
 	// by leftover relationships (examples run in sequence against one shared
 	// SpiceDB instance).
-	if _, err := c.DeleteRelationships(ctx, rel.NewFilter("document")); err != nil {
+	if _, err := c.DeleteAllRelationshipsNonAtomic(ctx, client.DeleteAllRequest{Filter: exampleutil.Must(rel.NewFilter("document"))}); err != nil {
 		log.Fatalf("cleanup failed: %v", err)
 	}
 }

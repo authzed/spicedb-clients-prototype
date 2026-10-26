@@ -3,6 +3,7 @@ package com.authzed.spicedb.examples;
 import static com.authzed.spicedb.Consistency.*;
 import static org.assertj.core.api.Assertions.*;
 
+import com.authzed.spicedb.*;
 import com.authzed.spicedb.Filter;
 import com.authzed.spicedb.PermissionTree;
 import com.authzed.spicedb.PermissionTree.LeafNode;
@@ -24,25 +25,38 @@ import org.junit.jupiter.api.Test;
  */
 class ExpandPermissionTreeTest extends SpiceDBIntegrationTest {
 
-  private String writeRevision;
+  private ZedToken writeRevision;
 
   @BeforeEach
   void setUp() {
-    client.deleteRelationships(Filter.of("document"));
+    client.deleteAllRelationshipsNonAtomic(Filter.of("document"));
 
     var txn = new Transaction();
-    txn.touch(Relationship.of("document", "report", "viewer", "user", "alice"));
-    txn.touch(Relationship.of("document", "report", "editor", "user", "bob"));
-    txn.touch(Relationship.of("document", "report", "owner", "user", "charlie"));
-    writeRevision = client.write(txn);
+    txn.touch(
+        Relationship.of(
+            new ObjectRef("document", "report"),
+            "viewer",
+            com.authzed.spicedb.SubjectRef.direct(new ObjectRef("user", "alice"))));
+    txn.touch(
+        Relationship.of(
+            new ObjectRef("document", "report"),
+            "editor",
+            com.authzed.spicedb.SubjectRef.direct(new ObjectRef("user", "bob"))));
+    txn.touch(
+        Relationship.of(
+            new ObjectRef("document", "report"),
+            "owner",
+            com.authzed.spicedb.SubjectRef.direct(new ObjectRef("user", "charlie"))));
+    writeRevision = client.write(txn).revision();
   }
 
   @Test
   void expand_view_permission_returns_union_of_all_relations() {
     ExpandResult result =
-        client.expandPermissionTree(atLeast(writeRevision), "document", "report", "view");
+        client.expandPermissionTree(
+            atLeast(writeRevision), new ObjectRef("document", "report"), "view");
 
-    assertThat(result.revision()).isNotEmpty();
+    assertThat(result.revision().value()).isNotEmpty();
 
     PermissionTree tree = result.tree();
     assertThat(tree.expandedObject().objectType()).isEqualTo("document");
@@ -65,7 +79,8 @@ class ExpandPermissionTreeTest extends SpiceDBIntegrationTest {
     // straight to a leaf node rather than wrapping it in a one-child intermediate node. Walking
     // the tree generically (rather than asserting on its exact shape) handles either case.
     ExpandResult result =
-        client.expandPermissionTree(atLeast(writeRevision), "document", "report", "delete");
+        client.expandPermissionTree(
+            atLeast(writeRevision), new ObjectRef("document", "report"), "delete");
 
     Set<String> subjectIDs = collectLeafSubjectIDs(result.tree());
     assertThat(subjectIDs).containsExactly("charlie");

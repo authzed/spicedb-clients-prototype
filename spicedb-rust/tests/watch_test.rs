@@ -118,12 +118,16 @@ async fn updates_yields_unrecognized_operation_as_unspecified_rather_than_droppi
     ];
     let addr = spawn_watch_server(MockWatchService::new(responses, /* keep_open */ true)).await;
 
-    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
-        .await
-        .expect("client should connect to mock server");
+    let client = SpiceDBClient::new_plaintext(
+        addr.to_string(),
+        "token",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("client should connect to mock server");
 
     let object_types: Vec<String> = Vec::new();
-    let stream = client.updates(&object_types);
+    let stream = client.updates(spicedb::UpdatesRequest::new(object_types.to_vec()));
     tokio::pin!(stream);
 
     let first = tokio::time::timeout(Duration::from_secs(2), stream.next())
@@ -138,7 +142,10 @@ async fn updates_yields_unrecognized_operation_as_unspecified_rather_than_droppi
         UpdateOperation::Touch,
         "an unrecognized operation must never be reported as a write"
     );
-    assert_eq!(first.updates[0].relationship.subject_id, "alice");
+    assert_eq!(
+        first.updates[0].relationship.subject().object().object_id(),
+        "alice"
+    );
 
     let second = tokio::time::timeout(Duration::from_secs(2), stream.next())
         .await
@@ -146,7 +153,14 @@ async fn updates_yields_unrecognized_operation_as_unspecified_rather_than_droppi
         .expect("stream should yield a second item")
         .expect("second item should be Ok(WatchEvent)");
     assert_eq!(second.updates[0].operation, UpdateOperation::Unspecified);
-    assert_eq!(second.updates[0].relationship.subject_id, "bob");
+    assert_eq!(
+        second.updates[0]
+            .relationship
+            .subject()
+            .object()
+            .object_id(),
+        "bob"
+    );
 
     let third = tokio::time::timeout(Duration::from_secs(2), stream.next())
         .await
@@ -154,7 +168,10 @@ async fn updates_yields_unrecognized_operation_as_unspecified_rather_than_droppi
         .expect("stream should yield a third item")
         .expect("third item should be Ok(WatchEvent)");
     assert_eq!(third.updates[0].operation, UpdateOperation::Delete);
-    assert_eq!(third.updates[0].relationship.subject_id, "carol");
+    assert_eq!(
+        third.updates[0].relationship.subject().object().object_id(),
+        "carol"
+    );
 }
 
 #[tokio::test]
@@ -172,12 +189,16 @@ async fn updates_yields_incrementally_while_stream_stays_open() {
     ];
     let addr = spawn_watch_server(MockWatchService::new(responses, /* keep_open */ true)).await;
 
-    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
-        .await
-        .expect("client should connect to mock server");
+    let client = SpiceDBClient::new_plaintext(
+        addr.to_string(),
+        "token",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("client should connect to mock server");
 
     let object_types: Vec<String> = Vec::new();
-    let stream = client.updates(&object_types);
+    let stream = client.updates(spicedb::UpdatesRequest::new(object_types.to_vec()));
     tokio::pin!(stream);
 
     // The FIRST update must arrive promptly — without waiting for the server
@@ -190,11 +211,27 @@ async fn updates_yields_incrementally_while_stream_stays_open() {
         .expect("first item should be Ok(WatchEvent)");
     assert_eq!(first.updates.len(), 1);
     assert_eq!(first.updates[0].operation, UpdateOperation::Create);
-    assert_eq!(first.updates[0].relationship.resource_type, "document");
-    assert_eq!(first.updates[0].relationship.resource_id, "readme");
-    assert_eq!(first.updates[0].relationship.resource_relation, "viewer");
-    assert_eq!(first.updates[0].relationship.subject_type, "user");
-    assert_eq!(first.updates[0].relationship.subject_id, "alice");
+    assert_eq!(
+        first.updates[0].relationship.resource().object_type(),
+        "document"
+    );
+    assert_eq!(
+        first.updates[0].relationship.resource().object_id(),
+        "readme"
+    );
+    assert_eq!(first.updates[0].relationship.relation(), "viewer");
+    assert_eq!(
+        first.updates[0]
+            .relationship
+            .subject()
+            .object()
+            .object_type(),
+        "user"
+    );
+    assert_eq!(
+        first.updates[0].relationship.subject().object().object_id(),
+        "alice"
+    );
 
     // The SECOND update likewise arrives incrementally, while the stream is
     // still open.
@@ -204,7 +241,14 @@ async fn updates_yields_incrementally_while_stream_stays_open() {
         .expect("stream should yield a second item")
         .expect("second item should be Ok(WatchEvent)");
     assert_eq!(second.updates[0].operation, UpdateOperation::Delete);
-    assert_eq!(second.updates[0].relationship.subject_id, "bob");
+    assert_eq!(
+        second.updates[0]
+            .relationship
+            .subject()
+            .object()
+            .object_id(),
+        "bob"
+    );
 }
 
 #[tokio::test]
@@ -222,12 +266,16 @@ async fn updates_retries_transient_establishment_failures() {
     let establish_calls = mock.establish_calls();
     let addr = spawn_watch_server(mock).await;
 
-    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
-        .await
-        .expect("client should connect to mock server");
+    let client = SpiceDBClient::new_plaintext(
+        addr.to_string(),
+        "token",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("client should connect to mock server");
 
     let object_types: Vec<String> = Vec::new();
-    let stream = client.updates(&object_types);
+    let stream = client.updates(spicedb::UpdatesRequest::new(object_types.to_vec()));
     tokio::pin!(stream);
 
     // The retry backoff (100ms, 200ms) means this can take a few hundred ms;
@@ -238,7 +286,10 @@ async fn updates_retries_transient_establishment_failures() {
         .expect("stream should yield an item")
         .expect("item should be Ok(WatchEvent)");
     assert_eq!(first.updates[0].operation, UpdateOperation::Touch);
-    assert_eq!(first.updates[0].relationship.subject_id, "carol");
+    assert_eq!(
+        first.updates[0].relationship.subject().object().object_id(),
+        "carol"
+    );
 
     // Three establishment attempts: two failures + one success.
     assert_eq!(establish_calls.load(Ordering::SeqCst), 3);
@@ -265,12 +316,16 @@ async fn watch_event_exposes_usable_resume_token() {
     }];
     let addr = spawn_watch_server(MockWatchService::new(responses, false)).await;
 
-    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
-        .await
-        .expect("client should connect to mock server");
+    let client = SpiceDBClient::new_plaintext(
+        addr.to_string(),
+        "token",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("client should connect to mock server");
 
     let object_types: Vec<String> = Vec::new();
-    let stream = client.updates(&object_types);
+    let stream = client.updates(spicedb::UpdatesRequest::new(object_types.to_vec()));
     tokio::pin!(stream);
 
     let event = tokio::time::timeout(Duration::from_secs(2), stream.next())
@@ -278,7 +333,7 @@ async fn watch_event_exposes_usable_resume_token() {
         .expect("event should arrive")
         .expect("stream should yield an item")
         .expect("item should be Ok(WatchEvent)");
-    assert_eq!(event.changes_through, "resume-me");
+    assert_eq!(event.changes_through.as_ref(), "resume-me");
 }
 
 #[tokio::test]
@@ -287,12 +342,16 @@ async fn updates_without_include_checkpoints_requests_no_update_kinds() {
     let requests = mock.requests();
     let addr = spawn_watch_server(mock).await;
 
-    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
-        .await
-        .expect("client should connect to mock server");
+    let client = SpiceDBClient::new_plaintext(
+        addr.to_string(),
+        "token",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("client should connect to mock server");
 
     let object_types: Vec<String> = Vec::new();
-    let stream = client.updates(&object_types);
+    let stream = client.updates(spicedb::UpdatesRequest::new(object_types.to_vec()));
     tokio::pin!(stream);
     let _ = tokio::time::timeout(Duration::from_secs(2), stream.next()).await;
 
@@ -307,12 +366,20 @@ async fn include_checkpoints_reaches_the_wire() {
     let requests = mock.requests();
     let addr = spawn_watch_server(mock).await;
 
-    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
-        .await
-        .expect("client should connect to mock server");
+    let client = SpiceDBClient::new_plaintext(
+        addr.to_string(),
+        "token",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("client should connect to mock server");
 
     let object_types: Vec<String> = Vec::new();
-    let stream = client.updates_with(&object_types, &WatchOptions::new().with_checkpoints());
+    let stream = client.updates(
+        spicedb::UpdatesRequest::new(object_types.to_vec()).with_options(
+            (WatchOptions::new().with_checkpoints(spicedb::CheckpointMode::Include)).clone(),
+        ),
+    );
     tokio::pin!(stream);
     let _ = tokio::time::timeout(Duration::from_secs(2), stream.next()).await;
 
@@ -340,12 +407,20 @@ async fn checkpoint_event_is_distinguishable_from_update_event() {
     ];
     let addr = spawn_watch_server(MockWatchService::new(responses, false)).await;
 
-    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
-        .await
-        .expect("client should connect to mock server");
+    let client = SpiceDBClient::new_plaintext(
+        addr.to_string(),
+        "token",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("client should connect to mock server");
 
     let object_types: Vec<String> = Vec::new();
-    let stream = client.updates_with(&object_types, &WatchOptions::new().with_checkpoints());
+    let stream = client.updates(
+        spicedb::UpdatesRequest::new(object_types.to_vec()).with_options(
+            (WatchOptions::new().with_checkpoints(spicedb::CheckpointMode::Include)).clone(),
+        ),
+    );
     tokio::pin!(stream);
 
     let checkpoint = tokio::time::timeout(Duration::from_secs(2), stream.next())
@@ -355,7 +430,7 @@ async fn checkpoint_event_is_distinguishable_from_update_event() {
         .expect("first item should be Ok(WatchEvent)");
     assert!(checkpoint.is_checkpoint);
     assert!(checkpoint.updates.is_empty());
-    assert_eq!(checkpoint.changes_through, "checkpoint-rev");
+    assert_eq!(checkpoint.changes_through.as_ref(), "checkpoint-rev");
 
     let update = tokio::time::timeout(Duration::from_secs(2), stream.next())
         .await
@@ -364,4 +439,173 @@ async fn checkpoint_event_is_distinguishable_from_update_event() {
         .expect("second item should be Ok(WatchEvent)");
     assert!(!update.is_checkpoint);
     assert_eq!(update.updates.len(), 1);
+}
+
+#[tokio::test]
+async fn watch_content_and_checkpoint_enums_preserve_exact_wire_selection() {
+    for (content, checkpoints, expected) in [
+        (
+            spicedb::WatchContent::Relationships,
+            spicedb::CheckpointMode::Exclude,
+            vec![],
+        ),
+        (
+            spicedb::WatchContent::Relationships,
+            spicedb::CheckpointMode::Include,
+            vec![
+                proto::WatchKind::IncludeRelationshipUpdates as i32,
+                proto::WatchKind::IncludeCheckpoints as i32,
+            ],
+        ),
+        (
+            spicedb::WatchContent::RelationshipsAndSchema,
+            spicedb::CheckpointMode::Exclude,
+            vec![
+                proto::WatchKind::IncludeRelationshipUpdates as i32,
+                proto::WatchKind::IncludeSchemaUpdates as i32,
+            ],
+        ),
+        (
+            spicedb::WatchContent::RelationshipsAndSchema,
+            spicedb::CheckpointMode::Include,
+            vec![
+                proto::WatchKind::IncludeRelationshipUpdates as i32,
+                proto::WatchKind::IncludeCheckpoints as i32,
+                proto::WatchKind::IncludeSchemaUpdates as i32,
+            ],
+        ),
+    ] {
+        let mock = MockWatchService::new(Vec::new(), false);
+        let requests = mock.requests();
+        let addr = spawn_watch_server(mock).await;
+        let client = SpiceDBClient::new_plaintext(
+            addr.to_string(),
+            "token",
+            spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+        )
+        .await
+        .unwrap();
+        let stream = client.updates(
+            spicedb::UpdatesRequest::new(vec![]).with_options(
+                WatchOptions::new()
+                    .with_content(content)
+                    .with_checkpoints(checkpoints)
+                    .with_start_revision("opaque+/=".into()),
+            ),
+        );
+        tokio::pin!(stream);
+        let _ = stream.next().await;
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests[0].optional_update_kinds, expected);
+        assert_eq!(
+            requests[0].optional_start_cursor.as_ref().unwrap().token,
+            "opaque+/="
+        );
+    }
+}
+
+#[tokio::test]
+async fn watch_relationship_filters_preserve_or_wire_semantics() {
+    use spicedb::{Filter, SubjectRelationFilter};
+    let filters = vec![
+        Filter::new("document")
+            .with_resource_id("one")
+            .with_relation("viewer")
+            .with_subject_type("user")
+            .with_subject_id("alice")
+            .with_subject_relation(SubjectRelationFilter::Direct),
+        Filter::new("folder")
+            .with_resource_id_prefix("team-")
+            .with_relation("reader")
+            .with_subject_type("group")
+            .with_subject_id("eng")
+            .with_subject_relation(SubjectRelationFilter::Named("member".into())),
+    ];
+    for empty in [false, true] {
+        let mock = MockWatchService::new(Vec::new(), false);
+        let requests = mock.requests();
+        let addr = spawn_watch_server(mock).await;
+        let client = SpiceDBClient::new_plaintext(
+            addr.to_string(),
+            "token",
+            spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+        )
+        .await
+        .unwrap();
+        let stream = client.updates(spicedb::UpdatesRequest::new(vec![]).with_options(
+            WatchOptions::new().with_filters(if empty { vec![] } else { filters.clone() }),
+        ));
+        tokio::pin!(stream);
+        assert!(stream.next().await.is_none());
+        let requests = requests.lock().unwrap();
+        assert!(requests[0].optional_object_types.is_empty());
+        if empty {
+            assert!(requests[0].optional_relationship_filters.is_empty());
+            continue;
+        }
+        assert_eq!(
+            requests[0].optional_relationship_filters,
+            vec![
+                proto::RelationshipFilter {
+                    resource_type: "document".into(),
+                    optional_resource_id: "one".into(),
+                    optional_relation: "viewer".into(),
+                    optional_subject_filter: Some(proto::SubjectFilter {
+                        subject_type: "user".into(),
+                        optional_subject_id: "alice".into(),
+                        optional_relation: Some(proto::subject_filter::RelationFilter {
+                            relation: "".into()
+                        })
+                    }),
+                    ..Default::default()
+                },
+                proto::RelationshipFilter {
+                    resource_type: "folder".into(),
+                    optional_resource_id_prefix: "team-".into(),
+                    optional_relation: "reader".into(),
+                    optional_subject_filter: Some(proto::SubjectFilter {
+                        subject_type: "group".into(),
+                        optional_subject_id: "eng".into(),
+                        optional_relation: Some(proto::subject_filter::RelationFilter {
+                            relation: "member".into()
+                        })
+                    }),
+                    ..Default::default()
+                },
+            ]
+        );
+    }
+}
+
+#[tokio::test]
+async fn watch_invalid_filters_fail_before_rpc() {
+    for (types, filter) in [
+        (vec!["document".into()], spicedb::Filter::new("document")),
+        (vec![], spicedb::Filter::new("")),
+        (
+            vec![],
+            spicedb::Filter::new("document").with_subject_id("alice"),
+        ),
+    ] {
+        let mock = MockWatchService::new(Vec::new(), false);
+        let requests = mock.requests();
+        let addr = spawn_watch_server(mock).await;
+        let client = SpiceDBClient::new_plaintext(
+            addr.to_string(),
+            "token",
+            spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+        )
+        .await
+        .unwrap();
+        let stream = client.updates(
+            spicedb::UpdatesRequest::new(types)
+                .with_options(WatchOptions::new().with_filters(vec![filter])),
+        );
+        tokio::pin!(stream);
+        assert!(matches!(
+            stream.next().await.unwrap(),
+            Err(spicedb::error::SpiceDBError::InvalidArgument(_))
+        ));
+        assert!(requests.lock().unwrap().is_empty());
+    }
 }

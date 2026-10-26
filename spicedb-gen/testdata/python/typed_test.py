@@ -11,6 +11,9 @@ Requires SpiceDB at localhost:50051.
 """
 
 from __future__ import annotations
+from spicedb import WriteResult, ZedToken, at_least, TransportSecurity, Tracing, LookupPermissionshipFilter
+
+import os
 
 import pytest
 from spicedb import full, Filter, Permissionship
@@ -60,10 +63,10 @@ class TestAsyncTypedClient:
     @pytest.fixture
     async def tc(self):
         client = AsyncTypedClient.connect(
-            "localhost:50051", "somerandomkeyhere", insecure=True
+            os.environ.get("SPICEDB_ENDPOINT", "localhost:50051"), os.environ.get("SPICEDB_TOKEN", "somerandomkeyhere"), transport_security=TransportSecurity.PLAINTEXT
         )
         try:
-            await client.client.write_schema(SCHEMA)
+            await client.write_schema(SCHEMA)
             yield client
         finally:
             await client.close()
@@ -81,7 +84,11 @@ class TestAsyncTypedClient:
             ),
         )
 
-        assert (await tc.check(full(), Document("readme").view, User("alice"))).has_permission is True
+        traced = await tc.check(full(), Document("readme").view, User("alice"), tracing=Tracing.ENABLED)
+        assert traced.has_permission is True
+        assert traced.debug_trace is not None
+        assert "definition document" in traced.debug_trace.schema_used
+        assert traced.debug_trace.check is not None
         assert (await tc.check(full(), Document("readme").edit, User("alice"))).has_permission is False
         assert (await tc.check(full(), Document("readme").view, User("bob"))).has_permission is True
         assert (await tc.check(full(), Document("readme").edit, User("bob"))).has_permission is True
@@ -99,7 +106,7 @@ class TestAsyncTypedClient:
         assert result.has_permission is False
         assert result.permissionship == Permissionship.CONDITIONAL_PERMISSION
         assert "allowed_cidr" in result.missing_context
-        assert result.checked_at
+        assert str(result.checked_at)
 
         # The payoff (spec D3b): supplying the missing caveat context at CHECK
         # TIME (not write time), via the new context= keyword parameter,
@@ -130,7 +137,7 @@ class TestAsyncTypedClient:
 
         ids = [
             r.resource_id
-            async for r in tc.lookup_resources(full(), DocumentView, User("alice"))
+            async for r in tc.lookup_resources(full(), DocumentView, User("alice"), permissionship_filter=LookupPermissionshipFilter.HAS_PERMISSION_ONLY)
         ]
         assert "readme" in ids
 
@@ -146,6 +153,8 @@ class TestAsyncTypedClient:
         ids = [
             s.subject.subject_id
             async for s in tc.lookup_subjects(full(), Document("readme").view, User)
+            if s.subject.permissionship is Permissionship.HAS_PERMISSION
+            and s.subject.subject_id != "*" and not s.excluded_subjects
         ]
         assert "alice" in ids
         assert "bob" in ids
@@ -183,8 +192,8 @@ class TestAsyncTypedClient:
         txn.create(Document("rfc").viewer(User("alice")))
         txn.touch(Document("rfc").editor(User("bob")))
         txn.delete(Document("rfc").owner(User("eve")))
-        revision = await tc.write(txn)
-        assert revision  # non-empty revision token
+        revision = (await tc.write(txn)).revision
+        assert str(revision)  # non-empty revision token
 
         assert (await tc.check(full(), Document("rfc").view, User("alice"))).has_permission is True
         assert (await tc.check(full(), Document("rfc").edit, User("bob"))).has_permission is True
@@ -233,8 +242,8 @@ class TestAsyncTypedClient:
         txn.must_match(
             Filter(resource_type="document", resource_id="protected", relation="owner")
         )
-        revision = await tc.write(txn)
-        assert revision
+        revision = (await tc.write(txn)).revision
+        assert str(revision)
 
         # Now try with a document that has no owner; must_match should fail.
         txn2 = TypedTransaction()
@@ -283,6 +292,8 @@ class TestAsyncTypedClient:
             async for s in tc.lookup_subjects(
                 full(), Document("teamdoc").view, TeamMember
             )
+            if s.subject.permissionship is Permissionship.HAS_PERMISSION
+            and s.subject.subject_id != "*" and not s.excluded_subjects
         ]
         # The ID returned is the team ID ("backend"), not the full team#member subject
         assert "backend" in team_members
@@ -298,10 +309,10 @@ class TestSyncTypedClient:
     @pytest.fixture
     def tc(self):
         client = SyncTypedClient.connect(
-            "localhost:50051", "somerandomkeyhere", insecure=True
+            os.environ.get("SPICEDB_ENDPOINT", "localhost:50051"), os.environ.get("SPICEDB_TOKEN", "somerandomkeyhere"), transport_security=TransportSecurity.PLAINTEXT
         )
         try:
-            client.client.write_schema(SCHEMA)
+            client.write_schema(SCHEMA)
             yield client
         finally:
             client.close()
@@ -323,7 +334,11 @@ class TestSyncTypedClient:
             ),
         )
 
-        assert tc.check(full(), Document("readme-sync").view, User("alice")).has_permission is True
+        traced = tc.check(full(), Document("readme-sync").view, User("alice"), tracing=Tracing.ENABLED)
+        assert traced.has_permission is True
+        assert traced.debug_trace is not None
+        assert "definition document" in traced.debug_trace.schema_used
+        assert traced.debug_trace.check is not None
         assert tc.check(full(), Document("readme-sync").edit, User("alice")).has_permission is False
         assert tc.check(full(), Document("readme-sync").view, User("bob")).has_permission is True
         assert tc.check(full(), Document("readme-sync").edit, User("bob")).has_permission is True
@@ -341,7 +356,7 @@ class TestSyncTypedClient:
         assert result.has_permission is False
         assert result.permissionship == Permissionship.CONDITIONAL_PERMISSION
         assert "allowed_cidr" in result.missing_context
-        assert result.checked_at
+        assert str(result.checked_at)
 
         # The payoff (spec D3b): supplying the missing caveat context at CHECK
         # TIME (not write time), via the new context= keyword parameter,
@@ -374,7 +389,7 @@ class TestSyncTypedClient:
 
         ids = [
             r.resource_id
-            for r in tc.lookup_resources(full(), DocumentView, User("alice"))
+            for r in tc.lookup_resources(full(), DocumentView, User("alice"), permissionship_filter=LookupPermissionshipFilter.HAS_PERMISSION_ONLY)
         ]
         assert "readme-sync" in ids
 
@@ -390,6 +405,8 @@ class TestSyncTypedClient:
         ids = [
             s.subject.subject_id
             for s in tc.lookup_subjects(full(), Document("readme-sync").view, User)
+            if s.subject.permissionship is Permissionship.HAS_PERMISSION
+            and s.subject.subject_id != "*" and not s.excluded_subjects
         ]
         assert "alice" in ids
         assert "bob" in ids
@@ -427,8 +444,8 @@ class TestSyncTypedClient:
         txn.create(Document("rfc-sync").viewer(User("alice")))
         txn.touch(Document("rfc-sync").editor(User("bob")))
         txn.delete(Document("rfc-sync").owner(User("eve")))
-        revision = tc.write(txn)
-        assert revision  # non-empty revision token
+        revision = tc.write(txn).revision
+        assert str(revision)  # non-empty revision token
 
         assert tc.check(full(), Document("rfc-sync").view, User("alice")).has_permission is True
         assert tc.check(full(), Document("rfc-sync").edit, User("bob")).has_permission is True
@@ -477,8 +494,8 @@ class TestSyncTypedClient:
         txn.must_match(
             Filter(resource_type="document", resource_id="protected-sync", relation="owner")
         )
-        revision = tc.write(txn)
-        assert revision
+        revision = tc.write(txn).revision
+        assert str(revision)
 
         # Now try with a document that has no owner; must_match should fail.
         txn2 = TypedTransaction()
@@ -525,6 +542,27 @@ class TestSyncTypedClient:
         team_members = [
             s.subject.subject_id
             for s in tc.lookup_subjects(full(), Document("teamdoc-sync").view, TeamMember)
+            if s.subject.permissionship is Permissionship.HAS_PERMISSION
+            and s.subject.subject_id != "*" and not s.excluded_subjects
         ]
         # The ID returned is the team ID ("backend-sync"), not the full team#member subject
         assert "backend-sync" in team_members
+
+
+def write_result_contract(tc: SyncTypedClient) -> None:
+    result: WriteResult = tc.touch(Document("one").viewer(User("alice")))
+    revision: ZedToken = result.revision
+    at_least(revision)
+    created: WriteResult = tc.create(Document("two").viewer(User("alice")))
+    deleted: WriteResult = tc.delete(Document("two").viewer(User("alice")))
+    written: WriteResult = tc.write(TypedTransaction())
+    assert created and deleted and written
+
+
+async def async_write_result_contract(tc: AsyncTypedClient) -> None:
+    result: WriteResult = await tc.touch(Document("one").viewer(User("alice")))
+    at_least(result.revision)
+    created: WriteResult = await tc.create(Document("two").viewer(User("alice")))
+    deleted: WriteResult = await tc.delete(Document("two").viewer(User("alice")))
+    written: WriteResult = await tc.write(TypedTransaction())
+    assert created and deleted and written

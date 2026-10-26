@@ -3,12 +3,13 @@
 Request-building and response-mapping are covered once in test_requests.py and
 test_mapping.py -- this file only asserts the sync client drives them correctly.
 """
+from spicedb import ZedToken
+from spicedb import TransportSecurity
 
+from spicedb import PermissionCheck
 from unittest import mock
-
 import grpc
 import pytest
-
 from spicedb import Filter, Permissionship, Relationship
 from spicedb.consistency import full
 from spicedb.errors import PermissionDeniedError, UnavailableError
@@ -17,7 +18,7 @@ from spicedb.sync import SpiceDBClient
 
 class _SyncRpcError(grpc.RpcError):
     def __init__(self, code, details="boom"):
-        self._code, self._details = code, details
+        self._code, self._details = (code, details)
 
     def code(self):
         return self._code
@@ -38,7 +39,7 @@ def make_client():
     created = []
 
     def _make(**kw):
-        c = SpiceDBClient("localhost:50051", token="t", insecure=True, **kw)
+        c = SpiceDBClient("localhost:50051", token="t", transport_security=TransportSecurity.PLAINTEXT, **kw)
         c._ensure_channel()
         created.append(c)
         return c
@@ -49,16 +50,16 @@ def make_client():
 
 
 def test_construction_opens_no_channel():
-    c = SpiceDBClient("localhost:50051", token="t", insecure=True)
+    c = SpiceDBClient("localhost:50051", token="t", transport_security=TransportSecurity.PLAINTEXT)
     assert c._channel is None
 
 
 def test_close_before_any_call_is_a_noop():
-    SpiceDBClient("localhost:50051", token="t", insecure=True).close()  # must not raise
+    SpiceDBClient("localhost:50051", token="t", transport_security=TransportSecurity.PLAINTEXT).close()
 
 
 def test_context_manager_closes_the_channel():
-    c = SpiceDBClient("localhost:50051", token="t", insecure=True)
+    c = SpiceDBClient("localhost:50051", token="t", transport_security=TransportSecurity.PLAINTEXT)
     with c as entered:
         assert entered is c
         entered._ensure_channel()
@@ -71,22 +72,16 @@ def test_check_permission_returns_check_result(make_client):
     from authzed.api.v1 import permission_service_pb2 as psp
 
     c = make_client()
-    resp = psp.CheckBulkPermissionsResponse(
+    resp = psp.CheckPermissionResponse(
         checked_at=core_pb2.ZedToken(token="deadbeef"),
-        pairs=[
-            psp.CheckBulkPermissionsPair(
-                item=psp.CheckBulkPermissionsResponseItem(
-                    permissionship=psp.CheckPermissionResponse.PERMISSIONSHIP_HAS_PERMISSION
-                )
-            )
-        ]
+        permissionship=psp.CheckPermissionResponse.PERMISSIONSHIP_HAS_PERMISSION,
     )
-    with mock.patch.object(c._permissions, "CheckBulkPermissions", return_value=resp):
+    with mock.patch.object(c._permissions, "CheckPermission", return_value=resp):
         rel = Relationship.from_triple("document:readme", "view", "user:jimmy")
-        result = c.check_permission(full(), rel)
+        result = c.check(_check(rel), consistency=full())
         assert result.permissionship == Permissionship.HAS_PERMISSION
         assert result.has_permission is True
-        assert result.checked_at == "deadbeef"
+        assert result.checked_at == ZedToken("deadbeef")
 
 
 def test_check_any_and_check_all_do_not_count_conditional(make_client):
@@ -111,14 +106,22 @@ def test_check_any_and_check_all_do_not_count_conditional(make_client):
                     permissionship=psp.CheckPermissionResponse.PERMISSIONSHIP_CONDITIONAL_PERMISSION
                 )
             )
-        ]
+        ],
     )
-    with mock.patch.object(c._permissions, "CheckBulkPermissions", return_value=resp):
+    with mock.patch.object(
+        c._permissions,
+        "CheckBulkPermissions",
+        side_effect=lambda request, **kwargs: _echo_response(resp, request),
+    ):
         rel = Relationship.from_triple(
             "document:readme", "conditional_view", "user:jimmy"
         )
-        assert c.check_any(full(), rel) is False
-        assert c.check_all(full(), rel) is False
+        assert (
+            _aggregate(c.check_bulk([_check(rel)], consistency=full()), False) is False
+        )
+        assert (
+            _aggregate(c.check_bulk([_check(rel)], consistency=full()), True) is False
+        )
 
 
 def test_check_all_with_zero_relationships_returns_false(make_client):
@@ -141,11 +144,14 @@ def test_check_all_with_zero_relationships_returns_false(make_client):
 
     c = make_client()
     resp = psp.CheckBulkPermissionsResponse(
-        checked_at=core_pb2.ZedToken(token="deadbeef"),
-        pairs=[],
+        checked_at=core_pb2.ZedToken(token="deadbeef"), pairs=[]
     )
-    with mock.patch.object(c._permissions, "CheckBulkPermissions", return_value=resp):
-        assert c.check_all(full()) is False
+    with mock.patch.object(
+        c._permissions,
+        "CheckBulkPermissions",
+        side_effect=lambda request, **kwargs: _echo_response(resp, request),
+    ):
+        assert _aggregate(c.check_bulk([], consistency=full()), True) is False
 
 
 def test_transient_error_is_retried_then_succeeds(make_client):
@@ -204,7 +210,7 @@ def test_backoff_has_jitter(make_client):
     c = make_client(max_retries=1)
     seen = {c._backoff_seconds(2) for _ in range(50)}
     assert len(seen) > 1, "backoff should vary between calls"
-    assert all(0 <= v <= 0.4 for v in seen)
+    assert all((0 <= v <= 0.4 for v in seen))
 
 
 def test_transient_error_gives_up_after_max_retries(make_client):
@@ -229,8 +235,8 @@ def test_no_event_loop_is_required_anywhere():
     import asyncio
 
     with pytest.raises(RuntimeError):
-        asyncio.get_running_loop()  # proves we are outside a loop
-    assert SpiceDBClient("localhost:50051", token="t", insecure=True)._channel is None
+        asyncio.get_running_loop()
+    assert SpiceDBClient("localhost:50051", token="t", transport_security=TransportSecurity.PLAINTEXT)._channel is None
 
 
 class _FakeSyncCall:
@@ -273,8 +279,10 @@ def test_read_relationships_returns_a_plain_iterator(make_client):
     with mock.patch.object(
         c._permissions, "ReadRelationships", return_value=_FakeSyncCall(page)
     ):
-        got = list(c.read_relationships(Filter(resource_type="document"), full()))
-    assert [r.resource_id for r in got] == ["0", "1", "2"]
+        got = list(
+            c.read_relationships(Filter(resource_type="document"), consistency=full())
+        )
+    assert [r.resource.object_id for r in got] == ["0", "1", "2"]
 
 
 def test_read_relationships_stops_when_page_is_short(make_client):
@@ -294,7 +302,7 @@ def test_read_relationships_stops_when_page_is_short(make_client):
         )
     )
     with mock.patch.object(c._permissions, "ReadRelationships", stub):
-        list(c.read_relationships(Filter(resource_type="document"), full()))
+        list(c.read_relationships(Filter(resource_type="document"), consistency=full()))
     assert stub.call_count == 1
 
 
@@ -314,8 +322,8 @@ def test_streaming_retries_establishment_only_before_first_yield(make_client):
 
     stub = mock.Mock(return_value=_FakeSyncCall(_one_then_fail()))
     with mock.patch.object(c._permissions, "ReadRelationships", stub):
-        it = c.read_relationships(Filter(resource_type="document"), full())
-        assert next(it).resource_id == "a"
+        it = c.read_relationships(Filter(resource_type="document"), consistency=full())
+        assert next(it).resource.object_id == "a"
         with pytest.raises(UnavailableError):
             next(it)
     assert stub.call_count == 1, "must NOT retry after an item was yielded"
@@ -335,3 +343,20 @@ def test_import_relationships_returns_num_loaded(make_client):
             Relationship.from_triple("document:b", "viewer", "user:jimmy"),
         ]
         assert c.import_relationships(rels) == 2
+
+
+def _check(value):
+    if isinstance(value, PermissionCheck):
+        return value
+    return PermissionCheck(value.resource, value.relation, value.subject)
+
+
+def _aggregate(values, every=False):
+    return bool(values) and (all(values) if every else any(values))
+
+
+def _echo_response(response, request):
+    response = type(response).FromString(response.SerializeToString())
+    for pair, item in zip(response.pairs, request.items):
+        pair.request.CopyFrom(item)
+    return response

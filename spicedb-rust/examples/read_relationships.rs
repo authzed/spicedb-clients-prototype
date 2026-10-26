@@ -6,7 +6,7 @@ use futures::StreamExt;
 use spicedb::client::SpiceDBClient;
 use spicedb::consistency;
 use spicedb::error::SpiceDBError;
-use spicedb::types::{Filter, Relationship, Transaction};
+use spicedb::types::{Filter, Transaction};
 
 const SCHEMA: &str = r#"definition user {}
 
@@ -28,9 +28,13 @@ async fn main() {
         std::env::var("SPICEDB_ENDPOINT").unwrap_or_else(|_| "localhost:50051".to_string());
     let token = std::env::var("SPICEDB_TOKEN").unwrap_or_else(|_| "testtoken".to_string());
 
-    let client = SpiceDBClient::new_plaintext(endpoint, token)
-        .await
-        .expect("failed to create client");
+    let client = SpiceDBClient::new_plaintext(
+        endpoint,
+        token,
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("failed to create client");
 
     // Clear before writing the schema, not after using it. Every example runs
     // against one SpiceDB and writes a whole schema, and SpiceDB refuses a
@@ -43,28 +47,33 @@ async fn main() {
     // definition yet, which SpiceDB reports as FailedPrecondition
     // (ERROR_REASON_UNKNOWN_DEFINITION). Anything else -- an unreachable
     // server, a bad token -- must still fail the example.
-    match client.delete_relationships(&Filter::new("document")).await {
+    match client
+        .delete_all_relationships_non_atomic(spicedb::DeleteAllRequest::new(
+            (Filter::new("document")).clone(),
+        ))
+        .await
+    {
         Ok(_) | Err(SpiceDBError::FailedPrecondition(_)) => {}
         Err(e) => panic!("cleanup before schema write failed: {e:?}"),
     }
 
     // Write schema
     client
-        .write_schema(SCHEMA)
+        .write_schema(spicedb::WriteSchemaRequest::new(SCHEMA))
         .await
         .expect("write schema failed");
 
     // Write test data
-    let alice = Relationship::new("document", "firstdoc", "viewer", "user", "alice", "")
+    let alice = spicedb::Relationship::from_tuple("document:firstdoc#viewer@user:alice")
         .expect("invalid relationship");
-    let bob = Relationship::new("document", "firstdoc", "viewer", "user", "bob", "")
+    let bob = spicedb::Relationship::from_tuple("document:firstdoc#viewer@user:bob")
         .expect("invalid relationship");
 
     let mut txn = Transaction::new();
     txn.touch(&alice);
     txn.touch(&bob);
     client
-        .write(&txn)
+        .write(spicedb::WriteRequest::new((txn).clone()))
         .await
         .expect("write relationships failed");
 
@@ -73,7 +82,10 @@ async fn main() {
         .with_resource_id("firstdoc")
         .with_relation("viewer");
 
-    let stream = client.read_relationships(&consistency::full(), &filter);
+    let stream = client.read_relationships(spicedb::ReadRelationshipsRequest::new(
+        (filter).clone(),
+        (consistency::full()).clone(),
+    ));
     tokio::pin!(stream);
 
     let mut relationships = Vec::new();

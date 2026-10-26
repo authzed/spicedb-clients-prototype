@@ -16,26 +16,22 @@ unnoticed.
 It stands up a stand-in SpiceDB because a real one cannot be asked to fail
 transiently on demand.
 """
+from spicedb import TransportSecurity
 
+from spicedb import ObjectRef, SubjectRef, PermissionCheck
 import grpc
 import pytest
 from authzed.api.v1 import permission_service_pb2, permission_service_pb2_grpc
-
 from spicedb import Relationship, full
 from spicedb.aio import SpiceDBClient
 from spicedb.errors import ResourceExhaustedError, UnavailableError
 from spicedb.types import Transaction
 
-
 pytestmark = pytest.mark.integration
-
-
 DOC = Relationship(
-    resource_type="document",
-    resource_id="readme",
-    resource_relation="view",
-    subject_type="user",
-    subject_id="alice",
+    ObjectRef("document", "readme"),
+    "view",
+    SubjectRef(ObjectRef("user", "alice"), relation=None),
 )
 
 
@@ -48,24 +44,16 @@ class _CountingServer(permission_service_pb2_grpc.PermissionsServiceServicer):
         self._check_failures = check_failures
         self._check_code = check_code
 
-    async def CheckBulkPermissions(self, request, context):  # noqa: N802
+    async def CheckPermission(self, request, context):
         self.check_attempts += 1
         if self.check_attempts <= self._check_failures:
             await context.abort(self._check_code, "transient, from the stand-in")
-        return permission_service_pb2.CheckBulkPermissionsResponse(
-            pairs=[
-                permission_service_pb2.CheckBulkPermissionsPair(
-                    item=permission_service_pb2.CheckBulkPermissionsResponseItem(
-                        permissionship=permission_service_pb2.CheckPermissionResponse.PERMISSIONSHIP_HAS_PERMISSION,
-                    )
-                )
-                for _ in request.items
-            ]
+        return permission_service_pb2.CheckPermissionResponse(
+            permissionship=permission_service_pb2.CheckPermissionResponse.PERMISSIONSHIP_HAS_PERMISSION
         )
 
-    async def WriteRelationships(self, request, context):  # noqa: N802
+    async def WriteRelationships(self, request, context):
         self.write_attempts += 1
-        # Always fails, transiently. A retrying client would come back.
         await context.abort(grpc.StatusCode.UNAVAILABLE, "transient, from the stand-in")
 
 
@@ -76,7 +64,7 @@ async def _serve(servicer) -> tuple[grpc.aio.Server, int]:
     )
     port = server.add_insecure_port("127.0.0.1:0")
     await server.start()
-    return server, port
+    return (server, port)
 
 
 async def test_a_read_is_retried_transparently() -> None:
@@ -90,13 +78,15 @@ async def test_a_read_is_retried_transparently() -> None:
     server, port = await _serve(servicer)
     try:
         async with SpiceDBClient(
-            f"127.0.0.1:{port}", token="some-token", insecure=True
+            f"127.0.0.1:{port}", token="some-token", transport_security=TransportSecurity.PLAINTEXT
         ) as client:
-            result = await client.check_permission(full(), DOC)
+            result = await client.check(
+                PermissionCheck(DOC.resource, DOC.relation, DOC.subject),
+                consistency=full(),
+            )
         assert result.has_permission
         assert servicer.check_attempts == 3, (
-            f"expected 2 failures plus 1 success = 3 attempts, got "
-            f"{servicer.check_attempts} (0 or 1 means reads are not retried at all)"
+            f"expected 2 failures plus 1 success = 3 attempts, got {servicer.check_attempts} (0 or 1 means reads are not retried at all)"
         )
     finally:
         await server.stop(None)
@@ -113,24 +103,20 @@ async def test_a_mutation_is_not_retried() -> None:
     server, port = await _serve(servicer)
     try:
         async with SpiceDBClient(
-            f"127.0.0.1:{port}", token="some-token", insecure=True
+            f"127.0.0.1:{port}", token="some-token", transport_security=TransportSecurity.PLAINTEXT
         ) as client:
             txn = Transaction()
             txn.touch(
                 Relationship(
-                    resource_type="document",
-                    resource_id="readme",
-                    resource_relation="viewer",
-                    subject_type="user",
-                    subject_id="alice",
+                    ObjectRef("document", "readme"),
+                    "viewer",
+                    SubjectRef(ObjectRef("user", "alice"), relation=None),
                 )
             )
             with pytest.raises(UnavailableError):
                 await client.write(txn)
         assert servicer.write_attempts == 1, (
-            f"a mutation must not be retried silently: WriteRelationships saw "
-            f"{servicer.write_attempts} attempts, so a lost response would leave "
-            "the caller believing a committed write had failed"
+            f"a mutation must not be retried silently: WriteRelationships saw {servicer.write_attempts} attempts, so a lost response would leave the caller believing a committed write had failed"
         )
     finally:
         await server.stop(None)
@@ -149,14 +135,15 @@ async def test_resource_exhausted_is_not_retried_even_on_a_read() -> None:
     server, port = await _serve(servicer)
     try:
         async with SpiceDBClient(
-            f"127.0.0.1:{port}", token="some-token", insecure=True
+            f"127.0.0.1:{port}", token="some-token", transport_security=TransportSecurity.PLAINTEXT
         ) as client:
             with pytest.raises(ResourceExhaustedError):
-                await client.check_permission(full(), DOC)
+                await client.check(
+                    PermissionCheck(DOC.resource, DOC.relation, DOC.subject),
+                    consistency=full(),
+                )
         assert servicer.check_attempts == 1, (
-            f"RESOURCE_EXHAUSTED must not be retried: saw {servicer.check_attempts} "
-            "attempts, which turns a load-shedding SpiceDB into a client-driven "
-            "retry storm"
+            f"RESOURCE_EXHAUSTED must not be retried: saw {servicer.check_attempts} attempts, which turns a load-shedding SpiceDB into a client-driven retry storm"
         )
     finally:
         await server.stop(None)

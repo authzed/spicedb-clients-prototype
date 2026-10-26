@@ -23,7 +23,11 @@ class SpiceDBClientTest {
 
   @Test
   void toProtoRelationshipBasic() {
-    Relationship r = Relationship.of("document", "doc1", "viewer", "user", "alice");
+    Relationship r =
+        Relationship.of(
+            new ObjectRef("document", "doc1"),
+            "viewer",
+            SubjectRef.direct(new ObjectRef("user", "alice")));
     var proto = SpiceDBClient.toProtoRelationship(r);
     assertEquals("document", proto.getResource().getObjectType());
     assertEquals("doc1", proto.getResource().getObjectId());
@@ -34,7 +38,11 @@ class SpiceDBClientTest {
 
   @Test
   void toProtoRelationshipWithSubjectRelation() {
-    Relationship r = Relationship.of("document", "doc1", "viewer", "group", "eng", "member");
+    Relationship r =
+        Relationship.of(
+            new ObjectRef("document", "doc1"),
+            "viewer",
+            SubjectRef.named(new ObjectRef("group", "eng"), "member"));
     var proto = SpiceDBClient.toProtoRelationship(r);
     assertEquals("member", proto.getSubject().getOptionalRelation());
   }
@@ -42,7 +50,10 @@ class SpiceDBClientTest {
   @Test
   void toProtoRelationshipWithCaveat() {
     Relationship r =
-        Relationship.of("document", "doc1", "viewer", "user", "alice")
+        Relationship.of(
+                new ObjectRef("document", "doc1"),
+                "viewer",
+                SubjectRef.direct(new ObjectRef("user", "alice")))
             .withCaveat("is_allowed", Map.of("allowed", true));
     var proto = SpiceDBClient.toProtoRelationship(r);
     assertTrue(proto.hasOptionalCaveat());
@@ -53,7 +64,11 @@ class SpiceDBClientTest {
   void toProtoRelationshipWithExpiration() {
     Instant exp = Instant.parse("2026-12-31T23:59:59Z");
     Relationship r =
-        Relationship.of("document", "doc1", "viewer", "user", "alice").withExpiration(exp);
+        Relationship.of(
+                new ObjectRef("document", "doc1"),
+                "viewer",
+                SubjectRef.direct(new ObjectRef("user", "alice")))
+            .withExpiration(exp);
     var proto = SpiceDBClient.toProtoRelationship(r);
     assertTrue(proto.hasOptionalExpiresAt());
     assertEquals(exp.getEpochSecond(), proto.getOptionalExpiresAt().getSeconds());
@@ -62,21 +77,28 @@ class SpiceDBClientTest {
   @Test
   void fromProtoRelationshipRoundTrip() {
     Relationship original =
-        Relationship.of("document", "doc1", "viewer", "user", "alice", "member");
+        Relationship.of(
+            new ObjectRef("document", "doc1"),
+            "viewer",
+            SubjectRef.named(new ObjectRef("user", "alice"), "member"));
     var proto = SpiceDBClient.toProtoRelationship(original);
     Relationship restored = SpiceDBClient.fromProtoRelationship(proto);
-    assertEquals(original.resourceType(), restored.resourceType());
-    assertEquals(original.resourceID(), restored.resourceID());
-    assertEquals(original.resourceRelation(), restored.resourceRelation());
-    assertEquals(original.subjectType(), restored.subjectType());
-    assertEquals(original.subjectID(), restored.subjectID());
-    assertEquals(original.subjectRelation(), restored.subjectRelation());
+    assertEquals(original.resource().objectType(), restored.resource().objectType());
+    assertEquals(original.resource().objectId(), restored.resource().objectId());
+    assertEquals(original.relation(), restored.relation());
+    assertEquals(
+        original.subject().object().objectType(), restored.subject().object().objectType());
+    assertEquals(original.subject().object().objectId(), restored.subject().object().objectId());
+    assertEquals(original.subject().relation(), restored.subject().relation());
   }
 
   @Test
   void fromProtoRelationshipWithCaveatRoundTrip() {
     Relationship original =
-        Relationship.of("document", "doc1", "viewer", "user", "alice")
+        Relationship.of(
+                new ObjectRef("document", "doc1"),
+                "viewer",
+                SubjectRef.direct(new ObjectRef("user", "alice")))
             .withCaveat("test_caveat", Map.of("key", "value"));
     var proto = SpiceDBClient.toProtoRelationship(original);
     Relationship restored = SpiceDBClient.fromProtoRelationship(proto);
@@ -107,7 +129,10 @@ class SpiceDBClientTest {
     context.put("a_list", Arrays.asList("one", 2, false));
 
     Relationship r =
-        Relationship.of("document", "doc1", "viewer", "user", "alice")
+        Relationship.of(
+                new ObjectRef("document", "doc1"),
+                "viewer",
+                SubjectRef.direct(new ObjectRef("user", "alice")))
             .withCaveat("some_caveat", context);
     var proto = SpiceDBClient.toProtoRelationship(r);
     var fields = proto.getOptionalCaveat().getContext().getFieldsMap();
@@ -152,14 +177,15 @@ class SpiceDBClientTest {
 
   @Test
   void toProtoRelationshipUnrepresentableCaveatContextValueThrows() {
-    Relationship r =
-        Relationship.of("document", "doc1", "viewer", "user", "alice")
-            .withCaveat("some_caveat", Map.of("bad_key", new UnrepresentableValue()));
-
     var thrown =
         assertThrows(
             com.authzed.spicedb.errors.InvalidArgumentException.class,
-            () -> SpiceDBClient.toProtoRelationship(r));
+            () ->
+                Relationship.of(
+                        new ObjectRef("document", "doc1"),
+                        "viewer",
+                        SubjectRef.direct(new ObjectRef("user", "alice")))
+                    .withCaveat("some_caveat", Map.of("bad_key", new UnrepresentableValue())));
 
     assertTrue(thrown.getMessage().contains("bad_key"), thrown.getMessage());
     assertTrue(
@@ -183,7 +209,10 @@ class SpiceDBClientTest {
     context.put("a_list", Arrays.asList("one", 2, false));
 
     Relationship original =
-        Relationship.of("document", "doc1", "viewer", "user", "alice")
+        Relationship.of(
+                new ObjectRef("document", "doc1"),
+                "viewer",
+                SubjectRef.direct(new ObjectRef("user", "alice")))
             .withCaveat("some_caveat", context);
     Relationship restored =
         SpiceDBClient.fromProtoRelationship(SpiceDBClient.toProtoRelationship(original));
@@ -208,8 +237,12 @@ class SpiceDBClientTest {
     // checkContext is CHECK-TIME only; it must never cause a write-time caveat to appear on the
     // proto, even when no caveat was set via withCaveat.
     Relationship r =
-        Relationship.of("document", "doc1", "viewer", "user", "alice")
-            .withCheckContext(Map.of("secret", "leak-if-present"));
+        Relationship.of(
+            new ObjectRef("document", "doc1"),
+            "viewer",
+            SubjectRef.direct(new ObjectRef("user", "alice")));
+    var request = TestRequests.withContext(r, Map.of("secret", "leak-if-present"));
+    assertTrue(request.context().containsKey("secret"));
     var proto = SpiceDBClient.toProtoRelationship(r);
     assertFalse(
         proto.hasOptionalCaveat(), "checkContext alone must never produce a write-time caveat");
@@ -221,9 +254,11 @@ class SpiceDBClientTest {
     // DISJOINT keys -- if toProtoRelationship ever merged them, "secret" would leak into the
     // write-time proto's caveat context and get silently stored in SpiceDB.
     Relationship r =
-        Relationship.of("document", "doc1", "viewer", "user", "alice")
-            .withCaveat("is_allowed", Map.of("allowed", true))
-            .withCheckContext(Map.of("secret", "leak-if-present"));
+        Relationship.of(
+                new ObjectRef("document", "doc1"),
+                "viewer",
+                SubjectRef.direct(new ObjectRef("user", "alice")))
+            .withCaveat("is_allowed", Map.of("allowed", true));
     var proto = SpiceDBClient.toProtoRelationship(r);
     assertTrue(proto.hasOptionalCaveat());
     assertFalse(
@@ -236,7 +271,11 @@ class SpiceDBClientTest {
   void fromProtoRelationshipWithExpirationRoundTrip() {
     Instant exp = Instant.parse("2026-06-15T12:00:00Z");
     Relationship original =
-        Relationship.of("document", "doc1", "viewer", "user", "alice").withExpiration(exp);
+        Relationship.of(
+                new ObjectRef("document", "doc1"),
+                "viewer",
+                SubjectRef.direct(new ObjectRef("user", "alice")))
+            .withExpiration(exp);
     var proto = SpiceDBClient.toProtoRelationship(original);
     Relationship restored = SpiceDBClient.fromProtoRelationship(proto);
     assertEquals(exp, restored.expiration());

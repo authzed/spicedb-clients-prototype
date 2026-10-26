@@ -4,6 +4,7 @@ The deprecated-field fallbacks below are the reason this logic is worth
 extracting: they are subtle, they protect against over-granting access, and
 duplicating them per flavor would be a security-relevant drift risk.
 """
+from spicedb import ZedToken
 
 import pytest
 from authzed.api.v1 import (
@@ -11,7 +12,6 @@ from authzed.api.v1 import (
     permission_service_pb2 as psp,
     watch_service_pb2 as wsp,
 )
-
 from spicedb import Permissionship, UpdateOperation
 from spicedb import _mapping as mapping
 from spicedb.errors import PermissionDeniedError, SpiceDBError
@@ -32,19 +32,22 @@ def test_check_results_maps_permissionship_per_item():
                     permissionship=psp.CheckPermissionResponse.PERMISSIONSHIP_NO_PERMISSION
                 )
             ),
-        ]
+        ],
     )
-    results = mapping.check_results(resp, 2)
+    expected = _request_items(2)
+    for pair, item in zip(resp.pairs, expected):
+        pair.request.CopyFrom(item)
+    results = mapping.check_results(resp, expected)
     assert results == [
         CheckResult(
             permissionship=Permissionship.HAS_PERMISSION,
             missing_context=[],
-            checked_at="deadbeef",
+            checked_at=ZedToken("deadbeef"),
         ),
         CheckResult(
             permissionship=Permissionship.NO_PERMISSION,
             missing_context=[],
-            checked_at="deadbeef",
+            checked_at=ZedToken("deadbeef"),
         ),
     ]
     assert [r.has_permission for r in results] == [True, False]
@@ -62,7 +65,10 @@ def test_check_results_conditional_has_permission_is_false():
             )
         ]
     )
-    results = mapping.check_results(resp, 1)
+    expected = _request_items(1)
+    for pair, item in zip(resp.pairs, expected):
+        pair.request.CopyFrom(item)
+    results = mapping.check_results(resp, expected)
     assert results[0].permissionship == Permissionship.CONDITIONAL_PERMISSION
     assert results[0].has_permission is False
 
@@ -82,8 +88,11 @@ def test_check_results_missing_context_carries_server_values():
             )
         ]
     )
-    results = mapping.check_results(resp, 1)
-    assert results[0].missing_context == ["ip_address", "time_of_day"]
+    expected = _request_items(1)
+    for pair, item in zip(resp.pairs, expected):
+        pair.request.CopyFrom(item)
+    results = mapping.check_results(resp, expected)
+    assert results[0].missing_context == ("ip_address", "time_of_day")
 
 
 def test_check_results_missing_context_empty_when_not_conditional():
@@ -96,8 +105,11 @@ def test_check_results_missing_context_empty_when_not_conditional():
             )
         ]
     )
-    results = mapping.check_results(resp, 1)
-    assert results[0].missing_context == []
+    expected = _request_items(1)
+    for pair, item in zip(resp.pairs, expected):
+        pair.request.CopyFrom(item)
+    results = mapping.check_results(resp, expected)
+    assert results[0].missing_context == ()
 
 
 def test_check_results_checked_at_populated_from_response():
@@ -117,10 +129,13 @@ def test_check_results_checked_at_populated_from_response():
                     permissionship=psp.CheckPermissionResponse.PERMISSIONSHIP_NO_PERMISSION
                 )
             ),
-        ]
+        ],
     )
-    results = mapping.check_results(resp, 2)
-    assert [r.checked_at for r in results] == ["cafebabe", "cafebabe"]
+    expected = _request_items(2)
+    for pair, item in zip(resp.pairs, expected):
+        pair.request.CopyFrom(item)
+    results = mapping.check_results(resp, expected)
+    assert [r.checked_at for r in results] == [ZedToken("cafebabe"), ZedToken("cafebabe")]
 
 
 def test_check_results_raises_typed_error_on_item_error():
@@ -129,12 +144,15 @@ def test_check_results_raises_typed_error_on_item_error():
     resp = psp.CheckBulkPermissionsResponse(
         pairs=[
             psp.CheckBulkPermissionsPair(
-                error=status_pb2.Status(code=7, message="nope")  # 7 = PERMISSION_DENIED
+                error=status_pb2.Status(code=7, message="nope")
             )
         ]
     )
+    expected = _request_items(1)
+    for pair, item in zip(resp.pairs, expected):
+        pair.request.CopyFrom(item)
     with pytest.raises(PermissionDeniedError, match="nope"):
-        mapping.check_results(resp, 1)
+        mapping.check_results(resp, expected)
 
 
 def test_check_results_raises_when_response_has_fewer_pairs_than_request_items():
@@ -148,22 +166,26 @@ def test_check_results_raises_when_response_has_fewer_pairs_than_request_items()
                 item=psp.CheckBulkPermissionsResponseItem(
                     permissionship=psp.CheckPermissionResponse.PERMISSIONSHIP_HAS_PERMISSION
                 )
-            ),
+            )
         ]
     )
-    with pytest.raises(SpiceDBError, match=r"1 pair.*2 request item"):
-        mapping.check_results(resp, 2)
+    expected = _request_items(2)
+    for pair, item in zip(resp.pairs, expected):
+        pair.request.CopyFrom(item)
+    with pytest.raises(SpiceDBError, match="1 pair.*2 request item"):
+        mapping.check_results(resp, expected)
 
 
 def test_check_results_raises_on_malformed_pair_instead_of_shrinking_results():
     """A CheckBulkPermissionsPair whose `response` oneof is unset (neither
     `item` nor `error`) must fail loudly, not silently fall through to the
     default (zero-value) item."""
-    resp = psp.CheckBulkPermissionsResponse(
-        pairs=[psp.CheckBulkPermissionsPair()]
-    )
+    resp = psp.CheckBulkPermissionsResponse(pairs=[psp.CheckBulkPermissionsPair()])
+    expected = _request_items(1)
+    for pair, item in zip(resp.pairs, expected):
+        pair.request.CopyFrom(item)
     with pytest.raises(SpiceDBError, match="check item 0"):
-        mapping.check_results(resp, 1)
+        mapping.check_results(resp, expected)
 
 
 def test_lookup_subject_falls_back_to_deprecated_top_level_fields():
@@ -231,10 +253,7 @@ def test_lookup_resource_conditional_permission_carries_partial_caveat():
     assert got.resource_id == "doc2"
     assert got.permissionship == Permissionship.CONDITIONAL_PERMISSION
     assert got.partial_caveat is not None
-    assert got.partial_caveat.missing_required_context == [
-        "ip_address",
-        "time_of_day",
-    ]
+    assert got.partial_caveat.missing_required_context == ("ip_address", "time_of_day")
 
 
 def test_lookup_resource_carries_looked_up_at():
@@ -246,7 +265,7 @@ def test_lookup_resource_carries_looked_up_at():
         looked_up_at=core_pb2.ZedToken(token="deadbeef"),
     )
     got = mapping.lookup_resource(resp)
-    assert got.looked_up_at == "deadbeef"
+    assert got.looked_up_at == ZedToken("deadbeef")
 
 
 def test_lookup_subject_carries_looked_up_at():
@@ -258,7 +277,7 @@ def test_lookup_subject_carries_looked_up_at():
         looked_up_at=core_pb2.ZedToken(token="cafebabe"),
     )
     got = mapping.lookup_subject(resp)
-    assert got.looked_up_at == "cafebabe"
+    assert got.looked_up_at == ZedToken("cafebabe")
 
 
 def test_watch_event_maps_multiple_updates_and_revision():
@@ -300,25 +319,42 @@ def test_watch_event_maps_multiple_updates_and_revision():
         UpdateOperation.TOUCH,
         UpdateOperation.DELETE,
     ]
-    assert [u.relationship.resource_id for u in event.updates] == ["1", "2"]
-    assert [u.relationship.subject_id for u in event.updates] == ["alice", "bob"]
-    assert event.changes_through == "deadbeef"
+    assert [u.relationship.resource.object_id for u in event.updates] == ["1", "2"]
+    assert [u.relationship.subject.object.object_id for u in event.updates] == [
+        "alice",
+        "bob",
+    ]
+    assert event.changes_through == ZedToken("deadbeef")
     assert event.is_checkpoint is False
 
 
 def test_watch_event_empty_updates_returns_empty_list_and_token():
     resp = wsp.WatchResponse(changes_through=core_pb2.ZedToken(token="cafebabe"))
     event = mapping.watch_event(resp)
-    assert event.updates == []
-    assert event.changes_through == "cafebabe"
+    assert event.updates == ()
+    assert event.changes_through == ZedToken("cafebabe")
 
 
 def test_watch_event_checkpoint_carries_no_updates_but_a_resume_token():
     resp = wsp.WatchResponse(
-        changes_through=core_pb2.ZedToken(token="checkpoint-token"),
-        is_checkpoint=True,
+        changes_through=core_pb2.ZedToken(token="checkpoint-token"), is_checkpoint=True
     )
     event = mapping.watch_event(resp)
-    assert event.updates == []
-    assert event.changes_through == "checkpoint-token"
+    assert event.updates == ()
+    assert event.changes_through == ZedToken("checkpoint-token")
     assert event.is_checkpoint is True
+
+
+def _request_items(count):
+    return [
+        psp.CheckBulkPermissionsRequestItem(
+            resource=core_pb2.ObjectReference(
+                object_type="document", object_id=str(index)
+            ),
+            permission="view",
+            subject=core_pb2.SubjectReference(
+                object=core_pb2.ObjectReference(object_type="user", object_id="alice")
+            ),
+        )
+        for index in range(count)
+    ]

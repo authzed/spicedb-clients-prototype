@@ -37,11 +37,13 @@ type PermissionRef struct {
 // TypedRelationship wraps a rel.Relationship with type safety.
 type TypedRelationship struct {
 	r rel.Relationship
+	err error
 }
 
-// TypedClient wraps a SpiceDB client with type-safe methods.
+// TypedClient adds schema-aware helpers and exposes every native client capability.
+// The embedded client shares its connection and lifecycle; Close closes that client.
 type TypedClient struct {
-	Client *client.Client
+	*client.Client
 }
 
 // NewTypedClient creates a new TypedClient wrapping the given SpiceDB client.
@@ -243,9 +245,11 @@ var (
 // {{$rel.PascalName}} creates a TypedRelationship for the {{$rel.Name}} relation on this {{$def.Name}}.
 func (d {{$def.PascalName}}Ref) {{$rel.PascalName}}(subject {{$rel.InterfaceName}}) TypedRelationship {
 	sType, sID, sRel := subject.subjectRef()
-	r := rel.MustFromTriple("{{$def.Name}}", d.id, "{{$rel.Name}}", sType, sID, sRel)
+	r, err := relationship("{{$def.Name}}", d.id, "{{$rel.Name}}", sType, sID, sRel)
+	if err != nil { return TypedRelationship{err: err} }
 	if cName, cCtx := subject.caveatInfo(); cName != "" {
-		r = r.WithCaveat(cName, cCtx)
+		r, err = r.WithCaveat(cName, cCtx)
+		if err != nil { return TypedRelationship{err: err} }
 	}
 	if exp := subject.expirationTime(); exp != nil {
 		r = r.WithExpiration(*exp)
@@ -257,101 +261,92 @@ func (d {{$def.PascalName}}Ref) {{$rel.PascalName}}(subject {{$rel.InterfaceName
 
 // --- Check and Lookup Functions ---
 
-// Check checks whether the given subject has the specified permission on the
-// resource.
-//
-// Check surfaces the underlying client's full CheckResult (Permissionship,
-// MissingContext, CheckedAt) rather than collapsing it to a bool: a
-// Conditional result means the server needed caveat context that was not
-// supplied, and is NOT a grant. Prefer CheckResult.HasPermission() over
-// comparing Permissionship directly for the common case.
-//
-// See CheckWithContext to supply a call-level caveat CHECK-TIME context for
-// evaluating caveats encountered during the check (Check is CheckWithContext
-// with a nil checkContext).
-//
-// A caveated subject ref (e.g. User("dave").WithIpRange(ctx)) supplies its
-// own context to the check via rel.Relationship.WithCheckContext, the same
-// accessor (subject.caveatInfo()) the write paths use to attach a caveat at
-// write time -- but here it is applied to the ephemeral relationship built
-// for this check only, never written.
-func Check(ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm Permission, subject Subject) (client.CheckResult, error) {
-	sType, sID, sRel := subject.subjectRef()
-	r, err := rel.FromTriple(perm.resourceType, perm.resourceID, perm.permission, sType, sID, sRel)
-	if err != nil {
-		return client.CheckResult{}, err
-	}
-	_, sCtx := subject.caveatInfo()
-	r = r.WithCheckContext(sCtx)
-	return tc.Client.CheckOne(ctx, cs, perm.permission, r)
+func subjectRef(subject Subject) (rel.SubjectRef, error) {
+    objectType, objectID, relation := subject.subjectRef()
+    object, err := rel.NewObject(objectType, objectID)
+    if err != nil { return rel.SubjectRef{}, err }
+    return rel.NewSubject(object, relation)
 }
 
-// CheckWithContext is Check with a call-level default caveat CHECK-TIME
-// context applied to the check, mirroring the underlying
-// client.CheckOneWithContext. The subject's own context (see Check) is the
-// ITEM-LEVEL value under client.CheckWithContext's merge rule: it wins
-// per-key over this call-level checkContext, and call-level keys the subject
-// doesn't mention are retained.
-func CheckWithContext(ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm Permission, checkContext map[string]any, subject Subject) (client.CheckResult, error) {
-	sType, sID, sRel := subject.subjectRef()
-	r, err := rel.FromTriple(perm.resourceType, perm.resourceID, perm.permission, sType, sID, sRel)
-	if err != nil {
-		return client.CheckResult{}, err
-	}
-	_, sCtx := subject.caveatInfo()
-	r = r.WithCheckContext(sCtx)
-	return tc.Client.CheckOneWithContext(ctx, cs, perm.permission, checkContext, r)
+func relationship(resourceType, resourceID, relation, subjectType, subjectID, subjectRelation string) (rel.Relationship, error) {
+    resource, err := rel.NewObject(resourceType, resourceID)
+    if err != nil { return rel.Relationship{}, err }
+    object, err := rel.NewObject(subjectType, subjectID)
+    if err != nil { return rel.Relationship{}, err }
+    subject, err := rel.NewSubject(object, subjectRelation)
+    if err != nil { return rel.Relationship{}, err }
+    return rel.NewRelationship(resource, relation, subject)
 }
 
-// LookupResources returns an iterator of resources that the subject has the specified permission on.
-func LookupResources(ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm PermissionRef, subject Subject) iter.Seq2[client.LookupResource, error] {
-	sType, sID, _ := subject.subjectRef()
-	return tc.Client.LookupResources(ctx, cs, perm.resourceType, perm.permission, sType, sID)
+// Check preserves the native result, including trace data. Options carry
+// call-level context, tracing and the total operation budget.
+func Check(ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm Permission, subject Subject, opts ...client.CheckOption) (client.CheckResult, error) {
+    resource, err := rel.NewObject(perm.resourceType, perm.resourceID)
+    if err != nil { return client.CheckResult{}, err }
+    ref, err := subjectRef(subject)
+    if err != nil { return client.CheckResult{}, err }
+    _, sCtx := subject.caveatInfo()
+    return tc.Client.Check(ctx, client.PermissionCheck{
+        Resource: resource, Permission: perm.permission, Subject: ref,
+        Consistency: cs, Context: sCtx,
+    }, opts...)
 }
 
-// LookupSubjects returns an iterator of subjects that have the specified permission on the resource.
-func LookupSubjects(ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm Permission, subjectType Subject) iter.Seq2[client.LookupSubject, error] {
-	sType, _, _ := subjectType.subjectRef()
-	return tc.Client.LookupSubjects(ctx, cs, perm.resourceType, perm.resourceID, perm.permission, sType)
+func failedStream[T any](err error) iter.Seq2[T, error] {
+    return func(yield func(T, error) bool) { var zero T; yield(zero, err) }
+}
+
+// LookupResources preserves the subject's userset relation and native cancellation.
+// For unconditional grants, pass client.WithLookupResourcesPermissionshipFilter(client.LookupHasPermissionOnly).
+// By default, results include conditional permissions that require further caveat context.
+func LookupResources(ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm PermissionRef, subject Subject, opts ...client.LookupResourcesOption) iter.Seq2[client.LookupResource, error] {
+    ref, err := subjectRef(subject)
+    if err != nil { return failedStream[client.LookupResource](err) }
+    return tc.Client.LookupResources(ctx, client.LookupResourcesRequest{
+        ResourceType: perm.resourceType, Permission: perm.permission,
+        Subject: ref, Consistency: cs,
+    }, opts...)
+}
+
+func LookupSubjects(ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm Permission, subjectType Subject, opts ...client.LookupSubjectsOption) iter.Seq2[client.LookupSubject, error] {
+    resource, err := rel.NewObject(perm.resourceType, perm.resourceID)
+    if err != nil { return failedStream[client.LookupSubject](err) }
+    sType, _, relation := subjectType.subjectRef()
+    if relation != "" { opts = append([]client.LookupSubjectsOption{client.WithLookupSubjectsRelation(relation)}, opts...) }
+    return tc.Client.LookupSubjects(ctx, client.LookupSubjectsRequest{
+        Resource: resource, Permission: perm.permission,
+        SubjectType: sType, Consistency: cs,
+    }, opts...)
 }
 
 // --- Write Methods ---
 
-// Touch creates or updates the given relationships. It returns an error,
-// without writing anything, if any relationship's caveat context cannot be
-// converted to protobuf -- see rel.Relationship.ToProto.
-func (tc *TypedClient) Touch(ctx context.Context, rels ...TypedRelationship) (string, error) {
-	var txn rel.Txn
-	for _, r := range rels {
-		if err := txn.Touch(r.r); err != nil {
-			return "", err
-		}
-	}
-	return tc.Client.Write(ctx, txn)
+// Touch applies a collection atomically, preserving validation errors before any RPC.
+func (tc *TypedClient) Touch(ctx context.Context, rels []TypedRelationship, opts ...client.WriteOption) (client.WriteResult, error) {
+    var txn rel.Txn
+    for _, r := range rels {
+        if r.err != nil { return client.WriteResult{}, r.err }
+        if err := txn.Touch(r.r); err != nil { return client.WriteResult{}, err }
+    }
+    return tc.Client.Write(ctx, client.WriteRequest{Transaction: txn}, opts...)
 }
 
-// Create creates the given relationships, failing if they already exist. It
-// returns an error, without writing anything, if any relationship's caveat
-// context cannot be converted to protobuf -- see rel.Relationship.ToProto.
-func (tc *TypedClient) Create(ctx context.Context, rels ...TypedRelationship) (string, error) {
-	var txn rel.Txn
-	for _, r := range rels {
-		if err := txn.Create(r.r); err != nil {
-			return "", err
-		}
-	}
-	return tc.Client.Write(ctx, txn)
+// Create applies a collection atomically, preserving validation errors before any RPC.
+func (tc *TypedClient) Create(ctx context.Context, rels []TypedRelationship, opts ...client.WriteOption) (client.WriteResult, error) {
+    var txn rel.Txn
+    for _, r := range rels {
+        if r.err != nil { return client.WriteResult{}, r.err }
+        if err := txn.Create(r.r); err != nil { return client.WriteResult{}, err }
+    }
+    return tc.Client.Write(ctx, client.WriteRequest{Transaction: txn}, opts...)
 }
 
-// Delete deletes the given relationships. It returns an error, without
-// writing anything, if any relationship's caveat context cannot be converted
-// to protobuf -- see rel.Relationship.ToProto.
-func (tc *TypedClient) Delete(ctx context.Context, rels ...TypedRelationship) (string, error) {
-	var txn rel.Txn
-	for _, r := range rels {
-		if err := txn.Delete(r.r); err != nil {
-			return "", err
-		}
-	}
-	return tc.Client.Write(ctx, txn)
+// Delete applies a collection atomically, preserving validation errors before any RPC.
+func (tc *TypedClient) Delete(ctx context.Context, rels []TypedRelationship, opts ...client.WriteOption) (client.WriteResult, error) {
+    var txn rel.Txn
+    for _, r := range rels {
+        if r.err != nil { return client.WriteResult{}, r.err }
+        if err := txn.Delete(r.r); err != nil { return client.WriteResult{}, err }
+    }
+    return tc.Client.Write(ctx, client.WriteRequest{Transaction: txn}, opts...)
 }

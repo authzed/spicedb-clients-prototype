@@ -3,6 +3,7 @@ package com.authzed.spicedb.examples;
 import static com.authzed.spicedb.Consistency.*;
 import static org.assertj.core.api.Assertions.*;
 
+import com.authzed.spicedb.*;
 import com.authzed.spicedb.CheckResult;
 import com.authzed.spicedb.Filter;
 import com.authzed.spicedb.Relationship;
@@ -21,19 +22,27 @@ import org.junit.jupiter.api.Test;
  */
 class BulkOperationsTest extends SpiceDBIntegrationTest {
 
-  private String writeRevision;
+  private ZedToken writeRevision;
 
   @BeforeEach
   void setUp() {
-    client.deleteRelationships(Filter.of("document"));
+    client.deleteAllRelationshipsNonAtomic(Filter.of("document"));
 
     // Bulk write relationships
     var txn = new Transaction();
     for (String user : List.of("alice", "bob", "charlie")) {
-      txn.touch(Relationship.of("document", "report", "viewer", "user", user));
+      txn.touch(
+          Relationship.of(
+              new ObjectRef("document", "report"),
+              "viewer",
+              SubjectRef.direct(new ObjectRef("user", user))));
     }
-    txn.touch(Relationship.of("document", "report", "editor", "user", "alice"));
-    writeRevision = client.write(txn);
+    txn.touch(
+        Relationship.of(
+            new ObjectRef("document", "report"),
+            "editor",
+            SubjectRef.direct(new ObjectRef("user", "alice"))));
+    writeRevision = client.write(txn).revision();
   }
 
   /**
@@ -44,28 +53,50 @@ class BulkOperationsTest extends SpiceDBIntegrationTest {
   @Test
   void bulk_check_returns_result_per_relationship() {
     List<CheckResult> results =
-        client.checkPermissions(
-            atLeast(writeRevision),
-            "view",
-            Relationship.of("document", "report", "view", "user", "alice"),
-            Relationship.of("document", "report", "view", "user", "bob"),
-            Relationship.of("document", "report", "view", "user", "charlie"));
+        client.checkBulk(
+            java.util.List.of(
+                new PermissionCheck(
+                    new ObjectRef("document", "report"),
+                    "view",
+                    SubjectRef.direct(new ObjectRef("user", "alice")),
+                    atLeast(writeRevision)),
+                new PermissionCheck(
+                    new ObjectRef("document", "report"),
+                    "view",
+                    SubjectRef.direct(new ObjectRef("user", "bob")),
+                    atLeast(writeRevision)),
+                new PermissionCheck(
+                    new ObjectRef("document", "report"),
+                    "view",
+                    SubjectRef.direct(new ObjectRef("user", "charlie")),
+                    atLeast(writeRevision))));
 
     assertThat(results).hasSize(3);
     assertThat(results).allSatisfy(r -> assertThat(r.hasPermission()).isTrue());
     // Every result carries checked_at, threadable into Consistency.atLeast for read-your-writes.
-    assertThat(results).allSatisfy(r -> assertThat(r.checkedAt()).isNotEmpty());
+    assertThat(results).allSatisfy(r -> assertThat(r.checkedAt().value()).isNotEmpty());
   }
 
   @Test
   void checkAll_returns_true_when_all_have_permission() {
     boolean allCanView =
         client.checkAll(
-            atLeast(writeRevision),
-            "view",
-            Relationship.of("document", "report", "view", "user", "alice"),
-            Relationship.of("document", "report", "view", "user", "bob"),
-            Relationship.of("document", "report", "view", "user", "charlie"));
+            java.util.List.of(
+                new PermissionCheck(
+                    new ObjectRef("document", "report"),
+                    "view",
+                    SubjectRef.direct(new ObjectRef("user", "alice")),
+                    atLeast(writeRevision)),
+                new PermissionCheck(
+                    new ObjectRef("document", "report"),
+                    "view",
+                    SubjectRef.direct(new ObjectRef("user", "bob")),
+                    atLeast(writeRevision)),
+                new PermissionCheck(
+                    new ObjectRef("document", "report"),
+                    "view",
+                    SubjectRef.direct(new ObjectRef("user", "charlie")),
+                    atLeast(writeRevision))));
 
     assertThat(allCanView).isTrue();
   }
@@ -74,10 +105,17 @@ class BulkOperationsTest extends SpiceDBIntegrationTest {
   void checkAll_returns_false_when_not_all_have_permission() {
     boolean allCanEdit =
         client.checkAll(
-            atLeast(writeRevision),
-            "edit",
-            Relationship.of("document", "report", "edit", "user", "alice"),
-            Relationship.of("document", "report", "edit", "user", "bob"));
+            java.util.List.of(
+                new PermissionCheck(
+                    new ObjectRef("document", "report"),
+                    "edit",
+                    SubjectRef.direct(new ObjectRef("user", "alice")),
+                    atLeast(writeRevision)),
+                new PermissionCheck(
+                    new ObjectRef("document", "report"),
+                    "edit",
+                    SubjectRef.direct(new ObjectRef("user", "bob")),
+                    atLeast(writeRevision))));
 
     // bob is only a viewer, not an editor
     assertThat(allCanEdit).isFalse();
@@ -87,10 +125,17 @@ class BulkOperationsTest extends SpiceDBIntegrationTest {
   void checkAny_returns_true_when_at_least_one_has_permission() {
     boolean anyCanEdit =
         client.checkAny(
-            atLeast(writeRevision),
-            "edit",
-            Relationship.of("document", "report", "edit", "user", "alice"),
-            Relationship.of("document", "report", "edit", "user", "bob"));
+            java.util.List.of(
+                new PermissionCheck(
+                    new ObjectRef("document", "report"),
+                    "edit",
+                    SubjectRef.direct(new ObjectRef("user", "alice")),
+                    atLeast(writeRevision)),
+                new PermissionCheck(
+                    new ObjectRef("document", "report"),
+                    "edit",
+                    SubjectRef.direct(new ObjectRef("user", "bob")),
+                    atLeast(writeRevision))));
 
     // alice is an editor
     assertThat(anyCanEdit).isTrue();
@@ -103,9 +148,18 @@ class BulkOperationsTest extends SpiceDBIntegrationTest {
     // which is transactional and limited in size.
     List<Relationship> imported =
         List.of(
-            Relationship.of("document", "bulkdoc1", "viewer", "user", "dave"),
-            Relationship.of("document", "bulkdoc2", "viewer", "user", "erin"),
-            Relationship.of("document", "bulkdoc3", "viewer", "user", "frank"));
+            Relationship.of(
+                new ObjectRef("document", "bulkdoc1"),
+                "viewer",
+                SubjectRef.direct(new ObjectRef("user", "dave"))),
+            Relationship.of(
+                new ObjectRef("document", "bulkdoc2"),
+                "viewer",
+                SubjectRef.direct(new ObjectRef("user", "erin"))),
+            Relationship.of(
+                new ObjectRef("document", "bulkdoc3"),
+                "viewer",
+                SubjectRef.direct(new ObjectRef("user", "frank"))));
 
     long numLoaded = client.importRelationships(imported);
 
@@ -116,14 +170,23 @@ class BulkOperationsTest extends SpiceDBIntegrationTest {
   void bulk_export_relationships_streams_matching_relationships() {
     List<Relationship> imported =
         List.of(
-            Relationship.of("document", "bulkdoc1", "viewer", "user", "dave"),
-            Relationship.of("document", "bulkdoc2", "viewer", "user", "erin"),
-            Relationship.of("document", "bulkdoc3", "viewer", "user", "frank"));
+            Relationship.of(
+                new ObjectRef("document", "bulkdoc1"),
+                "viewer",
+                SubjectRef.direct(new ObjectRef("user", "dave"))),
+            Relationship.of(
+                new ObjectRef("document", "bulkdoc2"),
+                "viewer",
+                SubjectRef.direct(new ObjectRef("user", "erin"))),
+            Relationship.of(
+                new ObjectRef("document", "bulkdoc3"),
+                "viewer",
+                SubjectRef.direct(new ObjectRef("user", "frank"))));
     client.importRelationships(imported);
 
     // exportRelationships streams relationships back out, paginating transparently under the
     // hood (512-item pages by default). The returned stream should be closed when done.
-    Filter exportFilter = Filter.of("document").withResourceIDPrefix("bulkdoc");
+    Filter exportFilter = Filter.of("document").withResourceIdPrefix("bulkdoc");
     List<Relationship> exported;
     try (var stream = client.exportRelationships(full(), exportFilter)) {
       exported = stream.toList();
@@ -131,7 +194,7 @@ class BulkOperationsTest extends SpiceDBIntegrationTest {
 
     assertThat(exported).hasSize(imported.size());
     assertThat(exported)
-        .extracting(Relationship::subjectID)
+        .extracting(r -> r.subject().object().objectId())
         .containsExactlyInAnyOrder("dave", "erin", "frank");
   }
 }

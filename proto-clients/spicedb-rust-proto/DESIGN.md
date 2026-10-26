@@ -1,5 +1,7 @@
 # spicedb-rust-proto — Design Manifest
 
+- The [root design](../../DESIGN.md) defines shared semantics, RPC coverage, security, and verification.
+
 This is the Rust proto client for SpiceDB. It wraps tonic-generated gRPC stubs
 with minimal boilerplate for connection setup and authentication.
 
@@ -110,3 +112,33 @@ Any methods or fields marked deprecated in the proto definitions must carry
 - No business logic — only plumbing (connection, auth, re-export)
 - All proto types re-exported as-is, no transformation
 - Proto files under `proto/` are never modified (they come from buf export)
+
+## Canonical idiomatic redesign boundary
+
+The approved breaking native API is specified in
+`../../spicedb-rust/DESIGN.md`. This tier continues to expose generated tonic
+requests/results. Native PermissionCheck, request options, ZedToken, exact
+filters and tree enums belong in the idiomatic crate; do not duplicate them here
+or retain removed idiomatic aliases. Keep exported/generated service coverage
+current and propagate protocol deprecations.
+
+SpiceDBProtoClient and its generated handles support cheap Clone sharing the
+channel. No application-wide mutex may serialize unrelated calls. A retained
+clone owns its channel independently; dropping another client does not invalidate
+it. `raw_proto()` uses the already authenticated channel and is not a new
+construction or credential-bypass route.
+
+System TLS calls tonic native-root configuration and is verified with a real
+handshake. Preserve the current absence of custom-CA/client-identity builders;
+do not claim mTLS configuration support. Guard and dialer must parse the same
+endpoint with tonic/http URI semantics. Refuse unsupported unix targets and
+remote plaintext credentials lacking the separately named opt-in. Malformed
+header tokens return typed errors rather than panicking; idiomatic construction
+maps those errors to its native InvalidArgument category.
+
+Do not add independent automatic retry or default timeout middleware: the
+idiomatic layer owns read-only retries and one complete-operation deadline,
+including chunks/pages/backoff. Its remaining budget propagates through
+Request::set_timeout. Raw tonic users manage deadlines and errors themselves.
+Dropping a future/stream must cancel the corresponding transport work; avoid
+detached tasks that outlive their owner.

@@ -15,7 +15,14 @@ use spicedb::types::Relationship;
 use support::{spawn_permissions_server, MockPermissionsService};
 
 fn rel(id: &str) -> Relationship {
-    Relationship::new("document", id, "viewer", "user", "alice", "").expect("valid relationship")
+    (|| -> Result<spicedb::Relationship, spicedb::SpiceDBError> {
+        spicedb::Relationship::new(
+            spicedb::ObjectRef::new("document", id)?,
+            "viewer",
+            spicedb::SubjectRef::new(spicedb::ObjectRef::new("user", "alice")?, None)?,
+        )
+    })()
+    .expect("valid relationship")
 }
 
 #[tokio::test]
@@ -34,12 +41,14 @@ async fn import_relationships_accepts_a_plain_iterator_not_just_a_vec() {
     let relationships = ids.into_iter().map(rel);
 
     let num_loaded = client
-        .import_relationships(relationships)
+        .import_relationships(spicedb::ImportRelationshipsRequest::new(
+            futures::stream::iter((relationships).into_iter().map(Ok)),
+        ))
         .await
         .expect("import should succeed");
 
     assert_eq!(
-        num_loaded, 5,
+        num_loaded.imported_count, 5,
         "the real server must see all 5 relationships from the iterator"
     );
 }
@@ -85,12 +94,40 @@ async fn import_relationships_accepts_a_one_shot_generator_without_materializing
     };
 
     let num_loaded = client
-        .import_relationships(source)
+        .import_relationships(spicedb::ImportRelationshipsRequest::new(
+            futures::stream::iter((source).into_iter().map(Ok)),
+        ))
         .await
         .expect("import should succeed");
 
     assert_eq!(
-        num_loaded, 2500,
+        num_loaded.imported_count, 2500,
         "the real server must see every relationship from the one-shot source, across multiple batches"
     );
+}
+
+#[tokio::test]
+async fn producer_error_aborts_upload_without_replay() {
+    let mock = MockPermissionsService::new();
+    let calls = mock.import_bulk_relationships_calls();
+    let address = spawn_permissions_server(mock).await;
+    let client = SpiceDBClient::new_plaintext(
+        address.to_string(),
+        "token",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .unwrap();
+    let source = async_stream::stream! {
+        for i in 0..1000 {yield Ok(spicedb::Relationship::from_tuple(&format!("document:{i}#viewer@user:alice")).unwrap());}
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        yield Err(spicedb::SpiceDBError::InvalidArgument("producer failed".into()));
+    };
+    let error = client
+        .import_relationships(spicedb::ImportRelationshipsRequest::new(source))
+        .await
+        .unwrap_err();
+    assert!(matches!(error, spicedb::SpiceDBError::InvalidArgument(_)));
+    assert_eq!(error.message(), "producer failed");
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
 }

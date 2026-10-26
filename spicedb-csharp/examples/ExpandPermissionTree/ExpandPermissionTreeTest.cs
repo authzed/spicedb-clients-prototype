@@ -24,19 +24,18 @@ public class ExpandPermissionTreeTest
     {
         await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
 
-        await client.WriteSchemaAsync(Schema);
+        await client.WriteSchemaAsync(Schema, null, default);
 
         var txn = new Transaction();
-        txn.Touch(Relationship.FromTriple("document", "report", "viewer", "user", "alice"));
-        txn.Touch(Relationship.FromTriple("document", "report", "editor", "user", "bob"));
-        var revision = await client.WriteAsync(txn);
+        txn.Touch(new Relationship(new ObjectRef("document", "report"), "viewer", new SubjectRef(new ObjectRef("user", "alice"))));
+        txn.Touch(new Relationship(new ObjectRef("document", "report"), "editor", new SubjectRef(new ObjectRef("user", "bob"))));
+        var revision = (await client.WriteAsync(txn, null, default)).Revision;
 
-        var result = await client.ExpandPermissionTreeAsync(
-            AtLeast(revision), "document", "report", "view");
+        var result = await client.ExpandPermissionTreeAsync(AtLeast(revision), new ObjectRef("document", "report"), "view", null, default);
 
         // The root node identifies the resource/permission that was expanded.
-        Assert.Equal("document", result.Tree.ExpandedObject.ObjectType);
-        Assert.Equal("report", result.Tree.ExpandedObject.ObjectID);
+        Assert.Equal("document", result.Tree.ExpandedObject!.ObjectType);
+        Assert.Equal("report", result.Tree.ExpandedObject!.ObjectId);
         Assert.Equal("view", result.Tree.ExpandedRelation);
 
         // "view = viewer + editor" is a union, so the root is an
@@ -47,7 +46,7 @@ public class ExpandPermissionTreeTest
 
         // Walk the tree recursively, collecting every subject found at a leaf.
         var subjectIDs = CollectLeafSubjects(result.Tree)
-            .Select(s => s.SubjectID)
+            .Select(s => s.Object.ObjectId)
             .ToHashSet();
 
         Assert.Contains("alice", subjectIDs);

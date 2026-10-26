@@ -14,7 +14,7 @@ Pick your language. Languages where `spicedb-gen` supports typed wrappers (**Go*
 > server was missing, and the revision the check ran at. **Only an unconditional
 > grant is true** — always go through the predicate (`HasPermission()`,
 > `has_permission`, `has_permission?`, `hasPermission()`), never the result object
-> itself. See [DESIGN.md](DESIGN.md#rule-only-an-unconditional-grant-is-true).
+> itself. See [DESIGN.md](DESIGN.md#domain-types-and-checks).
 
 For typed examples, first generate the wrapper from your schema:
 
@@ -22,7 +22,9 @@ For typed examples, first generate the wrapper from your schema:
 spicedb-gen --schema schema.zed --lang <go|typescript|java|python> --out <output-path>
 ```
 
-All examples below assume this schema:
+Tracing is optional and disabled by default; the examples enable it to make
+`CheckResult` debug information available. The snippets assume the schema below
+has already been written to the server:
 
 ```
 definition user {}
@@ -47,23 +49,31 @@ import (
 )
 
 c, err := client.NewPlaintext("localhost:50051", "somerandomkeyhere")
+if err != nil { panic(err) }
+defer c.Close()
 tc := NewTypedClient(c)
 
 // Writes — relation methods enforce valid subject types
-_, err = tc.Touch(ctx,
+written, err := tc.Touch(ctx, []TypedRelationship{
     Document("readme").Viewer(User("alice")),
     Document("readme").Editor(User("bob")),
-)
+})
+if err != nil { panic(err) }
 
 // Checks — autocomplete shows .View(), .Edit(), .Delete() on Document.
 // Check returns a client.CheckResult, never a bare bool: only HasPermission()
 // is a grant. A Conditional result means caveat context was missing, not "yes".
-result, err := Check(ctx, tc, consistency.Full(), Document("readme").View(), User("alice"))
+result, err := Check(ctx, tc, consistency.AtLeast(written.Revision), Document("readme").View(), User("alice"), client.WithCheckTracing(client.TracingEnabled))
+if err != nil { panic(err) }
 if result.HasPermission() { ... }
 
 // Lookups
-for res, err := range LookupResources(ctx, tc, consistency.Full(), Document_View, User("alice")) { ... }
-for sub, err := range LookupSubjects(ctx, tc, consistency.Full(), Document("readme").View(), UserType) { ... }
+for res, err := range LookupResources(ctx, tc, consistency.Full(), Document_View, User("alice"), client.WithLookupResourcesPermissionshipFilter(client.LookupHasPermissionOnly)) { ... }
+for sub, err := range LookupSubjects(ctx, tc, consistency.Full(), Document("readme").View(), UserType) {
+    if err != nil { panic(err) }
+    if sub.Subject.Permissionship != client.PermissionshipHasPermission { continue }
+    // Handle sub, preserving any wildcard exclusions.
+}
 
 // Type errors caught at compile time:
 // Document("readme").Editor(Team("eng")) // ERROR: editor only allows user
@@ -72,66 +82,83 @@ for sub, err := range LookupSubjects(ctx, tc, consistency.Full(), Document("read
 ### TypeScript (typed)
 
 ```typescript
-import { full } from "@spicedb/client";
+import { full, atLeast, Tracing, TransportSecurity, LookupPermissionshipFilter, WatchContent } from "@spicedb/client";
 import { TypedClient, Document, User } from "./permissions";
 
-const tc = TypedClient.create("localhost:50051", "somerandomkeyhere", { insecure: true });
+const tc = TypedClient.create("localhost:50051", "somerandomkeyhere", { transportSecurity: TransportSecurity.Plaintext });
 
 // Writes — relation methods enforce valid subject types
-await tc.touch(
+const written = await tc.touch([
     Document("readme").viewer(User("alice")),
     Document("readme").editor(User("bob")),
-);
+]);
 
 // Checks — autocomplete shows .view, .edit, .delete on Document.
 // check() returns a CheckResult, never a bare boolean. NEVER write `if (result)`:
 // every object is truthy in JS, so that would grant on an unevaluated caveat.
-const result = await tc.check(full(), Document("readme").view, User("alice"));
+const result = await tc.check(atLeast(written.revision), Document("readme").view, User("alice"), { tracing: Tracing.Enabled });
 if (result.hasPermission()) { ... }
 
 // Lookups
-for await (const res of await tc.lookupResources(full(), Document.view, User("alice"))) { ... }
-for await (const sub of await tc.lookupSubjects(full(), Document("readme").view, User)) { ... }
+for await (const res of tc.lookupResources(full(), Document.view, User("alice"), { permissionshipFilter: LookupPermissionshipFilter.HasPermissionOnly })) { ... }
+for await (const sub of tc.lookupSubjects(full(), Document("readme").view, User)) {
+    if (sub.subject.permissionship !== "hasPermission") continue;
+    // Handle sub, preserving any wildcard exclusions.
+}
 
 // Type errors caught at compile time:
 // Document("readme").editor(Team("eng"));  // ERROR: editor only allows user
+tc.close();
 ```
 
 ### Java (typed)
 
 ```java
-import com.authzed.spicedb.SpiceDBClient;
+import com.authzed.spicedb.CheckOptions;
+import com.authzed.spicedb.CheckTracing;
+import com.authzed.spicedb.LookupOptions;
+import com.authzed.spicedb.LookupPermissionshipFilter;
+import java.util.List;
 import static com.authzed.spicedb.Consistency.*;
 import static com.example.Permissions.*;
 
-var tc = new TypedClient(SpiceDBClient.createPlaintext("localhost:50051", "somerandomkeyhere"));
+var tc = TypedClient.createPlaintext("localhost:50051", "somerandomkeyhere");
 
 // Writes — relation methods enforce valid subject types
-tc.touch(
+var written = tc.touch(List.of(
     Document("readme").viewer(User("alice")),
     Document("readme").editor(User("bob"))
-);
+));
 
 // Checks — autocomplete shows .view(), .edit(), .delete() on Document.
 // check() returns a CheckResult, never a bare boolean: only hasPermission()
 // is a grant. A CONDITIONAL_PERMISSION result means caveat context was missing.
-var result = tc.check(full(), Document("readme").view(), User("alice"));
+var result = tc.check(atLeast(written.revision()), Document("readme").view(), User("alice"),
+    CheckOptions.builder().tracing(CheckTracing.ENABLED).build());
 if (result.hasPermission()) { ... }
+
+try (var resources = tc.lookupResources(full(), Document_View, User("alice"),
+    LookupOptions.builder()
+        .permissionshipFilter(LookupPermissionshipFilter.HAS_PERMISSION_ONLY).build())) {
+    resources.forEach(resource -> System.out.println(resource.resourceId()));
+}
 
 // Type errors caught at compile time:
 // Document("readme").editor(Team("eng")); // ERROR: editor only allows user
+tc.close();
 ```
 
 ### Python (typed)
 
 ```python
-from spicedb import full
-from permissions import TypedClient, Document, User, DocumentView
+from spicedb import full, at_least, Tracing, TransportSecurity, LookupPermissionshipFilter, Permissionship
+from permissions.permissions import Document, User, DocumentView
+from permissions.aio import TypedClient
 
-tc = TypedClient.connect("localhost:50051", "somerandomkeyhere", insecure=True)
+tc = TypedClient.connect("localhost:50051", "somerandomkeyhere", transport_security=TransportSecurity.PLAINTEXT)
 try:
     # Writes — relation methods enforce valid subject types
-    await tc.touch(
+    written = await tc.touch(
         Document("readme").viewer(User("alice")),
         Document("readme").editor(User("bob")),
     )
@@ -139,18 +166,43 @@ try:
     # Checks — autocomplete shows .view, .edit, .delete on Document.
     # check() returns a CheckResult, never a bare bool: only .has_permission is
     # a grant. A CONDITIONAL_PERMISSION result means caveat context was missing.
-    result = await tc.check(full(), Document("readme").view, User("alice"))
+    result = await tc.check(at_least(written.revision), Document("readme").view, User("alice"), tracing=Tracing.ENABLED)
     if result.has_permission: ...
 
     # Lookups
-    async for res in tc.lookup_resources(full(), DocumentView, User("alice")): ...
-    async for sub in tc.lookup_subjects(full(), Document("readme").view, User): ...
+    async with tc.lookup_resources(full(), DocumentView, User("alice"), permissionship_filter=LookupPermissionshipFilter.HAS_PERMISSION_ONLY) as resources:
+        async for res in resources: ...
+    async with tc.lookup_subjects(full(), Document("readme").view, User) as subjects:
+        async for sub in subjects:
+            if sub.subject.permissionship != Permissionship.HAS_PERMISSION:
+                continue
+            # Handle sub, preserving any wildcard exclusions.
 
     # Type errors caught at static-analysis time (pyright/mypy):
     # Document("readme").editor(Team("eng"))  # ERROR: editor only allows user
 finally:
     await tc.close()
 ```
+
+The four generated facades expose the native client's capabilities directly.
+Schema-aware checks and relationship helpers retain their type guarantees;
+other operations accept the native request/options/result types. For example:
+
+```typescript
+const deleted = await tc.deleteAllRelationshipsNonAtomic(
+    { resourceType: "document", resourceId: "readme" },
+    { pageSize: 100 },
+);
+const events = tc.watch({
+    relationshipFilters: [{ resourceType: "document" }],
+    startRevision: deleted.revision,
+    content: [WatchContent.Relationships, WatchContent.Checkpoints],
+});
+```
+
+Generated `delete` helpers delete explicit typed relationships in a transaction
+and return `WriteResult`; they are separate from filter-based non-atomic deletion.
+Native client access remains available for interoperability.
 
 ### C# (idiomatic)
 
@@ -160,15 +212,19 @@ using static SpiceDB.Client.Consistency;
 
 await using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "somerandomkeyhere");
 
-var rel = Relationship.FromTriple("document", "readme", "viewer", "user", "alice");
+var resource = new ObjectRef("document", "readme");
+var subject = new SubjectRef(new ObjectRef("user", "alice"));
 var txn = new Transaction();
-txn.Touch(rel);
-string revision = await client.WriteAsync(txn);
+txn.Touch(new Relationship(resource, "viewer", subject));
+WriteResult written = await client.WriteAsync(txn);
 
-// CheckPermissionAsync returns a CheckResult, never a bare bool: only
-// HasPermission is a grant. `if (result)` is a compile error by design.
-CheckResult result = await client.CheckPermissionAsync(AtLeast(revision), "view", rel);
+CheckResult result = await client.CheckAsync(
+    PermissionCheck.CreateBuilder()
+        .WithResource(resource).WithPermission("view").WithSubject(subject)
+        .WithConsistency(AtLeast(written.Revision)).Build(),
+    new CheckOptions { Tracing = CheckTracing.Enabled });
 if (result.HasPermission) { ... }
+
 ```
 
 ### Ruby (idiomatic)
@@ -177,15 +233,16 @@ if (result.HasPermission) { ... }
 require "spicedb"
 
 SpiceDB::Client.new_plaintext("localhost:50051", "somerandomkeyhere") do |client|
-  rel = SpiceDB::Relationship.from_triple("document", "readme", "viewer", "user", "alice")
+  resource = SpiceDB::ObjectRef.new(object_type: "document", object_id: "readme")
+  subject = SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: "user", object_id: "alice"))
   txn = SpiceDB::Transaction.new
-  txn.touch(rel)
-  revision = client.write(txn)
+  txn.touch(SpiceDB::Relationship.new(resource: resource, relation: "viewer", subject: subject))
+  written = client.write(txn)
 
-  # check_permission returns a CheckResult, never a boolean. NEVER write
-  # `if result` — every Ruby object but nil/false is truthy, so that would
-  # grant on a conditional result the server never actually evaluated.
-  result = client.check_permission(SpiceDB::Consistency.at_least(revision), "view", rel)
+  result = client.check(
+    SpiceDB::PermissionCheck.new(resource: resource, permission: "view", subject: subject),
+    consistency: SpiceDB::Consistency.at_least(written.revision), tracing: SpiceDB::Tracing::ENABLED
+  )
   puts result.has_permission?
 end
 ```
@@ -193,20 +250,53 @@ end
 ### Rust (idiomatic)
 
 ```rust
-use spicedb::{client::SpiceDBClient, consistency, types::{Relationship, Transaction}};
+use spicedb::{SpiceDBClient, consistency, ObjectRef, SubjectRef, Relationship,
+    Transaction, WriteRequest, PermissionCheck, CheckOptions, TracingMode, RemoteCredentialsPolicy};
 
-let client = SpiceDBClient::new_plaintext("localhost:50051", "somerandomkeyhere").await?;
-
-let rel = Relationship::new("document", "readme", "viewer", "user", "alice", "")?;
+let client = SpiceDBClient::new_plaintext("localhost:50051", "somerandomkeyhere", RemoteCredentialsPolicy::LoopbackOnly).await?;
+let resource = ObjectRef::new("document", "readme")?;
+let subject = SubjectRef::new(ObjectRef::new("user", "alice")?, None)?;
 let mut txn = Transaction::new();
-txn.touch(&rel);
-let revision = client.write(&txn).await?;
+txn.touch(&Relationship::new(resource.clone(), "viewer", subject.clone())?);
+let written = client.write(WriteRequest::new(txn)).await?;
 
-// check_permission returns a CheckResult, never a bare bool: only
-// has_permission() is a grant. `if result` does not compile.
-let result = client.check_permission(&consistency::at_least(&revision), "view", &rel).await?;
+let result = client.check(
+    PermissionCheck::new(resource, "view", subject, consistency::at_least(written.revision))
+        .with_options(CheckOptions::new().with_tracing(TracingMode::Enabled))
+).await?;
 if result.has_permission() { ... }
+
 ```
+
+Resource lookup examples select `HasPermissionOnly` (using each language's spelling)
+to exclude conditional and unknown results before presenting accessible IDs. The
+client-side filter defaults to `All` when omitted; callers retaining all results
+must inspect permissionship before treating a result as a grant. Limits count
+results yielded after filtering, and pagination continues through skipped results.
+
+## Tokens and connection policies
+
+Every relationship write returns a native `WriteResult` containing its revision
+(`Revision` in Go/C#, `revision()` in Java, `revision` elsewhere). Generated
+relationship-write helpers return the same wrapper.
+
+Every client uses a dedicated `ZedToken` value for revisions. Convert stored strings
+explicitly and use the token's string conversion when persisting it. Authentication
+credentials and pagination cursors remain distinct from revision tokens.
+
+All clients support authenticated plaintext connections to remote hostnames and IPs
+through their normal APIs. Plaintext transport alone permits loopback connections;
+remote plaintext additionally requires the named opt-in below.
+
+| Language | Explicit remote-plaintext opt-in |
+| --- | --- |
+| Go | `client.WithRemotePlaintextCredentials(client.RemotePlaintextAllowed)` |
+| Python | `remote_credentials=RemoteCredentials.ALLOW` |
+| TypeScript | `remoteCredentials: RemoteCredentials.AllowPlaintext` |
+| Java | `ClientOptions.builder().remotePlaintextCredentials(RemotePlaintextCredentials.ALLOW).build()` |
+| C# | `new ClientOptions { RemotePlaintextCredentials = RemotePlaintextCredentials.Allow }` |
+| Ruby | `remote_credentials: SpiceDB::RemoteCredentials::ALLOW_PLAINTEXT` |
+| Rust | `RemoteCredentialsPolicy::AllowInsecureRemote` in `new_plaintext` or the client builder |
 
 ## Structure
 
@@ -339,3 +429,16 @@ Use `mage updateAllowBreak` to skip compatibility checks when breaking changes a
 | Java       | spotless          | `gradle spotlessCheck`           |
 | Ruby       | rubocop           | `bundle exec rubocop`            |
 | Rust       | clippy + rustfmt  | `cargo clippy && cargo fmt --check` |
+
+## Bounded and non-atomic deletion
+
+`deleteRelationships` requires a positive limit and performs one bounded request.
+`deleteAllRelationshipsNonAtomic` (using each language's naming conventions)
+continues in batches, forwarding each non-empty deletion cursor to the next request.
+Each batch is atomic, but completed batches remain committed
+if a later batch fails or cancellation occurs. Both return `DeleteResult` with a
+native revision token, deleted count, completion state and optional cursor.
+
+Failure progress reports acknowledged work; a lost response can leave the final
+batch's outcome uncertain. C# exposes `exception.GetDeleteProgress()` for both
+SpiceDB errors and native cancellation exceptions.

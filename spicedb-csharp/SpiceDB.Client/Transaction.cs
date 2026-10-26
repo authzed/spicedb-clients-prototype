@@ -5,7 +5,7 @@ using Authzed.Api.V1;
 namespace SpiceDB.Client;
 
 /// <summary>
-/// A transaction builder for batching relationship mutations. Create, Touch,
+/// A mutable transaction builder for batching relationship mutations. Create, Touch,
 /// and Delete add operations; MustNotMatch and MustMatch add preconditions.
 /// Pass the completed transaction to <see cref="SpiceDBClient.WriteAsync"/>.
 /// </summary>
@@ -17,12 +17,12 @@ public sealed class Transaction
     /// <summary>
     /// Exposes the underlying proto updates for advanced use cases.
     /// </summary>
-    public IReadOnlyList<Authzed.Api.V1.RelationshipUpdate> V1Updates => _updates;
+    internal IReadOnlyList<Authzed.Api.V1.RelationshipUpdate> V1Updates => _updates.Select(x => x.Clone()).ToArray();
 
     /// <summary>
     /// Returns the preconditions added to this transaction.
     /// </summary>
-    public IReadOnlyList<Precondition> Preconditions => _preconditions;
+    internal IReadOnlyList<Precondition> Preconditions => _preconditions.Select(x => x.Clone()).ToArray();
 
     /// <summary>
     /// Adds a relationship create to the transaction. Fails if the
@@ -30,7 +30,7 @@ public sealed class Transaction
     /// </summary>
     public void Create(Relationship relationship)
     {
-        ArgumentNullException.ThrowIfNull(relationship);
+        Native.Required(relationship, nameof(relationship));
         _updates.Add(new Authzed.Api.V1.RelationshipUpdate
         {
             Operation = Authzed.Api.V1.RelationshipUpdate.Types.Operation.Create,
@@ -44,7 +44,7 @@ public sealed class Transaction
     /// </summary>
     public void Touch(Relationship relationship)
     {
-        ArgumentNullException.ThrowIfNull(relationship);
+        Native.Required(relationship, nameof(relationship));
         _updates.Add(new Authzed.Api.V1.RelationshipUpdate
         {
             Operation = Authzed.Api.V1.RelationshipUpdate.Types.Operation.Touch,
@@ -57,7 +57,7 @@ public sealed class Transaction
     /// </summary>
     public void Delete(Relationship relationship)
     {
-        ArgumentNullException.ThrowIfNull(relationship);
+        Native.Required(relationship, nameof(relationship));
         _updates.Add(new Authzed.Api.V1.RelationshipUpdate
         {
             Operation = Authzed.Api.V1.RelationshipUpdate.Types.Operation.Delete,
@@ -70,7 +70,7 @@ public sealed class Transaction
     /// </summary>
     public void MustNotMatch(Filter filter)
     {
-        ArgumentNullException.ThrowIfNull(filter);
+        Native.Required(filter, nameof(filter));
         _preconditions.Add(BuildPrecondition(Precondition.Types.Operation.MustNotMatch, filter));
     }
 
@@ -79,7 +79,7 @@ public sealed class Transaction
     /// </summary>
     public void MustMatch(Filter filter)
     {
-        ArgumentNullException.ThrowIfNull(filter);
+        Native.Required(filter, nameof(filter));
         _preconditions.Add(BuildPrecondition(Precondition.Types.Operation.MustMatch, filter));
     }
 
@@ -92,7 +92,7 @@ public sealed class Transaction
     /// </summary>
     internal static Precondition BuildPrecondition(Precondition.Types.Operation operation, Filter filter)
     {
-        ArgumentNullException.ThrowIfNull(filter);
+        Native.Required(filter, nameof(filter));
         return new Precondition
         {
             Operation = operation,

@@ -2,7 +2,79 @@
 
 ## Unreleased
 
+- Watch supports native relationship filters through `WatchOptions::with_filters`, with OR semantics and local rejection of simultaneous object types. Examples use type-only relationship filters.
+
+- **BREAKING:** Rename `delete_all_relationships` to `delete_all_relationships_non_atomic` and `DeleteResult.deleted_at` to `DeleteResult.revision`. Each deletion batch is transactional; the complete operation is non-atomic and completed batches remain committed after later failures.
+
+- Add an optional client-side LookupResources permissionship filter for unconditional grants; limits count yielded matches and pagination advances over skipped rows. The default still includes conditional results.
+
 ### Changed
+
+- Revision inputs now require `ZedToken`; convert persisted strings explicitly with
+  `ZedToken::from(value)` and recover them losslessly with `into_string()`.
+- Check tracing and lookup debugging use `TracingMode` and `DebugMode`;
+  `with_tracing(true)` becomes `with_tracing(TracingMode::Enabled)`.
+  Watch uses `with_checkpoints(CheckpointMode::Include)` and
+  `with_content(WatchContent::RelationshipsAndSchema)`; both controls can be reset explicitly.
+- Plaintext construction takes `RemoteCredentialsPolicy::LoopbackOnly` or the
+  explicit `AllowInsecureRemote` opt-in. Builders use `remote_credentials_policy`.
+  The latter permits sending credentials without TLS to remote hostnames/IPs.
+  Secure transport remains the builder default. Wildcard selection remains the
+  existing `WildcardOption` enum; result facts remain booleans.
+
+- **2026-10-26 — BREAKING CHANGE: approved native prototype API reset.** Every
+  operation now takes one owned request and its operation-specific options.
+  `SpiceDBClient` is cheaply cloneable, `Send + Sync`; cloned raw handles retain
+  their own channel ownership. Public evolving result structs/enums are
+  non-exhaustive.
+
+  Before:
+  ```rust,ignore
+  client.check_permission_with_options(&full(), "view", &relationship,
+      &CheckOptions::new().with_timeout(Duration::from_secs(1))).await?;
+  client.check_permissions(&full(), "view", &relationships).await?;
+  client.delete_relationships(&filter).await?;
+  ```
+  After:
+  ```rust,ignore
+  let question = PermissionCheck::new(resource, "view", subject, full())
+      .with_context(context)
+      .with_options(CheckOptions::new().with_timeout(Duration::from_secs(1)).with_tracing(TracingMode::Enabled));
+  let result = client.check(question).await?;
+  let results = client.check_bulk(BulkCheckRequest::new(questions)).await?;
+  let page = client.delete_relationships(DeleteRequest::new(filter.clone(), NonZeroU32::new(100).unwrap())).await?;
+  let completed = client.delete_all_relationships_non_atomic(DeleteAllRequest::new(filter)).await?;
+  ```
+
+  Check-time context moves from `Relationship::with_check_context` onto
+  `PermissionCheck::with_context`. Relationship construction takes native
+  `ObjectRef`/`SubjectRef`; fields use borrowed accessors. Revision strings become
+  opaque `ZedToken` values (`token.as_ref()` / `token.into_string()`). Revision-only
+  calls return a native result with `.revision`. The former optional leaf and
+  intermediate fields become exclusive `PermissionTree::Leaf` and
+  `PermissionTree::Intermediate` enum variants. Schema diffs likewise become
+  native enum variants retaining their complete payload.
+
+  All `*_with_timeout`, `*_with_options`, check-any/all, and legacy singular/bulk
+  names are removed; use `request.with_options(...)` and explicitly aggregate
+  `CheckResult::has_permission`, guarding empty collections. Singular checks use
+  CheckPermission; singular and bulk tracing preserve the complete native
+  recursive diagnostic tree, including cached=false presence.
+
+  One monotonic timeout now bounds retries/backoff/chunks/pages; stream/import
+  lifetime remains unbounded unless explicitly selected. Dropping futures or
+  streams cancels owned calls without detached work. Exact relationship filters
+  distinguish any/direct/named subject relations. Delete-all failures retain
+  acknowledged progress and the typed source; no mutation is replayed.
+  Unknown/unspecified server deletion progress is a typed failure, never a
+  continuation signal; its acknowledged count/revision/cursor remains available
+  together with earlier successful pages.
+
+  Added native wrappers for all nondeprecated Materialize RPCs, authenticated on
+  the existing channel (see RPC_COVERAGE.md). The raw client is a secondary escape
+  hatch, not an alternative to native coverage. Previous dated Unreleased entries
+  below describe superseded prototype stages, not compatibility aliases retained
+  by this reset. Future compatibility gates remain enabled.
 
 - **2026-09-11: `DeleteOptions` and `WatchOptions` are `#[non_exhaustive]`, and
   `DeleteOptions.cursor` is public.** Root DESIGN.md, "RULE: Every RPC wrapper must have one

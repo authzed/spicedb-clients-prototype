@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative '../lib/spicedb'
+require_relative 'support/native_helpers'
 require 'spicedb_proto'
 require 'grpc'
 
@@ -40,7 +41,8 @@ RSpec.describe 'SpiceDB::Client#import_relationships one-shot enumerable safety'
   let(:client) { SpiceDB::Client.new_plaintext('localhost:50051', 'testtoken') }
 
   def a_relationship(id)
-    SpiceDB::Relationship.from_triple('document', id, 'viewer', 'user', 'alice')
+    SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: id), relation: 'viewer',
+                              subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: 'alice'), relation: nil))
   end
 
   it 'sends every relationship from a one-shot source exactly once' do
@@ -51,7 +53,7 @@ RSpec.describe 'SpiceDB::Client#import_relationships one-shot enumerable safety'
     permissions_service = double('permissions_service')
     allow(permissions_service).to receive(:import_bulk_relationships) do |requests, **_kwargs|
       requests.each { |req| sent.concat(req.relationships) }
-      Authzed::Api::V1::ImportBulkRelationshipsResponse.new(num_loaded: sent.length)
+      FixtureOperation.new(Authzed::Api::V1::ImportBulkRelationshipsResponse.new(num_loaded: sent.length))
     end
     client.instance_variable_set(
       :@proto_client, double('proto_client', permissions: permissions_service)

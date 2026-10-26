@@ -97,12 +97,19 @@ async fn read_relationships_yields_incrementally_and_paginates_lazily() {
     let cursors = mock.read_relationships_cursors();
 
     let addr = spawn_permissions_server(mock).await;
-    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
-        .await
-        .expect("client should connect to mock server");
+    let client = SpiceDBClient::new_plaintext(
+        addr.to_string(),
+        "token",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("client should connect to mock server");
 
     let filter = Filter::new("document");
-    let stream = client.read_relationships(&consistency::full(), &filter);
+    let stream = client.read_relationships(spicedb::ReadRelationshipsRequest::new(
+        (filter).clone(),
+        (consistency::full()).clone(),
+    ));
     tokio::pin!(stream);
 
     let first = stream
@@ -110,7 +117,7 @@ async fn read_relationships_yields_incrementally_and_paginates_lazily() {
         .await
         .expect("stream should yield a first item")
         .expect("first item should be Ok(Relationship)");
-    assert_eq!(first.resource_id, "doc-0");
+    assert_eq!(first.resource().object_id(), "doc-0");
 
     // Only the FIRST page's RPC should have been issued so far — the second
     // page must not be fetched until the first is fully drained.
@@ -132,7 +139,7 @@ async fn read_relationships_yields_incrementally_and_paginates_lazily() {
     );
     for (i, rel) in all.iter().enumerate() {
         assert_eq!(
-            rel.resource_id,
+            rel.resource().object_id(),
             format!("doc-{i}"),
             "items must arrive in order"
         );
@@ -183,11 +190,20 @@ async fn lookup_resources_yields_incrementally_and_paginates_lazily() {
     let cursors = mock.lookup_resources_cursors();
 
     let addr = spawn_permissions_server(mock).await;
-    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
-        .await
-        .expect("client should connect to mock server");
+    let client = SpiceDBClient::new_plaintext(
+        addr.to_string(),
+        "token",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("client should connect to mock server");
 
-    let stream = client.lookup_resources(&consistency::full(), "document", "view", "user", "alice");
+    let stream = client.lookup_resources(spicedb::LookupResourcesRequest::new(
+        "document",
+        "view",
+        spicedb::SubjectRef::new(spicedb::ObjectRef::new("user", "alice").unwrap(), None).unwrap(),
+        (consistency::full()).clone(),
+    ));
     tokio::pin!(stream);
 
     let first = stream
@@ -279,12 +295,20 @@ async fn lookup_subjects_yields_incrementally_over_a_single_call() {
     let calls = mock.lookup_subjects_calls();
 
     let addr = spawn_permissions_server(mock).await;
-    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
-        .await
-        .expect("client should connect to mock server");
+    let client = SpiceDBClient::new_plaintext(
+        addr.to_string(),
+        "token",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("client should connect to mock server");
 
-    let stream =
-        client.lookup_subjects(&consistency::full(), "document", "firstdoc", "view", "user");
+    let stream = client.lookup_subjects(spicedb::LookupSubjectsRequest::new(
+        spicedb::ObjectRef::new("document", "firstdoc").unwrap(),
+        "view",
+        "user",
+        (consistency::full()).clone(),
+    ));
     tokio::pin!(stream);
 
     let first = stream
@@ -360,12 +384,20 @@ async fn lookup_subjects_surfaces_wildcard_excluded_subjects() {
     mock.set_lookup_subjects_responses(responses);
 
     let addr = spawn_permissions_server(mock).await;
-    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
-        .await
-        .expect("client should connect to mock server");
+    let client = SpiceDBClient::new_plaintext(
+        addr.to_string(),
+        "token",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("client should connect to mock server");
 
-    let stream =
-        client.lookup_subjects(&consistency::full(), "document", "firstdoc", "view", "user");
+    let stream = client.lookup_subjects(spicedb::LookupSubjectsRequest::new(
+        spicedb::ObjectRef::new("document", "firstdoc").unwrap(),
+        "view",
+        "user",
+        (consistency::full()).clone(),
+    ));
     tokio::pin!(stream);
 
     let result = stream
@@ -423,12 +455,20 @@ async fn lookup_subjects_falls_back_to_deprecated_fields() {
     mock.set_lookup_subjects_responses(responses);
 
     let addr = spawn_permissions_server(mock).await;
-    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
-        .await
-        .expect("client should connect to mock server");
+    let client = SpiceDBClient::new_plaintext(
+        addr.to_string(),
+        "token",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("client should connect to mock server");
 
-    let stream =
-        client.lookup_subjects(&consistency::full(), "document", "firstdoc", "view", "user");
+    let stream = client.lookup_subjects(spicedb::LookupSubjectsRequest::new(
+        spicedb::ObjectRef::new("document", "firstdoc").unwrap(),
+        "view",
+        "user",
+        (consistency::full()).clone(),
+    ));
     tokio::pin!(stream);
 
     let result = stream
@@ -492,11 +532,17 @@ async fn export_relationships_yields_incrementally_and_paginates_lazily() {
     let cursors = mock.export_relationships_cursors();
 
     let addr = spawn_permissions_server(mock).await;
-    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
-        .await
-        .expect("client should connect to mock server");
+    let client = SpiceDBClient::new_plaintext(
+        addr.to_string(),
+        "token",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("client should connect to mock server");
 
-    let stream = client.export_relationships(&consistency::full(), None);
+    let stream = client.export_relationships(spicedb::ExportRelationshipsRequest::new(
+        (consistency::full()).clone(),
+    ));
     tokio::pin!(stream);
 
     let first = stream
@@ -504,7 +550,7 @@ async fn export_relationships_yields_incrementally_and_paginates_lazily() {
         .await
         .expect("stream should yield a first item")
         .expect("first item should be Ok(Relationship)");
-    assert_eq!(first.resource_id, "doc-0");
+    assert_eq!(first.resource().object_id(), "doc-0");
     assert_eq!(
         calls.load(Ordering::SeqCst),
         1,
@@ -519,7 +565,7 @@ async fn export_relationships_yields_incrementally_and_paginates_lazily() {
     assert_eq!(all.len(), PAGE_SIZE + 3);
     for (i, rel) in all.iter().enumerate() {
         assert_eq!(
-            rel.resource_id,
+            rel.resource().object_id(),
             format!("doc-{i}"),
             "items must arrive in order"
         );
@@ -533,4 +579,68 @@ async fn export_relationships_yields_incrementally_and_paginates_lazily() {
 
     let seen_cursors = cursors.lock().unwrap().clone();
     assert_eq!(seen_cursors, vec![None, Some(cursor("page1-end"))]);
+}
+
+#[tokio::test]
+async fn lookup_resources_filters_exact_grants_across_pages() {
+    for filtered in [false, true] {
+        let mock = MockPermissionsService::new();
+        let row = |id: &str, permissionship, token: &str| proto::LookupResourcesResponse {
+            resource_object_id: id.into(),
+            permissionship,
+            after_result_cursor: Some(cursor(token)),
+            looked_up_at: Some(proto::ZedToken {
+                token: "snapshot".into(),
+            }),
+            ..Default::default()
+        };
+        mock.push_lookup_resources_page(vec![row("conditional", 2, "1"), row("unknown", 99, "2")]);
+        mock.push_lookup_resources_page(vec![row("unspecified", 0, "3"), row("grant1", 1, "4")]);
+        mock.push_lookup_resources_page(vec![row("conditional2", 2, "5")]);
+        mock.push_lookup_resources_page(vec![row("grant2", 1, "6")]);
+        let cursors = mock.lookup_resources_cursors();
+        let addr = spawn_permissions_server(mock).await;
+        let client = SpiceDBClient::new_plaintext(
+            addr.to_string(),
+            "token",
+            spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+        )
+        .await
+        .unwrap();
+        let mut options = spicedb::LookupResourcesOptions::new()
+            .with_page_size(std::num::NonZeroU32::new(2).unwrap())
+            .with_limit(2);
+        if filtered {
+            options = options
+                .with_permissionship_filter(spicedb::LookupPermissionshipFilter::HasPermissionOnly);
+        }
+        let request = spicedb::LookupResourcesRequest::new(
+            "document",
+            "view",
+            spicedb::SubjectRef::new(spicedb::ObjectRef::new("user", "alice").unwrap(), None)
+                .unwrap(),
+            consistency::full(),
+        )
+        .with_options(options);
+        let stream = client.lookup_resources(request);
+        tokio::pin!(stream);
+        let mut ids = Vec::new();
+        while let Some(result) = stream.next().await {
+            ids.push(result.unwrap().resource_id);
+        }
+        if filtered {
+            assert_eq!(ids, vec!["grant1", "grant2"]);
+            assert_eq!(
+                *cursors.lock().unwrap(),
+                vec![
+                    None,
+                    Some(cursor("2")),
+                    Some(cursor("4")),
+                    Some(cursor("5"))
+                ]
+            );
+        } else {
+            assert_eq!(ids, vec!["conditional", "unknown"]);
+        }
+    }
 }

@@ -35,18 +35,18 @@ public class PermissionTreeTests
 
         var tree = SpiceDBClient.ToPermissionTree(proto);
 
-        tree.ExpandedObject.ObjectType.Should().Be("document");
-        tree.ExpandedObject.ObjectID.Should().Be("doc1");
+        tree.ExpandedObject!.ObjectType.Should().Be("document");
+        tree.ExpandedObject!.ObjectId.Should().Be("doc1");
         tree.ExpandedRelation.Should().Be("viewer");
         tree.Intermediate.Should().BeNull();
         tree.Leaf.Should().NotBeNull();
         tree.Leaf!.Subjects.Should().HaveCount(2);
-        tree.Leaf.Subjects[0].SubjectType.Should().Be("user");
-        tree.Leaf.Subjects[0].SubjectID.Should().Be("alice");
-        tree.Leaf.Subjects[0].OptionalRelation.Should().Be("");
-        tree.Leaf.Subjects[1].SubjectType.Should().Be("group");
-        tree.Leaf.Subjects[1].SubjectID.Should().Be("eng");
-        tree.Leaf.Subjects[1].OptionalRelation.Should().Be("member");
+        tree.Leaf.Subjects[0].Object.ObjectType.Should().Be("user");
+        tree.Leaf.Subjects[0].Object.ObjectId.Should().Be("alice");
+        tree.Leaf.Subjects[0].Relation.Should().BeNull();
+        tree.Leaf.Subjects[1].Object.ObjectType.Should().Be("group");
+        tree.Leaf.Subjects[1].Object.ObjectId.Should().Be("eng");
+        tree.Leaf.Subjects[1].Relation.Should().Be("member");
     }
 
     [Fact]
@@ -100,8 +100,8 @@ public class PermissionTreeTests
 
         var tree = SpiceDBClient.ToPermissionTree(root);
 
-        tree.ExpandedObject.ObjectType.Should().Be("document");
-        tree.ExpandedObject.ObjectID.Should().Be("doc1");
+        tree.ExpandedObject!.ObjectType.Should().Be("document");
+        tree.ExpandedObject!.ObjectId.Should().Be("doc1");
         tree.ExpandedRelation.Should().Be("view");
         tree.Leaf.Should().BeNull();
         tree.Intermediate.Should().NotBeNull();
@@ -112,8 +112,8 @@ public class PermissionTreeTests
         mappedLeafChild.Intermediate.Should().BeNull();
         mappedLeafChild.Leaf.Should().NotBeNull();
         mappedLeafChild.Leaf!.Subjects.Should().HaveCount(2);
-        mappedLeafChild.Leaf.Subjects[0].SubjectID.Should().Be("alice");
-        mappedLeafChild.Leaf.Subjects[1].OptionalRelation.Should().Be("member");
+        mappedLeafChild.Leaf.Subjects[0].Object.ObjectId.Should().Be("alice");
+        mappedLeafChild.Leaf.Subjects[1].Relation.Should().Be("member");
 
         var mappedIntersection = tree.Intermediate.Children[1];
         mappedIntersection.ExpandedRelation.Should().Be("editor");
@@ -121,7 +121,7 @@ public class PermissionTreeTests
         mappedIntersection.Intermediate.Should().NotBeNull();
         mappedIntersection.Intermediate!.Operation.Should().Be(TreeOperation.Intersection);
         mappedIntersection.Intermediate.Children.Should().HaveCount(1);
-        mappedIntersection.Intermediate.Children[0].Leaf!.Subjects[0].SubjectID.Should().Be("bob");
+        mappedIntersection.Intermediate.Children[0].Leaf!.Subjects[0].Object.ObjectId.Should().Be("bob");
     }
 
     [Fact]
@@ -150,8 +150,7 @@ public class PermissionTreeTests
 
         tree.Intermediate.Should().BeNull();
         tree.Leaf.Should().BeNull();
-        tree.ExpandedObject.ObjectType.Should().Be("");
-        tree.ExpandedObject.ObjectID.Should().Be("");
+        tree.ExpandedObject.Should().BeNull();
         tree.ExpandedRelation.Should().Be("");
     }
 

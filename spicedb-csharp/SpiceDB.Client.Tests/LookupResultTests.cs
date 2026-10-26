@@ -18,6 +18,47 @@ namespace SpiceDB.Client.Tests;
 
 public class LookupResultTests
 {
+    [Theory]
+    [InlineData(LookupPermissionshipFilter.All, 7)]
+    [InlineData(LookupPermissionshipFilter.HasPermissionOnly, 2)]
+    public async Task LookupResources_FilterCountsYieldedGrantsAcrossPages(LookupPermissionshipFilter filter, int expected)
+    {
+        int[] values = [2, 0, 99, 1, 2, 1, 1];
+        var requests = new List<LookupResourcesRequest>();
+        var mock = new Mock<PermissionsService.PermissionsServiceClient>();
+        mock.Setup(c => c.LookupResources(It.IsAny<LookupResourcesRequest>(), It.IsAny<Metadata>(), It.IsAny<DateTime?>(), It.IsAny<CancellationToken>()))
+            .Returns((LookupResourcesRequest request, Metadata metadata, DateTime? deadline, CancellationToken token) =>
+            {
+                requests.Add(request.Clone());
+                var start = request.OptionalCursor is null ? 0 : int.Parse(request.OptionalCursor.Token);
+                var responses = Enumerable.Range(start, Math.Min((int)request.OptionalLimit, values.Length - start))
+                    .Select(i => new LookupResourcesResponse { ResourceObjectId = "doc" + i, Permissionship = (LookupPermissionship)values[i], AfterResultCursor = new Cursor { Token = (i + 1).ToString() }, LookedUpAt = new Authzed.Api.V1.ZedToken { Token = "revision" } }).ToArray();
+                return MakeServerStreamingCall(new FakeStreamReader<LookupResourcesResponse>(responses));
+            });
+        await using var client = new SpiceDBClient(mock.Object, new Mock<SchemaService.SchemaServiceClient>().Object, new Mock<WatchService.WatchServiceClient>().Object, new Mock<ExperimentalService.ExperimentalServiceClient>().Object);
+        var results = new List<LookupResource>();
+        var options = filter == LookupPermissionshipFilter.All ? new LookupOptions { PageSize = 2 } : new LookupOptions { PageSize = 2, Limit = 2, PermissionshipFilter = filter };
+        await foreach (var result in client.LookupResourcesAsync(Consistency.Full(), "document", "view", new SubjectRef(new ObjectRef("user", "alice")), options)) results.Add(result);
+        results.Should().HaveCount(expected);
+        results[0].LookedUpAt!.Value.Should().Be("revision");
+        if (filter == LookupPermissionshipFilter.HasPermissionOnly)
+        {
+            results.Select(r => r.ResourceID).Should().Equal("doc3", "doc5");
+            requests.Select(r => r.OptionalCursor?.Token).Should().Equal(null, "2", "4", "5");
+        }
+        else results.Select(r => r.Permissionship).Should().Equal(Permissionship.ConditionalPermission, Permissionship.Unspecified, Permissionship.Unspecified, Permissionship.HasPermission, Permissionship.ConditionalPermission, Permissionship.HasPermission, Permissionship.HasPermission);
+        Func<Task> subjects = async () => { await foreach (var result in client.LookupSubjectsAsync(Consistency.Full(), new ObjectRef("document", "one"), "view", "user", new LookupOptions { PermissionshipFilter = LookupPermissionshipFilter.HasPermissionOnly })) { } };
+        await subjects.Should().ThrowAsync<InvalidArgumentException>();
+    }
+
+    [Fact]
+    public void LookupFilter_RejectsUnknownMode()
+    {
+        Action invalid = () => _ = new LookupOptions { PermissionshipFilter = (LookupPermissionshipFilter)99 };
+        invalid.Should().Throw<InvalidArgumentException>();
+        new LookupOptions().PermissionshipFilter.Should().Be(LookupPermissionshipFilter.All);
+    }
+
     // ── ToPermissionship ─────────────────────────────────────────────────
 
     [Theory]
@@ -276,8 +317,7 @@ public class LookupResultTests
             new Mock<ExperimentalService.ExperimentalServiceClient>().Object);
 
         var results = new List<LookupSubject>();
-        await foreach (var result in client.LookupSubjectsAsync(
-            Consistency.Full(), "document", "doc1", "view", "user"))
+        await foreach (var result in client.LookupSubjectsAsync(Consistency.Full(), new ObjectRef("document", "doc1"), "view", "user", null, default))
         {
             results.Add(result);
         }
@@ -318,8 +358,7 @@ public class LookupResultTests
             new Mock<ExperimentalService.ExperimentalServiceClient>().Object);
 
         var results = new List<LookupResource>();
-        await foreach (var result in client.LookupResourcesAsync(
-            Consistency.Full(), "document", "view", "user", "alice"))
+        await foreach (var result in client.LookupResourcesAsync(Consistency.Full(), "document", "view", new SubjectRef(new ObjectRef("user", "alice")), null, default))
         {
             results.Add(result);
         }
@@ -353,8 +392,7 @@ public class LookupResultTests
             new Mock<WatchService.WatchServiceClient>().Object,
             new Mock<ExperimentalService.ExperimentalServiceClient>().Object);
 
-        await foreach (var _ in client.LookupResourcesWithOptionsAsync(
-            Consistency.Full(), "document", "view", "user", "alice", new LookupOptions { WithDebug = true }))
+        await foreach (var _ in client.LookupResourcesAsync(Consistency.Full(), "document", "view", new SubjectRef(new ObjectRef("user", "alice")), new LookupOptions { Debug = LookupDebug.Enabled }, default))
         {
         }
 

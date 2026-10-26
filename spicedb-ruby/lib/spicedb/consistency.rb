@@ -12,6 +12,17 @@ module SpiceDB
   module Consistency
     # Strategy wraps a consistency requirement for read operations.
     Strategy = Data.define(:type, :revision) do
+      def initialize(type:, revision: nil)
+        raise InvalidArgumentError, 'unknown consistency strategy' unless %i[full min_latency at_least snapshot].include?(type)
+
+        if %i[at_least snapshot].include?(type)
+          revision = ZedToken.validate(revision)
+        elsif !revision.nil?
+          raise InvalidArgumentError, 'this consistency strategy does not accept a revision'
+        end
+        super
+      end
+
       # Returns the proto-compatible consistency hash for this strategy.
       # @return [Hash] consistency configuration for the proto client
       def to_proto
@@ -21,9 +32,9 @@ module SpiceDB
         when :min_latency
           { minimize_latency: true }
         when :at_least
-          { at_least_as_fresh: { token: revision } }
+          { at_least_as_fresh: { token: revision.to_s } }
         when :snapshot
-          { at_exact_snapshot: { token: revision } }
+          { at_exact_snapshot: { token: revision.to_s } }
         end
       end
     end
@@ -46,39 +57,39 @@ module SpiceDB
 
     # Returns a strategy that ensures results are at least as fresh as the
     # given revision. Use this for read-after-write consistency.
-    # @param revision [String] a ZedToken revision string
+    # @param revision [ZedToken] a revision
     # @return [Strategy]
     def at_least(revision)
       Strategy.new(type: :at_least, revision: revision)
     end
 
     # Returns a strategy that reads at the exact given revision.
-    # @param revision [String] a ZedToken revision string
+    # @param revision [ZedToken] a revision
     # @return [Strategy]
     def snapshot(revision)
       Strategy.new(type: :snapshot, revision: revision)
     end
 
-    # Returns AtLeast(revision) if revision is non-nil and non-empty,
+    # Returns AtLeast(revision) if revision is non-nil,
     # otherwise Full. Use this when you have an optional revision from a
     # previous write and want the safest fallback.
-    # @param revision [String, nil] an optional ZedToken revision string
+    # @param revision [ZedToken, nil] an optional ZedToken revision string
     # @return [Strategy]
     def at_least_or_full(revision)
-      if revision.nil? || revision.empty?
+      if revision.nil?
         full
       else
         at_least(revision)
       end
     end
 
-    # Returns AtLeast(revision) if revision is non-nil and non-empty,
+    # Returns AtLeast(revision) if revision is non-nil,
     # otherwise MinLatency. Use this when you have an optional revision but
     # prefer performance over full consistency as the fallback.
-    # @param revision [String, nil] an optional ZedToken revision string
+    # @param revision [ZedToken, nil] an optional ZedToken revision string
     # @return [Strategy]
     def at_least_or_min_latency(revision)
-      if revision.nil? || revision.empty?
+      if revision.nil?
         min_latency
       else
         at_least(revision)

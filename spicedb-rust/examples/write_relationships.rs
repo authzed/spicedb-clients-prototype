@@ -4,7 +4,7 @@
 
 use spicedb::client::SpiceDBClient;
 use spicedb::error::SpiceDBError;
-use spicedb::types::{DeleteOptions, Filter, Relationship, Transaction};
+use spicedb::types::{DeleteAllOptions, Filter, Transaction};
 
 const SCHEMA: &str = r#"definition user {}
 
@@ -26,9 +26,13 @@ async fn main() {
         std::env::var("SPICEDB_ENDPOINT").unwrap_or_else(|_| "localhost:50051".to_string());
     let token = std::env::var("SPICEDB_TOKEN").unwrap_or_else(|_| "testtoken".to_string());
 
-    let client = SpiceDBClient::new_plaintext(endpoint, token)
-        .await
-        .expect("failed to create client");
+    let client = SpiceDBClient::new_plaintext(
+        endpoint,
+        token,
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("failed to create client");
 
     // Clear before writing the schema, not after using it. Every example runs
     // against one SpiceDB and writes a whole schema, and SpiceDB refuses a
@@ -41,21 +45,26 @@ async fn main() {
     // definition yet, which SpiceDB reports as FailedPrecondition
     // (ERROR_REASON_UNKNOWN_DEFINITION). Anything else -- an unreachable
     // server, a bad token -- must still fail the example.
-    match client.delete_relationships(&Filter::new("document")).await {
+    match client
+        .delete_all_relationships_non_atomic(spicedb::DeleteAllRequest::new(
+            (Filter::new("document")).clone(),
+        ))
+        .await
+    {
         Ok(_) | Err(SpiceDBError::FailedPrecondition(_)) => {}
         Err(e) => panic!("cleanup before schema write failed: {e:?}"),
     }
 
     // Write schema
     client
-        .write_schema(SCHEMA)
+        .write_schema(spicedb::WriteSchemaRequest::new(SCHEMA))
         .await
         .expect("write schema failed");
 
     // Build a transaction with multiple operations and a precondition
-    let alice_viewer = Relationship::new("document", "firstdoc", "viewer", "user", "alice", "")
+    let alice_viewer = spicedb::Relationship::from_tuple("document:firstdoc#viewer@user:alice")
         .expect("invalid relationship");
-    let bob_editor = Relationship::new("document", "firstdoc", "editor", "user", "bob", "")
+    let bob_editor = spicedb::Relationship::from_tuple("document:firstdoc#editor@user:bob")
         .expect("invalid relationship");
 
     let mut txn = Transaction::new();
@@ -69,10 +78,16 @@ async fn main() {
             .with_subject_id("mallory"),
     );
 
-    let revision = client.write(&txn).await.expect("write failed");
+    let revision = client
+        .write(spicedb::WriteRequest::new((txn).clone()))
+        .await
+        .expect("write failed");
 
-    println!("wrote relationships at revision: {revision}");
-    assert!(!revision.is_empty(), "expected non-empty revision");
+    println!("wrote relationships at revision: {revision:?}");
+    assert!(
+        !revision.revision.as_ref().is_empty(),
+        "expected non-empty revision"
+    );
 
     // A failed precondition arrives with SpiceDB's structured explanation
     // attached, not just a message: the typed error carries the
@@ -80,7 +95,7 @@ async fn main() {
     // precondition did not hold, so recovery can be written against data
     // rather than against a parsed string.
     let seconddoc_viewer =
-        Relationship::new("document", "seconddoc", "viewer", "user", "alice", "")
+        spicedb::Relationship::from_tuple("document:seconddoc#viewer@user:alice")
             .expect("invalid relationship");
     let mut doomed = Transaction::new();
     doomed.touch(&seconddoc_viewer);
@@ -93,7 +108,7 @@ async fn main() {
     );
 
     let precondition_err = client
-        .write(&doomed)
+        .write(spicedb::WriteRequest::new((doomed).clone()))
         .await
         .expect_err("expected the unsatisfiable precondition to fail the write");
 
@@ -121,7 +136,7 @@ async fn main() {
     // has a simple filter-only sibling for unguarded deletes; here we use
     // `delete_relationships_with` to require that alice is still a viewer
     // before deleting bob's editor grant.
-    let delete_options = DeleteOptions::new()
+    let delete_options = DeleteAllOptions::new()
         .with_must_match(
             Filter::new("document")
                 .with_resource_id("firstdoc")
@@ -129,20 +144,26 @@ async fn main() {
                 .with_subject_type("user")
                 .with_subject_id("alice"),
         )
-        .with_limit(1_000);
+        .with_page_size(std::num::NonZeroU32::new(1_000).unwrap());
 
     let delete_revision = client
-        .delete_relationships_with(
-            &Filter::new("document")
-                .with_resource_id("firstdoc")
-                .with_relation("editor")
-                .with_subject_type("user")
-                .with_subject_id("bob"),
-            &delete_options,
+        .delete_all_relationships_non_atomic(
+            spicedb::DeleteAllRequest::new(
+                (Filter::new("document")
+                    .with_resource_id("firstdoc")
+                    .with_relation("editor")
+                    .with_subject_type("user")
+                    .with_subject_id("bob"))
+                .clone(),
+            )
+            .with_options((delete_options).clone()),
         )
         .await
         .expect("guarded delete failed");
 
-    println!("deleted relationships at revision: {delete_revision}");
-    assert!(!delete_revision.is_empty(), "expected non-empty revision");
+    println!("deleted relationships at revision: {delete_revision:?}");
+    assert!(
+        !delete_revision.revision.as_ref().is_empty(),
+        "expected non-empty revision"
+    );
 }

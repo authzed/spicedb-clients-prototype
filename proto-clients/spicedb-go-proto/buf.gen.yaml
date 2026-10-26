@@ -1,4 +1,10 @@
 version: v2
+managed:
+  enabled: true
+  override:
+    - file_option: go_package_prefix
+      module: buf.build/authzed/api
+      value: github.com/authzed/spicedb-clients/proto-clients/spicedb-go-proto/gen
 plugins:
   - remote: buf.build/protocolbuffers/go
     out: gen

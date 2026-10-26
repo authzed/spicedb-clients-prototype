@@ -37,6 +37,7 @@ func (s *authCapturingServer) CheckBulkPermissions(ctx context.Context, req *v1.
 	pairs := make([]*v1.CheckBulkPermissionsPair, len(req.GetItems()))
 	for i := range req.GetItems() {
 		pairs[i] = &v1.CheckBulkPermissionsPair{
+			Request: req.Items[i],
 			Response: &v1.CheckBulkPermissionsPair_Item{
 				Item: &v1.CheckBulkPermissionsResponseItem{
 					Permissionship: v1.CheckPermissionResponse_PERMISSIONSHIP_HAS_PERMISSION,
@@ -78,13 +79,13 @@ func startAuthCapturingServer(t *testing.T) (dialer func(context.Context, string
 }
 
 func testRelationship() rel.Relationship {
-	return rel.MustFromTriple("document", "1", "view", "user", "alice", "")
+	return testTriple("document", "1", "view", "user", "alice", "")
 }
 
 // TestNewWithOpts_RefusesInsecureNonLoopbackWithoutOptIn is the idiomatic
 // layer's regression test for root DESIGN.md, "RULE: Credentials over
 // insecure transport require an explicit opt-in": WithInsecure against a
-// non-loopback endpoint, with no WithInsecureAllowRemoteHost, must fail
+// non-loopback endpoint, with no WithRemotePlaintextCredentials(RemotePlaintextAllowed), must fail
 // before any credential reaches the wire.
 //
 // dialCount proves the dialer that would carry the connection (and, over
@@ -151,7 +152,7 @@ func TestNewPlaintext_RefusesAuthorityShiftingEndpoints(t *testing.T) {
 // TestNewPlaintext_LoopbackWorksWithNoOptIn proves the loopback exemption
 // needs no ceremony through the idiomatic constructor: NewPlaintext against
 // a loopback endpoint succeeds and actually delivers the bearer token, with
-// no WithInsecureAllowRemoteHost involved anywhere.
+// no WithRemotePlaintextCredentials(RemotePlaintextAllowed) involved anywhere.
 func TestNewPlaintext_LoopbackWorksWithNoOptIn(t *testing.T) {
 	dialer, _, capturedAuth := startAuthCapturingServer(t)
 
@@ -163,7 +164,7 @@ func TestNewPlaintext_LoopbackWorksWithNoOptIn(t *testing.T) {
 	require.NotNil(t, c)
 	t.Cleanup(func() { _ = c.Close() })
 
-	_, err = c.Check(context.Background(), consistency.Full(), "view", testRelationship())
+	_, err = c.CheckBulk(context.Background(), []PermissionCheck{testCheck(consistency.Full(), "view", testRelationship())})
 	require.NoError(t, err)
 
 	got := <-capturedAuth
@@ -171,24 +172,27 @@ func TestNewPlaintext_LoopbackWorksWithNoOptIn(t *testing.T) {
 }
 
 // TestNewWithOpts_InsecureAllowRemoteHostSendsToken proves the named
-// opt-in actually works: with WithInsecureAllowRemoteHost, an insecure
+// opt-in actually works: with WithRemotePlaintextCredentials(RemotePlaintextAllowed), an insecure
 // connection to a non-loopback endpoint is permitted and the bearer token
 // is sent.
-func TestNewWithOpts_InsecureAllowRemoteHostSendsToken(t *testing.T) {
-	dialer, _, capturedAuth := startAuthCapturingServer(t)
-
-	c, err := NewWithOpts("passthrough:///evil.example.com:1234", "remote-token",
-		WithInsecure(),
-		WithInsecureAllowRemoteHost(),
-		WithDialOptions(grpc.WithContextDialer(dialer)),
-	)
-	require.NoError(t, err)
-	require.NotNil(t, c)
-	t.Cleanup(func() { _ = c.Close() })
-
-	_, err = c.Check(context.Background(), consistency.Full(), "view", testRelationship())
-	require.NoError(t, err)
-
-	got := <-capturedAuth
-	require.Equal(t, "Bearer remote-token", got)
+func TestConstructorsRemotePlaintextSendsToken(t *testing.T) {
+	for _, ctor := range []struct {
+		name string
+		new  func(string, string, ...Option) (*Client, error)
+	}{
+		{"options", NewWithOpts}, {"plaintext", NewPlaintext}, {"system TLS configurable", NewSystemTLS},
+	} {
+		t.Run(ctor.name, func(t *testing.T) {
+			dialer, _, capturedAuth := startAuthCapturingServer(t)
+			c, err := ctor.new("passthrough:///remote.example.com:1234", "remote-token",
+				WithInsecure(), WithRemotePlaintextCredentials(RemotePlaintextAllowed),
+				WithDialOptions(grpc.WithContextDialer(dialer)),
+			)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = c.Close() })
+			_, err = c.CheckBulk(context.Background(), []PermissionCheck{testCheck(consistency.Full(), "view", testRelationship())})
+			require.NoError(t, err)
+			require.Equal(t, "Bearer remote-token", <-capturedAuth)
+		})
+	}
 }

@@ -10,6 +10,7 @@ import build.buf.gen.authzed.api.v1.CheckPermissionResponse;
 import build.buf.gen.authzed.api.v1.PermissionsServiceGrpc;
 import build.buf.gen.authzed.api.v1.WriteRelationshipsRequest;
 import build.buf.gen.authzed.api.v1.WriteRelationshipsResponse;
+import com.authzed.spicedb.*;
 import com.authzed.spicedb.CheckResult;
 import com.authzed.spicedb.Consistency;
 import com.authzed.spicedb.Relationship;
@@ -45,7 +46,10 @@ import org.junit.jupiter.api.Test;
 class RetryPolicyTest {
 
   private static final Relationship DOC =
-      Relationship.of("document", "readme", "view", "user", "alice");
+      Relationship.of(
+          new ObjectRef("document", "readme"),
+          "view",
+          SubjectRef.direct(new ObjectRef("user", "alice")));
 
   /** Fails a configurable number of opening attempts per RPC and counts every one. */
   private static final class CountingService
@@ -73,6 +77,7 @@ class RetryPolicyTest {
       for (int i = 0; i < request.getItemsCount(); i++) {
         builder.addPairs(
             CheckBulkPermissionsPair.newBuilder()
+                .setRequest(request.getItems(i))
                 .setItem(
                     CheckBulkPermissionsResponseItem.newBuilder()
                         .setPermissionship(
@@ -108,7 +113,13 @@ class RetryPolicyTest {
     Server server = serve(service);
     try (SpiceDBClient client =
         SpiceDBClient.createPlaintext("127.0.0.1:" + server.getPort(), "t")) {
-      CheckResult result = client.checkPermission(Consistency.full(), "view", DOC);
+      CheckResult result =
+          client
+              .checkBulk(
+                  java.util.List.of(
+                      new PermissionCheck(
+                          DOC.resource(), "view", DOC.subject(), Consistency.full())))
+              .get(0);
       assertThat(result.hasPermission()).isTrue();
       assertThat(service.checkAttempts.get())
           .as(
@@ -129,7 +140,11 @@ class RetryPolicyTest {
     try (SpiceDBClient client =
         SpiceDBClient.createPlaintext("127.0.0.1:" + server.getPort(), "t")) {
       var txn = new Transaction();
-      txn.touch(Relationship.of("document", "readme", "viewer", "user", "alice"));
+      txn.touch(
+          Relationship.of(
+              new ObjectRef("document", "readme"),
+              "viewer",
+              SubjectRef.direct(new ObjectRef("user", "alice"))));
       assertThatThrownBy(() -> client.write(txn)).isInstanceOf(UnavailableException.class);
       assertThat(service.writeAttempts.get())
           .as(
@@ -150,7 +165,14 @@ class RetryPolicyTest {
     Server server = serve(service);
     try (SpiceDBClient client =
         SpiceDBClient.createPlaintext("127.0.0.1:" + server.getPort(), "t")) {
-      assertThatThrownBy(() -> client.checkPermission(Consistency.full(), "view", DOC))
+      assertThatThrownBy(
+              () ->
+                  client
+                      .checkBulk(
+                          java.util.List.of(
+                              new PermissionCheck(
+                                  DOC.resource(), "view", DOC.subject(), Consistency.full())))
+                      .get(0))
           .isInstanceOf(ResourceExhaustedException.class);
       assertThat(service.checkAttempts.get())
           .as(

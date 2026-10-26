@@ -116,7 +116,7 @@ func (s *hangingPermissionsServer) ExportBulkRelationships(_ *v1.ExportBulkRelat
 }
 
 // ImportBulkRelationships is the client-streaming counterpart: this test
-// drives it with a caveat context that fails ToProto before any batch is
+// drives it with an invalid zero-value relationship before any batch is
 // flushed, so the server never receives a message at all. A blocked Recv
 // unblocking with an error is itself the proof of release here -- if the
 // client instead returned without cancelling, Recv would block for the
@@ -177,7 +177,7 @@ func startHangingStreamServer(t *testing.T) (*Client, *streamCancelSignal) {
 		WithInsecure(),
 		// bufnet is an in-memory bufconn dial target, not a real network
 		// destination -- unrelated to what this test exercises.
-		WithInsecureAllowRemoteHost(),
+		WithRemotePlaintextCredentials(RemotePlaintextAllowed),
 		WithDialOptions(grpc.WithContextDialer(dialer)),
 	)
 	require.NoError(t, err)
@@ -200,9 +200,9 @@ func TestUpdates_BreakReleasesTheStream(t *testing.T) {
 	ctx := context.Background()
 
 	var seen int
-	for event, err := range c.Updates(ctx, []string{"document"}, "") {
+	for event, err := range c.Updates(ctx, UpdatesRequest{ObjectTypes: []string{"document"}}, WithUpdatesStart(consistency.NewZedToken(""))) {
 		require.NoError(t, err)
-		require.Equal(t, "token-1", event.ChangesThrough)
+		require.EqualValues(t, "token-1", event.ChangesThrough.String())
 		seen++
 		break
 	}
@@ -217,7 +217,7 @@ func TestLookupResources_BreakReleasesTheStream(t *testing.T) {
 	c, sig := startHangingStreamServer(t)
 
 	var seen int
-	for res, err := range c.LookupResources(context.Background(), consistency.MinLatency(), "document", "view", "user", "user1") {
+	for res, err := range c.LookupResources(context.Background(), LookupResourcesRequest{Consistency: consistency.MinLatency(), ResourceType: "document", Permission: "view", Subject: testSubject("user", "user1", "")}) {
 		require.NoError(t, err)
 		require.Equal(t, "doc1", res.ResourceID)
 		seen++
@@ -235,7 +235,7 @@ func TestLookupSubjects_BreakReleasesTheStream(t *testing.T) {
 	c, sig := startHangingStreamServer(t)
 
 	var seen int
-	for sub, err := range c.LookupSubjects(context.Background(), consistency.MinLatency(), "document", "doc1", "view", "user") {
+	for sub, err := range c.LookupSubjects(context.Background(), LookupSubjectsRequest{Consistency: consistency.MinLatency(), Resource: testObject("document", "doc1"), Permission: "view", SubjectType: "user"}) {
 		require.NoError(t, err)
 		require.Equal(t, "user1", sub.Subject.SubjectID)
 		seen++
@@ -252,9 +252,9 @@ func TestReadRelationships_BreakReleasesTheStream(t *testing.T) {
 	c, sig := startHangingStreamServer(t)
 
 	var seen int
-	for r, err := range c.ReadRelationships(context.Background(), consistency.MinLatency(), rel.NewFilter("document")) {
+	for r, err := range c.ReadRelationships(context.Background(), ReadRelationshipsRequest{Consistency: consistency.MinLatency(), Filter: testFilter("document")}) {
 		require.NoError(t, err)
-		require.Equal(t, "doc1", r.ResourceID)
+		require.Equal(t, "doc1", r.Resource().ID())
 		seen++
 		break
 	}
@@ -270,9 +270,9 @@ func TestExportRelationships_BreakReleasesTheStream(t *testing.T) {
 	c, sig := startHangingStreamServer(t)
 
 	var seen int
-	for r, err := range c.ExportRelationships(context.Background(), consistency.MinLatency(), nil) {
+	for r, err := range c.ExportRelationships(context.Background(), ExportRelationshipsRequest{Consistency: consistency.MinLatency()}) {
 		require.NoError(t, err)
-		require.Equal(t, "doc1", r.ResourceID)
+		require.Equal(t, "doc1", r.Resource().ID())
 		seen++
 		break
 	}
@@ -281,7 +281,7 @@ func TestExportRelationships_BreakReleasesTheStream(t *testing.T) {
 	sig.requireCancelled(t)
 }
 
-// TestImportRelationships_ToProtoFailureReleasesTheStream proves the
+// TestImportRelationships_ConversionFailureReleasesTheStream proves the
 // client-streaming counterpart of the same bug: a relationship whose caveat
 // context fails to convert to protobuf used to return immediately from
 // ImportRelationships, leaving the client-streaming call opened by
@@ -289,15 +289,13 @@ func TestExportRelationships_BreakReleasesTheStream(t *testing.T) {
 // caller's own ctx is deliberately long-lived and never cancelled by the
 // test, matching every other test in this file, because that is the case
 // that used to leak.
-func TestImportRelationships_ToProtoFailureReleasesTheStream(t *testing.T) {
+func TestImportRelationships_ConversionFailureReleasesTheStream(t *testing.T) {
 	c, sig := startHangingStreamServer(t)
 
-	bad := rel.MustFromTriple("document", "doc1", "viewer", "user", "alice", "").
-		WithCaveat("only_bizhours", map[string]any{"offender": make(chan int)})
-
-	numLoaded, err := c.ImportRelationships(context.Background(), func(yield func(rel.Relationship) bool) {
+	bad := rel.Relationship{}
+	numLoaded, err := c.ImportRelationships(context.Background(), ImportRelationshipsRequest{Relationships: func(yield func(rel.Relationship) bool) {
 		yield(bad)
-	})
+	}})
 	require.ErrorIs(t, err, ErrInvalidArgument)
 	require.Zero(t, numLoaded)
 

@@ -62,7 +62,7 @@ public class RoaringLookupResourcesTest
                 // with them (it does not decode roaring itself).
                 Bitmap = ByteString.CopyFrom([1, 2, 3, 4]),
                 Cardinality = 2,
-                AtRevision = new ZedToken { Token = "rev-1" },
+                AtRevision = new Authzed.Api.V1.ZedToken { Token = "rev-1" },
             });
         }
     }
@@ -94,12 +94,11 @@ public class RoaringLookupResourcesTest
             using var channel = GrpcChannel.ForAddress(AddressOf(app));
             await using var client = SpiceDBClient.CreateFromChannel(channel, "some-token");
 
-            var result = await client.ExperimentalRoaringLookupResourcesAsync(
-                Full(), "document", "view", "user", "alice");
+            var result = await client.ExperimentalRoaringLookupResourcesAsync(Full(), "document", "view", new SubjectRef(new ObjectRef("user", "alice")), null, default);
 
             Assert.Equal(new byte[] { 1, 2, 3, 4 }, result.Bitmap);
             Assert.Equal(2ul, result.Cardinality);
-            Assert.Equal("rev-1", result.AtRevision);
+            Assert.Equal("rev-1", result.AtRevision.Value);
         }
         finally
         {
@@ -117,8 +116,7 @@ public class RoaringLookupResourcesTest
             await using var client = SpiceDBClient.CreateFromChannel(channel, "some-token");
 
             var ex = await Assert.ThrowsAsync<FailedPreconditionException>(() =>
-                client.ExperimentalRoaringLookupResourcesAsync(
-                    Full(), "document", "non-canonical-ids", "user", "alice"));
+                client.ExperimentalRoaringLookupResourcesAsync(Full(), "document", "non-canonical-ids", new SubjectRef(new ObjectRef("user", "alice")), null, default));
 
             Assert.NotNull(ex.InnerException);
         }

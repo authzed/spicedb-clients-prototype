@@ -57,7 +57,7 @@ public class WatchUpdateMappingTests
         await using var client = NewClient(watch: mockWatch.Object);
 
         var events = new List<WatchEvent>();
-        await foreach (var e in client.UpdatesAsync())
+        await foreach (var e in client.UpdatesAsync([], null, new WatchOptions { Content = WatchContent.Relationships }, default))
             events.Add(e);
 
         events.Should().HaveCount(1);
@@ -67,7 +67,7 @@ public class WatchUpdateMappingTests
         got[0].Operation.Should().NotBe(
             UpdateOperation.Touch,
             "an operation the client cannot interpret must never be reported as a write");
-        got[0].Relationship.ResourceID.Should().Be("doc1");
+        got[0].Relationship.Resource.ObjectId.Should().Be("doc1");
     }
 
     [Fact]
@@ -108,7 +108,7 @@ public class WatchUpdateMappingTests
         await using var client = NewClient(watch: mockWatch.Object);
 
         var events = new List<WatchEvent>();
-        await foreach (var e in client.UpdatesAsync())
+        await foreach (var e in client.UpdatesAsync([], null, new WatchOptions { Content = WatchContent.Relationships }, default))
             events.Add(e);
 
         events.Should().HaveCount(1);
@@ -118,7 +118,7 @@ public class WatchUpdateMappingTests
             UpdateOperation.Create,
             UpdateOperation.Touch,
             UpdateOperation.Delete);
-        got.Select(u => u.Relationship.ResourceID).Should().Equal("doc1", "doc2", "doc3");
+        got.Select(u => u.Relationship.Resource.ObjectId).Should().Equal("doc1", "doc2", "doc3");
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────

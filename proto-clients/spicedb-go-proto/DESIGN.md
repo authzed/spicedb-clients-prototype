@@ -1,5 +1,7 @@
 # spicedb-go-proto — Design Manifest
 
+- The [root design](../../DESIGN.md) defines shared semantics, RPC coverage, security, and verification.
+
 This is the Go proto client for SpiceDB. It wraps buf-generated gRPC stubs
 with minimal boilerplate for connection setup and authentication.
 
@@ -19,6 +21,7 @@ Create a `client.go` file in the package root with:
    - `SchemaServiceClient`
    - `WatchServiceClient`
    - `ExperimentalServiceClient`
+   - `RoaringLookupResourcesServiceClient` from `authzed.api.materialize.v0`
 
 2. **`NewClient(endpoint string, token string, opts ...Option) (*Client, error)`**
    — constructor that:
@@ -30,6 +33,8 @@ Create a `client.go` file in the package root with:
 3. **`Option` type** — `type Option func(*clientConfig)` for:
    - `WithInsecure()` — disable TLS (for testing)
    - `WithDialOptions(...grpc.DialOption)` — escape hatch for custom gRPC options
+   - `WithInsecureAllowRemoteHost()` — distinct explicit credential opt-in for
+     a non-loopback plaintext target
 
 4. **Re-export of proto types** — a `types.go` file that re-exports key proto
    types needed by the idiomatic layer (ObjectReference, SubjectReference,
@@ -56,3 +61,34 @@ Any methods or fields marked deprecated in the proto definitions must carry
 - No business logic — only plumbing (connection, auth, re-export)
 - All proto types re-exported as-is, no transformation
 - Generated files under `gen/` are never modified
+
+## Canonical idiomatic redesign boundary
+
+The approved breaking idiomatic redesign is specified in
+`../../spicedb-go/DESIGN.md`. This tier retains raw generated request/response
+values; native PermissionCheck, opaque strategies/filters/transactions, and
+ZedToken live above it. Generated files are regenerated, never hand patched.
+Update service/type exports when the protocol changes, including the materialize
+roaring lookup wrapper, so every supported RPC remains reachable. Do not create
+legacy idiomatic aliases in this tier.
+
+System TLS delegates to grpc-go's default trust store. The plaintext credential
+guard must inspect the same target/resolver semantics as the dialer, including
+resolver authority. Refuse remote plaintext without the separate opt-in and
+return a typed sentinel the idiomatic constructor can map to InvalidArgument.
+Custom dial credentials must not silently bypass the credential guard. Preserve
+real-handshake and parser-bypass regression coverage.
+
+Read-only retry policy may cover transient Unavailable/Aborted with finite
+attempts and jitter, never ResourceExhausted or mutations. The idiomatic layer
+owns the complete operation deadline (30s unary default); this tier honors its
+context across attempts without resetting it. Do not combine independent retry
+loops. Raw calls have no idiomatic default deadline or error mapping; callers
+manage their contexts. Cancellation/close releases transports, and Close is
+idempotent. The authenticated RawProto accessor reuses this client; it is not a
+new connection path.
+
+The secondary `Connection() grpc.ClientConnInterface` accessor borrows the existing
+authenticated connection to construct additional generated service clients. It
+returns nil for hand-built stub-only clients, opens nothing, and transfers no
+ownership. `Close()` still owns transport teardown. Tests verify reuse and lifecycle.

@@ -41,8 +41,10 @@ RSpec.describe 'RawEscapeHatch' do
     # change: a TOUCH of an already-identical relationship produces no watch
     # event.)
     seed = SpiceDB::Transaction.new
-    seed.touch(SpiceDB::Relationship.from_triple('document', 'ledger', 'viewer', 'user', 'seed'))
-    seed_revision = client.write(seed)
+    seed.touch(SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'ledger'), relation: 'viewer',
+                                         subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user',
+                                                                                                         object_id: 'seed'), relation: nil)))
+    seed_revision = client.write(seed).revision
 
     # The stubs behind #proto_client already carry this client's bearer token
     # (composed call credentials on the secure path, an interceptor on the
@@ -70,9 +72,9 @@ RSpec.describe 'RawEscapeHatch' do
       )
     )
 
-    revision = written.written_at.token
+    revision = SpiceDB::ZedToken.new(written.written_at.token)
     puts "raw write committed at revision #{revision}"
-    expect(revision).not_to be_empty
+    expect(revision.to_s).not_to be_empty
 
     # Read the metadata back. Sending it proves nothing on its own: a client
     # that dropped the field would look identical from here, because
@@ -87,7 +89,7 @@ RSpec.describe 'RawEscapeHatch' do
       client.proto_client.watch.watch(
         Authzed::Api::V1::WatchRequest.new(
           optional_object_types: ['document'],
-          optional_start_cursor: Authzed::Api::V1::ZedToken.new(token: seed_revision)
+          optional_start_cursor: Authzed::Api::V1::ZedToken.new(token: seed_revision.to_s)
         )
       ).each do |resp|
         next if resp.optional_transaction_metadata.nil?
@@ -105,15 +107,19 @@ RSpec.describe 'RawEscapeHatch' do
 
     # The idiomatic API picks up right where the raw call left off -- same
     # client, same connection, including read-your-writes on the raw revision.
-    rel = SpiceDB::Relationship.from_triple('document', 'ledger', 'view', 'user', 'jimmy')
-    result = client.check_permission(SpiceDB::Consistency.at_least(revision), 'view', rel)
+    rel = SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'ledger'), relation: 'view',
+                                    subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: 'jimmy'), relation: nil))
+    result = client.check(SpiceDB::PermissionCheck.new(resource: rel.resource, permission: 'view', subject: rel.subject),
+                          consistency: SpiceDB::Consistency.at_least(revision))
     puts "user:jimmy can view document:ledger: #{result.has_permission?}"
     expect(result.has_permission?).to be true
   end
 
   it 'calls an RPC the idiomatic API routes around' do
     txn = SpiceDB::Transaction.new
-    txn.touch(SpiceDB::Relationship.from_triple('document', 'ledger', 'viewer', 'user', 'jimmy'))
+    txn.touch(SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'ledger'), relation: 'viewer',
+                                        subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user',
+                                                                                                        object_id: 'jimmy'), relation: nil)))
     client.write(txn)
 
     # A raw call gets no client default deadline -- pass one yourself.

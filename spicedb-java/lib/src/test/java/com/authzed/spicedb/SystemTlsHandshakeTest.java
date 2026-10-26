@@ -67,7 +67,10 @@ class SystemTlsHandshakeTest {
   @Test
   void createSystemTls_completesRealHandshake() {
     SpiceDBClient client =
-        SpiceDBClient.createSystemTls(ENDPOINT, "not-a-real-token", Duration.ofSeconds(30));
+        SpiceDBClient.createSystemTls(
+            ENDPOINT,
+            "not-a-real-token",
+            ClientOptions.builder().defaultTimeout(Duration.ofSeconds(30)).build());
     String detail;
     try {
       // ManagedChannelBuilder connects lazily, so the constructor proves nothing by itself. This

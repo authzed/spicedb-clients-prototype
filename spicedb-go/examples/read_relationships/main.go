@@ -8,6 +8,8 @@ import (
 	"log"
 	"os"
 
+	"github.com/authzed/spicedb-clients/spicedb-go/examples/internal/exampleutil"
+
 	"github.com/authzed/spicedb-clients/spicedb-go/client"
 	"github.com/authzed/spicedb-clients/spicedb-go/consistency"
 	"github.com/authzed/spicedb-clients/spicedb-go/rel"
@@ -29,7 +31,7 @@ func main() {
 	ctx := context.Background()
 
 	// Setup: write schema and data
-	_, err = c.WriteSchema(ctx, `definition user {}
+	_, err = c.WriteSchema(ctx, client.WriteSchemaRequest{Schema: `definition user {}
 
 definition document {
 	relation viewer: user
@@ -38,30 +40,30 @@ definition document {
 	permission view = viewer + editor + owner
 	permission edit = editor + owner
 	permission delete = owner
-}`)
+}`})
 	if err != nil {
 		log.Fatalf("write schema failed: %v", err)
 	}
 
 	var txn rel.Txn
-	if err := txn.Touch(rel.MustFromTriple("document", "firstdoc", "viewer", "user", "alice", "")); err != nil {
+	if err := txn.Touch(exampleutil.Must(rel.NewRelationship(exampleutil.Object("document", "firstdoc"), "viewer", exampleutil.Subject(exampleutil.Object("user", "alice"), "")))); err != nil {
 		log.Fatalf("failed to add relationship to transaction: %v", err)
 	}
-	if err := txn.Touch(rel.MustFromTriple("document", "firstdoc", "viewer", "user", "bob", "")); err != nil {
+	if err := txn.Touch(exampleutil.Must(rel.NewRelationship(exampleutil.Object("document", "firstdoc"), "viewer", exampleutil.Subject(exampleutil.Object("user", "bob"), "")))); err != nil {
 		log.Fatalf("failed to add relationship to transaction: %v", err)
 	}
-	_, err = c.Write(ctx, txn)
+	_, err = c.Write(ctx, client.WriteRequest{Transaction: txn})
 	if err != nil {
 		log.Fatalf("write relationships failed: %v", err)
 	}
 
 	// Read relationships
-	filter := rel.NewFilter("document").
+	filter := exampleutil.Must(rel.NewFilter("document")).
 		WithResourceID("firstdoc").
 		WithRelation("viewer")
 
 	count := 0
-	for r, err := range c.ReadRelationships(ctx, consistency.Full(), filter) {
+	for r, err := range c.ReadRelationships(ctx, client.ReadRelationshipsRequest{Consistency: consistency.Full(), Filter: filter}) {
 		if err != nil {
 			log.Fatalf("read failed: %v", err)
 		}
@@ -77,7 +79,7 @@ definition document {
 	// Clean up so later examples that write a narrower schema aren't blocked
 	// by leftover relationships (examples run in sequence against one shared
 	// SpiceDB instance).
-	if _, err := c.DeleteRelationships(ctx, rel.NewFilter("document")); err != nil {
+	if _, err := c.DeleteAllRelationshipsNonAtomic(ctx, client.DeleteAllRequest{Filter: exampleutil.Must(rel.NewFilter("document"))}); err != nil {
 		log.Fatalf("cleanup failed: %v", err)
 	}
 }

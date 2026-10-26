@@ -34,17 +34,11 @@ class CountingService < Authzed::Api::V1::PermissionsService::Service
     super()
   end
 
-  def check_bulk_permissions(request, _call)
+  def check_permission(_request, _call)
     @check_attempts += 1
     raise @check_error, 'transient, from the stand-in' if @check_attempts <= @check_failures
 
-    Authzed::Api::V1::CheckBulkPermissionsResponse.new(
-      pairs: request.items.map do
-        Authzed::Api::V1::CheckBulkPermissionsPair.new(
-          item: Authzed::Api::V1::CheckBulkPermissionsResponseItem.new(permissionship: 2)
-        )
-      end
-    )
+    Authzed::Api::V1::CheckPermissionResponse.new(permissionship: 2)
   end
 
   def write_relationships(_request, _call)
@@ -76,8 +70,9 @@ RSpec.describe 'Retry policy' do
     # nothing.
     service = CountingService.new(check_failures: 2)
     with_stand_in(service) do |c|
-      rel = SpiceDB::Relationship.from_triple('document', 'readme', 'view', 'user', 'alice')
-      result = c.check_permission(SpiceDB::Consistency.full, 'view', rel)
+      rel = SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'readme'), relation: 'view',
+                                      subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: 'alice'), relation: nil))
+      result = c.check(SpiceDB::PermissionCheck.new(resource: rel.resource, permission: 'view', subject: rel.subject), consistency: SpiceDB::Consistency.full)
       expect(result.has_permission?).to be(true)
     end
 
@@ -94,7 +89,9 @@ RSpec.describe 'Retry policy' do
     service = CountingService.new
     with_stand_in(service) do |c|
       txn = SpiceDB::Transaction.new
-      txn.touch(SpiceDB::Relationship.from_triple('document', 'readme', 'viewer', 'user', 'alice'))
+      txn.touch(SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'readme'), relation: 'viewer',
+                                          subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user',
+                                                                                                          object_id: 'alice'), relation: nil)))
       expect { c.write(txn) }.to raise_error(SpiceDB::UnavailableError)
     end
 
@@ -110,8 +107,9 @@ RSpec.describe 'Retry policy' do
     # can never succeed however many times it is tried.
     service = CountingService.new(check_failures: 99, check_error: GRPC::ResourceExhausted)
     with_stand_in(service) do |c|
-      rel = SpiceDB::Relationship.from_triple('document', 'readme', 'view', 'user', 'alice')
-      expect { c.check_permission(SpiceDB::Consistency.full, 'view', rel) }
+      rel = SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'readme'), relation: 'view',
+                                      subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: 'alice'), relation: nil))
+      expect { c.check(SpiceDB::PermissionCheck.new(resource: rel.resource, permission: 'view', subject: rel.subject), consistency: SpiceDB::Consistency.full) }
         .to raise_error(SpiceDB::ResourceExhaustedError)
     end
 

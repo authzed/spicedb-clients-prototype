@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative '../lib/spicedb'
+require_relative 'support/native_helpers'
 require 'spicedb_proto'
 # Struct#to_h / Struct.from_hash are google-protobuf's well-known-type
 # convenience methods -- not auto-required by 'google/protobuf' itself.
@@ -46,6 +47,7 @@ RSpec.describe 'SpiceDB::Client caveat context on checks' do
     permissions_service = double('permissions_service')
     allow(permissions_service).to receive(:check_bulk_permissions) do |request|
       captured_requests << request
+      response.pairs.each_with_index { |pair, index| pair.request = request.items[index] }
       response
     end
 
@@ -54,7 +56,8 @@ RSpec.describe 'SpiceDB::Client caveat context on checks' do
   end
 
   def rel(id, subject = 'alice')
-    SpiceDB::Relationship.from_triple('document', id, 'viewer', 'user', subject)
+    SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: id), relation: 'viewer',
+                              subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: subject), relation: nil))
   end
 
   # C1 — call-level context alone reaches every item in a bulk request.
@@ -66,7 +69,7 @@ RSpec.describe 'SpiceDB::Client caveat context on checks' do
     )
 
     rels = [rel('doc1'), rel('doc2'), rel('doc3')]
-    client.check_permissions(SpiceDB::Consistency.full, 'view', *rels, context: { now: 42 })
+    client.check_bulk([*rels].flatten.map { |item| permission_check(item, 'view') }, consistency: SpiceDB::Consistency.full, context: { 'now' => 42 })
 
     request = captured.first
     expect(request.items.length).to eq(3)
@@ -83,10 +86,10 @@ RSpec.describe 'SpiceDB::Client caveat context on checks' do
       pairs_config: Array.new(2) { { permissionship: :PERMISSIONSHIP_HAS_PERMISSION } }
     )
 
-    with_context = rel('doc1').with_check_context({ now: 42 })
+    with_context = permission_check(rel('doc1')).with(context: { 'now' => 42 })
     without_context = rel('doc2', 'bob')
 
-    client.check_permissions(SpiceDB::Consistency.full, 'view', with_context, without_context)
+    client.check_bulk([with_context, without_context].flatten.map { |item| permission_check(item, 'view') }, consistency: SpiceDB::Consistency.full)
 
     request = captured.first
     expect(request.items[0].context.to_h).to eq({ 'now' => 42 })
@@ -104,13 +107,12 @@ RSpec.describe 'SpiceDB::Client caveat context on checks' do
       pairs_config: Array.new(2) { { permissionship: :PERMISSIONSHIP_HAS_PERMISSION } }
     )
 
-    overriding = rel('doc1').with_check_context({ region: 'eu' })
+    overriding = permission_check(rel('doc1')).with(context: { 'region' => 'eu' })
     sibling = rel('doc2', 'bob') # supplies no per-item context at all
 
-    client.check_permissions(
-      SpiceDB::Consistency.full, 'view', overriding, sibling,
-      context: { now: 42, region: 'us' }
-    )
+    client.check_bulk([overriding, sibling].flatten.map do |item|
+      permission_check(item, 'view')
+    end, consistency: SpiceDB::Consistency.full, context: { 'now' => 42, 'region' => 'us' })
 
     request = captured.first
     overriding_item, sibling_item = request.items
@@ -130,7 +132,7 @@ RSpec.describe 'SpiceDB::Client caveat context on checks' do
     captured = []
     stub_bulk_check_capturing(captured)
 
-    client.check_permissions(SpiceDB::Consistency.full, 'view', rel('doc1'))
+    client.check_bulk([rel('doc1')].flatten.map { |item| permission_check(item, 'view') }, consistency: SpiceDB::Consistency.full)
 
     request = captured.first
     expect(request.items.first.context).to be_nil
@@ -143,9 +145,15 @@ RSpec.describe 'SpiceDB::Client caveat context on checks' do
     captured = []
     stub_bulk_check_capturing(captured)
 
-    client.check_permission(SpiceDB::Consistency.full, 'view', rel('doc1'), context: { now: 1 })
-    client.check_any(SpiceDB::Consistency.full, 'view', rel('doc1'), context: { now: 2 })
-    client.check_all(SpiceDB::Consistency.full, 'view', rel('doc1'), context: { now: 3 })
+    client.check_bulk([rel('doc1')].flatten.map do |item|
+      permission_check(item, 'view')
+    end, consistency: SpiceDB::Consistency.full, context: { 'now' => 1 }).first
+    client.check_bulk([rel('doc1')].flatten.map do |item|
+      permission_check(item, 'view')
+    end, consistency: SpiceDB::Consistency.full, context: { 'now' => 2 }).any?(&:has_permission?)
+    client.check_bulk([rel('doc1')].flatten.map do |item|
+      permission_check(item, 'view')
+    end, consistency: SpiceDB::Consistency.full, context: { 'now' => 3 }).all?(&:has_permission?)
 
     expect(captured.map { |r| r.items.first.context.to_h }).to eq(
       [{ 'now' => 1 }, { 'now' => 2 }, { 'now' => 3 }]
@@ -159,7 +167,7 @@ RSpec.describe 'SpiceDB::Client caveat context on checks' do
     captured = []
     stub_bulk_check_capturing(captured)
 
-    result = client.check_permission(SpiceDB::Consistency.full, 'view', rel('doc1'))
+    result = client.check_bulk([rel('doc1')].flatten.map { |item| permission_check(item, 'view') }, consistency: SpiceDB::Consistency.full).first
 
     expect(result).to be_a(SpiceDB::CheckResult)
     expect(captured.first.items.first.context).to be_nil

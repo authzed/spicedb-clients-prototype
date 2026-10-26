@@ -10,99 +10,139 @@ class RelationshipTest {
 
   @Test
   void ofCreatesRelationship() {
-    Relationship r = Relationship.of("document", "doc1", "viewer", "user", "alice", "");
-    assertEquals("document", r.resourceType());
-    assertEquals("doc1", r.resourceID());
-    assertEquals("viewer", r.resourceRelation());
-    assertEquals("user", r.subjectType());
-    assertEquals("alice", r.subjectID());
-    assertEquals("", r.subjectRelation());
+    Relationship r =
+        Relationship.of(
+            new ObjectRef("document", "doc1"),
+            "viewer",
+            SubjectRef.direct(new ObjectRef("user", "alice")));
+    assertEquals("document", r.resource().objectType());
+    assertEquals("doc1", r.resource().objectId());
+    assertEquals("viewer", r.relation());
+    assertEquals("user", r.subject().object().objectType());
+    assertEquals("alice", r.subject().object().objectId());
+    assertNull(r.subject().relation());
     assertNull(r.caveatName());
     assertNull(r.caveatContext());
     assertNull(r.expiration());
-    assertNull(r.checkContext());
+    assertFalse(
+        java.util.Arrays.stream(Relationship.class.getRecordComponents())
+            .anyMatch(c -> c.getName().equals("checkContext")));
   }
 
   @Test
   void ofWithoutSubjectRelation() {
-    Relationship r = Relationship.of("document", "doc1", "viewer", "user", "alice");
-    assertEquals("", r.subjectRelation());
+    Relationship r =
+        Relationship.of(
+            new ObjectRef("document", "doc1"),
+            "viewer",
+            SubjectRef.direct(new ObjectRef("user", "alice")));
+    assertNull(r.subject().relation());
   }
 
   @Test
   void ofRejectsEmptyResourceType() {
     assertThrows(
-        IllegalArgumentException.class,
-        () -> Relationship.of("", "doc1", "viewer", "user", "alice"));
+        com.authzed.spicedb.errors.InvalidArgumentException.class,
+        () ->
+            Relationship.of(
+                new ObjectRef("", "doc1"),
+                "viewer",
+                SubjectRef.direct(new ObjectRef("user", "alice"))));
   }
 
   @Test
   void ofRejectsNullResourceID() {
     assertThrows(
-        IllegalArgumentException.class,
-        () -> Relationship.of("document", null, "viewer", "user", "alice"));
+        com.authzed.spicedb.errors.InvalidArgumentException.class,
+        () ->
+            Relationship.of(
+                new ObjectRef("document", null),
+                "viewer",
+                SubjectRef.direct(new ObjectRef("user", "alice"))));
   }
 
   @Test
   void ofRejectsEmptySubjectType() {
     assertThrows(
-        IllegalArgumentException.class,
-        () -> Relationship.of("document", "doc1", "viewer", "", "alice"));
+        com.authzed.spicedb.errors.InvalidArgumentException.class,
+        () ->
+            Relationship.of(
+                new ObjectRef("document", "doc1"),
+                "viewer",
+                SubjectRef.direct(new ObjectRef("", "alice"))));
   }
 
   @Test
   void ofRejectsNullSubjectID() {
     assertThrows(
-        IllegalArgumentException.class,
-        () -> Relationship.of("document", "doc1", "viewer", "user", null));
+        com.authzed.spicedb.errors.InvalidArgumentException.class,
+        () ->
+            Relationship.of(
+                new ObjectRef("document", "doc1"),
+                "viewer",
+                SubjectRef.direct(new ObjectRef("user", null))));
   }
 
   @Test
   void fromTupleBasic() {
     Relationship r = Relationship.fromTuple("document:doc1#viewer@user:alice");
-    assertEquals("document", r.resourceType());
-    assertEquals("doc1", r.resourceID());
-    assertEquals("viewer", r.resourceRelation());
-    assertEquals("user", r.subjectType());
-    assertEquals("alice", r.subjectID());
-    assertEquals("", r.subjectRelation());
+    assertEquals("document", r.resource().objectType());
+    assertEquals("doc1", r.resource().objectId());
+    assertEquals("viewer", r.relation());
+    assertEquals("user", r.subject().object().objectType());
+    assertEquals("alice", r.subject().object().objectId());
+    assertNull(r.subject().relation());
   }
 
   @Test
   void fromTupleWithSubjectRelation() {
     Relationship r = Relationship.fromTuple("document:doc1#viewer@group:eng#member");
-    assertEquals("group", r.subjectType());
-    assertEquals("eng", r.subjectID());
-    assertEquals("member", r.subjectRelation());
+    assertEquals("group", r.subject().object().objectType());
+    assertEquals("eng", r.subject().object().objectId());
+    assertEquals("member", r.subject().relation());
   }
 
   @Test
   void fromTupleRejectsMissingAt() {
     assertThrows(
-        IllegalArgumentException.class, () -> Relationship.fromTuple("document:doc1#viewer"));
+        com.authzed.spicedb.errors.InvalidArgumentException.class,
+        () -> Relationship.fromTuple("document:doc1#viewer"));
   }
 
   @Test
   void fromTupleRejectsMissingHash() {
     assertThrows(
-        IllegalArgumentException.class, () -> Relationship.fromTuple("document:doc1@user:alice"));
+        com.authzed.spicedb.errors.InvalidArgumentException.class,
+        () -> Relationship.fromTuple("document:doc1@user:alice"));
   }
 
   @Test
   void toStringBasic() {
-    Relationship r = Relationship.of("document", "doc1", "viewer", "user", "alice");
+    Relationship r =
+        Relationship.of(
+            new ObjectRef("document", "doc1"),
+            "viewer",
+            SubjectRef.direct(new ObjectRef("user", "alice")));
     assertEquals("document:doc1#viewer@user:alice", r.toString());
   }
 
   @Test
   void toStringWithSubjectRelation() {
-    Relationship r = Relationship.of("document", "doc1", "viewer", "group", "eng", "member");
+    Relationship r =
+        Relationship.of(
+            new ObjectRef("document", "doc1"),
+            "viewer",
+            SubjectRef.named(new ObjectRef("group", "eng"), "member"));
     assertEquals("document:doc1#viewer@group:eng#member", r.toString());
   }
 
   @Test
   void withCaveatReturnsNewInstance() {
-    Relationship original = Relationship.of("document", "doc1", "viewer", "user", "alice");
+    Relationship original =
+        Relationship.of(
+            new ObjectRef("document", "doc1"),
+            "viewer",
+            SubjectRef.direct(new ObjectRef("user", "alice")));
     Map<String, Object> ctx = Map.of("allowed", true);
     Relationship withCaveat = original.withCaveat("is_allowed", ctx);
 
@@ -110,12 +150,16 @@ class RelationshipTest {
     assertEquals("is_allowed", withCaveat.caveatName());
     assertEquals(ctx, withCaveat.caveatContext());
     // Original fields preserved
-    assertEquals("document", withCaveat.resourceType());
+    assertEquals("document", withCaveat.resource().objectType());
   }
 
   @Test
   void withExpirationReturnsNewInstance() {
-    Relationship original = Relationship.of("document", "doc1", "viewer", "user", "alice");
+    Relationship original =
+        Relationship.of(
+            new ObjectRef("document", "doc1"),
+            "viewer",
+            SubjectRef.direct(new ObjectRef("user", "alice")));
     Instant exp = Instant.parse("2026-12-31T23:59:59Z");
     Relationship withExp = original.withExpiration(exp);
 
@@ -125,14 +169,18 @@ class RelationshipTest {
 
   @Test
   void withCheckContextReturnsNewInstance() {
-    Relationship original = Relationship.of("document", "doc1", "viewer", "user", "alice");
+    Relationship original =
+        Relationship.of(
+            new ObjectRef("document", "doc1"),
+            "viewer",
+            SubjectRef.direct(new ObjectRef("user", "alice")));
     Map<String, Object> ctx = Map.of("now", 42);
-    Relationship withCheckContext = original.withCheckContext(ctx);
+    PermissionCheck withCheckContext = TestRequests.withContext(original, ctx);
 
-    assertNull(original.checkContext());
-    assertEquals(ctx, withCheckContext.checkContext());
+    assertNull(TestRequests.check(original, "view", Consistency.full()).context());
+    assertEquals(ctx, withCheckContext.context());
     // Original fields preserved
-    assertEquals("document", withCheckContext.resourceType());
+    assertEquals("document", withCheckContext.resource().objectType());
   }
 
   @Test
@@ -141,17 +189,24 @@ class RelationshipTest {
     // not aliases of one another. caveatContext is write-time (stored WITH the relationship);
     // checkContext is check-time only (supplied fresh on each check call, never written).
     Relationship r =
-        Relationship.of("document", "doc1", "viewer", "user", "alice")
-            .withCaveat("is_allowed", Map.of("write_time_key", "w"))
-            .withCheckContext(Map.of("check_time_key", "c"));
+        Relationship.of(
+                new ObjectRef("document", "doc1"),
+                "viewer",
+                SubjectRef.direct(new ObjectRef("user", "alice")))
+            .withCaveat("is_allowed", Map.of("write_time_key", "w"));
 
     assertEquals(Map.of("write_time_key", "w"), r.caveatContext());
-    assertEquals(Map.of("check_time_key", "c"), r.checkContext());
+    var request = TestRequests.withContext(r, Map.of("check_time_key", "c"));
+    assertEquals(Map.of("check_time_key", "c"), request.context());
   }
 
   @Test
   void toFilterCreatesMatchingFilter() {
-    Relationship r = Relationship.of("document", "doc1", "viewer", "user", "alice");
+    Relationship r =
+        Relationship.of(
+            new ObjectRef("document", "doc1"),
+            "viewer",
+            SubjectRef.direct(new ObjectRef("user", "alice")));
     Filter f = r.toFilter();
     assertEquals("document", f.resourceType());
     assertEquals("doc1", f.resourceID());

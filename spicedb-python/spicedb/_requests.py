@@ -7,10 +7,12 @@ once.
 """
 
 from __future__ import annotations
+from spicedb.token import ZedToken, _token_string
+from spicedb.options import Tracing, WatchContent, _option
 
 import itertools
 from collections.abc import Iterable, Iterator
-from typing import Any
+from collections.abc import Sequence
 
 from authzed.api.v1 import (
     core_pb2,
@@ -20,13 +22,24 @@ from authzed.api.v1 import (
 )
 from google.protobuf import struct_pb2
 
+from spicedb.errors import InvalidArgumentError
 from spicedb.consistency import Consistency
-from spicedb.types import Filter, Relationship, Transaction, context_to_struct
+from spicedb.types import (
+    JSONObject,
+    Filter,
+    Relationship,
+    PermissionCheck,
+    ObjectRef,
+    SubjectRef,
+    SchemaFilter,
+    Transaction,
+    context_to_struct,
+)
 
-DEFAULT_PAGE_SIZE = 512
+DEFAULT_PAGE_SIZE = 1000
 IMPORT_BATCH_SIZE = 1000
 
-# Per-page size for delete_relationships(auto_page=True), mirroring
+# Per-page size for delete_all_relationships_non_atomic, mirroring
 # spicedb-go's defaultDeletePageSize (client/relationships.go).
 DEFAULT_DELETE_PAGE_SIZE = 1000
 
@@ -44,42 +57,24 @@ DEFAULT_DELETE_PAGE_SIZE = 1000
 CHECK_BATCH_SIZE = 1000
 
 
-def context_struct(context: dict[str, Any] | None) -> struct_pb2.Struct | None:
+def context_struct(context: JSONObject | None) -> struct_pb2.Struct | None:
     """Build a protobuf Struct from caveat context, or None if unset."""
     if context is None:
         return None
     return context_to_struct(context, "caveat context")
 
 
-def object_reference(obj: tuple[str, str]) -> core_pb2.ObjectReference:
-    obj_type, obj_id = obj
-    return core_pb2.ObjectReference(object_type=obj_type, object_id=obj_id)
+def object_reference(obj: ObjectRef) -> core_pb2.ObjectReference:
+    return obj._to_proto()
 
 
-def subject_reference(
-    subject: Relationship | tuple[str, str],
-) -> core_pb2.SubjectReference:
-    """Build a SubjectReference from a Relationship's subject fields, or from a
-    ("type:id", "optional_relation") tuple."""
-    if isinstance(subject, Relationship):
-        return core_pb2.SubjectReference(
-            object=core_pb2.ObjectReference(
-                object_type=subject.subject_type,
-                object_id=subject.subject_id,
-            ),
-            optional_relation=subject.subject_relation,
-        )
-    subj_str, subj_rel = subject
-    s_type, s_id = subj_str.split(":", 1)
-    return core_pb2.SubjectReference(
-        object=core_pb2.ObjectReference(object_type=s_type, object_id=s_id),
-        optional_relation=subj_rel,
-    )
+def subject_reference(subject: SubjectRef) -> core_pb2.SubjectReference:
+    return subject._to_proto()
 
 
 def _merge_check_context(
-    call_level: dict[str, Any] | None, item_level: dict[str, Any] | None
-) -> dict[str, Any] | None:
+    call_level: JSONObject | None, item_level: JSONObject | None
+) -> JSONObject | None:
     """Merge call-level and per-item caveat context for one check item.
 
     Key-level, item wins: ``{**call_level, **item_level}``. Item keys
@@ -98,41 +93,44 @@ def _merge_check_context(
     return {**(call_level or {}), **(item_level or {})}
 
 
+def check_fields(check: PermissionCheck, context):
+    if not isinstance(check, PermissionCheck):
+        from spicedb.errors import InvalidArgumentError
+
+        raise InvalidArgumentError("check: expected PermissionCheck")
+    return dict(
+        resource=check.resource._to_proto(),
+        permission=check.permission,
+        subject=check.subject._to_proto(),
+        context=context_struct(_merge_check_context(context, check.context)),
+    )
+
+
+def check_request(
+    check: PermissionCheck, consistency: Consistency, context=None, tracing: Tracing = Tracing.DISABLED
+):
+    return permission_service_pb2.CheckPermissionRequest(
+        consistency=consistency._to_proto(),
+        with_tracing=_option(tracing, Tracing),
+        **check_fields(check, context),
+    )
+
+
 def check_bulk_request(
     consistency: Consistency,
-    rels: tuple[Relationship, ...] | list[Relationship],
-    context: dict[str, Any] | None,
-) -> permission_service_pb2.CheckBulkPermissionsRequest:
-    """Build a CheckBulkPermissionsRequest, one item per relationship.
-
-    ``context`` is the call-level default; it is fanned out onto every item
-    because ``CheckBulkPermissionsRequest`` itself has no context field on
-    the wire -- only ``CheckBulkPermissionsRequestItem.context`` does (proto
-    field 4). Each relationship's own ``check_context`` (if any) is merged
-    on top per ``_merge_check_context``: an item with no ``check_context``
-    inherits ``context`` unchanged.
-    """
-    items = [
-        permission_service_pb2.CheckBulkPermissionsRequestItem(
-            resource=core_pb2.ObjectReference(
-                object_type=rel.resource_type,
-                object_id=rel.resource_id,
-            ),
-            permission=rel.resource_relation,
-            subject=core_pb2.SubjectReference(
-                object=core_pb2.ObjectReference(
-                    object_type=rel.subject_type,
-                    object_id=rel.subject_id,
-                ),
-                optional_relation=rel.subject_relation,
-            ),
-            context=context_struct(_merge_check_context(context, rel.check_context)),
-        )
-        for rel in rels
-    ]
+    checks: Sequence[PermissionCheck],
+    context=None,
+    tracing: Tracing = Tracing.DISABLED,
+):
     return permission_service_pb2.CheckBulkPermissionsRequest(
         consistency=consistency._to_proto(),
-        items=items,
+        with_tracing=_option(tracing, Tracing),
+        items=[
+            permission_service_pb2.CheckBulkPermissionsRequestItem(
+                **check_fields(check, context)
+            )
+            for check in checks
+        ],
     )
 
 
@@ -171,20 +169,16 @@ def lookup_resources_request(
 
 
 def lookup_subjects_request(
-    resource: tuple[str, str],
+    resource: ObjectRef,
     permission: str,
     subject_type: str,
     subject_relation: str,
     ctx_struct: struct_pb2.Struct | None,
     consistency: Consistency,
 ) -> permission_service_pb2.LookupSubjectsRequest:
-    res_type, res_id = resource
     return permission_service_pb2.LookupSubjectsRequest(
         consistency=consistency._to_proto(),
-        resource=core_pb2.ObjectReference(
-            object_type=res_type,
-            object_id=res_id,
-        ),
+        resource=resource._to_proto(),
         permission=permission,
         subject_object_type=subject_type,
         optional_subject_relation=subject_relation,
@@ -266,66 +260,48 @@ def import_batches(
         batch = [r._to_proto() for r in itertools.islice(it, batch_size)]
         if not batch:
             return
-        yield permission_service_pb2.ImportBulkRelationshipsRequest(
-            relationships=batch
-        )
+        yield permission_service_pb2.ImportBulkRelationshipsRequest(relationships=batch)
 
 
 def watch_request(
-    object_types: list[str] | None,
-    start_revision: str | None,
-    include_checkpoints: bool = False,
+    object_types: Sequence[str] | None,
+    start_revision: ZedToken | None,
+    content: Sequence[WatchContent] = (WatchContent.RELATIONSHIPS,),
+    *,
+    filters: Sequence[Filter] = (),
 ) -> watch_service_pb2.WatchRequest:
+    if object_types and filters:
+        raise InvalidArgumentError("watch object_types and filters are mutually exclusive")
     cursor = None
     if start_revision is not None:
-        cursor = core_pb2.ZedToken(token=start_revision)
+        cursor = core_pb2.ZedToken(token=_token_string(start_revision))
 
-    # optional_update_kinds is empty-means-default (relationship updates
-    # only, for backwards compatibility). A non-empty list is the exact set
-    # requested, so asking for checkpoints must also spell out relationship
-    # updates or the server would stop sending them.
-    update_kinds = []
-    if include_checkpoints:
-        update_kinds = [
-            watch_service_pb2.WATCH_KIND_INCLUDE_RELATIONSHIP_UPDATES,
-            watch_service_pb2.WATCH_KIND_INCLUDE_CHECKPOINTS,
-        ]
+    update_kinds = [_option(value, WatchContent) for value in content]
 
     return watch_service_pb2.WatchRequest(
         optional_object_types=object_types or [],
+        optional_relationship_filters=[value._to_proto() for value in filters],
         optional_start_cursor=cursor,
         optional_update_kinds=update_kinds,
     )
 
 
 def expand_request(
-    resource: tuple[str, str],
+    resource: ObjectRef,
     permission: str,
     consistency: Consistency,
 ) -> permission_service_pb2.ExpandPermissionTreeRequest:
-    res_type, res_id = resource
     return permission_service_pb2.ExpandPermissionTreeRequest(
         consistency=consistency._to_proto(),
-        resource=core_pb2.ObjectReference(
-            object_type=res_type,
-            object_id=res_id,
-        ),
+        resource=resource._to_proto(),
         permission=permission,
     )
 
 
-def reflect_schema_request(
-    consistency: Consistency,
-    filters: list[str] | None,
-) -> schema_service_pb2.ReflectSchemaRequest:
+def reflect_schema_request(consistency: Consistency, filters: Sequence[SchemaFilter]):
     return schema_service_pb2.ReflectSchemaRequest(
         consistency=consistency._to_proto(),
-        optional_filters=[
-            schema_service_pb2.ReflectionSchemaFilter(
-                optional_definition_name_filter=f,
-            )
-            for f in (filters or [])
-        ],
+        optional_filters=[f._to_proto() for f in filters],
     )
 
 

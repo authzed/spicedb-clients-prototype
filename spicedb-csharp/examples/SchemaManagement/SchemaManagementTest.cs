@@ -23,9 +23,9 @@ public class SchemaManagementTest
     {
         await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
 
-        var revision = await client.WriteSchemaAsync(Schema);
+        var revision = await client.WriteSchemaAsync(Schema, null, default);
 
-        Assert.NotEmpty(revision);
+        Assert.NotEmpty(revision.Value);
     }
 
     [Fact]
@@ -33,11 +33,11 @@ public class SchemaManagementTest
     {
         await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
 
-        await client.WriteSchemaAsync(Schema);
+        await client.WriteSchemaAsync(Schema, null, default);
 
-        var (readSchema, readRevision) = await client.ReadSchemaAsync();
+        var (readSchema, readRevision) = await client.ReadSchemaAsync(null, default);
 
-        Assert.NotEmpty(readRevision);
+        Assert.NotEmpty(readRevision.Value);
         Assert.Contains("definition user", readSchema);
         Assert.Contains("definition document", readSchema);
     }

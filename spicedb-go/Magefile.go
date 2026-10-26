@@ -46,6 +46,7 @@ var wantExamples = []string{
 	"insecure_opt_in",
 	"lookup_resources",
 	"lookup_subjects",
+	"materialize_operations",
 	"raw_escape_hatch",
 	"read_relationships",
 	"relationship_counters",

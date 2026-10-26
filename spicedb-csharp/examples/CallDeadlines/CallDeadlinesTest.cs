@@ -38,8 +38,7 @@ public class CallDeadlinesTest
         // mock -- so a signature drift here (e.g. the parameter silently
         // disappearing) would fail this example, not just a unit test
         // against a stalling stub.
-        await using var client = SpiceDBClient.CreatePlaintext(
-            SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token, defaultTimeout: TimeSpan.FromSeconds(5));
+        await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token, new ClientOptions { DefaultTimeout = TimeSpan.FromSeconds(5) });
 
         // The schema above is narrower than the one the other examples write,
         // and all thirteen projects share one SpiceDB. SpiceDB refuses a
@@ -48,15 +47,15 @@ public class CallDeadlinesTest
         // BulkOperations, which writes no `editor`; reorder the solution and
         // it would fail exactly as RawEscapeHatch did.
         await SpiceDBTestServer.ClearDocumentRelationshipsAsync(client);
-        await client.WriteSchemaAsync(Schema);
+        await client.WriteSchemaAsync(Schema, null, default);
 
         var txn = new Transaction();
-        txn.Touch(Relationship.FromTriple("document", "readme", "viewer", "user", "alice"));
-        await client.WriteAsync(txn);
+        txn.Touch(new Relationship(new ObjectRef("document", "readme"), "viewer", new SubjectRef(new ObjectRef("user", "alice"))));
+        await client.WriteAsync(txn, null, default);
 
         // Bound by the 5s default set above.
-        var rel = Relationship.FromTriple("document", "readme", "view", "user", "alice");
-        var result = await client.CheckPermissionAsync(Full(), "view", rel);
+        var rel = new Relationship(new ObjectRef("document", "readme"), "view", new SubjectRef(new ObjectRef("user", "alice")));
+        var result = await client.CheckAsync(new PermissionCheck(rel.Resource, "view", rel.Subject, Full()), null, default);
         Assert.True(result.HasPermission, "expected alice to have view permission");
     }
 
@@ -72,18 +71,17 @@ public class CallDeadlinesTest
         // BulkOperations, which writes no `editor`; reorder the solution and
         // it would fail exactly as RawEscapeHatch did.
         await SpiceDBTestServer.ClearDocumentRelationshipsAsync(client);
-        await client.WriteSchemaAsync(Schema);
+        await client.WriteSchemaAsync(Schema, null, default);
 
         var txn = new Transaction();
-        txn.Touch(Relationship.FromTriple("document", "readme", "viewer", "user", "alice"));
-        await client.WriteAsync(txn);
+        txn.Touch(new Relationship(new ObjectRef("document", "readme"), "viewer", new SubjectRef(new ObjectRef("user", "alice"))));
+        await client.WriteAsync(txn, null, default);
 
         // 2 seconds is generous for a real call against a local SpiceDB --
         // this exercises the real timeout parameter end-to-end, not testing
         // how small a timeout can be.
-        var rel = Relationship.FromTriple("document", "readme", "view", "user", "alice");
-        var result = await client.CheckPermissionWithOptionsAsync(
-            Full(), "view", rel, new CheckOptions { Timeout = TimeSpan.FromSeconds(2) });
+        var rel = new Relationship(new ObjectRef("document", "readme"), "view", new SubjectRef(new ObjectRef("user", "alice")));
+        var result = await client.CheckAsync(new PermissionCheck(rel.Resource, "view", rel.Subject, Full()), new CheckOptions { Timeout = TimeSpan.FromSeconds(2) }, default);
         Assert.True(result.HasPermission, "expected alice to have view permission");
     }
 
@@ -105,21 +103,20 @@ public class CallDeadlinesTest
         // BulkOperations, which writes no `editor`; reorder the solution and
         // it would fail exactly as RawEscapeHatch did.
         await SpiceDBTestServer.ClearDocumentRelationshipsAsync(client);
-        await client.WriteSchemaAsync(Schema);
+        await client.WriteSchemaAsync(Schema, null, default);
 
         var relationships = Enumerable.Range(0, 50)
-            .Select(i => Relationship.FromTriple("document", $"bulk-{i}", "viewer", "user", "alice"))
+            .Select(i => new Relationship(new ObjectRef("document", $"bulk-{i}"), "viewer", new SubjectRef(new ObjectRef("user", "alice"))))
             .ToArray();
-        var numLoaded = await client.ImportRelationshipsAsync(ToAsyncEnumerable(relationships));
+        var numLoaded = await client.ImportRelationshipsAsync(ToAsyncEnumerable(relationships), null, default);
         Assert.Equal(50u, numLoaded);
 
         // A caller-supplied timeout on the same client-streaming call must still be honored --
         // the exclusion is from the *default*, not from the ability to bound the call at all.
         var moreRelationships = Enumerable.Range(0, 50)
-            .Select(i => Relationship.FromTriple("document", $"bulk2-{i}", "viewer", "user", "alice"))
+            .Select(i => new Relationship(new ObjectRef("document", $"bulk2-{i}"), "viewer", new SubjectRef(new ObjectRef("user", "alice"))))
             .ToArray();
-        var numLoadedBounded = await client.ImportRelationshipsAsync(
-            ToAsyncEnumerable(moreRelationships), timeout: TimeSpan.FromSeconds(30));
+        var numLoadedBounded = await client.ImportRelationshipsAsync(ToAsyncEnumerable(moreRelationships), new ImportOptions { Timeout = TimeSpan.FromSeconds(30) }, default);
         Assert.Equal(50u, numLoadedBounded);
     }
 
@@ -141,13 +138,12 @@ public class CallDeadlinesTest
     {
         using var wedged = WedgedListener(out var endpoint);
 
-        await using var client = SpiceDBClient.CreatePlaintext(
-            endpoint, SpiceDBTestServer.Token, defaultTimeout: WedgedTimeout);
+        await using var client = SpiceDBClient.CreatePlaintext(endpoint, SpiceDBTestServer.Token, new ClientOptions { DefaultTimeout = WedgedTimeout });
 
-        var rel = Relationship.FromTriple("document", "readme", "view", "user", "alice");
+        var rel = new Relationship(new ObjectRef("document", "readme"), "view", new SubjectRef(new ObjectRef("user", "alice")));
         await ExpectDeadlineToFireAsync(
             "defaultTimeout",
-            () => client.CheckPermissionAsync(Full(), "view", rel));
+            () => client.CheckAsync(new PermissionCheck(rel.Resource, "view", rel.Subject, Full()), null, default));
     }
 
     [Fact]
@@ -161,10 +157,10 @@ public class CallDeadlinesTest
         // above.
         await using var client = SpiceDBClient.CreatePlaintext(endpoint, SpiceDBTestServer.Token);
 
-        var rel = Relationship.FromTriple("document", "readme", "view", "user", "alice");
+        var rel = new Relationship(new ObjectRef("document", "readme"), "view", new SubjectRef(new ObjectRef("user", "alice")));
         await ExpectDeadlineToFireAsync(
             "per-call timeout",
-            () => client.CheckPermissionWithOptionsAsync(Full(), "view", rel, new CheckOptions { Timeout = WedgedTimeout }));
+            () => client.CheckAsync(new PermissionCheck(rel.Resource, "view", rel.Subject, Full()), new CheckOptions { Timeout = WedgedTimeout }, default));
     }
 
     /// <summary>

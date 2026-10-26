@@ -12,8 +12,8 @@ public class ConsistencyTests
         var strategy = Consistency.Full();
 
         strategy.Should().NotBeNull();
-        strategy.V1Consistency.Should().NotBeNull();
-        strategy.V1Consistency.FullyConsistent.Should().BeTrue();
+        strategy.ToProto().Should().NotBeNull();
+        strategy.ToProto().FullyConsistent.Should().BeTrue();
     }
 
     [Fact]
@@ -22,58 +22,58 @@ public class ConsistencyTests
         var strategy = Consistency.MinLatency();
 
         strategy.Should().NotBeNull();
-        strategy.V1Consistency.Should().NotBeNull();
-        strategy.V1Consistency.MinimizeLatency.Should().BeTrue();
+        strategy.ToProto().Should().NotBeNull();
+        strategy.ToProto().MinimizeLatency.Should().BeTrue();
     }
 
     [Fact]
     public void AtLeast_ReturnsAtLeastAsFreshStrategy()
     {
-        var strategy = Consistency.AtLeast("sometoken123");
+        var strategy = Consistency.AtLeast(new SpiceDB.Client.ZedToken("sometoken123"));
 
         strategy.Should().NotBeNull();
-        strategy.V1Consistency.AtLeastAsFresh.Should().NotBeNull();
-        strategy.V1Consistency.AtLeastAsFresh.Token.Should().Be("sometoken123");
+        strategy.ToProto().AtLeastAsFresh.Should().NotBeNull();
+        strategy.ToProto().AtLeastAsFresh.Token.Should().Be("sometoken123");
     }
 
     [Fact]
     public void AtLeast_ThrowsOnEmptyRevision()
     {
-        var act = () => Consistency.AtLeast("");
-        act.Should().Throw<ArgumentException>();
+        var act = () => Consistency.AtLeast(new SpiceDB.Client.ZedToken(""));
+        act.Should().Throw<InvalidArgumentException>();
     }
 
     [Fact]
     public void AtLeast_ThrowsOnNullRevision()
     {
-        var act = () => Consistency.AtLeast(null!);
-        act.Should().Throw<ArgumentException>();
+        var act = () => Consistency.AtLeast(new SpiceDB.Client.ZedToken(null!));
+        act.Should().Throw<InvalidArgumentException>();
     }
 
     [Fact]
     public void Snapshot_ReturnsExactSnapshotStrategy()
     {
-        var strategy = Consistency.Snapshot("rev42");
+        var strategy = Consistency.Snapshot(new SpiceDB.Client.ZedToken("rev42"));
 
         strategy.Should().NotBeNull();
-        strategy.V1Consistency.AtExactSnapshot.Should().NotBeNull();
-        strategy.V1Consistency.AtExactSnapshot.Token.Should().Be("rev42");
+        strategy.ToProto().AtExactSnapshot.Should().NotBeNull();
+        strategy.ToProto().AtExactSnapshot.Token.Should().Be("rev42");
     }
 
     [Fact]
     public void Snapshot_ThrowsOnEmptyRevision()
     {
-        var act = () => Consistency.Snapshot("");
-        act.Should().Throw<ArgumentException>();
+        var act = () => Consistency.Snapshot(new SpiceDB.Client.ZedToken(""));
+        act.Should().Throw<InvalidArgumentException>();
     }
 
     [Fact]
     public void AtLeastOrFull_WithRevision_ReturnsAtLeast()
     {
-        var strategy = Consistency.AtLeastOrFull("tok1");
+        var strategy = Consistency.AtLeastOrFull(new SpiceDB.Client.ZedToken("tok1"));
 
-        strategy.V1Consistency.AtLeastAsFresh.Should().NotBeNull();
-        strategy.V1Consistency.AtLeastAsFresh.Token.Should().Be("tok1");
+        strategy.ToProto().AtLeastAsFresh.Should().NotBeNull();
+        strategy.ToProto().AtLeastAsFresh.Token.Should().Be("tok1");
     }
 
     [Fact]
@@ -81,24 +81,24 @@ public class ConsistencyTests
     {
         var strategy = Consistency.AtLeastOrFull(null);
 
-        strategy.V1Consistency.FullyConsistent.Should().BeTrue();
+        strategy.ToProto().FullyConsistent.Should().BeTrue();
     }
 
     [Fact]
     public void AtLeastOrFull_WithEmpty_ReturnsFull()
     {
-        var strategy = Consistency.AtLeastOrFull("");
+        var strategy = Consistency.AtLeastOrFull(new SpiceDB.Client.ZedToken(""));
 
-        strategy.V1Consistency.FullyConsistent.Should().BeTrue();
+        strategy.ToProto().FullyConsistent.Should().BeTrue();
     }
 
     [Fact]
     public void AtLeastOrMinLatency_WithRevision_ReturnsAtLeast()
     {
-        var strategy = Consistency.AtLeastOrMinLatency("tok2");
+        var strategy = Consistency.AtLeastOrMinLatency(new SpiceDB.Client.ZedToken("tok2"));
 
-        strategy.V1Consistency.AtLeastAsFresh.Should().NotBeNull();
-        strategy.V1Consistency.AtLeastAsFresh.Token.Should().Be("tok2");
+        strategy.ToProto().AtLeastAsFresh.Should().NotBeNull();
+        strategy.ToProto().AtLeastAsFresh.Token.Should().Be("tok2");
     }
 
     [Fact]
@@ -106,25 +106,25 @@ public class ConsistencyTests
     {
         var strategy = Consistency.AtLeastOrMinLatency(null);
 
-        strategy.V1Consistency.MinimizeLatency.Should().BeTrue();
+        strategy.ToProto().MinimizeLatency.Should().BeTrue();
     }
 
     [Fact]
     public void AtLeastOrMinLatency_WithEmpty_ReturnsMinLatency()
     {
-        var strategy = Consistency.AtLeastOrMinLatency("");
+        var strategy = Consistency.AtLeastOrMinLatency(new SpiceDB.Client.ZedToken(""));
 
-        strategy.V1Consistency.MinimizeLatency.Should().BeTrue();
+        strategy.ToProto().MinimizeLatency.Should().BeTrue();
     }
 
     [Fact]
     public void Strategy_IsSealed_Record()
     {
-        // ConsistencyStrategy is a sealed record — verify value equality
+        // Consistency is a sealed record — verify value equality
         var a = Consistency.Full();
         var b = Consistency.Full();
 
         // Both should have the same shape (but not reference-equal proto objects)
-        a.V1Consistency.FullyConsistent.Should().Be(b.V1Consistency.FullyConsistent);
+        a.ToProto().FullyConsistent.Should().Be(b.ToProto().FullyConsistent);
     }
 }

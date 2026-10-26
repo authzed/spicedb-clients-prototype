@@ -1,6 +1,7 @@
 import { ConnectError, Code } from "@connectrpc/connect";
 import type { Any } from "@bufbuild/protobuf/wkt";
 import { anyUnpack } from "@bufbuild/protobuf/wkt";
+import type { DeleteResult } from "./types.js";
 import { ErrorInfoSchema } from "@spicedb/proto";
 
 /**
@@ -14,7 +15,7 @@ export interface SpiceDBErrorOptions extends ErrorOptions {
   /** See {@link SpiceDBError.reasonDomain}. */
   reasonDomain?: string;
   /** See {@link SpiceDBError.reasonMetadata}. */
-  reasonMetadata?: Record<string, string>;
+  reasonMetadata?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -26,6 +27,8 @@ export interface SpiceDBErrorOptions extends ErrorOptions {
  * "Error mapping must not lose the server's detail".
  */
 export class SpiceDBError extends Error {
+  declare readonly deleteProgress?: DeleteResult;
+  declare readonly inputIndex?: number;
   /**
    * The name of an `authzed.api.v1.ErrorReason` enum value, e.g.
    * `"ERROR_REASON_MAXIMUM_DEPTH_EXCEEDED"`. Empty string when the server
@@ -46,14 +49,14 @@ export class SpiceDBError extends Error {
    * The specifics behind the reason -- which precondition failed, what depth
    * limit was hit. Empty object when the server attached no `ErrorInfo`.
    */
-  readonly reasonMetadata: Record<string, string>;
+  readonly reasonMetadata: Readonly<Record<string, string>>;
 
   constructor(message: string, options?: SpiceDBErrorOptions) {
     super(message, options);
     this.name = "SpiceDBError";
     this.reason = options?.reason ?? "";
     this.reasonDomain = options?.reasonDomain ?? "";
-    this.reasonMetadata = options?.reasonMetadata ?? {};
+    this.reasonMetadata = Object.freeze({ ...options?.reasonMetadata });
   }
 }
 
@@ -237,7 +240,7 @@ export function toSpiceDBError(err: unknown): SpiceDBError {
     return new SpiceDBError(err.message, { cause: err });
   }
 
-  return new SpiceDBError(String(err));
+  return new SpiceDBError(String(err), {cause:err});
 }
 
 /**
@@ -319,6 +322,6 @@ export function toSpiceDBErrorFromStatus(status: {
   }
   return mapConnectError(
     new ConnectError(status.message, status.code as Code),
-    reason,
+    { ...reason, cause: status },
   );
 }

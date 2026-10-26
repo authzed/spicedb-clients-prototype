@@ -2,6 +2,7 @@ package com.authzed.spicedb.examples;
 
 import static org.assertj.core.api.Assertions.*;
 
+import com.authzed.spicedb.*;
 import com.authzed.spicedb.SpiceDBClient;
 import com.authzed.spicedb.errors.InvalidArgumentException;
 import org.junit.jupiter.api.Test;
@@ -77,7 +78,12 @@ class InsecureOptInTest {
     // and accepting the credential exposure that follows are different decisions, and clause 1
     // forbids one boolean from doing both jobs.
     try (SpiceDBClient client =
-        SpiceDBClient.createPlaintext("example.com:50051", SpiceDBIntegrationTest.TOKEN, true)) {
+        SpiceDBClient.createPlaintext(
+            "example.com:50051",
+            SpiceDBIntegrationTest.TOKEN,
+            ClientOptions.builder()
+                .remotePlaintextCredentials(com.authzed.spicedb.RemotePlaintextCredentials.ALLOW)
+                .build())) {
       assertThat(client).isNotNull();
     }
   }

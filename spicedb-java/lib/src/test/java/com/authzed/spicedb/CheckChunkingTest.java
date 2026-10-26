@@ -92,12 +92,14 @@ class CheckChunkingTest {
         CheckBulkPermissionsRequestItem item = items.get(i);
         if (malformedAtAbsolute == base + i) {
           // Neither item nor error set — the oneof left empty.
-          response.addPairs(CheckBulkPermissionsPair.newBuilder().build());
+          response.addPairs(
+              CheckBulkPermissionsPair.newBuilder().setRequest(request.getItems(i)).build());
           continue;
         }
         if (errAtAbsolute == base + i) {
           response.addPairs(
               CheckBulkPermissionsPair.newBuilder()
+                  .setRequest(request.getItems(i))
                   .setError(
                       build.buf.gen.google.rpc.Status.newBuilder()
                           .setCode(io.grpc.Status.Code.PERMISSION_DENIED.value())
@@ -108,6 +110,7 @@ class CheckChunkingTest {
         }
         response.addPairs(
             CheckBulkPermissionsPair.newBuilder()
+                .setRequest(request.getItems(i))
                 .setItem(
                     CheckBulkPermissionsResponseItem.newBuilder()
                         .setPermissionship(
@@ -126,7 +129,11 @@ class CheckChunkingTest {
   private static Relationship[] numberedRels(int n) {
     var rels = new Relationship[n];
     for (int i = 0; i < n; i++) {
-      rels[i] = Relationship.of("document", String.format("%05d", i), "view", "user", "alice");
+      rels[i] =
+          Relationship.of(
+              new ObjectRef("document", String.format("%05d", i)),
+              "view",
+              SubjectRef.direct(new ObjectRef("user", "alice")));
     }
     return rels;
   }
@@ -136,7 +143,9 @@ class CheckChunkingTest {
     var service = new EchoService(-1);
     try (TestServers servers = TestServers.start(service)) {
       List<CheckResult> results =
-          servers.client().checkPermissions(Consistency.full(), "view", numberedRels(TOTAL));
+          servers
+              .client()
+              .checkBulk(TestRequests.checks(numberedRels(TOTAL), "view", Consistency.full()));
 
       assertEquals(TOTAL, results.size());
       assertEquals(
@@ -153,7 +162,9 @@ class CheckChunkingTest {
     var service = new EchoService(-1);
     try (TestServers servers = TestServers.start(service)) {
       List<CheckResult> results =
-          servers.client().checkPermissions(Consistency.full(), "view", numberedRels(TOTAL));
+          servers
+              .client()
+              .checkBulk(TestRequests.checks(numberedRels(TOTAL), "view", Consistency.full()));
 
       assertEquals(TOTAL, results.size());
       for (int i = 0; i < TOTAL; i++) {
@@ -172,7 +183,9 @@ class CheckChunkingTest {
     var service = new EchoService(-1);
     try (TestServers servers = TestServers.start(service)) {
       List<CheckResult> results =
-          servers.client().checkPermissions(Consistency.full(), "view", numberedRels(n));
+          servers
+              .client()
+              .checkBulk(TestRequests.checks(numberedRels(n), "view", Consistency.full()));
 
       assertEquals(n, results.size());
       assertEquals(List.of(n), service.requestSizes);
@@ -186,7 +199,9 @@ class CheckChunkingTest {
     var service = new EchoService(-1);
     try (TestServers servers = TestServers.start(service)) {
       List<CheckResult> results =
-          servers.client().checkPermissions(Consistency.full(), "view", new Relationship[0]);
+          servers
+              .client()
+              .checkBulk(TestRequests.checks(new Relationship[0], "view", Consistency.full()));
 
       assertTrue(results.isEmpty());
       assertTrue(service.requestSizes.isEmpty(), "an empty input must not reach the wire at all");
@@ -199,7 +214,10 @@ class CheckChunkingTest {
     // and it costs no request.
     var service = new EchoService(-1);
     try (TestServers servers = TestServers.start(service)) {
-      assertFalse(servers.client().checkAll(Consistency.full(), "view", new Relationship[0]));
+      assertFalse(
+          servers
+              .client()
+              .checkAll(TestRequests.checks(new Relationship[0], "view", Consistency.full())));
       assertTrue(service.requestSizes.isEmpty());
     }
   }
@@ -217,7 +235,8 @@ class CheckChunkingTest {
               () ->
                   servers
                       .client()
-                      .checkPermissions(Consistency.full(), "view", numberedRels(TOTAL)));
+                      .checkBulk(
+                          TestRequests.checks(numberedRels(TOTAL), "view", Consistency.full())));
 
       assertTrue(ex.getMessage().contains("999 pair(s)"), ex.getMessage());
       assertTrue(ex.getMessage().contains("1000 request item(s)"), ex.getMessage());
@@ -244,8 +263,9 @@ class CheckChunkingTest {
               () ->
                   servers
                       .client()
-                      .checkPermissions(
-                          Consistency.full(), "view", numberedRels(CHECK_BATCH_SIZE * 2)));
+                      .checkBulk(
+                          TestRequests.checks(
+                              numberedRels(CHECK_BATCH_SIZE * 2), "view", Consistency.full())));
 
       assertTrue(
           ex.getMessage().contains("check item " + failing + ":"),
@@ -272,8 +292,9 @@ class CheckChunkingTest {
               () ->
                   servers
                       .client()
-                      .checkPermissions(
-                          Consistency.full(), "view", numberedRels(CHECK_BATCH_SIZE * 2)));
+                      .checkBulk(
+                          TestRequests.checks(
+                              numberedRels(CHECK_BATCH_SIZE * 2), "view", Consistency.full())));
 
       assertTrue(ex.getMessage().contains("malformed CheckBulkPermissionsPair"), ex.getMessage());
       assertTrue(

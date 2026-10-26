@@ -22,7 +22,7 @@ use std::sync::atomic::Ordering;
 use spicedb::client::SpiceDBClient;
 use spicedb::consistency;
 use spicedb::error::SpiceDBError;
-use spicedb::types::{Relationship, Transaction};
+use spicedb::types::Transaction;
 use spicedb_proto::authzed::api::v1 as proto;
 use tonic::Status;
 
@@ -60,14 +60,30 @@ async fn read_is_retried_on_a_transient_error() {
     let calls = mock.check_bulk_permissions_calls();
 
     let addr = spawn_permissions_server(mock).await;
-    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
-        .await
-        .expect("client should connect to mock server");
+    let client = SpiceDBClient::new_plaintext(
+        addr.to_string(),
+        "token",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("client should connect to mock server");
 
-    let rel = Relationship::new("document", "doc1", "view", "user", "alice", "")
+    let rel = spicedb::Relationship::from_tuple("document:doc1#view@user:alice")
         .expect("valid relationship");
     let result = client
-        .check_permissions(&consistency::full(), "view", &[rel])
+        .check_bulk(spicedb::BulkCheckRequest::new(
+            [rel]
+                .iter()
+                .map(|r| {
+                    spicedb::PermissionCheck::new(
+                        (r).resource().clone(),
+                        "view",
+                        (r).subject().clone(),
+                        (consistency::full()).clone(),
+                    )
+                })
+                .collect(),
+        ))
         .await;
 
     assert!(
@@ -89,17 +105,21 @@ async fn mutation_is_attempted_exactly_once_on_a_retryable_error() {
     let calls = mock.write_relationships_calls();
 
     let addr = spawn_permissions_server(mock).await;
-    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
-        .await
-        .expect("client should connect to mock server");
+    let client = SpiceDBClient::new_plaintext(
+        addr.to_string(),
+        "token",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("client should connect to mock server");
 
-    let rel = Relationship::new("document", "doc1", "viewer", "user", "alice", "")
+    let rel = spicedb::Relationship::from_tuple("document:doc1#viewer@user:alice")
         .expect("valid relationship");
     let mut txn = Transaction::new();
     txn.create(&rel);
 
     let err = client
-        .write(&txn)
+        .write(spicedb::WriteRequest::new((txn).clone()))
         .await
         .expect_err("the mock's only queued response is a failure");
 
@@ -124,14 +144,30 @@ async fn resource_exhausted_is_never_retried_on_a_read() {
     let calls = mock.check_bulk_permissions_calls();
 
     let addr = spawn_permissions_server(mock).await;
-    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
-        .await
-        .expect("client should connect to mock server");
+    let client = SpiceDBClient::new_plaintext(
+        addr.to_string(),
+        "token",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("client should connect to mock server");
 
-    let rel = Relationship::new("document", "doc1", "view", "user", "alice", "")
+    let rel = spicedb::Relationship::from_tuple("document:doc1#view@user:alice")
         .expect("valid relationship");
     let err = client
-        .check_permissions(&consistency::full(), "view", &[rel])
+        .check_bulk(spicedb::BulkCheckRequest::new(
+            [rel]
+                .iter()
+                .map(|r| {
+                    spicedb::PermissionCheck::new(
+                        (r).resource().clone(),
+                        "view",
+                        (r).subject().clone(),
+                        (consistency::full()).clone(),
+                    )
+                })
+                .collect(),
+        ))
         .await
         .expect_err("the mock's only queued response is a failure");
 
@@ -153,17 +189,21 @@ async fn resource_exhausted_is_never_retried_on_a_mutation() {
     let calls = mock.write_relationships_calls();
 
     let addr = spawn_permissions_server(mock).await;
-    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
-        .await
-        .expect("client should connect to mock server");
+    let client = SpiceDBClient::new_plaintext(
+        addr.to_string(),
+        "token",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("client should connect to mock server");
 
-    let rel = Relationship::new("document", "doc1", "viewer", "user", "alice", "")
+    let rel = spicedb::Relationship::from_tuple("document:doc1#viewer@user:alice")
         .expect("valid relationship");
     let mut txn = Transaction::new();
     txn.create(&rel);
 
     let err = client
-        .write(&txn)
+        .write(spicedb::WriteRequest::new((txn).clone()))
         .await
         .expect_err("the mock's only queued response is a failure");
 
@@ -183,17 +223,21 @@ async fn non_transient_mutation_error_is_attempted_once() {
     let calls = mock.write_relationships_calls();
 
     let addr = spawn_permissions_server(mock).await;
-    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
-        .await
-        .expect("client should connect to mock server");
+    let client = SpiceDBClient::new_plaintext(
+        addr.to_string(),
+        "token",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("client should connect to mock server");
 
-    let rel = Relationship::new("document", "doc1", "viewer", "user", "alice", "")
+    let rel = spicedb::Relationship::from_tuple("document:doc1#viewer@user:alice")
         .expect("valid relationship");
     let mut txn = Transaction::new();
     txn.create(&rel);
 
     let err = client
-        .write(&txn)
+        .write(spicedb::WriteRequest::new((txn).clone()))
         .await
         .expect_err("the mock's only queued response is a failure");
 

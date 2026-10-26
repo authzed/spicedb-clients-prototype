@@ -1,39 +1,29 @@
+import { Tracing, TransportSecurity } from "../../src/index.js";
 /**
  * Example: Basic permission check
  *
- * Demonstrates using checkPermission, checkPermissions, checkAny, and
- * checkAll — including the CheckResult returned for a caveated relationship
+ * Demonstrates using checkPermission, checkBulk, any aggregate, and
+ * all aggregate — including the CheckResult returned for a caveated relationship
  * whose context was not supplied at check time, and resolving that
  * conditional into a grant by supplying the missing context via
  * CheckOptions (a call-level default, fanned out and merged with any
  * per-item context on bulk checks).
  */
-import {
-  createSpiceDBClient,
-  Transaction,
-  relationship,
-  full,
-  atLeast,
-  type CheckRequest,
-} from "../../src/index.js";
-
+import { createSpiceDBClient, Transaction, relationship, full, atLeast, type CheckRequest, } from "../../src/index.js";
 function assert(condition: boolean, message: string): void {
-  if (!condition) {
-    console.error(`ASSERTION FAILED: ${message}`);
-    process.exit(1);
-  }
+    if (!condition) {
+        console.error(`ASSERTION FAILED: ${message}`);
+        process.exit(1);
+    }
 }
-
 // Endpoint and token come from the environment so the example runs against
 // whichever SpiceDB the caller started; the defaults match
 // docker-compose.test.yml.
 const endpoint = process.env.SPICEDB_ENDPOINT || "localhost:50051";
 const token = process.env.SPICEDB_TOKEN || "testtoken";
-
 const client = createSpiceDBClient(endpoint, token, {
-  insecure: true,
+    transportSecurity: TransportSecurity.Plaintext
 });
-
 // Setup: write schema and data. The "active" caveat and conditional_viewer
 // relation exist to demonstrate a conditionalPermission check result below.
 await client.writeSchema(`
@@ -54,57 +44,65 @@ definition document {
   permission conditional_view = conditional_viewer
 }
 `);
-
 const txn = new Transaction();
 txn.touch(relationship("document:readme", "viewer", "user:jimmy"));
 txn.touch(relationship("document:readme", "editor", "user:sally"));
-const setupRevision = await client.write(txn);
-
+const { revision: setupRevision } = await client.write(txn);
 // Single permission check
 const check: CheckRequest = {
-  resourceType: "document",
-  resourceId: "readme",
-  permission: "view",
-  subjectType: "user",
-  subjectId: "jimmy",
+    permission: "view",
+    resource: {
+        objectType: "document",
+        objectId: "readme"
+    },
+    subject: {
+        object: {
+            objectType: "user",
+            objectId: "jimmy"
+        }
+    },
+    consistency: full()
 };
-
-const result = await client.checkPermission(full(), check);
-console.log(
-  `user:jimmy can view document:readme: ${result.hasPermission()} (permissionship: ${result.permissionship})`,
-);
+const result = await client.check({
+    ...check,
+    consistency: full()
+}, { tracing: Tracing.Enabled });
+assert(result.debugTrace !== undefined, "expected populated server trace");
+assert(result.debugTrace!.schemaUsed.includes("definition document"), "expected trace schema");
+assert(result.debugTrace!.check?.permission === "view", "expected native check tree");
+console.log(`user:jimmy can view document:readme: ${result.hasPermission()} (permissionship: ${result.permissionship})`);
 assert(result.hasPermission(), "expected jimmy to have view permission");
-
 // checkedAt is the revision this check was evaluated at. Thread it into
 // atLeast()/atLeastOrFull() to make a later read observe this check (and
 // everything it observed) — read-your-writes for checks.
-assert(result.checkedAt !== "", "expected a non-empty checkedAt token");
-
+assert(result.checkedAt.toString() !== "", "expected a non-empty checkedAt token");
 // Bulk check: multiple permissions at once
 const checks: CheckRequest[] = [
-  { ...check, permission: "view" },
-  { ...check, permission: "edit" },
+    { ...check, permission: "view" },
+    { ...check, permission: "edit" },
 ];
-
-const results = await client.checkPermissions(atLeast(setupRevision), ...checks);
-console.log(
-  "Bulk check results:",
-  results.map((r) => r.hasPermission()),
-);
+const results = await client.checkBulk(checks.map(request => ({
+    ...request,
+    consistency: atLeast(setupRevision)
+})));
+console.log("Bulk check results:", results.map((r) => r.hasPermission()));
 assert(results[0].hasPermission(), "expected jimmy can view");
 assert(!results[1].hasPermission(), "expected jimmy cannot edit");
-
-// checkAny: does jimmy have any of these permissions? A conditionalPermission
+// any aggregate: does jimmy have any of these permissions? A conditionalPermission
 // result would NOT count here — only an unconditional grant does.
-const hasAny = await client.checkAny(full(), ...checks);
+const hasAny = await client.checkBulk(checks.map(request => ({
+    ...request,
+    consistency: full()
+}))).then(results => results.length > 0 && results.some(result => result.hasPermission()));
 console.log(`user:jimmy has any permission: ${hasAny}`);
 assert(hasAny, "expected jimmy to have at least one permission");
-
-// checkAll: does jimmy have all permissions?
-const hasAll = await client.checkAll(full(), ...checks);
+// all aggregate: does jimmy have all permissions?
+const hasAll = await client.checkBulk(checks.map(request => ({
+    ...request,
+    consistency: full()
+}))).then(results => results.length > 0 && results.every(result => result.hasPermission()));
 console.log(`user:jimmy has all permissions: ${hasAll}`);
 assert(!hasAll, "expected jimmy to NOT have all permissions");
-
 // -----------------------------------------------------------------------
 // Conditional (caveated) check: write a caveated relationship without
 // supplying its context, then check it with no context either. The server
@@ -116,39 +114,44 @@ assert(!hasAll, "expected jimmy to NOT have all permissions");
 // -----------------------------------------------------------------------
 const caveatedTxn = new Transaction();
 caveatedTxn.touch({
-  resourceType: "document",
-  resourceId: "conditionaldoc",
-  resourceRelation: "conditional_viewer",
-  subjectType: "user",
-  subjectId: "jimmy",
-  caveatName: "active",
+    resource: {
+        objectType: "document",
+        objectId: "conditionaldoc"
+    },
+    relation: "conditional_viewer",
+    subject: {
+        object: {
+            objectType: "user",
+            objectId: "jimmy"
+        }
+    },
+    caveat: {
+        name: "active"
+    }
 });
 await client.write(caveatedTxn);
-
-const condResult = await client.checkPermission(full(), {
-  resourceType: "document",
-  resourceId: "conditionaldoc",
-  permission: "conditional_view",
-  subjectType: "user",
-  subjectId: "jimmy",
+const condResult = await client.check({
+    ...{
+        permission: "conditional_view",
+        resource: {
+            objectType: "document",
+            objectId: "conditionaldoc"
+        },
+        subject: {
+            object: {
+                objectType: "user",
+                objectId: "jimmy"
+            }
+        },
+        consistency: full()
+    },
+    consistency: full()
 });
-console.log(
-  `user:jimmy can conditionally view document:conditionaldoc: ${condResult.hasPermission()} ` +
-    `(permissionship: ${condResult.permissionship}, missing context: ${condResult.missingContext})`,
-);
-assert(
-  condResult.permissionship === "conditionalPermission",
-  `expected conditionalPermission with no caveat context supplied, got ${condResult.permissionship}`,
-);
-assert(
-  !condResult.hasPermission(),
-  "a conditionalPermission result must never report hasPermission() === true",
-);
-assert(
-  condResult.missingContext.length === 1 && condResult.missingContext[0] === "now",
-  `expected missingContext == ["now"], got ${condResult.missingContext}`,
-);
-
+console.log(`user:jimmy can conditionally view document:conditionaldoc: ${condResult.hasPermission()} ` +
+    `(permissionship: ${condResult.permissionship}, missing context: ${condResult.missingContext})`);
+assert(condResult.permissionship === "conditionalPermission", `expected conditionalPermission with no caveat context supplied, got ${condResult.permissionship}`);
+assert(!condResult.hasPermission(), "a conditionalPermission result must never report hasPermission() === true");
+assert(condResult.missingContext.length === 1 && condResult.missingContext[0] === "now", `expected missingContext == ["now"], got ${condResult.missingContext}`);
 // -----------------------------------------------------------------------
 // Resolving the conditional: supply the caveat context the previous check
 // reported as missing (via `condResult.missingContext`) and check again.
@@ -160,28 +163,28 @@ assert(
 // default caveat context. For a single check this is equivalent to setting
 // `context` directly on the check, but the same `CheckOptions` shape also
 // applies (as a default, fanned out and merged per-item) to
-// `checkPermissions`/`checkAny`/`checkAll` below.
+// `checkBulk`/`any aggregate`/`all aggregate` below.
 // -----------------------------------------------------------------------
-const resolvedResult = await client.checkPermission(
-  full(),
-  {
-    resourceType: "document",
-    resourceId: "conditionaldoc",
-    permission: "conditional_view",
-    subjectType: "user",
-    subjectId: "jimmy",
-  },
-  { context: { now: 42 } }, // "now < 100" — satisfies the "active" caveat
-);
-console.log(
-  `user:jimmy can conditionally view document:conditionaldoc once "now" is supplied: ` +
-    `${resolvedResult.hasPermission()} (permissionship: ${resolvedResult.permissionship})`,
-);
-assert(
-  resolvedResult.hasPermission(),
-  `expected supplying the missing "now" context to resolve the conditional into a grant, got ${resolvedResult.permissionship}`,
-);
-
+const resolvedResult = await client.check({
+    ...{
+        permission: "conditional_view",
+        resource: {
+            objectType: "document",
+            objectId: "conditionaldoc"
+        },
+        subject: {
+            object: {
+                objectType: "user",
+                objectId: "jimmy"
+            }
+        },
+        consistency: full()
+    },
+    consistency: full()
+}, { context: { now: 42 } });
+console.log(`user:jimmy can conditionally view document:conditionaldoc once "now" is supplied: ` +
+    `${resolvedResult.hasPermission()} (permissionship: ${resolvedResult.permissionship})`);
+assert(resolvedResult.hasPermission(), `expected supplying the missing "now" context to resolve the conditional into a grant, got ${resolvedResult.permissionship}`);
 // -----------------------------------------------------------------------
 // Call-level context on a bulk check: a single default applied to every
 // item in the array. Per-item context (already shown above via `context`
@@ -190,30 +193,32 @@ assert(
 // mention are still applied. Here neither item overrides `now`, so both
 // resolve to a grant from the call-level default alone.
 // -----------------------------------------------------------------------
-const bulkResolved = await client.checkPermissions(
-  full(),
-  [
+const bulkResolved = await client.checkBulk([
     {
-      resourceType: "document",
-      resourceId: "conditionaldoc",
-      permission: "conditional_view",
-      subjectType: "user",
-      subjectId: "jimmy",
+        permission: "conditional_view",
+        resource: {
+            objectType: "document",
+            objectId: "conditionaldoc"
+        },
+        subject: {
+            object: {
+                objectType: "user",
+                objectId: "jimmy"
+            }
+        },
+        consistency: full()
     },
-  ],
-  { context: { now: 42 } },
-);
-assert(
-  bulkResolved.length === 1 && bulkResolved[0].hasPermission(),
-  "expected the call-level default context to resolve the bulk conditional check into a grant",
-);
-
+].map(request => ({
+    ...request,
+    consistency: full()
+})), { context: { now: 42 } });
+assert(bulkResolved.length === 1 && bulkResolved[0].hasPermission(), "expected the call-level default context to resolve the bulk conditional check into a grant");
 // Clean up so later examples that write a narrower schema aren't blocked by
 // leftover relationships (examples run in sequence against one shared
 // SpiceDB instance).
-await client.deleteRelationships({ resourceType: "document" });
-
+await client.deleteRelationships({ resourceType: "document" }, {
+    limit: 1000
+});
 // Release the underlying transport now that this example is done with it.
 client.close();
-
 console.log("check_permission: PASS");

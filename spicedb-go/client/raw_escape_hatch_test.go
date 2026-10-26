@@ -13,7 +13,6 @@ import (
 
 	v1 "github.com/authzed/spicedb-clients/proto-clients/spicedb-go-proto/gen/authzed/api/v1"
 	"github.com/authzed/spicedb-clients/spicedb-go/consistency"
-	"github.com/authzed/spicedb-clients/spicedb-go/rel"
 )
 
 // The escape hatch, RawProto, exists so a request the idiomatic surface cannot
@@ -24,9 +23,8 @@ import (
 // below run a real (in-process, bufconn-backed) gRPC server and assert the
 // authorization metadata the handler actually received.
 //
-// The RPC driven here is CheckPermission, the single-check call the idiomatic
-// client never makes (CheckOne routes every check through
-// CheckBulkPermissions), so the gap is genuine rather than contrived.
+// The raw CheckPermission call reaches the same authenticated connection as
+// the native singular API.
 
 // authRecordingServer implements both the single-check and bulk-check RPCs,
 // recording the authorization metadata of every request in arrival order.
@@ -85,7 +83,7 @@ func newAuthRecordingTestClient(t *testing.T) (*Client, *authRecordingServer) {
 		WithInsecure(),
 		// bufnet is an in-memory bufconn dial target, not a real network
 		// destination -- unrelated to what these tests exercise.
-		WithInsecureAllowRemoteHost(),
+		WithRemotePlaintextCredentials(RemotePlaintextAllowed),
 		WithDialOptions(grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
 			return lis.DialContext(ctx)
 		})),
@@ -127,16 +125,15 @@ func TestRawProto_SharesTheConnectionTheIdiomaticMethodsUse(t *testing.T) {
 	// Not a second connection built behind the caller's back.
 	require.Same(t, c.RawProto(), c.RawProto())
 
-	result, err := c.CheckOne(context.Background(), consistency.Full(), "view",
-		rel.MustFromTriple("document", "readme", "view", "user", "jimmy", ""))
+	result, err := c.Check(context.Background(), testCheck(consistency.Full(), "view", testTriple("document", "readme", "view", "user", "jimmy", "")))
 	require.NoError(t, err)
 	require.True(t, result.HasPermission())
 
 	_, err = c.RawProto().PermissionsServiceClient.CheckPermission(context.Background(), checkPermissionRequest())
 	require.NoError(t, err)
 
-	// One idiomatic call (via CheckBulkPermissions) and one raw call (via the
-	// single-check RPC), both authenticated, both on this client's own
+	// One native singular check and one raw singular check, both authenticated
+	// on this client's own
 	// connection.
 	require.Equal(t, []string{"Bearer test-token", "Bearer test-token"}, srv.authorizations)
 }

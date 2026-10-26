@@ -1,8 +1,38 @@
 # Changelog
 
+- Generated sync/async clients now expose all native capabilities directly, including `delete_relationships`, `delete_all_relationships_non_atomic`, Watch relationship filters, bulk checks, schema operations, imports/exports, counters, and materialize methods. Schema-aware check/lookup overloads remain strict. Lookup/read methods expose native pagination and diagnostic options; typed write helpers accept metadata, and `write` accepts typed or native transactions. Native stream identity and cancellation are preserved.
+
+- Watch supports full native relationship filters, ORing multiple entries and watching all relationship changes when filters are empty. Nonempty `object_types` and `filters` are mutually exclusive and fail locally before RPC. Watch examples now use type-only relationship filters.
+
+- **Breaking:** rename `delete_all_relationships` to `delete_all_relationships_non_atomic`; no compatibility alias remains. Before: `client.delete_all_relationships(filter)`. After: `client.delete_all_relationships_non_atomic(filter)`. Each batch is transactional, but the entire operation is non-atomic: earlier batches remain deleted if a later batch fails. Successful results and acknowledged failure progress expose their native token through `revision`.
+
+- **Breaking:** relationship transaction writes now return `WriteResult` instead of a bare `ZedToken`. Extract `result.revision` for consistency, watch resumption, or token serialization. Schema writes and bulk relationship deletion retain their existing result types.
+
+- Add `LookupPermissionshipFilter.ALL` / `LookupPermissionshipFilter.HAS_PERMISSION_ONLY` to LookupResources. The default preserves conditional matches; opt-in filtering yields only unconditional grants, with limits applied after filtering and pagination continuing through skipped matches.
+
 ## Unreleased
 
+### Native tokens and named modes (breaking)
+
+- Revision inputs/results now use immutable `ZedToken`. Migrate
+  `at_least("revision")` to `at_least(ZedToken("revision"))`; persist returned
+  revisions with `str(token)` and reconstruct them with `ZedToken(saved)`.
+- Replace `tracing=True` with `tracing=Tracing.ENABLED`, `with_debug=True` with
+  `debug=LookupDebug.ENABLED`, and `include_wildcards=False` with
+  `wildcards=Wildcards.EXCLUDE`. Watch selects a sequence such as
+  `content=(WatchContent.RELATIONSHIPS, WatchContent.CHECKPOINTS)`; add
+  `WatchContent.SCHEMA` to request schema updates.
+- Replace `insecure=True` with `transport_security=TransportSecurity.PLAINTEXT`.
+  Remote authenticated plaintext requires `remote_credentials=RemoteCredentials.ALLOW`
+  instead of `allow_insecure_remote_credentials=True`, in both normal clients
+  and generated connection factories. TLS remains the default.
+
 ### Added
+
+- Complete native Materialize coverage: count-by-filter, roaring lookup,
+  permission-set watch/lookup with closeable streams and lossless native cursors,
+  and permission-set download URLs/timestamps/revisions. All five nondeprecated
+  RPCs preserve authentication and native error/deadline behavior.
 
 - **2026-09-10: `delete_relationships(..., auto_page=True)`, unlocked by the proto
   regeneration bringing `DeleteRelationshipsRequest.optional_cursor`/
@@ -370,6 +400,14 @@
 
 ### Fixed
 
+- Validate each bulk response's echoed request before mapping any results or
+  item errors, including nested context and field presence. Missing, reordered,
+  or duplicated echoes fail with the absolute input index.
+- Async imports observe the server response while consuming the producer, so
+  early remote rejection cancels and closes a blocked producer immediately.
+  Preserve native server error causes, caller cancellation, producer failures,
+  and the total import deadline.
+
 - **2026-08-19**: **The clear-before-write delete tolerates one error, not all of them.** It
   swallowed every failure, so an unreachable server or a rotated token read as "nothing to clear"
   and the example carried on to fail somewhere less obvious. Only
@@ -706,6 +744,44 @@
   functions which were already exported.
 
 ### Breaking
+
+- **BREAKING CHANGE — 2026-10-26 prototype reset.** Canonical `check` and
+  `check_bulk` replace the former check method families. Checks use
+  `PermissionCheck`; stored relationships use nested `ObjectRef`, `SubjectRef`,
+  and `Caveat`, and no longer carry evaluation context. All consistency-bearing
+  operations require `consistency=`. Tokens remain lossless strings.
+- Unary calls share one 30-second total monotonic budget across retries, chunks,
+  and delete-all pages. Every stream supports `with`/`async with`, explicit
+  cancellation while awaiting a result, and optional total `timeout=`. Imports
+  support incremental native producers and cancel on producer failures.
+- `delete_relationships(filter, limit=10)` sends one bounded RPC and returns
+  `DeleteResult`; use `delete_all_relationships_non_atomic(filter, page_size=1000)` to
+  continue until complete. Interrupted deletes retain acknowledged progress.
+  Subject filters distinguish any, direct, and named usersets exactly.
+- Immutable native records snapshot nested collections and JSON values.
+  Results preserve native schema revisions, full reflection/diff contents,
+  roaring bitmap data, and opt-in recursive singular/per-item bulk traces.
+
+  Before:
+  ```python
+  rel = Relationship.from_triple("document:readme", "view", "user:alice",
+                                 check_context={"region": "us"})
+  result = client.check_permission(full(), rel)
+  client.delete_relationships(Filter("document"), limit=100, auto_page=True)
+  ```
+
+  After:
+  ```python
+  from spicedb import ObjectRef, SubjectRef, PermissionCheck, Filter, full
+  check = PermissionCheck(ObjectRef("document", "readme"), "view",
+                          SubjectRef(ObjectRef("user", "alice")),
+                          context={"region": "us"})
+  result = client.check(check, consistency=full(), tracing=True)
+  progress = client.delete_all_relationships_non_atomic(Filter("document"), page_size=100)
+  with client.read_relationships(Filter("document"), consistency=full()) as rows:
+      first = next(rows, None)
+  ```
+
 
 - **2026-08-18** (behavioral; new keyword-only parameter): per root DESIGN.md, "RULE: Credentials
   over insecure transport require an explicit opt-in" -- `SpiceDBClient(..., insecure=True)` (both

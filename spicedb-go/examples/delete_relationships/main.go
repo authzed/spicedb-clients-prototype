@@ -15,6 +15,8 @@ import (
 	"log"
 	"os"
 
+	"github.com/authzed/spicedb-clients/spicedb-go/examples/internal/exampleutil"
+
 	"github.com/authzed/spicedb-clients/spicedb-go/client"
 	"github.com/authzed/spicedb-clients/spicedb-go/consistency"
 	"github.com/authzed/spicedb-clients/spicedb-go/rel"
@@ -36,7 +38,7 @@ func main() {
 	ctx := context.Background()
 
 	// Setup: write schema
-	_, err = c.WriteSchema(ctx, `definition user {}
+	_, err = c.WriteSchema(ctx, client.WriteSchemaRequest{Schema: `definition user {}
 
 definition document {
 	relation viewer: user
@@ -45,34 +47,34 @@ definition document {
 	permission view = viewer + editor + owner
 	permission edit = editor + owner
 	permission delete = owner
-}`)
+}`})
 	if err != nil {
 		log.Fatalf("write schema failed: %v", err)
 	}
 
 	// Start from a known state so the counts read back below are this
 	// example's own writes and not an earlier example's leftovers.
-	if _, err := c.DeleteRelationships(ctx, rel.NewFilter("document")); err != nil {
+	if _, err := c.DeleteAllRelationshipsNonAtomic(ctx, client.DeleteAllRequest{Filter: exampleutil.Must(rel.NewFilter("document"))}); err != nil {
 		log.Fatalf("clearing document relationships failed: %v", err)
 	}
 
 	// Write relationships to delete
 	var txn rel.Txn
-	if err := txn.Touch(rel.MustFromTriple("document", "firstdoc", "owner", "user", "alice", "")); err != nil {
+	if err := txn.Touch(exampleutil.Must(rel.NewRelationship(exampleutil.Object("document", "firstdoc"), "owner", exampleutil.Subject(exampleutil.Object("user", "alice"), "")))); err != nil {
 		log.Fatalf("failed to add relationship to transaction: %v", err)
 	}
-	if err := txn.Touch(rel.MustFromTriple("document", "firstdoc", "viewer", "user", "bob", "")); err != nil {
+	if err := txn.Touch(exampleutil.Must(rel.NewRelationship(exampleutil.Object("document", "firstdoc"), "viewer", exampleutil.Subject(exampleutil.Object("user", "bob"), "")))); err != nil {
 		log.Fatalf("failed to add relationship to transaction: %v", err)
 	}
-	if err := txn.Touch(rel.MustFromTriple("document", "firstdoc", "viewer", "user", "carol", "")); err != nil {
+	if err := txn.Touch(exampleutil.Must(rel.NewRelationship(exampleutil.Object("document", "firstdoc"), "viewer", exampleutil.Subject(exampleutil.Object("user", "carol"), "")))); err != nil {
 		log.Fatalf("failed to add relationship to transaction: %v", err)
 	}
-	if _, err := c.Write(ctx, txn); err != nil {
+	if _, err := c.Write(ctx, client.WriteRequest{Transaction: txn}); err != nil {
 		log.Fatalf("write relationships failed: %v", err)
 	}
 
-	viewerFilter := rel.NewFilter("document").WithResourceID("firstdoc").WithRelation("viewer")
-	ownerFilter := rel.NewFilter("document").WithResourceID("firstdoc").WithRelation("owner")
+	viewerFilter := exampleutil.Must(rel.NewFilter("document")).WithResourceID("firstdoc").WithRelation("viewer")
+	ownerFilter := exampleutil.Must(rel.NewFilter("document")).WithResourceID("firstdoc").WithRelation("owner")
 
 	if n := count(ctx, c, viewerFilter); n != 2 {
 		log.Fatalf("expected 2 viewers before the delete, got %d", n)
@@ -83,29 +85,29 @@ definition document {
 	// whole delete) unless a relationship matching ownerGuard exists at
 	// evaluation time. This guards against accidentally stripping viewers from
 	// a document that has already lost its owner.
-	ownerGuard := rel.NewFilter("document").WithResourceID("firstdoc").WithRelation("owner")
+	ownerGuard := exampleutil.Must(rel.NewFilter("document")).WithResourceID("firstdoc").WithRelation("owner")
 
-	revision, err := c.DeleteRelationships(ctx, viewerFilter, client.WithDeleteMustMatch(ownerGuard))
+	revision, err := c.DeleteRelationships(ctx, client.DeleteRequest{Filter: viewerFilter, Limit: 2}, client.WithDeleteMustMatch(ownerGuard))
 	if err != nil {
 		log.Fatalf("guarded delete failed: %v", err)
 	}
-	fmt.Printf("deleted viewers at revision: %s\n", revision)
+	fmt.Printf("deleted viewers at revision: %s\n", revision.Revision)
 
 	// Read the delete back. A DeleteRelationships that built the wrong filter,
 	// or dropped it entirely, returns a revision and no error either way.
-	if n := countAt(ctx, c, consistency.AtLeast(revision), viewerFilter); n != 0 {
+	if n := countAt(ctx, c, consistency.AtLeast(revision.Revision), viewerFilter); n != 0 {
 		log.Fatalf("expected every viewer to be gone after the guarded delete, %d remain", n)
 	}
-	if n := countAt(ctx, c, consistency.AtLeast(revision), ownerFilter); n != 1 {
+	if n := countAt(ctx, c, consistency.AtLeast(revision.Revision), ownerFilter); n != 1 {
 		log.Fatalf("expected the owner to survive a delete filtered to viewers, got %d owners", n)
 	}
 
 	// A delete guarded by a precondition that ISN'T satisfied is rejected
 	// outright rather than silently deleting nothing.
-	neverMatches := rel.NewFilter("document").WithResourceID("firstdoc").WithRelation("viewer").
+	neverMatches := exampleutil.Must(rel.NewFilter("document")).WithResourceID("firstdoc").WithRelation("viewer").
 		WithSubjectType("user").WithSubjectID("nonexistent-subject")
 
-	_, err = c.DeleteRelationships(ctx, ownerFilter, client.WithDeleteMustMatch(neverMatches))
+	_, err = c.DeleteAllRelationshipsNonAtomic(ctx, client.DeleteAllRequest{Filter: ownerFilter}, client.WithDeleteAllMustMatch(neverMatches))
 	if err == nil {
 		log.Fatalf("expected guarded delete with unsatisfied precondition to fail")
 	}
@@ -138,26 +140,26 @@ definition document {
 	// loop stopped after the first page, the read-back below would still find
 	// two owners.
 	var more rel.Txn
-	if err := more.Touch(rel.MustFromTriple("document", "firstdoc", "owner", "user", "dave", "")); err != nil {
+	if err := more.Touch(exampleutil.Must(rel.NewRelationship(exampleutil.Object("document", "firstdoc"), "owner", exampleutil.Subject(exampleutil.Object("user", "dave"), "")))); err != nil {
 		log.Fatalf("failed to add relationship to transaction: %v", err)
 	}
-	if err := more.Touch(rel.MustFromTriple("document", "firstdoc", "owner", "user", "erin", "")); err != nil {
+	if err := more.Touch(exampleutil.Must(rel.NewRelationship(exampleutil.Object("document", "firstdoc"), "owner", exampleutil.Subject(exampleutil.Object("user", "erin"), "")))); err != nil {
 		log.Fatalf("failed to add relationship to transaction: %v", err)
 	}
-	if _, err := c.Write(ctx, more); err != nil {
+	if _, err := c.Write(ctx, client.WriteRequest{Transaction: more}); err != nil {
 		log.Fatalf("write relationships failed: %v", err)
 	}
 	if n := count(ctx, c, ownerFilter); n != 3 {
 		log.Fatalf("expected 3 owners before the limited delete, got %d", n)
 	}
 
-	revision, err = c.DeleteRelationships(ctx, ownerFilter, client.WithDeleteLimit(1))
+	revision, err = c.DeleteAllRelationshipsNonAtomic(ctx, client.DeleteAllRequest{Filter: ownerFilter}, client.WithDeleteAllPageSize(1))
 	if err != nil {
 		log.Fatalf("delete with limit failed: %v", err)
 	}
-	fmt.Printf("deleted owners one page at a time, through revision: %s\n", revision)
+	fmt.Printf("deleted owners one page at a time, through revision: %s\n", revision.Revision)
 
-	if n := countAt(ctx, c, consistency.AtLeast(revision), ownerFilter); n != 0 {
+	if n := countAt(ctx, c, consistency.AtLeast(revision.Revision), ownerFilter); n != 0 {
 		log.Fatalf("expected the paged delete to remove every owner, %d remain", n)
 	}
 }
@@ -172,7 +174,7 @@ func count(ctx context.Context, c *client.Client, filter rel.Filter) int {
 // what makes the read-back a proof rather than a race.
 func countAt(ctx context.Context, c *client.Client, cs consistency.Strategy, filter rel.Filter) int {
 	n := 0
-	for r, err := range c.ReadRelationships(ctx, cs, filter) {
+	for r, err := range c.ReadRelationships(ctx, client.ReadRelationshipsRequest{Consistency: cs, Filter: filter}) {
 		if err != nil {
 			log.Fatalf("read relationships failed: %v", err)
 		}

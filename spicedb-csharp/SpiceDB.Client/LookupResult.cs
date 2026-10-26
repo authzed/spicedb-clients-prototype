@@ -43,7 +43,8 @@ public enum Permissionship
 /// </summary>
 public sealed record PartialCaveatInfo
 {
-    public IReadOnlyList<string> MissingRequiredContext { get; init; } = [];
+    private IReadOnlyList<string> _MissingRequiredContext = Array.Empty<string>();
+    public IReadOnlyList<string> MissingRequiredContext { get => _MissingRequiredContext; init => _MissingRequiredContext = Native.List(value); }
 }
 
 /// <summary>One result from <see cref="SpiceDBClient.LookupResourcesAsync"/>.</summary>
@@ -63,7 +64,7 @@ public sealed record LookupResource
     /// yielded by a single <see cref="SpiceDBClient.LookupResourcesAsync"/>
     /// call — a property of the call, not of the individual resource.
     /// </summary>
-    public string LookedUpAt { get; init; } = "";
+    public ZedToken LookedUpAt { get; init; }
 }
 
 /// <summary>
@@ -90,12 +91,13 @@ public sealed record ResolvedSubject
 public sealed record LookupSubject
 {
     public ResolvedSubject Subject { get; init; } = new();
-    public IReadOnlyList<ResolvedSubject> ExcludedSubjects { get; init; } = [];
+    private IReadOnlyList<ResolvedSubject> _ExcludedSubjects = Array.Empty<ResolvedSubject>();
+    public IReadOnlyList<ResolvedSubject> ExcludedSubjects { get => _ExcludedSubjects; init => _ExcludedSubjects = Native.List(value); }
 
     /// <summary>
     /// The revision this result was computed at. Identical for every item
     /// yielded by a single <see cref="SpiceDBClient.LookupSubjectsAsync"/>
     /// call — a property of the call, not of the individual subject.
     /// </summary>
-    public string LookedUpAt { get; init; } = "";
+    public ZedToken LookedUpAt { get; init; }
 }

@@ -1,24 +1,18 @@
 namespace SpiceDB.Client;
 
-/// <summary>
-/// Call-level options for the lookup operations:
-/// <see cref="SpiceDBClient.LookupResourcesWithOptionsAsync"/> and
-/// <see cref="SpiceDBClient.LookupSubjectsWithOptionsAsync"/>.
-/// </summary>
-/// <remarks>
-/// This type exists so that a new lookup option is a new property here rather
-/// than a new parameter. <c>with_debug</c> arrived upstream and, with nowhere
-/// to put it, became a required positional parameter on
-/// <c>LookupResourcesAsync</c> — breaking every existing caller for the sake
-/// of one optional field. See root DESIGN.md, "RULE: Every RPC wrapper must
-/// have one place to add an option".
-/// </remarks>
+/// <summary>Client-side LookupResources filtering. Conditional permission is not a grant.</summary>
+public enum LookupPermissionshipFilter { All, HasPermissionOnly }
+
 public sealed class LookupOptions
 {
-    /// <summary>
-    /// Asks the server to attach debug information to the error when the
-    /// lookup fails by exceeding the maximum dispatch depth. It has no effect
-    /// on a successful call, and no effect on any other failure.
-    /// </summary>
-    public bool WithDebug { get; init; }
+    private IReadOnlyDictionary<string, object?>? _context;
+    public IReadOnlyDictionary<string, object?>? Context { get => _context; init => _context = Native.Context(value); }
+    public TimeSpan? Timeout { get; init; }
+    private LookupPermissionshipFilter _permissionshipFilter;
+    public LookupPermissionshipFilter PermissionshipFilter { get => _permissionshipFilter; init => _permissionshipFilter = BehaviorOptions.Defined(value, nameof(PermissionshipFilter)); }
+    private LookupDebug _debug;
+    public LookupDebug Debug { get => _debug; init => _debug = BehaviorOptions.Defined(value, nameof(Debug)); }
+    public int? PageSize { get; init; }
+    public int? Limit { get; init; }
+    public string? SubjectRelation { get; init; }
 }

@@ -27,11 +27,11 @@ public class SchemaReflectionTest
         await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
 
         await SpiceDBTestServer.ClearDocumentRelationshipsAsync(client);
-        await client.WriteSchemaAsync(Schema);
+        await client.WriteSchemaAsync(Schema, null, default);
 
-        var result = await client.ReflectSchemaAsync(Full());
+        var result = await client.ReflectSchemaAsync(Full(), null, default);
 
-        Assert.NotEmpty(result.Revision);
+        Assert.NotEmpty(result.Revision.Value);
 
         // The exact names, not just how many. Counting alone passes on a
         // reflection that conflated relations with permissions, or that
@@ -56,12 +56,13 @@ public class SchemaReflectionTest
         await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
 
         await SpiceDBTestServer.ClearDocumentRelationshipsAsync(client);
-        await client.WriteSchemaAsync(Schema);
+        await client.WriteSchemaAsync(Schema, null, default);
 
-        var (perms, revision) = await client.ComputablePermissionsAsync(
-            Full(), "document", "viewer");
+        var response = await client.ComputablePermissionsAsync(Full(), "document", "viewer", null, default);
+        var perms = response.Permissions;
+        var revision = response.Revision;
 
-        Assert.NotEmpty(revision);
+        Assert.NotEmpty(revision.Value);
 
         // `viewer` appears in `view` and nowhere else in this schema, so the
         // answer is exactly one reference -- and it names the permission rather
@@ -78,12 +79,13 @@ public class SchemaReflectionTest
         await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
 
         await SpiceDBTestServer.ClearDocumentRelationshipsAsync(client);
-        await client.WriteSchemaAsync(Schema);
+        await client.WriteSchemaAsync(Schema, null, default);
 
-        var (deps, revision) = await client.DependentRelationsAsync(
-            Full(), "document", "view");
+        var response = await client.DependentRelationsAsync(Full(), "document", "view", null, default);
+        var deps = response.Relations;
+        var revision = response.Revision;
 
-        Assert.NotEmpty(revision);
+        Assert.NotEmpty(revision.Value);
 
         // `view = viewer + editor`, so both relations are dependencies and
         // nothing else is.
@@ -98,7 +100,7 @@ public class SchemaReflectionTest
         await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
 
         await SpiceDBTestServer.ClearDocumentRelationshipsAsync(client);
-        await client.WriteSchemaAsync(Schema);
+        await client.WriteSchemaAsync(Schema, null, default);
 
         // Diff against a modified schema that adds a new relation and permission
         var newSchema = """
@@ -114,9 +116,11 @@ public class SchemaReflectionTest
             }
             """;
 
-        var (diffs, revision) = await client.DiffSchemaAsync(Full(), newSchema);
+        var response = await client.DiffSchemaAsync(Full(), newSchema, null, default);
+        var diffs = response.Diffs;
+        var revision = response.Revision;
 
-        Assert.NotEmpty(revision);
+        Assert.NotEmpty(revision.Value);
 
         // newSchema adds one relation and one permission and changes the
         // expression of the other two, so the diff is a known set. Asserting

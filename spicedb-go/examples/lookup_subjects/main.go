@@ -12,6 +12,8 @@ import (
 	"log"
 	"os"
 
+	"github.com/authzed/spicedb-clients/spicedb-go/examples/internal/exampleutil"
+
 	"github.com/authzed/spicedb-clients/spicedb-go/client"
 	"github.com/authzed/spicedb-clients/spicedb-go/consistency"
 	"github.com/authzed/spicedb-clients/spicedb-go/rel"
@@ -34,7 +36,7 @@ func main() {
 
 	// Setup: write schema and data. `banned` carves subjects out of the
 	// public/wildcard viewer grant below.
-	_, err = c.WriteSchema(ctx, `definition user {}
+	_, err = c.WriteSchema(ctx, client.WriteSchemaRequest{Schema: `definition user {}
 
 definition document {
 	relation viewer: user | user:*
@@ -44,23 +46,23 @@ definition document {
 	permission view = (viewer + editor + owner) - banned
 	permission edit = editor + owner
 	permission delete = owner
-}`)
+}`})
 	if err != nil {
 		log.Fatalf("write schema failed: %v", err)
 	}
 
 	var txn rel.Txn
-	if err := txn.Touch(rel.MustFromTriple("document", "firstdoc", "editor", "user", "bob", "")); err != nil {
+	if err := txn.Touch(exampleutil.Must(rel.NewRelationship(exampleutil.Object("document", "firstdoc"), "editor", exampleutil.Subject(exampleutil.Object("user", "bob"), "")))); err != nil {
 		log.Fatalf("failed to add relationship to transaction: %v", err)
 	}
 	// Grant view to every user (wildcard), except those in `banned`.
-	if err := txn.Touch(rel.MustFromTriple("document", "firstdoc", "viewer", "user", "*", "")); err != nil {
+	if err := txn.Touch(exampleutil.Must(rel.NewRelationship(exampleutil.Object("document", "firstdoc"), "viewer", exampleutil.Subject(exampleutil.Object("user", "*"), "")))); err != nil {
 		log.Fatalf("failed to add relationship to transaction: %v", err)
 	}
-	if err := txn.Touch(rel.MustFromTriple("document", "firstdoc", "banned", "user", "eve", "")); err != nil {
+	if err := txn.Touch(exampleutil.Must(rel.NewRelationship(exampleutil.Object("document", "firstdoc"), "banned", exampleutil.Subject(exampleutil.Object("user", "eve"), "")))); err != nil {
 		log.Fatalf("failed to add relationship to transaction: %v", err)
 	}
-	_, err = c.Write(ctx, txn)
+	_, err = c.Write(ctx, client.WriteRequest{Transaction: txn})
 	if err != nil {
 		log.Fatalf("write relationships failed: %v", err)
 	}
@@ -68,11 +70,14 @@ definition document {
 	// Lookup subjects
 	var sawWildcard bool
 	excludedIDs := map[string]bool{}
-	for subject, err := range c.LookupSubjects(ctx, consistency.Full(), "document", "firstdoc", "view", "user") {
+	for subject, err := range c.LookupSubjects(ctx, client.LookupSubjectsRequest{Consistency: consistency.Full(), Resource: exampleutil.Object("document", "firstdoc"), Permission: "view", SubjectType: "user"}) {
 		if err != nil {
 			log.Fatalf("lookup failed: %v", err)
 		}
 
+		if subject.Subject.Permissionship != client.PermissionshipHasPermission {
+			continue // Conditional results require more caveat context.
+		}
 		fmt.Printf("subject:%s can view document:firstdoc (permissionship=%s)\n", subject.Subject.SubjectID, subject.Subject.Permissionship)
 
 		if subject.Subject.SubjectID == "*" {
@@ -96,11 +101,13 @@ definition document {
 
 	// bob has view via `editor`, independent of the wildcard/banned rule.
 	found := map[string]bool{}
-	for subject, err := range c.LookupSubjects(ctx, consistency.Full(), "document", "firstdoc", "edit", "user") {
+	for subject, err := range c.LookupSubjects(ctx, client.LookupSubjectsRequest{Consistency: consistency.Full(), Resource: exampleutil.Object("document", "firstdoc"), Permission: "edit", SubjectType: "user"}) {
 		if err != nil {
 			log.Fatalf("lookup failed: %v", err)
 		}
-		found[subject.Subject.SubjectID] = true
+		if subject.Subject.Permissionship == client.PermissionshipHasPermission && subject.Subject.SubjectID != "*" {
+			found[subject.Subject.SubjectID] = true
+		}
 	}
 	if !found["bob"] {
 		log.Fatalf("expected bob in edit results")
@@ -109,7 +116,7 @@ definition document {
 	// Clean up so later examples that write a narrower schema (e.g. one
 	// without a `banned` relation) aren't blocked by leftover relationships
 	// (examples run in sequence against one shared SpiceDB instance).
-	if _, err := c.DeleteRelationships(ctx, rel.NewFilter("document")); err != nil {
+	if _, err := c.DeleteAllRelationshipsNonAtomic(ctx, client.DeleteAllRequest{Filter: exampleutil.Must(rel.NewFilter("document"))}); err != nil {
 		log.Fatalf("cleanup failed: %v", err)
 	}
 }

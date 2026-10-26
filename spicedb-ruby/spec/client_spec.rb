@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative '../lib/spicedb'
+require_relative 'support/native_helpers'
 require 'spicedb_proto'
 
 RSpec.describe SpiceDB::Client do
@@ -87,7 +88,7 @@ RSpec.describe SpiceDB::Client do
     it 'allows a non-loopback endpoint when allow_insecure_remote_credentials is true' do
       expect do
         described_class.new_plaintext(
-          'evil.example.com:1234', 'testtoken', allow_insecure_remote_credentials: true
+          'evil.example.com:1234', 'testtoken', remote_credentials: SpiceDB::RemoteCredentials::ALLOW_PLAINTEXT
         )
       end.not_to raise_error
     end
@@ -95,9 +96,9 @@ RSpec.describe SpiceDB::Client do
 
   describe 'constants' do
     it 'has sensible page size defaults' do
-      expect(described_class::DEFAULT_READ_PAGE_SIZE).to eq(512)
-      expect(described_class::DEFAULT_LOOKUP_PAGE_SIZE).to eq(512)
-      expect(described_class::DEFAULT_EXPORT_PAGE_SIZE).to eq(512)
+      expect(described_class::DEFAULT_READ_PAGE_SIZE).to eq(1000)
+      expect(described_class::DEFAULT_LOOKUP_PAGE_SIZE).to eq(1000)
+      expect(described_class::DEFAULT_EXPORT_PAGE_SIZE).to eq(1000)
       expect(described_class::DEFAULT_DELETE_PAGE_SIZE).to eq(1_000)
       expect(described_class::DEFAULT_IMPORT_BATCH_SIZE).to eq(1_000)
       expect(described_class::DEFAULT_CHECK_BATCH_SIZE).to eq(1_000)
@@ -109,10 +110,12 @@ RSpec.describe SpiceDB::Client do
       it 'is a Data.define value type' do
         update = SpiceDB::Update.new(
           operation: :create,
-          relationship: SpiceDB::Relationship.from_triple('document', 'doc1', 'viewer', 'user', 'alice')
+          relationship: SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'doc1'), relation: 'viewer',
+                                                  subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user',
+                                                                                                                  object_id: 'alice'), relation: nil))
         )
         expect(update.operation).to eq(:create)
-        expect(update.relationship.subject_id).to eq('alice')
+        expect(update.relationship.subject.object.object_id).to eq('alice')
         expect(update).to be_frozen
       end
     end
@@ -125,9 +128,9 @@ RSpec.describe SpiceDB::Client do
           intermediate: nil,
           leaf: SpiceDB::LeafNode.new(subjects: [])
         )
-        result = SpiceDB::ExpandResult.new(tree: tree, revision: 'rev1')
+        result = SpiceDB::ExpandResult.new(tree: tree, revision: SpiceDB::ZedToken.new('rev1'))
         expect(result.tree).to eq(tree)
-        expect(result.revision).to eq('rev1')
+        expect(result.revision).to eq(SpiceDB::ZedToken.new('rev1'))
         expect(result).to be_frozen
         expect(result.tree).not_to be_a(Authzed::Api::V1::PermissionRelationshipTree)
       end
@@ -140,10 +143,10 @@ RSpec.describe SpiceDB::Client do
           expanded_relation: 'view',
           intermediate: nil,
           leaf: SpiceDB::LeafNode.new(
-            subjects: [SpiceDB::SubjectRef.new(subject_type: 'user', subject_id: 'alice', optional_relation: '')]
+            subjects: [SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: 'alice'), relation: nil)]
           )
         )
-        expect(leaf_tree.leaf.subjects.first.subject_id).to eq('alice')
+        expect(leaf_tree.leaf.subjects.first.object.object_id).to eq('alice')
         expect(leaf_tree.intermediate).to be_nil
         expect(leaf_tree).to be_frozen
       end
@@ -151,7 +154,7 @@ RSpec.describe SpiceDB::Client do
 
     describe 'SpiceDB::CountResult' do
       it 'is a Data.define value type' do
-        result = SpiceDB::CountResult.new(relationship_count: 42, revision: 'rev1', still_calculating: false)
+        result = SpiceDB::CountResult.new(relationship_count: 42, revision: SpiceDB::ZedToken.new('rev1'), still_calculating: false)
         expect(result.relationship_count).to eq(42)
         expect(result.still_calculating).to be false
         expect(result).to be_frozen
@@ -171,10 +174,10 @@ RSpec.describe SpiceDB::Client do
 
     describe 'SpiceDB::ReflectSchemaResult' do
       it 'holds definitions, caveats, and revision' do
-        result = SpiceDB::ReflectSchemaResult.new(definitions: [], caveats: [], revision: 'rev1')
+        result = SpiceDB::ReflectSchemaResult.new(definitions: [], caveats: [], revision: SpiceDB::ZedToken.new('rev1'))
         expect(result.definitions).to eq([])
         expect(result.caveats).to eq([])
-        expect(result.revision).to eq('rev1')
+        expect(result.revision).to eq(SpiceDB::ZedToken.new('rev1'))
       end
     end
 
@@ -195,10 +198,10 @@ RSpec.describe SpiceDB::Client do
     let(:client) { described_class.new_plaintext('localhost:50051', 'testtoken') }
 
     # Checks
-    it { expect(client).to respond_to(:check_permission) }
-    it { expect(client).to respond_to(:check_permissions) }
-    it { expect(client).to respond_to(:check_any) }
-    it { expect(client).to respond_to(:check_all) }
+    it { expect(client).to respond_to(:check) }
+    it { expect(client).to respond_to(:check_bulk) }
+    it { expect(client).not_to respond_to(:check_any) }
+    it { expect(client).not_to respond_to(:check_all) }
 
     # Relationships
     it { expect(client).to respond_to(:write) }
@@ -225,7 +228,7 @@ RSpec.describe SpiceDB::Client do
     it { expect(client).to respond_to(:export_relationships) }
 
     # Watch
-    it { expect(client).to respond_to(:updates) }
+    it { expect(client).to respond_to(:watch) }
 
     # Experimental
     it { expect(client).to respond_to(:experimental_register_relationship_counter) }

@@ -11,6 +11,7 @@
 # split large inputs.
 
 require_relative '../lib/spicedb'
+require_relative 'support/native_helpers'
 require 'spicedb_proto'
 
 RSpec.describe 'SpiceDB::Client#check_permissions chunking' do
@@ -40,10 +41,10 @@ RSpec.describe 'SpiceDB::Client#check_permissions chunking' do
 
       pairs = items.each_with_index.map do |(item), i|
         # `response` oneof left unset entirely.
-        next Authzed::Api::V1::CheckBulkPermissionsPair.new if malformed_at_absolute == base + i
+        next Authzed::Api::V1::CheckBulkPermissionsPair.new(request: item) if malformed_at_absolute == base + i
 
         Authzed::Api::V1::CheckBulkPermissionsPair.new(
-          item: Authzed::Api::V1::CheckBulkPermissionsResponseItem.new(
+          request: item, item: Authzed::Api::V1::CheckBulkPermissionsResponseItem.new(
             permissionship: :PERMISSIONSHIP_HAS_PERMISSION,
             # `msg['object_id']`, not `msg.object_id`: the generated reader is
             # shadowed by Kernel#object_id, so the dotted form silently yields
@@ -70,14 +71,15 @@ RSpec.describe 'SpiceDB::Client#check_permissions chunking' do
   # n relationships whose resource IDs are their zero-padded index.
   def numbered_rels(count)
     (0...count).map do |i|
-      SpiceDB::Relationship.from_triple('document', format('%05d', i), 'viewer', 'user', 'alice')
+      SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: format('%05d', i)), relation: 'viewer',
+                                subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: 'alice'), relation: nil))
     end
   end
 
   it 'splits an oversized input into requests of at most DEFAULT_CHECK_BATCH_SIZE' do
     sizes = stub_echo_server
 
-    results = client.check_permissions(SpiceDB::Consistency.full, 'view', numbered_rels(total))
+    results = client.check_bulk([numbered_rels(total)].flatten.map { |item| permission_check(item, 'view') }, consistency: SpiceDB::Consistency.full)
 
     expect(results.length).to eq(total)
     expect(sizes).to eq([batch_size, batch_size, 7])
@@ -89,7 +91,7 @@ RSpec.describe 'SpiceDB::Client#check_permissions chunking' do
     # one of the 2,007 results, not just at the seams.
     stub_echo_server
 
-    results = client.check_permissions(SpiceDB::Consistency.full, 'view', numbered_rels(total))
+    results = client.check_bulk([numbered_rels(total)].flatten.map { |item| permission_check(item, 'view') }, consistency: SpiceDB::Consistency.full)
 
     expect(results.map { |r| r.missing_context.first }).to eq((0...total).map { |i| format('%05d', i) })
   end
@@ -99,7 +101,7 @@ RSpec.describe 'SpiceDB::Client#check_permissions chunking' do
       # The common case must not regress into a loop with per-chunk overhead.
       sizes = stub_echo_server
 
-      results = client.check_permissions(SpiceDB::Consistency.full, 'view', numbered_rels(n))
+      results = client.check_bulk([numbered_rels(n)].flatten.map { |item| permission_check(item, 'view') }, consistency: SpiceDB::Consistency.full)
 
       expect(results.length).to eq(n)
       expect(sizes).to eq([n])
@@ -111,7 +113,7 @@ RSpec.describe 'SpiceDB::Client#check_permissions chunking' do
     # empty item list -- and returns [] rather than raising.
     sizes = stub_echo_server
 
-    expect(client.check_permissions(SpiceDB::Consistency.full, 'view')).to eq([])
+    expect(client.check_bulk([], consistency: SpiceDB::Consistency.full)).to eq([])
     expect(sizes).to eq([])
   end
 
@@ -120,7 +122,7 @@ RSpec.describe 'SpiceDB::Client#check_permissions chunking' do
     # checks is false, and it costs no request.
     sizes = stub_echo_server
 
-    expect(client.check_all(SpiceDB::Consistency.full, 'view')).to be(false)
+    expect(!client.check_bulk([], consistency: SpiceDB::Consistency.full).empty?).to be(false)
     expect(sizes).to eq([])
   end
 
@@ -132,7 +134,7 @@ RSpec.describe 'SpiceDB::Client#check_permissions chunking' do
     sizes = stub_echo_server(short_at: 1)
 
     expect do
-      client.check_permissions(SpiceDB::Consistency.full, 'view', numbered_rels(total))
+      client.check_bulk([numbered_rels(total)].flatten.map { |item| permission_check(item, 'view') }, consistency: SpiceDB::Consistency.full)
     end.to raise_error(SpiceDB::Error, /999 pair\(s\) for 1000 request item\(s\)/)
 
     # Two requests went out before the guard fired -- proof the failure was
@@ -150,7 +152,7 @@ RSpec.describe 'SpiceDB::Client#check_permissions chunking' do
     stub_echo_server(malformed_at_absolute: failing)
 
     expect do
-      client.check_permissions(SpiceDB::Consistency.full, 'view', numbered_rels(batch_size * 2))
+      client.check_bulk([numbered_rels(batch_size * 2)].flatten.map { |item| permission_check(item, 'view') }, consistency: SpiceDB::Consistency.full)
     end.to raise_error(SpiceDB::Error, /check item #{failing}: malformed/)
   end
 end

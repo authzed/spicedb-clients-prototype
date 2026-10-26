@@ -10,6 +10,8 @@ import (
 	"os"
 	"slices"
 
+	"github.com/authzed/spicedb-clients/spicedb-go/examples/internal/exampleutil"
+
 	"github.com/authzed/spicedb-clients/spicedb-go/client"
 	"github.com/authzed/spicedb-clients/spicedb-go/consistency"
 	"github.com/authzed/spicedb-clients/spicedb-go/rel"
@@ -31,7 +33,7 @@ func main() {
 	ctx := context.Background()
 
 	// Setup: write schema
-	_, err = c.WriteSchema(ctx, `definition user {}
+	_, err = c.WriteSchema(ctx, client.WriteSchemaRequest{Schema: `definition user {}
 
 definition document {
 	relation viewer: user
@@ -40,7 +42,7 @@ definition document {
 	permission view = viewer + editor + owner
 	permission edit = editor + owner
 	permission delete = owner
-}`)
+}`})
 	if err != nil {
 		log.Fatalf("write schema failed: %v", err)
 	}
@@ -49,16 +51,16 @@ definition document {
 	var txn rel.Txn
 	users := []string{"alice", "bob", "charlie"}
 	for _, user := range users {
-		if err := txn.Touch(rel.MustFromTriple("document", "report", "viewer", "user", user, "")); err != nil {
+		if err := txn.Touch(exampleutil.Must(rel.NewRelationship(exampleutil.Object("document", "report"), "viewer", exampleutil.Subject(exampleutil.Object("user", user), "")))); err != nil {
 			log.Fatalf("failed to add relationship to transaction: %v", err)
 		}
 	}
-	revision, err := c.Write(ctx, txn)
+	revision, err := c.Write(ctx, client.WriteRequest{Transaction: txn})
 	if err != nil {
 		log.Fatalf("bulk write failed: %v", err)
 	}
-	fmt.Printf("wrote %d relationships at revision: %s\n", len(users), revision)
-	if revision == "" {
+	fmt.Printf("wrote %d relationships at revision: %s\n", len(users), revision.Revision)
+	if revision.Revision.String() == "" {
 		log.Fatalf("expected non-empty revision")
 	}
 
@@ -67,12 +69,11 @@ definition document {
 	// the results concatenated in input order -- SpiceDB rejects a single
 	// request carrying more than 10,000. Nothing here changes for a
 	// larger slice.
-	var checks []rel.Relationship
-	for _, user := range users {
-		checks = append(checks, rel.MustFromTriple("document", "report", "view", "user", user, ""))
+	checks := make([]client.PermissionCheck, len(users))
+	for i, user := range users {
+		checks[i] = client.PermissionCheck{Resource: exampleutil.Object("document", "report"), Permission: "view", Subject: exampleutil.Subject(exampleutil.Object("user", user), ""), Consistency: consistency.AtLeast(revision.Revision)}
 	}
-
-	results, err := c.Check(ctx, consistency.AtLeast(revision), "view", checks...)
+	results, err := c.CheckBulk(ctx, checks)
 	if err != nil {
 		log.Fatalf("bulk check failed: %v", err)
 	}
@@ -84,47 +85,38 @@ definition document {
 		}
 	}
 
-	// CheckAll
-	allAllowed, err := c.CheckAll(ctx, consistency.AtLeast(revision), "view", checks...)
-	if err != nil {
-		log.Fatalf("check all failed: %v", err)
+	// Aggregate only unconditional grants. Empty input never grants.
+	allAllowed, anyAllowed := len(results) > 0, false
+	for _, result := range results {
+		allAllowed = allAllowed && result.HasPermission()
+		anyAllowed = anyAllowed || result.HasPermission()
 	}
-	fmt.Printf("all users can view: %v\n", allAllowed)
-	if !allAllowed {
-		log.Fatalf("expected all users to have view permission")
+	if !allAllowed || !anyAllowed {
+		log.Fatal("expected every bulk check to grant")
 	}
-
-	// CheckAny
-	anyAllowed, err := c.CheckAny(ctx, consistency.AtLeast(revision), "view", checks...)
-	if err != nil {
-		log.Fatalf("check any failed: %v", err)
-	}
-	fmt.Printf("any user can view: %v\n", anyAllowed)
-	if !anyAllowed {
-		log.Fatalf("expected at least one user to have view permission")
-	}
+	fmt.Printf("all users can view: %v; any user can view: %v\n", allAllowed, anyAllowed)
 
 	// Bulk import relationships. ImportRelationships streams relationships
 	// from an iter.Seq, batching them automatically.
 	imported := []rel.Relationship{
-		rel.MustFromTriple("document", "bulkdoc1", "viewer", "user", "dave", ""),
-		rel.MustFromTriple("document", "bulkdoc2", "viewer", "user", "erin", ""),
-		rel.MustFromTriple("document", "bulkdoc3", "viewer", "user", "frank", ""),
+		exampleutil.Must(rel.NewRelationship(exampleutil.Object("document", "bulkdoc1"), "viewer", exampleutil.Subject(exampleutil.Object("user", "dave"), ""))),
+		exampleutil.Must(rel.NewRelationship(exampleutil.Object("document", "bulkdoc2"), "viewer", exampleutil.Subject(exampleutil.Object("user", "erin"), ""))),
+		exampleutil.Must(rel.NewRelationship(exampleutil.Object("document", "bulkdoc3"), "viewer", exampleutil.Subject(exampleutil.Object("user", "frank"), ""))),
 	}
-	numLoaded, err := c.ImportRelationships(ctx, slices.Values(imported))
+	numLoaded, err := c.ImportRelationships(ctx, client.ImportRelationshipsRequest{Relationships: slices.Values(imported)})
 	if err != nil {
 		log.Fatalf("import relationships failed: %v", err)
 	}
-	fmt.Printf("imported %d relationships\n", numLoaded)
-	if numLoaded != uint64(len(imported)) {
-		log.Fatalf("expected %d relationships imported, got %d", len(imported), numLoaded)
+	fmt.Printf("imported %d relationships\n", numLoaded.ImportedCount)
+	if numLoaded.ImportedCount != uint64(len(imported)) {
+		log.Fatalf("expected %d relationships imported, got %d", len(imported), numLoaded.ImportedCount)
 	}
 
 	// Bulk export relationships. ExportRelationships returns an iterator that
 	// transparently pages through all matching relationships.
-	exportFilter := rel.NewFilter("document").WithResourceIDPrefix("bulkdoc")
+	exportFilter := exampleutil.Must(rel.NewFilter("document")).WithResourceIDPrefix("bulkdoc")
 	exportCount := 0
-	for r, err := range c.ExportRelationships(ctx, consistency.Full(), &exportFilter) {
+	for r, err := range c.ExportRelationships(ctx, client.ExportRelationshipsRequest{Consistency: consistency.Full()}, client.WithExportRelationshipsFilter(exportFilter)) {
 		if err != nil {
 			log.Fatalf("export relationships failed: %v", err)
 		}
@@ -138,7 +130,7 @@ definition document {
 	// Clean up so later examples that write a narrower schema aren't blocked
 	// by leftover relationships (examples run in sequence against one shared
 	// SpiceDB instance).
-	if _, err := c.DeleteRelationships(ctx, rel.NewFilter("document")); err != nil {
+	if _, err := c.DeleteAllRelationshipsNonAtomic(ctx, client.DeleteAllRequest{Filter: exampleutil.Must(rel.NewFilter("document"))}); err != nil {
 		log.Fatalf("cleanup failed: %v", err)
 	}
 }

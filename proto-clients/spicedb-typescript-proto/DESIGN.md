@@ -1,5 +1,7 @@
 # spicedb-typescript-proto — Design Manifest
 
+- The [root design](../../DESIGN.md) defines shared semantics, RPC coverage, security, and verification.
+
 This is the TypeScript proto client for SpiceDB. It wraps buf-generated
 Connect-ES stubs with minimal boilerplate for connection setup and
 authentication.
@@ -94,3 +96,32 @@ marked as such.
 - No business logic — only plumbing
 - All proto types re-exported as-is
 - Generated files under `src/gen/` are never modified
+
+## 2026-10-26 transport contract
+
+The canonical factory is `createSpiceDBClient(endpoint, token, options?)`;
+replace the stale `createClient` wrapper name above rather than exporting both.
+Add the generated materialize RoaringLookupResourcesService as `materialize`
+and export its messages. This is a separate service, not an ExperimentalService
+method. Protocol-generated names themselves remain unchanged.
+
+ClientOptions includes `allowInsecureRemoteCredentials?: boolean`; reject remote
+plaintext credentials unless it is explicitly true. The loopback guard uses the
+same URL parser as the transport and rejects authority-shifting syntax before
+opening a session. This transport does not dial Unix sockets: reject Unix
+targets rather than treating a DNS hostname `unix` as loopback. TLS material
+never supplies another transport mode or bypasses these guards.
+
+All option fields and header collections are readonly inputs. Forward the
+caller's AbortSignal and remaining timeout on every RPC shape, including unary
+mutations, server streams, and client-streaming import. Already-aborted calls
+perform no network work. Cancellation releases HTTP/2 streams and must remain
+reachable through exposed iterator cleanup; interceptors preserve auth headers
+and never overwrite signal/deadline options. close() terminates owned sessions
+and calls. The idiomatic layer alone owns retries, total budgets, chunking,
+and native errors; this layer does not restart calls or reset durations.
+
+Export native generated debug and materialize roaring definitions from index.ts.
+`SpiceDBProtoClient.materialize` is a Connect client for RoaringLookupResourcesService
+created using the same authenticated transport as the other services. Never create
+a second session to expose it. Tests exercise a call through the supplied transport.

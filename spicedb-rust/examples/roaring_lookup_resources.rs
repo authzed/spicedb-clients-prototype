@@ -107,17 +107,23 @@ async fn spawn() -> (SocketAddr, CapturedRequest) {
 #[tokio::main]
 async fn main() {
     let (addr, captured) = spawn().await;
-    let client = SpiceDBClient::new_plaintext(format!("{addr}"), "some-token")
-        .await
-        .expect("connect to the stand-in");
+    let client = SpiceDBClient::new_plaintext(
+        format!("{addr}"),
+        "some-token",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("connect to the stand-in");
 
     let result = client
         .experimental_roaring_lookup_resources(
-            &consistency::full(),
-            "document",
-            "view",
-            "user",
-            "alice",
+            spicedb::ExperimentalRoaringLookupResourcesRequest::new(
+                "document",
+                "view",
+                spicedb::SubjectRef::new(spicedb::ObjectRef::new("user", "alice").unwrap(), None)
+                    .unwrap(),
+                (consistency::full()).clone(),
+            ),
         )
         .await
         .expect("roaring lookup failed");
@@ -134,7 +140,8 @@ async fn main() {
         "cardinality must come from the response, not be recomputed from the bitmap"
     );
     assert_eq!(
-        result.at_revision, "rev-1",
+        result.at_revision.as_ref(),
+        "rev-1",
         "at_revision must be the response's ZedToken token, not the proto message itself"
     );
     println!(
@@ -166,11 +173,13 @@ async fn main() {
     // wrong) bitmap.
     let err = client
         .experimental_roaring_lookup_resources(
-            &consistency::full(),
-            "document",
-            "non-canonical-ids",
-            "user",
-            "alice",
+            spicedb::ExperimentalRoaringLookupResourcesRequest::new(
+                "document",
+                "non-canonical-ids",
+                spicedb::SubjectRef::new(spicedb::ObjectRef::new("user", "alice").unwrap(), None)
+                    .unwrap(),
+                (consistency::full()).clone(),
+            ),
         )
         .await
         .expect_err("a non-canonical resource object id must fail, not return a partial bitmap");
@@ -184,13 +193,18 @@ async fn main() {
     // deadline, per root DESIGN.md, "RULE: A unary call must have a
     // deadline".
     let result = client
-        .experimental_roaring_lookup_resources_with_timeout(
-            &consistency::full(),
-            "document",
-            "view",
-            "user",
-            "alice",
-            Duration::from_secs(5),
+        .experimental_roaring_lookup_resources(
+            spicedb::ExperimentalRoaringLookupResourcesRequest::new(
+                "document",
+                "view",
+                spicedb::SubjectRef::new(spicedb::ObjectRef::new("user", "alice").unwrap(), None)
+                    .unwrap(),
+                (consistency::full()).clone(),
+            )
+            .with_options(
+                spicedb::ExperimentalRoaringLookupResourcesOptions::new()
+                    .with_timeout(Duration::from_secs(5)),
+            ),
         )
         .await
         .expect("with_timeout variant failed");

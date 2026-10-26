@@ -15,6 +15,27 @@ namespace SpiceDB.Client.Tests;
 
 public class WatchResumabilityTests
 {
+    [Theory]
+    [InlineData(WatchContent.Relationships)]
+    [InlineData(WatchContent.Checkpoints)]
+    [InlineData(WatchContent.SchemaUpdates)]
+    [InlineData(WatchContent.Relationships | WatchContent.Checkpoints | WatchContent.SchemaUpdates)]
+    public async Task WatchContentSelectsExactlyRequestedKinds(WatchContent content)
+    {
+        WatchRequest? captured = null;
+        var watch = new Mock<WatchService.WatchServiceClient>();
+        watch.Setup(c => c.Watch(It.IsAny<WatchRequest>(), It.IsAny<Metadata>(), It.IsAny<DateTime?>(), It.IsAny<CancellationToken>()))
+            .Callback<WatchRequest, Metadata, DateTime?, CancellationToken>((request, _, _, _) => captured = request)
+            .Returns(MakeServerStreamingCall(new FakeStreamReader<WatchResponse>([])));
+        await using var client = NewClient(watch: watch.Object);
+        await foreach (var _ in client.UpdatesAsync([], new SpiceDB.Client.ZedToken(" opaque+/= "), new WatchOptions { Content = content })) { }
+        Assert.NotNull(captured);
+        Assert.Equal(" opaque+/= ", captured.OptionalStartCursor.Token);
+        Assert.Equal(content.HasFlag(WatchContent.Relationships), captured.OptionalUpdateKinds.Contains(WatchKind.IncludeRelationshipUpdates));
+        Assert.Equal(content.HasFlag(WatchContent.Checkpoints), captured.OptionalUpdateKinds.Contains(WatchKind.IncludeCheckpoints));
+        Assert.Equal(content.HasFlag(WatchContent.SchemaUpdates), captured.OptionalUpdateKinds.Contains(WatchKind.IncludeSchemaUpdates));
+    }
+
     [Fact]
     public async Task UpdatesAsync_WatchEvent_ExposesUsableResumeToken()
     {
@@ -27,21 +48,21 @@ public class WatchResumabilityTests
                 It.IsAny<CancellationToken>()))
             .Returns(MakeServerStreamingCall(new FakeStreamReader<WatchResponse>(
             [
-                new WatchResponse { ChangesThrough = new ZedToken { Token = "resume-me" } },
+                new WatchResponse { ChangesThrough = new Authzed.Api.V1.ZedToken { Token = "resume-me" } },
             ])));
 
         await using var client = NewClient(watch: mockWatch.Object);
 
         var events = new List<WatchEvent>();
-        await foreach (var e in client.UpdatesAsync())
+        await foreach (var e in client.UpdatesAsync([], null, new WatchOptions { Content = WatchContent.Relationships }, default))
             events.Add(e);
 
         events.Should().HaveCount(1);
-        events[0].ChangesThrough.Should().Be("resume-me");
+        events[0].ChangesThrough.Value.Should().Be("resume-me");
     }
 
     [Fact]
-    public async Task UpdatesAsync_WithoutIncludeCheckpoints_RequestsNoUpdateKinds()
+    public async Task UpdatesAsync_RelationshipContent_RequestsOnlyRelationships()
     {
         var captured = new List<WatchRequest>();
         var mockWatch = new Mock<WatchService.WatchServiceClient>();
@@ -56,12 +77,12 @@ public class WatchResumabilityTests
 
         await using var client = NewClient(watch: mockWatch.Object);
 
-        await foreach (var _ in client.UpdatesAsync())
+        await foreach (var _ in client.UpdatesAsync([], null, new WatchOptions { Content = WatchContent.Relationships }, default))
         {
         }
 
         captured.Should().HaveCount(1);
-        captured[0].OptionalUpdateKinds.Should().BeEmpty();
+        captured[0].OptionalUpdateKinds.Should().Equal(WatchKind.IncludeRelationshipUpdates);
     }
 
     [Fact]
@@ -80,7 +101,7 @@ public class WatchResumabilityTests
 
         await using var client = NewClient(watch: mockWatch.Object);
 
-        await foreach (var _ in client.UpdatesAsync(includeCheckpoints: true))
+        await foreach (var _ in client.UpdatesAsync([], null, new WatchOptions { Content = WatchContent.Relationships | WatchContent.Checkpoints }, default))
         {
         }
 
@@ -106,12 +127,12 @@ public class WatchResumabilityTests
             [
                 new WatchResponse
                 {
-                    ChangesThrough = new ZedToken { Token = "checkpoint-rev" },
+                    ChangesThrough = new Authzed.Api.V1.ZedToken { Token = "checkpoint-rev" },
                     IsCheckpoint = true,
                 },
                 new WatchResponse
                 {
-                    ChangesThrough = new ZedToken { Token = "update-rev" },
+                    ChangesThrough = new Authzed.Api.V1.ZedToken { Token = "update-rev" },
                     Updates =
                     {
                         new Authzed.Api.V1.RelationshipUpdate
@@ -126,18 +147,18 @@ public class WatchResumabilityTests
         await using var client = NewClient(watch: mockWatch.Object);
 
         var events = new List<WatchEvent>();
-        await foreach (var e in client.UpdatesAsync(includeCheckpoints: true))
+        await foreach (var e in client.UpdatesAsync([], null, new WatchOptions { Content = WatchContent.Relationships | WatchContent.Checkpoints }, default))
             events.Add(e);
 
         events.Should().HaveCount(2);
 
         events[0].IsCheckpoint.Should().BeTrue();
         events[0].Updates.Should().BeEmpty();
-        events[0].ChangesThrough.Should().Be("checkpoint-rev");
+        events[0].ChangesThrough.Value.Should().Be("checkpoint-rev");
 
         events[1].IsCheckpoint.Should().BeFalse();
         events[1].Updates.Should().HaveCount(1);
-        events[1].ChangesThrough.Should().Be("update-rev");
+        events[1].ChangesThrough.Value.Should().Be("update-rev");
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────

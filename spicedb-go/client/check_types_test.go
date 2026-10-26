@@ -39,7 +39,7 @@ func TestCheckResultCarriesMissingContext(t *testing.T) {
 	if !reflect.DeepEqual(r.MissingContext, []string{"now", "ip"}) {
 		t.Errorf("MissingContext = %v, want [now ip]", r.MissingContext)
 	}
-	if r.CheckedAt != "tok-1" {
+	if r.CheckedAt.String() != "tok-1" {
 		t.Errorf("CheckedAt = %q, want tok-1", r.CheckedAt)
 	}
 	if r.HasPermission() {
@@ -48,8 +48,7 @@ func TestCheckResultCarriesMissingContext(t *testing.T) {
 }
 
 // TestCheckResultFromBulkItem_PropagatesResponseLevelToken proves that the
-// bulk-item variant of the mapper — used by Check/CheckOne/CheckIter, which
-// call CheckBulkPermissions exclusively — carries the SAME checked_at token
+// bulk-item mapper used by CheckBulk and CheckIter — carries the SAME checked_at token
 // into every item, since CheckBulkPermissionsResponseItem has no per-item
 // checked_at field of its own (only the response as a whole does).
 func TestCheckResultFromBulkItem_PropagatesResponseLevelToken(t *testing.T) {
@@ -60,7 +59,7 @@ func TestCheckResultFromBulkItem_PropagatesResponseLevelToken(t *testing.T) {
 	if r.Permissionship != PermissionshipHasPermission {
 		t.Errorf("got %v, want HasPermission", r.Permissionship)
 	}
-	if r.CheckedAt != "response-tok" {
+	if r.CheckedAt.String() != "response-tok" {
 		t.Errorf("CheckedAt = %q, want response-tok", r.CheckedAt)
 	}
 	if len(r.MissingContext) != 0 {

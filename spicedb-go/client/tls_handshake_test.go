@@ -74,7 +74,7 @@ func TestNewSystemTLS_CompletesRealHandshake(t *testing.T) {
 	// The constructor is lazy, so it proves nothing by itself. This RPC is what forces
 	// the connection, and with it the handshake -- clause 2: "where the constructor is
 	// lazy, force the connection inside the test".
-	_, _, err = c.ReadSchema(ctx)
+	_, err = c.ReadSchema(ctx, client.ReadSchemaRequest{})
 	if err == nil {
 		return // a successful RPC is, a fortiori, a completed handshake
 	}

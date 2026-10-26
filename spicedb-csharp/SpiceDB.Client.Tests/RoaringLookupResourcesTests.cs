@@ -35,7 +35,7 @@ public class RoaringLookupResourcesTests
                 {
                     Bitmap = ByteString.CopyFrom([1, 2, 3, 4]),
                     Cardinality = 2,
-                    AtRevision = new ZedToken { Token = "tok" },
+                    AtRevision = new Authzed.Api.V1.ZedToken { Token = "tok" },
                 }));
 
         mockMaterialize = mock;
@@ -54,8 +54,7 @@ public class RoaringLookupResourcesTests
     {
         var client = NewClient(out _, out var captured);
 
-        await client.ExperimentalRoaringLookupResourcesAsync(
-            Consistency.Full(), "document", "view", "user", "alice");
+        await client.ExperimentalRoaringLookupResourcesAsync(Consistency.Full(), "document", "view", new SubjectRef(new ObjectRef("user", "alice")), null, default);
 
         captured.Should().HaveCount(1);
         captured[0].ResourceObjectType.Should().Be("document");
@@ -69,12 +68,11 @@ public class RoaringLookupResourcesTests
     {
         var client = NewClient(out _, out _);
 
-        var result = await client.ExperimentalRoaringLookupResourcesAsync(
-            Consistency.Full(), "document", "view", "user", "alice");
+        var result = await client.ExperimentalRoaringLookupResourcesAsync(Consistency.Full(), "document", "view", new SubjectRef(new ObjectRef("user", "alice")), null, default);
 
         result.Bitmap.Should().Equal(1, 2, 3, 4);
         result.Cardinality.Should().Be(2u);
-        result.AtRevision.Should().Be("tok");
+        result.AtRevision.Value.Should().Be("tok");
     }
 
     [Fact]
@@ -82,8 +80,7 @@ public class RoaringLookupResourcesTests
     {
         var client = NewClient(out _, out _);
 
-        var act = async () => await client.ExperimentalRoaringLookupResourcesAsync(
-            null!, "document", "view", "user", "alice");
-        await act.Should().ThrowAsync<ArgumentNullException>();
+        var act = async () => await client.ExperimentalRoaringLookupResourcesAsync(null!, "document", "view", new SubjectRef(new ObjectRef("user", "alice")), null, default);
+        await act.Should().ThrowAsync<InvalidArgumentException>();
     }
 }

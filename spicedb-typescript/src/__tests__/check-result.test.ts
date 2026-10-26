@@ -1,68 +1,33 @@
+import { TransportSecurity } from "../modes.js";
+import { ZedToken } from "../types.js";
 import { describe, it, expect, vi } from "vitest";
 import { create } from "@bufbuild/protobuf";
-import {
-  CheckPermissionResponseSchema,
-  CheckBulkPermissionsResponseItemSchema,
-  PartialCaveatInfoSchema,
-  ZedTokenSchema,
-  CheckPermissionResponse_Permissionship,
-} from "@spicedb/proto";
-import {
-  CheckResult,
-  checkPermissionshipFromProto,
-  checkResultFromProto,
-  checkResultFromBulkItem,
-} from "../types.js";
+import { CheckPermissionResponseSchema, CheckBulkPermissionsResponseItemSchema, PartialCaveatInfoSchema, ZedTokenSchema, CheckPermissionResponse_Permissionship, } from "@spicedb/proto";
+import { CheckResult, checkPermissionshipFromProto, checkResultFromProto, checkResultFromBulkItem, } from "../types.js";
 import { SpiceDBClient } from "../client.js";
 import { full } from "../consistency.js";
-import {
-  PermissionDeniedError,
-  NotFoundError,
-  SpiceDBError,
-} from "../errors.js";
-
+import { PermissionDeniedError, NotFoundError, SpiceDBError, } from "../errors.js";
 // ---------------------------------------------------------------------------
 // Pure mapper tests
 // ---------------------------------------------------------------------------
-
 describe("checkPermissionshipFromProto()", () => {
-  it("maps HAS_PERMISSION", () => {
-    expect(
-      checkPermissionshipFromProto(
-        CheckPermissionResponse_Permissionship.HAS_PERMISSION,
-      ),
-    ).toBe("hasPermission");
-  });
-
-  it("maps NO_PERMISSION (a value CheckPermissionResponse has that LookupPermissionship does not)", () => {
-    expect(
-      checkPermissionshipFromProto(
-        CheckPermissionResponse_Permissionship.NO_PERMISSION,
-      ),
-    ).toBe("noPermission");
-  });
-
-  it("maps CONDITIONAL_PERMISSION", () => {
-    expect(
-      checkPermissionshipFromProto(
-        CheckPermissionResponse_Permissionship.CONDITIONAL_PERMISSION,
-      ),
-    ).toBe("conditionalPermission");
-  });
-
-  it("maps UNSPECIFIED", () => {
-    expect(
-      checkPermissionshipFromProto(
-        CheckPermissionResponse_Permissionship.UNSPECIFIED,
-      ),
-    ).toBe("unspecified");
-  });
+    it("maps HAS_PERMISSION", () => {
+        expect(checkPermissionshipFromProto(CheckPermissionResponse_Permissionship.HAS_PERMISSION)).toBe("hasPermission");
+    });
+    it("maps NO_PERMISSION (a value CheckPermissionResponse has that LookupPermissionship does not)", () => {
+        expect(checkPermissionshipFromProto(CheckPermissionResponse_Permissionship.NO_PERMISSION)).toBe("noPermission");
+    });
+    it("maps CONDITIONAL_PERMISSION", () => {
+        expect(checkPermissionshipFromProto(CheckPermissionResponse_Permissionship.CONDITIONAL_PERMISSION)).toBe("conditionalPermission");
+    });
+    it("maps UNSPECIFIED", () => {
+        expect(checkPermissionshipFromProto(CheckPermissionResponse_Permissionship.UNSPECIFIED)).toBe("unspecified");
+    });
 });
-
 // ---------------------------------------------------------------------------
 // T1 — THE regression guard on the fail-open this task exists to close.
 //
-// Before this change, spicedb-typescript's checkPermission/checkPermissions
+// Before this change, spicedb-typescript's checkPermission/checkBulk
 // collapsed CONDITIONAL_PERMISSION into `true` (client.ts OR'd
 // HAS_PERMISSION and CONDITIONAL_PERMISSION together), granting access on a
 // caveat the server could not evaluate because the required context was
@@ -72,110 +37,94 @@ describe("checkPermissionshipFromProto()", () => {
 // the wrong reason, the fail-open is back.
 // ---------------------------------------------------------------------------
 describe("CheckResult.hasPermission() — fail-open regression guard (T1)", () => {
-  it.each([
-    ["unspecified", false],
-    ["noPermission", false],
-    ["hasPermission", true],
-    ["conditionalPermission", false],
-  ] as const)(
-    "permissionship=%s -> hasPermission()=%s",
-    (permissionship, expected) => {
-      const result = new CheckResult(permissionship, [], "");
-      expect(result.hasPermission()).toBe(expected);
-    },
-  );
-
-  it("is false for a conditional result specifically — this exact case used to fail open to `true`", () => {
-    const result = new CheckResult("conditionalPermission", ["now"], "rev-1");
-    expect(result.hasPermission()).toBe(false);
-  });
-
-  it("checkResultFromProto: a CONDITIONAL_PERMISSION response yields hasPermission() === false", () => {
-    const resp = create(CheckPermissionResponseSchema, {
-      permissionship:
-        CheckPermissionResponse_Permissionship.CONDITIONAL_PERMISSION,
-      partialCaveatInfo: create(PartialCaveatInfoSchema, {
-        missingRequiredContext: ["now"],
-      }),
+    it.each([
+        ["unspecified", false],
+        ["noPermission", false],
+        ["hasPermission", true],
+        ["conditionalPermission", false],
+    ] as const)("permissionship=%s -> hasPermission()=%s", (permissionship, expected) => {
+        const result = new CheckResult(permissionship, [], new ZedToken(""));
+        expect(result.hasPermission()).toBe(expected);
     });
-    expect(checkResultFromProto(resp).hasPermission()).toBe(false);
-  });
+    it("is false for a conditional result specifically — this exact case used to fail open to `true`", () => {
+        const result = new CheckResult("conditionalPermission", ["now"], new ZedToken("rev-1"));
+        expect(result.hasPermission()).toBe(false);
+    });
+    it("checkResultFromProto: a CONDITIONAL_PERMISSION response yields hasPermission() === false", () => {
+        const resp = create(CheckPermissionResponseSchema, {
+            permissionship: CheckPermissionResponse_Permissionship.CONDITIONAL_PERMISSION,
+            partialCaveatInfo: create(PartialCaveatInfoSchema, {
+                missingRequiredContext: ["now"]
+            })
+        });
+        expect(checkResultFromProto(resp).hasPermission()).toBe(false);
+    });
 });
-
 describe("checkResultFromProto()", () => {
-  it("maps a HAS_PERMISSION response, with no missing context, and hasPermission() true", () => {
-    const resp = create(CheckPermissionResponseSchema, {
-      permissionship: CheckPermissionResponse_Permissionship.HAS_PERMISSION,
-      checkedAt: create(ZedTokenSchema, { token: "rev-1" }),
+    it("maps a HAS_PERMISSION response, with no missing context, and hasPermission() true", () => {
+        const resp = create(CheckPermissionResponseSchema, {
+            permissionship: CheckPermissionResponse_Permissionship.HAS_PERMISSION,
+            checkedAt: create(ZedTokenSchema, { token: "rev-1" })
+        });
+        const result = checkResultFromProto(resp);
+        expect(result.permissionship).toBe("hasPermission");
+        expect(result.hasPermission()).toBe(true);
+        expect(result.missingContext).toEqual([]);
     });
-    const result = checkResultFromProto(resp);
-    expect(result.permissionship).toBe("hasPermission");
-    expect(result.hasPermission()).toBe(true);
-    expect(result.missingContext).toEqual([]);
-  });
-
-  // T2 — asserted by exact value, not merely "non-empty".
-  it("carries the server's missing_required_context contents by value (T2)", () => {
-    const resp = create(CheckPermissionResponseSchema, {
-      permissionship:
-        CheckPermissionResponse_Permissionship.CONDITIONAL_PERMISSION,
-      partialCaveatInfo: create(PartialCaveatInfoSchema, {
-        missingRequiredContext: ["now", "region"],
-      }),
+    // T2 — asserted by exact value, not merely "non-empty".
+    it("carries the server's missing_required_context contents by value (T2)", () => {
+        const resp = create(CheckPermissionResponseSchema, {
+            permissionship: CheckPermissionResponse_Permissionship.CONDITIONAL_PERMISSION,
+            partialCaveatInfo: create(PartialCaveatInfoSchema, {
+                missingRequiredContext: ["now", "region"]
+            })
+        });
+        const result = checkResultFromProto(resp);
+        expect(result.missingContext).toEqual(["now", "region"]);
     });
-    const result = checkResultFromProto(resp);
-    expect(result.missingContext).toEqual(["now", "region"]);
-  });
-
-  // T3 — the checked-at token is populated from the response.
-  it("populates checkedAt from the response's checked_at token (T3)", () => {
-    const resp = create(CheckPermissionResponseSchema, {
-      permissionship: CheckPermissionResponse_Permissionship.HAS_PERMISSION,
-      checkedAt: create(ZedTokenSchema, { token: "rev-123" }),
+    // T3 — the checked-at token is populated from the response.
+    it("populates checkedAt from the response's checked_at token (T3)", () => {
+        const resp = create(CheckPermissionResponseSchema, {
+            permissionship: CheckPermissionResponse_Permissionship.HAS_PERMISSION,
+            checkedAt: create(ZedTokenSchema, { token: "rev-123" })
+        });
+        expect(checkResultFromProto(resp).checkedAt.toString()).toBe("rev-123");
     });
-    expect(checkResultFromProto(resp).checkedAt).toBe("rev-123");
-  });
-
-  it("maps NO_PERMISSION", () => {
-    const resp = create(CheckPermissionResponseSchema, {
-      permissionship: CheckPermissionResponse_Permissionship.NO_PERMISSION,
+    it("maps NO_PERMISSION", () => {
+        const resp = create(CheckPermissionResponseSchema, {
+            permissionship: CheckPermissionResponse_Permissionship.NO_PERMISSION
+        });
+        const result = checkResultFromProto(resp);
+        expect(result.permissionship).toBe("noPermission");
+        expect(result.hasPermission()).toBe(false);
     });
-    const result = checkResultFromProto(resp);
-    expect(result.permissionship).toBe("noPermission");
-    expect(result.hasPermission()).toBe(false);
-  });
-
-  it("defaults checkedAt to empty string when unset", () => {
-    const resp = create(CheckPermissionResponseSchema, {
-      permissionship: CheckPermissionResponse_Permissionship.HAS_PERMISSION,
+    it("defaults checkedAt to empty string when unset", () => {
+        const resp = create(CheckPermissionResponseSchema, {
+            permissionship: CheckPermissionResponse_Permissionship.HAS_PERMISSION
+        });
+        expect(checkResultFromProto(resp).checkedAt.toString()).toBe("");
     });
-    expect(checkResultFromProto(resp).checkedAt).toBe("");
-  });
 });
-
 describe("checkResultFromBulkItem()", () => {
-  it("uses the passed-in responseCheckedAt — CheckBulkPermissionsResponseItem has no per-item token", () => {
-    const item = create(CheckBulkPermissionsResponseItemSchema, {
-      permissionship:
-        CheckPermissionResponse_Permissionship.CONDITIONAL_PERMISSION,
-      partialCaveatInfo: create(PartialCaveatInfoSchema, {
-        missingRequiredContext: ["now"],
-      }),
+    it("uses the passed-in responseCheckedAt — CheckBulkPermissionsResponseItem has no per-item token", () => {
+        const item = create(CheckBulkPermissionsResponseItemSchema, {
+            permissionship: CheckPermissionResponse_Permissionship.CONDITIONAL_PERMISSION,
+            partialCaveatInfo: create(PartialCaveatInfoSchema, {
+                missingRequiredContext: ["now"]
+            })
+        });
+        const result = checkResultFromBulkItem(item, new ZedToken("response-level-token"));
+        expect(result.checkedAt.toString()).toBe("response-level-token");
+        expect(result.missingContext).toEqual(["now"]);
+        expect(result.hasPermission()).toBe(false);
     });
-    const result = checkResultFromBulkItem(item, "response-level-token");
-    expect(result.checkedAt).toBe("response-level-token");
-    expect(result.missingContext).toEqual(["now"]);
-    expect(result.hasPermission()).toBe(false);
-  });
-
-  it("maps HAS_PERMISSION with hasPermission() true", () => {
-    const item = create(CheckBulkPermissionsResponseItemSchema, {
-      permissionship: CheckPermissionResponse_Permissionship.HAS_PERMISSION,
+    it("maps HAS_PERMISSION with hasPermission() true", () => {
+        const item = create(CheckBulkPermissionsResponseItemSchema, {
+            permissionship: CheckPermissionResponse_Permissionship.HAS_PERMISSION
+        });
+        expect(checkResultFromBulkItem(item, new ZedToken("r")).hasPermission()).toBe(true);
     });
-    expect(checkResultFromBulkItem(item, "r").hasPermission()).toBe(true);
-  });
 });
-
 // ---------------------------------------------------------------------------
 // Client-level tests: SpiceDBClient doesn't accept a proto client via its
 // public constructor, so these replace the private `proto` field at runtime
@@ -183,272 +132,267 @@ describe("checkResultFromBulkItem()", () => {
 // streaming-retry.test.ts's harness (adapted here for unary, not streaming,
 // RPCs).
 // ---------------------------------------------------------------------------
-
 interface FakeProto {
-  permissions?: Record<string, ReturnType<typeof vi.fn>>;
+    permissions?: Record<string, ReturnType<typeof vi.fn>>;
 }
-
 function clientWithFakeProto(fake: FakeProto): SpiceDBClient {
-  const client = new SpiceDBClient({
-    endpoint: "localhost:50051",
-    token: "test-token",
-    insecure: true,
-  });
-  (client as unknown as { proto: FakeProto }).proto = fake;
-  return client;
+    const client = new SpiceDBClient({
+        endpoint: "localhost:50051",
+        token: "test-token",
+        transportSecurity: TransportSecurity.Plaintext
+    });
+    const bulk = fake.permissions?.checkBulkPermissions;
+    if (bulk) {
+        fake.permissions!.checkBulkPermissions = vi.fn(async (request: import("@spicedb/proto").CheckBulkPermissionsRequest) => {
+            const response = await Reflect.apply(bulk, undefined, [request]);
+            // Standard response fixtures echo each request like the real service.
+            response.pairs.forEach((pair: { request?: unknown }, index: number) => { pair.request = request.items[index]; });
+            return response;
+        });
+    }
+    (client as unknown as {
+        proto: FakeProto;
+    }).proto = fake;
+    return client;
 }
-
-const aCheck = (overrides: Partial<Parameters<SpiceDBClient["checkPermission"]>[1]> = {}) => ({
-  resourceType: "document",
-  resourceId: "1",
-  permission: "view",
-  subjectType: "user",
-  subjectId: "jimmy",
-  ...overrides,
+const aCheck = (overrides: Partial<Parameters<SpiceDBClient["check"]>[0]> = {}) => ({
+    permission: "view",
+    resource: {
+        objectType: "document",
+        objectId: "1"
+    },
+    subject: {
+        object: {
+            objectType: "user",
+            objectId: "jimmy"
+        }
+    },
+    consistency: full(), ...overrides
 });
-
 describe("SpiceDBClient.checkPermission()", () => {
-  it("returns a CheckResult (not a boolean), reflecting HAS_PERMISSION as a grant", async () => {
-    const fn = vi.fn().mockResolvedValue(
-      create(CheckPermissionResponseSchema, {
-        permissionship: CheckPermissionResponse_Permissionship.HAS_PERMISSION,
-        checkedAt: create(ZedTokenSchema, { token: "rev-9" }),
-      }),
-    );
-    const client = clientWithFakeProto({
-      permissions: { checkPermission: fn },
+    it("returns a CheckResult (not a boolean), reflecting HAS_PERMISSION as a grant", async () => {
+        const fn = vi.fn().mockResolvedValue(create(CheckPermissionResponseSchema, {
+            permissionship: CheckPermissionResponse_Permissionship.HAS_PERMISSION,
+            checkedAt: create(ZedTokenSchema, { token: "rev-9" })
+        }));
+        const client = clientWithFakeProto({
+            permissions: { checkPermission: fn }
+        });
+        const result = await client.check({
+            ...aCheck(),
+            consistency: full()
+        });
+        expect(result).toBeInstanceOf(CheckResult);
+        expect(result.hasPermission()).toBe(true);
+        expect(result.checkedAt.toString()).toBe("rev-9");
     });
-
-    const result = await client.checkPermission(full(), aCheck());
-    expect(result).toBeInstanceOf(CheckResult);
-    expect(result.hasPermission()).toBe(true);
-    expect(result.checkedAt).toBe("rev-9");
-  });
-
-  it("returns hasPermission()===false for a conditional response — the fail-open this task closes", async () => {
-    const fn = vi.fn().mockResolvedValue(
-      create(CheckPermissionResponseSchema, {
-        permissionship:
-          CheckPermissionResponse_Permissionship.CONDITIONAL_PERMISSION,
-        partialCaveatInfo: create(PartialCaveatInfoSchema, {
-          missingRequiredContext: ["now"],
-        }),
-        checkedAt: create(ZedTokenSchema, { token: "rev-10" }),
-      }),
-    );
-    const client = clientWithFakeProto({
-      permissions: { checkPermission: fn },
+    it("returns hasPermission()===false for a conditional response — the fail-open this task closes", async () => {
+        const fn = vi.fn().mockResolvedValue(create(CheckPermissionResponseSchema, {
+            permissionship: CheckPermissionResponse_Permissionship.CONDITIONAL_PERMISSION,
+            partialCaveatInfo: create(PartialCaveatInfoSchema, {
+                missingRequiredContext: ["now"]
+            }),
+            checkedAt: create(ZedTokenSchema, { token: "rev-10" })
+        }));
+        const client = clientWithFakeProto({
+            permissions: { checkPermission: fn }
+        });
+        const result = await client.check({
+            ...aCheck(),
+            consistency: full()
+        });
+        expect(result.permissionship).toBe("conditionalPermission");
+        expect(result.hasPermission()).toBe(false);
+        expect(result.missingContext).toEqual(["now"]);
     });
-
-    const result = await client.checkPermission(full(), aCheck());
-    expect(result.permissionship).toBe("conditionalPermission");
-    expect(result.hasPermission()).toBe(false);
-    expect(result.missingContext).toEqual(["now"]);
-  });
 });
-
-describe("SpiceDBClient.checkPermissions()", () => {
-  it("propagates the response-level checkedAt onto every item", async () => {
-    const fn = vi.fn().mockResolvedValue({
-      checkedAt: create(ZedTokenSchema, { token: "batch-rev" }),
-      pairs: [
-        {
-          response: {
-            case: "item",
-            value: create(CheckBulkPermissionsResponseItemSchema, {
-              permissionship:
-                CheckPermissionResponse_Permissionship.HAS_PERMISSION,
-            }),
-          },
-        },
-        {
-          response: {
-            case: "item",
-            value: create(CheckBulkPermissionsResponseItemSchema, {
-              permissionship:
-                CheckPermissionResponse_Permissionship.CONDITIONAL_PERMISSION,
-              partialCaveatInfo: create(PartialCaveatInfoSchema, {
-                missingRequiredContext: ["now"],
-              }),
-            }),
-          },
-        },
-      ],
+describe("SpiceDBClient.checkBulk()", () => {
+    it("propagates the response-level checkedAt onto every item", async () => {
+        const fn = vi.fn().mockResolvedValue({
+            checkedAt: create(ZedTokenSchema, { token: "batch-rev" }),
+            pairs: [
+                {
+                    response: {
+                        case: "item",
+                        value: create(CheckBulkPermissionsResponseItemSchema, {
+                            permissionship: CheckPermissionResponse_Permissionship.HAS_PERMISSION
+                        })
+                    }
+                },
+                {
+                    response: {
+                        case: "item",
+                        value: create(CheckBulkPermissionsResponseItemSchema, {
+                            permissionship: CheckPermissionResponse_Permissionship.CONDITIONAL_PERMISSION,
+                            partialCaveatInfo: create(PartialCaveatInfoSchema, {
+                                missingRequiredContext: ["now"]
+                            })
+                        })
+                    }
+                },
+            ]
+        });
+        const client = clientWithFakeProto({
+            permissions: { checkBulkPermissions: fn }
+        });
+        const results = await client.checkBulk([aCheck({ subject: {object: {objectType:"user",objectId:"a"}} }),
+            aCheck({ subject: {object: {objectType:"user",objectId:"b"}} })].map(request => ({
+            ...request,
+            consistency: full()
+        })));
+        expect(results).toHaveLength(2);
+        expect(results.every((r) => r.checkedAt.toString() === "batch-rev")).toBe(true);
+        expect(results[0].hasPermission()).toBe(true);
+        expect(results[1].hasPermission()).toBe(false); // conditional is NOT a grant
+        expect(results[1].missingContext).toEqual(["now"]);
     });
-    const client = clientWithFakeProto({
-      permissions: { checkBulkPermissions: fn },
+    // -------------------------------------------------------------------------
+    // HARD REQUIREMENT: a per-item CheckBulkPermissions error MUST surface as
+    // a typed SpiceDBError, never as a falsy/failing CheckResult. Before this
+    // fix, `pair.response.case === "error"` silently became `false` —
+    // indistinguishable from a real denial.
+    // -------------------------------------------------------------------------
+    it("surfaces a per-item error as a typed SpiceDBError instead of a falsy result", async () => {
+        const fn = vi.fn().mockResolvedValue({
+            checkedAt: create(ZedTokenSchema, { token: "batch-rev" }),
+            pairs: [
+                {
+                    response: {
+                        case: "error",
+                        value: { code: 7, message: "PERMISSION_DENIED: nope" }
+                    }
+                },
+            ]
+        });
+        const client = clientWithFakeProto({
+            permissions: { checkBulkPermissions: fn }
+        });
+        await expect(client.checkBulk([aCheck()].map(request => ({
+            ...request,
+            consistency: full()
+        })))).rejects.toBeInstanceOf(PermissionDeniedError);
     });
-
-    const results = await client.checkPermissions(
-      full(),
-      aCheck({ subjectId: "a" }),
-      aCheck({ subjectId: "b" }),
-    );
-
-    expect(results).toHaveLength(2);
-    expect(results.every((r) => r.checkedAt === "batch-rev")).toBe(true);
-    expect(results[0].hasPermission()).toBe(true);
-    expect(results[1].hasPermission()).toBe(false); // conditional is NOT a grant
-    expect(results[1].missingContext).toEqual(["now"]);
-  });
-
-  // -------------------------------------------------------------------------
-  // HARD REQUIREMENT: a per-item CheckBulkPermissions error MUST surface as
-  // a typed SpiceDBError, never as a falsy/failing CheckResult. Before this
-  // fix, `pair.response.case === "error"` silently became `false` —
-  // indistinguishable from a real denial.
-  // -------------------------------------------------------------------------
-  it("surfaces a per-item error as a typed SpiceDBError instead of a falsy result", async () => {
-    const fn = vi.fn().mockResolvedValue({
-      checkedAt: create(ZedTokenSchema, { token: "batch-rev" }),
-      pairs: [
-        {
-          response: {
-            case: "error",
-            value: { code: 7, message: "PERMISSION_DENIED: nope" }, // 7 = PermissionDenied
-          },
-        },
-      ],
+    it("maps different per-item error codes to their corresponding typed errors", async () => {
+        const fn = vi.fn().mockResolvedValue({
+            checkedAt: create(ZedTokenSchema, { token: "batch-rev" }),
+            pairs: [
+                { response: { case: "error", value: { code: 5, message: "not found" } } }, // 5 = NotFound
+            ]
+        });
+        const client = clientWithFakeProto({
+            permissions: { checkBulkPermissions: fn }
+        });
+        await expect(client.checkBulk([aCheck()].map(request => ({
+            ...request,
+            consistency: full()
+        })))).rejects.toBeInstanceOf(NotFoundError);
     });
-    const client = clientWithFakeProto({
-      permissions: { checkBulkPermissions: fn },
-    });
-
-    await expect(
-      client.checkPermissions(full(), aCheck()),
-    ).rejects.toBeInstanceOf(PermissionDeniedError);
-  });
-
-  it("maps different per-item error codes to their corresponding typed errors", async () => {
-    const fn = vi.fn().mockResolvedValue({
-      checkedAt: create(ZedTokenSchema, { token: "batch-rev" }),
-      pairs: [
-        { response: { case: "error", value: { code: 5, message: "not found" } } }, // 5 = NotFound
-      ],
-    });
-    const client = clientWithFakeProto({
-      permissions: { checkBulkPermissions: fn },
-    });
-
-    await expect(
-      client.checkPermissions(full(), aCheck()),
-    ).rejects.toBeInstanceOf(NotFoundError);
-  });
 });
-
-describe("checkAny / checkAll — conditional does not count as granted (fail-closed)", () => {
-  it("checkAny returns false when the only result is conditional", async () => {
-    const fn = vi.fn().mockResolvedValue({
-      checkedAt: create(ZedTokenSchema, { token: "r" }),
-      pairs: [
-        {
-          response: {
-            case: "item",
-            value: create(CheckBulkPermissionsResponseItemSchema, {
-              permissionship:
-                CheckPermissionResponse_Permissionship.CONDITIONAL_PERMISSION,
-            }),
-          },
-        },
-      ],
+describe("any aggregate / all aggregate — conditional does not count as granted (fail-closed)", () => {
+    it("any aggregate returns false when the only result is conditional", async () => {
+        const fn = vi.fn().mockResolvedValue({
+            checkedAt: create(ZedTokenSchema, { token: "r" }),
+            pairs: [
+                {
+                    response: {
+                        case: "item",
+                        value: create(CheckBulkPermissionsResponseItemSchema, {
+                            permissionship: CheckPermissionResponse_Permissionship.CONDITIONAL_PERMISSION
+                        })
+                    }
+                },
+            ]
+        });
+        const client = clientWithFakeProto({
+            permissions: { checkBulkPermissions: fn }
+        });
+        expect(await client.checkBulk([aCheck()].map(request => ({
+            ...request,
+            consistency: full()
+        }))).then(results => results.length > 0 && results.some(result => result.hasPermission()))).toBe(false);
     });
-    const client = clientWithFakeProto({
-      permissions: { checkBulkPermissions: fn },
+    it("all aggregate returns false when one of several results is conditional", async () => {
+        const fn = vi.fn().mockResolvedValue({
+            checkedAt: create(ZedTokenSchema, { token: "r" }),
+            pairs: [
+                {
+                    response: {
+                        case: "item",
+                        value: create(CheckBulkPermissionsResponseItemSchema, {
+                            permissionship: CheckPermissionResponse_Permissionship.HAS_PERMISSION
+                        })
+                    }
+                },
+                {
+                    response: {
+                        case: "item",
+                        value: create(CheckBulkPermissionsResponseItemSchema, {
+                            permissionship: CheckPermissionResponse_Permissionship.CONDITIONAL_PERMISSION
+                        })
+                    }
+                },
+            ]
+        });
+        const client = clientWithFakeProto({
+            permissions: { checkBulkPermissions: fn }
+        });
+        expect(await client.checkBulk([aCheck({ subject: {object: {objectType:"user",objectId:"a"}} }), aCheck({ subject: {object: {objectType:"user",objectId:"b"}} })].map(request => ({
+            ...request,
+            consistency: full()
+        }))).then(results => results.length > 0 && results.every(result => result.hasPermission()))).toBe(false);
     });
-
-    expect(await client.checkAny(full(), aCheck())).toBe(false);
-  });
-
-  it("checkAll returns false when one of several results is conditional", async () => {
-    const fn = vi.fn().mockResolvedValue({
-      checkedAt: create(ZedTokenSchema, { token: "r" }),
-      pairs: [
-        {
-          response: {
-            case: "item",
-            value: create(CheckBulkPermissionsResponseItemSchema, {
-              permissionship:
-                CheckPermissionResponse_Permissionship.HAS_PERMISSION,
-            }),
-          },
-        },
-        {
-          response: {
-            case: "item",
-            value: create(CheckBulkPermissionsResponseItemSchema, {
-              permissionship:
-                CheckPermissionResponse_Permissionship.CONDITIONAL_PERMISSION,
-            }),
-          },
-        },
-      ],
+    it("any aggregate returns true when at least one result is an unconditional grant", async () => {
+        const fn = vi.fn().mockResolvedValue({
+            checkedAt: create(ZedTokenSchema, { token: "r" }),
+            pairs: [
+                {
+                    response: {
+                        case: "item",
+                        value: create(CheckBulkPermissionsResponseItemSchema, {
+                            permissionship: CheckPermissionResponse_Permissionship.NO_PERMISSION
+                        })
+                    }
+                },
+                {
+                    response: {
+                        case: "item",
+                        value: create(CheckBulkPermissionsResponseItemSchema, {
+                            permissionship: CheckPermissionResponse_Permissionship.HAS_PERMISSION
+                        })
+                    }
+                },
+            ]
+        });
+        const client = clientWithFakeProto({
+            permissions: { checkBulkPermissions: fn }
+        });
+        expect(await client.checkBulk([aCheck({ subject: {object: {objectType:"user",objectId:"a"}} }), aCheck({ subject: {object: {objectType:"user",objectId:"b"}} })].map(request => ({
+            ...request,
+            consistency: full()
+        }))).then(results => results.length > 0 && results.some(result => result.hasPermission()))).toBe(true);
     });
-    const client = clientWithFakeProto({
-      permissions: { checkBulkPermissions: fn },
-    });
-
-    expect(
-      await client.checkAll(full(), aCheck({ subjectId: "a" }), aCheck({ subjectId: "b" })),
-    ).toBe(false);
-  });
-
-  it("checkAny returns true when at least one result is an unconditional grant", async () => {
-    const fn = vi.fn().mockResolvedValue({
-      checkedAt: create(ZedTokenSchema, { token: "r" }),
-      pairs: [
-        {
-          response: {
-            case: "item",
-            value: create(CheckBulkPermissionsResponseItemSchema, {
-              permissionship:
-                CheckPermissionResponse_Permissionship.NO_PERMISSION,
-            }),
-          },
-        },
-        {
-          response: {
-            case: "item",
-            value: create(CheckBulkPermissionsResponseItemSchema, {
-              permissionship:
-                CheckPermissionResponse_Permissionship.HAS_PERMISSION,
-            }),
-          },
-        },
-      ],
-    });
-    const client = clientWithFakeProto({
-      permissions: { checkBulkPermissions: fn },
-    });
-
-    expect(
-      await client.checkAny(full(), aCheck({ subjectId: "a" }), aCheck({ subjectId: "b" })),
-    ).toBe(true);
-  });
 });
-
 // ---------------------------------------------------------------------------
-// checkAll must not be vacuously true on zero checks. Array.prototype.every
+// all aggregate must not be vacuously true on zero checks. Array.prototype.every
 // is vacuously true over an empty array, so a caller gating on
-// checkAll(cs, "edit", ...docs.map(toCheck)) would have been silently
+// all aggregate(cs, "edit", ...docs.map(toCheck)) would have been silently
 // granted whenever the derived checks array came up empty (a filter that
 // matched nothing, an upstream returning []). Root DESIGN.md: "An aggregate
-// over zero checks is not a grant." checkAny is deliberately left alone —
+// over zero checks is not a grant." any aggregate is deliberately left alone —
 // Array.prototype.some is already correctly false on empty.
 // ---------------------------------------------------------------------------
-describe("checkAll — zero checks is not a grant (fail-closed)", () => {
-  it("returns false for zero checks, even if the bulk-check call would have returned zero pairs", async () => {
-    const fn = vi.fn().mockResolvedValue({
-      checkedAt: create(ZedTokenSchema, { token: "r" }),
-      pairs: [],
+describe("all aggregate — zero checks is not a grant (fail-closed)", () => {
+    it("returns false for zero checks, even if the bulk-check call would have returned zero pairs", async () => {
+        const fn = vi.fn().mockResolvedValue({
+            checkedAt: create(ZedTokenSchema, { token: "r" }),
+            pairs: []
+        });
+        const client = clientWithFakeProto({
+            permissions: { checkBulkPermissions: fn }
+        });
+        expect(await client.checkBulk([]).then(results => results.length > 0 && results.every(result => result.hasPermission()))).toBe(false);
     });
-    const client = clientWithFakeProto({
-      permissions: { checkBulkPermissions: fn },
-    });
-
-    expect(await client.checkAll(full())).toBe(false);
-  });
 });
-
 // ---------------------------------------------------------------------------
 // Task 16 — call-level caveat context default (`CheckOptions`), and its
 // merge with the pre-existing per-item context (`CheckRequest.context`).
@@ -459,293 +403,257 @@ describe("checkAll — zero checks is not a grant (fail-closed)", () => {
 // (which would silently drop shared call-level keys) cannot pass these.
 // ---------------------------------------------------------------------------
 describe("call-level CheckOptions — default context, per-item context, and their merge (Task 16)", () => {
-  function bulkFake(count: number) {
-    return vi.fn().mockResolvedValue({
-      checkedAt: create(ZedTokenSchema, { token: "r" }),
-      pairs: Array.from({ length: count }, () => ({
-        response: {
-          case: "item" as const,
-          value: create(CheckBulkPermissionsResponseItemSchema, {
-            permissionship: CheckPermissionResponse_Permissionship.HAS_PERMISSION,
-          }),
-        },
-      })),
+    function bulkFake(count: number) {
+        return vi.fn().mockResolvedValue({
+            checkedAt: create(ZedTokenSchema, { token: "r" }),
+            pairs: Array.from({ length: count }, () => ({
+                response: {
+                    case: "item" as const,
+                    value: create(CheckBulkPermissionsResponseItemSchema, {
+                        permissionship: CheckPermissionResponse_Permissionship.HAS_PERMISSION
+                    })
+                }
+            }))
+        });
+    }
+    // C1
+    it("call-level context alone reaches every item in a bulk request", async () => {
+        const fn = bulkFake(2);
+        const client = clientWithFakeProto({ permissions: { checkBulkPermissions: fn } });
+        await client.checkBulk([aCheck({ subject: {object: {objectType:"user",objectId:"a"}} }), aCheck({ subject: {object: {objectType:"user",objectId:"b"}} })].map(request => ({
+            ...request,
+            consistency: full()
+        })), { context: { now: 42 } });
+        const request = fn.mock.calls[0][0];
+        expect(request.items).toHaveLength(2);
+        expect(request.items[0].context).toEqual({ now: 42 });
+        expect(request.items[1].context).toEqual({ now: 42 });
     });
-  }
-
-  // C1
-  it("call-level context alone reaches every item in a bulk request", async () => {
-    const fn = bulkFake(2);
-    const client = clientWithFakeProto({ permissions: { checkBulkPermissions: fn } });
-
-    await client.checkPermissions(
-      full(),
-      [aCheck({ subjectId: "a" }), aCheck({ subjectId: "b" })],
-      { context: { now: 42 } },
-    );
-
-    const request = fn.mock.calls[0][0];
-    expect(request.items).toHaveLength(2);
-    expect(request.items[0].context).toEqual({ now: 42 });
-    expect(request.items[1].context).toEqual({ now: 42 });
-  });
-
-  // C2 — per-item context (pre-existing) reaches only that item; also
-  // confirms the classic variadic call form's request shape is unchanged.
-  it("per-item context alone reaches only that item", async () => {
-    const fn = bulkFake(2);
-    const client = clientWithFakeProto({ permissions: { checkBulkPermissions: fn } });
-
-    await client.checkPermissions(
-      full(),
-      aCheck({ subjectId: "a", context: { region: "eu" } }),
-      aCheck({ subjectId: "b" }),
-    );
-
-    const request = fn.mock.calls[0][0];
-    expect(request.items[0].context).toEqual({ region: "eu" });
-    expect(request.items[1].context).toBeUndefined();
-  });
-
-  // C3 — THE merge rule. Both items are asserted: asserting only the
-  // overriding item would also pass under wholesale-replacement semantics,
-  // so a single-item assertion does not pin the rule.
-  it("merges call-level default with per-item context: item wins on key conflict, call-level keys the item didn't override are retained", async () => {
-    const fn = bulkFake(2);
-    const client = clientWithFakeProto({ permissions: { checkBulkPermissions: fn } });
-
-    await client.checkPermissions(
-      full(),
-      [
-        aCheck({ subjectId: "overrides-region", context: { region: "eu" } }),
-        aCheck({ subjectId: "no-override" }),
-      ],
-      { context: { now: 42, region: "us" } },
-    );
-
-    const request = fn.mock.calls[0][0];
-    // Overriding item: its own `region` wins, but it still gets the
-    // call-level `now` it never mentioned.
-    expect(request.items[0].context).toEqual({ now: 42, region: "eu" });
-    // Sibling that supplied no context of its own: gets the call-level
-    // default untouched.
-    expect(request.items[1].context).toEqual({ now: 42, region: "us" });
-  });
-
-  // C4
-  it("sets no context field on the wire when neither call-level nor item-level context is supplied", async () => {
-    const fn = bulkFake(1);
-    const client = clientWithFakeProto({ permissions: { checkBulkPermissions: fn } });
-
-    await client.checkPermissions(full(), aCheck());
-
-    const request = fn.mock.calls[0][0];
-    expect(request.items[0].context).toBeUndefined();
-  });
-
-  it("checkPermission (single-check surface) applies CheckOptions.context as a default, merged with the check's own context", async () => {
-    const fn = vi.fn().mockResolvedValue(
-      create(CheckPermissionResponseSchema, {
-        permissionship: CheckPermissionResponse_Permissionship.HAS_PERMISSION,
-      }),
-    );
-    const client = clientWithFakeProto({ permissions: { checkPermission: fn } });
-
-    await client.checkPermission(full(), aCheck({ context: { region: "eu" } }), {
-      context: { now: 42, region: "us" },
+    // C2 — per-item context (pre-existing) reaches only that item; also
+    // confirms the classic variadic call form's request shape is unchanged.
+    it("per-item context alone reaches only that item", async () => {
+        const fn = bulkFake(2);
+        const client = clientWithFakeProto({ permissions: { checkBulkPermissions: fn } });
+        await client.checkBulk([aCheck({ subject:{object:{objectType:"user",objectId:"a"}}, context: { region: "eu" } }),
+            aCheck({ subject: {object: {objectType:"user",objectId:"b"}} })].map(request => ({
+            ...request,
+            consistency: full()
+        })));
+        const request = fn.mock.calls[0][0];
+        expect(request.items[0].context).toEqual({ region: "eu" });
+        expect(request.items[1].context).toBeUndefined();
     });
-
-    const request = fn.mock.calls[0][0];
-    expect(request.context).toEqual({ now: 42, region: "eu" });
-  });
-
-  it("checkPermission with no CheckOptions and no item context sets no context field on the wire", async () => {
-    const fn = vi.fn().mockResolvedValue(
-      create(CheckPermissionResponseSchema, {
-        permissionship: CheckPermissionResponse_Permissionship.HAS_PERMISSION,
-      }),
-    );
-    const client = clientWithFakeProto({ permissions: { checkPermission: fn } });
-
-    await client.checkPermission(full(), aCheck());
-
-    const request = fn.mock.calls[0][0];
-    expect(request.context).toBeUndefined();
-  });
-
-  it("checkAny accepts the array+options form and applies the call-level default to every item", async () => {
-    const fn = bulkFake(2);
-    const client = clientWithFakeProto({ permissions: { checkBulkPermissions: fn } });
-
-    const result = await client.checkAny(
-      full(),
-      [aCheck({ subjectId: "a" }), aCheck({ subjectId: "b" })],
-      { context: { now: 42 } },
-    );
-
-    expect(result).toBe(true);
-    const request = fn.mock.calls[0][0];
-    expect(request.items[0].context).toEqual({ now: 42 });
-    expect(request.items[1].context).toEqual({ now: 42 });
-  });
-
-  it("checkAll accepts the array+options form and applies the call-level default to every item", async () => {
-    const fn = bulkFake(2);
-    const client = clientWithFakeProto({ permissions: { checkBulkPermissions: fn } });
-
-    const result = await client.checkAll(
-      full(),
-      [aCheck({ subjectId: "a" }), aCheck({ subjectId: "b" })],
-      { context: { now: 42 } },
-    );
-
-    expect(result).toBe(true);
-    const request = fn.mock.calls[0][0];
-    expect(request.items[0].context).toEqual({ now: 42 });
-    expect(request.items[1].context).toEqual({ now: 42 });
-  });
-
-  // Binding invariant: the pre-existing variadic call sites' request shape
-  // must not change. No CheckOptions supplied -> no context field, same as
-  // before this task.
-  it("does not change the existing variadic call sites' built request", async () => {
-    const fn = bulkFake(2);
-    const client = clientWithFakeProto({ permissions: { checkBulkPermissions: fn } });
-
-    await client.checkPermissions(full(), aCheck({ subjectId: "a" }), aCheck({ subjectId: "b" }));
-
-    const request = fn.mock.calls[0][0];
-    expect(request.items).toHaveLength(2);
-    expect(request.items[0].context).toBeUndefined();
-    expect(request.items[1].context).toBeUndefined();
-  });
+    // C3 — THE merge rule. Both items are asserted: asserting only the
+    // overriding item would also pass under wholesale-replacement semantics,
+    // so a single-item assertion does not pin the rule.
+    it("merges call-level default with per-item context: item wins on key conflict, call-level keys the item didn't override are retained", async () => {
+        const fn = bulkFake(2);
+        const client = clientWithFakeProto({ permissions: { checkBulkPermissions: fn } });
+        await client.checkBulk([
+            aCheck({ subject:{object:{objectType:"user",objectId:"overrides-region"}}, context: { region: "eu" } }),
+            aCheck({ subject: {object: {objectType:"user",objectId:"no-override"}} }),
+        ].map(request => ({
+            ...request,
+            consistency: full()
+        })), { context: { now: 42, region: "us" } });
+        const request = fn.mock.calls[0][0];
+        // Overriding item: its own `region` wins, but it still gets the
+        // call-level `now` it never mentioned.
+        expect(request.items[0].context).toEqual({ now: 42, region: "eu" });
+        // Sibling that supplied no context of its own: gets the call-level
+        // default untouched.
+        expect(request.items[1].context).toEqual({ now: 42, region: "us" });
+    });
+    // C4
+    it("sets no context field on the wire when neither call-level nor item-level context is supplied", async () => {
+        const fn = bulkFake(1);
+        const client = clientWithFakeProto({ permissions: { checkBulkPermissions: fn } });
+        await client.checkBulk([aCheck()].map(request => ({
+            ...request,
+            consistency: full()
+        })));
+        const request = fn.mock.calls[0][0];
+        expect(request.items[0].context).toBeUndefined();
+    });
+    it("checkPermission (single-check surface) applies CheckOptions.context as a default, merged with the check's own context", async () => {
+        const fn = vi.fn().mockResolvedValue(create(CheckPermissionResponseSchema, {
+            permissionship: CheckPermissionResponse_Permissionship.HAS_PERMISSION
+        }));
+        const client = clientWithFakeProto({ permissions: { checkPermission: fn } });
+        await client.check({
+            ...aCheck({ context: { region: "eu" } }),
+            consistency: full()
+        }, {
+            context: { now: 42, region: "us" }
+        });
+        const request = fn.mock.calls[0][0];
+        expect(request.context).toEqual({ now: 42, region: "eu" });
+    });
+    it("checkPermission with no CheckOptions and no item context sets no context field on the wire", async () => {
+        const fn = vi.fn().mockResolvedValue(create(CheckPermissionResponseSchema, {
+            permissionship: CheckPermissionResponse_Permissionship.HAS_PERMISSION
+        }));
+        const client = clientWithFakeProto({ permissions: { checkPermission: fn } });
+        await client.check({
+            ...aCheck(),
+            consistency: full()
+        });
+        const request = fn.mock.calls[0][0];
+        expect(request.context).toBeUndefined();
+    });
+    it("any aggregate accepts the array+options form and applies the call-level default to every item", async () => {
+        const fn = bulkFake(2);
+        const client = clientWithFakeProto({ permissions: { checkBulkPermissions: fn } });
+        const result = await client.checkBulk([aCheck({ subject: {object: {objectType:"user",objectId:"a"}} }), aCheck({ subject: {object: {objectType:"user",objectId:"b"}} })].map(request => ({
+            ...request,
+            consistency: full()
+        })), { context: { now: 42 } }).then(results => results.length > 0 && results.some(result => result.hasPermission()));
+        expect(result).toBe(true);
+        const request = fn.mock.calls[0][0];
+        expect(request.items[0].context).toEqual({ now: 42 });
+        expect(request.items[1].context).toEqual({ now: 42 });
+    });
+    it("all aggregate accepts the array+options form and applies the call-level default to every item", async () => {
+        const fn = bulkFake(2);
+        const client = clientWithFakeProto({ permissions: { checkBulkPermissions: fn } });
+        const result = await client.checkBulk([aCheck({ subject: {object: {objectType:"user",objectId:"a"}} }), aCheck({ subject: {object: {objectType:"user",objectId:"b"}} })].map(request => ({
+            ...request,
+            consistency: full()
+        })), { context: { now: 42 } }).then(results => results.length > 0 && results.every(result => result.hasPermission()));
+        expect(result).toBe(true);
+        const request = fn.mock.calls[0][0];
+        expect(request.items[0].context).toEqual({ now: 42 });
+        expect(request.items[1].context).toEqual({ now: 42 });
+    });
+    // Binding invariant: the pre-existing variadic call sites' request shape
+    // must not change. No CheckOptions supplied -> no context field, same as
+    // before this task.
+    it("does not change the existing variadic call sites' built request", async () => {
+        const fn = bulkFake(2);
+        const client = clientWithFakeProto({ permissions: { checkBulkPermissions: fn } });
+        await client.checkBulk([aCheck({ subject: {object: {objectType:"user",objectId:"a"}} }), aCheck({ subject: {object: {objectType:"user",objectId:"b"}} })].map(request => ({
+            ...request,
+            consistency: full()
+        })));
+        const request = fn.mock.calls[0][0];
+        expect(request.items).toHaveLength(2);
+        expect(request.items[0].context).toBeUndefined();
+        expect(request.items[1].context).toBeUndefined();
+    });
 });
-
 // ---------------------------------------------------------------------------
 // Bulk-check response length guard.
 //
 // The proto guarantees pairs are returned in request order but says nothing
 // about count. Sizing the result array off `resp.pairs` silently desynced
 // results[i] from checks[i] for every item after a gap — one resource's
-// answer attributed to another — and `checkAll`'s `.every()` returned `true`
+// answer attributed to another — and `all aggregate`'s `.every()` returned `true`
 // over an array missing the very checks that would have denied. The
-// `checkPermissions` doc promises "one per check request, in the same order";
+// `checkBulk` doc promises "one per check request, in the same order";
 // this guard is what enforces it. Matches the guard the other six clients got.
 // ---------------------------------------------------------------------------
 describe("bulk-check response length guard", () => {
-  const grantedItem = () => ({
-    response: {
-      case: "item" as const,
-      value: create(CheckBulkPermissionsResponseItemSchema, {
-        permissionship: CheckPermissionResponse_Permissionship.HAS_PERMISSION,
-      }),
-    },
-  });
-
-  const fakeWithPairs = (pairCount: number) =>
-    clientWithFakeProto({
-      permissions: {
-        checkBulkPermissions: vi.fn().mockResolvedValue({
-          checkedAt: create(ZedTokenSchema, { token: "batch-rev" }),
-          pairs: Array.from({ length: pairCount }, grantedItem),
-        }),
-      },
+    const grantedItem = () => ({
+        response: {
+            case: "item" as const,
+            value: create(CheckBulkPermissionsResponseItemSchema, {
+                permissionship: CheckPermissionResponse_Permissionship.HAS_PERMISSION
+            })
+        }
     });
-
-  it("throws when the response carries fewer pairs than the request carried items", async () => {
-    const client = fakeWithPairs(2);
-
-    await expect(
-      client.checkPermissions(
-        full(),
-        aCheck({ subjectId: "a" }),
-        aCheck({ subjectId: "b" }),
-        aCheck({ subjectId: "c" }),
-      ),
-    ).rejects.toThrow(/2 pair\(s\) for 3 request item\(s\)/);
-  });
-
-  it("throws when the response carries more pairs than the request carried items", async () => {
-    const client = fakeWithPairs(5);
-
-    await expect(
-      client.checkPermissions(
-        full(),
-        aCheck({ subjectId: "a" }),
-        aCheck({ subjectId: "b" }),
-        aCheck({ subjectId: "c" }),
-      ),
-    ).rejects.toThrow(/5 pair\(s\) for 3 request item\(s\)/);
-  });
-
-  it("throws a typed SpiceDBError, not a bare Error", async () => {
-    const client = fakeWithPairs(0);
-
-    await expect(
-      client.checkPermissions(full(), aCheck()),
-    ).rejects.toBeInstanceOf(SpiceDBError);
-  });
-
-  it("checkAll rejects a short response instead of returning a vacuous true", async () => {
-    // Every returned pair says HAS_PERMISSION, but only one of the three
-    // requested checks came back. Without the guard, `.every()` over that
-    // single granted result returned true for all three.
-    const client = fakeWithPairs(1);
-
-    await expect(
-      client.checkAll(
-        full(),
-        aCheck({ subjectId: "a" }),
-        aCheck({ subjectId: "b" }),
-        aCheck({ subjectId: "c" }),
-      ),
-    ).rejects.toThrow(/1 pair\(s\) for 3 request item\(s\)/);
-  });
-
-  it("checkAny rejects a short response rather than aggregating over it", async () => {
-    const client = fakeWithPairs(1);
-
-    await expect(
-      client.checkAny(
-        full(),
-        aCheck({ subjectId: "a" }),
-        aCheck({ subjectId: "b" }),
-      ),
-    ).rejects.toThrow(/1 pair\(s\) for 2 request item\(s\)/);
-  });
-
-  it("a matching-length response is unaffected", async () => {
-    const client = fakeWithPairs(3);
-
-    const results = await client.checkPermissions(
-      full(),
-      aCheck({ subjectId: "a" }),
-      aCheck({ subjectId: "b" }),
-      aCheck({ subjectId: "c" }),
-    );
-
-    expect(results).toHaveLength(3);
-    expect(results.every((r) => r.hasPermission())).toBe(true);
-  });
-
-  // A CheckBulkPermissionsPair whose `response` oneof is unset used to
-  // degrade to an `unspecified` CheckResult. `.map()` does preserve index
-  // alignment, so the desync rationale above doesn't apply — but an
-  // `unspecified` result is indistinguishable from a genuine "no permission"
-  // answer, so a broken server hid behind a plausible-looking denial. It now
-  // throws, matching the other six clients.
-  it("throws on a malformed pair (oneof neither item nor error) instead of degrading to unspecified", async () => {
-    const client = clientWithFakeProto({
-      permissions: {
-        checkBulkPermissions: vi.fn().mockResolvedValue({
-          checkedAt: create(ZedTokenSchema, { token: "batch-rev" }),
-          pairs: [{ response: { case: undefined } }],
-        }),
-      },
+    const fakeWithPairs = (pairCount: number) => clientWithFakeProto({
+        permissions: {
+            checkBulkPermissions: vi.fn().mockResolvedValue({
+                checkedAt: create(ZedTokenSchema, { token: "batch-rev" }),
+                pairs: Array.from({ length: pairCount }, grantedItem)
+            })
+        }
     });
+    it("throws when the response carries fewer pairs than the request carried items", async () => {
+        const client = fakeWithPairs(2);
+        await expect(client.checkBulk([aCheck({ subject: {object: {objectType:"user",objectId:"a"}} }),
+            aCheck({ subject: {object: {objectType:"user",objectId:"b"}} }),
+            aCheck({ subject: {object: {objectType:"user",objectId:"c"}} })].map(request => ({
+            ...request,
+            consistency: full()
+        })))).rejects.toThrow(/2 pair\(s\) for 3 request item\(s\)/);
+    });
+    it("throws when the response carries more pairs than the request carried items", async () => {
+        const client = fakeWithPairs(5);
+        await expect(client.checkBulk([aCheck({ subject: {object: {objectType:"user",objectId:"a"}} }),
+            aCheck({ subject: {object: {objectType:"user",objectId:"b"}} }),
+            aCheck({ subject: {object: {objectType:"user",objectId:"c"}} })].map(request => ({
+            ...request,
+            consistency: full()
+        })))).rejects.toThrow(/5 pair\(s\) for 3 request item\(s\)/);
+    });
+    it("throws a typed SpiceDBError, not a bare Error", async () => {
+        const client = fakeWithPairs(0);
+        await expect(client.checkBulk([aCheck()].map(request => ({
+            ...request,
+            consistency: full()
+        })))).rejects.toBeInstanceOf(SpiceDBError);
+    });
+    it("all aggregate rejects a short response instead of returning a vacuous true", async () => {
+        // Every returned pair says HAS_PERMISSION, but only one of the three
+        // requested checks came back. Without the guard, `.every()` over that
+        // single granted result returned true for all three.
+        const client = fakeWithPairs(1);
+        await expect(client.checkBulk([aCheck({ subject: {object: {objectType:"user",objectId:"a"}} }),
+            aCheck({ subject: {object: {objectType:"user",objectId:"b"}} }),
+            aCheck({ subject: {object: {objectType:"user",objectId:"c"}} })].map(request => ({
+            ...request,
+            consistency: full()
+        }))).then(results => results.length > 0 && results.every(result => result.hasPermission()))).rejects.toThrow(/1 pair\(s\) for 3 request item\(s\)/);
+    });
+    it("any aggregate rejects a short response rather than aggregating over it", async () => {
+        const client = fakeWithPairs(1);
+        await expect(client.checkBulk([aCheck({ subject: {object: {objectType:"user",objectId:"a"}} }),
+            aCheck({ subject: {object: {objectType:"user",objectId:"b"}} })].map(request => ({
+            ...request,
+            consistency: full()
+        }))).then(results => results.length > 0 && results.some(result => result.hasPermission()))).rejects.toThrow(/1 pair\(s\) for 2 request item\(s\)/);
+    });
+    it("a matching-length response is unaffected", async () => {
+        const client = fakeWithPairs(3);
+        const results = await client.checkBulk([aCheck({ subject: {object: {objectType:"user",objectId:"a"}} }),
+            aCheck({ subject: {object: {objectType:"user",objectId:"b"}} }),
+            aCheck({ subject: {object: {objectType:"user",objectId:"c"}} })].map(request => ({
+            ...request,
+            consistency: full()
+        })));
+        expect(results).toHaveLength(3);
+        expect(results.every((r) => r.hasPermission())).toBe(true);
+    });
+    // A CheckBulkPermissionsPair whose `response` oneof is unset used to
+    // degrade to an `unspecified` CheckResult. `.map()` does preserve index
+    // alignment, so the desync rationale above doesn't apply — but an
+    // `unspecified` result is indistinguishable from a genuine "no permission"
+    // answer, so a broken server hid behind a plausible-looking denial. It now
+    // throws, matching the other six clients.
+    it("throws on a malformed pair (oneof neither item nor error) instead of degrading to unspecified", async () => {
+        const client = clientWithFakeProto({
+            permissions: {
+                checkBulkPermissions: vi.fn().mockResolvedValue({
+                    checkedAt: create(ZedTokenSchema, { token: "batch-rev" }),
+                    pairs: [{ response: { case: undefined } }]
+                })
+            }
+        });
+        await expect(client.checkBulk([aCheck()].map(request => ({
+            ...request,
+            consistency: full()
+        })))).rejects.toThrow(/malformed CheckBulkPermissionsPair/);
+    });
+});
 
-    await expect(client.checkPermissions(full(), aCheck())).rejects.toThrow(
-      /malformed CheckBulkPermissionsPair/,
-    );
-  });
+it("preserves singular result expiration independently of tracing", () => {
+    const result = checkResultFromProto(create(CheckPermissionResponseSchema, {
+        optionalExpiresAt: { seconds: 100n, nanos: 123000000 },
+    }));
+    expect(result.expiration?.getTime()).toBe(100123);
+    expect(result.debugTrace).toBeUndefined();
+    expect(() => result.expiration!.setTime(0)).toThrow();
+    expect(checkResultFromProto(create(CheckPermissionResponseSchema)).expiration).toBeUndefined();
+    expect(checkResultFromBulkItem(create(CheckBulkPermissionsResponseItemSchema), new ZedToken("r")).expiration).toBeUndefined();
 });

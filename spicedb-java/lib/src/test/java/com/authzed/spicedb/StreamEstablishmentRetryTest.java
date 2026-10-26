@@ -58,7 +58,10 @@ import org.junit.jupiter.api.Test;
 class StreamEstablishmentRetryTest {
 
   private static Relationship aRelationship() {
-    return Relationship.of("document", "doc1", "viewer", "user", "alice");
+    return Relationship.of(
+        new ObjectRef("document", "doc1"),
+        "viewer",
+        SubjectRef.direct(new ObjectRef("user", "alice")));
   }
 
   // ---------------------------------------------------------------------
@@ -96,7 +99,7 @@ class StreamEstablishmentRetryTest {
       }
 
       assertEquals(1, results.size());
-      assertEquals("doc1", results.get(0).resourceID());
+      assertEquals("doc1", results.get(0).resource().objectId());
       assertEquals(2, attempts.get(), "establishment retry should have made a 2nd attempt");
     }
   }
@@ -161,7 +164,11 @@ class StreamEstablishmentRetryTest {
       SpiceDBClient client = servers.client();
       List<LookupResult.LookupResource> results;
       try (Stream<LookupResult.LookupResource> stream =
-          client.lookupResources(Consistency.full(), "document", "view", "user", "alice")) {
+          client.lookupResources(
+              Consistency.full(),
+              "document",
+              "view",
+              SubjectRef.direct(new ObjectRef("user", "alice")))) {
         results = stream.toList();
       }
 
@@ -194,7 +201,11 @@ class StreamEstablishmentRetryTest {
     try (TestServers servers = TestServers.start(service)) {
       SpiceDBClient client = servers.client();
       try (Stream<LookupResult.LookupResource> stream =
-          client.lookupResources(Consistency.full(), "document", "view", "user", "alice")) {
+          client.lookupResources(
+              Consistency.full(),
+              "document",
+              "view",
+              SubjectRef.direct(new ObjectRef("user", "alice")))) {
         assertThrows(SpiceDBException.class, () -> stream.toList());
       }
       assertEquals(1, attempts.get(), "a transient error after an item was read must not retry");
@@ -236,7 +247,8 @@ class StreamEstablishmentRetryTest {
       SpiceDBClient client = servers.client();
       List<LookupResult.LookupSubject> results;
       try (Stream<LookupResult.LookupSubject> stream =
-          client.lookupSubjects(Consistency.full(), "document", "doc1", "view", "user")) {
+          client.lookupSubjects(
+              Consistency.full(), new ObjectRef("document", "doc1"), "view", "user")) {
         results = stream.toList();
       }
 
@@ -274,7 +286,13 @@ class StreamEstablishmentRetryTest {
       SpiceDBClient client = servers.client();
       assertThrows(
           SpiceDBException.class,
-          () -> client.lookupSubjects(Consistency.full(), "document", "doc1", "view", "user"));
+          () -> {
+            try (var stream =
+                client.lookupSubjects(
+                    Consistency.full(), new ObjectRef("document", "doc1"), "view", "user")) {
+              stream.toList();
+            }
+          });
       assertEquals(1, attempts.get(), "a transient error after an item was read must not retry");
     }
   }
@@ -314,7 +332,7 @@ class StreamEstablishmentRetryTest {
       }
 
       assertEquals(1, results.size());
-      assertEquals("doc1", results.get(0).resourceID());
+      assertEquals("doc1", results.get(0).resource().objectId());
       assertEquals(2, attempts.get(), "establishment retry should have made a 2nd attempt");
     }
   }
@@ -391,7 +409,7 @@ class StreamEstablishmentRetryTest {
 
       assertEquals(1, results.size());
       assertEquals(1, results.get(0).updates().size());
-      assertEquals("doc1", results.get(0).updates().get(0).relationship().resourceID());
+      assertEquals("doc1", results.get(0).updates().get(0).relationship().resource().objectId());
       assertEquals(2, attempts.get(), "establishment retry should have made a 2nd attempt");
     }
   }
@@ -424,7 +442,7 @@ class StreamEstablishmentRetryTest {
 
         assertTrue(iterator.hasNext());
         SpiceDBClient.WatchEvent first = iterator.next();
-        assertEquals("doc1", first.updates().get(0).relationship().resourceID());
+        assertEquals("doc1", first.updates().get(0).relationship().resource().objectId());
 
         assertThrows(SpiceDBException.class, iterator::hasNext);
       }

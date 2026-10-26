@@ -15,7 +15,8 @@ import java.util.List;
  * txn.create(relationship);
  * txn.touch(anotherRelationship);
  * txn.mustNotMatch(filter);
- * String revision = client.write(txn);
+ * WriteResult result = client.write(txn);
+ * ZedToken revision = result.revision();
  * }</pre>
  */
 public final class Transaction {

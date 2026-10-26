@@ -26,6 +26,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/authzed/spicedb-clients/spicedb-go/examples/internal/exampleutil"
+
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -97,7 +99,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	r, err := rel.FromTriple("document", "readme", "view", "user", "alice", "")
+	r, err := rel.NewRelationship(exampleutil.Object("document", "readme"), "view", exampleutil.Subject(exampleutil.Object("user", "alice"), ""))
 	if err != nil {
 		log.Fatalf("build relationship: %v", err)
 	}
@@ -110,7 +112,7 @@ func main() {
 	// read changes nothing.
 	readSrv := &countingServer{checkFailures: 2, checkCode: codes.Unavailable}
 	c, stop := start(readSrv)
-	res, err := c.CheckOne(ctx, consistency.Full(), "view", r)
+	res, err := c.Check(ctx, client.PermissionCheck{Resource: (r).Resource(), Subject: (r).Subject(), Permission: "view", Consistency: consistency.Full()})
 	if err != nil {
 		log.Fatalf("a read failing transiently should have been retried to success: %v", err)
 	}
@@ -137,7 +139,7 @@ func main() {
 	if err := txn.Touch(r); err != nil {
 		log.Fatalf("build txn: %v", err)
 	}
-	if _, err := wc.Write(ctx, txn); err == nil {
+	if _, err := wc.Write(ctx, client.WriteRequest{Transaction: txn}); err == nil {
 		log.Fatal("the stand-in always fails; the write should have surfaced an error")
 	} else if !errors.Is(err, client.ErrUnavailable) {
 		log.Fatalf("expected the transient failure to surface as ErrUnavailable: %v", err)
@@ -158,7 +160,7 @@ func main() {
 	// absent from the retryable set even though the call itself is a read.
 	exhaustedSrv := &countingServer{checkFailures: 99, checkCode: codes.ResourceExhausted}
 	ec, stopExhausted := start(exhaustedSrv)
-	if _, err := ec.CheckOne(ctx, consistency.Full(), "view", r); err == nil {
+	if _, err := ec.Check(ctx, client.PermissionCheck{Resource: (r).Resource(), Subject: (r).Subject(), Permission: "view", Consistency: consistency.Full()}); err == nil {
 		log.Fatal("the stand-in always fails here; the check should have surfaced an error")
 	} else if !errors.Is(err, client.ErrResourceExhausted) {
 		log.Fatalf("expected ErrResourceExhausted: %v", err)
@@ -172,4 +174,13 @@ func main() {
 	stopExhausted()
 
 	fmt.Println("retry_policy: reads retried, mutations and load-shed left to the caller")
+}
+
+func (s *countingServer) CheckPermission(ctx context.Context, r *v1.CheckPermissionRequest) (*v1.CheckPermissionResponse, error) {
+	response, e := s.CheckBulkPermissions(ctx, &v1.CheckBulkPermissionsRequest{Consistency: r.Consistency, Items: []*v1.CheckBulkPermissionsRequestItem{{Resource: r.Resource, Permission: r.Permission, Subject: r.Subject, Context: r.Context}}})
+	if e != nil {
+		return nil, e
+	}
+	item := response.Pairs[0].GetItem()
+	return &v1.CheckPermissionResponse{Permissionship: item.Permissionship, PartialCaveatInfo: item.PartialCaveatInfo, CheckedAt: response.CheckedAt}, nil
 }

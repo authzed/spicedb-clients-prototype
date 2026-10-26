@@ -24,12 +24,12 @@ public class LookupResourcesTest
     {
         await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
 
-        await client.WriteSchemaAsync(Schema);
+        await client.WriteSchemaAsync(Schema, null, default);
 
         var txn = new Transaction();
-        txn.Touch(Relationship.FromTriple("document", "firstdoc", "viewer", "user", "alice"));
-        txn.Touch(Relationship.FromTriple("document", "seconddoc", "editor", "user", "alice"));
-        await client.WriteAsync(txn);
+        txn.Touch(new Relationship(new ObjectRef("document", "firstdoc"), "viewer", new SubjectRef(new ObjectRef("user", "alice"))));
+        txn.Touch(new Relationship(new ObjectRef("document", "seconddoc"), "editor", new SubjectRef(new ObjectRef("user", "alice"))));
+        await client.WriteAsync(txn, null, default);
 
         // Lookup resources alice can view. Each result is a native
         // LookupResource carrying the resource ID plus permissionship — check
@@ -37,11 +37,11 @@ public class LookupResourcesTest
         // ConditionalPermission results depend on caveat context that was not
         // fully evaluated by the server.
         var resourceIDs = new HashSet<string>();
-        await foreach (var result in client.LookupResourcesAsync(
-            Full(), "document", "view", "user", "alice"))
+        await foreach (var result in client.LookupResourcesAsync(Full(), "document", "view", new SubjectRef(new ObjectRef("user", "alice")), new LookupOptions { PermissionshipFilter = LookupPermissionshipFilter.HasPermissionOnly }, default))
         {
             Assert.Equal(Permissionship.HasPermission, result.Permissionship);
-            resourceIDs.Add(result.ResourceID);
+            if (result.Permissionship == Permissionship.HasPermission)
+                resourceIDs.Add(result.ResourceID); // Also safe with the default All mode.
         }
 
         Assert.Contains("firstdoc", resourceIDs);

@@ -1,823 +1,121 @@
-# spicedb-csharp — Idiomatic C# Client Design
-
-## Inherits
-
-Root DESIGN.md (`../DESIGN.md`) — read it for the overall vision and backwards
-compatibility mandate. This document takes precedence for C#-specific decisions.
-
-## Language-Specific Goals
-
-### Philosophy: Pit of Success
-
-The API should make the correct thing easy and the wrong thing hard. Users
-should fall into correct usage patterns by default.
-
-### Where a new option goes
-
-**A new option on an existing operation is a new property on that operation's
-options class — never a new parameter, and never a new method.** `CheckOptions`
-carries `Context` and `Timeout`; `LookupOptions` carries `WithDebug`. Each
-operation exposes a plain form and one `...WithOptionsAsync` form that reads
-them.
-
-This matters more in C# than in most languages, and it has broken this client
-twice. **C# substitutes an optional parameter's default at the call site**, so
-adding `int foo = 0` to a public method is a binary-breaking change for every
-already-compiled assembly — the caller keeps passing the old default until it is
-recompiled. `with_debug` arrived upstream, landed here as a trailing optional
-parameter, and broke the api-compat gate; the repair made it a *required*
-positional parameter plus a compatibility overload, which broke callers a second
-way and left an overload family behind.
-
-A method per option is the same mistake spread over time.
-`CheckPermissionsAsync` / `CheckPermissionsWithContextAsync` grows one new member
-for every option the API ever adds, each needing its own doc, test and example.
-
-So, when the upstream API gains an optional field:
-
-1. Add a property to the relevant options class.
-2. Read it in the existing `...WithOptionsAsync` method.
-3. Leave every public signature alone.
-
-If an operation has no options class yet, add one modelled on `CheckOptions`,
-and give the operation a `...WithOptionsAsync` form beside its plain one.
-`CancellationToken` stays its own trailing parameter, per .NET convention,
-rather than moving onto the options class.
-
-See root DESIGN.md, "RULE: Every RPC wrapper must have one place to add an
-option".
-
-### Namespace & Project Structure
-
-Single namespace: `SpiceDB.Client`
-
-Projects:
-
-- **SpiceDB.Client** — the `SpiceDBClient` class and all SpiceDB operations,
-  plus relationship types, filters, transactions, consistency, and errors
-- **SpiceDB.Client.Tests** — xUnit + FluentAssertions unit tests
-
-Types (Relationship, Filter, Transaction, ConsistencyStrategy) are independent
-of the client. Users can construct relationships and filters without creating a
-client instance.
-
-**RULE: FluentAssertions stays on the 7.x line (7.2.2).** 7.2.2 is the last
-Apache-2.0 release; FluentAssertions 8.x relicenses to a commercial (Xceed)
-licence — its nuspec switches from an Apache-2.0 licence expression to a licence
-file. That is a licensing decision, not a version bump, so an automated
-dependency update must never carry it to 8.x on its own. The pin lives in
-`SpiceDB.Client.Tests.csproj` (with a comment) and is enforced against
-regressions by a Dependabot `ignore` for `FluentAssertions >= 8.0.0` in
-`.github/dependabot.yml`.
-
-### Constructors
-
-Security-obvious named constructors:
-
-- `SpiceDBClient.CreatePlaintext(endpoint, presharedKey)` — for testing, makes
-  insecure connection obvious
-- `SpiceDBClient.CreateSystemTls(endpoint, presharedKey)` — for production
-- `SpiceDBClient.CreateFromChannel(channel, presharedKey)` — escape hatch with
-  existing GrpcChannel
-
-Per root DESIGN.md, "RULE: Credentials over insecure transport require an
-explicit opt-in": `CreatePlaintext` only permits plaintext to a loopback
-endpoint (`localhost`, `127.0.0.0/8`, or `::1`) — the local-development case
-that is the entire reason it exists. A `unix:` target is NOT loopback here and
-is refused outright: Grpc.Net.Client dials a URI, so it would resolve the DNS
-name `unix` rather than a socket path. Anything else needs
-`allowInsecureRemoteCredentials: true` passed explicitly, or
-`CreatePlaintext` refuses to construct the client at all, before any
-connection is created.
-
-#### Custom TLS trust material
-
-There is deliberately **no** dedicated CA-bundle parameter: `CreateFromChannel`
-already is one. A caller builds the `GrpcChannel`, and with it the whole
-`SocketsHttpHandler`/`HttpClientHandler` TLS surface — a private root, a client
-certificate for mutual TLS, or a custom validation callback:
-
-```csharp
-var handler = new SocketsHttpHandler {
-    SslOptions = new SslClientAuthenticationOptions {
-        ClientCertificates = new X509CertificateCollection { clientCert },
-        RemoteCertificateValidationCallback = ValidateAgainstPrivateRoot,
-    },
-};
-var channel = GrpcChannel.ForAddress(uri, new GrpcChannelOptions { HttpHandler = handler });
-var client = SpiceDBClient.CreateFromChannel(channel, presharedKey);
-```
-
-This is what satisfies root DESIGN.md, "RULE: A system-TLS constructor must
-reach a real server", whose clause 1 permits `CreateSystemTls` to delegate to
-`ChannelCredentials.SecureSsl` only because a caller can supply their own trust
-material instead. Adding a parallel CA parameter would mean two ways to
-configure one channel's TLS, and a caller passing both would have no way to
-predict which won.
-
-Note that .NET's default is already the OS trust store, so unlike the Python,
-TypeScript and Ruby clients — whose runtimes use a compiled-in or bundled root
-set — an operator-installed CA is honoured by `CreateSystemTls` with nothing
-extra. This hatch is for pinning a CA the host does *not* trust, and for mutual
-TLS.
-
-The client implements `IAsyncDisposable`:
-
-```csharp
-await using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "token");
-```
-
-**A borrowed channel is never disposed.** `DisposeAsync` tears down only a
-channel this library created — the one `CreatePlaintext`/`CreateSystemTls`
-built. A `GrpcChannel` handed to `CreateFromChannel` stays open, because the
-idiomatic way to supply one is a DI-registered **singleton** shared by the whole
-application:
-
-```csharp
-services.AddSingleton(_ => GrpcChannel.ForAddress(uri, options));
-services.AddScoped(sp => SpiceDBClient.CreateFromChannel(
-    sp.GetRequiredService<GrpcChannel>(), presharedKey));
-```
-
-Disposing that channel with the first scoped client to finish would break every
-other consumer of it — which is exactly what happened until `SpiceDBProtoClient`
-started tracking whether it owned its channel. Lending a channel does not
-transfer ownership; the caller disposes it at application shutdown.
-
-### Escape hatch: raw proto access
-
-`client.RawProto()` returns the underlying `SpiceDBProtoClient` — the five generated
-service clients (`Permissions`, `Schema`, `Watch`, `Experimental`, `Materialize`) this
-library makes its own calls through:
-
-```csharp
-var response = await client.RawProto().Permissions.CheckPermissionAsync(request);
-```
-
-Clearly-marked **secondary** API, which is what root DESIGN.md's "What NOT To Do"
-permits: channels, stubs and metadata stay out of the primary surface, and "escape
-hatches for advanced use are acceptable as clearly marked secondary API". It exists so a
-request the idiomatic surface cannot express — an RPC or proto field not wrapped here,
-such as `WriteRelationshipsRequest.OptionalTransactionMetadata`, or the single-check
-`CheckPermission` RPC that `CheckPermissionAsync` deliberately routes around — has a
-workaround short of forking the client.
-
-It complements `CreateFromChannel`, which shapes the connection *before* it exists (and is
-where custom TLS goes): `RawProto()` hands back what was built, whichever constructor
-built it, so a caller who used `CreatePlaintext`/`CreateSystemTls` has a hatch too.
-
-Four properties, all deliberate:
-
-- **The bearer token comes free.** Each service client is built on an intercepted
-  `CallInvoker`, so a raw call is authenticated exactly as an idiomatic one is.
-- **A raw call is a raw call.** No `SpiceDBException` mapping (you catch `RpcException`),
-  no retry, and no `DefaultTimeout` — pass a `deadline` yourself.
-- **Do not dispose the returned object.** It holds this client's connection, and
-  `DisposeAsync` is what releases it (or, for a channel you supplied to
-  `CreateFromChannel`, you are).
-- **It is an accessor, never a constructor.** It takes no endpoint, preshared key, or
-  transport setting, so channel construction stays on the single guarded path in
-  `SpiceDBProtoClient` and the hatch cannot become a way around root DESIGN.md, "RULE:
-  Credentials over insecure transport require an explicit opt-in".
-
-No stability promise beyond `Grpc.Net.Client`'s and the generated code's. Throws
-`InvalidOperationException` only for a client built through the internal test-only
-constructor, which no public factory can produce.
-
-### Consistency
-
-ZedTokens are opaque `string` values, never proto types. Consistency is an
-**explicit required parameter** on every read operation — never silently
-defaulted.
-
-Static factory methods on the `Consistency` class:
-
-- `Consistency.Full()` — fully consistent, least performant
-- `Consistency.MinLatency()` — SpiceDB's preferred revision, optimal performance
-- `Consistency.AtLeast(revision)` — read-after-write
-- `Consistency.Snapshot(revision)` — exact revision
-- `Consistency.AtLeastOrFull(revision?)` — AtLeast if non-empty, else Full
-- `Consistency.AtLeastOrMinLatency(revision?)` — AtLeast if non-empty, else MinLatency
-
-All write operations return the revision as a `string`.
-
-### Relationships
-
-Sealed `Relationship` record (immutable, value equality):
-
-```csharp
-public sealed record Relationship
-{
-    public string ResourceType { get; init; }
-    public string ResourceID { get; init; }
-    public string ResourceRelation { get; init; }
-    public string SubjectType { get; init; }
-    public string SubjectID { get; init; }
-    public string SubjectRelation { get; init; }
-    public string? CaveatName { get; init; }
-    public IReadOnlyDictionary<string, object>? CaveatContext { get; init; }
-    public DateTimeOffset? Expiration { get; init; }
-    public IReadOnlyDictionary<string, object>? CheckContext { get; init; }
-}
-```
-
-`CaveatContext` (write-time, stored with the relationship's caveat) and
-`CheckContext` (check-time-only, supplied fresh on every check call and
-never written to SpiceDB) are deliberately separate fields — see "Caveat
-context" under "Checks" below.
-
-Static factory methods:
-
-- `Relationship.FromTriple(resourceType, resourceID, resourceRelation, subjectType, subjectID, subjectRelation)` — validates fields, throws `ArgumentException`
-- `Relationship.FromTuple(tupleString)` — parses `type:id#relation@type:id[#relation]`, throws `FormatException`
-- `Relationship.FromProto(proto)` — converts from proto type
-
-Immutable modifiers:
-
-- `rel.WithCaveat(name, context?)` — returns copy with caveat (write-time
-  `CaveatContext`)
-- `rel.WithExpiration(dateTimeOffset)` — returns copy with expiration
-- `rel.WithCheckContext(context?)` — returns copy carrying per-item
-  check-time caveat context (`CheckContext`, distinct from `WithCaveat`'s
-  write-time context — see "Caveat context" under "Checks")
-
-Conversion:
-
-- `rel.ToProto()` — converts to proto type
-- `rel.ToFilter()` — creates a Filter matching this relationship
-- `rel.ToString()` — returns tuple string representation
-
-### Filter
-
-Sealed `Filter` record (immutable, value equality):
-
-```csharp
-var filter = new Filter("document")
-    .WithResourceID("doc1")
-    .WithRelation("viewer")
-    .WithSubjectType("user")
-    .WithSubjectID("alice")
-    .WithSubjectRelation("member");
-```
-
-Methods: `WithResourceID`, `WithResourceIDPrefix`, `WithRelation`,
-`WithSubjectType`, `WithSubjectID`, `WithSubjectRelation`, `ToProto`
-
-### Transaction
-
-Mutable builder for batching relationship writes:
-
-```csharp
-var txn = new Transaction();
-txn.Create(relationship);
-txn.Touch(relationship);
-txn.Delete(relationship);
-txn.MustNotMatch(filter);   // precondition
-txn.MustMatch(filter);      // precondition
-var revision = await client.WriteAsync(txn);
-```
-
-Exposes `V1Updates` and `Preconditions` for advanced use cases.
-
-### Checks
-
-All checks use `BulkCheckPermissions` under the hood — there is no production
-call site for the single-item `CheckPermission` RPC.
-
-- `CheckPermissionAsync(consistency, permission, relationship, cancellationToken = default)` → `Task<CheckResult>`
-- `CheckPermissionWithOptionsAsync(consistency, permission, relationship, options, cancellationToken = default)` → `Task<CheckResult>`
-- `CheckPermissionsAsync(consistency, permission, cancellationToken, params relationships)` → `Task<CheckResult[]>`
-- `CheckPermissionsWithOptionsAsync(consistency, permission, options, cancellationToken, params relationships)` → `Task<CheckResult[]>`
-- `CheckAnyAsync(consistency, permission, cancellationToken, params relationships)` → `Task<bool>`
-- `CheckAnyWithOptionsAsync(consistency, permission, options, cancellationToken, params relationships)` → `Task<bool>`
-- `CheckAllAsync(consistency, permission, cancellationToken, params relationships)` → `Task<bool>`
-- `CheckAllWithOptionsAsync(consistency, permission, options, cancellationToken, params relationships)` → `Task<bool>`
-
-`context` is an optional call-level default caveat context (an
-`IReadOnlyDictionary<string, object>?`) — see "Caveat context" below for the
-per-item form (`Relationship.WithCheckContext`) and the merge rule between
-the two.
-
-`CheckResult` carries the server's four-valued answer instead of collapsing
-it to a `bool` (root DESIGN.md, "RULE: Only an unconditional grant is
-true"):
-
-```csharp
-public sealed record CheckResult
-{
-    public Permissionship Permissionship { get; init; }
-    public IReadOnlyList<string> MissingContext { get; init; } = [];
-    public string CheckedAt { get; init; } = "";
-    public bool HasPermission => Permissionship == Permissionship.HasPermission;
-}
-```
-
-- `Permissionship` — `Unspecified`/`NoPermission`/`HasPermission`/`ConditionalPermission`
-  (the same enum used by the lookup surface; see "Lookups" below). A
-  `ConditionalPermission` result means the server found a matching
-  relationship but could not evaluate its caveat because the required
-  context was not supplied — it is NOT a grant.
-- `MissingContext` — the caveat context keys the server needed and did not
-  receive. Empty unless `Permissionship` is `ConditionalPermission`.
-- `CheckedAt` — the ZedToken revision this check was evaluated at. Thread it
-  into `Consistency.AtLeast` for read-your-writes.
-- `HasPermission` — true ONLY for `HasPermission`, a single equality
-  comparison. Prefer this over comparing `Permissionship` directly.
-
-**No `operator bool`/`operator true`/`false` is defined on `CheckResult`.**
-This is a deliberate choice, not an oversight: `if (result)` is a compile
-error by design, forcing callers through `HasPermission` (or an explicit
-`Permissionship` comparison) to get a boolean answer. C# records don't
-implicitly participate in boolean contexts, so omitting these operators is
-the safe default — it preserves the compile error rather than introducing a
-truthy conversion that could disagree with `HasPermission` for a
-`ConditionalPermission` result. C# is one of the languages that is "safe by
-construction" per root DESIGN.md clause 5 (`if (result)` does not compile).
-
-`CheckAnyAsync`/`CheckAllAsync` count only `HasPermission` results — a
-`ConditionalPermission` never contributes to a `true`.
-
-`CheckBulkPermissionsResponse.checked_at` is response-level, not per-item —
-the bulk path propagates that one token onto every `CheckResult.CheckedAt`
-mapped from that response. A check over more than `DefaultCheckBatchSize`
-relationships is split into one request per chunk, so the returned array can
-carry more than one distinct `CheckedAt` — uniform within a chunk, not across
-the call. See root DESIGN.md, invariant 2 under bulk checks.
-
-A per-item `CheckBulkPermissions` error (`google.rpc.Status`, carried as the
-`error` arm of the pair's oneof) is routed through the same `ErrorMapper`
-switch used by every other RPC — synthesized into an `RpcException` from its
-numeric code/message — so callers get the specific typed exception (e.g.
-`PermissionDeniedException`) instead of the base `SpiceDBException`.
-
-#### Caveat context
-
-A `ConditionalPermission` result means the server needed caveat context
-(named values like `now` that a caveat expression evaluates against) and
-didn't get it. `MissingContext` tells the caller what was needed;
-supplying it is what turns a conditional result into a real grant. Two
-forms, matching the wire: `CheckBulkPermissionsRequestItem.context` (proto
-field 4) is per-item — `CheckBulkPermissionsRequest` itself has no context
-field — so a call-level default is fanned out onto every item at
-request-build time.
-
-- **Call-level** — a default applied to every relationship in the call, set
-  as `CheckOptions.Context` and passed to the `...WithOptionsAsync` form of
-  any check. There is one such form per operation rather than a method per
-  option, and a new option is a new property on `CheckOptions`: see root
-  DESIGN.md, "RULE: Every RPC wrapper must have one place to add an option".
-  The older shape — a `...WithContextAsync` method per option, alongside a
-  trailing optional `context = null` parameter on `CheckPermissionAsync` — is
-  what that rule retires: the optional parameter was binary-breaking to add,
-  and the method family grew one member per option.
-- **Per-item** — `Relationship.CheckContext` (set via
-  `Relationship.WithCheckContext(context)`) carries context for that one
-  relationship's check. It flows through even the plain, unchanged
-  `CheckPermissionsAsync`/`CheckAnyAsync`/`CheckAllAsync` — no `WithOptions`
-  call is needed just to use per-item context alone.
-
-**Merge rule (key-level, item wins):** each item's context is the
-call-level dictionary with the item's own entries overwriting matching
-keys; call-level keys the item doesn't mention are retained. A call-level
-`{now: 42, region: "us"}` plus a per-item `{region: "eu"}` sends
-`{now: 42, region: "eu"}` for that item; a sibling item with no per-item
-context still gets `{now: 42, region: "us"}` unchanged. This is
-deliberately NOT wholesale replacement — an item supplying one key must
-never silently drop every other call-level key. When neither call-level
-nor per-item context is supplied, no `context` field is set on that item's
-wire representation (`null`, never an empty `Struct`).
-
-`Relationship.CheckContext` is check-time-only and is a **distinct**
-field from `Relationship.CaveatContext` (write-time, sent by `WriteAsync`
-as part of a stored relationship's caveat). `Relationship.ToProto()` never
-reads `CheckContext` — only `WriteAsync`'s caveat context is ever written to
-SpiceDB. Conflating the two would leak check-time-only data into a stored
-relationship the next time a `Relationship` round-trips through
-`WriteAsync`.
-
-```csharp
-var callLevel = new Dictionary<string, object> { ["now"] = 42, ["region"] = "us" };
-var relA = Relationship.FromTriple("document", "doc1", "view", "user", "alice");
-var relB = Relationship.FromTriple("document", "doc2", "view", "user", "bob")
-    .WithCheckContext(new Dictionary<string, object> { ["region"] = "eu" });
-
-// relA -> {now: 42, region: "us"} (inherits the call-level default)
-// relB -> {now: 42, region: "eu"} (region overridden, now retained)
-var results = await client.CheckPermissionsWithOptionsAsync(
-    consistency, "view", callLevel, default, relA, relB);
-```
-
-Why not an overload on the existing `CheckPermissionsAsync`/`CheckAnyAsync`/
-`CheckAllAsync` signatures? Each ends in `params Relationship[]`, and C#
-disallows any parameter after `params` — a `context` parameter would have to
-land *before* it, which risks colliding with the pre-existing
-`CancellationToken cancellationToken = default` slot for calls that already
-pass `default` positionally. New method names sidestep that risk entirely
-(and match how `spicedb-go`/`spicedb-rust` solved the same shape problem with
-`*WithContext` methods) rather than leaning on subtle overload-resolution
-betterness rules. `CheckPermissionAsync` has no such constraint — nothing
-follows its `CancellationToken` parameter — so it's widened in place with a
-trailing optional parameter instead of getting a fifth check method.
-
-### Streaming & Transparent Cursor Pagination
-
-`IAsyncEnumerable<T>` for all streaming RPCs. **Cursors are fully internal** —
-the caller sees a single async enumerable, and the client transparently
-re-fetches pages using the `AfterResultCursor` from each response.
-
-| Method | Default page size | Notes |
-|--------|------------------|-------|
-| `ReadRelationshipsAsync` | 512 | cursor-based auto-pagination |
-| `LookupResourcesAsync` | 512 | cursor-based auto-pagination |
-| `LookupSubjectsAsync` | — | no cursor support in SpiceDB yet; single streaming call |
-| `ExportRelationshipsAsync` | 512 | cursor-based auto-pagination |
-| `DeleteRelationshipsAsync` | 1,000 | auto-repeats until all matched rels deleted; matches SpiceDB's default `--max-delete-relationships-limit` |
-| `ImportRelationshipsAsync` | 1,000 | batches into client-streaming sends |
-| `UpdatesAsync` | — | server-streaming, no pagination needed |
-
-Async enumerables:
-
-- `ReadRelationshipsAsync(consistency, filter)` → `IAsyncEnumerable<Relationship>`
-- `LookupResourcesAsync(consistency, resourceType, permission, subjectType, subjectID)` → `IAsyncEnumerable<LookupResource>`
-- `LookupSubjectsAsync(consistency, resourceType, resourceID, permission, subjectType, cancellationToken = default)` → `IAsyncEnumerable<LookupSubject>`
-- `LookupSubjectsWithOptionsAsync(consistency, resourceType, resourceID, permission, subjectType, options, cancellationToken = default)` → `IAsyncEnumerable<LookupSubject>`
-- `ExportRelationshipsAsync(consistency, filter?)` → `IAsyncEnumerable<Relationship>`
-- `UpdatesAsync(objectTypes?, startRevision?, includeCheckpoints?)` → `IAsyncEnumerable<WatchEvent>`
-
-### Lookups
-
-`LookupResourcesAsync`/`LookupSubjectsAsync` yield native records instead of
-bare strings — the proto `LookupPermissionship`/`PartialCaveatInfo`/
-`ResolvedSubject` types are never exposed. Mirrors `spicedb-go`'s
-`client/lookup_types.go`.
-
-```csharp
-public enum Permissionship { Unspecified, HasPermission, ConditionalPermission, NoPermission }
-public sealed record PartialCaveatInfo { MissingRequiredContext }
-public sealed record LookupResource { ResourceID, Permissionship, PartialCaveat, LookedUpAt }
-public sealed record ResolvedSubject { SubjectID, Permissionship, PartialCaveat }
-public sealed record LookupSubject { Subject, ExcludedSubjects, LookedUpAt }
-```
-
-- `LookupResourcesAsync(consistency, resourceType, permission, subjectType, subjectID, cancellationToken = default)` → `IAsyncEnumerable<LookupResource>`
-- `LookupSubjectsAsync(consistency, resourceType, resourceID, permission, subjectType, cancellationToken = default)` → `IAsyncEnumerable<LookupSubject>`
-- `LookupSubjectsWithOptionsAsync(consistency, resourceType, resourceID, permission, subjectType, options, cancellationToken = default)` → `IAsyncEnumerable<LookupSubject>`
-
-`LookupOptions.WithDebug` maps the proto `LookupResourcesRequest.with_debug` field: it asks
-the server to attach debug information to the error raised on a
-maximum-recursion-depth failure, and changes nothing about a successful
-result. This client does not decode that payload — it rides the mapped
-`SpiceDBException.InnerException` (the original `RpcException`) for a caller
-who wants to read it. A trailing optional parameter, not an overload, per the
-same reasoning as `CheckPermissionAsync`'s trailing `context` parameter below.
-
-`Permissionship` MUST be checked before treating a result as a full grant —
-`ConditionalPermission` results depend on caveat context (`PartialCaveat`)
-that the server did not fully evaluate. `Permissionship` now also serves the
-check surface (`CheckResult`, above) with a fourth value, `NoPermission`,
-which — deliberately — lookups never yield: a subject/resource pair lacking
-the permission is simply absent from a lookup stream rather than yielded
-with that permissionship.
-
-`LookedUpAt` (on both `LookupResource` and `LookupSubject`) is the ZedToken
-revision the result was computed at — identical for every item yielded by a
-single call, since it's a property of the call, not of the individual
-result. It maps the proto `looked_up_at` field that was previously
-unreachable through the idiomatic client.
-
-**Wildcard exclusions**: when `LookupSubject.Subject.SubjectID` is the
-wildcard `"*"`, the server has granted the permission to every subject of
-`subjectType` EXCEPT those listed in `LookupSubject.ExcludedSubjects`.
-Callers MUST check `ExcludedSubjects` before treating a wildcard match as a
-blanket grant — ignoring it risks granting access to subjects the server
-explicitly excluded. The deprecated proto fallback fields
-(`subject_object_id`/`permissionship`/`partial_caveat_info`/
-`excluded_subject_ids`) are handled transparently for servers that don't yet
-populate the non-deprecated `subject`/`excluded_subjects` fields.
-
-### Writes
-
-- `WriteAsync(transaction)` → `Task<string>` (revision)
-
-### Deletions
-
-- `DeleteRelationshipsAsync(filter, mustMatch?, mustNotMatch?, limit?)` → `Task<string>` (revision)
-- `DeleteRelationshipsWithOptionsAsync(filter, options)` → `Task<string>` (revision)
-
-Automatically pages through large result sets using a limit of 1,000 per RPC
-call (override with `limit`/`DeleteRelationshipsOptions.Limit`; matches
-SpiceDB's default `--max-delete-relationships-limit`, so the default works
-against a stock server). Repeats until the server reports all matching
-relationships are deleted.
-
-Optional parameters reach the proto fields that were previously unreachable —
-`optional_preconditions` and `optional_limit`:
-
-```csharp
-var revision = await client.DeleteRelationshipsAsync(
-    filter,
-    mustMatch: [guardFilter],       // MUST_MATCH precondition
-    mustNotMatch: [otherFilter],    // MUST_NOT_MATCH precondition
-    limit: 500);                    // override the 1,000 default page size
-```
-
-`mustMatch`/`mustNotMatch` build a `Precondition` from a `Filter` via the
-same internal helper `Transaction.MustMatch`/`MustNotMatch` use
-(`Transaction.BuildPrecondition`); the server rejects the whole call
-(deleting nothing for that call) if a precondition isn't satisfied.
-Preconditions are a per-request proto field, so when a delete spans multiple
-pages, they're re-evaluated by the server on every page — there's no "check
-once, apply to every page" semantics. A delete that starts successfully can
-still fail partway through if the guarded state changes between pages, after
-earlier pages were already deleted. For a single-shot, all-or-nothing guarded
-delete, pair a precondition with `limit` set high enough to cover every
-matching relationship in one call. No optional parameters given means
-unchanged default behavior: no preconditions, 1,000-item page size, partial
-deletions allowed (so auto-paging keeps working).
-
-`DeleteRelationshipsAsync` had no options class before `optional_cursor`
-arrived upstream, so per "Where a new option goes", above,
-`DeleteRelationshipsWithOptionsAsync` was added beside it rather than growing
-`DeleteRelationshipsAsync`'s parameter list further.
-`DeleteRelationshipsOptions` carries the same knobs as the plain overload
-(`MustMatch`, `MustNotMatch`, `Limit`) plus `Cursor` and a per-page `Timeout`,
-so the next option this operation gains is a property there, not a new
-parameter on either method.
-
-Both forms already thread the server's `after_result_cursor` from each
-response into the next page's `optional_cursor` internally — the same
-transparent-continuation pattern `ReadRelationshipsAsync` uses — so a
-datastore that supports cursored deletion gets a faster, non-repeating scan
-for free, with no observable change for one that doesn't (it simply never
-populates the field, so the next page omits `optional_cursor` and the loop
-behaves exactly as it did before this field existed).
-
-`DeleteRelationshipsOptions.Cursor` is a distinct, caller-supplied knob on top
-of that: since both auto-paging forms always run to completion themselves,
-neither can ever hand a resumable cursor back to a caller. `Cursor` exists for
-a caller who obtained one another way — a partial deletion driven through
-`RawProto()` that was interrupted (process restart, deliberate early stop) —
-and wants this client to auto-page the rest to completion from that point
-rather than re-issuing raw calls by hand:
-
-```csharp
-var revision = await client.DeleteRelationshipsWithOptionsAsync(
-    filter,
-    new DeleteRelationshipsOptions { Cursor = savedCursorToken });
-```
-
-Only datastores whose deletion can be ordered and resumed honor a supplied
-cursor; others reject the request. Leaving `Cursor` `null` (including via the
-plain `DeleteRelationshipsAsync`) starts a new deletion, identical to today.
-
-### Schema
-
-- `ReadSchemaAsync()` → `Task<(string Schema, string Revision)>`
-- `WriteSchemaAsync(schema)` → `Task<string>` (revision)
-- `ReflectSchemaAsync(consistency)` → `Task<ReflectSchemaResult>`
-- `ComputablePermissionsAsync(consistency, definitionName, relationName)` → `Task<(IReadOnlyList<RelationReference>, string)>`
-- `DependentRelationsAsync(consistency, definitionName, permissionName)` → `Task<(IReadOnlyList<RelationReference>, string)>`
-- `DiffSchemaAsync(consistency, comparisonSchema)` → `Task<(IReadOnlyList<SchemaDiff>, string)>`
-
-### Expand
-
-- `ExpandPermissionTreeAsync(consistency, resourceType, resourceID, permission)` → `Task<ExpandResult>`
-
-`ExpandResult.Tree` is a native `PermissionTree` record — the proto
-`PermissionRelationshipTree` is never exposed. Exactly one of
-`Intermediate`/`Leaf` is non-null on each node, mapped recursively from the
-proto `tree_type` oneof.
-
-### Bulk Import / Export
-
-- `ImportRelationshipsAsync(IAsyncEnumerable<Relationship>)` → `Task<ulong>` (numLoaded)
-- `ExportRelationshipsAsync(consistency, filter?)` → `IAsyncEnumerable<Relationship>`
-
-### Watch
-
-- `UpdatesAsync(objectTypes?, startRevision?, includeCheckpoints?)` → `IAsyncEnumerable<WatchEvent>`
-  — `includeCheckpoints` (default `false`) requests `WATCH_KIND_INCLUDE_CHECKPOINTS`
-  (recommended behind a proxy that aborts idle connections, since a checkpoint keeps the
-  stream alive with no changes to report)
-
-`WatchEvent { IReadOnlyList<RelationshipUpdate> Updates, string ChangesThrough, bool
-IsCheckpoint }` is one event per `WatchResponse`. `ChangesThrough` is always populated --
-proto: "This token can be used in a subsequent WatchRequest to resume watching from this
-point" -- pass it as `startRevision` to resume after a dropped stream instead of restarting
-from the original `startRevision` (reprocessing, possibly past the GC window) or from head
-(silently losing every change in the gap). `IsCheckpoint` is true for a checkpoint event,
-which carries no `Updates`.
-
-### Experimental — Relationship Counters
-
-All experimental methods are marked with XML doc `<b>Experimental:</b>` notes.
-
-- `ExperimentalRegisterRelationshipCounterAsync(name, filter)` → `Task`
-- `ExperimentalCountRelationshipsAsync(name)` → `Task<(CountResult?, bool StillCalculating)>`
-- `ExperimentalUnregisterRelationshipCounterAsync(name)` → `Task`
-
-### Experimental — Roaring Lookup Resources
-
-- `ExperimentalRoaringLookupResourcesAsync(consistency, resourceType, permission, subjectType, subjectID, cancellationToken = default, timeout = null)` → `Task<RoaringLookupResourcesResult>`
-
-Wraps the materialize-tier `RoaringLookupResourcesService` (`Authzed.Api.Materialize.V0`,
-a separate generated package from the other four services — see `SpiceDBProtoClient.Materialize`
-under "Escape hatch: raw proto access"), not the `authzed.api.v1.ExperimentalService` the other
-three experimental methods above use. Read-only, so it goes through the same retry path as
-every other read.
-
-```csharp
-public sealed record RoaringLookupResourcesResult
-{
-    public byte[] Bitmap { get; init; } = [];
-    public ulong Cardinality { get; init; }
-    public string AtRevision { get; init; } = "";
-}
-```
-
-`Bitmap` is the roaring64 bitmap (RoaringFormatSpec 64-bit portable format) of the resource
-object IDs the subject has the permission on, copied out of the proto `ByteString` into a
-plain `byte[]` — this client does not decode roaring itself, matching "No protobuf types in
-the public API" in root DESIGN.md's "What NOT To Do". No options class: every field on the
-underlying request (`consistency`, `resourceObjectType`, `permission`, `subject`) is required,
-so — unlike `CheckOptions`/`LookupOptions` — there is currently nothing optional to carry one.
-Per "Where a new option goes", above, the first optional field this RPC gains upstream gets an
-options class and a `...WithOptionsAsync` form beside the plain method, the same way
-`DeleteRelationshipsWithOptionsAsync` was added once `optional_cursor` arrived.
-
-A non-canonical resource object ID (see the RPC's own doc comment in
-`RoaringlookupresourcesGrpc.cs`) fails the call with `FailedPreconditionException` rather than
-returning a partial bitmap.
-
-### Error Handling
-
-Exception hierarchy rooted at `SpiceDBException`:
-
-- `PermissionDeniedException`
-- `NotFoundException`
-- `AlreadyExistsException`
-- `InvalidArgumentException`
-- `FailedPreconditionException`
-- `UnavailableException`
-- `CancelledException`
-- `ResourceExhaustedException`
-- `DeadlineExceededException`
-- `AbortedException`
-
-`ErrorMapper` static class:
-
-- `ToSpiceDBException(RpcException)` — maps gRPC status codes to typed exceptions
-- `IsTransient(Exception)` — returns true for UNAVAILABLE and ABORTED
-
-### Auto-Retry
-
-Automatic retry with jittered exponential backoff, for **reads only**, on
-**`UNAVAILABLE` and `ABORTED`**.
-
-`RESOURCE_EXHAUSTED` is deliberately NOT retryable. In SpiceDB it means
-either memory load-shed — where retrying adds load to an already-overloaded
-server — or a deterministic `MaxDepthExceeded`, which can never succeed and
-whose retries re-run the most expensive class of check several times before
-surfacing the same error. See root `DESIGN.md`, "RULE: Automatic retry is
-for idempotent operations only".
-
-**Mutations are never auto-retried.** `WriteRelationships` carrying
-`OPERATION_CREATE`, or any request with preconditions, is not idempotent: if
-it commits and the response is lost — a rolling restart, a proxy dropping the
-connection — the retry returns `ALREADY_EXISTS`/`FAILED_PRECONDITION` and the
-caller concludes a write failed that in fact succeeded. Writes, deletes,
-schema writes, bulk import, and the counter registration calls therefore
-never enter the retry loop: their errors are mapped to this client's typed
-form and raised on the first attempt. A caller who wants a mutation retried
-must decide that themselves, knowing their own idempotency.
-
-**Timeout shape**: the per-call timeout is a per-*attempt* budget, applied
-fresh to each retry rather than shrinking across them, so a call that
-legitimately needs several retries is not made more likely to fail than one
-that needs none. Worst-case latency for a timeout `t` is therefore
-`t × (retries + 1)` plus backoff, and an auto-paging call spends a fresh `t`
-per page. Root `DESIGN.md`, "On worst-case latency", covers why this differs
-from Go's; a caller needing a true end-to-end bound must impose it above this
-client.
-
-Max 3 retries (4 attempts total), 100ms initial backoff, doubling each retry,
-sampled with full jitter.
-
-### Deadlines
-
-Every unary method (`CheckPermissionAsync`, `WriteAsync`, `ReadSchemaAsync`,
-etc.) takes an optional `TimeSpan? timeout = null`, applied via
-`CallOptions.Deadline` — **alongside**, not instead of, the pre-existing
-`CancellationToken`: a cancelled token stops the client from waiting, but
-only a server-enforced deadline tells the server itself to stop working.
-`CreatePlaintext`/`CreateSystemTls`/`CreateFromChannel` all take an optional
-`TimeSpan? defaultTimeout = null`, applied to any unary call that doesn't
-pass its own `timeout` — both default to `SpiceDBClient.DefaultTimeout`
-(30s), mirroring `authzed-node`'s `DEFAULT_DEADLINE_MS = 30_000` (its
-comment cites `grpc/grpc-node#541`). See root DESIGN.md, "RULE: A unary
-call must have a deadline".
-
-The six `params Relationship[]` check overloads (`CheckPermissionsAsync`,
-`CheckPermissionsWithOptionsAsync`, `CheckAnyAsync`, `CheckAnyWithOptionsAsync`,
-`CheckAllAsync`, `CheckAllWithOptionsAsync`) deliberately do **not** take a
-`timeout` parameter: inserting one ahead of
-the `params` array would silently break any existing positional call site
-passing relationships right after `cancellationToken` (e.g.
-`CheckPermissionsAsync(cs, "view", default, rel1, rel2)` — `rel1` would try
-to bind to the new parameter instead of the params array). They are still
-bounded by the client's `DefaultTimeout`; use the singular
-`CheckPermissionAsync` for a per-call override on checks.
-
-```csharp
-await using var client = SpiceDBClient.CreatePlaintext(endpoint, token, defaultTimeout: TimeSpan.FromSeconds(5));
-var result = await client.CheckPermissionAsync(Consistency.Full(), "view", rel);                                    // bound by the 5s default
-var result2 = await client.CheckPermissionAsync(Consistency.Full(), "view", rel, timeout: TimeSpan.FromSeconds(1)); // overrides it
-```
-
-Server-streaming methods (`ReadRelationshipsAsync`, `LookupResourcesAsync`,
-`LookupSubjectsAsync`, `UpdatesAsync`, `ExportRelationshipsAsync`) take no
-`timeout` parameter and are NOT bound by `DefaultTimeout` — they are
-long-lived by design (`UpdatesAsync` may run for the life of the process),
-and applying the unary default to them would make the stream itself the
-outage.
-
-`ImportRelationshipsAsync` is client-streaming, not server-streaming, but
-the same exclusion applies for the mirror-image reason: its duration scales
-with the size of the caller's dataset, not with server latency, so no fixed
-default is correct for it either. Unlike the server-streaming methods
-above, it DOES take a `timeout` parameter — omitting it means unbounded
-there, not "use `DefaultTimeout`"; pass it explicitly to bound a bulk
-import. (Its `cancellationToken` still works as caller-side cancellation
-regardless.)
-
-Note for callers reasoning about worst-case latency: `timeout` is a
-per-*attempt* budget, applied fresh on each retry, so a call that retries
-can take up to `timeout × (retries + 1)` plus backoff, and an auto-paging
-call (e.g. `DeleteRelationshipsAsync`) applies the same `timeout` fresh to
-each page.
-
-### Supporting Types
-
-```csharp
-public sealed record SchemaDefinition { Name, Comment, Relations, Permissions }
-public sealed record SchemaRelation { Name, Comment, ParentDefinitionName }
-public sealed record SchemaPermission { Name, Comment, ParentDefinitionName }
-public sealed record SchemaCaveat { Name, Comment, Expression, Parameters }
-public sealed record SchemaCaveatParameter { Name, Type, ParentCaveatName }
-public sealed record ReflectSchemaResult { Definitions, Caveats, Revision }
-public sealed record RelationReference { DefinitionName, RelationName, IsPermission }
-public sealed record SchemaDiff { Kind, DefinitionName, RelationName, PermissionName, CaveatName }
-public sealed record ExpandResult { Tree, Revision }
-public sealed record CountResult { RelationshipCount, Revision }
-public sealed record RelationshipUpdate { Operation, Relationship }
-public enum UpdateOperation { Create = 1, Touch = 2, Delete = 3 }
-public sealed record PermissionTree { ExpandedObject, ExpandedRelation, Intermediate, Leaf }
-public sealed record ObjectRef { ObjectType, ObjectID }
-public sealed record SubjectRef { SubjectType, SubjectID, OptionalRelation }
-public sealed record IntermediateNode { Operation, Children }
-public sealed record LeafNode { Subjects }
-public enum TreeOperation { Unspecified, Union, Intersection, Exclusion }
-public enum Permissionship { Unspecified, HasPermission, ConditionalPermission, NoPermission }
-public sealed record PartialCaveatInfo { MissingRequiredContext }
-public sealed record LookupResource { ResourceID, Permissionship, PartialCaveat, LookedUpAt }
-public sealed record ResolvedSubject { SubjectID, Permissionship, PartialCaveat }
-public sealed record LookupSubject { Subject, ExcludedSubjects, LookedUpAt }
-public sealed record CheckResult { Permissionship, MissingContext, CheckedAt, HasPermission }
-public sealed record RoaringLookupResourcesResult { Bitmap, Cardinality, AtRevision }
-```
-
-### Escape Hatches
-
-- `ConsistencyStrategy.V1Consistency` — exposes underlying proto type
-- `Transaction.V1Updates` / `Transaction.Preconditions` — exposes underlying proto updates
-- `SpiceDBClient.CreateFromChannel(channel, key)` — use existing GrpcChannel.
-  The channel stays caller-owned: `DisposeAsync` does not dispose it.
-- `SpiceDBClient.RawProto()` — the underlying `SpiceDBProtoClient` and its five generated
-  service clients, for an RPC or proto field the idiomatic API does not wrap
-
-## Examples Manifest
-
-| Directory | Demonstrates |
-|-----------|-------------|
-| `CheckPermission/` | Basic permission check |
-| `WriteRelationships/` | Writing relationships with transactions |
-| `ReadRelationships/` | Reading relationships with async enumerables |
-| `LookupResources/` | Resource lookup |
-| `LookupSubjects/` | Subject lookup |
-| `CallDeadlines/` | The `defaultTimeout` construction parameter, a per-call `timeout` override, and confirming bulk import isn't bounded by the unary default |
-| `ErrorMapping/` | Recovering from `OUT_OF_RANGE` (stale ZedToken) and `UNAUTHENTICATED` without parsing a message |
-| `InsecureOptIn/` | Why `CreatePlaintext` is loopback-only, and the named opt-in a remote plaintext host requires |
-| `RetryPolicy/` | Which calls are retried for you and which are not, counted server-side |
-| `UnrepresentableValues/` | Caller data that cannot convert fails loudly, naming the key; unknown server enums degrade safely |
-| `WatchChanges/` | Watching for changes |
-| `SchemaManagement/` | Schema read/write |
-| `BulkOperations/` | Bulk checks, batch writes, and bulk relationship import/export |
-| `SchemaReflection/` | Schema reflection, computable permissions, diffs |
-| `RelationshipCounters/` | Relationship counter registration and counting |
-| `ExpandPermissionTree/` | Expanding a permission into its native `PermissionTree` of subjects |
-| `RawEscapeHatch/` | `RawProto()` — driving the generated service client directly for a proto field (`OptionalTransactionMetadata`) and an RPC (`CheckPermission`) the idiomatic API does not expose |
-| `RoaringLookupResources/` | `ExperimentalRoaringLookupResourcesAsync` — bitmap/cardinality/revision mapping and the `FAILED_PRECONDITION` a non-canonical resource ID produces, against a stand-in server (this RPC is not yet served by the SpiceDB the integration job starts) |
-
-## Changelog
-
-See [CHANGELOG.md](CHANGELOG.md) for release notes.
+# C# client design
+
+- **Use native asynchronous C# values and explicit operation options.**
+  - `PermissionCheck.CreateBuilder()` offers `WithResource`, `WithPermission`, `WithSubject`, `WithConsistency` and `WithContext`; `Build()` validates required fields and produces an immutable request. Context is snapshotted when supplied.
+  - The [root design](../DESIGN.md) defines shared semantics, RPC coverage, security, and verification.
+  - `SpiceDBClient` is sealed and `IAsyncDisposable`. Operations use `Task`,
+    `IAsyncEnumerable`, immutable native models, `DateTimeOffset`, and `TimeSpan`.
+  - Each operation accepts required arguments, one nullable options object, and
+    a final `CancellationToken`. Null options select documented defaults.
+  - The [shared design](../DESIGN.md) defines cross-language semantics.
+
+- **Keep revision tokens opaque and distinct from credentials and cursors.**
+  - `ZedToken` is a readonly value constructed from a string. `Value` and
+    `ToString()` preserve its complete contents without normalization.
+  - Every public revision input and result uses `ZedToken`, including checks,
+    writes, deletes, schema, lookups, counters, watch, and materialize operations.
+    Optional positions use `ZedToken?`; credentials and opaque resume cursors
+    remain strings. `PermissionSetCursor` is a separate native value.
+  - Reads require `Consistency.Full()`, `MinLatency()`, `AtLeast(token)`, or
+    `Snapshot(token)`. Strict token strategies reject empty/default tokens;
+    `AtLeastOrFull` and `AtLeastOrMinLatency` provide explicitly named fallbacks.
+
+- **Make behavioral choices discoverable with named enums.**
+  - `CheckOptions.Tracing` uses `CheckTracing.Disabled` (default) or `Enabled`.
+    Singular checks use `CheckPermission`; bulk checks forward tracing on every
+    chunk and preserve each item's complete native recursive trace.
+  - `LookupOptions.Debug` uses `LookupDebug.Disabled` (default) or `Enabled`.
+    LookupSubjects and roaring lookup reject unsupported debug settings.
+  - `WatchOptions.Content` is a flags enum: `WatchContent.Relationships` (default),
+    `Checkpoints`, and `SchemaUpdates`. Combine flags to request multiple kinds;
+    zero and unknown bits are invalid.
+  - `ClientOptions.RemotePlaintextCredentials` uses
+    `RemotePlaintextCredentials.Reject` (default) or `Allow`.
+  - Undefined enum values fail with `InvalidArgumentException`. Binary result
+    facts such as `HasPermission`, `IsCheckpoint`, and `Completed` stay boolean.
+
+- **Separate persisted tuples from permission questions.**
+  - `ObjectRef`, `SubjectRef.Direct`, and `SubjectRef.Named` describe identity.
+    `Relationship` contains stored caveat context and optional expiration.
+    `PermissionCheck` contains permission, explicit consistency, and evaluation context.
+  - `CheckAsync`, `CheckBulkAsync`, `CheckAnyAsync`, and `CheckAllAsync` accept
+    request values. Only unconditional grants satisfy `HasPermission`; empty
+    aggregates are false. Conditional, denied, and unspecified remain distinct.
+  - Bulk calls validate equal consistency before RPC, split at 1,000, validate
+    cardinality and every echoed request, and preserve absolute error indexes
+    and per-chunk revisions. Singular expiration is independent of tracing.
+  - Context values recursively snapshot JSON-compatible data, preserve null,
+    and reject unsupported values with their paths. Per-request keys override
+    call-level defaults; absent context remains absent.
+
+- **Preserve filter scope and acknowledged deletion progress.**
+  - `Filter` is immutable. Subject relation filters distinguish `Any`, `Direct`,
+    and `Named`; exact relationship filters retain all tuple identity fields.
+  - `DeleteRelationshipsAsync(filter, limit, options)` makes one bounded call.
+    `DeleteAllRelationshipsNonAtomicAsync(filter, options)` uses a separate positive
+    page size (default 1,000), one budget, and preconditions on every page.
+  - `DeleteResult` preserves count, revision, completion and any resume cursor.
+    Unknown completion is an error. Failures carry cumulative `DeleteProgress`,
+    including acknowledged malformed responses and the latest token/cursor.
+    `error.GetDeleteProgress()` retrieves it from client errors and native cancellation
+    exceptions without changing exception identity or cancellation tokens.
+  - Every batch is transactional; the complete operation is non-atomic. Previously
+    completed batches remain committed when later batches fail or are canceled.
+    Read the result's `Revision` for its native revision token. Nonempty response
+    cursors seed the next batch; absent or empty cursors are omitted on the wire,
+    retaining the no-cursor fallback. Results and progress retain acknowledged cursors.
+
+- **Share deadlines and release transport resources deterministically.**
+  - Unary calls default to a 30-second total monotonic budget, configurable via
+    client or operation options. Retries, chunks and pages spend the same budget.
+    Streams/imports have no default timeout but accept an explicit total timeout.
+  - Caller cancellation preserves its native token; remote cancellation and
+    deadline expiry retain separate typed categories and original diagnostics.
+  - Retry idempotent reads only for unavailable/aborted errors with bounded
+    jittered backoff. Never replay mutations or partially consumed streams.
+  - Enumerator disposal, early loop exit, cancellation and client disposal stop
+    active transport calls. Imports apply bounded backpressure and cancel and
+    dispose producers on early server rejection, producer failure or cancellation.
+
+- **Expose the complete protocol through native operations.**
+  - Relationships, schema reflection/diff, permission trees, lookup exclusions,
+    counters, watch metadata/checkpoints, and all nondeprecated materialize RPCs
+    use native immutable results. Experimental operations are explicitly named.
+  - Read/export pages default to 512. Lookup limits cap total yielded results;
+    unsupported settings fail explicitly. Permission-set lookup is one bounded
+    page with `PermissionSetLookupOptions.ResumeCursor` for continuation.
+  - `Transaction` collects create/touch/delete operations and match/nonmatch
+    preconditions, snapshotting them for writes. Metadata remains native JSON.
+
+- **Require an explicit decision for remote plaintext credentials.**
+  - `CreateSystemTls(endpoint, key, options)` uses platform trust.
+    `CreatePlaintext(endpoint, key, options)` permits loopback by default and
+    rejects authenticated remote hosts/IPs unless options explicitly set
+    `RemotePlaintextCredentials = RemotePlaintextCredentials.Allow`.
+  - `CreateFromChannel(channel, key, options)` applies the same policy and borrows
+    its channel. The transport's parsed address establishes scheme/loopback;
+    unavailable metadata fails closed unless explicitly opted in. Arbitrary
+    caller transport configuration can supersede endpoint security assumptions.
+  - `RawProto()` exposes authenticated services on the existing connection and
+    bypasses native mapping/retry/deadlines. Deprecated RPCs remain raw-only.
+
+- **Verify observable contracts and keep examples executable.**
+  - Unit and real local gRPC transport tests cover enum mapping/validation,
+    lossless tokens, remote credential guards, strict bulk association,
+    cumulative deletion, lifecycle cleanup, TLS, and cancellation.
+  - Build both solutions, run the full unit suite and every integration example,
+    verify formatting, and document public changes in the Unreleased changelog.
+
+- **LookupResources can filter for unconditional grants on the client.**
+  - The default `All` mode returns every response, including conditional and unknown permissionship values. Before mapping results to accessible IDs, require unconditional permission explicitly or opt into `new LookupOptions { PermissionshipFilter = LookupPermissionshipFilter.HasPermissionOnly }`.
+  - The filter yields only exact HAS_PERMISSION responses; conditional, unspecified, and unknown values are skipped. Limits count yielded matches, and skipped responses still advance pagination and cursors.
+  - Filtering does not deduplicate results or change server caveat evaluation. LookupSubjects rejects the nondefault filter.
+
+- **Relationship writes return a native WriteResult.**
+  - Access `Revision` for the `ZedToken` to pass to consistency or watch APIs. Typed relationship mutations return the same wrapper.
+  - Schema writes and filtered relationship deletion retain their operation-specific results; absent wire revisions retain their existing mapping.
+
+- **Watch supports native relationship filters.**
+  - `WatchOptions.RelationshipFilters` snapshots the filter list and forwards resource type/ID/prefix, relation, and subject constraints, including direct and named subject relations.
+  - Pass an empty object-type list when specifying relationship filters. Nonempty object types and relationship filters are mutually exclusive and rejected before any RPC. Both lists empty watches all relationships.
+  - Existing object-type calls remain available; watch examples prefer type-only relationship filters and retain cursor, cancellation, and content options.

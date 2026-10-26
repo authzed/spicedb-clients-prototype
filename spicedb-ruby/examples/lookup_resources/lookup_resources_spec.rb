@@ -7,22 +7,27 @@ RSpec.describe 'LookupResources' do
     client.write_schema(TEST_SCHEMA)
 
     txn = SpiceDB::Transaction.new
-    txn.touch(SpiceDB::Relationship.from_triple('document', 'firstdoc', 'viewer', 'user', 'alice'))
-    txn.touch(SpiceDB::Relationship.from_triple('document', 'seconddoc', 'editor', 'user', 'alice'))
+    txn.touch(SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'firstdoc'), relation: 'viewer',
+                                        subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user',
+                                                                                                        object_id: 'alice'), relation: nil)))
+    txn.touch(SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'seconddoc'), relation: 'editor',
+                                        subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user',
+                                                                                                        object_id: 'alice'), relation: nil)))
     client.write(txn)
 
     # alice can view both documents (viewer implies view, editor implies view)
-    results = client.lookup_resources(
-      SpiceDB::Consistency.full,
-      'document', 'view', 'user', 'alice'
-    ).to_a
+    results = client.lookup_resources(resource_type: 'document', permission: 'view',
+                                      subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user',
+                                                                                                      object_id: 'alice')),
+                                      consistency: SpiceDB::Consistency.full,
+                                      permissionship_filter: SpiceDB::LookupPermissionshipFilter::HAS_PERMISSION_ONLY).to_a
 
     resource_ids = results.map(&:resource_id)
     expect(resource_ids).to include('firstdoc')
     expect(resource_ids).to include('seconddoc')
 
     # Each result is a native SpiceDB::LookupResource, not a bare ID — callers
-    # MUST check permissionship before treating a result as a full grant.
+    # use HAS_PERMISSION_ONLY above to exclude conditional and unknown matches.
     # Results also aren't guaranteed unique (the same resource_id can be
     # yielded more than once), which is why this asserts with `include`
     # rather than an exact-array match.
@@ -34,15 +39,20 @@ RSpec.describe 'LookupResources' do
     client.write_schema(TEST_SCHEMA)
 
     txn = SpiceDB::Transaction.new
-    txn.touch(SpiceDB::Relationship.from_triple('document', 'firstdoc', 'viewer', 'user', 'alice'))
-    txn.touch(SpiceDB::Relationship.from_triple('document', 'seconddoc', 'owner', 'user', 'alice'))
+    txn.touch(SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'firstdoc'), relation: 'viewer',
+                                        subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user',
+                                                                                                        object_id: 'alice'), relation: nil)))
+    txn.touch(SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'seconddoc'), relation: 'owner',
+                                        subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user',
+                                                                                                        object_id: 'alice'), relation: nil)))
     client.write(txn)
 
     # Only seconddoc should appear for "delete" (owner implies delete)
-    resource_ids = client.lookup_resources(
-      SpiceDB::Consistency.full,
-      'document', 'delete', 'user', 'alice'
-    ).map(&:resource_id)
+    resource_ids = client.lookup_resources(resource_type: 'document', permission: 'delete',
+                                           subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user',
+                                                                                                           object_id: 'alice')),
+                                           consistency: SpiceDB::Consistency.full,
+                                           permissionship_filter: SpiceDB::LookupPermissionshipFilter::HAS_PERMISSION_ONLY).map(&:resource_id)
 
     expect(resource_ids).to include('seconddoc')
     expect(resource_ids).not_to include('firstdoc')
@@ -51,10 +61,10 @@ RSpec.describe 'LookupResources' do
   it 'returns empty when subject has no access' do
     client.write_schema(TEST_SCHEMA)
 
-    results = client.lookup_resources(
-      SpiceDB::Consistency.full,
-      'document', 'view', 'user', 'nobody'
-    ).to_a
+    results = client.lookup_resources(resource_type: 'document', permission: 'view',
+                                      subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user',
+                                                                                                      object_id: 'nobody')), consistency: SpiceDB::Consistency.full,
+                                      permissionship_filter: SpiceDB::LookupPermissionshipFilter::HAS_PERMISSION_ONLY).to_a
 
     expect(results).to be_empty
   end
@@ -75,15 +85,18 @@ RSpec.describe 'LookupResources' do
 
     txn = SpiceDB::Transaction.new
     txn.touch(
-      SpiceDB::Relationship.from_triple('document', 'caveated', 'viewer', 'user', 'alice')
+      SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'caveated'), relation: 'viewer',
+                                subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: 'alice'), relation: nil))
                             .with_caveat('has_valid_ip', {})
     )
     client.write(txn)
 
-    result = client.lookup_resources(
-      SpiceDB::Consistency.full,
-      'document', 'view', 'user', 'alice'
-    ).find { |r| r.resource_id == 'caveated' }
+    result = client.lookup_resources(resource_type: 'document', permission: 'view',
+                                     subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user',
+                                                                                                     object_id: 'alice')),
+                                     consistency: SpiceDB::Consistency.full).find do |r|
+      r.resource_id == 'caveated'
+    end
 
     # Without caveat context supplied, the server can't fully evaluate the
     # grant — permissionship MUST be checked before treating this as access.
@@ -93,6 +106,6 @@ RSpec.describe 'LookupResources' do
     # Clean up the caveated relationship so the next example's around-hook
     # can restore TEST_SCHEMA (which drops the `has_valid_ip` caveat type)
     # without SpiceDB rejecting it for a dangling relationship reference.
-    client.delete_relationships(SpiceDB::Filter.new(resource_type: 'document'))
+    client.delete_all_relationships_non_atomic(SpiceDB::Filter.new(resource_type: 'document'))
   end
 end

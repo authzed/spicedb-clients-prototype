@@ -471,6 +471,17 @@ func NewClient(endpoint string, token string, opts ...Option) (*Client, error) {
 	}, nil
 }
 
+// Connection borrows this client's existing authenticated transport for an
+// additional generated service. It neither creates a connection nor transfers
+// ownership; Close remains the owner's responsibility. It returns nil for a
+// client assembled from stub test doubles without a transport.
+func (c *Client) Connection() grpc.ClientConnInterface {
+	if c == nil || c.conn == nil {
+		return nil
+	}
+	return c.conn
+}
+
 // Close releases the underlying gRPC connection. Idempotent -- safe to call
 // more than once, including concurrently with itself.
 //

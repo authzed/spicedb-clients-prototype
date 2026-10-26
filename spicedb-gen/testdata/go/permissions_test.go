@@ -2,6 +2,7 @@ package permissions_test
 
 import (
 	"context"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -39,8 +40,17 @@ definition document {
 
 func newTestClient(t *testing.T) *TypedClient {
 	t.Helper()
-	c, err := client.NewPlaintext("localhost:50051", "somerandomkeyhere")
+	endpoint := os.Getenv("SPICEDB_ENDPOINT")
+	if endpoint == "" {
+		endpoint = "localhost:50051"
+	}
+	token := os.Getenv("SPICEDB_TOKEN")
+	if token == "" {
+		token = "somerandomkeyhere"
+	}
+	c, err := client.NewPlaintext(endpoint, token)
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
 	return NewTypedClient(c)
 }
 
@@ -49,36 +59,38 @@ func TestTouchAndCheck(t *testing.T) {
 	tc := newTestClient(t)
 
 	// Write the schema
-	_, err := tc.Client.WriteSchema(ctx, schema)
+	_, err := tc.WriteSchema(ctx, client.WriteSchemaRequest{Schema: schema})
 	require.NoError(t, err)
 
 	// Write relationships
-	_, err = tc.Touch(ctx,
+	_, err = tc.Touch(ctx, []TypedRelationship{
 		Document("readme").Viewer(User("alice")),
 		Document("readme").Editor(User("bob")),
 		Document("readme").Owner(User("charlie")),
 		Document("readme").Viewer(Team("eng").Member()),
-	)
+	})
 	require.NoError(t, err)
 
 	// Write a caveated relationship
-	_, err = tc.Touch(ctx,
+	_, err = tc.Touch(ctx, []TypedRelationship{
 		Document("readme").Viewer(User("dave").WithIpRange(IpRangeContext{}.WithAllowedCidr("10.0.0.0/8"))),
-	)
+	})
 	require.NoError(t, err)
 
 	// Write a caveated relationship with no context supplied at write time, so
 	// checking it needs context the server does not have.
-	_, err = tc.Touch(ctx,
+	_, err = tc.Touch(ctx, []TypedRelationship{
 		Document("readme").Viewer(User("erin").WithIpRange(IpRangeContext{})),
-	)
+	})
 	require.NoError(t, err)
 
 	// Check permissions
 	cs := consistency.Full()
 
-	result, err := Check(ctx, tc, cs, Document("readme").View(), User("alice"))
+	result, err := Check(ctx, tc, cs, Document("readme").View(), User("alice"), client.WithCheckTracing(client.TracingEnabled))
 	require.NoError(t, err)
+	require.NotNil(t, result.DebugTrace)
+	assert.NotEmpty(t, result.DebugTrace.SchemaUsed)
 	assert.True(t, result.HasPermission(), "alice should be able to view")
 
 	result, err = Check(ctx, tc, cs, Document("readme").Edit(), User("alice"))
@@ -113,9 +125,9 @@ func TestTouchAndCheck(t *testing.T) {
 	assert.NotEmpty(t, result.CheckedAt)
 
 	// The payoff (spec D3b): supplying the missing caveat context at CHECK
-	// TIME (not write time), via the new CheckWithContext, resolves erin's
+	// TIME (not write time), via the native context option, resolves erin's
 	// CONDITIONAL_PERMISSION into a genuine grant.
-	result, err = CheckWithContext(ctx, tc, cs, Document("readme").View(), map[string]any{"allowed_cidr": "0.0.0.0/0"}, User("erin"))
+	result, err = Check(ctx, tc, cs, Document("readme").View(), User("erin"), client.WithCheckContext(map[string]any{"allowed_cidr": "0.0.0.0/0"}))
 	require.NoError(t, err)
 	assert.True(t, result.HasPermission(), "supplying allowed_cidr at check time should resolve erin's conditional check into a grant")
 	assert.Equal(t, client.PermissionshipHasPermission, result.Permissionship)
@@ -124,10 +136,10 @@ func TestTouchAndCheck(t *testing.T) {
 	// PLAIN Check (no call-level context at all) must still resolve it via
 	// the subject's OWN embedded context (User(...).WithIpRange(ctx) passed
 	// directly to Check) -- this is what makes the fix functional for the
-	// simplest call shape, not just CheckWithContext.
-	_, err = tc.Touch(ctx,
+	// simplest call shape, including call-level options.
+	_, err = tc.Touch(ctx, []TypedRelationship{
 		Document("readme").Viewer(User("frank").WithIpRange(IpRangeContext{})),
-	)
+	})
 	require.NoError(t, err)
 
 	result, err = Check(ctx, tc, cs, Document("readme").View(),
@@ -140,15 +152,15 @@ func TestTouchAndCheck(t *testing.T) {
 	// per-key over a conflicting call-level default. The call-level default
 	// below is a WRONG cidr that would fail the caveat on its own; the
 	// subject's own embedded context supplies the CORRECT cidr.
-	_, err = tc.Touch(ctx,
+	_, err = tc.Touch(ctx, []TypedRelationship{
 		Document("readme").Viewer(User("grace").WithIpRange(IpRangeContext{})),
-	)
+	})
 	require.NoError(t, err)
 
-	result, err = CheckWithContext(
+	result, err = Check(
 		ctx, tc, cs, Document("readme").View(),
-		map[string]any{"allowed_cidr": "wrong-value-must-be-overridden"},
 		User("grace").WithIpRange(IpRangeContext{}.WithAllowedCidr("0.0.0.0/0")),
+		client.WithCheckContext(map[string]any{"allowed_cidr": "wrong-value-must-be-overridden"}),
 	)
 	require.NoError(t, err)
 	assert.True(t, result.HasPermission(),
@@ -161,15 +173,15 @@ func TestTouchAndCheck(t *testing.T) {
 	// the merge were wholesale replacement, "end" would be silently dropped
 	// and the caveat (start != "" && end != "") would come back Conditional
 	// on a MISSING "end", not a grant.
-	_, err = tc.Touch(ctx,
+	_, err = tc.Touch(ctx, []TypedRelationship{
 		Document("readme").Viewer(User("henry").WithTimeWindow(TimeWindowContext{})),
-	)
+	})
 	require.NoError(t, err)
 
-	result, err = CheckWithContext(
+	result, err = Check(
 		ctx, tc, cs, Document("readme").View(),
-		map[string]any{"end": "5pm"},
 		User("henry").WithTimeWindow(TimeWindowContext{}.WithStart("9am")),
+		client.WithCheckContext(map[string]any{"end": "5pm"}),
 	)
 	require.NoError(t, err)
 	assert.True(t, result.HasPermission(),
@@ -184,7 +196,7 @@ func TestLookupResources(t *testing.T) {
 	cs := consistency.Full()
 
 	var ids []string
-	for res, err := range LookupResources(ctx, tc, cs, Document_View, User("alice")) {
+	for res, err := range LookupResources(ctx, tc, cs, Document_View, User("alice"), client.WithLookupResourcesPermissionshipFilter(client.LookupHasPermissionOnly)) {
 		require.NoError(t, err)
 		ids = append(ids, res.ResourceID)
 	}

@@ -50,11 +50,12 @@ public class CheckContextTests
             .Returns<CheckBulkPermissionsRequest, Metadata, DateTime?, CancellationToken>(
                 (req, _, _, _) => MakeUnaryCall(new CheckBulkPermissionsResponse
                 {
-                    CheckedAt = new ZedToken { Token = "tok" },
+                    CheckedAt = new Authzed.Api.V1.ZedToken { Token = "tok" },
                     Pairs =
                     {
-                        req.Items.Select(_ => new CheckBulkPermissionsPair
+                        req.Items.Select(item => new CheckBulkPermissionsPair
                         {
+                            Request = item.Clone(),
                             Item = new CheckBulkPermissionsResponseItem
                             {
                                 Permissionship = CheckPermissionResponse.Types.Permissionship.HasPermission,
@@ -97,13 +98,12 @@ public class CheckContextTests
     {
         var client = NewClient(out _, out var captured);
 
-        var rel1 = Relationship.FromTriple("document", "doc1", "viewer", "user", "alice");
-        var rel2 = Relationship.FromTriple("document", "doc2", "viewer", "user", "bob");
+        var rel1 = new Relationship(new ObjectRef("document", "doc1"), "viewer", new SubjectRef(new ObjectRef("user", "alice")));
+        var rel2 = new Relationship(new ObjectRef("document", "doc2"), "viewer", new SubjectRef(new ObjectRef("user", "bob")));
 
-        var callLevel = new Dictionary<string, object> { ["now"] = 42, ["region"] = "us" };
+        var callLevel = new Dictionary<string, object?> { ["now"] = 42, ["region"] = "us" };
 
-        await client.CheckPermissionsWithOptionsAsync(
-            Consistency.Full(), "view", new CheckOptions { Context = callLevel }, default, rel1, rel2);
+        await client.CheckBulkAsync([new PermissionCheck(rel1.Resource, "view", rel1.Subject, Consistency.Full()), new PermissionCheck(rel2.Resource, "view", rel2.Subject, Consistency.Full())], new CheckOptions { Context = callLevel }, default);
 
         captured.Should().ContainSingle();
         var items = captured[0].Items;
@@ -124,12 +124,11 @@ public class CheckContextTests
         // needing the WithContext-suffixed method.
         var client = NewClient(out _, out var captured);
 
-        var rel1 = Relationship.FromTriple("document", "doc1", "viewer", "user", "alice");
-        var rel2 = Relationship
-            .FromTriple("document", "doc2", "viewer", "user", "bob")
-            .WithCheckContext(new Dictionary<string, object> { ["now"] = 42 });
+        var rel1 = new Relationship(new ObjectRef("document", "doc1"), "viewer", new SubjectRef(new ObjectRef("user", "alice")));
+        var rel2 = new Relationship(new ObjectRef("document", "doc2"), "viewer", new SubjectRef(new ObjectRef("user", "bob")));
+        var rel2Check = new PermissionCheck(rel2.Resource, "view", rel2.Subject, Consistency.Full()).WithContext(new Dictionary<string, object?> { ["now"] = 42 });
 
-        await client.CheckPermissionsAsync(Consistency.Full(), "view", default, rel1, rel2);
+        await client.CheckBulkAsync([new PermissionCheck(rel1.Resource, "view", rel1.Subject, Consistency.Full()), rel2Check], null, default);
 
         captured.Should().ContainSingle();
         var items = captured[0].Items;
@@ -149,15 +148,12 @@ public class CheckContextTests
     {
         var client = NewClient(out _, out var captured);
 
-        var callLevel = new Dictionary<string, object> { ["now"] = 42, ["region"] = "us" };
+        var callLevel = new Dictionary<string, object?> { ["now"] = 42, ["region"] = "us" };
 
-        var item0 = Relationship
-            .FromTriple("document", "doc1", "viewer", "user", "alice")
-            .WithCheckContext(new Dictionary<string, object> { ["region"] = "eu" });
-        var item1 = Relationship.FromTriple("document", "doc2", "viewer", "user", "bob");
+        var item0 = new Relationship(new ObjectRef("document", "doc1"), "viewer", new SubjectRef(new ObjectRef("user", "alice")));
+        var item1 = new Relationship(new ObjectRef("document", "doc2"), "viewer", new SubjectRef(new ObjectRef("user", "bob")));
 
-        await client.CheckPermissionsWithOptionsAsync(
-            Consistency.Full(), "view", new CheckOptions { Context = callLevel }, default, item0, item1);
+        await client.CheckBulkAsync([new PermissionCheck(item0.Resource, "view", item0.Subject, Consistency.Full(), new Dictionary<string, object?> { ["region"] = "eu" }), new PermissionCheck(item1.Resource, "view", item1.Subject, Consistency.Full())], new CheckOptions { Context = callLevel }, default);
 
         captured.Should().ContainSingle();
         var items = captured[0].Items;
@@ -183,13 +179,12 @@ public class CheckContextTests
     {
         var client = NewClient(out _, out var captured);
 
-        var rel1 = Relationship.FromTriple("document", "doc1", "viewer", "user", "alice");
-        var rel2 = Relationship.FromTriple("document", "doc2", "viewer", "user", "bob");
+        var rel1 = new Relationship(new ObjectRef("document", "doc1"), "viewer", new SubjectRef(new ObjectRef("user", "alice")));
+        var rel2 = new Relationship(new ObjectRef("document", "doc2"), "viewer", new SubjectRef(new ObjectRef("user", "bob")));
 
         // Explicit null call-level context via the WithContext overload —
         // equivalent to calling the plain CheckPermissionsAsync.
-        await client.CheckPermissionsWithOptionsAsync(
-            Consistency.Full(), "view", new CheckOptions(), default, rel1, rel2);
+        await client.CheckBulkAsync([new PermissionCheck(rel1.Resource, "view", rel1.Subject, Consistency.Full()), new PermissionCheck(rel2.Resource, "view", rel2.Subject, Consistency.Full())], new CheckOptions(), default);
 
         captured.Should().ContainSingle();
         var items = captured[0].Items;
@@ -204,8 +199,8 @@ public class CheckContextTests
     {
         var client = NewClient(out _, out var captured);
 
-        var rel = Relationship.FromTriple("document", "doc1", "viewer", "user", "alice");
-        await client.CheckPermissionsAsync(Consistency.Full(), "view", default, rel);
+        var rel = new Relationship(new ObjectRef("document", "doc1"), "viewer", new SubjectRef(new ObjectRef("user", "alice")));
+        await client.CheckBulkAsync([new PermissionCheck(rel.Resource, "view", rel.Subject, Consistency.Full())], null, default);
 
         captured.Should().ContainSingle();
         captured[0].Items[0].Context.Should().BeNull();
@@ -219,10 +214,10 @@ public class CheckContextTests
     {
         var client = NewClient(out _, out var captured);
 
-        var rel = Relationship.FromTriple("document", "doc1", "viewer", "user", "alice");
-        var context = new Dictionary<string, object> { ["now"] = 42 };
+        var rel = new Relationship(new ObjectRef("document", "doc1"), "viewer", new SubjectRef(new ObjectRef("user", "alice")));
+        var context = new Dictionary<string, object?> { ["now"] = 42 };
 
-        await client.CheckPermissionWithOptionsAsync(Consistency.Full(), "view", rel, new CheckOptions { Context = context });
+        _ = (await client.CheckBulkAsync([new PermissionCheck(rel.Resource, "view", rel.Subject, Consistency.Full())], new CheckOptions { Context = context }, default))[0];
 
         captured.Should().ContainSingle();
         captured[0].Items[0].Context.Should().Be(AsStruct(("now", 42)));
@@ -236,11 +231,11 @@ public class CheckContextTests
     {
         var client = NewClient(out _, out var captured);
 
-        var rel1 = Relationship.FromTriple("document", "doc1", "viewer", "user", "alice");
-        var rel2 = Relationship.FromTriple("document", "doc2", "viewer", "user", "bob");
-        var context = new Dictionary<string, object> { ["now"] = 42 };
+        var rel1 = new Relationship(new ObjectRef("document", "doc1"), "viewer", new SubjectRef(new ObjectRef("user", "alice")));
+        var rel2 = new Relationship(new ObjectRef("document", "doc2"), "viewer", new SubjectRef(new ObjectRef("user", "bob")));
+        var context = new Dictionary<string, object?> { ["now"] = 42 };
 
-        await client.CheckAnyWithOptionsAsync(Consistency.Full(), "view", new CheckOptions { Context = context }, default, rel1, rel2);
+        await client.CheckAnyAsync([new PermissionCheck(rel1.Resource, "view", rel1.Subject, Consistency.Full()), new PermissionCheck(rel2.Resource, "view", rel2.Subject, Consistency.Full())], new CheckOptions { Context = context }, default);
 
         captured.Should().ContainSingle();
         var items = captured[0].Items;
@@ -260,11 +255,10 @@ public class CheckContextTests
     {
         var client = NewClient(out _, out _);
 
-        var rel = Relationship.FromTriple("document", "doc1", "viewer", "user", "alice");
-        var context = new Dictionary<string, object> { ["bad_key"] = new UnrepresentableValue() };
+        var rel = new Relationship(new ObjectRef("document", "doc1"), "viewer", new SubjectRef(new ObjectRef("user", "alice")));
+        var context = new Dictionary<string, object?> { ["bad_key"] = new UnrepresentableValue() };
 
-        var act = async () => await client.CheckPermissionsWithOptionsAsync(
-            Consistency.Full(), "view", new CheckOptions { Context = context }, default, rel);
+        var act = async () => await client.CheckBulkAsync([new PermissionCheck(rel.Resource, "view", rel.Subject, Consistency.Full())], new CheckOptions { Context = context }, default);
 
         var result = await act.Should().ThrowAsync<InvalidArgumentException>();
         result.Which.Message.Should().Contain("bad_key");
@@ -276,11 +270,11 @@ public class CheckContextTests
     {
         var client = NewClient(out _, out var captured);
 
-        var rel1 = Relationship.FromTriple("document", "doc1", "viewer", "user", "alice");
-        var rel2 = Relationship.FromTriple("document", "doc2", "viewer", "user", "bob");
-        var context = new Dictionary<string, object> { ["now"] = 42 };
+        var rel1 = new Relationship(new ObjectRef("document", "doc1"), "viewer", new SubjectRef(new ObjectRef("user", "alice")));
+        var rel2 = new Relationship(new ObjectRef("document", "doc2"), "viewer", new SubjectRef(new ObjectRef("user", "bob")));
+        var context = new Dictionary<string, object?> { ["now"] = 42 };
 
-        await client.CheckAllWithOptionsAsync(Consistency.Full(), "view", new CheckOptions { Context = context }, default, rel1, rel2);
+        await client.CheckAllAsync([new PermissionCheck(rel1.Resource, "view", rel1.Subject, Consistency.Full()), new PermissionCheck(rel2.Resource, "view", rel2.Subject, Consistency.Full())], new CheckOptions { Context = context }, default);
 
         captured.Should().ContainSingle();
         var items = captured[0].Items;

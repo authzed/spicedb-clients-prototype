@@ -4,6 +4,7 @@ package client
 import (
 	"errors"
 	"fmt"
+	"time"
 
 	proto "github.com/authzed/spicedb-clients/proto-clients/spicedb-go-proto"
 	v1 "github.com/authzed/spicedb-clients/proto-clients/spicedb-go-proto/gen/authzed/api/v1"
@@ -20,7 +21,8 @@ type Client struct {
 	wsc v1.WatchServiceClient
 	esc v1.ExperimentalServiceClient
 
-	proto *proto.Client
+	proto          *proto.Client
+	defaultTimeout time.Duration
 }
 
 // Option configures the client when using NewWithOpts.
@@ -30,37 +32,39 @@ type options struct {
 	insecure            bool
 	allowInsecureRemote bool
 	dialOptions         []grpc.DialOption
+	defaultTimeout      time.Duration
+	err                 error
 }
 
-// WithInsecure disables TLS. Use only for testing.
-//
-// By itself this only permits a plaintext connection to a loopback endpoint
-// (localhost, 127.0.0.0/8, ::1, or a unix socket). See root DESIGN.md,
-// "RULE: Credentials over insecure transport require an explicit opt-in":
-// NewWithOpts refuses to send the bearer token to any other endpoint unless
-// WithInsecureAllowRemoteHost is also passed.
-func WithInsecure() Option {
-	return func(o *options) { o.insecure = true }
-}
+// WithInsecure selects plaintext transport. Remote credentials also require
+// WithRemotePlaintextCredentials(RemotePlaintextAllowed).
+func WithInsecure() Option { return func(o *options) { o.insecure = true } }
 
-// WithInsecureAllowRemoteHost permits an insecure (plaintext) connection to
-// send its bearer token to a non-loopback host. Named and separate from
-// WithInsecure on purpose: root DESIGN.md, "RULE: Credentials over
-// insecure transport require an explicit opt-in" requires an option a
-// reader cannot mistake for a default, not a boolean that does double duty
-// as the plaintext-transport switch. Passing this alongside WithInsecure is
-// the caller stating, on purpose, "yes, send a long-lived SpiceDB token in
-// cleartext to a remote host" -- do that only if you understand a SpiceDB
-// token is a complete authorization bypass in anyone else's hands.
-func WithInsecureAllowRemoteHost() Option {
-	return func(o *options) { o.allowInsecureRemote = true }
+// RemotePlaintextCredentials controls sending credentials to remote plaintext endpoints.
+type RemotePlaintextCredentials uint8
+
+const (
+	RemotePlaintextRejected RemotePlaintextCredentials = iota
+	RemotePlaintextAllowed
+)
+
+// WithRemotePlaintextCredentials explicitly permits or rejects credentials over
+// remote plaintext. The default rejects them. This option does not disable TLS.
+func WithRemotePlaintextCredentials(policy RemotePlaintextCredentials) Option {
+	return func(o *options) {
+		if policy != RemotePlaintextRejected && policy != RemotePlaintextAllowed {
+			o.err = invalid("unknown remote plaintext credential policy")
+			return
+		}
+		o.allowInsecureRemote = policy == RemotePlaintextAllowed
+	}
 }
 
 // WithDialOptions adds custom gRPC dial options.
 //
 // Security note (root DESIGN.md, "RULE: Credentials over insecure transport
 // require an explicit opt-in"): the guard NewWithOpts applies recognizes
-// WithInsecure/WithInsecureAllowRemoteHost by the options themselves, and
+// WithInsecure/WithRemotePlaintextCredentials by the options themselves, and
 // cannot see what an arbitrary grpc.DialOption does to the connection.
 // Caller options are appended AFTER this library's own, and later dial options
 // win in grpc-go, so a grpc.WithTransportCredentials passed here replaces the
@@ -74,34 +78,32 @@ func WithInsecureAllowRemoteHost() Option {
 // at all rather than send it in cleartext. It fails closed. Everything this
 // option does to the connection is nonetheless the caller's responsibility.
 func WithDialOptions(opts ...grpc.DialOption) Option {
+	opts = append([]grpc.DialOption(nil), opts...)
 	return func(o *options) { o.dialOptions = append(o.dialOptions, opts...) }
 }
 
-// NewPlaintext creates a client with an insecure (plaintext) connection.
-// Use this for testing only — the lack of TLS is made obvious by the name.
-//
-// This only works against a loopback endpoint (localhost, 127.0.0.0/8,
-// ::1, or a unix socket) -- see root DESIGN.md, "RULE: Credentials over
-// insecure transport require an explicit opt-in". For a non-loopback
-// endpoint, use NewWithOpts with both WithInsecure and
-// WithInsecureAllowRemoteHost.
-func NewPlaintext(endpoint, presharedKey string) (*Client, error) {
-	return NewWithOpts(endpoint, presharedKey, WithInsecure())
+// NewPlaintext creates a plaintext client. Remote endpoints require
+// WithRemotePlaintextCredentials(RemotePlaintextAllowed) to send credentials.
+func NewPlaintext(endpoint, presharedKey string, opts ...Option) (*Client, error) {
+	return NewWithOpts(endpoint, presharedKey, append([]Option{WithInsecure()}, opts...)...)
 }
 
 // NewSystemTLS creates a client using the system's TLS certificate pool.
 // Use this for production connections.
-func NewSystemTLS(endpoint, presharedKey string) (*Client, error) {
-	return NewWithOpts(endpoint, presharedKey)
+func NewSystemTLS(endpoint, presharedKey string, opts ...Option) (*Client, error) {
+	return NewWithOpts(endpoint, presharedKey, opts...)
 }
 
 // NewWithOpts creates a client with functional options.
 func NewWithOpts(endpoint, presharedKey string, opts ...Option) (*Client, error) {
-	o := &options{}
+	o := &options{defaultTimeout: 30 * time.Second}
 	for _, opt := range opts {
 		opt(o)
 	}
 
+	if o.err != nil {
+		return nil, o.err
+	}
 	var protoOpts []proto.Option
 	if o.insecure {
 		protoOpts = append(protoOpts, proto.WithInsecure())
@@ -109,9 +111,7 @@ func NewWithOpts(endpoint, presharedKey string, opts ...Option) (*Client, error)
 	if o.allowInsecureRemote {
 		protoOpts = append(protoOpts, proto.WithInsecureAllowRemoteHost())
 	}
-	if len(o.dialOptions) > 0 {
-		protoOpts = append(protoOpts, proto.WithDialOptions(o.dialOptions...))
-	}
+	protoOpts = append(protoOpts, proto.WithDialOptions(append(o.dialOptions, grpc.WithDisableRetry(), grpc.WithDisableServiceConfig())...))
 
 	pc, err := proto.NewClient(endpoint, presharedKey, protoOpts...)
 	if err != nil {
@@ -129,55 +129,21 @@ func NewWithOpts(endpoint, presharedKey string, opts ...Option) (*Client, error)
 	}
 
 	return &Client{
-		psc:   pc.PermissionsServiceClient,
-		ssc:   pc.SchemaServiceClient,
-		wsc:   pc.WatchServiceClient,
-		esc:   pc.ExperimentalServiceClient,
-		proto: pc,
+		psc:            pc.PermissionsServiceClient,
+		ssc:            pc.SchemaServiceClient,
+		wsc:            pc.WatchServiceClient,
+		esc:            pc.ExperimentalServiceClient,
+		proto:          pc,
+		defaultTimeout: o.defaultTimeout,
 	}, nil
 }
 
-// RawProto is the escape hatch: the underlying proto client, holding the four
-// generated service clients (PermissionsServiceClient, SchemaServiceClient,
-// WatchServiceClient, ExperimentalServiceClient) this Client makes its own
-// calls through.
-//
-// Clearly-marked secondary API. Root DESIGN.md's "What NOT To Do" keeps
-// channels, stubs and metadata out of the primary surface and permits exactly
-// this -- "escape hatches for advanced use are acceptable as clearly marked
-// secondary API" -- so that a request the idiomatic methods cannot express (an
-// RPC or proto field not wrapped here, such as
-// WriteRelationshipsRequest.OptionalTransactionMetadata, or the single-check
-// CheckPermission RPC that CheckOne deliberately routes around) has a
-// workaround short of forking the client:
-//
-//	resp, err := c.RawProto().PermissionsServiceClient.CheckPermission(ctx, req)
-//
-// Prefer this over building a second proto client alongside: the returned
-// client dials nothing new. It is this Client's own connection, configured
-// exactly as you configured it (including anything passed to WithDialOptions)
-// and carrying the same bearer credentials, so a raw call cannot silently end
-// up on a different transport than the idiomatic ones.
-//
-// Four things to know before reaching for it:
-//
-//   - The bearer token comes free. The connection carries this library's
-//     PerRPCCredentials, so a raw call is authenticated exactly as an
-//     idiomatic one is.
-//   - A raw call is a raw call: no *client.Error mapping (you handle
-//     google.golang.org/grpc/status yourself), no retry, and no deadline of
-//     this library's -- set one on ctx.
-//   - Do not Close the returned client. It holds this Client's connection, and
-//     (*Client).Close is what releases it.
-//   - No stability promise beyond grpc-go's and the generated code's.
-//
-// It is an accessor, never a constructor: it takes no endpoint, token, or
-// transport setting and hands back a client that already exists, so it cannot
-// become a second construction path around the guard in NewWithOpts -- root
-// DESIGN.md, "RULE: Credentials over insecure transport require an explicit
-// opt-in".
-//
-// Returns nil for a zero-value Client (one no constructor produced).
+// RawProto is the explicitly secondary accessor for the existing authenticated connection.
+// It creates no connection and transfers no ownership. Do not close it independently.
+// Raw calls bypass native validation, errors, budgets and application retries. The
+// connection disables transport retries so mutation calls are never automatically replayed.
+// WithDialOptions permits custom trust/mTLS; caller transport options override defaults,
+// while native credential guards continue to apply. Returns nil for a zero-value Client.
 func (c *Client) RawProto() *proto.Client {
 	if c == nil {
 		return nil
@@ -207,4 +173,15 @@ func (c *Client) Close() error {
 		return nil
 	}
 	return c.proto.Close()
+}
+
+// WithDefaultTimeout sets the total unary operation budget (30 seconds by default).
+func WithDefaultTimeout(d time.Duration) Option {
+	return func(o *options) {
+		if d <= 0 {
+			o.err = invalid("default timeout must be positive")
+			return
+		}
+		o.defaultTimeout = d
+	}
 }

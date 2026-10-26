@@ -28,9 +28,13 @@ async fn main() {
         std::env::var("SPICEDB_ENDPOINT").unwrap_or_else(|_| "localhost:50051".to_string());
     let token = std::env::var("SPICEDB_TOKEN").unwrap_or_else(|_| "testtoken".to_string());
 
-    let client = SpiceDBClient::new_plaintext(endpoint, token)
-        .await
-        .expect("failed to create client");
+    let client = SpiceDBClient::new_plaintext(
+        endpoint,
+        token,
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("failed to create client");
 
     // Clear before writing the schema, not after using it. Every example runs
     // against one SpiceDB and writes a whole schema, and SpiceDB refuses a
@@ -43,20 +47,27 @@ async fn main() {
     // definition yet, which SpiceDB reports as FailedPrecondition
     // (ERROR_REASON_UNKNOWN_DEFINITION). Anything else -- an unreachable
     // server, a bad token -- must still fail the example.
-    match client.delete_relationships(&Filter::new("document")).await {
+    match client
+        .delete_all_relationships_non_atomic(spicedb::DeleteAllRequest::new(
+            (Filter::new("document")).clone(),
+        ))
+        .await
+    {
         Ok(_) | Err(SpiceDBError::FailedPrecondition(_)) => {}
         Err(e) => panic!("cleanup before schema write failed: {e:?}"),
     }
 
     // Write schema
     client
-        .write_schema(SCHEMA)
+        .write_schema(spicedb::WriteSchemaRequest::new(SCHEMA))
         .await
         .expect("write schema failed");
 
     // Reflect the current schema
     let result = client
-        .reflect_schema(&consistency::full())
+        .reflect_schema(spicedb::ReflectSchemaRequest::new(
+            (consistency::full()).clone(),
+        ))
         .await
         .expect("reflect schema failed");
 
@@ -107,13 +118,21 @@ async fn main() {
     permission_names.sort_unstable();
     assert_eq!(permission_names, vec!["delete", "edit", "view"]);
     assert!(
-        !result.revision.is_empty(),
+        !result.revision.as_ref().is_empty(),
         "expected a non-empty revision from reflect_schema"
     );
 
     // Find computable permissions for a relation
-    let (perms, revision) = client
-        .computable_permissions(&consistency::full(), "document", "viewer")
+    let spicedb::ComputablePermissionsResult {
+        permissions: perms,
+        revision,
+        ..
+    } = client
+        .computable_permissions(spicedb::ComputablePermissionsRequest::new(
+            "document",
+            "viewer",
+            (consistency::full()).clone(),
+        ))
         .await
         .expect("computable permissions failed");
 
@@ -136,11 +155,19 @@ async fn main() {
         perms[0].is_permission,
         "expected document#view to be reported as a permission, not a relation"
     );
-    assert!(!revision.is_empty());
+    assert!(!revision.as_ref().is_empty());
 
     // Find dependent relations for a permission
-    let (deps, revision) = client
-        .dependent_relations(&consistency::full(), "document", "view")
+    let spicedb::DependentRelationsResult {
+        relations: deps,
+        revision,
+        ..
+    } = client
+        .dependent_relations(spicedb::DependentRelationsRequest::new(
+            "document",
+            "view",
+            (consistency::full()).clone(),
+        ))
         .await
         .expect("dependent relations failed");
 
@@ -163,7 +190,7 @@ async fn main() {
             "document#viewer".to_string(),
         ]
     );
-    assert!(!revision.is_empty());
+    assert!(!revision.as_ref().is_empty());
 
     // Diff against a modified schema
     let new_schema = r#"definition user {}
@@ -179,59 +206,23 @@ definition document {
     permission manage = admin
 }"#;
 
-    let (diffs, revision) = client
-        .diff_schema(&consistency::full(), new_schema)
+    let spicedb::DiffSchemaResult {
+        diffs, revision, ..
+    } = client
+        .diff_schema(spicedb::DiffSchemaRequest::new(
+            new_schema,
+            (consistency::full()).clone(),
+        ))
         .await
         .expect("diff schema failed");
 
     println!("\nschema diffs (revision: {revision}):");
     assert!(!diffs.is_empty(), "expected at least one diff");
-    for d in &diffs {
-        print!("  {}", d.kind);
-        if !d.definition_name.is_empty() {
-            print!(" on {}", d.definition_name);
-        }
-        if !d.relation_name.is_empty() {
-            print!("#{}", d.relation_name);
-        }
-        if !d.permission_name.is_empty() {
-            print!("#{}", d.permission_name);
-        }
-        println!();
-    }
-
-    // new_schema adds one relation and one permission and changes the
-    // expression of the other three, so the diff is a known set. Asserting only
-    // that it is non-empty would pass on a diff that reported every kind as
-    // "unknown" -- the exact outcome of the proto-to-native mapping falling
-    // through to its default branch.
-    let diff_tuples: Vec<(&str, &str, &str, &str)> = diffs
+    assert!(diffs.iter().any(|d| matches!(d,spicedb::SchemaDiff::RelationAdded(r) if r.parent_definition_name=="document" && r.name=="admin")));
+    assert!(diffs.iter().any(|d| matches!(d,spicedb::SchemaDiff::PermissionAdded(r) if r.parent_definition_name=="document" && r.name=="manage")));
+    assert!(diffs.iter().any(|d| matches!(d,spicedb::SchemaDiff::PermissionExprChanged(r) if r.parent_definition_name=="document" && r.name=="view")));
+    assert!(!diffs
         .iter()
-        .map(|d| {
-            (
-                d.kind.as_str(),
-                d.definition_name.as_str(),
-                d.relation_name.as_str(),
-                d.permission_name.as_str(),
-            )
-        })
-        .collect();
-    assert!(
-        diff_tuples.contains(&("relation_added", "document", "admin", "")),
-        "expected a relation_added diff for document#admin, got {diff_tuples:?}"
-    );
-    assert!(
-        diff_tuples.contains(&("permission_added", "document", "", "manage")),
-        "expected a permission_added diff for document#manage, got {diff_tuples:?}"
-    );
-    assert!(
-        diff_tuples.contains(&("permission_expr_changed", "document", "", "view")),
-        "expected a permission_expr_changed diff for document#view, got {diff_tuples:?}"
-    );
-    assert!(
-        !diffs.iter().any(|d| d.kind == "unknown"),
-        "a diff came back as \"unknown\": the proto-to-native diff mapping does not cover \
-         what the server sent ({diff_tuples:?})"
-    );
-    assert!(!revision.is_empty());
+        .any(|d| matches!(d, spicedb::SchemaDiff::Unknown)));
+    println!("{diffs:#?}");
 }

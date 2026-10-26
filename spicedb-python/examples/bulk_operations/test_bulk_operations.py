@@ -3,64 +3,71 @@
 Demonstrates bulk permission checks and bulk relationship import/export.
 """
 
+from spicedb import PermissionCheck
 import pytest
-
 from spicedb import Filter, Relationship, full
 from spicedb.aio import SpiceDBClient
 from spicedb.consistency import at_least
 from spicedb.types import Transaction
 
-
 pytestmark = pytest.mark.integration
 
 
 async def test_bulk_checks(client: SpiceDBClient):
-    # Bulk write relationships
     users = ["alice", "bob", "charlie"]
     txn = Transaction()
     for user in users:
         txn.touch(Relationship.from_triple("document:report", "viewer", f"user:{user}"))
-    revision = await client.write(txn)
+    revision = (await client.write(txn)).revision
     print(f"wrote {len(users)} relationships at revision: {revision}")
-
-    # Bulk check permissions. Inputs over 1,000 relationships are split into
-    # one CheckBulkPermissions request per 1,000 automatically and the
-    # results concatenated in input order -- SpiceDB rejects a single
-    # request carrying more than 10,000. Nothing here changes for a larger
-    # list. check_permissions() returns a list of
-    # CheckResult, not bare bools -- .has_permission is true ONLY for a full
-    # HAS_PERMISSION grant.
     checks = [
         Relationship.from_triple("document:report", "view", f"user:{user}")
         for user in users
     ]
-    results = await client.check_permissions(at_least(revision), *checks)
-
+    results = await client.check_bulk(
+        [
+            *[
+                PermissionCheck(item.resource, item.relation, item.subject)
+                for item in checks
+            ]
+        ],
+        consistency=at_least(revision),
+    )
     for user, result in zip(users, results):
         print(f"user:{user} can view document:report: {result.has_permission}")
         assert result.has_permission is True
-
-    # check_all — verify all users have permission
-    all_allowed = await client.check_all(at_least(revision), *checks)
+    all_allowed = (lambda results: bool(results) and all(results))(
+        await client.check_bulk(
+            [
+                *[
+                    PermissionCheck(item.resource, item.relation, item.subject)
+                    for item in checks
+                ]
+            ],
+            consistency=at_least(revision),
+        )
+    )
     print(f"all users can view: {all_allowed}")
     assert all_allowed is True
-
-    # check_any — verify at least one user has permission
-    any_allowed = await client.check_any(at_least(revision), *checks)
+    any_allowed = (lambda results: bool(results) and any(results))(
+        await client.check_bulk(
+            [
+                *[
+                    PermissionCheck(item.resource, item.relation, item.subject)
+                    for item in checks
+                ]
+            ],
+            consistency=at_least(revision),
+        )
+    )
     print(f"any user can view: {any_allowed}")
     assert any_allowed is True
-
-    # Clean up so later examples that write a narrower schema aren't blocked
-    # by leftover relationships.
-    await client.delete_relationships(
+    await client.delete_all_relationships_non_atomic(
         Filter(resource_type="document", resource_id="report")
     )
 
 
 async def test_bulk_import_export(client: SpiceDBClient):
-    # import_relationships streams relationships to the server in batches
-    # and returns the number loaded — useful for large, one-shot data loads
-    # (unlike write(), which is transactional and limited in size).
     users = ["dana", "erin", "frank"]
     relationships = [
         Relationship.from_triple("document:archive", "viewer", f"user:{user}")
@@ -69,32 +76,23 @@ async def test_bulk_import_export(client: SpiceDBClient):
     num_loaded = await client.import_relationships(relationships)
     print(f"imported {num_loaded} relationships")
     assert num_loaded == len(users)
-
-    # import_relationships also accepts a generator (or any other iterable)
-    # instead of a list -- it's consumed lazily, one batch at a time, so a
-    # caller streaming in millions of relationships from a generator or a DB
-    # cursor is never forced to materialize the whole thing into a list
-    # first.
     more_users = ["grace", "heidi"]
 
     def relationship_generator():
         for user in more_users:
             yield Relationship.from_triple("document:archive", "viewer", f"user:{user}")
 
-    num_loaded_from_generator = await client.import_relationships(relationship_generator())
+    num_loaded_from_generator = await client.import_relationships(
+        relationship_generator()
+    )
     print(f"imported {num_loaded_from_generator} relationships from a generator")
     assert num_loaded_from_generator == len(more_users)
-
-    # export_relationships streams relationships back out, paginating
-    # automatically under the hood.
     filter = Filter(resource_type="document", resource_id="archive")
-    exported = [rel async for rel in client.export_relationships(full(), filter=filter)]
+    exported = [
+        rel async for rel in client.export_relationships(filter, consistency=full())
+    ]
     print(f"exported {len(exported)} relationships")
-
-    exported_subject_ids = {rel.subject_id for rel in exported}
+    exported_subject_ids = {rel.subject.object.object_id for rel in exported}
     for user in users:
         assert user in exported_subject_ids
-
-    # Clean up so later examples that write a narrower schema aren't blocked
-    # by leftover relationships.
-    await client.delete_relationships(filter)
+    await client.delete_all_relationships_non_atomic(filter)

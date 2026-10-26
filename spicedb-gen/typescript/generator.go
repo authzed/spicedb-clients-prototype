@@ -385,8 +385,12 @@ func celTypeToTS(celType string) string {
 		return "boolean"
 	case "duration", "timestamp":
 		return "string"
+	case "map":
+		return "JSONObject"
+	case "list":
+		return "readonly JSONValue[]"
 	default:
-		return "unknown"
+		return "JSONValue"
 	}
 }
 

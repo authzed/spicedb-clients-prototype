@@ -12,6 +12,7 @@ import build.buf.gen.authzed.api.v1.RelationshipUpdate;
 import build.buf.gen.authzed.api.v1.SubjectReference;
 import build.buf.gen.authzed.api.v1.WriteRelationshipsRequest;
 import build.buf.gen.authzed.api.v1.WriteRelationshipsResponse;
+import com.authzed.spicedb.*;
 import com.authzed.spicedb.CheckResult;
 import com.authzed.spicedb.Filter;
 import com.authzed.spicedb.Relationship;
@@ -58,7 +59,7 @@ class RawEscapeHatchTest extends SpiceDBIntegrationTest {
   // it means.
   @Test
   void rawChannel_sends_a_field_the_idiomatic_api_does_not_expose() {
-    client.deleteRelationships(Filter.of("document"));
+    client.deleteAllRelationshipsNonAtomic(Filter.of("document"));
 
     var stub = PermissionsServiceGrpc.newBlockingStub(client.rawChannel());
 
@@ -97,22 +98,28 @@ class RawEscapeHatchTest extends SpiceDBIntegrationTest {
     // The idiomatic API picks up right where the raw call left off — same client, same
     // connection, including read-your-writes on the raw revision.
     CheckResult result =
-        client.checkPermission(
-            atLeast(revision),
-            "view",
-            Relationship.of("document", "ledger", "view", "user", "jimmy"));
+        client.check(
+            new PermissionCheck(
+                new ObjectRef("document", "ledger"),
+                "view",
+                SubjectRef.direct(new ObjectRef("user", "jimmy")),
+                atLeast(new com.authzed.spicedb.ZedToken(revision))));
     System.out.println("user:jimmy can view document:ledger: " + result.hasPermission());
     assertThat(result.hasPermission()).isTrue();
 
-    client.deleteRelationships(Filter.of("document").withResourceID("ledger"));
+    client.deleteAllRelationshipsNonAtomic(Filter.of("document").withResourceId("ledger"));
   }
 
   @Test
   void rawChannel_calls_an_rpc_the_idiomatic_api_routes_around() {
-    client.deleteRelationships(Filter.of("document"));
+    client.deleteAllRelationshipsNonAtomic(Filter.of("document"));
 
     var txn = new com.authzed.spicedb.Transaction();
-    txn.touch(Relationship.of("document", "ledger", "viewer", "user", "jimmy"));
+    txn.touch(
+        Relationship.of(
+            new ObjectRef("document", "ledger"),
+            "viewer",
+            SubjectRef.direct(new ObjectRef("user", "jimmy"))));
     client.write(txn);
 
     // A raw call gets no client default deadline — set one yourself.
@@ -141,6 +148,6 @@ class RawEscapeHatchTest extends SpiceDBIntegrationTest {
 
     // Close the CLIENT, never the channel rawChannel() handed out — the base class does
     // that in @AfterEach, and it is what releases this connection.
-    client.deleteRelationships(Filter.of("document").withResourceID("ledger"));
+    client.deleteAllRelationshipsNonAtomic(Filter.of("document").withResourceId("ledger"));
   }
 }

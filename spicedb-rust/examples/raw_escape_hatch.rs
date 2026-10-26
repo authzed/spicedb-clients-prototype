@@ -30,7 +30,7 @@ use spicedb::client::SpiceDBClient;
 use spicedb::consistency;
 use spicedb::error::SpiceDBError;
 use spicedb::spicedb_proto::authzed::api::v1 as proto;
-use spicedb::types::{Filter, Relationship};
+use spicedb::types::Filter;
 
 const SCHEMA: &str = r#"definition user {}
 
@@ -48,9 +48,13 @@ async fn main() {
         std::env::var("SPICEDB_ENDPOINT").unwrap_or_else(|_| "localhost:50051".to_string());
     let token = std::env::var("SPICEDB_TOKEN").unwrap_or_else(|_| "testtoken".to_string());
 
-    let client = SpiceDBClient::new_plaintext(endpoint, token)
-        .await
-        .expect("failed to create client");
+    let client = SpiceDBClient::new_plaintext(
+        endpoint,
+        token,
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("failed to create client");
 
     // Clear before writing the schema, not after using it. Every example runs
     // against one SpiceDB and writes a whole schema, and SpiceDB refuses a
@@ -63,13 +67,18 @@ async fn main() {
     // definition yet, which SpiceDB reports as FailedPrecondition
     // (ERROR_REASON_UNKNOWN_DEFINITION). Anything else -- an unreachable
     // server, a bad token -- must still fail the example.
-    match client.delete_relationships(&Filter::new("document")).await {
+    match client
+        .delete_all_relationships_non_atomic(spicedb::DeleteAllRequest::new(
+            (Filter::new("document")).clone(),
+        ))
+        .await
+    {
         Ok(_) | Err(SpiceDBError::FailedPrecondition(_)) => {}
         Err(e) => panic!("cleanup before schema write failed: {e:?}"),
     }
 
     client
-        .write_schema(SCHEMA)
+        .write_schema(spicedb::WriteSchemaRequest::new(SCHEMA))
         .await
         .expect("write schema failed");
 
@@ -124,10 +133,15 @@ async fn main() {
 
     // The idiomatic API picks up right where the raw call left off -- same
     // client, same connection, including read-your-writes on the raw revision.
-    let rel = Relationship::new("document", "ledger", "view", "user", "jimmy", "")
+    let rel = spicedb::Relationship::from_tuple("document:ledger#view@user:jimmy")
         .expect("invalid relationship");
     let result = client
-        .check_permission(&consistency::at_least(&revision), "view", &rel)
+        .check(spicedb::PermissionCheck::new(
+            rel.resource().clone(),
+            "view",
+            rel.subject().clone(),
+            (consistency::at_least((revision.as_str()).into())).clone(),
+        ))
         .await
         .expect("idiomatic check failed");
     println!(
@@ -176,7 +190,9 @@ async fn main() {
 
     // Clean up so a later example isn't blocked by leftover relationships.
     client
-        .delete_relationships(&Filter::new("document").with_resource_id("ledger"))
+        .delete_all_relationships_non_atomic(spicedb::DeleteAllRequest::new(
+            (Filter::new("document").with_resource_id("ledger")).clone(),
+        ))
         .await
         .expect("cleanup failed");
 

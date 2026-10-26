@@ -1,70 +1,7 @@
-// Client
-export {
-  SpiceDBClient,
-  createSpiceDBClient,
-  type SpiceDBClientOptions,
-  type SpiceDBProtoClient,
-  type TlsOptions,
-} from "./client.js";
+export { SpiceDBClient, createSpiceDBClient, type SpiceDBClientOptions, type SpiceDBProtoClient, type TlsOptions } from "./client.js";
+export { Consistency, full, minLatency, atLeast, snapshot, atLeastOrFull, atLeastOrMinLatency } from "./consistency.js";
+export { OperationAbortError } from "./operation.js";
+export { type JSONValue, type JSONObject, ZedToken, type ObjectRef, type SubjectRef, type Caveat, type Relationship, type CheckRequest, type SubjectRelationFilter, type SubjectFilter, type RelationshipFilter, type CallOptions, type CheckOptions, type Preconditions, type DeleteOptions, type DeleteAllOptions, type DeleteResult, type WriteResult, type ReadRelationshipsRequest, type LookupResourcesRequest, type LookupSubjectsRequest, type ExpandPermissionTreeRequest, type SchemaFilter, type ReflectSchemaRequest, type ComputablePermissionsRequest, type DependentRelationsRequest, type DiffSchemaRequest, type ExportRelationshipsRequest, type WatchRequest, type RoaringLookupResourcesRequest, type RoaringLookupResourcesResult, type WatchChange, type WatchEvent, type TreeOperation, type PermissionTreeNode, type PermissionTree, type ExpandResult, type SchemaCaveatParameter, type SchemaCaveat, type SchemaTypeReference, type SchemaRelation, type SchemaPermission, type SchemaDefinition, type ReflectSchemaResult, type RelationReference, type RelationsResult, type SchemaResult, type SchemaDiff, type SchemaDiffResult, type RelationshipCountResult, type Permissionship, type PartialCaveatInfo, type LookupResource, type ResolvedSubject, type LookupSubject, type CaveatEvaluation, type TraceResolution, type CheckDebugTrace, type DebugInformation, CheckResult, Transaction, relationship, relationshipFromTuple, relationshipToFilter, type PermissionSetCursor, type PermissionSetReference, type PermissionSetMember, type PermissionSetChange, type WatchedPermission, type WatchPermissionSetsRequest, type PermissionSetEvent, type LookupPermissionSetsRequest, type LookupPermissionSet, type DownloadPermissionSetsRequest, type PermissionSetFile, type DownloadPermissionSetsResult, } from "./types.js";
+export { SpiceDBError, PermissionDeniedError, NotFoundError, AlreadyExistsError, InvalidArgumentError, CancelledError, FailedPreconditionError, UnavailableError, DeadlineExceededError, ResourceExhaustedError, UnauthenticatedError, OutOfRangeError, type SpiceDBErrorOptions } from "./errors.js";
 
-// Consistency
-export { Consistency, full, minLatency, atLeast, atLeastOrFull, atLeastOrMinLatency, snapshot } from "./consistency.js";
-
-// Types
-export {
-  type Relationship,
-  type RelationshipFilterOptions,
-  type DeleteOptions,
-  type LookupResourcesParams,
-  type LookupSubjectsParams,
-  type CheckRequest,
-  type CheckOptions,
-  type WatchChange,
-  type WatchEvent,
-  type WatchOptions,
-  type ExpandPermissionTreeParams,
-  type ReflectSchemaOptions,
-  type ComputablePermissionsParams,
-  type DependentRelationsParams,
-  type RelationReference,
-  type RelationshipCountResult,
-  type TreeOperation,
-  type ObjectRef,
-  type SubjectRef,
-  type IntermediateNode,
-  type LeafNode,
-  type PermissionTree,
-  type SchemaCaveatParameter,
-  type SchemaCaveat,
-  type SchemaRelation,
-  type SchemaPermission,
-  type SchemaDefinition,
-  type ReflectSchemaResult,
-  type SchemaDiff,
-  type Permissionship,
-  type PartialCaveatInfo,
-  type LookupResource,
-  type ResolvedSubject,
-  type LookupSubject,
-  CheckResult,
-  Transaction,
-  relationship,
-  relationshipFromTuple,
-} from "./types.js";
-
-// Errors
-export {
-  SpiceDBError,
-  PermissionDeniedError,
-  NotFoundError,
-  AlreadyExistsError,
-  InvalidArgumentError,
-  CancelledError,
-  FailedPreconditionError,
-  UnavailableError,
-  DeadlineExceededError,
-  ResourceExhaustedError,
-  UnauthenticatedError,
-  OutOfRangeError,
-  type SpiceDBErrorOptions,
-} from "./errors.js";
+export { SubjectRelationKind, Tracing, LookupDebug, LookupPermissionshipFilter, Wildcards, WatchContent, TransportSecurity, RemoteCredentials } from "./modes.js";

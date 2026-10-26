@@ -10,42 +10,42 @@ public class SpiceDBClientTests
     public void CreatePlaintext_ThrowsOnEmptyEndpoint()
     {
         var act = () => SpiceDBClient.CreatePlaintext("", "token");
-        act.Should().Throw<ArgumentException>().Which.ParamName.Should().Be("endpoint");
+        act.Should().Throw<InvalidArgumentException>().Which.Message.Should().Contain("endpoint");
     }
 
     [Fact]
     public void CreatePlaintext_ThrowsOnEmptyKey()
     {
         var act = () => SpiceDBClient.CreatePlaintext("localhost:50051", "");
-        act.Should().Throw<ArgumentException>().Which.ParamName.Should().Be("presharedKey");
+        act.Should().Throw<InvalidArgumentException>().Which.Message.Should().Contain("presharedKey");
     }
 
     [Fact]
     public void CreatePlaintext_ThrowsOnNullEndpoint()
     {
         var act = () => SpiceDBClient.CreatePlaintext(null!, "token");
-        act.Should().Throw<ArgumentException>();
+        act.Should().Throw<InvalidArgumentException>();
     }
 
     [Fact]
     public void CreatePlaintext_ThrowsOnNullKey()
     {
         var act = () => SpiceDBClient.CreatePlaintext("localhost:50051", null!);
-        act.Should().Throw<ArgumentException>();
+        act.Should().Throw<InvalidArgumentException>();
     }
 
     [Fact]
     public void CreateSystemTls_ThrowsOnEmptyEndpoint()
     {
         var act = () => SpiceDBClient.CreateSystemTls("", "token");
-        act.Should().Throw<ArgumentException>().Which.ParamName.Should().Be("endpoint");
+        act.Should().Throw<InvalidArgumentException>().Which.Message.Should().Contain("endpoint");
     }
 
     [Fact]
     public void CreateSystemTls_ThrowsOnEmptyKey()
     {
         var act = () => SpiceDBClient.CreateSystemTls("localhost:443", "");
-        act.Should().Throw<ArgumentException>().Which.ParamName.Should().Be("presharedKey");
+        act.Should().Throw<InvalidArgumentException>().Which.Message.Should().Contain("presharedKey");
     }
 
     [Fact]
@@ -78,7 +78,7 @@ public class SpiceDBClientTests
     /// <summary>
     /// Regression test for root DESIGN.md, "RULE: Credentials over insecure
     /// transport require an explicit opt-in": CreatePlaintext against a
-    /// non-loopback endpoint, with no allowInsecureRemoteCredentials, must
+    /// non-loopback endpoint, with no RemotePlaintextCredentials.Allow, must
     /// refuse to construct a client at all -- before any channel, credential,
     /// or connection is created. The proto-layer test
     /// (InsecureHostGuardTest.TestRefusesInsecureNonLoopbackWithoutOptIn) is
@@ -95,7 +95,7 @@ public class SpiceDBClientTests
         // opt-in", clause 4.
         var ex = act.Should().Throw<InvalidArgumentException>().Which;
         ex.Message.Should().Contain("evil.example.com:1234");
-        ex.Message.Should().Contain("allowInsecureRemoteCredentials");
+        ex.Message.Should().Contain("RemotePlaintextCredentials.Allow");
     }
 
     /// <summary>
@@ -113,7 +113,7 @@ public class SpiceDBClientTests
     {
         var act = () => SpiceDBClient.CreatePlaintext(endpoint, "testtoken");
         var ex = act.Should().Throw<InvalidArgumentException>().Which;
-        ex.Message.Should().Contain("allowInsecureRemoteCredentials");
+        ex.Message.Should().Contain("RemotePlaintextCredentials.Allow");
     }
 
     /// <summary>
@@ -126,7 +126,7 @@ public class SpiceDBClientTests
     public void CreatePlaintext_RefusesUnixSocketTargets(string endpoint)
     {
         var act = () => SpiceDBClient.CreatePlaintext(endpoint, "testtoken");
-        var ex = act.Should().Throw<InvalidOperationException>().Which;
+        var ex = act.Should().Throw<InvalidArgumentException>().Which;
         ex.Message.Should().Contain("unix-domain-socket");
     }
 
@@ -156,10 +156,9 @@ public class SpiceDBClientTests
     }
 
     [Fact]
-    public void CreatePlaintext_AllowInsecureRemoteCredentialsPermitsNonLoopback()
+    public void CreatePlaintext_AllowPolicyPermitsNonLoopback()
     {
-        var act = () => SpiceDBClient.CreatePlaintext(
-            "evil.example.com:1234", "testtoken", allowInsecureRemoteCredentials: true);
+        var act = () => SpiceDBClient.CreatePlaintext("evil.example.com:1234", "testtoken", new ClientOptions { RemotePlaintextCredentials = RemotePlaintextCredentials.Allow });
         act.Should().NotThrow();
     }
 
@@ -167,7 +166,7 @@ public class SpiceDBClientTests
     public void CreateFromChannel_ThrowsOnNullChannel()
     {
         var act = () => SpiceDBClient.CreateFromChannel(null!, "token");
-        act.Should().Throw<ArgumentNullException>();
+        act.Should().Throw<InvalidArgumentException>();
     }
 
     [Fact]
@@ -175,17 +174,17 @@ public class SpiceDBClientTests
     {
         using var channel = Grpc.Net.Client.GrpcChannel.ForAddress("http://localhost:50051");
         var act = () => SpiceDBClient.CreateFromChannel(channel, "");
-        act.Should().Throw<ArgumentException>();
+        act.Should().Throw<InvalidArgumentException>();
     }
 
     [Fact]
     public async Task CheckPermissionAsync_ThrowsOnNullConsistency()
     {
         await using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "testtoken");
-        var rel = Relationship.FromTriple("document", "doc1", "viewer", "user", "alice");
+        var rel = new Relationship(new ObjectRef("document", "doc1"), "viewer", new SubjectRef(new ObjectRef("user", "alice")));
 
-        var act = async () => await client.CheckPermissionAsync(null!, "view", rel);
-        await act.Should().ThrowAsync<ArgumentNullException>();
+        var act = async () => await client.CheckAsync(new PermissionCheck(rel.Resource, "view", rel.Subject, null!), null, default);
+        await act.Should().ThrowAsync<InvalidArgumentException>();
     }
 
     [Fact]
@@ -193,10 +192,8 @@ public class SpiceDBClientTests
     {
         await using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "testtoken");
 
-        var act = async () => await client.CheckPermissionsAsync(
-            Consistency.Full(), "", default,
-            Relationship.FromTriple("document", "doc1", "viewer", "user", "alice"));
-        await act.Should().ThrowAsync<ArgumentException>();
+        var act = async () => await client.CheckBulkAsync([new PermissionCheck(new Relationship(new ObjectRef("document", "doc1"), "viewer", new SubjectRef(new ObjectRef("user", "alice"))).Resource, "", new Relationship(new ObjectRef("document", "doc1"), "viewer", new SubjectRef(new ObjectRef("user", "alice"))).Subject, Consistency.Full())], null, default);
+        await act.Should().ThrowAsync<InvalidArgumentException>();
     }
 
     [Fact]
@@ -204,7 +201,7 @@ public class SpiceDBClientTests
     {
         await using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "testtoken");
 
-        var results = await client.CheckPermissionsAsync(Consistency.Full(), "view", default);
+        var results = await client.CheckBulkAsync([], null, default);
         results.Should().BeEmpty();
     }
 
@@ -213,8 +210,8 @@ public class SpiceDBClientTests
     {
         await using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "testtoken");
 
-        var act = async () => await client.WriteAsync(null!);
-        await act.Should().ThrowAsync<ArgumentNullException>();
+        var act = async () => await client.WriteAsync(null!, null, default);
+        await act.Should().ThrowAsync<InvalidArgumentException>();
     }
 
     [Fact]
@@ -222,8 +219,8 @@ public class SpiceDBClientTests
     {
         await using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "testtoken");
 
-        var act = async () => await client.WriteSchemaAsync("");
-        await act.Should().ThrowAsync<ArgumentException>();
+        var act = async () => await client.WriteSchemaAsync("", null, default);
+        await act.Should().ThrowAsync<InvalidArgumentException>();
     }
 
     [Fact]
@@ -231,8 +228,8 @@ public class SpiceDBClientTests
     {
         await using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "testtoken");
 
-        var act = async () => await client.ExperimentalRegisterRelationshipCounterAsync("", new Filter("doc"));
-        await act.Should().ThrowAsync<ArgumentException>();
+        var act = async () => await client.ExperimentalRegisterRelationshipCounterAsync("", new Filter("doc"), null, default);
+        await act.Should().ThrowAsync<InvalidArgumentException>();
     }
 
     [Fact]
@@ -240,8 +237,8 @@ public class SpiceDBClientTests
     {
         await using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "testtoken");
 
-        var act = async () => await client.ExperimentalCountRelationshipsAsync("");
-        await act.Should().ThrowAsync<ArgumentException>();
+        var act = async () => await client.ExperimentalCountRelationshipsAsync("", null, default);
+        await act.Should().ThrowAsync<InvalidArgumentException>();
     }
 
     [Fact]
@@ -249,7 +246,7 @@ public class SpiceDBClientTests
     {
         await using var client = SpiceDBClient.CreatePlaintext("localhost:50051", "testtoken");
 
-        var act = async () => await client.ExperimentalUnregisterRelationshipCounterAsync("");
-        await act.Should().ThrowAsync<ArgumentException>();
+        var act = async () => await client.ExperimentalUnregisterRelationshipCounterAsync("", null, default);
+        await act.Should().ThrowAsync<InvalidArgumentException>();
     }
 }

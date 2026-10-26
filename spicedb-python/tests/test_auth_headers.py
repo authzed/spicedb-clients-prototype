@@ -8,28 +8,22 @@ credentials). These tests fail loudly if that regresses.
 """
 
 from __future__ import annotations
-
+from spicedb import TransportSecurity
+from spicedb import PermissionCheck
 import contextlib
 import pathlib
 import subprocess
 import tempfile
 from concurrent import futures
 from unittest import mock
-
 import grpc
 import pytest
 from authzed.api.v1 import permission_service_pb2 as psp
-
 from spicedb import Filter, Relationship
 from spicedb.aio import SpiceDBClient
 from spicedb.consistency import full
 
 TOKEN = "test-token"
-
-# One relationship, because `check_permissions` with zero relationships now
-# sends no request at all (an empty bulk check is a round trip whose only
-# possible answer is the empty list). These tests need a real RPC to reach
-# the wire, so they hand it something to ask about.
 _ONE_REL = Relationship.from_triple("document:readme", "view", "user:alice")
 
 
@@ -41,15 +35,27 @@ def tls_pair() -> tuple[bytes, bytes]:
         crt = pathlib.Path(d) / "cert.pem"
         subprocess.run(
             [
-                "openssl", "req", "-x509", "-newkey", "rsa:2048",
-                "-keyout", str(key), "-out", str(crt), "-days", "1", "-nodes",
-                "-subj", "/CN=localhost",
-                "-addext", "subjectAltName=DNS:localhost",
+                "openssl",
+                "req",
+                "-x509",
+                "-newkey",
+                "rsa:2048",
+                "-keyout",
+                str(key),
+                "-out",
+                str(crt),
+                "-days",
+                "1",
+                "-nodes",
+                "-subj",
+                "/CN=localhost",
+                "-addext",
+                "subjectAltName=DNS:localhost",
             ],
             check=True,
             capture_output=True,
         )
-        yield crt.read_bytes(), key.read_bytes()
+        yield (crt.read_bytes(), key.read_bytes())
 
 
 class _Recorder:
@@ -58,31 +64,28 @@ class _Recorder:
 
     def _record(self, context) -> None:
         self.headers.extend(
-            (k, v) for k, v in context.invocation_metadata() if k == "authorization"
+            ((k, v) for k, v in context.invocation_metadata() if k == "authorization")
         )
 
     def check_bulk(self, request: bytes, context) -> bytes:
         self._record(context)
-        # Answer one pair per request item. The client's pair-count guard
-        # rejects a response that does not match the request's item count,
-        # so a fixed empty response would fail every caller that asks about
-        # an actual relationship.
         req = psp.CheckBulkPermissionsRequest()
         req.ParseFromString(request)
         return psp.CheckBulkPermissionsResponse(
             pairs=[
                 psp.CheckBulkPermissionsPair(
+                    request=item,
                     item=psp.CheckBulkPermissionsResponseItem(
                         permissionship=psp.CheckPermissionResponse.PERMISSIONSHIP_HAS_PERMISSION
-                    )
+                    ),
                 )
-                for _ in req.items
+                for item in req.items
             ]
         ).SerializeToString()
 
     def read_relationships(self, request: bytes, context):
         self._record(context)
-        return iter(())  # empty page -> client stops after one request
+        return iter(())
 
     def import_bulk(self, request_iterator, context) -> bytes:
         """Stream-unary handler: drains the real request feed the sync/aio
@@ -130,7 +133,7 @@ def _serve(recorder: _Recorder, tls: tuple[bytes, bytes] | None):
             "localhost:0", grpc.ssl_server_credentials([(key, crt)])
         )
     server.start()
-    return server, port
+    return (server, port)
 
 
 @contextlib.contextmanager
@@ -159,22 +162,20 @@ async def test_aio_sends_exactly_one_authorization_header(
     try:
         with _trusting(tls_pair) if secure else contextlib.nullcontext():
             client = SpiceDBClient(
-                f"localhost:{port}", token=TOKEN, insecure=not secure
+                f"localhost:{port}", token=TOKEN, transport_security=TransportSecurity.TLS if secure else TransportSecurity.PLAINTEXT
             )
             if streaming:
                 async for _ in client.read_relationships(
-                    Filter(resource_type="document"), full()
+                    Filter(resource_type="document"), consistency=full()
                 ):
                     pass
             else:
-                await client.check_permissions(full(), _ONE_REL)
+                await client.check_bulk([_check(_ONE_REL)], consistency=full())
             await client.close()
     finally:
         server.stop(0)
-
     assert len(recorder.headers) == 1, (
-        f"expected exactly 1 authorization header, got {len(recorder.headers)}: "
-        f"{recorder.headers}"
+        f"expected exactly 1 authorization header, got {len(recorder.headers)}: {recorder.headers}"
     )
     assert recorder.headers[0][1] == f"Bearer {TOKEN}"
 
@@ -201,7 +202,7 @@ def test_sync_import_relationships_sends_exactly_one_authorization_header(
     try:
         with _trusting(tls_pair) if secure else contextlib.nullcontext():
             client = SyncSpiceDBClient(
-                f"localhost:{port}", token=TOKEN, insecure=not secure
+                f"localhost:{port}", token=TOKEN, transport_security=TransportSecurity.TLS if secure else TransportSecurity.PLAINTEXT
             )
             rels = [
                 Relationship.from_triple("document:a", "viewer", "user:jimmy"),
@@ -211,11 +212,9 @@ def test_sync_import_relationships_sends_exactly_one_authorization_header(
             client.close()
     finally:
         server.stop(0)
-
     assert num_loaded == 2, "the real server must see both relationships sent"
     assert len(recorder.headers) == 1, (
-        f"expected exactly 1 authorization header, got {len(recorder.headers)}: "
-        f"{recorder.headers}"
+        f"expected exactly 1 authorization header, got {len(recorder.headers)}: {recorder.headers}"
     )
     assert recorder.headers[0][1] == f"Bearer {TOKEN}"
 
@@ -247,13 +246,14 @@ def test_sync_import_relationships_accepts_a_one_shot_generator(tls_pair):
             yield Relationship.from_triple(f"document:{i}", "viewer", "user:jimmy")
 
     try:
-        client = SyncSpiceDBClient(f"localhost:{port}", token=TOKEN, insecure=True)
+        client = SyncSpiceDBClient(f"localhost:{port}", token=TOKEN, transport_security=TransportSecurity.PLAINTEXT)
         num_loaded = client.import_relationships(one_shot())
         client.close()
     finally:
         server.stop(0)
-
-    assert num_loaded == 5, "the real server must see all 5 relationships from the generator"
+    assert num_loaded == 5, (
+        "the real server must see all 5 relationships from the generator"
+    )
 
 
 @pytest.mark.parametrize("secure", [False, True])
@@ -268,21 +268,25 @@ def test_sync_sends_exactly_one_authorization_header(
     try:
         with _trusting(tls_pair) if secure else contextlib.nullcontext():
             client = SyncSpiceDBClient(
-                f"localhost:{port}", token=TOKEN, insecure=not secure
+                f"localhost:{port}", token=TOKEN, transport_security=TransportSecurity.TLS if secure else TransportSecurity.PLAINTEXT
             )
             if streaming:
                 for _ in client.read_relationships(
-                    Filter(resource_type="document"), full()
+                    Filter(resource_type="document"), consistency=full()
                 ):
                     pass
             else:
-                client.check_permissions(full(), _ONE_REL)
+                client.check_bulk([_check(_ONE_REL)], consistency=full())
             client.close()
     finally:
         server.stop(0)
-
     assert len(recorder.headers) == 1, (
-        f"expected exactly 1 authorization header, got {len(recorder.headers)}: "
-        f"{recorder.headers}"
+        f"expected exactly 1 authorization header, got {len(recorder.headers)}: {recorder.headers}"
     )
     assert recorder.headers[0][1] == f"Bearer {TOKEN}"
+
+
+def _check(value):
+    if isinstance(value, PermissionCheck):
+        return value
+    return PermissionCheck(value.resource, value.relation, value.subject)

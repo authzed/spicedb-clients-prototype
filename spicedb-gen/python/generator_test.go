@@ -36,6 +36,20 @@ func TestLanguage(t *testing.T) {
 	assert.Equal(t, "python", g.Language())
 }
 
+func TestCanonicalRequestsOptionsAndCloseableStreams(t *testing.T) {
+	files, err := (&Generator{}).Generate(testSchema(t), nil)
+	require.NoError(t, err)
+	for _, name := range []string{"sync.py", "aio.py"} {
+		output := fileContent(t, files, name)
+		assert.Contains(t, output, "request = PermissionCheck(")
+		assert.Contains(t, output, "self.client.check(request, consistency=c, context=context, timeout=timeout, tracing=tracing)")
+		assert.Contains(t, output, "tracing: Tracing = Tracing.DISABLED")
+		assert.NotContains(t, output, "check_permission(")
+		assert.NotContains(t, output, "Iterator[")
+		assert.Contains(t, output, "token=token,")
+	}
+}
+
 // TestGeneratesThreeFiles verifies the split output: permissions.py holds the
 // flavor-agnostic types, sync.py and aio.py each hold a TypedClient bound to
 // their flavor's SpiceDBClient.
@@ -322,14 +336,14 @@ func TestGenerateSampleSchema(t *testing.T) {
 		iterKind     string // "Iterator" or "AsyncIterator"
 		awaitPrefix  string // "" or "await "
 	}{
-		{"sync.py", sync, "from spicedb.sync import SpiceDBClient", "def", "__enter__", "__exit__", "Iterator", ""},
-		{"aio.py", aio, "from spicedb.aio import SpiceDBClient", "async def", "__aenter__", "__aexit__", "AsyncIterator", "await "},
+		{"sync.py", sync, "from spicedb.sync import SpiceDBClient", "def", "__enter__", "__exit__", "Stream", ""},
+		{"aio.py", aio, "from spicedb.aio import SpiceDBClient", "async def", "__aenter__", "__aexit__", "AsyncStream", "await "},
 	} {
 		output := flavor.output
 
 		// Imports
 		assert.Contains(t, output, "from __future__ import annotations", flavor.name)
-		assert.Contains(t, output, "from collections.abc import "+flavor.iterKind, flavor.name)
+		assert.Contains(t, output, flavor.flavorImport+", "+flavor.iterKind, flavor.name)
 		assert.Contains(t, output, "from typing import Any, overload", flavor.name)
 		assert.Contains(t, output, "from spicedb import Transaction, Relationship, Filter, LookupResource, LookupSubject", flavor.name)
 		assert.Contains(t, output, "from spicedb.consistency import Consistency", flavor.name)
@@ -345,8 +359,8 @@ func TestGenerateSampleSchema(t *testing.T) {
 		assert.Contains(t, output, "client: SpiceDBClient", flavor.name)
 		assert.Contains(t, output, "def __init__(self, client: SpiceDBClient)", flavor.name)
 		assert.Contains(t, output, "def connect(", flavor.name)
-		assert.Contains(t, output, "insecure: bool = False,", flavor.name)
-		assert.Contains(t, output, "allow_insecure_remote_credentials: bool = False,", flavor.name)
+		assert.Contains(t, output, "transport_security: TransportSecurity = TransportSecurity.TLS,", flavor.name)
+		assert.Contains(t, output, "remote_credentials: RemoteCredentials = RemoteCredentials.REJECT,", flavor.name)
 		assert.Contains(t, output, `) -> "TypedClient":`, flavor.name)
 		assert.Contains(t, output, flavor.defKw+" "+flavor.enter, flavor.name)
 		assert.Contains(t, output, flavor.defKw+" "+flavor.exit, flavor.name)
@@ -356,30 +370,30 @@ func TestGenerateSampleSchema(t *testing.T) {
 		// CheckResult, not bool: see TestCheckSurfacesCheckResult below for the
 		// rigorous regression guard. Accepts a keyword-only context parameter:
 		// see TestCheckAcceptsContext for the rigorous regression guard on that.
-		assert.Contains(t, output, flavor.defKw+" check(self, c: Consistency, p: _DocumentViewPermission, s: DocumentViewSubject, *, context: dict[str, Any] | None = None) -> CheckResult:", flavor.name)
-		assert.Contains(t, output, flavor.defKw+" check(self, c: Consistency, p: _DocumentEditPermission, s: DocumentEditSubject, *, context: dict[str, Any] | None = None) -> CheckResult:", flavor.name)
-		assert.Contains(t, output, flavor.defKw+" check(self, c: Consistency, p: _DocumentDeletePermission, s: DocumentDeleteSubject, *, context: dict[str, Any] | None = None) -> CheckResult:", flavor.name)
+		assert.Contains(t, output, flavor.defKw+" check(self, c: Consistency, p: _DocumentViewPermission, s: DocumentViewSubject, *, context: JSONObject | None = None, timeout: float | None = None, tracing: Tracing = Tracing.DISABLED) -> CheckResult:", flavor.name)
+		assert.Contains(t, output, flavor.defKw+" check(self, c: Consistency, p: _DocumentEditPermission, s: DocumentEditSubject, *, context: JSONObject | None = None, timeout: float | None = None, tracing: Tracing = Tracing.DISABLED) -> CheckResult:", flavor.name)
+		assert.Contains(t, output, flavor.defKw+" check(self, c: Consistency, p: _DocumentDeletePermission, s: DocumentDeleteSubject, *, context: JSONObject | None = None, timeout: float | None = None, tracing: Tracing = Tracing.DISABLED) -> CheckResult:", flavor.name)
 
 		// writes
-		assert.Contains(t, output, flavor.defKw+" touch(self, *rels: TypedRelationship) -> str:", flavor.name)
-		assert.Contains(t, output, flavor.defKw+" create(self, *rels: TypedRelationship) -> str:", flavor.name)
-		assert.Contains(t, output, flavor.defKw+" delete(self, *rels: TypedRelationship) -> str:", flavor.name)
+		assert.Contains(t, output, flavor.defKw+" touch(self, *rels: TypedRelationship, timeout: float | None = None, metadata: JSONObject | None = None) -> WriteResult:", flavor.name)
+		assert.Contains(t, output, flavor.defKw+" create(self, *rels: TypedRelationship, timeout: float | None = None, metadata: JSONObject | None = None) -> WriteResult:", flavor.name)
+		assert.Contains(t, output, flavor.defKw+" delete(self, *rels: TypedRelationship, timeout: float | None = None, metadata: JSONObject | None = None) -> WriteResult:", flavor.name)
 
 		// lookup_resources — overload keyed on PermissionRef subclass
-		assert.Contains(t, output, "def lookup_resources(self, c: Consistency, p: _DocumentViewRef, s: DocumentViewSubject) -> "+flavor.iterKind+"[LookupResource]:", flavor.name)
-		assert.Contains(t, output, "def lookup_resources(self, c: Consistency, p: _DocumentEditRef, s: DocumentEditSubject) -> "+flavor.iterKind+"[LookupResource]:", flavor.name)
-		assert.Contains(t, output, "def lookup_resources(self, c: Consistency, p: _DocumentDeleteRef, s: DocumentDeleteSubject) -> "+flavor.iterKind+"[LookupResource]:", flavor.name)
+		assert.Contains(t, output, "def lookup_resources(self, c: Consistency, p: _DocumentViewRef, s: DocumentViewSubject, *, timeout: float | None = None, context: JSONObject | None = None, permissionship_filter: LookupPermissionshipFilter = LookupPermissionshipFilter.ALL, limit: int | None = None, page_size: int = 1000, debug: LookupDebug = LookupDebug.DISABLED) -> "+flavor.iterKind+"[LookupResource]:", flavor.name)
+		assert.Contains(t, output, "def lookup_resources(self, c: Consistency, p: _DocumentEditRef, s: DocumentEditSubject, *, timeout: float | None = None, context: JSONObject | None = None, permissionship_filter: LookupPermissionshipFilter = LookupPermissionshipFilter.ALL, limit: int | None = None, page_size: int = 1000, debug: LookupDebug = LookupDebug.DISABLED) -> "+flavor.iterKind+"[LookupResource]:", flavor.name)
+		assert.Contains(t, output, "def lookup_resources(self, c: Consistency, p: _DocumentDeleteRef, s: DocumentDeleteSubject, *, timeout: float | None = None, context: JSONObject | None = None, permissionship_filter: LookupPermissionshipFilter = LookupPermissionshipFilter.ALL, limit: int | None = None, page_size: int = 1000, debug: LookupDebug = LookupDebug.DISABLED) -> "+flavor.iterKind+"[LookupResource]:", flavor.name)
 
 		// lookup_subjects — overload keyed on Permission subclass; sentinel = type[…]
 		assert.Contains(t, output, "def lookup_subjects(", flavor.name)
 		assert.Contains(t, output, "type[TeamMember] | type[User] | type[UserIpRange] | type[UserTimeWindow]", flavor.name)
 
 		// read_relationships — untyped passthrough
-		assert.Contains(t, output, "def read_relationships(self, c: Consistency, f: Filter) -> "+flavor.iterKind+"[Relationship]:", flavor.name)
+		assert.Contains(t, output, "def read_relationships(self, c: Consistency, f: Filter, *, timeout: float | None = None, page_size: int = 1000) -> "+flavor.iterKind+"[Relationship]:", flavor.name)
 
 		// TypedClient.write(txn) — atomic write of a TypedTransaction
-		assert.Contains(t, output, flavor.defKw+" write(self, txn: TypedTransaction) -> str:", flavor.name)
-		assert.Contains(t, output, "return "+flavor.awaitPrefix+"self.client.write(txn._txn)", flavor.name)
+		assert.Contains(t, output, flavor.defKw+" write(self, txn: TypedTransaction | Transaction, *, timeout: float | None = None, metadata: JSONObject | None = None) -> WriteResult:", flavor.name)
+		assert.Contains(t, output, "return "+flavor.awaitPrefix+"self.client.write(txn._txn if isinstance(txn, TypedTransaction) else txn, timeout=timeout, metadata=metadata)", flavor.name)
 	}
 
 	// sync.py must not carry any async remnants; aio.py must not carry the
@@ -424,12 +438,12 @@ func TestCheckSurfacesCheckResult(t *testing.T) {
 		assert.Contains(t, output, "from spicedb import Transaction, Relationship, Filter, LookupResource, LookupSubject, CheckResult", flavor.name)
 
 		// @overload declarations — exact signature per permission, returning CheckResult.
-		assert.Contains(t, output, "def check(self, c: Consistency, p: _DocumentViewPermission, s: DocumentViewSubject, *, context: dict[str, Any] | None = None) -> CheckResult: ...", flavor.name)
-		assert.Contains(t, output, "def check(self, c: Consistency, p: _DocumentEditPermission, s: DocumentEditSubject, *, context: dict[str, Any] | None = None) -> CheckResult: ...", flavor.name)
-		assert.Contains(t, output, "def check(self, c: Consistency, p: _DocumentDeletePermission, s: DocumentDeleteSubject, *, context: dict[str, Any] | None = None) -> CheckResult: ...", flavor.name)
+		assert.Contains(t, output, "def check(self, c: Consistency, p: _DocumentViewPermission, s: DocumentViewSubject, *, context: JSONObject | None = None, timeout: float | None = None, tracing: Tracing = Tracing.DISABLED) -> CheckResult: ...", flavor.name)
+		assert.Contains(t, output, "def check(self, c: Consistency, p: _DocumentEditPermission, s: DocumentEditSubject, *, context: JSONObject | None = None, timeout: float | None = None, tracing: Tracing = Tracing.DISABLED) -> CheckResult: ...", flavor.name)
+		assert.Contains(t, output, "def check(self, c: Consistency, p: _DocumentDeletePermission, s: DocumentDeleteSubject, *, context: JSONObject | None = None, timeout: float | None = None, tracing: Tracing = Tracing.DISABLED) -> CheckResult: ...", flavor.name)
 
 		// Dispatching implementation — exact signature, returning CheckResult.
-		assert.Contains(t, output, flavor.defKw+" check(self, c: Consistency, p: Any, s: Any, *, context: dict[str, Any] | None = None) -> CheckResult:", flavor.name)
+		assert.Contains(t, output, flavor.defKw+" check(self, c: Consistency, p: Any, s: Any, *, context: JSONObject | None = None, timeout: float | None = None, tracing: Tracing = Tracing.DISABLED) -> CheckResult:", flavor.name)
 
 		// The old bool-returning forms must be entirely gone. Asserting merely
 		// that the string "CheckResult" appears somewhere would pass even on a
@@ -442,7 +456,7 @@ func TestCheckSurfacesCheckResult(t *testing.T) {
 		// untouched, not re-collapsed to a bool inside the generated wrapper —
 		// which would silently reintroduce the exact bug CheckResult exists to
 		// fix, hidden inside generated code users don't read.
-		assert.Contains(t, output, "return "+flavor.awaitPrefix+"self.client.check_permission(c, rel, context=merged_context)", flavor.name)
+		assert.Contains(t, output, "return "+flavor.awaitPrefix+"self.client.check(request, consistency=c, context=context, timeout=timeout, tracing=tracing)", flavor.name)
 	}
 }
 
@@ -479,12 +493,12 @@ func TestCheckAcceptsContext(t *testing.T) {
 		output := flavor.output
 
 		// @overload declarations gain the new keyword-only context parameter.
-		assert.Contains(t, output, "def check(self, c: Consistency, p: _DocumentViewPermission, s: DocumentViewSubject, *, context: dict[str, Any] | None = None) -> CheckResult: ...", flavor.name)
-		assert.Contains(t, output, "def check(self, c: Consistency, p: _DocumentEditPermission, s: DocumentEditSubject, *, context: dict[str, Any] | None = None) -> CheckResult: ...", flavor.name)
-		assert.Contains(t, output, "def check(self, c: Consistency, p: _DocumentDeletePermission, s: DocumentDeleteSubject, *, context: dict[str, Any] | None = None) -> CheckResult: ...", flavor.name)
+		assert.Contains(t, output, "def check(self, c: Consistency, p: _DocumentViewPermission, s: DocumentViewSubject, *, context: JSONObject | None = None, timeout: float | None = None, tracing: Tracing = Tracing.DISABLED) -> CheckResult: ...", flavor.name)
+		assert.Contains(t, output, "def check(self, c: Consistency, p: _DocumentEditPermission, s: DocumentEditSubject, *, context: JSONObject | None = None, timeout: float | None = None, tracing: Tracing = Tracing.DISABLED) -> CheckResult: ...", flavor.name)
+		assert.Contains(t, output, "def check(self, c: Consistency, p: _DocumentDeletePermission, s: DocumentDeleteSubject, *, context: JSONObject | None = None, timeout: float | None = None, tracing: Tracing = Tracing.DISABLED) -> CheckResult: ...", flavor.name)
 
 		// Dispatching implementation gains the same parameter.
-		assert.Contains(t, output, flavor.defKw+" check(self, c: Consistency, p: Any, s: Any, *, context: dict[str, Any] | None = None) -> CheckResult:", flavor.name)
+		assert.Contains(t, output, flavor.defKw+" check(self, c: Consistency, p: Any, s: Any, *, context: JSONObject | None = None, timeout: float | None = None, tracing: Tracing = Tracing.DISABLED) -> CheckResult:", flavor.name)
 
 		// The OLD context-less forms must be entirely gone -- guards against a
 		// regression that adds the parameter to only some of the declarations
@@ -494,14 +508,15 @@ func TestCheckAcceptsContext(t *testing.T) {
 		assert.NotContains(t, output, "def check(self, c: Consistency, p: _DocumentDeletePermission, s: DocumentDeleteSubject) -> CheckResult: ...", flavor.name)
 		assert.NotContains(t, output, flavor.defKw+" check(self, c: Consistency, p: Any, s: Any) -> CheckResult:", flavor.name)
 
-		// The merge -- call-level `context` and the subject's own caveat info
+		// The native client merges call-level context with per-item subject context.
+		// Both must be forwarded. The call-level `context` and the subject's own caveat info
 		// are combined key-level, subject wins -- must actually be present, not
 		// just the new parameter accepted and silently dropped. Asserting only
 		// the signature would pass even if `context` were never read in the
 		// body, which would silently reintroduce the exact "context is
 		// unreachable" gap this task exists to close.
-		assert.Contains(t, output, "{**(context or {}), **(subject_context or {})}", flavor.name)
-		assert.Contains(t, output, "return "+flavor.awaitPrefix+"self.client.check_permission(c, rel, context=merged_context)", flavor.name)
+		assert.Contains(t, output, "context=subject_context,", flavor.name)
+		assert.Contains(t, output, "return "+flavor.awaitPrefix+"self.client.check(request, consistency=c, context=context, timeout=timeout, tracing=tracing)", flavor.name)
 	}
 }
 

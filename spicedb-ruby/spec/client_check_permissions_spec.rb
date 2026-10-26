@@ -1,11 +1,15 @@
 # frozen_string_literal: true
 
 require_relative '../lib/spicedb'
+require_relative 'support/native_helpers'
 require 'spicedb_proto'
 
 RSpec.describe 'SpiceDB::Client#check_permissions per-item error mapping' do
   let(:client) { SpiceDB::Client.new_plaintext('localhost:50051', 'testtoken') }
-  let(:relationship) { SpiceDB::Relationship.from_triple('document', 'doc1', 'viewer', 'user', 'alice') }
+  let(:relationship) do
+    SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'doc1'), relation: 'viewer',
+                              subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: 'alice'), relation: nil))
+  end
 
   # Stubs @proto_client.permissions.check_bulk_permissions to return a
   # CheckBulkPermissionsResponse whose single pair carries a per-item
@@ -16,7 +20,10 @@ RSpec.describe 'SpiceDB::Client#check_permissions per-item error mapping' do
     response = Authzed::Api::V1::CheckBulkPermissionsResponse.new(pairs: [pair])
 
     permissions_service = double('permissions_service')
-    allow(permissions_service).to receive(:check_bulk_permissions).and_return(response)
+    allow(permissions_service).to receive(:check_bulk_permissions) do |request|
+      response.pairs.each_with_index { |pair, index| pair.request = request.items[index] }
+      response
+    end
 
     proto_client = double('proto_client', permissions: permissions_service)
     client.instance_variable_set(:@proto_client, proto_client)
@@ -29,7 +36,7 @@ RSpec.describe 'SpiceDB::Client#check_permissions per-item error mapping' do
     # both pins the exact subclass (fails if the base SpiceDB::Error is raised
     # instead) and the message text.
     expect do
-      client.check_permission(SpiceDB::Consistency.full, 'view', relationship)
+      client.check_bulk([relationship].flatten.map { |item| permission_check(item, 'view') }, consistency: SpiceDB::Consistency.full).first
     end.to raise_error(SpiceDB::InvalidArgumentError, 'invalid argument: bad caveat context')
   end
 
@@ -37,21 +44,30 @@ RSpec.describe 'SpiceDB::Client#check_permissions per-item error mapping' do
     stub_bulk_check_item_error(code: 5, message: 'not found: no such resource')
 
     expect do
-      client.check_any(SpiceDB::Consistency.full, 'view', relationship)
+      client.check_bulk([relationship].flatten.map { |item| permission_check(item, 'view') }, consistency: SpiceDB::Consistency.full).any?(&:has_permission?)
     end.to raise_error(SpiceDB::NotFoundError, 'not found: no such resource')
   end
 end
 
 RSpec.describe 'SpiceDB::Client#check_permissions response/request length guard' do
   let(:client) { SpiceDB::Client.new_plaintext('localhost:50051', 'testtoken') }
-  let(:relationship1) { SpiceDB::Relationship.from_triple('document', 'doc1', 'viewer', 'user', 'alice') }
-  let(:relationship2) { SpiceDB::Relationship.from_triple('document', 'doc2', 'viewer', 'user', 'bob') }
+  let(:relationship1) do
+    SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'doc1'), relation: 'viewer',
+                              subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: 'alice'), relation: nil))
+  end
+  let(:relationship2) do
+    SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'doc2'), relation: 'viewer',
+                              subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: 'bob'), relation: nil))
+  end
 
   def stub_bulk_check_response(pairs:)
     response = Authzed::Api::V1::CheckBulkPermissionsResponse.new(pairs: pairs)
 
     permissions_service = double('permissions_service')
-    allow(permissions_service).to receive(:check_bulk_permissions).and_return(response)
+    allow(permissions_service).to receive(:check_bulk_permissions) do |request|
+      response.pairs.each_with_index { |pair, index| pair.request = request.items[index] }
+      response
+    end
 
     proto_client = double('proto_client', permissions: permissions_service)
     client.instance_variable_set(:@proto_client, proto_client)
@@ -68,7 +84,7 @@ RSpec.describe 'SpiceDB::Client#check_permissions response/request length guard'
     stub_bulk_check_response(pairs: [Authzed::Api::V1::CheckBulkPermissionsPair.new(item: item)])
 
     expect do
-      client.check_permissions(SpiceDB::Consistency.full, 'view', relationship1, relationship2)
+      client.check_bulk([relationship1, relationship2].flatten.map { |item| permission_check(item, 'view') }, consistency: SpiceDB::Consistency.full)
     end.to raise_error(SpiceDB::Error, /1 pair.*2 request item/)
   end
 
@@ -80,14 +96,17 @@ RSpec.describe 'SpiceDB::Client#check_permissions response/request length guard'
     stub_bulk_check_response(pairs: [Authzed::Api::V1::CheckBulkPermissionsPair.new])
 
     expect do
-      client.check_permission(SpiceDB::Consistency.full, 'view', relationship1)
+      client.check_bulk([relationship1].flatten.map { |item| permission_check(item, 'view') }, consistency: SpiceDB::Consistency.full).first
     end.to raise_error(SpiceDB::Error, /check item 0/)
   end
 end
 
 RSpec.describe 'SpiceDB::Client#check_permissions error pair with an empty message' do
   let(:client) { SpiceDB::Client.new_plaintext('localhost:50051', 'testtoken') }
-  let(:relationship) { SpiceDB::Relationship.from_triple('document', 'doc1', 'viewer', 'user', 'alice') }
+  let(:relationship) do
+    SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'doc1'), relation: 'viewer',
+                              subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: 'alice'), relation: nil))
+  end
 
   # google.rpc.Status requires a code, never a message, so a server is entitled
   # to send an error pair whose message is empty. The per-item guard used to
@@ -101,11 +120,14 @@ RSpec.describe 'SpiceDB::Client#check_permissions error pair with an empty messa
     response = Authzed::Api::V1::CheckBulkPermissionsResponse.new(pairs: [pair])
 
     permissions_service = double('permissions_service')
-    allow(permissions_service).to receive(:check_bulk_permissions).and_return(response)
+    allow(permissions_service).to receive(:check_bulk_permissions) do |request|
+      response.pairs.each_with_index { |pair, index| pair.request = request.items[index] }
+      response
+    end
     client.instance_variable_set(:@proto_client, double('proto_client', permissions: permissions_service))
 
     expect do
-      client.check_permissions(SpiceDB::Consistency.full, 'view', relationship)
+      client.check_bulk([relationship].flatten.map { |item| permission_check(item, 'view') }, consistency: SpiceDB::Consistency.full)
     end.to raise_error(SpiceDB::PermissionDeniedError)
   end
 end

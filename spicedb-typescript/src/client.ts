@@ -1,1605 +1,500 @@
-import { create, type JsonObject } from "@bufbuild/protobuf";
-import {
-  createSpiceDBClient as createProtoClient,
-  InsecureRemoteHostError,
-  type ClientOptions as ProtoClientOptions,
-  type SpiceDBProtoClient,
-  type TlsOptions,
-  CheckBulkPermissionsRequestItemSchema,
-  CheckBulkPermissionsRequestSchema,
-  CheckPermissionRequestSchema,
-  ReadRelationshipsRequestSchema,
-  WriteRelationshipsRequestSchema,
-  LookupResourcesRequestSchema,
-  LookupSubjectsRequestSchema,
-  ExpandPermissionTreeRequestSchema,
-  ExportBulkRelationshipsRequestSchema,
-  ImportBulkRelationshipsRequestSchema,
-  ReadSchemaRequestSchema,
-  WriteSchemaRequestSchema,
-  ReflectSchemaRequestSchema,
-  ReflectionSchemaFilterSchema,
-  ComputablePermissionsRequestSchema,
-  DependentRelationsRequestSchema,
-  DiffSchemaRequestSchema,
-  ExperimentalRegisterRelationshipCounterRequestSchema,
-  ExperimentalCountRelationshipsRequestSchema,
-  ExperimentalUnregisterRelationshipCounterRequestSchema,
-  WatchRequestSchema,
-  WatchKind,
-  ObjectReferenceSchema,
-  SubjectReferenceSchema,
-  RelationshipSchema,
-  ZedTokenSchema,
-  RelationshipUpdate_Operation,
-  DeleteRelationshipsResponse_DeletionProgress,
-} from "@spicedb/proto";
-
+import { serverToken, tokenString } from "./token.js";
+import { Tracing, LookupDebug, LookupPermissionshipFilter, Wildcards, WatchContent, TransportSecurity, RemoteCredentials, mode } from "./modes.js";
+import { create, clone, equals, type JsonObject } from "@bufbuild/protobuf";
+import { createSpiceDBClient as createProtoClient, type SpiceDBProtoClient, type TlsOptions, CheckBulkPermissionsRequestItemSchema, CheckBulkPermissionsRequestSchema, CheckPermissionRequestSchema, ReadRelationshipsRequestSchema, WriteRelationshipsRequestSchema, LookupResourcesRequestSchema, LookupSubjectsRequestSchema, ExpandPermissionTreeRequestSchema, ExportBulkRelationshipsRequestSchema, ImportBulkRelationshipsRequestSchema, ReadSchemaRequestSchema, WriteSchemaRequestSchema, ReflectSchemaRequestSchema, ReflectionSchemaFilterSchema, ComputablePermissionsRequestSchema, DependentRelationsRequestSchema, DiffSchemaRequestSchema, ExperimentalRegisterRelationshipCounterRequestSchema, ExperimentalCountRelationshipsRequestSchema, ExperimentalUnregisterRelationshipCounterRequestSchema, WatchRequestSchema, WatchKind, LookupSubjectsRequest_WildcardOption, ZedTokenSchema, CursorSchema, RelationshipUpdate_Operation, DeleteRelationshipsResponse_DeletionProgress, DeleteRelationshipsRequestSchema, } from "@spicedb/proto";
+import { ExperimentalCountRelationshipsByFilterRequestSchema, MaterializePermissionSetsProtocol as PermissionSets } from "@spicedb/proto";
+import type { WatchPermissionSetsRequest, PermissionSetEvent, LookupPermissionSetsRequest, LookupPermissionSet, DownloadPermissionSetsRequest, DownloadPermissionSetsResult, PermissionSetCursor, PermissionSetChange, PermissionSetReference } from "./types.js";
 import { Consistency } from "./consistency.js";
-
-import {
-  type Relationship,
-  type RelationshipFilterOptions,
-  type LookupResourcesParams,
-  type LookupSubjectsParams,
-  type LookupResource,
-  type LookupSubject,
-  type CheckRequest,
-  type CheckOptions,
-  CheckResult,
-  type WatchChange,
-  type WatchEvent,
-  type WatchOptions,
-  type ExpandPermissionTreeParams,
-  type ReflectSchemaOptions,
-  type ComputablePermissionsParams,
-  type DependentRelationsParams,
-  type RelationReference,
-  type RelationshipCountResult,
-  type Transaction,
-  type DeleteOptions,
-  type PermissionTree,
-  type SchemaDefinition,
-  type SchemaCaveat,
-  type SchemaDiff,
-  toProtoRelationship,
-  fromProtoRelationship,
-  toProtoRelationshipFilter,
-  toProtoDeleteRelationshipsRequest,
-  fromProtoPermissionTree,
-  fromProtoSchemaDefinition,
-  fromProtoSchemaCaveat,
-  fromProtoRelationReference,
-  fromProtoSchemaDiff,
-  fromProtoLookupResource,
-  fromProtoLookupSubject,
-  checkResultFromProto,
-  checkResultFromBulkItem,
-  mergeCheckContext,
-} from "./types.js";
-
-import {
-  InvalidArgumentError,
-  SpiceDBError,
-  toSpiceDBError,
-  toSpiceDBErrorFromStatus,
-  isTransientError,
-} from "./errors.js";
-
-/**
- * The escape hatch's return type: the underlying proto client, carrying the
- * four generated Connect clients this library calls through. Re-exported from
- * the proto tier so a caller can name what {@link SpiceDBClient.raw} hands
- * back without depending on `@spicedb/proto` directly.
- */
-export type { SpiceDBProtoClient };
-
-/**
- * Caller-supplied TLS trust material for the secure path.
- *
- * Re-exported from the proto tier rather than restated here: this client hands
- * `options.tls` to `createProtoClient` untouched, so there is one contract and
- * it belongs where the transport is built. Two declarations of it would drift
- * silently -- a field added to one and not the other type-checks on both sides
- * and is simply dropped in between.
- */
-export type { TlsOptions };
-
-/**
- * Options for creating a SpiceDBClient.
- */
+import { type Relationship, type RelationshipFilter, type CheckRequest, type CheckOptions, type CheckResult, type CallOptions, type DeleteOptions, type DeleteAllOptions, type DeleteResult, type WriteResult, type ReadRelationshipsRequest, type LookupResourcesRequest, type LookupSubjectsRequest, type LookupResource, type LookupSubject, type ExpandPermissionTreeRequest, type ExpandResult, type ExportRelationshipsRequest, type WatchRequest, type WatchEvent, type WatchChange, type ReflectSchemaRequest, type ReflectSchemaResult, type ComputablePermissionsRequest, type DependentRelationsRequest, type RelationsResult, type DiffSchemaRequest, type SchemaDiffResult, type SchemaResult, type RelationshipCountResult, type RoaringLookupResourcesRequest, type RoaringLookupResourcesResult, type ZedToken, Transaction, toProtoRelationship, fromProtoRelationship, toProtoRelationshipFilter, toProtoDeleteRelationshipsRequest, fromProtoPermissionTree, fromProtoSchemaDefinition, fromProtoSchemaCaveat, fromProtoRelationReference, fromProtoSchemaDiff, fromProtoLookupResource, fromProtoLookupSubject, checkResultFromProto, checkResultFromBulkItem, mergeCheckContext, immutableSnapshot, jsonSnapshot, protoSubject, positiveLimit, } from "./types.js";
+import { InvalidArgumentError, SpiceDBError, toSpiceDBErrorFromStatus, isTransientError } from "./errors.js";
+import { Operation, withDeleteProgress } from "./operation.js";
+export type { SpiceDBProtoClient, TlsOptions };
 export interface SpiceDBClientOptions {
-  endpoint: string;
-  token: string;
-  /**
-   * Use plaintext (insecure) connection instead of TLS.
-   *
-   * By itself, this only permits a plaintext connection to a loopback
-   * endpoint (localhost, 127.0.0.0/8, or ::1) -- see
-   * root DESIGN.md, "RULE: Credentials over insecure transport require an
-   * explicit opt-in". For a non-loopback endpoint, also pass
-   * `allowInsecureRemoteCredentials: true`.
-   */
-  insecure?: boolean;
-  /**
-   * Explicit, separately named opt-in permitting `insecure: true` to target
-   * a non-loopback endpoint. Named and separate from `insecure` on purpose:
-   * a reader must not be able to mistake it for a default. Set this to
-   * `true` only if you genuinely mean to send a bearer token in cleartext
-   * to a remote host.
-   */
-  allowInsecureRemoteCredentials?: boolean;
-  /**
-   * Caller-supplied TLS trust material -- a private CA to verify SpiceDB
-   * against, and optionally a client certificate for mutual TLS. See
-   * `TlsOptions`.
-   *
-   * This never decides *whether* TLS is used: `insecure` alone does that.
-   * Combining the two throws, rather than silently ignoring the material the
-   * way `node:tls` would on a plaintext socket -- supplying a CA must not
-   * become a quieter route to sending a bearer token in cleartext. See root
-   * DESIGN.md, "RULE: Credentials over insecure transport require an explicit
-   * opt-in".
-   */
-  tls?: TlsOptions;
-  headers?: Record<string, string>;
-  maxRetries?: number;
-  /**
-   * Milliseconds applied to every unary call that does not pass its own
-   * `timeoutMs`. Defaults to `DEFAULT_TIMEOUT_MS` (30s), mirroring
-   * `authzed-node`'s `DEFAULT_DEADLINE_MS = 30_000` (its comment cites
-   * `grpc/grpc-node#541`, a known gRPC failure mode where a channel that
-   * accepts a connection but never answers produces no error at all).
-   * Without a finite default, a wedged SpiceDB hangs every caller that
-   * didn't opt in to a timeout -- in practice, most callers -- forever: the
-   * connection looks fine at the transport level, so nothing ever times out
-   * and nothing is ever produced to retry. See root DESIGN.md, "RULE: A
-   * unary call must have a deadline".
-   *
-   * Deliberately NOT applied to streaming calls (`readRelationships`,
-   * `lookupResources`, `lookupSubjects`, `watch`, `exportBulkRelationships`)
-   * -- those are long-lived by design, and applying this default to them
-   * would make the stream itself the outage (see DESIGN.md, "Streaming
-   * calls MUST NOT inherit the unary default").
-   */
-  defaultTimeoutMs?: number;
+    readonly endpoint: string;
+    readonly token: string;
+    readonly transportSecurity?: TransportSecurity;
+    readonly remoteCredentials?: RemoteCredentials;
+    readonly tls?: TlsOptions;
+    readonly headers?: Readonly<Record<string, string>>;
+    readonly maxRetries?: number;
+    readonly defaultTimeoutMs?: number;
 }
-
-const DEFAULT_MAX_RETRIES = 3;
-
-const DEFAULT_TIMEOUT_MS = 30_000;
-
-/**
- * Normalizes the two calling conventions shared by `checkPermissions`,
- * `checkAny`, and `checkAll` into a plain `{ checks, options }` pair:
- *
- * - Classic variadic form — `(consistency, check1, check2, ...)` — every
- *   positional argument after `consistency` is an individual
- *   {@link CheckRequest}. Distinguished from the array form purely by
- *   `Array.isArray`: a real `CheckRequest` is never an array, so this can
- *   never misfire on an existing call site.
- * - Explicit-array form — `(consistency, checks, options?)` — `checksOrFirst`
- *   is the full `CheckRequest[]` and `optionsOrSecond`, if present, is
- *   {@link CheckOptions}.
- *
- * This keeps the pre-existing rest-parameter overload's behavior byte-for-
- * byte unchanged (no `options` is ever produced for it), while giving the
- * array form a place to carry a call-level default context.
- * @internal
- */
-function normalizeBulkCheckArgs(
-  checksOrFirst: CheckRequest[] | CheckRequest | undefined,
-  optionsOrSecond: CheckOptions | CheckRequest | undefined,
-  rest: CheckRequest[],
-): { checks: CheckRequest[]; options?: CheckOptions } {
-  if (Array.isArray(checksOrFirst)) {
-    return { checks: checksOrFirst, options: optionsOrSecond as CheckOptions | undefined };
-  }
-  const checks: CheckRequest[] = [];
-  if (checksOrFirst !== undefined) {
-    checks.push(checksOrFirst);
-  }
-  if (optionsOrSecond !== undefined) {
-    checks.push(optionsOrSecond as CheckRequest);
-  }
-  checks.push(...rest);
-  return { checks };
-}
-
-/**
- * How many relationships go into one `ImportBulkRelationships` request
- * message. Matches the batch size every other SpiceDB client uses.
- * @internal
- */
-const IMPORT_BATCH_SIZE = 1000;
-
-/**
- * How many items go into one `CheckBulkPermissions` request.
- *
- * SpiceDB rejects a request carrying more items than `maxBulkCheckCount` --
- * 10,000, a hard-coded const in `internal/services/v1/bulkcheck.go` with no
- * flag to raise or lower it -- with
- * `ERROR_REASON_TOO_MANY_CHECKS_IN_REQUEST`. Nothing in the proto enforces
- * this: `CheckBulkPermissionsRequest.items` carries only a per-item
- * `required` rule, not a collection-size rule, so the limit lives solely in
- * server code and a client that forwards the caller's array unchanged fails
- * on large inputs. 1,000 leaves ten times' headroom and matches
- * `IMPORT_BATCH_SIZE` and the other clients' check batch size.
- * @internal
- */
-const CHECK_BATCH_SIZE = 1000;
-
-/**
- * Default per-page size for `deleteRelationships(..., { autoPage: true })`,
- * used when `options.limit` is not given. Matches spicedb-go's
- * `defaultDeletePageSize` (client/relationships.go).
- * @internal
- */
-const DELETE_PAGE_SIZE = 1000;
-
-/**
- * Converts a caller's relationship sequence into the request stream
- * `importBulkRelationships` sends, batching as it goes.
- *
- * The batching is incremental on purpose. Only one batch is resident at a
- * time, so a caller can hand in a generator reading from a file or a database
- * cursor and import a dataset larger than memory. Materializing the sequence
- * here -- or accepting only an array -- would put the caller's whole dataset
- * in the heap twice, once as their relationships and once as protos, which is
- * the shape most likely to run out of memory on the one call whose entire
- * purpose is bulk volume.
- *
- * `for await` accepts both sync and async iterables, so the sync case costs
- * nothing extra here.
- * @internal
- */
-async function* importBatches(
-  relationships: Iterable<Relationship> | AsyncIterable<Relationship>,
-) {
-  let batch = [];
-  for await (const rel of relationships) {
-    batch.push(toProtoRelationship(rel));
-    if (batch.length >= IMPORT_BATCH_SIZE) {
-      yield { relationships: batch };
-      batch = [];
-    }
-  }
-  if (batch.length > 0) {
-    yield { relationships: batch };
-  }
-}
-
-/**
- * SpiceDBClient provides an idiomatic TypeScript interface to SpiceDB.
- *
- * All read methods require an explicit consistency parameter.
- * All write methods return an opaque revision string.
- */
+/** Reusable authenticated client. Unary calls share a total operation budget; streams have no default lifetime limit. */
 export class SpiceDBClient {
-  private readonly proto: SpiceDBProtoClient;
-  private readonly maxRetries: number;
-  private readonly defaultTimeoutMs: number;
-
-  constructor(options: SpiceDBClientOptions) {
-    try {
-      this.proto = createProtoClient(options.endpoint, options.token, {
-        insecure: options.insecure,
-        allowInsecureRemoteCredentials: options.allowInsecureRemoteCredentials,
-        tls: options.tls,
-        headers: options.headers,
-      });
-    } catch (err) {
-      // The insecure-remote-host refusal is a caller argument this client rejects
-      // before any connection exists, so it surfaces as InvalidArgumentError -- the
-      // same type a filter the wire cannot express uses. The proto tier's own error
-      // class is an implementation detail a caller of this class should never see.
-      // See root DESIGN.md, "RULE: Credentials over insecure transport require an
-      // explicit opt-in", clause 4.
-      if (err instanceof InsecureRemoteHostError) {
-        throw new InvalidArgumentError(err.message, { cause: err });
-      }
-      throw err;
-    }
-    this.maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
-    this.defaultTimeoutMs = options.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS;
-  }
-
-  /**
-   * Escape hatch: the underlying `SpiceDBProtoClient`, with the four generated
-   * Connect clients (`permissions`, `schema`, `watch`, `experimental`) this
-   * client makes its own calls through.
-   *
-   * Clearly-marked **secondary** API. Root DESIGN.md's "What NOT To Do" keeps
-   * channels, stubs and metadata out of the primary surface and permits exactly
-   * this -- "escape hatches for advanced use are acceptable as clearly marked
-   * secondary API" -- so that a request the idiomatic methods cannot express
-   * (an RPC or proto field not wrapped here, such as
-   * `WriteRelationshipsRequest.optionalTransactionMetadata`) has a workaround
-   * short of forking the client:
-   *
-   * ```ts
-   * const { permissionship } = await client.raw().permissions.checkPermission({
-   *   consistency: { requirement: { case: "fullyConsistent", value: true } },
-   *   resource: { objectType: "document", objectId: "readme" },
-   *   permission: "view",
-   *   subject: { object: { objectType: "user", objectId: "jimmy" } },
-   * });
-   * ```
-   *
-   * Four things to know before reaching for it:
-   *
-   * - The `authorization` header comes free. It is set by a transport
-   *   interceptor, so every raw call is authenticated exactly as an idiomatic
-   *   one is -- unlike this repo's Python client, which authenticates per call.
-   * - A raw call is a raw call: no `SpiceDBError` mapping (you catch
-   *   Connect's `ConnectError`), no retry on a transient failure, and no
-   *   `defaultTimeoutMs` -- pass `CallOptions.timeoutMs` yourself, or the call
-   *   is unbounded.
-   * - Do NOT call `close()` on the returned object. It is the same connection
-   *   this client uses, and {@link SpiceDBClient.close} is what releases it;
-   *   closing it here breaks every later call on this client.
-   * - No stability promise beyond what `@connectrpc/connect` and the generated
-   *   `@spicedb/proto` clients give. They are those packages' objects, and this
-   *   client will not shim over a change in either.
-   *
-   * It is an accessor, never a constructor: it takes no endpoint, token, or
-   * transport setting and hands back a client that already exists, so it cannot
-   * become a second construction path around the guard in
-   * `createSpiceDBClient` -- root DESIGN.md, "RULE: Credentials over insecure
-   * transport require an explicit opt-in".
-   */
-  raw(): SpiceDBProtoClient {
-    return this.proto;
-  }
-
-  /**
-   * Resolves a per-call `timeoutMs` override against `this.defaultTimeoutMs`.
-   * `undefined` means "use the client default" -- there is deliberately no
-   * way to make an unbounded unary call. See root DESIGN.md, "RULE: A unary
-   * call must have a deadline".
-   */
-  private effectiveTimeoutMs(timeoutMs?: number): number {
-    return timeoutMs ?? this.defaultTimeoutMs;
-  }
-
-  /**
-   * Creates an `AbortController` for one streaming attempt, linked to an
-   * optional caller-supplied `AbortSignal` so external cancellation
-   * propagates too. Returns `[controller, cleanup]` -- every streaming
-   * method MUST call `cleanup()` from a `finally` block wrapping the
-   * attempt, whether it succeeded, threw, or was abandoned via the
-   * caller's `for await` `break` (which resumes the generator through
-   * `.return()`, unwinding through the same `finally` as any other exit
-   * path).
-   *
-   * `cleanup()` unconditionally aborts `controller`. This is what actually
-   * releases the underlying HTTP/2 stream on abandonment: Connect-ES's own
-   * server-streaming iterator deliberately omits `return()`/`throw()` (see
-   * its `run-call.js`, "We deliberately omit throw/return"), so a bare
-   * `break` in consuming code never reaches the transport by itself.
-   * Passing `controller.signal` as `CallOptions.signal` on the underlying
-   * call gives Connect-ES an explicit cancellation path instead -- root
-   * DESIGN.md, "RULE: Abandoning a stream must release it", clause 3,
-   * names this exact trap. See also `close()`, which releases the whole
-   * connection rather than one stream.
-   */
-  private linkedAbortController(external?: AbortSignal): [AbortController, () => void] {
-    const controller = new AbortController();
-    if (!external) {
-      return [controller, () => controller.abort()];
-    }
-    if (external.aborted) {
-      controller.abort(external.reason);
-      return [controller, () => controller.abort()];
-    }
-    const onAbort = () => controller.abort(external.reason);
-    external.addEventListener("abort", onAbort, { once: true });
-    return [
-      controller,
-      () => {
-        external.removeEventListener("abort", onAbort);
-        controller.abort();
-      },
-    ];
-  }
-
-  /**
-   * Releases the underlying transport. Idempotent -- safe to call more than
-   * once, including concurrently with itself (delegates to
-   * `SpiceDBProtoClient.close`, which guards with a boolean flag).
-   *
-   * Every streaming call on this client (`readRelationships`,
-   * `lookupResources`, `lookupSubjects`, `watch`, `exportBulkRelationships`)
-   * shares this one transport, and there was previously no way to release
-   * it deterministically. See root DESIGN.md, "RULE: Abandoning a stream
-   * must release it".
-   */
-  close(): void {
-    this.proto.close();
-  }
-
-  // ---------------------------------------------------------------------------
-  // Permission Checks
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Checks whether the subject has the given permission on the resource.
-   *
-   * Uses the single-check `CheckPermission` RPC directly (not routed
-   * through `CheckBulkPermissions`).
-   *
-   * `options.context`, when supplied, is a call-level default caveat
-   * context. It is merged key-by-key with `check.context` — `check.context`
-   * wins on conflict, and default keys `check.context` does not mention are
-   * retained (see {@link CheckOptions.context} for the exact rule). For a
-   * single check this mostly reads as "either supplies context," but it
-   * keeps the same `CheckOptions` shape usable across all four check
-   * surfaces.
-   *
-   * @returns A {@link CheckResult}. Use `result.hasPermission()` for the
-   *          common case — it is `true` ONLY when the server's answer is an
-   *          unconditional grant. A `"conditionalPermission"` result means
-   *          the server needed caveat context that was not supplied in
-   *          `check.context`/`options.context`; it is NOT a grant, and
-   *          `result.hasPermission()` returns `false` for it.
-   */
-  async checkPermission(
-    consistency: Consistency,
-    check: CheckRequest,
-    options?: CheckOptions,
-  ): Promise<CheckResult> {
-    const timeoutMs = this.effectiveTimeoutMs(options?.timeoutMs);
-    return this.withRetry(async () => {
-      const resp = await this.proto.permissions.checkPermission(
-        create(CheckPermissionRequestSchema, {
-          consistency: consistency._toProto(),
-          resource: create(ObjectReferenceSchema, {
-            objectType: check.resourceType,
-            objectId: check.resourceId,
-          }),
-          permission: check.permission,
-          subject: create(SubjectReferenceSchema, {
-            object: create(ObjectReferenceSchema, {
-              objectType: check.subjectType,
-              objectId: check.subjectId,
-            }),
-            optionalRelation: check.subjectRelation ?? "",
-          }),
-          context: mergeCheckContext(options?.context, check.context),
-        }),
-        { timeoutMs },
-      );
-      return checkResultFromProto(resp);
-    });
-  }
-
-  /**
-   * Checks multiple permissions in a single bulk request.
-   *
-   * Two calling conventions:
-   * - The classic variadic form (`consistency, check1, check2, ...`) —
-   *   unchanged, and it never sets a call-level default.
-   * - An explicit-array form (`consistency, checks, options`) that
-   *   additionally accepts {@link CheckOptions}. `options.context` is a
-   *   call-level default caveat context fanned out onto every item (the
-   *   wire has no request-level context field — see
-   *   {@link CheckOptions.context} for the exact per-item merge rule with
-   *   each check's own `context`).
-   *
-   * A per-item failure (e.g. an internal error evaluating one specific
-   * check) is surfaced by throwing a typed {@link SpiceDBError} — it is
-   * NEVER silently coerced into a result, since that would make a
-   * permission-denied, an invalid-argument, and an internal server error
-   * all indistinguishable from a real "no permission" answer.
-   *
-   * Large inputs are split automatically into requests of at most 1,000
-   * items and the responses concatenated in input order — SpiceDB rejects a
-   * single request carrying more than 10,000. An empty `checks` sends no
-   * request at all and resolves to `[]`.
-   *
-   * @returns An array of {@link CheckResult}, one per check request, in the
-   *          same order. Results within one request share a `checkedAt` —
-   *          the response carries a single token for the whole batch, not
-   *          one per item — so an input large enough to be split can carry
-   *          more than one token across the returned array.
-   */
-  async checkPermissions(
-    consistency: Consistency,
-    ...checks: CheckRequest[]
-  ): Promise<CheckResult[]>;
-  async checkPermissions(
-    consistency: Consistency,
-    checks: CheckRequest[],
-    options?: CheckOptions,
-  ): Promise<CheckResult[]>;
-  async checkPermissions(
-    consistency: Consistency,
-    checksOrFirst?: CheckRequest[] | CheckRequest,
-    optionsOrSecond?: CheckOptions | CheckRequest,
-    ...rest: CheckRequest[]
-  ): Promise<CheckResult[]> {
-    const { checks, options } = normalizeBulkCheckArgs(
-      checksOrFirst,
-      optionsOrSecond,
-      rest,
-    );
-    return this.runBulkCheck(consistency, checks, options);
-  }
-
-  /**
-   * Shared implementation behind {@link checkPermissions}, {@link checkAny},
-   * and {@link checkAll} — all three are aggregates/pass-throughs over the
-   * same `CheckBulkPermissions` request, so the request-building and
-   * response-mapping logic (including the call-level `options.context`
-   * merge) lives here once.
-   * @internal
-   */
-  private async runBulkCheck(
-    consistency: Consistency,
-    checks: CheckRequest[],
-    options?: CheckOptions,
-  ): Promise<CheckResult[]> {
-    // Zero checks sends nothing at all. An empty request is not a cheaper
-    // way to ask nothing -- it is a round trip whose only possible answer is
-    // the empty array, and `checkAll` already treats an aggregate over zero
-    // checks as `false` rather than a grant.
-    if (checks.length === 0) {
-      return [];
-    }
-
-    // One request per chunk of `CHECK_BATCH_SIZE`, results concatenated in
-    // input order so `results[i]` still corresponds to `checks[i]` across
-    // the chunk boundary. A caller passing fewer than `CHECK_BATCH_SIZE`
-    // checks -- the overwhelmingly common case -- still makes exactly one
-    // request. Retry is per chunk, so a transient failure on the third
-    // chunk never re-sends the first two.
-    const results: CheckResult[] = [];
-    for (let start = 0; start < checks.length; start += CHECK_BATCH_SIZE) {
-      results.push(
-        ...(await this.runBulkCheckChunk(
-          consistency,
-          checks.slice(start, start + CHECK_BATCH_SIZE),
-          start,
-          options,
-        )),
-      );
-    }
-    return results;
-  }
-
-  /**
-   * Issues one `CheckBulkPermissions` request for `checks` and maps the
-   * response. `checks` is non-empty and no longer than `CHECK_BATCH_SIZE`;
-   * `runBulkCheck` is what enforces both. Every response guard below --
-   * the pair-count check and the malformed-oneof check -- therefore applies
-   * per chunk, exactly as it applied to the whole request before chunking.
-   *
-   * `offset` is `checks`'s start index within the caller's full array. The
-   * "check item N" message reports `offset + i`, not `i`: the index a caller
-   * sees must be the one they can use to look up their own check. Reporting
-   * the chunk-relative index would attribute the failing item to a different
-   * resource entirely.
-   * @internal
-   */
-  private async runBulkCheckChunk(
-    consistency: Consistency,
-    checks: CheckRequest[],
-    offset: number,
-    options?: CheckOptions,
-  ): Promise<CheckResult[]> {
-    const timeoutMs = this.effectiveTimeoutMs(options?.timeoutMs);
-    return this.withRetry(async () => {
-      const resp = await this.proto.permissions.checkBulkPermissions(
-        create(CheckBulkPermissionsRequestSchema, {
-          consistency: consistency._toProto(),
-          items: checks.map((check) =>
-            create(CheckBulkPermissionsRequestItemSchema, {
-              resource: create(ObjectReferenceSchema, {
-                objectType: check.resourceType,
-                objectId: check.resourceId,
-              }),
-              permission: check.permission,
-              subject: create(SubjectReferenceSchema, {
-                object: create(ObjectReferenceSchema, {
-                  objectType: check.subjectType,
-                  objectId: check.subjectId,
-                }),
-                optionalRelation: check.subjectRelation ?? "",
-              }),
-              context: mergeCheckContext(options?.context, check.context),
-            }),
-          ),
-        }),
-        { timeoutMs },
-      );
-      // The proto guarantees pairs are returned in request order but says
-      // nothing about count. A short response would otherwise silently
-      // desync results[i] from checks[i] for every item after the gap — one
-      // resource's answer attributed to another — and `checkAll`'s
-      // `.every()` would return `true` over an array missing the checks that
-      // would have denied. Fail loudly instead of returning a
-      // misaligned-but-"successful" array. The doc comment on
-      // `checkPermissions` promises "one per check request, in the same
-      // order"; this is what enforces it.
-      if (resp.pairs.length !== checks.length) {
-        throw new SpiceDBError(
-          `checkBulkPermissions returned ${resp.pairs.length} pair(s) for ` +
-            `${checks.length} request item(s)`,
-        );
-      }
-
-      const checkedAt = resp.checkedAt?.token ?? "";
-      return resp.pairs.map((pair, i) => {
-        if (pair.response.case === "error") {
-          // A per-item error MUST reach the caller as a typed error, not as
-          // a falsy/failing CheckResult — see the doc comment above.
-          throw toSpiceDBErrorFromStatus(pair.response.value);
+    private readonly proto: SpiceDBProtoClient;
+    private readonly maxRetries: number;
+    private readonly defaultTimeoutMs: number;
+    private readonly operations = new Set<Operation>();
+    private closed = false;
+    constructor(options: SpiceDBClientOptions) {
+        this.defaultTimeoutMs = options.defaultTimeoutMs ?? 30000;
+        if (!Number.isFinite(this.defaultTimeoutMs) || this.defaultTimeoutMs <= 0)
+            throw new InvalidArgumentError("defaultTimeoutMs must be finite and positive");
+        this.maxRetries = options.maxRetries ?? 3;
+        if (!Number.isInteger(this.maxRetries) || this.maxRetries < 0 || this.maxRetries > 3)
+            throw new InvalidArgumentError("maxRetries must be an integer from 0 through 3");
+        try {
+            this.proto = createProtoClient(options.endpoint, options.token, { insecure: mode(options.transportSecurity, TransportSecurity, TransportSecurity.Tls, "transportSecurity") === TransportSecurity.Plaintext, allowInsecureRemoteCredentials: mode(options.remoteCredentials, RemoteCredentials, RemoteCredentials.LoopbackOnly, "remoteCredentials") === RemoteCredentials.AllowPlaintext, tls: options.tls, headers: options.headers ? { ...options.headers } : undefined });
         }
-        if (pair.response.case === "item") {
-          return checkResultFromBulkItem(pair.response.value, checkedAt);
+        catch (error) {
+            throw new InvalidArgumentError(error instanceof Error ? error.message.replace(/allowInsecureRemoteCredentials/g, "remoteCredentials: RemoteCredentials.AllowPlaintext").replace(/insecure: true/g, "transportSecurity: TransportSecurity.Plaintext") : String(error), { cause: error });
         }
-        // Malformed pair: the oneof has neither `item` nor `error` set. A
-        // well-behaved server always sets one, so this should be unreachable
-        // in practice. Throw, matching the other six clients' guard, rather
-        // than degrading to an `unspecified` result: `unspecified` is
-        // non-granting and `.map()` does preserve index alignment, so the
-        // desync rationale above doesn't apply here — but it is
-        // indistinguishable from a real server answer of "no permission",
-        // which hides a broken server behind a plausible-looking denial.
-        throw new SpiceDBError(
-          `check item ${offset + i}: malformed CheckBulkPermissionsPair ` +
-            `(neither item nor error set)`,
-        );
-      });
-    });
-  }
-
-  /**
-   * Returns `true` if the subject has ANY of the specified permissions
-   * outright. A `"conditionalPermission"` result does NOT count as
-   * granted — only results where {@link CheckResult.hasPermission} is
-   * `true` are considered. This is deliberate and fail-closed.
-   *
-   * Accepts the same two calling conventions as `checkPermissions`,
-   * including the explicit-array form with a call-level {@link CheckOptions}
-   * default.
-   */
-  async checkAny(
-    consistency: Consistency,
-    ...checks: CheckRequest[]
-  ): Promise<boolean>;
-  async checkAny(
-    consistency: Consistency,
-    checks: CheckRequest[],
-    options?: CheckOptions,
-  ): Promise<boolean>;
-  async checkAny(
-    consistency: Consistency,
-    checksOrFirst?: CheckRequest[] | CheckRequest,
-    optionsOrSecond?: CheckOptions | CheckRequest,
-    ...rest: CheckRequest[]
-  ): Promise<boolean> {
-    const { checks, options } = normalizeBulkCheckArgs(
-      checksOrFirst,
-      optionsOrSecond,
-      rest,
-    );
-    const results = await this.runBulkCheck(consistency, checks, options);
-    return results.some((r) => r.hasPermission());
-  }
-
-  /**
-   * Returns `true` if the subject has ALL of the specified permissions
-   * outright. A `"conditionalPermission"` result does NOT count as
-   * granted — every result must satisfy {@link CheckResult.hasPermission}
-   * for this to return `true`. This is deliberate and fail-closed.
-   *
-   * Accepts the same two calling conventions as `checkPermissions`,
-   * including the explicit-array form with a call-level {@link CheckOptions}
-   * default.
-   *
-   * Returns `false`, not the vacuous `true` that `Array.prototype.every`
-   * yields on an empty array, when zero checks are given — "no checks to
-   * run" is not "all checks passed".
-   */
-  async checkAll(
-    consistency: Consistency,
-    ...checks: CheckRequest[]
-  ): Promise<boolean>;
-  async checkAll(
-    consistency: Consistency,
-    checks: CheckRequest[],
-    options?: CheckOptions,
-  ): Promise<boolean>;
-  async checkAll(
-    consistency: Consistency,
-    checksOrFirst?: CheckRequest[] | CheckRequest,
-    optionsOrSecond?: CheckOptions | CheckRequest,
-    ...rest: CheckRequest[]
-  ): Promise<boolean> {
-    const { checks, options } = normalizeBulkCheckArgs(
-      checksOrFirst,
-      optionsOrSecond,
-      rest,
-    );
-    if (checks.length === 0) {
-      return false;
     }
-    const results = await this.runBulkCheck(consistency, checks, options);
-    return results.every((r) => r.hasPermission());
-  }
-
-  // ---------------------------------------------------------------------------
-  // Relationship Reads
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Reads relationships matching the given filter.
-   *
-   * Stopping early releases the underlying stream: a `for await` `break`
-   * resumes this generator through `.return()`, whose `finally` aborts the
-   * call's internal controller. Pass `options.signal` when the release has
-   * to be driven from outside the loop instead -- a timeout, a request
-   * cancellation, tearing down a component. See root DESIGN.md, "RULE:
-   * Abandoning a stream must release it".
-   *
-   * @returns An async iterable of matching relationships.
-   */
-  async *readRelationships(
-    filter: RelationshipFilterOptions,
-    consistency: Consistency,
-    options?: { signal?: AbortSignal },
-  ): AsyncIterableIterator<Relationship> {
-    const request = create(ReadRelationshipsRequestSchema, {
-      consistency: consistency._toProto(),
-      relationshipFilter: toProtoRelationshipFilter(filter),
-    });
-    let attempt = 0;
-    for (;;) {
-      let yielded = 0;
-      const [controller, cleanup] = this.linkedAbortController(options?.signal);
-      try {
-        const stream = this.proto.permissions.readRelationships(request, {
-          signal: controller.signal,
-        });
-        for await (const resp of stream) {
-          if (resp.relationship) {
-            yield fromProtoRelationship(resp.relationship);
-            yielded++;
-          }
-        }
-        return;
-      } catch (err) {
-        if (
-          yielded === 0 &&
-          (await this.shouldRetryEstablishment(attempt, err))
-        ) {
-          attempt++;
-          continue;
-        }
-        throw toSpiceDBError(err);
-      } finally {
-        cleanup();
-      }
+    /** Secondary authenticated protocol accessor; shares ownership and bypasses idiomatic retry, errors and deadlines. */
+    raw(): SpiceDBProtoClient { return this.proto; }
+    close(): void {
+        if (this.closed)
+            return;
+        this.closed = true;
+        for (const op of this.operations)
+            op.cancel();
+        this.proto.close();
     }
-  }
-
-  // ---------------------------------------------------------------------------
-  // Writes
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Writes relationships as a single atomic transaction.
-   *
-   * @returns The revision at which the write was committed.
-   */
-  async write(txn: Transaction, options?: { timeoutMs?: number }): Promise<string> {
-    const timeoutMs = this.effectiveTimeoutMs(options?.timeoutMs);
-    return this.callOnce(async () => {
-      const resp = await this.proto.permissions.writeRelationships(
-        create(WriteRelationshipsRequestSchema, {
-          updates: txn.updates,
-          optionalPreconditions: txn.preconditions,
-          optionalTransactionMetadata: txn.metadata as JsonObject | undefined,
-        }),
-        { timeoutMs },
-      );
-      return resp.writtenAt?.token ?? "";
-    });
-  }
-
-  /**
-   * Deletes all relationships matching the given filter.
-   *
-   * `options.mustMatch`/`options.mustNotMatch` add preconditions that guard
-   * the delete: if a precondition fails, the server rejects the call and
-   * deletes nothing. Mirrors spicedb-go's `WithDeleteMustMatch`/
-   * `WithDeleteMustNotMatch` (client/relationships.go).
-   *
-   * `options.limit` bounds how many relationships this call deletes. If
-   * more relationships match the filter than `limit`, only `limit` of them
-   * are deleted by this call (the server requires
-   * `optionalAllowPartialDeletions`, which this sets automatically whenever
-   * `limit` is given, to permit that). By default (`options.autoPage`
-   * unset) this does not auto-page — call again with the same filter to
-   * continue deleting what remains.
-   *
-   * `options.autoPage: true` closes that gap: it loops internally, feeding
-   * each response's cursor back in as the next request's `optionalCursor`
-   * — the same transparent-cursor approach {@link SpiceDBClient.readRelationships}
-   * uses — until every match is deleted, mirroring spicedb-go's
-   * `DeleteRelationships` (client/relationships.go), which auto-pages
-   * unconditionally. It is opt-in here because it changes what `limit`
-   * means (a per-page size instead of a cap on the total deleted) and what
-   * a single call can do; a caller relying on the default bounded,
-   * single-RPC behavior must not have that silently replaced by an
-   * unbounded loop.
-   *
-   * @returns The revision at which the deletion was committed (the final
-   * page's, when `options.autoPage` is `true`).
-   */
-  async deleteRelationships(
-    filter: RelationshipFilterOptions,
-    options?: DeleteOptions,
-  ): Promise<string> {
-    const timeoutMs = this.effectiveTimeoutMs(options?.timeoutMs);
-    if (!options?.autoPage) {
-      return this.callOnce(async () => {
-        const resp = await this.proto.permissions.deleteRelationships(
-          toProtoDeleteRelationshipsRequest(filter, options),
-          { timeoutMs },
-        );
-        return resp.deletedAt?.token ?? "";
-      });
+    private backoffMs(attempt: number): number { return Math.random() * 100 * 2 ** attempt; }
+    private effectiveTimeoutMs(timeoutMs?: number): number { return timeoutMs ?? this.defaultTimeoutMs; }
+    private operation(options?: CallOptions, streaming = false): Operation {
+        if (this.closed)
+            throw new SpiceDBError("Client is closed");
+        const op = new Operation(options, streaming ? undefined : this.effectiveTimeoutMs(options?.timeoutMs), () => this.operations.delete(op));
+        this.operations.add(op);
+        return op;
     }
-
-    const pageSize = options.limit ?? DELETE_PAGE_SIZE;
-    let cursor = options.cursor;
-    let revision = "";
-    for (;;) {
-      const resp = await this.callOnce(() =>
-        this.proto.permissions.deleteRelationships(
-          toProtoDeleteRelationshipsRequest(filter, {
-            ...options,
-            limit: pageSize,
-            cursor,
-          }),
-          { timeoutMs },
-        ),
-      );
-      revision = resp.deletedAt?.token ?? "";
-      if (
-        resp.deletionProgress !==
-        DeleteRelationshipsResponse_DeletionProgress.PARTIAL
-      ) {
-        return revision;
-      }
-      cursor = resp.afterResultCursor?.token;
+    private consistency(value: Consistency) {
+        if (!(value instanceof Consistency))
+            throw new InvalidArgumentError("consistency is required");
+        return value._toProto();
     }
-  }
-
-  // ---------------------------------------------------------------------------
-  // Lookups
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Looks up all resources of the given type that the subject has the
-   * specified permission on. Each result carries the permissionship (full
-   * grant vs conditional on caveat context), and, for conditional results,
-   * which caveat context was missing, and `lookedUpAt` — the revision the
-   * result was computed at. Callers MUST check `permissionship` before
-   * treating a result as a full grant.
-   *
-   * Results are **not guaranteed to be unique**: the same `resourceId` may be
-   * yielded more than once — for example via caveated/conditional results, or
-   * when `params.limit` is set — possibly with differing `permissionship`.
-   * Callers that require uniqueness must deduplicate.
-   *
-   * Stopping early releases the underlying stream: a `for await` `break`
-   * resumes this generator through `.return()`, whose `finally` aborts the
-   * call's internal controller. Pass `params.signal` when the release has
-   * to be driven from outside the loop instead -- a timeout, a request
-   * cancellation, tearing down a component. See root DESIGN.md, "RULE:
-   * Abandoning a stream must release it".
-   *
-   * @returns An async iterable of {@link LookupResource}.
-   */
-  async *lookupResources(
-    params: LookupResourcesParams,
-    consistency: Consistency,
-  ): AsyncIterableIterator<LookupResource> {
-    const request = create(LookupResourcesRequestSchema, {
-      consistency: consistency._toProto(),
-      resourceObjectType: params.resourceType,
-      permission: params.permission,
-      subject: create(SubjectReferenceSchema, {
-        object: create(ObjectReferenceSchema, {
-          objectType: params.subjectType,
-          objectId: params.subjectId,
-        }),
-        optionalRelation: params.subjectRelation ?? "",
-      }),
-      context: params.context as JsonObject | undefined,
-      optionalLimit: params.limit ?? 0,
-    });
-    let attempt = 0;
-    for (;;) {
-      let yielded = 0;
-      const [controller, cleanup] = this.linkedAbortController(params.signal);
-      try {
-        const stream = this.proto.permissions.lookupResources(request, {
-          signal: controller.signal,
-        });
-        for await (const resp of stream) {
-          yield fromProtoLookupResource(resp);
-          yielded++;
-        }
-        return;
-      } catch (err) {
-        if (
-          yielded === 0 &&
-          (await this.shouldRetryEstablishment(attempt, err))
-        ) {
-          attempt++;
-          continue;
-        }
-        throw toSpiceDBError(err);
-      } finally {
-        cleanup();
-      }
-    }
-  }
-
-  /**
-   * Looks up all subjects of the given type that have the specified
-   * permission on the resource.
-   *
-   * When a yielded `LookupSubject.subject` is the wildcard `"*"`, the server
-   * has granted the permission to every subject of `subjectType` EXCEPT
-   * those listed in `LookupSubject.excludedSubjects`. Callers MUST check
-   * `excludedSubjects` before treating a wildcard match as a blanket grant,
-   * or they risk granting access to subjects the server explicitly excluded.
-   * `lookedUpAt` carries the revision the result was computed at.
-   *
-   * Results are **not guaranteed to be unique**: the same subject may be
-   * yielded more than once, possibly with differing `permissionship`.
-   * Callers that require uniqueness must deduplicate.
-   *
-   * Stopping early releases the underlying stream: a `for await` `break`
-   * resumes this generator through `.return()`, whose `finally` aborts the
-   * call's internal controller. Pass `params.signal` when the release has
-   * to be driven from outside the loop instead -- a timeout, a request
-   * cancellation, tearing down a component. See root DESIGN.md, "RULE:
-   * Abandoning a stream must release it".
-   *
-   * @returns An async iterable of {@link LookupSubject}.
-   */
-  async *lookupSubjects(
-    params: LookupSubjectsParams,
-    consistency: Consistency,
-  ): AsyncIterableIterator<LookupSubject> {
-    const request = create(LookupSubjectsRequestSchema, {
-      consistency: consistency._toProto(),
-      resource: create(ObjectReferenceSchema, {
-        objectType: params.resourceType,
-        objectId: params.resourceId,
-      }),
-      permission: params.permission,
-      subjectObjectType: params.subjectType,
-      optionalSubjectRelation: params.subjectRelation ?? "",
-      context: params.context as JsonObject | undefined,
-      optionalConcreteLimit: params.limit ?? 0,
-    });
-    let attempt = 0;
-    for (;;) {
-      let yielded = 0;
-      const [controller, cleanup] = this.linkedAbortController(params.signal);
-      try {
-        const stream = this.proto.permissions.lookupSubjects(request, {
-          signal: controller.signal,
-        });
-        for await (const resp of stream) {
-          yield fromProtoLookupSubject(resp);
-          yielded++;
-        }
-        return;
-      } catch (err) {
-        if (
-          yielded === 0 &&
-          (await this.shouldRetryEstablishment(attempt, err))
-        ) {
-          attempt++;
-          continue;
-        }
-        throw toSpiceDBError(err);
-      } finally {
-        cleanup();
-      }
-    }
-  }
-
-  // ---------------------------------------------------------------------------
-  // Expand
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Expands a permission tree for the given resource and permission.
-   */
-  async expandPermissionTree(
-    consistency: Consistency,
-    params: ExpandPermissionTreeParams,
-  ): Promise<{ expandedAt: string; treeRoot: PermissionTree }> {
-    const timeoutMs = this.effectiveTimeoutMs(params.timeoutMs);
-    return this.withRetry(async () => {
-      const resp = await this.proto.permissions.expandPermissionTree(
-        create(ExpandPermissionTreeRequestSchema, {
-          consistency: consistency._toProto(),
-          resource: create(ObjectReferenceSchema, {
-            objectType: params.resourceType,
-            objectId: params.resourceId,
-          }),
-          permission: params.permission,
-        }),
-        { timeoutMs },
-      );
-      return {
-        expandedAt: resp.expandedAt?.token ?? "",
-        treeRoot: fromProtoPermissionTree(resp.treeRoot),
-      };
-    });
-  }
-
-  // ---------------------------------------------------------------------------
-  // Bulk Operations
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Imports relationships in bulk, in a single transaction.
-   *
-   * `relationships` is any iterable -- an array, a generator, an async
-   * generator, anything with `Symbol.iterator` or `Symbol.asyncIterator`.
-   * Relationships are converted and batched as they are pulled, so importing
-   * a dataset larger than memory only requires that the caller produce it
-   * lazily:
-   *
-   * ```ts
-   * async function* fromCursor() {
-   *   for await (const row of db.query("SELECT ...")) {
-   *     yield { resourceType: "document", resourceId: row.id, ... };
-   *   }
-   * }
-   * await client.importBulkRelationships(fromCursor());
-   * ```
-   *
-   * An array still works exactly as before -- arrays are iterable -- and is
-   * the right choice when the data is already in memory.
-   *
-   * The sequence is consumed exactly once. This call is never retried
-   * automatically (a bulk import is a mutation; root DESIGN.md, "RULE:
-   * Automatic retry is for idempotent operations only"), so a single pass is
-   * all it needs. A caller who retries by hand must supply a fresh iterable,
-   * since a spent generator yields nothing.
-   *
-   * `importBulkRelationships` is client-streaming, not unary: its duration
-   * scales with the size of `relationships`, not with server latency, so
-   * unlike every other method on this client it does NOT fall back to
-   * `defaultTimeoutMs` (root DESIGN.md, "RULE: A unary call must have a
-   * deadline", clause 3). Omitting `options.timeoutMs` here means this call
-   * is unbounded; pass it explicitly to bound a bulk import.
-   *
-   * @returns The number of relationships loaded.
-   */
-  async importBulkRelationships(
-    relationships: Iterable<Relationship> | AsyncIterable<Relationship>,
-    options?: { timeoutMs?: number },
-  ): Promise<bigint> {
-    const timeoutMs = options?.timeoutMs;
-    return this.callOnce(async () => {
-      const resp = await this.proto.permissions.importBulkRelationships(
-        importBatches(relationships),
-        { timeoutMs },
-      );
-      return resp.numLoaded;
-    });
-  }
-
-  /**
-   * Exports all relationships, optionally filtered, as an async iterable.
-   *
-   * Stopping early releases the underlying stream: a `for await` `break`
-   * resumes this generator through `.return()`, whose `finally` aborts the
-   * call's internal controller. Pass `options.signal` when the release has
-   * to be driven from outside the loop instead -- a timeout, a request
-   * cancellation, tearing down a component. See root DESIGN.md, "RULE:
-   * Abandoning a stream must release it".
-   *
-   * @returns An async iterable of relationships.
-   */
-  async *exportBulkRelationships(
-    consistency: Consistency,
-    filter?: RelationshipFilterOptions,
-    options?: { signal?: AbortSignal },
-  ): AsyncIterableIterator<Relationship> {
-    const request = create(ExportBulkRelationshipsRequestSchema, {
-      consistency: consistency._toProto(),
-      optionalRelationshipFilter: filter
-        ? toProtoRelationshipFilter(filter)
-        : undefined,
-    });
-    let attempt = 0;
-    for (;;) {
-      let yielded = 0;
-      const [controller, cleanup] = this.linkedAbortController(options?.signal);
-      try {
-        const stream = this.proto.permissions.exportBulkRelationships(request, {
-          signal: controller.signal,
-        });
-        for await (const resp of stream) {
-          for (const protoRel of resp.relationships) {
-            yield fromProtoRelationship(protoRel);
-            yielded++;
-          }
-        }
-        return;
-      } catch (err) {
-        if (
-          yielded === 0 &&
-          (await this.shouldRetryEstablishment(attempt, err))
-        ) {
-          attempt++;
-          continue;
-        }
-        throw toSpiceDBError(err);
-      } finally {
-        cleanup();
-      }
-    }
-  }
-
-  // ---------------------------------------------------------------------------
-  // Schema
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Reads the current schema.
-   *
-   * @returns The schema text and revision.
-   */
-  async readSchema(options?: { timeoutMs?: number }): Promise<{ schema: string; revision: string }> {
-    const timeoutMs = this.effectiveTimeoutMs(options?.timeoutMs);
-    return this.withRetry(async () => {
-      const resp = await this.proto.schema.readSchema(
-        create(ReadSchemaRequestSchema, {}),
-        { timeoutMs },
-      );
-      return {
-        schema: resp.schemaText,
-        revision: resp.readAt?.token ?? "",
-      };
-    });
-  }
-
-  /**
-   * Writes (replaces) the current schema.
-   *
-   * @returns The revision at which the schema was written.
-   */
-  async writeSchema(schema: string, options?: { timeoutMs?: number }): Promise<string> {
-    const timeoutMs = this.effectiveTimeoutMs(options?.timeoutMs);
-    return this.callOnce(async () => {
-      const resp = await this.proto.schema.writeSchema(
-        create(WriteSchemaRequestSchema, { schema }),
-        { timeoutMs },
-      );
-      return resp.writtenAt?.token ?? "";
-    });
-  }
-
-  /**
-   * Reflects the schema, returning definitions and caveats.
-   */
-  async reflectSchema(
-    consistency: Consistency,
-    options?: ReflectSchemaOptions,
-  ): Promise<{
-    definitions: SchemaDefinition[];
-    caveats: SchemaCaveat[];
-    revision: string;
-  }> {
-    const timeoutMs = this.effectiveTimeoutMs(options?.timeoutMs);
-    return this.withRetry(async () => {
-      const filters = options
-        ? [
-            create(ReflectionSchemaFilterSchema, {
-              optionalDefinitionNameFilter:
-                options.definitionNameFilter ?? "",
-              optionalCaveatNameFilter: options.caveatNameFilter ?? "",
-              optionalRelationNameFilter:
-                options.relationNameFilter ?? "",
-              optionalPermissionNameFilter:
-                options.permissionNameFilter ?? "",
-            }),
-          ]
-        : [];
-
-      const resp = await this.proto.schema.reflectSchema(
-        create(ReflectSchemaRequestSchema, {
-          consistency: consistency._toProto(),
-          optionalFilters: filters,
-        }),
-        { timeoutMs },
-      );
-      return {
-        definitions: resp.definitions.map((def) => fromProtoSchemaDefinition(def)),
-        caveats: resp.caveats.map((cav) => fromProtoSchemaCaveat(cav)),
-        revision: resp.readAt?.token ?? "",
-      };
-    });
-  }
-
-  /**
-   * Computes the permissions that are computable for a given relation.
-   */
-  async computablePermissions(
-    consistency: Consistency,
-    params: ComputablePermissionsParams,
-  ): Promise<{ permissions: RelationReference[]; revision: string }> {
-    const timeoutMs = this.effectiveTimeoutMs(params.timeoutMs);
-    return this.withRetry(async () => {
-      const resp = await this.proto.schema.computablePermissions(
-        create(ComputablePermissionsRequestSchema, {
-          consistency: consistency._toProto(),
-          definitionName: params.definitionName,
-          relationName: params.relationName,
-          optionalDefinitionNameFilter: params.definitionNameFilter ?? "",
-        }),
-        { timeoutMs },
-      );
-      return {
-        permissions: resp.permissions.map((p) => fromProtoRelationReference(p)),
-        revision: resp.readAt?.token ?? "",
-      };
-    });
-  }
-
-  /**
-   * Finds the relations that a permission depends on.
-   */
-  async dependentRelations(
-    consistency: Consistency,
-    params: DependentRelationsParams,
-  ): Promise<{ relations: RelationReference[]; revision: string }> {
-    const timeoutMs = this.effectiveTimeoutMs(params.timeoutMs);
-    return this.withRetry(async () => {
-      const resp = await this.proto.schema.dependentRelations(
-        create(DependentRelationsRequestSchema, {
-          consistency: consistency._toProto(),
-          definitionName: params.definitionName,
-          permissionName: params.permissionName,
-        }),
-        { timeoutMs },
-      );
-      return {
-        relations: resp.relations.map((r) => fromProtoRelationReference(r)),
-        revision: resp.readAt?.token ?? "",
-      };
-    });
-  }
-
-  /**
-   * Computes the diff between the current schema and a comparison schema.
-   */
-  async diffSchema(
-    consistency: Consistency,
-    comparisonSchema: string,
-    options?: { timeoutMs?: number },
-  ): Promise<{ diffs: SchemaDiff[]; revision: string }> {
-    const timeoutMs = this.effectiveTimeoutMs(options?.timeoutMs);
-    return this.withRetry(async () => {
-      const resp = await this.proto.schema.diffSchema(
-        create(DiffSchemaRequestSchema, {
-          consistency: consistency._toProto(),
-          comparisonSchema,
-        }),
-        { timeoutMs },
-      );
-      return {
-        diffs: resp.diffs.map((d) => fromProtoSchemaDiff(d)),
-        revision: resp.readAt?.token ?? "",
-      };
-    });
-  }
-
-  // ---------------------------------------------------------------------------
-  // Experimental: Relationship Counters
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Registers a new relationship counter with the given filter.
-   * @experimental This API may change without following backwards compatibility rules.
-   */
-  async experimentalRegisterRelationshipCounter(
-    name: string,
-    filter: RelationshipFilterOptions,
-    options?: { timeoutMs?: number },
-  ): Promise<void> {
-    const timeoutMs = this.effectiveTimeoutMs(options?.timeoutMs);
-    return this.callOnce(async () => {
-      await this.proto.experimental.experimentalRegisterRelationshipCounter(
-        create(ExperimentalRegisterRelationshipCounterRequestSchema, {
-          name,
-          relationshipFilter: toProtoRelationshipFilter(filter),
-        }),
-        { timeoutMs },
-      );
-    });
-  }
-
-  /**
-   * Returns the count of relationships for a pre-registered counter.
-   * @experimental This API may change without following backwards compatibility rules.
-   */
-  async experimentalCountRelationships(
-    name: string,
-    options?: { timeoutMs?: number },
-  ): Promise<RelationshipCountResult> {
-    const timeoutMs = this.effectiveTimeoutMs(options?.timeoutMs);
-    return this.withRetry(async () => {
-      const resp =
-        await this.proto.experimental.experimentalCountRelationships(
-          create(ExperimentalCountRelationshipsRequestSchema, { name }),
-          { timeoutMs },
-        );
-      if (resp.counterResult.case === "counterStillCalculating") {
-        return { stillCalculating: true };
-      }
-      if (resp.counterResult.case === "readCounterValue") {
-        return {
-          stillCalculating: false,
-          count: Number(resp.counterResult.value.relationshipCount),
-          revision: resp.counterResult.value.readAt?.token ?? "",
-        };
-      }
-      return { stillCalculating: true };
-    });
-  }
-
-  /**
-   * Unregisters a previously registered relationship counter.
-   * @experimental This API may change without following backwards compatibility rules.
-   */
-  async experimentalUnregisterRelationshipCounter(
-    name: string,
-    options?: { timeoutMs?: number },
-  ): Promise<void> {
-    const timeoutMs = this.effectiveTimeoutMs(options?.timeoutMs);
-    return this.callOnce(async () => {
-      await this.proto.experimental.experimentalUnregisterRelationshipCounter(
-        create(ExperimentalUnregisterRelationshipCounterRequestSchema, {
-          name,
-        }),
-        { timeoutMs },
-      );
-    });
-  }
-
-  // ---------------------------------------------------------------------------
-  // Watch
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Watches for changes to relationships, returning an async iterable of events.
-   *
-   * Stopping early releases the underlying stream: a `for await` `break`
-   * resumes this generator through `.return()`, whose `finally` aborts the
-   * call's internal controller. Pass `options.signal` when the release has
-   * to be driven from outside the loop instead -- a timeout, a request
-   * cancellation, tearing down a component. See root DESIGN.md, "RULE:
-   * Abandoning a stream must release it".
-   */
-  async *watch(
-    options?: WatchOptions,
-  ): AsyncIterableIterator<WatchEvent> {
-    const req = create(WatchRequestSchema, {
-      optionalObjectTypes: options?.objectTypes ?? [],
-    });
-    if (options?.startRevision) {
-      req.optionalStartCursor = create(ZedTokenSchema, {
-        token: options.startRevision,
-      });
-    }
-    if (options?.includeCheckpoints) {
-      // optionalUpdateKinds is empty-means-default (relationship updates
-      // only, for backwards compatibility) -- a non-empty list is the exact
-      // set requested, so asking for checkpoints must also spell out
-      // relationship updates or the server would stop sending them.
-      req.optionalUpdateKinds = [
-        WatchKind.INCLUDE_RELATIONSHIP_UPDATES,
-        WatchKind.INCLUDE_CHECKPOINTS,
-      ];
-    }
-
-    let attempt = 0;
-    for (;;) {
-      let yielded = 0;
-      const [controller, cleanup] = this.linkedAbortController(options?.signal);
-      try {
-        const stream = this.proto.watch.watch(req, { signal: controller.signal });
-        for await (const resp of stream) {
-          const changes: WatchChange[] = resp.updates.map((update) => {
-            // Server-supplied data: an unrecognized operation
-            // (OPERATION_UNSPECIFIED, or a future wire value added after this
-            // client shipped) MUST NOT map to a write. Root DESIGN.md, "RULE:
-            // A conversion that cannot preserve meaning must fail", clause 2:
-            // server-supplied values the client does not recognise MUST NOT
-            // raise, and MUST map to the safe, non-permissive default -- never
-            // a grant, and never a write. TOUCH is a write, so it can only be
-            // the mapping for an explicit OPERATION_TOUCH, never the default:
-            // a cache or index mirror consuming this stream would otherwise
-            // upsert a relationship that may in fact have been deleted.
-            let operation: WatchChange["operation"];
-            switch (update.operation) {
-              case RelationshipUpdate_Operation.CREATE:
-                operation = "create";
-                break;
-              case RelationshipUpdate_Operation.TOUCH:
-                operation = "touch";
-                break;
-              case RelationshipUpdate_Operation.DELETE:
-                operation = "delete";
-                break;
-              default:
-                operation = "unspecified";
-                break;
+    private async retry<T>(op: Operation, fn: () => Promise<T>, read: boolean): Promise<T> {
+        for (let attempt = 0;; attempt++) {
+            try {
+                op.check();
+                return await op.race(fn());
             }
-            return {
-              operation,
-              relationship: update.relationship
-                ? fromProtoRelationship(update.relationship)
-                : {
-                    resourceType: "",
-                    resourceId: "",
-                    resourceRelation: "",
-                    subjectType: "",
-                    subjectId: "",
-                  },
-            };
-          });
-
-          yield {
-            changes,
-            revision: resp.changesThrough?.token ?? "",
-            metadata: resp.optionalTransactionMetadata,
-            schemaUpdated: resp.schemaUpdated,
-            isCheckpoint: resp.isCheckpoint,
-          };
-          yielded++;
+            catch (error) {
+                const mapped = op.map(error);
+                if (!read || attempt >= this.maxRetries || !isTransientError(error))
+                    throw mapped;
+                await op.sleep(this.backoffMs(attempt));
+            }
         }
-        return;
-      } catch (err) {
-        // Retrying is only safe before any update has been yielded (stream
-        // ESTABLISHMENT) — never retry mid-watch, since that would
-        // replay/duplicate already-delivered updates.
-        if (
-          yielded === 0 &&
-          (await this.shouldRetryEstablishment(attempt, err))
-        ) {
-          attempt++;
-          continue;
+    }
+    private async unary<T>(options: CallOptions | undefined, read: boolean, fn: (op: Operation) => Promise<T>): Promise<T> {
+        const op = this.operation(options);
+        try {
+            return await this.retry(op, () => fn(op), read);
         }
-        throw toSpiceDBError(err);
-      } finally {
-        cleanup();
-      }
-    }
-  }
-
-  // ---------------------------------------------------------------------------
-  // Retry Logic
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Decides whether to retry a streaming RPC's ESTABLISHMENT after a
-   * transient error, sleeping with the same backoff as `withRetry`.
-   *
-   * Callers MUST only invoke this when zero items have been yielded from
-   * the current stream — retrying after any item has been yielded would
-   * replay/duplicate it for the caller. This method only makes the
-   * transient/attempt-budget decision; the zero-yielded guard is the
-   * caller's responsibility.
-   */
-  /**
-   * Full-jitter backoff delay in milliseconds: `uniform(0, cap)` rather than
-   * a fixed `cap`. Plain exponential backoff has every client in a fleet
-   * retry on the same schedule after a server restart, turning the recovery
-   * into a thundering herd; sampling uniformly under the cap spreads
-   * retries out instead.
-   */
-  private backoffMs(attempt: number): number {
-    const cap = Math.min(100 * 2 ** attempt, 5000);
-    return Math.random() * cap;
-  }
-
-  private async shouldRetryEstablishment(
-    attempt: number,
-    err: unknown,
-  ): Promise<boolean> {
-    if (!isTransientError(err) || attempt === this.maxRetries) {
-      return false;
-    }
-    await new Promise((resolve) => setTimeout(resolve, this.backoffMs(attempt)));
-    return true;
-  }
-
-  /**
-   * Calls `fn` once, converting a thrown error, but never retrying.
-   *
-   * For mutations. A `WriteRelationships` containing `OPERATION_CREATE`, or
-   * any request carrying preconditions, is not idempotent: if it commits
-   * and the response is lost (a rolling restart, a proxy dropping the
-   * connection), a retry would surface `ALREADY_EXISTS`/`FAILED_PRECONDITION`
-   * for a write that in fact succeeded, and the caller would wrongly
-   * conclude it had failed. See DESIGN.md, "Automatic retry is for
-   * idempotent operations only".
-   */
-  private async callOnce<T>(fn: () => Promise<T>): Promise<T> {
-    try {
-      return await fn();
-    } catch (err) {
-      throw toSpiceDBError(err);
-    }
-  }
-
-  private async withRetry<T>(fn: () => Promise<T>): Promise<T> {
-    let lastErr: unknown;
-    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
-      try {
-        return await fn();
-      } catch (err) {
-        lastErr = err;
-        if (!isTransientError(err) || attempt === this.maxRetries) {
-          throw toSpiceDBError(err);
+        catch (error) {
+            throw op.map(error);
         }
-        await new Promise((resolve) => setTimeout(resolve, this.backoffMs(attempt)));
-      }
+        finally {
+            op.dispose();
+        }
     }
-    throw toSpiceDBError(lastErr);
-  }
+    private stream<T>(options: CallOptions | undefined, factory: (op: Operation) => AsyncGenerator<T>, retry = true): AsyncIterableIterator<T> {
+        const op = this.operation(options, true);
+        const self = this;
+        const iterator = (async function* () {
+            let yielded = false;
+            try {
+                for (let attempt = 0;; attempt++) {
+                    let current: AsyncGenerator<T> | undefined;
+                    try {
+                        op.check();
+                        current = factory(op);
+                        for (;;) {
+                            const item = await op.race(current.next());
+                            if (item.done)
+                                return;
+                            op.check();
+                            yielded = true;
+                            yield immutableSnapshot(item.value);
+                        }
+                    }
+                    catch (error) {
+                        if (!retry || yielded || attempt >= self.maxRetries || !isTransientError(error))
+                            throw op.map(error);
+                        await op.sleep(self.backoffMs(attempt));
+                    }
+                    finally {
+                        if (current) {
+                            const closing = current.return(undefined);
+                            if (op.controller.signal.aborted)
+                                void closing.catch(() => { });
+                            else
+                                await closing;
+                        }
+                    }
+                }
+            }
+            catch (error) {
+                throw op.map(error);
+            }
+            finally {
+                op.dispose();
+            }
+        })();
+        return {
+            next: value => iterator.next(value),
+            return: async (value) => { op.cancel(); return iterator.return(value); },
+            throw: async (error) => { op.cancel(); return iterator.throw(error); },
+            [Symbol.asyncIterator]() { return this; },
+        };
+    }
+    async check(request: CheckRequest, options?: CheckOptions): Promise<CheckResult> {
+        const wire = create(CheckPermissionRequestSchema, { resource: request.resource, permission: request.permission, subject: protoSubject(request.subject), consistency: this.consistency(request.consistency), context: mergeCheckContext(options?.context, request.context), withTracing: mode(options?.tracing, Tracing, Tracing.Disabled, "tracing") === Tracing.Enabled });
+        return this.unary(options, true, async (op) => checkResultFromProto(await this.proto.permissions.checkPermission(wire, op.callOptions())));
+    }
+    async checkBulk(requests: readonly CheckRequest[], options?: CheckOptions): Promise<readonly CheckResult[]> {
+        const op = this.operation(options);
+        try {
+            op.check();
+            const key = requests[0]?.consistency;
+            const items = requests.map((request, index) => {
+                if (!(request.consistency instanceof Consistency) || !(key instanceof Consistency) || request.consistency._key() !== key._key())
+                    throw new InvalidArgumentError(`check item ${index}: bulk consistency must be identical`);
+                return create(CheckBulkPermissionsRequestItemSchema, { resource: request.resource, permission: request.permission, subject: protoSubject(request.subject), context: mergeCheckContext(options?.context, request.context) });
+            });
+            const tracing = mode(options?.tracing, Tracing, Tracing.Disabled, "tracing") === Tracing.Enabled;
+            if (items.length === 0)
+                return Object.freeze([]);
+            const consistency = this.consistency(key!);
+            const results: CheckResult[] = [];
+            for (let offset = 0; offset < items.length; offset += 1000) {
+                op.check();
+                const chunk = items.slice(offset, offset + 1000);
+                const resp = await this.retry(op, () => this.proto.permissions.checkBulkPermissions(create(CheckBulkPermissionsRequestSchema, { consistency, items: chunk, withTracing: tracing }), op.callOptions()), true);
+                if (resp.pairs.length !== chunk.length)
+                    throw new SpiceDBError(`checkBulkPermissions returned ${resp.pairs.length} pair(s) for ${chunk.length} request item(s)`);
+                resp.pairs.forEach((pair, i) => {
+                    if (!pair.request || !equals(CheckBulkPermissionsRequestItemSchema, pair.request, chunk[i])) {
+                        const error = new SpiceDBError(`check item ${offset + i}: malformed echoed request`);
+                        Object.defineProperty(error, "inputIndex", { value: offset + i, enumerable: true });
+                        throw error;
+                    }
+                    if (pair.response.case === "error") {
+                        const error = toSpiceDBErrorFromStatus(pair.response.value);
+                        Object.defineProperty(error, "inputIndex", { value: offset + i, enumerable: true });
+                        error.message = `check item ${offset + i}: ${error.message}`;
+                        throw error;
+                    }
+                    if (pair.response.case !== "item")
+                        throw new SpiceDBError(`check item ${offset + i}: malformed CheckBulkPermissionsPair (neither item nor error set)`);
+                    results.push(checkResultFromBulkItem(pair.response.value, serverToken(resp.checkedAt?.token)));
+                });
+            }
+            return Object.freeze(results);
+        }
+        catch (error) {
+            throw op.map(error);
+        }
+        finally {
+            op.dispose();
+        }
+    }
+    async write(transaction: Transaction, options?: CallOptions): Promise<WriteResult> {
+        const wire = create(WriteRelationshipsRequestSchema, transaction._build());
+        return this.unary(options, false, async (op) => immutableSnapshot({ revision: serverToken((await this.proto.permissions.writeRelationships(wire, op.callOptions())).writtenAt?.token) }));
+    }
+    readRelationships(request: ReadRelationshipsRequest, options?: CallOptions): AsyncIterableIterator<Relationship> {
+        const size = positiveLimit(request.pageSize ?? 1000, "pageSize");
+        const wire = create(ReadRelationshipsRequestSchema, { consistency: this.consistency(request.consistency), relationshipFilter: toProtoRelationshipFilter(request.filter), optionalLimit: size, optionalCursor: request.cursor === undefined ? undefined : create(CursorSchema, { token: request.cursor }) });
+        const self = this;
+        return this.stream(options, async function* (op) {
+            for (;;) {
+                op.check();
+                let count = 0;
+                let cursor: string | undefined;
+                for await (const resp of self.proto.permissions.readRelationships(clone(ReadRelationshipsRequestSchema, wire), op.callOptions())) {
+                    op.check();
+                    cursor = resp.afterResultCursor?.token;
+                    if (resp.relationship) {
+                        count++;
+                        yield fromProtoRelationship(resp.relationship);
+                    }
+                }
+                if (count < size || !cursor)
+                    return;
+                if (cursor === wire.optionalCursor?.token)
+                    throw new SpiceDBError("Read cursor did not advance");
+                wire.optionalCursor = create(CursorSchema, { token: cursor });
+            }
+        });
+    }
+    async deleteRelationships(filter: RelationshipFilter, options: DeleteOptions): Promise<DeleteResult> {
+        const wire = toProtoDeleteRelationshipsRequest(filter, options);
+        return this.unary(options, false, async (op) => this.deleteResult(await this.proto.permissions.deleteRelationships(wire, op.callOptions())));
+    }
+    private deleteResult(resp: Awaited<ReturnType<SpiceDBProtoClient["permissions"]["deleteRelationships"]>>, previous = 0n): DeleteResult {
+        return immutableSnapshot({ revision: serverToken(resp.deletedAt?.token), deletedCount: previous + resp.relationshipsDeletedCount, cursor: resp.afterResultCursor?.token, progress: resp.deletionProgress === DeleteRelationshipsResponse_DeletionProgress.COMPLETE ? "complete" : resp.deletionProgress === DeleteRelationshipsResponse_DeletionProgress.PARTIAL ? "partial" : "unspecified" });
+    }
+    async deleteAllRelationshipsNonAtomic(filter: RelationshipFilter, options?: DeleteAllOptions): Promise<DeleteResult> {
+        const wire = toProtoDeleteRelationshipsRequest(filter, { ...options, limit: positiveLimit(options?.pageSize ?? 1000, "pageSize") });
+        const op = this.operation(options);
+        let progress: DeleteResult | undefined;
+        try {
+            for (;;) {
+                op.check();
+                const resp = await this.retry(op, () => this.proto.permissions.deleteRelationships(clone(DeleteRelationshipsRequestSchema, wire), op.callOptions()), false);
+                progress = this.deleteResult(resp, progress?.deletedCount);
+                if (progress.progress === "complete")
+                    return progress;
+                if (progress.progress === "unspecified")
+                    throw new SpiceDBError("delete-all returned unknown deletion progress");
+                wire.optionalCursor = progress.cursor ? create(CursorSchema, { token: progress.cursor }) : undefined;
+            }
+        }
+        catch (error) {
+            const mapped = op.map(error);
+            throw progress ? withDeleteProgress(mapped, progress) : mapped;
+        }
+        finally {
+            op.dispose();
+        }
+    }
+    lookupResources(request: LookupResourcesRequest, options?: CallOptions): AsyncIterableIterator<LookupResource> {
+        const filter = mode(request.permissionshipFilter, LookupPermissionshipFilter, LookupPermissionshipFilter.All, "permissionshipFilter");
+        const size = positiveLimit(request.pageSize ?? 1000, "pageSize");
+        if (request.limit !== undefined)
+            positiveLimit(request.limit, "limit");
+        const wire = create(LookupResourcesRequestSchema, { resourceObjectType: request.resourceType, permission: request.permission, subject: protoSubject(request.subject), consistency: this.consistency(request.consistency), context: request.context === undefined ? undefined : jsonSnapshot(request.context) as JsonObject, optionalLimit: Math.min(size, request.limit ?? size), withDebug: mode(request.debug, LookupDebug, LookupDebug.Disabled, "debug") === LookupDebug.Enabled, optionalCursor: request.cursor === undefined ? undefined : create(CursorSchema, { token: request.cursor }) });
+        const self = this;
+        const limit = request.limit;
+        return this.stream(options, async function* (op) {
+            let total = 0;
+            for (;;) {
+                op.check();
+                let count = 0;
+                let cursor: string | undefined;
+                for await (const resp of self.proto.permissions.lookupResources(clone(LookupResourcesRequestSchema, wire), op.callOptions())) {
+                    op.check();
+                    cursor = resp.afterResultCursor?.token;
+                    count++;
+                    const result = fromProtoLookupResource(resp);
+                    if (filter === LookupPermissionshipFilter.HasPermissionOnly && result.permissionship !== "hasPermission")
+                        continue;
+                    total++;
+                    yield result;
+                    if (limit !== undefined && total >= limit)
+                        return;
+                }
+                if (count < wire.optionalLimit || !cursor)
+                    return;
+                if (cursor === wire.optionalCursor?.token)
+                    throw new SpiceDBError("Lookup cursor did not advance");
+                wire.optionalCursor = create(CursorSchema, { token: cursor });
+                wire.optionalLimit = Math.min(size, limit === undefined ? size : limit - total);
+            }
+        });
+    }
+    lookupSubjects(request: LookupSubjectsRequest, options?: CallOptions): AsyncIterableIterator<LookupSubject> {
+        if (request.limit !== undefined)
+            positiveLimit(request.limit, "limit");
+        const wildcards = mode(request.wildcards, Wildcards, Wildcards.Default, "wildcards");
+        const wire = create(LookupSubjectsRequestSchema, { resource: request.resource, permission: request.permission, subjectObjectType: request.subjectType, optionalSubjectRelation: request.subjectRelation ?? "", consistency: this.consistency(request.consistency), context: request.context === undefined ? undefined : jsonSnapshot(request.context) as JsonObject, optionalConcreteLimit: request.limit ?? 0, optionalCursor: request.cursor === undefined ? undefined : create(CursorSchema, { token: request.cursor }), wildcardOption: wildcards === Wildcards.Exclude ? LookupSubjectsRequest_WildcardOption.EXCLUDE_WILDCARDS : wildcards === Wildcards.Include ? LookupSubjectsRequest_WildcardOption.INCLUDE_WILDCARDS : LookupSubjectsRequest_WildcardOption.UNSPECIFIED });
+        const self = this;
+        return this.stream(options, async function* (op) {
+            for await (const resp of self.proto.permissions.lookupSubjects(wire, op.callOptions())) {
+                op.check();
+                yield fromProtoLookupSubject(resp);
+            }
+        });
+    }
+    async expandPermissionTree(request: ExpandPermissionTreeRequest, options?: CallOptions): Promise<ExpandResult> {
+        const wire = create(ExpandPermissionTreeRequestSchema, { resource: request.resource, permission: request.permission, consistency: this.consistency(request.consistency) });
+        return this.unary(options, true, async (op) => { const resp = await this.proto.permissions.expandPermissionTree(wire, op.callOptions()); return immutableSnapshot({ treeRoot: fromProtoPermissionTree(resp.treeRoot), revision: serverToken(resp.expandedAt?.token) }); });
+    }
+    async importRelationships(relationships: Iterable<Relationship> | AsyncIterable<Relationship>, options?: CallOptions): Promise<bigint> {
+        const op = this.operation(options, true);
+        let input: Iterator<Relationship> | AsyncIterator<Relationship> | undefined;
+        let producerClosed = false;
+        const closeProducer = () => {
+            if (producerClosed)
+                return;
+            producerClosed = true;
+            // A producer may be parked on an uninterruptible await. Its return()
+            // cannot delay releasing the transport or delivering caller cancellation.
+            try {
+                if (input?.return)
+                    void Promise.resolve(input.return()).catch(() => { });
+            }
+            catch { /* Retain the original operation/producer failure. */ }
+        };
+        async function* batches() {
+            let batch: ReturnType<typeof toProtoRelationship>[] = [];
+            try {
+                for (;;) {
+                    op.check();
+                    const item = await op.race(Promise.resolve(input!.next()));
+                    if (item.done) {
+                        producerClosed = true;
+                        break;
+                    }
+                    batch.push(toProtoRelationship(item.value));
+                    if (batch.length === 1000) {
+                        yield create(ImportBulkRelationshipsRequestSchema, { relationships: batch });
+                        batch = [];
+                    }
+                }
+                if (batch.length)
+                    yield create(ImportBulkRelationshipsRequestSchema, { relationships: batch });
+            }
+            catch (error) {
+                op.fail(op.map(error));
+                throw error;
+            }
+            finally {
+                closeProducer();
+            }
+        }
+        try {
+            op.check();
+            input = Symbol.asyncIterator in relationships ? relationships[Symbol.asyncIterator]() : relationships[Symbol.iterator]();
+            return (await op.race(this.proto.permissions.importBulkRelationships(batches(), op.callOptions()))).numLoaded;
+        }
+        catch (error) {
+            throw op.map(error);
+        }
+        finally {
+            op.dispose();
+            closeProducer();
+        }
+    }
+    exportRelationships(request: ExportRelationshipsRequest, options?: CallOptions): AsyncIterableIterator<Relationship> {
+        const wire = create(ExportBulkRelationshipsRequestSchema, { consistency: this.consistency(request.consistency), optionalLimit: positiveLimit(request.pageSize ?? 1000, "pageSize"), optionalRelationshipFilter: request.filter === undefined ? undefined : toProtoRelationshipFilter(request.filter), optionalCursor: request.cursor === undefined ? undefined : create(CursorSchema, { token: request.cursor }) });
+        const self = this;
+        return this.stream(options, async function* (op) {
+            for await (const resp of self.proto.permissions.exportBulkRelationships(wire, op.callOptions()))
+                for (const rel of resp.relationships) {
+                    op.check();
+                    yield fromProtoRelationship(rel);
+                }
+        });
+    }
+    async readSchema(options?: CallOptions): Promise<SchemaResult> { return this.unary(options, true, async (op) => { const resp = await this.proto.schema.readSchema(create(ReadSchemaRequestSchema), op.callOptions()); return immutableSnapshot({ schema: resp.schemaText, revision: serverToken(resp.readAt?.token) }); }); }
+    async writeSchema(schema: string, options?: CallOptions): Promise<ZedToken> { return this.unary(options, false, async (op) => serverToken((await this.proto.schema.writeSchema(create(WriteSchemaRequestSchema, { schema }), op.callOptions())).writtenAt?.token)); }
+    async reflectSchema(request: ReflectSchemaRequest, options?: CallOptions): Promise<ReflectSchemaResult> {
+        const wire = create(ReflectSchemaRequestSchema, { consistency: this.consistency(request.consistency), optionalFilters: request.filters?.map(f => create(ReflectionSchemaFilterSchema, { optionalDefinitionNameFilter: f.definitionName ?? "", optionalCaveatNameFilter: f.caveatName ?? "", optionalRelationNameFilter: f.relationName ?? "", optionalPermissionNameFilter: f.permissionName ?? "" })) });
+        return this.unary(options, true, async (op) => { const resp = await this.proto.schema.reflectSchema(wire, op.callOptions()); return immutableSnapshot({ definitions: resp.definitions.map(fromProtoSchemaDefinition), caveats: resp.caveats.map(fromProtoSchemaCaveat), revision: serverToken(resp.readAt?.token) }); });
+    }
+    async computablePermissions(request: ComputablePermissionsRequest, options?: CallOptions): Promise<RelationsResult> {
+        const wire = create(ComputablePermissionsRequestSchema, { consistency: this.consistency(request.consistency), definitionName: request.definitionName, relationName: request.relationName, optionalDefinitionNameFilter: request.definitionNameFilter ?? "" });
+        return this.unary(options, true, async (op) => { const resp = await this.proto.schema.computablePermissions(wire, op.callOptions()); return immutableSnapshot({ relations: resp.permissions.map(fromProtoRelationReference), revision: serverToken(resp.readAt?.token) }); });
+    }
+    async dependentRelations(request: DependentRelationsRequest, options?: CallOptions): Promise<RelationsResult> {
+        const wire = create(DependentRelationsRequestSchema, { consistency: this.consistency(request.consistency), definitionName: request.definitionName, permissionName: request.permissionName });
+        return this.unary(options, true, async (op) => { const resp = await this.proto.schema.dependentRelations(wire, op.callOptions()); return immutableSnapshot({ relations: resp.relations.map(fromProtoRelationReference), revision: serverToken(resp.readAt?.token) }); });
+    }
+    async diffSchema(request: DiffSchemaRequest, options?: CallOptions): Promise<SchemaDiffResult> {
+        const wire = create(DiffSchemaRequestSchema, { consistency: this.consistency(request.consistency), comparisonSchema: request.comparisonSchema });
+        return this.unary(options, true, async (op) => { const resp = await this.proto.schema.diffSchema(wire, op.callOptions()); return immutableSnapshot({ diffs: resp.diffs.map(fromProtoSchemaDiff), revision: serverToken(resp.readAt?.token) }); });
+    }
+    /** @experimental */
+    async experimentalRegisterRelationshipCounter(name: string, filter: RelationshipFilter, options?: CallOptions): Promise<void> {
+        const wire = create(ExperimentalRegisterRelationshipCounterRequestSchema, { name, relationshipFilter: toProtoRelationshipFilter(filter) });
+        await this.unary(options, false, op => this.proto.experimental.experimentalRegisterRelationshipCounter(wire, op.callOptions()));
+    }
+    /** @experimental */
+    async experimentalCountRelationships(name: string, options?: CallOptions): Promise<RelationshipCountResult> {
+        return this.unary(options, true, async (op) => { const resp = await this.proto.experimental.experimentalCountRelationships(create(ExperimentalCountRelationshipsRequestSchema, { name }), op.callOptions()); return immutableSnapshot(resp.counterResult.case === "readCounterValue" ? { stillCalculating: false, count: resp.counterResult.value.relationshipCount, revision: serverToken(resp.counterResult.value.readAt?.token) } : { stillCalculating: true }); });
+    }
+    /** @experimental */
+    async experimentalUnregisterRelationshipCounter(name: string, options?: CallOptions): Promise<void> { await this.unary(options, false, op => this.proto.experimental.experimentalUnregisterRelationshipCounter(create(ExperimentalUnregisterRelationshipCounterRequestSchema, { name }), op.callOptions())); }
+    watch(request?: WatchRequest, options?: CallOptions): AsyncIterableIterator<WatchEvent> {
+        if (request?.objectTypes?.length && request.relationshipFilters?.length)
+            throw new InvalidArgumentError("watch objectTypes and relationshipFilters cannot be combined");
+        const kinds = (request?.content ?? [WatchContent.Relationships]).map(value => {
+            const content = mode(value, WatchContent, WatchContent.Relationships, "content");
+            return { [WatchContent.Relationships]: WatchKind.INCLUDE_RELATIONSHIP_UPDATES,
+                [WatchContent.Checkpoints]: WatchKind.INCLUDE_CHECKPOINTS,
+                [WatchContent.Schema]: WatchKind.INCLUDE_SCHEMA_UPDATES }[content];
+        });
+        const wire = create(WatchRequestSchema, { optionalObjectTypes: [...(request?.objectTypes ?? [])], optionalStartCursor: request?.startRevision === undefined ? undefined : create(ZedTokenSchema, { token: tokenString(request.startRevision) }), optionalUpdateKinds: kinds, optionalRelationshipFilters: request?.relationshipFilters?.map(toProtoRelationshipFilter) });
+        const self = this;
+        return this.stream(options, async function* (op) {
+            for await (const resp of self.proto.watch.watch(wire, op.callOptions())) {
+                const updates: WatchChange[] = resp.updates.map(update => ({ operation: ({ [RelationshipUpdate_Operation.CREATE]: "create", [RelationshipUpdate_Operation.TOUCH]: "touch", [RelationshipUpdate_Operation.DELETE]: "delete" } as const)[update.operation as RelationshipUpdate_Operation.CREATE] ?? "unspecified", relationship: fromProtoRelationship(update.relationship ?? createRelationship()) }));
+                op.check();
+                yield { updates, changesThrough: serverToken(resp.changesThrough?.token), metadata: resp.optionalTransactionMetadata === undefined ? undefined : jsonSnapshot(resp.optionalTransactionMetadata, "metadata"), schemaUpdated: resp.schemaUpdated, isCheckpoint: resp.isCheckpoint };
+            }
+        }, false);
+    }
+    /** @experimental Counts matches without registering a persistent relationship counter. */
+    async experimentalCountRelationshipsByFilter(filter: RelationshipFilter, options?: CallOptions): Promise<RelationshipCountResult> {
+        const wire = create(ExperimentalCountRelationshipsByFilterRequestSchema, { relationshipFilter: toProtoRelationshipFilter(filter) });
+        return this.unary(options, true, async (op) => { const response = await this.proto.materializeRelationships.experimentalCountRelationshipsByFilter(wire, op.callOptions()); return immutableSnapshot({ stillCalculating: false, count: response.relationshipCount, revision: serverToken(response.readAt?.token) }); });
+    }
+    /** @experimental Infinite permission-set events. Resume explicitly after interruption. */
+    experimentalWatchPermissionSets(request?: WatchPermissionSetsRequest, options?: CallOptions): AsyncIterableIterator<PermissionSetEvent> {
+        const wire = create(PermissionSets.WatchPermissionSetsRequestSchema, { optionalStartingAfter: request?.startRevision === undefined ? undefined : create(ZedTokenSchema, { token: tokenString(request.startRevision) }) });
+        const self = this;
+        return this.stream(options, async function* (op) { for await (const response of self.proto.permissionSets.watchPermissionSets(wire, op.callOptions())) {
+            op.check();
+            yield nativePermissionSetEvent(response);
+        } }, false);
+    }
+    /** @experimental Automatically fetches cursor pages; limit bounds total yielded responses. */
+    experimentalLookupPermissionSets(request: LookupPermissionSetsRequest, options?: CallOptions): AsyncIterableIterator<LookupPermissionSet> {
+        const size = positiveLimit(request.pageSize ?? 1000, "pageSize");
+        if (request.limit !== undefined)
+            positiveLimit(request.limit, "limit");
+        const wire = create(PermissionSets.LookupPermissionSetsRequestSchema, { limit: Math.min(size, request.limit ?? size), optionalAtRevision: request.revision === undefined ? undefined : create(ZedTokenSchema, { token: tokenString(request.revision) }), optionalStartingAfterCursor: request.cursor === undefined ? undefined : protoPermissionSetCursor(request.cursor) });
+        const self = this;
+        const limit = request.limit;
+        return this.stream(options, async function* (op) {
+            let count = 0;
+            for (;;) {
+                let cursor: PermissionSets.Cursor | undefined;
+                op.check();
+                for await (const response of self.proto.permissionSets.lookupPermissionSets(clone(PermissionSets.LookupPermissionSetsRequestSchema, wire), op.callOptions())) {
+                    op.check();
+                    cursor = response.cursor;
+                    count++;
+                    yield { change: response.change === undefined ? undefined : nativePermissionSetChange(response.change), cursor: response.cursor === undefined ? undefined : nativePermissionSetCursor(response.cursor) };
+                    if (limit !== undefined && count >= limit)
+                        return;
+                }
+                if (!cursor || cursor.completedMembers)
+                    return;
+                const previous = wire.optionalStartingAfterCursor;
+                if (previous && permissionSetCursorKey(previous) === permissionSetCursorKey(cursor))
+                    throw new SpiceDBError("Permission-set cursor did not advance");
+                wire.optionalStartingAfterCursor = clone(PermissionSets.CursorSchema, cursor);
+                wire.limit = Math.min(size, limit === undefined ? size : limit - count);
+            }
+        });
+    }
+    /** @experimental Returns snapshot file URLs, timestamp and revision without downloading files. */
+    async experimentalDownloadPermissionSets(request?: DownloadPermissionSetsRequest, options?: CallOptions): Promise<DownloadPermissionSetsResult> {
+        const wire = create(PermissionSets.DownloadPermissionSetsRequestSchema, { optionalAtRevision: request?.revision === undefined ? undefined : create(ZedTokenSchema, { token: tokenString(request.revision) }) });
+        return this.unary(options, true, async (op) => { const response = await this.proto.permissionSets.downloadPermissionSets(wire, op.callOptions()); return immutableSnapshot({ files: response.files.map(file => ({ name: file.name, url: file.url })), ...(response.timestamp ? { timestamp: new Date(Number(response.timestamp.seconds) * 1000 + response.timestamp.nanos / 1e6) } : {}), revision: serverToken(response.atRevision?.token) }); });
+    }
+    /** @experimental Returns the raw roaring64 bitmap without decoding its IDs. */
+    async experimentalRoaringLookupResources(request: RoaringLookupResourcesRequest, options?: CallOptions): Promise<RoaringLookupResourcesResult> {
+        const wire = { consistency: this.consistency(request.consistency), resourceObjectType: request.resourceType, permission: request.permission, subject: protoSubject(request.subject) };
+        return this.unary(options, true, async (op) => { const resp = await this.proto.materialize.experimentalRoaringLookupResources(wire, op.callOptions()); return immutableSnapshot({ bitmap: resp.bitmap, cardinality: resp.cardinality, revision: serverToken(resp.atRevision?.token) }); });
+    }
 }
-
-/**
- * Creates a SpiceDBClient connected to the given endpoint.
- *
- * @param endpoint - The SpiceDB server address (host:port)
- * @param token - Bearer token for authentication
- * @param options - Optional configuration
- */
-export function createSpiceDBClient(
-  endpoint: string,
-  token: string,
-  options?: {
-    insecure?: boolean;
-    /**
-     * Explicit, separately named opt-in permitting `insecure: true` to
-     * target a non-loopback endpoint. See root DESIGN.md, "RULE:
-     * Credentials over insecure transport require an explicit opt-in".
-     */
-    allowInsecureRemoteCredentials?: boolean;
-    /**
-     * Caller-supplied TLS trust material — a private CA to verify SpiceDB
-     * against, and optionally a client certificate for mutual TLS. See
-     * `TlsOptions`, and {@link SpiceDBClientOptions.tls} for why
-     * combining it with `insecure` throws rather than being ignored.
-     */
-    tls?: TlsOptions;
-    headers?: Record<string, string>;
-    maxRetries?: number;
-    defaultTimeoutMs?: number;
-  },
-): SpiceDBClient {
-  return new SpiceDBClient({
-    endpoint,
-    token,
-    ...options,
-  });
+function createRelationship() { return toProtoRelationship({ resource: { objectType: "", objectId: "" }, relation: "unspecified", subject: { object: { objectType: "", objectId: "" } } }); }
+export function createSpiceDBClient(endpoint: string, token: string, options?: Omit<SpiceDBClientOptions, "endpoint" | "token">): SpiceDBClient { return new SpiceDBClient({ endpoint, token, ...options }); }
+function protoPermissionSetCursor(cursor: PermissionSetCursor): PermissionSets.Cursor {
+    if (!Number.isInteger(cursor.startingIndex) || cursor.startingIndex < 0 || cursor.startingIndex > 0xffffffff)
+        throw new InvalidArgumentError("cursor.startingIndex must be a uint32 integer");
+    if (!Number.isInteger(cursor.limit) || cursor.limit < 0 || cursor.limit > 0xffffffff)
+        throw new InvalidArgumentError("cursor.limit must be a uint32 integer");
+    return create(PermissionSets.CursorSchema, { ...cursor, token: cursor.token === undefined ? undefined : create(ZedTokenSchema, { token: tokenString(cursor.token) }) });
+}
+function nativePermissionSetCursor(cursor: PermissionSets.Cursor): PermissionSetCursor { return immutableSnapshot({ limit: cursor.limit, ...(cursor.token === undefined ? {} : { token: serverToken(cursor.token.token) }), startingIndex: cursor.startingIndex, completedMembers: cursor.completedMembers, startingKey: cursor.startingKey, cursor: cursor.cursor }); }
+function permissionSetCursorKey(cursor: PermissionSets.Cursor): string { return `${cursor.token?.token}:${cursor.startingIndex}:${cursor.completedMembers}:${cursor.startingKey}:${cursor.cursor}`; }
+function nativeSetReference(reference: PermissionSets.SetReference): PermissionSetReference { return { object: { objectType: reference.objectType, objectId: reference.objectId }, permissionOrRelation: reference.permissionOrRelation }; }
+function nativePermissionSetChange(change: PermissionSets.PermissionSetChange): PermissionSetChange {
+    return immutableSnapshot({ revision: serverToken(change.atRevision?.token), operation: change.operation === PermissionSets.PermissionSetChange_SetOperation.ADDED ? "added" : change.operation === PermissionSets.PermissionSetChange_SetOperation.REMOVED ? "removed" : "unspecified", ...(change.parentSet ? { parentSet: nativeSetReference(change.parentSet) } : {}), child: change.child.case === "childSet" ? { kind: "set", set: nativeSetReference(change.child.value) } : change.child.case === "childMember" ? { kind: "member", member: { object: { objectType: change.child.value.objectType, objectId: change.child.value.objectId }, ...(change.child.value.optionalPermissionOrRelation ? { permissionOrRelation: change.child.value.optionalPermissionOrRelation } : {}) } } : { kind: "unspecified" } });
+}
+function nativePermissionSetEvent(response: PermissionSets.WatchPermissionSetsResponse): PermissionSetEvent {
+    switch (response.response.case) {
+        case "change": return { kind: "change", change: nativePermissionSetChange(response.response.value) };
+        case "completedRevision": return { kind: "completedRevision", revision: serverToken(response.response.value.token) };
+        case "lookupPermissionSetsRequired": return { kind: "lookupRequired", revision: serverToken(response.response.value.requiredLookupAt?.token) };
+        case "breakingSchemaChange": return { kind: "breakingSchemaChange", revision: serverToken(response.response.value.changeAt?.token), affectedPermissions: response.response.value.affectedPermissions.map(permission => ({ resourceType: permission.resourceType, permission: permission.permission, subjectType: permission.subjectType, ...(permission.optionalSubjectRelation ? { subjectRelation: permission.optionalSubjectRelation } : {}) })) };
+        default: return { kind: "unspecified" };
+    }
 }

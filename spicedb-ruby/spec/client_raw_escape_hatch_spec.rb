@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative '../lib/spicedb'
+require_relative 'support/native_helpers'
 require 'spicedb_proto'
 require 'grpc'
 
@@ -17,9 +18,8 @@ require 'grpc'
 # elsewhere in this suite) could not, since the interceptor and credentials
 # that attach the token live below the mock.
 #
-# The RPC driven here is CheckPermission, the single-check call the idiomatic
-# client never makes (#check_permission routes every check through
-# CheckBulkPermissions), so the gap is genuine rather than contrived.
+# Both raw singular checks and canonical bulk checks must use this same
+# authenticated transport.
 
 # Records the authorization metadata of every call it serves, in arrival order.
 class AuthRecordingPermissionsService < Authzed::Api::V1::PermissionsService::Service
@@ -40,9 +40,9 @@ class AuthRecordingPermissionsService < Authzed::Api::V1::PermissionsService::Se
 
   def check_bulk_permissions(request, call)
     @authorizations << call.metadata['authorization']
-    pairs = request.items.map do
+    pairs = request.items.map do |item|
       Authzed::Api::V1::CheckBulkPermissionsPair.new(
-        item: Authzed::Api::V1::CheckBulkPermissionsResponseItem.new(
+        request: item, item: Authzed::Api::V1::CheckBulkPermissionsResponseItem.new(
           permissionship: :PERMISSIONSHIP_HAS_PERMISSION
         )
       )
@@ -73,7 +73,10 @@ RSpec.describe 'SpiceDB::Client#proto_client escape hatch' do
     )
   end
 
-  let(:rel) { SpiceDB::Relationship.from_triple('document', 'readme', 'view', 'user', 'jimmy') }
+  let(:rel) do
+    SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'readme'), relation: 'view',
+                              subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: 'jimmy'), relation: nil))
+  end
 
   it 'drives a real generated stub against a real server, authenticated' do
     server, port, service = start_server
@@ -98,7 +101,9 @@ RSpec.describe 'SpiceDB::Client#proto_client escape hatch' do
       client = SpiceDB::Client.new_plaintext("localhost:#{port}", 'test-token')
       expect(client.proto_client).to be(client.proto_client)
 
-      expect(client.check_permission(SpiceDB::Consistency.full, 'view', rel).has_permission?).to be(true)
+      expect(client.check_bulk([rel].flatten.map do |item|
+        permission_check(item, 'view')
+      end, consistency: SpiceDB::Consistency.full).first.has_permission?).to be(true)
       client.proto_client.permissions.check_permission(check_permission_request)
 
       # One idiomatic call (via CheckBulkPermissions) and one raw call (via the

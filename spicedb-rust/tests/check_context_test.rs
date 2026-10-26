@@ -17,7 +17,6 @@ use std::collections::HashMap;
 use spicedb::client::SpiceDBClient;
 use spicedb::consistency;
 use spicedb::types::CheckOptions;
-use spicedb::types::Relationship;
 use spicedb_proto::authzed::api::v1 as proto;
 
 use support::{spawn_permissions_server, MockPermissionsService};
@@ -83,9 +82,13 @@ fn has_permission_response(n: usize) -> proto::CheckBulkPermissionsResponse {
 
 async fn client_with_mock(mock: MockPermissionsService) -> (SpiceDBClient, std::net::SocketAddr) {
     let addr = spawn_permissions_server(mock).await;
-    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
-        .await
-        .expect("client should connect to mock server");
+    let client = SpiceDBClient::new_plaintext(
+        addr.to_string(),
+        "token",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("client should connect to mock server");
     (client, addr)
 }
 
@@ -100,18 +103,28 @@ async fn c1_call_level_context_reaches_every_item() {
     let requests = mock.check_bulk_permissions_requests();
     let (client, _addr) = client_with_mock(mock).await;
 
-    let r1 = Relationship::new("document", "1", "view", "user", "alice", "").unwrap();
-    let r2 = Relationship::new("document", "2", "view", "user", "bob", "").unwrap();
+    let r1 = spicedb::Relationship::from_tuple("document:1#view@user:alice").unwrap();
+    let r2 = spicedb::Relationship::from_tuple("document:2#view@user:bob").unwrap();
 
     let mut context = HashMap::new();
     context.insert("now".to_string(), serde_json::json!(42.0));
 
     client
-        .check_permissions_with_options(
-            &consistency::full(),
-            "view",
-            &[r1, r2],
-            &CheckOptions::new().with_context(context.clone()),
+        .check_bulk(
+            spicedb::BulkCheckRequest::new(
+                [r1, r2]
+                    .iter()
+                    .map(|r| {
+                        spicedb::PermissionCheck::new(
+                            (r).resource().clone(),
+                            "view",
+                            (r).subject().clone(),
+                            (consistency::full()).clone(),
+                        )
+                    })
+                    .collect(),
+            )
+            .with_options((CheckOptions::new().with_context(context.clone())).clone()),
         )
         .await
         .expect("check should succeed");
@@ -145,19 +158,35 @@ async fn c2_per_item_context_reaches_only_that_item() {
     let requests = mock.check_bulk_permissions_requests();
     let (client, _addr) = client_with_mock(mock).await;
 
-    let r1 = Relationship::new("document", "1", "view", "user", "alice", "").unwrap();
+    let r1 = spicedb::Relationship::from_tuple("document:1#view@user:alice").unwrap();
 
     let mut item_ctx = HashMap::new();
     item_ctx.insert("now".to_string(), serde_json::json!(42.0));
-    let r2 = Relationship::new("document", "2", "view", "user", "bob", "")
-        .unwrap()
-        .with_check_context(item_ctx.clone());
+    let r2 = spicedb::Relationship::from_tuple("document:2#view@user:bob").unwrap();
 
     // Plain check_permissions — no call-level context argument at all — must
     // still honor r2's per-item context through the delegating,
     // backward-compatible entry point.
     client
-        .check_permissions(&consistency::full(), "view", &[r1, r2])
+        .check_bulk(spicedb::BulkCheckRequest::new(
+            [r1, r2]
+                .iter()
+                .enumerate()
+                .map(|(index, r)| {
+                    let q = spicedb::PermissionCheck::new(
+                        r.resource().clone(),
+                        "view",
+                        r.subject().clone(),
+                        consistency::full(),
+                    );
+                    if index == 1 {
+                        q.with_context(item_ctx.clone())
+                    } else {
+                        q
+                    }
+                })
+                .collect(),
+        ))
         .await
         .expect("check should succeed");
 
@@ -191,24 +220,38 @@ async fn c3_merges_call_level_and_per_item_context() {
     let requests = mock.check_bulk_permissions_requests();
     let (client, _addr) = client_with_mock(mock).await;
 
-    let sibling = Relationship::new("document", "1", "view", "user", "alice", "").unwrap();
+    let sibling = spicedb::Relationship::from_tuple("document:1#view@user:alice").unwrap();
 
     let mut item_ctx = HashMap::new();
     item_ctx.insert("region".to_string(), serde_json::json!("eu"));
-    let overridden = Relationship::new("document", "2", "view", "user", "bob", "")
-        .unwrap()
-        .with_check_context(item_ctx);
+    let overridden = spicedb::Relationship::from_tuple("document:2#view@user:bob").unwrap();
 
     let mut call_ctx = HashMap::new();
     call_ctx.insert("now".to_string(), serde_json::json!(42.0));
     call_ctx.insert("region".to_string(), serde_json::json!("us"));
 
     client
-        .check_permissions_with_options(
-            &consistency::full(),
-            "view",
-            &[sibling, overridden],
-            &CheckOptions::new().with_context(call_ctx.clone()),
+        .check_bulk(
+            spicedb::BulkCheckRequest::new(
+                [sibling, overridden]
+                    .iter()
+                    .enumerate()
+                    .map(|(index, r)| {
+                        spicedb::PermissionCheck::new(
+                            (r).resource().clone(),
+                            "view",
+                            (r).subject().clone(),
+                            (consistency::full()).clone(),
+                        )
+                        .with_context(if index == 1 {
+                            item_ctx.clone()
+                        } else {
+                            HashMap::new()
+                        })
+                    })
+                    .collect(),
+            )
+            .with_options((CheckOptions::new().with_context(call_ctx.clone())).clone()),
         )
         .await
         .expect("check should succeed");
@@ -247,15 +290,25 @@ async fn c4_no_context_supplied_sets_no_context_field() {
     let requests = mock.check_bulk_permissions_requests();
     let (client, _addr) = client_with_mock(mock).await;
 
-    let r1 = Relationship::new("document", "1", "view", "user", "alice", "").unwrap();
-    let r2 = Relationship::new("document", "2", "view", "user", "bob", "").unwrap();
+    let r1 = spicedb::Relationship::from_tuple("document:1#view@user:alice").unwrap();
+    let r2 = spicedb::Relationship::from_tuple("document:2#view@user:bob").unwrap();
 
     client
-        .check_permissions_with_options(
-            &consistency::full(),
-            "view",
-            &[r1, r2],
-            &CheckOptions::new(),
+        .check_bulk(
+            spicedb::BulkCheckRequest::new(
+                [r1, r2]
+                    .iter()
+                    .map(|r| {
+                        spicedb::PermissionCheck::new(
+                            (r).resource().clone(),
+                            "view",
+                            (r).subject().clone(),
+                            (consistency::full()).clone(),
+                        )
+                    })
+                    .collect(),
+            )
+            .with_options((CheckOptions::new()).clone()),
         )
         .await
         .expect("check should succeed");
@@ -275,20 +328,25 @@ async fn c4_no_context_supplied_sets_no_context_field() {
 
 #[tokio::test]
 async fn existing_check_methods_stay_unchanged_and_set_no_context() {
-    let r1 = || Relationship::new("document", "1", "view", "user", "alice", "").unwrap();
-    let r2 = || Relationship::new("document", "2", "view", "user", "bob", "").unwrap();
+    let r1 = || spicedb::Relationship::from_tuple("document:1#view@user:alice").unwrap();
+    let r2 = || spicedb::Relationship::from_tuple("document:2#view@user:bob").unwrap();
 
     {
         let mock = MockPermissionsService::new();
         mock.push_check_bulk_permissions_response(has_permission_response(1));
-        let requests = mock.check_bulk_permissions_requests();
+        let requests = mock.check_permission_requests();
         let (client, _addr) = client_with_mock(mock).await;
         let _ = client
-            .check_permission(&consistency::full(), "view", &r1())
+            .check(spicedb::PermissionCheck::new(
+                r1().resource().clone(),
+                "view",
+                r1().subject().clone(),
+                (consistency::full()).clone(),
+            ))
             .await
             .expect("check should succeed");
         let reqs = requests.lock().unwrap();
-        assert!(reqs[0].items[0].context.is_none());
+        assert!(reqs[0].context.is_none());
     }
 
     {
@@ -297,7 +355,19 @@ async fn existing_check_methods_stay_unchanged_and_set_no_context() {
         let requests = mock.check_bulk_permissions_requests();
         let (client, _addr) = client_with_mock(mock).await;
         let _ = client
-            .check_permissions(&consistency::full(), "view", &[r1(), r2()])
+            .check_bulk(spicedb::BulkCheckRequest::new(
+                [r1(), r2()]
+                    .iter()
+                    .map(|r| {
+                        spicedb::PermissionCheck::new(
+                            (r).resource().clone(),
+                            "view",
+                            (r).subject().clone(),
+                            (consistency::full()).clone(),
+                        )
+                    })
+                    .collect(),
+            ))
             .await
             .expect("check should succeed");
         let reqs = requests.lock().unwrap();
@@ -312,8 +382,23 @@ async fn existing_check_methods_stay_unchanged_and_set_no_context() {
         let requests = mock.check_bulk_permissions_requests();
         let (client, _addr) = client_with_mock(mock).await;
         let _ = client
-            .check_any(&consistency::full(), "view", &[r1(), r2()])
+            .check_bulk(spicedb::BulkCheckRequest::new(
+                [r1(), r2()]
+                    .iter()
+                    .map(|r| {
+                        spicedb::PermissionCheck::new(
+                            (r).resource().clone(),
+                            "view",
+                            (r).subject().clone(),
+                            (consistency::full()).clone(),
+                        )
+                    })
+                    .collect(),
+            ))
             .await
+            .map(|results| {
+                !results.is_empty() && results.iter().any(spicedb::CheckResult::has_permission)
+            })
             .expect("check should succeed");
         let reqs = requests.lock().unwrap();
         for item in &reqs[0].items {
@@ -327,8 +412,23 @@ async fn existing_check_methods_stay_unchanged_and_set_no_context() {
         let requests = mock.check_bulk_permissions_requests();
         let (client, _addr) = client_with_mock(mock).await;
         let _ = client
-            .check_all(&consistency::full(), "view", &[r1(), r2()])
+            .check_bulk(spicedb::BulkCheckRequest::new(
+                [r1(), r2()]
+                    .iter()
+                    .map(|r| {
+                        spicedb::PermissionCheck::new(
+                            (r).resource().clone(),
+                            "view",
+                            (r).subject().clone(),
+                            (consistency::full()).clone(),
+                        )
+                    })
+                    .collect(),
+            ))
             .await
+            .map(|results| {
+                !results.is_empty() && results.iter().all(spicedb::CheckResult::has_permission)
+            })
             .expect("check should succeed");
         let reqs = requests.lock().unwrap();
         for item in &reqs[0].items {
@@ -351,23 +451,23 @@ async fn with_context_variants_forward_call_level_context_to_wire() {
     {
         let mock = MockPermissionsService::new();
         mock.push_check_bulk_permissions_response(has_permission_response(1));
-        let requests = mock.check_bulk_permissions_requests();
+        let requests = mock.check_permission_requests();
         let (client, _addr) = client_with_mock(mock).await;
-        let r = Relationship::new("document", "1", "view", "user", "alice", "").unwrap();
+        let r = spicedb::Relationship::from_tuple("document:1#view@user:alice").unwrap();
         let _ = client
-            .check_permission_with_options(
-                &consistency::full(),
-                "view",
-                &r,
-                &CheckOptions::new().with_context(want.clone()),
+            .check(
+                spicedb::PermissionCheck::new(
+                    r.resource().clone(),
+                    "view",
+                    r.subject().clone(),
+                    (consistency::full()).clone(),
+                )
+                .with_options((CheckOptions::new().with_context(want.clone())).clone()),
             )
             .await
             .expect("check should succeed");
         let reqs = requests.lock().unwrap();
-        assert_eq!(
-            context_map(reqs[0].items[0].context.as_ref()),
-            Some(want.clone())
-        );
+        assert_eq!(context_map(reqs[0].context.as_ref()), Some(want.clone()));
     }
 
     {
@@ -375,16 +475,29 @@ async fn with_context_variants_forward_call_level_context_to_wire() {
         mock.push_check_bulk_permissions_response(has_permission_response(2));
         let requests = mock.check_bulk_permissions_requests();
         let (client, _addr) = client_with_mock(mock).await;
-        let r1 = Relationship::new("document", "1", "view", "user", "alice", "").unwrap();
-        let r2 = Relationship::new("document", "2", "view", "user", "bob", "").unwrap();
+        let r1 = spicedb::Relationship::from_tuple("document:1#view@user:alice").unwrap();
+        let r2 = spicedb::Relationship::from_tuple("document:2#view@user:bob").unwrap();
         let _ = client
-            .check_any_with_options(
-                &consistency::full(),
-                "view",
-                &[r1, r2],
-                &CheckOptions::new().with_context(want.clone()),
+            .check_bulk(
+                spicedb::BulkCheckRequest::new(
+                    [r1, r2]
+                        .iter()
+                        .map(|r| {
+                            spicedb::PermissionCheck::new(
+                                (r).resource().clone(),
+                                "view",
+                                (r).subject().clone(),
+                                (consistency::full()).clone(),
+                            )
+                        })
+                        .collect(),
+                )
+                .with_options((CheckOptions::new().with_context(want.clone())).clone()),
             )
             .await
+            .map(|results| {
+                !results.is_empty() && results.iter().any(spicedb::CheckResult::has_permission)
+            })
             .expect("check should succeed");
         let reqs = requests.lock().unwrap();
         for item in &reqs[0].items {
@@ -397,16 +510,29 @@ async fn with_context_variants_forward_call_level_context_to_wire() {
         mock.push_check_bulk_permissions_response(has_permission_response(2));
         let requests = mock.check_bulk_permissions_requests();
         let (client, _addr) = client_with_mock(mock).await;
-        let r1 = Relationship::new("document", "1", "view", "user", "alice", "").unwrap();
-        let r2 = Relationship::new("document", "2", "view", "user", "bob", "").unwrap();
+        let r1 = spicedb::Relationship::from_tuple("document:1#view@user:alice").unwrap();
+        let r2 = spicedb::Relationship::from_tuple("document:2#view@user:bob").unwrap();
         let _ = client
-            .check_all_with_options(
-                &consistency::full(),
-                "view",
-                &[r1, r2],
-                &CheckOptions::new().with_context(want.clone()),
+            .check_bulk(
+                spicedb::BulkCheckRequest::new(
+                    [r1, r2]
+                        .iter()
+                        .map(|r| {
+                            spicedb::PermissionCheck::new(
+                                (r).resource().clone(),
+                                "view",
+                                (r).subject().clone(),
+                                (consistency::full()).clone(),
+                            )
+                        })
+                        .collect(),
+                )
+                .with_options((CheckOptions::new().with_context(want.clone())).clone()),
             )
             .await
+            .map(|results| {
+                !results.is_empty() && results.iter().all(spicedb::CheckResult::has_permission)
+            })
             .expect("check should succeed");
         let reqs = requests.lock().unwrap();
         for item in &reqs[0].items {

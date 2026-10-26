@@ -36,7 +36,7 @@ RSpec.describe 'Insecure transport opt-in' do
     # Prove the client is usable, not merely constructed: the channel connects
     # lazily, so a constructor returning a client that could not talk to
     # anything would still satisfy a "did not raise" assertion.
-    expect(client.write_schema(TEST_SCHEMA)).not_to be_empty
+    expect(client.write_schema(TEST_SCHEMA)).to be_a(SpiceDB::ZedToken)
   end
 
   it 'refuses a remote plaintext host without the opt-in', :no_spicedb do
@@ -52,7 +52,7 @@ RSpec.describe 'Insecure transport opt-in' do
     # plaintext transport and accepting the credential exposure that follows are
     # different decisions, and clause 1 forbids one boolean from doing both jobs.
     client = SpiceDB::Client.new_plaintext(
-      'example.com:50051', SPICEDB_TOKEN, allow_insecure_remote_credentials: true
+      'example.com:50051', SPICEDB_TOKEN, remote_credentials: SpiceDB::RemoteCredentials::ALLOW_PLAINTEXT
     )
     expect(client).not_to be_nil
   end

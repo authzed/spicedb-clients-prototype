@@ -6,9 +6,10 @@ mappers (ReflectSchemaResult, SchemaDefinition, SchemaRelation,
 SchemaPermission, SchemaCaveat, SchemaCaveatParameter, SchemaDiff,
 RelationReference).
 """
+from spicedb import ZedToken
 
+from google.protobuf.json_format import MessageToDict
 from authzed.api.v1 import core_pb2, schema_service_pb2
-
 from spicedb.types import (
     ReflectSchemaResult,
     RelationReference,
@@ -34,16 +35,16 @@ class TestReflectSchemaResultFromProto:
                             name="viewer",
                             comment="can view",
                             parent_definition_name="document",
-                        ),
+                        )
                     ],
                     permissions=[
                         schema_service_pb2.ReflectionPermission(
                             name="view",
                             comment="view permission",
                             parent_definition_name="document",
-                        ),
+                        )
                     ],
-                ),
+                )
             ],
             caveats=[
                 schema_service_pb2.ReflectionCaveat(
@@ -52,21 +53,16 @@ class TestReflectSchemaResultFromProto:
                     expression="day != 'saturday' && day != 'sunday'",
                     parameters=[
                         schema_service_pb2.ReflectionCaveatParameter(
-                            name="day",
-                            type="string",
-                            parent_caveat_name="is_weekday",
-                        ),
+                            name="day", type="string", parent_caveat_name="is_weekday"
+                        )
                     ],
-                ),
+                )
             ],
             read_at=core_pb2.ZedToken(token="deadbeef"),
         )
-
         result = ReflectSchemaResult._from_proto(resp)
-
-        assert result.revision == "deadbeef"
-
-        assert result.definitions == [
+        assert result.revision == ZedToken("deadbeef")
+        assert result.definitions == (
             SchemaDefinition(
                 name="document",
                 comment="a document",
@@ -75,43 +71,40 @@ class TestReflectSchemaResultFromProto:
                         name="viewer",
                         comment="can view",
                         parent_definition_name="document",
-                    ),
+                    )
                 ],
                 permissions=[
                     SchemaPermission(
                         name="view",
                         comment="view permission",
                         parent_definition_name="document",
-                    ),
+                    )
                 ],
             ),
-        ]
-
-        assert result.caveats == [
+        )
+        assert result.caveats == (
             SchemaCaveat(
                 name="is_weekday",
                 comment="only on weekdays",
                 expression="day != 'saturday' && day != 'sunday'",
                 parameters=[
                     SchemaCaveatParameter(
-                        name="day",
-                        type="string",
-                        parent_caveat_name="is_weekday",
-                    ),
+                        name="day", type="string", parent_caveat_name="is_weekday"
+                    )
                 ],
             ),
-        ]
+        )
 
     def test_empty_response(self):
         resp = schema_service_pb2.ReflectSchemaResponse()
         result = ReflectSchemaResult._from_proto(resp)
-        assert result.definitions == []
-        assert result.caveats == []
-        assert result.revision == ""
+        assert result.definitions == ()
+        assert result.caveats == ()
+        assert result.revision == ZedToken("")
 
     def test_no_proto_leak(self):
         resp = schema_service_pb2.ReflectSchemaResponse(
-            definitions=[schema_service_pb2.ReflectionDefinition(name="document")],
+            definitions=[schema_service_pb2.ReflectionDefinition(name="document")]
         )
         result = ReflectSchemaResult._from_proto(resp)
         assert isinstance(result.definitions[0], SchemaDefinition)
@@ -124,7 +117,7 @@ class TestReflectSchemaResultFromProto:
             schema_service_pb2.ReflectSchemaResponse()
         )
         try:
-            result.revision = "other"  # type: ignore[misc]
+            result.revision = "other"
             assert False, "should have raised"
         except AttributeError:
             pass
@@ -136,30 +129,35 @@ class TestSchemaDiffFromProto:
 
     def test_definition_added(self):
         d = schema_service_pb2.ReflectionSchemaDiff(
-            definition_added=schema_service_pb2.ReflectionDefinition(name="document"),
+            definition_added=schema_service_pb2.ReflectionDefinition(name="document")
         )
         assert _schema_diff_from_proto(d) == SchemaDiff(
-            kind="definition_added", definition_name="document"
+            kind="definition_added",
+            definition_name="document",
+            details=MessageToDict(d, preserving_proto_field_name=True),
         )
 
     def test_definition_removed(self):
         d = schema_service_pb2.ReflectionSchemaDiff(
-            definition_removed=schema_service_pb2.ReflectionDefinition(name="document"),
+            definition_removed=schema_service_pb2.ReflectionDefinition(name="document")
         )
         assert _schema_diff_from_proto(d) == SchemaDiff(
-            kind="definition_removed", definition_name="document"
+            kind="definition_removed",
+            definition_name="document",
+            details=MessageToDict(d, preserving_proto_field_name=True),
         )
 
     def test_relation_added(self):
         d = schema_service_pb2.ReflectionSchemaDiff(
             relation_added=schema_service_pb2.ReflectionRelation(
                 name="editor", parent_definition_name="document"
-            ),
+            )
         )
         assert _schema_diff_from_proto(d) == SchemaDiff(
             kind="relation_added",
             definition_name="document",
             relation_name="editor",
+            details=MessageToDict(d, preserving_proto_field_name=True),
         )
 
     def test_relation_subject_type_added(self):
@@ -171,32 +169,36 @@ class TestSchemaDiffFromProto:
                 changed_subject_type=schema_service_pb2.ReflectionTypeReference(
                     subject_definition_name="user"
                 ),
-            ),
+            )
         )
         assert _schema_diff_from_proto(d) == SchemaDiff(
             kind="relation_subject_type_added",
             definition_name="document",
             relation_name="viewer",
+            details=MessageToDict(d, preserving_proto_field_name=True),
         )
 
     def test_permission_expr_changed(self):
         d = schema_service_pb2.ReflectionSchemaDiff(
             permission_expr_changed=schema_service_pb2.ReflectionPermission(
                 name="view", parent_definition_name="document"
-            ),
+            )
         )
         assert _schema_diff_from_proto(d) == SchemaDiff(
             kind="permission_expr_changed",
             definition_name="document",
             permission_name="view",
+            details=MessageToDict(d, preserving_proto_field_name=True),
         )
 
     def test_caveat_added(self):
         d = schema_service_pb2.ReflectionSchemaDiff(
-            caveat_added=schema_service_pb2.ReflectionCaveat(name="is_weekday"),
+            caveat_added=schema_service_pb2.ReflectionCaveat(name="is_weekday")
         )
         assert _schema_diff_from_proto(d) == SchemaDiff(
-            kind="caveat_added", caveat_name="is_weekday"
+            kind="caveat_added",
+            caveat_name="is_weekday",
+            details=MessageToDict(d, preserving_proto_field_name=True),
         )
 
     def test_caveat_parameter_type_changed(self):
@@ -206,15 +208,19 @@ class TestSchemaDiffFromProto:
                     name="day", parent_caveat_name="is_weekday"
                 ),
                 previous_type="int",
-            ),
+            )
         )
         assert _schema_diff_from_proto(d) == SchemaDiff(
-            kind="caveat_parameter_type_changed", caveat_name="is_weekday"
+            kind="caveat_parameter_type_changed",
+            caveat_name="is_weekday",
+            details=MessageToDict(d, preserving_proto_field_name=True),
         )
 
     def test_unset_diff_is_unknown(self):
         d = schema_service_pb2.ReflectionSchemaDiff()
-        assert _schema_diff_from_proto(d) == SchemaDiff(kind="unknown")
+        assert _schema_diff_from_proto(d) == SchemaDiff(
+            kind="unknown", details=MessageToDict(d, preserving_proto_field_name=True)
+        )
 
     def test_diffs_list_multiple_kinds(self):
         resp = schema_service_pb2.DiffSchemaResponse(
@@ -222,26 +228,34 @@ class TestSchemaDiffFromProto:
                 schema_service_pb2.ReflectionSchemaDiff(
                     definition_added=schema_service_pb2.ReflectionDefinition(
                         name="document"
-                    ),
+                    )
                 ),
                 schema_service_pb2.ReflectionSchemaDiff(
                     caveat_removed=schema_service_pb2.ReflectionCaveat(
                         name="is_weekday"
-                    ),
+                    )
                 ),
             ],
             read_at=core_pb2.ZedToken(token="cafebabe"),
         )
         diffs = [_schema_diff_from_proto(d) for d in resp.diffs]
         assert diffs == [
-            SchemaDiff(kind="definition_added", definition_name="document"),
-            SchemaDiff(kind="caveat_removed", caveat_name="is_weekday"),
+            SchemaDiff(
+                kind="definition_added",
+                definition_name="document",
+                details={"definition_added": {"name": "document"}},
+            ),
+            SchemaDiff(
+                kind="caveat_removed",
+                caveat_name="is_weekday",
+                details={"caveat_removed": {"name": "is_weekday"}},
+            ),
         ]
 
     def test_frozen(self):
         diff = _schema_diff_from_proto(schema_service_pb2.ReflectionSchemaDiff())
         try:
-            diff.kind = "other"  # type: ignore[misc]
+            diff.kind = "other"
             assert False, "should have raised"
         except AttributeError:
             pass
@@ -253,26 +267,18 @@ class TestRelationReferenceFromProto:
 
     def test_from_proto(self):
         proto = schema_service_pb2.ReflectionRelationReference(
-            definition_name="document",
-            relation_name="view",
-            is_permission=True,
+            definition_name="document", relation_name="view", is_permission=True
         )
         assert RelationReference._from_proto(proto) == RelationReference(
-            definition_name="document",
-            relation_name="view",
-            is_permission=True,
+            definition_name="document", relation_name="view", is_permission=True
         )
 
     def test_from_proto_relation_not_permission(self):
         proto = schema_service_pb2.ReflectionRelationReference(
-            definition_name="document",
-            relation_name="viewer",
-            is_permission=False,
+            definition_name="document", relation_name="viewer", is_permission=False
         )
         assert RelationReference._from_proto(proto) == RelationReference(
-            definition_name="document",
-            relation_name="viewer",
-            is_permission=False,
+            definition_name="document", relation_name="viewer", is_permission=False
         )
 
     def test_frozen(self):
@@ -280,7 +286,7 @@ class TestRelationReferenceFromProto:
             definition_name="document", relation_name="view", is_permission=True
         )
         try:
-            ref.relation_name = "other"  # type: ignore[misc]
+            ref.relation_name = "other"
             assert False, "should have raised"
         except AttributeError:
             pass

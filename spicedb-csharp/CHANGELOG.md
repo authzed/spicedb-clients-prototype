@@ -2,10 +2,6 @@
 
 ## Unreleased
 
-### Added
-
-- Add a fluent `PermissionCheck` builder with required-field validation and immutable context snapshots.
-
 ### Changed
 
 - **BREAKING CHANGE — named behavioral options.** Replace `Tracing = true`
@@ -89,6 +85,8 @@
   forms rename the call and wrap the context: `new CheckOptions { Context = ctx }`.
 
 ### Added
+
+- Add a fluent `PermissionCheck` builder with required-field validation and immutable context snapshots.
 
 - **2026-09-24: `ExperimentalRoaringLookupResourcesAsync` and `RoaringLookupResourcesResult`**,
   wrapping the proto client regen's new `authzed.api.materialize.v0.RoaringLookupResourcesService`

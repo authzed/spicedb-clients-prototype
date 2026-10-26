@@ -350,7 +350,7 @@ func TestLookupResourcesPermissionshipFilter(t *testing.T) {
 			}
 			stub := &lookupStubServer{lookupResourcesResponses: responses, paginate: true}
 			c := newTestClient(t, startLookupStubServer(t, stub))
-			defer c.Close()
+			t.Cleanup(func() { require.NoError(t, c.Close()) })
 			opts := []LookupResourcesOption{WithLookupResourcesPageSize(2), WithLookupResourcesLimit(2)}
 			if mode != LookupAll {
 				opts = append(opts, WithLookupResourcesPermissionshipFilter(mode))

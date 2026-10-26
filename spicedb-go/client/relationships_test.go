@@ -225,7 +225,7 @@ func TestUnknownEmptyDeletionResponseClearsPreviousAcknowledgedCursor(t *testing
 		{DeletionProgress: v1.DeleteRelationshipsResponse_DeletionProgress(999)},
 	}}
 	c := newTestClient(t, startDeleteStubServer(t, stub))
-	defer c.Close()
+	t.Cleanup(func() { require.NoError(t, c.Close()) })
 	result, err := c.DeleteAllRelationshipsNonAtomic(context.Background(), DeleteAllRequest{Filter: testFilter("document")})
 	require.Error(t, err)
 	require.Equal(t, uint64(3), result.DeletedCount)

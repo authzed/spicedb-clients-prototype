@@ -73,11 +73,14 @@ public sealed partial class SpiceDBClient : IAsyncDisposable
         private readonly TimeSpan? _timeout;
         private readonly CancellationToken _caller;
         private readonly CancellationTokenSource _linked;
+        // Timer rounding can cancel before the monotonic elapsed-time check expires.
+        // Keep the deadline source separate from caller and client-lifetime cancellation.
+        private readonly CancellationTokenSource _deadline = new();
         public CancellationToken Token => _linked.Token;
         public Budget(TimeSpan? timeout, CancellationToken caller, CancellationToken lifetime)
         {
-            _timeout = timeout; _caller = caller; _linked = CancellationTokenSource.CreateLinkedTokenSource(caller, lifetime);
-            if (timeout is { } t) _linked.CancelAfter(t);
+            _timeout = timeout; _caller = caller; _linked = CancellationTokenSource.CreateLinkedTokenSource(caller, lifetime, _deadline.Token);
+            if (timeout is { } t) _deadline.CancelAfter(t);
         }
         public DateTime? Deadline
         {
@@ -86,13 +89,13 @@ public sealed partial class SpiceDBClient : IAsyncDisposable
         public void Check()
         {
             _caller.ThrowIfCancellationRequested();
-            if (_timeout is { } t && Stopwatch.GetElapsedTime(_start) >= t) throw new DeadlineExceededException("Operation total deadline exceeded.");
+            if (_deadline.IsCancellationRequested || (_timeout is { } t && Stopwatch.GetElapsedTime(_start) >= t)) throw new DeadlineExceededException("Operation total deadline exceeded.");
             Token.ThrowIfCancellationRequested();
         }
         public Exception Map(Exception ex)
         {
             if (_caller.IsCancellationRequested) return new OperationCanceledException("Operation cancelled by caller.", ex, _caller);
-            if (_timeout is { } t && Stopwatch.GetElapsedTime(_start) >= t) return new DeadlineExceededException("Operation total deadline exceeded.", ex);
+            if (_deadline.IsCancellationRequested || (_timeout is { } t && Stopwatch.GetElapsedTime(_start) >= t)) return new DeadlineExceededException("Operation total deadline exceeded.", ex);
             return ex is RpcException rpc ? ErrorMapper.ToSpiceDBException(rpc) : ex;
         }
         public async Task Backoff(int attempt)
@@ -102,7 +105,7 @@ public sealed partial class SpiceDBClient : IAsyncDisposable
             catch (OperationCanceledException ex) { throw Map(ex); }
             Check();
         }
-        public void Dispose() => _linked.Dispose();
+        public void Dispose() { _linked.Dispose(); _deadline.Dispose(); }
     }
     private static async Task<T> Unary<T>(Budget budget, Func<DateTime?, CancellationToken, AsyncUnaryCall<T>> call, bool retry = true)
     {

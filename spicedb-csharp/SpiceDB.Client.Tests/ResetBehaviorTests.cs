@@ -172,6 +172,25 @@ public class ResetBehaviorTests
         var progress = Assert.IsType<DeleteProgress>(error.GetDeleteProgress()); Assert.Equal(2ul, progress.AcknowledgedCount); Assert.Null(progress.LastCursor); Assert.True(progress.OutcomeUnknown);
     }
     [Fact]
+    public async Task FractionalTimeoutMapsTimerCancellationToDeadlineExceeded()
+    {
+        var mock = new Mock<PermissionsService.PermissionsServiceClient>();
+        mock.Setup(x => x.CheckPermissionAsync(It.IsAny<CheckPermissionRequest>(), It.IsAny<Metadata>(), It.IsAny<DateTime?>(), It.IsAny<CancellationToken>()))
+            .Returns((CheckPermissionRequest _, Metadata _, DateTime? _, CancellationToken token) =>
+            {
+                async Task<CheckPermissionResponse> Respond()
+                {
+                    await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                    return new();
+                }
+                return Call(Respond());
+            });
+        await using var client = Client(mock);
+        for (var attempt = 0; attempt < 20; attempt++)
+            await Assert.ThrowsAsync<DeadlineExceededException>(() => client.CheckAsync(Request(), new CheckOptions { Timeout = TimeSpan.FromMilliseconds(5.9) }));
+    }
+
+    [Fact]
     public async Task TotalDeadlineDoesNotRestartAcrossCheckChunks()
     {
         int calls = 0; var deadlines = new List<DateTime>();

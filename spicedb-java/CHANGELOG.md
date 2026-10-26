@@ -2,10 +2,6 @@
 
 ## Unreleased
 
-### Added
-
-- Add a fluent `PermissionCheck` builder with required-field validation and immutable context snapshots.
-
 ### Changed
 
 - Behavioral options use enums: replace `.tracing(true)` with
@@ -46,6 +42,8 @@
   this reset intentionally breaks the pre-reset prototype surface.
 
 ### Added
+
+- Add a fluent `PermissionCheck` builder with required-field validation and immutable context snapshots.
 
 - Native experimental wrappers cover roaring lookup, filter counts, permission-set
   watch, lookup and download. Bitmap bytes and event alternatives are preserved;

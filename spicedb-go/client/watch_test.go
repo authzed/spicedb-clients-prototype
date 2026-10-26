@@ -197,7 +197,7 @@ func TestUpdates_StreamErrorYieldsZeroValueAndMappedError(t *testing.T) {
 func TestUpdatesRelationshipFiltersSnapshotAndWireMapping(t *testing.T) {
 	stub := &watchStubServer{}
 	c := newTestClient(t, startWatchStubServer(t, stub))
-	defer c.Close()
+	t.Cleanup(func() { require.NoError(t, c.Close()) })
 	named, err := rel.NamedRelation("member")
 	require.NoError(t, err)
 	filters := []rel.Filter{
@@ -239,7 +239,7 @@ func TestUpdatesRejectsInvalidFiltersBeforeRPC(t *testing.T) {
 func TestUpdatesEmptyFiltersWatchAll(t *testing.T) {
 	stub := &watchStubServer{}
 	c := newTestClient(t, startWatchStubServer(t, stub))
-	defer c.Close()
+	t.Cleanup(func() { require.NoError(t, c.Close()) })
 	for _, err := range c.Updates(context.Background(), UpdatesRequest{Filters: []rel.Filter{}}) {
 		require.NoError(t, err)
 	}

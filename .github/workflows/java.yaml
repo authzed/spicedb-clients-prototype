@@ -152,43 +152,8 @@ jobs:
     # five minutes, so this is a backstop, not a budget.
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-      - uses: actions/setup-java@v6
-        with:
-          distribution: temurin
-          java-version: 17
-      - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
-      - name: Install mage
-        timeout-minutes: 5
-        run: go install github.com/magefile/mage@latest
-      - name: Install japicmp
-        run: |
-          mkdir -p tools
-          curl -fsSL -o tools/japicmp.jar \
-            "https://repo1.maven.org/maven2/com/github/siom79/japicmp/japicmp/0.23.1/japicmp-0.23.1-jar-with-dependencies.jar"
-      # A deliberate break is acknowledged by labelling the PR
-      # `breaking-change-acknowledged`, which skips this step. The label is
-      # deliberately per-PR and visible on the PR itself: an intentional break
-      # should be a decision someone took and left a record of, not a silent
-      # config toggle. Removing the label re-runs the check.
-      #
-      # The skip is total, not selective -- mage returns 1 both for findings
-      # and for its own failures, so this cannot suppress only the former. A
-      # labelled PR therefore also loses the signal that the check itself
-      # broke, which is the cost of keeping the mechanism this simple.
-      # Read the label from the API rather than from github.event. The
-      # pull_request payload is a snapshot taken when the event fired, so a
-      # label added afterwards is invisible to it -- and re-running the job
-      # replays that same stored payload, so a re-run does not see it either.
-      # Adding `labeled` to the workflow's trigger types would fix that by
-      # re-running all of CI on every label change of any kind, which is a lot
-      # of compute for the rare deliberate break. This reads live state, so
-      # labelling and re-running the job is enough.
+      # Read live labels before setup so acknowledged breaks skip tool installation too.
+      # Reruns retain the original event payload; the API reflects labels added later.
       - name: Check for the acknowledgement label
         id: ack
         env:
@@ -201,6 +166,31 @@ jobs:
           else
             echo "acknowledged=false" >> "$GITHUB_OUTPUT"
           fi
+      - uses: actions/checkout@v7
+        if: steps.ack.outputs.acknowledged != 'true'
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        if: steps.ack.outputs.acknowledged != 'true'
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-java@v6
+        if: steps.ack.outputs.acknowledged != 'true'
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+        if: steps.ack.outputs.acknowledged != 'true'
+      - name: Install mage
+        if: steps.ack.outputs.acknowledged != 'true'
+        timeout-minutes: 5
+        run: go install github.com/magefile/mage@latest
+      - name: Install japicmp
+        if: steps.ack.outputs.acknowledged != 'true'
+        run: |
+          mkdir -p tools
+          curl -fsSL -o tools/japicmp.jar \
+            "https://repo1.maven.org/maven2/com/github/siom79/japicmp/japicmp/0.23.1/japicmp-0.23.1-jar-with-dependencies.jar"
       - name: API compatibility check
         if: steps.ack.outputs.acknowledged != 'true'
         run: mage -d spicedb-java apiCompat origin/${{ github.base_ref }}

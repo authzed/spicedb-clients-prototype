@@ -8,7 +8,9 @@ RSpec.describe 'CheckPermission' do
     client.write_schema(TEST_SCHEMA)
 
     txn = SpiceDB::Transaction.new
-    txn.touch(SpiceDB::Relationship.from_triple('document', 'firstdoc', 'viewer', 'user', 'alice'))
+    txn.touch(SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'firstdoc'), relation: 'viewer',
+                                        subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user',
+                                                                                                        object_id: 'alice'), relation: nil)))
     client.write(txn)
 
     # Check permission — alice is a viewer, so she can view.
@@ -18,25 +20,33 @@ RSpec.describe 'CheckPermission' do
     # no way to make an object falsy (no `__bool__` hook), so `if result`
     # would be unconditionally true even for a conditional (unevaluated)
     # grant; only #has_permission? tells you whether it's actually allowed.
-    rel = SpiceDB::Relationship.from_triple('document', 'firstdoc', 'viewer', 'user', 'alice')
-    result = client.check_permission(SpiceDB::Consistency.full, 'view', rel)
+    rel = SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'firstdoc'), relation: 'viewer',
+                                    subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: 'alice'), relation: nil))
+    result = client.check(SpiceDB::PermissionCheck.new(resource: rel.resource, permission: 'view', subject: rel.subject),
+                          consistency: SpiceDB::Consistency.full, tracing: SpiceDB::Tracing::ENABLED)
 
     expect(result).to be_a(SpiceDB::CheckResult)
     expect(result.has_permission?).to be true
     expect(result.permissionship).to eq(:has_permission)
-    expect(result.checked_at).not_to be_empty
+    expect(result.checked_at.to_s).not_to be_empty
+    expect(result.debug_trace.schema_used).to include('definition document')
+    expect(result.debug_trace.check).not_to be_nil
   end
 
   it 'reports NO_PERMISSION (has_permission? false) when permission is not granted' do
     client.write_schema(TEST_SCHEMA)
 
     txn = SpiceDB::Transaction.new
-    txn.touch(SpiceDB::Relationship.from_triple('document', 'firstdoc', 'viewer', 'user', 'alice'))
+    txn.touch(SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'firstdoc'), relation: 'viewer',
+                                        subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user',
+                                                                                                        object_id: 'alice'), relation: nil)))
     client.write(txn)
 
     # alice is only a viewer, she cannot delete
-    rel = SpiceDB::Relationship.from_triple('document', 'firstdoc', 'viewer', 'user', 'alice')
-    result = client.check_permission(SpiceDB::Consistency.full, 'delete', rel)
+    rel = SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'firstdoc'), relation: 'viewer',
+                                    subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: 'alice'), relation: nil))
+    result = client.check(SpiceDB::PermissionCheck.new(resource: rel.resource, permission: 'delete', subject: rel.subject),
+                          consistency: SpiceDB::Consistency.full)
 
     expect(result.has_permission?).to be false
     expect(result.permissionship).to eq(:no_permission)
@@ -46,11 +56,15 @@ RSpec.describe 'CheckPermission' do
     client.write_schema(TEST_SCHEMA)
 
     txn = SpiceDB::Transaction.new
-    txn.touch(SpiceDB::Relationship.from_triple('document', 'firstdoc', 'owner', 'user', 'alice'))
-    revision = client.write(txn)
+    txn.touch(SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'firstdoc'), relation: 'owner',
+                                        subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user',
+                                                                                                        object_id: 'alice'), relation: nil)))
+    revision = client.write(txn).revision
 
-    rel = SpiceDB::Relationship.from_triple('document', 'firstdoc', 'owner', 'user', 'alice')
-    result = client.check_permission(SpiceDB::Consistency.at_least(revision), 'delete', rel)
+    rel = SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'firstdoc'), relation: 'owner',
+                                    subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: 'alice'), relation: nil))
+    result = client.check(SpiceDB::PermissionCheck.new(resource: rel.resource, permission: 'delete', subject: rel.subject),
+                          consistency: SpiceDB::Consistency.at_least(revision))
 
     expect(result.has_permission?).to be true
   end
@@ -72,14 +86,17 @@ RSpec.describe 'CheckPermission' do
 
     txn = SpiceDB::Transaction.new
     txn.touch(
-      SpiceDB::Relationship.from_triple('doc', 'conditionaldoc', 'viewer', 'user', 'alice')
+      SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'doc', object_id: 'conditionaldoc'), relation: 'viewer',
+                                subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: 'alice'), relation: nil))
                             .with_caveat('active', {})
     )
     client.write(txn)
 
-    rel = SpiceDB::Relationship.from_triple('doc', 'conditionaldoc', 'viewer', 'user', 'alice')
+    rel = SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'doc', object_id: 'conditionaldoc'), relation: 'viewer',
+                                    subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: 'alice'), relation: nil))
     # No caveat context is supplied here — SpiceDB can't evaluate `active`.
-    result = client.check_permission(SpiceDB::Consistency.full, 'view', rel)
+    result = client.check(SpiceDB::PermissionCheck.new(resource: rel.resource, permission: 'view', subject: rel.subject),
+                          consistency: SpiceDB::Consistency.full)
 
     expect(result.permissionship).to eq(:conditional_permission)
     expect(result.missing_context).to include('now')
@@ -88,14 +105,14 @@ RSpec.describe 'CheckPermission' do
     # Clean up so the next example's around-hook can restore TEST_SCHEMA
     # (which doesn't have a `doc` definition or `active` caveat) without
     # SpiceDB rejecting it for a dangling relationship/caveat reference.
-    client.delete_relationships(SpiceDB::Filter.new(resource_type: 'doc'))
+    client.delete_all_relationships_non_atomic(SpiceDB::Filter.new(resource_type: 'doc'))
   end
 
   # C5 (integration/payoff test): the whole point of `missing_context` is
   # that a caller can act on it -- supply the context it names and get a
   # real grant back, not just a different flavor of "I don't know." Same
   # caveat schema as the CONDITIONAL_PERMISSION test above (`active(now
-  # int) { now < 100 }`); this time `now: 42` (which satisfies `now < 100`)
+  # int) { now < 100 }`); this time `'now' => 42` (which satisfies `now < 100`)
   # is supplied at check time via the call-level `context:` keyword, and
   # the conditional resolves to an actual :has_permission grant.
   it 'resolves a CONDITIONAL_PERMISSION into a grant when the missing caveat context is supplied' do
@@ -110,20 +127,23 @@ RSpec.describe 'CheckPermission' do
 
     txn = SpiceDB::Transaction.new
     txn.touch(
-      SpiceDB::Relationship.from_triple('doc', 'conditionaldoc', 'viewer', 'user', 'alice')
+      SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'doc', object_id: 'conditionaldoc'), relation: 'viewer',
+                                subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: 'alice'), relation: nil))
                             .with_caveat('active', {})
     )
     client.write(txn)
 
-    rel = SpiceDB::Relationship.from_triple('doc', 'conditionaldoc', 'viewer', 'user', 'alice')
-    # `now: 42` satisfies `now < 100` -- supplying it at check time is what
+    rel = SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'doc', object_id: 'conditionaldoc'), relation: 'viewer',
+                                    subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: 'alice'), relation: nil))
+    # `'now' => 42` satisfies `now < 100` -- supplying it at check time is what
     # turns the earlier CONDITIONAL_PERMISSION into a real grant.
-    result = client.check_permission(SpiceDB::Consistency.full, 'view', rel, context: { now: 42 })
+    result = client.check(SpiceDB::PermissionCheck.new(resource: rel.resource, permission: 'view', subject: rel.subject),
+                          consistency: SpiceDB::Consistency.full, context: { 'now' => 42 })
 
     expect(result.permissionship).to eq(:has_permission)
     expect(result.has_permission?).to be true
     expect(result.missing_context).to eq([])
   ensure
-    client.delete_relationships(SpiceDB::Filter.new(resource_type: 'doc'))
+    client.delete_all_relationships_non_atomic(SpiceDB::Filter.new(resource_type: 'doc'))
   end
 end

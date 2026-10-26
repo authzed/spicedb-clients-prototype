@@ -79,8 +79,8 @@ RSpec.describe 'SpiceDB::Client#permission_tree_from_proto' do
     expect(leaf_child.leaf).to be_a(SpiceDB::LeafNode)
     expect(leaf_child.leaf.subjects).to eq(
       [
-        SpiceDB::SubjectRef.new(subject_type: 'user', subject_id: 'alice', optional_relation: ''),
-        SpiceDB::SubjectRef.new(subject_type: 'group', subject_id: 'eng', optional_relation: 'member')
+        SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: 'alice'), relation: nil),
+        SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'group', object_id: 'eng'), relation: 'member')
       ]
     )
 
@@ -90,7 +90,7 @@ RSpec.describe 'SpiceDB::Client#permission_tree_from_proto' do
     expect(nested_child.intermediate.operation).to eq(:intersection)
     expect(nested_child.intermediate.children.length).to eq(1)
     expect(nested_child.intermediate.children[0].leaf.subjects).to eq(
-      [SpiceDB::SubjectRef.new(subject_type: 'user', subject_id: 'bob', optional_relation: '')]
+      [SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: 'bob'), relation: nil)]
     )
   end
 

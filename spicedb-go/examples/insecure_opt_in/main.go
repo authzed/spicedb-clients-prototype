@@ -8,7 +8,7 @@
 // anyone else's hands -- goes onto the wire in cleartext with nothing
 // signalling that it happened. So NewPlaintext is loopback-only, and reaching a
 // remote host over plaintext takes a second, separately-named option the caller
-// cannot supply by accident: WithInsecureAllowRemoteHost.
+// cannot supply by accident: WithRemotePlaintextCredentials(RemotePlaintextAllowed).
 //
 // The sharpest case is the last one below. The rule requires the guard's answer
 // to be *the transport's* answer -- the same parser the client dials with --
@@ -51,12 +51,12 @@ func main() {
 	// anything would still satisfy the check above.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if _, err := c.WriteSchema(ctx, `definition user {}
+	if _, err := c.WriteSchema(ctx, client.WriteSchemaRequest{Schema: `definition user {}
 
 definition document {
 	relation viewer: user
 	permission view = viewer
-}`); err != nil {
+}`}); err != nil {
 		log.Fatalf("loopback plaintext client could not reach SpiceDB: %v", err)
 	}
 	fmt.Println("loopback plaintext: allowed with no opt-in, and works")
@@ -82,13 +82,13 @@ definition document {
 	// ── 3. ...unless the caller says so, by name ─────────────────────────
 	//
 	// Two options, not one: WithInsecure selects the plaintext transport, and
-	// WithInsecureAllowRemoteHost accepts the credential exposure that follows.
+	// WithRemotePlaintextCredentials(RemotePlaintextAllowed) accepts the credential exposure that follows.
 	// Keeping them separate is the point -- a single boolean doing both jobs is
 	// exactly what clause 1 forbids, because "I want plaintext for local dev"
 	// and "I accept shipping this token in cleartext to a remote host" are
 	// different decisions.
 	remote, err := client.NewWithOpts("example.com:50051", token,
-		client.WithInsecure(), client.WithInsecureAllowRemoteHost())
+		client.WithInsecure(), client.WithRemotePlaintextCredentials(client.RemotePlaintextAllowed))
 	if err != nil {
 		log.Fatalf("the named opt-in should permit remote plaintext: %v", err)
 	}

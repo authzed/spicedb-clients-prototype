@@ -40,15 +40,17 @@ RSpec.describe SpiceDBProto::Client do
     Authzed.const_set(:Api, Module.new) unless defined?(::Authzed::Api)
     Authzed::Api.const_set(:Materialize, Module.new) unless defined?(::Authzed::Api::Materialize)
     Authzed::Api::Materialize.const_set(:V0, Module.new) unless defined?(::Authzed::Api::Materialize::V0)
-    unless Authzed::Api::Materialize::V0.const_defined?(:RoaringLookupResourcesService)
+    %w[RoaringLookupResourcesService RelationshipsService WatchPermissionSetsService].each do |service|
+      next if Authzed::Api::Materialize::V0.const_defined?(service)
+
       svc_mod = Module.new
       svc_mod.const_set(:Stub, stub_class)
-      Authzed::Api::Materialize::V0.const_set(:RoaringLookupResourcesService, svc_mod)
+      Authzed::Api::Materialize::V0.const_set(service, svc_mod)
     end
   end
 
   describe "#initialize" do
-    it "creates all five service stubs with insecure channel" do
+    it "creates all seven service stubs with insecure channel" do
       client = described_class.new("localhost:50051", "test-token", insecure: true)
 
       expect(client.permissions).to be_a(Authzed::Api::V1::PermissionsService::Stub)
@@ -56,6 +58,11 @@ RSpec.describe SpiceDBProto::Client do
       expect(client.watch).to be_a(Authzed::Api::V1::WatchService::Stub)
       expect(client.experimental).to be_a(Authzed::Api::V1::ExperimentalService::Stub)
       expect(client.materialize).to be_a(Authzed::Api::Materialize::V0::RoaringLookupResourcesService::Stub)
+      expect(client.materialize_relationships).to be_a(Authzed::Api::Materialize::V0::RelationshipsService::Stub)
+      expect(client.permission_sets).to be_a(Authzed::Api::Materialize::V0::WatchPermissionSetsService::Stub)
+      services = [client.permissions, client.schema, client.watch, client.experimental,
+                  client.materialize, client.materialize_relationships, client.permission_sets]
+      expect(services.map(&:channel).uniq).to eq([client.permissions.channel])
     end
 
     it "sets the endpoint on each stub" do

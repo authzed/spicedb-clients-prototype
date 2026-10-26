@@ -1,6 +1,42 @@
 # Changelog
 
+- Watch supports full native relationship filters, ORing multiple entries and watching all relationship changes when filters are empty. Nonempty `object_types` and `filters` are mutually exclusive and fail locally before RPC. Watch examples now use type-only relationship filters.
+
+- **Breaking:** rename `delete_all_relationships` to `delete_all_relationships_non_atomic`; no compatibility alias remains. Before: `client.delete_all_relationships(filter)`. After: `client.delete_all_relationships_non_atomic(filter)`. Each batch is transactional, but the entire operation is non-atomic: earlier batches remain deleted if a later batch fails. Successful results and acknowledged failure progress expose their native token through `revision`.
+
+- **Breaking:** relationship transaction writes now return `WriteResult` instead of a bare `ZedToken`. Extract `result.revision` for consistency, watch resumption, or token serialization. Schema writes and bulk relationship deletion retain their existing result types.
+
+- Add `LookupPermissionshipFilter::ALL` / `LookupPermissionshipFilter::HAS_PERMISSION_ONLY` to LookupResources. The default preserves conditional matches; opt-in filtering yields only unconditional grants, with limits applied after filtering and pagination continuing through skipped matches.
+
 ## Unreleased
+
+### Native tokens and named options
+
+- Revision inputs and results use immutable `SpiceDB::ZedToken`; absent revisions are `nil`. Persist tokens with `to_s` and reconstruct them with `ZedToken.new(stored_string)`.
+- Migrate `Consistency.at_least("revision")` to `Consistency.at_least(ZedToken.new("revision"))`.
+- Migrate `tracing: true` to `tracing: SpiceDB::Tracing::ENABLED` (default `DISABLED`).
+- Migrate `include_checkpoints: true` to `content: [SpiceDB::WatchContent::RELATIONSHIPS, SpiceDB::WatchContent::CHECKPOINTS]`; add `WatchContent::SCHEMA` for schema updates.
+- Migrate `insecure: true` to `transport: SpiceDB::TransportSecurity::PLAINTEXT` on `Client.new`.
+- Migrate `allow_insecure_remote_credentials: true` to `remote_credentials: SpiceDB::RemoteCredentials::ALLOW_PLAINTEXT` on `new_plaintext` or `Client.new`. The default `LOOPBACK_ONLY` continues to reject remote plaintext credentials.
+- Named option classes expose `.values`; unknown values, booleans, and raw token strings are rejected.
+
+
+### Breaking prototype reset — 2026-10-26
+
+- Use immutable `ObjectRef`, `SubjectRef` and `PermissionCheck` values; stored
+  `Relationship` caveats and per-check JSON context are separate.
+- Use canonical keyword operations with explicit consistency. `check` calls
+  CheckPermission, supports `tracing: SpiceDB::Tracing::ENABLED`, and returns native recursive debug
+  information and optional expiration. Bulk checks preserve input order.
+- Unary timeouts cover the whole operation, including retries and chunks.
+  Streams/imports have no implicit lifetime deadline. Owned `Stream` values
+  close on block exit or explicit `close`, including a pending RPC.
+- `delete_relationships` performs one bounded request; `delete_all_relationships_non_atomic`
+  explicitly continues and attaches acknowledged progress to failures.
+- Exact Any/Direct/Named subject filters, deeply frozen JSON, full schema/watch
+  metadata, and all nondeprecated materialize RPCs use native Ruby results.
+- Removed positional check aliases, relationship check context, and check-any/all
+  helpers. Use `check_bulk(...).any?(&:has_permission?)` or `.all?` instead.
 
 ### Fixed
 

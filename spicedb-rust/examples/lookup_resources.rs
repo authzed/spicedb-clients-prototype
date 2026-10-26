@@ -6,7 +6,7 @@ use futures::StreamExt;
 use spicedb::client::SpiceDBClient;
 use spicedb::consistency;
 use spicedb::error::SpiceDBError;
-use spicedb::types::{Filter, Relationship, Transaction};
+use spicedb::types::{Filter, Transaction};
 
 const SCHEMA: &str = r#"definition user {}
 
@@ -28,9 +28,13 @@ async fn main() {
         std::env::var("SPICEDB_ENDPOINT").unwrap_or_else(|_| "localhost:50051".to_string());
     let token = std::env::var("SPICEDB_TOKEN").unwrap_or_else(|_| "testtoken".to_string());
 
-    let client = SpiceDBClient::new_plaintext(endpoint, token)
-        .await
-        .expect("failed to create client");
+    let client = SpiceDBClient::new_plaintext(
+        endpoint,
+        token,
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("failed to create client");
 
     // Clear before writing the schema, not after using it. Every example runs
     // against one SpiceDB and writes a whole schema, and SpiceDB refuses a
@@ -43,33 +47,50 @@ async fn main() {
     // definition yet, which SpiceDB reports as FailedPrecondition
     // (ERROR_REASON_UNKNOWN_DEFINITION). Anything else -- an unreachable
     // server, a bad token -- must still fail the example.
-    match client.delete_relationships(&Filter::new("document")).await {
+    match client
+        .delete_all_relationships_non_atomic(spicedb::DeleteAllRequest::new(
+            (Filter::new("document")).clone(),
+        ))
+        .await
+    {
         Ok(_) | Err(SpiceDBError::FailedPrecondition(_)) => {}
         Err(e) => panic!("cleanup before schema write failed: {e:?}"),
     }
 
     // Write schema
     client
-        .write_schema(SCHEMA)
+        .write_schema(spicedb::WriteSchemaRequest::new(SCHEMA))
         .await
         .expect("write schema failed");
 
     // Write test data: alice can view firstdoc, alice can edit seconddoc
-    let alice_viewer = Relationship::new("document", "firstdoc", "viewer", "user", "alice", "")
+    let alice_viewer = spicedb::Relationship::from_tuple("document:firstdoc#viewer@user:alice")
         .expect("invalid relationship");
-    let alice_editor = Relationship::new("document", "seconddoc", "editor", "user", "alice", "")
+    let alice_editor = spicedb::Relationship::from_tuple("document:seconddoc#editor@user:alice")
         .expect("invalid relationship");
 
     let mut txn = Transaction::new();
     txn.touch(&alice_viewer);
     txn.touch(&alice_editor);
     client
-        .write(&txn)
+        .write(spicedb::WriteRequest::new((txn).clone()))
         .await
         .expect("write relationships failed");
 
-    // Lookup all documents alice can view
-    let stream = client.lookup_resources(&consistency::full(), "document", "view", "user", "alice");
+    // Collect only unconditional grants; conditional results need more caveat context.
+    let stream = client.lookup_resources(
+        spicedb::LookupResourcesRequest::new(
+            "document",
+            "view",
+            spicedb::SubjectRef::new(spicedb::ObjectRef::new("user", "alice").unwrap(), None)
+                .unwrap(),
+            (consistency::full()).clone(),
+        )
+        .with_options(
+            spicedb::LookupResourcesOptions::new()
+                .with_permissionship_filter(spicedb::LookupPermissionshipFilter::HasPermissionOnly),
+        ),
+    );
     tokio::pin!(stream);
 
     let mut resource_ids = Vec::new();

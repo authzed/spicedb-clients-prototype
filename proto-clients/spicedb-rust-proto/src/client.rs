@@ -225,12 +225,18 @@ pub type InterceptedService =
 ///     Ok(())
 /// }
 /// ```
+#[derive(Clone)]
 pub struct SpiceDBProtoClient {
     pub permissions: v1::permissions_service_client::PermissionsServiceClient<InterceptedService>,
     pub schema: v1::schema_service_client::SchemaServiceClient<InterceptedService>,
     pub watch: v1::watch_service_client::WatchServiceClient<InterceptedService>,
     pub experimental:
         v1::experimental_service_client::ExperimentalServiceClient<InterceptedService>,
+    pub materialize_relationships: materialize_v0::relationships_service_client::RelationshipsServiceClient<InterceptedService>,
+    /// Deprecated Materialize stream, retained only in the raw protocol tier.
+    #[deprecated(note = "Use permission_sets.watch_permission_sets instead")]
+    pub watch_permissions: materialize_v0::watch_permissions_service_client::WatchPermissionsServiceClient<InterceptedService>,
+    pub permission_sets: materialize_v0::watch_permission_sets_service_client::WatchPermissionSetsServiceClient<InterceptedService>,
     pub materialize: materialize_v0::roaring_lookup_resources_service_client::RoaringLookupResourcesServiceClient<InterceptedService>,
 }
 
@@ -386,15 +392,23 @@ impl SpiceDBProtoClient {
         let watch = v1::watch_service_client::WatchServiceClient::new(svc.clone());
         let experimental =
             v1::experimental_service_client::ExperimentalServiceClient::new(svc.clone());
+        let materialize_relationships = materialize_v0::relationships_service_client::RelationshipsServiceClient::new(svc.clone());
+        let watch_permissions = materialize_v0::watch_permissions_service_client::WatchPermissionsServiceClient::new(svc.clone());
+        let permission_sets = materialize_v0::watch_permission_sets_service_client::WatchPermissionSetsServiceClient::new(svc.clone());
         let materialize =
             materialize_v0::roaring_lookup_resources_service_client::RoaringLookupResourcesServiceClient::new(svc);
 
-        Ok(Self {
+        #[allow(deprecated)]
+        let client = Self {
             permissions,
             schema,
             watch,
             experimental,
             materialize,
-        })
+            materialize_relationships,
+            permission_sets,
+            watch_permissions,
+        };
+        Ok(client)
     }
 }

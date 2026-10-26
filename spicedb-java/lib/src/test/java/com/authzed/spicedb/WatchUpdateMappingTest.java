@@ -40,7 +40,10 @@ class WatchUpdateMappingTest {
                             .setOperation(RelationshipUpdate.Operation.OPERATION_UNSPECIFIED)
                             .setRelationship(
                                 SpiceDBClient.toProtoRelationship(
-                                    Relationship.of("document", "doc1", "viewer", "user", "alice")))
+                                    Relationship.of(
+                                        new ObjectRef("document", "doc1"),
+                                        "viewer",
+                                        SubjectRef.direct(new ObjectRef("user", "alice")))))
                             .build())
                     .build());
             responseObserver.onCompleted();

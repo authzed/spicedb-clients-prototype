@@ -157,8 +157,17 @@ class InsecureHostGuardTest {
 
   private static void attemptCheckPermission(SpiceDBClient client) {
     try {
-      client.checkPermission(
-          Consistency.full(), "view", Relationship.of("document", "1", "view", "user", "alice"));
+      client
+          .checkBulk(
+              java.util.List.of(
+                  TestRequests.check(
+                      Relationship.of(
+                          new ObjectRef("document", "1"),
+                          "view",
+                          SubjectRef.direct(new ObjectRef("user", "alice"))),
+                      "view",
+                      Consistency.full())))
+          .get(0);
     } catch (StatusRuntimeException e) {
       // Expected -- the fake server always closes with UNIMPLEMENTED. Only the captured metadata
       // matters to these tests, not the RPC's outcome.
@@ -311,7 +320,12 @@ class InsecureHostGuardTest {
     // attempted until the first RPC), so this proves the opt-in unlocks construction for a
     // non-loopback endpoint without needing (or risking hanging on) a real remote host.
     try (SpiceDBClient client =
-        SpiceDBClient.createPlaintext("evil.example.com:1234", "test-token", true)) {
+        SpiceDBClient.createPlaintext(
+            "evil.example.com:1234",
+            "test-token",
+            ClientOptions.builder()
+                .remotePlaintextCredentials(com.authzed.spicedb.RemotePlaintextCredentials.ALLOW)
+                .build())) {
       assertNotNull(client);
     }
   }

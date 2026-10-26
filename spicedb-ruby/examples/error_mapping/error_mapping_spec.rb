@@ -35,24 +35,18 @@ STALE_TOKEN = 'stale-zedtoken'
 module ErrorMappingStandIns
   # A minimal SpiceDB that answers only what this example asks of it.
   class StandInService < Authzed::Api::V1::PermissionsService::Service
-    def check_bulk_permissions(request, _call)
+    def check_permission(request, _call)
       # A read pinned to a token the server no longer has.
       raise GRPC::OutOfRange, 'the specified revision has expired or been garbage collected' if request.consistency&.at_least_as_fresh&.token == STALE_TOKEN
 
       # Anything else: re-reading at full consistency succeeds. That is the whole
       # point of the recovery -- dropping the stale token is sufficient.
-      Authzed::Api::V1::CheckBulkPermissionsResponse.new(
-        pairs: request.items.map do
-          Authzed::Api::V1::CheckBulkPermissionsPair.new(
-            item: Authzed::Api::V1::CheckBulkPermissionsResponseItem.new(permissionship: 2)
-          )
-        end
-      )
+      Authzed::Api::V1::CheckPermissionResponse.new(permissionship: 2)
     end
   end
 
   class RotatedTokenService < Authzed::Api::V1::PermissionsService::Service
-    def check_bulk_permissions(_request, _call)
+    def check_permission(_request, _call)
       raise GRPC::Unauthenticated, 'invalid token'
     end
   end
@@ -75,24 +69,29 @@ RSpec.describe 'Error mapping' do
 
   it 'recovers from a stale ZedToken without parsing a message', :no_spicedb do
     with_stand_in(ErrorMappingStandIns::StandInService) do |c|
-      rel = SpiceDB::Relationship.from_triple('document', 'readme', 'view', 'user', 'alice')
+      rel = SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'readme'), relation: 'view',
+                                      subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: 'alice'), relation: nil))
 
-      expect { c.check_permission(SpiceDB::Consistency.at_least(STALE_TOKEN), 'view', rel) }
+      expect do
+        c.check(SpiceDB::PermissionCheck.new(resource: rel.resource, permission: 'view', subject: rel.subject),
+                consistency: SpiceDB::Consistency.at_least(SpiceDB::ZedToken.new(STALE_TOKEN)))
+      end
         .to raise_error(SpiceDB::OutOfRangeError)
 
       # The recovery the rule calls mechanical, in full: drop the token, re-read
       # at full consistency. Nothing here parses a message.
-      result = c.check_permission(SpiceDB::Consistency.full, 'view', rel)
+      result = c.check(SpiceDB::PermissionCheck.new(resource: rel.resource, permission: 'view', subject: rel.subject), consistency: SpiceDB::Consistency.full)
       expect(result.has_permission?).to be(true)
     end
   end
 
   it 'reports a rotated token as distinct from a transport fault', :no_spicedb do
     with_stand_in(ErrorMappingStandIns::RotatedTokenService) do |c|
-      rel = SpiceDB::Relationship.from_triple('document', 'readme', 'view', 'user', 'alice')
+      rel = SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'readme'), relation: 'view',
+                                      subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: 'alice'), relation: nil))
       error = nil
       begin
-        c.check_permission(SpiceDB::Consistency.full, 'view', rel)
+        c.check(SpiceDB::PermissionCheck.new(resource: rel.resource, permission: 'view', subject: rel.subject), consistency: SpiceDB::Consistency.full)
       rescue StandardError => e
         error = e
       end

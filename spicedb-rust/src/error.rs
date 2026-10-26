@@ -45,6 +45,7 @@ struct ServerDetail {
 /// still work. It `Display`s and derefs as the bare message, so formatting and
 /// string inspection are unchanged.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct ErrorPayload {
     message: String,
     detail: Option<Box<ServerDetail>>,
@@ -135,7 +136,16 @@ impl From<&str> for ErrorPayload {
 
 /// The error type returned by all SpiceDB client operations.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum SpiceDBError {
+    BulkItem {
+        index: usize,
+        source: Box<SpiceDBError>,
+    },
+    DeleteProgress {
+        progress: crate::types::DeleteResult,
+        source: Box<SpiceDBError>,
+    },
     /// The caller does not have permission to execute the operation.
     PermissionDenied(ErrorPayload),
 
@@ -208,6 +218,9 @@ impl SpiceDBError {
             | SpiceDBError::ResourceExhausted(p)
             | SpiceDBError::Transport(p) => p,
             SpiceDBError::Status { message, .. } => message,
+            SpiceDBError::BulkItem { source, .. } | SpiceDBError::DeleteProgress { source, .. } => {
+                source.payload()
+            }
         }
     }
 
@@ -262,6 +275,8 @@ impl SpiceDBError {
     /// The prefix `Display` puts in front of the message.
     fn prefix(&self) -> &'static str {
         match self {
+            SpiceDBError::BulkItem { .. } => "bulk item error",
+            SpiceDBError::DeleteProgress { .. } => "delete progress error",
             SpiceDBError::PermissionDenied(_) => "permission denied",
             SpiceDBError::Unauthenticated(_) => "unauthenticated",
             SpiceDBError::NotFound(_) => "not found",
@@ -282,6 +297,12 @@ impl SpiceDBError {
 impl fmt::Display for SpiceDBError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            SpiceDBError::BulkItem { index, source } => write!(f, "check item {index}: {source}"),
+            SpiceDBError::DeleteProgress { progress, source } => write!(
+                f,
+                "delete interrupted after {} confirmed deletions: {}",
+                progress.deleted_count, source
+            ),
             SpiceDBError::Status { code, message } => {
                 write!(f, "grpc status {code}: {message}")
             }
@@ -299,6 +320,9 @@ impl Error for SpiceDBError {
     /// `thiserror`'s derive would make the payload the source and add a hop
     /// that renders as the same message.
     fn source(&self) -> Option<&(dyn Error + 'static)> {
+        if let Self::BulkItem { source, .. } | Self::DeleteProgress { source, .. } = self {
+            return Some(source.as_ref());
+        }
         self.status()
             .map(|s| s as &(dyn Error + 'static))
             .or_else(|| {

@@ -11,317 +11,309 @@ use spicedb_proto::authzed::api::v1 as proto;
 
 use crate::error::SpiceDBError;
 
-/// A flat representation of a SpiceDB relationship.
+/// Native JSON context. Requests own every nested value.
+pub type Context = HashMap<String, serde_json::Value>;
+
+/// An opaque server revision with lossless string conversion.
 ///
-/// Avoids nested proto types in favor of plain Rust fields. All fields use
-/// owned `String` values for ergonomics; borrow when passing to client methods
-/// via `&Relationship`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Relationship {
-    pub resource_type: String,
-    pub resource_id: String,
-    pub resource_relation: String,
-    pub subject_type: String,
-    pub subject_id: String,
-    pub subject_relation: String,
-    pub caveat_name: String,
-    pub caveat_context: Option<HashMap<String, serde_json::Value>>,
-    pub expiration: Option<DateTime<Utc>>,
-    /// Per-item caveat context used only when this relationship is passed to
-    /// a check call (`check_permission_with_options`/
-    /// `check_permissions_with_options`/`check_any_with_options`/
-    /// `check_all_with_options`).
-    ///
-    /// This is a **different concept** from `caveat_context`, which is
-    /// stored with the relationship as part of a write and supplies values
-    /// for the caveat baked into that specific tuple: `check_context` is
-    /// never sent on a write (see [`Relationship::to_proto`]) and instead
-    /// supplies values for evaluating whatever caveat a permission check
-    /// encounters at check time. Keeping them on separate fields prevents a
-    /// check-time value from silently leaking into a write and altering a
-    /// stored relationship's caveat context. Set it with
-    /// [`Relationship::with_check_context`].
-    pub check_context: Option<HashMap<String, serde_json::Value>>,
+/// Revision arguments require this value rather than an authentication string.
+/// ```compile_fail
+/// spicedb::consistency::at_least("plain string");
+/// ```
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub struct ZedToken(String);
+impl From<String> for ZedToken {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+impl From<&str> for ZedToken {
+    fn from(value: &str) -> Self {
+        Self(value.into())
+    }
+}
+impl From<&ZedToken> for ZedToken {
+    fn from(value: &ZedToken) -> Self {
+        value.clone()
+    }
+}
+impl AsRef<str> for ZedToken {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+impl fmt::Display for ZedToken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl ZedToken {
+    pub fn into_string(self) -> String {
+        self.0
+    }
+    pub(crate) fn to_proto(&self) -> proto::ZedToken {
+        proto::ZedToken {
+            token: self.0.clone(),
+        }
+    }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Relationship {
+    resource: ObjectRef,
+    relation: String,
+    subject: SubjectRef,
+    caveat_name: String,
+    caveat_specified: bool,
+    caveat_context: Option<Context>,
+    expiration: Option<DateTime<Utc>>,
+}
 impl Relationship {
-    /// Creates a new relationship from resource and subject components.
-    ///
-    /// Returns an error if resource_type, resource_id, resource_relation,
-    /// subject_type, or subject_id are empty.
     pub fn new(
-        resource_type: impl Into<String>,
-        resource_id: impl Into<String>,
-        resource_relation: impl Into<String>,
-        subject_type: impl Into<String>,
-        subject_id: impl Into<String>,
-        subject_relation: impl Into<String>,
-    ) -> Result<Self, RelationshipError> {
-        let r = Self {
-            resource_type: resource_type.into(),
-            resource_id: resource_id.into(),
-            resource_relation: resource_relation.into(),
-            subject_type: subject_type.into(),
-            subject_id: subject_id.into(),
-            subject_relation: subject_relation.into(),
+        resource: ObjectRef,
+        relation: impl Into<String>,
+        subject: SubjectRef,
+    ) -> Result<Self, SpiceDBError> {
+        let relation = relation.into();
+        required("relation", &relation)?;
+        Ok(Self {
+            resource,
+            relation,
+            subject,
             caveat_name: String::new(),
+            caveat_specified: false,
             caveat_context: None,
             expiration: None,
-            check_context: None,
+        })
+    }
+    pub fn from_tuple(tuple: &str) -> Result<Self, SpiceDBError> {
+        let invalid = || {
+            invalid(
+                "tuple",
+                "expected resource:type#relation@subject:id[#relation]",
+            )
         };
-        r.validate()?;
-        Ok(r)
-    }
-
-    /// Creates a new relationship from resource object, relation, and subject
-    /// object (no subject relation).
-    pub fn from_objects(
-        resource_type: impl Into<String>,
-        resource_id: impl Into<String>,
-        relation: impl Into<String>,
-        subject_type: impl Into<String>,
-        subject_id: impl Into<String>,
-    ) -> Result<Self, RelationshipError> {
-        Self::new(
-            resource_type,
-            resource_id,
-            relation,
-            subject_type,
-            subject_id,
-            "",
-        )
-    }
-
-    /// Parses a relationship from a tuple string in the format:
-    ///
-    /// `resourceType:resourceID#relation@subjectType:subjectID[#subjectRelation]`
-    pub fn from_tuple(tuple: &str) -> Result<Self, RelationshipError> {
-        let (resource_part, subject_part) = tuple
-            .split_once('@')
-            .ok_or_else(|| RelationshipError::InvalidFormat("missing '@' separator".into()))?;
-
-        let (resource_type_id, resource_relation) = resource_part
+        let (resource, subject) = tuple.split_once('@').ok_or_else(invalid)?;
+        let (resource, relation) = resource.split_once('#').ok_or_else(invalid)?;
+        let (rt, rid) = resource.split_once(':').ok_or_else(invalid)?;
+        let (subject, sr) = subject
             .split_once('#')
-            .ok_or_else(|| RelationshipError::InvalidFormat("missing '#' in resource".into()))?;
-
-        let (resource_type, resource_id) = resource_type_id.split_once(':').ok_or_else(|| {
-            RelationshipError::InvalidFormat("missing ':' in resource type:id".into())
-        })?;
-
-        let (subject_type, subject_id, subject_relation) =
-            if let Some((subject_type_id, subject_rel)) = subject_part.split_once('#') {
-                let (st, si) = subject_type_id.split_once(':').ok_or_else(|| {
-                    RelationshipError::InvalidFormat("missing ':' in subject type:id".into())
-                })?;
-                (st, si, subject_rel)
-            } else {
-                let (st, si) = subject_part.split_once(':').ok_or_else(|| {
-                    RelationshipError::InvalidFormat("missing ':' in subject type:id".into())
-                })?;
-                (st, si, "")
-            };
-
+            .map_or((subject, None), |(s, r)| (s, Some(r.to_owned())));
+        let (st, sid) = subject.split_once(':').ok_or_else(invalid)?;
         Self::new(
-            resource_type,
-            resource_id,
-            resource_relation,
-            subject_type,
-            subject_id,
-            subject_relation,
+            ObjectRef::new(rt, rid)?,
+            relation,
+            SubjectRef::new(ObjectRef::new(st, sid)?, sr)?,
         )
     }
-
-    /// Returns a copy of this relationship with the given caveat attached.
-    pub fn with_caveat(
-        mut self,
-        name: impl Into<String>,
-        context: Option<HashMap<String, serde_json::Value>>,
-    ) -> Self {
+    pub fn resource(&self) -> &ObjectRef {
+        &self.resource
+    }
+    pub fn relation(&self) -> &str {
+        &self.relation
+    }
+    pub fn subject(&self) -> &SubjectRef {
+        &self.subject
+    }
+    pub fn caveat_name(&self) -> &str {
+        &self.caveat_name
+    }
+    pub fn caveat_context(&self) -> Option<&Context> {
+        self.caveat_context.as_ref()
+    }
+    pub fn expiration(&self) -> Option<DateTime<Utc>> {
+        self.expiration
+    }
+    pub fn with_caveat(mut self, name: impl Into<String>, context: Option<Context>) -> Self {
         self.caveat_name = name.into();
+        self.caveat_specified = true;
         self.caveat_context = context;
         self
     }
-
-    /// Returns a copy of this relationship with the given expiration.
     pub fn with_expiration(mut self, expiration: DateTime<Utc>) -> Self {
         self.expiration = Some(expiration);
         self
     }
-
-    /// Returns a copy of this relationship carrying per-item caveat context
-    /// for check calls. See the `check_context` field doc for how this
-    /// differs from [`with_caveat`](Self::with_caveat)'s context.
-    ///
-    /// When a call-level default is also supplied to the `_with_options`
-    /// check method, the two are merged key by key: this item's keys win on
-    /// conflict, and any call-level keys not present here are retained. For
-    /// example, a call-level `{now: 42, region: "us"}` plus a per-item
-    /// `{region: "eu"}` produces `{now: 42, region: "eu"}` for this item.
-    pub fn with_check_context(mut self, context: HashMap<String, serde_json::Value>) -> Self {
-        self.check_context = Some(context);
-        self
-    }
-
-    /// Returns a [`Filter`] that matches the exact resource of this relationship.
     pub fn filter(&self) -> Filter {
-        Filter {
-            resource_type: self.resource_type.clone(),
-            resource_id: Some(self.resource_id.clone()),
-            resource_id_prefix: None,
-            relation: Some(self.resource_relation.clone()),
-            subject_type: Some(self.subject_type.clone()),
-            subject_id: Some(self.subject_id.clone()),
-            subject_relation: None,
-        }
+        Filter::new(self.resource.object_type())
+            .with_resource_id(self.resource.object_id())
+            .with_relation(&self.relation)
+            .with_subject_type(self.subject.object().object_type())
+            .with_subject_id(self.subject.object().object_id())
+            .with_subject_relation(
+                self.subject
+                    .relation()
+                    .map_or(SubjectRelationFilter::Direct, |r| {
+                        SubjectRelationFilter::Named(r.into())
+                    }),
+            )
     }
-
-    fn validate(&self) -> Result<(), RelationshipError> {
-        if self.resource_type.is_empty()
-            || self.resource_id.is_empty()
-            || self.resource_relation.is_empty()
-        {
-            return Err(RelationshipError::InvalidResource);
+    pub(crate) fn validate(&self) -> Result<(), SpiceDBError> {
+        if self.caveat_specified && self.caveat_name.is_empty() {
+            return Err(invalid("caveat_name", "required when context is supplied"));
         }
-        if self.subject_type.is_empty() || self.subject_id.is_empty() {
-            return Err(RelationshipError::InvalidSubject);
+        if let Some(c) = &self.caveat_context {
+            validate_context(c)?;
         }
         Ok(())
     }
-
     pub(crate) fn to_proto(&self) -> proto::Relationship {
-        let optional_caveat = if self.caveat_name.is_empty() {
-            None
-        } else {
-            let context = self.caveat_context.as_ref().map(|ctx| {
-                let fields = ctx
-                    .iter()
-                    .map(|(k, v)| (k.clone(), json_value_to_prost(v)))
-                    .collect();
-                prost_types::Struct { fields }
-            });
-            Some(proto::ContextualizedCaveat {
-                caveat_name: self.caveat_name.clone(),
-                context,
-            })
-        };
-
-        let optional_expires_at = self.expiration.map(|exp| prost_types::Timestamp {
-            seconds: exp.timestamp(),
-            nanos: exp.timestamp_subsec_nanos() as i32,
-        });
-
         proto::Relationship {
-            resource: Some(proto::ObjectReference {
-                object_type: self.resource_type.clone(),
-                object_id: self.resource_id.clone(),
+            resource: Some(self.resource.to_proto()),
+            relation: self.relation.clone(),
+            subject: Some(self.subject.to_proto()),
+            optional_caveat: if self.caveat_name.is_empty() {
+                None
+            } else {
+                Some(proto::ContextualizedCaveat {
+                    caveat_name: self.caveat_name.clone(),
+                    context: self.caveat_context.as_ref().map(check_context_to_proto),
+                })
+            },
+            optional_expires_at: self.expiration.map(|t| prost_types::Timestamp {
+                seconds: t.timestamp(),
+                nanos: t.timestamp_subsec_nanos() as i32,
             }),
-            relation: self.resource_relation.clone(),
-            subject: Some(proto::SubjectReference {
-                object: Some(proto::ObjectReference {
-                    object_type: self.subject_type.clone(),
-                    object_id: self.subject_id.clone(),
-                }),
-                optional_relation: self.subject_relation.clone(),
-            }),
-            optional_caveat,
-            optional_expires_at,
         }
     }
-
-    pub(crate) fn from_proto(pr: &proto::Relationship) -> Self {
-        let resource = pr.resource.as_ref();
-        let subject_ref = pr.subject.as_ref();
-        let subject_obj = subject_ref.and_then(|s| s.object.as_ref());
-
-        let (caveat_name, caveat_context) = if let Some(cav) = &pr.optional_caveat {
-            let context = cav.context.as_ref().map(|s| {
-                s.fields
-                    .iter()
-                    .map(|(k, v)| (k.clone(), prost_value_to_json(v)))
-                    .collect()
-            });
-            (cav.caveat_name.clone(), context)
-        } else {
-            (String::new(), None)
-        };
-
-        let expiration = pr
-            .optional_expires_at
-            .as_ref()
-            .and_then(|ts| DateTime::from_timestamp(ts.seconds, ts.nanos as u32));
-
+    pub(crate) fn from_proto(r: &proto::Relationship) -> Self {
         Self {
-            resource_type: resource.map(|r| r.object_type.clone()).unwrap_or_default(),
-            resource_id: resource.map(|r| r.object_id.clone()).unwrap_or_default(),
-            resource_relation: pr.relation.clone(),
-            subject_type: subject_obj
-                .map(|o| o.object_type.clone())
+            resource: ObjectRef::from_proto(r.resource.as_ref()),
+            relation: r.relation.clone(),
+            subject: SubjectRef::from_proto(r.subject.as_ref()),
+            caveat_specified: r.optional_caveat.is_some(),
+            caveat_name: r
+                .optional_caveat
+                .as_ref()
+                .map(|c| c.caveat_name.clone())
                 .unwrap_or_default(),
-            subject_id: subject_obj.map(|o| o.object_id.clone()).unwrap_or_default(),
-            subject_relation: subject_ref
-                .map(|s| s.optional_relation.clone())
-                .unwrap_or_default(),
-            caveat_name,
-            caveat_context,
-            expiration,
-            // check_context is a client-side-only, check-time annotation —
-            // it has no wire representation on proto::Relationship, so a
-            // relationship read back from the server never carries one.
-            check_context: None,
+            caveat_context: r
+                .optional_caveat
+                .as_ref()
+                .and_then(|c| c.context.as_ref())
+                .map(context_from_proto),
+            expiration: r
+                .optional_expires_at
+                .as_ref()
+                .and_then(timestamp_from_proto),
         }
     }
 }
-
 impl fmt::Display for Relationship {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
             "{}:{}#{}@{}:{}",
-            self.resource_type,
-            self.resource_id,
-            self.resource_relation,
-            self.subject_type,
-            self.subject_id,
+            self.resource.object_type,
+            self.resource.object_id,
+            self.relation,
+            self.subject.object.object_type,
+            self.subject.object.object_id
         )?;
-        if !self.subject_relation.is_empty() {
-            write!(f, "#{}", self.subject_relation)?;
+        if let Some(r) = &self.subject.relation {
+            write!(f, "#{}", r)?;
         }
         Ok(())
     }
 }
 
-/// Errors that can occur when constructing or validating relationships.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum RelationshipError {
-    /// Resource type, ID, or relation is empty.
-    #[error("resource type, id, and relation are required")]
-    InvalidResource,
-
-    /// Subject type or ID is empty.
-    #[error("subject type and id are required")]
-    InvalidSubject,
-
-    /// The tuple string format is invalid.
-    #[error("invalid tuple format: {0}")]
-    InvalidFormat(String),
+pub(crate) fn invalid(field: &str, reason: &str) -> SpiceDBError {
+    SpiceDBError::InvalidArgument(format!("{field}: {reason}").into())
+}
+pub(crate) fn required(field: &str, value: &str) -> Result<(), SpiceDBError> {
+    if value.is_empty() {
+        Err(invalid(field, "must not be empty"))
+    } else {
+        Ok(())
+    }
+}
+pub(crate) fn validate_context(context: &Context) -> Result<(), SpiceDBError> {
+    fn value(path: &str, v: &serde_json::Value) -> Result<(), SpiceDBError> {
+        match v {
+            serde_json::Value::Number(n) => {
+                let number = n
+                    .as_f64()
+                    .ok_or_else(|| invalid(path, "not representable as a finite JSON number"))?;
+                if !number.is_finite()
+                    || n.as_i64().is_some_and(|x| x as i128 != number as i128)
+                    || n.as_u64().is_some_and(|x| x as u128 != number as u128)
+                {
+                    return Err(invalid(path, "not exactly representable in protobuf JSON"));
+                }
+            }
+            serde_json::Value::Object(o) => {
+                for (k, v) in o {
+                    value(&format!("{path}.{k}"), v)?;
+                }
+            }
+            serde_json::Value::Array(a) => {
+                for (i, v) in a.iter().enumerate() {
+                    value(&format!("{path}[{i}]"), v)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+    for (k, v) in context {
+        value(k, v)?;
+    }
+    Ok(())
+}
+pub(crate) fn context_from_proto(c: &prost_types::Struct) -> Context {
+    c.fields
+        .iter()
+        .map(|(k, v)| (k.clone(), prost_value_to_json(v)))
+        .collect()
+}
+pub(crate) fn timestamp_from_proto(t: &prost_types::Timestamp) -> Option<DateTime<Utc>> {
+    u32::try_from(t.nanos)
+        .ok()
+        .and_then(|n| DateTime::from_timestamp(t.seconds, n))
 }
 
-/// Specifies criteria for matching relationships in read and delete operations.
-///
-/// Use the builder methods to narrow the filter. A filter requires at minimum
-/// a resource type.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SubjectRelationFilter {
+    Any,
+    Direct,
+    Named(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Filter {
-    pub resource_type: String,
-    pub resource_id: Option<String>,
-    pub resource_id_prefix: Option<String>,
-    pub relation: Option<String>,
-    pub subject_type: Option<String>,
-    pub subject_id: Option<String>,
-    pub subject_relation: Option<String>,
+    pub(crate) resource_type: String,
+    pub(crate) resource_id: Option<String>,
+    pub(crate) resource_id_prefix: Option<String>,
+    pub(crate) relation: Option<String>,
+    pub(crate) subject_type: Option<String>,
+    pub(crate) subject_id: Option<String>,
+    pub(crate) subject_relation: SubjectRelationFilter,
 }
 
 impl Filter {
+    pub fn resource_type(&self) -> &str {
+        &self.resource_type
+    }
+    pub fn resource_id(&self) -> Option<&str> {
+        self.resource_id.as_deref()
+    }
+    pub fn resource_id_prefix(&self) -> Option<&str> {
+        self.resource_id_prefix.as_deref()
+    }
+    pub fn relation(&self) -> Option<&str> {
+        self.relation.as_deref()
+    }
+    pub fn subject_type(&self) -> Option<&str> {
+        self.subject_type.as_deref()
+    }
+    pub fn subject_id(&self) -> Option<&str> {
+        self.subject_id.as_deref()
+    }
+
     /// Creates a new filter that matches relationships of the given resource type.
     pub fn new(resource_type: impl Into<String>) -> Self {
         Self {
@@ -331,7 +323,7 @@ impl Filter {
             relation: None,
             subject_type: None,
             subject_id: None,
-            subject_relation: None,
+            subject_relation: SubjectRelationFilter::Any,
         }
     }
 
@@ -366,9 +358,13 @@ impl Filter {
     }
 
     /// Narrows the filter to a specific subject relation.
-    pub fn with_subject_relation(mut self, relation: impl Into<String>) -> Self {
-        self.subject_relation = Some(relation.into());
+    pub fn with_subject_relation(mut self, relation: SubjectRelationFilter) -> Self {
+        self.subject_relation = relation;
         self
+    }
+
+    pub fn subject_relation(&self) -> &SubjectRelationFilter {
+        &self.subject_relation
     }
 
     /// Converts this filter to its proto representation.
@@ -385,34 +381,58 @@ impl Filter {
     /// alice's. See root DESIGN.md, "RULE: A conversion that cannot preserve meaning must fail",
     /// clause 1.
     pub(crate) fn to_proto(&self) -> Result<proto::RelationshipFilter, SpiceDBError> {
-        let optional_subject_filter = match &self.subject_type {
-            Some(subject_type) => Some(proto::SubjectFilter {
-                subject_type: subject_type.clone(),
-                optional_subject_id: self.subject_id.clone().unwrap_or_default(),
-                optional_relation: self.subject_relation.as_ref().map(|r| {
-                    proto::subject_filter::RelationFilter {
-                        relation: r.clone(),
-                    }
-                }),
+        required("resource_type", &self.resource_type)?;
+        if self.resource_id.is_some() && self.resource_id_prefix.is_some() {
+            return Err(invalid(
+                "resource_id",
+                "cannot combine with resource_id_prefix",
+            ));
+        }
+        for (field, value) in [
+            ("resource_id", self.resource_id.as_deref()),
+            ("resource_id_prefix", self.resource_id_prefix.as_deref()),
+            ("relation", self.relation.as_deref()),
+            ("subject_id", self.subject_id.as_deref()),
+        ] {
+            if let Some(value) = value {
+                required(field, value)?;
+            }
+        }
+        let relation = match &self.subject_relation {
+            SubjectRelationFilter::Any => None,
+            SubjectRelationFilter::Direct => Some(proto::subject_filter::RelationFilter {
+                relation: String::new(),
             }),
-            None if self.subject_id.is_some() || self.subject_relation.is_some() => {
-                let missing = if self.subject_id.is_some() {
-                    "subject_id"
-                } else {
-                    "subject_relation"
-                };
-                return Err(SpiceDBError::InvalidArgument(
-                    format!(
-                        "Filter has {missing} set without subject_type. The wire format requires \
-                         subject_type whenever a subject constraint is present -- call \
-                         with_subject_type(...) before with_{missing}(...)."
-                    )
-                    .into(),
-                ));
+            SubjectRelationFilter::Named(name) => {
+                required("subject_relation", name)?;
+                if name == "..." {
+                    return Err(invalid(
+                        "subject_relation",
+                        "ellipsis is not a named relation",
+                    ));
+                }
+                Some(proto::subject_filter::RelationFilter {
+                    relation: name.clone(),
+                })
+            }
+        };
+        let optional_subject_filter = match &self.subject_type {
+            Some(t) => {
+                required("subject_type", t)?;
+                Some(proto::SubjectFilter {
+                    subject_type: t.clone(),
+                    optional_subject_id: self.subject_id.clone().unwrap_or_default(),
+                    optional_relation: relation,
+                })
+            }
+            None if self.subject_id.is_some() || relation.is_some() => {
+                return Err(invalid(
+                    "subject_type",
+                    "required with subject_id or subject_relation",
+                ))
             }
             None => None,
         };
-
         Ok(proto::RelationshipFilter {
             resource_type: self.resource_type.clone(),
             optional_resource_id: self.resource_id.clone().unwrap_or_default(),
@@ -425,6 +445,7 @@ impl Filter {
 
 /// The type of mutation in a relationship update.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum UpdateOperation {
     /// The server sent an operation this client does not recognize -- either
     /// `OPERATION_UNSPECIFIED` on the wire, or a future operation value added
@@ -449,6 +470,7 @@ pub enum UpdateOperation {
 /// A relationship mutation (create, touch, or delete) as received from the
 /// watch API.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Update {
     pub operation: UpdateOperation,
     pub relationship: Relationship,
@@ -457,7 +479,11 @@ pub struct Update {
 /// A single event from [`SpiceDBClient::updates`](crate::client::SpiceDBClient::updates),
 /// corresponding to one `WatchResponse` from the server.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct WatchEvent {
+    pub schema_updated: bool,
+    pub full_revision_metadata: Vec<Context>,
+    pub transaction_metadata: Option<Context>,
     pub updates: Vec<Update>,
     /// The point in time this event is current through. Always populated.
     /// Proto: "the ZedToken that represents the point in time that the
@@ -467,62 +493,73 @@ pub struct WatchEvent {
     /// dropped stream, instead of restarting from the original
     /// `start_revision` (reprocessing everything since, possibly past the
     /// GC window) or from head (silently losing every change in the gap).
-    pub changes_through: String,
+    pub changes_through: ZedToken,
     /// True for a checkpoint event, which carries no [`updates`](Self::updates) -- it
     /// exists only to advertise a fresh [`changes_through`](Self::changes_through) and,
     /// behind a proxy that aborts idle connections, to keep the stream
     /// alive. Checkpoints are only sent when
-    /// [`WatchOptions::with_checkpoints`] was passed to `updates_with`.
+    /// [`WatchOptions::with_checkpoints`] was passed to `updates`.
     pub is_checkpoint: bool,
 }
 
-/// Optional settings for [`SpiceDBClient::updates_with`](crate::client::SpiceDBClient::updates_with).
+/// Optional settings for [`SpiceDBClient::updates`](crate::client::SpiceDBClient::updates).
 ///
-/// Exists so a watch's optional settings read as names at the call site.
-/// `updates` previously took the checkpoint flag as a bare positional
-/// `bool` -- `client.updates(&types, None, false)` -- which is the one place
-/// in this client where a reader could not tell what a literal argument
-/// meant without opening the signature. Built the same way
-/// [`DeleteOptions`] is:
+/// Watch from a typed revision and opt into periodic checkpoint delivery.
 ///
 /// ```
-/// use spicedb::types::WatchOptions;
-///
+/// use spicedb::{WatchOptions, ZedToken, CheckpointMode};
 /// let options = WatchOptions::new()
-///     .with_start_revision("some-zedtoken")
-///     .with_checkpoints();
+///     .with_start_revision(ZedToken::from("some-zedtoken"))
+///     .with_checkpoints(CheckpointMode::Include);
 /// ```
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct WatchOptions {
+    pub(crate) timeout: Option<std::time::Duration>,
+    pub(crate) filters: Vec<Filter>,
     /// Resume from this revision instead of from head. Pass a
     /// [`WatchEvent::changes_through`] from a previous stream to pick up
     /// exactly where it stopped.
-    pub start_revision: Option<String>,
+    pub(crate) start_revision: Option<ZedToken>,
     /// Request periodic checkpoint events ([`WatchEvent::is_checkpoint`],
     /// carrying no updates) in addition to relationship updates.
     /// Recommended if this SpiceDB instance is running behind a proxy that
     /// aborts idle connections, since a checkpoint keeps the stream alive
     /// even when there are no changes.
-    pub include_checkpoints: bool,
+    pub(crate) checkpoints: CheckpointMode,
+    pub(crate) content: WatchContent,
 }
 
 impl WatchOptions {
+    pub fn with_content(mut self, content: WatchContent) -> Self {
+        self.content = content;
+        self
+    }
+    pub fn with_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.timeout = Some(timeout);
+        self
+    }
+    /// Watch relationships matching any filter (OR). Empty filters watch all relationships.
+    /// Cannot be combined with object types in UpdatesRequest.
+    pub fn with_filters(mut self, filters: Vec<Filter>) -> Self {
+        self.filters = filters;
+        self
+    }
     /// Creates an empty `WatchOptions`: watch from head, no checkpoints.
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Resumes from `revision` rather than from head.
-    pub fn with_start_revision(mut self, revision: impl Into<String>) -> Self {
-        self.start_revision = Some(revision.into());
+    pub fn with_start_revision(mut self, revision: ZedToken) -> Self {
+        self.start_revision = Some(revision);
         self
     }
 
     /// Requests periodic checkpoint events in addition to relationship
     /// updates.
-    pub fn with_checkpoints(mut self) -> Self {
-        self.include_checkpoints = true;
+    pub fn with_checkpoints(mut self, checkpoints: CheckpointMode) -> Self {
+        self.checkpoints = checkpoints;
         self
     }
 }
@@ -531,7 +568,8 @@ impl WatchOptions {
 ///
 /// Transactions take `&Relationship` (borrow) rather than moving the
 /// relationship, so callers can reuse relationship values.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Transaction {
     updates: Vec<(UpdateOperation, Relationship)>,
     preconditions: Vec<Precondition>,
@@ -539,6 +577,7 @@ pub struct Transaction {
 
 /// A precondition that must hold for a write transaction to succeed.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Precondition {
     pub operation: PreconditionOperation,
     pub filter: Filter,
@@ -546,129 +585,12 @@ pub struct Precondition {
 
 /// The type of precondition check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PreconditionOperation {
     /// The filter must NOT match any existing relationships.
     MustNotMatch,
     /// The filter MUST match at least one existing relationship.
     MustMatch,
-}
-
-/// Optional preconditions and a page-size override for
-/// [`SpiceDBClient::delete_relationships_with`](crate::client::SpiceDBClient::delete_relationships_with).
-///
-/// Use [`DeleteOptions::default`] (or [`DeleteOptions::new`]) for no
-/// preconditions and the default page size (1,000), and the builder methods
-/// to add guards:
-///
-/// ```
-/// use spicedb::types::{DeleteOptions, Filter};
-///
-/// let options = DeleteOptions::new()
-///     .with_must_match(Filter::new("document").with_resource_id("doc1"))
-///     .with_must_not_match(Filter::new("document").with_resource_id("doc2"))
-///     .with_limit(100);
-/// ```
-///
-/// # Preconditions and paging
-///
-/// Preconditions are a per-request proto field, so when a delete spans
-/// multiple pages (more matches than the limit), they are re-evaluated by the
-/// server on every page — there is no "check-once, apply-to-all-pages"
-/// semantics. This means a delete that starts successfully can still fail
-/// partway through if the guarded state changes between pages, after earlier
-/// pages have already been deleted. For a single-shot, all-or-nothing guarded
-/// delete, pair the precondition with [`DeleteOptions::with_limit`] set large
-/// enough to cover every matching relationship in one call.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-#[non_exhaustive]
-pub struct DeleteOptions {
-    /// Filters that must each match at least one existing relationship for
-    /// the delete to proceed.
-    pub must_match: Vec<Filter>,
-    /// Filters that must each match no existing relationship for the delete
-    /// to proceed.
-    pub must_not_match: Vec<Filter>,
-    /// Overrides the default per-request page size (1,000) used by
-    /// `delete_relationships`'/`delete_relationships_with`'s auto-paging loop.
-    pub limit: Option<u32>,
-    /// Overrides the client's `default_timeout` (seconds bounding EACH
-    /// page's call). `None` uses the client default. See root DESIGN.md,
-    /// "RULE: A unary call must have a deadline".
-    pub timeout: Option<std::time::Duration>,
-    /// Resumes a deletion left incomplete by an earlier call, from the
-    /// opaque cursor it returned. `delete_relationships`/
-    /// `delete_relationships_with` always run themselves to completion and
-    /// never hand a cursor back, so this is only reachable via a partial
-    /// deletion driven through [`raw_proto`](crate::client::SpiceDBClient::raw_proto)
-    /// (e.g. one interrupted by a process restart). Only datastores whose
-    /// deletion can be ordered and resumed honor a supplied cursor; others
-    /// reject the request. `None` (the default) starts a new deletion.
-    pub cursor: Option<String>,
-}
-
-impl DeleteOptions {
-    /// Creates an empty `DeleteOptions`: no preconditions, default page size.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Adds a precondition that at least one relationship must match
-    /// `filter`. Multiple calls accumulate; all are sent with every request.
-    pub fn with_must_match(mut self, filter: Filter) -> Self {
-        self.must_match.push(filter);
-        self
-    }
-
-    /// Adds a precondition that no relationship may match `filter`. Multiple
-    /// calls accumulate; all are sent with every request.
-    pub fn with_must_not_match(mut self, filter: Filter) -> Self {
-        self.must_not_match.push(filter);
-        self
-    }
-
-    /// Overrides the default per-request page size (1,000).
-    pub fn with_limit(mut self, limit: u32) -> Self {
-        self.limit = Some(limit);
-        self
-    }
-
-    /// Overrides the client's `default_timeout` for each page's call.
-    pub fn with_timeout(mut self, timeout: std::time::Duration) -> Self {
-        self.timeout = Some(timeout);
-        self
-    }
-
-    /// Resumes a deletion from a cursor obtained another way (see the
-    /// [`cursor`](DeleteOptions::cursor) field docs).
-    pub fn with_cursor(mut self, cursor: impl Into<String>) -> Self {
-        self.cursor = Some(cursor.into());
-        self
-    }
-
-    /// Converts the accumulated must-match/must-not-match filters into
-    /// [`Precondition`]s (must-match filters first, then must-not-match).
-    ///
-    /// This mirrors [`Transaction::preconditions`]'s shape so both delete and
-    /// write preconditions flow through the same proto conversion in
-    /// `client.rs`.
-    pub(crate) fn preconditions(&self) -> Vec<Precondition> {
-        let mut preconditions =
-            Vec::with_capacity(self.must_match.len() + self.must_not_match.len());
-        preconditions.extend(self.must_match.iter().cloned().map(|filter| Precondition {
-            operation: PreconditionOperation::MustMatch,
-            filter,
-        }));
-        preconditions.extend(
-            self.must_not_match
-                .iter()
-                .cloned()
-                .map(|filter| Precondition {
-                    operation: PreconditionOperation::MustNotMatch,
-                    filter,
-                }),
-        );
-        preconditions
-    }
 }
 
 impl Transaction {
@@ -741,6 +663,7 @@ impl Transaction {
 
 /// Schema reflection types returned by `reflect_schema`.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct SchemaDefinition {
     pub name: String,
     pub comment: String,
@@ -750,7 +673,9 @@ pub struct SchemaDefinition {
 
 /// A relation within a schema definition.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct SchemaRelation {
+    pub subject_types: Vec<SchemaTypeReference>,
     pub name: String,
     pub comment: String,
     pub parent_definition_name: String,
@@ -758,6 +683,7 @@ pub struct SchemaRelation {
 
 /// A permission within a schema definition.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct SchemaPermission {
     pub name: String,
     pub comment: String,
@@ -766,6 +692,7 @@ pub struct SchemaPermission {
 
 /// A caveat defined in a SpiceDB schema.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct SchemaCaveat {
     pub name: String,
     pub comment: String,
@@ -775,6 +702,7 @@ pub struct SchemaCaveat {
 
 /// A parameter of a caveat.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct SchemaCaveatParameter {
     pub name: String,
     pub type_name: String,
@@ -783,15 +711,17 @@ pub struct SchemaCaveatParameter {
 
 /// The result of a schema reflection call.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ReflectSchemaResult {
     pub definitions: Vec<SchemaDefinition>,
     pub caveats: Vec<SchemaCaveat>,
-    pub revision: String,
+    pub revision: ZedToken,
 }
 
 /// Identifies a relation or permission on a definition (used by computable
 /// permissions and dependent relations).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct RelationReference {
     pub definition_name: String,
     pub relation_name: String,
@@ -799,171 +729,179 @@ pub struct RelationReference {
 }
 
 /// A single difference between two schemas.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct SchemaDiff {
-    /// A human-readable description of the diff type (e.g. "definition_added",
-    /// "relation_removed", "permission_expr_changed").
-    pub kind: String,
-    /// Set for definition and relation/permission-level diffs.
-    pub definition_name: String,
-    /// Set for relation-level diffs.
-    pub relation_name: String,
-    /// Set for permission-level diffs.
-    pub permission_name: String,
-    /// Set for caveat-level diffs.
-    pub caveat_name: String,
-}
-
-/// Identifies an object (resource or subject) by type and ID.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ObjectRef {
-    pub object_type: String,
-    pub object_id: String,
+    object_type: String,
+    object_id: String,
 }
-
-/// The algebraic set operation combining an [`IntermediateNode`]'s children.
+impl ObjectRef {
+    pub fn new(
+        object_type: impl Into<String>,
+        object_id: impl Into<String>,
+    ) -> Result<Self, SpiceDBError> {
+        let value = Self {
+            object_type: object_type.into(),
+            object_id: object_id.into(),
+        };
+        required("object_type", &value.object_type)?;
+        required("object_id", &value.object_id)?;
+        Ok(value)
+    }
+    pub fn object_type(&self) -> &str {
+        &self.object_type
+    }
+    pub fn object_id(&self) -> &str {
+        &self.object_id
+    }
+    pub(crate) fn to_proto(&self) -> proto::ObjectReference {
+        proto::ObjectReference {
+            object_type: self.object_type.clone(),
+            object_id: self.object_id.clone(),
+        }
+    }
+    pub(crate) fn from_proto(o: Option<&proto::ObjectReference>) -> Self {
+        o.map(|o| Self {
+            object_type: o.object_type.clone(),
+            object_id: o.object_id.clone(),
+        })
+        .unwrap_or(Self {
+            object_type: String::new(),
+            object_id: String::new(),
+        })
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SubjectRef {
+    object: ObjectRef,
+    relation: Option<String>,
+}
+impl SubjectRef {
+    pub fn new(object: ObjectRef, relation: Option<String>) -> Result<Self, SpiceDBError> {
+        if let Some(r) = &relation {
+            required("subject_relation", r)?;
+            if r == "..." {
+                return Err(invalid("subject_relation", "use None for a direct subject"));
+            }
+        }
+        Ok(Self { object, relation })
+    }
+    pub fn object(&self) -> &ObjectRef {
+        &self.object
+    }
+    pub fn relation(&self) -> Option<&str> {
+        self.relation.as_deref()
+    }
+    pub(crate) fn to_proto(&self) -> proto::SubjectReference {
+        proto::SubjectReference {
+            object: Some(self.object.to_proto()),
+            optional_relation: self.relation.clone().unwrap_or_default(),
+        }
+    }
+    pub(crate) fn from_proto(s: Option<&proto::SubjectReference>) -> Self {
+        s.map(|s| Self {
+            object: ObjectRef::from_proto(s.object.as_ref()),
+            relation: if s.optional_relation.is_empty() || s.optional_relation == "..." {
+                None
+            } else {
+                Some(s.optional_relation.clone())
+            },
+        })
+        .unwrap_or(Self {
+            object: ObjectRef::from_proto(None),
+            relation: None,
+        })
+    }
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TreeOperation {
     Unspecified,
     Union,
     Intersection,
     Exclusion,
 }
-
-/// A subject with access at a leaf of the permission tree.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SubjectRef {
-    pub subject_type: String,
-    pub subject_id: String,
-    /// Empty if the subject reference has no sub-relation.
-    pub subject_relation: String,
+#[non_exhaustive]
+pub enum PermissionTree {
+    Intermediate {
+        expanded_object: ObjectRef,
+        expanded_relation: String,
+        operation: TreeOperation,
+        children: Vec<PermissionTree>,
+    },
+    Leaf {
+        expanded_object: ObjectRef,
+        expanded_relation: String,
+        subjects: Vec<SubjectRef>,
+    },
+    Unknown,
 }
-
-/// Combines child subtrees with a [`TreeOperation`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IntermediateNode {
-    pub operation: TreeOperation,
-    pub children: Vec<PermissionTree>,
-}
-
-/// Holds the concrete subjects at a leaf of the permission tree.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LeafNode {
-    pub subjects: Vec<SubjectRef>,
-}
-
-/// A native node of an expanded permission tree, as returned by
-/// [`SpiceDBClient::expand_permission_tree`](crate::client::SpiceDBClient::expand_permission_tree).
-///
-/// Exactly one of `intermediate` or `leaf` is `Some`: `intermediate` nodes
-/// represent a set operation (union, intersection, exclusion) over child
-/// subtrees, while `leaf` nodes hold the concrete resolved subjects.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct PermissionTree {
-    pub expanded_object: ObjectRef,
-    pub expanded_relation: String,
-    pub intermediate: Option<IntermediateNode>,
-    pub leaf: Option<LeafNode>,
-}
-
-/// Maps the proto `AlgebraicSubjectSet.Operation` enum (represented as `i32`
-/// by prost) to its native equivalent. Unrecognized values map to
-/// `TreeOperation::Unspecified`.
 pub(crate) fn tree_operation_from_proto(v: i32) -> TreeOperation {
     match v {
-        x if x == proto::algebraic_subject_set::Operation::Union as i32 => TreeOperation::Union,
-        x if x == proto::algebraic_subject_set::Operation::Intersection as i32 => {
-            TreeOperation::Intersection
-        }
-        x if x == proto::algebraic_subject_set::Operation::Exclusion as i32 => {
-            TreeOperation::Exclusion
-        }
+        1 => TreeOperation::Union,
+        2 => TreeOperation::Intersection,
+        3 => TreeOperation::Exclusion,
         _ => TreeOperation::Unspecified,
     }
 }
-
-/// Recursively maps a proto `PermissionRelationshipTree` to its native
-/// representation. `None` maps to a zero-value `PermissionTree`.
 pub(crate) fn permission_tree_from_proto(
     t: Option<&proto::PermissionRelationshipTree>,
 ) -> PermissionTree {
     let Some(t) = t else {
-        return PermissionTree::default();
+        return PermissionTree::Unknown;
     };
-
-    let expanded_object = t
-        .expanded_object
-        .as_ref()
-        .map(|o| ObjectRef {
-            object_type: o.object_type.clone(),
-            object_id: o.object_id.clone(),
-        })
-        .unwrap_or_default();
-
-    let mut tree = PermissionTree {
-        expanded_object,
-        expanded_relation: t.expanded_relation.clone(),
-        intermediate: None,
-        leaf: None,
-    };
-
+    let expanded_object = ObjectRef::from_proto(t.expanded_object.as_ref());
+    let expanded_relation = t.expanded_relation.clone();
     match &t.tree_type {
-        Some(proto::permission_relationship_tree::TreeType::Intermediate(intermediate)) => {
-            let children = intermediate
-                .children
-                .iter()
-                .map(|child| permission_tree_from_proto(Some(child)))
-                .collect();
-            tree.intermediate = Some(IntermediateNode {
-                operation: tree_operation_from_proto(intermediate.operation),
-                children,
-            });
+        Some(proto::permission_relationship_tree::TreeType::Intermediate(i)) => {
+            PermissionTree::Intermediate {
+                expanded_object,
+                expanded_relation,
+                operation: tree_operation_from_proto(i.operation),
+                children: i
+                    .children
+                    .iter()
+                    .map(|c| permission_tree_from_proto(Some(c)))
+                    .collect(),
+            }
         }
-        Some(proto::permission_relationship_tree::TreeType::Leaf(leaf)) => {
-            let subjects = leaf
+        Some(proto::permission_relationship_tree::TreeType::Leaf(l)) => PermissionTree::Leaf {
+            expanded_object,
+            expanded_relation,
+            subjects: l
                 .subjects
                 .iter()
-                .map(|subject| SubjectRef {
-                    subject_type: subject
-                        .object
-                        .as_ref()
-                        .map(|o| o.object_type.clone())
-                        .unwrap_or_default(),
-                    subject_id: subject
-                        .object
-                        .as_ref()
-                        .map(|o| o.object_id.clone())
-                        .unwrap_or_default(),
-                    subject_relation: subject.optional_relation.clone(),
-                })
-                .collect();
-            tree.leaf = Some(LeafNode { subjects });
-        }
-        None => {}
+                .map(|s| SubjectRef::from_proto(Some(s)))
+                .collect(),
+        },
+        None => PermissionTree::Unknown,
     }
-
-    tree
 }
 
 /// The result of an expand permission tree call.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExpandResult {
+#[non_exhaustive]
+pub struct ExpandPermissionTreeResult {
     /// The root of the expanded permission tree.
     pub tree: PermissionTree,
     /// The revision at which the tree was expanded.
-    pub revision: String,
+    pub revision: ZedToken,
 }
 
 /// The result of a relationship count operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct CountResult {
     pub relationship_count: u64,
-    pub revision: String,
+    pub revision: ZedToken,
 }
 
 /// The result of an experimental roaring lookup resources call.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RoaringLookupResourcesResult {
+#[non_exhaustive]
+pub struct ExperimentalRoaringLookupResourcesResult {
     /// The roaring64 bitmap, in RoaringFormatSpec 64-bit portable format, of
     /// the resource object IDs accessible to the subject. The IDs are the
     /// object IDs from the relationships themselves, as 44-bit integers --
@@ -972,7 +910,7 @@ pub struct RoaringLookupResourcesResult {
     /// The number of resource IDs in `bitmap`.
     pub cardinality: u64,
     /// The ZedToken revision the lookup was performed at.
-    pub at_revision: String,
+    pub at_revision: ZedToken,
 }
 
 /// Indicates whether a check or lookup result reflects a full grant, a full
@@ -993,6 +931,7 @@ pub struct RoaringLookupResourcesResult {
 /// appended at the end — this enum carries no explicit discriminants, so
 /// there's no risk of renumbering the other variants by doing so.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Permissionship {
     Unspecified,
     NoPermission,
@@ -1000,17 +939,9 @@ pub enum Permissionship {
     ConditionalPermission,
 }
 
-/// Result of a [`SpiceDBClient::check_permission`](crate::client::SpiceDBClient::check_permission)/
-/// [`check_permissions`](crate::client::SpiceDBClient::check_permissions) call.
-///
-/// `permissionship` carries the server's answer. A `ConditionalPermission`
-/// result means the server needed caveat context that was not supplied — it
-/// is NOT a grant. Prefer [`CheckResult::has_permission`] over comparing
-/// `permissionship` directly for the common case.
-///
-/// Marked `#[must_use]` to prevent silently ignoring permission check results.
 #[must_use]
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct CheckResult {
     /// The server's answer for this check.
     pub permissionship: Permissionship,
@@ -1019,7 +950,9 @@ pub struct CheckResult {
     pub missing_context: Vec<String>,
     /// The revision (ZedToken) this check was evaluated at. Thread it into
     /// [`crate::consistency::at_least`] so a later read observes this check.
-    pub checked_at: String,
+    pub checked_at: ZedToken,
+    pub debug_trace: Option<DebugInformation>,
+    pub expiration: Option<DateTime<Utc>>,
 }
 
 impl CheckResult {
@@ -1035,12 +968,14 @@ impl CheckResult {
 
 /// Caveat context that was missing to fully evaluate a conditional result.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct PartialCaveatInfo {
     pub missing_required_context: Vec<String>,
 }
 
 /// One result from `lookup_resources`.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct LookupResource {
     pub resource_id: String,
     pub permissionship: Permissionship,
@@ -1049,13 +984,14 @@ pub struct LookupResource {
     /// The revision (ZedToken) this result was computed at. Identical for
     /// every item yielded by a single `lookup_resources` call — it's a
     /// property of the call, not of the individual resource.
-    pub looked_up_at: String,
+    pub looked_up_at: ZedToken,
 }
 
 /// A subject resolved by `lookup_subjects` — either the matched subject, or
 /// (when found in [`LookupSubject::excluded_subjects`]) a subject excluded
 /// from a wildcard match.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ResolvedSubject {
     pub subject_id: String,
     pub permissionship: Permissionship,
@@ -1069,13 +1005,14 @@ pub struct ResolvedSubject {
 /// a blanket grant, or they risk granting access to subjects the server
 /// explicitly excluded.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct LookupSubject {
     pub subject: ResolvedSubject,
     pub excluded_subjects: Vec<ResolvedSubject>,
     /// The revision (ZedToken) this result was computed at. Identical for
     /// every item yielded by a single `lookup_subjects` call — it's a
     /// property of the call, not of the individual subject.
-    pub looked_up_at: String,
+    pub looked_up_at: ZedToken,
 }
 
 /// Maps the proto `LookupPermissionship` enum (represented as `i32` by
@@ -1133,7 +1070,9 @@ pub(crate) fn check_result_from_bulk_item(
             .as_ref()
             .map(|c| c.missing_required_context.clone())
             .unwrap_or_default(),
-        checked_at: checked_at.to_string(),
+        checked_at: checked_at.into(),
+        debug_trace: item.debug_trace.as_ref().map(DebugInformation::from_proto),
+        expiration: None,
     }
 }
 
@@ -1256,809 +1195,74 @@ fn prost_value_to_json(v: &prost_types::Value) -> serde_json::Value {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_relationship_new_valid() {
-        let r = Relationship::new("document", "doc1", "viewer", "user", "alice", "").unwrap();
-        assert_eq!(r.resource_type, "document");
-        assert_eq!(r.resource_id, "doc1");
-        assert_eq!(r.resource_relation, "viewer");
-        assert_eq!(r.subject_type, "user");
-        assert_eq!(r.subject_id, "alice");
-        assert_eq!(r.subject_relation, "");
-    }
-
-    #[test]
-    fn test_relationship_new_invalid_resource() {
-        let r = Relationship::new("", "doc1", "viewer", "user", "alice", "");
-        assert_eq!(r.unwrap_err(), RelationshipError::InvalidResource);
-
-        let r = Relationship::new("document", "", "viewer", "user", "alice", "");
-        assert_eq!(r.unwrap_err(), RelationshipError::InvalidResource);
-
-        let r = Relationship::new("document", "doc1", "", "user", "alice", "");
-        assert_eq!(r.unwrap_err(), RelationshipError::InvalidResource);
-    }
-
-    #[test]
-    fn test_relationship_new_invalid_subject() {
-        let r = Relationship::new("document", "doc1", "viewer", "", "alice", "");
-        assert_eq!(r.unwrap_err(), RelationshipError::InvalidSubject);
-
-        let r = Relationship::new("document", "doc1", "viewer", "user", "", "");
-        assert_eq!(r.unwrap_err(), RelationshipError::InvalidSubject);
-    }
-
-    #[test]
-    fn test_relationship_from_objects() {
-        let r = Relationship::from_objects("document", "doc1", "viewer", "user", "alice").unwrap();
-        assert_eq!(r.resource_relation, "viewer");
-        assert_eq!(r.subject_relation, "");
-    }
-
-    #[test]
-    fn test_relationship_from_tuple() {
-        let r = Relationship::from_tuple("document:doc1#viewer@user:alice").unwrap();
-        assert_eq!(r.resource_type, "document");
-        assert_eq!(r.resource_id, "doc1");
-        assert_eq!(r.resource_relation, "viewer");
-        assert_eq!(r.subject_type, "user");
-        assert_eq!(r.subject_id, "alice");
-        assert_eq!(r.subject_relation, "");
-    }
-
-    #[test]
-    fn test_relationship_from_tuple_with_subject_relation() {
-        let r = Relationship::from_tuple("document:doc1#viewer@group:eng#member").unwrap();
-        assert_eq!(r.subject_type, "group");
-        assert_eq!(r.subject_id, "eng");
-        assert_eq!(r.subject_relation, "member");
-    }
-
-    #[test]
-    fn test_relationship_from_tuple_invalid() {
-        assert!(Relationship::from_tuple("no-at-sign").is_err());
-        assert!(Relationship::from_tuple("nohash@user:alice").is_err());
-        assert!(Relationship::from_tuple("nocolon#rel@user:alice").is_err());
-        assert!(Relationship::from_tuple("type:id#rel@nocolon").is_err());
-    }
-
-    #[test]
-    fn test_relationship_display() {
-        let r = Relationship::new("document", "doc1", "viewer", "user", "alice", "").unwrap();
-        assert_eq!(r.to_string(), "document:doc1#viewer@user:alice");
-
-        let r = Relationship::new("document", "doc1", "viewer", "group", "eng", "member").unwrap();
-        assert_eq!(r.to_string(), "document:doc1#viewer@group:eng#member");
-    }
-
-    #[test]
-    fn test_relationship_with_caveat() {
-        let r = Relationship::new("document", "doc1", "viewer", "user", "alice", "")
-            .unwrap()
-            .with_caveat("is_active", None);
-        assert_eq!(r.caveat_name, "is_active");
-        assert!(r.caveat_context.is_none());
-    }
-
-    #[test]
-    fn test_relationship_with_caveat_context() {
-        let mut ctx = HashMap::new();
-        ctx.insert("active".to_string(), serde_json::Value::Bool(true));
-        let r = Relationship::new("document", "doc1", "viewer", "user", "alice", "")
-            .unwrap()
-            .with_caveat("is_active", Some(ctx));
-        assert_eq!(r.caveat_name, "is_active");
-        assert!(r.caveat_context.is_some());
-    }
-
-    #[test]
-    fn test_relationship_with_expiration() {
-        let exp = Utc::now();
-        let r = Relationship::new("document", "doc1", "viewer", "user", "alice", "")
-            .unwrap()
-            .with_expiration(exp);
-        assert_eq!(r.expiration, Some(exp));
-    }
-
-    #[test]
-    fn test_relationship_filter() {
-        let r = Relationship::new("document", "doc1", "viewer", "user", "alice", "").unwrap();
-        let f = r.filter();
-        assert_eq!(f.resource_type, "document");
-        assert_eq!(f.resource_id, Some("doc1".to_string()));
-        assert_eq!(f.relation, Some("viewer".to_string()));
-        assert_eq!(f.subject_type, Some("user".to_string()));
-        assert_eq!(f.subject_id, Some("alice".to_string()));
-    }
-
-    #[test]
-    fn test_relationship_immutable_modifiers() {
-        let r = Relationship::new("document", "doc1", "viewer", "user", "alice", "").unwrap();
-        let r2 = r.clone().with_caveat("caveat", None);
-        // Original unchanged
-        assert_eq!(r.caveat_name, "");
-        assert_eq!(r2.caveat_name, "caveat");
-    }
-
-    #[test]
-    fn test_filter_builder() {
-        let f = Filter::new("document")
-            .with_resource_id("doc1")
-            .with_relation("viewer")
-            .with_subject_type("user")
-            .with_subject_id("alice")
-            .with_subject_relation("member");
-        assert_eq!(f.resource_type, "document");
-        assert_eq!(f.resource_id, Some("doc1".to_string()));
-        assert_eq!(f.relation, Some("viewer".to_string()));
-        assert_eq!(f.subject_type, Some("user".to_string()));
-        assert_eq!(f.subject_id, Some("alice".to_string()));
-        assert_eq!(f.subject_relation, Some("member".to_string()));
-    }
-
-    #[test]
-    fn test_filter_with_prefix() {
-        let f = Filter::new("document").with_resource_id_prefix("doc-");
-        assert_eq!(f.resource_id_prefix, Some("doc-".to_string()));
-    }
-
-    /// Regression test for the offboarding hazard this finding describes:
-    /// `to_proto` used to build a `SubjectFilter` with `subject_type` defaulted to
-    /// an empty string whenever only `subject_id`/`subject_relation` was set --
-    /// unlike the other clients, this wasn't silent (the server rejects an empty
-    /// `subject_type`, since it's a required, pattern-validated field), but it
-    /// still let a caller build and send a filter the wire can never accept,
-    /// instead of failing client-side with a message naming the problem.
-    /// `to_proto` must now return `Err` instead.
-    #[test]
-    fn test_filter_to_proto_subject_id_without_subject_type_errors() {
-        let f = Filter::new("document").with_subject_id("alice");
-
-        let err = f.to_proto().unwrap_err();
-
-        let msg = err.to_string();
-        assert!(msg.contains("subject_id"), "message was: {msg}");
-        assert!(msg.contains("subject_type"), "message was: {msg}");
-        assert!(matches!(err, SpiceDBError::InvalidArgument(_)));
-    }
-
-    /// `subject_relation` counterpart of the above.
-    #[test]
-    fn test_filter_to_proto_subject_relation_without_subject_type_errors() {
-        let f = Filter::new("document").with_subject_relation("member");
-
-        let err = f.to_proto().unwrap_err();
-
-        let msg = err.to_string();
-        assert!(msg.contains("subject_relation"), "message was: {msg}");
-        assert!(msg.contains("subject_type"), "message was: {msg}");
-        assert!(matches!(err, SpiceDBError::InvalidArgument(_)));
-    }
-
-    /// Companion to the two error cases above -- proves `subject_type` alone (no
-    /// `subject_id`) still builds a valid subject filter and is not accidentally
-    /// caught by the new guard.
-    #[test]
-    fn test_filter_to_proto_subject_type_alone_does_not_error() {
-        let f = Filter::new("document").with_subject_type("user");
-
-        let proto = f.to_proto().unwrap();
-
-        let subject_filter = proto.optional_subject_filter.unwrap();
-        assert_eq!(subject_filter.subject_type, "user");
-        assert_eq!(subject_filter.optional_subject_id, "");
-    }
-
-    /// Companion proving the valid combination (`subject_type` supplied
-    /// alongside `subject_id`) still works correctly.
-    #[test]
-    fn test_filter_to_proto_subject_type_and_id_does_not_error() {
-        let f = Filter::new("document")
-            .with_subject_type("user")
-            .with_subject_id("alice");
-
-        let proto = f.to_proto().unwrap();
-
-        let subject_filter = proto.optional_subject_filter.unwrap();
-        assert_eq!(subject_filter.subject_type, "user");
-        assert_eq!(subject_filter.optional_subject_id, "alice");
-    }
-
-    #[test]
-    fn test_transaction_create_touch_delete() {
-        let r = Relationship::new("document", "doc1", "viewer", "user", "alice", "").unwrap();
-        let mut txn = Transaction::new();
-        txn.create(&r);
-        txn.touch(&r);
-        txn.delete(&r);
-        assert_eq!(txn.len(), 3);
-        assert!(!txn.is_empty());
-        assert_eq!(txn.updates()[0].0, UpdateOperation::Create);
-        assert_eq!(txn.updates()[1].0, UpdateOperation::Touch);
-        assert_eq!(txn.updates()[2].0, UpdateOperation::Delete);
-    }
-
-    #[test]
-    fn test_transaction_preconditions() {
-        let mut txn = Transaction::new();
-        let f = Filter::new("document").with_resource_id("doc1");
-        txn.must_not_match(f.clone());
-        txn.must_match(f);
-        assert_eq!(txn.preconditions().len(), 2);
-        assert_eq!(
-            txn.preconditions()[0].operation,
-            PreconditionOperation::MustNotMatch
-        );
-        assert_eq!(
-            txn.preconditions()[1].operation,
-            PreconditionOperation::MustMatch
-        );
-    }
-
-    #[test]
-    fn test_delete_options_default_is_empty() {
-        let options = DeleteOptions::default();
-        assert!(options.must_match.is_empty());
-        assert!(options.must_not_match.is_empty());
-        assert_eq!(options.limit, None);
-        assert!(options.preconditions().is_empty());
-    }
-
-    #[test]
-    fn test_delete_options_builder() {
-        let must_match_filter = Filter::new("document").with_resource_id("doc1");
-        let must_not_match_filter = Filter::new("document").with_resource_id("doc2");
-        let options = DeleteOptions::new()
-            .with_must_match(must_match_filter.clone())
-            .with_must_not_match(must_not_match_filter.clone())
-            .with_limit(100);
-
-        assert_eq!(options.must_match, vec![must_match_filter]);
-        assert_eq!(options.must_not_match, vec![must_not_match_filter]);
-        assert_eq!(options.limit, Some(100));
-    }
-
-    #[test]
-    fn test_delete_options_preconditions_must_match_before_must_not_match() {
-        let must_match_filter = Filter::new("document").with_resource_id("doc1");
-        let must_not_match_filter = Filter::new("document").with_resource_id("doc2");
-        let options = DeleteOptions::new()
-            .with_must_not_match(must_not_match_filter.clone())
-            .with_must_match(must_match_filter.clone());
-
-        let preconditions = options.preconditions();
-        assert_eq!(preconditions.len(), 2);
-        assert_eq!(preconditions[0].operation, PreconditionOperation::MustMatch);
-        assert_eq!(preconditions[0].filter, must_match_filter);
-        assert_eq!(
-            preconditions[1].operation,
-            PreconditionOperation::MustNotMatch
-        );
-        assert_eq!(preconditions[1].filter, must_not_match_filter);
-    }
-
-    #[test]
-    fn test_delete_options_multiple_must_match_accumulate() {
-        let f1 = Filter::new("document").with_resource_id("doc1");
-        let f2 = Filter::new("document").with_resource_id("doc2");
-        let options = DeleteOptions::new()
-            .with_must_match(f1.clone())
-            .with_must_match(f2.clone());
-
-        assert_eq!(options.must_match, vec![f1, f2]);
-        assert_eq!(options.preconditions().len(), 2);
-    }
-
-    #[test]
-    fn test_transaction_empty() {
-        let txn = Transaction::new();
-        assert!(txn.is_empty());
-        assert_eq!(txn.len(), 0);
-    }
-
-    #[test]
-    fn test_transaction_borrows_relationship() {
-        let r = Relationship::new("document", "doc1", "viewer", "user", "alice", "").unwrap();
-        let mut txn = Transaction::new();
-        txn.create(&r);
-        // r is still usable after passing by reference
-        assert_eq!(r.resource_type, "document");
-    }
-
-    #[test]
-    fn test_check_result_must_use() {
-        let result = CheckResult {
-            permissionship: Permissionship::HasPermission,
-            missing_context: Vec::new(),
-            checked_at: "rev-1".to_string(),
-        };
-        // Using the result (must_use is a compile-time lint, tested by compilation)
-        assert!(result.has_permission());
-    }
-
-    // T1: has_permission() is false for every variant except HasPermission,
-    // parametrized over all four Permissionship values.
-    #[test]
-    fn test_check_result_has_permission_only_true_for_has_permission() {
-        let cases = [
-            (Permissionship::Unspecified, false),
-            (Permissionship::NoPermission, false),
-            (Permissionship::HasPermission, true),
-            (Permissionship::ConditionalPermission, false),
-        ];
-        for (permissionship, expected) in cases {
-            let result = CheckResult {
-                permissionship: permissionship.clone(),
-                missing_context: Vec::new(),
-                checked_at: String::new(),
-            };
-            assert_eq!(
-                result.has_permission(),
-                expected,
-                "has_permission() should be {expected} for {permissionship:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn test_check_permissionship_from_proto() {
-        assert_eq!(
-            check_permissionship_from_proto(
-                proto::check_permission_response::Permissionship::Unspecified as i32
-            ),
-            Permissionship::Unspecified
-        );
-        assert_eq!(
-            check_permissionship_from_proto(
-                proto::check_permission_response::Permissionship::NoPermission as i32
-            ),
-            Permissionship::NoPermission
-        );
-        assert_eq!(
-            check_permissionship_from_proto(
-                proto::check_permission_response::Permissionship::HasPermission as i32
-            ),
-            Permissionship::HasPermission
-        );
-        assert_eq!(
-            check_permissionship_from_proto(
-                proto::check_permission_response::Permissionship::ConditionalPermission as i32
-            ),
-            Permissionship::ConditionalPermission
-        );
-        // Unrecognized values fail safe to Unspecified rather than panicking.
-        assert_eq!(
-            check_permissionship_from_proto(99),
-            Permissionship::Unspecified
-        );
-    }
-
-    // T2: missing context carries the server's `missing_required_context`
-    // contents, asserted by value (not merely non-empty).
-    #[test]
-    fn test_check_result_from_bulk_item_missing_context_by_value() {
-        let item = proto::CheckBulkPermissionsResponseItem {
-            permissionship: proto::check_permission_response::Permissionship::ConditionalPermission
-                as i32,
-            partial_caveat_info: Some(proto::PartialCaveatInfo {
-                missing_required_context: vec!["ip_address".to_string(), "now".to_string()],
-            }),
-            debug_trace: None,
-        };
-        let result = check_result_from_bulk_item(&item, "rev-1");
-        assert_eq!(
-            result.missing_context,
-            vec!["ip_address".to_string(), "now".to_string()]
-        );
-        assert_eq!(result.permissionship, Permissionship::ConditionalPermission);
-    }
-
-    #[test]
-    fn test_check_result_from_bulk_item_no_partial_caveat_info_yields_empty_missing_context() {
-        let item = proto::CheckBulkPermissionsResponseItem {
-            permissionship: proto::check_permission_response::Permissionship::HasPermission as i32,
-            partial_caveat_info: None,
-            debug_trace: None,
-        };
-        let result = check_result_from_bulk_item(&item, "rev-1");
-        assert!(result.missing_context.is_empty());
-    }
-
-    // T3: the checked-at token is populated from the (response-level) value
-    // passed in, since CheckBulkPermissionsResponseItem carries no per-item
-    // checked_at of its own.
-    #[test]
-    fn test_check_result_from_bulk_item_checked_at_populated() {
-        let item = proto::CheckBulkPermissionsResponseItem {
-            permissionship: proto::check_permission_response::Permissionship::HasPermission as i32,
-            partial_caveat_info: None,
-            debug_trace: None,
-        };
-        let result = check_result_from_bulk_item(&item, "zedtoken-abc123");
-        assert_eq!(result.checked_at, "zedtoken-abc123");
-    }
-
-    #[test]
-    fn test_lookup_resource_has_looked_up_at() {
-        let lr = LookupResource {
-            resource_id: "doc1".into(),
-            permissionship: Permissionship::HasPermission,
-            partial_caveat: None,
-            looked_up_at: "rev-1".into(),
-        };
-        assert_eq!(lr.looked_up_at, "rev-1");
-    }
-
-    #[test]
-    fn test_lookup_subject_has_looked_up_at() {
-        let ls = LookupSubject {
-            subject: ResolvedSubject {
-                subject_id: "alice".into(),
-                permissionship: Permissionship::HasPermission,
-                partial_caveat: None,
-            },
-            excluded_subjects: Vec::new(),
-            looked_up_at: "rev-1".into(),
-        };
-        assert_eq!(ls.looked_up_at, "rev-1");
-    }
-
-    #[test]
-    fn test_update_operation() {
-        assert_ne!(UpdateOperation::Create, UpdateOperation::Touch);
-        assert_ne!(UpdateOperation::Touch, UpdateOperation::Delete);
-        assert_ne!(UpdateOperation::Create, UpdateOperation::Delete);
-    }
-
-    #[test]
-    fn test_schema_types_derive_traits() {
-        let def = SchemaDefinition {
-            name: "document".into(),
-            comment: "A document".into(),
-            relations: vec![SchemaRelation {
-                name: "viewer".into(),
-                comment: "".into(),
-                parent_definition_name: "document".into(),
-            }],
-            permissions: vec![SchemaPermission {
-                name: "view".into(),
-                comment: "".into(),
-                parent_definition_name: "document".into(),
-            }],
-        };
-        let def2 = def.clone();
-        assert_eq!(def, def2);
-        let _ = format!("{:?}", def);
-    }
-
-    #[test]
-    fn test_count_result() {
-        let cr = CountResult {
-            relationship_count: 42,
-            revision: "rev-1".into(),
-        };
-        assert_eq!(cr.relationship_count, 42);
-        assert_eq!(cr.revision, "rev-1");
-    }
-
-    #[test]
-    fn test_permissionship_from_proto() {
-        assert_eq!(
-            permissionship_from_proto(proto::LookupPermissionship::Unspecified as i32),
-            Permissionship::Unspecified
-        );
-        assert_eq!(
-            permissionship_from_proto(proto::LookupPermissionship::HasPermission as i32),
-            Permissionship::HasPermission
-        );
-        assert_eq!(
-            permissionship_from_proto(proto::LookupPermissionship::ConditionalPermission as i32),
-            Permissionship::ConditionalPermission
-        );
-        // Unrecognized values fail safe to Unspecified rather than panicking.
-        assert_eq!(permissionship_from_proto(99), Permissionship::Unspecified);
-    }
-
-    #[test]
-    fn test_partial_caveat_from_proto_none() {
-        assert_eq!(partial_caveat_from_proto(None), None);
-    }
-
-    #[test]
-    fn test_partial_caveat_from_proto_some() {
-        let proto_caveat = proto::PartialCaveatInfo {
-            missing_required_context: vec!["ip_address".to_string()],
-        };
-        assert_eq!(
-            partial_caveat_from_proto(Some(&proto_caveat)),
-            Some(PartialCaveatInfo {
-                missing_required_context: vec!["ip_address".to_string()],
-            })
-        );
-    }
-
-    #[test]
-    fn test_resolved_subject_from_proto_none_yields_zero_value() {
-        let subject = resolved_subject_from_proto(None);
-        assert_eq!(subject.subject_id, "");
-        assert_eq!(subject.permissionship, Permissionship::Unspecified);
-        assert_eq!(subject.partial_caveat, None);
-    }
-
-    #[test]
-    fn test_resolved_subject_from_proto_some() {
-        let proto_subject = proto::ResolvedSubject {
-            subject_object_id: "alice".to_string(),
-            permissionship: proto::LookupPermissionship::HasPermission as i32,
-            partial_caveat_info: None,
-        };
-        let subject = resolved_subject_from_proto(Some(&proto_subject));
-        assert_eq!(subject.subject_id, "alice");
-        assert_eq!(subject.permissionship, Permissionship::HasPermission);
-        assert_eq!(subject.partial_caveat, None);
-    }
-
-    #[test]
-    fn test_tree_operation_from_proto() {
-        assert_eq!(
-            tree_operation_from_proto(proto::algebraic_subject_set::Operation::Unspecified as i32),
-            TreeOperation::Unspecified
-        );
-        assert_eq!(
-            tree_operation_from_proto(proto::algebraic_subject_set::Operation::Union as i32),
-            TreeOperation::Union
-        );
-        assert_eq!(
-            tree_operation_from_proto(proto::algebraic_subject_set::Operation::Intersection as i32),
-            TreeOperation::Intersection
-        );
-        assert_eq!(
-            tree_operation_from_proto(proto::algebraic_subject_set::Operation::Exclusion as i32),
-            TreeOperation::Exclusion
-        );
-        // Unrecognized values fail safe to Unspecified rather than panicking.
-        assert_eq!(tree_operation_from_proto(99), TreeOperation::Unspecified);
-    }
-
-    #[test]
-    fn test_permission_tree_from_proto_none_yields_zero_value() {
-        let tree = permission_tree_from_proto(None);
-        assert_eq!(tree.expanded_object, ObjectRef::default());
-        assert_eq!(tree.expanded_relation, "");
-        assert!(tree.intermediate.is_none());
-        assert!(tree.leaf.is_none());
-    }
-
-    #[test]
-    fn test_permission_tree_from_proto_leaf() {
-        let proto_tree = proto::PermissionRelationshipTree {
-            expanded_object: Some(proto::ObjectReference {
-                object_type: "document".to_string(),
-                object_id: "firstdoc".to_string(),
-            }),
-            expanded_relation: "viewer".to_string(),
-            tree_type: Some(proto::permission_relationship_tree::TreeType::Leaf(
-                proto::DirectSubjectSet {
-                    subjects: vec![proto::SubjectReference {
-                        object: Some(proto::ObjectReference {
-                            object_type: "user".to_string(),
-                            object_id: "alice".to_string(),
-                        }),
-                        optional_relation: String::new(),
-                    }],
-                },
-            )),
-        };
-
-        let tree = permission_tree_from_proto(Some(&proto_tree));
-        assert_eq!(tree.expanded_object.object_type, "document");
-        assert_eq!(tree.expanded_object.object_id, "firstdoc");
-        assert_eq!(tree.expanded_relation, "viewer");
-        assert!(tree.intermediate.is_none());
-        let leaf = tree.leaf.expect("expected a leaf node");
-        assert_eq!(leaf.subjects.len(), 1);
-        assert_eq!(leaf.subjects[0].subject_type, "user");
-        assert_eq!(leaf.subjects[0].subject_id, "alice");
-        assert_eq!(leaf.subjects[0].subject_relation, "");
-    }
-
-    #[test]
-    fn test_permission_tree_from_proto_intermediate_recurses() {
-        let leaf_tree = proto::PermissionRelationshipTree {
-            expanded_object: Some(proto::ObjectReference {
-                object_type: "document".to_string(),
-                object_id: "firstdoc".to_string(),
-            }),
-            expanded_relation: "editor".to_string(),
-            tree_type: Some(proto::permission_relationship_tree::TreeType::Leaf(
-                proto::DirectSubjectSet {
-                    subjects: vec![proto::SubjectReference {
-                        object: Some(proto::ObjectReference {
-                            object_type: "user".to_string(),
-                            object_id: "bob".to_string(),
-                        }),
-                        optional_relation: String::new(),
-                    }],
-                },
-            )),
-        };
-
-        let proto_tree = proto::PermissionRelationshipTree {
-            expanded_object: Some(proto::ObjectReference {
-                object_type: "document".to_string(),
-                object_id: "firstdoc".to_string(),
-            }),
-            expanded_relation: "view".to_string(),
-            tree_type: Some(proto::permission_relationship_tree::TreeType::Intermediate(
-                proto::AlgebraicSubjectSet {
-                    operation: proto::algebraic_subject_set::Operation::Union as i32,
-                    children: vec![leaf_tree],
-                },
-            )),
-        };
-
-        let tree = permission_tree_from_proto(Some(&proto_tree));
-        assert_eq!(tree.expanded_relation, "view");
-        assert!(tree.leaf.is_none());
-        let intermediate = tree.intermediate.expect("expected an intermediate node");
-        assert_eq!(intermediate.operation, TreeOperation::Union);
-        assert_eq!(intermediate.children.len(), 1);
-        let child_leaf = intermediate.children[0]
-            .leaf
-            .as_ref()
-            .expect("expected child to be a leaf");
-        assert_eq!(child_leaf.subjects[0].subject_id, "bob");
-    }
-
-    // -----------------------------------------------------------------------
-    // Task 17: caveat context on the check surface (spec D3b)
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_relationship_with_check_context_is_distinct_from_caveat_context() {
-        let mut check_ctx = HashMap::new();
-        check_ctx.insert("now".to_string(), serde_json::json!(42.0));
-
-        let mut write_ctx = HashMap::new();
-        write_ctx.insert("threshold".to_string(), serde_json::json!(10.0));
-
-        let r = Relationship::new("document", "doc1", "viewer", "user", "alice", "")
-            .unwrap()
-            .with_caveat("active", Some(write_ctx.clone()))
-            .with_check_context(check_ctx.clone());
-
-        assert_eq!(r.caveat_context, Some(write_ctx));
-        assert_eq!(r.check_context, Some(check_ctx));
-    }
-
-    #[test]
-    fn test_relationship_default_check_context_is_none() {
-        let r = Relationship::new("document", "doc1", "viewer", "user", "alice", "").unwrap();
-        assert_eq!(r.check_context, None);
-    }
-
-    // Proves check_context never leaks onto the wire write path — a leak
-    // here would silently alter a stored relationship's caveat context.
-    #[test]
-    fn test_relationship_to_proto_does_not_leak_check_context_into_write_path() {
-        let mut check_ctx = HashMap::new();
-        check_ctx.insert("now".to_string(), serde_json::json!(42.0));
-
-        let mut write_ctx = HashMap::new();
-        write_ctx.insert("threshold".to_string(), serde_json::json!(10.0));
-
-        let r = Relationship::new("document", "doc1", "viewer", "user", "alice", "")
-            .unwrap()
-            .with_caveat("active", Some(write_ctx))
-            .with_check_context(check_ctx);
-
-        let proto_rel = r.to_proto();
-        let caveat = proto_rel.optional_caveat.expect("caveat should be set");
-        let ctx = caveat.context.expect("caveat context should be set");
-        assert_eq!(ctx.fields.len(), 1);
-        assert!(
-            ctx.fields.contains_key("threshold"),
-            "write path must carry only caveat_context, not check_context"
-        );
-        assert!(
-            !ctx.fields.contains_key("now"),
-            "check_context must never leak onto the wire write path"
-        );
-    }
-
-    #[test]
-    fn test_merge_check_context_neither_supplied_is_none() {
-        assert_eq!(merge_check_context(None, None), None);
-    }
-
-    #[test]
-    fn test_merge_check_context_call_level_only() {
-        let mut call_level = HashMap::new();
-        call_level.insert("now".to_string(), serde_json::json!(42.0));
-        assert_eq!(
-            merge_check_context(Some(&call_level), None),
-            Some(call_level)
-        );
-    }
-
-    #[test]
-    fn test_merge_check_context_item_only() {
-        let mut item = HashMap::new();
-        item.insert("now".to_string(), serde_json::json!(42.0));
-        assert_eq!(merge_check_context(None, Some(&item)), Some(item));
-    }
-
-    // C3 at the pure-function level: item key wins on conflict, call-level
-    // key absent from the item is retained.
-    #[test]
-    fn test_merge_check_context_merge_rule() {
-        let mut call_level = HashMap::new();
-        call_level.insert("now".to_string(), serde_json::json!(42.0));
-        call_level.insert("region".to_string(), serde_json::json!("us"));
-
-        let mut item = HashMap::new();
-        item.insert("region".to_string(), serde_json::json!("eu"));
-
-        let merged = merge_check_context(Some(&call_level), Some(&item)).unwrap();
-
-        let mut want = HashMap::new();
-        want.insert("now".to_string(), serde_json::json!(42.0));
-        want.insert("region".to_string(), serde_json::json!("eu"));
-        assert_eq!(merged, want);
-    }
-
-    #[test]
-    fn test_check_context_to_proto_round_trips() {
-        let mut ctx = HashMap::new();
-        ctx.insert("now".to_string(), serde_json::json!(42.0));
-        ctx.insert("region".to_string(), serde_json::json!("us"));
-
-        let proto_struct = check_context_to_proto(&ctx);
-        let round_tripped: HashMap<String, serde_json::Value> = proto_struct
-            .fields
-            .iter()
-            .map(|(k, v)| (k.clone(), prost_value_to_json(v)))
-            .collect();
-        assert_eq!(round_tripped, ctx);
-    }
+/// Permission check tracing, disabled by default.
+/// ```compile_fail
+/// spicedb::CheckOptions::new().with_tracing(true);
+/// ```
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum TracingMode {
+    #[default]
+    Disabled,
+    Enabled,
 }
 
-/// Call-level options for the permission-check operations.
-///
-/// This type exists so that a new check option is a new field here rather than
-/// a new method. Before it, each check operation had three forms — plain,
-/// `..._with_context` and `..._with_timeout` — which is twelve methods for four
-/// operations, and meant a caller could set a context *or* a timeout and never
-/// both, because no method accepted the pair. See root DESIGN.md, "RULE: Every
-/// RPC wrapper must have one place to add an option".
-///
-/// `#[non_exhaustive]` is the point: it stops downstream crates constructing
-/// this with a struct literal, so adding a field later is not a breaking
-/// change. Build it with [`CheckOptions::new`] and the `with_*` methods.
-///
-/// ```no_run
-/// # use spicedb::types::CheckOptions;
-/// # use std::time::Duration;
-/// let options = CheckOptions::new().with_timeout(Duration::from_secs(2));
-/// ```
-#[derive(Debug, Clone, Default, PartialEq)]
+/// Resource lookup debugging.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DebugMode {
+    #[default]
+    Disabled,
+    Enabled,
+}
+
+/// Periodic watch checkpoint delivery.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum CheckpointMode {
+    #[default]
+    Exclude,
+    Include,
+}
+
+/// Kinds of changes delivered by a watch.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum WatchContent {
+    #[default]
+    Relationships,
+    RelationshipsAndSchema,
+}
+
+/// Whether plaintext transport may send credentials to remote hosts.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RemoteCredentialsPolicy {
+    #[default]
+    LoopbackOnly,
+    /// Permit sending credentials without TLS to remote hostnames and IPs.
+    AllowInsecureRemote,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct CheckOptions {
+    pub(crate) tracing: TracingMode,
     /// Call-level caveat context, applied to every relationship the call
     /// evaluates and merged key-by-key with each relationship's own context,
     /// where the relationship's own value wins for keys present in both.
-    pub context: Option<std::collections::HashMap<String, serde_json::Value>>,
+    pub(crate) context: Option<std::collections::HashMap<String, serde_json::Value>>,
     /// Deadline for this call, overriding the client's default. `None` applies
     /// that default rather than removing the bound — see root DESIGN.md,
     /// "RULE: A unary call must have a deadline".
-    pub timeout: Option<std::time::Duration>,
+    pub(crate) timeout: Option<std::time::Duration>,
 }
 
 impl CheckOptions {
+    pub fn with_tracing(mut self, tracing: TracingMode) -> Self {
+        self.tracing = tracing;
+        self
+    }
     /// Options with nothing set: the client's defaults apply.
     pub fn new() -> Self {
         Self::default()
@@ -2084,24 +1288,1547 @@ impl CheckOptions {
 ///
 /// See [`CheckOptions`] for why this type exists and why it is
 /// `#[non_exhaustive]`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Native diagnostic trace; this never participates in authorization decisions.
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
-pub struct LookupOptions {
-    /// Asks the server to attach debug information to the error raised when the
-    /// lookup fails by exceeding the maximum dispatch depth. It has no effect
-    /// on a successful call, and none on any other failure.
-    pub with_debug: bool,
+pub struct DebugInformation {
+    pub check: Option<CheckDebugTrace>,
+    pub schema_used: String,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct CheckDebugTrace {
+    pub resource: Option<ObjectRef>,
+    pub permission: String,
+    pub permission_type: PermissionType,
+    pub subject: Option<SubjectRef>,
+    pub result: Permissionship,
+    pub caveat_evaluation: Option<CaveatEvaluation>,
+    pub duration: Option<chrono::TimeDelta>,
+    pub resolution: Option<TraceResolution>,
+    pub expiration: Option<DateTime<Utc>>,
+    pub operation_id: String,
+    pub source: String,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PermissionType {
+    Unspecified,
+    Relation,
+    Permission,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum TraceResolution {
+    Cached(bool),
+    Subproblems(Vec<CheckDebugTrace>),
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum CaveatResult {
+    Unspecified,
+    Unevaluated,
+    False,
+    True,
+    MissingContext,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct CaveatEvaluation {
+    pub expression: String,
+    pub result: CaveatResult,
+    pub context: Option<Context>,
+    pub missing_context: Vec<String>,
+    pub name: String,
+}
+impl DebugInformation {
+    pub(crate) fn from_proto(p: &proto::DebugInformation) -> Self {
+        Self {
+            check: p.check.as_ref().map(CheckDebugTrace::from_proto),
+            schema_used: p.schema_used.clone(),
+        }
+    }
+}
+impl CheckDebugTrace {
+    fn from_proto(p: &proto::CheckDebugTrace) -> Self {
+        Self {
+            resource: p.resource.as_ref().map(|r| ObjectRef::from_proto(Some(r))),
+            permission: p.permission.clone(),
+            permission_type: match p.permission_type {
+                1 => PermissionType::Relation,
+                2 => PermissionType::Permission,
+                _ => PermissionType::Unspecified,
+            },
+            subject: p.subject.as_ref().map(|s| SubjectRef::from_proto(Some(s))),
+            result: check_permissionship_from_proto(p.result),
+            caveat_evaluation: p.caveat_evaluation_info.as_ref().map(|c| CaveatEvaluation {
+                expression: c.expression.clone(),
+                result: match c.result {
+                    1 => CaveatResult::Unevaluated,
+                    2 => CaveatResult::False,
+                    3 => CaveatResult::True,
+                    4 => CaveatResult::MissingContext,
+                    _ => CaveatResult::Unspecified,
+                },
+                context: c.context.as_ref().map(context_from_proto),
+                missing_context: c
+                    .partial_caveat_info
+                    .as_ref()
+                    .map(|i| i.missing_required_context.clone())
+                    .unwrap_or_default(),
+                name: c.caveat_name.clone(),
+            }),
+            duration: p.duration.as_ref().and_then(|d| {
+                chrono::TimeDelta::try_seconds(d.seconds)
+                    .and_then(|s| s.checked_add(&chrono::TimeDelta::nanoseconds(d.nanos as i64)))
+            }),
+            resolution: p.resolution.as_ref().map(|r| match r {
+                proto::check_debug_trace::Resolution::WasCachedResult(c) => {
+                    TraceResolution::Cached(*c)
+                }
+                proto::check_debug_trace::Resolution::SubProblems(s) => {
+                    TraceResolution::Subproblems(s.traces.iter().map(Self::from_proto).collect())
+                }
+            }),
+            expiration: p
+                .optional_expires_at
+                .as_ref()
+                .and_then(timestamp_from_proto),
+            operation_id: p.trace_operation_id.clone(),
+            source: p.source.clone(),
+        }
+    }
 }
 
-impl LookupOptions {
-    /// Options with nothing set: the client's defaults apply.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct PermissionCheck {
+    pub(crate) resource: ObjectRef,
+    pub(crate) permission: String,
+    pub(crate) subject: SubjectRef,
+    pub(crate) consistency: crate::consistency::Strategy,
+    pub(crate) context: Option<Context>,
+    pub(crate) options: Option<CheckOptions>,
+}
+impl PermissionCheck {
+    pub fn new(
+        resource: ObjectRef,
+        permission: impl Into<String>,
+        subject: SubjectRef,
+        consistency: crate::consistency::Strategy,
+    ) -> Self {
+        Self {
+            resource,
+            permission: permission.into(),
+            subject,
+            consistency,
+            context: None,
+            options: None,
+        }
+    }
+    pub fn with_context(mut self, context: Context) -> Self {
+        self.context = Some(context);
+        self
+    }
+    pub fn with_options(mut self, options: CheckOptions) -> Self {
+        self.options = Some(options);
+        self
+    }
+    pub fn context(&self) -> Option<&Context> {
+        self.context.as_ref()
+    }
+    pub fn resource(&self) -> &ObjectRef {
+        &self.resource
+    }
+    pub fn permission(&self) -> &str {
+        &self.permission
+    }
+    pub fn subject(&self) -> &SubjectRef {
+        &self.subject
+    }
+    pub fn consistency(&self) -> &crate::consistency::Strategy {
+        &self.consistency
+    }
+    pub(crate) fn validate(&self) -> Result<(), SpiceDBError> {
+        required("permission", &self.permission)?;
+        self.consistency.validate()?;
+        if let Some(c) = &self.context {
+            validate_context(c)?;
+        }
+        Ok(())
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct BulkCheckRequest {
+    pub(crate) items: Vec<PermissionCheck>,
+    pub(crate) options: CheckOptions,
+}
+impl BulkCheckRequest {
+    pub fn new(items: Vec<PermissionCheck>) -> Self {
+        Self {
+            items,
+            options: CheckOptions::new(),
+        }
+    }
+    pub fn with_options(mut self, options: CheckOptions) -> Self {
+        self.options = options;
+        self
+    }
+    pub fn items(&self) -> &[PermissionCheck] {
+        &self.items
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct WriteOptions {
+    pub(crate) timeout: Option<std::time::Duration>,
+    pub(crate) transaction_metadata: Option<Context>,
+}
+impl WriteOptions {
     pub fn new() -> Self {
         Self::default()
     }
-
-    /// Asks the server for debug information on a dispatch-depth failure.
-    pub fn with_debug(mut self, with_debug: bool) -> Self {
-        self.with_debug = with_debug;
+    pub fn with_timeout(mut self, value: std::time::Duration) -> Self {
+        self.timeout = Some(value);
         self
+    }
+    pub fn with_transaction_metadata(mut self, value: Context) -> Self {
+        self.transaction_metadata = Some(value);
+        self
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct WriteRequest {
+    pub(crate) transaction: Transaction,
+    pub(crate) options: WriteOptions,
+}
+impl WriteRequest {
+    pub fn new(transaction: Transaction) -> Self {
+        Self {
+            transaction,
+            options: WriteOptions::new(),
+        }
+    }
+    pub fn with_options(mut self, options: WriteOptions) -> Self {
+        self.options = options;
+        self
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ReadRelationshipsOptions {
+    pub(crate) timeout: Option<std::time::Duration>,
+    pub(crate) page_size: std::num::NonZeroU32,
+    pub(crate) limit: Option<u32>,
+    pub(crate) cursor: Option<String>,
+}
+impl Default for ReadRelationshipsOptions {
+    fn default() -> Self {
+        Self {
+            timeout: None,
+            page_size: std::num::NonZeroU32::new(512).unwrap(),
+            limit: None,
+            cursor: None,
+        }
+    }
+}
+impl ReadRelationshipsOptions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn with_timeout(mut self, value: std::time::Duration) -> Self {
+        self.timeout = Some(value);
+        self
+    }
+    pub fn with_page_size(mut self, value: std::num::NonZeroU32) -> Self {
+        self.page_size = value;
+        self
+    }
+    pub fn with_limit(mut self, value: u32) -> Self {
+        self.limit = Some(value);
+        self
+    }
+    pub fn with_cursor(mut self, value: impl Into<String>) -> Self {
+        self.cursor = Some(value.into());
+        self
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ReadRelationshipsRequest {
+    pub(crate) filter: Filter,
+    pub(crate) consistency: crate::consistency::Strategy,
+    pub(crate) options: ReadRelationshipsOptions,
+}
+impl ReadRelationshipsRequest {
+    pub fn new(filter: Filter, consistency: crate::consistency::Strategy) -> Self {
+        Self {
+            filter,
+            consistency,
+            options: ReadRelationshipsOptions::new(),
+        }
+    }
+    pub fn with_options(mut self, options: ReadRelationshipsOptions) -> Self {
+        self.options = options;
+        self
+    }
+}
+/// Client-side selection of LookupResources results. Limits count yielded results.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LookupPermissionshipFilter {
+    /// Preserve all results, including conditional and unknown permissionships.
+    #[default]
+    All,
+    /// Yield only unconditional grants.
+    HasPermissionOnly,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct LookupResourcesOptions {
+    pub(crate) permissionship_filter: LookupPermissionshipFilter,
+    pub(crate) timeout: Option<std::time::Duration>,
+    pub(crate) page_size: std::num::NonZeroU32,
+    pub(crate) limit: Option<u32>,
+    pub(crate) cursor: Option<String>,
+    pub(crate) context: Option<Context>,
+    pub(crate) debug: DebugMode,
+}
+impl Default for LookupResourcesOptions {
+    fn default() -> Self {
+        Self {
+            permissionship_filter: LookupPermissionshipFilter::All,
+            timeout: None,
+            page_size: std::num::NonZeroU32::new(512).unwrap(),
+            limit: None,
+            cursor: None,
+            context: None,
+            debug: DebugMode::Disabled,
+        }
+    }
+}
+impl LookupResourcesOptions {
+    /// Filter results client-side; pagination continues past skipped results.
+    pub fn with_permissionship_filter(mut self, value: LookupPermissionshipFilter) -> Self {
+        self.permissionship_filter = value;
+        self
+    }
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn with_timeout(mut self, value: std::time::Duration) -> Self {
+        self.timeout = Some(value);
+        self
+    }
+    pub fn with_page_size(mut self, value: std::num::NonZeroU32) -> Self {
+        self.page_size = value;
+        self
+    }
+    pub fn with_limit(mut self, value: u32) -> Self {
+        self.limit = Some(value);
+        self
+    }
+    pub fn with_cursor(mut self, value: impl Into<String>) -> Self {
+        self.cursor = Some(value.into());
+        self
+    }
+    pub fn with_context(mut self, value: Context) -> Self {
+        self.context = Some(value);
+        self
+    }
+    pub fn with_debug(mut self, value: DebugMode) -> Self {
+        self.debug = value;
+        self
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct LookupResourcesRequest {
+    pub(crate) resource_type: String,
+    pub(crate) permission: String,
+    pub(crate) subject: SubjectRef,
+    pub(crate) consistency: crate::consistency::Strategy,
+    pub(crate) options: LookupResourcesOptions,
+}
+impl LookupResourcesRequest {
+    pub fn new(
+        resource_type: impl Into<String>,
+        permission: impl Into<String>,
+        subject: SubjectRef,
+        consistency: crate::consistency::Strategy,
+    ) -> Self {
+        Self {
+            resource_type: resource_type.into(),
+            permission: permission.into(),
+            subject,
+            consistency,
+            options: LookupResourcesOptions::new(),
+        }
+    }
+    pub fn with_options(mut self, options: LookupResourcesOptions) -> Self {
+        self.options = options;
+        self
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct LookupSubjectsOptions {
+    pub(crate) timeout: Option<std::time::Duration>,
+    pub(crate) context: Option<Context>,
+    pub(crate) subject_relation: Option<String>,
+    pub(crate) limit: Option<u32>,
+    pub(crate) wildcard_option: WildcardOption,
+}
+impl Default for LookupSubjectsOptions {
+    fn default() -> Self {
+        Self {
+            timeout: None,
+            context: None,
+            subject_relation: None,
+            limit: None,
+            wildcard_option: WildcardOption::Include,
+        }
+    }
+}
+impl LookupSubjectsOptions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn with_timeout(mut self, value: std::time::Duration) -> Self {
+        self.timeout = Some(value);
+        self
+    }
+    pub fn with_context(mut self, value: Context) -> Self {
+        self.context = Some(value);
+        self
+    }
+    pub fn with_subject_relation(mut self, value: impl Into<String>) -> Self {
+        self.subject_relation = Some(value.into());
+        self
+    }
+    pub fn with_limit(mut self, value: u32) -> Self {
+        self.limit = Some(value);
+        self
+    }
+    pub fn with_wildcard_option(mut self, value: WildcardOption) -> Self {
+        self.wildcard_option = value;
+        self
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct LookupSubjectsRequest {
+    pub(crate) resource: ObjectRef,
+    pub(crate) permission: String,
+    pub(crate) subject_type: String,
+    pub(crate) consistency: crate::consistency::Strategy,
+    pub(crate) options: LookupSubjectsOptions,
+}
+impl LookupSubjectsRequest {
+    pub fn new(
+        resource: ObjectRef,
+        permission: impl Into<String>,
+        subject_type: impl Into<String>,
+        consistency: crate::consistency::Strategy,
+    ) -> Self {
+        Self {
+            resource,
+            permission: permission.into(),
+            subject_type: subject_type.into(),
+            consistency,
+            options: LookupSubjectsOptions::new(),
+        }
+    }
+    pub fn with_options(mut self, options: LookupSubjectsOptions) -> Self {
+        self.options = options;
+        self
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct ReadSchemaOptions {
+    pub(crate) timeout: Option<std::time::Duration>,
+}
+impl ReadSchemaOptions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn with_timeout(mut self, value: std::time::Duration) -> Self {
+        self.timeout = Some(value);
+        self
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ReadSchemaRequest {
+    pub(crate) options: ReadSchemaOptions,
+}
+impl ReadSchemaRequest {
+    pub fn new() -> Self {
+        Self {
+            options: ReadSchemaOptions::new(),
+        }
+    }
+    pub fn with_options(mut self, options: ReadSchemaOptions) -> Self {
+        self.options = options;
+        self
+    }
+}
+impl Default for ReadSchemaRequest {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct WriteSchemaOptions {
+    pub(crate) timeout: Option<std::time::Duration>,
+}
+impl WriteSchemaOptions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn with_timeout(mut self, value: std::time::Duration) -> Self {
+        self.timeout = Some(value);
+        self
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct WriteSchemaRequest {
+    pub(crate) schema: String,
+    pub(crate) options: WriteSchemaOptions,
+}
+impl WriteSchemaRequest {
+    pub fn new(schema: impl Into<String>) -> Self {
+        Self {
+            schema: schema.into(),
+            options: WriteSchemaOptions::new(),
+        }
+    }
+    pub fn with_options(mut self, options: WriteSchemaOptions) -> Self {
+        self.options = options;
+        self
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct ReflectSchemaOptions {
+    pub(crate) timeout: Option<std::time::Duration>,
+    pub(crate) filters: Vec<ReflectionFilter>,
+}
+impl ReflectSchemaOptions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn with_timeout(mut self, value: std::time::Duration) -> Self {
+        self.timeout = Some(value);
+        self
+    }
+    pub fn with_filters(mut self, value: Vec<ReflectionFilter>) -> Self {
+        self.filters = value;
+        self
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ReflectSchemaRequest {
+    pub(crate) consistency: crate::consistency::Strategy,
+    pub(crate) options: ReflectSchemaOptions,
+}
+impl ReflectSchemaRequest {
+    pub fn new(consistency: crate::consistency::Strategy) -> Self {
+        Self {
+            consistency,
+            options: ReflectSchemaOptions::new(),
+        }
+    }
+    pub fn with_options(mut self, options: ReflectSchemaOptions) -> Self {
+        self.options = options;
+        self
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct ComputablePermissionsOptions {
+    pub(crate) timeout: Option<std::time::Duration>,
+    pub(crate) definition_name_filter: Option<String>,
+}
+impl ComputablePermissionsOptions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn with_timeout(mut self, value: std::time::Duration) -> Self {
+        self.timeout = Some(value);
+        self
+    }
+    pub fn with_definition_name_filter(mut self, value: impl Into<String>) -> Self {
+        self.definition_name_filter = Some(value.into());
+        self
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ComputablePermissionsRequest {
+    pub(crate) definition_name: String,
+    pub(crate) relation_name: String,
+    pub(crate) consistency: crate::consistency::Strategy,
+    pub(crate) options: ComputablePermissionsOptions,
+}
+impl ComputablePermissionsRequest {
+    pub fn new(
+        definition_name: impl Into<String>,
+        relation_name: impl Into<String>,
+        consistency: crate::consistency::Strategy,
+    ) -> Self {
+        Self {
+            definition_name: definition_name.into(),
+            relation_name: relation_name.into(),
+            consistency,
+            options: ComputablePermissionsOptions::new(),
+        }
+    }
+    pub fn with_options(mut self, options: ComputablePermissionsOptions) -> Self {
+        self.options = options;
+        self
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct DependentRelationsOptions {
+    pub(crate) timeout: Option<std::time::Duration>,
+}
+impl DependentRelationsOptions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn with_timeout(mut self, value: std::time::Duration) -> Self {
+        self.timeout = Some(value);
+        self
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct DependentRelationsRequest {
+    pub(crate) definition_name: String,
+    pub(crate) permission_name: String,
+    pub(crate) consistency: crate::consistency::Strategy,
+    pub(crate) options: DependentRelationsOptions,
+}
+impl DependentRelationsRequest {
+    pub fn new(
+        definition_name: impl Into<String>,
+        permission_name: impl Into<String>,
+        consistency: crate::consistency::Strategy,
+    ) -> Self {
+        Self {
+            definition_name: definition_name.into(),
+            permission_name: permission_name.into(),
+            consistency,
+            options: DependentRelationsOptions::new(),
+        }
+    }
+    pub fn with_options(mut self, options: DependentRelationsOptions) -> Self {
+        self.options = options;
+        self
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct DiffSchemaOptions {
+    pub(crate) timeout: Option<std::time::Duration>,
+}
+impl DiffSchemaOptions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn with_timeout(mut self, value: std::time::Duration) -> Self {
+        self.timeout = Some(value);
+        self
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct DiffSchemaRequest {
+    pub(crate) comparison_schema: String,
+    pub(crate) consistency: crate::consistency::Strategy,
+    pub(crate) options: DiffSchemaOptions,
+}
+impl DiffSchemaRequest {
+    pub fn new(
+        comparison_schema: impl Into<String>,
+        consistency: crate::consistency::Strategy,
+    ) -> Self {
+        Self {
+            comparison_schema: comparison_schema.into(),
+            consistency,
+            options: DiffSchemaOptions::new(),
+        }
+    }
+    pub fn with_options(mut self, options: DiffSchemaOptions) -> Self {
+        self.options = options;
+        self
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct ExpandPermissionTreeOptions {
+    pub(crate) timeout: Option<std::time::Duration>,
+}
+impl ExpandPermissionTreeOptions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn with_timeout(mut self, value: std::time::Duration) -> Self {
+        self.timeout = Some(value);
+        self
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ExpandPermissionTreeRequest {
+    pub(crate) resource: ObjectRef,
+    pub(crate) permission: String,
+    pub(crate) consistency: crate::consistency::Strategy,
+    pub(crate) options: ExpandPermissionTreeOptions,
+}
+impl ExpandPermissionTreeRequest {
+    pub fn new(
+        resource: ObjectRef,
+        permission: impl Into<String>,
+        consistency: crate::consistency::Strategy,
+    ) -> Self {
+        Self {
+            resource,
+            permission: permission.into(),
+            consistency,
+            options: ExpandPermissionTreeOptions::new(),
+        }
+    }
+    pub fn with_options(mut self, options: ExpandPermissionTreeOptions) -> Self {
+        self.options = options;
+        self
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ExportRelationshipsOptions {
+    pub(crate) timeout: Option<std::time::Duration>,
+    pub(crate) page_size: std::num::NonZeroU32,
+    pub(crate) filter: Option<Filter>,
+    pub(crate) limit: Option<u32>,
+    pub(crate) cursor: Option<String>,
+}
+impl Default for ExportRelationshipsOptions {
+    fn default() -> Self {
+        Self {
+            timeout: None,
+            page_size: std::num::NonZeroU32::new(512).unwrap(),
+            filter: None,
+            limit: None,
+            cursor: None,
+        }
+    }
+}
+impl ExportRelationshipsOptions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn with_timeout(mut self, value: std::time::Duration) -> Self {
+        self.timeout = Some(value);
+        self
+    }
+    pub fn with_page_size(mut self, value: std::num::NonZeroU32) -> Self {
+        self.page_size = value;
+        self
+    }
+    pub fn with_filter(mut self, value: Filter) -> Self {
+        self.filter = Some(value);
+        self
+    }
+    pub fn with_limit(mut self, value: u32) -> Self {
+        self.limit = Some(value);
+        self
+    }
+    pub fn with_cursor(mut self, value: impl Into<String>) -> Self {
+        self.cursor = Some(value.into());
+        self
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ExportRelationshipsRequest {
+    pub(crate) consistency: crate::consistency::Strategy,
+    pub(crate) options: ExportRelationshipsOptions,
+}
+impl ExportRelationshipsRequest {
+    pub fn new(consistency: crate::consistency::Strategy) -> Self {
+        Self {
+            consistency,
+            options: ExportRelationshipsOptions::new(),
+        }
+    }
+    pub fn with_options(mut self, options: ExportRelationshipsOptions) -> Self {
+        self.options = options;
+        self
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct UpdatesRequest {
+    pub(crate) object_types: Vec<String>,
+    pub(crate) options: WatchOptions,
+}
+impl UpdatesRequest {
+    pub fn new(object_types: Vec<String>) -> Self {
+        Self {
+            object_types,
+            options: WatchOptions::new(),
+        }
+    }
+    pub fn with_options(mut self, options: WatchOptions) -> Self {
+        self.options = options;
+        self
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct ExperimentalRegisterRelationshipCounterOptions {
+    pub(crate) timeout: Option<std::time::Duration>,
+}
+impl ExperimentalRegisterRelationshipCounterOptions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn with_timeout(mut self, value: std::time::Duration) -> Self {
+        self.timeout = Some(value);
+        self
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ExperimentalRegisterRelationshipCounterRequest {
+    pub(crate) name: String,
+    pub(crate) filter: Filter,
+    pub(crate) options: ExperimentalRegisterRelationshipCounterOptions,
+}
+impl ExperimentalRegisterRelationshipCounterRequest {
+    pub fn new(name: impl Into<String>, filter: Filter) -> Self {
+        Self {
+            name: name.into(),
+            filter,
+            options: ExperimentalRegisterRelationshipCounterOptions::new(),
+        }
+    }
+    pub fn with_options(mut self, options: ExperimentalRegisterRelationshipCounterOptions) -> Self {
+        self.options = options;
+        self
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct ExperimentalCountRelationshipsOptions {
+    pub(crate) timeout: Option<std::time::Duration>,
+}
+impl ExperimentalCountRelationshipsOptions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn with_timeout(mut self, value: std::time::Duration) -> Self {
+        self.timeout = Some(value);
+        self
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ExperimentalCountRelationshipsRequest {
+    pub(crate) name: String,
+    pub(crate) options: ExperimentalCountRelationshipsOptions,
+}
+impl ExperimentalCountRelationshipsRequest {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            options: ExperimentalCountRelationshipsOptions::new(),
+        }
+    }
+    pub fn with_options(mut self, options: ExperimentalCountRelationshipsOptions) -> Self {
+        self.options = options;
+        self
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct ExperimentalUnregisterRelationshipCounterOptions {
+    pub(crate) timeout: Option<std::time::Duration>,
+}
+impl ExperimentalUnregisterRelationshipCounterOptions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn with_timeout(mut self, value: std::time::Duration) -> Self {
+        self.timeout = Some(value);
+        self
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ExperimentalUnregisterRelationshipCounterRequest {
+    pub(crate) name: String,
+    pub(crate) options: ExperimentalUnregisterRelationshipCounterOptions,
+}
+impl ExperimentalUnregisterRelationshipCounterRequest {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            options: ExperimentalUnregisterRelationshipCounterOptions::new(),
+        }
+    }
+    pub fn with_options(
+        mut self,
+        options: ExperimentalUnregisterRelationshipCounterOptions,
+    ) -> Self {
+        self.options = options;
+        self
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct ExperimentalRoaringLookupResourcesOptions {
+    pub(crate) timeout: Option<std::time::Duration>,
+}
+impl ExperimentalRoaringLookupResourcesOptions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn with_timeout(mut self, value: std::time::Duration) -> Self {
+        self.timeout = Some(value);
+        self
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ExperimentalRoaringLookupResourcesRequest {
+    pub(crate) resource_type: String,
+    pub(crate) permission: String,
+    pub(crate) subject: SubjectRef,
+    pub(crate) consistency: crate::consistency::Strategy,
+    pub(crate) options: ExperimentalRoaringLookupResourcesOptions,
+}
+impl ExperimentalRoaringLookupResourcesRequest {
+    pub fn new(
+        resource_type: impl Into<String>,
+        permission: impl Into<String>,
+        subject: SubjectRef,
+        consistency: crate::consistency::Strategy,
+    ) -> Self {
+        Self {
+            resource_type: resource_type.into(),
+            permission: permission.into(),
+            subject,
+            consistency,
+            options: ExperimentalRoaringLookupResourcesOptions::new(),
+        }
+    }
+    pub fn with_options(mut self, options: ExperimentalRoaringLookupResourcesOptions) -> Self {
+        self.options = options;
+        self
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct DeleteOptions {
+    pub(crate) timeout: Option<std::time::Duration>,
+    pub(crate) preconditions: Vec<Precondition>,
+    pub(crate) cursor: Option<String>,
+    pub(crate) transaction_metadata: Option<Context>,
+}
+impl DeleteOptions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn with_timeout(mut self, value: std::time::Duration) -> Self {
+        self.timeout = Some(value);
+        self
+    }
+    pub fn with_preconditions(mut self, value: Vec<Precondition>) -> Self {
+        self.preconditions = value;
+        self
+    }
+    pub fn with_cursor(mut self, value: impl Into<String>) -> Self {
+        self.cursor = Some(value.into());
+        self
+    }
+    pub fn with_transaction_metadata(mut self, value: Context) -> Self {
+        self.transaction_metadata = Some(value);
+        self
+    }
+    pub fn with_must_match(mut self, filter: Filter) -> Self {
+        self.preconditions.push(Precondition {
+            operation: PreconditionOperation::MustMatch,
+            filter,
+        });
+        self
+    }
+    pub fn with_must_not_match(mut self, filter: Filter) -> Self {
+        self.preconditions.push(Precondition {
+            operation: PreconditionOperation::MustNotMatch,
+            filter,
+        });
+        self
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct DeleteRequest {
+    pub(crate) filter: Filter,
+    pub(crate) limit: std::num::NonZeroU32,
+    pub(crate) options: DeleteOptions,
+}
+impl DeleteRequest {
+    pub fn new(filter: Filter, limit: std::num::NonZeroU32) -> Self {
+        Self {
+            filter,
+            limit,
+            options: DeleteOptions::new(),
+        }
+    }
+    pub fn with_options(mut self, options: DeleteOptions) -> Self {
+        self.options = options;
+        self
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct DeleteAllOptions {
+    pub(crate) timeout: Option<std::time::Duration>,
+    pub(crate) preconditions: Vec<Precondition>,
+    pub(crate) cursor: Option<String>,
+    pub(crate) transaction_metadata: Option<Context>,
+    pub(crate) page_size: std::num::NonZeroU32,
+}
+impl Default for DeleteAllOptions {
+    fn default() -> Self {
+        Self {
+            timeout: None,
+            preconditions: Vec::new(),
+            cursor: None,
+            transaction_metadata: None,
+            page_size: std::num::NonZeroU32::new(1000).unwrap(),
+        }
+    }
+}
+impl DeleteAllOptions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn with_timeout(mut self, value: std::time::Duration) -> Self {
+        self.timeout = Some(value);
+        self
+    }
+    pub fn with_preconditions(mut self, value: Vec<Precondition>) -> Self {
+        self.preconditions = value;
+        self
+    }
+    pub fn with_cursor(mut self, value: impl Into<String>) -> Self {
+        self.cursor = Some(value.into());
+        self
+    }
+    pub fn with_transaction_metadata(mut self, value: Context) -> Self {
+        self.transaction_metadata = Some(value);
+        self
+    }
+    pub fn with_page_size(mut self, value: std::num::NonZeroU32) -> Self {
+        self.page_size = value;
+        self
+    }
+    pub fn with_must_match(mut self, filter: Filter) -> Self {
+        self.preconditions.push(Precondition {
+            operation: PreconditionOperation::MustMatch,
+            filter,
+        });
+        self
+    }
+    pub fn with_must_not_match(mut self, filter: Filter) -> Self {
+        self.preconditions.push(Precondition {
+            operation: PreconditionOperation::MustNotMatch,
+            filter,
+        });
+        self
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct DeleteAllRequest {
+    pub(crate) filter: Filter,
+    pub(crate) options: DeleteAllOptions,
+}
+impl DeleteAllRequest {
+    pub fn new(filter: Filter) -> Self {
+        Self {
+            filter,
+            options: DeleteAllOptions::new(),
+        }
+    }
+    pub fn with_options(mut self, options: DeleteAllOptions) -> Self {
+        self.options = options;
+        self
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct ExperimentalCountRelationshipsByFilterOptions {
+    pub(crate) timeout: Option<std::time::Duration>,
+}
+impl ExperimentalCountRelationshipsByFilterOptions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn with_timeout(mut self, value: std::time::Duration) -> Self {
+        self.timeout = Some(value);
+        self
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ExperimentalCountRelationshipsByFilterRequest {
+    pub(crate) filter: Filter,
+    pub(crate) options: ExperimentalCountRelationshipsByFilterOptions,
+}
+impl ExperimentalCountRelationshipsByFilterRequest {
+    pub fn new(filter: Filter) -> Self {
+        Self {
+            filter,
+            options: ExperimentalCountRelationshipsByFilterOptions::new(),
+        }
+    }
+    pub fn with_options(mut self, options: ExperimentalCountRelationshipsByFilterOptions) -> Self {
+        self.options = options;
+        self
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct WatchPermissionSetsOptions {
+    pub(crate) timeout: Option<std::time::Duration>,
+    pub(crate) start_revision: Option<ZedToken>,
+}
+impl WatchPermissionSetsOptions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn with_timeout(mut self, value: std::time::Duration) -> Self {
+        self.timeout = Some(value);
+        self
+    }
+    pub fn with_start_revision(mut self, value: ZedToken) -> Self {
+        self.start_revision = Some(value);
+        self
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct WatchPermissionSetsRequest {
+    pub(crate) options: WatchPermissionSetsOptions,
+}
+impl WatchPermissionSetsRequest {
+    pub fn new() -> Self {
+        Self {
+            options: WatchPermissionSetsOptions::new(),
+        }
+    }
+    pub fn with_options(mut self, options: WatchPermissionSetsOptions) -> Self {
+        self.options = options;
+        self
+    }
+}
+impl Default for WatchPermissionSetsRequest {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct LookupPermissionSetsOptions {
+    pub(crate) timeout: Option<std::time::Duration>,
+    pub(crate) at_revision: Option<ZedToken>,
+    pub(crate) cursor: Option<PermissionSetCursor>,
+}
+impl LookupPermissionSetsOptions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn with_timeout(mut self, value: std::time::Duration) -> Self {
+        self.timeout = Some(value);
+        self
+    }
+    pub fn with_at_revision(mut self, value: ZedToken) -> Self {
+        self.at_revision = Some(value);
+        self
+    }
+    pub fn with_cursor(mut self, value: PermissionSetCursor) -> Self {
+        self.cursor = Some(value);
+        self
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct LookupPermissionSetsRequest {
+    pub(crate) limit: std::num::NonZeroU32,
+    pub(crate) options: LookupPermissionSetsOptions,
+}
+impl LookupPermissionSetsRequest {
+    pub fn new(limit: std::num::NonZeroU32) -> Self {
+        Self {
+            limit,
+            options: LookupPermissionSetsOptions::new(),
+        }
+    }
+    pub fn with_options(mut self, options: LookupPermissionSetsOptions) -> Self {
+        self.options = options;
+        self
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct DownloadPermissionSetsOptions {
+    pub(crate) timeout: Option<std::time::Duration>,
+    pub(crate) at_revision: Option<ZedToken>,
+}
+impl DownloadPermissionSetsOptions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn with_timeout(mut self, value: std::time::Duration) -> Self {
+        self.timeout = Some(value);
+        self
+    }
+    pub fn with_at_revision(mut self, value: ZedToken) -> Self {
+        self.at_revision = Some(value);
+        self
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct DownloadPermissionSetsRequest {
+    pub(crate) options: DownloadPermissionSetsOptions,
+}
+impl DownloadPermissionSetsRequest {
+    pub fn new() -> Self {
+        Self {
+            options: DownloadPermissionSetsOptions::new(),
+        }
+    }
+    pub fn with_options(mut self, options: DownloadPermissionSetsOptions) -> Self {
+        self.options = options;
+        self
+    }
+}
+impl Default for DownloadPermissionSetsRequest {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct WriteResult {
+    pub revision: ZedToken,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct WriteSchemaResult {
+    pub revision: ZedToken,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ExperimentalRegisterRelationshipCounterResult {}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ExperimentalUnregisterRelationshipCounterResult {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ReadSchemaResult {
+    pub schema_text: String,
+    pub revision: ZedToken,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ComputablePermissionsResult {
+    pub permissions: Vec<RelationReference>,
+    pub revision: ZedToken,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct DependentRelationsResult {
+    pub relations: Vec<RelationReference>,
+    pub revision: ZedToken,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct DiffSchemaResult {
+    pub diffs: Vec<SchemaDiff>,
+    pub revision: ZedToken,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct DeleteResult {
+    pub revision: ZedToken,
+    pub deleted_count: u64,
+    pub complete: bool,
+    pub cursor: Option<String>,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum WildcardOption {
+    Include,
+    Exclude,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ReflectionFilter {
+    pub definition_name_filter: String,
+    pub caveat_name_filter: String,
+    pub relation_name_filter: String,
+    pub permission_name_filter: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ExperimentalCountRelationshipsResult {
+    Count(CountResult),
+    StillCalculating,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ImportRelationshipsOptions {
+    pub(crate) timeout: Option<std::time::Duration>,
+}
+impl ImportRelationshipsOptions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn with_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.timeout = Some(timeout);
+        self
+    }
+}
+#[non_exhaustive]
+pub struct ImportRelationshipsRequest {
+    pub(crate) relationships:
+        std::pin::Pin<Box<dyn futures::Stream<Item = Result<Relationship, SpiceDBError>> + Send>>,
+    pub(crate) options: ImportRelationshipsOptions,
+}
+impl ImportRelationshipsRequest {
+    pub fn new<S: futures::Stream<Item = Result<Relationship, SpiceDBError>> + Send + 'static>(
+        relationships: S,
+    ) -> Self {
+        Self {
+            relationships: Box::pin(relationships),
+            options: ImportRelationshipsOptions::default(),
+        }
+    }
+    pub fn with_options(mut self, options: ImportRelationshipsOptions) -> Self {
+        self.options = options;
+        self
+    }
+}
+impl fmt::Debug for ImportRelationshipsRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ImportRelationshipsRequest")
+            .field("options", &self.options)
+            .finish_non_exhaustive()
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ImportRelationshipsResult {
+    pub imported_count: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct PermissionSetCursor {
+    pub limit: u32,
+    pub revision: Option<ZedToken>,
+    pub starting_index: u32,
+    pub completed_members: bool,
+    pub starting_key: String,
+    pub cursor: String,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SetReference {
+    pub object: ObjectRef,
+    pub permission_or_relation: String,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct MemberReference {
+    pub object: ObjectRef,
+    pub permission_or_relation: Option<String>,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SetOperation {
+    Unspecified,
+    Added,
+    Removed,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PermissionSetChild {
+    Set(SetReference),
+    Member(MemberReference),
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct PermissionSetChange {
+    pub revision: ZedToken,
+    pub operation: SetOperation,
+    pub parent_set: Option<SetReference>,
+    pub child: Option<PermissionSetChild>,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct WatchedPermission {
+    pub resource_type: String,
+    pub permission: String,
+    pub subject_type: String,
+    pub subject_relation: Option<String>,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PermissionSetEvent {
+    Change(PermissionSetChange),
+    CompletedRevision(ZedToken),
+    LookupRequired {
+        revision: ZedToken,
+    },
+    BreakingSchemaChange {
+        revision: ZedToken,
+        affected_permissions: Vec<WatchedPermission>,
+    },
+    Unknown,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct LookupPermissionSetsResult {
+    pub change: Option<PermissionSetChange>,
+    pub cursor: Option<PermissionSetCursor>,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct PermissionSetFile {
+    pub name: String,
+    pub url: String,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct DownloadPermissionSetsResult {
+    pub files: Vec<PermissionSetFile>,
+    pub timestamp: Option<DateTime<Utc>>,
+    pub revision: ZedToken,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ExperimentalCountRelationshipsByFilterResult {
+    pub relationship_count: u64,
+    pub revision: ZedToken,
+}
+
+#[cfg(test)]
+#[path = "result_tests.rs"]
+mod result_tests;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SchemaTypeReference {
+    pub subject_definition_name: String,
+    pub caveat_name: Option<String>,
+    pub reference: Option<SchemaSubjectType>,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SchemaSubjectType {
+    Terminal(bool),
+    Relation(String),
+    PublicWildcard(bool),
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RelationSubjectTypeChange {
+    pub relation: Option<SchemaRelation>,
+    pub changed_subject_type: Option<SchemaTypeReference>,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct CaveatParameterTypeChange {
+    pub parameter: Option<SchemaCaveatParameter>,
+    pub previous_type: String,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SchemaDiff {
+    DefinitionAdded(SchemaDefinition),
+    DefinitionRemoved(SchemaDefinition),
+    DefinitionDocCommentChanged(SchemaDefinition),
+    RelationAdded(SchemaRelation),
+    RelationRemoved(SchemaRelation),
+    RelationDocCommentChanged(SchemaRelation),
+    RelationSubjectTypeAdded(RelationSubjectTypeChange),
+    RelationSubjectTypeRemoved(RelationSubjectTypeChange),
+    PermissionAdded(SchemaPermission),
+    PermissionRemoved(SchemaPermission),
+    PermissionDocCommentChanged(SchemaPermission),
+    PermissionExprChanged(SchemaPermission),
+    CaveatAdded(SchemaCaveat),
+    CaveatRemoved(SchemaCaveat),
+    CaveatDocCommentChanged(SchemaCaveat),
+    CaveatExprChanged(SchemaCaveat),
+    CaveatParameterAdded(SchemaCaveatParameter),
+    CaveatParameterRemoved(SchemaCaveatParameter),
+    CaveatParameterTypeChanged(CaveatParameterTypeChange),
+    Unknown,
+}
+
+#[cfg(test)]
+#[path = "types_tests.rs"]
+mod conversion_tests;
+
+impl ReflectionFilter {
+    pub fn new() -> Self {
+        Self {
+            definition_name_filter: String::new(),
+            caveat_name_filter: String::new(),
+            relation_name_filter: String::new(),
+            permission_name_filter: String::new(),
+        }
+    }
+    pub fn with_definition_name(mut self, value: impl Into<String>) -> Self {
+        self.definition_name_filter = value.into();
+        self
+    }
+    pub fn with_caveat_name(mut self, value: impl Into<String>) -> Self {
+        self.caveat_name_filter = value.into();
+        self
+    }
+    pub fn with_relation_name(mut self, value: impl Into<String>) -> Self {
+        self.relation_name_filter = value.into();
+        self
+    }
+    pub fn with_permission_name(mut self, value: impl Into<String>) -> Self {
+        self.permission_name_filter = value.into();
+        self
+    }
+}
+impl Default for ReflectionFilter {
+    fn default() -> Self {
+        Self::new()
     }
 }

@@ -29,11 +29,11 @@ func (g *Generator) Language() string {
 // TemplateData holds all pre-computed data needed by the Go template.
 type TemplateData struct {
 	CaveatContextTypes []CaveatContextData
-	SubjectRefTypes      []SubjectRefTypeData
-	TypeSentinels        []TypeSentinelData
-	Definitions          []DefinitionData
-	SealedInterfaces     []SealedInterfaceData
-	PermissionVars       []PermissionVarData
+	SubjectRefTypes    []SubjectRefTypeData
+	TypeSentinels      []TypeSentinelData
+	Definitions        []DefinitionData
+	SealedInterfaces   []SealedInterfaceData
+	PermissionVars     []PermissionVarData
 }
 
 // CaveatContextData holds data for generating a caveat context struct.
@@ -66,10 +66,10 @@ type SubjectRefTypeData struct {
 
 // WithMethodData holds data for a With* method on a base ref type.
 type WithMethodData struct {
-	MethodName    string // e.g. "WithIPRange"
-	ContextType   string // e.g. "IPRangeContext"
-	ReturnType    string // e.g. "UserIPRange"
-	IsExpiration  bool
+	MethodName   string // e.g. "WithIPRange"
+	ContextType  string // e.g. "IPRangeContext"
+	ReturnType   string // e.g. "UserIPRange"
+	IsExpiration bool
 }
 
 // TypeSentinelData holds data for a type sentinel (used for LookupSubjects).
@@ -110,7 +110,6 @@ type SubRefMethodData struct {
 	MethodName string // e.g. "Member"
 	ReturnType string // e.g. "TeamMemberRef"
 }
-
 
 // SealedInterfaceData holds data for generating a sealed interface.
 type SealedInterfaceData struct {
@@ -518,7 +517,6 @@ func buildTemplateData(s *schema.Schema) TemplateData {
 		Definitions:        definitions,
 		SealedInterfaces:   sealedInterfaces,
 		PermissionVars:     permissionVars,
-
 	}
 }
 

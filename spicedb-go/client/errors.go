@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
@@ -11,6 +12,11 @@ import (
 
 // Sentinel errors for gRPC conditions, matchable with errors.Is.
 var (
+	ErrUnknown            = errors.New("spicedb: unknown")
+	ErrAborted            = errors.New("spicedb: aborted")
+	ErrInternal           = errors.New("spicedb: internal")
+	ErrUnimplemented      = errors.New("spicedb: unimplemented")
+	ErrDataLoss           = errors.New("spicedb: data loss")
 	ErrNotFound           = errors.New("spicedb: not found")
 	ErrAlreadyExists      = errors.New("spicedb: already exists")
 	ErrInvalidArgument    = errors.New("spicedb: invalid argument")
@@ -58,6 +64,8 @@ const (
 	// ErrorCode values are appended here so existing constants keep their
 	// numeric values.
 	CodeOutOfRange
+	CodeUnimplemented
+	CodeDataLoss
 )
 
 // String returns a human-readable name for the ErrorCode, matching the
@@ -88,6 +96,10 @@ func (c ErrorCode) String() string {
 		return "Canceled"
 	case CodeInternal:
 		return "Internal"
+	case CodeUnimplemented:
+		return "Unimplemented"
+	case CodeDataLoss:
+		return "DataLoss"
 	case CodeOutOfRange:
 		return "OutOfRange"
 	default:
@@ -112,6 +124,8 @@ var grpcCodeToErrorCode = map[codes.Code]ErrorCode{
 	codes.Canceled:           CodeCanceled,
 	codes.Internal:           CodeInternal,
 	codes.OutOfRange:         CodeOutOfRange,
+	codes.Unimplemented:      CodeUnimplemented,
+	codes.DataLoss:           CodeDataLoss,
 }
 
 // Error is a native SpiceDB error carrying a native error code and message.
@@ -150,6 +164,16 @@ func (e *Error) Error() string { return e.Message }
 func (e *Error) Unwrap() error { return e.err }
 func (e *Error) Is(target error) bool {
 	switch target {
+	case ErrUnknown:
+		return e.Code == CodeUnknown
+	case ErrAborted:
+		return e.Code == CodeAborted
+	case ErrInternal:
+		return e.Code == CodeInternal
+	case ErrUnimplemented:
+		return e.Code == CodeUnimplemented
+	case ErrDataLoss:
+		return e.Code == CodeDataLoss
 	case ErrNotFound:
 		return e.Code == CodeNotFound
 	case ErrAlreadyExists:
@@ -164,9 +188,9 @@ func (e *Error) Is(target error) bool {
 		return e.Code == CodeUnauthenticated
 	case ErrUnavailable:
 		return e.Code == CodeUnavailable
-	case ErrCanceled:
+	case ErrCanceled, context.Canceled:
 		return e.Code == CodeCanceled
-	case ErrDeadlineExceeded:
+	case ErrDeadlineExceeded, context.DeadlineExceeded:
 		return e.Code == CodeDeadlineExceeded
 	case ErrResourceExhausted:
 		return e.Code == CodeResourceExhausted
@@ -205,6 +229,12 @@ func mapGRPCError(op string, err error) error {
 		return nil
 	}
 	st, _ := status.FromError(err)
+	if errors.Is(err, context.Canceled) {
+		st = status.New(codes.Canceled, err.Error())
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		st = status.New(codes.DeadlineExceeded, err.Error())
+	}
 	mapped := &Error{
 		Code:    grpcCodeToErrorCode[st.Code()],
 		Message: fmt.Sprintf("spicedb: %s: %s", op, st.Message()),

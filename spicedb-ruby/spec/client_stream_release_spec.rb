@@ -224,17 +224,18 @@ RSpec.describe 'SpiceDB::Client stream release' do
 
   describe 'a stream that yields straight off the wire' do
     it 'releases lookup_subjects when the caller breaks out' do
-      take_one(client.lookup_subjects(SpiceDB::Consistency.full, 'document', 'doc1', 'view', 'user'))
+      take_one(client.lookup_subjects(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'doc1'), permission: 'view', subject_type: 'user',
+                                      consistency: SpiceDB::Consistency.full))
       expect_released
     end
 
     it 'releases export_relationships when the caller breaks out' do
-      take_one(client.export_relationships(SpiceDB::Consistency.full))
+      take_one(client.export_relationships(nil, consistency: SpiceDB::Consistency.full))
       expect_released
     end
 
     it 'releases updates when the caller breaks out' do
-      take_one(client.updates(['document']))
+      take_one(client.watch(object_types: ['document']))
       expect_released
     end
 
@@ -242,9 +243,39 @@ RSpec.describe 'SpiceDB::Client stream release' do
     # they must release too -- worth pinning separately, since "just give me
     # the first few" is the scenario the rule opens with.
     it 'releases updates when the caller takes only the first event' do
-      expect(client.updates(['document']).first.changes_through).to eq('token-1')
+      expect(client.watch(object_types: ['document']).first.changes_through).to eq(SpiceDB::ZedToken.new('token-1'))
       expect_released
     end
+  end
+
+  it 'releases a retained next/close stream without waiting for garbage collection' do
+    stream = client.watch(object_types: ['document'])
+    expect(stream.next.changes_through).to eq(SpiceDB::ZedToken.new('token-1'))
+    stream.close
+    stream.close
+    expect { stream.next }.to raise_error(StopIteration)
+    expect_released
+  end
+
+  it 'cancels an RPC while another thread is blocked in next' do
+    stream = client.watch(object_types: ['document'])
+    first = Queue.new
+    worker = Thread.new do
+      first << stream.next
+      begin
+        stream.next
+      rescue StopIteration
+        :closed
+      end
+    end
+    expect(Timeout.timeout(5) { first.pop }.changes_through).to eq(SpiceDB::ZedToken.new('token-1'))
+    stream.close
+    expect(worker.join(5)).not_to be_nil
+    expect(worker.value).to eq(:closed)
+    expect_released
+  ensure
+    stream&.close
+    worker&.join(5)
   end
 
   describe 'a stream that drains a page before yielding' do
@@ -257,7 +288,7 @@ RSpec.describe 'SpiceDB::Client stream release' do
     it 'does not open another read_relationships page after the caller stops' do
       before_count = observations.open_count
 
-      take_one(client.read_relationships(SpiceDB::Consistency.full, SpiceDB::Filter.new(resource_type: 'document')))
+      take_one(client.read_relationships(SpiceDB::Filter.new(resource_type: 'document'), consistency: SpiceDB::Consistency.full))
 
       expect_no_further_page(before_count)
     end
@@ -265,7 +296,9 @@ RSpec.describe 'SpiceDB::Client stream release' do
     it 'does not open another lookup_resources page after the caller stops' do
       before_count = observations.open_count
 
-      take_one(client.lookup_resources(SpiceDB::Consistency.full, 'document', 'view', 'user', 'alice'))
+      take_one(client.lookup_resources(resource_type: 'document', permission: 'view',
+                                       subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user',
+                                                                                                       object_id: 'alice')), consistency: SpiceDB::Consistency.full))
 
       expect_no_further_page(before_count)
     end

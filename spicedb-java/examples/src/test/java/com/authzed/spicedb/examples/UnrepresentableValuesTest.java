@@ -7,12 +7,12 @@ import build.buf.gen.authzed.api.v1.CheckBulkPermissionsRequest;
 import build.buf.gen.authzed.api.v1.CheckBulkPermissionsResponse;
 import build.buf.gen.authzed.api.v1.CheckBulkPermissionsResponseItem;
 import build.buf.gen.authzed.api.v1.PermissionsServiceGrpc;
+import com.authzed.spicedb.*;
 import com.authzed.spicedb.CheckResult;
 import com.authzed.spicedb.Consistency;
 import com.authzed.spicedb.Filter;
 import com.authzed.spicedb.Relationship;
 import com.authzed.spicedb.SpiceDBClient;
-import com.authzed.spicedb.Transaction;
 import com.authzed.spicedb.errors.InvalidArgumentException;
 import io.grpc.Server;
 import io.grpc.ServerBuilder;
@@ -48,23 +48,17 @@ class UnrepresentableValuesTest {
     // A value with no protobuf representation fails loudly, naming the key. Dropping it would
     // leave a caveat evaluating against context the caller believes it sent, and a caller with a
     // large context map should not have to bisect it to find the bad entry.
-    Relationship rel =
-        Relationship.of("document", "readme", "viewer", "user", "alice")
-            .withCaveat("only_on_tuesday", Map.of("day", "tuesday", "impostor", new Object()));
-
-    var txn = new Transaction();
-    txn.touch(rel);
-
-    try (SpiceDBClient client =
-        SpiceDBClient.createPlaintext(
-            SpiceDBIntegrationTest.ENDPOINT, SpiceDBIntegrationTest.TOKEN)) {
-      assertThatThrownBy(() -> client.write(txn))
-          // The client's own typed error, not a bare IllegalArgumentException, and it names the
-          // offending key -- both of which clause 1 requires.
-          .isInstanceOf(InvalidArgumentException.class)
-          .hasMessageContaining("impostor")
-          .hasMessageNotContaining("day");
-    }
+    assertThatThrownBy(
+            () ->
+                Relationship.of(
+                        new ObjectRef("document", "readme"),
+                        "viewer",
+                        SubjectRef.direct(new ObjectRef("user", "alice")))
+                    .withCaveat(
+                        "only_on_tuesday", Map.of("day", "tuesday", "impostor", new Object())))
+        .isInstanceOf(InvalidArgumentException.class)
+        .hasMessageContaining("impostor")
+        .hasMessageNotContaining("day");
   }
 
   @Test
@@ -76,14 +70,16 @@ class UnrepresentableValuesTest {
         SpiceDBClient.createPlaintext(
             SpiceDBIntegrationTest.ENDPOINT, SpiceDBIntegrationTest.TOKEN)) {
       assertThatThrownBy(
-              () -> client.deleteRelationships(Filter.of("document").withSubjectID("alice")))
+              () ->
+                  client.deleteAllRelationshipsNonAtomic(
+                      Filter.of("document").withSubjectId("alice")))
           .isInstanceOf(InvalidArgumentException.class)
           .hasMessageContaining("subjectType");
 
       // The same filter with the missing piece supplied converts fine, which is what makes the
       // check above a real constraint rather than a blanket ban.
-      client.deleteRelationships(
-          Filter.of("document").withSubjectType("user").withSubjectID("alice"));
+      client.deleteAllRelationshipsNonAtomic(
+          Filter.of("document").withSubjectType("user").withSubjectId("alice"));
     }
   }
 
@@ -104,6 +100,7 @@ class UnrepresentableValuesTest {
                     for (int i = 0; i < request.getItemsCount(); i++) {
                       builder.addPairs(
                           CheckBulkPermissionsPair.newBuilder()
+                              .setRequest(request.getItems(i))
                               .setItem(
                                   CheckBulkPermissionsResponseItem.newBuilder()
                                       // 4242 is not a value this client's enum knows. A SpiceDB
@@ -122,10 +119,15 @@ class UnrepresentableValuesTest {
     try (SpiceDBClient client =
         SpiceDBClient.createPlaintext("127.0.0.1:" + server.getPort(), "some-token")) {
       CheckResult result =
-          client.checkPermission(
-              Consistency.full(),
-              "view",
-              Relationship.of("document", "readme", "view", "user", "alice"));
+          client
+              .checkBulk(
+                  java.util.List.of(
+                      new PermissionCheck(
+                          new ObjectRef("document", "readme"),
+                          "view",
+                          SubjectRef.direct(new ObjectRef("user", "alice")),
+                          Consistency.full())))
+              .get(0);
       assertThat(result.hasPermission())
           .as("SECURITY: an unrecognised permissionship was treated as a grant")
           .isFalse();

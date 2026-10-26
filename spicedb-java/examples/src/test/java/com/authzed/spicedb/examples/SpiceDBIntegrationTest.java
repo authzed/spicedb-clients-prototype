@@ -1,5 +1,6 @@
 package com.authzed.spicedb.examples;
 
+import com.authzed.spicedb.*;
 import com.authzed.spicedb.Filter;
 import com.authzed.spicedb.SpiceDBClient;
 import com.authzed.spicedb.errors.FailedPreconditionException;
@@ -56,7 +57,7 @@ abstract class SpiceDBIntegrationTest {
    */
   static void clearDocumentRelationships(SpiceDBClient client) {
     try {
-      client.deleteRelationships(Filter.of("document"));
+      client.deleteAllRelationshipsNonAtomic(Filter.of("document"));
     } catch (FailedPreconditionException e) {
       // No `document` definition in the live schema yet: nothing to clear.
       // SpiceDB reports that as FAILED_PRECONDITION

@@ -65,7 +65,7 @@ still exists under it, and JUnit's class order is not something to rely on.
 
 | Test Class | Description |
 |---|---|
-| `CheckPermissionTest` | Basic permission check with `checkPermission`, returning `CheckResult` |
+| `CheckPermissionTest` | Basic permission check with `check`, returning `CheckResult` |
 | `ConditionalCheckTest` | `CONDITIONAL_PERMISSION` against a live caveated relationship whose context was never supplied — `hasPermission()` must be false |
 | `WriteRelationshipsTest` | Writing relationships with `Transaction` builder |
 | `ReadRelationshipsTest` | Reading relationships with cursor-based auto-pagination |
@@ -73,7 +73,7 @@ still exists under it, and JUnit's class order is not something to rely on.
 | `LookupSubjectsTest` | Finding subjects with access to a resource |
 | `WatchChangesTest` | Watching for relationship changes via the watch API |
 | `SchemaManagementTest` | Schema read/write operations |
-| `BulkOperationsTest` | Bulk permission checks with `checkPermissions`, `checkAll`, `checkAny`, plus bulk `importRelationships`/`exportRelationships` |
+| `BulkOperationsTest` | Bulk permission checks with `checkBulk`, `checkAll`, `checkAny`, plus bulk `importRelationships`/`exportRelationships` |
 | `SchemaReflectionTest` | Schema reflection, computable permissions, dependent relations, schema diff |
 | `RelationshipCountersTest` | Experimental relationship counter registration and reading |
 | `ExpandPermissionTreeTest` | Expanding a permission with `expandPermissionTree` and walking the native `PermissionTree` (intermediate/leaf nodes, subjects) |
@@ -83,3 +83,8 @@ still exists under it, and JUnit's class order is not something to rely on.
 | `InsecureOptInTest` | Why `createPlaintext` is loopback-only, and the named opt-in a remote plaintext host requires |
 | `RetryPolicyTest` | Which calls are retried for you and which are not, counted server-side |
 | `UnrepresentableValuesTest` | Caller data that cannot convert fails loudly, naming the key; unknown server enums degrade safely |
+
+The canonical checks take `PermissionCheck` and optional `CheckOptions.builder()`
+values. `CheckPermissionTest.singularCheckReturnsServerTrace` enables tracing and
+asserts real server diagnostics. All returned streams belong in try-with-resources.
+Bounded deletion uses an explicit total limit; delete-all is a separate operation.

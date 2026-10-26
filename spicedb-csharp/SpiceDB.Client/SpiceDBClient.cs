@@ -1,118 +1,19 @@
-// SpiceDBClient is the idiomatic C# client for SpiceDB.
-
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using Authzed.Api.SpiceDB.Proto;
 using Authzed.Api.V1;
 using Google.Protobuf.WellKnownTypes;
-using Google.Rpc;
 using Grpc.Core;
+using Google.Protobuf;
 using Grpc.Net.Client;
-// Not `using`'d: Authzed.Api.Materialize.V0's own `Cursor` message collides
-// with Authzed.Api.V1.Cursor, used throughout this file for pagination. The
-// handful of Materialize types below are referenced fully-qualified instead.
 using MaterializeV0 = Authzed.Api.Materialize.V0;
-
-// Exposes internal helpers (e.g. the proto -> native PermissionTree mapper)
-// to the test assembly without making them part of the public API surface.
 [assembly: InternalsVisibleTo("SpiceDB.Client.Tests")]
-
 namespace SpiceDB.Client;
 
-/// <summary>
-/// The idiomatic SpiceDB client. Use <see cref="CreatePlaintext"/> or
-/// <see cref="CreateSystemTls"/> to create one. Implements
-/// <see cref="IAsyncDisposable"/> — a channel this client created is disposed
-/// when the client is, while a channel handed to <see cref="CreateFromChannel"/>
-/// is left open for its owner (see <see cref="DisposeAsync"/>).
-/// </summary>
-public sealed class SpiceDBClient : IAsyncDisposable
+/// <summary>Native asynchronous SpiceDB API. RawProto is the authenticated secondary protocol escape hatch.</summary>
+public sealed partial class SpiceDBClient : IAsyncDisposable
 {
-    private const int DefaultReadPageSize = 512;
-    private const int DefaultDeletePageSize = 1_000;
-    private const int DefaultLookupPageSize = 512;
-    private const int DefaultImportBatchSize = 1_000;
-    private const int DefaultExportPageSize = 512;
-    /// <summary>
-    /// How many items go into one CheckBulkPermissions request.
-    /// <para>
-    /// SpiceDB rejects a request carrying more items than
-    /// <c>maxBulkCheckCount</c> — 10,000, a hard-coded const in
-    /// <c>internal/services/v1/bulkcheck.go</c> with no flag to raise or
-    /// lower it — with <c>ERROR_REASON_TOO_MANY_CHECKS_IN_REQUEST</c>.
-    /// Nothing in the proto enforces this:
-    /// <c>CheckBulkPermissionsRequest.items</c> carries only a per-item
-    /// <c>required</c> rule, not a collection-size rule, so the limit lives
-    /// solely in server code and a client that forwards the caller's array
-    /// unchanged fails on large inputs. 1,000 leaves ten times' headroom and
-    /// matches <see cref="DefaultImportBatchSize"/> and the other clients'
-    /// check batch size.
-    /// </para>
-    /// </summary>
-    private const int DefaultCheckBatchSize = 1_000;
-    private const int MaxRetryAttempts = 3;
-    private static readonly TimeSpan InitialBackoff = TimeSpan.FromMilliseconds(100);
-
-    /// <summary>
-    /// Applied to every unary call that does not pass its own <c>timeout</c>.
-    /// <para>
-    /// Mirrors <c>authzed-node</c>'s <c>DEFAULT_DEADLINE_MS = 30_000</c> (its
-    /// comment cites <c>grpc/grpc-node#541</c>, a known gRPC failure mode
-    /// where a channel that accepts a connection but never answers produces
-    /// no error at all). Without a finite default, a wedged SpiceDB hangs
-    /// every caller that didn't opt in to a timeout — in practice, most
-    /// callers — forever: the connection looks fine at the transport level,
-    /// so nothing ever times out and nothing is ever produced to retry. See
-    /// root DESIGN.md, "RULE: A unary call must have a deadline".
-    /// </para>
-    /// <para>
-    /// Deliberately NOT applied to streaming calls (<see cref="ReadRelationshipsAsync"/>,
-    /// <see cref="LookupResourcesAsync"/>, <see cref="LookupSubjectsAsync"/>,
-    /// <see cref="UpdatesAsync"/>, <see cref="ExportRelationshipsAsync"/>) —
-    /// those are long-lived by design, and applying this default to them
-    /// would make the stream itself the outage (see DESIGN.md, "Streaming
-    /// calls MUST NOT inherit the unary default").
-    /// </para>
-    /// </summary>
     public static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(30);
-
-    /// <summary>
-    /// Full-jitter backoff delay: <c>uniform(0, cap)</c> rather than the
-    /// fixed <paramref name="cap"/>. Without jitter, every client in a
-    /// fleet retries on the same schedule after a server restart, turning
-    /// the recovery into a thundering herd; sampling uniformly under the
-    /// cap spreads retries out instead.
-    /// </summary>
-    private static TimeSpan JitteredDelay(TimeSpan cap) =>
-        TimeSpan.FromMilliseconds(Random.Shared.NextDouble() * cap.TotalMilliseconds);
-
-    /// <summary>
-    /// Resolves a per-call <paramref name="timeout"/> override against
-    /// <see cref="_defaultTimeout"/>. <c>null</c> means "use the client
-    /// default" — there is deliberately no way to make an unbounded unary
-    /// call. See root DESIGN.md, "RULE: A unary call must have a deadline".
-    /// </summary>
-    private TimeSpan EffectiveTimeout(TimeSpan? timeout) => timeout ?? _defaultTimeout;
-
-    /// <summary>
-    /// Computes an absolute UTC deadline from a per-call <paramref name="timeout"/>
-    /// override (or the client default). Call this fresh at each individual
-    /// RPC attempt — including inside a retry loop's lambda — so a retried
-    /// call gets a full new window per attempt rather than a shrinking one.
-    /// </summary>
-    private DateTime EffectiveDeadline(TimeSpan? timeout) => DateTime.UtcNow + EffectiveTimeout(timeout);
-
-    /// <summary>
-    /// As <see cref="EffectiveDeadline"/>, but for client-streaming calls
-    /// (currently only <see cref="ImportRelationshipsAsync"/>) that must NOT
-    /// fall back to <see cref="_defaultTimeout"/> — see root DESIGN.md,
-    /// "RULE: A unary call must have a deadline", clause 3 (client-streaming
-    /// RPCs are excluded from the unary default because their duration
-    /// scales with the caller's dataset, not server latency). <c>null</c>
-    /// in, <c>null</c> out: no client default is ever substituted here.
-    /// </summary>
-    private static DateTime? DeadlineOrNull(TimeSpan? timeout) =>
-        timeout.HasValue ? DateTime.UtcNow + timeout.Value : null;
-
     private readonly SpiceDBProtoClient? _protoClient;
     private readonly PermissionsService.PermissionsServiceClient _permissions;
     private readonly SchemaService.SchemaServiceClient _schema;
@@ -120,1197 +21,439 @@ public sealed class SpiceDBClient : IAsyncDisposable
     private readonly ExperimentalService.ExperimentalServiceClient _experimental;
     private readonly MaterializeV0.RoaringLookupResourcesService.RoaringLookupResourcesServiceClient _materialize;
     private readonly TimeSpan _defaultTimeout;
+    private readonly CancellationTokenSource _lifetime = new();
+    private int _disposed;
+    private SpiceDBClient(SpiceDBProtoClient proto, TimeSpan timeout)
+    { _protoClient = proto; _permissions = proto.Permissions; _schema = proto.Schema; _watch = proto.Watch; _experimental = proto.Experimental; _materialize = proto.Materialize; _defaultTimeout = timeout; }
+    internal SpiceDBClient(PermissionsService.PermissionsServiceClient permissions, SchemaService.SchemaServiceClient schema,
+        WatchService.WatchServiceClient watch, ExperimentalService.ExperimentalServiceClient experimental,
+        MaterializeV0.RoaringLookupResourcesService.RoaringLookupResourcesServiceClient? materialize = null, TimeSpan? defaultTimeout = null)
+    { _permissions = permissions; _schema = schema; _watch = watch; _experimental = experimental; _materialize = materialize!; _defaultTimeout = defaultTimeout ?? DefaultTimeout; }
 
-    private SpiceDBClient(SpiceDBProtoClient protoClient, TimeSpan defaultTimeout)
+    public static SpiceDBClient CreatePlaintext(string endpoint, string presharedKey, ClientOptions? options = null) => Create(endpoint, presharedKey, options, true);
+    public static SpiceDBClient CreateSystemTls(string endpoint, string presharedKey, ClientOptions? options = null) => Create(endpoint, presharedKey, options, false);
+    private static SpiceDBClient Create(string endpoint, string key, ClientOptions? options, bool insecure)
     {
-        _protoClient = protoClient;
-        _permissions = protoClient.Permissions;
-        _schema = protoClient.Schema;
-        _watch = protoClient.Watch;
-        _experimental = protoClient.Experimental;
-        _materialize = protoClient.Materialize;
-        _defaultTimeout = defaultTimeout;
+        Native.Required(endpoint, nameof(endpoint)); Native.Required(key, "presharedKey");
+        var timeout = ValidTimeout(options?.DefaultTimeout ?? DefaultTimeout);
+        try { return new(new SpiceDBProtoClient(endpoint, key, insecure, options?.RemotePlaintextCredentials == RemotePlaintextCredentials.Allow), timeout); }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or UriFormatException) { throw new InvalidArgumentException(ex.Message.Replace("allowInsecureRemoteCredentials", "RemotePlaintextCredentials.Allow", StringComparison.Ordinal), ex); }
     }
-
-    /// <summary>
-    /// Test-only seam: constructs a client directly from (typically mocked)
-    /// service clients, bypassing channel/proto-client construction entirely.
-    /// Not part of the public API — exposed to the test assembly only via
-    /// <see cref="System.Runtime.CompilerServices.InternalsVisibleToAttribute"/>.
-    /// </summary>
-    internal SpiceDBClient(
-        PermissionsService.PermissionsServiceClient permissions,
-        SchemaService.SchemaServiceClient schema,
-        WatchService.WatchServiceClient watch,
-        ExperimentalService.ExperimentalServiceClient experimental,
-        MaterializeV0.RoaringLookupResourcesService.RoaringLookupResourcesServiceClient? materialize = null,
-        TimeSpan? defaultTimeout = null)
+    /// <summary>Borrows the channel. Arbitrary caller transport configuration can supersede endpoint security assumptions.</summary>
+    public static SpiceDBClient CreateFromChannel(GrpcChannel channel, string presharedKey, ClientOptions? options = null)
     {
-        _protoClient = null;
-        _permissions = permissions;
-        _schema = schema;
-        _watch = watch;
-        _experimental = experimental;
-        _materialize = materialize!;
-        _defaultTimeout = defaultTimeout ?? DefaultTimeout;
+        if (channel is null) throw new InvalidArgumentException("Channel is required.");
+        Native.Required(presharedKey, nameof(presharedKey));
+        var timeout = ValidTimeout(options?.DefaultTimeout ?? DefaultTimeout);
+        // Target omits the scheme. Inspect the transport's parsed address and fail
+        // closed if a future Grpc.Net.Client version stops exposing that metadata.
+        var address = typeof(GrpcChannel).GetProperty("Address", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(channel) as Uri;
+        if (!(options?.RemotePlaintextCredentials == RemotePlaintextCredentials.Allow) &&
+            (address is null || (address.Scheme != "https" && !address.IsLoopback)))
+            throw new InvalidArgumentException("Cannot establish secure or loopback channel transport. Set RemotePlaintextCredentials.Allow only to explicitly permit remote plaintext credentials.");
+        return new(new SpiceDBProtoClient(channel, presharedKey), timeout);
     }
-
-    /// <summary>
-    /// Creates a client with a plaintext (insecure) connection. Use this for
-    /// testing only — the lack of TLS is made obvious by the name.
-    /// <paramref name="defaultTimeout"/>, if supplied, overrides the default
-    /// applied to every unary call that doesn't pass its own <c>timeout</c>
-    /// (see <see cref="DefaultTimeout"/>).
-    /// <para>
-    /// By itself, this only works against a loopback <paramref name="endpoint"/>
-    /// (localhost, 127.0.0.0/8, or ::1) — the local-development
-    /// case that is the entire reason a plaintext connection exists. For any other
-    /// endpoint, pass <paramref name="allowInsecureRemoteCredentials"/>: true,
-    /// on purpose, if you genuinely mean to send a bearer token in cleartext to a
-    /// remote host. See root DESIGN.md, "RULE: Credentials over insecure transport
-    /// require an explicit opt-in".
-    /// </para>
-    /// </summary>
-    /// <exception cref="ArgumentException">Thrown when endpoint or presharedKey is empty.</exception>
-    /// <exception cref="InvalidOperationException">
-    /// Thrown when <paramref name="endpoint"/> is not loopback and
-    /// <paramref name="allowInsecureRemoteCredentials"/> is false — before any
-    /// channel, credential, or connection is created.
-    /// </exception>
-    public static SpiceDBClient CreatePlaintext(
-        string endpoint, string presharedKey, TimeSpan? defaultTimeout = null,
-        bool allowInsecureRemoteCredentials = false)
-    {
-        ValidateArgs(endpoint, presharedKey);
-        SpiceDBProtoClient protoClient;
-        try
-        {
-            protoClient = new SpiceDBProtoClient(
-                endpoint, presharedKey, insecure: true, allowInsecureRemoteCredentials: allowInsecureRemoteCredentials);
-        }
-        catch (InsecureRemoteHostException ex)
-        {
-            // The insecure-remote-host refusal is a caller argument this client rejects
-            // before any connection exists, so it surfaces as InvalidArgumentException --
-            // the same type a filter the wire cannot express uses. The proto tier's own
-            // exception type is an implementation detail a caller of this class should
-            // never have to know. See root DESIGN.md, "RULE: Credentials over insecure
-            // transport require an explicit opt-in", clause 4.
-            throw new InvalidArgumentException(ex.Message, ex);
-        }
-
-        return new SpiceDBClient(protoClient, defaultTimeout ?? DefaultTimeout);
-    }
-
-    /// <summary>
-    /// Creates a client using the system's TLS certificate pool. Use this
-    /// for production connections. <paramref name="defaultTimeout"/>, if
-    /// supplied, overrides the default applied to every unary call that
-    /// doesn't pass its own <c>timeout</c> (see <see cref="DefaultTimeout"/>).
-    /// </summary>
-    /// <exception cref="ArgumentException">Thrown when endpoint or presharedKey is empty.</exception>
-    public static SpiceDBClient CreateSystemTls(
-        string endpoint, string presharedKey, TimeSpan? defaultTimeout = null)
-    {
-        ValidateArgs(endpoint, presharedKey);
-        var protoClient = new SpiceDBProtoClient(endpoint, presharedKey, insecure: false);
-        return new SpiceDBClient(protoClient, defaultTimeout ?? DefaultTimeout);
-    }
-
-    /// <summary>
-    /// Creates a client from an existing <see cref="GrpcChannel"/>.
-    /// This is the escape hatch for advanced configuration.
-    /// <paramref name="defaultTimeout"/>, if supplied, overrides the default
-    /// applied to every unary call that doesn't pass its own <c>timeout</c>
-    /// (see <see cref="DefaultTimeout"/>).
-    /// <para>
-    /// <b>Security note:</b> unlike <see cref="CreatePlaintext"/>, this overload
-    /// performs no loopback check (root DESIGN.md, "RULE: Credentials over
-    /// insecure transport require an explicit opt-in") -- <paramref name="channel"/>
-    /// already exists, fully configured, by the time this runs, so there is no
-    /// endpoint string or insecure flag left to guard. The bearer token is attached
-    /// unconditionally regardless of what transport security <paramref
-    /// name="channel"/> actually has. Only pass a channel you built yourself and
-    /// know the transport security of.
-    /// </para>
-    /// <para>
-    /// <b>Ownership:</b> <paramref name="channel"/> stays yours. Disposing the
-    /// returned client does NOT dispose it, so a DI-registered singleton
-    /// <see cref="GrpcChannel"/> survives any number of scoped clients built on
-    /// it, and you dispose it yourself when the application shuts down. Only a
-    /// channel this library created — via <see cref="CreatePlaintext"/> or
-    /// <see cref="CreateSystemTls"/> — is torn down by <see cref="DisposeAsync"/>.
-    /// </para>
-    /// </summary>
-    public static SpiceDBClient CreateFromChannel(
-        GrpcChannel channel, string presharedKey, TimeSpan? defaultTimeout = null)
-    {
-        ArgumentNullException.ThrowIfNull(channel);
-        if (string.IsNullOrEmpty(presharedKey))
-            throw new ArgumentException("Preshared key must not be empty.", nameof(presharedKey));
-        // Create a proto client wrapping the provided channel by using
-        // a dummy endpoint — the channel is already configured.
-        var protoClient = new SpiceDBProtoClient(channel, presharedKey);
-        return new SpiceDBClient(protoClient, defaultTimeout ?? DefaultTimeout);
-    }
-
-    private static void ValidateArgs(string endpoint, string presharedKey)
-    {
-        if (string.IsNullOrEmpty(endpoint))
-            throw new ArgumentException("Endpoint must not be empty.", nameof(endpoint));
-        if (string.IsNullOrEmpty(presharedKey))
-            throw new ArgumentException("Preshared key must not be empty.", nameof(presharedKey));
-    }
-
-    /// <summary>
-    /// Escape hatch: the underlying <see cref="SpiceDBProtoClient"/>, with the five
-    /// generated gRPC service clients (<c>Permissions</c>, <c>Schema</c>, <c>Watch</c>,
-    /// <c>Experimental</c>, <c>Materialize</c>) this client makes its own calls through.
-    /// <para>
-    /// Clearly-marked <b>secondary</b> API. Root DESIGN.md's "What NOT To Do" keeps
-    /// channels, stubs and metadata out of the primary surface and permits exactly this —
-    /// "escape hatches for advanced use are acceptable as clearly marked secondary API" —
-    /// so that a request the idiomatic methods cannot express (an RPC or proto field not
-    /// wrapped here, such as <c>WriteRelationshipsRequest.OptionalTransactionMetadata</c>,
-    /// or the single-check <c>CheckPermission</c> RPC that
-    /// <see cref="CheckPermissionAsync"/> deliberately routes around) has a workaround
-    /// short of forking the client:
-    /// <code>
-    /// var response = await client.RawProto().Permissions.CheckPermissionAsync(request);
-    /// </code>
-    /// </para>
-    /// <para>
-    /// Four things to know before reaching for it. The bearer token comes free — each
-    /// service client is built on an intercepted <see cref="CallInvoker"/>, so a raw call
-    /// is authenticated exactly as an idiomatic one is. A raw call is a raw call: no
-    /// <c>SpiceDBException</c> mapping (you catch <see cref="RpcException"/>), no retry,
-    /// and no <see cref="DefaultTimeout"/> — pass a <c>deadline</c> yourself. Do not
-    /// dispose the returned object: it holds this client's own connection, and
-    /// <see cref="DisposeAsync"/> is what releases it (or, for a channel you supplied to
-    /// <see cref="CreateFromChannel"/>, you are). And there is no stability promise beyond
-    /// what <c>Grpc.Net.Client</c> and the generated clients give.
-    /// </para>
-    /// <para>
-    /// It is an accessor, never a constructor: it takes no endpoint, preshared key, or
-    /// transport-security argument and hands back a client that already exists, so it
-    /// cannot become a second construction path around the guard in
-    /// <see cref="CreatePlaintext"/> — root DESIGN.md, "RULE: Credentials over insecure
-    /// transport require an explicit opt-in".
-    /// </para>
-    /// </summary>
-    /// <exception cref="InvalidOperationException">
-    /// Thrown only for a client built through the internal test-only constructor that takes
-    /// service clients directly — that client has no proto client, and no public factory
-    /// can produce one.
-    /// </exception>
-    public SpiceDBProtoClient RawProto() =>
-        _protoClient ?? throw new InvalidOperationException(
-            "spicedb: this client was constructed from service clients directly (test-only seam) " +
-            "and has no underlying SpiceDBProtoClient.");
-
-    /// <summary>
-    /// Releases the connection this client created.
-    /// <para>
-    /// A channel supplied through <see cref="CreateFromChannel"/> is NOT disposed:
-    /// it belongs to the caller, who is typically sharing one DI-registered
-    /// singleton <see cref="GrpcChannel"/> across the application. Disposing it
-    /// here tore down a connection every other consumer was still using — the
-    /// first scoped consumer to finish broke the rest. Ownership tracking lives on
-    /// <c>SpiceDBProtoClient</c>, which is where the channel is actually disposed.
-    /// </para>
-    /// </summary>
+    public SpiceDBProtoClient RawProto() => _protoClient ?? throw new InvalidOperationException("The test client has no raw transport.");
     public ValueTask DisposeAsync()
     {
-        _protoClient?.Dispose();
+        if (Interlocked.Exchange(ref _disposed, 1) == 0) { _lifetime.Cancel(); _protoClient?.Dispose(); }
         return ValueTask.CompletedTask;
     }
-
-    // ──────────────────────────────────────────────────────────────────────
-    // Checks — all via BulkCheckPermissions
-    // ──────────────────────────────────────────────────────────────────────
-
-    /// <summary>
-    /// Performs a bulk permission check on the given relationships and returns
-    /// a <see cref="CheckResult"/> for each relationship. All checks use
-    /// BulkCheckPermissions under the hood.
-    /// <para>
-    /// <see cref="CheckResult.Permissionship"/> carries the server's
-    /// four-valued answer — a <see cref="Client.Permissionship.ConditionalPermission"/>
-    /// result means the server needed caveat context that was not supplied,
-    /// and is NOT a grant. Prefer <see cref="CheckResult.HasPermission"/>
-    /// over comparing <see cref="CheckResult.Permissionship"/> directly for
-    /// the common case.
-    /// </para>
-    /// <para>
-    /// This overload sends no call-level default caveat context. Any
-    /// relationship built with <see cref="Relationship.WithCheckContext"/>
-    /// still supplies its own per-item context through this method — see
-    /// <see cref="CheckPermissionsWithOptionsAsync"/> for a call-level
-    /// default and the exact per-key merge rule with per-item context.
-    /// </para>
-    /// <para>
-    /// Large inputs are split automatically into requests of at most 1,000
-    /// items and the responses concatenated in input order — SpiceDB rejects
-    /// a single request carrying more than 10,000. An empty
-    /// <paramref name="relationships"/> sends no request at all and returns
-    /// an empty array.
-    /// </para>
-    /// <para>
-    /// Results from one request share a <see cref="CheckResult.CheckedAt"/>
-    /// (the response carries a single token for the whole request, not one
-    /// per item), so an input large enough to be split carries more than one
-    /// token across the returned array.
-    /// </para>
-    /// <para>
-    /// The deadline that bounds a chunked call is the client-level
-    /// <see cref="DefaultTimeout"/>, and it bounds <b>each request</b> rather
-    /// than the call as a whole; the retry budget is likewise per request.
-    /// Worst-case wall time is
-    /// <c>ceil(relationships.Length / 1000.0) * DefaultTimeout</c>. That is
-    /// deliberate — one deadline spanning every chunk would make a large
-    /// check fail purely for being large, and a retry budget shared across
-    /// chunks would let one flaky chunk exhaust the allowance for the rest.
-    /// Size <see cref="DefaultTimeout"/> per request, and pass a
-    /// <see cref="CancellationToken"/> if you need a whole-operation bound.
-    /// </para>
-    /// <para>
-    /// The per-call <c>timeout</c> parameter is not a knob on this path:
-    /// <see cref="CheckPermissionAsync"/> is the only caller that supplies
-    /// one, and it always passes exactly one relationship, which is never
-    /// split. A per-call override on the plural surface would need a new
-    /// overload.
-    /// </para>
-    /// </summary>
-    /// <remarks>
-    /// This variadic overload does not accept a per-call <c>timeout</c> —
-    /// inserting one ahead of <c>params relationships</c> would silently
-    /// break any existing positional call site passing relationships right
-    /// after <paramref name="cancellationToken"/> (e.g.
-    /// <c>CheckPermissionsAsync(cs, "view", default, rel1, rel2)</c>). It is
-    /// still bounded by the client's <see cref="DefaultTimeout"/>; use
-    /// <see cref="CheckPermissionAsync"/> for a per-call override on checks.
-    /// </remarks>
-    public async Task<CheckResult[]> CheckPermissionsAsync(
-        ConsistencyStrategy consistency,
-        string permission,
-        CancellationToken cancellationToken = default,
-        params Relationship[] relationships) =>
-        await CheckPermissionsCoreAsync(consistency, permission, null, cancellationToken, null, relationships);
-
-    /// <summary>
-    /// <see cref="CheckPermissionsAsync"/> with a call-level default caveat
-    /// context applied to every relationship in <paramref name="relationships"/>.
-    /// Caveat context supplies named values (e.g. "now") that SpiceDB needs
-    /// to evaluate a caveat expression encountered during the check; without
-    /// it, a caveated match comes back as
-    /// <see cref="Client.Permissionship.ConditionalPermission"/> instead of a
-    /// grant, and <see cref="CheckResult.MissingContext"/> names what was
-    /// needed.
-    /// <para>
-    /// A relationship built with <see cref="Relationship.WithCheckContext"/>
-    /// overrides <paramref name="context"/> on a per-key basis for that one
-    /// relationship: the item's own keys win on conflict, and any call-level
-    /// keys the item doesn't specify are retained. For example, a call-level
-    /// <c>{"now": 42, "region": "us"}</c> plus a per-item
-    /// <c>{"region": "eu"}</c> sends <c>{"now": 42, "region": "eu"}</c> for
-    /// that item, while a sibling item with no per-item context still gets
-    /// the untouched call-level default. Pass a <c>null</c>
-    /// <paramref name="context"/> for no call-level default (equivalent to
-    /// calling <see cref="CheckPermissionsAsync"/>).
-    /// </para>
-    /// <para>
-    /// The wire has no request-level context field — only
-    /// <c>CheckBulkPermissionsRequestItem.context</c> (per item) — so
-    /// <paramref name="context"/> is fanned out onto every item at
-    /// request-build time. When neither the call-level nor an item's own
-    /// context is supplied, no context field is set on that item's wire
-    /// representation (never an empty <c>Struct</c>).
-    /// </para>
-    /// </summary>
-    public async Task<CheckResult[]> CheckPermissionsWithOptionsAsync(
-        ConsistencyStrategy consistency,
-        string permission,
-        CheckOptions options,
-        CancellationToken cancellationToken = default,
-        params Relationship[] relationships) =>
-        await CheckPermissionsCoreAsync(consistency, permission, options?.Context, cancellationToken, options?.Timeout, relationships);
-
-    /// <summary>
-    /// Shared implementation behind <see cref="CheckPermissionsAsync"/>,
-    /// <see cref="CheckPermissionsWithOptionsAsync"/>,
-    /// <see cref="CheckPermissionAsync"/>, <see cref="CheckAnyAsync"/>/
-    /// <see cref="CheckAnyWithOptionsAsync"/>, and
-    /// <see cref="CheckAllAsync"/>/<see cref="CheckAllWithOptionsAsync"/> —
-    /// all of them are aggregates or pass-throughs over the same
-    /// CheckBulkPermissions request, so the request-building, per-item
-    /// context merge, and response-mapping logic lives here once.
-    /// </summary>
-    private async Task<CheckResult[]> CheckPermissionsCoreAsync(
-        ConsistencyStrategy consistency,
-        string permission,
-        IReadOnlyDictionary<string, object>? context,
-        CancellationToken cancellationToken,
-        TimeSpan? timeout,
-        Relationship[] relationships)
+    private static TimeSpan JitteredDelay(TimeSpan cap) => TimeSpan.FromMilliseconds(Random.Shared.NextDouble() * cap.TotalMilliseconds);
+    private static TimeSpan ValidTimeout(TimeSpan value) => value <= TimeSpan.Zero || value.TotalMilliseconds > uint.MaxValue - 1 ? throw new InvalidArgumentException("Timeout must be positive and supported by the runtime timer.") : value;
+    private Budget Begin(TimeSpan? timeout, CancellationToken token, bool unary = true)
     {
-        ArgumentNullException.ThrowIfNull(consistency);
-        if (string.IsNullOrEmpty(permission))
-            throw new ArgumentException("Permission must not be empty.", nameof(permission));
-        // Zero relationships sends nothing at all. An empty request is not a
-        // cheaper way to ask nothing — it is a round trip whose only possible
-        // answer is the empty array, and CheckAllAsync already treats an
-        // aggregate over zero checks as false rather than a grant.
-        if (relationships.Length == 0)
-            return [];
-
-        // One request per chunk of DefaultCheckBatchSize, results concatenated
-        // in input order so results[i] still corresponds to relationships[i]
-        // across the chunk boundary. A caller passing fewer than
-        // DefaultCheckBatchSize relationships — the overwhelmingly common
-        // case — still makes exactly one request.
-        var results = new List<CheckResult>(relationships.Length);
-        for (var start = 0; start < relationships.Length; start += DefaultCheckBatchSize)
+        token.ThrowIfCancellationRequested();
+        ObjectDisposedException.ThrowIf(_disposed != 0, this);
+        return new(timeout is { } t ? ValidTimeout(t) : unary ? _defaultTimeout : null, token, _lifetime.Token);
+    }
+    private sealed class Budget : IDisposable
+    {
+        private readonly long _start = Stopwatch.GetTimestamp();
+        private readonly TimeSpan? _timeout;
+        private readonly CancellationToken _caller;
+        private readonly CancellationTokenSource _linked;
+        public CancellationToken Token => _linked.Token;
+        public Budget(TimeSpan? timeout, CancellationToken caller, CancellationToken lifetime)
         {
-            var length = Math.Min(DefaultCheckBatchSize, relationships.Length - start);
-            results.AddRange(await CheckChunkAsync(
-                consistency,
-                permission,
-                context,
-                cancellationToken,
-                timeout,
-                start,
-                relationships[start..(start + length)]));
+            _timeout = timeout; _caller = caller; _linked = CancellationTokenSource.CreateLinkedTokenSource(caller, lifetime);
+            if (timeout is { } t) _linked.CancelAfter(t);
         }
-        return [.. results];
-    }
-
-    /// <summary>
-    /// Issues one CheckBulkPermissions request for <paramref name="relationships"/>
-    /// and maps the response. <paramref name="relationships"/> is non-empty
-    /// and no longer than <see cref="DefaultCheckBatchSize"/>;
-    /// <see cref="CheckPermissionsCoreAsync"/> is what enforces both. Every
-    /// response guard below — the pair-count check and the malformed-oneof
-    /// check — therefore applies per chunk, exactly as it applied to the whole
-    /// request before chunking.
-    /// <para>
-    /// <paramref name="offset"/> is this chunk's start index within the
-    /// caller's full array. The "check item N" message reports
-    /// <c>offset + i</c>, not <c>i</c>: the index a caller sees must be the
-    /// one they can use to look up their own relationship. Reporting the
-    /// chunk-relative index would attribute the failing item to a different
-    /// resource entirely.
-    /// </para>
-    /// </summary>
-    private async Task<CheckResult[]> CheckChunkAsync(
-        ConsistencyStrategy consistency,
-        string permission,
-        IReadOnlyDictionary<string, object>? context,
-        CancellationToken cancellationToken,
-        TimeSpan? timeout,
-        int offset,
-        Relationship[] relationships)
-    {
-        var items = relationships.Select(r => CheckItemFromRel(r, permission, context)).ToList();
-
-        var resp = await RetryAsync(async () =>
-            await _permissions.CheckBulkPermissionsAsync(
-                new CheckBulkPermissionsRequest
-                {
-                    Consistency = consistency.V1Consistency,
-                    Items = { items },
-                },
-                deadline: EffectiveDeadline(timeout),
-                cancellationToken: cancellationToken),
-            cancellationToken);
-
-        // checked_at lives once on the response and applies to every pair —
-        // CheckBulkPermissionsResponseItem has no per-item token of its own.
-        var checkedAt = resp.CheckedAt?.Token ?? "";
-
-        // The proto guarantees pairs are returned in request order but says
-        // nothing about count. A short response would otherwise silently
-        // desync results[i] from relationships[i] for every item after the
-        // gap — one resource's answer attributed to another. Fail loudly
-        // instead of returning a misaligned-but-"successful" array.
-        if (resp.Pairs.Count != items.Count)
+        public DateTime? Deadline
         {
-            throw new SpiceDBException(
-                $"CheckBulkPermissions returned {resp.Pairs.Count} pair(s) for {items.Count} " +
-                "request item(s).");
+            get { Check(); return _timeout is { } t ? DateTime.UtcNow + (t - Stopwatch.GetElapsedTime(_start)) : null; }
         }
-
-        var results = new CheckResult[resp.Pairs.Count];
-        for (var i = 0; i < resp.Pairs.Count; i++)
+        public void Check()
         {
-            var pair = resp.Pairs[i];
-            if (pair.Error != null)
-            {
-                // pair.Error is a google.rpc.Status, not a thrown RpcException. ToRpcException
-                // (Google.Api.CommonProtos) turns it into one so the per-item error routes
-                // through the same ErrorMapper switch as every other RPC in this client, instead
-                // of discarding the code and throwing the base SpiceDBException. It also carries
-                // the status's own details across, so a per-item failure reaches the caller with
-                // the same structured reason an RPC-level failure does — hand-building a
-                // Grpc.Core.Status from just the code and message dropped them. See root
-                // DESIGN.md, "RULE: Error mapping must not lose the server's detail".
-                throw ErrorMapper.ToSpiceDBException(pair.Error.ToRpcException());
-            }
-            else if (pair.Item != null)
-            {
-                results[i] = ToCheckResult(pair.Item, checkedAt);
-            }
-            else
-            {
-                // pair.Response is a oneof — a well-behaved server always sets
-                // it to Item or Error, so this should be unreachable in
-                // practice. Mirrors spicedb-rust's malformed-oneof guard:
-                // fail loudly instead of dereferencing a null Item.
-                throw new SpiceDBException(
-                    $"check item {offset + i}: malformed CheckBulkPermissionsPair (neither Item " +
-                    "nor Error set).");
-            }
+            _caller.ThrowIfCancellationRequested();
+            if (_timeout is { } t && Stopwatch.GetElapsedTime(_start) >= t) throw new DeadlineExceededException("Operation total deadline exceeded.");
+            Token.ThrowIfCancellationRequested();
         }
-        return results;
-    }
-
-    /// <summary>
-    /// Checks a single permission and returns its <see cref="CheckResult"/>.
-    /// <paramref name="context"/> is an optional caveat context supplied for
-    /// this one check — see
-    /// <see cref="CheckPermissionsWithOptionsAsync"/> for the merge rule
-    /// with any per-item context on <paramref name="relationship"/> itself
-    /// (via <see cref="Relationship.WithCheckContext"/>); for a single check
-    /// this mostly reads as "either supplies context," but it keeps the same
-    /// shape usable across all four check methods.
-    /// </summary>
-    public async Task<CheckResult> CheckPermissionAsync(
-        ConsistencyStrategy consistency,
-        string permission,
-        Relationship relationship,
-        CancellationToken cancellationToken = default)
-    {
-        var results = await CheckPermissionsCoreAsync(consistency, permission, null, cancellationToken, null, [relationship]);
-        return results[0];
-    }
-
-    /// <summary>
-    /// <see cref="CheckPermissionAsync"/> with call-level options. Caveat
-    /// context and a per-call deadline live on <see cref="CheckOptions"/>
-    /// rather than on this signature, so that the next option added upstream
-    /// is a new property there and not a new parameter here. See root
-    /// DESIGN.md, "RULE: Every RPC wrapper must have one place to add an
-    /// option".
-    /// </summary>
-    public async Task<CheckResult> CheckPermissionWithOptionsAsync(
-        ConsistencyStrategy consistency,
-        string permission,
-        Relationship relationship,
-        CheckOptions options,
-        CancellationToken cancellationToken = default)
-    {
-        var results = await CheckPermissionsCoreAsync(consistency, permission, options?.Context, cancellationToken, options?.Timeout, [relationship]);
-        return results[0];
-    }
-
-    /// <summary>
-    /// Returns true if any of the given relationships have the permission
-    /// outright. A <see cref="Client.Permissionship.ConditionalPermission"/>
-    /// result does not count as granted — only
-    /// <see cref="CheckResult.HasPermission"/> results are considered.
-    /// </summary>
-    public async Task<bool> CheckAnyAsync(
-        ConsistencyStrategy consistency,
-        string permission,
-        CancellationToken cancellationToken = default,
-        params Relationship[] relationships)
-    {
-        var results = await CheckPermissionsCoreAsync(consistency, permission, null, cancellationToken, null, relationships);
-        return results.Any(r => r.HasPermission);
-    }
-
-    /// <summary>
-    /// <see cref="CheckAnyAsync"/> with a call-level default caveat context
-    /// (see <see cref="CheckPermissionsWithOptionsAsync"/> for the merge
-    /// rule with any per-item context).
-    /// </summary>
-    public async Task<bool> CheckAnyWithOptionsAsync(
-        ConsistencyStrategy consistency,
-        string permission,
-        CheckOptions options,
-        CancellationToken cancellationToken = default,
-        params Relationship[] relationships)
-    {
-        var results = await CheckPermissionsCoreAsync(consistency, permission, options?.Context, cancellationToken, options?.Timeout, relationships);
-        return results.Any(r => r.HasPermission);
-    }
-
-    /// <summary>
-    /// Returns true if all of the given relationships have the permission
-    /// outright. A <see cref="Client.Permissionship.ConditionalPermission"/>
-    /// result does not count as granted — every result must satisfy
-    /// <see cref="CheckResult.HasPermission"/> for this to return true.
-    /// </summary>
-    public async Task<bool> CheckAllAsync(
-        ConsistencyStrategy consistency,
-        string permission,
-        CancellationToken cancellationToken = default,
-        params Relationship[] relationships)
-    {
-        // Enumerable.All is vacuously true over an empty sequence, so without this guard an empty
-        // relationships array — reached via CheckPermissionsCoreAsync's own early return of []  —
-        // would silently produce "all checks passed" for zero checks. Guard explicitly instead of
-        // relying on that shared early return (RULE: "An aggregate over zero checks is not a grant").
-        if (relationships.Length == 0)
-            return false;
-
-        var results = await CheckPermissionsCoreAsync(consistency, permission, null, cancellationToken, null, relationships);
-        return results.All(r => r.HasPermission);
-    }
-
-    /// <summary>
-    /// <see cref="CheckAllAsync"/> with a call-level default caveat context
-    /// (see <see cref="CheckPermissionsWithOptionsAsync"/> for the merge
-    /// rule with any per-item context).
-    /// </summary>
-    public async Task<bool> CheckAllWithOptionsAsync(
-        ConsistencyStrategy consistency,
-        string permission,
-        CheckOptions options,
-        CancellationToken cancellationToken = default,
-        params Relationship[] relationships)
-    {
-        // See CheckAllAsync: guard the empty case explicitly rather than relying on
-        // CheckPermissionsCoreAsync's early return of [], which would otherwise feed
-        // Enumerable.All an empty sequence and vacuously return true.
-        if (relationships.Length == 0)
-            return false;
-
-        var results = await CheckPermissionsCoreAsync(consistency, permission, options?.Context, cancellationToken, options?.Timeout, relationships);
-        return results.All(r => r.HasPermission);
-    }
-
-    // ──────────────────────────────────────────────────────────────────────
-    // Relationships — Write, Read, Delete
-    // ──────────────────────────────────────────────────────────────────────
-
-    /// <summary>
-    /// Commits a transaction of relationship mutations to SpiceDB, returning
-    /// the revision at which the write occurred.
-    /// </summary>
-    public async Task<string> WriteAsync(
-        Transaction transaction,
-        CancellationToken cancellationToken = default,
-        TimeSpan? timeout = null)
-    {
-        ArgumentNullException.ThrowIfNull(transaction);
-
-        var req = new WriteRelationshipsRequest();
-        req.Updates.AddRange(transaction.V1Updates);
-        if (transaction.Preconditions.Count > 0)
-            req.OptionalPreconditions.AddRange(transaction.Preconditions);
-
-        var resp = await CallOnceAsync(async () =>
-            await _permissions.WriteRelationshipsAsync(
-                req,
-                deadline: EffectiveDeadline(timeout),
-                cancellationToken: cancellationToken));
-
-        return resp.WrittenAt?.Token ?? "";
-    }
-
-    /// <summary>
-    /// Returns an async enumerable of relationships matching the given filter.
-    /// Cursors are handled transparently — the client automatically re-fetches
-    /// pages of 512 relationships using the AfterResultCursor.
-    /// <para>
-    /// Stream/page ESTABLISHMENT is retried on transient errors (the same
-    /// {UNAVAILABLE, ABORTED} predicate and backoff/attempt budget as
-    /// unary calls), with the attempt budget reset for each new
-    /// page. Once any item has been yielded from the current page's open
-    /// stream, a transient error is mapped and rethrown instead of retried —
-    /// retrying after a yield would risk re-delivering already-yielded items.
-    /// </para>
-    /// </summary>
-    public async IAsyncEnumerable<Relationship> ReadRelationshipsAsync(
-        ConsistencyStrategy consistency,
-        Filter filter,
-        [EnumeratorCancellation] CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(consistency);
-        ArgumentNullException.ThrowIfNull(filter);
-
-        Cursor? cursor = null;
-        while (true)
+        public Exception Map(Exception ex)
         {
-            var req = new ReadRelationshipsRequest
+            if (_caller.IsCancellationRequested) return new OperationCanceledException("Operation cancelled by caller.", ex, _caller);
+            if (_timeout is { } t && Stopwatch.GetElapsedTime(_start) >= t) return new DeadlineExceededException("Operation total deadline exceeded.", ex);
+            return ex is RpcException rpc ? ErrorMapper.ToSpiceDBException(rpc) : ex;
+        }
+        public async Task Backoff(int attempt)
+        {
+            Check();
+            try { await Task.Delay(JitteredDelay(TimeSpan.FromMilliseconds(100 * (1 << attempt))), Token); }
+            catch (OperationCanceledException ex) { throw Map(ex); }
+            Check();
+        }
+        public void Dispose() => _linked.Dispose();
+    }
+    private static async Task<T> Unary<T>(Budget budget, Func<DateTime?, CancellationToken, AsyncUnaryCall<T>> call, bool retry = true)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            budget.Check();
+            try { using var rpc = call(budget.Deadline, budget.Token); return await rpc.ResponseAsync.WaitAsync(budget.Token); }
+            catch (RpcException ex) when (retry && attempt < 3 && ErrorMapper.IsTransient(ex)) { budget.Check(); await budget.Backoff(attempt); }
+            catch (Exception ex) when (ex is RpcException or OperationCanceledException) { throw budget.Map(ex); }
+        }
+    }
+    private static async IAsyncEnumerable<T> Stream<T>(Budget budget, Func<DateTime?, CancellationToken, AsyncServerStreamingCall<T>> open)
+    {
+        bool exposed = false;
+        for (int attempt = 0; ; attempt++)
+        {
+            budget.Check();
+            AsyncServerStreamingCall<T>? call = null;
+            bool retry = false;
+            try { call = open(budget.Deadline, budget.Token); }
+            catch (RpcException ex) when (attempt < 3 && ErrorMapper.IsTransient(ex)) { retry = true; }
+            catch (Exception ex) when (ex is RpcException or OperationCanceledException) { throw budget.Map(ex); }
+            if (call is not null)
             {
-                Consistency = consistency.V1Consistency,
-                RelationshipFilter = filter.ToProto(),
-                OptionalLimit = DefaultReadPageSize,
-            };
-            if (cursor != null)
-                req.OptionalCursor = cursor;
-
-            uint count = 0;
-            var attempt = 0;
-            var backoff = InitialBackoff;
-            var pageComplete = false;
-
-            while (!pageComplete)
-            {
-                AsyncServerStreamingCall<ReadRelationshipsResponse> call;
-                try
+                using (call)
+                using (budget.Token.Register(call.Dispose))
                 {
-                    call = _permissions.ReadRelationships(req, cancellationToken: cancellationToken);
-                }
-                catch (RpcException ex) when (attempt < MaxRetryAttempts && ErrorMapper.IsTransient(ex))
-                {
-                    attempt++;
-                    await Task.Delay(JitteredDelay(backoff), cancellationToken);
-                    backoff *= 2;
-                    continue;
-                }
-                catch (RpcException ex)
-                {
-                    throw ErrorMapper.ToSpiceDBException(ex);
-                }
-
-                using var stream = call;
-                uint yielded = 0;
-
-                while (true)
-                {
-                    ReadRelationshipsResponse? resp = null;
-                    bool hasNext;
-                    try
+                    while (true)
                     {
-                        hasNext = await stream.ResponseStream.MoveNext(cancellationToken);
-                        if (hasNext)
-                            resp = stream.ResponseStream.Current;
+                        budget.Check();
+                        bool next;
+                        try { next = await call.ResponseStream.MoveNext(budget.Token).WaitAsync(budget.Token); }
+                        catch (RpcException ex) when (!exposed && attempt < 3 && ErrorMapper.IsTransient(ex)) { retry = true; break; }
+                        catch (Exception ex) when (ex is RpcException or OperationCanceledException) { throw budget.Map(ex); }
+                        if (!next) yield break;
+                        exposed = true;
+                        yield return call.ResponseStream.Current;
                     }
-                    // Establishment retry only: safe while nothing has been
-                    // yielded yet from this page's current open stream.
-                    catch (RpcException ex) when (yielded == 0 && attempt < MaxRetryAttempts && ErrorMapper.IsTransient(ex))
-                    {
-                        attempt++;
-                        break;
-                    }
-                    catch (RpcException ex)
-                    {
-                        throw ErrorMapper.ToSpiceDBException(ex);
-                    }
-
-                    if (!hasNext)
-                    {
-                        pageComplete = true;
-                        break;
-                    }
-
-                    count++;
-                    yielded++;
-                    cursor = resp!.AfterResultCursor;
-                    yield return Relationship.FromProto(resp.Relationship);
-                }
-
-                if (!pageComplete)
-                {
-                    await Task.Delay(JitteredDelay(backoff), cancellationToken);
-                    backoff *= 2;
                 }
             }
-
-            if (count < DefaultReadPageSize)
-                yield break;
+            if (!retry) yield break;
+            await budget.Backoff(attempt);
         }
     }
 
-    /// <summary>
-    /// Deletes all relationships matching the given filter. Large result sets
-    /// are automatically paged in batches of 1,000 (override with
-    /// <paramref name="limit"/>). Returns the revision of the final deletion.
-    /// <para>
-    /// <paramref name="mustMatch"/>/<paramref name="mustNotMatch"/> add
-    /// preconditions that guard the delete: if a precondition fails, the
-    /// server rejects that call and deletes nothing for it. Preconditions are
-    /// a per-request proto field, so when a delete spans multiple pages
-    /// (i.e. more matches than the page size), they are re-evaluated by the
-    /// server on every page — there is no "check-once, apply-to-all-pages"
-    /// semantics. This means a delete that starts successfully can still fail
-    /// partway through if the guarded state changes between pages, after
-    /// earlier pages have already been deleted. For a single-shot,
-    /// all-or-nothing guarded delete, pair the precondition with a
-    /// <paramref name="limit"/> large enough to cover every matching
-    /// relationship in one call.
-    /// </para>
-    /// <para>
-    /// Mirrors spicedb-go's <c>WithDeleteMustMatch</c>/
-    /// <c>WithDeleteMustNotMatch</c>/<c>WithDeleteLimit</c>
-    /// (client/relationships.go). Additive — existing
-    /// <c>DeleteRelationshipsAsync(filter)</c> calls are unaffected: no
-    /// preconditions, 1,000-item page size, partial deletions allowed, same
-    /// as before.
-    /// </para>
-    /// </summary>
-    public async Task<string> DeleteRelationshipsAsync(
-        Filter filter,
-        IReadOnlyList<Filter>? mustMatch = null,
-        IReadOnlyList<Filter>? mustNotMatch = null,
-        uint? limit = null,
-        CancellationToken cancellationToken = default,
-        TimeSpan? timeout = null)
+    public async Task<CheckResult> CheckAsync(PermissionCheck request, CheckOptions? options = null, CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(filter);
-
-        var preconditions = BuildDeletePreconditions(mustMatch, mustNotMatch);
-        return await DeleteRelationshipsCoreAsync(
-            filter, preconditions, limit ?? DefaultDeletePageSize, cursorToken: null, cancellationToken, timeout);
-    }
-
-    /// <summary>
-    /// <see cref="DeleteRelationshipsAsync"/> with call-level options.
-    /// <paramref name="options"/> carries every optional knob — preconditions,
-    /// page size, a resumption cursor, and a per-page deadline — so that the
-    /// next option this operation gains is a new property on
-    /// <see cref="DeleteRelationshipsOptions"/> rather than a new parameter
-    /// here. See root DESIGN.md, "RULE: Every RPC wrapper must have one place
-    /// to add an option".
-    /// </summary>
-    public async Task<string> DeleteRelationshipsWithOptionsAsync(
-        Filter filter,
-        DeleteRelationshipsOptions options,
-        CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(filter);
-
-        var preconditions = BuildDeletePreconditions(options?.MustMatch, options?.MustNotMatch);
-        return await DeleteRelationshipsCoreAsync(
-            filter, preconditions, options?.Limit ?? DefaultDeletePageSize, options?.Cursor, cancellationToken, options?.Timeout);
-    }
-
-    private static List<Precondition> BuildDeletePreconditions(
-        IReadOnlyList<Filter>? mustMatch, IReadOnlyList<Filter>? mustNotMatch)
-    {
-        var preconditions = new List<Precondition>();
-        if (mustMatch != null)
+        using var budget = Begin(options?.Timeout, cancellationToken);
+        if (request is null) throw new InvalidArgumentException("Request is required.");
+        var wire = new CheckPermissionRequest
         {
-            foreach (var f in mustMatch)
-                preconditions.Add(Transaction.BuildPrecondition(Precondition.Types.Operation.MustMatch, f));
-        }
-        if (mustNotMatch != null)
-        {
-            foreach (var f in mustNotMatch)
-                preconditions.Add(Transaction.BuildPrecondition(Precondition.Types.Operation.MustNotMatch, f));
-        }
-        return preconditions;
-    }
-
-    /// <summary>
-    /// Shared implementation behind <see cref="DeleteRelationshipsAsync"/> and
-    /// <see cref="DeleteRelationshipsWithOptionsAsync"/>. Loops, re-sending
-    /// <paramref name="preconditions"/> on every page, until the server
-    /// reports <see cref="DeleteRelationshipsResponse.Types.DeletionProgress.Complete"/>.
-    /// <para>
-    /// <paramref name="cursorToken"/> seeds the first request's
-    /// <c>optional_cursor</c> (non-null only via
-    /// <see cref="DeleteRelationshipsWithOptionsAsync"/>, to resume a
-    /// deletion left incomplete by an earlier call); every subsequent
-    /// request threads the previous response's <c>after_result_cursor</c>
-    /// instead, the same transparent-continuation pattern
-    /// <see cref="ReadRelationshipsAsync"/> uses. A datastore that doesn't
-    /// support cursored deletion simply never populates that field, so the
-    /// next request omits <c>optional_cursor</c> and this degrades to the
-    /// original re-send-the-same-filter behavior.
-    /// </para>
-    /// </summary>
-    private async Task<string> DeleteRelationshipsCoreAsync(
-        Filter filter,
-        List<Precondition> preconditions,
-        uint pageSize,
-        string? cursorToken,
-        CancellationToken cancellationToken,
-        TimeSpan? timeout)
-    {
-        Cursor? cursor = string.IsNullOrEmpty(cursorToken) ? null : new Cursor { Token = cursorToken };
-
-        string revision = "";
-        while (true)
-        {
-            var req = new DeleteRelationshipsRequest
-            {
-                RelationshipFilter = filter.ToProto(),
-                OptionalLimit = pageSize,
-                OptionalAllowPartialDeletions = true,
-            };
-            if (preconditions.Count > 0)
-                req.OptionalPreconditions.AddRange(preconditions);
-            if (cursor != null)
-                req.OptionalCursor = cursor;
-
-            var resp = await CallOnceAsync(async () =>
-                await _permissions.DeleteRelationshipsAsync(
-                    req,
-                    deadline: EffectiveDeadline(timeout),
-                    cancellationToken: cancellationToken));
-
-            revision = resp.DeletedAt?.Token ?? "";
-            cursor = resp.AfterResultCursor;
-
-            if (resp.DeletionProgress == DeleteRelationshipsResponse.Types.DeletionProgress.Complete)
-                return revision;
-        }
-    }
-
-    // ──────────────────────────────────────────────────────────────────────
-    // Lookups
-    // ──────────────────────────────────────────────────────────────────────
-
-    /// <summary>
-    /// Returns an async enumerable of resources of the given type that the
-    /// subject has the specified permission on. Each result carries the
-    /// permissionship (full grant vs conditional on caveat context) and, for
-    /// conditional results, which caveat context was missing. Cursors are
-    /// handled transparently with 512-item pages.
-    /// <para>
-    /// Stream/page ESTABLISHMENT is retried on transient errors, with the
-    /// attempt budget reset for each new page. Once any item has been
-    /// yielded from the current page's open stream, a transient error is
-    /// mapped and rethrown instead of retried — see
-    /// <see cref="ReadRelationshipsAsync"/> for the full rationale.
-    /// </para>
-    /// <para>
-    /// </summary>
-    public IAsyncEnumerable<LookupResource> LookupResourcesAsync(
-        ConsistencyStrategy consistency,
-        string resourceType,
-        string permission,
-        string subjectType,
-        string subjectID,
-        CancellationToken cancellationToken = default)
-        => LookupResourcesWithOptionsAsync(consistency, resourceType, permission, subjectType, subjectID,
-            new LookupOptions(), cancellationToken);
-
-    /// <summary>
-    /// Returns an async enumerable of resources of the given type that the
-    /// subject has the specified permission on. Each result carries the
-    /// permissionship (full grant vs conditional on caveat context) and, for
-    /// conditional results, which caveat context was missing. Cursors are
-    /// handled transparently with 512-item pages.
-    /// <para>
-    /// Stream/page ESTABLISHMENT is retried on transient errors, with the
-    /// attempt budget reset for each new page. Once any item has been
-    /// yielded from the current page's open stream, a transient error is
-    /// mapped and rethrown instead of retried — see
-    /// <see cref="ReadRelationshipsAsync"/> for the full rationale.
-    /// </para>
-    /// <para>
-    /// <see cref="LookupOptions.WithDebug"/> asks the server to attach debug information
-    /// to the error it returns when this lookup fails with a maximum-recursion-depth
-    /// error. It never changes a successful result. This client does not decode
-    /// that debug payload — recover the mapped <see cref="RpcException"/> from
-    /// <see cref="SpiceDBException.InnerException"/> to read it.
-    /// </para>
-    /// </summary>
-    /// <summary>
-    /// <see cref="LookupResourcesAsync"/> with call-level options. Options
-    /// live on <see cref="LookupOptions"/> rather than on this signature: when
-    /// <c>with_debug</c> arrived upstream with nowhere to go it became a
-    /// required positional parameter here, breaking every existing caller for
-    /// the sake of one optional field. See root DESIGN.md, "RULE: Every RPC
-    /// wrapper must have one place to add an option".
-    /// </summary>
-    public async IAsyncEnumerable<LookupResource> LookupResourcesWithOptionsAsync(
-        ConsistencyStrategy consistency,
-        string resourceType,
-        string permission,
-        string subjectType,
-        string subjectID,
-        LookupOptions options,
-        [EnumeratorCancellation] CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(consistency);
-
-        Cursor? cursor = null;
-        while (true)
-        {
-            var req = new LookupResourcesRequest
-            {
-                Consistency = consistency.V1Consistency,
-                ResourceObjectType = resourceType,
-                Permission = permission,
-                Subject = new SubjectReference
-                {
-                    Object = new ObjectReference
-                    {
-                        ObjectType = subjectType,
-                        ObjectId = subjectID,
-                    },
-                },
-                OptionalLimit = DefaultLookupPageSize,
-                WithDebug = options?.WithDebug ?? false,
-            };
-            if (cursor != null)
-                req.OptionalCursor = cursor;
-
-            int count = 0;
-            var attempt = 0;
-            var backoff = InitialBackoff;
-            var pageComplete = false;
-
-            while (!pageComplete)
-            {
-                AsyncServerStreamingCall<LookupResourcesResponse> call;
-                try
-                {
-                    call = _permissions.LookupResources(req, cancellationToken: cancellationToken);
-                }
-                catch (RpcException ex) when (attempt < MaxRetryAttempts && ErrorMapper.IsTransient(ex))
-                {
-                    attempt++;
-                    await Task.Delay(JitteredDelay(backoff), cancellationToken);
-                    backoff *= 2;
-                    continue;
-                }
-                catch (RpcException ex)
-                {
-                    throw ErrorMapper.ToSpiceDBException(ex);
-                }
-
-                using var stream = call;
-                int yielded = 0;
-
-                while (true)
-                {
-                    LookupResourcesResponse? resp = null;
-                    bool hasNext;
-                    try
-                    {
-                        hasNext = await stream.ResponseStream.MoveNext(cancellationToken);
-                        if (hasNext)
-                            resp = stream.ResponseStream.Current;
-                    }
-                    catch (RpcException ex) when (yielded == 0 && attempt < MaxRetryAttempts && ErrorMapper.IsTransient(ex))
-                    {
-                        attempt++;
-                        break;
-                    }
-                    catch (RpcException ex)
-                    {
-                        throw ErrorMapper.ToSpiceDBException(ex);
-                    }
-
-                    if (!hasNext)
-                    {
-                        pageComplete = true;
-                        break;
-                    }
-
-                    count++;
-                    yielded++;
-                    cursor = resp!.AfterResultCursor;
-                    yield return new LookupResource
-                    {
-                        ResourceID = resp.ResourceObjectId,
-                        Permissionship = ToPermissionship(resp.Permissionship),
-                        PartialCaveat = ToPartialCaveatInfo(resp.PartialCaveatInfo),
-                        LookedUpAt = resp.LookedUpAt?.Token ?? "",
-                    };
-                }
-
-                if (!pageComplete)
-                {
-                    await Task.Delay(JitteredDelay(backoff), cancellationToken);
-                    backoff *= 2;
-                }
-            }
-
-            if (count < DefaultLookupPageSize)
-                yield break;
-        }
-    }
-
-    /// <summary>
-    /// Returns an async enumerable of subjects of the given type that have
-    /// the specified permission on the resource. Unlike LookupResources,
-    /// LookupSubjects does not currently support cursor-based pagination in
-    /// SpiceDB and streams all results in a single server-streaming call.
-    /// <para>
-    /// When a yielded <see cref="LookupSubject.Subject"/> is the wildcard
-    /// "*", the server has granted the permission to every subject of
-    /// <paramref name="subjectType"/> EXCEPT those listed in
-    /// <see cref="LookupSubject.ExcludedSubjects"/>. Callers MUST check
-    /// <see cref="LookupSubject.ExcludedSubjects"/> before treating a
-    /// wildcard match as a blanket grant, or they risk granting access to
-    /// subjects the server explicitly excluded.
-    /// </para>
-    /// <para>
-    /// Since there is one stream (no pages), the retry-on-transient-error
-    /// behavior applies to that single ESTABLISHMENT only: once any subject
-    /// has been yielded, a transient error is mapped and rethrown instead of
-    /// retried — see <see cref="ReadRelationshipsAsync"/> for the full
-    /// rationale.
-    /// </para>
-    /// </summary>
-    public IAsyncEnumerable<LookupSubject> LookupSubjectsAsync(
-        ConsistencyStrategy consistency,
-        string resourceType,
-        string resourceID,
-        string permission,
-        string subjectType,
-        CancellationToken cancellationToken = default) =>
-        LookupSubjectsWithOptionsAsync(consistency, resourceType, resourceID, permission, subjectType,
-            new LookupOptions(), cancellationToken);
-
-    /// <summary>
-    /// <see cref="LookupSubjectsAsync"/> with call-level options. See
-    /// <see cref="LookupResourcesWithOptionsAsync"/> for why options live on
-    /// <see cref="LookupOptions"/> rather than on the signature.
-    /// </summary>
-    public async IAsyncEnumerable<LookupSubject> LookupSubjectsWithOptionsAsync(
-        ConsistencyStrategy consistency,
-        string resourceType,
-        string resourceID,
-        string permission,
-        string subjectType,
-        LookupOptions options,
-        [EnumeratorCancellation] CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(consistency);
-
-        var req = new LookupSubjectsRequest
-        {
-            Consistency = consistency.V1Consistency,
-            Resource = new ObjectReference
-            {
-                ObjectType = resourceType,
-                ObjectId = resourceID,
-            },
-            Permission = permission,
-            SubjectObjectType = subjectType,
+            Resource = request.Resource.ToProto(),
+            Permission = request.Permission,
+            Subject = request.Subject.ToProto(),
+            Consistency = request.Consistency.ToProto(),
+            Context = MergeCheckContext(options?.Context, request.Context),
+            WithTracing = options?.Tracing == CheckTracing.Enabled
         };
-
-        var attempt = 0;
-        var backoff = InitialBackoff;
-        var yielded = 0;
-
-        // Establishment-retry loop: LookupSubjects has no cursor support, so
-        // there's a single logical stream — retry re-opens it (not a page).
-        // Once anything has been yielded, retrying is never safe.
-        while (true)
+        var response = await Unary(budget, (d, c) => _permissions.CheckPermissionAsync(wire, deadline: d, cancellationToken: c));
+        return new(ToCheckPermissionship(response.Permissionship), response.PartialCaveatInfo?.MissingRequiredContext ?? Enumerable.Empty<string>(), new(response.CheckedAt?.Token ?? ""), DebugInformation.FromProto(response.DebugTrace), response.OptionalExpiresAt?.ToDateTimeOffset());
+    }
+    public async Task<IReadOnlyList<CheckResult>> CheckBulkAsync(IReadOnlyList<PermissionCheck> requests, CheckOptions? options = null, CancellationToken cancellationToken = default)
+    {
+        using var budget = Begin(options?.Timeout, cancellationToken);
+        if (requests is null) throw new InvalidArgumentException("Requests are required.");
+        var items = requests.ToArray();
+        if (items.Any(x => x is null)) throw new InvalidArgumentException("Requests must not contain null.");
+        if (items.Length == 0) return Array.Empty<CheckResult>();
+        if (items.Any(x => x.Consistency != items[0].Consistency)) throw new InvalidArgumentException("Bulk requests must have equal consistency strategies and tokens.");
+        var results = new List<CheckResult>(items.Length);
+        for (int offset = 0; offset < items.Length; offset += 1000)
         {
-            AsyncServerStreamingCall<LookupSubjectsResponse> call;
-            try
+            budget.Check();
+            var wire = new CheckBulkPermissionsRequest { Consistency = items[0].Consistency.ToProto(), WithTracing = options?.Tracing == CheckTracing.Enabled };
+            foreach (var item in items.Skip(offset).Take(1000)) wire.Items.Add(new CheckBulkPermissionsRequestItem
+            { Resource = item.Resource.ToProto(), Permission = item.Permission, Subject = item.Subject.ToProto(), Context = MergeCheckContext(options?.Context, item.Context) });
+            var response = await Unary(budget, (d, c) => _permissions.CheckBulkPermissionsAsync(wire, deadline: d, cancellationToken: c));
+            if (response.Pairs.Count != wire.Items.Count) throw new SpiceDBException($"Bulk response returned {response.Pairs.Count} pair(s) for {wire.Items.Count} request item(s).");
+            foreach (var pair in response.Pairs)
             {
-                call = _permissions.LookupSubjects(req, cancellationToken: cancellationToken);
+                if (!wire.Items[results.Count - offset].Equals(pair.Request))
+                    throw new SpiceDBException($"check item {results.Count}: bulk response echoed request does not match its input.") { InputIndex = results.Count };
+                if (pair.Error is { } error)
+                {
+                    var exception = ErrorMapper.ToSpiceDBException(new RpcException(new Grpc.Core.Status((StatusCode)error.Code, error.Message), new Metadata { { "grpc-status-details-bin", error.ToByteArray() } }));
+                    exception.InputIndex = results.Count;
+                    throw exception;
+                }
+                if (pair.Item is null) throw new SpiceDBException($"check item {results.Count}: bulk response is missing its result.") { InputIndex = results.Count };
+                results.Add(ToCheckResult(pair.Item, response.CheckedAt?.Token ?? ""));
             }
-            catch (RpcException ex) when (yielded == 0 && attempt < MaxRetryAttempts && ErrorMapper.IsTransient(ex))
-            {
-                attempt++;
-                await Task.Delay(JitteredDelay(backoff), cancellationToken);
-                backoff *= 2;
-                continue;
-            }
-            catch (RpcException ex)
-            {
-                throw ErrorMapper.ToSpiceDBException(ex);
-            }
+        }
+        return results.AsReadOnly();
+    }
+    public async Task<bool> CheckAnyAsync(IReadOnlyList<PermissionCheck> requests, CheckOptions? options = null, CancellationToken cancellationToken = default) => (await CheckBulkAsync(requests, options, cancellationToken)).Any(r => r.HasPermission);
+    public async Task<bool> CheckAllAsync(IReadOnlyList<PermissionCheck> requests, CheckOptions? options = null, CancellationToken cancellationToken = default)
+    { var results = await CheckBulkAsync(requests, options, cancellationToken); return results.Count > 0 && results.All(r => r.HasPermission); }
 
-            using var stream = call;
-
+    public async Task<WriteResult> WriteAsync(Transaction transaction, WriteOptions? options = null, CancellationToken cancellationToken = default)
+    {
+        using var budget = Begin(options?.Timeout, cancellationToken);
+        if (transaction is null) throw new InvalidArgumentException("Transaction is required.");
+        var request = new WriteRelationshipsRequest { OptionalTransactionMetadata = Native.Struct(options?.Metadata) };
+        request.Updates.AddRange(transaction.V1Updates); request.OptionalPreconditions.AddRange(transaction.Preconditions);
+        var response = await Unary(budget, (d, c) => _permissions.WriteRelationshipsAsync(request, deadline: d, cancellationToken: c), false);
+        return new(new ZedToken(response.WrittenAt?.Token ?? ""));
+    }
+    private static int Positive(int value, string field) => value > 0 ? value : throw new InvalidArgumentException($"{field} must be positive.");
+    public async Task<DeleteResult> DeleteRelationshipsAsync(Filter filter, int limit, DeleteOptions? options = null, CancellationToken cancellationToken = default)
+    {
+        bool inFlight = false;
+        try
+        {
+            using var budget = Begin(options?.Timeout, cancellationToken);
+            Positive(limit, nameof(limit));
+            Native.Required(filter, nameof(filter)).ToProto();
+            foreach (var precondition in (options?.MustMatch ?? []).Concat(options?.MustNotMatch ?? [])) precondition.ToProto();
+            budget.Check();
+            inFlight = true;
+            return await DeletePage(budget, filter, limit, options?.ResumeCursor, options?.MustMatch, options?.MustNotMatch, options?.Metadata);
+        }
+        catch (Exception ex)
+        {
+            var progress = new DeleteProgress(0, null, null, 0, inFlight);
+            if (ex is SpiceDBException typed) typed.DeleteProgress ??= progress;
+            if (ex is OperationCanceledException) ex.Data["SpiceDB.DeleteProgress"] = progress;
+            throw;
+        }
+    }
+    private async Task<DeleteResult> DeletePage(Budget budget, Filter filter, int limit, string? cursor, IReadOnlyList<Filter>? matches, IReadOnlyList<Filter>? notMatches, IReadOnlyDictionary<string, object?>? metadata)
+    {
+        if (filter is null) throw new InvalidArgumentException("Filter is required.");
+        var request = new DeleteRelationshipsRequest
+        {
+            RelationshipFilter = Native.Required(filter, nameof(filter)).ToProto(),
+            OptionalLimit = (uint)limit,
+            OptionalAllowPartialDeletions = true,
+            OptionalTransactionMetadata = Native.Struct(metadata),
+            OptionalCursor = string.IsNullOrEmpty(cursor) ? null : new() { Token = cursor }
+        };
+        foreach (var item in matches ?? []) request.OptionalPreconditions.Add(Transaction.BuildPrecondition(Precondition.Types.Operation.MustMatch, item));
+        foreach (var item in notMatches ?? []) request.OptionalPreconditions.Add(Transaction.BuildPrecondition(Precondition.Types.Operation.MustNotMatch, item));
+        var response = await Unary(budget, (d, c) => _permissions.DeleteRelationshipsAsync(request, deadline: d, cancellationToken: c), false);
+        if (response.DeletionProgress is not (DeleteRelationshipsResponse.Types.DeletionProgress.Complete or DeleteRelationshipsResponse.Types.DeletionProgress.Partial))
+            throw new SpiceDBException("Invalid server deletion progress.") { DeleteProgress = new(response.RelationshipsDeletedCount, new ZedToken(response.DeletedAt?.Token ?? ""), response.AfterResultCursor?.Token, 1, false) };
+        return new(new(response.DeletedAt?.Token ?? ""), response.RelationshipsDeletedCount, response.DeletionProgress == DeleteRelationshipsResponse.Types.DeletionProgress.Complete, response.AfterResultCursor?.Token);
+    }
+    /// <summary>Deletes all matches in separate transactional batches. The overall operation is non-atomic: completed batches remain committed if a later batch fails or is canceled.</summary>
+    public async Task<DeleteResult> DeleteAllRelationshipsNonAtomicAsync(Filter filter, DeleteAllOptions? options = null, CancellationToken cancellationToken = default)
+    {
+        int pages = 0;
+        ulong count = 0; ZedToken? token = null; string? cursor = options?.ResumeCursor; bool inFlight = false;
+        try
+        {
+            using var budget = Begin(options?.Timeout, cancellationToken);
+            int size = Positive(options?.PageSize ?? 1000, "PageSize");
+            Native.Required(filter, nameof(filter)).ToProto();
+            foreach (var precondition in (options?.MustMatch ?? []).Concat(options?.MustNotMatch ?? [])) precondition.ToProto();
             while (true)
             {
-                LookupSubjectsResponse? resp = null;
-                bool hasNext;
-                try
-                {
-                    hasNext = await stream.ResponseStream.MoveNext(cancellationToken);
-                    if (hasNext)
-                        resp = stream.ResponseStream.Current;
-                }
-                catch (RpcException ex) when (yielded == 0 && attempt < MaxRetryAttempts && ErrorMapper.IsTransient(ex))
-                {
-                    attempt++;
-                    break;
-                }
-                catch (RpcException ex)
-                {
-                    throw ErrorMapper.ToSpiceDBException(ex);
-                }
-
-                if (!hasNext)
-                    yield break;
-
-                yielded++;
-                yield return ToLookupSubject(resp!);
+                budget.Check(); inFlight = true;
+                var page = await DeletePage(budget, filter, size, cursor, options?.MustMatch, options?.MustNotMatch, options?.Metadata);
+                inFlight = false; pages++; count += page.DeletedCount; token = page.Revision; cursor = page.ResumeCursor;
+                if (page.Completed) return page with { DeletedCount = count };
             }
-
-            // Reached only via the transient-retry break above.
-            await Task.Delay(JitteredDelay(backoff), cancellationToken);
-            backoff *= 2;
+        }
+        catch (Exception ex)
+        {
+            var progress = new DeleteProgress(count, token, pages == 0 ? null : cursor, pages, inFlight);
+            if (ex is SpiceDBException typed)
+            {
+                if (typed.DeleteProgress is { } acknowledged)
+                    progress = new(count + acknowledged.AcknowledgedCount, acknowledged.LastToken ?? token, acknowledged.LastCursor, pages + acknowledged.CompletedPages, acknowledged.OutcomeUnknown);
+                typed.DeleteProgress = progress;
+            }
+            if (ex is OperationCanceledException) ex.Data["SpiceDB.DeleteProgress"] = progress;
+            throw;
         }
     }
 
-    // ──────────────────────────────────────────────────────────────────────
-    // Schema
-    // ──────────────────────────────────────────────────────────────────────
-
-    /// <summary>
-    /// Returns the current SpiceDB schema and the revision it was read at.
-    /// </summary>
-    public async Task<(string Schema, string Revision)> ReadSchemaAsync(
-        CancellationToken cancellationToken = default,
-        TimeSpan? timeout = null)
+    public async IAsyncEnumerable<Relationship> ReadRelationshipsAsync(Consistency consistency, Filter filter, ReadOptions? options = null, [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        var resp = await RetryAsync(async () =>
-            await _schema.ReadSchemaAsync(
-                new ReadSchemaRequest(),
-                deadline: EffectiveDeadline(timeout),
-                cancellationToken: cancellationToken),
-            cancellationToken);
-
-        return (resp.SchemaText, resp.ReadAt?.Token ?? "");
-    }
-
-    /// <summary>
-    /// Writes a new schema to SpiceDB, returning the revision.
-    /// </summary>
-    public async Task<string> WriteSchemaAsync(
-        string schema,
-        CancellationToken cancellationToken = default,
-        TimeSpan? timeout = null)
-    {
-        if (string.IsNullOrEmpty(schema))
-            throw new ArgumentException("Schema must not be empty.", nameof(schema));
-
-        var resp = await CallOnceAsync(async () =>
-            await _schema.WriteSchemaAsync(
-                new WriteSchemaRequest { Schema = schema },
-                deadline: EffectiveDeadline(timeout),
-                cancellationToken: cancellationToken));
-
-        return resp.WrittenAt?.Token ?? "";
-    }
-
-    /// <summary>
-    /// Returns the definitions and caveats in the current schema.
-    /// </summary>
-    public async Task<ReflectSchemaResult> ReflectSchemaAsync(
-        ConsistencyStrategy consistency,
-        CancellationToken cancellationToken = default,
-        TimeSpan? timeout = null)
-    {
-        ArgumentNullException.ThrowIfNull(consistency);
-
-        var resp = await RetryAsync(async () =>
-            await _schema.ReflectSchemaAsync(
-                new ReflectSchemaRequest { Consistency = consistency.V1Consistency },
-                deadline: EffectiveDeadline(timeout),
-                cancellationToken: cancellationToken),
-            cancellationToken);
-
-        var result = new ReflectSchemaResult
+        using var budget = Begin(options?.Timeout, cancellationToken, false);
+        int size = Positive(options?.PageSize ?? 512, "PageSize"), remaining = Positive(options?.Limit ?? int.MaxValue, "Limit");
+        var request = new ReadRelationshipsRequest { Consistency = Native.Required(consistency, nameof(consistency)).ToProto(), RelationshipFilter = Native.Required(filter, nameof(filter)).ToProto() };
+        while (remaining > 0)
         {
-            Revision = resp.ReadAt?.Token ?? "",
-        };
+            request.OptionalLimit = (uint)Math.Min(size, remaining); int count = 0;
+            await foreach (var response in Stream(budget, (d, c) => _permissions.ReadRelationships(request, deadline: d, cancellationToken: c)))
+            {
+                request.OptionalCursor = response.AfterResultCursor; count++; remaining--;
+                yield return Relationship.FromProto(response.Relationship);
+                if (remaining == 0) yield break;
+            }
+            if (count < request.OptionalLimit || request.OptionalCursor is null) yield break;
+        }
+    }
+    public async IAsyncEnumerable<LookupResource> LookupResourcesAsync(Consistency consistency, string resourceType, string permission, SubjectRef subject, LookupOptions? options = null, [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        using var budget = Begin(options?.Timeout, cancellationToken, false);
+        if (options?.SubjectRelation is not null) throw new InvalidArgumentException("LookupResources uses the supplied SubjectRef relation.");
+        int size = Positive(options?.PageSize ?? 512, "PageSize"), remaining = Positive(options?.Limit ?? int.MaxValue, "Limit");
+        var request = new LookupResourcesRequest { Consistency = Native.Required(consistency, nameof(consistency)).ToProto(), ResourceObjectType = Native.Required(resourceType, nameof(resourceType)), Permission = Native.Required(permission, nameof(permission)), Subject = Native.Required(subject, nameof(subject)).ToProto(), Context = Native.Struct(options?.Context), WithDebug = options?.Debug == LookupDebug.Enabled };
+        while (remaining > 0)
+        {
+            request.OptionalLimit = (uint)Math.Min(size, remaining); int count = 0;
+            await foreach (var response in Stream(budget, (d, c) => _permissions.LookupResources(request, deadline: d, cancellationToken: c)))
+            {
+                request.OptionalCursor = response.AfterResultCursor; count++;
+                if (options?.PermissionshipFilter == LookupPermissionshipFilter.HasPermissionOnly && response.Permissionship != LookupPermissionship.HasPermission) continue;
+                remaining--;
+                yield return new() { ResourceID = response.ResourceObjectId, Permissionship = ToPermissionship(response.Permissionship), PartialCaveat = ToPartialCaveatInfo(response.PartialCaveatInfo), LookedUpAt = new(response.LookedUpAt?.Token ?? "") };
+                if (remaining == 0) yield break;
+            }
+            if (count < request.OptionalLimit || request.OptionalCursor is null) yield break;
+        }
+    }
+    public async IAsyncEnumerable<LookupSubject> LookupSubjectsAsync(Consistency consistency, ObjectRef resource, string permission, string subjectType, LookupOptions? options = null, [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        using var budget = Begin(options?.Timeout, cancellationToken, false);
+        if (options is not null && options.PermissionshipFilter != LookupPermissionshipFilter.All) throw new InvalidArgumentException("LookupSubjects does not support PermissionshipFilter.");
+        if (options?.Debug == LookupDebug.Enabled || options?.PageSize is not null) throw new InvalidArgumentException("LookupSubjects does not support Debug or PageSize; upstream concrete pagination is unimplemented.");
+        int remaining = Positive(options?.Limit ?? int.MaxValue, "Limit");
+        var request = new LookupSubjectsRequest { Consistency = Native.Required(consistency, nameof(consistency)).ToProto(), Resource = Native.Required(resource, nameof(resource)).ToProto(), Permission = Native.Required(permission, nameof(permission)), SubjectObjectType = Native.Required(subjectType, nameof(subjectType)), OptionalSubjectRelation = options?.SubjectRelation ?? "", Context = Native.Struct(options?.Context) };
+        await foreach (var response in Stream(budget, (d, c) => _permissions.LookupSubjects(request, deadline: d, cancellationToken: c)))
+        {
+            yield return ToLookupSubject(response);
+            if (--remaining == 0) yield break;
+        }
+    }
+    public async Task<ulong> ImportRelationshipsAsync(IAsyncEnumerable<Relationship> relationships, ImportOptions? options = null, CancellationToken cancellationToken = default)
+    {
+        using var budget = Begin(options?.Timeout, cancellationToken, false);
+        int size = Positive(options?.BatchSize ?? 1000, "BatchSize");
+        try
+        {
+            using var call = _permissions.ImportBulkRelationships(deadline: budget.Deadline, cancellationToken: budget.Token);
+            using var registration = budget.Token.Register(call.Dispose);
+            using var producer = CancellationTokenSource.CreateLinkedTokenSource(budget.Token);
+            async Task ObserveResponse()
+            {
+                try { await call.ResponseAsync; }
+                catch (Exception) { /* The upload path below preserves the response error. */ }
+                finally { producer.Cancel(); }
+            }
+            var responseFinished = ObserveResponse();
+            try
+            {
+                var batch = new ImportBulkRelationshipsRequest();
+                await foreach (var relationship in Native.Required(relationships, nameof(relationships)).WithCancellation(producer.Token))
+                {
+                    budget.Check(); batch.Relationships.Add(relationship.ToProto());
+                    if (batch.Relationships.Count == size) { await call.RequestStream.WriteAsync(batch).WaitAsync(producer.Token); batch = new(); }
+                }
+                if (batch.Relationships.Count > 0) await call.RequestStream.WriteAsync(batch).WaitAsync(producer.Token);
+                await call.RequestStream.CompleteAsync().WaitAsync(producer.Token);
+                return (await call.ResponseAsync.WaitAsync(budget.Token)).NumLoaded;
+            }
+            catch (OperationCanceledException) when (!budget.Token.IsCancellationRequested && call.ResponseAsync.IsCompleted)
+            {
+                // Server completion interrupts a cooperative producer, but is not caller cancellation.
+                return (await call.ResponseAsync).NumLoaded;
+            }
+            finally
+            {
+                call.Dispose();
+                await responseFinished;
+            }
+        }
+        catch (Exception ex) when (ex is RpcException or OperationCanceledException) { throw budget.Map(ex); }
+    }
+    public async IAsyncEnumerable<Relationship> ExportRelationshipsAsync(Consistency consistency, Filter filter, ExportOptions? options = null, [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        using var budget = Begin(options?.Timeout, cancellationToken, false);
+        int size = Positive(options?.PageSize ?? 512, "PageSize"), remaining = Positive(options?.Limit ?? int.MaxValue, "Limit");
+        var request = new ExportBulkRelationshipsRequest { Consistency = Native.Required(consistency, nameof(consistency)).ToProto(), OptionalRelationshipFilter = Native.Required(filter, nameof(filter)).ToProto() };
+        while (remaining > 0)
+        {
+            request.OptionalLimit = (uint)Math.Min(size, remaining); int count = 0;
+            await foreach (var response in Stream(budget, (d, c) => _permissions.ExportBulkRelationships(request, deadline: d, cancellationToken: c)))
+            {
+                request.OptionalCursor = response.AfterResultCursor;
+                foreach (var relationship in response.Relationships)
+                {
+                    count++; remaining--; yield return Relationship.FromProto(relationship);
+                    if (remaining == 0) yield break;
+                }
+            }
+            if (count < request.OptionalLimit || request.OptionalCursor is null) yield break;
+        }
+    }
+    public async IAsyncEnumerable<WatchEvent> UpdatesAsync(IReadOnlyList<string> objectTypes, ZedToken? startRevision, WatchOptions? options = null, [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        using var budget = Begin(options?.Timeout, cancellationToken, false);
+        var request = new WatchRequest { OptionalStartCursor = startRevision is { } token ? new() { Token = token.Value } : null };
+        request.OptionalObjectTypes.AddRange(Native.Required(objectTypes, nameof(objectTypes)).ToArray());
+        if (request.OptionalObjectTypes.Count > 0 && (options?.RelationshipFilters.Count ?? 0) > 0)
+            throw new InvalidArgumentException("Object types and relationship filters are mutually exclusive.");
+        request.OptionalRelationshipFilters.AddRange((options?.RelationshipFilters ?? []).Select(x => x.ToProto()));
+        var content = options?.Content ?? WatchContent.Relationships;
+        if (content.HasFlag(WatchContent.Relationships)) request.OptionalUpdateKinds.Add(WatchKind.IncludeRelationshipUpdates);
+        if (content.HasFlag(WatchContent.Checkpoints)) request.OptionalUpdateKinds.Add(WatchKind.IncludeCheckpoints);
+        if (content.HasFlag(WatchContent.SchemaUpdates)) request.OptionalUpdateKinds.Add(WatchKind.IncludeSchemaUpdates);
+        await foreach (var response in Stream(budget, (d, c) => _watch.Watch(request, deadline: d, cancellationToken: c)))
+            yield return new(response.Updates.Select(UpdateFromProto), new(response.ChangesThrough?.Token ?? ""), response.IsCheckpoint, response.SchemaUpdated, Native.FromStruct(response.OptionalTransactionMetadata), response.FullRevisionMetadata.Select(x => Native.FromStruct(x)!));
+    }
+    public async Task<SchemaResult> ReadSchemaAsync(
+        CallOptions? options = null, CancellationToken cancellationToken = default)
+    {
+        using var budget = Begin(options?.Timeout, cancellationToken);
+        options?.Validate();
+        var resp = await Unary(budget, (deadline, token) => _schema.ReadSchemaAsync(
+                new ReadSchemaRequest(),
+                deadline: deadline,
+                cancellationToken: token));
+
+        return new(resp.SchemaText, new(resp.ReadAt?.Token ?? ""));
+    }
+
+    public async Task<ZedToken> WriteSchemaAsync(
+        string schema,
+        CallOptions? options = null, CancellationToken cancellationToken = default)
+    {
+        using var budget = Begin(options?.Timeout, cancellationToken);
+        options?.Validate();
+        if (string.IsNullOrEmpty(schema))
+            throw new InvalidArgumentException("Schema must not be empty.");
+
+        var resp = await Unary(budget, (deadline, token) => _schema.WriteSchemaAsync(
+                new WriteSchemaRequest { Schema = schema },
+                deadline: deadline,
+                cancellationToken: token), false);
+
+        return new(resp.WrittenAt?.Token ?? "");
+    }
+
+    public async Task<ReflectSchemaResult> ReflectSchemaAsync(
+        Consistency consistency,
+        CallOptions? options = null, CancellationToken cancellationToken = default)
+    {
+        using var budget = Begin(options?.Timeout, cancellationToken);
+        options?.Validate(reflect: true);
+        if (consistency is null) throw new InvalidArgumentException("Consistency is required.");
+
+        var resp = await Unary(budget, (deadline, token) => _schema.ReflectSchemaAsync(
+                new ReflectSchemaRequest { Consistency = Native.Required(consistency, nameof(consistency)).ToProto(), OptionalFilters = { (options?.SchemaFilters ?? []).Select(x => x.ToProto()) } },
+                deadline: deadline,
+                cancellationToken: token));
+
+        var definitions = new List<SchemaDefinition>();
+        var caveats = new List<SchemaCaveat>();
 
         foreach (var def in resp.Definitions)
         {
@@ -1323,6 +466,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
                     Name = r.Name,
                     Comment = r.Comment,
                     ParentDefinitionName = r.ParentDefinitionName,
+                    SubjectTypes = r.SubjectTypes.Select(SchemaTypeReference.FromProto).ToArray(),
                 }).ToList(),
                 Permissions = def.Permissions.Select(p => new SchemaPermission
                 {
@@ -1331,7 +475,7 @@ public sealed class SpiceDBClient : IAsyncDisposable
                     ParentDefinitionName = p.ParentDefinitionName,
                 }).ToList(),
             };
-            result.Definitions.Add(sd);
+            definitions.Add(sd);
         }
 
         foreach (var cav in resp.Caveats)
@@ -1348,35 +492,32 @@ public sealed class SpiceDBClient : IAsyncDisposable
                     ParentCaveatName = p.ParentCaveatName,
                 }).ToList(),
             };
-            result.Caveats.Add(sc);
+            caveats.Add(sc);
         }
 
-        return result;
+        return new ReflectSchemaResult { Definitions = definitions, Caveats = caveats, Revision = new(resp.ReadAt?.Token ?? "") };
     }
 
-    /// <summary>
-    /// Returns the permissions that are computable for the given relation on a definition.
-    /// </summary>
-    public async Task<(IReadOnlyList<RelationReference> Permissions, string Revision)> ComputablePermissionsAsync(
-        ConsistencyStrategy consistency,
+    public async Task<ComputablePermissionsResult> ComputablePermissionsAsync(
+        Consistency consistency,
         string definitionName,
         string relationName,
-        CancellationToken cancellationToken = default,
-        TimeSpan? timeout = null)
+        CallOptions? options = null, CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(consistency);
+        using var budget = Begin(options?.Timeout, cancellationToken);
+        options?.Validate(computable: true);
+        if (consistency is null) throw new InvalidArgumentException("Consistency is required.");
 
-        var resp = await RetryAsync(async () =>
-            await _schema.ComputablePermissionsAsync(
+        var resp = await Unary(budget, (deadline, token) => _schema.ComputablePermissionsAsync(
                 new ComputablePermissionsRequest
                 {
-                    Consistency = consistency.V1Consistency,
+                    Consistency = Native.Required(consistency, nameof(consistency)).ToProto(),
                     DefinitionName = definitionName,
                     RelationName = relationName,
+                    OptionalDefinitionNameFilter = options?.DefinitionNameFilter ?? "",
                 },
-                deadline: EffectiveDeadline(timeout),
-                cancellationToken: cancellationToken),
-            cancellationToken);
+                deadline: deadline,
+                cancellationToken: token));
 
         var refs = resp.Permissions.Select(p => new RelationReference
         {
@@ -1385,32 +526,28 @@ public sealed class SpiceDBClient : IAsyncDisposable
             IsPermission = p.IsPermission,
         }).ToList();
 
-        return (refs, resp.ReadAt?.Token ?? "");
+        return new(refs, new(resp.ReadAt?.Token ?? ""));
     }
 
-    /// <summary>
-    /// Returns the relations that the given permission depends on.
-    /// </summary>
-    public async Task<(IReadOnlyList<RelationReference> Relations, string Revision)> DependentRelationsAsync(
-        ConsistencyStrategy consistency,
+    public async Task<DependentRelationsResult> DependentRelationsAsync(
+        Consistency consistency,
         string definitionName,
         string permissionName,
-        CancellationToken cancellationToken = default,
-        TimeSpan? timeout = null)
+        CallOptions? options = null, CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(consistency);
+        using var budget = Begin(options?.Timeout, cancellationToken);
+        options?.Validate();
+        if (consistency is null) throw new InvalidArgumentException("Consistency is required.");
 
-        var resp = await RetryAsync(async () =>
-            await _schema.DependentRelationsAsync(
+        var resp = await Unary(budget, (deadline, token) => _schema.DependentRelationsAsync(
                 new DependentRelationsRequest
                 {
-                    Consistency = consistency.V1Consistency,
+                    Consistency = Native.Required(consistency, nameof(consistency)).ToProto(),
                     DefinitionName = definitionName,
                     PermissionName = permissionName,
                 },
-                deadline: EffectiveDeadline(timeout),
-                cancellationToken: cancellationToken),
-            cancellationToken);
+                deadline: deadline,
+                cancellationToken: token));
 
         var refs = resp.Relations.Select(r => new RelationReference
         {
@@ -1419,710 +556,158 @@ public sealed class SpiceDBClient : IAsyncDisposable
             IsPermission = r.IsPermission,
         }).ToList();
 
-        return (refs, resp.ReadAt?.Token ?? "");
+        return new(refs, new(resp.ReadAt?.Token ?? ""));
     }
 
-    /// <summary>
-    /// Compares the current schema against the given comparison schema,
-    /// returning the differences.
-    /// </summary>
-    public async Task<(IReadOnlyList<SchemaDiff> Diffs, string Revision)> DiffSchemaAsync(
-        ConsistencyStrategy consistency,
+    public async Task<DiffSchemaResult> DiffSchemaAsync(
+        Consistency consistency,
         string comparisonSchema,
-        CancellationToken cancellationToken = default,
-        TimeSpan? timeout = null)
+        CallOptions? options = null, CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(consistency);
+        using var budget = Begin(options?.Timeout, cancellationToken);
+        options?.Validate();
+        if (consistency is null) throw new InvalidArgumentException("Consistency is required.");
 
-        var resp = await RetryAsync(async () =>
-            await _schema.DiffSchemaAsync(
+        var resp = await Unary(budget, (deadline, token) => _schema.DiffSchemaAsync(
                 new DiffSchemaRequest
                 {
-                    Consistency = consistency.V1Consistency,
+                    Consistency = Native.Required(consistency, nameof(consistency)).ToProto(),
                     ComparisonSchema = comparisonSchema,
                 },
-                deadline: EffectiveDeadline(timeout),
-                cancellationToken: cancellationToken),
-            cancellationToken);
+                deadline: deadline,
+                cancellationToken: token));
 
         var diffs = resp.Diffs.Select(SchemaDiff.FromProto).ToList();
-        return (diffs, resp.ReadAt?.Token ?? "");
+        return new(diffs, new(resp.ReadAt?.Token ?? ""));
     }
 
     // ──────────────────────────────────────────────────────────────────────
     // Expand
     // ──────────────────────────────────────────────────────────────────────
 
-    /// <summary>
-    /// Expands the permission tree for the given resource and permission,
-    /// returning the full tree of subjects with access.
-    /// </summary>
     public async Task<ExpandResult> ExpandPermissionTreeAsync(
-        ConsistencyStrategy consistency,
-        string resourceType,
-        string resourceID,
+        Consistency consistency,
+        ObjectRef resource,
         string permission,
-        CancellationToken cancellationToken = default,
-        TimeSpan? timeout = null)
+        CallOptions? options = null, CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(consistency);
+        using var budget = Begin(options?.Timeout, cancellationToken);
+        options?.Validate();
+        if (consistency is null) throw new InvalidArgumentException("Consistency is required.");
 
-        var resp = await RetryAsync(async () =>
-            await _permissions.ExpandPermissionTreeAsync(
+        var resp = await Unary(budget, (deadline, token) => _permissions.ExpandPermissionTreeAsync(
                 new ExpandPermissionTreeRequest
                 {
-                    Consistency = consistency.V1Consistency,
-                    Resource = new ObjectReference
-                    {
-                        ObjectType = resourceType,
-                        ObjectId = resourceID,
-                    },
+                    Consistency = Native.Required(consistency, nameof(consistency)).ToProto(),
+                    Resource = Native.Required(resource, nameof(resource)).ToProto(),
                     Permission = permission,
                 },
-                deadline: EffectiveDeadline(timeout),
-                cancellationToken: cancellationToken),
-            cancellationToken);
+                deadline: deadline,
+                cancellationToken: token));
 
         return new ExpandResult
         {
             Tree = ToPermissionTree(resp.TreeRoot),
-            Revision = resp.ExpandedAt?.Token ?? "",
+            Revision = new(resp.ExpandedAt?.Token ?? ""),
         };
     }
 
-    // ──────────────────────────────────────────────────────────────────────
-    // Bulk Import / Export
-    // ──────────────────────────────────────────────────────────────────────
-
-    /// <summary>
-    /// Streams relationships to SpiceDB for bulk import, returning the number
-    /// of relationships loaded. Relationships are automatically batched into
-    /// chunks of 1,000.
-    ///
-    /// <para>
-    /// <c>ImportBulkRelationships</c> is client-streaming: its duration scales
-    /// with the size of <paramref name="relationships"/>, not with server
-    /// latency, so unlike every other method on this client, this call does
-    /// NOT fall back to the client's default timeout (root DESIGN.md, "RULE:
-    /// A unary call must have a deadline", clause 3). Omitting
-    /// <paramref name="timeout"/> means this call is unbounded; pass it
-    /// explicitly to bound a bulk import. (<paramref name="cancellationToken"/>
-    /// still cancels the call regardless.)
-    /// </para>
-    /// </summary>
-    public async Task<ulong> ImportRelationshipsAsync(
-        IAsyncEnumerable<Relationship> relationships,
-        CancellationToken cancellationToken = default,
-        TimeSpan? timeout = null)
-    {
-        ArgumentNullException.ThrowIfNull(relationships);
-
-        AsyncClientStreamingCall<ImportBulkRelationshipsRequest, ImportBulkRelationshipsResponse> stream;
-        try
-        {
-            stream = _permissions.ImportBulkRelationships(
-                deadline: DeadlineOrNull(timeout),
-                cancellationToken: cancellationToken);
-        }
-        catch (RpcException ex)
-        {
-            throw ErrorMapper.ToSpiceDBException(ex);
-        }
-
-        using (stream)
-        {
-            try
-            {
-                var batch = new List<Authzed.Api.V1.Relationship>(DefaultImportBatchSize);
-
-                await foreach (var rel in relationships.WithCancellation(cancellationToken))
-                {
-                    batch.Add(rel.ToProto());
-                    if (batch.Count >= DefaultImportBatchSize)
-                    {
-                        var req = new ImportBulkRelationshipsRequest();
-                        req.Relationships.AddRange(batch);
-                        await stream.RequestStream.WriteAsync(req, cancellationToken);
-                        batch.Clear();
-                    }
-                }
-
-                if (batch.Count > 0)
-                {
-                    var req = new ImportBulkRelationshipsRequest();
-                    req.Relationships.AddRange(batch);
-                    await stream.RequestStream.WriteAsync(req, cancellationToken);
-                }
-
-                await stream.RequestStream.CompleteAsync();
-                var resp = await stream;
-                return resp.NumLoaded;
-            }
-            catch (RpcException ex)
-            {
-                throw ErrorMapper.ToSpiceDBException(ex);
-            }
-        }
-    }
-
-    /// <summary>
-    /// Returns an async enumerable over all relationships matching the optional
-    /// filter, streamed from SpiceDB in bulk. Cursors are handled transparently
-    /// with 512-item pages.
-    /// <para>
-    /// Stream/page ESTABLISHMENT is retried on transient errors, with the
-    /// attempt budget reset for each new page. Once any relationship has been
-    /// yielded from the current page's open stream, a transient error is
-    /// mapped and rethrown instead of retried — see
-    /// <see cref="ReadRelationshipsAsync"/> for the full rationale.
-    /// </para>
-    /// </summary>
-    public async IAsyncEnumerable<Relationship> ExportRelationshipsAsync(
-        ConsistencyStrategy consistency,
-        Filter? filter = null,
-        [EnumeratorCancellation] CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(consistency);
-
-        Cursor? cursor = null;
-        while (true)
-        {
-            var req = new ExportBulkRelationshipsRequest
-            {
-                Consistency = consistency.V1Consistency,
-                OptionalLimit = DefaultExportPageSize,
-            };
-            if (cursor != null)
-                req.OptionalCursor = cursor;
-            if (filter != null)
-                req.OptionalRelationshipFilter = filter.ToProto();
-
-            int pageCount = 0;
-            var attempt = 0;
-            var backoff = InitialBackoff;
-            var pageComplete = false;
-
-            while (!pageComplete)
-            {
-                AsyncServerStreamingCall<ExportBulkRelationshipsResponse> call;
-                try
-                {
-                    call = _permissions.ExportBulkRelationships(req, cancellationToken: cancellationToken);
-                }
-                catch (RpcException ex) when (attempt < MaxRetryAttempts && ErrorMapper.IsTransient(ex))
-                {
-                    attempt++;
-                    await Task.Delay(JitteredDelay(backoff), cancellationToken);
-                    backoff *= 2;
-                    continue;
-                }
-                catch (RpcException ex)
-                {
-                    throw ErrorMapper.ToSpiceDBException(ex);
-                }
-
-                using var stream = call;
-                int yielded = 0;
-
-                while (true)
-                {
-                    ExportBulkRelationshipsResponse? resp = null;
-                    bool hasNext;
-                    try
-                    {
-                        hasNext = await stream.ResponseStream.MoveNext(cancellationToken);
-                        if (hasNext)
-                            resp = stream.ResponseStream.Current;
-                    }
-                    catch (RpcException ex) when (yielded == 0 && attempt < MaxRetryAttempts && ErrorMapper.IsTransient(ex))
-                    {
-                        attempt++;
-                        break;
-                    }
-                    catch (RpcException ex)
-                    {
-                        throw ErrorMapper.ToSpiceDBException(ex);
-                    }
-
-                    if (!hasNext)
-                    {
-                        pageComplete = true;
-                        break;
-                    }
-
-                    cursor = resp!.AfterResultCursor;
-                    foreach (var r in resp.Relationships)
-                    {
-                        pageCount++;
-                        yielded++;
-                        yield return Relationship.FromProto(r);
-                    }
-                }
-
-                if (!pageComplete)
-                {
-                    await Task.Delay(JitteredDelay(backoff), cancellationToken);
-                    backoff *= 2;
-                }
-            }
-
-            if (pageCount < DefaultExportPageSize)
-                yield break;
-        }
-    }
-
-    // ──────────────────────────────────────────────────────────────────────
-    // Watch
-    // ──────────────────────────────────────────────────────────────────────
-
-    /// <summary>
-    /// Returns an async enumerable of watch events from SpiceDB's watch API,
-    /// starting from the given revision. Each yielded <see cref="WatchEvent"/>
-    /// corresponds to one server response: zero or more relationship updates,
-    /// all current through <see cref="WatchEvent.ChangesThrough"/>.
-    /// <para>
-    /// <see cref="WatchEvent.ChangesThrough"/> is always populated. Pass it as
-    /// <paramref name="startRevision"/> on a later call to resume after a
-    /// dropped stream, instead of restarting from the original
-    /// <paramref name="startRevision"/> (reprocessing everything since,
-    /// possibly past the GC window) or from head (silently losing every
-    /// change in the gap).
-    /// </para>
-    /// <para>
-    /// <paramref name="includeCheckpoints"/> requests periodic checkpoint
-    /// events (<see cref="WatchEvent.IsCheckpoint"/>, no updates) in addition
-    /// to relationship updates. Recommended if this SpiceDB instance is
-    /// running behind a proxy that aborts idle connections, since a
-    /// checkpoint keeps the stream alive even when there are no changes.
-    /// </para>
-    /// <para>
-    /// Watch ESTABLISHMENT is retried on transient errors — but only up until
-    /// the first event is yielded. Once anything has been yielded from the
-    /// current watch stream, a transient error is mapped and rethrown instead
-    /// of retried; retrying mid-watch would risk re-delivering already-seen
-    /// updates (or silently skipping ones the caller never saw), and there is
-    /// no cursor to safely resume from mid-stream. See
-    /// <see cref="ReadRelationshipsAsync"/> for the full rationale.
-    /// </para>
-    /// </summary>
-    public async IAsyncEnumerable<WatchEvent> UpdatesAsync(
-        IEnumerable<string>? objectTypes = null,
-        string? startRevision = null,
-        bool includeCheckpoints = false,
-        [EnumeratorCancellation] CancellationToken cancellationToken = default)
-    {
-        var req = new WatchRequest();
-        if (objectTypes != null)
-            req.OptionalObjectTypes.AddRange(objectTypes);
-        if (!string.IsNullOrEmpty(startRevision))
-            req.OptionalStartCursor = new ZedToken { Token = startRevision };
-        if (includeCheckpoints)
-        {
-            // OptionalUpdateKinds is empty-means-default (relationship updates only, for
-            // backwards compatibility) -- a non-empty list is the exact set requested, so asking
-            // for checkpoints must also spell out relationship updates or the server would stop
-            // sending them.
-            req.OptionalUpdateKinds.Add(WatchKind.IncludeRelationshipUpdates);
-            req.OptionalUpdateKinds.Add(WatchKind.IncludeCheckpoints);
-        }
-
-        var attempt = 0;
-        var backoff = InitialBackoff;
-        var yielded = 0;
-
-        // Establishment-retry loop: retry re-opening the watch only while
-        // nothing has been yielded yet — never mid-watch.
-        while (true)
-        {
-            AsyncServerStreamingCall<WatchResponse> call;
-            try
-            {
-                call = _watch.Watch(req, cancellationToken: cancellationToken);
-            }
-            catch (RpcException ex) when (yielded == 0 && attempt < MaxRetryAttempts && ErrorMapper.IsTransient(ex))
-            {
-                attempt++;
-                await Task.Delay(JitteredDelay(backoff), cancellationToken);
-                backoff *= 2;
-                continue;
-            }
-            catch (RpcException ex)
-            {
-                throw ErrorMapper.ToSpiceDBException(ex);
-            }
-
-            using var stream = call;
-
-            while (true)
-            {
-                WatchResponse? resp = null;
-                bool hasNext;
-                try
-                {
-                    hasNext = await stream.ResponseStream.MoveNext(cancellationToken);
-                    if (hasNext)
-                        resp = stream.ResponseStream.Current;
-                }
-                catch (RpcException ex) when (yielded == 0 && attempt < MaxRetryAttempts && ErrorMapper.IsTransient(ex))
-                {
-                    attempt++;
-                    break;
-                }
-                catch (RpcException ex)
-                {
-                    throw ErrorMapper.ToSpiceDBException(ex);
-                }
-
-                if (!hasNext)
-                    yield break;
-
-                yielded++;
-                yield return new WatchEvent
-                {
-                    Updates = resp!.Updates.Select(UpdateFromProto).ToList(),
-                    ChangesThrough = resp.ChangesThrough?.Token ?? "",
-                    IsCheckpoint = resp.IsCheckpoint,
-                };
-            }
-
-            // Reached only via the transient-retry break above.
-            await Task.Delay(JitteredDelay(backoff), cancellationToken);
-            backoff *= 2;
-        }
-    }
-
-    // ──────────────────────────────────────────────────────────────────────
-    // Experimental — Relationship Counters
-    // ──────────────────────────────────────────────────────────────────────
-
-    /// <summary>
-    /// Registers a named counter that tracks relationships matching the given
-    /// filter. The counter is computed asynchronously by SpiceDB.
-    /// <para>
-    /// <b>Experimental:</b> This API may change without following the backwards
-    /// compatibility mandate.
-    /// </para>
-    /// </summary>
     public async Task ExperimentalRegisterRelationshipCounterAsync(
         string name,
         Filter filter,
-        CancellationToken cancellationToken = default,
-        TimeSpan? timeout = null)
+        CallOptions? options = null, CancellationToken cancellationToken = default)
     {
+        using var budget = Begin(options?.Timeout, cancellationToken);
+        options?.Validate();
         if (string.IsNullOrEmpty(name))
-            throw new ArgumentException("Name must not be empty.", nameof(name));
-        ArgumentNullException.ThrowIfNull(filter);
+            throw new InvalidArgumentException("Name must not be empty.");
+        Native.Required(filter, nameof(filter));
 
-        await CallOnceAsync(async () =>
-            await _experimental.ExperimentalRegisterRelationshipCounterAsync(
+        await Unary(budget, (deadline, token) => _experimental.ExperimentalRegisterRelationshipCounterAsync(
                 new ExperimentalRegisterRelationshipCounterRequest
                 {
                     Name = name,
-                    RelationshipFilter = filter.ToProto(),
+                    RelationshipFilter = Native.Required(filter, nameof(filter)).ToProto(),
                 },
-                deadline: EffectiveDeadline(timeout),
-                cancellationToken: cancellationToken));
+                deadline: deadline,
+                cancellationToken: token), false);
     }
 
-    /// <summary>
-    /// Reads the value of a previously registered relationship counter. Returns
-    /// the count result (null if still calculating) and whether the counter is
-    /// still being calculated.
-    /// <para>
-    /// <b>Experimental:</b> This API may change without following the backwards
-    /// compatibility mandate.
-    /// </para>
-    /// </summary>
-    public async Task<(CountResult? Result, bool StillCalculating)> ExperimentalCountRelationshipsAsync(
+    public async Task<CountResult> ExperimentalCountRelationshipsAsync(
         string name,
-        CancellationToken cancellationToken = default,
-        TimeSpan? timeout = null)
+        CallOptions? options = null, CancellationToken cancellationToken = default)
     {
+        using var budget = Begin(options?.Timeout, cancellationToken);
+        options?.Validate();
         if (string.IsNullOrEmpty(name))
-            throw new ArgumentException("Name must not be empty.", nameof(name));
+            throw new InvalidArgumentException("Name must not be empty.");
 
-        var resp = await RetryAsync(async () =>
-            await _experimental.ExperimentalCountRelationshipsAsync(
+        var resp = await Unary(budget, (deadline, token) => _experimental.ExperimentalCountRelationshipsAsync(
                 new ExperimentalCountRelationshipsRequest { Name = name },
-                deadline: EffectiveDeadline(timeout),
-                cancellationToken: cancellationToken),
-            cancellationToken);
+                deadline: deadline,
+                cancellationToken: token));
 
         if (resp.CounterStillCalculating)
-            return (null, true);
+            return new CountResult { StillCalculating = true };
 
-        var cv = resp.ReadCounterValue;
-        return (new CountResult
+        var cv = resp.ReadCounterValue ?? throw new SpiceDBException("Counter response does not contain a count or calculating state.");
+        return new CountResult
         {
             RelationshipCount = cv.RelationshipCount,
-            Revision = cv.ReadAt?.Token ?? "",
-        }, false);
+            Revision = new(cv.ReadAt?.Token ?? ""),
+        };
     }
 
-    /// <summary>
-    /// Removes a previously registered relationship counter.
-    /// <para>
-    /// <b>Experimental:</b> This API may change without following the backwards
-    /// compatibility mandate.
-    /// </para>
-    /// </summary>
     public async Task ExperimentalUnregisterRelationshipCounterAsync(
         string name,
-        CancellationToken cancellationToken = default,
-        TimeSpan? timeout = null)
+        CallOptions? options = null, CancellationToken cancellationToken = default)
     {
+        using var budget = Begin(options?.Timeout, cancellationToken);
+        options?.Validate();
         if (string.IsNullOrEmpty(name))
-            throw new ArgumentException("Name must not be empty.", nameof(name));
+            throw new InvalidArgumentException("Name must not be empty.");
 
-        await CallOnceAsync(async () =>
-            await _experimental.ExperimentalUnregisterRelationshipCounterAsync(
+        await Unary(budget, (deadline, token) => _experimental.ExperimentalUnregisterRelationshipCounterAsync(
                 new ExperimentalUnregisterRelationshipCounterRequest { Name = name },
-                deadline: EffectiveDeadline(timeout),
-                cancellationToken: cancellationToken));
+                deadline: deadline,
+                cancellationToken: token), false);
     }
 
     // ──────────────────────────────────────────────────────────────────────
     // Experimental — Roaring Lookup Resources
     // ──────────────────────────────────────────────────────────────────────
 
-    /// <summary>
-    /// Returns a roaring64 bitmap (RoaringFormatSpec 64-bit portable format) of the
-    /// resource object IDs of <paramref name="resourceType"/> on which the given
-    /// subject has <paramref name="permission"/>. Every resource object ID of
-    /// <paramref name="resourceType"/> must be a canonical decimal integer that fits
-    /// in 44 bits, or the call fails with <see cref="FailedPreconditionException"/>.
-    /// <para>
-    /// Read-only, so it is retried like any other read. The whole bitmap comes back
-    /// in one unary response, and most gRPC clients refuse a message over 4 MiB by
-    /// default — a result of more than roughly 400,000 widely-spread IDs can exceed
-    /// that and fail on this side with <see cref="ResourceExhaustedException"/>.
-    /// <see cref="RoaringLookupResourcesResult.Cardinality"/> tells the caller how
-    /// large a result they got; raise <c>GrpcChannelOptions.MaxReceiveMessageSize</c>
-    /// (via <see cref="CreateFromChannel"/>) to match the largest result expected.
-    /// </para>
-    /// <para>
-    /// <b>Experimental:</b> This API may change without following the backwards
-    /// compatibility mandate.
-    /// </para>
-    /// </summary>
     public async Task<RoaringLookupResourcesResult> ExperimentalRoaringLookupResourcesAsync(
-        ConsistencyStrategy consistency,
+        Consistency consistency,
         string resourceType,
         string permission,
-        string subjectType,
-        string subjectID,
-        CancellationToken cancellationToken = default,
-        TimeSpan? timeout = null)
+        SubjectRef subject,
+        LookupOptions? options = null, CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(consistency);
+        using var budget = Begin(options?.Timeout, cancellationToken);
+        if (consistency is null) throw new InvalidArgumentException("Consistency is required.");
 
-        var resp = await RetryAsync(async () =>
-            await _materialize.ExperimentalRoaringLookupResourcesAsync(
+        if (options is not null && (options.Debug == LookupDebug.Enabled || options.Context is not null || options.PageSize is not null || options.Limit is not null || options.SubjectRelation is not null))
+            throw new InvalidArgumentException("Roaring lookup supports Timeout only; context, debug, limits and subject relation options are unsupported. Put a subject relation on SubjectRef.");
+        var resp = await Unary(budget, (deadline, token) => _materialize.ExperimentalRoaringLookupResourcesAsync(
                 new MaterializeV0.ExperimentalRoaringLookupResourcesRequest
                 {
-                    Consistency = consistency.V1Consistency,
+                    Consistency = Native.Required(consistency, nameof(consistency)).ToProto(),
                     ResourceObjectType = resourceType,
                     Permission = permission,
-                    Subject = new SubjectReference
-                    {
-                        Object = new ObjectReference
-                        {
-                            ObjectType = subjectType,
-                            ObjectId = subjectID,
-                        },
-                    },
+                    Subject = Native.Required(subject, nameof(subject)).ToProto(),
                 },
-                deadline: EffectiveDeadline(timeout),
-                cancellationToken: cancellationToken),
-            cancellationToken);
+                deadline: deadline,
+                cancellationToken: token));
 
         return new RoaringLookupResourcesResult
         {
-            Bitmap = resp.Bitmap.ToByteArray(),
+            Bitmap = Array.AsReadOnly(resp.Bitmap.ToByteArray()),
             Cardinality = resp.Cardinality,
-            AtRevision = resp.AtRevision?.Token ?? "",
+            AtRevision = new(resp.AtRevision?.Token ?? ""),
         };
     }
 
-    // ──────────────────────────────────────────────────────────────────────
-    // Internals
-    // ──────────────────────────────────────────────────────────────────────
-
-    private static CheckBulkPermissionsRequestItem CheckItemFromRel(
-        Relationship r, string permission, IReadOnlyDictionary<string, object>? callLevelContext)
-    {
-        var item = new CheckBulkPermissionsRequestItem
-        {
-            Resource = new ObjectReference
-            {
-                ObjectType = r.ResourceType,
-                ObjectId = r.ResourceID,
-            },
-            Permission = permission,
-            Subject = new SubjectReference
-            {
-                Object = new ObjectReference
-                {
-                    ObjectType = r.SubjectType,
-                    ObjectId = r.SubjectID,
-                },
-                OptionalRelation = r.SubjectRelation,
-            },
-        };
-
-        var context = MergeCheckContext(callLevelContext, r.CheckContext);
-        if (context != null)
-            item.Context = context;
-
-        return item;
-    }
-
-    /// <summary>
-    /// Merges call-level and per-item check-time caveat context per the
-    /// key-level merge rule: the item's own keys win on conflict, and any
-    /// call-level keys the item doesn't specify are retained. Returns
-    /// <c>null</c> (no context field to set on the wire) when both are
-    /// null/empty — deliberately never an empty <see cref="Struct"/>, so a
-    /// caller who supplies no context at all sees no <c>context</c> field on
-    /// the built request. Internal — exposed to the test assembly via
-    /// InternalsVisibleTo; not part of the public API.
-    /// </summary>
-    internal static Struct? MergeCheckContext(
-        IReadOnlyDictionary<string, object>? callLevel,
-        IReadOnlyDictionary<string, object>? item)
-    {
-        if ((callLevel == null || callLevel.Count == 0) && (item == null || item.Count == 0))
-            return null;
-
-        var merged = new Struct();
-        if (callLevel != null)
-        {
-            foreach (var (key, value) in callLevel)
-                merged.Fields[key] = ToProtoValueForKey(key, value);
-        }
-        if (item != null)
-        {
-            // Applied after callLevel so item keys overwrite matching
-            // call-level keys — this IS the "item wins" half of the merge
-            // rule. Call-level keys the item doesn't mention are untouched
-            // by this loop, which is the "call-level retained" half.
-            foreach (var (key, value) in item)
-                merged.Fields[key] = ToProtoValueForKey(key, value);
-        }
-
-        return merged;
-    }
-
-    /// <summary>
-    /// Converts a native .NET value into a protobuf Struct <see cref="Value"/>
-    /// by dispatching on type — numbers, booleans, null, and nested
-    /// maps/lists all land on their matching <c>kind</c> oneof case rather
-    /// than being stringified. This is the single converter for caveat
-    /// context on both the check path (call-level and per-item context
-    /// merged in <see cref="MergeCheckContext"/>) and the write path
-    /// (<see cref="Relationship.ToProto"/>'s <c>CaveatContext</c>) — both
-    /// send values through this method so a numeric caveat parameter (e.g. a
-    /// schema's <c>now &lt; 100</c> compared against an <c>int</c>) evaluates
-    /// correctly instead of comparing against a string SpiceDB would reject
-    /// or fail to coerce, whichever surface it was supplied on.
-    /// </summary>
-    /// <exception cref="InvalidArgumentException">
-    /// Thrown when <paramref name="value"/>'s type cannot be represented on the wire (e.g. a
-    /// custom class instance) — never silently stringified.
-    /// </exception>
-    internal static Value ToProtoValue(object? value) => value switch
-    {
-        null => Value.ForNull(),
-        bool b => Value.ForBool(b),
-        string s => Value.ForString(s),
-        sbyte or byte or short or ushort or int or uint or long or ulong or float or double or decimal =>
-            Value.ForNumber(Convert.ToDouble(value)),
-        IReadOnlyDictionary<string, object> nested => Value.ForStruct(ToProtoStructFrom(nested)),
-        System.Collections.IEnumerable list => Value.ForList(ToProtoValueList(list)),
-        // A value this conversion cannot represent (e.g. a custom class instance) came from the
-        // caller, who can see this error and fix their input -- stringifying it instead would
-        // silently produce a caveat context value SpiceDB never intended, per root DESIGN.md
-        // "RULE: A conversion that cannot preserve meaning must fail", clause 1. Shared by both
-        // the check path (MergeCheckContext) and the write path (Relationship.ToProto).
-        _ => throw new InvalidArgumentException(
-            $"unsupported caveat context value type: {value.GetType()}"),
-    };
-
-    /// <summary>
-    /// Calls <see cref="ToProtoValue"/> for one caveat-context entry, and — if it throws
-    /// <see cref="InvalidArgumentException"/> because <paramref name="value"/>'s type cannot be
-    /// represented — re-raises with <paramref name="key"/> named, so the caller can tell which
-    /// entry in their context dictionary needs fixing rather than just "some value, somewhere."
-    /// For a nested dictionary, the innermost failure names its own (nested) key first, and each
-    /// enclosing call adds its key in turn, so the message traces the full path to the offending
-    /// entry.
-    /// </summary>
-    internal static Value ToProtoValueForKey(string key, object? value)
-    {
-        try
-        {
-            return ToProtoValue(value);
-        }
-        catch (InvalidArgumentException e)
-        {
-            throw new InvalidArgumentException($"caveat context key \"{key}\": {e.Message}", e);
-        }
-    }
-
-    private static Struct ToProtoStructFrom(IReadOnlyDictionary<string, object> dict)
-    {
-        var s = new Struct();
-        foreach (var (key, value) in dict)
-            s.Fields[key] = ToProtoValueForKey(key, value);
-        return s;
-    }
-
-    private static Value[] ToProtoValueList(System.Collections.IEnumerable list)
-    {
-        var values = new List<Value>();
-        foreach (var item in list)
-            values.Add(ToProtoValue(item));
-        return values.ToArray();
-    }
-
-    /// <summary>
-    /// Converts a protobuf Struct <see cref="Value"/> into a native .NET
-    /// value by dispatching on its <c>kind</c> oneof — the read-side inverse
-    /// of <see cref="ToProtoValue"/>. Used by <see cref="Relationship.FromProto"/>
-    /// to read a stored relationship's caveat context back without
-    /// stringifying it: <c>number_value</c> becomes a <c>double</c> (a
-    /// integer caveat parameter legitimately round-trips as e.g. <c>42.0</c>
-    /// — <c>google.protobuf.Value.number_value</c> is a double on the wire,
-    /// not a defect in this conversion), <c>bool_value</c> a <c>bool</c>,
-    /// <c>null_value</c> becomes .NET <c>null</c>, and
-    /// <c>struct_value</c>/<c>list_value</c> recurse. Internal — exposed to
-    /// the test assembly via InternalsVisibleTo; not part of the public API.
-    /// </summary>
-    internal static object? FromProtoValue(Value value) => value.KindCase switch
-    {
-        Value.KindOneofCase.NullValue => null,
-        Value.KindOneofCase.BoolValue => value.BoolValue,
-        Value.KindOneofCase.NumberValue => value.NumberValue,
-        Value.KindOneofCase.StringValue => value.StringValue,
-        Value.KindOneofCase.StructValue => FromProtoStruct(value.StructValue),
-        Value.KindOneofCase.ListValue => value.ListValue.Values.Select(FromProtoValue).ToList(),
-        _ => null,
-    };
-
-    /// <summary>
-    /// Converts every field of a protobuf <see cref="Struct"/> via
-    /// <see cref="FromProtoValue"/>. Internal — exposed to the test assembly
-    /// via InternalsVisibleTo; not part of the public API.
-    /// </summary>
-    internal static IReadOnlyDictionary<string, object> FromProtoStruct(Struct s) =>
-        s.Fields.ToDictionary(f => f.Key, f => FromProtoValue(f.Value)!);
-
-    /// <summary>
-    /// Maps the proto LookupPermissionship enum to its native equivalent.
-    /// Unrecognized values map to Permissionship.Unspecified. Internal —
-    /// exposed to the test assembly via InternalsVisibleTo; not part of the
-    /// public API.
-    /// </summary>
     internal static Permissionship ToPermissionship(Authzed.Api.V1.LookupPermissionship v) => v switch
     {
         Authzed.Api.V1.LookupPermissionship.HasPermission => Permissionship.HasPermission,
@@ -2130,10 +715,6 @@ public sealed class SpiceDBClient : IAsyncDisposable
         _ => Permissionship.Unspecified,
     };
 
-    /// <summary>
-    /// Maps a proto PartialCaveatInfo to its native equivalent. A null input
-    /// maps to null.
-    /// </summary>
     internal static PartialCaveatInfo? ToPartialCaveatInfo(Authzed.Api.V1.PartialCaveatInfo? v)
     {
         if (v == null)
@@ -2141,14 +722,6 @@ public sealed class SpiceDBClient : IAsyncDisposable
         return new PartialCaveatInfo { MissingRequiredContext = v.MissingRequiredContext.ToList() };
     }
 
-    /// <summary>
-    /// Maps the proto CheckPermissionResponse.Types.Permissionship enum
-    /// (which, unlike LookupPermissionship, has a NoPermission value in
-    /// addition to Unspecified/HasPermission/ConditionalPermission) to its
-    /// native equivalent. Unrecognized values map to
-    /// Permissionship.Unspecified. Internal — exposed to the test assembly
-    /// via InternalsVisibleTo; not part of the public API.
-    /// </summary>
     internal static Permissionship ToCheckPermissionship(CheckPermissionResponse.Types.Permissionship v) => v switch
     {
         CheckPermissionResponse.Types.Permissionship.HasPermission => Permissionship.HasPermission,
@@ -2157,31 +730,9 @@ public sealed class SpiceDBClient : IAsyncDisposable
         _ => Permissionship.Unspecified,
     };
 
-    /// <summary>
-    /// Maps one successful CheckBulkPermissionsResponseItem pair to a native
-    /// CheckResult. CheckBulkPermissionsResponseItem carries the same
-    /// permissionship/partial-caveat-info fields as CheckPermissionResponse,
-    /// but has no per-item checked_at of its own — the token lives once on
-    /// the enclosing CheckBulkPermissionsResponse and applies to every pair
-    /// in it, so callers pass it in as <paramref name="checkedAt"/> to
-    /// propagate it onto each result.
-    /// </summary>
-    internal static CheckResult ToCheckResult(CheckBulkPermissionsResponseItem item, string checkedAt) =>
-        new()
-        {
-            Permissionship = ToCheckPermissionship(item.Permissionship),
-            MissingContext = item.PartialCaveatInfo != null
-                ? item.PartialCaveatInfo.MissingRequiredContext.ToList()
-                : [],
-            CheckedAt = checkedAt,
-        };
+    internal static CheckResult ToCheckResult(CheckBulkPermissionsResponseItem item, string checkedAt) => new(
+        ToCheckPermissionship(item.Permissionship), item.PartialCaveatInfo?.MissingRequiredContext ?? Enumerable.Empty<string>(), new(checkedAt), DebugInformation.FromProto(item.DebugTrace));
 
-    /// <summary>
-    /// Maps a proto ResolvedSubject to its native equivalent. A null input
-    /// maps to a zero-value ResolvedSubject (empty SubjectID), which callers
-    /// use as the trigger for falling back to deprecated response-level
-    /// fields.
-    /// </summary>
     internal static ResolvedSubject ToResolvedSubject(Authzed.Api.V1.ResolvedSubject? v)
     {
         if (v == null)
@@ -2194,13 +745,6 @@ public sealed class SpiceDBClient : IAsyncDisposable
         };
     }
 
-    /// <summary>
-    /// Maps a LookupSubjectsResponse to its native LookupSubject, including
-    /// the deprecated-field fallbacks for both the resolved subject
-    /// (`subject_object_id`/`permissionship`/`partial_caveat_info`) and the
-    /// excluded subjects (`excluded_subject_ids`) for servers that don't yet
-    /// populate the non-deprecated `subject`/`excluded_subjects` fields.
-    /// </summary>
     internal static LookupSubject ToLookupSubject(LookupSubjectsResponse resp)
     {
         var subject = ToResolvedSubject(resp.Subject);
@@ -2233,65 +777,24 @@ public sealed class SpiceDBClient : IAsyncDisposable
         {
             Subject = subject,
             ExcludedSubjects = excluded,
-            LookedUpAt = resp.LookedUpAt?.Token ?? "",
+            LookedUpAt = new(resp.LookedUpAt?.Token ?? ""),
         };
     }
 
-    /// <summary>
-    /// Recursively maps a proto PermissionRelationshipTree to its native
-    /// representation. A null input maps to a zero-value PermissionTree.
-    /// Internal — exposed to the test assembly via InternalsVisibleTo for
-    /// direct field-by-field verification; not part of the public API.
-    /// </summary>
     internal static PermissionTree ToPermissionTree(PermissionRelationshipTree? t)
     {
-        if (t == null)
-            return new PermissionTree();
-
-        var tree = new PermissionTree
+        if (t is null) return new();
+        var resource = t.ExpandedObject is null ? null : ObjectRef.FromProto(t.ExpandedObject);
+        return t.TreeTypeCase switch
         {
-            ExpandedObject = new ObjectRef
-            {
-                ObjectType = t.ExpandedObject?.ObjectType ?? "",
-                ObjectID = t.ExpandedObject?.ObjectId ?? "",
-            },
-            ExpandedRelation = t.ExpandedRelation ?? "",
+            PermissionRelationshipTree.TreeTypeOneofCase.Intermediate => new(resource, t.ExpandedRelation, intermediate: new IntermediateNode
+            { Operation = ToTreeOperation(t.Intermediate.Operation), Children = t.Intermediate.Children.Select(ToPermissionTree).ToArray() }),
+            PermissionRelationshipTree.TreeTypeOneofCase.Leaf => new(resource, t.ExpandedRelation, leaf: new LeafNode
+            { Subjects = t.Leaf.Subjects.Select(SubjectRef.FromProto).ToArray() }),
+            _ => new(resource, t.ExpandedRelation),
         };
-
-        switch (t.TreeTypeCase)
-        {
-            case PermissionRelationshipTree.TreeTypeOneofCase.Intermediate:
-                tree = tree with
-                {
-                    Intermediate = new IntermediateNode
-                    {
-                        Operation = ToTreeOperation(t.Intermediate.Operation),
-                        Children = t.Intermediate.Children.Select(ToPermissionTree).ToList(),
-                    },
-                };
-                break;
-            case PermissionRelationshipTree.TreeTypeOneofCase.Leaf:
-                tree = tree with
-                {
-                    Leaf = new LeafNode
-                    {
-                        Subjects = t.Leaf.Subjects.Select(s => new SubjectRef
-                        {
-                            SubjectType = s.Object?.ObjectType ?? "",
-                            SubjectID = s.Object?.ObjectId ?? "",
-                            OptionalRelation = s.OptionalRelation ?? "",
-                        }).ToList(),
-                    },
-                };
-                break;
-        }
-
-        return tree;
     }
 
-    /// <summary>
-    /// Maps the proto algebraic set operation to its native equivalent.
-    /// </summary>
     private static TreeOperation ToTreeOperation(AlgebraicSubjectSet.Types.Operation op) => op switch
     {
         AlgebraicSubjectSet.Types.Operation.Union => TreeOperation.Union,
@@ -2318,84 +821,37 @@ public sealed class SpiceDBClient : IAsyncDisposable
             Authzed.Api.V1.RelationshipUpdate.Types.Operation.Delete => UpdateOperation.Delete,
             _ => UpdateOperation.Unspecified,
         };
-        return new RelationshipUpdate
-        {
-            Operation = op,
-            Relationship = Relationship.FromProto(pu.Relationship),
-        };
+        return new RelationshipUpdate(op, Relationship.FromProto(pu.Relationship));
     }
 
-    /// <summary>
-    /// Retries an async operation with full-jitter exponential backoff for
-    /// transient gRPC errors. Only for idempotent (read) operations — see
-    /// <see cref="CallOnceAsync{T}"/> for mutations.
-    /// </summary>
-    private static async Task<T> RetryAsync<T>(
-        Func<Task<T>> operation,
-        CancellationToken cancellationToken)
+    internal static Struct? MergeCheckContext(IReadOnlyDictionary<string, object?>? defaults, IReadOnlyDictionary<string, object?>? item)
     {
-        var backoff = InitialBackoff;
-        for (var attempt = 0; ; attempt++)
-        {
-            try
-            {
-                return await operation();
-            }
-            catch (RpcException ex) when (attempt < MaxRetryAttempts && ErrorMapper.IsTransient(ex))
-            {
-                await Task.Delay(JitteredDelay(backoff), cancellationToken);
-                backoff *= 2;
-            }
-            catch (RpcException ex)
-            {
-                throw ErrorMapper.ToSpiceDBException(ex);
-            }
-        }
+        if (defaults is null && item is null) return null;
+        var merged = defaults?.ToDictionary(p => p.Key, p => p.Value) ?? new Dictionary<string, object?>();
+        if (item is not null) foreach (var pair in item) merged[pair.Key] = pair.Value;
+        return Native.Struct(Native.Context(merged));
     }
-
-    /// <summary>
-    /// Runs an async operation once, converting a gRPC error, but never
-    /// retrying.
-    /// <para>
-    /// For mutations. A <c>WriteRelationships</c> containing
-    /// <c>OPERATION_CREATE</c>, or any request carrying preconditions, is
-    /// not idempotent: if it commits and the response is lost (a rolling
-    /// restart, a proxy dropping the connection), a retry would surface
-    /// <c>ALREADY_EXISTS</c>/<c>FAILED_PRECONDITION</c> for a write that in
-    /// fact succeeded, and the caller would wrongly conclude it had
-    /// failed. See DESIGN.md, "Automatic retry is for idempotent
-    /// operations only".
-    /// </para>
-    /// </summary>
-    private static async Task<T> CallOnceAsync<T>(Func<Task<T>> operation)
-    {
-        try
-        {
-            return await operation();
-        }
-        catch (RpcException ex)
-        {
-            throw ErrorMapper.ToSpiceDBException(ex);
-        }
-    }
+    internal static Value ToProtoValue(object? value) => Native.Value(value);
+    internal static Value ToProtoValueForKey(string key, object? value) => Native.Struct(Native.Context(new Dictionary<string, object?> { [key] = value }))!.Fields[key];
+    internal static object? FromProtoValue(Value value) => Native.FromValue(value);
+    internal static IReadOnlyDictionary<string, object?> FromProtoStruct(Struct value) => Native.FromStruct(value)!;
 }
-
-// ──────────────────────────────────────────────────────────────────────
-// Supporting types for schema operations
-// ──────────────────────────────────────────────────────────────────────
-
 /// <summary>Represents a definition in a SpiceDB schema.</summary>
 public sealed record SchemaDefinition
 {
     public string Name { get; init; } = "";
     public string Comment { get; init; } = "";
-    public List<SchemaRelation> Relations { get; init; } = [];
-    public List<SchemaPermission> Permissions { get; init; } = [];
+    private IReadOnlyList<SchemaRelation> _Relations = Array.Empty<SchemaRelation>();
+    public IReadOnlyList<SchemaRelation> Relations { get => _Relations; init => _Relations = Native.List(value); }
+    private IReadOnlyList<SchemaPermission> _Permissions = Array.Empty<SchemaPermission>();
+    public IReadOnlyList<SchemaPermission> Permissions { get => _Permissions; init => _Permissions = Native.List(value); }
 }
 
 /// <summary>Represents a relation within a schema definition.</summary>
 public sealed record SchemaRelation
 {
+    private IReadOnlyList<SchemaTypeReference> _subjectTypes = Array.Empty<SchemaTypeReference>();
+    public IReadOnlyList<SchemaTypeReference> SubjectTypes { get => _subjectTypes; init => _subjectTypes = Native.List(value); }
     public string Name { get; init; } = "";
     public string Comment { get; init; } = "";
     public string ParentDefinitionName { get; init; } = "";
@@ -2415,7 +871,8 @@ public sealed record SchemaCaveat
     public string Name { get; init; } = "";
     public string Comment { get; init; } = "";
     public string Expression { get; init; } = "";
-    public List<SchemaCaveatParameter> Parameters { get; init; } = [];
+    private IReadOnlyList<SchemaCaveatParameter> _Parameters = Array.Empty<SchemaCaveatParameter>();
+    public IReadOnlyList<SchemaCaveatParameter> Parameters { get => _Parameters; init => _Parameters = Native.List(value); }
 }
 
 /// <summary>Represents a parameter of a caveat.</summary>
@@ -2429,9 +886,11 @@ public sealed record SchemaCaveatParameter
 /// <summary>Holds the result of a schema reflection call.</summary>
 public sealed record ReflectSchemaResult
 {
-    public List<SchemaDefinition> Definitions { get; init; } = [];
-    public List<SchemaCaveat> Caveats { get; init; } = [];
-    public string Revision { get; init; } = "";
+    private IReadOnlyList<SchemaDefinition> _Definitions = Array.Empty<SchemaDefinition>();
+    public IReadOnlyList<SchemaDefinition> Definitions { get => _Definitions; init => _Definitions = Native.List(value); }
+    private IReadOnlyList<SchemaCaveat> _Caveats = Array.Empty<SchemaCaveat>();
+    public IReadOnlyList<SchemaCaveat> Caveats { get => _Caveats; init => _Caveats = Native.List(value); }
+    public ZedToken Revision { get; init; }
 }
 
 /// <summary>Identifies a relation or permission on a definition.</summary>
@@ -2452,7 +911,28 @@ public sealed record SchemaDiff
     public string PermissionName { get; init; } = "";
     public string CaveatName { get; init; } = "";
 
+    public SchemaDefinition? Definition { get; init; }
+    public SchemaRelation? Relation { get; init; }
+    public SchemaPermission? Permission { get; init; }
+    public SchemaCaveat? Caveat { get; init; }
+    public SchemaCaveatParameter? Parameter { get; init; }
+    public SchemaTypeReference? ChangedSubjectType { get; init; }
+    public string? PreviousType { get; init; }
     internal static SchemaDiff FromProto(ReflectionSchemaDiff d)
+    {
+        var result = MapSummary(d);
+        return result with
+        {
+            Definition = SchemaMapping.Definition(d.DefinitionAdded ?? d.DefinitionRemoved ?? d.DefinitionDocCommentChanged),
+            Relation = SchemaMapping.Relation(d.RelationAdded ?? d.RelationRemoved ?? d.RelationDocCommentChanged ?? d.RelationSubjectTypeAdded?.Relation ?? d.RelationSubjectTypeRemoved?.Relation),
+            Permission = SchemaMapping.Permission(d.PermissionAdded ?? d.PermissionRemoved ?? d.PermissionDocCommentChanged ?? d.PermissionExprChanged),
+            Caveat = SchemaMapping.Caveat(d.CaveatAdded ?? d.CaveatRemoved ?? d.CaveatDocCommentChanged ?? d.CaveatExprChanged),
+            Parameter = SchemaMapping.Parameter(d.CaveatParameterAdded ?? d.CaveatParameterRemoved ?? d.CaveatParameterTypeChanged?.Parameter),
+            ChangedSubjectType = (d.RelationSubjectTypeAdded?.ChangedSubjectType ?? d.RelationSubjectTypeRemoved?.ChangedSubjectType) is { } type ? SchemaTypeReference.FromProto(type) : null,
+            PreviousType = d.CaveatParameterTypeChanged?.PreviousType,
+        };
+    }
+    private static SchemaDiff MapSummary(ReflectionSchemaDiff d)
     {
         // Map each oneof case to a SchemaDiff with the appropriate Kind
         if (d.DefinitionAdded != null)
@@ -2503,14 +983,15 @@ public sealed record ExpandResult
 {
     /// <summary>The root of the expanded permission tree.</summary>
     public PermissionTree Tree { get; init; } = new();
-    public string Revision { get; init; } = "";
+    public ZedToken Revision { get; init; }
 }
 
 /// <summary>Holds the result of a relationship count operation.</summary>
 public sealed record CountResult
 {
+    public bool StillCalculating { get; init; }
     public ulong RelationshipCount { get; init; }
-    public string Revision { get; init; } = "";
+    public ZedToken Revision { get; init; }
 }
 
 /// <summary>
@@ -2524,11 +1005,12 @@ public sealed record RoaringLookupResourcesResult
     /// the relationships themselves, as 44-bit integers -- this client does not
     /// decode the bitmap.
     /// </summary>
-    public byte[] Bitmap { get; init; } = [];
+    private IReadOnlyList<byte> _Bitmap = Array.Empty<byte>();
+    public IReadOnlyList<byte> Bitmap { get => _Bitmap; init => _Bitmap = Native.List(value); }
 
     /// <summary>The number of resource IDs in <see cref="Bitmap"/>.</summary>
     public ulong Cardinality { get; init; }
 
     /// <summary>The ZedToken revision the lookup was performed at.</summary>
-    public string AtRevision { get; init; } = "";
+    public ZedToken AtRevision { get; init; }
 }

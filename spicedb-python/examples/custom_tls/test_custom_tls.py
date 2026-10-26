@@ -24,17 +24,17 @@ material. It brings up its own TLS-terminated gRPC endpoint with a throwaway
 CA instead, so what you see below is a real handshake against a certificate no
 public root set would accept.
 """
+from spicedb import TransportSecurity
 
+from spicedb import ObjectRef, SubjectRef, PermissionCheck
 import pathlib
 import subprocess
 import tempfile
 from concurrent import futures
-
 import grpc
 import pytest
 from authzed.api.v1 import permission_service_pb2 as psp
-
-from spicedb import InvalidArgumentError, Relationship, full
+from spicedb import InvalidArgumentError, full
 from spicedb.aio import SpiceDBClient
 
 TOKEN = "somerandomkeyhere"
@@ -54,23 +54,58 @@ def pki():
     """
     with tempfile.TemporaryDirectory() as tmp:
         d = pathlib.Path(tmp)
-        _openssl("req", "-x509", "-newkey", "rsa:2048", "-nodes",
-                 "-keyout", str(d / "ca.key"), "-out", str(d / "ca.crt"),
-                 "-days", "1", "-subj", "/CN=example internal CA",
-                 "-addext", "basicConstraints=critical,CA:TRUE")
+        _openssl(
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-nodes",
+            "-keyout",
+            str(d / "ca.key"),
+            "-out",
+            str(d / "ca.crt"),
+            "-days",
+            "1",
+            "-subj",
+            "/CN=example internal CA",
+            "-addext",
+            "basicConstraints=critical,CA:TRUE",
+        )
 
         def leaf(name: str, ext: str) -> tuple[bytes, bytes]:
             (d / f"{name}.ext").write_text(
                 f"basicConstraints=CA:FALSE\nkeyUsage=digitalSignature,keyEncipherment\n{ext}\n"
             )
-            _openssl("req", "-newkey", "rsa:2048", "-nodes",
-                     "-keyout", str(d / f"{name}.key"), "-out", str(d / f"{name}.csr"),
-                     "-subj", f"/CN={name}")
-            _openssl("x509", "-req", "-in", str(d / f"{name}.csr"),
-                     "-CA", str(d / "ca.crt"), "-CAkey", str(d / "ca.key"),
-                     "-CAcreateserial", "-out", str(d / f"{name}.crt"),
-                     "-days", "1", "-extfile", str(d / f"{name}.ext"))
-            return (d / f"{name}.crt").read_bytes(), (d / f"{name}.key").read_bytes()
+            _openssl(
+                "req",
+                "-newkey",
+                "rsa:2048",
+                "-nodes",
+                "-keyout",
+                str(d / f"{name}.key"),
+                "-out",
+                str(d / f"{name}.csr"),
+                "-subj",
+                f"/CN={name}",
+            )
+            _openssl(
+                "x509",
+                "-req",
+                "-in",
+                str(d / f"{name}.csr"),
+                "-CA",
+                str(d / "ca.crt"),
+                "-CAkey",
+                str(d / "ca.key"),
+                "-CAcreateserial",
+                "-out",
+                str(d / f"{name}.crt"),
+                "-days",
+                "1",
+                "-extfile",
+                str(d / f"{name}.ext"),
+            )
+            return ((d / f"{name}.crt").read_bytes(), (d / f"{name}.key").read_bytes())
 
         server_cert, server_key = leaf(
             "localhost",
@@ -94,20 +129,13 @@ def _serve_tls(pki, *, require_client_auth: bool):
             grpc.method_handlers_generic_handler(
                 "authzed.api.v1.PermissionsService",
                 {
-                    "CheckBulkPermissions": grpc.unary_unary_rpc_method_handler(
-                        lambda request, context: psp.CheckBulkPermissionsResponse(
-                            pairs=[
-                                psp.CheckBulkPermissionsPair(
-                                    request=psp.CheckBulkPermissionsRequestItem(),
-                                    item=psp.CheckBulkPermissionsResponseItem(
-                                        permissionship=psp.CheckPermissionResponse.PERMISSIONSHIP_HAS_PERMISSION
-                                    ),
-                                )
-                            ]
+                    "CheckPermission": grpc.unary_unary_rpc_method_handler(
+                        lambda request, context: psp.CheckPermissionResponse(
+                            permissionship=2
                         ).SerializeToString(),
                         lambda b: b,
                         lambda b: b,
-                    ),
+                    )
                 },
             ),
         )
@@ -121,7 +149,7 @@ def _serve_tls(pki, *, require_client_auth: bool):
         ),
     )
     server.start()
-    return server, port
+    return (server, port)
 
 
 async def test_connect_with_a_private_ca(pki):
@@ -129,15 +157,19 @@ async def test_connect_with_a_private_ca(pki):
     server, port = _serve_tls(pki, require_client_auth=False)
     try:
         async with SpiceDBClient(
-            f"localhost:{port}",
-            token=TOKEN,
-            ca_cert=pki["ca"],
-            default_timeout=10.0,
+            f"localhost:{port}", token=TOKEN, ca_cert=pki["ca"], default_timeout=10.0
         ) as client:
-            result = await client.check_permission(
-                full(), Relationship.from_triple("document:readme", "view", "user:alice")
+            result = await client.check(
+                PermissionCheck(
+                    ObjectRef("document", "readme"),
+                    "view",
+                    SubjectRef(ObjectRef("user", "alice"), None),
+                ),
+                consistency=full(),
             )
-            print(f"connected over TLS to a private CA; has_permission={result.has_permission}")
+            print(
+                f"connected over TLS to a private CA; has_permission={result.has_permission}"
+            )
             assert result.has_permission is True
     finally:
         server.stop(0)
@@ -155,8 +187,13 @@ async def test_connect_with_mutual_tls(pki):
             client_key=pki["client_key"],
             default_timeout=10.0,
         ) as client:
-            result = await client.check_permission(
-                full(), Relationship.from_triple("document:readme", "view", "user:alice")
+            result = await client.check(
+                PermissionCheck(
+                    ObjectRef("document", "readme"),
+                    "view",
+                    SubjectRef(ObjectRef("user", "alice"), None),
+                ),
+                consistency=full(),
             )
             print(f"connected over mutual TLS; has_permission={result.has_permission}")
             assert result.has_permission is True
@@ -165,7 +202,7 @@ async def test_connect_with_mutual_tls(pki):
 
 
 def test_trust_material_never_makes_the_connection_plaintext():
-    """`insecure=True` plus trust material is a contradiction, and is refused.
+    """`transport_security=TransportSecurity.PLAINTEXT` plus trust material is a contradiction, and is refused.
 
     A plaintext connection performs no handshake, so grpc would ignore the CA
     and send the bearer token in cleartext behind a call site that reads as
@@ -173,6 +210,4 @@ def test_trust_material_never_makes_the_connection_plaintext():
     insecure transport require an explicit opt-in".
     """
     with pytest.raises(InvalidArgumentError):
-        SpiceDBClient(
-            "localhost:50051", token=TOKEN, insecure=True, ca_cert=b"...."
-        )
+        SpiceDBClient("localhost:50051", token=TOKEN, transport_security=TransportSecurity.PLAINTEXT, ca_cert=b"....")

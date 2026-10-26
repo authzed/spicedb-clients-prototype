@@ -28,17 +28,20 @@ RSpec.describe 'Call deadlines' do
     # just a unit spec against a stalling stub.
     SpiceDB::Client.new_plaintext(SPICEDB_ENDPOINT, SPICEDB_TOKEN, default_timeout: 5) do |c|
       c.write_schema(TEST_SCHEMA)
-      c.delete_relationships(SpiceDB::Filter.new(resource_type: 'document'))
+      c.delete_all_relationships_non_atomic(SpiceDB::Filter.new(resource_type: 'document'))
 
       txn = SpiceDB::Transaction.new
-      txn.touch(SpiceDB::Relationship.from_triple('document', 'readme', 'viewer', 'user', 'alice'))
+      txn.touch(SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'readme'), relation: 'viewer',
+                                          subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user',
+                                                                                                          object_id: 'alice'), relation: nil)))
       c.write(txn)
 
-      rel = SpiceDB::Relationship.from_triple('document', 'readme', 'view', 'user', 'alice')
-      result = c.check_permission(SpiceDB::Consistency.full, 'view', rel)
+      rel = SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'readme'), relation: 'view',
+                                      subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: 'alice'), relation: nil))
+      result = c.check(SpiceDB::PermissionCheck.new(resource: rel.resource, permission: 'view', subject: rel.subject), consistency: SpiceDB::Consistency.full)
       expect(result.has_permission?).to be true
 
-      c.delete_relationships(SpiceDB::Filter.new(resource_type: 'document').with_resource_id('readme'))
+      c.delete_all_relationships_non_atomic(SpiceDB::Filter.new(resource_type: 'document').with_resource_id('readme'))
     end
   end
 
@@ -47,14 +50,18 @@ RSpec.describe 'Call deadlines' do
     # exercises the real timeout: keyword end-to-end, not testing how small
     # a timeout can be.
     txn = SpiceDB::Transaction.new
-    txn.touch(SpiceDB::Relationship.from_triple('document', 'readme', 'viewer', 'user', 'alice'))
+    txn.touch(SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'readme'), relation: 'viewer',
+                                        subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user',
+                                                                                                        object_id: 'alice'), relation: nil)))
     client.write(txn, timeout: 5)
 
-    rel = SpiceDB::Relationship.from_triple('document', 'readme', 'view', 'user', 'alice')
-    result = client.check_permission(SpiceDB::Consistency.full, 'view', rel, timeout: 5)
+    rel = SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'readme'), relation: 'view',
+                                    subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: 'alice'), relation: nil))
+    result = client.check(SpiceDB::PermissionCheck.new(resource: rel.resource, permission: 'view', subject: rel.subject),
+                          consistency: SpiceDB::Consistency.full, timeout: 5)
     expect(result.has_permission?).to be true
   ensure
-    client.delete_relationships(SpiceDB::Filter.new(resource_type: 'document').with_resource_id('readme'))
+    client.delete_all_relationships_non_atomic(SpiceDB::Filter.new(resource_type: 'document').with_resource_id('readme'))
   end
 
   it 'does not bound bulk import by the unary default' do
@@ -64,7 +71,8 @@ RSpec.describe 'Call deadlines' do
     # Calling it with no timeout: at all must still succeed.
     users = (1..50).map { |i| "user#{i}" }
     relationships = users.map do |u|
-      SpiceDB::Relationship.from_triple('document', 'bulk', 'viewer', 'user', u)
+      SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'bulk'), relation: 'viewer',
+                                subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: u), relation: nil))
     end
     num_loaded = client.import_relationships(relationships)
     expect(num_loaded).to eq(users.length)
@@ -73,13 +81,14 @@ RSpec.describe 'Call deadlines' do
     # still be honored -- the exclusion is from the *default*, not from the
     # ability to bound the call at all.
     more_relationships = users.map do |u|
-      SpiceDB::Relationship.from_triple('document', 'bulk2', 'viewer', 'user', u)
+      SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'bulk2'), relation: 'viewer',
+                                subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: u), relation: nil))
     end
     num_loaded_bounded = client.import_relationships(more_relationships, timeout: 30)
     expect(num_loaded_bounded).to eq(users.length)
   ensure
-    client.delete_relationships(SpiceDB::Filter.new(resource_type: 'document').with_resource_id('bulk'))
-    client.delete_relationships(SpiceDB::Filter.new(resource_type: 'document').with_resource_id('bulk2'))
+    client.delete_all_relationships_non_atomic(SpiceDB::Filter.new(resource_type: 'document').with_resource_id('bulk'))
+    client.delete_all_relationships_non_atomic(SpiceDB::Filter.new(resource_type: 'document').with_resource_id('bulk2'))
   end
 
   # A socket that accepts TCP connections and never speaks gRPC. The kernel
@@ -113,9 +122,11 @@ RSpec.describe 'Call deadlines' do
   it 'expires default_timeout: against a server that never answers' do
     with_wedged_server do |endpoint|
       SpiceDB::Client.new_plaintext(endpoint, SPICEDB_TOKEN, default_timeout: WEDGED_TIMEOUT) do |wedged|
-        rel = SpiceDB::Relationship.from_triple('document', 'readme', 'view', 'user', 'alice')
+        rel = SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'readme'), relation: 'view',
+                                        subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user',
+                                                                                                        object_id: 'alice'), relation: nil))
         expect_deadline_to_fire('default_timeout') do
-          wedged.check_permission(SpiceDB::Consistency.full, 'view', rel)
+          wedged.check(SpiceDB::PermissionCheck.new(resource: rel.resource, permission: 'view', subject: rel.subject), consistency: SpiceDB::Consistency.full)
         end
       end
     end
@@ -128,9 +139,12 @@ RSpec.describe 'Call deadlines' do
       # argument and dropped it would still pass every fast-local-call example
       # above.
       SpiceDB::Client.new_plaintext(endpoint, SPICEDB_TOKEN) do |wedged|
-        rel = SpiceDB::Relationship.from_triple('document', 'readme', 'view', 'user', 'alice')
+        rel = SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'readme'), relation: 'view',
+                                        subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user',
+                                                                                                        object_id: 'alice'), relation: nil))
         expect_deadline_to_fire('per-call timeout') do
-          wedged.check_permission(SpiceDB::Consistency.full, 'view', rel, timeout: WEDGED_TIMEOUT)
+          wedged.check(SpiceDB::PermissionCheck.new(resource: rel.resource, permission: 'view', subject: rel.subject), consistency: SpiceDB::Consistency.full,
+                                                                                                                       timeout: WEDGED_TIMEOUT)
         end
       end
     end

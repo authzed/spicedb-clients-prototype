@@ -49,9 +49,13 @@ async fn raw_proto_drives_a_real_generated_client_against_a_real_server() {
     let authorizations = mock.check_permission_authorizations();
     let addr = spawn_permissions_server(mock).await;
 
-    let client = SpiceDBClient::new_plaintext(addr.to_string(), "test-token")
-        .await
-        .expect("client should connect to the mock server");
+    let client = SpiceDBClient::new_plaintext(
+        addr.to_string(),
+        "test-token",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("client should connect to the mock server");
 
     // Clone, because the generated clients take `&mut self`. A tonic client
     // clone shares the same channel -- it does not open a second connection.
@@ -108,15 +112,24 @@ async fn raw_proto_shares_the_connection_the_idiomatic_methods_use() {
     let raw_calls = mock.check_permission_requests();
     let addr = spawn_permissions_server(mock).await;
 
-    let client = SpiceDBClient::new_plaintext(addr.to_string(), "test-token")
-        .await
-        .expect("client should connect to the mock server");
+    let client = SpiceDBClient::new_plaintext(
+        addr.to_string(),
+        "test-token",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("client should connect to the mock server");
 
     // An idiomatic call and a raw one, in that order, over one client.
-    let rel = spicedb::types::Relationship::new("document", "readme", "view", "user", "jimmy", "")
+    let rel = spicedb::Relationship::from_tuple("document:readme#view@user:jimmy")
         .expect("valid relationship");
     let result = client
-        .check_permission(&spicedb::consistency::full(), "view", &rel)
+        .check(spicedb::PermissionCheck::new(
+            rel.resource().clone(),
+            "view",
+            rel.subject().clone(),
+            (spicedb::consistency::full()).clone(),
+        ))
         .await
         .expect("idiomatic check should succeed");
     assert!(result.has_permission());
@@ -129,13 +142,13 @@ async fn raw_proto_shares_the_connection_the_idiomatic_methods_use() {
 
     assert_eq!(
         bulk_calls.load(std::sync::atomic::Ordering::SeqCst),
-        1,
-        "the idiomatic call must have gone through CheckBulkPermissions"
+        0,
+        "the idiomatic singular call uses CheckPermission"
     );
     assert_eq!(
         raw_calls.lock().unwrap().len(),
-        1,
-        "the raw call must have gone through the single-check RPC the idiomatic API never uses"
+        2,
+        "both calls share the authenticated singular transport"
     );
 }
 
@@ -164,8 +177,7 @@ async fn raw_proto_is_an_accessor_not_a_second_construction_path() {
         Err(err) => err,
     };
     assert!(
-        err.to_string()
-            .contains("allow_insecure_remote_credentials"),
+        err.to_string().contains("AllowInsecureRemote"),
         "unexpected error: {err}"
     );
 }

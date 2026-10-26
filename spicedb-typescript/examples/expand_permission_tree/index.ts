@@ -1,3 +1,4 @@
+import { TransportSecurity } from "../../src/index.js";
 /**
  * Example: Expand permission tree
  *
@@ -7,32 +8,21 @@
  * TreeOperation) or a `leaf` node (concrete SubjectRefs). No `unknown` or
  * proto types are involved.
  */
-import {
-  createSpiceDBClient,
-  Transaction,
-  relationship,
-  full,
-  type PermissionTree,
-  type SubjectRef,
-} from "../../src/index.js";
-
+import { createSpiceDBClient, Transaction, relationship, full, type PermissionTree, type SubjectRef, } from "../../src/index.js";
 function assert(condition: boolean, message: string): void {
-  if (!condition) {
-    console.error(`ASSERTION FAILED: ${message}`);
-    process.exit(1);
-  }
+    if (!condition) {
+        console.error(`ASSERTION FAILED: ${message}`);
+        process.exit(1);
+    }
 }
-
 // Endpoint and token come from the environment so the example runs against
 // whichever SpiceDB the caller started; the defaults match
 // docker-compose.test.yml.
 const endpoint = process.env.SPICEDB_ENDPOINT || "localhost:50051";
 const token = process.env.SPICEDB_TOKEN || "testtoken";
-
 const client = createSpiceDBClient(endpoint, token, {
-  insecure: true,
+    transportSecurity: TransportSecurity.Plaintext
 });
-
 // Setup: write schema and data
 await client.writeSchema(`
 definition user {}
@@ -44,63 +34,54 @@ definition document {
   permission view = viewer + editor + owner
 }
 `);
-
 const txn = new Transaction();
 txn.touch(relationship("document:readme", "viewer", "user:jimmy"));
 txn.touch(relationship("document:readme", "editor", "user:sally"));
 txn.touch(relationship("document:readme", "owner", "user:alice"));
 await client.write(txn);
-
 // Expand the "view" permission tree for document:readme
-const { expandedAt, treeRoot } = await client.expandPermissionTree(full(), {
-  resourceType: "document",
-  resourceId: "readme",
-  permission: "view",
+const { revision, treeRoot } = await client.expandPermissionTree({
+    ...{
+        permission: "view",
+        resource: {
+            objectType: "document",
+            objectId: "readme"
+        }
+    },
+    consistency: full()
 });
-console.log(`Expanded at revision: ${expandedAt}`);
-
+console.log(`Expanded at revision: ${revision}`);
 // Recursively walk the native PermissionTree, printing each node's
 // expandedObject/expandedRelation, the operation at intermediate nodes, and
 // the concrete subjects at leaf nodes. Returns every leaf subject found.
 function walk(node: PermissionTree, depth = 0): SubjectRef[] {
-  const indent = "  ".repeat(depth);
-  console.log(
-    `${indent}${node.expandedObject.objectType}:${node.expandedObject.objectId}#${node.expandedRelation}`,
-  );
-
-  if (node.intermediate) {
-    console.log(`${indent}  operation: ${node.intermediate.operation}`);
-    return node.intermediate.children.flatMap((child) => walk(child, depth + 1));
-  }
-
-  if (node.leaf) {
-    return node.leaf.subjects.map((subject) => {
-      console.log(`${indent}  leaf subject: ${subject.subjectType}:${subject.subjectId}`);
-      return subject;
-    });
-  }
-
-  return [];
+    const indent = "  ".repeat(depth);
+    console.log(`${indent}${node.expandedObject.objectType}:${node.expandedObject.objectId}#${node.expandedRelation}`);
+    if (node.node.kind === "intermediate") {
+        console.log(`${indent}  operation: ${node.node.operation}`);
+        return node.node.children.flatMap((child) => walk(child, depth + 1));
+    }
+    if (node.node.kind === "leaf") {
+        return node.node.subjects.map((subject) => {
+            console.log(`${indent}  leaf subject: ${subject.object.objectType}:${subject.object.objectId}`);
+            return subject;
+        });
+    }
+    return [];
 }
-
 const leafSubjects = walk(treeRoot);
-const subjectIds = new Set(leafSubjects.map((s) => `${s.subjectType}:${s.subjectId}`));
-
+const subjectIds = new Set(leafSubjects.map((s) => `${s.object.objectType}:${s.object.objectId}`));
 console.log("\nExpanded subjects:", [...subjectIds].sort());
 assert(subjectIds.has("user:jimmy"), "expected jimmy in expanded tree");
 assert(subjectIds.has("user:sally"), "expected sally in expanded tree");
 assert(subjectIds.has("user:alice"), "expected alice in expanded tree");
-assert(
-  subjectIds.size === 3,
-  `expected exactly 3 expanded subjects, got ${subjectIds.size}`,
-);
-
+assert(subjectIds.size === 3, `expected exactly 3 expanded subjects, got ${subjectIds.size}`);
 // Clean up so later examples that write a narrower schema aren't blocked by
 // leftover relationships (examples run in sequence against one shared
 // SpiceDB instance).
-await client.deleteRelationships({ resourceType: "document" });
-
+await client.deleteRelationships({ resourceType: "document" }, {
+    limit: 1000
+});
 // Release the underlying transport now that this example is done with it.
 client.close();
-
 console.log("\nexpand_permission_tree: PASS");

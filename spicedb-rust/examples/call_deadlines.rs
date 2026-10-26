@@ -70,27 +70,40 @@ async fn main() {
     // definition yet, which SpiceDB reports as FailedPrecondition
     // (ERROR_REASON_UNKNOWN_DEFINITION). Anything else -- an unreachable
     // server, a bad token -- must still fail the example.
-    match client.delete_relationships(&Filter::new("document")).await {
+    match client
+        .delete_all_relationships_non_atomic(spicedb::DeleteAllRequest::new(
+            (Filter::new("document")).clone(),
+        ))
+        .await
+    {
         Ok(_) | Err(SpiceDBError::FailedPrecondition(_)) => {}
         Err(e) => panic!("cleanup before schema write failed: {e:?}"),
     }
 
     client
-        .write_schema(SCHEMA)
+        .write_schema(spicedb::WriteSchemaRequest::new(SCHEMA))
         .await
         .expect("write schema failed");
 
-    let rel = Relationship::new("document", "readme", "viewer", "user", "alice", "")
+    let rel = spicedb::Relationship::from_tuple("document:readme#viewer@user:alice")
         .expect("invalid relationship");
     let mut txn = Transaction::new();
     txn.touch(&rel);
-    let revision = client.write(&txn).await.expect("write failed");
+    let revision = client
+        .write(spicedb::WriteRequest::new((txn).clone()))
+        .await
+        .expect("write failed");
 
     // Bound by the 5s default set above.
-    let check_rel = Relationship::new("document", "readme", "view", "user", "alice", "")
+    let check_rel = spicedb::Relationship::from_tuple("document:readme#view@user:alice")
         .expect("invalid relationship");
     let result = client
-        .check_permission(&consistency::at_least(&revision), "view", &check_rel)
+        .check(spicedb::PermissionCheck::new(
+            check_rel.resource().clone(),
+            "view",
+            check_rel.subject().clone(),
+            (consistency::at_least((&revision.revision).into())).clone(),
+        ))
         .await
         .expect("check failed");
     println!(
@@ -104,11 +117,14 @@ async fn main() {
     // this exercises the real timeout parameter end-to-end, not testing how
     // small a timeout can be.
     let result = client
-        .check_permission_with_options(
-            &consistency::at_least(&revision),
-            "view",
-            &check_rel,
-            &CheckOptions::new().with_timeout(Duration::from_secs(2)),
+        .check(
+            spicedb::PermissionCheck::new(
+                check_rel.resource().clone(),
+                "view",
+                check_rel.subject().clone(),
+                (consistency::at_least((&revision.revision).into())).clone(),
+            )
+            .with_options((CheckOptions::new().with_timeout(Duration::from_secs(2))).clone()),
         )
         .await
         .expect("check with timeout failed");
@@ -127,46 +143,53 @@ async fn main() {
     // DeadlineExceeded well before it finished.
     let import_rels: Vec<Relationship> = (0..50)
         .map(|i| {
-            Relationship::new(
-                "document",
-                format!("bulk-{i}"),
-                "viewer",
-                "user",
-                "alice",
-                "",
-            )
+            (|| -> Result<spicedb::Relationship, spicedb::SpiceDBError> {
+                spicedb::Relationship::new(
+                    spicedb::ObjectRef::new("document", format!("bulk-{i}"))?,
+                    "viewer",
+                    spicedb::SubjectRef::new(spicedb::ObjectRef::new("user", "alice")?, None)?,
+                )
+            })()
             .expect("invalid relationship")
         })
         .collect();
     let num_loaded = client
-        .import_relationships(import_rels)
+        .import_relationships(spicedb::ImportRelationshipsRequest::new(
+            futures::stream::iter((import_rels).into_iter().map(Ok)),
+        ))
         .await
         .expect("import failed");
-    println!("imported {num_loaded} relationships with no timeout bound");
-    assert_eq!(num_loaded, 50);
+    println!("imported {num_loaded:?} relationships with no timeout bound");
+    assert_eq!(num_loaded.imported_count, 50);
 
     // A caller-supplied timeout on the same client-streaming call must
     // still be honored -- the exclusion is from the *default*, not from the
     // ability to bound the call at all.
     let more_import_rels: Vec<Relationship> = (0..50)
         .map(|i| {
-            Relationship::new(
-                "document",
-                format!("bulk2-{i}"),
-                "viewer",
-                "user",
-                "alice",
-                "",
-            )
+            (|| -> Result<spicedb::Relationship, spicedb::SpiceDBError> {
+                spicedb::Relationship::new(
+                    spicedb::ObjectRef::new("document", format!("bulk2-{i}"))?,
+                    "viewer",
+                    spicedb::SubjectRef::new(spicedb::ObjectRef::new("user", "alice")?, None)?,
+                )
+            })()
             .expect("invalid relationship")
         })
         .collect();
     let num_loaded_bounded = client
-        .import_relationships_with_timeout(more_import_rels, Duration::from_secs(30))
+        .import_relationships(
+            spicedb::ImportRelationshipsRequest::new(futures::stream::iter(
+                (more_import_rels).into_iter().map(Ok),
+            ))
+            .with_options(
+                spicedb::ImportRelationshipsOptions::new().with_timeout(Duration::from_secs(30)),
+            ),
+        )
         .await
         .expect("import with timeout failed");
-    println!("imported {num_loaded_bounded} relationships with an explicit 30s timeout");
-    assert_eq!(num_loaded_bounded, 50);
+    println!("imported {num_loaded_bounded:?} relationships with an explicit 30s timeout");
+    assert_eq!(num_loaded_bounded.imported_count, 50);
 
     // ── The case the rule is about: a server that never answers ──────────
     //
@@ -191,7 +214,12 @@ async fn main() {
     // would hang the CI job rather than fail it.
     let outcome = tokio::time::timeout(
         WEDGED_WATCHDOG,
-        wedged_client.check_permission(&consistency::full(), "view", &check_rel),
+        wedged_client.check(spicedb::PermissionCheck::new(
+            check_rel.resource().clone(),
+            "view",
+            check_rel.subject().clone(),
+            (consistency::full()).clone(),
+        )),
     )
     .await
     .unwrap_or_else(|_| {
@@ -220,11 +248,14 @@ async fn main() {
     // would still pass every fast-local-call assertion above.
     let outcome = tokio::time::timeout(
         WEDGED_WATCHDOG,
-        wedged_client.check_permission_with_options(
-            &consistency::full(),
-            "view",
-            &check_rel,
-            &CheckOptions::new().with_timeout(WEDGED_TIMEOUT),
+        wedged_client.check(
+            spicedb::PermissionCheck::new(
+                check_rel.resource().clone(),
+                "view",
+                check_rel.subject().clone(),
+                (consistency::full()).clone(),
+            )
+            .with_options((CheckOptions::new().with_timeout(WEDGED_TIMEOUT)).clone()),
         ),
     )
     .await
@@ -245,7 +276,9 @@ async fn main() {
     // Clean up so later examples that write a narrower schema aren't blocked by
     // leftover relationships.
     client
-        .delete_relationships(&Filter::new("document"))
+        .delete_all_relationships_non_atomic(spicedb::DeleteAllRequest::new(
+            (Filter::new("document")).clone(),
+        ))
         .await
         .expect("cleanup failed");
 }

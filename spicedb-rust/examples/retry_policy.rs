@@ -28,7 +28,7 @@ use spicedb::types::{Relationship, Transaction};
 use tonic::Code;
 
 fn doc() -> Relationship {
-    Relationship::new("document", "readme", "view", "user", "alice", "")
+    spicedb::Relationship::from_tuple("document:readme#view@user:alice")
         .expect("invalid relationship")
 }
 
@@ -45,12 +45,21 @@ async fn main() {
         code: Code::Unavailable,
     })
     .await;
-    let client = SpiceDBClient::new_plaintext(format!("{addr}"), "t")
-        .await
-        .expect("connect to the stand-in");
+    let client = SpiceDBClient::new_plaintext(
+        format!("{addr}"),
+        "t",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("connect to the stand-in");
 
     let result = client
-        .check_permission(&consistency::full(), "view", &doc())
+        .check(spicedb::PermissionCheck::new(
+            doc().resource().clone(),
+            "view",
+            doc().subject().clone(),
+            (consistency::full()).clone(),
+        ))
         .await
         .expect("a read failing transiently should have been retried to success");
     assert!(
@@ -75,16 +84,20 @@ async fn main() {
     // first attempt, so the caller -- who alone knows whether a replay is safe
     // for the transaction they built -- decides what happens next.
     let (write_addr, write_counts) = common::spawn(CheckBehavior::GrantUnlessStaleToken).await;
-    let write_client = SpiceDBClient::new_plaintext(format!("{write_addr}"), "t")
-        .await
-        .expect("connect to the stand-in");
+    let write_client = SpiceDBClient::new_plaintext(
+        format!("{write_addr}"),
+        "t",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("connect to the stand-in");
 
     let mut txn = Transaction::new();
-    let write_rel = Relationship::new("document", "readme", "viewer", "user", "alice", "")
+    let write_rel = spicedb::Relationship::from_tuple("document:readme#viewer@user:alice")
         .expect("invalid relationship");
     txn.touch(&write_rel);
     let err = write_client
-        .write(&txn)
+        .write(spicedb::WriteRequest::new((txn).clone()))
         .await
         .expect_err("the stand-in always fails writes; this should have surfaced an error");
     assert!(
@@ -113,12 +126,21 @@ async fn main() {
         code: Code::ResourceExhausted,
     })
     .await;
-    let exhausted_client = SpiceDBClient::new_plaintext(format!("{exhausted_addr}"), "t")
-        .await
-        .expect("connect to the stand-in");
+    let exhausted_client = SpiceDBClient::new_plaintext(
+        format!("{exhausted_addr}"),
+        "t",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("connect to the stand-in");
 
     let err = exhausted_client
-        .check_permission(&consistency::full(), "view", &doc())
+        .check(spicedb::PermissionCheck::new(
+            doc().resource().clone(),
+            "view",
+            doc().subject().clone(),
+            (consistency::full()).clone(),
+        ))
         .await
         .expect_err("the stand-in always fails here; this should have surfaced an error");
     assert!(

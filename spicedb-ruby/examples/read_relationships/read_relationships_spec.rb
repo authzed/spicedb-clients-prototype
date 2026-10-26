@@ -7,8 +7,11 @@ RSpec.describe 'ReadRelationships' do
     client.write_schema(TEST_SCHEMA)
 
     txn = SpiceDB::Transaction.new
-    txn.touch(SpiceDB::Relationship.from_triple('document', 'firstdoc', 'viewer', 'user', 'alice'))
-    txn.touch(SpiceDB::Relationship.from_triple('document', 'firstdoc', 'viewer', 'user', 'bob'))
+    txn.touch(SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'firstdoc'), relation: 'viewer',
+                                        subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user',
+                                                                                                        object_id: 'alice'), relation: nil)))
+    txn.touch(SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'firstdoc'), relation: 'viewer',
+                                        subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: 'bob'), relation: nil)))
     client.write(txn)
 
     # Read all viewer relationships on firstdoc
@@ -16,12 +19,12 @@ RSpec.describe 'ReadRelationships' do
                             .with_resource_id('firstdoc')
                             .with_relation('viewer')
 
-    relationships = client.read_relationships(SpiceDB::Consistency.full, filter).to_a
+    relationships = client.read_relationships(filter, consistency: SpiceDB::Consistency.full).to_a
 
     expect(relationships).not_to be_empty
     expect(relationships.length).to eq(2)
 
-    subject_ids = relationships.map(&:subject_id).sort
+    subject_ids = relationships.map { |relationship| relationship.subject.object.object_id }.sort
     expect(subject_ids).to eq(%w[alice bob])
   end
 
@@ -32,7 +35,7 @@ RSpec.describe 'ReadRelationships' do
                             .with_resource_id('nonexistent')
                             .with_relation('viewer')
 
-    relationships = client.read_relationships(SpiceDB::Consistency.full, filter).to_a
+    relationships = client.read_relationships(filter, consistency: SpiceDB::Consistency.full).to_a
 
     expect(relationships).to be_empty
   end
@@ -41,17 +44,19 @@ RSpec.describe 'ReadRelationships' do
     client.write_schema(TEST_SCHEMA)
 
     txn = SpiceDB::Transaction.new
-    txn.touch(SpiceDB::Relationship.from_triple('document', 'firstdoc', 'viewer', 'user', 'alice'))
+    txn.touch(SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'firstdoc'), relation: 'viewer',
+                                        subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user',
+                                                                                                        object_id: 'alice'), relation: nil)))
     client.write(txn)
 
     filter = SpiceDB::Filter.new(resource_type: 'document')
                             .with_resource_id('firstdoc')
                             .with_relation('viewer')
-                            .with_subject_type('user')
+                            .with_subject(SpiceDB::SubjectFilter.new(subject_type: 'user'))
 
-    relationships = client.read_relationships(SpiceDB::Consistency.full, filter).to_a
+    relationships = client.read_relationships(filter, consistency: SpiceDB::Consistency.full).to_a
 
     expect(relationships.length).to eq(1)
-    expect(relationships.first.subject_id).to eq('alice')
+    expect(relationships.first.subject.object.object_id).to eq('alice')
   end
 end

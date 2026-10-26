@@ -35,8 +35,16 @@ public record PermissionTree(
   public record SubjectRef(String subjectType, String subjectID, String optionalRelation) {}
 
   /** Combines child subtrees with a set operation. */
-  public record IntermediateNode(Operation operation, List<PermissionTree> children) {}
+  public record IntermediateNode(Operation operation, List<PermissionTree> children) {
+    public IntermediateNode {
+      children = List.copyOf(children);
+    }
+  }
 
   /** Holds the concrete subjects at a leaf of a {@link PermissionTree}. */
-  public record LeafNode(List<SubjectRef> subjects) {}
+  public record LeafNode(List<SubjectRef> subjects) {
+    public LeafNode {
+      subjects = List.copyOf(subjects);
+    }
+  }
 }

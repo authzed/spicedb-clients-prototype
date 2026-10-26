@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative '../lib/spicedb'
+require_relative 'support/native_helpers'
 require 'spicedb_proto'
 require 'grpc'
 
@@ -14,7 +15,7 @@ RSpec.describe 'SpiceDB::Client#updates error mapping' do
     allow(watch_response).to receive(:each).and_raise(bad_status)
 
     watch_service = double('watch_service')
-    allow(watch_service).to receive(:watch).and_return(watch_response)
+    allow(watch_service).to receive(:watch).and_return(FixtureOperation.new(watch_response))
 
     proto_client = double('proto_client', watch: watch_service)
     client.instance_variable_set(:@proto_client, proto_client)
@@ -25,7 +26,7 @@ RSpec.describe 'SpiceDB::Client#updates error mapping' do
     stub_watch_failure(bad_status)
 
     expect do
-      client.updates(['document']).each { |_update| nil }
+      client.watch(object_types: ['document']).each { |_update| nil }
     end.to raise_error(SpiceDB::NotFoundError, 'revision has been garbage collected')
   end
 
@@ -33,6 +34,6 @@ RSpec.describe 'SpiceDB::Client#updates error mapping' do
     bad_status = GRPC::BadStatus.new(5, 'revision has been garbage collected')
     stub_watch_failure(bad_status)
 
-    expect { client.updates(['document']).first }.to raise_error(SpiceDB::NotFoundError)
+    expect { client.watch(object_types: ['document']).first }.to raise_error(SpiceDB::NotFoundError)
   end
 end

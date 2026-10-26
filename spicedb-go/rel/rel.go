@@ -1,8 +1,4 @@
-// Package rel provides relationship types, filters, and transaction builders
-// for SpiceDB.
-//
-// Types in this package are independent of the client — you can construct
-// relationships and filters without importing the client package.
+// Package rel provides immutable native tuple values and mutable transaction builders.
 package rel
 
 import (
@@ -10,545 +6,267 @@ import (
 	"strings"
 	"time"
 
-	v1 "github.com/authzed/spicedb-clients/proto-clients/spicedb-go-proto/gen/authzed/api/v1"
-	"google.golang.org/protobuf/types/known/structpb"
-	"google.golang.org/protobuf/types/known/timestamppb"
+	"github.com/authzed/spicedb-clients/spicedb-go/internal/native"
 )
 
-// Sentinel errors for validation.
 var (
-	// ErrInvalidResource indicates a resource type, ID, or relation is empty.
-	ErrInvalidResource = fmt.Errorf("resource type, id, and relation are required")
-	// ErrInvalidRelation indicates a relation string is empty.
-	ErrInvalidRelation = fmt.Errorf("relation is required")
-	// ErrInvalidSubject indicates a subject type or ID is empty.
-	ErrInvalidSubject = fmt.Errorf("subject type and id are required")
-	// ErrInvalidFilter indicates a Filter has SubjectID or SubjectRelation set
-	// without SubjectType. The wire's SubjectFilter.subject_type is required,
-	// so there is no way to express a subject constraint without it.
-	ErrInvalidFilter = fmt.Errorf("filter has a subject constraint set without SubjectType")
-	// ErrInvalidCaveatContext indicates a Relationship's CaveatContext holds a
-	// value that cannot be represented as a protobuf Struct (structpb.NewStruct
-	// rejects it). The error wrapping this sentinel names the offending key.
-	//
-	// Caveat context is caller-supplied, so this fails loudly rather than
-	// writing the relationship with its caveat name attached and its context
-	// silently missing — see root DESIGN.md, "RULE: A conversion that cannot
-	// preserve meaning must fail", clause 1.
-	ErrInvalidCaveatContext = fmt.Errorf("caveat context holds a value that cannot be converted to protobuf")
+	ErrInvalidResource      = fmt.Errorf("resource type and id are required")
+	ErrInvalidRelation      = fmt.Errorf("relation is required")
+	ErrInvalidSubject       = fmt.Errorf("subject type and id are required")
+	ErrInvalidFilter        = fmt.Errorf("invalid relationship filter")
+	ErrInvalidCaveatContext = fmt.Errorf("invalid caveat context")
 )
 
-// Relationship is a flat representation of a SpiceDB relationship.
-// It avoids nested proto types in favor of plain Go fields.
+type ObjectRef struct{ objectType, objectID string }
+
+func NewObject(objectType, objectID string) (ObjectRef, error) {
+	if objectType == "" || objectID == "" {
+		return ObjectRef{}, ErrInvalidResource
+	}
+	return ObjectRef{objectType, objectID}, nil
+}
+func (o ObjectRef) Type() string { return o.objectType }
+func (o ObjectRef) ID() string   { return o.objectID }
+func (o ObjectRef) Validate() error {
+	if o.objectType == "" || o.objectID == "" {
+		return ErrInvalidResource
+	}
+	return nil
+}
+
+type SubjectRef struct {
+	object   ObjectRef
+	relation string
+}
+
+func NewSubject(object ObjectRef, relation string) (SubjectRef, error) {
+	if object.Validate() != nil {
+		return SubjectRef{}, ErrInvalidSubject
+	}
+	if relation == "..." {
+		return SubjectRef{}, fmt.Errorf("use empty relation for direct subjects: %w", ErrInvalidSubject)
+	}
+	return SubjectRef{object, relation}, nil
+}
+func (s SubjectRef) Object() ObjectRef { return s.object }
+func (s SubjectRef) Relation() string  { return s.relation }
+func (s SubjectRef) Validate() error {
+	if s.object.Validate() != nil {
+		return ErrInvalidSubject
+	}
+	return nil
+}
+
 type Relationship struct {
-	ResourceType     string
-	ResourceID       string
-	ResourceRelation string
-	SubjectType      string
-	SubjectID        string
-	SubjectRelation  string
-	CaveatName       string
-	CaveatContext    map[string]any
-	Expiration       *time.Time
-
-	// CheckContext is per-item caveat context used only when this
-	// Relationship is passed to a check call (Check/CheckOne/CheckAny/
-	// CheckAll/CheckIter). It is distinct from CaveatContext, which is
-	// stored with the relationship as part of a write and supplies values
-	// for the caveat baked into that specific tuple: CheckContext is never
-	// sent on a write, and supplies values for evaluating whatever caveat
-	// the permission check encounters at check time. Set it with
-	// WithCheckContext.
-	CheckContext map[string]any
+	resource      ObjectRef
+	relation      string
+	subject       SubjectRef
+	caveatName    string
+	caveatContext map[string]any
+	expiration    *time.Time
 }
 
-// Interface allows user-defined domain types to be used as relationships.
-type Interface interface {
-	Relationship() Relationship
+func NewRelationship(resource ObjectRef, relation string, subject SubjectRef) (Relationship, error) {
+	r := Relationship{resource: resource, relation: relation, subject: subject}
+	return r, r.Validate()
 }
-
-// FromTriple creates a Relationship from a resource type/ID/relation and subject
-// type/ID/relation. Returns an error if any required field is empty.
-func FromTriple(
-	resourceType, resourceID, resourceRelation string,
-	subjectType, subjectID, subjectRelation string,
-) (Relationship, error) {
-	if resourceType == "" || resourceID == "" || resourceRelation == "" {
-		return Relationship{}, ErrInvalidResource
+func (r Relationship) Validate() error {
+	if r.expiration != nil && (r.expiration.Year() < 1 || r.expiration.Year() > 9999) {
+		return fmt.Errorf("expiration outside supported timestamp range")
 	}
-	if subjectType == "" || subjectID == "" {
-		return Relationship{}, ErrInvalidSubject
+	if e := r.resource.Validate(); e != nil {
+		return e
 	}
-	return Relationship{
-		ResourceType:     resourceType,
-		ResourceID:       resourceID,
-		ResourceRelation: resourceRelation,
-		SubjectType:      subjectType,
-		SubjectID:        subjectID,
-		SubjectRelation:  subjectRelation,
-	}, nil
-}
-
-// MustFromTriple is like FromTriple but panics on error.
-func MustFromTriple(
-	resourceType, resourceID, resourceRelation string,
-	subjectType, subjectID, subjectRelation string,
-) Relationship {
-	r, err := FromTriple(resourceType, resourceID, resourceRelation, subjectType, subjectID, subjectRelation)
-	if err != nil {
-		panic(err)
+	if r.relation == "" {
+		return ErrInvalidRelation
 	}
-	return r
+	return r.subject.Validate()
 }
-
-// FromTuple parses a relationship from a string in the format:
-//
-//	resourceType:resourceID#relation@subjectType:subjectID[#subjectRelation]
-func FromTuple(tuple string) (Relationship, error) {
-	// Split resource from subject at @
-	parts := strings.SplitN(tuple, "@", 2)
-	if len(parts) != 2 {
-		return Relationship{}, fmt.Errorf("invalid tuple format: missing '@' separator")
+func (r Relationship) Resource() ObjectRef           { return r.resource }
+func (r Relationship) Relation() string              { return r.relation }
+func (r Relationship) Subject() SubjectRef           { return r.subject }
+func (r Relationship) CaveatName() string            { return r.caveatName }
+func (r Relationship) CaveatContext() map[string]any { m, _ := native.Map(r.caveatContext); return m }
+func (r Relationship) Expiration() *time.Time {
+	if r.expiration == nil {
+		return nil
 	}
-
-	resourcePart, subjectPart := parts[0], parts[1]
-
-	// Parse resource: type:id#relation
-	resourceParts := strings.SplitN(resourcePart, "#", 2)
-	if len(resourceParts) != 2 {
-		return Relationship{}, fmt.Errorf("invalid tuple format: missing '#' in resource")
+	t := *r.expiration
+	return &t
+}
+func (r Relationship) WithCaveat(name string, ctx map[string]any) (Relationship, error) {
+	if name == "" {
+		return r, fmt.Errorf("caveat name is required: %w", ErrInvalidCaveatContext)
 	}
-
-	resourceTypeID := strings.SplitN(resourceParts[0], ":", 2)
-	if len(resourceTypeID) != 2 {
-		return Relationship{}, fmt.Errorf("invalid tuple format: missing ':' in resource type:id")
+	m, e := native.Map(ctx)
+	if e != nil {
+		return r, fmt.Errorf("%w: %w", ErrInvalidCaveatContext, e)
 	}
-
-	// Parse subject: type:id[#relation]
-	var subjectType, subjectID, subjectRelation string
-	subjectHash := strings.SplitN(subjectPart, "#", 2)
-	subjectTypeID := strings.SplitN(subjectHash[0], ":", 2)
-	if len(subjectTypeID) != 2 {
-		return Relationship{}, fmt.Errorf("invalid tuple format: missing ':' in subject type:id")
-	}
-	subjectType = subjectTypeID[0]
-	subjectID = subjectTypeID[1]
-	if len(subjectHash) == 2 {
-		subjectRelation = subjectHash[1]
-	}
-
-	return FromTriple(
-		resourceTypeID[0], resourceTypeID[1], resourceParts[1],
-		subjectType, subjectID, subjectRelation,
-	)
+	r.caveatName = name
+	r.caveatContext = m
+	return r, nil
 }
-
-// FromObjects creates a Relationship from a resource and subject ObjectReference-like
-// pair with the given relation.
-func FromObjects(
-	resourceType, resourceID, relation string,
-	subjectType, subjectID string,
-) (Relationship, error) {
-	return FromTriple(resourceType, resourceID, relation, subjectType, subjectID, "")
-}
-
-// WithCaveat returns a copy of the relationship with the given caveat.
-func (r Relationship) WithCaveat(name string, context map[string]any) Relationship {
-	r.CaveatName = name
-	r.CaveatContext = context
-	return r
-}
-
-// WithExpiration returns a copy of the relationship with the given expiration.
-func (r Relationship) WithExpiration(t time.Time) Relationship {
-	r.Expiration = &t
-	return r
-}
-
-// WithCheckContext returns a copy of the relationship carrying per-item
-// caveat context for check calls. See the CheckContext field doc for how
-// this differs from WithCaveat's context.
-//
-// When a call-level default is also supplied (via the client's *WithContext
-// check methods — Client.CheckWithContext, Client.CheckOneWithContext,
-// Client.CheckAnyWithContext, Client.CheckAllWithContext, and
-// Client.CheckIterWithContext), the two are merged key by key for this
-// item: this item's keys win on conflict, and any call-level keys not
-// present here are retained. For example, a call-level {"now": 42,
-// "region": "us"} plus a per-item {"region": "eu"} produces
-// {"now": 42, "region": "eu"} for this item.
-func (r Relationship) WithCheckContext(context map[string]any) Relationship {
-	r.CheckContext = context
-	return r
-}
-
-// String returns the tuple string representation of the relationship.
+func (r Relationship) WithExpiration(t time.Time) Relationship { r.expiration = &t; return r }
 func (r Relationship) String() string {
-	s := fmt.Sprintf("%s:%s#%s@%s:%s", r.ResourceType, r.ResourceID, r.ResourceRelation, r.SubjectType, r.SubjectID)
-	if r.SubjectRelation != "" {
-		s += "#" + r.SubjectRelation
+	s := fmt.Sprintf("%s:%s#%s@%s:%s", r.resource.Type(), r.resource.ID(), r.relation, r.subject.Object().Type(), r.subject.Object().ID())
+	if r.subject.relation != "" {
+		s += "#" + r.subject.relation
 	}
 	return s
 }
-
-// ToProto converts a Relationship to its proto representation. It returns an
-// error wrapping ErrInvalidCaveatContext — instead of silently dropping the
-// caveat context and writing the relationship anyway — if CaveatContext
-// cannot be converted to a protobuf Struct (structpb.NewStruct fails on
-// values it cannot represent). Silently persisting a caveat name with no
-// context would mis-evaluate every future check against that relationship,
-// and re-checking with correct context would never repair it; only rewriting
-// the relationship would. See checkItemFromRel in client/checks.go for the
-// identical treatment on the check path.
-//
-// The error names the offending key. structpb.NewStruct reports only the
-// value's type, not which entry held it, so the conversion is done per key
-// and the failing key is identified here — matching what the C#, Java and
-// Ruby clients report for the same failure.
-func (r Relationship) ToProto() (*v1.Relationship, error) {
-	rel := &v1.Relationship{
-		Resource: &v1.ObjectReference{
-			ObjectType: r.ResourceType,
-			ObjectId:   r.ResourceID,
-		},
-		Relation: r.ResourceRelation,
-		Subject: &v1.SubjectReference{
-			Object: &v1.ObjectReference{
-				ObjectType: r.SubjectType,
-				ObjectId:   r.SubjectID,
-			},
-			OptionalRelation: r.SubjectRelation,
-		},
+func FromTuple(tuple string) (Relationship, error) {
+	parts := strings.Split(tuple, "@")
+	if len(parts) != 2 {
+		return Relationship{}, fmt.Errorf("tuple requires one @")
 	}
-
-	if r.CaveatName != "" {
-		rel.OptionalCaveat = &v1.ContextualizedCaveat{
-			CaveatName: r.CaveatName,
-		}
-		if r.CaveatContext != nil {
-			ctx, err := CaveatContextToStruct(r.CaveatContext)
-			if err != nil {
-				return nil, fmt.Errorf("spicedb: relationship %s: %w", r, err)
-			}
-			rel.OptionalCaveat.Context = ctx
-		}
+	rr := strings.Split(parts[0], "#")
+	if len(rr) != 2 {
+		return Relationship{}, fmt.Errorf("tuple requires resource relation")
 	}
-
-	if r.Expiration != nil {
-		rel.OptionalExpiresAt = timestamppb.New(*r.Expiration)
+	ro := strings.SplitN(rr[0], ":", 2)
+	ss := strings.Split(parts[1], "#")
+	so := strings.SplitN(ss[0], ":", 2)
+	if len(ro) != 2 || len(so) != 2 || len(ss) > 2 {
+		return Relationship{}, fmt.Errorf("invalid tuple")
 	}
-
-	return rel, nil
-}
-
-// CaveatContextToStruct converts a caveat-context map to a protobuf Struct,
-// returning an error wrapping ErrInvalidCaveatContext and naming the
-// offending key if any value cannot be represented.
-//
-// This is the single converter for both surfaces that carry caveat context:
-// write-time (a relationship's CaveatContext, via Relationship.ToProto) and
-// check-time (the merged context on a bulk-check item, in
-// client.checkItemFromRel). Keeping one converter is deliberate — the
-// original defect in several clients in this repo was a write path that
-// converted differently from the check path.
-//
-// structpb.NewStruct converts the whole map at once and reports only the
-// value's Go type ("invalid type: chan int"), never which entry held it — on
-// a context map with many keys that leaves the caller guessing. Converting
-// per key costs one extra allocation and lets the error say which entry to
-// fix, the same way C#'s ToProtoValueForKey, Java's toProtoValueForKey, and
-// Ruby's check_context_to_struct rescue-and-re-raise already do.
-func CaveatContextToStruct(context map[string]any) (*structpb.Struct, error) {
-	fields := make(map[string]*structpb.Value, len(context))
-	for k, v := range context {
-		val, err := structpb.NewValue(v)
-		if err != nil {
-			return nil, fmt.Errorf(
-				"caveat context key %q: %w: %s",
-				k, ErrInvalidCaveatContext, err,
-			)
-		}
-		fields[k] = val
+	o, e := NewObject(ro[0], ro[1])
+	if e != nil {
+		return Relationship{}, e
 	}
-	return &structpb.Struct{Fields: fields}, nil
-}
-
-// FromProto converts a proto Relationship to an idiomatic Relationship.
-func FromProto(pr *v1.Relationship) Relationship {
-	r := Relationship{
-		ResourceType:     pr.GetResource().GetObjectType(),
-		ResourceID:       pr.GetResource().GetObjectId(),
-		ResourceRelation: pr.GetRelation(),
-		SubjectType:      pr.GetSubject().GetObject().GetObjectType(),
-		SubjectID:        pr.GetSubject().GetObject().GetObjectId(),
-		SubjectRelation:  pr.GetSubject().GetOptionalRelation(),
+	s, e := NewObject(so[0], so[1])
+	if e != nil {
+		return Relationship{}, e
 	}
-	if c := pr.GetOptionalCaveat(); c != nil {
-		r.CaveatName = c.GetCaveatName()
-		if c.GetContext() != nil {
-			r.CaveatContext = c.GetContext().AsMap()
-		}
+	relation := ""
+	if len(ss) == 2 {
+		relation = ss[1]
 	}
-	if exp := pr.GetOptionalExpiresAt(); exp != nil {
-		t := exp.AsTime()
-		r.Expiration = &t
+	sub, e := NewSubject(s, relation)
+	if e != nil {
+		return Relationship{}, e
 	}
-	return r
+	return NewRelationship(o, rr[1], sub)
 }
 
-// Filter specifies criteria for matching relationships.
-type Filter struct {
-	ResourceType     string
-	ResourceID       string
-	ResourceIDPrefix string
-	Relation         string
-	SubjectType      string
-	SubjectID        string
-	SubjectRelation  string
-
-	// V1Filter exposes the underlying proto type for advanced use cases.
-	V1Filter *v1.RelationshipFilter
-}
-
-// NewFilter creates a filter that matches relationships of the given resource type.
-func NewFilter(resourceType string) Filter {
-	return Filter{ResourceType: resourceType}
-}
-
-// WithResourceID narrows the filter to a specific resource ID.
-func (f Filter) WithResourceID(id string) Filter {
-	f.ResourceID = id
-	return f
-}
-
-// WithResourceIDPrefix narrows the filter to resource IDs with the given prefix.
-func (f Filter) WithResourceIDPrefix(prefix string) Filter {
-	f.ResourceIDPrefix = prefix
-	return f
-}
-
-// WithRelation narrows the filter to a specific relation.
-func (f Filter) WithRelation(relation string) Filter {
-	f.Relation = relation
-	return f
-}
-
-// WithSubjectType narrows the filter to a specific subject type.
-func (f Filter) WithSubjectType(subjectType string) Filter {
-	f.SubjectType = subjectType
-	return f
-}
-
-// WithSubjectID narrows the filter to a specific subject ID.
-func (f Filter) WithSubjectID(subjectID string) Filter {
-	f.SubjectID = subjectID
-	return f
-}
-
-// WithSubjectRelation narrows the filter to a specific subject relation.
-func (f Filter) WithSubjectRelation(relation string) Filter {
-	f.SubjectRelation = relation
-	return f
-}
-
-// ToProto converts a Filter to its proto representation. It returns an
-// error — instead of silently building a filter with no subject constraint
-// at all — if SubjectID or SubjectRelation is set without SubjectType. The
-// wire's SubjectFilter.subject_type is a required field, so there is no way
-// to express a subject ID/relation constraint without it, which makes
-// silently dropping the constraint the one unsafe resolution: a caller who
-// wrote NewFilter("document").WithSubjectID("alice"), expecting to narrow
-// to alice's relationships, would instead match every subject on every
-// document -- e.g. DeleteRelationships would delete every relationship on
-// every document, not just alice's. See root DESIGN.md, "RULE: A
-// conversion that cannot preserve meaning must fail", clause 1.
-func (f Filter) ToProto() (*v1.RelationshipFilter, error) {
-	if f.V1Filter != nil {
-		return f.V1Filter, nil
-	}
-
-	filter := &v1.RelationshipFilter{
-		ResourceType:       f.ResourceType,
-		OptionalResourceId: f.ResourceID,
-		OptionalRelation:   f.Relation,
-	}
-	if f.ResourceIDPrefix != "" {
-		filter.OptionalResourceIdPrefix = f.ResourceIDPrefix
-	}
-	if f.SubjectType != "" {
-		filter.OptionalSubjectFilter = &v1.SubjectFilter{
-			SubjectType:       f.SubjectType,
-			OptionalSubjectId: f.SubjectID,
-		}
-		if f.SubjectRelation != "" {
-			filter.OptionalSubjectFilter.OptionalRelation = &v1.SubjectFilter_RelationFilter{
-				Relation: f.SubjectRelation,
-			}
-		}
-	} else if f.SubjectID != "" || f.SubjectRelation != "" {
-		missing := "SubjectID"
-		if f.SubjectID == "" {
-			missing = "SubjectRelation"
-		}
-		return nil, fmt.Errorf(
-			"spicedb: filter has %s set without SubjectType; the wire format requires "+
-				"SubjectType whenever a subject constraint is present -- call WithSubjectType(...) "+
-				"before With%s(...): %w",
-			missing, missing, ErrInvalidFilter,
-		)
-	}
-	return filter, nil
-}
-
-// Relationship.Filter returns a Filter that matches the exact resource of this relationship.
-func (r Relationship) Filter() Filter {
-	return Filter{
-		ResourceType: r.ResourceType,
-		ResourceID:   r.ResourceID,
-		Relation:     r.ResourceRelation,
-		SubjectType:  r.SubjectType,
-		SubjectID:    r.SubjectID,
-	}
-}
-
-// Update represents a relationship mutation (create, touch, or delete).
-type Update struct {
-	Operation    UpdateOperation
-	Relationship Relationship
-}
-
-// UpdateOperation is the type of mutation in an Update.
-type UpdateOperation int
+type RelationFilterKind uint8
 
 const (
-	// UpdateOperationUnspecified means the server sent an operation this
-	// client does not recognize — either OPERATION_UNSPECIFIED on the wire,
-	// or a future operation value added after this client shipped. It is the
-	// zero value, so it is also what an unset Update.Operation reads as.
-	//
-	// Never treat it as a write: a cache or index mirror consuming the watch
-	// stream that upserts on an unrecognized operation could turn a delete it
-	// doesn't understand into a silent write. Handle it explicitly (re-read
-	// the relationship, or fail the mirror closed) rather than letting it
-	// fall through a default branch.
+	RelationAny RelationFilterKind = iota
+	RelationDirect
+	RelationNamed
+)
+
+type SubjectRelationFilter struct {
+	kind RelationFilterKind
+	name string
+}
+
+func AnyRelation() SubjectRelationFilter    { return SubjectRelationFilter{} }
+func DirectRelation() SubjectRelationFilter { return SubjectRelationFilter{kind: RelationDirect} }
+func NamedRelation(name string) (SubjectRelationFilter, error) {
+	if name == "" || name == "..." {
+		return SubjectRelationFilter{}, ErrInvalidRelation
+	}
+	return SubjectRelationFilter{RelationNamed, name}, nil
+}
+func (r SubjectRelationFilter) Kind() RelationFilterKind { return r.kind }
+func (r SubjectRelationFilter) Name() string             { return r.name }
+
+type Filter struct {
+	resourceType, resourceID, resourceIDPrefix, relation, subjectType, subjectID string
+	subjectRelation                                                              SubjectRelationFilter
+}
+
+func NewFilter(resourceType string) (Filter, error) {
+	if resourceType == "" {
+		return Filter{}, ErrInvalidFilter
+	}
+	return Filter{resourceType: resourceType}, nil
+}
+func (f Filter) WithResourceID(v string) Filter                     { f.resourceID = v; return f }
+func (f Filter) WithResourceIDPrefix(v string) Filter               { f.resourceIDPrefix = v; return f }
+func (f Filter) WithRelation(v string) Filter                       { f.relation = v; return f }
+func (f Filter) WithSubjectType(v string) Filter                    { f.subjectType = v; return f }
+func (f Filter) WithSubjectID(v string) Filter                      { f.subjectID = v; return f }
+func (f Filter) WithSubjectRelation(v SubjectRelationFilter) Filter { f.subjectRelation = v; return f }
+func (f Filter) ResourceType() string                               { return f.resourceType }
+func (f Filter) ResourceID() string                                 { return f.resourceID }
+func (f Filter) ResourceIDPrefix() string                           { return f.resourceIDPrefix }
+func (f Filter) Relation() string                                   { return f.relation }
+func (f Filter) SubjectType() string                                { return f.subjectType }
+func (f Filter) SubjectID() string                                  { return f.subjectID }
+func (f Filter) SubjectRelation() SubjectRelationFilter             { return f.subjectRelation }
+func (f Filter) Validate() error {
+	if f.resourceType == "" || (f.resourceID != "" && f.resourceIDPrefix != "") || (f.subjectType == "" && (f.subjectID != "" || f.subjectRelation.kind != RelationAny)) {
+		return ErrInvalidFilter
+	}
+	return nil
+}
+func (r Relationship) Filter() Filter {
+	rf := DirectRelation()
+	if r.subject.relation != "" {
+		rf, _ = NamedRelation(r.subject.relation)
+	}
+	return Filter{resourceType: r.resource.Type(), resourceID: r.resource.ID(), relation: r.relation, subjectType: r.subject.Object().Type(), subjectID: r.subject.Object().ID(), subjectRelation: rf}
+}
+
+type UpdateOperation uint8
+
+const (
 	UpdateOperationUnspecified UpdateOperation = iota
 	UpdateOperationCreate
 	UpdateOperationTouch
 	UpdateOperationDelete
 )
 
-// UpdateFromProto converts a proto RelationshipUpdate to an idiomatic Update.
-//
-// An operation this client does not recognize maps to
-// UpdateOperationUnspecified — never to a write. This is server-supplied
-// data, so it degrades to the safe, non-permissive default rather than
-// raising; see root DESIGN.md, "RULE: A conversion that cannot preserve
-// meaning must fail", clause 2.
-func UpdateFromProto(pu *v1.RelationshipUpdate) Update {
-	var op UpdateOperation
-	switch pu.GetOperation() {
-	case v1.RelationshipUpdate_OPERATION_CREATE:
-		op = UpdateOperationCreate
-	case v1.RelationshipUpdate_OPERATION_TOUCH:
-		op = UpdateOperationTouch
-	case v1.RelationshipUpdate_OPERATION_DELETE:
-		op = UpdateOperationDelete
-	default:
-		op = UpdateOperationUnspecified
-	}
-	return Update{
-		Operation:    op,
-		Relationship: FromProto(pu.GetRelationship()),
-	}
+type Update struct {
+	Operation    UpdateOperation
+	Relationship Relationship
 }
 
-// Txn is a transaction builder for batching relationship writes.
+// PreconditionOperation selects whether a filter must match any relationships.
+type PreconditionOperation uint8
+
+const (
+	PreconditionUnspecified PreconditionOperation = iota
+	PreconditionMustMatch
+	PreconditionMustNotMatch
+)
+
+type Precondition struct {
+	Filter    Filter
+	Operation PreconditionOperation
+}
+
+// Txn is a mutable transaction builder. Methods validate before adding native values.
 type Txn struct {
-	// V1Updates exposes the underlying proto updates for advanced use cases.
-	V1Updates     []*v1.RelationshipUpdate
-	preconditions []*v1.Precondition
+	updates       []Update
+	preconditions []Precondition
 }
 
-// Preconditions returns the preconditions added to this transaction.
-func (t *Txn) Preconditions() []*v1.Precondition {
-	return t.preconditions
-}
-
-// Create adds a relationship create to the transaction. Fails if the
-// relationship already exists. Returns an error, and adds nothing to the
-// transaction, if r's caveat context cannot be converted to protobuf — see
-// Relationship.ToProto.
-func (t *Txn) Create(r Relationship) error {
-	p, err := r.ToProto()
-	if err != nil {
-		return err
+func (t *Txn) add(r Relationship, op UpdateOperation) error {
+	if e := r.Validate(); e != nil {
+		return e
 	}
-	t.V1Updates = append(t.V1Updates, &v1.RelationshipUpdate{
-		Operation:    v1.RelationshipUpdate_OPERATION_CREATE,
-		Relationship: p,
-	})
+	t.updates = append(t.updates, Update{op, r})
 	return nil
 }
-
-// Touch adds a relationship touch to the transaction. Creates or updates
-// the relationship. Returns an error, and adds nothing to the transaction,
-// if r's caveat context cannot be converted to protobuf — see
-// Relationship.ToProto.
-func (t *Txn) Touch(r Relationship) error {
-	p, err := r.ToProto()
-	if err != nil {
-		return err
-	}
-	t.V1Updates = append(t.V1Updates, &v1.RelationshipUpdate{
-		Operation:    v1.RelationshipUpdate_OPERATION_TOUCH,
-		Relationship: p,
-	})
-	return nil
-}
-
-// Delete adds a relationship delete to the transaction. Returns an error,
-// and adds nothing to the transaction, if r's caveat context cannot be
-// converted to protobuf — see Relationship.ToProto. Deletes ordinarily
-// don't need caveat context, but Delete accepts the same Relationship type
-// as Create and Touch, so the same conversion applies.
-func (t *Txn) Delete(r Relationship) error {
-	p, err := r.ToProto()
-	if err != nil {
-		return err
-	}
-	t.V1Updates = append(t.V1Updates, &v1.RelationshipUpdate{
-		Operation:    v1.RelationshipUpdate_OPERATION_DELETE,
-		Relationship: p,
-	})
-	return nil
-}
-
-// MustNotMatch adds a precondition that no relationships match the given
-// filter. Returns an error, and adds nothing to the transaction, if f
-// cannot be converted to protobuf -- see Filter.ToProto.
-func (t *Txn) MustNotMatch(f Filter) error {
-	p, err := f.ToProto()
-	if err != nil {
-		return err
-	}
-	t.preconditions = append(t.preconditions, &v1.Precondition{
-		Operation: v1.Precondition_OPERATION_MUST_NOT_MATCH,
-		Filter:    p,
-	})
-	return nil
-}
-
-// MustMatch adds a precondition that at least one relationship matches the
-// given filter. Returns an error, and adds nothing to the transaction, if f
-// cannot be converted to protobuf -- see Filter.ToProto.
+func (t *Txn) Create(r Relationship) error { return t.add(r, UpdateOperationCreate) }
+func (t *Txn) Touch(r Relationship) error  { return t.add(r, UpdateOperationTouch) }
+func (t *Txn) Delete(r Relationship) error { return t.add(r, UpdateOperationDelete) }
 func (t *Txn) MustMatch(f Filter) error {
-	p, err := f.ToProto()
-	if err != nil {
-		return err
+	if e := f.Validate(); e != nil {
+		return e
 	}
-	t.preconditions = append(t.preconditions, &v1.Precondition{
-		Operation: v1.Precondition_OPERATION_MUST_MATCH,
-		Filter:    p,
-	})
+	t.preconditions = append(t.preconditions, Precondition{f, PreconditionMustMatch})
 	return nil
 }
+func (t *Txn) MustNotMatch(f Filter) error {
+	if e := f.Validate(); e != nil {
+		return e
+	}
+	t.preconditions = append(t.preconditions, Precondition{f, PreconditionMustNotMatch})
+	return nil
+}
+func (t Txn) Updates() []Update             { return append([]Update(nil), t.updates...) }
+func (t Txn) Preconditions() []Precondition { return append([]Precondition(nil), t.preconditions...) }

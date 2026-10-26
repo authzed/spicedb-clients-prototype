@@ -2,7 +2,43 @@
 
 ## Unreleased
 
+- Generated `TypedClient` now directly exposes all native methods through client embedding, including bounded/non-atomic filter deletion, watch, import/export, schema, and Materialize operations. Native options and lifecycle ownership are preserved; existing schema-aware helpers and the `Client` accessor remain available.
+
+- Watch supports native relationship filters through `UpdatesRequest.Filters`, with OR semantics and local rejection of simultaneous object types. Examples use type-only relationship filters.
+
+- **BREAKING:** Rename `DeleteAllRelationships` to `DeleteAllRelationshipsNonAtomic` and `DeleteResult.DeletedAt` to `DeleteResult.Revision`. Each deletion batch is transactional; the complete operation is non-atomic and completed batches remain committed after later failures.
+
+- **BREAKING:** Generated `Touch`, `Create`, and `Delete` return `client.WriteResult` instead of an unwrapped token. Read `.Revision` when supplying write consistency.
+
+- Add an optional client-side LookupResources permissionship filter for unconditional grants; limits count yielded matches and pagination advances over skipped rows. The default still includes conditional results.
+
+- **2026-10-26 BREAKING:** Revision tokens are opaque value structs. Replace
+  `consistency.ZedToken(text)` with `consistency.NewZedToken(text)` and
+  `string(token)` with `token.String()`. Token contents round-trip unchanged.
+  Behavioral options accept named modes: replace `WithCheckTracing(true)` with
+  `WithCheckTracing(TracingEnabled)`, `WithLookupResourcesDebug()` with
+  `WithLookupResourcesDebug(DebugEnabled)`, and `WithUpdatesCheckpoints()` with
+  `WithUpdatesCheckpoints(CheckpointsIncluded)`.
+  Replace `Precondition.MustMatch` booleans with `Precondition.Operation` and
+  `rel.PreconditionMustMatch` / `rel.PreconditionMustNotMatch`.
+  All constructors accept options; remote plaintext credentials require
+  `WithRemotePlaintextCredentials(RemotePlaintextAllowed)` instead of
+  `WithInsecureAllowRemoteHost()`.
+
+
 ### Added
+
+- **2026-10-26:** `CheckResult.Expiration` preserves singular response expiration
+  independently of whether tracing is enabled.
+
+- **2026-10-26:** Native singular and per-item bulk debug traces through
+  `WithCheckTracing(client.TracingEnabled)`, including schema, recursive subproblems, caveat JSON,
+  duration, expiration, cached-result presence, operation ID and source.
+- **2026-10-26:** Native experimental materialize roaring lookup, relationship
+  counts by filter, permission-set watch/lookup, and downloadable file metadata
+  on the existing authenticated connection. `materialize_operations` executes
+  these contracts against a local stand-in; all 19 examples are reconciled by name.
+
 
 - **2026-09-10: `DeleteRelationships`' auto-paging loop now uses cursor-based resumption.**
   The proto's `DeleteRelationshipsRequest` gained `optional_cursor` and
@@ -207,13 +243,82 @@
 
 ### Breaking Changes
 
+- **BREAKING CHANGE — 2026-10-26 prototype API reset:** Every operation now
+  accepts one native request and trailing operation-specific functional options.
+  Removed positional overloads, `CheckOne`, `CheckAny`/`CheckAll`, all check
+  `*WithContext` siblings, relationship check-context fields, flat mutable tuple
+  fields, and public protobuf conversion/storage fields. `RawProto()` is the
+  secondary accessor for advanced generated calls on the same owned connection.
+
+  Before:
+
+  ```go
+  tuple := rel.MustFromTriple("document", "readme", "view", "user", "alice", "")
+  result, err := c.CheckOneWithContext(ctx, consistency.Full(), "view", context, tuple)
+  results, err := c.Check(ctx, consistency.Full(), "view", tuple, anotherTuple)
+  revision, err := c.DeleteRelationships(ctx, filter, client.WithDeleteLimit(1000))
+  ```
+
+  After (handle constructor errors in application code):
+
+  ```go
+  document, err := rel.NewObject("document", "readme")
+  userObject, err := rel.NewObject("user", "alice")
+  alice, err := rel.NewSubject(userObject, "")
+  request := client.PermissionCheck{
+      Resource: document, Permission: "view", Subject: alice,
+      Context: context, Consistency: consistency.Full(),
+  }
+  result, err := c.Check(ctx, request, client.WithCheckTracing(client.TracingEnabled))
+  results, err := c.CheckBulk(ctx, []client.PermissionCheck{request, anotherRequest})
+  bounded, err := c.DeleteRelationships(ctx, client.DeleteRequest{Filter: filter, Limit: 1000})
+  complete, err := c.DeleteAllRelationshipsNonAtomic(ctx, client.DeleteAllRequest{Filter: filter},
+      client.WithDeleteAllPageSize(1000))
+  ```
+
+  `Check` uses the singular RPC. Aggregate `CheckBulk` results explicitly with
+  `HasPermission()`; conditional/unknown values and empty collections never grant.
+  Check context lives on `PermissionCheck.Context`, separately from persisted
+  `relationship.WithCaveat(name, context)`, which now validates and returns an error.
+
+  Revisions use opaque `consistency.ZedToken`: replace `revision string` with
+  `revision consistency.ZedToken`, serialize with `string(revision)`, and construct
+  losslessly with `consistency.NewZedToken(serialized)`. Writes now return
+  `WriteResult{Revision: ...}`; schema and other operations also return named native
+  results instead of positional metadata. Replace `Strategy.V1Consistency`,
+  `Filter.V1Filter` and `Txn.V1Updates` with native consistency constructors,
+  validated `rel.NewFilter`, and `Txn.Create`/`Touch`/`Delete`/preconditions.
+  Relationship/ref/filter fields are private; accessors return defensive copies.
+  `FromTuple`/`String` retain native tuple parsing and formatting. Expanded trees
+  expose one tagged variant through `Kind`, `Children`, `Subjects` and `Operation`.
+
+  Unary calls now have one 30-second total budget, configurable with
+  `WithDefaultTimeout` or an operation timeout option. The budget covers all
+  attempts, backoff, chunks and pages. Streams and imports have no default lifetime
+  limit; explicit timeouts begin at execution/consumption. Native context errors
+  remain reachable with `errors.Is`, alongside native SpiceDB identities.
+  Reads retry only UNAVAILABLE/ABORTED with full jitter, at most four attempts.
+  Transport retries are disabled; mutations are never automatically replayed.
+
+  Subject filters now distinguish `AnyRelation`, `DirectRelation` and
+  `NamedRelation(name)`. Exact relationship filters preserve userset/direct
+  identity and reject unrepresentable constraints. Bounded deletes issue one RPC;
+  delete-all reports acknowledged count/revision/cursor through its returned result
+  and `DeleteProgressError` after cancellation or failure. Completion pages are
+  not atomic, and an unacknowledged mutation may have committed.
+
+  This is the explicitly approved incompatible baseline reset; compatibility gates
+  remain intact for subsequent releases. An integrating PR must carry the existing
+  `breaking-change-acknowledged` label rather than weaken the gate.
+
+
 - **2026-08-18** (behavioral; no signature change): per root DESIGN.md, "RULE: Credentials over
   insecure transport require an explicit opt-in" -- `NewPlaintext`/`NewWithOpts(..., WithInsecure())`
   now refuse to construct a client for a non-loopback endpoint (loopback means `localhost`,
   `127.0.0.0/8`, `::1`, or a `unix:` socket target). Previously an insecure connection would send
   its bearer token in cleartext to any host, including one a caller had no intention of trusting
   with it -- e.g. an `insecure: true` copied from a localhost example into a staging config. A new
-  option, `WithInsecureAllowRemoteHost()`, opts in explicitly when a caller genuinely means to send
+  option, `WithRemotePlaintextCredentials(client.RemotePlaintextAllowed)`, opts in explicitly when a caller genuinely means to send
   credentials in cleartext to a remote host; it must be passed alongside `WithInsecure()`, since
   `WithInsecure()` alone is no longer sufficient for a non-loopback endpoint. `NewPlaintext` and
   loopback `NewWithOpts` usage are unaffected -- no code change needed for local development.

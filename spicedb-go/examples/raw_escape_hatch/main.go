@@ -1,32 +1,11 @@
 // Example raw_escape_hatch demonstrates reaching past the idiomatic API with
 // RawProto.
 //
-// Every wrapper eventually meets a request the wrapper does not express. This
-// client's answer is RawProto: the underlying proto client, with the four
-// generated service clients it makes its own calls through -- a workaround
-// short of forking the library. Root DESIGN.md, "What NOT To Do", allows
-// exactly this as "clearly marked secondary API".
-//
-// The gaps demonstrated here are real, not hypothetical:
-//
-//  1. WriteRelationshipsRequest.OptionalTransactionMetadata is a proto field
-//     this client does not surface anywhere. Applications use it to stamp an
-//     audit correlation ID onto a write, which comes back out of the Watch
-//     stream.
-//  2. CheckPermission -- the single-check RPC. The idiomatic CheckOne routes
-//     every check through CheckBulkPermissions, so the raw client is how you
-//     drive the unary RPC itself.
-//
-// Note what this example does NOT do: build a second proto client. RawProto
-// returns THIS client's connection, configured exactly as it was configured
-// (including anything passed to WithDialOptions) and carrying the same
-// credentials, so the raw path cannot end up on a different transport than the
-// idiomatic one.
-//
-// What you give up on the raw path, and why the idiomatic methods stay the
-// default: no *client.Error mapping (you handle grpc status codes yourself), no
-// retry on a transient failure, and no deadline of the library's -- set one on
-// the context.
+// RawProto accesses the existing authenticated generated clients. This example
+// writes transaction metadata, reads it from a raw watch response, and compares
+// native and raw singular permission checks. The raw path creates no connection
+// and transfers no ownership. It bypasses native validation, errors, retry and
+// total budgets, so callers supply context deadlines and cancel streams directly.
 package main
 
 import (
@@ -36,6 +15,8 @@ import (
 	"log"
 	"os"
 	"time"
+
+	"github.com/authzed/spicedb-clients/spicedb-go/examples/internal/exampleutil"
 
 	"google.golang.org/protobuf/types/known/structpb"
 
@@ -60,29 +41,29 @@ func main() {
 
 	ctx := context.Background()
 
-	if _, err := c.WriteSchema(ctx, `definition user {}
+	if _, err := c.WriteSchema(ctx, client.WriteSchemaRequest{Schema: `definition user {}
 
 definition document {
 	relation viewer: user
 	permission view = viewer
-}`); err != nil {
+}`}); err != nil {
 		log.Fatalf("write schema failed: %v", err)
 	}
 
 	// Clear first: a TOUCH of an already-identical relationship is not a
 	// change, so SpiceDB would emit no watch event for it and the read-back
 	// below would wait forever on a rerun.
-	if _, err := c.DeleteRelationships(ctx, rel.NewFilter("document")); err != nil {
+	if _, err := c.DeleteAllRelationshipsNonAtomic(ctx, client.DeleteAllRequest{Filter: exampleutil.Must(rel.NewFilter("document"))}); err != nil {
 		log.Fatalf("clearing document relationships failed: %v", err)
 	}
 
 	// A seed write fixes the revision the watch below starts from, so it sees
 	// the metadata write and nothing that came before it.
 	var seed rel.Txn
-	if err := seed.Touch(rel.MustFromTriple("document", "ledger", "viewer", "user", "seed", "")); err != nil {
+	if err := seed.Touch(exampleutil.Must(rel.NewRelationship(exampleutil.Object("document", "ledger"), "viewer", exampleutil.Subject(exampleutil.Object("user", "seed"), "")))); err != nil {
 		log.Fatalf("failed to add relationship to transaction: %v", err)
 	}
-	seedRevision, err := c.Write(ctx, seed)
+	seedRevision, err := c.Write(ctx, client.WriteRequest{Transaction: seed})
 	if err != nil {
 		log.Fatalf("seed write failed: %v", err)
 	}
@@ -109,7 +90,7 @@ definition document {
 
 	watchStream, err := c.RawProto().WatchServiceClient.Watch(watchCtx, &v1.WatchRequest{
 		OptionalObjectTypes: []string{"document"},
-		OptionalStartCursor: &v1.ZedToken{Token: seedRevision},
+		OptionalStartCursor: &v1.ZedToken{Token: seedRevision.Revision.String()},
 	})
 	if err != nil {
 		log.Fatalf("raw watch failed: %v", err)
@@ -180,8 +161,8 @@ definition document {
 
 	// The idiomatic API picks up right where the raw call left off -- same
 	// client, same connection, including read-your-writes on the raw revision.
-	r := rel.MustFromTriple("document", "ledger", "view", "user", "jimmy", "")
-	result, err := c.CheckOne(ctx, consistency.AtLeast(revision), "view", r)
+	r := exampleutil.Must(rel.NewRelationship(exampleutil.Object("document", "ledger"), "view", exampleutil.Subject(exampleutil.Object("user", "jimmy"), "")))
+	result, err := c.Check(ctx, client.PermissionCheck{Resource: (r).Resource(), Subject: (r).Subject(), Permission: "view", Consistency: consistency.AtLeast(consistency.NewZedToken(revision))})
 	if err != nil {
 		log.Fatalf("idiomatic check failed: %v", err)
 	}
@@ -190,7 +171,7 @@ definition document {
 		log.Fatal("expected jimmy to have view permission")
 	}
 
-	// ── 2. An RPC the idiomatic API routes around ────────────────────────
+	// Compare the same singular check through the raw generated client.
 	//
 	// A raw call gets no deadline of the library's -- set one on the context.
 	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -215,7 +196,7 @@ definition document {
 	}
 
 	// Clean up so a later example isn't blocked by leftover relationships.
-	if _, err := c.DeleteRelationships(ctx, rel.NewFilter("document").WithResourceID("ledger")); err != nil {
+	if _, err := c.DeleteAllRelationshipsNonAtomic(ctx, client.DeleteAllRequest{Filter: exampleutil.Must(rel.NewFilter("document")).WithResourceID("ledger")}); err != nil {
 		log.Fatalf("cleanup failed: %v", err)
 	}
 

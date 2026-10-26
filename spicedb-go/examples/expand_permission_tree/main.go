@@ -10,6 +10,8 @@ import (
 	"log"
 	"os"
 
+	"github.com/authzed/spicedb-clients/spicedb-go/examples/internal/exampleutil"
+
 	"github.com/authzed/spicedb-clients/spicedb-go/client"
 	"github.com/authzed/spicedb-clients/spicedb-go/consistency"
 	"github.com/authzed/spicedb-clients/spicedb-go/rel"
@@ -31,7 +33,7 @@ func main() {
 	ctx := context.Background()
 
 	// Setup: write schema and test data
-	_, err = c.WriteSchema(ctx, `definition user {}
+	_, err = c.WriteSchema(ctx, client.WriteSchemaRequest{Schema: `definition user {}
 
 definition document {
 	relation viewer: user
@@ -40,42 +42,42 @@ definition document {
 	permission view = viewer + editor + owner
 	permission edit = editor + owner
 	permission delete = owner
-}`)
+}`})
 	if err != nil {
 		log.Fatalf("write schema failed: %v", err)
 	}
 
 	var txn rel.Txn
-	if err := txn.Touch(rel.MustFromTriple("document", "firstdoc", "viewer", "user", "alice", "")); err != nil {
+	if err := txn.Touch(exampleutil.Must(rel.NewRelationship(exampleutil.Object("document", "firstdoc"), "viewer", exampleutil.Subject(exampleutil.Object("user", "alice"), "")))); err != nil {
 		log.Fatalf("failed to add relationship to transaction: %v", err)
 	}
-	if err := txn.Touch(rel.MustFromTriple("document", "firstdoc", "editor", "user", "bob", "")); err != nil {
+	if err := txn.Touch(exampleutil.Must(rel.NewRelationship(exampleutil.Object("document", "firstdoc"), "editor", exampleutil.Subject(exampleutil.Object("user", "bob"), "")))); err != nil {
 		log.Fatalf("failed to add relationship to transaction: %v", err)
 	}
-	_, err = c.Write(ctx, txn)
+	_, err = c.Write(ctx, client.WriteRequest{Transaction: txn})
 	if err != nil {
 		log.Fatalf("write relationships failed: %v", err)
 	}
 
 	// Expand the "view" permission into its full tree of subjects.
-	result, err := c.ExpandPermissionTree(ctx, consistency.Full(), "document", "firstdoc", "view")
+	result, err := c.ExpandPermissionTree(ctx, client.ExpandPermissionTreeRequest{Consistency: consistency.Full(), Resource: exampleutil.Object("document", "firstdoc"), Permission: "view"})
 	if err != nil {
 		log.Fatalf("expand permission tree failed: %v", err)
 	}
 
-	fmt.Printf("expanded %s:%s#%s\n", result.Tree.ExpandedObject.ObjectType, result.Tree.ExpandedObject.ObjectID, result.Tree.ExpandedRelation)
-	if result.Tree.ExpandedObject.ObjectType != "document" || result.Tree.ExpandedObject.ObjectID != "firstdoc" {
-		log.Fatalf("unexpected expanded object: %+v", result.Tree.ExpandedObject)
+	fmt.Printf("expanded %s:%s#%s\n", result.Tree.ExpandedObject().Type(), result.Tree.ExpandedObject().ID(), result.Tree.ExpandedRelation())
+	if result.Tree.ExpandedObject().Type() != "document" || result.Tree.ExpandedObject().ID() != "firstdoc" {
+		log.Fatalf("unexpected expanded object: %+v", result.Tree.ExpandedObject())
 	}
 
 	// "view = viewer + editor + owner" is a union, so the root of the tree is
 	// an intermediate node combining the three relations' subtrees.
-	if result.Tree.Intermediate == nil {
+	if result.Tree.Kind() != client.PermissionTreeIntermediate {
 		log.Fatalf("expected root node to be an intermediate (union) node")
 	}
-	fmt.Printf("root is an intermediate node: operation=%v children=%d\n", result.Tree.Intermediate.Operation, len(result.Tree.Intermediate.Children))
-	if result.Tree.Intermediate.Operation != client.TreeOperationUnion {
-		log.Fatalf("expected union operation at root, got %v", result.Tree.Intermediate.Operation)
+	fmt.Printf("root is an intermediate node: operation=%v children=%d\n", result.Tree.Operation(), len(result.Tree.Children()))
+	if result.Tree.Operation() != client.TreeOperationUnion {
+		log.Fatalf("expected union operation at root, got %v", result.Tree.Operation())
 	}
 
 	// Walk the tree, collecting subjects found at leaf nodes.
@@ -96,7 +98,7 @@ definition document {
 	// Clean up so later examples that write a narrower schema aren't blocked
 	// by leftover relationships (examples run in sequence against one shared
 	// SpiceDB instance).
-	if _, err := c.DeleteRelationships(ctx, rel.NewFilter("document")); err != nil {
+	if _, err := c.DeleteAllRelationshipsNonAtomic(ctx, client.DeleteAllRequest{Filter: exampleutil.Must(rel.NewFilter("document"))}); err != nil {
 		log.Fatalf("cleanup failed: %v", err)
 	}
 }
@@ -105,14 +107,10 @@ definition document {
 // IDs from every leaf node. Exactly one of Intermediate or Leaf is non-nil on
 // any given node.
 func collectLeafSubjects(t client.PermissionTree, subjects map[string]bool) {
-	if leaf := t.Leaf; leaf != nil {
-		for _, s := range leaf.Subjects {
-			subjects[s.SubjectID] = true
-		}
+	for _, s := range t.Subjects() {
+		subjects[s.Object().ID()] = true
 	}
-	if intermediate := t.Intermediate; intermediate != nil {
-		for _, child := range intermediate.Children {
-			collectLeafSubjects(child, subjects)
-		}
+	for _, child := range t.Children() {
+		collectLeafSubjects(child, subjects)
 	}
 }

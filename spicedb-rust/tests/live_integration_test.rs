@@ -14,7 +14,23 @@
 use spicedb::client::SpiceDBClient;
 use spicedb::consistency;
 use spicedb::types::CheckOptions;
-use spicedb::types::{Permissionship, Relationship, Transaction};
+use spicedb::types::{Permissionship, Transaction};
+
+static LIVE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+async fn cleanup(client: &SpiceDBClient) {
+    for definition in ["document", "doc"] {
+        match client
+            .delete_all_relationships_non_atomic(spicedb::DeleteAllRequest::new(
+                spicedb::Filter::new(definition),
+            ))
+            .await
+        {
+            Ok(_) | Err(spicedb::SpiceDBError::FailedPrecondition(_)) => {}
+            Err(error) => panic!("cleanup failed: {error}"),
+        }
+    }
+}
 
 const CAVEATED_SCHEMA: &str = r#"definition user {}
 
@@ -45,29 +61,43 @@ fn live_token() -> String {
 #[tokio::test]
 #[ignore = "requires a live SpiceDB server (see module docs)"]
 async fn check_permission_with_missing_caveat_context_is_conditional_not_granted() {
-    let client = SpiceDBClient::new_plaintext(live_endpoint(), live_token())
-        .await
-        .expect("connect to live SpiceDB");
+    let _guard = LIVE_LOCK.lock().await;
+    let client = SpiceDBClient::new_plaintext(
+        live_endpoint(),
+        live_token(),
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("connect to live SpiceDB");
 
+    cleanup(&client).await;
     client
-        .write_schema(CAVEATED_SCHEMA)
+        .write_schema(spicedb::WriteSchemaRequest::new(CAVEATED_SCHEMA))
         .await
         .expect("write schema");
 
     // Write the relationship with the `active` caveat attached but no
     // context supplied.
-    let rel = Relationship::new("doc", "conditionaldoc", "viewer", "user", "alice", "")
+    let rel = spicedb::Relationship::from_tuple("doc:conditionaldoc#viewer@user:alice")
         .expect("valid relationship")
         .with_caveat("active", None);
     let mut txn = Transaction::new();
     txn.touch(&rel);
-    let revision = client.write(&txn).await.expect("write relationship");
+    let revision = client
+        .write(spicedb::WriteRequest::new((txn).clone()))
+        .await
+        .expect("write relationship");
 
     // Check with no context — the server cannot evaluate `now < 100`.
-    let check_rel = Relationship::new("doc", "conditionaldoc", "view", "user", "alice", "")
+    let check_rel = spicedb::Relationship::from_tuple("doc:conditionaldoc#view@user:alice")
         .expect("valid relationship");
     let result = client
-        .check_permission(&consistency::at_least(&revision), "view", &check_rel)
+        .check(spicedb::PermissionCheck::new(
+            check_rel.resource().clone(),
+            "view",
+            check_rel.subject().clone(),
+            (consistency::at_least((&revision.revision).into())).clone(),
+        ))
         .await
         .expect("check should succeed (the server answers Conditional, not an error)");
 
@@ -87,9 +117,10 @@ async fn check_permission_with_missing_caveat_context_is_conditional_not_granted
         "expected the server to report `now` as the missing caveat parameter"
     );
     assert!(
-        !result.checked_at.is_empty(),
+        !result.checked_at.as_ref().is_empty(),
         "checked_at should be populated from the response"
     );
+    cleanup(&client).await;
 }
 
 /// C5: the payoff test for spec D3b. Same caveat schema and relationship as
@@ -100,28 +131,42 @@ async fn check_permission_with_missing_caveat_context_is_conditional_not_granted
 #[tokio::test]
 #[ignore = "requires a live SpiceDB server (see module docs)"]
 async fn check_permission_with_options_resolves_conditional_to_grant() {
-    let client = SpiceDBClient::new_plaintext(live_endpoint(), live_token())
-        .await
-        .expect("connect to live SpiceDB");
+    let _guard = LIVE_LOCK.lock().await;
+    let client = SpiceDBClient::new_plaintext(
+        live_endpoint(),
+        live_token(),
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("connect to live SpiceDB");
 
+    cleanup(&client).await;
     client
-        .write_schema(CAVEATED_SCHEMA)
+        .write_schema(spicedb::WriteSchemaRequest::new(CAVEATED_SCHEMA))
         .await
         .expect("write schema");
 
-    let rel = Relationship::new("doc", "contextresolveddoc", "viewer", "user", "alice", "")
+    let rel = spicedb::Relationship::from_tuple("doc:contextresolveddoc#viewer@user:alice")
         .expect("valid relationship")
         .with_caveat("active", None);
     let mut txn = Transaction::new();
     txn.touch(&rel);
-    let revision = client.write(&txn).await.expect("write relationship");
+    let revision = client
+        .write(spicedb::WriteRequest::new((txn).clone()))
+        .await
+        .expect("write relationship");
 
-    let check_rel = Relationship::new("doc", "contextresolveddoc", "view", "user", "alice", "")
+    let check_rel = spicedb::Relationship::from_tuple("doc:contextresolveddoc#view@user:alice")
         .expect("valid relationship");
 
     // Without context: Conditional, per the test above.
     let conditional = client
-        .check_permission(&consistency::at_least(&revision), "view", &check_rel)
+        .check(spicedb::PermissionCheck::new(
+            check_rel.resource().clone(),
+            "view",
+            check_rel.subject().clone(),
+            (consistency::at_least((&revision.revision).into())).clone(),
+        ))
         .await
         .expect("check should succeed");
     assert_eq!(
@@ -135,11 +180,14 @@ async fn check_permission_with_options_resolves_conditional_to_grant() {
     let mut context = std::collections::HashMap::new();
     context.insert("now".to_string(), serde_json::json!(42));
     let granted = client
-        .check_permission_with_options(
-            &consistency::at_least(&revision),
-            "view",
-            &check_rel,
-            &CheckOptions::new().with_context(context.clone()),
+        .check(
+            spicedb::PermissionCheck::new(
+                check_rel.resource().clone(),
+                "view",
+                check_rel.subject().clone(),
+                (consistency::at_least((&revision.revision).into())).clone(),
+            )
+            .with_options((CheckOptions::new().with_context(context.clone())).clone()),
         )
         .await
         .expect("check with context should succeed");
@@ -158,4 +206,5 @@ async fn check_permission_with_options_resolves_conditional_to_grant() {
         granted.missing_context.is_empty(),
         "a HasPermission result must not report missing context"
     );
+    cleanup(&client).await;
 }

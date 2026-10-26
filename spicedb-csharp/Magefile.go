@@ -83,24 +83,14 @@ func gitRunV(args ...string) error {
 }
 
 // Gen updates the idiomatic client based on proto client changes.
-// optionsInstruction is spelled out in the prompt rather than left to
-// ./DESIGN.md because this exact mistake has been made twice by regeneration.
-// Both times the upstream API gained an optional field, and both times it
-// landed on a public signature: first as a trailing optional parameter, then --
-// repairing that -- as a required positional parameter plus a compatibility
-// overload. C# substitutes an optional parameter's default at the call site, so
-// the first was binary-breaking for every already-compiled assembly, and the
-// second broke callers outright.
-const optionsInstruction = "A new option on an existing operation is a NEW PROPERTY on that " +
-	"operation's options class (CheckOptions, LookupOptions), read by the existing " +
-	"...WithOptionsAsync method. Do not add a parameter to any public method, optional or " +
-	"otherwise: C# bakes an optional parameter's default into the call site, so adding one is a " +
-	"binary-breaking change for every already-compiled assembly. Do not add a per-option method " +
-	"variant either (...WithContextAsync and friends are what this replaces). If an operation has " +
-	"no options class yet, add one modelled on CheckOptions and give the operation a " +
-	"...WithOptionsAsync form beside its plain one; CancellationToken stays its own trailing " +
-	"parameter. See root DESIGN.md, \"RULE: Every RPC wrapper must have one place to add an " +
-	"option\", and ./DESIGN.md, \"Where a new option goes\"."
+// optionsInstruction keeps generation aligned with the native API contract.
+const optionsInstruction = "Follow the canonical signatures in DESIGN.md. Each operation has " +
+	"one native options parameter and a final CancellationToken. Add optional settings as " +
+	"properties on that operation's sealed options class; do not create WithOptions, " +
+	"WithContext, or WithTimeout sibling methods or legacy aliases. Singular checks use " +
+	"PermissionCheck and CheckPermission, and CheckOptions.Tracing maps with_tracing. " +
+	"Use ZedToken for every revision and named enums for behavioral options: CheckTracing, " +
+	"LookupDebug, WatchContent, and RemotePlaintextCredentials. Validate undefined values."
 
 func Gen() error {
 	// Read last generation baseline

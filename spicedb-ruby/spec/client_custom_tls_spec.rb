@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative '../lib/spicedb'
+require_relative 'support/native_helpers'
 require 'spicedb_proto'
 require 'grpc'
 require 'openssl'
@@ -125,13 +126,16 @@ RSpec.describe 'SpiceDB::Client.new_custom_tls' do
   let(:ca_pem) { TestPki.ca[:cert].to_pem }
   let(:client_cert_pem) { TestPki.client[:cert].to_pem }
   let(:client_key_pem) { TestPki.client[:key].to_pem }
-  let(:rel) { SpiceDB::Relationship.from_triple('document', 'readme', 'viewer', 'user', 'jimmy') }
+  let(:rel) do
+    SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'readme'), relation: 'viewer',
+                              subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: 'jimmy'), relation: nil))
+  end
 
   # A real check, not an empty one: check_permissions short-circuits to [] with
   # no relationships and never opens a connection, so an empty call would pass
   # against a server it never reached.
   def check(client)
-    client.check_permissions(SpiceDB::Consistency.full, 'view', rel)
+    client.check_bulk([rel].flatten.map { |item| permission_check(item, 'view') }, consistency: SpiceDB::Consistency.full)
   end
 
   it 'completes a handshake the default roots reject' do
@@ -195,19 +199,19 @@ RSpec.describe 'SpiceDB::Client.new_custom_tls argument validation' do
     # private CA was configured when it was not.
     expect do
       SpiceDB::Client.new_custom_tls('spicedb.example.com:443', 'testtoken')
-    end.to raise_error(ArgumentError, /new_system_tls/)
+    end.to raise_error(SpiceDB::InvalidArgumentError, /new_system_tls/)
   end
 
   it 'refuses a client certificate without its key' do
     expect do
       SpiceDB::Client.new_custom_tls('spicedb.example.com:443', 'testtoken', client_cert: 'pem')
-    end.to raise_error(ArgumentError, /client_key/)
+    end.to raise_error(SpiceDB::InvalidArgumentError, /client_key/)
   end
 
   it 'refuses a client key without its certificate' do
     expect do
       SpiceDB::Client.new_custom_tls('spicedb.example.com:443', 'testtoken', client_key: 'pem')
-    end.to raise_error(ArgumentError, /client_cert/)
+    end.to raise_error(SpiceDB::InvalidArgumentError, /client_cert/)
   end
 
   # Root DESIGN.md, "RULE: Credentials over insecure transport require an
@@ -218,9 +222,9 @@ RSpec.describe 'SpiceDB::Client.new_custom_tls argument validation' do
   # though TLS were configured.
   it 'refuses trust material on the plaintext path, rather than ignoring it' do
     expect do
-      SpiceDB::Client.new(endpoint: 'localhost:50051', token: 'testtoken', insecure: true,
+      SpiceDB::Client.new(endpoint: 'localhost:50051', token: 'testtoken', transport: SpiceDB::TransportSecurity::PLAINTEXT,
                           ca_cert: 'pem')
-    end.to raise_error(ArgumentError, /insecure: true and TLS material/)
+    end.to raise_error(SpiceDB::InvalidArgumentError, /insecure: true and TLS material/)
   end
 
   it 'keeps the non-loopback refusal ahead of the TLS one' do
@@ -228,7 +232,7 @@ RSpec.describe 'SpiceDB::Client.new_custom_tls argument validation' do
     # credential guard -- and the credential-leak message, not the TLS one, is
     # what a caller sees.
     expect do
-      SpiceDB::Client.new(endpoint: 'evil.example.com:443', token: 'testtoken', insecure: true,
+      SpiceDB::Client.new(endpoint: 'evil.example.com:443', token: 'testtoken', transport: SpiceDB::TransportSecurity::PLAINTEXT,
                           ca_cert: 'pem')
     end.to raise_error(SpiceDB::InvalidArgumentError, /allow_insecure_remote_credentials/)
   end

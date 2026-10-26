@@ -112,19 +112,35 @@ async fn check_permissions_maps_per_item_permission_denied_not_invalid_argument(
     });
 
     let addr = spawn_permissions_server(mock).await;
-    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
-        .await
-        .expect("client should connect to mock server");
+    let client = SpiceDBClient::new_plaintext(
+        addr.to_string(),
+        "token",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("client should connect to mock server");
 
-    let rel = Relationship::new("document", "doc1", "view", "user", "alice", "")
+    let rel = spicedb::Relationship::from_tuple("document:doc1#view@user:alice")
         .expect("valid relationship");
     let err = client
-        .check_permissions(&consistency::full(), "view", &[rel])
+        .check_bulk(spicedb::BulkCheckRequest::new(
+            [rel]
+                .iter()
+                .map(|r| {
+                    spicedb::PermissionCheck::new(
+                        (r).resource().clone(),
+                        "view",
+                        (r).subject().clone(),
+                        (consistency::full()).clone(),
+                    )
+                })
+                .collect(),
+        ))
         .await
         .expect_err("a per-item error must surface as an Err");
 
     assert!(
-        matches!(err, SpiceDBError::PermissionDenied(_)),
+        matches!(&err, SpiceDBError::BulkItem {index:0,source} if matches!(source.as_ref(),SpiceDBError::PermissionDenied(_))),
         "expected SpiceDBError::PermissionDenied for a per-item PERMISSION_DENIED (code 7), \
          got {err:?}. Before the fix, this hardcoded InvalidArgument regardless of err_resp.code."
     );
@@ -144,19 +160,35 @@ async fn check_permissions_maps_per_item_not_found_via_real_mapper() {
     });
 
     let addr = spawn_permissions_server(mock).await;
-    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
-        .await
-        .expect("client should connect to mock server");
+    let client = SpiceDBClient::new_plaintext(
+        addr.to_string(),
+        "token",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("client should connect to mock server");
 
-    let rel = Relationship::new("document", "doc1", "view", "user", "alice", "")
+    let rel = spicedb::Relationship::from_tuple("document:doc1#view@user:alice")
         .expect("valid relationship");
     let err = client
-        .check_permissions(&consistency::full(), "view", &[rel])
+        .check_bulk(spicedb::BulkCheckRequest::new(
+            [rel]
+                .iter()
+                .map(|r| {
+                    spicedb::PermissionCheck::new(
+                        (r).resource().clone(),
+                        "view",
+                        (r).subject().clone(),
+                        (consistency::full()).clone(),
+                    )
+                })
+                .collect(),
+        ))
         .await
         .expect_err("a per-item error must surface as an Err");
 
     assert!(
-        matches!(err, SpiceDBError::NotFound(_)),
+        matches!(&err, SpiceDBError::BulkItem {index:0,source} if matches!(source.as_ref(),SpiceDBError::NotFound(_))),
         "expected SpiceDBError::NotFound for a per-item NOT_FOUND (code 5), got {err:?}"
     );
 }
@@ -188,16 +220,32 @@ async fn check_permissions_maps_items_and_propagates_response_level_checked_at()
     });
 
     let addr = spawn_permissions_server(mock).await;
-    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
-        .await
-        .expect("client should connect to mock server");
+    let client = SpiceDBClient::new_plaintext(
+        addr.to_string(),
+        "token",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("client should connect to mock server");
 
     let rel1 =
-        Relationship::new("document", "doc1", "view", "user", "alice", "").expect("valid rel");
+        spicedb::Relationship::from_tuple("document:doc1#view@user:alice").expect("valid rel");
     let rel2 =
-        Relationship::new("document", "doc2", "view", "user", "alice", "").expect("valid rel");
+        spicedb::Relationship::from_tuple("document:doc2#view@user:alice").expect("valid rel");
     let results = client
-        .check_permissions(&consistency::full(), "view", &[rel1, rel2])
+        .check_bulk(spicedb::BulkCheckRequest::new(
+            [rel1, rel2]
+                .iter()
+                .map(|r| {
+                    spicedb::PermissionCheck::new(
+                        (r).resource().clone(),
+                        "view",
+                        (r).subject().clone(),
+                        (consistency::full()).clone(),
+                    )
+                })
+                .collect(),
+        ))
         .await
         .expect("check should succeed");
 
@@ -205,7 +253,7 @@ async fn check_permissions_maps_items_and_propagates_response_level_checked_at()
 
     assert_eq!(results[0].permissionship, Permissionship::HasPermission);
     assert!(results[0].has_permission());
-    assert_eq!(results[0].checked_at, "rev-42");
+    assert_eq!(results[0].checked_at.as_ref(), "rev-42");
     assert!(results[0].missing_context.is_empty());
 
     assert_eq!(
@@ -214,7 +262,8 @@ async fn check_permissions_maps_items_and_propagates_response_level_checked_at()
     );
     assert!(!results[1].has_permission());
     assert_eq!(
-        results[1].checked_at, "rev-42",
+        results[1].checked_at.as_ref(),
+        "rev-42",
         "checked_at is response-level in CheckBulkPermissionsResponse — every \
          item in the batch must get the same token"
     );
@@ -245,15 +294,34 @@ async fn check_any_does_not_count_conditional_as_granted() {
     mock.push_check_bulk_permissions_response(conditional_response());
 
     let addr = spawn_permissions_server(mock).await;
-    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
-        .await
-        .expect("client should connect to mock server");
+    let client = SpiceDBClient::new_plaintext(
+        addr.to_string(),
+        "token",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("client should connect to mock server");
 
     let rel =
-        Relationship::new("document", "doc1", "view", "user", "alice", "").expect("valid rel");
+        spicedb::Relationship::from_tuple("document:doc1#view@user:alice").expect("valid rel");
     let any = client
-        .check_any(&consistency::full(), "view", &[rel])
+        .check_bulk(spicedb::BulkCheckRequest::new(
+            [rel]
+                .iter()
+                .map(|r| {
+                    spicedb::PermissionCheck::new(
+                        (r).resource().clone(),
+                        "view",
+                        (r).subject().clone(),
+                        (consistency::full()).clone(),
+                    )
+                })
+                .collect(),
+        ))
         .await
+        .map(|results| {
+            !results.is_empty() && results.iter().any(spicedb::CheckResult::has_permission)
+        })
         .expect("check_any should succeed");
 
     assert!(
@@ -268,15 +336,34 @@ async fn check_all_does_not_count_conditional_as_granted() {
     mock.push_check_bulk_permissions_response(conditional_response());
 
     let addr = spawn_permissions_server(mock).await;
-    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
-        .await
-        .expect("client should connect to mock server");
+    let client = SpiceDBClient::new_plaintext(
+        addr.to_string(),
+        "token",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("client should connect to mock server");
 
     let rel =
-        Relationship::new("document", "doc1", "view", "user", "alice", "").expect("valid rel");
+        spicedb::Relationship::from_tuple("document:doc1#view@user:alice").expect("valid rel");
     let all = client
-        .check_all(&consistency::full(), "view", &[rel])
+        .check_bulk(spicedb::BulkCheckRequest::new(
+            [rel]
+                .iter()
+                .map(|r| {
+                    spicedb::PermissionCheck::new(
+                        (r).resource().clone(),
+                        "view",
+                        (r).subject().clone(),
+                        (consistency::full()).clone(),
+                    )
+                })
+                .collect(),
+        ))
         .await
+        .map(|results| {
+            !results.is_empty() && results.iter().all(spicedb::CheckResult::has_permission)
+        })
         .expect("check_all should succeed");
 
     assert!(
@@ -302,13 +389,20 @@ async fn check_all_returns_false_for_zero_relationships() {
     let calls = mock.check_bulk_permissions_calls();
 
     let addr = spawn_permissions_server(mock).await;
-    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
-        .await
-        .expect("client should connect to mock server");
+    let client = SpiceDBClient::new_plaintext(
+        addr.to_string(),
+        "token",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("client should connect to mock server");
 
     let all = client
-        .check_all(&consistency::full(), "view", &[])
+        .check_bulk(spicedb::BulkCheckRequest::new(Vec::new()))
         .await
+        .map(|results| {
+            !results.is_empty() && results.iter().all(spicedb::CheckResult::has_permission)
+        })
         .expect("check_all should succeed");
 
     assert!(
@@ -344,14 +438,30 @@ async fn check_permissions_errors_on_malformed_pair_instead_of_shrinking_results
     });
 
     let addr = spawn_permissions_server(mock).await;
-    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
-        .await
-        .expect("client should connect to mock server");
+    let client = SpiceDBClient::new_plaintext(
+        addr.to_string(),
+        "token",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("client should connect to mock server");
 
     let rel =
-        Relationship::new("document", "doc1", "view", "user", "alice", "").expect("valid rel");
+        spicedb::Relationship::from_tuple("document:doc1#view@user:alice").expect("valid rel");
     let err = client
-        .check_permissions(&consistency::full(), "view", &[rel])
+        .check_bulk(spicedb::BulkCheckRequest::new(
+            [rel]
+                .iter()
+                .map(|r| {
+                    spicedb::PermissionCheck::new(
+                        (r).resource().clone(),
+                        "view",
+                        (r).subject().clone(),
+                        (consistency::full()).clone(),
+                    )
+                })
+                .collect(),
+        ))
         .await
         .expect_err(
             "a malformed pair (neither Item nor Error) must surface as an Err, not silently \
@@ -390,19 +500,35 @@ async fn check_permissions_malformed_pair_does_not_desync_results_from_inputs() 
     });
 
     let addr = spawn_permissions_server(mock).await;
-    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
-        .await
-        .expect("client should connect to mock server");
+    let client = SpiceDBClient::new_plaintext(
+        addr.to_string(),
+        "token",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("client should connect to mock server");
 
     let rel1 =
-        Relationship::new("document", "doc1", "view", "user", "alice", "").expect("valid rel");
+        spicedb::Relationship::from_tuple("document:doc1#view@user:alice").expect("valid rel");
     let rel2 =
-        Relationship::new("document", "doc2", "view", "user", "alice", "").expect("valid rel");
+        spicedb::Relationship::from_tuple("document:doc2#view@user:alice").expect("valid rel");
     let rel3 =
-        Relationship::new("document", "doc3", "view", "user", "alice", "").expect("valid rel");
+        spicedb::Relationship::from_tuple("document:doc3#view@user:alice").expect("valid rel");
 
     let result = client
-        .check_permissions(&consistency::full(), "view", &[rel1, rel2, rel3])
+        .check_bulk(spicedb::BulkCheckRequest::new(
+            [rel1, rel2, rel3]
+                .iter()
+                .map(|r| {
+                    spicedb::PermissionCheck::new(
+                        (r).resource().clone(),
+                        "view",
+                        (r).subject().clone(),
+                        (consistency::full()).clone(),
+                    )
+                })
+                .collect(),
+        ))
         .await;
 
     assert!(
@@ -439,17 +565,33 @@ async fn check_permissions_errors_when_response_has_fewer_pairs_than_request_ite
     });
 
     let addr = spawn_permissions_server(mock).await;
-    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
-        .await
-        .expect("client should connect to mock server");
+    let client = SpiceDBClient::new_plaintext(
+        addr.to_string(),
+        "token",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("client should connect to mock server");
 
     let rel1 =
-        Relationship::new("document", "doc1", "view", "user", "alice", "").expect("valid rel");
+        spicedb::Relationship::from_tuple("document:doc1#view@user:alice").expect("valid rel");
     let rel2 =
-        Relationship::new("document", "doc2", "view", "user", "alice", "").expect("valid rel");
+        spicedb::Relationship::from_tuple("document:doc2#view@user:alice").expect("valid rel");
 
     let err = client
-        .check_permissions(&consistency::full(), "view", &[rel1, rel2])
+        .check_bulk(spicedb::BulkCheckRequest::new(
+            [rel1, rel2]
+                .iter()
+                .map(|r| {
+                    spicedb::PermissionCheck::new(
+                        (r).resource().clone(),
+                        "view",
+                        (r).subject().clone(),
+                        (consistency::full()).clone(),
+                    )
+                })
+                .collect(),
+        ))
         .await
         .expect_err(
             "a response with fewer pairs than request items must surface as an Err, not \
@@ -487,15 +629,26 @@ async fn check_permission_errors_instead_of_panicking_on_zero_pairs() {
     });
 
     let addr = spawn_permissions_server(mock).await;
-    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
-        .await
-        .expect("client should connect to mock server");
+    let client = SpiceDBClient::new_plaintext(
+        addr.to_string(),
+        "token",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("client should connect to mock server");
 
     let rel =
-        Relationship::new("document", "doc1", "view", "user", "alice", "").expect("valid rel");
+        spicedb::Relationship::from_tuple("document:doc1#view@user:alice").expect("valid rel");
 
     let err = client
-        .check_permission(&consistency::full(), "view", &rel)
+        .check_bulk(spicedb::BulkCheckRequest::new(vec![
+            spicedb::PermissionCheck::new(
+                rel.resource().clone(),
+                "view",
+                rel.subject().clone(),
+                consistency::full(),
+            ),
+        ]))
         .await
         .expect_err(
             "check_permission must return a typed error, not panic, when the server returns \
@@ -532,19 +685,35 @@ async fn per_item_error_carries_its_own_error_reason_and_metadata() {
     });
 
     let addr = spawn_permissions_server(mock).await;
-    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
-        .await
-        .expect("client should connect to mock server");
+    let client = SpiceDBClient::new_plaintext(
+        addr.to_string(),
+        "token",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("client should connect to mock server");
 
-    let rel = Relationship::new("document", "doc1", "view", "user", "alice", "")
+    let rel = spicedb::Relationship::from_tuple("document:doc1#view@user:alice")
         .expect("valid relationship");
     let err = client
-        .check_permissions(&consistency::full(), "view", &[rel])
+        .check_bulk(spicedb::BulkCheckRequest::new(
+            [rel]
+                .iter()
+                .map(|r| {
+                    spicedb::PermissionCheck::new(
+                        (r).resource().clone(),
+                        "view",
+                        (r).subject().clone(),
+                        (consistency::full()).clone(),
+                    )
+                })
+                .collect(),
+        ))
         .await
         .expect_err("a per-item error must surface as an Err");
 
     assert!(
-        matches!(err, SpiceDBError::ResourceExhausted(_)),
+        matches!(&err, SpiceDBError::BulkItem {index:0,source} if matches!(source.as_ref(),SpiceDBError::ResourceExhausted(_))),
         "expected ResourceExhausted for a per-item RESOURCE_EXHAUSTED, got {err:?}"
     );
     assert_eq!(err.reason(), Some("ERROR_REASON_MAXIMUM_DEPTH_EXCEEDED"));
@@ -564,8 +733,14 @@ const CHECK_BATCH_SIZE: usize = 1_000;
 fn numbered_rels(n: usize) -> Vec<Relationship> {
     (0..n)
         .map(|i| {
-            Relationship::new("document", format!("{i:05}"), "view", "user", "alice", "")
-                .expect("valid relationship")
+            (|| -> Result<spicedb::Relationship, spicedb::SpiceDBError> {
+                spicedb::Relationship::new(
+                    spicedb::ObjectRef::new("document", format!("{i:05}"))?,
+                    "view",
+                    spicedb::SubjectRef::new(spicedb::ObjectRef::new("user", "alice")?, None)?,
+                )
+            })()
+            .expect("valid relationship")
         })
         .collect()
 }
@@ -611,16 +786,28 @@ async fn per_item_error_reports_the_callers_absolute_index() {
     });
 
     let addr = spawn_permissions_server(mock).await;
-    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
-        .await
-        .expect("client should connect to mock server");
+    let client = SpiceDBClient::new_plaintext(
+        addr.to_string(),
+        "token",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("client should connect to mock server");
 
     let err = client
-        .check_permissions(
-            &consistency::full(),
-            "view",
-            &numbered_rels(CHECK_BATCH_SIZE * 2),
-        )
+        .check_bulk(spicedb::BulkCheckRequest::new(
+            numbered_rels(CHECK_BATCH_SIZE * 2)
+                .iter()
+                .map(|r| {
+                    spicedb::PermissionCheck::new(
+                        (r).resource().clone(),
+                        "view",
+                        (r).subject().clone(),
+                        (consistency::full()).clone(),
+                    )
+                })
+                .collect(),
+        ))
         .await
         .expect_err("a per-item error must surface as an Err");
 
@@ -664,16 +851,28 @@ async fn malformed_pair_reports_the_callers_absolute_index() {
     });
 
     let addr = spawn_permissions_server(mock).await;
-    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
-        .await
-        .expect("client should connect to mock server");
+    let client = SpiceDBClient::new_plaintext(
+        addr.to_string(),
+        "token",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("client should connect to mock server");
 
     let err = client
-        .check_permissions(
-            &consistency::full(),
-            "view",
-            &numbered_rels(CHECK_BATCH_SIZE * 2),
-        )
+        .check_bulk(spicedb::BulkCheckRequest::new(
+            numbered_rels(CHECK_BATCH_SIZE * 2)
+                .iter()
+                .map(|r| {
+                    spicedb::PermissionCheck::new(
+                        (r).resource().clone(),
+                        "view",
+                        (r).subject().clone(),
+                        (consistency::full()).clone(),
+                    )
+                })
+                .collect(),
+        ))
         .await
         .expect_err("a malformed pair must surface as an Err");
 

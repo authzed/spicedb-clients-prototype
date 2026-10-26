@@ -52,7 +52,10 @@ class StreamCancellationTest {
                             .setOperation(RelationshipUpdate.Operation.OPERATION_TOUCH)
                             .setRelationship(
                                 SpiceDBClient.toProtoRelationship(
-                                    Relationship.of("document", "doc1", "viewer", "user", "alice")))
+                                    Relationship.of(
+                                        new ObjectRef("document", "doc1"),
+                                        "viewer",
+                                        SubjectRef.direct(new ObjectRef("user", "alice")))))
                             .build())
                     .build());
             // Never call onCompleted/onError — hold the stream open so we can prove close()
@@ -66,7 +69,7 @@ class StreamCancellationTest {
         Iterator<SpiceDBClient.WatchEvent> iterator = stream.iterator();
         assertTrue(iterator.hasNext());
         SpiceDBClient.WatchEvent first = iterator.next();
-        assertEquals("doc1", first.updates().get(0).relationship().resourceID());
+        assertEquals("doc1", first.updates().get(0).relationship().resource().objectId());
 
         // Stream is still open here (server never completed it). Closing must cancel the call.
       }
@@ -104,7 +107,10 @@ class StreamCancellationTest {
                 ReadRelationshipsResponse.newBuilder()
                     .setRelationship(
                         SpiceDBClient.toProtoRelationship(
-                            Relationship.of("document", "doc1", "viewer", "user", "alice")))
+                            Relationship.of(
+                                new ObjectRef("document", "doc1"),
+                                "viewer",
+                                SubjectRef.direct(new ObjectRef("user", "alice")))))
                     .build());
             firstItemSent.countDown();
             // Never call onCompleted — the page never "finishes", so the client's page-drain

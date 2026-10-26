@@ -33,11 +33,11 @@ dotnet test SpiceDB.Client.Examples.sln -maxcpucount:1
 dotnet test examples/CheckPermission/CheckPermission.csproj
 
 # or against any other SpiceDB
-SPICEDB_ENDPOINT=spicedb.internal:50051 SPICEDB_TOKEN=hunter2 \
+SPICEDB_ENDPOINT=localhost:50071 SPICEDB_TOKEN=hunter2 \
     dotnet test SpiceDB.Client.Examples.sln -maxcpucount:1
 ```
 
-`-maxcpucount:1` is not optional. All thirteen projects share one SpiceDB and
+`-maxcpucount:1` is not optional. All example projects share one SpiceDB and
 each writes a whole schema, so running them concurrently lets one project's
 `WriteSchemaAsync` land between another's schema write and its relationship
 write -- which fails, nondeterministically, on a different example each run.
@@ -73,12 +73,12 @@ executed by CI and must be able to fail".
 
 | Directory | Description |
 |-----------|-------------|
-| `CheckPermission/` | Basic permission check |
+| `CheckPermission/` | Singular permission checks, conditional results, request context and populated debug tracing |
 | `WriteRelationships/` | Writing relationships with transactions |
 | `ReadRelationships/` | Reading relationships with async enumerables |
 | `LookupResources/` | Resource lookup |
 | `LookupSubjects/` | Subject lookup |
-| `CallDeadlines/` | The `defaultTimeout` construction parameter, a per-call `timeout` override, and confirming bulk import isn't bounded by the unary default |
+| `CallDeadlines/` | `ClientOptions.DefaultTimeout`, per-operation `Timeout`, and confirming bulk import isn't bounded by the unary default |
 | `ErrorMapping/` | Recovering from `OUT_OF_RANGE` (stale ZedToken) and `UNAUTHENTICATED` without parsing a message |
 | `InsecureOptIn/` | Why `CreatePlaintext` is loopback-only, and the named opt-in a remote plaintext host requires |
 | `RetryPolicy/` | Which calls are retried for you and which are not, counted server-side |
@@ -89,4 +89,5 @@ executed by CI and must be able to fail".
 | `SchemaReflection/` | Schema reflection, computable permissions, diffs |
 | `RelationshipCounters/` | Relationship counter registration and counting |
 | `ExpandPermissionTree/` | Expanding a permission into its native `PermissionTree` of subjects |
-| `RawEscapeHatch/` | The `RawProto()` escape hatch: driving the generated service client on this client's own connection to send `OptionalTransactionMetadata` (a proto field this client does not wrap) and to call the single-check `CheckPermission` RPC |
+| `RawEscapeHatch/` | The `RawProto()` escape hatch: driving the generated service client on this client's own connection to send raw transaction metadata and call `CheckPermission` with explicit protocol deadlines |
+| `RoaringLookupResources/` | Native bitmap lookup with cardinality, revision and raw authenticated service access |

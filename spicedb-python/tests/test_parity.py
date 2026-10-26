@@ -5,16 +5,12 @@ it fails the build the moment the two surfaces disagree.
 """
 
 from __future__ import annotations
-
 import inspect
 import typing
-
 import pytest
-
 from spicedb.aio import SpiceDBClient as AsyncClient
 from spicedb.sync import SpiceDBClient as SyncClient
 
-# close/__enter__/__aenter__ intentionally differ in shape between flavors.
 _LIFECYCLE = {"close"}
 
 
@@ -33,9 +29,12 @@ def test_same_public_method_names():
 @pytest.mark.parametrize("name", sorted(set(_public_methods(AsyncClient)) - _LIFECYCLE))
 def test_signatures_match(name: str):
     """Parameter names, kinds, and defaults must be identical."""
-    sync_params = list(inspect.signature(_public_methods(SyncClient)[name]).parameters.values())
-    aio_params = list(inspect.signature(_public_methods(AsyncClient)[name]).parameters.values())
-
+    sync_params = list(
+        inspect.signature(_public_methods(SyncClient)[name]).parameters.values()
+    )
+    aio_params = list(
+        inspect.signature(_public_methods(AsyncClient)[name]).parameters.values()
+    )
     assert [(p.name, p.kind, p.default) for p in sync_params] == [
         (p.name, p.kind, p.default) for p in aio_params
     ], f"signature drift in {name}()"
@@ -44,9 +43,13 @@ def test_signatures_match(name: str):
 @pytest.mark.parametrize("name", sorted(set(_public_methods(AsyncClient)) - _LIFECYCLE))
 def test_return_annotations_match_after_normalization(name: str):
     """AsyncIterator[T] on aio must correspond to Iterator[T] on sync."""
-    sync_ret = str(inspect.signature(_public_methods(SyncClient)[name]).return_annotation)
-    aio_ret = str(inspect.signature(_public_methods(AsyncClient)[name]).return_annotation)
-    normalized = aio_ret.replace("AsyncIterator", "Iterator")
+    sync_ret = str(
+        inspect.signature(_public_methods(SyncClient)[name]).return_annotation
+    )
+    aio_ret = str(
+        inspect.signature(_public_methods(AsyncClient)[name]).return_annotation
+    )
+    normalized = aio_ret.replace("AsyncStream", "Stream")
     assert sync_ret == normalized, f"return-type drift in {name}()"
 
 
@@ -69,22 +72,34 @@ def test_asyncgen_methods_have_asynciterator_annotation():
             continue
         raw = str(inspect.signature(fn).return_annotation)
         assert raw.startswith("AsyncIterator"), (
-            f"{name} is an async generator at runtime but its return "
-            f"annotation {raw!r} does not start with 'AsyncIterator'"
+            f"{name} is an async generator at runtime but its return annotation {raw!r} does not start with 'AsyncIterator'"
         )
 
 
 def test_no_sync_method_is_a_coroutine_or_async_generator():
     for name, fn in _public_methods(SyncClient).items():
         assert not inspect.iscoroutinefunction(fn), f"{name} must not be async"
-        assert not inspect.isasyncgenfunction(fn), f"{name} must not be an async generator"
-
-
-def test_every_aio_method_is_awaitable_or_an_async_generator():
-    for name, fn in _public_methods(AsyncClient).items():
-        assert inspect.iscoroutinefunction(fn) or inspect.isasyncgenfunction(fn), (
-            f"{name} on the aio client is neither a coroutine nor an async generator"
+        assert not inspect.isasyncgenfunction(fn), (
+            f"{name} must not be an async generator"
         )
+
+
+def test_every_aio_method_has_native_execution_shape():
+    streams = {
+        "read_relationships",
+        "lookup_resources",
+        "lookup_subjects",
+        "export_relationships",
+        "watch",
+        "watch_permission_sets",
+        "lookup_permission_sets",
+    }
+    for name, fn in _public_methods(AsyncClient).items():
+        assert inspect.iscoroutinefunction(fn) == (name not in streams)
+        if name in streams:
+            assert str(inspect.signature(fn).return_annotation).startswith(
+                "AsyncStream["
+            )
 
 
 def test_docstrings_present_on_both():

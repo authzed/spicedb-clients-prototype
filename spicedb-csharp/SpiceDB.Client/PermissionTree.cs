@@ -15,32 +15,19 @@ public enum TreeOperation
     Exclusion,
 }
 
-/// <summary>Identifies a resource or subject object.</summary>
-public sealed record ObjectRef
-{
-    public string ObjectType { get; init; } = "";
-    public string ObjectID { get; init; } = "";
-}
-
-/// <summary>A subject with access at a leaf of a <see cref="PermissionTree"/>.</summary>
-public sealed record SubjectRef
-{
-    public string SubjectType { get; init; } = "";
-    public string SubjectID { get; init; } = "";
-    public string OptionalRelation { get; init; } = "";
-}
-
 /// <summary>Combines child subtrees with a set operation.</summary>
 public sealed record IntermediateNode
 {
     public TreeOperation Operation { get; init; }
-    public IReadOnlyList<PermissionTree> Children { get; init; } = [];
+    private IReadOnlyList<PermissionTree> _Children = Array.Empty<PermissionTree>();
+    public IReadOnlyList<PermissionTree> Children { get => _Children; init => _Children = Native.List(value); }
 }
 
 /// <summary>Holds the concrete subjects at a leaf of a <see cref="PermissionTree"/>.</summary>
 public sealed record LeafNode
 {
-    public IReadOnlyList<SubjectRef> Subjects { get; init; } = [];
+    private IReadOnlyList<SubjectRef> _Subjects = Array.Empty<SubjectRef>();
+    public IReadOnlyList<SubjectRef> Subjects { get => _Subjects; init => _Subjects = Native.List(value); }
 }
 
 /// <summary>
@@ -50,8 +37,14 @@ public sealed record LeafNode
 /// </summary>
 public sealed record PermissionTree
 {
-    public ObjectRef ExpandedObject { get; init; } = new();
-    public string ExpandedRelation { get; init; } = "";
-    public IntermediateNode? Intermediate { get; init; }
-    public LeafNode? Leaf { get; init; }
+    public ObjectRef? ExpandedObject { get; }
+    public string ExpandedRelation { get; }
+    public IntermediateNode? Intermediate { get; }
+    public LeafNode? Leaf { get; }
+    public bool IsUnspecified => Intermediate is null && Leaf is null;
+    public PermissionTree(ObjectRef? expandedObject = null, string expandedRelation = "", IntermediateNode? intermediate = null, LeafNode? leaf = null)
+    {
+        if (intermediate is not null && leaf is not null) throw new InvalidArgumentException("A permission tree node cannot be both intermediate and leaf.");
+        ExpandedObject = expandedObject; ExpandedRelation = expandedRelation; Intermediate = intermediate; Leaf = leaf;
+    }
 }

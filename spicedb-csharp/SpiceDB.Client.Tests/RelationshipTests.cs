@@ -10,14 +10,14 @@ public class RelationshipTests
     [Fact]
     public void FromTriple_CreatesRelationship()
     {
-        var rel = Relationship.FromTriple("document", "doc1", "viewer", "user", "alice");
+        var rel = new Relationship(new ObjectRef("document", "doc1"), "viewer", new SubjectRef(new ObjectRef("user", "alice")));
 
-        rel.ResourceType.Should().Be("document");
-        rel.ResourceID.Should().Be("doc1");
-        rel.ResourceRelation.Should().Be("viewer");
-        rel.SubjectType.Should().Be("user");
-        rel.SubjectID.Should().Be("alice");
-        rel.SubjectRelation.Should().BeEmpty();
+        rel.Resource.ObjectType.Should().Be("document");
+        rel.Resource.ObjectId.Should().Be("doc1");
+        rel.Relation.Should().Be("viewer");
+        rel.Subject.Object.ObjectType.Should().Be("user");
+        rel.Subject.Object.ObjectId.Should().Be("alice");
+        rel.Subject.Relation.Should().BeNull();
         rel.CaveatName.Should().BeNull();
         rel.CaveatContext.Should().BeNull();
         rel.Expiration.Should().BeNull();
@@ -26,44 +26,44 @@ public class RelationshipTests
     [Fact]
     public void FromTriple_WithSubjectRelation()
     {
-        var rel = Relationship.FromTriple("document", "doc1", "viewer", "group", "engineering", "member");
+        var rel = new Relationship(new ObjectRef("document", "doc1"), "viewer", new SubjectRef(new ObjectRef("group", "engineering"), "member"));
 
-        rel.SubjectRelation.Should().Be("member");
+        rel.Subject.Relation.Should().Be("member");
     }
 
     [Fact]
     public void FromTriple_ThrowsOnEmptyResourceType()
     {
-        var act = () => Relationship.FromTriple("", "doc1", "viewer", "user", "alice");
-        act.Should().Throw<ArgumentException>();
+        var act = () => new Relationship(new ObjectRef("", "doc1"), "viewer", new SubjectRef(new ObjectRef("user", "alice")));
+        act.Should().Throw<InvalidArgumentException>();
     }
 
     [Fact]
     public void FromTriple_ThrowsOnEmptyResourceID()
     {
-        var act = () => Relationship.FromTriple("document", "", "viewer", "user", "alice");
-        act.Should().Throw<ArgumentException>();
+        var act = () => new Relationship(new ObjectRef("document", ""), "viewer", new SubjectRef(new ObjectRef("user", "alice")));
+        act.Should().Throw<InvalidArgumentException>();
     }
 
     [Fact]
     public void FromTriple_ThrowsOnEmptyResourceRelation()
     {
-        var act = () => Relationship.FromTriple("document", "doc1", "", "user", "alice");
-        act.Should().Throw<ArgumentException>();
+        var act = () => new Relationship(new ObjectRef("document", "doc1"), "", new SubjectRef(new ObjectRef("user", "alice")));
+        act.Should().Throw<InvalidArgumentException>();
     }
 
     [Fact]
     public void FromTriple_ThrowsOnEmptySubjectType()
     {
-        var act = () => Relationship.FromTriple("document", "doc1", "viewer", "", "alice");
-        act.Should().Throw<ArgumentException>();
+        var act = () => new Relationship(new ObjectRef("document", "doc1"), "viewer", new SubjectRef(new ObjectRef("", "alice")));
+        act.Should().Throw<InvalidArgumentException>();
     }
 
     [Fact]
     public void FromTriple_ThrowsOnEmptySubjectID()
     {
-        var act = () => Relationship.FromTriple("document", "doc1", "viewer", "user", "");
-        act.Should().Throw<ArgumentException>();
+        var act = () => new Relationship(new ObjectRef("document", "doc1"), "viewer", new SubjectRef(new ObjectRef("user", "")));
+        act.Should().Throw<InvalidArgumentException>();
     }
 
     [Fact]
@@ -71,12 +71,12 @@ public class RelationshipTests
     {
         var rel = Relationship.FromTuple("document:doc1#viewer@user:alice");
 
-        rel.ResourceType.Should().Be("document");
-        rel.ResourceID.Should().Be("doc1");
-        rel.ResourceRelation.Should().Be("viewer");
-        rel.SubjectType.Should().Be("user");
-        rel.SubjectID.Should().Be("alice");
-        rel.SubjectRelation.Should().BeEmpty();
+        rel.Resource.ObjectType.Should().Be("document");
+        rel.Resource.ObjectId.Should().Be("doc1");
+        rel.Relation.Should().Be("viewer");
+        rel.Subject.Object.ObjectType.Should().Be("user");
+        rel.Subject.Object.ObjectId.Should().Be("alice");
+        rel.Subject.Relation.Should().BeNull();
     }
 
     [Fact]
@@ -84,44 +84,44 @@ public class RelationshipTests
     {
         var rel = Relationship.FromTuple("document:doc1#viewer@group:engineering#member");
 
-        rel.SubjectType.Should().Be("group");
-        rel.SubjectID.Should().Be("engineering");
-        rel.SubjectRelation.Should().Be("member");
+        rel.Subject.Object.ObjectType.Should().Be("group");
+        rel.Subject.Object.ObjectId.Should().Be("engineering");
+        rel.Subject.Relation.Should().Be("member");
     }
 
     [Fact]
     public void FromTuple_ThrowsOnMissingAt()
     {
         var act = () => Relationship.FromTuple("document:doc1#viewer");
-        act.Should().Throw<FormatException>().WithMessage("*@*");
+        act.Should().Throw<InvalidArgumentException>().WithMessage("*@*");
     }
 
     [Fact]
     public void FromTuple_ThrowsOnMissingHash()
     {
         var act = () => Relationship.FromTuple("document:doc1@user:alice");
-        act.Should().Throw<FormatException>().WithMessage("*#*");
+        act.Should().Throw<InvalidArgumentException>().WithMessage("*#*");
     }
 
     [Fact]
     public void FromTuple_ThrowsOnMissingResourceColon()
     {
         var act = () => Relationship.FromTuple("documentdoc1#viewer@user:alice");
-        act.Should().Throw<FormatException>().WithMessage("*:*");
+        act.Should().Throw<InvalidArgumentException>().WithMessage("*:*");
     }
 
     [Fact]
     public void FromTuple_ThrowsOnEmptyString()
     {
         var act = () => Relationship.FromTuple("");
-        act.Should().Throw<FormatException>();
+        act.Should().Throw<InvalidArgumentException>();
     }
 
     [Fact]
     public void WithCaveat_ReturnsCopyWithCaveat()
     {
-        var original = Relationship.FromTriple("document", "doc1", "viewer", "user", "alice");
-        var context = new Dictionary<string, object> { ["region"] = "us" };
+        var original = new Relationship(new ObjectRef("document", "doc1"), "viewer", new SubjectRef(new ObjectRef("user", "alice")));
+        var context = new Dictionary<string, object?> { ["region"] = "us" };
         var withCaveat = original.WithCaveat("ip_allowlist", context);
 
         // Original unchanged
@@ -133,38 +133,39 @@ public class RelationshipTests
         withCaveat.CaveatContext.Should().ContainKey("region");
 
         // Other fields unchanged
-        withCaveat.ResourceType.Should().Be("document");
-        withCaveat.SubjectID.Should().Be("alice");
+        withCaveat.Resource.ObjectType.Should().Be("document");
+        withCaveat.Subject.Object.ObjectId.Should().Be("alice");
     }
 
     [Fact]
     public void WithExpiration_ReturnsCopyWithExpiration()
     {
-        var original = Relationship.FromTriple("document", "doc1", "viewer", "user", "alice");
+        var original = new Relationship(new ObjectRef("document", "doc1"), "viewer", new SubjectRef(new ObjectRef("user", "alice")));
         var expires = new DateTimeOffset(2026, 12, 31, 0, 0, 0, TimeSpan.Zero);
         var withExp = original.WithExpiration(expires);
 
         original.Expiration.Should().BeNull();
         withExp.Expiration.Should().Be(expires);
-        withExp.ResourceType.Should().Be("document");
+        withExp.Resource.ObjectType.Should().Be("document");
     }
 
     [Fact]
     public void WithCheckContext_ReturnsCopyWithCheckContext()
     {
-        var original = Relationship.FromTriple("document", "doc1", "viewer", "user", "alice");
-        var context = new Dictionary<string, object> { ["now"] = 42 };
-        var withContext = original.WithCheckContext(context);
+        var original = new Relationship(new ObjectRef("document", "doc1"), "viewer", new SubjectRef(new ObjectRef("user", "alice")));
+        var context = new Dictionary<string, object?> { ["now"] = 42 };
+        var request = new PermissionCheck(original.Resource, "view", original.Subject, Consistency.Full());
+        var withContext = request.WithContext(context);
 
         // Original unchanged
-        original.CheckContext.Should().BeNull();
+        request.Context.Should().BeNull();
 
         // New carries the check-time context
-        withContext.CheckContext.Should().ContainKey("now");
+        withContext.Context.Should().ContainKey("now");
 
         // Other fields unchanged
-        withContext.ResourceType.Should().Be("document");
-        withContext.SubjectID.Should().Be("alice");
+        withContext.Resource.ObjectType.Should().Be("document");
+        withContext.Subject.Object.ObjectId.Should().Be("alice");
     }
 
     [Fact]
@@ -176,14 +177,13 @@ public class RelationshipTests
         // or be confused with the other — a caller who means to attach
         // check-time context must not accidentally alter what would be
         // written to SpiceDB, and vice versa.
-        var rel = Relationship
-            .FromTriple("document", "doc1", "caveated_viewer", "user", "alice")
-            .WithCaveat("active")
-            .WithCheckContext(new Dictionary<string, object> { ["now"] = 42 });
+        var rel = new Relationship(new ObjectRef("document", "doc1"), "caveated_viewer", new SubjectRef(new ObjectRef("user", "alice")))
+            .WithCaveat("active");
+        var request = new PermissionCheck(rel.Resource, "view", rel.Subject, Consistency.Full()).WithContext(new Dictionary<string, object?> { ["now"] = 42 });
 
         rel.CaveatContext.Should().BeNull();
-        rel.CheckContext.Should().NotBeNull();
-        rel.CheckContext.Should().ContainKey("now");
+        request.Context.Should().NotBeNull();
+        request.Context.Should().ContainKey("now");
     }
 
     [Fact]
@@ -194,10 +194,9 @@ public class RelationshipTests
         // OptionalCaveat.Context. A leak here would silently alter what gets
         // stored in SpiceDB based on data that was only ever meant to answer
         // one check call.
-        var rel = Relationship
-            .FromTriple("document", "doc1", "caveated_viewer", "user", "alice")
-            .WithCaveat("active")
-            .WithCheckContext(new Dictionary<string, object> { ["now"] = 42, ["secret"] = "leak-me-not" });
+        var rel = new Relationship(new ObjectRef("document", "doc1"), "caveated_viewer", new SubjectRef(new ObjectRef("user", "alice")))
+            .WithCaveat("active");
+        var request = new PermissionCheck(rel.Resource, "view", rel.Subject, Consistency.Full()).WithContext(new Dictionary<string, object?> { ["now"] = 42, ["secret"] = "leak-me-not" });
 
         var proto = rel.ToProto();
 
@@ -208,21 +207,21 @@ public class RelationshipTests
     [Fact]
     public void ToString_BasicFormat()
     {
-        var rel = Relationship.FromTriple("document", "doc1", "viewer", "user", "alice");
+        var rel = new Relationship(new ObjectRef("document", "doc1"), "viewer", new SubjectRef(new ObjectRef("user", "alice")));
         rel.ToString().Should().Be("document:doc1#viewer@user:alice");
     }
 
     [Fact]
     public void ToString_WithSubjectRelation()
     {
-        var rel = Relationship.FromTriple("document", "doc1", "viewer", "group", "eng", "member");
+        var rel = new Relationship(new ObjectRef("document", "doc1"), "viewer", new SubjectRef(new ObjectRef("group", "eng"), "member"));
         rel.ToString().Should().Be("document:doc1#viewer@group:eng#member");
     }
 
     [Fact]
     public void ToProto_ConvertsCorrectly()
     {
-        var rel = Relationship.FromTriple("document", "doc1", "viewer", "user", "alice");
+        var rel = new Relationship(new ObjectRef("document", "doc1"), "viewer", new SubjectRef(new ObjectRef("user", "alice")));
         var proto = rel.ToProto();
 
         proto.Resource.ObjectType.Should().Be("document");
@@ -235,8 +234,8 @@ public class RelationshipTests
     [Fact]
     public void ToProto_WithCaveat()
     {
-        var rel = Relationship.FromTriple("document", "doc1", "viewer", "user", "alice")
-            .WithCaveat("my_caveat", new Dictionary<string, object> { ["key"] = "val" });
+        var rel = new Relationship(new ObjectRef("document", "doc1"), "viewer", new SubjectRef(new ObjectRef("user", "alice")))
+            .WithCaveat("my_caveat", new Dictionary<string, object?> { ["key"] = "val" });
         var proto = rel.ToProto();
 
         proto.OptionalCaveat.Should().NotBeNull();
@@ -258,17 +257,17 @@ public class RelationshipTests
     [Fact]
     public void ToProto_PreservesCaveatContextTypes()
     {
-        var context = new Dictionary<string, object>
+        var context = new Dictionary<string, object?>
         {
             ["a_string"] = "hello",
             ["an_int"] = 42,
             ["a_float"] = 3.5,
             ["a_bool"] = true,
             ["a_null"] = null!,
-            ["a_map"] = new Dictionary<string, object> { ["nested"] = "value" },
+            ["a_map"] = new Dictionary<string, object?> { ["nested"] = "value" },
             ["a_list"] = new List<object> { "one", 2, false },
         };
-        var rel = Relationship.FromTriple("document", "doc1", "viewer", "user", "alice")
+        var rel = new Relationship(new ObjectRef("document", "doc1"), "viewer", new SubjectRef(new ObjectRef("user", "alice")))
             .WithCaveat("some_caveat", context);
 
         var proto = rel.ToProto();
@@ -315,14 +314,12 @@ public class RelationshipTests
     [Fact]
     public void ToProto_UnrepresentableCaveatContextValue_Throws()
     {
-        var context = new Dictionary<string, object>
+        var context = new Dictionary<string, object?>
         {
             ["bad_key"] = new UnrepresentableValue(),
         };
-        var rel = Relationship.FromTriple("document", "doc1", "viewer", "user", "alice")
-            .WithCaveat("some_caveat", context);
-
-        var act = () => rel.ToProto();
+        var rel = new Relationship(new ObjectRef("document", "doc1"), "viewer", new SubjectRef(new ObjectRef("user", "alice")));
+        var act = () => rel.WithCaveat("some_caveat", context);
 
         var thrown = act.Should().Throw<InvalidArgumentException>().Which;
         thrown.Message.Should().Contain("bad_key");
@@ -337,17 +334,17 @@ public class RelationshipTests
     [Fact]
     public void RoundTrip_PreservesCaveatContextTypes()
     {
-        var context = new Dictionary<string, object>
+        var context = new Dictionary<string, object?>
         {
             ["a_string"] = "hello",
             ["an_int"] = 42,
             ["a_float"] = 3.5,
             ["a_bool"] = true,
             ["a_null"] = null!,
-            ["a_map"] = new Dictionary<string, object> { ["nested"] = "value" },
+            ["a_map"] = new Dictionary<string, object?> { ["nested"] = "value" },
             ["a_list"] = new List<object> { "one", 2, false },
         };
-        var original = Relationship.FromTriple("document", "doc1", "viewer", "user", "alice")
+        var original = new Relationship(new ObjectRef("document", "doc1"), "viewer", new SubjectRef(new ObjectRef("user", "alice")))
             .WithCaveat("some_caveat", context);
 
         var roundTripped = Relationship.FromProto(original.ToProto());
@@ -363,7 +360,7 @@ public class RelationshipTests
         rt["a_bool"].Should().Be(true);
         rt["a_null"].Should().BeNull();
 
-        var nestedMap = rt["a_map"].Should().BeAssignableTo<IReadOnlyDictionary<string, object>>().Subject;
+        var nestedMap = rt["a_map"].Should().BeAssignableTo<IReadOnlyDictionary<string, object?>>().Subject;
         nestedMap["nested"].Should().Be("value");
 
         var list = rt["a_list"].Should().BeAssignableTo<IEnumerable<object>>().Subject.ToList();
@@ -377,7 +374,7 @@ public class RelationshipTests
     public void ToProto_WithExpiration()
     {
         var expires = new DateTimeOffset(2026, 6, 15, 12, 0, 0, TimeSpan.Zero);
-        var rel = Relationship.FromTriple("document", "doc1", "viewer", "user", "alice")
+        var rel = new Relationship(new ObjectRef("document", "doc1"), "viewer", new SubjectRef(new ObjectRef("user", "alice")))
             .WithExpiration(expires);
         var proto = rel.ToProto();
 
@@ -401,52 +398,52 @@ public class RelationshipTests
 
         var rel = Relationship.FromProto(proto);
 
-        rel.ResourceType.Should().Be("doc");
-        rel.ResourceID.Should().Be("1");
-        rel.ResourceRelation.Should().Be("reader");
-        rel.SubjectType.Should().Be("user");
-        rel.SubjectID.Should().Be("bob");
-        rel.SubjectRelation.Should().Be("member");
+        rel.Resource.ObjectType.Should().Be("doc");
+        rel.Resource.ObjectId.Should().Be("1");
+        rel.Relation.Should().Be("reader");
+        rel.Subject.Object.ObjectType.Should().Be("user");
+        rel.Subject.Object.ObjectId.Should().Be("bob");
+        rel.Subject.Relation.Should().Be("member");
     }
 
     [Fact]
     public void RoundTrip_ToProtoAndBack()
     {
-        var original = Relationship.FromTriple("document", "doc1", "viewer", "user", "alice", "member");
+        var original = new Relationship(new ObjectRef("document", "doc1"), "viewer", new SubjectRef(new ObjectRef("user", "alice"), "member"));
         var roundTripped = Relationship.FromProto(original.ToProto());
 
-        roundTripped.ResourceType.Should().Be(original.ResourceType);
-        roundTripped.ResourceID.Should().Be(original.ResourceID);
-        roundTripped.ResourceRelation.Should().Be(original.ResourceRelation);
-        roundTripped.SubjectType.Should().Be(original.SubjectType);
-        roundTripped.SubjectID.Should().Be(original.SubjectID);
-        roundTripped.SubjectRelation.Should().Be(original.SubjectRelation);
+        roundTripped.Resource.ObjectType.Should().Be(original.Resource.ObjectType);
+        roundTripped.Resource.ObjectId.Should().Be(original.Resource.ObjectId);
+        roundTripped.Relation.Should().Be(original.Relation);
+        roundTripped.Subject.Object.ObjectType.Should().Be(original.Subject.Object.ObjectType);
+        roundTripped.Subject.Object.ObjectId.Should().Be(original.Subject.Object.ObjectId);
+        roundTripped.Subject.Relation.Should().Be(original.Subject.Relation);
     }
 
     [Fact]
     public void ToFilter_CreatesMatchingFilter()
     {
-        var rel = Relationship.FromTriple("document", "doc1", "viewer", "user", "alice");
+        var rel = new Relationship(new ObjectRef("document", "doc1"), "viewer", new SubjectRef(new ObjectRef("user", "alice")));
         var filter = rel.ToFilter();
 
         filter.ResourceType.Should().Be("document");
-        filter.ResourceID.Should().Be("doc1");
+        filter.ResourceId.Should().Be("doc1");
         filter.Relation.Should().Be("viewer");
         filter.SubjectType.Should().Be("user");
-        filter.SubjectID.Should().Be("alice");
+        filter.SubjectId.Should().Be("alice");
     }
 
     [Fact]
     public void Relationship_IsImmutableRecord()
     {
-        var rel = Relationship.FromTriple("document", "doc1", "viewer", "user", "alice");
+        var rel = new Relationship(new ObjectRef("document", "doc1"), "viewer", new SubjectRef(new ObjectRef("user", "alice")));
 
         // Records support value equality
-        var same = Relationship.FromTriple("document", "doc1", "viewer", "user", "alice");
+        var same = new Relationship(new ObjectRef("document", "doc1"), "viewer", new SubjectRef(new ObjectRef("user", "alice")));
         rel.Should().Be(same);
 
         // Different should not be equal
-        var different = Relationship.FromTriple("document", "doc2", "viewer", "user", "alice");
+        var different = new Relationship(new ObjectRef("document", "doc2"), "viewer", new SubjectRef(new ObjectRef("user", "alice")));
         rel.Should().NotBe(different);
     }
 }

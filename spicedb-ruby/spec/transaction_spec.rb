@@ -4,17 +4,13 @@ require_relative '../lib/spicedb'
 
 RSpec.describe SpiceDB::Transaction do
   let(:rel) do
-    SpiceDB::Relationship.from_triple(
-      'document', 'doc1', 'viewer',
-      'user', 'alice'
-    )
+    SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'doc1'), relation: 'viewer',
+                              subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: 'alice'), relation: nil))
   end
 
   let(:rel2) do
-    SpiceDB::Relationship.from_triple(
-      'document', 'doc2', 'editor',
-      'user', 'bob'
-    )
+    SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'doc2'), relation: 'editor',
+                              subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: 'bob'), relation: nil))
   end
 
   describe '#create' do

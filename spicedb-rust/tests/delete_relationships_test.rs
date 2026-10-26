@@ -3,7 +3,7 @@
 //!
 //! These tests capture the outbound `DeleteRelationshipsRequest` against a
 //! mock `PermissionsService` and assert on what the client actually sent —
-//! proving `DeleteOptions` preconditions and limit reach the wire, and that
+//! proving `DeleteAllOptions` preconditions and limit reach the wire, and that
 //! the simple `delete_relationships(filter)` path is unaffected.
 
 mod support;
@@ -12,7 +12,7 @@ use std::sync::atomic::Ordering;
 
 use spicedb::client::SpiceDBClient;
 use spicedb::error::SpiceDBError;
-use spicedb::types::{DeleteOptions, Filter};
+use spicedb::types::{DeleteAllOptions, Filter};
 use spicedb_proto::authzed::api::v1 as proto;
 
 use support::{spawn_permissions_server, MockPermissionsService};
@@ -48,7 +48,7 @@ fn partial_response_with_cursor(
             token: token.to_string(),
         }),
         deletion_progress: proto::delete_relationships_response::DeletionProgress::Partial as i32,
-        relationships_deleted_count: 0,
+        relationships_deleted_count: 1,
         after_result_cursor: after_result_cursor.map(|token| proto::Cursor {
             token: token.to_string(),
         }),
@@ -106,17 +106,21 @@ async fn delete_relationships_sends_no_preconditions_and_default_limit() {
     let requests = mock.delete_relationships_requests();
 
     let addr = spawn_permissions_server(mock).await;
-    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
-        .await
-        .expect("client should connect to mock server");
+    let client = SpiceDBClient::new_plaintext(
+        addr.to_string(),
+        "token",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("client should connect to mock server");
 
     let filter = Filter::new("document").with_resource_id("doc1");
     let revision = client
-        .delete_relationships(&filter)
+        .delete_all_relationships_non_atomic(spicedb::DeleteAllRequest::new((filter).clone()))
         .await
         .expect("delete should succeed");
 
-    assert_eq!(revision, "rev-1");
+    assert_eq!(revision.revision.as_ref(), "rev-1");
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 
     let seen = requests.lock().unwrap().clone();
@@ -153,14 +157,18 @@ async fn delete_relationships_errors_when_filter_subject_id_has_no_subject_type(
     let calls = mock.delete_relationships_calls();
 
     let addr = spawn_permissions_server(mock).await;
-    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
-        .await
-        .expect("client should connect to mock server");
+    let client = SpiceDBClient::new_plaintext(
+        addr.to_string(),
+        "token",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("client should connect to mock server");
 
     let bad_filter = Filter::new("document").with_subject_id("alice");
 
     let err = client
-        .delete_relationships(&bad_filter)
+        .delete_all_relationships_non_atomic(spicedb::DeleteAllRequest::new((bad_filter).clone()))
         .await
         .expect_err("filter with subject_id but no subject_type must be rejected");
 
@@ -182,14 +190,19 @@ async fn delete_relationships_errors_when_filter_subject_relation_has_no_subject
     let calls = mock.delete_relationships_calls();
 
     let addr = spawn_permissions_server(mock).await;
-    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
-        .await
-        .expect("client should connect to mock server");
+    let client = SpiceDBClient::new_plaintext(
+        addr.to_string(),
+        "token",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("client should connect to mock server");
 
-    let bad_filter = Filter::new("document").with_subject_relation("member");
+    let bad_filter = Filter::new("document")
+        .with_subject_relation(spicedb::SubjectRelationFilter::Named("member".into()));
 
     let err = client
-        .delete_relationships(&bad_filter)
+        .delete_all_relationships_non_atomic(spicedb::DeleteAllRequest::new((bad_filter).clone()))
         .await
         .expect_err("filter with subject_relation but no subject_type must be rejected");
 
@@ -209,16 +222,22 @@ async fn delete_relationships_with_errors_when_must_match_filter_subject_id_has_
     let calls = mock.delete_relationships_calls();
 
     let addr = spawn_permissions_server(mock).await;
-    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
-        .await
-        .expect("client should connect to mock server");
+    let client = SpiceDBClient::new_plaintext(
+        addr.to_string(),
+        "token",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("client should connect to mock server");
 
     let filter = Filter::new("document").with_resource_id("doc1");
     let bad_guard = Filter::new("document").with_subject_id("alice");
-    let options = DeleteOptions::new().with_must_match(bad_guard);
+    let options = DeleteAllOptions::new().with_must_match(bad_guard);
 
     let err = client
-        .delete_relationships_with(&filter, &options)
+        .delete_all_relationships_non_atomic(
+            spicedb::DeleteAllRequest::new((filter).clone()).with_options((options).clone()),
+        )
         .await
         .expect_err("must_match filter with subject_id but no subject_type must be rejected");
 
@@ -236,13 +255,17 @@ async fn delete_relationships_sends_subject_type_alone_without_erroring() {
     let requests = mock.delete_relationships_requests();
 
     let addr = spawn_permissions_server(mock).await;
-    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
-        .await
-        .expect("client should connect to mock server");
+    let client = SpiceDBClient::new_plaintext(
+        addr.to_string(),
+        "token",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("client should connect to mock server");
 
     let filter = Filter::new("document").with_subject_type("user");
     client
-        .delete_relationships(&filter)
+        .delete_all_relationships_non_atomic(spicedb::DeleteAllRequest::new((filter).clone()))
         .await
         .expect("delete should succeed");
 
@@ -267,15 +290,19 @@ async fn delete_relationships_sends_subject_type_and_id_without_erroring() {
     let requests = mock.delete_relationships_requests();
 
     let addr = spawn_permissions_server(mock).await;
-    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
-        .await
-        .expect("client should connect to mock server");
+    let client = SpiceDBClient::new_plaintext(
+        addr.to_string(),
+        "token",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("client should connect to mock server");
 
     let filter = Filter::new("document")
         .with_subject_type("user")
         .with_subject_id("alice");
     client
-        .delete_relationships(&filter)
+        .delete_all_relationships_non_atomic(spicedb::DeleteAllRequest::new((filter).clone()))
         .await
         .expect("delete should succeed");
 
@@ -302,9 +329,13 @@ async fn delete_relationships_with_sends_must_match_and_must_not_match_precondit
     let requests = mock.delete_relationships_requests();
 
     let addr = spawn_permissions_server(mock).await;
-    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
-        .await
-        .expect("client should connect to mock server");
+    let client = SpiceDBClient::new_plaintext(
+        addr.to_string(),
+        "token",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("client should connect to mock server");
 
     let filter = Filter::new("document").with_resource_id("doc1");
     let must_match_filter = Filter::new("document")
@@ -318,15 +349,17 @@ async fn delete_relationships_with_sends_must_match_and_must_not_match_precondit
         .with_subject_type("user")
         .with_subject_id("mallory");
 
-    let options = DeleteOptions::new()
+    let options = DeleteAllOptions::new()
         .with_must_match(must_match_filter.clone())
         .with_must_not_match(must_not_match_filter.clone());
 
     let revision = client
-        .delete_relationships_with(&filter, &options)
+        .delete_all_relationships_non_atomic(
+            spicedb::DeleteAllRequest::new((filter).clone()).with_options((options).clone()),
+        )
         .await
         .expect("delete should succeed");
-    assert_eq!(revision, "rev-2");
+    assert_eq!(revision.revision.as_ref(), "rev-2");
 
     let seen = requests.lock().unwrap().clone();
     assert_eq!(seen.len(), 1);
@@ -367,15 +400,21 @@ async fn delete_relationships_with_overrides_page_size() {
     let requests = mock.delete_relationships_requests();
 
     let addr = spawn_permissions_server(mock).await;
-    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
-        .await
-        .expect("client should connect to mock server");
+    let client = SpiceDBClient::new_plaintext(
+        addr.to_string(),
+        "token",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("client should connect to mock server");
 
     let filter = Filter::new("document");
-    let options = DeleteOptions::new().with_limit(25);
+    let options = DeleteAllOptions::new().with_page_size(std::num::NonZeroU32::new(25).unwrap());
 
     client
-        .delete_relationships_with(&filter, &options)
+        .delete_all_relationships_non_atomic(
+            spicedb::DeleteAllRequest::new((filter).clone()).with_options((options).clone()),
+        )
         .await
         .expect("delete should succeed");
 
@@ -398,20 +437,27 @@ async fn delete_relationships_with_pages_until_complete() {
     let requests = mock.delete_relationships_requests();
 
     let addr = spawn_permissions_server(mock).await;
-    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
-        .await
-        .expect("client should connect to mock server");
+    let client = SpiceDBClient::new_plaintext(
+        addr.to_string(),
+        "token",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("client should connect to mock server");
 
     let filter = Filter::new("document");
-    let options = DeleteOptions::new().with_limit(10);
+    let options = DeleteAllOptions::new().with_page_size(std::num::NonZeroU32::new(10).unwrap());
 
     let revision = client
-        .delete_relationships_with(&filter, &options)
+        .delete_all_relationships_non_atomic(
+            spicedb::DeleteAllRequest::new((filter).clone()).with_options((options).clone()),
+        )
         .await
         .expect("delete should succeed");
 
     assert_eq!(
-        revision, "rev-final",
+        revision.revision.as_ref(),
+        "rev-final",
         "should return the revision of the final (complete) page"
     );
     assert_eq!(
@@ -453,18 +499,24 @@ async fn delete_relationships_with_threads_after_result_cursor_between_pages() {
     let requests = mock.delete_relationships_requests();
 
     let addr = spawn_permissions_server(mock).await;
-    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
-        .await
-        .expect("client should connect to mock server");
+    let client = SpiceDBClient::new_plaintext(
+        addr.to_string(),
+        "token",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("client should connect to mock server");
 
     let filter = Filter::new("document");
-    let options = DeleteOptions::new().with_limit(10);
+    let options = DeleteAllOptions::new().with_page_size(std::num::NonZeroU32::new(10).unwrap());
 
     let revision = client
-        .delete_relationships_with(&filter, &options)
+        .delete_all_relationships_non_atomic(
+            spicedb::DeleteAllRequest::new((filter).clone()).with_options((options).clone()),
+        )
         .await
         .expect("delete should succeed");
-    assert_eq!(revision, "rev-final");
+    assert_eq!(revision.revision.as_ref(), "rev-final");
 
     let seen = requests.lock().unwrap().clone();
     assert_eq!(seen.len(), 3);
@@ -500,15 +552,21 @@ async fn delete_relationships_with_omits_cursor_when_server_never_returns_one() 
     let requests = mock.delete_relationships_requests();
 
     let addr = spawn_permissions_server(mock).await;
-    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
-        .await
-        .expect("client should connect to mock server");
+    let client = SpiceDBClient::new_plaintext(
+        addr.to_string(),
+        "token",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("client should connect to mock server");
 
     let filter = Filter::new("document");
-    let options = DeleteOptions::new().with_limit(10);
+    let options = DeleteAllOptions::new().with_page_size(std::num::NonZeroU32::new(10).unwrap());
 
     client
-        .delete_relationships_with(&filter, &options)
+        .delete_all_relationships_non_atomic(
+            spicedb::DeleteAllRequest::new((filter).clone()).with_options((options).clone()),
+        )
         .await
         .expect("delete should succeed");
 
@@ -521,7 +579,7 @@ async fn delete_relationships_with_omits_cursor_when_server_never_returns_one() 
     );
 }
 
-/// `DeleteOptions::with_cursor` seeds the very first page's `optional_cursor`
+/// `DeleteAllOptions::with_cursor` seeds the very first page's `optional_cursor`
 /// -- the resume path for a deletion left incomplete by an earlier call.
 #[tokio::test]
 async fn delete_relationships_with_cursor_option_seeds_first_page() {
@@ -530,18 +588,24 @@ async fn delete_relationships_with_cursor_option_seeds_first_page() {
     let requests = mock.delete_relationships_requests();
 
     let addr = spawn_permissions_server(mock).await;
-    let client = SpiceDBClient::new_plaintext(addr.to_string(), "token")
-        .await
-        .expect("client should connect to mock server");
+    let client = SpiceDBClient::new_plaintext(
+        addr.to_string(),
+        "token",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("client should connect to mock server");
 
     let filter = Filter::new("document");
-    let options = DeleteOptions::new().with_cursor("resume-from-here");
+    let options = DeleteAllOptions::new().with_cursor("resume-from-here");
 
     let revision = client
-        .delete_relationships_with(&filter, &options)
+        .delete_all_relationships_non_atomic(
+            spicedb::DeleteAllRequest::new((filter).clone()).with_options((options).clone()),
+        )
         .await
         .expect("delete should succeed");
-    assert_eq!(revision, "rev-final");
+    assert_eq!(revision.revision.as_ref(), "rev-final");
 
     let seen = requests.lock().unwrap().clone();
     assert_eq!(seen.len(), 1);
@@ -551,4 +615,70 @@ async fn delete_relationships_with_cursor_option_seeds_first_page() {
             token: "resume-from-here".to_string()
         })
     );
+}
+
+#[tokio::test]
+async fn delete_all_non_atomic_omits_empty_response_cursor() {
+    let mock = MockPermissionsService::new();
+    mock.push_delete_relationships_response(partial_response_with_cursor("rev-page1", Some("")));
+    mock.push_delete_relationships_response(complete_response("rev-final"));
+    let requests = mock.delete_relationships_requests();
+
+    let addr = spawn_permissions_server(mock).await;
+    let client = SpiceDBClient::new_plaintext(
+        addr.to_string(),
+        "token",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("client should connect to mock server");
+
+    let filter = Filter::new("document");
+    let options = DeleteAllOptions::new().with_page_size(std::num::NonZeroU32::new(10).unwrap());
+
+    client
+        .delete_all_relationships_non_atomic(
+            spicedb::DeleteAllRequest::new((filter).clone()).with_options((options).clone()),
+        )
+        .await
+        .expect("delete should succeed");
+
+    let seen = requests.lock().unwrap().clone();
+    assert_eq!(seen.len(), 2);
+    assert_eq!(seen[0].optional_cursor, None);
+    assert_eq!(
+        seen[1].optional_cursor, None,
+        "an empty response cursor must be omitted from the next request"
+    );
+}
+
+#[tokio::test]
+async fn delete_all_non_atomic_omits_empty_initial_cursor() {
+    let mock = MockPermissionsService::new();
+    mock.push_delete_relationships_response(complete_response("rev-final"));
+    let requests = mock.delete_relationships_requests();
+
+    let addr = spawn_permissions_server(mock).await;
+    let client = SpiceDBClient::new_plaintext(
+        addr.to_string(),
+        "token",
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("client should connect to mock server");
+
+    let filter = Filter::new("document");
+    let options = DeleteAllOptions::new().with_cursor("");
+
+    let revision = client
+        .delete_all_relationships_non_atomic(
+            spicedb::DeleteAllRequest::new((filter).clone()).with_options((options).clone()),
+        )
+        .await
+        .expect("delete should succeed");
+    assert_eq!(revision.revision.as_ref(), "rev-final");
+
+    let seen = requests.lock().unwrap().clone();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].optional_cursor, None);
 }

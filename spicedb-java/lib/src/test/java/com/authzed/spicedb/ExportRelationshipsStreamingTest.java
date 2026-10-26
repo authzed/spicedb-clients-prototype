@@ -32,7 +32,8 @@ import org.junit.jupiter.api.Test;
 class ExportRelationshipsStreamingTest {
 
   private static Relationship aRelationship(String id) {
-    return Relationship.of("document", id, "viewer", "user", "alice");
+    return Relationship.of(
+        new ObjectRef("document", id), "viewer", SubjectRef.direct(new ObjectRef("user", "alice")));
   }
 
   @Test
@@ -76,7 +77,7 @@ class ExportRelationshipsStreamingTest {
                     + "server stream to finish -- if this times out, exportRelationships is "
                     + "buffering the whole stream before yielding anything");
 
-        assertEquals("doc1", first.resourceID());
+        assertEquals("doc1", first.resource().objectId());
       }
     }
   }

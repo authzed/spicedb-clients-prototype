@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative '../lib/spicedb'
+require_relative 'support/native_helpers'
 require 'spicedb_proto'
 
 # CheckPermissionResponse#permissionship is three-valued in older client
@@ -19,13 +20,16 @@ require 'spicedb_proto'
 # use `result.has_permission?` instead of testing the result itself.
 RSpec.describe 'SpiceDB::Client check results' do
   let(:client) { SpiceDB::Client.new_plaintext('localhost:50051', 'testtoken') }
-  let(:relationship) { SpiceDB::Relationship.from_triple('document', 'doc1', 'viewer', 'user', 'alice') }
+  let(:relationship) do
+    SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'doc1'), relation: 'viewer',
+                              subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: 'alice'), relation: nil))
+  end
 
   # Stubs @proto_client.permissions.check_bulk_permissions to return a
   # CheckBulkPermissionsResponse built from the given array of
   # {permissionship:, missing_required_context: nil}. `checked_at` is set at
   # the response level (mirroring the real proto), never per-item.
-  def stub_bulk_check(pairs_config, checked_at: 'zed-token-1')
+  def stub_bulk_check(pairs_config, checked_at: SpiceDB::ZedToken.new('zed-token-1'))
     pairs = pairs_config.map do |cfg|
       item_args = { permissionship: cfg[:permissionship] }
       if cfg[:missing_required_context]
@@ -40,11 +44,14 @@ RSpec.describe 'SpiceDB::Client check results' do
 
     response = Authzed::Api::V1::CheckBulkPermissionsResponse.new(
       pairs: pairs,
-      checked_at: Authzed::Api::V1::ZedToken.new(token: checked_at)
+      checked_at: Authzed::Api::V1::ZedToken.new(token: checked_at.to_s)
     )
 
     permissions_service = double('permissions_service')
-    allow(permissions_service).to receive(:check_bulk_permissions).and_return(response)
+    allow(permissions_service).to receive(:check_bulk_permissions) do |request|
+      response.pairs.each_with_index { |pair, index| pair.request = request.items[index] }
+      response
+    end
 
     proto_client = double('proto_client', permissions: permissions_service)
     client.instance_variable_set(:@proto_client, proto_client)
@@ -62,7 +69,7 @@ RSpec.describe 'SpiceDB::Client check results' do
       it "is #{expected} for #{proto_value}" do
         stub_bulk_check([{ permissionship: proto_value }])
 
-        result = client.check_permission(SpiceDB::Consistency.full, 'view', relationship)
+        result = client.check_bulk([relationship].flatten.map { |item| permission_check(item, 'view') }, consistency: SpiceDB::Consistency.full).first
 
         expect(result.has_permission?).to eq(expected)
       end
@@ -71,7 +78,7 @@ RSpec.describe 'SpiceDB::Client check results' do
     it 'is false for a conditional permission even though the CheckResult itself is truthy' do
       stub_bulk_check([{ permissionship: :PERMISSIONSHIP_CONDITIONAL_PERMISSION }])
 
-      result = client.check_permission(SpiceDB::Consistency.full, 'view', relationship)
+      result = client.check_bulk([relationship].flatten.map { |item| permission_check(item, 'view') }, consistency: SpiceDB::Consistency.full).first
 
       # Ruby cannot override truthiness — every non-nil/false object is
       # truthy in `if`. This pins that `if result` is NOT a safe substitute
@@ -89,7 +96,7 @@ RSpec.describe 'SpiceDB::Client check results' do
       stub_bulk_check([{ permissionship: :PERMISSIONSHIP_CONDITIONAL_PERMISSION,
                          missing_required_context: %w[ip_address user_role] }])
 
-      result = client.check_permission(SpiceDB::Consistency.full, 'view', relationship)
+      result = client.check_bulk([relationship].flatten.map { |item| permission_check(item, 'view') }, consistency: SpiceDB::Consistency.full).first
 
       expect(result.missing_context).to eq(%w[ip_address user_role])
     end
@@ -97,7 +104,7 @@ RSpec.describe 'SpiceDB::Client check results' do
     it 'is empty (not nil) when the permission is unconditional' do
       stub_bulk_check([{ permissionship: :PERMISSIONSHIP_HAS_PERMISSION }])
 
-      result = client.check_permission(SpiceDB::Consistency.full, 'view', relationship)
+      result = client.check_bulk([relationship].flatten.map { |item| permission_check(item, 'view') }, consistency: SpiceDB::Consistency.full).first
 
       expect(result.missing_context).to eq([])
     end
@@ -106,22 +113,22 @@ RSpec.describe 'SpiceDB::Client check results' do
   # T3 — the checked-at token is populated from the response.
   describe '#checked_at' do
     it 'is populated from CheckBulkPermissionsResponse#checked_at' do
-      stub_bulk_check([{ permissionship: :PERMISSIONSHIP_HAS_PERMISSION }], checked_at: 'zed-token-abc')
+      stub_bulk_check([{ permissionship: :PERMISSIONSHIP_HAS_PERMISSION }], checked_at: SpiceDB::ZedToken.new('zed-token-abc'))
 
-      result = client.check_permission(SpiceDB::Consistency.full, 'view', relationship)
+      result = client.check_bulk([relationship].flatten.map { |item| permission_check(item, 'view') }, consistency: SpiceDB::Consistency.full).first
 
-      expect(result.checked_at).to eq('zed-token-abc')
+      expect(result.checked_at).to eq(SpiceDB::ZedToken.new('zed-token-abc'))
     end
 
     it 'propagates the single response-level token to every result in a batch, since checked_at is not per-item' do
       stub_bulk_check(
         [{ permissionship: :PERMISSIONSHIP_HAS_PERMISSION }, { permissionship: :PERMISSIONSHIP_NO_PERMISSION }],
-        checked_at: 'zed-token-batch'
+        checked_at: SpiceDB::ZedToken.new('zed-token-batch')
       )
 
-      results = client.check_permissions(SpiceDB::Consistency.full, 'view', relationship, relationship)
+      results = client.check_bulk([relationship, relationship].flatten.map { |item| permission_check(item, 'view') }, consistency: SpiceDB::Consistency.full)
 
-      expect(results.map(&:checked_at)).to eq(%w[zed-token-batch zed-token-batch])
+      expect(results.map(&:checked_at)).to eq([SpiceDB::ZedToken.new('zed-token-batch')] * 2)
     end
   end
 
@@ -129,7 +136,7 @@ RSpec.describe 'SpiceDB::Client check results' do
     it 'returns an Array<SpiceDB::CheckResult>, not booleans' do
       stub_bulk_check([{ permissionship: :PERMISSIONSHIP_HAS_PERMISSION }])
 
-      results = client.check_permissions(SpiceDB::Consistency.full, 'view', relationship)
+      results = client.check_bulk([relationship].flatten.map { |item| permission_check(item, 'view') }, consistency: SpiceDB::Consistency.full)
 
       expect(results).to all(be_a(SpiceDB::CheckResult))
     end
@@ -140,7 +147,8 @@ RSpec.describe 'SpiceDB::Client check results' do
       stub_bulk_check([{ permissionship: :PERMISSIONSHIP_CONDITIONAL_PERMISSION },
                        { permissionship: :PERMISSIONSHIP_NO_PERMISSION }])
 
-      result = client.check_any(SpiceDB::Consistency.full, 'view', relationship, relationship)
+      result = client.check_bulk([relationship, relationship].flatten.map { |item| permission_check(item, 'view') },
+                                 consistency: SpiceDB::Consistency.full).any?(&:has_permission?)
 
       expect(result).to be false
     end
@@ -149,7 +157,8 @@ RSpec.describe 'SpiceDB::Client check results' do
       stub_bulk_check([{ permissionship: :PERMISSIONSHIP_NO_PERMISSION },
                        { permissionship: :PERMISSIONSHIP_HAS_PERMISSION }])
 
-      result = client.check_any(SpiceDB::Consistency.full, 'view', relationship, relationship)
+      result = client.check_bulk([relationship, relationship].flatten.map { |item| permission_check(item, 'view') },
+                                 consistency: SpiceDB::Consistency.full).any?(&:has_permission?)
 
       expect(result).to be true
     end
@@ -157,7 +166,8 @@ RSpec.describe 'SpiceDB::Client check results' do
     it 'still returns a plain Boolean (unaffected by the CheckResult change)' do
       stub_bulk_check([{ permissionship: :PERMISSIONSHIP_HAS_PERMISSION }])
 
-      result = client.check_any(SpiceDB::Consistency.full, 'view', relationship)
+      result = client.check_bulk([relationship].flatten.map { |item| permission_check(item, 'view') },
+                                 consistency: SpiceDB::Consistency.full).any?(&:has_permission?)
 
       expect(result).to be(true).or be(false)
       expect(result).not_to be_a(SpiceDB::CheckResult)
@@ -169,7 +179,8 @@ RSpec.describe 'SpiceDB::Client check results' do
       stub_bulk_check([{ permissionship: :PERMISSIONSHIP_HAS_PERMISSION },
                        { permissionship: :PERMISSIONSHIP_CONDITIONAL_PERMISSION }])
 
-      result = client.check_all(SpiceDB::Consistency.full, 'view', relationship, relationship)
+      result = client.check_bulk([relationship, relationship].flatten.map { |item| permission_check(item, 'view') },
+                                 consistency: SpiceDB::Consistency.full).all?(&:has_permission?)
 
       expect(result).to be false
     end
@@ -178,7 +189,8 @@ RSpec.describe 'SpiceDB::Client check results' do
       stub_bulk_check([{ permissionship: :PERMISSIONSHIP_HAS_PERMISSION },
                        { permissionship: :PERMISSIONSHIP_HAS_PERMISSION }])
 
-      result = client.check_all(SpiceDB::Consistency.full, 'view', relationship, relationship)
+      result = client.check_bulk([relationship, relationship].flatten.map { |item| permission_check(item, 'view') },
+                                 consistency: SpiceDB::Consistency.full).all?(&:has_permission?)
 
       expect(result).to be true
     end
@@ -195,7 +207,7 @@ RSpec.describe 'SpiceDB::Client check results' do
     it 'is false, not vacuously true, for zero relationships' do
       stub_bulk_check([])
 
-      result = client.check_all(SpiceDB::Consistency.full, 'view')
+      result = !client.check_bulk([], consistency: SpiceDB::Consistency.full).empty?
 
       expect(result).to be false
     end

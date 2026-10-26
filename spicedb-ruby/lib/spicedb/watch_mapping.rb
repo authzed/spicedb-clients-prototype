@@ -21,16 +21,18 @@ module SpiceDB
     # compatibility) -- a non-empty list is the exact set requested, so
     # asking for checkpoints must also spell out relationship updates or the
     # server would stop sending them.
-    def watch_request(object_types, start_revision, include_checkpoints)
-      req_args = { optional_object_types: object_types }
-      req_args[:optional_start_cursor] = Authzed::Api::V1::ZedToken.new(token: start_revision) if start_revision && !start_revision.empty?
-      if include_checkpoints
-        req_args[:optional_update_kinds] = %i[
-          WATCH_KIND_INCLUDE_RELATIONSHIP_UPDATES
-          WATCH_KIND_INCLUDE_CHECKPOINTS
-        ]
-      end
-      Authzed::Api::V1::WatchRequest.new(**req_args)
+    def watch_request(object_types, start_revision, content, filters: [])
+      raise InvalidArgumentError, 'watch object_types and filters are mutually exclusive' unless object_types.empty? || filters.empty?
+      raise InvalidArgumentError, 'watch content must be a nonempty array' unless content.is_a?(Array) && !content.empty?
+
+      kinds = { WatchContent::RELATIONSHIPS => :WATCH_KIND_INCLUDE_RELATIONSHIP_UPDATES,
+                WatchContent::CHECKPOINTS => :WATCH_KIND_INCLUDE_CHECKPOINTS,
+                WatchContent::SCHEMA => :WATCH_KIND_INCLUDE_SCHEMA_UPDATES }
+      Authzed::Api::V1::WatchRequest.new(
+        optional_object_types: object_types, optional_relationship_filters: filters.map { |filter| filter_to_proto(filter) },
+        optional_start_cursor: token_to_proto(start_revision),
+        optional_update_kinds: content.map { |choice| kinds.fetch(WatchContent.validate(choice)) }.uniq
+      )
     end
 
     # Maps a proto WatchResponse to a native WatchEvent: the response-level
@@ -40,10 +42,11 @@ module SpiceDB
       WatchEvent.new(
         updates: resp.updates.map { |u| watch_update_from_proto(u) },
         # Message-typed proto fields are nil when unset (unlike scalar
-        # fields), so guard with `&.` -- ZedTokens are documented as
-        # opaque, never-nil Strings, so fall back to ''.
-        changes_through: resp.changes_through&.token || '',
-        is_checkpoint: resp.is_checkpoint
+        # fields), so preserve absence as nil.
+        changes_through: ZedToken.from_proto(resp.changes_through),
+        is_checkpoint: resp.is_checkpoint, schema_updated: resp.schema_updated,
+        metadata: resp.optional_transaction_metadata && struct_to_caveat_context(resp.optional_transaction_metadata),
+        full_revision_metadata: resp.full_revision_metadata.map { |metadata| struct_to_caveat_context(metadata) }
       )
     end
 

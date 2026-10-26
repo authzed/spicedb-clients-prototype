@@ -7,7 +7,7 @@ namespace SpiceDB.Client.Tests;
 public class TransactionTests
 {
     private static Relationship TestRel(string id = "doc1") =>
-        Relationship.FromTriple("document", id, "viewer", "user", "alice");
+        new Relationship(new ObjectRef("document", id), "viewer", new SubjectRef(new ObjectRef("user", "alice")));
 
     [Fact]
     public void Create_AddsCreateOperation()
@@ -68,7 +68,7 @@ public class TransactionTests
     public void MustNotMatch_AddsPrecondition()
     {
         var txn = new Transaction();
-        var filter = new Filter("document").WithResourceID("doc1");
+        var filter = new Filter("document").WithResourceId("doc1");
         txn.MustNotMatch(filter);
 
         txn.Preconditions.Should().HaveCount(1);
@@ -81,7 +81,7 @@ public class TransactionTests
     public void MustMatch_AddsPrecondition()
     {
         var txn = new Transaction();
-        var filter = new Filter("document").WithResourceID("doc1");
+        var filter = new Filter("document").WithResourceId("doc1");
         txn.MustMatch(filter);
 
         txn.Preconditions.Should().HaveCount(1);
@@ -94,7 +94,7 @@ public class TransactionTests
     {
         var txn = new Transaction();
         var act = () => txn.Create(null!);
-        act.Should().Throw<ArgumentNullException>();
+        act.Should().Throw<InvalidArgumentException>();
     }
 
     [Fact]
@@ -102,7 +102,7 @@ public class TransactionTests
     {
         var txn = new Transaction();
         var act = () => txn.Touch(null!);
-        act.Should().Throw<ArgumentNullException>();
+        act.Should().Throw<InvalidArgumentException>();
     }
 
     [Fact]
@@ -110,7 +110,7 @@ public class TransactionTests
     {
         var txn = new Transaction();
         var act = () => txn.Delete(null!);
-        act.Should().Throw<ArgumentNullException>();
+        act.Should().Throw<InvalidArgumentException>();
     }
 
     [Fact]
@@ -118,7 +118,7 @@ public class TransactionTests
     {
         var txn = new Transaction();
         var act = () => txn.MustNotMatch(null!);
-        act.Should().Throw<ArgumentNullException>();
+        act.Should().Throw<InvalidArgumentException>();
     }
 
     [Fact]
@@ -126,7 +126,7 @@ public class TransactionTests
     {
         var txn = new Transaction();
         var act = () => txn.MustMatch(null!);
-        act.Should().Throw<ArgumentNullException>();
+        act.Should().Throw<InvalidArgumentException>();
     }
 
     [Fact]
@@ -143,9 +143,9 @@ public class TransactionTests
     {
         var txn = new Transaction();
         txn.Create(TestRel("doc1"));
-        txn.MustNotMatch(new Filter("document").WithResourceID("doc1").WithRelation("viewer"));
+        txn.MustNotMatch(new Filter("document").WithResourceId("doc1").WithRelation("viewer"));
         txn.Touch(TestRel("doc2"));
-        txn.MustMatch(new Filter("document").WithResourceID("doc2"));
+        txn.MustMatch(new Filter("document").WithResourceId("doc2"));
 
         txn.V1Updates.Should().HaveCount(2);
         txn.Preconditions.Should().HaveCount(2);

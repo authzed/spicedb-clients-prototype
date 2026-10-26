@@ -3,10 +3,10 @@ package com.authzed.spicedb.examples;
 import static com.authzed.spicedb.Consistency.*;
 import static org.assertj.core.api.Assertions.*;
 
+import com.authzed.spicedb.*;
 import com.authzed.spicedb.CheckOptions;
 import com.authzed.spicedb.CheckResult;
 import com.authzed.spicedb.Filter;
-import com.authzed.spicedb.LookupResult;
 import com.authzed.spicedb.Relationship;
 import com.authzed.spicedb.Transaction;
 import java.util.List;
@@ -57,7 +57,10 @@ class ConditionalCheckTest extends SpiceDBIntegrationTest {
     // The caveat context is left empty at write time — "now" is not supplied here, and (see the
     // test below) not supplied at check time either, so the server cannot evaluate `now < 100`.
     txn.touch(
-        Relationship.of("doc", "firstdoc", "viewer", "user", "alice")
+        Relationship.of(
+                new ObjectRef("doc", "firstdoc"),
+                "viewer",
+                SubjectRef.direct(new ObjectRef("user", "alice")))
             .withCaveat("active", Map.of()));
     client.write(txn);
   }
@@ -66,21 +69,24 @@ class ConditionalCheckTest extends SpiceDBIntegrationTest {
   void restoreSharedSchema() {
     // WriteSchema refuses to drop the `doc` definition while a relationship exists under it, so
     // the relationship must be cleared first.
-    client.deleteRelationships(Filter.of("doc"));
+    client.deleteAllRelationshipsNonAtomic(Filter.of("doc"));
     client.writeSchema(SCHEMA);
   }
 
   @Test
   void check_with_no_context_is_conditional_and_not_a_grant() {
     CheckResult result =
-        client.checkPermission(
-            full(), "view", Relationship.of("doc", "firstdoc", "view", "user", "alice"));
+        client.check(
+            new PermissionCheck(
+                new ObjectRef("doc", "firstdoc"),
+                "view",
+                SubjectRef.direct(new ObjectRef("user", "alice")),
+                full()));
 
-    assertThat(result.permissionship())
-        .isEqualTo(LookupResult.Permissionship.CONDITIONAL_PERMISSION);
+    assertThat(result.permissionship()).isEqualTo(Permissionship.CONDITIONAL_PERMISSION);
     assertThat(result.hasPermission()).isFalse();
     assertThat(result.missingContext()).containsExactly("now");
-    assertThat(result.checkedAt()).isNotEmpty();
+    assertThat(result.checkedAt().value()).isNotEmpty();
   }
 
   /**
@@ -92,33 +98,40 @@ class ConditionalCheckTest extends SpiceDBIntegrationTest {
   @Test
   void check_with_context_supplied_at_check_time_resolves_to_a_grant() {
     CheckResult result =
-        client.checkPermissionWithOptions(
-            full(),
-            "view",
-            Relationship.of("doc", "firstdoc", "view", "user", "alice"),
-            CheckOptions.none().withContext(Map.of("now", 42)));
+        client.check(
+            new PermissionCheck(
+                new ObjectRef("doc", "firstdoc"),
+                "view",
+                SubjectRef.direct(new ObjectRef("user", "alice")),
+                full()),
+            CheckOptions.builder().context(Map.of("now", 42)).build());
 
-    assertThat(result.permissionship()).isEqualTo(LookupResult.Permissionship.HAS_PERMISSION);
+    assertThat(result.permissionship()).isEqualTo(Permissionship.HAS_PERMISSION);
     assertThat(result.hasPermission()).isTrue();
     assertThat(result.missingContext()).isEmpty();
-    assertThat(result.checkedAt()).isNotEmpty();
+    assertThat(result.checkedAt().value()).isNotEmpty();
   }
 
   /**
    * Bonus live proof of the merge rule (C3) against a real caveat evaluation, not just a captured
    * request: a call-level default of {@code now=200} fails the caveat ({@code now < 100}), but the
    * checked relationship overrides it with its own {@code now=42} via {@link
-   * Relationship#withCheckContext}, which must win per-key over the call-level default.
+   * PermissionCheck#withContext}, which must win per-key over the call-level default.
    */
   @Test
   void check_context_merge_item_override_wins_over_call_level_default() {
-    Relationship overridden =
-        Relationship.of("doc", "firstdoc", "view", "user", "alice")
-            .withCheckContext(Map.of("now", 42));
+    PermissionCheck overridden =
+        new PermissionCheck(
+            new ObjectRef("doc", "firstdoc"),
+            "view",
+            SubjectRef.direct(new ObjectRef("user", "alice")),
+            full(),
+            Map.of("now", 42));
 
     List<CheckResult> results =
-        client.checkPermissionsWithOptions(
-            full(), "view", CheckOptions.none().withContext(Map.of("now", 200)), overridden);
+        client.checkBulk(
+            java.util.List.of(overridden),
+            CheckOptions.builder().context(Map.of("now", 200)).build());
 
     assertThat(results).hasSize(1);
     assertThat(results.get(0).hasPermission())

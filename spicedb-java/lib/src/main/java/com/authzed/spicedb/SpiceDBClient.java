@@ -14,7 +14,6 @@ import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.protobuf.StatusProto;
 import io.grpc.stub.MetadataUtils;
-import io.grpc.stub.StreamObserver;
 import java.net.URI;
 import java.time.Duration;
 import java.time.Instant;
@@ -24,23 +23,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 
-/**
- * Idiomatic Java client for SpiceDB.
- *
- * <p>Implements {@link AutoCloseable} for use with try-with-resources. All streaming methods return
- * {@link Stream} instances that should also be closed when done.
- *
- * <p>Use the static factory methods to create instances:
- *
- * <pre>{@code
- * try (var client = SpiceDBClient.createPlaintext("localhost:50051", "testtoken")) {
- *     CheckResult result = client.checkPermission(
- *         Consistency.full(), "view",
- *         Relationship.of("document", "doc1", "viewer", "user", "alice"));
- *     boolean allowed = result.hasPermission();
- * }
- * }</pre>
- */
 public final class SpiceDBClient implements AutoCloseable {
 
   private static final int DEFAULT_READ_PAGE_SIZE = 512;
@@ -49,40 +31,11 @@ public final class SpiceDBClient implements AutoCloseable {
   private static final int DEFAULT_IMPORT_BATCH_SIZE = 1_000;
   private static final int DEFAULT_EXPORT_PAGE_SIZE = 512;
 
-  /**
-   * How many items go into one {@code CheckBulkPermissions} request.
-   *
-   * <p>SpiceDB rejects a request carrying more items than {@code maxBulkCheckCount} — 10,000, a
-   * hard-coded const in {@code internal/services/v1/bulkcheck.go} with no flag to raise or lower it
-   * — with {@code ERROR_REASON_TOO_MANY_CHECKS_IN_REQUEST}. Nothing in the proto enforces this:
-   * {@code CheckBulkPermissionsRequest.items} carries only a per-item {@code required} rule, not a
-   * collection-size rule, so the limit lives solely in server code and a client that forwards the
-   * caller's array unchanged fails on large inputs. 1,000 leaves ten times' headroom and matches
-   * {@link #DEFAULT_IMPORT_BATCH_SIZE} and the other clients' check batch size.
-   */
   private static final int DEFAULT_CHECK_BATCH_SIZE = 1_000;
 
   private static final int MAX_RETRIES = 4;
   private static final long INITIAL_BACKOFF_MS = 100;
 
-  /**
-   * Applied to every unary call that does not pass its own {@code timeout} override.
-   *
-   * <p>Mirrors {@code authzed-node}'s {@code DEFAULT_DEADLINE_MS = 30_000} (its comment cites
-   * {@code grpc/grpc-node#541}, a known gRPC failure mode where a channel that accepts a connection
-   * but never answers produces no error at all). Without a finite default, a wedged SpiceDB hangs
-   * every caller that didn't opt in to a timeout -- in practice, most callers -- forever: the
-   * connection looks fine at the transport level, so nothing ever times out and nothing is ever
-   * produced to retry. See root DESIGN.md, "RULE: A unary call must have a deadline".
-   *
-   * <p>Deliberately NOT applied to server-streaming calls ({@link #readRelationships}, {@link
-   * #lookupResources}, {@link #lookupSubjects}, {@link #updates}, {@link #exportRelationships}) --
-   * those are long-lived by design, and applying this default to them would make the stream itself
-   * the outage -- NOR to the client-streaming {@link #importRelationships(Iterable)}, whose
-   * duration scales with the size of the caller's dataset rather than server latency, so no fixed
-   * default is correct for it either (see DESIGN.md, "Streaming calls MUST NOT inherit the unary
-   * default").
-   */
   public static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(30);
 
   private final ManagedChannel channel;
@@ -93,11 +46,6 @@ public final class SpiceDBClient implements AutoCloseable {
   private final PermissionsServiceGrpc.PermissionsServiceStub permissionsAsyncStub;
   private final Duration defaultTimeout;
 
-  /**
-   * The same channel, wrapped so every call made through it carries this client's bearer metadata.
-   * Handed out by {@link #rawChannel()}; see there for why it is the authenticated channel rather
-   * than the bare one.
-   */
   private final Channel authenticatedChannel;
 
   private SpiceDBClient(ManagedChannel channel, Metadata metadata) {
@@ -106,6 +54,8 @@ public final class SpiceDBClient implements AutoCloseable {
 
   private SpiceDBClient(ManagedChannel channel, Metadata metadata, Duration defaultTimeout) {
     this.channel = channel;
+    if (defaultTimeout == null || defaultTimeout.isZero() || defaultTimeout.isNegative())
+      throw new InvalidArgumentException("default timeout must be positive");
     this.defaultTimeout = defaultTimeout;
     this.permissionsStub =
         PermissionsServiceGrpc.newBlockingStub(channel)
@@ -126,140 +76,59 @@ public final class SpiceDBClient implements AutoCloseable {
         ClientInterceptors.intercept(channel, MetadataUtils.newAttachHeadersInterceptor(metadata));
   }
 
-  /**
-   * Creates a client with an insecure (plaintext) connection. Use this for testing only — the lack
-   * of TLS is made obvious by the name.
-   *
-   * <p>By itself, this only works against a loopback {@code endpoint} (localhost, 127.0.0.0/8, ::1,
-   * or a unix socket target) -- see root DESIGN.md, "RULE: Credentials over insecure transport
-   * require an explicit opt-in". For a non-loopback endpoint, use {@link #createPlaintext(String,
-   * String, boolean)}.
-   */
   public static SpiceDBClient createPlaintext(String endpoint, String presharedKey) {
-    return createPlaintext(endpoint, presharedKey, DEFAULT_TIMEOUT, false);
+    return createPlaintext(endpoint, presharedKey, ClientOptions.builder().build());
   }
 
   /**
-   * As {@link #createPlaintext(String, String)}, with an explicit opt-in permitting a non-loopback
-   * {@code endpoint}.
-   *
-   * @param allowInsecureRemoteCredentials explicit, separately named opt-in required before this
-   *     plaintext connection may target a non-loopback {@code endpoint}. Named and separate from
-   *     the choice to call this method at all, so a reader cannot mistake it for a default: pass
-   *     {@code true} only if you genuinely mean to send a bearer token in cleartext to a remote
-   *     host.
-   * @throws IllegalArgumentException if {@code endpoint} is not loopback and {@code
-   *     allowInsecureRemoteCredentials} is false -- thrown before any channel is created.
+   * Creates an authenticated plaintext client. Remote endpoints require the explicit opt-in {@code
+   * ClientOptions.builder().remotePlaintextCredentials(RemotePlaintextCredentials.ALLOW)}.
    */
   public static SpiceDBClient createPlaintext(
-      String endpoint, String presharedKey, boolean allowInsecureRemoteCredentials) {
-    return createPlaintext(endpoint, presharedKey, DEFAULT_TIMEOUT, allowInsecureRemoteCredentials);
+      String endpoint, String presharedKey, ClientOptions options) {
+    if (options == null) throw new InvalidArgumentException("options must not be null");
+    if (options.caCertificate() != null
+        || options.clientCertificate() != null
+        || options.clientKey() != null)
+      throw new InvalidArgumentException("TLS certificates cannot be used with plaintext");
+    requireInsecureTransportAllowed(
+        endpoint, true, options.remotePlaintextCredentials() == RemotePlaintextCredentials.ALLOW);
+    return new SpiceDBClient(
+        ManagedChannelBuilder.forTarget(endpoint).usePlaintext().build(),
+        bearerMetadata(presharedKey),
+        options.defaultTimeout());
   }
 
-  /**
-   * Creates a client with an insecure (plaintext) connection and a client-wide {@code
-   * defaultTimeout} applied to every unary call that doesn't pass its own {@code timeout} override
-   * (see {@link #DEFAULT_TIMEOUT}). Use this for testing only — the lack of TLS is made obvious by
-   * the name.
-   *
-   * <p>By itself, this only works against a loopback {@code endpoint} (localhost, 127.0.0.0/8, ::1,
-   * or a unix socket target) -- see root DESIGN.md, "RULE: Credentials over insecure transport
-   * require an explicit opt-in". For a non-loopback endpoint, use {@link #createPlaintext(String,
-   * String, Duration, boolean)}.
-   */
-  public static SpiceDBClient createPlaintext(
-      String endpoint, String presharedKey, Duration defaultTimeout) {
-    return createPlaintext(endpoint, presharedKey, defaultTimeout, false);
-  }
-
-  /**
-   * As {@link #createPlaintext(String, String, Duration)}, with an explicit opt-in permitting a
-   * non-loopback {@code endpoint}. See {@link #createPlaintext(String, String, boolean)} for what
-   * {@code allowInsecureRemoteCredentials} means.
-   *
-   * @throws IllegalArgumentException if {@code endpoint} is not loopback and {@code
-   *     allowInsecureRemoteCredentials} is false -- thrown before any channel is created.
-   */
-  public static SpiceDBClient createPlaintext(
-      String endpoint,
-      String presharedKey,
-      Duration defaultTimeout,
-      boolean allowInsecureRemoteCredentials) {
-    requireInsecureTransportAllowed(endpoint, true, allowInsecureRemoteCredentials);
-    ManagedChannel channel = ManagedChannelBuilder.forTarget(endpoint).usePlaintext().build();
-    return new SpiceDBClient(channel, bearerMetadata(presharedKey), defaultTimeout);
-  }
-
-  /**
-   * Creates a client using the system's TLS certificate pool. Use this for production connections.
-   */
   public static SpiceDBClient createSystemTls(String endpoint, String presharedKey) {
-    return createSystemTls(endpoint, presharedKey, DEFAULT_TIMEOUT);
+    return createSystemTls(endpoint, presharedKey, ClientOptions.builder().build());
   }
 
-  /**
-   * Creates a client using the system's TLS certificate pool and a client-wide {@code
-   * defaultTimeout} applied to every unary call that doesn't pass its own {@code timeout} override
-   * (see {@link #DEFAULT_TIMEOUT}). Use this for production connections.
-   */
   public static SpiceDBClient createSystemTls(
-      String endpoint, String presharedKey, Duration defaultTimeout) {
-    ManagedChannel channel =
-        ManagedChannelBuilder.forTarget(endpoint).useTransportSecurity().build();
-    return new SpiceDBClient(channel, bearerMetadata(presharedKey), defaultTimeout);
+      String endpoint, String presharedKey, ClientOptions options) {
+    if (options == null) throw new InvalidArgumentException("options must not be null");
+    var builder = io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder.forTarget(endpoint);
+    try {
+      var tls = io.grpc.netty.shaded.io.grpc.netty.GrpcSslContexts.forClient();
+      if (options.caCertificate() != null) tls.trustManager(options.caCertificate().toFile());
+      if (options.clientCertificate() != null)
+        tls.keyManager(options.clientCertificate().toFile(), options.clientKey().toFile());
+      builder.sslContext(tls.build());
+    } catch (java.io.IOException | IllegalArgumentException e) {
+      throw new InvalidArgumentException("invalid TLS configuration", e);
+    }
+    return new SpiceDBClient(
+        builder.build(), bearerMetadata(presharedKey), options.defaultTimeout());
   }
 
   /**
-   * Creates a client with custom options.
-   *
-   * <p>{@link ClientOption}s may include advanced escape-hatch options that expose the underlying
-   * gRPC channel builder for configuration not covered by the primary API. Most users should prefer
-   * {@link #createPlaintext} or {@link #createSystemTls}.
-   *
-   * <p><b>Security note (root DESIGN.md, "RULE: Credentials over insecure transport require an
-   * explicit opt-in"):</b> this method refuses to combine {@link #withInsecure()} with a
-   * non-loopback {@code endpoint} unless {@link #allowInsecureRemoteCredentials()} is also among
-   * {@code options} -- but it recognizes only those two named options themselves, by identity, not
-   * by inspecting what any option actually does to the builder ({@code
-   * io.grpc.ManagedChannelBuilder} exposes no way to read back whether plaintext was configured). A
-   * custom {@link ClientOption} lambda that calls {@code builder.usePlaintext()} directly bypasses
-   * this guard entirely and is not detected -- that lambda is the raw escape hatch documented on
-   * {@link ClientOption#apply}; the full credential-safety burden for what it does to the builder
-   * falls on whoever writes it.
-   *
-   * @param endpoint the SpiceDB endpoint
-   * @param presharedKey the bearer token
-   * @param options additional configuration options
+   * Advanced transport configuration. Custom options can supersede TLS assumptions; callers own
+   * their safety.
    */
   public static SpiceDBClient create(
       String endpoint, String presharedKey, ClientOption... options) {
-    return create(endpoint, presharedKey, DEFAULT_TIMEOUT, options);
+    return create(endpoint, presharedKey, DEFAULT_TIMEOUT, null, options);
   }
 
-  /**
-   * Creates a client with custom options and a client-wide {@code defaultTimeout} applied to every
-   * unary call that doesn't pass its own {@code timeout} override (see {@link #DEFAULT_TIMEOUT}).
-   *
-   * <p>See {@link #create(String, String, ClientOption...)} for the security note on what this
-   * guard can and cannot see among custom {@code options}.
-   *
-   * @param endpoint the SpiceDB endpoint
-   * @param presharedKey the bearer token
-   * @param defaultTimeout the client-wide default unary-call timeout
-   * @param options additional configuration options
-   */
-  public static SpiceDBClient create(
-      String endpoint, String presharedKey, Duration defaultTimeout, ClientOption... options) {
-    return create(endpoint, presharedKey, defaultTimeout, null, options);
-  }
-
-  /**
-   * Test-only seam: as {@link #create(String, String, Duration, ClientOption...)}, but lets a
-   * caller (the test source set) override the underlying {@link ManagedChannelBuilder} -- e.g. with
-   * an in-process or a real local transport -- while {@code endpoint} (what the guard below
-   * actually evaluates) stays independent and can be an arbitrary non-loopback literal.
-   * Package-private: not part of the public API.
-   */
   static SpiceDBClient create(
       String endpoint,
       String presharedKey,
@@ -291,43 +160,17 @@ public final class SpiceDBClient implements AutoCloseable {
     return new SpiceDBClient(builder.build(), bearerMetadata(presharedKey), defaultTimeout);
   }
 
-  /**
-   * Test-only factory that wires a client directly to a pre-built {@link ManagedChannel} (e.g. an
-   * in-process transport for tests). Package-private: not part of the public API surface.
-   */
   static SpiceDBClient forChannel(ManagedChannel channel) {
     return new SpiceDBClient(channel, new Metadata());
   }
 
-  /**
-   * Test-only factory: as {@link #forChannel(ManagedChannel)}, with an explicit {@code
-   * defaultTimeout}. Package-private: not part of the public API surface.
-   */
   static SpiceDBClient forChannel(ManagedChannel channel, Duration defaultTimeout) {
     return new SpiceDBClient(channel, new Metadata(), defaultTimeout);
   }
 
-  /** Functional option for customizing the client. */
   @FunctionalInterface
   public interface ClientOption {
-    /**
-     * Applies this option to the underlying gRPC {@link ManagedChannelBuilder}.
-     *
-     * <p><b>Advanced escape hatch:</b> this method exposes {@code io.grpc.ManagedChannelBuilder}
-     * directly for configuration not covered by the primary API. Most users should prefer {@link
-     * #createPlaintext} or {@link #createSystemTls} and the standard {@code withInsecure()} option.
-     *
-     * <p><b>Security note:</b> {@link #create}'s insecure-transport guard (root DESIGN.md, "RULE:
-     * Credentials over insecure transport require an explicit opt-in") only recognizes {@code
-     * withInsecure()}/{@code allowInsecureRemoteCredentials()} by identity, because {@code
-     * ManagedChannelBuilder} has no public getter to read back whether a given option called {@code
-     * usePlaintext()}. A custom implementation of this method that calls {@code
-     * builder.usePlaintext()} is invisible to that guard -- it can send a bearer token to any host
-     * in cleartext with no refusal at all. Do not implement this method to toggle plaintext
-     * yourself; use {@code withInsecure()}/{@code allowInsecureRemoteCredentials()} instead.
-     *
-     * @param builder the channel builder to configure
-     */
+
     void apply(ManagedChannelBuilder<?> builder);
   }
 
@@ -340,69 +183,14 @@ public final class SpiceDBClient implements AutoCloseable {
   private static final ClientOption INSECURE_OPTION = ManagedChannelBuilder::usePlaintext;
   private static final ClientOption ALLOW_INSECURE_REMOTE_CREDENTIALS_OPTION = builder -> {};
 
-  /**
-   * Option to disable TLS (plaintext). Use only for testing.
-   *
-   * <p>By itself, this only permits a plaintext connection to a loopback endpoint (localhost,
-   * 127.0.0.0/8, ::1, or a unix socket target) -- see root DESIGN.md, "RULE: Credentials over
-   * insecure transport require an explicit opt-in". Combine with {@link
-   * #allowInsecureRemoteCredentials()} for a non-loopback endpoint.
-   *
-   * <p>This guard only fires when {@code withInsecure()} itself is passed to {@link #create}. A
-   * custom {@link ClientOption} that calls {@code builder.usePlaintext()} directly is a different,
-   * undetected path to the same insecure state -- see the security note on {@link
-   * ClientOption#apply}.
-   */
   public static ClientOption withInsecure() {
     return INSECURE_OPTION;
   }
 
-  /**
-   * Explicit, separately named opt-in permitting {@link #withInsecure()} to target a non-loopback
-   * endpoint via {@link #create}. Named and separate from {@link #withInsecure()} on purpose: root
-   * DESIGN.md, "RULE: Credentials over insecure transport require an explicit opt-in" requires an
-   * option a reader cannot mistake for a default. Pass this only if you genuinely mean to send a
-   * bearer token in cleartext to a remote host.
-   */
   public static ClientOption allowInsecureRemoteCredentials() {
     return ALLOW_INSECURE_REMOTE_CREDENTIALS_OPTION;
   }
 
-  /**
-   * Reports whether the connection this client would actually open for {@code endpoint} terminates
-   * on a loopback destination: the literal hostname "localhost", an IP in 127.0.0.0/8, the IPv6
-   * loopback ::1, or a unix domain socket target (a "unix:" prefix). A unix socket never leaves the
-   * host's kernel, so it is loopback for this check even though it has no IP at all.
-   *
-   * <p>That wording is deliberate. This method does not answer "does this string look like it names
-   * a loopback host"; it answers "will the transport dial loopback". Those are the same question
-   * only if this method and the transport agree on where the host ends and the rest of the target
-   * begins -- and a hand-rolled string split will always disagree with a URI parser somewhere. It
-   * used to: given {@code "127.0.0.1:443@evil.com"} a last-colon split yields host "127.0.0.1" and
-   * reports loopback, while grpc-java's {@code DnsNameResolver} derives its host as {@code
-   * URI.create("//" + name).getHost()} -- which reads "127.0.0.1:443" as URI <i>userinfo</i> and
-   * returns "evil.com", then resolves and connects there on the default port (an RPC against {@code
-   * "127.0.0.1:443@evil.invalid"} fails with "Unable to resolve host evil.invalid", naming the host
-   * it actually went looking for). So the bearer token went to evil.com in cleartext with this
-   * method reporting "loopback", and the {@code :authority} header carried the whole undivided
-   * string, hiding it.
-   *
-   * <p>So the host is derived with the same {@code URI.create("//" + …).getHost()} expression
-   * {@code DnsNameResolver} itself uses. There is one parse, so guard and transport cannot
-   * disagree. Before that, anything that could move the authority under URI parsing ({@code @},
-   * {@code /}, {@code ?}, {@code #}, whitespace) is refused outright: a legitimate SpiceDB target
-   * contains none of those, and failing closed on a weird endpoint is the correct trade for a
-   * credential leak.
-   *
-   * <p>This is the exemption in root DESIGN.md, "RULE: Credentials over insecure transport require
-   * an explicit opt-in": loopback is the reason a plaintext connection exists at all (local
-   * development, docker-compose, CI), so it must keep working with no extra ceremony.
-   *
-   * <p>Never performs a DNS lookup: a numeric IPv4 literal is parsed by hand, an IPv6-shaped
-   * literal (recognized by containing a ':', which no real hostname ever does) is handed to {@link
-   * java.net.InetAddress#getByName}, which the JDK resolves purely by parsing for a literal
-   * address, and anything else is treated as not loopback without ever consulting a resolver.
-   */
   static boolean isLoopbackEndpoint(String endpoint) {
     // Checked first, and only on the raw string: a unix target is not a URI authority at all (it
     // carries a filesystem path, so it legitimately contains the '/' the reserved-character check
@@ -479,17 +267,6 @@ public final class SpiceDBClient implements AutoCloseable {
   private static final java.util.regex.Pattern IPV4_LITERAL =
       java.util.regex.Pattern.compile("^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}$");
 
-  /**
-   * Refuses an insecure connection to a non-loopback endpoint. See root DESIGN.md, "RULE:
-   * Credentials over insecure transport require an explicit opt-in". Call this before creating any
-   * channel -- a rejected combination must never get far enough to put a bearer token on the wire.
-   *
-   * @throws InvalidArgumentException if {@code insecure} is true, {@code endpoint} is not loopback,
-   *     and {@code allowInsecureRemoteCredentials} is false. This is a caller argument refused
-   *     before any connection exists, so it takes the same type as every other such refusal in this
-   *     client -- see root DESIGN.md, "RULE: Credentials over insecure transport require an
-   *     explicit opt-in", clause 4.
-   */
   private static void requireInsecureTransportAllowed(
       String endpoint, boolean insecure, boolean allowInsecureRemoteCredentials) {
     if (insecure && !allowInsecureRemoteCredentials && !isLoopbackEndpoint(endpoint)) {
@@ -498,749 +275,480 @@ public final class SpiceDBClient implements AutoCloseable {
               + "non-loopback endpoint \""
               + endpoint
               + "\": use TLS, or pass "
-              + "allowInsecureRemoteCredentials=true (or the allowInsecureRemoteCredentials() "
+              + "remotePlaintextCredentials(RemotePlaintextCredentials.ALLOW) (or the allowInsecureRemoteCredentials() "
               + "ClientOption) if you intend to send a bearer token in cleartext to a remote "
               + "host");
     }
   }
 
   // -----------------------------------------------------------------------
-  // Checks — all use BulkCheckPermissions under the hood
+  // Checks — singular and chunked bulk RPCs
   // -----------------------------------------------------------------------
 
-  /**
-   * Checks a single permission, returning a {@link CheckResult} carrying the server's full
-   * three-valued answer, the caveat context that was missing (if any), and the {@link ZedToken}
-   * revision the check was evaluated at. Uses BulkCheckPermissions under the hood.
-   *
-   * <p><b>RULE (root DESIGN.md, "Only an unconditional grant is true"):</b> prefer {@link
-   * CheckResult#hasPermission()} over comparing {@link CheckResult#permissionship()} directly — a
-   * {@code CONDITIONAL_PERMISSION} result means the server needed caveat context that was not
-   * supplied, and is NOT a grant.
-   */
-  public CheckResult checkPermission(Consistency consistency, String permission, Relationship r) {
-    List<CheckResult> results = checkPermissions(consistency, permission, r);
-    return results.get(0);
+  public CheckResult check(PermissionCheck request) {
+    return check(request, CheckOptions.builder().build());
   }
 
-  /**
-   * As {@link #checkPermission(Consistency, String, Relationship)}, with a per-call {@code timeout}
-   * overriding the client's default (see {@link #DEFAULT_TIMEOUT}).
-   */
-  public CheckResult checkPermissionWithOptions(
-      Consistency consistency, String permission, Relationship r, CheckOptions options) {
-    List<CheckResult> results =
-        checkPermissionsImpl(consistency, permission, options.context(), options.timeout(), r);
-    return results.get(0);
-  }
-
-  /**
-   * Checks permissions for multiple relationships, returning a {@link CheckResult} for each. All
-   * checks use BulkCheckPermissions under the hood.
-   *
-   * <p>Large inputs are split automatically into requests of at most 1,000 items and the responses
-   * concatenated in input order — SpiceDB rejects a single request carrying more than 10,000. An
-   * empty {@code relationships} sends no request at all and returns an empty list.
-   *
-   * <p>Results from one request share a {@code checkedAt} (the response carries a single token for
-   * the whole request, not one per item), so an input large enough to be split carries more than
-   * one token across the returned list.
-   *
-   * <p>A per-call {@code timeout} on the overloads that accept one bounds <b>each request</b> this
-   * call makes, not the call as a whole, and the retry budget is likewise per request: worst-case
-   * wall time is {@code ceil(relationships.length / 1000.0) * timeout}. That is deliberate — one
-   * deadline spanning every chunk would make a large check fail purely for being large, and a retry
-   * budget shared across chunks would let one flaky chunk exhaust the allowance for the rest. Size
-   * the value per request, and impose a whole-operation bound yourself if you need one.
-   *
-   * <p>See {@link #checkPermission} for the RULE governing how to interpret each result.
-   */
-  public List<CheckResult> checkPermissions(
-      Consistency consistency, String permission, Relationship... relationships) {
-    return checkPermissionsWithOptions(consistency, permission, CheckOptions.none(), relationships);
-  }
-
-  /**
-   * As {@link #checkPermissions(Consistency, String, Relationship...)}, with a per-call {@code
-   * timeout} overriding the client's default (see {@link #DEFAULT_TIMEOUT}).
-   */
-  public List<CheckResult> checkPermissionsWithOptions(
-      Consistency consistency,
-      String permission,
-      CheckOptions options,
-      Relationship... relationships) {
-    return checkPermissionsImpl(
-        consistency, permission, options.context(), options.timeout(), relationships);
-  }
-
-  /**
-   * Shared implementation behind every {@code checkPermission(s)} overload -- request-building and
-   * response-mapping, including the call-level {@code context} merge, live here once.
-   */
-  private List<CheckResult> checkPermissionsImpl(
-      Consistency consistency,
-      String permission,
-      Map<String, Object> context,
-      Duration timeout,
-      Relationship... relationships) {
-    // Zero relationships sends nothing at all. An empty request is not a cheaper way to ask
-    // nothing — it is a round trip whose only possible answer is the empty list, and checkAll
-    // already treats an aggregate over zero checks as false rather than a grant.
-    if (relationships.length == 0) {
-      return List.of();
-    }
-
-    // One request per chunk of DEFAULT_CHECK_BATCH_SIZE, results concatenated in input order so
-    // results.get(i) still corresponds to relationships[i] across the chunk boundary. A caller
-    // passing fewer than DEFAULT_CHECK_BATCH_SIZE relationships — the overwhelmingly common case
-    // — still makes exactly one request.
-    var results = new ArrayList<CheckResult>(relationships.length);
-    for (int start = 0; start < relationships.length; start += DEFAULT_CHECK_BATCH_SIZE) {
-      int end = Math.min(start + DEFAULT_CHECK_BATCH_SIZE, relationships.length);
-      results.addAll(
-          checkChunk(
-              consistency,
-              permission,
-              context,
-              timeout,
-              start,
-              Arrays.copyOfRange(relationships, start, end)));
-    }
-    return results;
-  }
-
-  /**
-   * Issues one {@code CheckBulkPermissions} request for {@code relationships} and maps the
-   * response. {@code relationships} is non-empty and no longer than {@link
-   * #DEFAULT_CHECK_BATCH_SIZE}; {@code checkPermissionsImpl} is what enforces both. Every response
-   * guard below — the pair-count check and the malformed-oneof check — therefore applies per chunk,
-   * exactly as it applied to the whole request before chunking.
-   *
-   * <p>{@code offset} is this chunk's start index within the caller's full array. Every "check item
-   * N" message below reports {@code offset + i}, not {@code i}: the index a caller sees must be the
-   * one they can use to look up their own relationship — see {@code spicedb-java/DESIGN.md}, which
-   * pins that contract. Reporting the chunk-relative index would attribute the failing item to a
-   * different resource entirely.
-   */
-  private List<CheckResult> checkChunk(
-      Consistency consistency,
-      String permission,
-      Map<String, Object> context,
-      Duration timeout,
-      int offset,
-      Relationship... relationships) {
-    var items = new ArrayList<CheckBulkPermissionsRequestItem>(relationships.length);
-    for (Relationship r : relationships) {
-      items.add(checkItemFromRel(r, permission, context));
-    }
-
-    long timeoutMs = effectiveTimeout(timeout).toMillis();
-    CheckBulkPermissionsResponse resp =
+  public CheckResult check(PermissionCheck request, CheckOptions options) {
+    if (options == null) throw new InvalidArgumentException("options must not be null");
+    if (request == null) throw new InvalidArgumentException("request must not be null");
+    var deadline =
+        io.grpc.Deadline.after(effectiveTimeout(options.timeout()).toNanos(), TimeUnit.NANOSECONDS);
+    var item = checkItem(request, options.context());
+    var builder =
+        CheckPermissionRequest.newBuilder()
+            .setResource(item.getResource())
+            .setPermission(item.getPermission())
+            .setSubject(item.getSubject())
+            .setConsistency(request.consistency().toProto())
+            .setWithTracing(options.tracing() == CheckTracing.ENABLED);
+    if (item.hasContext()) builder.setContext(item.getContext());
+    var response =
         withRetry(
-            () ->
-                permissionsStub
-                    .withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS)
-                    .checkBulkPermissions(
-                        CheckBulkPermissionsRequest.newBuilder()
-                            .setConsistency(consistency.toProto())
-                            .addAllItems(items)
-                            .build()));
+            deadline,
+            () -> permissionsStub.withDeadline(deadline).checkPermission(builder.build()));
+    return new CheckResult(
+        checkPermissionshipFromProto(response.getPermissionship()),
+        response.getPartialCaveatInfo().getMissingRequiredContextList(),
+        (response.hasCheckedAt() ? new ZedToken(response.getCheckedAt().getToken()) : null),
+        response.hasDebugTrace() ? DebugInformation.fromProto(response.getDebugTrace()) : null,
+        response.hasOptionalExpiresAt()
+            ? Instant.ofEpochSecond(
+                response.getOptionalExpiresAt().getSeconds(),
+                response.getOptionalExpiresAt().getNanos())
+            : null);
+  }
 
-    // CheckBulkPermissionsResponseItem carries no per-item checked_at of its own — the token lives
-    // once on the enclosing response and applies to every pair in it.
-    String checkedAt = resp.getCheckedAt().getToken();
+  public List<CheckResult> checkBulk(Collection<PermissionCheck> requests) {
+    return checkBulk(requests, CheckOptions.builder().build());
+  }
 
-    // The proto guarantees pairs are returned in request order but says nothing about count. A
-    // short (or long) response would otherwise silently desync results[i] from relationships[i]
-    // for every item after the gap — one resource's answer attributed to another. Fail loudly
-    // instead of returning a misaligned-but-"successful" List.
-    if (resp.getPairsCount() != items.size()) {
-      throw new SpiceDBException(
-          "checkBulkPermissions returned "
-              + resp.getPairsCount()
-              + " pair(s) for "
-              + items.size()
-              + " request item(s)");
-    }
-
-    var results = new ArrayList<CheckResult>(resp.getPairsCount());
-    for (int i = 0; i < resp.getPairsCount(); i++) {
-      CheckBulkPermissionsPair pair = resp.getPairs(i);
-      if (pair.hasError()) {
-        // Route the per-item error through ErrorMapper (by way of a StatusRuntimeException
-        // carrying the item's own status) so callers get the SPECIFIC typed exception (e.g.
-        // PermissionDeniedException) instead of the untyped base SpiceDBException — the item's
-        // code was previously discarded here. The item's ABSOLUTE index (offset + i) is preserved
-        // in the message, matching spicedb-go's `fmt.Sprintf("check item %d", offset+i)`.
-        throw ErrorMapper.toSpiceDBException(
-            perItemStatusException(pair.getError(), "check item " + (offset + i) + ": "));
-      } else if (pair.hasItem()) {
-        results.add(checkResultFromBulkItem(pair.getItem(), checkedAt));
-      } else {
-        // The proto's `response` is a oneof — a well-behaved server always sets it to item or
-        // error, so this should be unreachable in practice. Silently skipping the index here
-        // would shrink `results` below `items.size()`, desyncing every subsequent results[i]
-        // from relationships[i] for the rest of the batch. Fail loudly instead of returning a
-        // misaligned-but-"successful" List. Mirrors spicedb-rust's malformed-oneof guard.
+  public List<CheckResult> checkBulk(Collection<PermissionCheck> requests, CheckOptions options) {
+    if (options == null) throw new InvalidArgumentException("options must not be null");
+    var deadline =
+        io.grpc.Deadline.after(effectiveTimeout(options.timeout()).toNanos(), TimeUnit.NANOSECONDS);
+    if (requests == null) throw new InvalidArgumentException("requests must not be null");
+    var snapshot = new ArrayList<>(requests);
+    if (snapshot.contains(null))
+      throw new InvalidArgumentException("requests must not contain null");
+    if (snapshot.isEmpty()) return List.of();
+    var consistency = snapshot.get(0).consistency();
+    for (var request : snapshot)
+      if (!consistency.equals(request.consistency()))
+        throw new InvalidArgumentException("bulk requests must have equal consistency");
+    var results = new ArrayList<CheckResult>();
+    for (int offset = 0; offset < snapshot.size(); offset += DEFAULT_CHECK_BATCH_SIZE) {
+      var items =
+          snapshot
+              .subList(offset, Math.min(offset + DEFAULT_CHECK_BATCH_SIZE, snapshot.size()))
+              .stream()
+              .map(r -> checkItem(r, options.context()))
+              .toList();
+      var req =
+          CheckBulkPermissionsRequest.newBuilder()
+              .setConsistency(consistency.toProto())
+              .setWithTracing(options.tracing() == CheckTracing.ENABLED)
+              .addAllItems(items)
+              .build();
+      var response =
+          withRetry(
+              deadline, () -> permissionsStub.withDeadline(deadline).checkBulkPermissions(req));
+      if (response.getPairsCount() != items.size())
         throw new SpiceDBException(
-            "check item "
-                + (offset + i)
-                + ": malformed CheckBulkPermissionsPair (neither item nor error"
-                + " set)");
+            "checkBulkPermissions returned "
+                + response.getPairsCount()
+                + " pair(s) for "
+                + items.size()
+                + " request item(s)");
+      for (int i = 0; i < response.getPairsCount(); i++) {
+        var pair = response.getPairs(i);
+        if (!pair.hasRequest() || !pair.getRequest().equals(items.get(i)))
+          throw new SpiceDBException(
+              "check item " + (offset + i) + ": missing or mismatched echoed request");
+        if (pair.hasError())
+          throw ErrorMapper.toSpiceDBException(
+              perItemStatusException(pair.getError(), "check item " + (offset + i) + ": "));
+        if (!pair.hasItem())
+          throw new SpiceDBException(
+              "check item "
+                  + (offset + i)
+                  + ": malformed CheckBulkPermissionsPair (neither item nor error set)");
+        results.add(
+            checkResultFromBulkItem(
+                pair.getItem(),
+                response.hasCheckedAt() ? new ZedToken(response.getCheckedAt().getToken()) : null));
       }
     }
-    return results;
+    return List.copyOf(results);
   }
 
-  /**
-   * Returns true if any of the given relationships have the permission unconditionally. A {@code
-   * CONDITIONAL_PERMISSION} result does not count as granted — only {@link
-   * CheckResult#hasPermission()} results are considered (RULE, clause 3).
-   */
-  public boolean checkAny(
-      Consistency consistency, String permission, Relationship... relationships) {
-    return checkAnyWithOptions(consistency, permission, CheckOptions.none(), relationships);
+  public boolean checkAny(Collection<PermissionCheck> requests) {
+    return checkAny(requests, CheckOptions.builder().build());
   }
 
-  /**
-   * As {@link #checkAny(Consistency, String, Relationship...)}, with a per-call {@code timeout}
-   * overriding the client's default (see {@link #DEFAULT_TIMEOUT}).
-   */
-  public boolean checkAnyWithOptions(
-      Consistency consistency,
-      String permission,
-      CheckOptions options,
-      Relationship... relationships) {
-    List<CheckResult> results =
-        checkPermissionsImpl(
-            consistency, permission, options.context(), options.timeout(), relationships);
-    for (CheckResult r : results) {
-      if (r.hasPermission()) return true;
-    }
-    return false;
+  public boolean checkAny(Collection<PermissionCheck> requests, CheckOptions options) {
+    return checkBulk(requests, options).stream().anyMatch(CheckResult::hasPermission);
   }
 
-  /**
-   * Returns true if all of the given relationships have the permission unconditionally. A {@code
-   * CONDITIONAL_PERMISSION} result does not count as granted — every result must be {@link
-   * CheckResult#hasPermission()} for this to return true (RULE, clause 3).
-   */
-  public boolean checkAll(
-      Consistency consistency, String permission, Relationship... relationships) {
-    return checkAllWithOptions(consistency, permission, CheckOptions.none(), relationships);
+  public boolean checkAll(Collection<PermissionCheck> requests) {
+    return checkAll(requests, CheckOptions.builder().build());
   }
 
-  /**
-   * As {@link #checkAll(Consistency, String, Relationship...)}, with a per-call {@code timeout}
-   * overriding the client's default (see {@link #DEFAULT_TIMEOUT}).
-   *
-   * <p>Returns false, not the vacuous true a for-loop over zero relationships would fall through
-   * to, when {@code relationships} is empty (RULE: "An aggregate over zero checks is not a grant").
-   */
-  public boolean checkAllWithOptions(
-      Consistency consistency,
-      String permission,
-      CheckOptions options,
-      Relationship... relationships) {
-    if (relationships.length == 0) {
-      return false;
-    }
-    List<CheckResult> results =
-        checkPermissionsImpl(
-            consistency, permission, options.context(), options.timeout(), relationships);
-    for (CheckResult r : results) {
-      if (!r.hasPermission()) return false;
-    }
-    return true;
+  public boolean checkAll(Collection<PermissionCheck> requests, CheckOptions options) {
+    var results = checkBulk(requests, options);
+    return !results.isEmpty() && results.stream().allMatch(CheckResult::hasPermission);
   }
 
   // -----------------------------------------------------------------------
   // Writes
   // -----------------------------------------------------------------------
 
-  /**
-   * Commits a transaction of relationship mutations to SpiceDB, returning the revision at which the
-   * write occurred.
-   */
-  public String write(Transaction txn) {
-    return write(txn, null);
+  public WriteResult write(Transaction txn) {
+    return write(txn, WriteOptions.builder().build());
   }
 
-  /**
-   * As {@link #write(Transaction)}, with a per-call {@code timeout} overriding the client's default
-   * (see {@link #DEFAULT_TIMEOUT}).
-   */
-  public String write(Transaction txn, Duration timeout) {
+  public WriteResult write(Transaction txn, WriteOptions options) {
+    if (options == null) throw new InvalidArgumentException("options must not be null");
+    Duration timeout = options.timeout();
+    var deadline =
+        io.grpc.Deadline.after(effectiveTimeout(timeout).toNanos(), TimeUnit.NANOSECONDS);
     var reqBuilder = WriteRelationshipsRequest.newBuilder();
+    if (options.metadata() != null)
+      reqBuilder.setOptionalTransactionMetadata(toProtoStruct(options.metadata()));
 
-    for (Transaction.Mutation m : txn.mutations()) {
+    for (Transaction.Mutation m : List.copyOf(txn.mutations())) {
       reqBuilder.addUpdates(toRelationshipUpdate(m));
     }
 
-    for (Transaction.Precondition p : txn.preconditions()) {
+    for (Transaction.Precondition p : List.copyOf(txn.preconditions())) {
       reqBuilder.addOptionalPreconditions(toPrecondition(p));
     }
 
-    long timeoutMs = effectiveTimeout(timeout).toMillis();
     WriteRelationshipsResponse resp =
         callOnce(
-            () ->
-                permissionsStub
-                    .withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS)
-                    .writeRelationships(reqBuilder.build()));
-    return resp.getWrittenAt().getToken();
+            () -> permissionsStub.withDeadline(deadline).writeRelationships(reqBuilder.build()));
+    return new WriteResult(
+        resp.hasWrittenAt() ? new ZedToken(resp.getWrittenAt().getToken()) : null);
   }
 
   // -----------------------------------------------------------------------
   // Read Relationships — cursor-based auto-pagination (512-item pages)
   // -----------------------------------------------------------------------
 
-  /**
-   * Returns a stream over relationships matching the given filter. Cursors are handled
-   * transparently — the client automatically re-fetches pages of 512 relationships.
-   *
-   * <p>The returned stream should be closed when done (it is AutoCloseable).
-   */
   public Stream<Relationship> readRelationships(Consistency consistency, Filter filter) {
-    return paginatedRelationshipStream(consistency, filter, DEFAULT_READ_PAGE_SIZE);
+    return readRelationships(consistency, filter, ReadOptions.builder().build());
   }
 
-  // -----------------------------------------------------------------------
-  // Delete Relationships — auto-paging 1,000-item batches
-  // -----------------------------------------------------------------------
+  public Stream<Relationship> readRelationships(
+      Consistency consistency, Filter filter, ReadOptions options) {
+    if (options == null) throw new InvalidArgumentException("options must not be null");
+    var proto = toRelationshipFilter(filter);
+    Objects.requireNonNull(consistency, "consistency");
+    return pagedStream(
+        cursor -> {
+          var b =
+              ReadRelationshipsRequest.newBuilder()
+                  .setConsistency(consistency.toProto())
+                  .setRelationshipFilter(proto)
+                  .setOptionalLimit(options.pageSize());
+          if (cursor != null) b.setOptionalCursor(cursor);
+          return permissionsStub.readRelationships(b.build());
+        },
+        ReadRelationshipsResponse::getAfterResultCursor,
+        r -> fromProtoRelationship(r.getRelationship()),
+        options.pageSize(),
+        options.limit(),
+        options.timeout());
+  }
 
-  /**
-   * Optional preconditions and page-size override for {@link #deleteRelationships(Filter,
-   * DeleteOptions)}.
-   *
-   * <p>Immutable — {@code withMustMatch}/{@code withMustNotMatch}/{@code withLimit} each return a
-   * new instance, mirroring {@link Filter}'s builder style. Start from {@link #none()}, which is
-   * exactly the behavior of the single-argument {@link #deleteRelationships(Filter)} overload.
-   *
-   * <p>Preconditions are a per-request proto field, so when a delete spans multiple pages (i.e.
-   * more matches than the page size), they are re-evaluated by the server on every page — there is
-   * no "check-once, apply-to-all-pages" semantics. This means a delete that starts successfully can
-   * still fail partway through if the guarded state changes between pages, after earlier pages have
-   * already been deleted. For a single-shot, all-or-nothing guarded delete, pair the precondition
-   * with a {@link #withLimit} large enough to cover every matching relationship in one call.
-   * Mirrors {@code spicedb-go}'s {@code WithDeleteMustMatch}/{@code WithDeleteMustNotMatch}/{@code
-   * WithDeleteLimit} (client/relationships.go).
-   *
-   * <pre>{@code
-   * var options = SpiceDBClient.DeleteOptions.none()
-   *     .withMustMatch(existsFilter)
-   *     .withLimit(500);
-   * client.deleteRelationships(filter, options);
-   * }</pre>
-   */
-  public record DeleteOptions(
-      List<Filter> mustMatch, List<Filter> mustNotMatch, Integer limit, Duration timeout) {
+  public record DeleteResult(
+      ZedToken revision, long deletedCount, boolean completed, String resumeCursor) {}
 
-    public DeleteOptions {
-      mustMatch = mustMatch == null ? List.of() : List.copyOf(mustMatch);
-      mustNotMatch = mustNotMatch == null ? List.of() : List.copyOf(mustNotMatch);
-      if (limit != null && limit <= 0) {
-        throw new IllegalArgumentException("limit must be positive");
-      }
-    }
+  public DeleteResult deleteRelationships(Filter filter, int limit) {
+    return deleteRelationships(filter, limit, DeleteOptions.builder().build());
+  }
 
-    /**
-     * Preconditions and page size with no per-call deadline — equivalent to the canonical
-     * constructor with a {@code null} timeout, which is exactly the "no per-call deadline"
-     * semantics that form already expresses.
-     *
-     * <p>Kept explicitly: {@code timeout} was added as a fourth record component after this type
-     * shipped with three, and a record's canonical constructor is generated from its component
-     * list, so adding the component silently removed this signature. Deleting this constructor is a
-     * binary and source break for every caller that wrote {@code new DeleteOptions(a, b, c)}. If a
-     * fifth component is ever added, add the corresponding delegating overload here rather than
-     * letting the old arity disappear.
-     */
-    public DeleteOptions(List<Filter> mustMatch, List<Filter> mustNotMatch, Integer limit) {
-      this(mustMatch, mustNotMatch, limit, null);
-    }
-
-    /**
-     * No preconditions, default page size (1,000) — identical behavior to {@link
-     * #deleteRelationships(Filter)}.
-     */
-    public static DeleteOptions none() {
-      return new DeleteOptions(List.of(), List.of(), null, null);
-    }
-
-    /**
-     * Adds a MUST_MATCH precondition: the server rejects the delete (and deletes nothing) unless at
-     * least one relationship matching {@code filter} exists at evaluation time. Multiple calls
-     * accumulate; all are sent with every page of the delete.
-     */
-    public DeleteOptions withMustMatch(Filter filter) {
-      var updated = new ArrayList<>(mustMatch);
-      updated.add(filter);
-      return new DeleteOptions(updated, mustNotMatch, limit, timeout);
-    }
-
-    /**
-     * Adds a MUST_NOT_MATCH precondition: the server rejects the delete (and deletes nothing) if
-     * any relationship matching {@code filter} exists at evaluation time. Multiple calls
-     * accumulate; all are sent with every page of the delete.
-     */
-    public DeleteOptions withMustNotMatch(Filter filter) {
-      var updated = new ArrayList<>(mustNotMatch);
-      updated.add(filter);
-      return new DeleteOptions(mustMatch, updated, limit, timeout);
-    }
-
-    /** Overrides the per-request page size used by the auto-paging delete loop (default 1,000). */
-    public DeleteOptions withLimit(int limit) {
-      return new DeleteOptions(mustMatch, mustNotMatch, limit, timeout);
-    }
-
-    /**
-     * Overrides the client's default unary-call timeout (see {@link SpiceDBClient#DEFAULT_TIMEOUT})
-     * for EACH page's call.
-     */
-    public DeleteOptions withTimeout(Duration timeout) {
-      return new DeleteOptions(mustMatch, mustNotMatch, limit, timeout);
+  public DeleteResult deleteRelationships(Filter filter, int limit, DeleteOptions options) {
+    if (options == null) throw new InvalidArgumentException("options must not be null");
+    if (limit <= 0) throw new InvalidArgumentException("limit must be positive");
+    var deadline =
+        io.grpc.Deadline.after(effectiveTimeout(options.timeout()).toNanos(), TimeUnit.NANOSECONDS);
+    try {
+      return deletePage(filter, limit, options, deadline);
+    } catch (SpiceDBException e) {
+      if (e.deleteProgress() == null)
+        e.attachDeleteProgress(new DeleteProgress(0, null, null, 0, true));
+      throw e;
+    } catch (java.util.concurrent.CancellationException e) {
+      throw new DeleteCancellationException(e, new DeleteProgress(0, null, null, 0, true));
     }
   }
 
-  /**
-   * Deletes all relationships matching the given filter, guarded by optional preconditions and with
-   * an optional page-size override supplied via {@code options}. Returns the revision of the final
-   * deletion. See {@link DeleteOptions} for precondition/paging semantics.
-   *
-   * <p>Pages are threaded together with {@code DeleteRelationshipsResponse.after_result_cursor} /
-   * {@code DeleteRelationshipsRequest.optional_cursor} when the server returns one, the same
-   * cursor-handoff shape {@link #readRelationships} and {@link #lookupResources} use, so a
-   * datastore that supports it does not re-examine relationships already deleted by an earlier
-   * page. This is entirely transparent — the cursor never appears in this method's signature.
-   * Datastores that do not populate {@code after_result_cursor} keep working exactly as before: the
-   * next page is requested with no cursor and re-evaluates the filter against what remains.
-   */
-  public String deleteRelationships(Filter filter, DeleteOptions options) {
-    var preconditions = new ArrayList<Precondition>();
-    for (Filter f : options.mustMatch()) {
-      preconditions.add(
+  private DeleteResult deletePage(
+      Filter filter, int limit, DeleteOptions options, io.grpc.Deadline deadline) {
+    var builder =
+        DeleteRelationshipsRequest.newBuilder()
+            .setRelationshipFilter(toRelationshipFilter(filter))
+            .setOptionalLimit(limit)
+            .setOptionalAllowPartialDeletions(true);
+    for (var f : options.mustMatch())
+      builder.addOptionalPreconditions(
           toPrecondition(
               new Transaction.Precondition(Transaction.PreconditionOperation.MUST_MATCH, f)));
-    }
-    for (Filter f : options.mustNotMatch()) {
-      preconditions.add(
+    for (var f : options.mustNotMatch())
+      builder.addOptionalPreconditions(
           toPrecondition(
               new Transaction.Precondition(Transaction.PreconditionOperation.MUST_NOT_MATCH, f)));
-    }
-    int pageSize = options.limit() != null ? options.limit() : DEFAULT_DELETE_PAGE_SIZE;
-    long timeoutMs = effectiveTimeout(options.timeout()).toMillis();
-
-    String revision = "";
-    Cursor cursor = null;
-    while (true) {
-      var reqBuilder =
-          DeleteRelationshipsRequest.newBuilder()
-              .setRelationshipFilter(toRelationshipFilter(filter))
-              .addAllOptionalPreconditions(preconditions)
-              .setOptionalLimit(pageSize)
-              .setOptionalAllowPartialDeletions(true);
-      if (cursor != null) {
-        reqBuilder.setOptionalCursor(cursor);
-      }
-      DeleteRelationshipsResponse resp =
-          callOnce(
-              () ->
-                  permissionsStub
-                      .withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS)
-                      .deleteRelationships(reqBuilder.build()));
-      revision = resp.getDeletedAt().getToken();
-      if (resp.getDeletionProgress()
-          == DeleteRelationshipsResponse.DeletionProgress.DELETION_PROGRESS_COMPLETE) {
-        return revision;
-      }
-      cursor = resp.hasAfterResultCursor() ? resp.getAfterResultCursor() : null;
-    }
+    if (options.resumeCursor() != null && !options.resumeCursor().isEmpty())
+      builder.setOptionalCursor(Cursor.newBuilder().setToken(options.resumeCursor()));
+    var response =
+        callOnce(() -> permissionsStub.withDeadline(deadline).deleteRelationships(builder.build()));
+    var token = (response.hasDeletedAt() ? new ZedToken(response.getDeletedAt().getToken()) : null);
+    var cursor =
+        response.hasAfterResultCursor() ? response.getAfterResultCursor().getToken() : null;
+    boolean completed =
+        switch (response.getDeletionProgress()) {
+          case DELETION_PROGRESS_COMPLETE -> true;
+          case DELETION_PROGRESS_PARTIAL -> false;
+          default -> {
+            var error = new SpiceDBException("invalid deletion progress in server response");
+            error.attachDeleteProgress(
+                new DeleteProgress(
+                    response.getRelationshipsDeletedCount(), token, cursor, 1, false));
+            throw error;
+          }
+        };
+    return new DeleteResult(token, response.getRelationshipsDeletedCount(), completed, cursor);
   }
 
   /**
-   * Deletes all relationships matching the given filter. Large result sets are automatically paged
-   * in batches of 1,000. Returns the revision of the final deletion.
+   * Deletes matches in transactional batches. Completed batches remain committed on later failure
+   * or cancellation; the overall operation is non-atomic.
    */
-  public String deleteRelationships(Filter filter) {
-    return deleteRelationships(filter, DeleteOptions.none());
+  public DeleteResult deleteAllRelationshipsNonAtomic(Filter filter) {
+    return deleteAllRelationshipsNonAtomic(filter, DeleteAllOptions.builder().build());
+  }
+
+  /**
+   * Deletes matches in transactional batches. Completed batches remain committed on later failure
+   * or cancellation; the overall operation is non-atomic.
+   */
+  public DeleteResult deleteAllRelationshipsNonAtomic(Filter filter, DeleteAllOptions options) {
+    if (options == null) throw new InvalidArgumentException("options must not be null");
+    var deadline =
+        io.grpc.Deadline.after(effectiveTimeout(options.timeout()).toNanos(), TimeUnit.NANOSECONDS);
+    long count = 0;
+    int pages = 0;
+    ZedToken token = null;
+    String cursor = options.resumeCursor();
+    while (true) {
+      try {
+        var result =
+            deletePage(
+                filter,
+                options.pageSize(),
+                DeleteOptions.builder()
+                    .mustMatch(options.mustMatch())
+                    .mustNotMatch(options.mustNotMatch())
+                    .resumeCursor(cursor)
+                    .build(),
+                deadline);
+        count += result.deletedCount();
+        pages++;
+        token = result.revision();
+        cursor = result.resumeCursor();
+        if (result.completed()) return new DeleteResult(token, count, true, cursor);
+      } catch (SpiceDBException error) {
+        var prior = error.deleteProgress();
+        error.attachDeleteProgress(
+            prior == null
+                ? new DeleteProgress(count, token, pages == 0 ? null : cursor, pages, true)
+                : new DeleteProgress(
+                    count + prior.acknowledgedCount(),
+                    prior.lastToken(),
+                    prior.lastCursor(),
+                    pages + prior.completedPages(),
+                    prior.outcomeUnknown()));
+        throw error;
+      } catch (java.util.concurrent.CancellationException error) {
+        throw new DeleteCancellationException(
+            error, new DeleteProgress(count, token, pages == 0 ? null : cursor, pages, true));
+      }
+    }
   }
 
   // -----------------------------------------------------------------------
   // Lookups — cursor-based auto-pagination (512-item pages)
   // -----------------------------------------------------------------------
 
-  /**
-   * Returns a stream over resources of the given type that the subject has the specified permission
-   * on. Each result carries the permissionship (full grant vs conditional on caveat context) and,
-   * for conditional results, which caveat context was missing. Cursors are handled transparently.
-   *
-   * <p>Results are <b>not guaranteed to be unique</b>: the same {@code resourceId} may be yielded
-   * more than once — for example via caveated/conditional results — possibly with a different
-   * {@code permissionship} on each occurrence. Callers that require uniqueness must deduplicate by
-   * {@code resourceId} themselves.
-   *
-   * <p>The returned stream should be closed when done.
-   */
+  public Stream<LookupResult.LookupResource> lookupResources(
+      Consistency consistency, String resourceType, String permission, SubjectRef subject) {
+    return lookupResources(
+        consistency, resourceType, permission, subject, LookupOptions.builder().build());
+  }
+
   public Stream<LookupResult.LookupResource> lookupResources(
       Consistency consistency,
       String resourceType,
       String permission,
-      String subjectType,
-      String subjectID) {
-    return lookupResourcesWithOptions(
-        consistency, resourceType, permission, subjectType, subjectID, LookupOptions.none());
-  }
-
-  /**
-   * As {@link #lookupResources(Consistency, String, String, String, String)}, with {@code
-   * withDebug} asking the server to attach debug information to the error it returns if this lookup
-   * fails with a maximum-recursion-depth error. It never changes a successful result. This client
-   * does not decode that debug payload — it is reachable, undecoded, as the cause of the mapped
-   * {@link SpiceDBException}.
-   */
-  public Stream<LookupResult.LookupResource> lookupResourcesWithOptions(
-      Consistency consistency,
-      String resourceType,
-      String permission,
-      String subjectType,
-      String subjectID,
+      SubjectRef subject,
       LookupOptions options) {
-    boolean withDebug = options.debug();
-    Context.CancellableContext cancelCtx = Context.current().withCancellation();
-    Iterator<LookupResult.LookupResource> iterator =
-        new Iterator<>() {
-          private Cursor cursor = null;
-          private Iterator<LookupResourcesResponse> currentPage = Collections.emptyIterator();
-          private boolean done = false;
-          private int pageCount = 0;
-
-          @Override
-          public boolean hasNext() {
-            if (currentPage.hasNext()) return true;
-            if (done) return false;
-            fetchNextPage();
-            return currentPage.hasNext();
-          }
-
-          @Override
-          public LookupResult.LookupResource next() {
-            if (!hasNext()) throw new NoSuchElementException();
-            LookupResourcesResponse resp = currentPage.next();
-            pageCount++;
-            cursor = resp.getAfterResultCursor();
-            return lookupResourceFromProto(resp);
-          }
-
-          private void fetchNextPage() {
-            var reqBuilder =
-                LookupResourcesRequest.newBuilder()
-                    .setConsistency(consistency.toProto())
-                    .setResourceObjectType(resourceType)
-                    .setPermission(permission)
-                    .setSubject(
-                        SubjectReference.newBuilder()
-                            .setObject(
-                                ObjectReference.newBuilder()
-                                    .setObjectType(subjectType)
-                                    .setObjectId(subjectID)
-                                    .build())
-                            .build())
-                    .setOptionalLimit(DEFAULT_LOOKUP_PAGE_SIZE)
-                    .setWithDebug(withDebug);
-
-            if (cursor != null) {
-              reqBuilder.setOptionalCursor(cursor);
-            }
-
-            var responses = new ArrayList<LookupResourcesResponse>();
-            Iterator<LookupResourcesResponse> serverStream;
-            Context previous = cancelCtx.attach();
-            try {
-              serverStream =
-                  openStreamWithRetry(() -> permissionsStub.lookupResources(reqBuilder.build()));
-            } finally {
-              cancelCtx.detach(previous);
-            }
-            // The first hasNext() is already primed by openStreamWithRetry (retried above); every
-            // poll from here on is mapped-but-not-retried, since an item may already have been
-            // appended to `responses` by the time a later one fails.
-            while (mapStreamErrors(serverStream::hasNext)) {
-              responses.add(mapStreamErrors(serverStream::next));
-            }
-
-            currentPage = responses.iterator();
-            if (responses.size() < DEFAULT_LOOKUP_PAGE_SIZE) {
-              done = true;
-            }
-            if (pageCount > 0 && responses.isEmpty()) {
-              done = true;
-            }
-            pageCount = 0;
-          }
-        };
-
-    return cancelOnClose(
-        StreamSupport.stream(
-            Spliterators.spliteratorUnknownSize(iterator, Spliterator.ORDERED), false),
-        cancelCtx);
+    if (options == null) throw new InvalidArgumentException("options must not be null");
+    Objects.requireNonNull(consistency, "consistency");
+    if (options.subjectRelation() != null)
+      throw new InvalidArgumentException(
+          "lookupResources uses the required SubjectRef relation, not subjectRelation options");
+    var protoSubject = subjectProto(subject);
+    return pagedStream(
+        cursor -> {
+          var b =
+              LookupResourcesRequest.newBuilder()
+                  .setConsistency(consistency.toProto())
+                  .setResourceObjectType(resourceType)
+                  .setPermission(permission)
+                  .setSubject(protoSubject)
+                  .setOptionalLimit(options.pageSize())
+                  .setWithDebug(options.debug() == LookupDebug.ENABLED);
+          if (cursor != null) b.setOptionalCursor(cursor);
+          if (options.context() != null) b.setContext(toProtoStruct(options.context()));
+          return permissionsStub.lookupResources(b.build());
+        },
+        LookupResourcesResponse::getAfterResultCursor,
+        SpiceDBClient::lookupResourceFromProto,
+        response ->
+            options.permissionshipFilter() == LookupPermissionshipFilter.ALL
+                || response.getPermissionship()
+                    == LookupPermissionship.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION,
+        options.pageSize(),
+        options.limit(),
+        options.timeout());
   }
 
-  /**
-   * Returns a stream over subjects of the given type that have the specified permission on the
-   * resource. Unlike lookupResources, this does not use cursor-based pagination (not supported in
-   * SpiceDB yet) and streams all results in a single call.
-   *
-   * <p>When a yielded {@link LookupResult.LookupSubject#subject} is the wildcard {@code "*"}, the
-   * server has granted the permission to every subject of the requested subject type EXCEPT those
-   * listed in {@link LookupResult.LookupSubject#excludedSubjects}. Callers MUST check {@code
-   * excludedSubjects} before treating a wildcard match as a blanket grant, or they risk granting
-   * access to subjects the server explicitly excluded.
-   *
-   * <p>Results are <b>not guaranteed to be unique</b>: the same subject may be yielded more than
-   * once, possibly with a different {@code permissionship} on each occurrence. Callers that require
-   * uniqueness must deduplicate by subject ID themselves.
-   *
-   * <p>The returned stream should be closed when done.
-   */
-  public Stream<LookupResult.LookupSubject> lookupSubjectsWithOptions(
-      Consistency consistency,
-      String resourceType,
-      String resourceID,
-      String permission,
-      String subjectType,
-      LookupOptions options) {
-    // LookupSubjects has no option of its own yet. The form exists so the next
-    // one upstream adds is a component on LookupOptions rather than another
-    // overload here -- root DESIGN.md, "RULE: Every RPC wrapper must have one
-    // place to add an option".
-    return lookupSubjects(consistency, resourceType, resourceID, permission, subjectType);
+  public Stream<LookupResult.LookupSubject> lookupSubjects(
+      Consistency consistency, ObjectRef resource, String permission, String subjectType) {
+    return lookupSubjects(
+        consistency, resource, permission, subjectType, LookupOptions.builder().build());
   }
 
-  /**
-   * Returns a stream of subjects of the given type that have the permission on the resource.
-   *
-   * <p>See {@link #lookupSubjectsWithOptions} for the options-taking form.
-   */
   public Stream<LookupResult.LookupSubject> lookupSubjects(
       Consistency consistency,
-      String resourceType,
-      String resourceID,
+      ObjectRef resource,
       String permission,
-      String subjectType) {
-    Iterator<LookupSubjectsResponse> serverStream =
-        openStreamWithRetry(
-            () ->
-                permissionsStub.lookupSubjects(
-                    LookupSubjectsRequest.newBuilder()
-                        .setConsistency(consistency.toProto())
-                        .setResource(
-                            ObjectReference.newBuilder()
-                                .setObjectType(resourceType)
-                                .setObjectId(resourceID)
-                                .build())
-                        .setPermission(permission)
-                        .setSubjectObjectType(subjectType)
-                        .build()));
-    // The first hasNext() is already primed by openStreamWithRetry (retried above); every poll
-    // from here on is mapped-but-not-retried, since an item may already have been added to
-    // `responses` by the time a later one fails.
-    var responses = new ArrayList<LookupSubjectsResponse>();
-    while (mapStreamErrors(serverStream::hasNext)) {
-      responses.add(mapStreamErrors(serverStream::next));
-    }
-
-    return responses.stream().map(SpiceDBClient::lookupSubjectFromProto);
+      String subjectType,
+      LookupOptions options) {
+    if (options == null) throw new InvalidArgumentException("options must not be null");
+    if (options.permissionshipFilter() != LookupPermissionshipFilter.ALL)
+      throw new InvalidArgumentException("lookupSubjects does not support permissionshipFilter");
+    if (options.debug() == LookupDebug.ENABLED || options.pageSize() != 512)
+      throw new InvalidArgumentException("lookupSubjects does not support debug or pageSize");
+    var builder =
+        LookupSubjectsRequest.newBuilder()
+            .setConsistency(consistency.toProto())
+            .setResource(objectProto(resource))
+            .setPermission(permission)
+            .setSubjectObjectType(subjectType);
+    if (options.subjectRelation() != null)
+      builder.setOptionalSubjectRelation(options.subjectRelation());
+    if (options.context() != null) builder.setContext(toProtoStruct(options.context()));
+    return lazyStream(
+        () -> permissionsStub.lookupSubjects(builder.build()),
+        SpiceDBClient::lookupSubjectFromProto,
+        options.timeout(),
+        options.limit());
   }
 
   // -----------------------------------------------------------------------
   // Schema
   // -----------------------------------------------------------------------
 
-  /** Result of a {@link #readSchema()} call. */
-  public record SchemaResult(String schema, String revision) {}
+  public record SchemaResult(String schema, ZedToken revision) {}
 
-  /** Returns the current SpiceDB schema. */
   public SchemaResult readSchema() {
-    return readSchema(null);
+    return readSchema(CallOptions.builder().build());
   }
 
-  /**
-   * As {@link #readSchema()}, with a per-call {@code timeout} overriding the client's default (see
-   * {@link #DEFAULT_TIMEOUT}).
-   */
-  public SchemaResult readSchema(Duration timeout) {
-    long timeoutMs = effectiveTimeout(timeout).toMillis();
+  public SchemaResult readSchema(CallOptions options) {
+    if (options == null) throw new InvalidArgumentException("options must not be null");
+    Duration timeout = options.timeout();
+    var deadline =
+        io.grpc.Deadline.after(effectiveTimeout(timeout).toNanos(), TimeUnit.NANOSECONDS);
     ReadSchemaResponse resp =
         withRetry(
+            deadline,
             () ->
                 schemaStub
-                    .withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS)
+                    .withDeadline(deadline)
                     .readSchema(ReadSchemaRequest.getDefaultInstance()));
-    return new SchemaResult(resp.getSchemaText(), resp.getReadAt().getToken());
+    return new SchemaResult(
+        resp.getSchemaText(),
+        (resp.hasReadAt() ? new ZedToken(resp.getReadAt().getToken()) : null));
   }
 
-  /** Writes a new schema to SpiceDB, returning the revision. */
-  public String writeSchema(String schema) {
-    return writeSchema(schema, null);
+  public ZedToken writeSchema(String schema) {
+    return writeSchema(schema, CallOptions.builder().build());
   }
 
-  /**
-   * As {@link #writeSchema(String)}, with a per-call {@code timeout} overriding the client's
-   * default (see {@link #DEFAULT_TIMEOUT}).
-   */
-  public String writeSchema(String schema, Duration timeout) {
-    long timeoutMs = effectiveTimeout(timeout).toMillis();
+  public ZedToken writeSchema(String schema, CallOptions options) {
+    if (options == null) throw new InvalidArgumentException("options must not be null");
+    Duration timeout = options.timeout();
+    var deadline =
+        io.grpc.Deadline.after(effectiveTimeout(timeout).toNanos(), TimeUnit.NANOSECONDS);
     WriteSchemaResponse resp =
         callOnce(
             () ->
                 schemaStub
-                    .withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS)
+                    .withDeadline(deadline)
                     .writeSchema(WriteSchemaRequest.newBuilder().setSchema(schema).build()));
-    return resp.getWrittenAt().getToken();
+    return (resp.hasWrittenAt() ? new ZedToken(resp.getWrittenAt().getToken()) : null);
   }
 
-  /** A definition in a SpiceDB schema. */
   public record SchemaDefinition(
       String name,
       String comment,
       List<SchemaRelation> relations,
-      List<SchemaPermission> permissions) {}
-
-  /** A relation within a schema definition. */
-  public record SchemaRelation(String name, String comment, String parentDefinitionName) {}
-
-  /** A permission within a schema definition. */
-  public record SchemaPermission(String name, String comment, String parentDefinitionName) {}
-
-  /** A caveat defined in a SpiceDB schema. */
-  public record SchemaCaveat(
-      String name, String comment, String expression, List<SchemaCaveatParameter> parameters) {}
-
-  /** A parameter of a caveat. */
-  public record SchemaCaveatParameter(String name, String type, String parentCaveatName) {}
-
-  /** Result of a {@link #reflectSchema(Consistency)} call. */
-  public record ReflectSchemaResult(
-      List<SchemaDefinition> definitions, List<SchemaCaveat> caveats, String revision) {}
-
-  /** Returns the definitions and caveats in the current schema. */
-  public ReflectSchemaResult reflectSchema(Consistency consistency) {
-    return reflectSchema(consistency, null);
+      List<SchemaPermission> permissions) {
+    public SchemaDefinition {
+      relations = List.copyOf(relations);
+      permissions = List.copyOf(permissions);
+    }
   }
 
-  /**
-   * As {@link #reflectSchema(Consistency)}, with a per-call {@code timeout} overriding the client's
-   * default (see {@link #DEFAULT_TIMEOUT}).
-   */
-  public ReflectSchemaResult reflectSchema(Consistency consistency, Duration timeout) {
-    long timeoutMs = effectiveTimeout(timeout).toMillis();
+  public record SchemaRelation(String name, String comment, String parentDefinitionName) {}
+
+  public record SchemaPermission(String name, String comment, String parentDefinitionName) {}
+
+  public record SchemaCaveat(
+      String name, String comment, String expression, List<SchemaCaveatParameter> parameters) {
+    public SchemaCaveat {
+      parameters = List.copyOf(parameters);
+    }
+  }
+
+  public record SchemaCaveatParameter(String name, String type, String parentCaveatName) {}
+
+  public record ReflectSchemaResult(
+      List<SchemaDefinition> definitions, List<SchemaCaveat> caveats, ZedToken revision) {
+    public ReflectSchemaResult {
+      definitions = List.copyOf(definitions);
+      caveats = List.copyOf(caveats);
+    }
+  }
+
+  public ReflectSchemaResult reflectSchema(Consistency consistency) {
+    return reflectSchema(consistency, CallOptions.builder().build());
+  }
+
+  public ReflectSchemaResult reflectSchema(Consistency consistency, CallOptions options) {
+    if (options == null) throw new InvalidArgumentException("options must not be null");
+    Duration timeout = options.timeout();
+    var deadline =
+        io.grpc.Deadline.after(effectiveTimeout(timeout).toNanos(), TimeUnit.NANOSECONDS);
     ReflectSchemaResponse resp =
         withRetry(
+            deadline,
             () ->
                 schemaStub
-                    .withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS)
+                    .withDeadline(deadline)
                     .reflectSchema(
                         ReflectSchemaRequest.newBuilder()
                             .setConsistency(consistency.toProto())
@@ -1278,34 +786,39 @@ public final class SpiceDBClient implements AutoCloseable {
     }
 
     return new ReflectSchemaResult(
-        List.copyOf(definitions), List.copyOf(caveats), resp.getReadAt().getToken());
+        List.copyOf(definitions),
+        List.copyOf(caveats),
+        (resp.hasReadAt() ? new ZedToken(resp.getReadAt().getToken()) : null));
   }
 
-  /** Identifies a relation or permission on a definition. */
   public record RelationReference(
       String definitionName, String relationName, boolean isPermission) {}
 
-  /** Result of a {@link #computablePermissions} call. */
-  public record ComputablePermissionsResult(List<RelationReference> permissions, String revision) {}
-
-  /** Returns the permissions that are computable for the given relation. */
-  public ComputablePermissionsResult computablePermissions(
-      Consistency consistency, String definitionName, String relationName) {
-    return computablePermissions(consistency, definitionName, relationName, null);
+  public record ComputablePermissionsResult(
+      List<RelationReference> permissions, ZedToken revision) {
+    public ComputablePermissionsResult {
+      permissions = List.copyOf(permissions);
+    }
   }
 
-  /**
-   * As {@link #computablePermissions(Consistency, String, String)}, with a per-call {@code timeout}
-   * overriding the client's default (see {@link #DEFAULT_TIMEOUT}).
-   */
   public ComputablePermissionsResult computablePermissions(
-      Consistency consistency, String definitionName, String relationName, Duration timeout) {
-    long timeoutMs = effectiveTimeout(timeout).toMillis();
+      Consistency consistency, String definitionName, String relationName) {
+    return computablePermissions(
+        consistency, definitionName, relationName, CallOptions.builder().build());
+  }
+
+  public ComputablePermissionsResult computablePermissions(
+      Consistency consistency, String definitionName, String relationName, CallOptions options) {
+    if (options == null) throw new InvalidArgumentException("options must not be null");
+    Duration timeout = options.timeout();
+    var deadline =
+        io.grpc.Deadline.after(effectiveTimeout(timeout).toNanos(), TimeUnit.NANOSECONDS);
     ComputablePermissionsResponse resp =
         withRetry(
+            deadline,
             () ->
                 schemaStub
-                    .withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS)
+                    .withDeadline(deadline)
                     .computablePermissions(
                         ComputablePermissionsRequest.newBuilder()
                             .setConsistency(consistency.toProto())
@@ -1319,30 +832,34 @@ public final class SpiceDBClient implements AutoCloseable {
           new RelationReference(
               perm.getDefinitionName(), perm.getRelationName(), perm.getIsPermission()));
     }
-    return new ComputablePermissionsResult(List.copyOf(refs), resp.getReadAt().getToken());
+    return new ComputablePermissionsResult(
+        List.copyOf(refs), (resp.hasReadAt() ? new ZedToken(resp.getReadAt().getToken()) : null));
   }
 
-  /** Result of a {@link #dependentRelations} call. */
-  public record DependentRelationsResult(List<RelationReference> relations, String revision) {}
+  public record DependentRelationsResult(List<RelationReference> relations, ZedToken revision) {
+    public DependentRelationsResult {
+      relations = List.copyOf(relations);
+    }
+  }
 
-  /** Returns the relations that the given permission depends on. */
   public DependentRelationsResult dependentRelations(
       Consistency consistency, String definitionName, String permissionName) {
-    return dependentRelations(consistency, definitionName, permissionName, null);
+    return dependentRelations(
+        consistency, definitionName, permissionName, CallOptions.builder().build());
   }
 
-  /**
-   * As {@link #dependentRelations(Consistency, String, String)}, with a per-call {@code timeout}
-   * overriding the client's default (see {@link #DEFAULT_TIMEOUT}).
-   */
   public DependentRelationsResult dependentRelations(
-      Consistency consistency, String definitionName, String permissionName, Duration timeout) {
-    long timeoutMs = effectiveTimeout(timeout).toMillis();
+      Consistency consistency, String definitionName, String permissionName, CallOptions options) {
+    if (options == null) throw new InvalidArgumentException("options must not be null");
+    Duration timeout = options.timeout();
+    var deadline =
+        io.grpc.Deadline.after(effectiveTimeout(timeout).toNanos(), TimeUnit.NANOSECONDS);
     DependentRelationsResponse resp =
         withRetry(
+            deadline,
             () ->
                 schemaStub
-                    .withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS)
+                    .withDeadline(deadline)
                     .dependentRelations(
                         DependentRelationsRequest.newBuilder()
                             .setConsistency(consistency.toProto())
@@ -1356,10 +873,10 @@ public final class SpiceDBClient implements AutoCloseable {
           new RelationReference(
               rel.getDefinitionName(), rel.getRelationName(), rel.getIsPermission()));
     }
-    return new DependentRelationsResult(List.copyOf(refs), resp.getReadAt().getToken());
+    return new DependentRelationsResult(
+        List.copyOf(refs), (resp.hasReadAt() ? new ZedToken(resp.getReadAt().getToken()) : null));
   }
 
-  /** A single difference between two schemas. */
   public record SchemaDiff(
       String kind,
       String definitionName,
@@ -1367,26 +884,28 @@ public final class SpiceDBClient implements AutoCloseable {
       String permissionName,
       String caveatName) {}
 
-  /** Result of a {@link #diffSchema} call. */
-  public record DiffSchemaResult(List<SchemaDiff> diffs, String revision) {}
-
-  /** Compares the current schema against the given comparison schema. */
-  public DiffSchemaResult diffSchema(Consistency consistency, String comparisonSchema) {
-    return diffSchema(consistency, comparisonSchema, null);
+  public record DiffSchemaResult(List<SchemaDiff> diffs, ZedToken revision) {
+    public DiffSchemaResult {
+      diffs = List.copyOf(diffs);
+    }
   }
 
-  /**
-   * As {@link #diffSchema(Consistency, String)}, with a per-call {@code timeout} overriding the
-   * client's default (see {@link #DEFAULT_TIMEOUT}).
-   */
+  public DiffSchemaResult diffSchema(Consistency consistency, String comparisonSchema) {
+    return diffSchema(consistency, comparisonSchema, CallOptions.builder().build());
+  }
+
   public DiffSchemaResult diffSchema(
-      Consistency consistency, String comparisonSchema, Duration timeout) {
-    long timeoutMs = effectiveTimeout(timeout).toMillis();
+      Consistency consistency, String comparisonSchema, CallOptions options) {
+    if (options == null) throw new InvalidArgumentException("options must not be null");
+    Duration timeout = options.timeout();
+    var deadline =
+        io.grpc.Deadline.after(effectiveTimeout(timeout).toNanos(), TimeUnit.NANOSECONDS);
     DiffSchemaResponse resp =
         withRetry(
+            deadline,
             () ->
                 schemaStub
-                    .withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS)
+                    .withDeadline(deadline)
                     .diffSchema(
                         DiffSchemaRequest.newBuilder()
                             .setConsistency(consistency.toProto())
@@ -1397,376 +916,258 @@ public final class SpiceDBClient implements AutoCloseable {
     for (var d : resp.getDiffsList()) {
       diffs.add(schemaDiffFromProto(d));
     }
-    return new DiffSchemaResult(List.copyOf(diffs), resp.getReadAt().getToken());
+    return new DiffSchemaResult(
+        List.copyOf(diffs), (resp.hasReadAt() ? new ZedToken(resp.getReadAt().getToken()) : null));
   }
 
   // -----------------------------------------------------------------------
   // Expand
   // -----------------------------------------------------------------------
 
-  /** Result of an {@link #expandPermissionTree} call. */
-  public record ExpandResult(PermissionTree tree, String revision) {}
+  public record ExpandResult(PermissionTree tree, ZedToken revision) {}
 
-  /**
-   * Expands the permission tree for the given resource and permission, returning the full tree of
-   * subjects with access.
-   */
   public ExpandResult expandPermissionTree(
-      Consistency consistency, String resourceType, String resourceID, String permission) {
-    return expandPermissionTree(consistency, resourceType, resourceID, permission, null);
+      Consistency consistency, ObjectRef resource, String permission) {
+    return expandPermissionTree(consistency, resource, permission, CallOptions.builder().build());
   }
 
-  /**
-   * As {@link #expandPermissionTree(Consistency, String, String, String)}, with a per-call {@code
-   * timeout} overriding the client's default (see {@link #DEFAULT_TIMEOUT}).
-   */
   public ExpandResult expandPermissionTree(
-      Consistency consistency,
-      String resourceType,
-      String resourceID,
-      String permission,
-      Duration timeout) {
-    long timeoutMs = effectiveTimeout(timeout).toMillis();
+      Consistency consistency, ObjectRef resource, String permission, CallOptions options) {
+    if (options == null) throw new InvalidArgumentException("options must not be null");
+    Duration timeout = options.timeout();
+    var deadline =
+        io.grpc.Deadline.after(effectiveTimeout(timeout).toNanos(), TimeUnit.NANOSECONDS);
     ExpandPermissionTreeResponse resp =
         withRetry(
+            deadline,
             () ->
                 permissionsStub
-                    .withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS)
+                    .withDeadline(deadline)
                     .expandPermissionTree(
                         ExpandPermissionTreeRequest.newBuilder()
                             .setConsistency(consistency.toProto())
-                            .setResource(
-                                ObjectReference.newBuilder()
-                                    .setObjectType(resourceType)
-                                    .setObjectId(resourceID)
-                                    .build())
+                            .setResource(objectProto(resource))
                             .setPermission(permission)
                             .build()));
-    return new ExpandResult(toPermissionTree(resp.getTreeRoot()), resp.getExpandedAt().getToken());
+    return new ExpandResult(
+        toPermissionTree(resp.getTreeRoot()),
+        (resp.hasExpandedAt() ? new ZedToken(resp.getExpandedAt().getToken()) : null));
   }
 
   // -----------------------------------------------------------------------
   // Bulk Import / Export
   // -----------------------------------------------------------------------
 
-  /**
-   * Streams relationships to SpiceDB for bulk import, returning the number of relationships loaded.
-   * Relationships are automatically batched into chunks of 1,000.
-   *
-   * <p>{@code ImportBulkRelationships} is client-streaming: its duration scales with the size of
-   * {@code relationships}, not with server latency, so unlike every other method on this client,
-   * this call is NOT bounded by {@link #DEFAULT_TIMEOUT} (root DESIGN.md, "RULE: A unary call must
-   * have a deadline", clause 3). It is unbounded; use {@link #importRelationships(Iterable,
-   * Duration)} to bound it explicitly.
-   */
   public long importRelationships(Iterable<Relationship> relationships) {
-    return importRelationships(relationships, null);
+    return importRelationships(relationships, ImportOptions.builder().build());
   }
 
-  /**
-   * As {@link #importRelationships(Iterable)}, with an explicit per-call {@code timeout}. There is
-   * no client default to override here (see {@link #importRelationships(Iterable)}) -- this is the
-   * only way to bound this call at all.
-   */
-  public long importRelationships(Iterable<Relationship> relationships, Duration timeout) {
-    // Deliberately NOT effectiveTimeout(timeout) -- no client default applies here, only an
-    // explicit per-call timeout.
-    var stub =
-        timeout != null
-            ? permissionsAsyncStub.withDeadlineAfter(timeout.toMillis(), TimeUnit.MILLISECONDS)
-            : permissionsAsyncStub;
-
-    var resultHolder = new long[1];
-    var errorHolder = new Throwable[1];
-    var latch = new java.util.concurrent.CountDownLatch(1);
-
-    StreamObserver<ImportBulkRelationshipsResponse> responseObserver =
-        new StreamObserver<>() {
-          @Override
-          public void onNext(ImportBulkRelationshipsResponse resp) {
-            resultHolder[0] = resp.getNumLoaded();
-          }
-
-          @Override
-          public void onError(Throwable t) {
-            errorHolder[0] = t;
-            latch.countDown();
-          }
-
-          @Override
-          public void onCompleted() {
-            latch.countDown();
-          }
-        };
-
-    StreamObserver<ImportBulkRelationshipsRequest> requestObserver =
-        stub.importBulkRelationships(responseObserver);
-
-    var batch = new ArrayList<build.buf.gen.authzed.api.v1.Relationship>(DEFAULT_IMPORT_BATCH_SIZE);
-    for (Relationship r : relationships) {
-      batch.add(toProtoRelationship(r));
-      if (batch.size() >= DEFAULT_IMPORT_BATCH_SIZE) {
-        requestObserver.onNext(
-            ImportBulkRelationshipsRequest.newBuilder().addAllRelationships(batch).build());
-        batch.clear();
-      }
-    }
-
-    if (!batch.isEmpty()) {
-      requestObserver.onNext(
-          ImportBulkRelationshipsRequest.newBuilder().addAllRelationships(batch).build());
-    }
-
-    requestObserver.onCompleted();
-
+  public long importRelationships(Iterable<Relationship> relationships, ImportOptions options) {
+    if (options == null) throw new InvalidArgumentException("options must not be null");
+    var scope = new StreamScope(options.timeout());
+    var ctx = scope.context();
+    var previous = ctx.attach();
+    var lock = new Object();
+    var done = new java.util.concurrent.atomic.AtomicBoolean();
+    var failure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+    var loaded = new java.util.concurrent.atomic.AtomicLong();
+    var call =
+        new java.util.concurrent.atomic.AtomicReference<
+            io.grpc.stub.ClientCallStreamObserver<ImportBulkRelationshipsRequest>>();
+    Iterator<Relationship> input = null;
     try {
-      latch.await();
+      permissionsAsyncStub.importBulkRelationships(
+          new io.grpc.stub.ClientResponseObserver<
+              ImportBulkRelationshipsRequest, ImportBulkRelationshipsResponse>() {
+            public void beforeStart(
+                io.grpc.stub.ClientCallStreamObserver<ImportBulkRelationshipsRequest> stream) {
+              call.set(stream);
+              stream.setOnReadyHandler(
+                  () -> {
+                    synchronized (lock) {
+                      lock.notifyAll();
+                    }
+                  });
+            }
+
+            public void onNext(ImportBulkRelationshipsResponse response) {
+              loaded.set(response.getNumLoaded());
+            }
+
+            public void onError(Throwable error) {
+              failure.set(error);
+              done.set(true);
+              synchronized (lock) {
+                lock.notifyAll();
+              }
+            }
+
+            public void onCompleted() {
+              done.set(true);
+              synchronized (lock) {
+                lock.notifyAll();
+              }
+            }
+          });
+      input = relationships.iterator();
+      var stream = call.get();
+      while (true) {
+        synchronized (lock) {
+          while (!stream.isReady() && !done.get() && !ctx.isCancelled()) lock.wait(50);
+        }
+        if (ctx.isCancelled()) {
+          if (scope.ended || ctx.getDeadline() == null || !ctx.getDeadline().isExpired())
+            throw new java.util.concurrent.CancellationException("import cancelled");
+          throw Status.DEADLINE_EXCEEDED.asRuntimeException();
+        }
+        if (done.get()) {
+          if (failure.get() != null) throw importFailure(failure.get());
+          break;
+        }
+        var batch = new ArrayList<build.buf.gen.authzed.api.v1.Relationship>(options.batchSize());
+        while (batch.size() < options.batchSize()
+            && !done.get()
+            && !ctx.isCancelled()
+            && input.hasNext()) {
+          if (Thread.currentThread().isInterrupted()) throw new InterruptedException();
+          batch.add(toProtoRelationship(input.next()));
+        }
+        if (!batch.isEmpty())
+          stream.onNext(
+              ImportBulkRelationshipsRequest.newBuilder().addAllRelationships(batch).build());
+        if (batch.size() < options.batchSize()) {
+          stream.onCompleted();
+          break;
+        }
+      }
+      synchronized (lock) {
+        while (!done.get() && !ctx.isCancelled()) lock.wait(50);
+      }
+      if (failure.get() != null) throw importFailure(failure.get());
+      if (ctx.isCancelled()) {
+        if (scope.ended) throw new java.util.concurrent.CancellationException("import cancelled");
+        throw Status.DEADLINE_EXCEEDED.asRuntimeException();
+      }
+      return loaded.get();
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
-      throw new SpiceDBException("import interrupted", e);
+      failure.compareAndSet(null, e);
+      throw new java.util.concurrent.CancellationException("import interrupted");
+    } catch (StatusRuntimeException e) {
+      failure.compareAndSet(null, e);
+      if (Thread.currentThread().isInterrupted() || scope.ended)
+        throw new java.util.concurrent.CancellationException("import cancelled");
+      throw ErrorMapper.toSpiceDBException(e);
+    } catch (RuntimeException e) {
+      failure.compareAndSet(null, e);
+      throw e;
+    } finally {
+      scope.close();
+      ctx.detach(previous);
+      if (input instanceof AutoCloseable closeable)
+        try {
+          closeable.close();
+        } catch (Exception e) {
+          if (failure.get() == null) throw new SpiceDBException("closing import source failed", e);
+          failure.get().addSuppressed(e);
+        }
     }
-
-    if (errorHolder[0] != null) {
-      if (errorHolder[0] instanceof StatusRuntimeException sre) {
-        throw ErrorMapper.toSpiceDBException(sre);
-      }
-      throw new SpiceDBException("import failed", errorHolder[0]);
-    }
-
-    return resultHolder[0];
   }
 
-  /**
-   * Returns a stream over all relationships matching the optional filter, streamed from SpiceDB in
-   * bulk.
-   *
-   * <p>Unlike every other paginated RPC on this client (whose {@code optional_limit} bounds the
-   * WHOLE stream, ending the call once that many results have been returned), {@code
-   * ExportBulkRelationships}' {@code optional_limit} bounds only the number of relationships the
-   * server puts in a SINGLE response MESSAGE ("page") -- the server keeps streaming further
-   * messages on the SAME call until the whole dataset has been sent. The loop shape that is correct
-   * for {@link #updates}/every lookup method (drain the current page's server stream, check the
-   * count against the page size to decide whether to reissue with a new cursor) is therefore wrong
-   * here: it would drain the ENTIRE export -- however many relationships that is -- into one
-   * in-memory buffer before this method's {@code Stream} produced its first element, which is an
-   * OOM risk in the one API most likely to face the largest dataset in the system (a full
-   * 10M-relationship export). Instead, this pulls exactly ONE response message (up to {@link
-   * #DEFAULT_EXPORT_PAGE_SIZE} relationships) per underlying {@code hasNext()}/{@code next()}
-   * refill, mirroring {@link #updates}' single-message-at-a-time model, and only opens a new call
-   * -- with establishment retry, same as {@link #updates} -- lazily, on first use.
-   *
-   * <p>The returned stream should be closed when done.
-   */
+  private static RuntimeException importFailure(Throwable error) {
+    if (error instanceof StatusRuntimeException status)
+      return ErrorMapper.toSpiceDBException(status);
+    if (error instanceof io.grpc.StatusException status)
+      return ErrorMapper.toSpiceDBException(
+          status.getStatus().withCause(error).asRuntimeException(status.getTrailers()));
+    return new SpiceDBException("import failed", error);
+  }
+
   public Stream<Relationship> exportRelationships(Consistency consistency, Filter filter) {
-    Context.CancellableContext cancelCtx = Context.current().withCancellation();
-    Iterator<Relationship> iterator =
-        new Iterator<>() {
-          // Opened lazily on the first hasNext() call, then read from across
-          // many next() calls until the server closes it -- see updates()'s
-          // Iterator<WatchResponse> serverStream for why eager priming would
-          // be wrong (not applicable to export's bounded stream the same
-          // way, but kept consistent: establishment retry only applies to
-          // this one open, same reasoning as updates()).
-          private Iterator<ExportBulkRelationshipsResponse> serverStream;
-          private Cursor cursor = null;
-          private final List<Relationship> buffer = new ArrayList<>();
-          private int bufferIndex = 0;
+    return exportRelationships(consistency, filter, ExportOptions.builder().build());
+  }
 
-          @Override
-          public boolean hasNext() {
-            if (bufferIndex < buffer.size()) return true;
-            fetchNextBatch();
-            return bufferIndex < buffer.size();
-          }
+  public Stream<Relationship> exportRelationships(
+      Consistency consistency, Filter filter, ExportOptions options) {
+    if (options == null) throw new InvalidArgumentException("options must not be null");
+    var b =
+        ExportBulkRelationshipsRequest.newBuilder()
+            .setConsistency(consistency.toProto())
+            .setOptionalLimit(options.pageSize());
+    if (filter != null) b.setOptionalRelationshipFilter(toRelationshipFilter(filter));
+    return managedStream(
+        () -> {
+          var responses =
+              openStreamWithRetry(() -> permissionsStub.exportBulkRelationships(b.build()));
+          return new Iterator<Relationship>() {
+            Iterator<build.buf.gen.authzed.api.v1.Relationship> batch = Collections.emptyIterator();
 
-          @Override
-          public Relationship next() {
-            if (!hasNext()) throw new NoSuchElementException();
-            return buffer.get(bufferIndex++);
-          }
-
-          private void fetchNextBatch() {
-            buffer.clear();
-            bufferIndex = 0;
-
-            if (serverStream == null) {
-              var reqBuilder =
-                  ExportBulkRelationshipsRequest.newBuilder()
-                      .setConsistency(consistency.toProto())
-                      .setOptionalLimit(DEFAULT_EXPORT_PAGE_SIZE);
-
-              if (filter != null) {
-                reqBuilder.setOptionalRelationshipFilter(toRelationshipFilter(filter));
+            public boolean hasNext() {
+              while (!batch.hasNext()) {
+                if (!responses.hasNext()) return false;
+                batch = responses.next().getRelationshipsList().iterator();
               }
-              if (cursor != null) {
-                reqBuilder.setOptionalCursor(cursor);
-              }
-
-              Context previous = cancelCtx.attach();
-              try {
-                serverStream =
-                    openStreamWithRetry(
-                        () -> permissionsStub.exportBulkRelationships(reqBuilder.build()));
-              } finally {
-                cancelCtx.detach(previous);
-              }
+              return true;
             }
 
-            // Pull exactly ONE response message -- see the Javadoc above for
-            // why draining serverStream::hasNext() in a loop here (the
-            // previous implementation) buffers the entire export before the
-            // caller's Stream yields anything.
-            if (mapStreamErrors(serverStream::hasNext)) {
-              ExportBulkRelationshipsResponse resp = mapStreamErrors(serverStream::next);
-              cursor = resp.getAfterResultCursor();
-              for (var r : resp.getRelationshipsList()) {
-                buffer.add(fromProtoRelationship(r));
-              }
-            } else {
-              // The server closed the stream: every matching relationship
-              // has been sent (ExportBulkRelationships' single call is
-              // exhaustive -- see the Javadoc above), so there is nothing
-              // left to fetch.
-              serverStream = null;
+            public Relationship next() {
+              if (!hasNext()) throw new NoSuchElementException();
+              return fromProtoRelationship(batch.next());
             }
-          }
-        };
-
-    return cancelOnClose(
-        StreamSupport.stream(
-            Spliterators.spliteratorUnknownSize(iterator, Spliterator.ORDERED), false),
-        cancelCtx);
+          };
+        },
+        options.timeout(),
+        options.limit());
   }
 
   // -----------------------------------------------------------------------
   // Watch
   // -----------------------------------------------------------------------
 
-  /** A relationship update from the watch API. */
   public record Update(UpdateOperation operation, Relationship relationship) {}
 
-  /** The type of mutation in an Update. */
   public enum UpdateOperation {
-    /**
-     * The server sent an operation this client does not recognize -- either {@code
-     * OPERATION_UNSPECIFIED} on the wire, or a future operation value added after this client
-     * shipped. Never treat this as a write: a cache or index mirror consuming the watch stream that
-     * upserts on an unrecognized operation could turn a delete it doesn't understand into a silent
-     * write.
-     */
     UNSPECIFIED,
     CREATE,
     TOUCH,
     DELETE
   }
 
-  /**
-   * A single event from the watch API, corresponding to one {@code WatchResponse} from the server.
-   *
-   * <p>{@code changesThrough} is always populated -- proto: "the ZedToken that represents the point
-   * in time that the watch response is current through. This token can be used in a subsequent
-   * WatchRequest to resume watching from this point." Pass it as {@code startRevision} to a later
-   * {@link #updates(List, String)} call to resume after a dropped stream, instead of restarting
-   * from the original {@code startRevision} (reprocessing everything since, possibly past the GC
-   * window) or from head (silently losing every change in the gap).
-   *
-   * <p>{@code isCheckpoint} is true for a checkpoint event, which carries no {@code updates} -- it
-   * exists only to advertise a fresh {@code changesThrough} and, behind a proxy that aborts idle
-   * connections, to keep the stream alive. Checkpoints are only sent when {@code
-   * includeCheckpoints} is passed to {@link #updates(List, String, boolean)}.
-   */
-  public record WatchEvent(List<Update> updates, String changesThrough, boolean isCheckpoint) {
+  public record WatchEvent(List<Update> updates, ZedToken changesThrough, boolean isCheckpoint) {
     public WatchEvent {
       updates = updates == null ? List.of() : List.copyOf(updates);
     }
   }
 
-  /**
-   * Returns a stream over watch events from SpiceDB's watch API, starting from the given revision.
-   * Equivalent to {@code updates(objectTypes, startRevision, false)} -- does not request
-   * checkpoints.
-   *
-   * <p>The returned stream should be closed when done.
-   */
-  public Stream<WatchEvent> updates(List<String> objectTypes, String startRevision) {
-    return updates(objectTypes, startRevision, false);
+  public Stream<WatchEvent> updates(List<String> objectTypes, ZedToken startRevision) {
+    return updates(objectTypes, startRevision, WatchOptions.builder().build());
   }
 
-  /**
-   * As {@link #updates(List, String)}, but with {@code includeCheckpoints} to also request periodic
-   * checkpoint events ({@link WatchEvent#isCheckpoint()}, no updates). Recommended if this SpiceDB
-   * instance is running behind a proxy that aborts idle connections, since a checkpoint keeps the
-   * stream alive even when there are no changes.
-   *
-   * <p>The returned stream should be closed when done.
-   */
   public Stream<WatchEvent> updates(
-      List<String> objectTypes, String startRevision, boolean includeCheckpoints) {
-    var reqBuilder = WatchRequest.newBuilder();
-    if (objectTypes != null) {
-      reqBuilder.addAllOptionalObjectTypes(objectTypes);
-    }
-    if (startRevision != null && !startRevision.isEmpty()) {
-      reqBuilder.setOptionalStartCursor(ZedToken.newBuilder().setToken(startRevision).build());
-    }
-    if (includeCheckpoints) {
-      // optionalUpdateKinds is empty-means-default (relationship updates only, for backwards
-      // compatibility) -- a non-empty list is the exact set requested, so asking for checkpoints
-      // must also spell out relationship updates or the server would stop sending them.
-      reqBuilder.addOptionalUpdateKinds(WatchKind.WATCH_KIND_INCLUDE_RELATIONSHIP_UPDATES);
-      reqBuilder.addOptionalUpdateKinds(WatchKind.WATCH_KIND_INCLUDE_CHECKPOINTS);
-    }
-
-    Context.CancellableContext cancelCtx = Context.current().withCancellation();
-
-    Iterator<WatchEvent> iterator =
-        new Iterator<>() {
-          // Opened lazily, on the first hasNext() call below — not eagerly here in updates()
-          // itself. This matters for correctness, not just style: grpc-java's blocking-stub
-          // priming call (which openStreamWithRetry needs, to make retry effective — see its
-          // Javadoc) blocks until the first message OR the call terminates. For watch, "the first
-          // message" can be arbitrarily far in the future (it's an indefinite live feed), so
-          // priming eagerly would turn updates() into a call that can hang for however long
-          // there's no relationship change — a real behavioral regression for a method whose
-          // whole contract is "return a stream promptly, block only when the caller pulls from
-          // it". Deferring the open (and its retry) to the caller's first pull preserves that
-          // contract while still making establishment retry effective once the caller does pull.
-          private Iterator<WatchResponse> serverStream;
-
-          @Override
-          public boolean hasNext() {
-            if (serverStream == null) {
-              // Establishment retry: applies ONLY to this first open. Once serverStream is set,
-              // every later call skips straight to mapStreamErrors below (no retry) — so a
-              // transient error after the watch has connected (mid-watch) is mapped and rethrown,
-              // never retried, since retrying would replay/duplicate already-delivered updates.
-              Context previous = cancelCtx.attach();
-              try {
-                serverStream = openStreamWithRetry(() -> watchStub.watch(reqBuilder.build()));
-              } finally {
-                cancelCtx.detach(previous);
-              }
-            }
-            return mapStreamErrors(serverStream::hasNext);
-          }
-
-          @Override
-          public WatchEvent next() {
-            if (!hasNext()) throw new NoSuchElementException();
-            WatchResponse resp = mapStreamErrors(serverStream::next);
-            List<Update> batch = new ArrayList<>(resp.getUpdatesCount());
-            for (var u : resp.getUpdatesList()) {
-              batch.add(updateFromProto(u));
-            }
-            return new WatchEvent(
-                batch, resp.getChangesThrough().getToken(), resp.getIsCheckpoint());
-          }
-        };
-
-    return cancelOnClose(
-        StreamSupport.stream(
-            Spliterators.spliteratorUnknownSize(iterator, Spliterator.ORDERED), false),
-        cancelCtx);
+      List<String> objectTypes, ZedToken startRevision, WatchOptions options) {
+    if (options == null) throw new InvalidArgumentException("options must not be null");
+    if (objectTypes != null && !objectTypes.isEmpty() && !options.relationshipFilters().isEmpty())
+      throw new InvalidArgumentException(
+          "objectTypes and relationshipFilters are mutually exclusive");
+    var b = WatchRequest.newBuilder();
+    for (var filter : options.relationshipFilters())
+      b.addOptionalRelationshipFilters(toRelationshipFilter(filter));
+    if (objectTypes != null) b.addAllOptionalObjectTypes(List.copyOf(objectTypes));
+    if (startRevision != null)
+      b.setOptionalStartCursor(
+          build.buf.gen.authzed.api.v1.ZedToken.newBuilder().setToken(startRevision.value()));
+    if (options.content() == WatchContent.RELATIONSHIPS_AND_CHECKPOINTS)
+      b.addOptionalUpdateKinds(WatchKind.WATCH_KIND_INCLUDE_RELATIONSHIP_UPDATES)
+          .addOptionalUpdateKinds(WatchKind.WATCH_KIND_INCLUDE_CHECKPOINTS);
+    return lazyStream(
+        () -> watchStub.watch(b.build()),
+        r ->
+            new WatchEvent(
+                r.getUpdatesList().stream().map(this::updateFromProto).toList(),
+                (r.hasChangesThrough() ? new ZedToken(r.getChangesThrough().getToken()) : null),
+                r.getIsCheckpoint()),
+        options.timeout(),
+        0);
   }
 
   // -----------------------------------------------------------------------
@@ -1774,29 +1175,20 @@ public final class SpiceDBClient implements AutoCloseable {
   // compatibility mandate
   // -----------------------------------------------------------------------
 
-  /**
-   * Registers a named counter that tracks relationships matching the given filter. The counter is
-   * computed asynchronously by SpiceDB.
-   *
-   * <p><b>Experimental:</b> this API may change without notice.
-   */
   public void experimentalRegisterRelationshipCounter(String name, Filter filter) {
-    experimentalRegisterRelationshipCounter(name, filter, null);
+    experimentalRegisterRelationshipCounter(name, filter, CallOptions.builder().build());
   }
 
-  /**
-   * As {@link #experimentalRegisterRelationshipCounter(String, Filter)}, with a per-call {@code
-   * timeout} overriding the client's default (see {@link #DEFAULT_TIMEOUT}).
-   *
-   * <p><b>Experimental:</b> this API may change without notice.
-   */
   public void experimentalRegisterRelationshipCounter(
-      String name, Filter filter, Duration timeout) {
-    long timeoutMs = effectiveTimeout(timeout).toMillis();
+      String name, Filter filter, CallOptions options) {
+    if (options == null) throw new InvalidArgumentException("options must not be null");
+    Duration timeout = options.timeout();
+    var deadline =
+        io.grpc.Deadline.after(effectiveTimeout(timeout).toNanos(), TimeUnit.NANOSECONDS);
     callOnce(
         () ->
             experimentalStub
-                .withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS)
+                .withDeadline(deadline)
                 .experimentalRegisterRelationshipCounter(
                     ExperimentalRegisterRelationshipCounterRequest.newBuilder()
                         .setName(name)
@@ -1804,63 +1196,50 @@ public final class SpiceDBClient implements AutoCloseable {
                         .build()));
   }
 
-  /** Result of an {@link #experimentalCountRelationships} call. */
-  public record CountResult(long relationshipCount, String revision, boolean stillCalculating) {}
+  public record CountResult(long relationshipCount, ZedToken revision, boolean stillCalculating) {}
 
-  /**
-   * Reads the value of a previously registered relationship counter.
-   *
-   * <p><b>Experimental:</b> this API may change without notice.
-   */
   public CountResult experimentalCountRelationships(String name) {
-    return experimentalCountRelationships(name, null);
+    return experimentalCountRelationships(name, CallOptions.builder().build());
   }
 
-  /**
-   * As {@link #experimentalCountRelationships(String)}, with a per-call {@code timeout} overriding
-   * the client's default (see {@link #DEFAULT_TIMEOUT}).
-   *
-   * <p><b>Experimental:</b> this API may change without notice.
-   */
-  public CountResult experimentalCountRelationships(String name, Duration timeout) {
-    long timeoutMs = effectiveTimeout(timeout).toMillis();
+  public CountResult experimentalCountRelationships(String name, CallOptions options) {
+    if (options == null) throw new InvalidArgumentException("options must not be null");
+    Duration timeout = options.timeout();
+    var deadline =
+        io.grpc.Deadline.after(effectiveTimeout(timeout).toNanos(), TimeUnit.NANOSECONDS);
     ExperimentalCountRelationshipsResponse resp =
         withRetry(
+            deadline,
             () ->
                 experimentalStub
-                    .withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS)
+                    .withDeadline(deadline)
                     .experimentalCountRelationships(
                         ExperimentalCountRelationshipsRequest.newBuilder().setName(name).build()));
 
     if (resp.getCounterStillCalculating()) {
-      return new CountResult(0, "", true);
+      return new CountResult(0, null, true);
     }
 
     var cv = resp.getReadCounterValue();
-    return new CountResult(cv.getRelationshipCount(), cv.getReadAt().getToken(), false);
+    return new CountResult(
+        cv.getRelationshipCount(),
+        (cv.hasReadAt() ? new ZedToken(cv.getReadAt().getToken()) : null),
+        false);
   }
 
-  /**
-   * Removes a previously registered relationship counter.
-   *
-   * <p><b>Experimental:</b> this API may change without notice.
-   */
   public void experimentalUnregisterRelationshipCounter(String name) {
-    experimentalUnregisterRelationshipCounter(name, null);
+    experimentalUnregisterRelationshipCounter(name, CallOptions.builder().build());
   }
 
-  /**
-   * As {@link #experimentalUnregisterRelationshipCounter(String)}, with a per-call {@code timeout}
-   * overriding the client's default (see {@link #DEFAULT_TIMEOUT}).
-   *
-   * <p><b>Experimental:</b> this API may change without notice.
-   */
-  public void experimentalUnregisterRelationshipCounter(String name, Duration timeout) {
-    long timeoutMs = effectiveTimeout(timeout).toMillis();
+  public void experimentalUnregisterRelationshipCounter(String name, CallOptions options) {
+    if (options == null) throw new InvalidArgumentException("options must not be null");
+    Duration timeout = options.timeout();
+    var deadline =
+        io.grpc.Deadline.after(effectiveTimeout(timeout).toNanos(), TimeUnit.NANOSECONDS);
     callOnce(
         () ->
             experimentalStub
-                .withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS)
+                .withDeadline(deadline)
                 .experimentalUnregisterRelationshipCounter(
                     ExperimentalUnregisterRelationshipCounterRequest.newBuilder()
                         .setName(name)
@@ -1871,51 +1250,176 @@ public final class SpiceDBClient implements AutoCloseable {
   // Escape hatch
   // -----------------------------------------------------------------------
 
+  /** Experimental bitmap lookup; this RPC does not support context, debug or pagination. */
+  public Materialize.RoaringLookupResourcesResult experimentalRoaringLookupResources(
+      Consistency consistency, String resourceType, String permission, SubjectRef subject) {
+    return experimentalRoaringLookupResources(
+        consistency, resourceType, permission, subject, LookupOptions.builder().build());
+  }
+
+  public Materialize.RoaringLookupResourcesResult experimentalRoaringLookupResources(
+      Consistency consistency,
+      String resourceType,
+      String permission,
+      SubjectRef subject,
+      LookupOptions options) {
+    if (options == null) throw new InvalidArgumentException("options must not be null");
+    if (options.subjectRelation() != null
+        || options.context() != null
+        || options.debug() == LookupDebug.ENABLED
+        || options.limit() != 0
+        || options.pageSize() != 512)
+      throw new InvalidArgumentException(
+          "roaring lookup does not support context, debug, limit or pageSize");
+    var deadline =
+        io.grpc.Deadline.after(effectiveTimeout(options.timeout()).toNanos(), TimeUnit.NANOSECONDS);
+    var request =
+        build.buf.gen.authzed.api.materialize.v0.ExperimentalRoaringLookupResourcesRequest
+            .newBuilder()
+            .setConsistency(consistency.toProto())
+            .setResourceObjectType(resourceType)
+            .setPermission(permission)
+            .setSubject(subjectProto(subject))
+            .build();
+    var response =
+        withRetry(
+            deadline,
+            () ->
+                build.buf.gen.authzed.api.materialize.v0.RoaringLookupResourcesServiceGrpc
+                    .newBlockingStub(authenticatedChannel)
+                    .withDeadline(deadline)
+                    .experimentalRoaringLookupResources(request));
+    return new Materialize.RoaringLookupResourcesResult(
+        response.getBitmap().toByteArray(),
+        response.getCardinality(),
+        (response.hasAtRevision() ? new ZedToken(response.getAtRevision().getToken()) : null));
+  }
+
+  /** Experimental direct filter count. */
+  public CountResult experimentalCountRelationshipsByFilter(Filter filter) {
+    return experimentalCountRelationshipsByFilter(filter, CallOptions.builder().build());
+  }
+
+  public CountResult experimentalCountRelationshipsByFilter(Filter filter, CallOptions options) {
+    if (options == null) throw new InvalidArgumentException("options must not be null");
+    var deadline =
+        io.grpc.Deadline.after(effectiveTimeout(options.timeout()).toNanos(), TimeUnit.NANOSECONDS);
+    var request =
+        build.buf.gen.authzed.api.materialize.v0.ExperimentalCountRelationshipsByFilterRequest
+            .newBuilder()
+            .setRelationshipFilter(toRelationshipFilter(filter))
+            .build();
+    var response =
+        withRetry(
+            deadline,
+            () ->
+                build.buf.gen.authzed.api.materialize.v0.RelationshipsServiceGrpc.newBlockingStub(
+                        authenticatedChannel)
+                    .withDeadline(deadline)
+                    .experimentalCountRelationshipsByFilter(request));
+    return new CountResult(
+        response.getRelationshipCount(),
+        (response.hasReadAt() ? new ZedToken(response.getReadAt().getToken()) : null),
+        false);
+  }
+
+  /** Experimental closeable permission-set watch; null starts at head. */
+  public Stream<Materialize.PermissionSetEvent> experimentalWatchPermissionSets(
+      ZedToken startRevision) {
+    return experimentalWatchPermissionSets(startRevision, CallOptions.builder().build());
+  }
+
+  public Stream<Materialize.PermissionSetEvent> experimentalWatchPermissionSets(
+      ZedToken startRevision, CallOptions options) {
+    if (options == null) throw new InvalidArgumentException("options must not be null");
+    var b = build.buf.gen.authzed.api.materialize.v0.WatchPermissionSetsRequest.newBuilder();
+    if (startRevision != null)
+      b.setOptionalStartingAfter(
+          build.buf.gen.authzed.api.v1.ZedToken.newBuilder().setToken(startRevision.value()));
+    return lazyStream(
+        () ->
+            build.buf.gen.authzed.api.materialize.v0.WatchPermissionSetsServiceGrpc.newBlockingStub(
+                    authenticatedChannel)
+                .watchPermissionSets(b.build()),
+        Materialize::event,
+        options.timeout(),
+        0);
+  }
+
+  /** Experimental snapshot lookup with explicit opaque continuation. */
+  public Stream<Materialize.LookupPermissionSet> experimentalLookupPermissionSets(
+      ZedToken atRevision) {
+    return experimentalLookupPermissionSets(atRevision, PermissionSetOptions.builder().build());
+  }
+
+  public Stream<Materialize.LookupPermissionSet> experimentalLookupPermissionSets(
+      ZedToken atRevision, PermissionSetOptions options) {
+    if (options == null) throw new InvalidArgumentException("options must not be null");
+    var b =
+        build.buf.gen.authzed.api.materialize.v0.LookupPermissionSetsRequest.newBuilder()
+            .setLimit(options.limit());
+    if (atRevision != null)
+      b.setOptionalAtRevision(
+          build.buf.gen.authzed.api.v1.ZedToken.newBuilder().setToken(atRevision.value()));
+    if (options.resumeCursor() != null)
+      try {
+        b.setOptionalStartingAfterCursor(
+            build.buf.gen.authzed.api.materialize.v0.Cursor.parseFrom(
+                Base64.getDecoder().decode(options.resumeCursor())));
+      } catch (Exception e) {
+        throw new InvalidArgumentException("invalid permission-set cursor", e);
+      }
+    return lazyStream(
+        () ->
+            build.buf.gen.authzed.api.materialize.v0.WatchPermissionSetsServiceGrpc.newBlockingStub(
+                    authenticatedChannel)
+                .lookupPermissionSets(b.build()),
+        r ->
+            new Materialize.LookupPermissionSet(
+                r.hasChange() ? Materialize.change(r.getChange()) : null,
+                r.hasCursor()
+                    ? Base64.getEncoder().encodeToString(r.getCursor().toByteArray())
+                    : null),
+        options.timeout(),
+        options.limit());
+  }
+
   /**
-   * Escape hatch: this client's own gRPC {@link Channel}, already carrying its bearer metadata.
-   *
-   * <p>Clearly-marked <b>secondary</b> API. Root DESIGN.md's "What NOT To Do" keeps channels, stubs
-   * and metadata out of the primary surface and permits exactly this -- "escape hatches for
-   * advanced use are acceptable as clearly marked secondary API" -- so that a request the idiomatic
-   * methods cannot express (an RPC or proto field not wrapped here, such as {@code
-   * WriteRelationshipsRequest.optionalTransactionMetadata}, or the single-check {@code
-   * CheckPermission} RPC that {@link #checkPermission} deliberately routes around) has a workaround
-   * short of forking the client. Build any generated stub on it:
-   *
-   * <pre>{@code
-   * var stub = PermissionsServiceGrpc.newBlockingStub(client.rawChannel());
-   * CheckPermissionResponse response = stub.checkPermission(request);
-   * }</pre>
-   *
-   * <p>A {@link Channel} rather than the stubs themselves, because it is strictly more: every
-   * generated stub -- including for a service this client does not wrap -- is one {@code newStub}
-   * call away from it, and the bearer token still comes free, since the returned channel attaches
-   * this client's metadata to every call made through it. Prefer it over rebuilding a {@link
-   * ManagedChannel} of your own: that means replicating this client's transport configuration
-   * exactly (including anything a {@link ClientOption} did to the builder) and re-attaching the
-   * token by hand, and getting either wrong gives you different transport security on the raw path
-   * while the call site reads as though it were the same connection.
-   *
-   * <p>Four things to know before reaching for it. A raw call is a raw call: no {@link
-   * SpiceDBException} mapping (you catch {@link StatusRuntimeException}), no retry, and no {@link
-   * #DEFAULT_TIMEOUT} -- call {@code withDeadlineAfter} yourself. The connection belongs to this
-   * client: {@link #close()} shuts it down, and a stub built here must not outlive it. And there is
-   * no stability promise beyond grpc-java's and the generated code's.
-   *
-   * <p><b>The lifecycle stays here, and not merely by declaration.</b> What is returned is the
-   * wrapper {@code ClientInterceptors.intercept} builds -- a package-private {@code Channel}
-   * subclass holding the real channel as an unreachable delegate -- so {@code (ManagedChannel)
-   * client.rawChannel()} throws {@link ClassCastException} rather than handing out {@code
-   * shutdown()}. The {@code Channel} return type is what makes that honest at compile time; the
-   * wrapper is what makes it true at runtime. Returning the bare channel from here, still typed
-   * {@code Channel}, would compile, keep every sentence above true, and quietly give every caller a
-   * downcast to the client's own connection -- so do not "simplify" it that way.
-   *
-   * <p>It is an accessor, never a constructor: it takes no endpoint, preshared key, or transport
-   * setting and hands back a channel that already exists, so it cannot become a second construction
-   * path around the guard in {@link #create(String, String, ClientOption...)} -- root DESIGN.md,
-   * "RULE: Credentials over insecure transport require an explicit opt-in".
+   * Experimental file manifest download. URLs are returned without initiating network transfers.
    */
+  public Materialize.DownloadPermissionSetsResult experimentalDownloadPermissionSets(
+      ZedToken atRevision) {
+    return experimentalDownloadPermissionSets(atRevision, CallOptions.builder().build());
+  }
+
+  public Materialize.DownloadPermissionSetsResult experimentalDownloadPermissionSets(
+      ZedToken atRevision, CallOptions options) {
+    if (options == null) throw new InvalidArgumentException("options must not be null");
+    var deadline =
+        io.grpc.Deadline.after(effectiveTimeout(options.timeout()).toNanos(), TimeUnit.NANOSECONDS);
+    var b = build.buf.gen.authzed.api.materialize.v0.DownloadPermissionSetsRequest.newBuilder();
+    if (atRevision != null)
+      b.setOptionalAtRevision(
+          build.buf.gen.authzed.api.v1.ZedToken.newBuilder().setToken(atRevision.value()));
+    var r =
+        withRetry(
+            deadline,
+            () ->
+                build.buf.gen.authzed.api.materialize.v0.WatchPermissionSetsServiceGrpc
+                    .newBlockingStub(authenticatedChannel)
+                    .withDeadline(deadline)
+                    .downloadPermissionSets(b.build()));
+    return new Materialize.DownloadPermissionSetsResult(
+        r.getFilesList().stream()
+            .map(file -> new Materialize.DownloadFile(file.getName(), file.getUrl()))
+            .toList(),
+        r.hasTimestamp()
+            ? Instant.ofEpochSecond(r.getTimestamp().getSeconds(), r.getTimestamp().getNanos())
+            : null,
+        r.hasAtRevision() ? new ZedToken(r.getAtRevision().getToken()) : null);
+  }
+
+  /** Already-authenticated transport escape hatch. Closing it is not ownership transfer. */
   public Channel rawChannel() {
     return authenticatedChannel;
   }
@@ -1926,6 +1430,8 @@ public final class SpiceDBClient implements AutoCloseable {
 
   @Override
   public void close() {
+    closed = true;
+    for (var scope : List.copyOf(activeStreams)) scope.close();
     channel.shutdown();
     try {
       if (!channel.awaitTermination(5, TimeUnit.SECONDS)) {
@@ -1941,11 +1447,6 @@ public final class SpiceDBClient implements AutoCloseable {
   // Internal helpers
   // -----------------------------------------------------------------------
 
-  /**
-   * Resolves a per-call {@code timeout} override against {@link #defaultTimeout}. {@code null}
-   * means "use the client default" -- there is deliberately no way to make an unbounded unary call.
-   * See root DESIGN.md, "RULE: A unary call must have a deadline".
-   */
   private Duration effectiveTimeout(Duration timeout) {
     return timeout != null ? timeout : defaultTimeout;
   }
@@ -1958,34 +1459,21 @@ public final class SpiceDBClient implements AutoCloseable {
     return metadata;
   }
 
-  /** Retry with exponential backoff for transient gRPC errors. */
   @FunctionalInterface
   private interface RetryableCall<T> {
     T call();
   }
 
-  /**
-   * Runs a blocking mid-stream operation (e.g. {@code serverStream.hasNext()}/{@code next()}),
-   * mapping any {@link StatusRuntimeException} it throws to a typed {@link SpiceDBException}.
-   *
-   * <p>Unlike {@link #withRetry}, this does NOT retry — mid-stream errors (including transient
-   * ones) are not safely retryable without re-issuing the whole call, since some results may have
-   * already been delivered to the consumer.
-   */
   private static <T> T mapStreamErrors(java.util.function.Supplier<T> op) {
     try {
       return op.get();
     } catch (StatusRuntimeException e) {
+      if (Thread.currentThread().isInterrupted())
+        throw new java.util.concurrent.CancellationException("operation interrupted");
       throw ErrorMapper.toSpiceDBException(e);
     }
   }
 
-  /**
-   * Registers an {@code onClose} handler that cancels {@code cancelCtx} (and, transitively, any
-   * gRPC call bound to it) when the returned stream is closed. Used by the lazy streaming methods
-   * to make {@code close()} actually cancel the underlying server-streaming call, rather than
-   * leaving it open server-side.
-   */
   private static <T> Stream<T> cancelOnClose(
       Stream<T> stream, Context.CancellableContext cancelCtx) {
     return stream.onClose(
@@ -1994,34 +1482,52 @@ public final class SpiceDBClient implements AutoCloseable {
                 Status.CANCELLED.withDescription("stream closed by caller").asRuntimeException()));
   }
 
-  /**
-   * Full-jitter backoff delay in milliseconds: {@code uniform(0, cap)} rather than the fixed {@code
-   * cap}. Without jitter, every client in a fleet retries on the same schedule after a server
-   * restart, turning the recovery into a thundering herd; sampling uniformly under the cap spreads
-   * retries out instead.
-   */
   private static long jitteredBackoffMs(long cap) {
     return (long) (ThreadLocalRandom.current().nextDouble() * cap);
   }
 
-  /**
-   * Retries {@code call} with full-jitter exponential backoff for transient gRPC errors. Only for
-   * idempotent (read) calls -- see {@link #callOnce} for mutations.
-   */
   private <T> T withRetry(RetryableCall<T> call) {
+    return withRetry(Context.current().getDeadline(), call);
+  }
+
+  private <T> T withRetry(io.grpc.Deadline deadline, RetryableCall<T> call) {
     long backoff = INITIAL_BACKOFF_MS;
     for (int attempt = 0; attempt < MAX_RETRIES; attempt++) {
+      if (deadline != null && deadline.isExpired())
+        throw ErrorMapper.toSpiceDBException(Status.DEADLINE_EXCEEDED.asRuntimeException());
+      if (closed) throw new java.util.concurrent.CancellationException("client closed");
       try {
+        if (Thread.currentThread().isInterrupted())
+          throw new java.util.concurrent.CancellationException("operation interrupted");
         return call.call();
       } catch (StatusRuntimeException e) {
+        if (Thread.currentThread().isInterrupted())
+          throw new java.util.concurrent.CancellationException("operation interrupted");
         if (!ErrorMapper.isTransient(e) || attempt == MAX_RETRIES - 1) {
           throw ErrorMapper.toSpiceDBException(e);
         }
         try {
-          Thread.sleep(jitteredBackoffMs(backoff));
+          long pause =
+              deadline == null
+                  ? jitteredBackoffMs(backoff)
+                  : Math.max(
+                      0,
+                      Math.min(
+                          jitteredBackoffMs(backoff),
+                          deadline.timeRemaining(TimeUnit.MILLISECONDS)));
+          long until = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(pause);
+          while (System.nanoTime() < until) {
+            if (closed
+                || (Context.current().isCancelled() && (deadline == null || !deadline.isExpired())))
+              throw new java.util.concurrent.CancellationException(
+                  "operation cancelled during backoff");
+            Thread.sleep(
+                Math.max(
+                    1, Math.min(10, TimeUnit.NANOSECONDS.toMillis(until - System.nanoTime()))));
+          }
         } catch (InterruptedException ie) {
           Thread.currentThread().interrupt();
-          throw ErrorMapper.toSpiceDBException(e);
+          throw new java.util.concurrent.CancellationException("interrupted during retry");
         }
         backoff *= 2;
       }
@@ -2029,45 +1535,18 @@ public final class SpiceDBClient implements AutoCloseable {
     throw new SpiceDBException("unreachable");
   }
 
-  /**
-   * Runs {@code call} once, converting a {@link StatusRuntimeException}, but never retrying.
-   *
-   * <p>For mutations. A {@code WriteRelationships} containing {@code OPERATION_CREATE}, or any
-   * request carrying preconditions, is not idempotent: if it commits and the response is lost (a
-   * rolling restart, a proxy dropping the connection), a retry would surface {@code
-   * ALREADY_EXISTS}/{@code FAILED_PRECONDITION} for a write that in fact succeeded, and the caller
-   * would wrongly conclude it had failed. See root DESIGN.md, "Automatic retry is for idempotent
-   * operations only".
-   */
   private <T> T callOnce(RetryableCall<T> call) {
     try {
+      if (Thread.currentThread().isInterrupted())
+        throw new java.util.concurrent.CancellationException("operation interrupted");
       return call.call();
     } catch (StatusRuntimeException e) {
+      if (Thread.currentThread().isInterrupted())
+        throw new java.util.concurrent.CancellationException("operation interrupted");
       throw ErrorMapper.toSpiceDBException(e);
     }
   }
 
-  /**
-   * Opens a server-streaming RPC and makes stream/page ESTABLISHMENT effectively retryable on
-   * transient errors, reusing {@link #withRetry}'s transient predicate, {@code MAX_RETRIES}, and
-   * backoff verbatim (no divergent retry policy).
-   *
-   * <p>For grpc-java's blocking stub, {@code stub.someStreamingMethod(request)} never throws — it
-   * only enqueues the call and returns an {@link Iterator}; the RPC's actual outcome (including a
-   * transient {@code UNAVAILABLE}/{@code ABORTED}) only surfaces on the iterator's first {@code
-   * hasNext()}/{@code next()} call. Wrapping only the stub call in {@link #withRetry} (the old
-   * code) therefore never actually retries anything — the exception always escapes on the caller's
-   * first poll, past the retry loop. This method fixes that by folding the priming {@code
-   * hasNext()} call INTO the retried unit of work: if it throws a transient error, {@link
-   * #withRetry} re-issues {@code openCall} (a fresh RPC, e.g. from the same page cursor) after
-   * backoff, exactly as it would for a unary call.
-   *
-   * <p><b>No-replay guarantee:</b> this method must only ever be used to open a stream/page BEFORE
-   * any item has been handed to the caller. Once it returns, the returned iterator is primed (its
-   * first {@code hasNext()} result is already cached), and every subsequent poll MUST go through
-   * {@link #mapStreamErrors} — not this method — since re-opening after an item has already been
-   * yielded would replay/duplicate it.
-   */
   private <T> Iterator<T> openStreamWithRetry(RetryableCall<Iterator<T>> openCall) {
     return withRetry(
         () -> {
@@ -2079,110 +1558,220 @@ public final class SpiceDBClient implements AutoCloseable {
         });
   }
 
-  private Stream<Relationship> paginatedRelationshipStream(
-      Consistency consistency, Filter filter, int pageSize) {
-    Context.CancellableContext cancelCtx = Context.current().withCancellation();
-    Iterator<Relationship> iterator =
-        new Iterator<>() {
-          private Cursor cursor = null;
-          private final List<Relationship> buffer = new ArrayList<>();
-          private int bufferIndex = 0;
-          private boolean done = false;
+  private final Set<StreamScope> activeStreams = java.util.concurrent.ConcurrentHashMap.newKeySet();
+  private volatile boolean closed;
+  private static final java.util.concurrent.ScheduledExecutorService DEADLINES =
+      java.util.concurrent.Executors.newSingleThreadScheduledExecutor(
+          r -> {
+            var t = new Thread(r, "spicedb-stream-deadlines");
+            t.setDaemon(true);
+            return t;
+          });
 
-          @Override
+  private final class StreamScope implements AutoCloseable {
+    final Duration timeout;
+    final Context parent = Context.current();
+    Context.CancellableContext context;
+    volatile boolean ended;
+
+    StreamScope(Duration timeout) {
+      this.timeout = timeout;
+      activeStreams.add(this);
+      if (closed) {
+        close();
+        throw new java.util.concurrent.CancellationException("client closed");
+      }
+    }
+
+    synchronized Context.CancellableContext context() {
+      if (ended) throw new java.util.concurrent.CancellationException("stream closed");
+      if (context == null)
+        context =
+            timeout == null
+                ? parent.withCancellation()
+                : parent.withDeadlineAfter(timeout.toNanos(), TimeUnit.NANOSECONDS, DEADLINES);
+      return context;
+    }
+
+    public synchronized void close() {
+      ended = true;
+      if (context != null) context.cancel(null);
+      activeStreams.remove(this);
+    }
+  }
+
+  private <T> Stream<T> managedStream(
+      java.util.function.Supplier<Iterator<T>> create, Duration timeout, long limit) {
+    var scope = new StreamScope(timeout);
+    var iterator =
+        new Iterator<T>() {
+          Iterator<T> delegate;
+          long emitted;
+          boolean done;
+
           public boolean hasNext() {
-            if (bufferIndex < buffer.size()) return true;
             if (done) return false;
-            fetchNextPage();
-            return bufferIndex < buffer.size();
-          }
-
-          @Override
-          public Relationship next() {
-            if (!hasNext()) throw new NoSuchElementException();
-            return buffer.get(bufferIndex++);
-          }
-
-          private void fetchNextPage() {
-            buffer.clear();
-            bufferIndex = 0;
-
-            var reqBuilder =
-                ReadRelationshipsRequest.newBuilder()
-                    .setConsistency(consistency.toProto())
-                    .setRelationshipFilter(toRelationshipFilter(filter))
-                    .setOptionalLimit(pageSize);
-
-            if (cursor != null) {
-              reqBuilder.setOptionalCursor(cursor);
-            }
-
-            Iterator<ReadRelationshipsResponse> serverStream;
-            Context previous = cancelCtx.attach();
-            try {
-              serverStream =
-                  openStreamWithRetry(() -> permissionsStub.readRelationships(reqBuilder.build()));
-            } finally {
-              cancelCtx.detach(previous);
-            }
-
-            while (mapStreamErrors(serverStream::hasNext)) {
-              ReadRelationshipsResponse resp = mapStreamErrors(serverStream::next);
-              cursor = resp.getAfterResultCursor();
-              buffer.add(fromProtoRelationship(resp.getRelationship()));
-            }
-
-            if (buffer.size() < pageSize) {
+            if (limit > 0 && emitted >= limit) {
               done = true;
+              scope.close();
+              return false;
+            }
+            var ctx = scope.context();
+            var previous = ctx.attach();
+            try {
+              if (Thread.currentThread().isInterrupted())
+                throw new java.util.concurrent.CancellationException("stream interrupted");
+              if (delegate == null) delegate = create.get();
+              boolean more = mapStreamErrors(delegate::hasNext);
+              if (!more) {
+                done = true;
+                scope.close();
+              }
+              return more;
+            } catch (RuntimeException e) {
+              boolean local = scope.ended;
+              scope.close();
+              if (local && e instanceof com.authzed.spicedb.errors.CancelledException)
+                throw new java.util.concurrent.CancellationException("stream cancelled");
+              throw e;
+            } finally {
+              ctx.detach(previous);
+            }
+          }
+
+          public T next() {
+            if (!hasNext()) throw new NoSuchElementException();
+            var ctx = scope.context();
+            var previous = ctx.attach();
+            try {
+              T value = mapStreamErrors(delegate::next);
+              emitted++;
+              return value;
+            } catch (RuntimeException e) {
+              boolean local = scope.ended;
+              scope.close();
+              if (local && e instanceof com.authzed.spicedb.errors.CancelledException)
+                throw new java.util.concurrent.CancellationException("stream cancelled");
+              throw e;
+            } finally {
+              ctx.detach(previous);
             }
           }
         };
-
-    return cancelOnClose(
-        StreamSupport.stream(
-            Spliterators.spliteratorUnknownSize(iterator, Spliterator.ORDERED), false),
-        cancelCtx);
+    return StreamSupport.stream(
+            Spliterators.spliteratorUnknownSize(iterator, Spliterator.ORDERED), false)
+        .onClose(scope::close);
   }
 
-  private static CheckBulkPermissionsRequestItem checkItemFromRel(
-      Relationship r, String permission, Map<String, Object> callLevelContext) {
+  private <P, T> Stream<T> lazyStream(
+      RetryableCall<Iterator<P>> open,
+      java.util.function.Function<P, T> convert,
+      Duration timeout,
+      long limit) {
+    return managedStream(
+        () -> {
+          var source = openStreamWithRetry(open);
+          return new Iterator<T>() {
+            public boolean hasNext() {
+              return source.hasNext();
+            }
+
+            public T next() {
+              return convert.apply(source.next());
+            }
+          };
+        },
+        timeout,
+        limit);
+  }
+
+  private <P, T> Stream<T> pagedStream(
+      java.util.function.Function<Cursor, Iterator<P>> open,
+      java.util.function.Function<P, Cursor> cursorOf,
+      java.util.function.Function<P, T> convert,
+      int pageSize,
+      long limit,
+      Duration timeout) {
+    return pagedStream(open, cursorOf, convert, response -> true, pageSize, limit, timeout);
+  }
+
+  private <P, T> Stream<T> pagedStream(
+      java.util.function.Function<Cursor, Iterator<P>> open,
+      java.util.function.Function<P, Cursor> cursorOf,
+      java.util.function.Function<P, T> convert,
+      java.util.function.Predicate<P> include,
+      int pageSize,
+      long limit,
+      Duration timeout) {
+    return managedStream(
+        () ->
+            new Iterator<T>() {
+              P pending;
+              Iterator<P> page = Collections.emptyIterator();
+              Cursor cursor;
+              int count;
+              boolean opened, done;
+
+              public boolean hasNext() {
+                if (pending != null) return true;
+                while (!done) {
+                  while (page.hasNext()) {
+                    var response = page.next();
+                    count++;
+                    cursor = cursorOf.apply(response);
+                    if (include.test(response)) {
+                      pending = response;
+                      return true;
+                    }
+                  }
+                  if (opened && count < pageSize) {
+                    done = true;
+                    return false;
+                  }
+                  page = openStreamWithRetry(() -> open.apply(cursor));
+                  opened = true;
+                  count = 0;
+                }
+                return false;
+              }
+
+              public T next() {
+                if (!hasNext()) throw new NoSuchElementException();
+                var response = pending;
+                pending = null;
+                return convert.apply(response);
+              }
+            },
+        timeout,
+        limit);
+  }
+
+  private static CheckBulkPermissionsRequestItem checkItem(
+      PermissionCheck r, Map<String, Object> defaults) {
     var builder =
         CheckBulkPermissionsRequestItem.newBuilder()
-            .setResource(
-                ObjectReference.newBuilder()
-                    .setObjectType(r.resourceType())
-                    .setObjectId(r.resourceID())
-                    .build())
-            .setPermission(permission)
-            .setSubject(
-                SubjectReference.newBuilder()
-                    .setObject(
-                        ObjectReference.newBuilder()
-                            .setObjectType(r.subjectType())
-                            .setObjectId(r.subjectID())
-                            .build())
-                    .setOptionalRelation(r.subjectRelation() != null ? r.subjectRelation() : "")
-                    .build());
-
-    // CHECK-TIME context only -- r.caveatContext() (write-time) is never read here. See
-    // mergeCheckContext for the key-level, item-wins merge rule.
-    Map<String, Object> merged = mergeCheckContext(callLevelContext, r.checkContext());
-    if (merged != null) {
-      builder.setContext(toProtoStruct(merged));
-    }
+            .setResource(objectProto(r.resource()))
+            .setPermission(r.permission())
+            .setSubject(subjectProto(r.subject()));
+    var context = mergeCheckContext(defaults, r.context());
+    if (context != null) builder.setContext(toProtoStruct(context));
     return builder.build();
   }
 
-  /**
-   * Merges call-level and per-item CHECK-TIME caveat context using a key-level merge where the
-   * item's keys win: {@code {...callLevel, ...item}}. Call-level keys absent from {@code item} are
-   * retained -- this is NOT wholesale replacement, since an item supplying one key must not
-   * silently drop every call-level key (the caveat would then fail to evaluate for the dropped
-   * keys, landing the caller back in the confusing CONDITIONAL_PERMISSION state this contract
-   * exists to make legible). Returns {@code null} (never an empty map) when both inputs are
-   * null/empty, so the caller knows to omit the wire {@code context} field entirely rather than
-   * sending an empty {@code Struct}.
-   */
+  private static ObjectReference objectProto(ObjectRef object) {
+    return ObjectReference.newBuilder()
+        .setObjectType(object.objectType())
+        .setObjectId(object.objectId())
+        .build();
+  }
+
+  private static SubjectReference subjectProto(SubjectRef subject) {
+    return SubjectReference.newBuilder()
+        .setObject(objectProto(subject.object()))
+        .setOptionalRelation(subject.relation() == null ? "" : subject.relation())
+        .build();
+  }
+
   private static Map<String, Object> mergeCheckContext(
       Map<String, Object> callLevel, Map<String, Object> item) {
     boolean callEmpty = callLevel == null || callLevel.isEmpty();
@@ -2200,7 +1789,6 @@ public final class SpiceDBClient implements AutoCloseable {
     return merged;
   }
 
-  /** Converts a check-time context map to a proto {@code Struct}, reusing {@link #toProtoValue}. */
   private static com.google.protobuf.Struct toProtoStruct(Map<String, Object> context) {
     var builder = com.google.protobuf.Struct.newBuilder();
     for (var entry : context.entrySet()) {
@@ -2239,18 +1827,19 @@ public final class SpiceDBClient implements AutoCloseable {
         build.buf.gen.authzed.api.v1.Relationship.newBuilder()
             .setResource(
                 ObjectReference.newBuilder()
-                    .setObjectType(r.resourceType())
-                    .setObjectId(r.resourceID())
+                    .setObjectType(r.resource().objectType())
+                    .setObjectId(r.resource().objectId())
                     .build())
-            .setRelation(r.resourceRelation())
+            .setRelation(r.relation())
             .setSubject(
                 SubjectReference.newBuilder()
                     .setObject(
                         ObjectReference.newBuilder()
-                            .setObjectType(r.subjectType())
-                            .setObjectId(r.subjectID())
+                            .setObjectType(r.subject().object().objectType())
+                            .setObjectId(r.subject().object().objectId())
                             .build())
-                    .setOptionalRelation(r.subjectRelation() != null ? r.subjectRelation() : "")
+                    .setOptionalRelation(
+                        r.subject().relation() != null ? r.subject().relation() : "")
                     .build());
 
     if (r.caveatName() != null && !r.caveatName().isEmpty()) {
@@ -2297,35 +1886,27 @@ public final class SpiceDBClient implements AutoCloseable {
               pr.getOptionalExpiresAt().getSeconds(), pr.getOptionalExpiresAt().getNanos());
     }
 
+    var object =
+        new ObjectRef(
+            pr.getSubject().getObject().getObjectType(), pr.getSubject().getObject().getObjectId());
+    var relation = pr.getSubject().getOptionalRelation();
     return new Relationship(
-        pr.getResource().getObjectType(),
-        pr.getResource().getObjectId(),
+        new ObjectRef(pr.getResource().getObjectType(), pr.getResource().getObjectId()),
         pr.getRelation(),
-        pr.getSubject().getObject().getObjectType(),
-        pr.getSubject().getObject().getObjectId(),
-        pr.getSubject().getOptionalRelation(),
+        relation.isEmpty() ? SubjectRef.direct(object) : SubjectRef.named(object, relation),
         caveatName,
         caveatContext,
-        expiration,
-        // checkContext is CHECK-TIME only and never round-trips through a write/read — a
-        // relationship read back from the server never carries it.
-        null);
+        expiration);
   }
 
-  /**
-   * Maps the proto {@code LookupPermissionship} enum to its native equivalent. Unrecognized values
-   * map to {@code UNSPECIFIED}.
-   */
-  private static LookupResult.Permissionship permissionshipFromProto(LookupPermissionship v) {
+  private static Permissionship permissionshipFromProto(LookupPermissionship v) {
     return switch (v) {
-      case LOOKUP_PERMISSIONSHIP_HAS_PERMISSION -> LookupResult.Permissionship.HAS_PERMISSION;
-      case LOOKUP_PERMISSIONSHIP_CONDITIONAL_PERMISSION ->
-          LookupResult.Permissionship.CONDITIONAL_PERMISSION;
-      default -> LookupResult.Permissionship.UNSPECIFIED;
+      case LOOKUP_PERMISSIONSHIP_HAS_PERMISSION -> Permissionship.HAS_PERMISSION;
+      case LOOKUP_PERMISSIONSHIP_CONDITIONAL_PERMISSION -> Permissionship.CONDITIONAL_PERMISSION;
+      default -> Permissionship.UNSPECIFIED;
     };
   }
 
-  /** Maps a proto {@code PartialCaveatInfo} to its native equivalent. A null input maps to null. */
   private static LookupResult.PartialCaveatInfo partialCaveatFromProto(
       build.buf.gen.authzed.api.v1.PartialCaveatInfo v) {
     if (v == null) {
@@ -2334,35 +1915,16 @@ public final class SpiceDBClient implements AutoCloseable {
     return new LookupResult.PartialCaveatInfo(List.copyOf(v.getMissingRequiredContextList()));
   }
 
-  /**
-   * Maps the proto {@code CheckPermissionResponse.Permissionship} enum to its native equivalent.
-   * Unlike {@code LookupPermissionship} (mapped by {@link #permissionshipFromProto}), this enum has
-   * a {@code NO_PERMISSION} value — the check surface answers a yes/no/conditional question about
-   * one specific pair, so "no" is itself an answer. Unrecognized values map to {@code UNSPECIFIED}.
-   */
-  private static LookupResult.Permissionship checkPermissionshipFromProto(
+  private static Permissionship checkPermissionshipFromProto(
       CheckPermissionResponse.Permissionship v) {
     return switch (v) {
-      case PERMISSIONSHIP_HAS_PERMISSION -> LookupResult.Permissionship.HAS_PERMISSION;
-      case PERMISSIONSHIP_CONDITIONAL_PERMISSION ->
-          LookupResult.Permissionship.CONDITIONAL_PERMISSION;
-      case PERMISSIONSHIP_NO_PERMISSION -> LookupResult.Permissionship.NO_PERMISSION;
-      default -> LookupResult.Permissionship.UNSPECIFIED;
+      case PERMISSIONSHIP_HAS_PERMISSION -> Permissionship.HAS_PERMISSION;
+      case PERMISSIONSHIP_CONDITIONAL_PERMISSION -> Permissionship.CONDITIONAL_PERMISSION;
+      case PERMISSIONSHIP_NO_PERMISSION -> Permissionship.NO_PERMISSION;
+      default -> Permissionship.UNSPECIFIED;
     };
   }
 
-  /**
-   * Wraps a per-item {@code google.rpc.Status} (from a bulk response pair) in a {@link
-   * StatusRuntimeException} that keeps the status's own details, so a per-item failure reaches the
-   * caller carrying the same structured reason an RPC-level failure does. See root DESIGN.md,
-   * "RULE: Error mapping must not lose the server's detail".
-   *
-   * <p>The status arrives as the BSR-generated {@code build.buf.gen.google.rpc.Status} while gRPC's
-   * own {@link StatusProto} works with {@code com.google.rpc.Status} -- two generated classes for
-   * the same message. They are bridged by a serialize/parse round-trip rather than a field-by-field
-   * copy, so no field can be forgotten as the message evolves. If the round-trip ever fails, the
-   * code and message still reach the caller as a typed exception; only the details are lost.
-   */
   private static StatusRuntimeException perItemStatusException(
       build.buf.gen.google.rpc.Status errorStatus, String messagePrefix) {
     String message = messagePrefix + errorStatus.getMessage();
@@ -2378,43 +1940,30 @@ public final class SpiceDBClient implements AutoCloseable {
     }
   }
 
-  /**
-   * Maps a proto {@code CheckBulkPermissionsResponseItem} (one pair's successful result from a
-   * CheckBulkPermissions call) to a native {@link CheckResult}. {@code
-   * CheckBulkPermissionsResponseItem} carries no per-item {@code checked_at} of its own — the token
-   * lives once on the enclosing {@code CheckBulkPermissionsResponse} and applies to every pair in
-   * it, so callers pass it in as {@code responseCheckedAt} to propagate onto each item.
-   */
   private static CheckResult checkResultFromBulkItem(
-      CheckBulkPermissionsResponseItem item, String responseCheckedAt) {
+      CheckBulkPermissionsResponseItem item, ZedToken responseCheckedAt) {
     return new CheckResult(
         checkPermissionshipFromProto(item.getPermissionship()),
         item.hasPartialCaveatInfo()
             ? item.getPartialCaveatInfo().getMissingRequiredContextList()
             : List.of(),
-        responseCheckedAt);
+        responseCheckedAt,
+        item.hasDebugTrace() ? DebugInformation.fromProto(item.getDebugTrace()) : null,
+        null);
   }
 
-  /**
-   * Maps a proto {@code LookupResourcesResponse} to a native {@link LookupResult.LookupResource}.
-   */
   private static LookupResult.LookupResource lookupResourceFromProto(LookupResourcesResponse resp) {
     return new LookupResult.LookupResource(
         resp.getResourceObjectId(),
         permissionshipFromProto(resp.getPermissionship()),
         partialCaveatFromProto(resp.hasPartialCaveatInfo() ? resp.getPartialCaveatInfo() : null),
-        resp.getLookedUpAt().getToken());
+        (resp.hasLookedUpAt() ? new ZedToken(resp.getLookedUpAt().getToken()) : null));
   }
 
-  /**
-   * Maps a proto {@code ResolvedSubject} to its native equivalent. A null input maps to a
-   * zero-value {@link LookupResult.ResolvedSubject} (empty {@code subjectId}), which callers use as
-   * the trigger for falling back to deprecated response-level fields.
-   */
   private static LookupResult.ResolvedSubject resolvedSubjectFromProto(
       build.buf.gen.authzed.api.v1.ResolvedSubject v) {
     if (v == null) {
-      return new LookupResult.ResolvedSubject("", LookupResult.Permissionship.UNSPECIFIED, null);
+      return new LookupResult.ResolvedSubject("", Permissionship.UNSPECIFIED, null);
     }
     return new LookupResult.ResolvedSubject(
         v.getSubjectObjectId(),
@@ -2422,13 +1971,6 @@ public final class SpiceDBClient implements AutoCloseable {
         partialCaveatFromProto(v.hasPartialCaveatInfo() ? v.getPartialCaveatInfo() : null));
   }
 
-  /**
-   * Maps a proto {@code LookupSubjectsResponse} to a native {@link LookupResult.LookupSubject},
-   * falling back to the deprecated {@code subject_object_id}/{@code permissionship}/{@code
-   * partial_caveat_info} fields when {@code subject} isn't populated (older servers), and to the
-   * deprecated {@code excluded_subject_ids} (IDs only, no permissionship/caveat info) when {@code
-   * excluded_subjects} isn't populated. Mirrors {@code spicedb-go}'s {@code lookup.go}.
-   */
   @SuppressWarnings("deprecation") // intentional fallback to deprecated fields, see below
   private static LookupResult.LookupSubject lookupSubjectFromProto(LookupSubjectsResponse resp) {
     LookupResult.ResolvedSubject subject =
@@ -2455,22 +1997,18 @@ public final class SpiceDBClient implements AutoCloseable {
       // permissionship/caveat info).
       excluded =
           resp.getExcludedSubjectIdsList().stream()
-              .map(
-                  id ->
-                      new LookupResult.ResolvedSubject(
-                          id, LookupResult.Permissionship.UNSPECIFIED, null))
+              .map(id -> new LookupResult.ResolvedSubject(id, Permissionship.UNSPECIFIED, null))
               .toList();
     } else {
       excluded = List.of();
     }
 
-    return new LookupResult.LookupSubject(subject, excluded, resp.getLookedUpAt().getToken());
+    return new LookupResult.LookupSubject(
+        subject,
+        excluded,
+        (resp.hasLookedUpAt() ? new ZedToken(resp.getLookedUpAt().getToken()) : null));
   }
 
-  /**
-   * Recursively maps a proto {@code PermissionRelationshipTree} to its native {@link
-   * PermissionTree} representation. A null input maps to a zero-value tree.
-   */
   static PermissionTree toPermissionTree(PermissionRelationshipTree t) {
     if (t == null) {
       return new PermissionTree(new PermissionTree.ObjectRef("", ""), "", null, null);
@@ -2510,7 +2048,6 @@ public final class SpiceDBClient implements AutoCloseable {
         leaf);
   }
 
-  /** Maps the proto algebraic set operation to its native equivalent. */
   private static PermissionTree.Operation toTreeOperation(AlgebraicSubjectSet.Operation op) {
     return switch (op) {
       case OPERATION_UNION -> PermissionTree.Operation.UNION;
@@ -2520,18 +2057,6 @@ public final class SpiceDBClient implements AutoCloseable {
     };
   }
 
-  /**
-   * Converts a {@link Filter} to its proto representation.
-   *
-   * @throws InvalidArgumentException if {@code subjectID} or {@code subjectRelation} is set without
-   *     {@code subjectType}. The wire's {@code SubjectFilter.subject_type} is a required field, so
-   *     there is no way to express a subject ID/relation constraint without it, which makes
-   *     silently dropping the constraint the one unsafe resolution: a caller who wrote {@code
-   *     Filter.of("document").withSubjectID("alice")}, expecting to narrow to alice's
-   *     relationships, would instead match every subject on every document -- e.g. {@code
-   *     deleteRelationships} would delete every relationship on every document, not just alice's.
-   *     See root DESIGN.md, "RULE: A conversion that cannot preserve meaning must fail", clause 1.
-   */
   private static RelationshipFilter toRelationshipFilter(Filter f) {
     var builder = RelationshipFilter.newBuilder().setResourceType(f.resourceType());
 
@@ -2545,7 +2070,7 @@ public final class SpiceDBClient implements AutoCloseable {
       builder.setOptionalRelation(f.relation());
     }
     boolean hasSubjectID = f.subjectID() != null && !f.subjectID().isEmpty();
-    boolean hasSubjectRelation = f.subjectRelation() != null && !f.subjectRelation().isEmpty();
+    boolean hasSubjectRelation = !(f.subjectRelation() instanceof SubjectRelationFilter.Any);
     if (f.subjectType() != null && !f.subjectType().isEmpty()) {
       var subjectBuilder = SubjectFilter.newBuilder().setSubjectType(f.subjectType());
       if (hasSubjectID) {
@@ -2553,7 +2078,10 @@ public final class SpiceDBClient implements AutoCloseable {
       }
       if (hasSubjectRelation) {
         subjectBuilder.setOptionalRelation(
-            SubjectFilter.RelationFilter.newBuilder().setRelation(f.subjectRelation()).build());
+            SubjectFilter.RelationFilter.newBuilder()
+                .setRelation(
+                    f.subjectRelation() instanceof SubjectRelationFilter.Named n ? n.name() : "")
+                .build());
       }
       builder.setOptionalSubjectFilter(subjectBuilder.build());
     } else if (hasSubjectID || hasSubjectRelation) {
@@ -2695,22 +2223,6 @@ public final class SpiceDBClient implements AutoCloseable {
     return new SchemaDiff("unknown", "", "", "", "");
   }
 
-  /**
-   * Converts a native Java value into a protobuf {@code Value} by dispatching on type, recursing
-   * into nested {@link Map}/{@link List} values. This is the single converter for caveat context on
-   * both surfaces: check-time (merged in {@link #mergeCheckContext}, sent via {@link
-   * #toProtoStruct}) and write-time (a relationship's stored {@code caveatContext}, in {@link
-   * #toProtoRelationship}). A numeric/boolean/null/nested value lands on its matching {@code kind}
-   * oneof case instead of being stringified, so a caveat comparing a typed parameter (e.g. a
-   * schema's {@code now < 100} against an {@code int}) evaluates correctly on either surface -- and
-   * on the write path, evaluates correctly on every future check against the stored relationship,
-   * since a bad write-time context is persisted rather than failing just once.
-   *
-   * @throws InvalidArgumentException if {@code value}'s type cannot be represented on the wire
-   *     (e.g. a custom class instance). Caveat context is caller-supplied, so per root {@code
-   *     DESIGN.md} "RULE: A conversion that cannot preserve meaning must fail", clause 1, this
-   *     raises a typed error naming the unsupported type instead of silently stringifying it.
-   */
   private static com.google.protobuf.Value toProtoValue(Object value) {
     if (value == null) {
       return com.google.protobuf.Value.newBuilder()
@@ -2746,14 +2258,6 @@ public final class SpiceDBClient implements AutoCloseable {
     }
   }
 
-  /**
-   * Calls {@link #toProtoValue} for one caveat-context entry, and -- if it throws {@link
-   * InvalidArgumentException} because {@code value}'s type cannot be represented -- re-raises with
-   * {@code key} named, so the caller can tell which entry in their context map needs fixing rather
-   * than just "some value, somewhere." For a nested {@link Map}, the innermost failure names its
-   * own (nested) key first, and each enclosing call adds its key in turn, so the message traces the
-   * full path to the offending entry.
-   */
   private static com.google.protobuf.Value toProtoValueForKey(String key, Object value) {
     try {
       return toProtoValue(value);
@@ -2762,13 +2266,7 @@ public final class SpiceDBClient implements AutoCloseable {
     }
   }
 
-  /**
-   * Converts a protobuf {@code Value} into a native Java value by dispatching on its {@code kind}
-   * oneof -- the read-side inverse of {@link #toProtoValue}, recursing into nested {@code
-   * Struct}/{@code ListValue} values so a relationship read back via {@link #fromProtoRelationship}
-   * doesn't lose the shape of a caveat context it wrote with {@link #toProtoValue}.
-   */
-  private static Object fromProtoValue(com.google.protobuf.Value value) {
+  static Object fromProtoValue(com.google.protobuf.Value value) {
     return switch (value.getKindCase()) {
       case NULL_VALUE -> null;
       case BOOL_VALUE -> value.getBoolValue();

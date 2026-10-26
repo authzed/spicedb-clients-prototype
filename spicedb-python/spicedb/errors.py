@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import grpc
 from google.protobuf import message as _proto_message
 from google.rpc import error_details_pb2, status_pb2
@@ -46,6 +48,9 @@ class SpiceDBError(Exception):
         reason_metadata: dict[str, str] | None = None,
     ) -> None:
         super().__init__(message)
+        self.status: Any = None
+        self.input_index: int | None = None
+        self.delete_progress: Any = None
         self.reason = reason
         self.reason_domain = reason_domain
         self.reason_metadata: dict[str, str] = dict(reason_metadata or {})
@@ -192,7 +197,7 @@ def _rich_status(err: grpc.RpcError) -> status_pb2.Status | None:
     return None
 
 
-def _reason_kwargs(status: status_pb2.Status | None) -> dict[str, object]:
+def _reason_kwargs(status: status_pb2.Status | None) -> dict[str, Any]:
     info = _error_info(status)
     if info is None:
         return {}
@@ -215,7 +220,9 @@ def to_spicedb_error(err: grpc.RpcError) -> SpiceDBError:
     """
     code = err.code()
     cls = _CODE_TO_ERROR.get(code, SpiceDBError)
-    return cls(err.details(), **_reason_kwargs(_rich_status(err)))
+    result = cls(err.details(), **_reason_kwargs(_rich_status(err)))
+    result.status = err
+    return result
 
 
 def error_from_status_proto(status: status_pb2.Status) -> SpiceDBError:
@@ -224,7 +231,9 @@ def error_from_status_proto(status: status_pb2.Status) -> SpiceDBError:
     reason instead of fabricating a generic error."""
     code = _INT_TO_STATUS_CODE.get(status.code)
     cls = _CODE_TO_ERROR.get(code, SpiceDBError) if code is not None else SpiceDBError
-    return cls(status.message, **_reason_kwargs(status))
+    result = cls(status.message, **_reason_kwargs(status))
+    result.status = status
+    return result
 
 
 def is_transient(err: Exception) -> bool:

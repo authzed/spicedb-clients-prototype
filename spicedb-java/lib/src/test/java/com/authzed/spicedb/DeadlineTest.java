@@ -69,11 +69,20 @@ class DeadlineTest {
 
     try (InProcessHarness harness = InProcessHarness.start(service, Duration.ofMillis(200))) {
       SpiceDBClient client = harness.client();
-      var rel = com.authzed.spicedb.Relationship.of("document", "doc1", "view", "user", "alice");
+      var rel =
+          com.authzed.spicedb.Relationship.of(
+              new ObjectRef("document", "doc1"),
+              "view",
+              SubjectRef.direct(new ObjectRef("user", "alice")));
 
       long start = System.nanoTime();
       Throwable thrown =
-          runWithWatchdog(() -> client.checkPermission(Consistency.full(), "view", rel));
+          runWithWatchdog(
+              () ->
+                  client
+                      .checkBulk(
+                          java.util.List.of(TestRequests.check(rel, "view", Consistency.full())))
+                      .get(0));
       long elapsedMs = (System.nanoTime() - start) / 1_000_000;
 
       assertInstanceOf(DeadlineExceededException.class, thrown, "got: " + thrown);
@@ -106,17 +115,21 @@ class DeadlineTest {
     try (InProcessHarness harness =
         InProcessHarness.start(service, Duration.ofMillis(STALL_MS * 10))) {
       SpiceDBClient client = harness.client();
-      var rel = com.authzed.spicedb.Relationship.of("document", "doc1", "view", "user", "alice");
+      var rel =
+          com.authzed.spicedb.Relationship.of(
+              new ObjectRef("document", "doc1"),
+              "view",
+              SubjectRef.direct(new ObjectRef("user", "alice")));
 
       long start = System.nanoTime();
       Throwable thrown =
           runWithWatchdog(
               () ->
-                  client.checkPermissionWithOptions(
-                      Consistency.full(),
-                      "view",
-                      rel,
-                      CheckOptions.none().withTimeout(Duration.ofMillis(200))));
+                  client
+                      .checkBulk(
+                          java.util.List.of(TestRequests.check(rel, "view", Consistency.full())),
+                          CheckOptions.builder().timeout(Duration.ofMillis(200)).build())
+                      .get(0));
       long elapsedMs = (System.nanoTime() - start) / 1_000_000;
 
       assertInstanceOf(DeadlineExceededException.class, thrown, "got: " + thrown);
@@ -145,6 +158,7 @@ class DeadlineTest {
                 CheckBulkPermissionsResponse.newBuilder()
                     .addPairs(
                         build.buf.gen.authzed.api.v1.CheckBulkPermissionsPair.newBuilder()
+                            .setRequest(request.getItems(0))
                             .setItem(
                                 build.buf.gen.authzed.api.v1.CheckBulkPermissionsResponseItem
                                     .newBuilder()
@@ -163,17 +177,21 @@ class DeadlineTest {
     // succeeding.
     try (InProcessHarness harness = InProcessHarness.start(service, Duration.ofMillis(200))) {
       SpiceDBClient client = harness.client();
-      var rel = com.authzed.spicedb.Relationship.of("document", "doc1", "view", "user", "alice");
+      var rel =
+          com.authzed.spicedb.Relationship.of(
+              new ObjectRef("document", "doc1"),
+              "view",
+              SubjectRef.direct(new ObjectRef("user", "alice")));
 
       long start = System.nanoTime();
       CheckResult result =
           runOrThrow(
               () ->
-                  client.checkPermissionWithOptions(
-                      Consistency.full(),
-                      "view",
-                      rel,
-                      CheckOptions.none().withTimeout(Duration.ofMillis(STALL_MS * 10))));
+                  client
+                      .checkBulk(
+                          java.util.List.of(TestRequests.check(rel, "view", Consistency.full())),
+                          CheckOptions.builder().timeout(Duration.ofMillis(STALL_MS * 10)).build())
+                      .get(0));
       long elapsedMs = (System.nanoTime() - start) / 1_000_000;
 
       assertTrue(result.hasPermission(), "expected a HAS_PERMISSION grant, got: " + result);
@@ -225,7 +243,11 @@ class DeadlineTest {
     // inherited it, this call would fail with DeadlineExceededException instead of completing.
     try (InProcessHarness harness = InProcessHarness.start(service, Duration.ofMillis(100))) {
       SpiceDBClient client = harness.client();
-      var rel = com.authzed.spicedb.Relationship.of("document", "doc1", "viewer", "user", "alice");
+      var rel =
+          com.authzed.spicedb.Relationship.of(
+              new ObjectRef("document", "doc1"),
+              "viewer",
+              SubjectRef.direct(new ObjectRef("user", "alice")));
 
       long start = System.nanoTime();
       long numLoaded = runOrThrow(() -> client.importRelationships(List.of(rel)));
@@ -272,11 +294,19 @@ class DeadlineTest {
 
     try (InProcessHarness harness = InProcessHarness.start(service, Duration.ofSeconds(30))) {
       SpiceDBClient client = harness.client();
-      var rel = com.authzed.spicedb.Relationship.of("document", "doc1", "viewer", "user", "alice");
+      var rel =
+          com.authzed.spicedb.Relationship.of(
+              new ObjectRef("document", "doc1"),
+              "viewer",
+              SubjectRef.direct(new ObjectRef("user", "alice")));
 
       long start = System.nanoTime();
       Throwable thrown =
-          runWithWatchdog(() -> client.importRelationships(List.of(rel), Duration.ofMillis(200)));
+          runWithWatchdog(
+              () ->
+                  client.importRelationships(
+                      List.of(rel),
+                      ImportOptions.builder().timeout(Duration.ofMillis(200)).build()));
       long elapsedMs = (System.nanoTime() - start) / 1_000_000;
 
       assertInstanceOf(DeadlineExceededException.class, thrown, "got: " + thrown);
@@ -338,7 +368,7 @@ class DeadlineTest {
       long elapsedMs = (System.nanoTime() - start) / 1_000_000;
 
       assertEquals(1, items.size());
-      assertEquals("a", items.get(0).resourceID());
+      assertEquals("a", items.get(0).resource().objectId());
       assertTrue(
           elapsedMs >= STALL_MS,
           "the stream must outlive the tiny unary default -- it should have waited out the "

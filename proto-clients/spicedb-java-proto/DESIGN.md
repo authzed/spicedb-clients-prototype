@@ -1,5 +1,7 @@
 # spicedb-java-proto — Design Manifest
 
+- The [root design](../../DESIGN.md) defines shared semantics, RPC coverage, security, and verification.
+
 This is the Java proto client for SpiceDB. It wraps buf-generated gRPC stubs
 with minimal boilerplate for connection setup and authentication.
 
@@ -98,3 +100,21 @@ Any methods or fields marked deprecated in the proto definitions must carry
   is `io.grpc:grpc-netty-shaded -> <version>` (a versionless request meeting a BOM constraint,
   marked `(c)`); a `X:1.72.0 -> 1.79.0` arrow means two *different* versions were requested and
   the invariant is broken.
+
+## Prototype reset transport contract (2026-10-26)
+
+The root and idiomatic client DESIGN.md define the approved API reset. This tier
+remains transport plumbing: generated messages and RPC signatures are unchanged.
+Preserve all services including materialize, upstream deprecations, authentication,
+TLS defaults/overrides, endpoint guards and borrowed-channel ownership.
+
+Forward caller deadlines and cancellation without replacing them with a fresh
+per-attempt timeout. The idiomatic tier owns the one total operation budget and
+read-only retry policy. Transport cancellation must release streams/uploads even
+when no next message has arrived. Preserve complete status details and trailers.
+Native idiomatic cancellation semantics are implemented above this tier.
+
+Singular and bulk check stubs preserve with_tracing and debug_trace fields,
+including recursive debug data; no transport adapter may erase them. Test real
+loopback transport behavior for cancellation/security in addition to generated
+stub construction. Real TLS handshake tests remain gated and run in CI.

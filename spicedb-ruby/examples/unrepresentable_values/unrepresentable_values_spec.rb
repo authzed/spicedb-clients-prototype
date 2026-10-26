@@ -25,17 +25,8 @@ require_relative '../spec_helper'
 # permissionship this client has never heard of, so it stands up a stand-in.
 # Answers with a permissionship value from a SpiceDB newer than this client.
 class FutureService < Authzed::Api::V1::PermissionsService::Service
-  def check_bulk_permissions(request, _call)
-    Authzed::Api::V1::CheckBulkPermissionsResponse.new(
-      pairs: request.items.map do
-        Authzed::Api::V1::CheckBulkPermissionsPair.new(
-          # 4242 is not a value this client's enum knows. A SpiceDB that added
-          # a permissionship after this client shipped would look exactly like
-          # this on the wire.
-          item: Authzed::Api::V1::CheckBulkPermissionsResponseItem.new(permissionship: 4242)
-        )
-      end
-    )
+  def check_permission(_request, _call)
+    Authzed::Api::V1::CheckPermissionResponse.new(permissionship: 4242)
   end
 end
 
@@ -45,18 +36,9 @@ RSpec.describe 'Unrepresentable values' do
     # Dropping it would leave a caveat evaluating against context the caller
     # believes it sent, and a caller with a large context map should not have to
     # bisect it to find the bad entry.
-    rel = SpiceDB::Relationship.from_triple('document', 'readme', 'viewer', 'user', 'alice')
-                               .with_caveat('only_on_tuesday',
-                                            { 'day' => 'tuesday', 'impostor' => Object.new })
-
-    txn = SpiceDB::Transaction.new
-    txn.touch(rel)
-
-    # This client converts at write time rather than at touch time, so the write
-    # is where the refusal lands. What matters for the rule is that it lands at
-    # all, typed, and naming the key -- not which call surfaces it.
-    expect { client.write(txn) }
-      .to raise_error(SpiceDB::InvalidArgumentError, /impostor/)
+    expect do
+      SpiceDB::Caveat.new(name: 'only_on_tuesday', context: { 'day' => 'tuesday', 'impostor' => Object.new })
+    end.to raise_error(SpiceDB::InvalidArgumentError, /impostor/)
   end
 
   it 'refuses a subject filter the wire cannot express, rather than widening it' do
@@ -64,15 +46,14 @@ RSpec.describe 'Unrepresentable values' do
     # simply drops it, so the filter silently WIDENS. Applied to
     # delete_relationships that is the difference between deleting alice's
     # relationships and deleting every relationship on every document.
-    expect { client.delete_relationships(SpiceDB::Filter.new(resource_type: 'document').with_subject_id('alice')) }
+    expect { client.delete_all_relationships_non_atomic(SpiceDB::Filter.new(resource_type: 'document').with_subject(SpiceDB::SubjectFilter.new(subject_type: '', subject_id: 'alice'))) }
       .to raise_error(SpiceDB::InvalidArgumentError, /subject_type/)
 
     # The same filter with the missing piece supplied converts fine, which is
     # what makes the check above a real constraint rather than a blanket ban.
     expect do
-      client.delete_relationships(
-        SpiceDB::Filter.new(resource_type: 'document').with_subject_type('user').with_subject_id('alice')
-      )
+      client.delete_all_relationships_non_atomic(SpiceDB::Filter.new(resource_type: 'document').with_subject(SpiceDB::SubjectFilter.new(subject_type: 'user',
+                                                                                                                                        subject_id: 'alice')))
     end.not_to raise_error
   end
 
@@ -85,9 +66,11 @@ RSpec.describe 'Unrepresentable values' do
 
     begin
       SpiceDB::Client.new_plaintext("127.0.0.1:#{port}", 'some-token') do |c|
-        result = c.check_permission(
-          SpiceDB::Consistency.full, 'view',
-          SpiceDB::Relationship.from_triple('document', 'readme', 'view', 'user', 'alice')
+        result = c.check(
+          SpiceDB::PermissionCheck.new(
+            resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'readme'), permission: 'view',
+            subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: 'alice'))
+          ), consistency: SpiceDB::Consistency.full
         )
         expect(result.has_permission?)
           .to be(false), 'SECURITY: an unrecognised permissionship was treated as a grant'

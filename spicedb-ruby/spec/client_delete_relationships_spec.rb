@@ -14,9 +14,9 @@ RSpec.describe 'SpiceDB::Client#delete_relationships preconditions and limit' do
   # Stubs @proto_client.permissions.delete_relationships to return a
   # single-page COMPLETE response, and captures each request sent so specs
   # can assert on its contents.
-  def stub_delete_relationships(requests, revision: 'rev1')
+  def stub_delete_relationships(requests, revision: SpiceDB::ZedToken.new('rev1'))
     response = Authzed::Api::V1::DeleteRelationshipsResponse.new(
-      deleted_at: Authzed::Api::V1::ZedToken.new(token: revision),
+      deleted_at: Authzed::Api::V1::ZedToken.new(token: revision.to_s),
       deletion_progress: :DELETION_PROGRESS_COMPLETE
     )
 
@@ -35,9 +35,9 @@ RSpec.describe 'SpiceDB::Client#delete_relationships preconditions and limit' do
       requests = []
       stub_delete_relationships(requests)
 
-      revision = client.delete_relationships(filter)
+      revision = client.delete_all_relationships_non_atomic(filter)
 
-      expect(revision).to eq('rev1')
+      expect(revision.revision).to eq(SpiceDB::ZedToken.new('rev1'))
       expect(requests.length).to eq(1)
       req = requests.first
       expect(req.optional_preconditions).to eq([])
@@ -54,42 +54,29 @@ RSpec.describe 'SpiceDB::Client#delete_relationships preconditions and limit' do
   # delete every relationship on every document, not just the intended
   # subject's. It must now raise before any RPC is attempted, instead of
   # silently widening.
-  describe 'filter with subject_id but no subject_type' do
-    it 'raises InvalidArgumentError naming subject_id and subject_type, and sends no request' do
+  describe 'invalid nested subject filters' do
+    it 'rejects a missing subject type before deletion' do
       requests = []
       stub_delete_relationships(requests)
-      bad_filter = SpiceDB::Filter.new(resource_type: 'document', subject_id: 'alice')
-
-      expect { client.delete_relationships(bad_filter) }.to raise_error(SpiceDB::InvalidArgumentError) do |e|
-        expect(e.message).to include('subject_id')
-        expect(e.message).to include('subject_type')
-      end
-      expect(requests).to be_empty
-    end
-  end
-
-  describe 'filter with subject_relation but no subject_type' do
-    it 'raises InvalidArgumentError naming subject_relation and subject_type' do
-      requests = []
-      stub_delete_relationships(requests)
-      bad_filter = SpiceDB::Filter.new(resource_type: 'document', subject_relation: 'member')
-
-      expect { client.delete_relationships(bad_filter) }.to raise_error(SpiceDB::InvalidArgumentError) do |e|
-        expect(e.message).to include('subject_relation')
-        expect(e.message).to include('subject_type')
-      end
-      expect(requests).to be_empty
-    end
-  end
-
-  describe 'must_match: filter with subject_id but no subject_type' do
-    it 'raises InvalidArgumentError and sends no request' do
-      requests = []
-      stub_delete_relationships(requests)
-      bad_guard = SpiceDB::Filter.new(resource_type: 'document', subject_id: 'alice')
-
       expect do
-        client.delete_relationships(filter, must_match: [bad_guard])
+        subject = SpiceDB::SubjectFilter.new(subject_type: '', subject_id: 'alice')
+        client.delete_all_relationships_non_atomic(filter.with_subject(subject))
+      end.to raise_error(SpiceDB::InvalidArgumentError, /subject_type/)
+      expect(requests).to be_empty
+    end
+
+    it 'rejects a named relation without a subject type' do
+      expect do
+        SpiceDB::SubjectFilter.new(subject_type: nil, relation: SpiceDB::SubjectRelationFilter.named('member'))
+      end.to raise_error(SpiceDB::InvalidArgumentError, /subject_type/)
+    end
+
+    it 'rejects unrepresentable precondition filters before mutation' do
+      requests = []
+      stub_delete_relationships(requests)
+      expect do
+        bad_guard = SpiceDB::Filter.new(resource_type: 'document', subject: 'invalid')
+        client.delete_relationships(filter, limit: 1, must_match: [bad_guard])
       end.to raise_error(SpiceDB::InvalidArgumentError)
       expect(requests).to be_empty
     end
@@ -99,9 +86,9 @@ RSpec.describe 'SpiceDB::Client#delete_relationships preconditions and limit' do
     it 'does not raise, and sends a subject filter with an empty optional_subject_id' do
       requests = []
       stub_delete_relationships(requests)
-      type_only_filter = SpiceDB::Filter.new(resource_type: 'document', subject_type: 'user')
+      type_only_filter = SpiceDB::Filter.new(resource_type: 'document', subject: SpiceDB::SubjectFilter.new(subject_type: 'user'))
 
-      client.delete_relationships(type_only_filter)
+      client.delete_all_relationships_non_atomic(type_only_filter)
 
       req = requests.first
       expect(req.relationship_filter.optional_subject_filter.subject_type).to eq('user')
@@ -113,9 +100,9 @@ RSpec.describe 'SpiceDB::Client#delete_relationships preconditions and limit' do
     it 'does not raise, and sends the full subject filter' do
       requests = []
       stub_delete_relationships(requests)
-      full_filter = SpiceDB::Filter.new(resource_type: 'document', subject_type: 'user', subject_id: 'alice')
+      full_filter = SpiceDB::Filter.new(resource_type: 'document', subject: SpiceDB::SubjectFilter.new(subject_type: 'user', subject_id: 'alice'))
 
-      client.delete_relationships(full_filter)
+      client.delete_all_relationships_non_atomic(full_filter)
 
       req = requests.first
       expect(req.relationship_filter.optional_subject_filter.subject_type).to eq('user')
@@ -129,7 +116,7 @@ RSpec.describe 'SpiceDB::Client#delete_relationships preconditions and limit' do
       stub_delete_relationships(requests)
       guard = SpiceDB::Filter.new(resource_type: 'document').with_relation('owner')
 
-      client.delete_relationships(filter, must_match: [guard])
+      client.delete_all_relationships_non_atomic(filter, must_match: [guard])
 
       req = requests.first
       expect(req.optional_preconditions.length).to eq(1)
@@ -146,7 +133,7 @@ RSpec.describe 'SpiceDB::Client#delete_relationships preconditions and limit' do
       stub_delete_relationships(requests)
       guard = SpiceDB::Filter.new(resource_type: 'document').with_relation('banned')
 
-      client.delete_relationships(filter, must_not_match: [guard])
+      client.delete_all_relationships_non_atomic(filter, must_not_match: [guard])
 
       req = requests.first
       expect(req.optional_preconditions.length).to eq(1)
@@ -164,7 +151,7 @@ RSpec.describe 'SpiceDB::Client#delete_relationships preconditions and limit' do
       must = SpiceDB::Filter.new(resource_type: 'document').with_relation('owner')
       must_not = SpiceDB::Filter.new(resource_type: 'document').with_relation('banned')
 
-      client.delete_relationships(filter, must_match: [must], must_not_match: [must_not])
+      client.delete_all_relationships_non_atomic(filter, must_match: [must], must_not_match: [must_not])
 
       ops = requests.first.optional_preconditions.map(&:operation)
       expect(ops).to eq(%i[OPERATION_MUST_MATCH OPERATION_MUST_NOT_MATCH])
@@ -185,7 +172,7 @@ RSpec.describe 'SpiceDB::Client#delete_relationships preconditions and limit' do
       requests = []
       stub_delete_relationships(requests)
 
-      client.delete_relationships(filter)
+      client.delete_all_relationships_non_atomic(filter)
 
       expect(requests.first.optional_limit).to eq(SpiceDB::Client::DEFAULT_DELETE_PAGE_SIZE)
     end
@@ -214,9 +201,9 @@ RSpec.describe 'SpiceDB::Client#delete_relationships preconditions and limit' do
       client.instance_variable_set(:@proto_client, proto_client)
 
       guard = SpiceDB::Filter.new(resource_type: 'document').with_relation('owner')
-      revision = client.delete_relationships(filter, must_match: [guard], limit: 1)
+      revision = client.delete_all_relationships_non_atomic(filter, must_match: [guard], page_size: 1)
 
-      expect(revision).to eq('rev-complete')
+      expect(revision.revision).to eq(SpiceDB::ZedToken.new('rev-complete'))
       expect(requests.length).to eq(2)
       expect(requests[0].optional_preconditions.length).to eq(1)
       expect(requests[1].optional_preconditions.length).to eq(1)
@@ -245,7 +232,7 @@ RSpec.describe 'SpiceDB::Client#delete_relationships preconditions and limit' do
       proto_client = double('proto_client', permissions: permissions_service)
       client.instance_variable_set(:@proto_client, proto_client)
 
-      client.delete_relationships(filter, limit: 1)
+      client.delete_all_relationships_non_atomic(filter, page_size: 1)
 
       expect(requests.length).to eq(2)
       expect(requests[0].optional_cursor).to be_nil

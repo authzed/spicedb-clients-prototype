@@ -13,15 +13,13 @@ both the response and the `authorization` header the server actually received.
 """
 
 from __future__ import annotations
-
+from spicedb import TransportSecurity
 import inspect
 from concurrent import futures
-
 import grpc
 import pytest
 from authzed.api.v1 import permission_service_pb2 as psp
 from authzed.api.v1 import permission_service_pb2_grpc as psg
-
 from spicedb.aio import SpiceDBClient as AsyncClient
 from spicedb.raw import RawGrpc
 from spicedb.sync import SpiceDBClient as SyncClient
@@ -37,7 +35,7 @@ class _Recorder:
 
     def check_bulk(self, request: bytes, context) -> bytes:
         self.headers.extend(
-            v for k, v in context.invocation_metadata() if k == "authorization"
+            (v for k, v in context.invocation_metadata() if k == "authorization")
         )
         req = psp.CheckBulkPermissionsRequest()
         req.ParseFromString(request)
@@ -65,14 +63,14 @@ def _serve(recorder: _Recorder):
                 {
                     "CheckBulkPermissions": grpc.unary_unary_rpc_method_handler(
                         recorder.check_bulk, lambda b: b, lambda b: b
-                    ),
+                    )
                 },
             ),
         )
     )
     port = server.add_insecure_port("localhost:0")
     server.start()
-    return server, port
+    return (server, port)
 
 
 def _request() -> psp.CheckBulkPermissionsRequest:
@@ -91,7 +89,7 @@ def test_sync_raw_grpc_drives_a_real_stub_against_a_real_server():
     recorder = _Recorder()
     server, port = _serve(recorder)
     try:
-        client = SyncClient(f"localhost:{port}", token=TOKEN, insecure=True)
+        client = SyncClient(f"localhost:{port}", token=TOKEN, transport_security=TransportSecurity.PLAINTEXT)
         try:
             raw = client.raw_grpc()
             stub = psg.PermissionsServiceStub(raw.channel)
@@ -100,14 +98,11 @@ def test_sync_raw_grpc_drives_a_real_stub_against_a_real_server():
             client.close()
     finally:
         server.stop(0)
-
     assert len(resp.pairs) == 1
     assert (
         resp.pairs[0].item.permissionship
         == psp.CheckPermissionResponse.PERMISSIONSHIP_HAS_PERMISSION
     )
-    # The hatch's metadata is what authenticates a raw call: this client
-    # attaches the token per call, not on the channel.
     assert recorder.headers == [f"Bearer {TOKEN}"]
 
 
@@ -115,7 +110,7 @@ async def test_aio_raw_grpc_drives_a_real_stub_against_a_real_server():
     recorder = _Recorder()
     server, port = _serve(recorder)
     try:
-        client = AsyncClient(f"localhost:{port}", token=TOKEN, insecure=True)
+        client = AsyncClient(f"localhost:{port}", token=TOKEN, transport_security=TransportSecurity.PLAINTEXT)
         try:
             raw = await client.raw_grpc()
             stub = psg.PermissionsServiceStub(raw.channel)
@@ -124,7 +119,6 @@ async def test_aio_raw_grpc_drives_a_real_stub_against_a_real_server():
             await client.close()
     finally:
         server.stop(0)
-
     assert len(resp.pairs) == 1
     assert (
         resp.pairs[0].item.permissionship
@@ -135,7 +129,7 @@ async def test_aio_raw_grpc_drives_a_real_stub_against_a_real_server():
 
 def test_sync_raw_grpc_hands_back_the_channel_the_client_itself_uses():
     """Not a second connection built behind the caller's back."""
-    client = SyncClient("localhost:50051", token=TOKEN, insecure=True)
+    client = SyncClient("localhost:50051", token=TOKEN, transport_security=TransportSecurity.PLAINTEXT)
     try:
         raw = client.raw_grpc()
         assert raw.channel is client._channel
@@ -145,7 +139,7 @@ def test_sync_raw_grpc_hands_back_the_channel_the_client_itself_uses():
 
 
 async def test_aio_raw_grpc_hands_back_the_channel_the_client_itself_uses():
-    client = AsyncClient("localhost:50051", token=TOKEN, insecure=True)
+    client = AsyncClient("localhost:50051", token=TOKEN, transport_security=TransportSecurity.PLAINTEXT)
     try:
         raw = await client.raw_grpc()
         assert raw.channel is client._channel
@@ -156,14 +150,14 @@ async def test_aio_raw_grpc_hands_back_the_channel_the_client_itself_uses():
 
 def test_raw_grpc_metadata_cannot_corrupt_the_client_s_own():
     """An immutable copy, so a caller holding it cannot break later calls."""
-    client = SyncClient("localhost:50051", token=TOKEN, insecure=True)
+    client = SyncClient("localhost:50051", token=TOKEN, transport_security=TransportSecurity.PLAINTEXT)
     try:
         raw = client.raw_grpc()
         assert raw.metadata == (("authorization", f"Bearer {TOKEN}"),)
         assert isinstance(raw.metadata, tuple)
         assert raw.metadata is not client._metadata
         with pytest.raises((AttributeError, TypeError)):
-            raw.metadata.append(("x", "y"))  # type: ignore[attr-defined]
+            raw.metadata.append(("x", "y"))
     finally:
         client.close()
 
@@ -181,14 +175,15 @@ def test_raw_grpc_is_an_accessor_not_a_second_construction_path(cls):
     `self`, and `spicedb.raw` defines no constructor at all.
     """
     assert list(inspect.signature(cls.raw_grpc).parameters) == ["self"]
-
     import spicedb.raw as raw_module
 
     defined_here = sorted(
-        n
-        for n in dir(raw_module)
-        if not n.startswith("_")
-        and getattr(getattr(raw_module, n), "__module__", None) == "spicedb.raw"
+        (
+            n
+            for n in dir(raw_module)
+            if not n.startswith("_")
+            and getattr(getattr(raw_module, n), "__module__", None) == "spicedb.raw"
+        )
     )
     assert defined_here == ["RawGrpc"]
     assert list(inspect.signature(RawGrpc).parameters) == ["channel", "metadata"]

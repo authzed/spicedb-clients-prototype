@@ -2,6 +2,9 @@ package client
 
 import (
 	"context"
+	"github.com/authzed/spicedb-clients/spicedb-go/consistency"
+	"github.com/authzed/spicedb-clients/spicedb-go/rel"
+	"google.golang.org/protobuf/proto"
 	"net"
 	"testing"
 
@@ -71,13 +74,13 @@ func TestUpdates_ExposesUsableResumeToken(t *testing.T) {
 	c := newTestClient(t, dialer)
 
 	var got []WatchEvent
-	for event, err := range c.Updates(context.Background(), []string{"document"}, "") {
+	for event, err := range c.Updates(context.Background(), UpdatesRequest{ObjectTypes: []string{"document"}}, WithUpdatesStart(consistency.NewZedToken(""))) {
 		require.NoError(t, err)
 		got = append(got, event)
 	}
 
 	require.Len(t, got, 1)
-	require.Equal(t, "resume-me", got[0].ChangesThrough)
+	require.EqualValues(t, "resume-me", got[0].ChangesThrough.String())
 }
 
 // TestUpdates_NoOptionByDefaultRequestsNoUpdateKinds proves that Updates
@@ -89,7 +92,7 @@ func TestUpdates_NoOptionByDefaultRequestsNoUpdateKinds(t *testing.T) {
 	dialer := startWatchStubServer(t, stub)
 	c := newTestClient(t, dialer)
 
-	for range c.Updates(context.Background(), nil, "") {
+	for range c.Updates(context.Background(), UpdatesRequest{ObjectTypes: nil}, WithUpdatesStart(consistency.NewZedToken(""))) {
 	}
 
 	require.NotNil(t, stub.lastRequest)
@@ -105,7 +108,7 @@ func TestUpdates_WithIncludeCheckpointsReachesTheWire(t *testing.T) {
 	dialer := startWatchStubServer(t, stub)
 	c := newTestClient(t, dialer)
 
-	for range c.Updates(context.Background(), nil, "", WithIncludeCheckpoints()) {
+	for range c.Updates(context.Background(), UpdatesRequest{ObjectTypes: nil}, WithUpdatesStart(consistency.NewZedToken("")), WithUpdatesCheckpoints(CheckpointsIncluded)) {
 	}
 
 	require.NotNil(t, stub.lastRequest)
@@ -148,7 +151,7 @@ func TestUpdates_CheckpointEventDistinguishableFromUpdateEvent(t *testing.T) {
 	c := newTestClient(t, dialer)
 
 	var got []WatchEvent
-	for event, err := range c.Updates(context.Background(), nil, "", WithIncludeCheckpoints()) {
+	for event, err := range c.Updates(context.Background(), UpdatesRequest{ObjectTypes: nil}, WithUpdatesStart(consistency.NewZedToken("")), WithUpdatesCheckpoints(CheckpointsIncluded)) {
 		require.NoError(t, err)
 		got = append(got, event)
 	}
@@ -157,11 +160,11 @@ func TestUpdates_CheckpointEventDistinguishableFromUpdateEvent(t *testing.T) {
 
 	require.True(t, got[0].IsCheckpoint)
 	require.Empty(t, got[0].Updates)
-	require.Equal(t, "checkpoint-rev", got[0].ChangesThrough)
+	require.EqualValues(t, "checkpoint-rev", got[0].ChangesThrough.String())
 
 	require.False(t, got[1].IsCheckpoint)
 	require.Len(t, got[1].Updates, 1)
-	require.Equal(t, "update-rev", got[1].ChangesThrough)
+	require.EqualValues(t, "update-rev", got[1].ChangesThrough.String())
 }
 
 // TestUpdates_StreamErrorYieldsZeroValueAndMappedError proves that a
@@ -181,7 +184,7 @@ func TestUpdates_StreamErrorYieldsZeroValueAndMappedError(t *testing.T) {
 		yields int
 		gotErr error
 	)
-	for event, err := range c.Updates(context.Background(), nil, "") {
+	for event, err := range c.Updates(context.Background(), UpdatesRequest{ObjectTypes: nil}, WithUpdatesStart(consistency.NewZedToken(""))) {
 		yields++
 		require.Equal(t, WatchEvent{}, event)
 		gotErr = err
@@ -189,4 +192,57 @@ func TestUpdates_StreamErrorYieldsZeroValueAndMappedError(t *testing.T) {
 
 	require.Equal(t, 1, yields)
 	require.Error(t, gotErr)
+}
+
+func TestUpdatesRelationshipFiltersSnapshotAndWireMapping(t *testing.T) {
+	stub := &watchStubServer{}
+	c := newTestClient(t, startWatchStubServer(t, stub))
+	defer c.Close()
+	named, err := rel.NamedRelation("member")
+	require.NoError(t, err)
+	filters := []rel.Filter{
+		testFilter("document").WithResourceID("one").WithRelation("viewer").WithSubjectType("user").WithSubjectID("alice").WithSubjectRelation(rel.DirectRelation()),
+		testFilter("folder").WithResourceIDPrefix("team-").WithRelation("reader").WithSubjectType("group").WithSubjectID("eng").WithSubjectRelation(named),
+	}
+	stream := c.Updates(context.Background(), UpdatesRequest{Filters: filters})
+	filters[0] = testFilter("mutated")
+	for _, err := range stream {
+		require.NoError(t, err)
+	}
+	require.Empty(t, stub.lastRequest.OptionalObjectTypes)
+	expected := []*v1.RelationshipFilter{
+		{ResourceType: "document", OptionalResourceId: "one", OptionalRelation: "viewer", OptionalSubjectFilter: &v1.SubjectFilter{SubjectType: "user", OptionalSubjectId: "alice", OptionalRelation: &v1.SubjectFilter_RelationFilter{Relation: ""}}},
+		{ResourceType: "folder", OptionalResourceIdPrefix: "team-", OptionalRelation: "reader", OptionalSubjectFilter: &v1.SubjectFilter{SubjectType: "group", OptionalSubjectId: "eng", OptionalRelation: &v1.SubjectFilter_RelationFilter{Relation: "member"}}},
+	}
+	require.Len(t, stub.lastRequest.OptionalRelationshipFilters, len(expected))
+	for i, want := range expected {
+		require.True(t, proto.Equal(want, stub.lastRequest.OptionalRelationshipFilters[i]))
+	}
+}
+
+func TestUpdatesRejectsInvalidFiltersBeforeRPC(t *testing.T) {
+	for _, request := range []UpdatesRequest{
+		{ObjectTypes: []string{"document"}, Filters: []rel.Filter{testFilter("document")}},
+		{Filters: []rel.Filter{{}}},
+		{Filters: []rel.Filter{testFilter("document").WithSubjectID("alice")}},
+	} {
+		stub := &watchStubServer{}
+		c := newTestClient(t, startWatchStubServer(t, stub))
+		for _, err := range c.Updates(context.Background(), request) {
+			require.ErrorIs(t, err, ErrInvalidArgument)
+		}
+		require.Nil(t, stub.lastRequest)
+		require.NoError(t, c.Close())
+	}
+}
+
+func TestUpdatesEmptyFiltersWatchAll(t *testing.T) {
+	stub := &watchStubServer{}
+	c := newTestClient(t, startWatchStubServer(t, stub))
+	defer c.Close()
+	for _, err := range c.Updates(context.Background(), UpdatesRequest{Filters: []rel.Filter{}}) {
+		require.NoError(t, err)
+	}
+	require.Empty(t, stub.lastRequest.OptionalRelationshipFilters)
+	require.Empty(t, stub.lastRequest.OptionalObjectTypes)
 }

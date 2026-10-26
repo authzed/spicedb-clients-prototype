@@ -53,9 +53,10 @@ to fail".
 
 ## Examples
 
-- `check_permission/` — `checkPermission`, `checkPermissions`, `checkAny`, `checkAll`.
-- `bulk_operations/` — bulk permission checks, `importBulkRelationships`, and
-  `exportBulkRelationships`.
+- `check_permission/` — `check`, `checkBulk`, explicit any/all aggregation, and populated native server tracing.
+- `bulk_operations/` — bulk permission checks, `importRelationships`, and
+  `exportRelationships`, plus all native Materialize operations against an
+  authenticated local stand-in (Materialize is separate from ordinary SpiceDB).
 - `expand_permission_tree/` — `expandPermissionTree` and walking the native
   `PermissionTree` (intermediate nodes with a `TreeOperation`, leaf nodes with
   concrete subjects).
@@ -66,9 +67,8 @@ to fail".
   filters.
 - `write_relationships/` — the `Transaction` builder: create, touch, delete,
   and preconditions.
-- `delete_relationships_autopage/` — `deleteRelationships({ limit, autoPage })`:
-  confirms the default (no `autoPage`) still stops after one bounded page,
-  then shows `autoPage: true` looping internally until every match is gone.
+- `delete_relationships_autopage/` — bounded `deleteRelationships({ limit })`
+  followed by `deleteAllRelationshipsNonAtomic({ pageSize })`, asserting counts and completion.
 - `schema_management/` — reading and writing the SpiceDB schema.
 - `call_deadlines/` — `defaultTimeoutMs` on `createSpiceDBClient`, a per-call
   `timeoutMs` override, confirming bulk import isn't bounded by the unary
@@ -84,9 +84,7 @@ to fail".
 - `retry_policy/` — which calls are retried for you and which are not, counted
   server-side against a stand-in.
 - `raw_escape_hatch/` — the `raw()` escape hatch: driving the generated
-  Connect client directly to send `optionalTransactionMetadata` (a proto field
-  this client does not wrap) and to call the single-check `CheckPermission`
-  RPC, then handing the same connection back to the idiomatic API.
+  Connect client directly to send `optionalTransactionMetadata` and to call the raw `CheckPermission` RPC, then handing the same connection back to the idiomatic API.
 - `custom_tls/` — reaching a SpiceDB behind a private CA with `tls.caCert`,
   and mutual TLS with `tls.clientCert`/`tls.clientKey`. Brings up its own
   TLS-terminated endpoint — the only example that does not use the shared

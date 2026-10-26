@@ -72,14 +72,16 @@ RSpec.describe 'RoaringLookupResources', :no_spicedb do
     server, thread, service, port = start_stand_in_server
     begin
       SpiceDB::Client.new_plaintext("127.0.0.1:#{port}", SPICEDB_TOKEN) do |client|
-        result = client.experimental_roaring_lookup_resources(
-          SpiceDB::Consistency.full, 'document', 'view', 'user', 'alice'
-        )
+        result = client.experimental_roaring_lookup_resources(resource_type: 'document', permission: 'view',
+                                                              subject: SpiceDB::SubjectRef.new(
+                                                                object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: 'alice')
+                                                              ),
+                                                              consistency: SpiceDB::Consistency.full)
 
         expect(result).to be_a(SpiceDB::RoaringLookupResourcesResult)
         expect(result.bitmap).to eq([1, 2, 3, 4].pack('C*'))
         expect(result.cardinality).to eq(2)
-        expect(result.at_revision).to eq('rev-1')
+        expect(result.at_revision).to eq(SpiceDB::ZedToken.new('rev-1'))
 
         # What actually reached the stand-in -- proves the request was built
         # correctly, not merely that some response came back.
@@ -102,13 +104,47 @@ RSpec.describe 'RoaringLookupResources', :no_spicedb do
     begin
       SpiceDB::Client.new_plaintext("127.0.0.1:#{port}", SPICEDB_TOKEN) do |client|
         expect do
-          client.experimental_roaring_lookup_resources(
-            SpiceDB::Consistency.full, 'document', 'non-canonical-ids', 'user', 'alice'
-          )
+          client.experimental_roaring_lookup_resources(resource_type: 'document', permission: 'non-canonical-ids',
+                                                       subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user',
+                                                                                                                       object_id: 'alice')),
+                                                       consistency: SpiceDB::Consistency.full)
         end.to raise_error(SpiceDB::FailedPreconditionError, /canonical/)
       end
     ensure
       stop_stand_in_server(server, thread)
     end
+  end
+end
+
+require_relative 'materialize_stand_ins'
+
+RSpec.describe 'Materialize permission sets', :no_spicedb do
+  it 'authenticates every service and returns native counters, cursor events and download manifests' do
+    server = GRPC::RpcServer.new(pool_size: 4)
+    port = server.add_http2_port('127.0.0.1:0', :this_port_is_insecure)
+    server.handle(MaterializeSetStandIns::Counts.new)
+    server.handle(MaterializeSetStandIns::Sets.new)
+    thread = Thread.new { server.run }
+    server.wait_till_running(5)
+    SpiceDB::Client.new_plaintext("127.0.0.1:#{port}", 'materialize-token') do |client|
+      count = client.experimental_count_relationships_by_filter(SpiceDB::Filter.new(resource_type: 'document'))
+      expect(count.relationship_count).to eq(12)
+      expect(count.revision).to eq(SpiceDB::ZedToken.new('count-rev'))
+      event = client.experimental_watch_permission_sets.first
+      expect(event.kind).to eq(:completed_revision)
+      expect(event.revision).to eq(SpiceDB::ZedToken.new('checkpoint'))
+      page = client.experimental_lookup_permission_sets(limit: 2).first
+      expect(page.change.child_member.object.object_id).to eq('alice')
+      expect(page.change.operation).to eq(:added)
+      expect(page.cursor.to_h).to eq(limit: 2, token: SpiceDB::ZedToken.new('set-rev'), starting_index: 7,
+                                     completed_members: false, starting_key: 'key', cursor: 'opaque')
+      download = client.experimental_download_permission_sets
+      expect(download.files.first.name).to eq('snapshot')
+      expect(download.timestamp).to eq(Time.at(12, 34, :nsec))
+      expect(download.revision).to eq(SpiceDB::ZedToken.new('download-rev'))
+    end
+  ensure
+    server&.stop
+    thread&.join(5)
   end
 end

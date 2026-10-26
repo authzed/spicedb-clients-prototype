@@ -67,6 +67,11 @@ public sealed class SpiceDBProtoClient : IDisposable
     /// <summary>gRPC client for the experimental RoaringLookupResources materialize service.</summary>
     public RoaringLookupResourcesService.RoaringLookupResourcesServiceClient Materialize { get; }
 
+    public RelationshipsService.RelationshipsServiceClient MaterializeRelationships { get; }
+    public WatchPermissionSetsService.WatchPermissionSetsServiceClient MaterializePermissionSets { get; }
+    [Obsolete("Use MaterializePermissionSets instead.")]
+    public WatchPermissionsService.WatchPermissionsServiceClient MaterializeWatchPermissions { get; }
+
     /// <summary>
     /// Creates a new SpiceDB proto client connected to the given endpoint,
     /// authenticated with the given bearer token.
@@ -213,6 +218,11 @@ public sealed class SpiceDBProtoClient : IDisposable
         Watch = new WatchService.WatchServiceClient(invoker);
         Experimental = new ExperimentalService.ExperimentalServiceClient(invoker);
         Materialize = new RoaringLookupResourcesService.RoaringLookupResourcesServiceClient(invoker);
+        MaterializeRelationships = new RelationshipsService.RelationshipsServiceClient(invoker);
+        MaterializePermissionSets = new WatchPermissionSetsService.WatchPermissionSetsServiceClient(invoker);
+#pragma warning disable CS0618
+        MaterializeWatchPermissions = new WatchPermissionsService.WatchPermissionsServiceClient(invoker);
+#pragma warning restore CS0618
     }
 
     /// <summary>
@@ -256,6 +266,11 @@ public sealed class SpiceDBProtoClient : IDisposable
         Watch = new WatchService.WatchServiceClient(invoker);
         Experimental = new ExperimentalService.ExperimentalServiceClient(invoker);
         Materialize = new RoaringLookupResourcesService.RoaringLookupResourcesServiceClient(invoker);
+        MaterializeRelationships = new RelationshipsService.RelationshipsServiceClient(invoker);
+        MaterializePermissionSets = new WatchPermissionSetsService.WatchPermissionSetsServiceClient(invoker);
+#pragma warning disable CS0618
+        MaterializeWatchPermissions = new WatchPermissionsService.WatchPermissionsServiceClient(invoker);
+#pragma warning restore CS0618
     }
 
     /// <summary>

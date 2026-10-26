@@ -52,7 +52,7 @@ module SpiceDBProto
     #   in that package's proto source. Named for the service it wraps rather than
     #   grouped under +experimental+, since it is a distinct generated package with its
     #   own stub class, not another RPC on Authzed::Api::V1::ExperimentalService::Stub.
-    attr_reader :materialize
+    attr_reader :materialize, :materialize_relationships, :permission_sets
 
     # Creates a new SpiceDB proto client.
     #
@@ -160,6 +160,8 @@ module SpiceDBProto
       @experimental = Authzed::Api::V1::ExperimentalService::Stub.new(
         endpoint, nil, **stub_opts
       )
+      @materialize_relationships = Authzed::Api::Materialize::V0::RelationshipsService::Stub.new(endpoint, nil, **stub_opts)
+      @permission_sets = Authzed::Api::Materialize::V0::WatchPermissionSetsService::Stub.new(endpoint, nil, **stub_opts)
       @materialize = Authzed::Api::Materialize::V0::RoaringLookupResourcesService::Stub.new(
         endpoint, nil, **stub_opts
       )

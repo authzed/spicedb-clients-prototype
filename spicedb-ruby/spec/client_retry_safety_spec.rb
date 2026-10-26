@@ -19,7 +19,10 @@ require 'grpc'
 # coverage of the RESOURCE_EXHAUSTED half of this guarantee.
 RSpec.describe 'SpiceDB::Client retry safety' do
   let(:client) { SpiceDB::Client.new_plaintext('localhost:50051', 'testtoken') }
-  let(:rel) { SpiceDB::Relationship.from_triple('document', 'readme', 'viewer', 'user', 'jimmy') }
+  let(:rel) do
+    SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'readme'), relation: 'viewer',
+                              subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: 'jimmy'), relation: nil))
+  end
 
   # Stubs @proto_client.schema.read_schema to raise `errors.shift` on each
   # call until the queue is empty, then return a successful response.
@@ -67,10 +70,10 @@ RSpec.describe 'SpiceDB::Client retry safety' do
     it 'retries a transient error and eventually succeeds' do
       calls = stub_read_schema([GRPC::Unavailable.new('down')])
 
-      schema_text, revision = client.read_schema
+      result = client.read_schema
 
-      expect(schema_text).to eq('definition user {}')
-      expect(revision).to eq('rev1')
+      expect(result.schema).to eq('definition user {}')
+      expect(result.revision).to eq(SpiceDB::ZedToken.new('rev1'))
       expect(calls.length).to eq(2), 'expected exactly one retry (initial attempt + 1 retry)'
     end
 

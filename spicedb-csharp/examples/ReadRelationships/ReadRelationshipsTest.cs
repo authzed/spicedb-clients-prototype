@@ -25,27 +25,27 @@ public class ReadRelationshipsTest
     {
         await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
 
-        await client.WriteSchemaAsync(Schema);
+        await client.WriteSchemaAsync(Schema, null, default);
 
         var txn = new Transaction();
-        txn.Touch(Relationship.FromTriple("document", "firstdoc", "viewer", "user", "alice"));
-        txn.Touch(Relationship.FromTriple("document", "firstdoc", "viewer", "user", "bob"));
-        await client.WriteAsync(txn);
+        txn.Touch(new Relationship(new ObjectRef("document", "firstdoc"), "viewer", new SubjectRef(new ObjectRef("user", "alice"))));
+        txn.Touch(new Relationship(new ObjectRef("document", "firstdoc"), "viewer", new SubjectRef(new ObjectRef("user", "bob"))));
+        await client.WriteAsync(txn, null, default);
 
         // Read relationships
         var filter = new Filter("document")
-            .WithResourceID("firstdoc")
+            .WithResourceId("firstdoc")
             .WithRelation("viewer");
 
         var relationships = new List<Relationship>();
-        await foreach (var rel in client.ReadRelationshipsAsync(Full(), filter))
+        await foreach (var rel in client.ReadRelationshipsAsync(Full(), filter, null, default))
         {
             relationships.Add(rel);
         }
 
         Assert.True(relationships.Count >= 2, "expected at least two viewer relationships");
 
-        var subjectIDs = relationships.Select(r => r.SubjectID).ToHashSet();
+        var subjectIDs = relationships.Select(r => r.Subject.Object.ObjectId).ToHashSet();
         Assert.Contains("alice", subjectIDs);
         Assert.Contains("bob", subjectIDs);
     }

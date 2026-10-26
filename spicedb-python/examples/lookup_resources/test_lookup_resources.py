@@ -6,48 +6,39 @@ result means the match depends on caveat context that wasn't supplied —
 callers must not treat it as an unconditional grant.
 """
 
+from spicedb import ObjectRef, SubjectRef
 import pytest
-
-from spicedb import Filter, Permissionship, Relationship, full
+from spicedb import Filter, LookupPermissionshipFilter, Permissionship, Relationship, full
 from spicedb.aio import SpiceDBClient
 from spicedb.types import Transaction
-
 
 pytestmark = pytest.mark.integration
 
 
 async def test_lookup_resources(client: SpiceDBClient):
-    # Set up relationships
     txn = Transaction()
     txn.touch(Relationship.from_triple("document:readme", "viewer", "user:alice"))
     txn.touch(Relationship.from_triple("document:design", "viewer", "user:alice"))
     txn.touch(Relationship.from_triple("document:secret", "viewer", "user:bob"))
     await client.write(txn)
-
-    # Find all documents alice can view
     resource_ids = []
     async for resource in client.lookup_resources(
-        "document", "view", ("user:alice", ""), full()
+        resource_type="document",
+        permission="view",
+        subject=SubjectRef(ObjectRef("user", "alice"), None),
+        consistency=full(),
+        permissionship_filter=LookupPermissionshipFilter.HAS_PERMISSION_ONLY,
     ):
         print(
-            f"alice can view document:{resource.resource_id} "
-            f"(permissionship={resource.permissionship})"
+            f"alice can view document:{resource.resource_id} (permissionship={resource.permissionship})"
         )
-        # A conditional result means caveat context is missing;
-        # resource.partial_caveat lists which context. Never treat a
-        # conditional result as a full grant.
         assert resource.permissionship == Permissionship.HAS_PERMISSION, (
-            f"unexpected permissionship for document:{resource.resource_id}: "
-            f"{resource.permissionship} (missing context: {resource.partial_caveat})"
+            f"unexpected permissionship for document:{resource.resource_id}: {resource.permissionship} (missing context: {resource.partial_caveat})"
         )
         resource_ids.append(resource.resource_id)
-
     assert "readme" in resource_ids
     assert "design" in resource_ids
-
-    # Clean up so later examples that write a narrower schema aren't blocked
-    # by leftover relationships.
     for resource_id in ("readme", "design", "secret"):
-        await client.delete_relationships(
+        await client.delete_all_relationships_non_atomic(
             Filter(resource_type="document", resource_id=resource_id)
         )

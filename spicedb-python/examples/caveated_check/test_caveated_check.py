@@ -8,82 +8,54 @@ Conditional result, or callers would be granting access on an unevaluated
 condition. See examples/check_permission/ for the plain HAS_PERMISSION case.
 """
 
+from spicedb import ObjectRef, SubjectRef, PermissionCheck, Caveat
 import pytest
-
 from spicedb import Filter, Permissionship, Relationship, full
 from spicedb.aio import SpiceDBClient
 from spicedb.types import Transaction
 
-
 pytestmark = pytest.mark.integration
-
-# A superset of conftest.SCHEMA (adds the "active" caveat and a caveated
-# relation/permission) so examples that run after this one and rely on the
-# fixture's default schema (viewer/editor/owner/view/edit/delete) keep
-# working regardless of test collection order.
-CAVEATED_SCHEMA = """\
-caveat active(now int) {
-    now < 100
-}
-
-definition user {}
-
-definition document {
-    relation viewer: user
-    relation editor: user
-    relation owner: user
-    relation conditional_viewer: user with active
-    permission view = viewer + editor + owner
-    permission edit = editor + owner
-    permission delete = owner
-    permission conditional_view = conditional_viewer
-}
-"""
+CAVEATED_SCHEMA = "caveat active(now int) {\n    now < 100\n}\n\ndefinition user {}\n\ndefinition document {\n    relation viewer: user\n    relation editor: user\n    relation owner: user\n    relation conditional_viewer: user with active\n    permission view = viewer + editor + owner\n    permission edit = editor + owner\n    permission delete = owner\n    permission conditional_view = conditional_viewer\n}\n"
 
 
 async def test_caveated_check_without_context_is_conditional(client: SpiceDBClient):
     await client.write_schema(CAVEATED_SCHEMA)
-
-    # Grant conditional_viewer, guarded by the "active" caveat, WITHOUT
-    # supplying its context ("now") at write time either.
     txn = Transaction()
     txn.touch(
         Relationship.from_triple(
             "document:caveated",
             "conditional_viewer",
             "user:alice",
-            caveat_name="active",
+            caveat=Caveat("active", None),
         )
     )
     await client.write(txn)
-
-    # Check with no context.
     rel = Relationship.from_triple(
         "document:caveated", "conditional_view", "user:alice"
     )
-    result = await client.check_permission(full(), rel)
-
+    result = await client.check(
+        PermissionCheck(rel.resource, rel.relation, rel.subject), consistency=full()
+    )
     print(
-        f"alice can conditionally view document:caveated: {result.has_permission} "
-        f"(permissionship={result.permissionship}, "
-        f"missing_context={result.missing_context})"
+        f"alice can conditionally view document:caveated: {result.has_permission} (permissionship={result.permissionship}, missing_context={result.missing_context})"
     )
     assert result.permissionship == Permissionship.CONDITIONAL_PERMISSION
-    # The key assertion: a Conditional result is NOT a grant.
     assert result.has_permission is False
-    assert result.missing_context == ["now"]
-    # checked_at is still populated on a conditional result -- the server
-    # did evaluate the request, it just couldn't resolve the caveat.
-    assert result.checked_at
-
-    # check_any/check_all also treat this as not-granted -- a Conditional
-    # result must never flip either of them to True.
-    assert await client.check_any(full(), rel) is False
-    assert await client.check_all(full(), rel) is False
-
-    # Clean up so later examples that write a narrower schema aren't blocked
-    # by leftover relationships.
-    await client.delete_relationships(
+    assert result.missing_context == ("now",)
+    assert str(result.checked_at)
+    assert (lambda results: bool(results) and any(results))(
+        await client.check_bulk(
+            [PermissionCheck(rel.resource, rel.relation, rel.subject)],
+            consistency=full(),
+        )
+    ) is False
+    assert (lambda results: bool(results) and all(results))(
+        await client.check_bulk(
+            [PermissionCheck(rel.resource, rel.relation, rel.subject)],
+            consistency=full(),
+        )
+    ) is False
+    await client.delete_all_relationships_non_atomic(
         Filter(resource_type="document", resource_id="caveated")
     )
 
@@ -95,41 +67,34 @@ async def test_caveated_check_with_context_resolves_to_grant(client: SpiceDBClie
     caller can ACT on that -- supplying the missing "now" resolves the same
     conditional into a real HAS_PERMISSION grant.
 
-    Uses `Relationship.from_triple(..., check_context=...)`, the new
+    Uses `PermissionCheck(..., context=...)`, the new
     per-item override, rather than the call-level `context=` kwarg that
     already existed -- this is what this change actually adds.
     """
     await client.write_schema(CAVEATED_SCHEMA)
-
     txn = Transaction()
     txn.touch(
         Relationship.from_triple(
             "document:caveated",
             "conditional_viewer",
             "user:alice",
-            caveat_name="active",
+            caveat=Caveat("active", None),
         )
     )
     await client.write(txn)
-
-    # Check WITH context, supplied per-item via check_context rather than
-    # the call-level context= kwarg. "now" < 100 -- the caveat is satisfied.
-    rel = Relationship.from_triple(
-        "document:caveated",
+    rel = PermissionCheck(
+        ObjectRef("document", "caveated"),
         "conditional_view",
-        "user:alice",
-        check_context={"now": 50},
+        SubjectRef(ObjectRef("user", "alice"), None),
+        {"now": 50},
     )
-    result = await client.check_permission(full(), rel)
-
+    result = await client.check(rel, consistency=full())
     print(
-        f"alice can view document:caveated with context supplied: "
-        f"{result.has_permission} (permissionship={result.permissionship})"
+        f"alice can view document:caveated with context supplied: {result.has_permission} (permissionship={result.permissionship})"
     )
     assert result.permissionship == Permissionship.HAS_PERMISSION
     assert result.has_permission is True
-    assert result.missing_context == []
-
-    await client.delete_relationships(
+    assert result.missing_context == ()
+    await client.delete_all_relationships_non_atomic(
         Filter(resource_type="document", resource_id="caveated")
     )

@@ -26,9 +26,13 @@ async fn main() {
         std::env::var("SPICEDB_ENDPOINT").unwrap_or_else(|_| "localhost:50051".to_string());
     let token = std::env::var("SPICEDB_TOKEN").unwrap_or_else(|_| "testtoken".to_string());
 
-    let client = SpiceDBClient::new_plaintext(endpoint, token)
-        .await
-        .expect("failed to create client");
+    let client = SpiceDBClient::new_plaintext(
+        endpoint,
+        token,
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("failed to create client");
 
     // Clear before writing the schema, not after using it. Every example runs
     // against one SpiceDB and writes a whole schema, and SpiceDB refuses a
@@ -41,22 +45,37 @@ async fn main() {
     // definition yet, which SpiceDB reports as FailedPrecondition
     // (ERROR_REASON_UNKNOWN_DEFINITION). Anything else -- an unreachable
     // server, a bad token -- must still fail the example.
-    match client.delete_relationships(&Filter::new("document")).await {
+    match client
+        .delete_all_relationships_non_atomic(spicedb::DeleteAllRequest::new(
+            (Filter::new("document")).clone(),
+        ))
+        .await
+    {
         Ok(_) | Err(SpiceDBError::FailedPrecondition(_)) => {}
         Err(e) => panic!("cleanup before schema write failed: {e:?}"),
     }
 
     // Write a schema
     let revision = client
-        .write_schema(SCHEMA)
+        .write_schema(spicedb::WriteSchemaRequest::new(SCHEMA))
         .await
         .expect("write schema failed");
 
-    println!("wrote schema at revision: {revision}");
-    assert!(!revision.is_empty(), "expected non-empty revision");
+    println!("wrote schema at revision: {revision:?}");
+    assert!(
+        !revision.revision.as_ref().is_empty(),
+        "expected non-empty revision"
+    );
 
     // Read the schema back
-    let (read_schema, read_revision) = client.read_schema().await.expect("read schema failed");
+    let spicedb::ReadSchemaResult {
+        schema_text: read_schema,
+        revision: read_revision,
+        ..
+    } = client
+        .read_schema(spicedb::ReadSchemaRequest::new())
+        .await
+        .expect("read schema failed");
 
     println!("read schema at revision {read_revision}:\n{read_schema}");
 

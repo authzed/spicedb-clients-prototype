@@ -88,9 +88,9 @@ def is_loopback_endpoint(endpoint: str) -> bool:
 
     This is the exemption in root DESIGN.md, "RULE: Credentials over
     insecure transport require an explicit opt-in": loopback is the reason
-    insecure=True exists at all (local development, docker-compose, CI), so
+    transport_security=TransportSecurity.PLAINTEXT exists at all (local development, docker-compose, CI), so
     it must keep working with no extra ceremony. Anything else requires
-    allow_insecure_remote_credentials=True -- see
+    remote_credentials=RemoteCredentials.ALLOW -- see
     require_insecure_transport_allowed below.
     """
     # Checked first, and only on the raw string: a unix target is not a URI
@@ -151,12 +151,16 @@ def require_insecure_transport_allowed(
         ``endpoint`` is not loopback, and ``allow_insecure_remote_credentials``
         is False.
     """
-    if insecure and not allow_insecure_remote_credentials and not is_loopback_endpoint(endpoint):
+    if (
+        insecure
+        and not allow_insecure_remote_credentials
+        and not is_loopback_endpoint(endpoint)
+    ):
         from spicedb.errors import InvalidArgumentError
 
         raise InvalidArgumentError(
             f"spicedb: refusing to send credentials over an insecure (plaintext) connection "
             f"to non-loopback endpoint {endpoint!r}: use TLS (insecure=False), or pass "
-            f"allow_insecure_remote_credentials=True if you intend to send a bearer token in "
+            f"remote_credentials=RemoteCredentials.ALLOW if you intend to send a bearer token in "
             f"cleartext to a remote host"
         )

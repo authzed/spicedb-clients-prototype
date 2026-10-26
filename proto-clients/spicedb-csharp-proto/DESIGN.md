@@ -1,5 +1,7 @@
 # spicedb-csharp-proto — Design Manifest
 
+- The [root design](../../DESIGN.md) defines shared semantics, RPC coverage, security, and verification.
+
 This is the C# proto client for SpiceDB. It wraps buf-generated gRPC stubs
 with minimal boilerplate for connection setup and authentication.
 
@@ -18,7 +20,7 @@ generated into the `gen/` directory.
 
 Create a `Client.cs` file in the package root with:
 
-1. **`SpiceDBProtoClient` class** — wraps all generated gRPC service clients, as four
+1. **`SpiceDBProtoClient` class** — wraps all generated gRPC service clients, as eight
    public get-only properties. **The property names are part of the contract, not an
    implementation detail:** the idiomatic client's escape hatch, `SpiceDBClient.RawProto()`,
    hands this object to callers, so `client.RawProto().Permissions` is public API of
@@ -29,12 +31,18 @@ Create a `Client.cs` file in the package root with:
    - `Experimental` — `ExperimentalService.ExperimentalServiceClient`
    - `Materialize` — `RoaringLookupResourcesService.RoaringLookupResourcesServiceClient`
      (`Authzed.Api.Materialize.V0`, a separate generated package from the other four)
+   - `MaterializeRelationships` — `RelationshipsService.RelationshipsServiceClient`
+   - `MaterializePermissionSets` — `WatchPermissionSetsService.WatchPermissionSetsServiceClient`
+   - `MaterializeWatchPermissions` — `WatchPermissionsService.WatchPermissionsServiceClient`,
+     marked `[Obsolete("Use MaterializePermissionSets instead.")]` for the upstream-deprecated service.
+     All materialize accessors use the same authenticated call invoker and channel ownership.
+
 
 2. **Constructor: `SpiceDBProtoClient(string endpoint, string token, bool insecure = false,
    bool allowInsecureRemoteCredentials = false)`** — creates a `GrpcChannel` with:
    - TLS or insecure credentials based on the `insecure` parameter
    - Bearer token injection via `CallCredentials` (secure) or interceptor (insecure)
-   - All four service client properties populated
+   - All five service client properties populated
    - A refusal, before any channel/credential/handler exists, when `insecure` is combined
      with a non-loopback `endpoint` and `allowInsecureRemoteCredentials` is false — root
      DESIGN.md, "RULE: Credentials over insecure transport require an explicit opt-in".
@@ -122,3 +130,21 @@ Any methods or fields marked deprecated in the proto definitions must carry
 - No business logic — only plumbing (connection, auth)
 - Generated files under `gen/` are never modified
 - Project targets `net10.0` (`SpiceDB.Proto.csproj`)
+
+## Prototype reset transport contract (2026-10-26)
+
+The root and idiomatic client DESIGN.md define the approved API reset. This tier
+remains transport plumbing: generated messages and RPC signatures are unchanged.
+Preserve all services including materialize, upstream deprecations, authentication,
+TLS defaults/overrides, endpoint guards and borrowed-channel ownership.
+
+Forward caller deadlines and cancellation without replacing them with a fresh
+per-attempt timeout. The idiomatic tier owns the one total operation budget and
+read-only retry policy. Transport cancellation must release streams/uploads even
+when no next message has arrived. Preserve complete status details and trailers.
+Native idiomatic cancellation semantics are implemented above this tier.
+
+Singular and bulk check stubs preserve with_tracing and debug_trace fields,
+including recursive debug data; no transport adapter may erase them. Test real
+loopback transport behavior for cancellation/security in addition to generated
+stub construction. Real TLS handshake tests remain gated and run in CI.

@@ -40,6 +40,8 @@ func TestGenerate(t *testing.T) {
 	assert.Equal(t, "Permissions.java", files[0].Path)
 
 	content := string(files[0].Content)
+	assert.Contains(t, content, "remotePlaintextCredentials(RemotePlaintextCredentials.ALLOW)")
+	assert.Contains(t, content, "SpiceDBClient.createPlaintext(endpoint, token, options)")
 
 	// Write to /tmp for visual inspection.
 	if writeErr := os.WriteFile("/tmp/Permissions.java", files[0].Content, 0644); writeErr != nil {
@@ -50,6 +52,26 @@ func TestGenerate(t *testing.T) {
 
 	// Print the generated output for visual review.
 	t.Logf("Generated output:\n%s", content)
+
+	for _, method := range []string{"touch", "create", "delete"} {
+		assert.Contains(t, content, "public WriteResult "+method+"(")
+		assert.NotContains(t, content, "public ZedToken "+method+"(")
+	}
+
+	// Native capabilities are explicit direct forwarders: streams and exceptions are not wrapped.
+	for _, signature := range []string{
+		"return client.deleteRelationships(filter, limit, options);",
+		"return client.deleteAllRelationshipsNonAtomic(filter, options);",
+		"return client.updates(objectTypes, startRevision, options);",
+		"return client.importRelationships(relationships, options);",
+		"return client.exportRelationships(consistency, filter, options);",
+		"return client.checkBulk(requests, options);",
+		"return client.experimentalWatchPermissionSets(startRevision, options);",
+		"return client.experimentalLookupPermissionSets(atRevision, options);",
+		"return client.experimentalDownloadPermissionSets(atRevision, options);",
+	} {
+		assert.Contains(t, content, signature)
+	}
 
 	// Check package declaration.
 	assert.Contains(t, content, "package com.authzed.spicedb.gen.test;")
@@ -113,9 +135,9 @@ func TestGenerate(t *testing.T) {
 	assert.Contains(t, content, "public <S extends Subject> CheckResult check(")
 	assert.Contains(t, content, "public <S extends Subject> Stream<LookupResult.LookupResource> lookupResources(")
 	assert.Contains(t, content, "public <S extends Subject> Stream<LookupResult.LookupSubject> lookupSubjects(")
-	assert.Contains(t, content, "public String touch(TypedRelationship... rels)")
-	assert.Contains(t, content, "public String create(TypedRelationship... rels)")
-	assert.Contains(t, content, "public String delete(TypedRelationship... rels)")
+	assert.Contains(t, content, "public WriteResult touch(Collection<TypedRelationship> rels)")
+	assert.Contains(t, content, "public WriteResult create(Collection<TypedRelationship> rels)")
+	assert.Contains(t, content, "public WriteResult delete(Collection<TypedRelationship> rels)")
 
 	// Check relation methods produce TypedRelationship.
 	assert.Contains(t, content, "public TypedRelationship viewer(DocumentViewerSubject subject)")
@@ -153,7 +175,7 @@ func TestCheckSurfacesCheckResult(t *testing.T) {
 	// type-correct (still returns CheckResult) but would silently collapse
 	// CONDITIONAL_PERMISSION into a boolean internally before rewrapping it,
 	// discarding permissionship/missingContext/checkedAt.
-	assert.Contains(t, content, "return client.checkPermission(c, perm.permission(), r);")
+	assert.Contains(t, content, "return client.check(request, options);")
 }
 
 // TestCheckAcceptsContext verifies the generated TypedClient gains a
@@ -180,10 +202,10 @@ func TestCheckAcceptsContext(t *testing.T) {
 
 	// New overload: context accepted as a trailing Map<String, Object>.
 	assert.Contains(t, content,
-		"public <S extends Subject> CheckResult check(Consistency c, Permission<S> perm, S subject, Map<String, Object> context) {")
+		"public <S extends Subject> CheckResult check(Consistency c, Permission<S> perm, S subject, CheckOptions options) {")
 
 	// Pass-through: context is handed to the 4-arg checkPermission untouched.
-	assert.Contains(t, content, "return client.checkPermissionWithOptions(c, perm.permission(), r,")
+	assert.Contains(t, content, "return client.check(request, options);")
 
 	// The defect fix: check() must route the subject's own caveat context
 	// through withCheckContext (CHECK-TIME), never withCaveat (WRITE-TIME) --
@@ -192,7 +214,15 @@ func TestCheckAcceptsContext(t *testing.T) {
 	// caveatName. This NotContains guards against the old inert call
 	// reappearing in EITHER check() overload.
 	assert.NotContains(t, content, "r = r.withCaveat(subject.caveatName(), subject.caveatContext());")
-	assert.Contains(t, content, "r = r.withCheckContext(subject.caveatContext());")
+	assert.Contains(t, content, "subjectRef(subject), c, subject.caveatContext());")
+	assert.Contains(t, content, "return client.check(request, options);")
+	assert.NotContains(t, content, "withCheckContext")
+	assert.NotContains(t, content, "WithOptions")
+	assert.Contains(t, content, "public WriteResult touch(Collection<TypedRelationship> rels, WriteOptions options)")
+	assert.Contains(t, content, "return client.write(txn, options);")
+	assert.Contains(t, content, "implements AutoCloseable")
+	assert.Contains(t, content, "subjectRef(subject), options)")
+	assert.Contains(t, content, "options.toBuilder().subjectRelation(relation).build()")
 }
 
 func TestBuildTemplateData(t *testing.T) {

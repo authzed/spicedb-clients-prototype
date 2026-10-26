@@ -1,79 +1,53 @@
-// Package consistency provides constructors for SpiceDB consistency strategies.
-//
-// Every read operation on the SpiceDB client requires an explicit consistency
-// strategy. This prevents silent defaults and makes consistency choices visible.
+// Package consistency provides native, explicit read consistency and opaque revision tokens.
 package consistency
 
-import (
-	v1 "github.com/authzed/spicedb-clients/proto-clients/spicedb-go-proto/gen/authzed/api/v1"
+import "fmt"
+
+// ZedToken is an opaque revision value. Its zero value represents absence.
+type ZedToken struct{ value string }
+
+// NewZedToken preserves a serialized revision without interpreting its contents.
+func NewZedToken(value string) ZedToken { return ZedToken{value: value} }
+
+// String returns the exact serialized revision.
+func (t ZedToken) String() string { return t.value }
+
+type Kind uint8
+
+const (
+	Invalid Kind = iota
+	FullyConsistent
+	MinimizeLatency
+	AtLeastAsFresh
+	ExactSnapshot
 )
 
-// Strategy represents a consistency requirement for read operations.
-// Use the constructor functions in this package to create a Strategy.
 type Strategy struct {
-	// V1Consistency exposes the underlying proto type for advanced use cases.
-	V1Consistency *v1.Consistency
+	kind  Kind
+	token ZedToken
 }
 
-// Full returns a strategy that requires full consistency. This is the least
-// performant option but guarantees the most up-to-date results.
-func Full() Strategy {
-	return Strategy{
-		V1Consistency: &v1.Consistency{
-			Requirement: &v1.Consistency_FullyConsistent{FullyConsistent: true},
-		},
-	}
-}
-
-// MinLatency returns a strategy that uses SpiceDB's preferred revision for
-// optimal performance. This is the recommended default for most read operations.
-func MinLatency() Strategy {
-	return Strategy{
-		V1Consistency: &v1.Consistency{
-			Requirement: &v1.Consistency_MinimizeLatency{MinimizeLatency: true},
-		},
-	}
-}
-
-// AtLeast returns a strategy that ensures results are at least as fresh as the
-// given revision. Use this for read-after-write consistency.
-func AtLeast(revision string) Strategy {
-	return Strategy{
-		V1Consistency: &v1.Consistency{
-			Requirement: &v1.Consistency_AtLeastAsFresh{
-				AtLeastAsFresh: &v1.ZedToken{Token: revision},
-			},
-		},
-	}
-}
-
-// AtLeastOrFull returns AtLeast(revision) if revision is non-empty,
-// otherwise Full(). Use this when you have an optional revision from a
-// previous write and want the safest fallback.
-func AtLeastOrFull(revision string) Strategy {
-	if revision == "" {
+func Full() Strategy                   { return Strategy{kind: FullyConsistent} }
+func MinLatency() Strategy             { return Strategy{kind: MinimizeLatency} }
+func AtLeast(token ZedToken) Strategy  { return Strategy{kind: AtLeastAsFresh, token: token} }
+func Snapshot(token ZedToken) Strategy { return Strategy{kind: ExactSnapshot, token: token} }
+func AtLeastOrFull(token ZedToken) Strategy {
+	if token.String() == "" {
 		return Full()
 	}
-	return AtLeast(revision)
+	return AtLeast(token)
 }
-
-// AtLeastOrMinLatency returns AtLeast(revision) if revision is non-empty,
-// otherwise MinLatency(). Use this when you have an optional revision but
-// prefer performance over full consistency as the fallback.
-func AtLeastOrMinLatency(revision string) Strategy {
-	if revision == "" {
+func AtLeastOrMinLatency(token ZedToken) Strategy {
+	if token.String() == "" {
 		return MinLatency()
 	}
-	return AtLeast(revision)
+	return AtLeast(token)
 }
-
-// Snapshot returns a strategy that reads at the exact given revision.
-func Snapshot(revision string) Strategy {
-	return Strategy{
-		V1Consistency: &v1.Consistency{
-			Requirement: &v1.Consistency_AtExactSnapshot{
-				AtExactSnapshot: &v1.ZedToken{Token: revision},
-			},
-		},
+func (s Strategy) Kind() Kind      { return s.kind }
+func (s Strategy) Token() ZedToken { return s.token }
+func (s Strategy) Validate() error {
+	if s.kind == Invalid || ((s.kind == AtLeastAsFresh || s.kind == ExactSnapshot) && s.token.String() == "") {
+		return fmt.Errorf("explicit consistency and nonempty revision token required")
 	}
+	return nil
 }

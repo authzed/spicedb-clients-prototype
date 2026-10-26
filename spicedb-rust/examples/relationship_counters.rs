@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use spicedb::client::SpiceDBClient;
 use spicedb::error::SpiceDBError;
-use spicedb::types::{CountResult, Filter, Relationship, Transaction};
+use spicedb::types::{CountResult, Filter, Transaction};
 
 /// Bounds how long the counter may stay "still calculating" before this example
 /// fails. Expiry is a failure, deliberately, and not a way out of asserting.
@@ -24,10 +24,12 @@ async fn settled_counter(client: &SpiceDBClient, name: &str) -> CountResult {
     let deadline = Instant::now() + COUNTER_TIMEOUT;
     loop {
         let result = client
-            .experimental_count_relationships(name)
+            .experimental_count_relationships(spicedb::ExperimentalCountRelationshipsRequest::new(
+                name,
+            ))
             .await
             .expect("count relationships failed");
-        if let Some(count) = result {
+        if let spicedb::ExperimentalCountRelationshipsResult::Count(count) = result {
             return count;
         }
         println!("counter is still being calculated...");
@@ -59,9 +61,13 @@ async fn main() {
         std::env::var("SPICEDB_ENDPOINT").unwrap_or_else(|_| "localhost:50051".to_string());
     let token = std::env::var("SPICEDB_TOKEN").unwrap_or_else(|_| "testtoken".to_string());
 
-    let client = SpiceDBClient::new_plaintext(endpoint, token)
-        .await
-        .expect("failed to create client");
+    let client = SpiceDBClient::new_plaintext(
+        endpoint,
+        token,
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("failed to create client");
 
     // Clear before writing the schema, not after using it. Every example runs
     // against one SpiceDB and writes a whole schema, and SpiceDB refuses a
@@ -74,26 +80,31 @@ async fn main() {
     // definition yet, which SpiceDB reports as FailedPrecondition
     // (ERROR_REASON_UNKNOWN_DEFINITION). Anything else -- an unreachable
     // server, a bad token -- must still fail the example.
-    match client.delete_relationships(&Filter::new("document")).await {
+    match client
+        .delete_all_relationships_non_atomic(spicedb::DeleteAllRequest::new(
+            (Filter::new("document")).clone(),
+        ))
+        .await
+    {
         Ok(_) | Err(SpiceDBError::FailedPrecondition(_)) => {}
         Err(e) => panic!("cleanup before schema write failed: {e:?}"),
     }
 
     // Write schema and test data
     client
-        .write_schema(SCHEMA)
+        .write_schema(spicedb::WriteSchemaRequest::new(SCHEMA))
         .await
         .expect("write schema failed");
 
-    let alice = Relationship::new("document", "firstdoc", "viewer", "user", "alice", "")
+    let alice = spicedb::Relationship::from_tuple("document:firstdoc#viewer@user:alice")
         .expect("invalid relationship");
-    let bob = Relationship::new("document", "seconddoc", "viewer", "user", "bob", "")
+    let bob = spicedb::Relationship::from_tuple("document:seconddoc#viewer@user:bob")
         .expect("invalid relationship");
 
     // An `editor` the counter's filter must NOT count. Without a relationship
     // the filter has to exclude, a counter that ignored the relation filter
     // entirely would still report the expected number.
-    let carol = Relationship::new("document", "firstdoc", "editor", "user", "carol", "")
+    let carol = spicedb::Relationship::from_tuple("document:firstdoc#editor@user:carol")
         .expect("invalid relationship");
 
     let mut txn = Transaction::new();
@@ -101,19 +112,26 @@ async fn main() {
     txn.touch(&bob);
     txn.touch(&carol);
     client
-        .write(&txn)
+        .write(spicedb::WriteRequest::new((txn).clone()))
         .await
         .expect("write relationships failed");
 
     // Unregister any existing counter from a prior run (ignore errors)
     let _ = client
-        .experimental_unregister_relationship_counter("document_viewers")
+        .experimental_unregister_relationship_counter(
+            spicedb::ExperimentalUnregisterRelationshipCounterRequest::new("document_viewers"),
+        )
         .await;
 
     // Register a counter for all document viewer relationships
     let filter = Filter::new("document").with_relation("viewer");
     client
-        .experimental_register_relationship_counter("document_viewers", &filter)
+        .experimental_register_relationship_counter(
+            spicedb::ExperimentalRegisterRelationshipCounterRequest::new(
+                "document_viewers",
+                (filter).clone(),
+            ),
+        )
         .await
         .expect("register counter failed");
 
@@ -137,13 +155,15 @@ async fn main() {
         "expected the counter to report exactly 2 document viewers"
     );
     assert!(
-        !count.revision.is_empty(),
+        !count.revision.as_ref().is_empty(),
         "expected a non-empty revision on the settled counter"
     );
 
     // Unregister the counter when done
     client
-        .experimental_unregister_relationship_counter("document_viewers")
+        .experimental_unregister_relationship_counter(
+            spicedb::ExperimentalUnregisterRelationshipCounterRequest::new("document_viewers"),
+        )
         .await
         .expect("unregister counter failed");
 
@@ -153,7 +173,9 @@ async fn main() {
     // registered is an error, so a no-op unregister would leave this call
     // succeeding.
     match client
-        .experimental_count_relationships("document_viewers")
+        .experimental_count_relationships(spicedb::ExperimentalCountRelationshipsRequest::new(
+            "document_viewers",
+        ))
         .await
     {
         Err(SpiceDBError::FailedPrecondition(_)) => {}
@@ -163,7 +185,9 @@ async fn main() {
     // Clean up so later examples that write a narrower schema aren't blocked by
     // leftover relationships.
     client
-        .delete_relationships(&Filter::new("document"))
+        .delete_all_relationships_non_atomic(spicedb::DeleteAllRequest::new(
+            (Filter::new("document")).clone(),
+        ))
         .await
         .expect("cleanup failed");
 }

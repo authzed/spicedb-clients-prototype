@@ -28,19 +28,17 @@ public final class LookupResult {
    * CheckResult}, where the server is answering a question about one specific pair and "no" is
    * itself an answer.
    */
-  public enum Permissionship {
-    UNSPECIFIED,
-    NO_PERMISSION,
-    HAS_PERMISSION,
-    CONDITIONAL_PERMISSION
-  }
 
   /**
    * Lists caveat context that was missing to fully evaluate a conditional result.
    *
    * @param missingRequiredContext names of the missing caveat context parameters
    */
-  public record PartialCaveatInfo(List<String> missingRequiredContext) {}
+  public record PartialCaveatInfo(List<String> missingRequiredContext) {
+    public PartialCaveatInfo {
+      missingRequiredContext = List.copyOf(missingRequiredContext);
+    }
+  }
 
   /**
    * One result from {@link SpiceDBClient#lookupResources}.
@@ -56,7 +54,7 @@ public final class LookupResult {
       String resourceId,
       Permissionship permissionship,
       PartialCaveatInfo partialCaveat,
-      String lookedUpAt) {}
+      ZedToken lookedUpAt) {}
 
   /**
    * A subject resolved by {@link SpiceDBClient#lookupSubjects} — either the matched subject, or
@@ -86,5 +84,9 @@ public final class LookupResult {
    *     subject
    */
   public record LookupSubject(
-      ResolvedSubject subject, List<ResolvedSubject> excludedSubjects, String lookedUpAt) {}
+      ResolvedSubject subject, List<ResolvedSubject> excludedSubjects, ZedToken lookedUpAt) {
+    public LookupSubject {
+      excludedSubjects = List.copyOf(excludedSubjects);
+    }
+  }
 }

@@ -24,16 +24,16 @@ public class WriteRelationshipsTest
     {
         await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
 
-        await client.WriteSchemaAsync(Schema);
+        await client.WriteSchemaAsync(Schema, null, default);
 
         // Write relationships with transaction builder
         var txn = new Transaction();
-        txn.Touch(Relationship.FromTriple("document", "firstdoc", "viewer", "user", "alice"));
-        txn.Touch(Relationship.FromTriple("document", "firstdoc", "editor", "user", "bob"));
+        txn.Touch(new Relationship(new ObjectRef("document", "firstdoc"), "viewer", new SubjectRef(new ObjectRef("user", "alice"))));
+        txn.Touch(new Relationship(new ObjectRef("document", "firstdoc"), "editor", new SubjectRef(new ObjectRef("user", "bob"))));
 
-        var revision = await client.WriteAsync(txn);
+        var revision = (await client.WriteAsync(txn, null, default)).Revision;
 
-        Assert.NotEmpty(revision);
+        Assert.NotEmpty(revision.Value);
     }
 
     [Fact]
@@ -41,20 +41,20 @@ public class WriteRelationshipsTest
     {
         await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
 
-        await client.WriteSchemaAsync(Schema);
+        await client.WriteSchemaAsync(Schema, null, default);
 
         // Write with a precondition that no owner exists
         var txn = new Transaction();
-        txn.Touch(Relationship.FromTriple("document", "firstdoc", "viewer", "user", "alice"));
+        txn.Touch(new Relationship(new ObjectRef("document", "firstdoc"), "viewer", new SubjectRef(new ObjectRef("user", "alice"))));
         txn.MustNotMatch(new Filter("document")
-            .WithResourceID("firstdoc")
+            .WithResourceId("firstdoc")
             .WithRelation("editor")
             .WithSubjectType("user")
-            .WithSubjectID("mallory"));
+            .WithSubjectId("mallory"));
 
-        var revision = await client.WriteAsync(txn);
+        var revision = (await client.WriteAsync(txn, null, default)).Revision;
 
-        Assert.NotEmpty(revision);
+        Assert.NotEmpty(revision.Value);
     }
 
     // A failed precondition arrives with SpiceDB's structured explanation attached, not just a
@@ -66,18 +66,18 @@ public class WriteRelationshipsTest
     {
         await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
 
-        await client.WriteSchemaAsync(Schema);
+        await client.WriteSchemaAsync(Schema, null, default);
 
         var txn = new Transaction();
-        txn.Touch(Relationship.FromTriple("document", "seconddoc", "viewer", "user", "alice"));
+        txn.Touch(new Relationship(new ObjectRef("document", "seconddoc"), "viewer", new SubjectRef(new ObjectRef("user", "alice"))));
         txn.MustMatch(new Filter("document")
-            .WithResourceID("firstdoc")
+            .WithResourceId("firstdoc")
             .WithRelation("editor")
             .WithSubjectType("user")
-            .WithSubjectID("nobody"));
+            .WithSubjectId("nobody"));
 
         var ex = await Assert.ThrowsAsync<FailedPreconditionException>(
-            () => client.WriteAsync(txn));
+            () => client.WriteAsync(txn, null, default));
 
         Assert.Equal("ERROR_REASON_WRITE_OR_DELETE_PRECONDITION_FAILURE", ex.Reason);
         Assert.Equal("authzed.com", ex.ReasonDomain);

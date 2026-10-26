@@ -49,7 +49,7 @@ use spicedb_proto::authzed::api::v1::watch_service_server::{WatchService, WatchS
 /// The listener is bound *before* the serving task is spawned, so the OS accept
 /// queue holds any incoming connection until the server begins accepting — this
 /// removes the client-connects-before-server-ready race. Connect a client with
-/// `SpiceDBClient::new_plaintext(addr.to_string(), "token")`.
+/// `SpiceDBClient::new_plaintext(addr.to_string(), "token", spicedb::RemoteCredentialsPolicy::LoopbackOnly)`.
 pub async fn spawn_server(router: Router) -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -202,6 +202,7 @@ pub struct MockPermissionsService {
 
     lookup_resources_pages: Mutex<VecDeque<Vec<proto::LookupResourcesResponse>>>,
     lookup_resources_calls: Arc<AtomicUsize>,
+    lookup_resources_debug: Arc<Mutex<Vec<bool>>>,
     lookup_resources_cursors: Arc<Mutex<Vec<Option<proto::Cursor>>>>,
 
     lookup_subjects_responses: Mutex<Vec<proto::LookupSubjectsResponse>>,
@@ -211,10 +212,12 @@ pub struct MockPermissionsService {
     export_relationships_calls: Arc<AtomicUsize>,
     export_relationships_cursors: Arc<Mutex<Vec<Option<proto::Cursor>>>>,
 
+    delete_stall: Mutex<Option<std::time::Duration>>,
     delete_relationships_responses: Mutex<VecDeque<proto::DeleteRelationshipsResponse>>,
     delete_relationships_calls: Arc<AtomicUsize>,
     delete_relationships_requests: Arc<Mutex<Vec<proto::DeleteRelationshipsRequest>>>,
 
+    preserve_bulk_echoes: bool,
     check_bulk_permissions_responses: Mutex<VecDeque<proto::CheckBulkPermissionsResponse>>,
     check_bulk_permissions_calls: Arc<AtomicUsize>,
     check_bulk_permissions_requests: Arc<Mutex<Vec<proto::CheckBulkPermissionsRequest>>>,
@@ -229,6 +232,7 @@ pub struct MockPermissionsService {
     /// exists here for `tests/raw_escape_hatch_test.rs`, which drives it
     /// through `SpiceDBClient::raw_proto()` precisely because the idiomatic
     /// surface cannot reach it.
+    check_permission_responses: Mutex<VecDeque<proto::CheckPermissionResponse>>,
     check_permission_requests: Arc<Mutex<Vec<proto::CheckPermissionRequest>>>,
     /// The `authorization` metadata value seen on each `CheckPermission` call,
     /// in call order. Proves a raw call carries this client's bearer token
@@ -242,6 +246,8 @@ pub struct MockPermissionsService {
     /// page -- proves a streaming call outlives a tiny unary
     /// `default_timeout` instead of inheriting it. Used by
     /// `tests/deadline_test.rs`.
+    read_hold: bool,
+    read_active: Arc<AtomicUsize>,
     read_relationships_stall: Mutex<Option<std::time::Duration>>,
 
     import_bulk_relationships_calls: Arc<AtomicUsize>,
@@ -264,6 +270,7 @@ impl MockPermissionsService {
 
             lookup_resources_pages: Mutex::new(VecDeque::new()),
             lookup_resources_calls: Arc::new(AtomicUsize::new(0)),
+            lookup_resources_debug: Arc::new(Mutex::new(Vec::new())),
             lookup_resources_cursors: Arc::new(Mutex::new(Vec::new())),
 
             lookup_subjects_responses: Mutex::new(Vec::new()),
@@ -273,22 +280,27 @@ impl MockPermissionsService {
             export_relationships_calls: Arc::new(AtomicUsize::new(0)),
             export_relationships_cursors: Arc::new(Mutex::new(Vec::new())),
 
+            delete_stall: Mutex::new(None),
             delete_relationships_responses: Mutex::new(VecDeque::new()),
             delete_relationships_calls: Arc::new(AtomicUsize::new(0)),
             delete_relationships_requests: Arc::new(Mutex::new(Vec::new())),
 
+            preserve_bulk_echoes: false,
             check_bulk_permissions_responses: Mutex::new(VecDeque::new()),
             check_bulk_permissions_calls: Arc::new(AtomicUsize::new(0)),
             check_bulk_permissions_requests: Arc::new(Mutex::new(Vec::new())),
             check_bulk_permissions_fail: Mutex::new(VecDeque::new()),
             check_bulk_permissions_stall: Mutex::new(None),
 
+            check_permission_responses: Mutex::new(VecDeque::new()),
             check_permission_requests: Arc::new(Mutex::new(Vec::new())),
             check_permission_authorizations: Arc::new(Mutex::new(Vec::new())),
 
             write_relationships_calls: Arc::new(AtomicUsize::new(0)),
             write_relationships_fail: Mutex::new(VecDeque::new()),
 
+            read_hold: false,
+            read_active: Arc::new(AtomicUsize::new(0)),
             read_relationships_stall: Mutex::new(None),
 
             import_bulk_relationships_calls: Arc::new(AtomicUsize::new(0)),
@@ -299,6 +311,10 @@ impl MockPermissionsService {
     /// Queues one page (i.e. one `ReadRelationships` server call's worth) of
     /// responses. Pages are popped and streamed in the order they were
     /// pushed.
+    pub fn hold_read_stream(&mut self) -> Arc<AtomicUsize> {
+        self.read_hold = true;
+        self.read_active.clone()
+    }
     pub fn push_read_relationships_page(&self, page: Vec<proto::ReadRelationshipsResponse>) {
         self.read_relationships_pages
             .lock()
@@ -324,6 +340,10 @@ impl MockPermissionsService {
     }
 
     /// Returns a live handle to the `LookupResources` call counter.
+    pub fn lookup_resources_debug(&self) -> Arc<Mutex<Vec<bool>>> {
+        self.lookup_resources_debug.clone()
+    }
+
     pub fn lookup_resources_calls(&self) -> Arc<AtomicUsize> {
         self.lookup_resources_calls.clone()
     }
@@ -372,6 +392,9 @@ impl MockPermissionsService {
     /// order pushed. If the queue is exhausted, the mock falls back to a
     /// default `DELETION_PROGRESS_COMPLETE` response — so single-call tests
     /// that don't care about the response body don't need to push one.
+    pub fn stall_delete_relationships(&self, duration: std::time::Duration) {
+        *self.delete_stall.lock().unwrap() = Some(duration);
+    }
     pub fn push_delete_relationships_response(&self, resp: proto::DeleteRelationshipsResponse) {
         self.delete_relationships_responses
             .lock()
@@ -397,6 +420,9 @@ impl MockPermissionsService {
     /// Queues one `CheckBulkPermissions` response, popped and returned in the
     /// order pushed. If the queue is exhausted, the mock falls back to a
     /// default (empty-pairs) response.
+    pub fn preserve_bulk_response_echoes(&mut self) {
+        self.preserve_bulk_echoes = true;
+    }
     pub fn push_check_bulk_permissions_response(&self, resp: proto::CheckBulkPermissionsResponse) {
         self.check_bulk_permissions_responses
             .lock()
@@ -420,6 +446,12 @@ impl MockPermissionsService {
 
     /// Returns a live handle to the full `CheckPermissionRequest` received on
     /// each single-check call, in call order.
+    pub fn push_check_permission_response(&self, response: proto::CheckPermissionResponse) {
+        self.check_permission_responses
+            .lock()
+            .unwrap()
+            .push_back(response);
+    }
     pub fn check_permission_requests(&self) -> Arc<Mutex<Vec<proto::CheckPermissionRequest>>> {
         self.check_permission_requests.clone()
     }
@@ -511,13 +543,18 @@ impl PermissionsService for MockPermissionsService {
             .pop_front()
             .unwrap_or_default();
         let stall = *self.read_relationships_stall.lock().unwrap();
+        let hold = self.read_hold;
+        let active = self.read_active.clone();
         let stream = async_stream::stream! {
+            struct Active(std::sync::Arc<AtomicUsize>);impl Drop for Active{fn drop(&mut self){self.0.fetch_sub(1,Ordering::SeqCst);}}
+            active.fetch_add(1,Ordering::SeqCst);let _guard=Active(active);
             if let Some(d) = stall {
                 tokio::time::sleep(d).await;
             }
             for resp in page {
                 yield Ok(resp);
             }
+            if hold{std::future::pending::<()>().await;}
         };
         Ok(Response::new(Box::pin(stream)))
     }
@@ -548,6 +585,10 @@ impl PermissionsService for MockPermissionsService {
             .lock()
             .unwrap()
             .push(request.into_inner());
+        let stall = *self.delete_stall.lock().unwrap();
+        if let Some(duration) = stall {
+            tokio::time::sleep(duration).await;
+        }
         let resp = self
             .delete_relationships_responses
             .lock()
@@ -587,6 +628,16 @@ impl PermissionsService for MockPermissionsService {
             .lock()
             .unwrap()
             .push(request.into_inner());
+        let stall = *self.check_bulk_permissions_stall.lock().unwrap();
+        if let Some(duration) = stall {
+            tokio::time::sleep(duration).await;
+        }
+        if let Some(status) = self.check_bulk_permissions_fail.lock().unwrap().pop_front() {
+            return Err(status);
+        }
+        if let Some(response) = self.check_permission_responses.lock().unwrap().pop_front() {
+            return Ok(Response::new(response));
+        }
         Ok(Response::new(proto::CheckPermissionResponse {
             checked_at: Some(proto::ZedToken {
                 token: "rev-raw".to_string(),
@@ -602,6 +653,7 @@ impl PermissionsService for MockPermissionsService {
         &self,
         request: Request<proto::CheckBulkPermissionsRequest>,
     ) -> Result<Response<proto::CheckBulkPermissionsResponse>, Status> {
+        let items = request.get_ref().items.clone();
         self.check_bulk_permissions_calls
             .fetch_add(1, Ordering::SeqCst);
         self.check_bulk_permissions_requests
@@ -615,12 +667,17 @@ impl PermissionsService for MockPermissionsService {
         if let Some(status) = self.check_bulk_permissions_fail.lock().unwrap().pop_front() {
             return Err(status);
         }
-        let resp = self
+        let mut resp = self
             .check_bulk_permissions_responses
             .lock()
             .unwrap()
             .pop_front()
             .unwrap_or_default();
+        for (pair, item) in resp.pairs.iter_mut().zip(items) {
+            if !self.preserve_bulk_echoes && pair.request.is_none() {
+                pair.request = Some(item);
+            }
+        }
         Ok(Response::new(resp))
     }
 
@@ -638,6 +695,10 @@ impl PermissionsService for MockPermissionsService {
         request: Request<proto::LookupResourcesRequest>,
     ) -> Result<Response<Self::LookupResourcesStream>, Status> {
         self.lookup_resources_calls.fetch_add(1, Ordering::SeqCst);
+        self.lookup_resources_debug
+            .lock()
+            .unwrap()
+            .push(request.get_ref().with_debug);
         self.lookup_resources_cursors
             .lock()
             .unwrap()

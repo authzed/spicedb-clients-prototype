@@ -4,14 +4,32 @@ import {
     SpiceDBClient,
     createSpiceDBClient,
     Transaction,
-    CheckResult,
+    type CheckResult,
     type Relationship,
     type LookupResource,
     type LookupSubject,
     type CheckOptions,
+    type CallOptions,
+    type LookupResourcesRequest,
+    type LookupSubjectsRequest,
+    type ReadRelationshipsRequest,
+    type RelationshipFilter,
+    type SpiceDBClientOptions,
+    type JSONObject,
+    type JSONValue,
+    type WriteResult,
 } from "@spicedb/client";
 import { full } from "@spicedb/client";
 type Consistency = ReturnType<typeof full>;
+
+export interface LookupResourcesOptions extends CallOptions,
+    Omit<LookupResourcesRequest, "resourceType" | "permission" | "subject" | "consistency"> {}
+/** The selector supplies the subject type. subjectRelation is a native relation name,
+ * validated by the server; it is not constrained by the generated selector. */
+export interface LookupSubjectsOptions extends CallOptions,
+    Omit<LookupSubjectsRequest, "resource" | "permission" | "subjectType" | "consistency"> {}
+export interface ReadRelationshipsOptions extends CallOptions,
+    Omit<ReadRelationshipsRequest, "filter" | "consistency"> {}
 
 // --- Caveat Contexts ---
 export interface IpRangeContext {
@@ -21,8 +39,8 @@ export interface IpRangeContext {
 // names back to the RAW schema parameter names SpiceDB's CEL evaluator looks up (e.g.
 // "allowedCidr" -> "allowed_cidr"). A field left undefined is omitted entirely, not sent as an
 // explicit null/undefined value.
-function ipRangeContextToRaw(ctx: IpRangeContext): Record<string, unknown> {
-    const raw: Record<string, unknown> = {};
+function ipRangeContextToRaw(ctx: IpRangeContext): JSONObject {
+    const raw: Record<string, JSONValue> = {};
     if (ctx.allowedCidr !== undefined) raw["allowed_cidr"] = ctx.allowedCidr;
     return raw;
 }
@@ -34,8 +52,8 @@ export interface TimeWindowContext {
 // names back to the RAW schema parameter names SpiceDB's CEL evaluator looks up (e.g.
 // "allowedCidr" -> "allowed_cidr"). A field left undefined is omitted entirely, not sent as an
 // explicit null/undefined value.
-function timeWindowContextToRaw(ctx: TimeWindowContext): Record<string, unknown> {
-    const raw: Record<string, unknown> = {};
+function timeWindowContextToRaw(ctx: TimeWindowContext): JSONObject {
+    const raw: Record<string, JSONValue> = {};
     if (ctx.end !== undefined) raw["end"] = ctx.end;
     if (ctx.start !== undefined) raw["start"] = ctx.start;
     return raw;
@@ -46,8 +64,8 @@ type UserRef = { _type: "user"; _id: string; _caveat?: never };
 type TeamRef = { _type: "team"; _id: string; _caveat?: never };
 type TeamMemberRef = { _type: "team"; _id: string; _relation: "member"; _caveat?: never };
 type DocumentRef = { _type: "document"; _id: string; _caveat?: never };
-type UserIpRangeRef = { _type: "user"; _id: string; _caveat: "ip_range"; _caveatContext: Record<string, unknown> };
-type UserTimeWindowRef = { _type: "user"; _id: string; _caveat: "time_window"; _caveatContext: Record<string, unknown> };
+type UserIpRangeRef = { _type: "user"; _id: string; _caveat: "ip_range"; _caveatContext: JSONObject };
+type UserTimeWindowRef = { _type: "user"; _id: string; _caveat: "time_window"; _caveatContext: JSONObject };
 
 // --- Factories ---
 
@@ -104,6 +122,28 @@ Document.view = { _type: "document" as const, _permission: "view" as const };
 Document.edit = { _type: "document" as const, _permission: "edit" as const };
 Document.delete = { _type: "document" as const, _permission: "delete" as const };
 
+export interface TypedRelationship {
+    readonly _type: string;
+    readonly _relation: string;
+    readonly _id: string;
+    readonly _subject: {
+        readonly _type: string;
+        readonly _id: string;
+        readonly _relation?: string;
+        readonly _caveat?: string;
+        readonly _caveatContext?: JSONObject;
+    };
+}
+
+function toRelationship(r: TypedRelationship): Relationship {
+    return {
+        resource: { objectType: r._type, objectId: r._id },
+        relation: r._relation,
+        subject: { object: { objectType: r._subject._type, objectId: r._subject._id }, relation: r._subject._relation },
+        caveat: r._subject._caveat === undefined ? undefined : { name: r._subject._caveat, context: r._subject._caveatContext },
+    };
+}
+
 // --- TypedClient ---
 export class TypedClient {
     readonly client: SpiceDBClient;
@@ -112,7 +152,7 @@ export class TypedClient {
         this.client = client;
     }
 
-    static create(endpoint: string, token: string, options?: { insecure?: boolean; allowInsecureRemoteCredentials?: boolean; headers?: Record<string, string>; maxRetries?: number; defaultTimeoutMs?: number }): TypedClient {
+    static create(endpoint: string, token: string, options?: Omit<SpiceDBClientOptions, "endpoint" | "token">): TypedClient {
         return new TypedClient(createSpiceDBClient(endpoint, token, options));
     }
 
@@ -120,78 +160,148 @@ export class TypedClient {
     async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "view" }, s: UserRef | UserIpRangeRef | UserTimeWindowRef | TeamMemberRef, options?: CheckOptions): Promise<CheckResult>;
     async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "edit" }, s: UserRef, options?: CheckOptions): Promise<CheckResult>;
     async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "delete" }, s: UserRef, options?: CheckOptions): Promise<CheckResult>;
-    async check(c: Consistency, p: { _type: string; _id: string; _permission: string }, s: { _type: string; _id: string; _relation?: string; _caveat?: string; _caveatContext?: Record<string, any> }, options?: CheckOptions): Promise<CheckResult> {
+    async check(c: Consistency, p: { _type: string; _id: string; _permission: string }, s: { _type: string; _id: string; _relation?: string; _caveat?: string; _caveatContext?: JSONObject }, options?: CheckOptions): Promise<CheckResult> {
         // s._caveatContext (e.g. from User("dave").withIpRange(ctx)) is the
         // ITEM-LEVEL context for this one check -- it wins per-key over
-        // options.context (the call-level default) via checkPermission's own
+        // options.context (the call-level default) via check's own
         // mergeCheckContext; call-level keys the subject doesn't mention are
         // retained.
-        return this.client.checkPermission(c, {
-            resourceType: p._type, resourceId: p._id, permission: p._permission,
-            subjectType: s._type, subjectId: s._id, subjectRelation: (s as any)._relation,
+        return this.client.check({
+            resource: { objectType: p._type, objectId: p._id },
+            permission: p._permission, consistency: c,
+            subject: { object: { objectType: s._type, objectId: s._id }, relation: s._relation },
             context: s._caveatContext,
         }, options);
     }
 
-    // Write operations
-    async touch(...rels: Array<{ _type: string; _relation: string; _id: string; _subject: { _type: string; _id: string; _relation?: string; _caveat?: string; _caveatContext?: Record<string, any> } }>): Promise<string> {
+    // Writes accept a collection so cancellation and total budget options remain available.
+    async touch(rels: readonly TypedRelationship[], options?: CallOptions): Promise<WriteResult> {
         const txn = new Transaction();
-        for (const r of rels) {
-            txn.touch({ resourceType: r._type, resourceId: r._id, resourceRelation: r._relation,
-                        subjectType: r._subject._type, subjectId: r._subject._id, subjectRelation: r._subject._relation,
-                        caveatName: r._subject._caveat, caveatContext: r._subject._caveatContext as any });
-        }
-        return this.client.write(txn);
+        for (const r of rels) txn.touch(toRelationship(r));
+        return this.client.write(txn, options);
     }
 
-    async create(...rels: Array<{ _type: string; _relation: string; _id: string; _subject: { _type: string; _id: string; _relation?: string; _caveat?: string; _caveatContext?: Record<string, any> } }>): Promise<string> {
+    async create(rels: readonly TypedRelationship[], options?: CallOptions): Promise<WriteResult> {
         const txn = new Transaction();
-        for (const r of rels) {
-            txn.create({ resourceType: r._type, resourceId: r._id, resourceRelation: r._relation,
-                         subjectType: r._subject._type, subjectId: r._subject._id, subjectRelation: r._subject._relation,
-                         caveatName: r._subject._caveat, caveatContext: r._subject._caveatContext as any });
-        }
-        return this.client.write(txn);
+        for (const r of rels) txn.create(toRelationship(r));
+        return this.client.write(txn, options);
     }
 
-    async delete(...rels: Array<{ _type: string; _relation: string; _id: string; _subject: { _type: string; _id: string; _relation?: string; _caveat?: string; _caveatContext?: Record<string, any> } }>): Promise<string> {
+    async delete(rels: readonly TypedRelationship[], options?: CallOptions): Promise<WriteResult> {
         const txn = new Transaction();
-        for (const r of rels) {
-            txn.delete({ resourceType: r._type, resourceId: r._id, resourceRelation: r._relation,
-                         subjectType: r._subject._type, subjectId: r._subject._id, subjectRelation: r._subject._relation,
-                         caveatName: r._subject._caveat, caveatContext: r._subject._caveatContext as any });
-        }
-        return this.client.write(txn);
+        for (const r of rels) txn.delete(toRelationship(r));
+        return this.client.write(txn, options);
     }
+
+    close(): void { this.client.close(); }
 
     // LookupResources overloads
-    async lookupResources(c: Consistency, p: { _type: "document"; _permission: "view" }, s: UserRef | UserIpRangeRef | UserTimeWindowRef | TeamMemberRef): Promise<AsyncIterableIterator<LookupResource>>;
-    async lookupResources(c: Consistency, p: { _type: "document"; _permission: "edit" }, s: UserRef): Promise<AsyncIterableIterator<LookupResource>>;
-    async lookupResources(c: Consistency, p: { _type: "document"; _permission: "delete" }, s: UserRef): Promise<AsyncIterableIterator<LookupResource>>;
-    async lookupResources(c: Consistency, p: { _type: string; _permission: string }, s: { _type: string; _id: string; _relation?: string }): Promise<AsyncIterableIterator<LookupResource>> {
+    lookupResources(c: Consistency, p: { _type: "document"; _permission: "view" }, s: UserRef | UserIpRangeRef | UserTimeWindowRef | TeamMemberRef, options?: LookupResourcesOptions): AsyncIterableIterator<LookupResource>;
+    lookupResources(c: Consistency, p: { _type: "document"; _permission: "edit" }, s: UserRef, options?: LookupResourcesOptions): AsyncIterableIterator<LookupResource>;
+    lookupResources(c: Consistency, p: { _type: "document"; _permission: "delete" }, s: UserRef, options?: LookupResourcesOptions): AsyncIterableIterator<LookupResource>;
+    lookupResources(c: Consistency, p: { _type: string; _permission: string }, s: { _type: string; _id: string; _relation?: string }, options?: LookupResourcesOptions): AsyncIterableIterator<LookupResource> {
+        const { signal, timeoutMs, ...requestOptions } = options ?? {};
         return this.client.lookupResources({
+            ...requestOptions,
             resourceType: p._type, permission: p._permission,
-            subjectType: s._type, subjectId: s._id, subjectRelation: (s as any)._relation,
-        }, c);
+            subject: { object: { objectType: s._type, objectId: s._id }, relation: s._relation },
+            consistency: c,
+        }, options);
     }
 
     // LookupSubjects overloads
-    async lookupSubjects(c: Consistency, p: { _type: "document"; _id: string; _permission: "view" }, subjectType: (id: string) => { _type: string }): Promise<AsyncIterableIterator<LookupSubject>>;
-    async lookupSubjects(c: Consistency, p: { _type: "document"; _id: string; _permission: "edit" }, subjectType: (id: string) => { _type: string }): Promise<AsyncIterableIterator<LookupSubject>>;
-    async lookupSubjects(c: Consistency, p: { _type: "document"; _id: string; _permission: "delete" }, subjectType: (id: string) => { _type: string }): Promise<AsyncIterableIterator<LookupSubject>>;
-    async lookupSubjects(c: Consistency, p: { _type: string; _id: string; _permission: string }, subjectType: (id: string) => { _type: string }): Promise<AsyncIterableIterator<LookupSubject>> {
+    lookupSubjects(c: Consistency, p: { _type: "document"; _id: string; _permission: "view" }, subjectType: (id: string) => { _type: string }, options?: LookupSubjectsOptions): AsyncIterableIterator<LookupSubject>;
+    lookupSubjects(c: Consistency, p: { _type: "document"; _id: string; _permission: "edit" }, subjectType: (id: string) => { _type: string }, options?: LookupSubjectsOptions): AsyncIterableIterator<LookupSubject>;
+    lookupSubjects(c: Consistency, p: { _type: "document"; _id: string; _permission: "delete" }, subjectType: (id: string) => { _type: string }, options?: LookupSubjectsOptions): AsyncIterableIterator<LookupSubject>;
+    lookupSubjects(c: Consistency, p: { _type: string; _id: string; _permission: string }, subjectType: (id: string) => { _type: string }, options?: LookupSubjectsOptions): AsyncIterableIterator<LookupSubject> {
+        const { signal, timeoutMs, ...requestOptions } = options ?? {};
         return this.client.lookupSubjects({
+            ...requestOptions,
             subjectType: subjectType("")._type,
             permission: p._permission,
-            resourceType: p._type,
-            resourceId: p._id,
-        }, c);
+            resource: { objectType: p._type, objectId: p._id },
+            consistency: c,
+        }, options);
     }
 
     // ReadRelationships
-    readRelationships(c: Consistency, filter: { _type: string; _relation?: string }): AsyncIterableIterator<Relationship> {
+    readRelationships(c: Consistency, filter: RelationshipFilter | { _type: string; _id?: string; _relation?: string }, options?: ReadRelationshipsOptions): AsyncIterableIterator<Relationship> {
+        const { signal, timeoutMs, ...requestOptions } = options ?? {};
         return this.client.readRelationships({
-            resourceType: filter._type, resourceRelation: filter._relation,
-        }, c);
+            ...requestOptions,
+            filter: "resourceType" in filter ? filter : { resourceType: filter._type, resourceId: filter._id, relation: filter._relation },
+            consistency: c,
+        }, options);
     }
+    // Native capabilities retain their full typed signatures and stream ownership.
+    raw(...args: Parameters<SpiceDBClient["raw"]>): ReturnType<SpiceDBClient["raw"]> {
+        return this.client.raw(...args);
+    }
+    checkBulk(...args: Parameters<SpiceDBClient["checkBulk"]>): ReturnType<SpiceDBClient["checkBulk"]> {
+        return this.client.checkBulk(...args);
+    }
+    write(...args: Parameters<SpiceDBClient["write"]>): ReturnType<SpiceDBClient["write"]> {
+        return this.client.write(...args);
+    }
+    deleteRelationships(...args: Parameters<SpiceDBClient["deleteRelationships"]>): ReturnType<SpiceDBClient["deleteRelationships"]> {
+        return this.client.deleteRelationships(...args);
+    }
+    deleteAllRelationshipsNonAtomic(...args: Parameters<SpiceDBClient["deleteAllRelationshipsNonAtomic"]>): ReturnType<SpiceDBClient["deleteAllRelationshipsNonAtomic"]> {
+        return this.client.deleteAllRelationshipsNonAtomic(...args);
+    }
+    expandPermissionTree(...args: Parameters<SpiceDBClient["expandPermissionTree"]>): ReturnType<SpiceDBClient["expandPermissionTree"]> {
+        return this.client.expandPermissionTree(...args);
+    }
+    importRelationships(...args: Parameters<SpiceDBClient["importRelationships"]>): ReturnType<SpiceDBClient["importRelationships"]> {
+        return this.client.importRelationships(...args);
+    }
+    exportRelationships(...args: Parameters<SpiceDBClient["exportRelationships"]>): ReturnType<SpiceDBClient["exportRelationships"]> {
+        return this.client.exportRelationships(...args);
+    }
+    readSchema(...args: Parameters<SpiceDBClient["readSchema"]>): ReturnType<SpiceDBClient["readSchema"]> {
+        return this.client.readSchema(...args);
+    }
+    writeSchema(...args: Parameters<SpiceDBClient["writeSchema"]>): ReturnType<SpiceDBClient["writeSchema"]> {
+        return this.client.writeSchema(...args);
+    }
+    reflectSchema(...args: Parameters<SpiceDBClient["reflectSchema"]>): ReturnType<SpiceDBClient["reflectSchema"]> {
+        return this.client.reflectSchema(...args);
+    }
+    computablePermissions(...args: Parameters<SpiceDBClient["computablePermissions"]>): ReturnType<SpiceDBClient["computablePermissions"]> {
+        return this.client.computablePermissions(...args);
+    }
+    dependentRelations(...args: Parameters<SpiceDBClient["dependentRelations"]>): ReturnType<SpiceDBClient["dependentRelations"]> {
+        return this.client.dependentRelations(...args);
+    }
+    diffSchema(...args: Parameters<SpiceDBClient["diffSchema"]>): ReturnType<SpiceDBClient["diffSchema"]> {
+        return this.client.diffSchema(...args);
+    }
+    experimentalRegisterRelationshipCounter(...args: Parameters<SpiceDBClient["experimentalRegisterRelationshipCounter"]>): ReturnType<SpiceDBClient["experimentalRegisterRelationshipCounter"]> {
+        return this.client.experimentalRegisterRelationshipCounter(...args);
+    }
+    experimentalCountRelationships(...args: Parameters<SpiceDBClient["experimentalCountRelationships"]>): ReturnType<SpiceDBClient["experimentalCountRelationships"]> {
+        return this.client.experimentalCountRelationships(...args);
+    }
+    experimentalUnregisterRelationshipCounter(...args: Parameters<SpiceDBClient["experimentalUnregisterRelationshipCounter"]>): ReturnType<SpiceDBClient["experimentalUnregisterRelationshipCounter"]> {
+        return this.client.experimentalUnregisterRelationshipCounter(...args);
+    }
+    watch(...args: Parameters<SpiceDBClient["watch"]>): ReturnType<SpiceDBClient["watch"]> {
+        return this.client.watch(...args);
+    }
+    experimentalCountRelationshipsByFilter(...args: Parameters<SpiceDBClient["experimentalCountRelationshipsByFilter"]>): ReturnType<SpiceDBClient["experimentalCountRelationshipsByFilter"]> {
+        return this.client.experimentalCountRelationshipsByFilter(...args);
+    }
+    experimentalWatchPermissionSets(...args: Parameters<SpiceDBClient["experimentalWatchPermissionSets"]>): ReturnType<SpiceDBClient["experimentalWatchPermissionSets"]> {
+        return this.client.experimentalWatchPermissionSets(...args);
+    }
+    experimentalLookupPermissionSets(...args: Parameters<SpiceDBClient["experimentalLookupPermissionSets"]>): ReturnType<SpiceDBClient["experimentalLookupPermissionSets"]> {
+        return this.client.experimentalLookupPermissionSets(...args);
+    }
+    experimentalDownloadPermissionSets(...args: Parameters<SpiceDBClient["experimentalDownloadPermissionSets"]>): ReturnType<SpiceDBClient["experimentalDownloadPermissionSets"]> {
+        return this.client.experimentalDownloadPermissionSets(...args);
+    }
+    experimentalRoaringLookupResources(...args: Parameters<SpiceDBClient["experimentalRoaringLookupResources"]>): ReturnType<SpiceDBClient["experimentalRoaringLookupResources"]> {
+        return this.client.experimentalRoaringLookupResources(...args);
+    }
+
 }

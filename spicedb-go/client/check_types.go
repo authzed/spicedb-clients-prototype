@@ -2,6 +2,8 @@ package client
 
 import (
 	v1 "github.com/authzed/spicedb-clients/proto-clients/spicedb-go-proto/gen/authzed/api/v1"
+	"github.com/authzed/spicedb-clients/spicedb-go/consistency"
+	"time"
 )
 
 // CheckResult is the outcome of a permission check. Permissionship carries the
@@ -16,7 +18,9 @@ type CheckResult struct {
 	MissingContext []string
 	// CheckedAt is the revision this check was evaluated at. Thread it into
 	// consistency.AtLeast to make a later read observe this one.
-	CheckedAt string
+	CheckedAt  consistency.ZedToken
+	DebugTrace *DebugInformation
+	Expiration *time.Time
 }
 
 // HasPermission reports whether the subject has the permission outright. It is
@@ -47,10 +51,17 @@ func checkPermissionshipFromProto(v v1.CheckPermissionResponse_Permissionship) P
 // a single, non-bulk CheckPermission RPC) to a native CheckResult. The
 // response's own checked_at is used directly.
 func checkResultFromProto(resp *v1.CheckPermissionResponse) CheckResult {
+	var expiration *time.Time
+	if timestamp := resp.GetOptionalExpiresAt(); timestamp != nil {
+		value := timestamp.AsTime()
+		expiration = &value
+	}
 	return CheckResult{
 		Permissionship: checkPermissionshipFromProto(resp.GetPermissionship()),
-		MissingContext: resp.GetPartialCaveatInfo().GetMissingRequiredContext(),
-		CheckedAt:      resp.GetCheckedAt().GetToken(),
+		MissingContext: append([]string(nil), resp.GetPartialCaveatInfo().GetMissingRequiredContext()...),
+		CheckedAt:      consistency.NewZedToken(resp.GetCheckedAt().GetToken()),
+		DebugTrace:     debugInformation(resp.GetDebugTrace()),
+		Expiration:     expiration,
 	}
 }
 
@@ -64,7 +75,8 @@ func checkResultFromProto(resp *v1.CheckPermissionResponse) CheckResult {
 func checkResultFromBulkItem(item *v1.CheckBulkPermissionsResponseItem, responseCheckedAt string) CheckResult {
 	return CheckResult{
 		Permissionship: checkPermissionshipFromProto(item.GetPermissionship()),
-		MissingContext: item.GetPartialCaveatInfo().GetMissingRequiredContext(),
-		CheckedAt:      responseCheckedAt,
+		MissingContext: append([]string(nil), item.GetPartialCaveatInfo().GetMissingRequiredContext()...),
+		CheckedAt:      consistency.NewZedToken(responseCheckedAt),
+		DebugTrace:     debugInformation(item.GetDebugTrace()),
 	}
 }

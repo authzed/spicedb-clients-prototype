@@ -40,9 +40,10 @@ module SpiceDB
     def check_context_to_struct(context)
       return nil if context.nil?
 
+      context = Values.context(context)
       struct = Google::Protobuf::Struct.new
       context.each do |k, v|
-        struct.fields[k.to_s] = check_context_value(v)
+        struct.fields[k] = check_context_value(v)
       rescue SpiceDB::InvalidArgumentError => e
         raise SpiceDB::InvalidArgumentError, "caveat context key #{k.to_s.inspect}: #{e.message}"
       end

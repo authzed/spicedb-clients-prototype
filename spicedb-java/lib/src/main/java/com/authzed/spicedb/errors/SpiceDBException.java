@@ -18,6 +18,16 @@ import java.util.Map;
  */
 public class SpiceDBException extends RuntimeException {
 
+  private com.authzed.spicedb.DeleteProgress deleteProgress;
+
+  public com.authzed.spicedb.DeleteProgress deleteProgress() {
+    return deleteProgress;
+  }
+
+  public void attachDeleteProgress(com.authzed.spicedb.DeleteProgress progress) {
+    this.deleteProgress = progress;
+  }
+
   private final String reason;
   private final String reasonDomain;
 

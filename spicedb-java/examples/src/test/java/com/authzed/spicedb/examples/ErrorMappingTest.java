@@ -8,6 +8,7 @@ import build.buf.gen.authzed.api.v1.CheckBulkPermissionsResponse;
 import build.buf.gen.authzed.api.v1.CheckBulkPermissionsResponseItem;
 import build.buf.gen.authzed.api.v1.CheckPermissionResponse;
 import build.buf.gen.authzed.api.v1.PermissionsServiceGrpc;
+import com.authzed.spicedb.*;
 import com.authzed.spicedb.CheckResult;
 import com.authzed.spicedb.Consistency;
 import com.authzed.spicedb.Relationship;
@@ -52,7 +53,10 @@ class ErrorMappingTest {
 
   private static final String STALE_TOKEN = "stale-zedtoken";
   private static final Relationship DOC =
-      Relationship.of("document", "readme", "view", "user", "alice");
+      Relationship.of(
+          new ObjectRef("document", "readme"),
+          "view",
+          SubjectRef.direct(new ObjectRef("user", "alice")));
 
   /** A minimal SpiceDB that answers only what this example asks of it. */
   private static Server standIn() throws IOException {
@@ -78,6 +82,7 @@ class ErrorMappingTest {
                 for (int i = 0; i < request.getItemsCount(); i++) {
                   builder.addPairs(
                       CheckBulkPermissionsPair.newBuilder()
+                          .setRequest(request.getItems(i))
                           .setItem(
                               CheckBulkPermissionsResponseItem.newBuilder()
                                   .setPermissionship(
@@ -116,7 +121,16 @@ class ErrorMappingTest {
     try (SpiceDBClient client =
         SpiceDBClient.createPlaintext("127.0.0.1:" + server.getPort(), "some-token")) {
       assertThatThrownBy(
-              () -> client.checkPermission(Consistency.atLeast(STALE_TOKEN), "view", DOC))
+              () ->
+                  client
+                      .checkBulk(
+                          java.util.List.of(
+                              new PermissionCheck(
+                                  DOC.resource(),
+                                  "view",
+                                  DOC.subject(),
+                                  Consistency.atLeast(new ZedToken(STALE_TOKEN)))))
+                      .get(0))
           .as(
               "a check pinned to a collected ZedToken must surface as OutOfRangeException, not a"
                   + " generic failure a caller has to string-match")
@@ -127,7 +141,13 @@ class ErrorMappingTest {
           .hasCauseInstanceOf(io.grpc.StatusRuntimeException.class);
 
       // The recovery the rule calls mechanical, in full. Nothing here parses a message.
-      CheckResult result = client.checkPermission(Consistency.full(), "view", DOC);
+      CheckResult result =
+          client
+              .checkBulk(
+                  java.util.List.of(
+                      new PermissionCheck(
+                          DOC.resource(), "view", DOC.subject(), Consistency.full())))
+              .get(0);
       assertThat(result.hasPermission()).isTrue();
     } finally {
       server.shutdownNow().awaitTermination();
@@ -139,7 +159,14 @@ class ErrorMappingTest {
     Server server = rotatedTokenServer();
     try (SpiceDBClient client =
         SpiceDBClient.createPlaintext("127.0.0.1:" + server.getPort(), "rotated-token")) {
-      assertThatThrownBy(() -> client.checkPermission(Consistency.full(), "view", DOC))
+      assertThatThrownBy(
+              () ->
+                  client
+                      .checkBulk(
+                          java.util.List.of(
+                              new PermissionCheck(
+                                  DOC.resource(), "view", DOC.subject(), Consistency.full())))
+                      .get(0))
           .isInstanceOf(UnauthenticatedException.class)
           // Asserting the negative is the half that would silently rot if every code collapsed
           // into one class.

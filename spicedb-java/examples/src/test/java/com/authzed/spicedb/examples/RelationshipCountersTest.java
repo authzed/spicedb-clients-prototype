@@ -2,6 +2,7 @@ package com.authzed.spicedb.examples;
 
 import static org.assertj.core.api.Assertions.*;
 
+import com.authzed.spicedb.*;
 import com.authzed.spicedb.Filter;
 import com.authzed.spicedb.Relationship;
 import com.authzed.spicedb.SpiceDBClient;
@@ -39,16 +40,32 @@ class RelationshipCountersTest extends SpiceDBIntegrationTest {
 
   @BeforeEach
   void setUp() {
-    client.deleteRelationships(Filter.of("document"));
+    client.deleteAllRelationshipsNonAtomic(Filter.of("document"));
 
     var txn = new Transaction();
-    txn.touch(Relationship.of("document", "countdoc1", "viewer", "user", "alice"));
-    txn.touch(Relationship.of("document", "countdoc2", "viewer", "user", "bob"));
-    txn.touch(Relationship.of("document", "countdoc3", "viewer", "user", "charlie"));
+    txn.touch(
+        Relationship.of(
+            new ObjectRef("document", "countdoc1"),
+            "viewer",
+            SubjectRef.direct(new ObjectRef("user", "alice"))));
+    txn.touch(
+        Relationship.of(
+            new ObjectRef("document", "countdoc2"),
+            "viewer",
+            SubjectRef.direct(new ObjectRef("user", "bob"))));
+    txn.touch(
+        Relationship.of(
+            new ObjectRef("document", "countdoc3"),
+            "viewer",
+            SubjectRef.direct(new ObjectRef("user", "charlie"))));
     // An `editor` the counter's filter must NOT count. Without a relationship the filter has to
     // exclude, a counter that ignored the relation filter entirely would still report the
     // expected number.
-    txn.touch(Relationship.of("document", "countdoc1", "editor", "user", "dave"));
+    txn.touch(
+        Relationship.of(
+            new ObjectRef("document", "countdoc1"),
+            "editor",
+            SubjectRef.direct(new ObjectRef("user", "dave"))));
     client.write(txn);
 
     // Clean up any existing counter from a prior run. Only "not registered" is tolerated -- an
@@ -82,7 +99,7 @@ class RelationshipCountersTest extends SpiceDBIntegrationTest {
     // fails here, and so does a count of four, which is what ignoring the relation filter would
     // produce.
     assertThat(result.relationshipCount()).isEqualTo(3);
-    assertThat(result.revision()).isNotEmpty();
+    assertThat(result.revision().value()).isNotEmpty();
   }
 
   @Test

@@ -1,7 +1,7 @@
 """Unit tests for spicedb.consistency — no SpiceDB instance needed."""
+from spicedb import ZedToken
 
 from google.protobuf.message import Message
-
 from spicedb.consistency import (
     Consistency,
     at_least,
@@ -39,42 +39,42 @@ def test_min_latency():
 
 
 def test_at_least():
-    c = at_least("sometoken123")
+    c = at_least(ZedToken("sometoken123"))
     assert isinstance(c, Consistency)
     proto = c._to_proto()
     assert proto.at_least_as_fresh.token == "sometoken123"
 
 
 def test_at_least_or_full_with_revision():
-    c = at_least_or_full("sometoken123")
+    c = at_least_or_full(ZedToken("sometoken123"))
     assert isinstance(c, Consistency)
     proto = c._to_proto()
     assert proto.at_least_as_fresh.token == "sometoken123"
 
 
 def test_at_least_or_full_empty():
-    c = at_least_or_full("")
+    c = at_least_or_full(ZedToken(""))
     assert isinstance(c, Consistency)
     proto = c._to_proto()
     assert proto.fully_consistent is True
 
 
 def test_at_least_or_min_latency_with_revision():
-    c = at_least_or_min_latency("sometoken123")
+    c = at_least_or_min_latency(ZedToken("sometoken123"))
     assert isinstance(c, Consistency)
     proto = c._to_proto()
     assert proto.at_least_as_fresh.token == "sometoken123"
 
 
 def test_at_least_or_min_latency_empty():
-    c = at_least_or_min_latency("")
+    c = at_least_or_min_latency(ZedToken(""))
     assert isinstance(c, Consistency)
     proto = c._to_proto()
     assert proto.minimize_latency is True
 
 
 def test_snapshot():
-    c = snapshot("sometoken123")
+    c = snapshot(ZedToken("sometoken123"))
     assert isinstance(c, Consistency)
     proto = c._to_proto()
     assert proto.at_exact_snapshot.token == "sometoken123"

@@ -88,3 +88,6 @@ example must be executed by CI and must be able to fail".
 | `expand_permission_tree/` | Expanding a permission into its native `PermissionTree` (intermediate/leaf nodes, subjects) |
 | `raw_escape_hatch/` | The `#proto_client` escape hatch: driving the generated stub on this client's own connection to send `optional_transaction_metadata` (a proto field this gem does not wrap) and to call the single-check `CheckPermission` RPC |
 | `custom_tls/` | Reaching a SpiceDB behind a private CA with `new_custom_tls(ca_cert:)`, and mutual TLS with `client_cert:`/`client_key:`. Brings up its own TLS-terminated endpoint — the only example tagged `:no_spicedb`, since a plaintext server has nothing to demonstrate about trust material |
+
+Revision values are `SpiceDB::ZedToken`: use `ZedToken.new(stored_string)` when loading a revision and `token.to_s` when persisting it. Token absence is `nil`.
+Check diagnostics use `tracing: SpiceDB::Tracing::ENABLED`. Watch content uses an array of `SpiceDB::WatchContent` cases. To intentionally send credentials over remote plaintext, use `Client.new_plaintext(endpoint, key, remote_credentials: SpiceDB::RemoteCredentials::ALLOW_PLAINTEXT)`; local-only credentials remain the default.

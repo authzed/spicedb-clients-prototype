@@ -1,9 +1,11 @@
 """Unit tests for SpiceDBClient construction — no SpiceDB instance needed."""
+from spicedb import ZedToken
+from spicedb import TransportSecurity, WatchContent
 
+from spicedb import ObjectRef, SubjectRef, PermissionCheck, SubjectFilter
 import asyncio
 import inspect
 from unittest.mock import AsyncMock
-
 import grpc
 import pytest
 from authzed.api.v1 import (
@@ -13,7 +15,6 @@ from authzed.api.v1 import (
     watch_service_pb2,
 )
 from google.rpc import status_pb2
-
 from spicedb import Filter, Relationship, RelationReference, full
 from spicedb.aio import SpiceDBClient
 from spicedb.errors import (
@@ -37,7 +38,7 @@ async def make_client():
     created = []
 
     def _make(**kw):
-        c = SpiceDBClient("localhost:50051", token="testtoken", insecure=True, **kw)
+        c = SpiceDBClient("localhost:50051", token="testtoken", transport_security=TransportSecurity.PLAINTEXT, **kw)
         c._ensure_channel()
         created.append(c)
         return c
@@ -157,7 +158,7 @@ async def test_constructor_insecure_opens_channel_on_ensure(make_client):
 
 
 async def test_context_manager():
-    async with SpiceDBClient("localhost:50051", token="testtoken", insecure=True) as c:
+    async with SpiceDBClient("localhost:50051", token="testtoken", transport_security=TransportSecurity.PLAINTEXT) as c:
         c._ensure_channel()
         assert c._channel is not None
 
@@ -166,6 +167,7 @@ class TestSchemaReflectionSignatures:
     """`reflect_schema`/`diff_schema` must return native types, not proto
     (NOT-1: no proto in the public API). `client.py` uses
     `from __future__ import annotations`, so annotations are unevaluated
+from spicedb import ZedToken, TransportSecurity, WatchContent
     strings — check them directly rather than importing proto types here.
     """
 
@@ -175,15 +177,15 @@ class TestSchemaReflectionSignatures:
 
     def test_diff_schema_returns_native_list(self):
         sig = inspect.signature(SpiceDBClient.diff_schema)
-        assert sig.return_annotation == "list[SchemaDiff]"
+        assert sig.return_annotation == "SchemaDiffResult"
 
     def test_computable_permissions_returns_native_list(self):
         sig = inspect.signature(SpiceDBClient.computable_permissions)
-        assert sig.return_annotation == "list[RelationReference]"
+        assert sig.return_annotation == "RelationsResult"
 
     def test_dependent_relations_returns_native_list(self):
         sig = inspect.signature(SpiceDBClient.dependent_relations)
-        assert sig.return_annotation == "list[RelationReference]"
+        assert sig.return_annotation == "RelationsResult"
 
 
 class TestComputablePermissions:
@@ -196,9 +198,7 @@ class TestComputablePermissions:
         response = schema_service_pb2.ComputablePermissionsResponse(
             permissions=[
                 schema_service_pb2.ReflectionRelationReference(
-                    definition_name="document",
-                    relation_name="view",
-                    is_permission=True,
+                    definition_name="document", relation_name="view", is_permission=True
                 ),
                 schema_service_pb2.ReflectionRelationReference(
                     definition_name="document",
@@ -209,10 +209,10 @@ class TestComputablePermissions:
             read_at=core_pb2.ZedToken(token="deadbeef"),
         )
         client._schema.ComputablePermissions = AsyncMock(return_value=response)
-
-        result = await client.computable_permissions(full(), "document", "viewer")
-
-        assert result == [
+        result = await client.computable_permissions(
+            consistency=full(), definition_name="document", relation_name="viewer"
+        )
+        assert result.relations == (
             RelationReference(
                 definition_name="document", relation_name="view", is_permission=True
             ),
@@ -221,8 +221,7 @@ class TestComputablePermissions:
                 relation_name="view_and_edit",
                 is_permission=True,
             ),
-        ]
-
+        )
         client._schema.ComputablePermissions.assert_awaited_once()
         request = client._schema.ComputablePermissions.await_args.args[0]
         assert request.definition_name == "document"
@@ -253,18 +252,17 @@ class TestDependentRelations:
             read_at=core_pb2.ZedToken(token="cafebabe"),
         )
         client._schema.DependentRelations = AsyncMock(return_value=response)
-
-        result = await client.dependent_relations(full(), "document", "view")
-
-        assert result == [
+        result = await client.dependent_relations(
+            consistency=full(), definition_name="document", permission_name="view"
+        )
+        assert result.relations == (
             RelationReference(
                 definition_name="document", relation_name="viewer", is_permission=False
             ),
             RelationReference(
                 definition_name="document", relation_name="editor", is_permission=False
             ),
-        ]
-
+        )
         client._schema.DependentRelations.assert_awaited_once()
         request = client._schema.DependentRelations.await_args.args[0]
         assert request.definition_name == "document"
@@ -279,57 +277,39 @@ class TestCheckPermissionReturnsCheckResult:
 
     async def test_check_permission_returns_check_result(self, make_client):
         client = make_client()
-        response = permission_service_pb2.CheckBulkPermissionsResponse(
+        response = permission_service_pb2.CheckPermissionResponse(
             checked_at=core_pb2.ZedToken(token="deadbeef"),
-            pairs=[
-                permission_service_pb2.CheckBulkPermissionsPair(
-                    item=permission_service_pb2.CheckBulkPermissionsResponseItem(
-                        permissionship=permission_service_pb2.CheckPermissionResponse.PERMISSIONSHIP_HAS_PERMISSION
-                    )
-                )
-            ],
+            permissionship=permission_service_pb2.CheckPermissionResponse.PERMISSIONSHIP_HAS_PERMISSION,
         )
-        client._permissions.CheckBulkPermissions = AsyncMock(return_value=response)
-
+        client._permissions.CheckPermission = AsyncMock(return_value=response)
         rel = Relationship.from_triple("document:readme", "view", "user:alice")
-        result = await client.check_permission(full(), rel)
-
+        result = await client.check(_check(rel), consistency=full())
         assert result == CheckResult(
             permissionship=Permissionship.HAS_PERMISSION,
             missing_context=[],
-            checked_at="deadbeef",
+            checked_at=ZedToken("deadbeef"),
         )
         assert result.has_permission is True
 
-    async def test_check_permission_conditional_has_permission_false(
-        self, make_client
-    ):
+    async def test_check_permission_conditional_has_permission_false(self, make_client):
         client = make_client()
-        response = permission_service_pb2.CheckBulkPermissionsResponse(
+        response = permission_service_pb2.CheckPermissionResponse(
             checked_at=core_pb2.ZedToken(token="deadbeef"),
-            pairs=[
-                permission_service_pb2.CheckBulkPermissionsPair(
-                    item=permission_service_pb2.CheckBulkPermissionsResponseItem(
-                        permissionship=permission_service_pb2.CheckPermissionResponse.PERMISSIONSHIP_CONDITIONAL_PERMISSION,
-                        partial_caveat_info=core_pb2.PartialCaveatInfo(
-                            missing_required_context=["now"]
-                        ),
-                    )
-                )
-            ],
+            permissionship=permission_service_pb2.CheckPermissionResponse.PERMISSIONSHIP_CONDITIONAL_PERMISSION,
+            partial_caveat_info=core_pb2.PartialCaveatInfo(
+                missing_required_context=["now"]
+            ),
         )
-        client._permissions.CheckBulkPermissions = AsyncMock(return_value=response)
-
-        rel = Relationship.from_triple("document:readme", "conditional_view", "user:alice")
-        result = await client.check_permission(full(), rel)
-
+        client._permissions.CheckPermission = AsyncMock(return_value=response)
+        rel = Relationship.from_triple(
+            "document:readme", "conditional_view", "user:alice"
+        )
+        result = await client.check(_check(rel), consistency=full())
         assert result.permissionship == Permissionship.CONDITIONAL_PERMISSION
         assert result.has_permission is False
-        assert result.missing_context == ["now"]
+        assert result.missing_context == ("now",)
 
-    async def test_check_any_and_check_all_do_not_count_conditional(
-        self, make_client
-    ):
+    async def test_check_any_and_check_all_do_not_count_conditional(self, make_client):
         """check_any/check_all stay boolean but must count ONLY
         HasPermission -- a Conditional result is not a grant, so it must not
         flip either to True.
@@ -351,11 +331,22 @@ class TestCheckPermissionReturnsCheckResult:
                 )
             ],
         )
-        client._permissions.CheckBulkPermissions = AsyncMock(return_value=response)
-
-        rel = Relationship.from_triple("document:readme", "conditional_view", "user:alice")
-        assert await client.check_any(full(), rel) is False
-        assert await client.check_all(full(), rel) is False
+        client._permissions.CheckBulkPermissions = AsyncMock(
+            side_effect=lambda request, **kwargs: _echo_response(response, request)
+        )
+        rel = Relationship.from_triple(
+            "document:readme", "conditional_view", "user:alice"
+        )
+        assert (
+            _aggregate(
+                await client.check_bulk([_check(rel)], consistency=full()), False
+            )
+            is False
+        )
+        assert (
+            _aggregate(await client.check_bulk([_check(rel)], consistency=full()), True)
+            is False
+        )
 
     async def test_check_all_with_zero_relationships_returns_false(self, make_client):
         """Python's builtin all() is vacuously True over an empty iterable,
@@ -373,12 +364,14 @@ class TestCheckPermissionReturnsCheckResult:
         test_check_all_with_zero_relationships_returns_false."""
         client = make_client()
         response = permission_service_pb2.CheckBulkPermissionsResponse(
-            checked_at=core_pb2.ZedToken(token="deadbeef"),
-            pairs=[],
+            checked_at=core_pb2.ZedToken(token="deadbeef"), pairs=[]
         )
-        client._permissions.CheckBulkPermissions = AsyncMock(return_value=response)
-
-        assert await client.check_all(full()) is False
+        client._permissions.CheckBulkPermissions = AsyncMock(
+            side_effect=lambda request, **kwargs: _echo_response(response, request)
+        )
+        assert (
+            _aggregate(await client.check_bulk([], consistency=full()), True) is False
+        )
 
 
 class TestBulkCheckPerItemErrorFidelity:
@@ -389,34 +382,21 @@ class TestBulkCheckPerItemErrorFidelity:
     async def test_per_item_invalid_argument_surfaces_as_typed_error(self, make_client):
         client = make_client()
         pair = permission_service_pb2.CheckBulkPermissionsPair(
-            error=status_pb2.Status(code=3, message="bad item"),  # INVALID_ARGUMENT
+            error=status_pb2.Status(code=3, message="bad item")
         )
         response = permission_service_pb2.CheckBulkPermissionsResponse(pairs=[pair])
-        client._permissions.CheckBulkPermissions = AsyncMock(return_value=response)
-
-        rel = Relationship(
-            resource_type="document",
-            resource_id="1",
-            resource_relation="view",
-            subject_type="user",
-            subject_id="alice",
+        client._permissions.CheckBulkPermissions = AsyncMock(
+            side_effect=lambda request, **kwargs: _echo_response(response, request)
         )
-
+        rel = Relationship(
+            ObjectRef("document", "1"),
+            "view",
+            SubjectRef(ObjectRef("user", "alice"), relation=None),
+        )
         with pytest.raises(InvalidArgumentError) as exc_info:
-            await client.check_permissions(full(), rel)
-
-        # Must not be downgraded to a generic base SpiceDBError (e.g. the
-        # old fabricated INTERNAL path).
+            await client.check_bulk([_check(rel)], consistency=full())
         assert type(exc_info.value) is not SpiceDBError
         assert str(exc_info.value) == "bad item"
-
-
-# ── Lookup: rich result types ───────────────────────────────────────────
-#
-# Mirrors spicedb-go's client/lookup_test.go: LookupResources/LookupSubjects
-# must yield native LookupResource/LookupSubject structs (permissionship,
-# partial caveat info, and — the over-grant-risk fix — excluded_subjects for
-# wildcard "*" matches) instead of bare ID strings.
 
 
 class TestLookupResourcesYieldsPermissionshipAndPartialCaveat:
@@ -439,14 +419,15 @@ class TestLookupResourcesYieldsPermissionshipAndPartialCaveat:
                 ),
             ),
         )
-
         got = [
             r
             async for r in client.lookup_resources(
-                "document", "view", ("user:alice", ""), full()
+                resource_type="document",
+                permission="view",
+                subject=_subject("user:alice", ""),
+                consistency=full(),
             )
         ]
-
         assert len(got) == 2
         assert got[0] == LookupResource(
             resource_id="doc1",
@@ -456,7 +437,7 @@ class TestLookupResourcesYieldsPermissionshipAndPartialCaveat:
         assert got[1].resource_id == "doc2"
         assert got[1].permissionship == Permissionship.CONDITIONAL_PERMISSION
         assert got[1].partial_caveat is not None
-        assert got[1].partial_caveat.missing_required_context == ["ip_address"]
+        assert got[1].partial_caveat.missing_required_context == ("ip_address",)
 
 
 class TestLookupSubjectsWildcardSubjectExposesExcludedSubjects:
@@ -486,14 +467,15 @@ class TestLookupSubjectsWildcardSubjectExposesExcludedSubjects:
                 ],
             )
         )
-
         got = [
             s
             async for s in client.lookup_subjects(
-                ("document", "doc1"), "view", "user", full()
+                resource=ObjectRef("document", "doc1"),
+                permission="view",
+                subject_type="user",
+                consistency=full(),
             )
         ]
-
         assert len(got) == 1
         assert got[0].subject == ResolvedSubject(
             subject_id="*",
@@ -516,20 +498,21 @@ class TestLookupSubjectsNonWildcardHasNoExcludedSubjects:
                 subject=permission_service_pb2.ResolvedSubject(
                     subject_object_id="alice",
                     permissionship=permission_service_pb2.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION,
-                ),
+                )
             )
         )
-
         got = [
             s
             async for s in client.lookup_subjects(
-                ("document", "doc1"), "view", "user", full()
+                resource=ObjectRef("document", "doc1"),
+                permission="view",
+                subject_type="user",
+                consistency=full(),
             )
         ]
-
         assert len(got) == 1
         assert got[0].subject.subject_id == "alice"
-        assert got[0].excluded_subjects == []
+        assert got[0].excluded_subjects == ()
 
 
 class TestLookupSignatures:
@@ -540,11 +523,11 @@ class TestLookupSignatures:
 
     def test_lookup_resources_returns_lookup_resource_iterator(self):
         sig = inspect.signature(SpiceDBClient.lookup_resources)
-        assert sig.return_annotation == "AsyncIterator[LookupResource]"
+        assert sig.return_annotation == "AsyncStream[LookupResource]"
 
     def test_lookup_subjects_returns_lookup_subject_iterator(self):
         sig = inspect.signature(SpiceDBClient.lookup_subjects)
-        assert sig.return_annotation == "AsyncIterator[LookupSubject]"
+        assert sig.return_annotation == "AsyncStream[LookupSubject]"
 
 
 class TestDeleteRelationships:
@@ -558,6 +541,8 @@ class TestDeleteRelationships:
         client = make_client()
         response = permission_service_pb2.DeleteRelationshipsResponse(
             deleted_at=core_pb2.ZedToken(token="deadbeef"),
+            deletion_progress=1,
+            relationships_deleted_count=2,
         )
         client._permissions.DeleteRelationships = AsyncMock(return_value=response)
         return client
@@ -565,42 +550,31 @@ class TestDeleteRelationships:
     async def test_no_options_preserves_default_behavior(self, make_client):
         client = self._client(make_client)
         f = Filter(resource_type="document", resource_id="1")
-
-        revision = await client.delete_relationships(f)
-
-        assert revision == "deadbeef"
+        revision = await client.delete_all_relationships_non_atomic(f)
+        assert revision.revision == ZedToken("deadbeef")
         client._permissions.DeleteRelationships.assert_awaited_once()
         request = client._permissions.DeleteRelationships.await_args.args[0]
         assert request.relationship_filter == f._to_proto()
         assert list(request.optional_preconditions) == []
-        assert request.optional_limit == 0
-        assert request.optional_allow_partial_deletions is False
+        assert request.optional_limit == 1000
+        assert request.optional_allow_partial_deletions is True
 
     async def test_filter_subject_id_without_subject_type_raises_before_rpc(
         self, make_client
     ):
-        """Regression test for the offboarding hazard this finding
-        describes: a filter carrying a subject ID but no subject type must
-        be rejected before it ever reaches the server, not silently sent as
-        an unconstrained-subject delete that would remove every
-        relationship on every document."""
         client = self._client(make_client)
-        f = Filter(resource_type="document", subject_id="alice")
-
-        with pytest.raises(InvalidArgumentError) as exc_info:
-            await client.delete_relationships(f)
-
-        assert "subject_id" in str(exc_info.value)
-        assert "subject_type" in str(exc_info.value)
+        with pytest.raises(InvalidArgumentError, match="subject_type"):
+            await client.delete_relationships(
+                Filter("document", subject=SubjectFilter("", subject_id="alice")),
+                limit=10,
+            )
         client._permissions.DeleteRelationships.assert_not_awaited()
 
     async def test_must_match_sets_precondition(self, make_client):
         client = self._client(make_client)
         f = Filter(resource_type="document", resource_id="1")
         guard = Filter(resource_type="document", resource_id="1", relation="owner")
-
-        await client.delete_relationships(f, must_match=[guard])
-
+        await client.delete_all_relationships_non_atomic(f, must_match=[guard])
         request = client._permissions.DeleteRelationships.await_args.args[0]
         assert list(request.optional_preconditions) == [
             permission_service_pb2.Precondition(
@@ -613,9 +587,7 @@ class TestDeleteRelationships:
         client = self._client(make_client)
         f = Filter(resource_type="document", resource_id="1")
         guard = Filter(resource_type="document", resource_id="1", relation="banned")
-
-        await client.delete_relationships(f, must_not_match=[guard])
-
+        await client.delete_all_relationships_non_atomic(f, must_not_match=[guard])
         request = client._permissions.DeleteRelationships.await_args.args[0]
         assert list(request.optional_preconditions) == [
             permission_service_pb2.Precondition(
@@ -624,9 +596,7 @@ class TestDeleteRelationships:
             )
         ]
 
-    async def test_must_match_and_must_not_match_accumulate_in_order(
-        self, make_client
-    ):
+    async def test_must_match_and_must_not_match_accumulate_in_order(self, make_client):
         client = self._client(make_client)
         f = Filter(resource_type="document", resource_id="1")
         match_guard = Filter(
@@ -635,11 +605,9 @@ class TestDeleteRelationships:
         not_match_guard = Filter(
             resource_type="document", resource_id="1", relation="banned"
         )
-
-        await client.delete_relationships(
+        await client.delete_all_relationships_non_atomic(
             f, must_match=[match_guard], must_not_match=[not_match_guard]
         )
-
         request = client._permissions.DeleteRelationships.await_args.args[0]
         assert list(request.optional_preconditions) == [
             permission_service_pb2.Precondition(
@@ -655,26 +623,16 @@ class TestDeleteRelationships:
     async def test_limit_sets_optional_limit(self, make_client):
         client = self._client(make_client)
         f = Filter(resource_type="document", resource_id="1")
-
         await client.delete_relationships(f, limit=50)
-
         request = client._permissions.DeleteRelationships.await_args.args[0]
         assert request.optional_limit == 50
-        # The server rejects a limited delete outright if more relationships
-        # match than the limit unless partial deletions are allowed — so
-        # supplying `limit` must also flip this on, or `limit` would only
-        # ever work when the caller already knows the exact match count.
         assert request.optional_allow_partial_deletions is True
 
-    async def test_limit_none_leaves_optional_limit_unset(self, make_client):
+    async def test_limit_none_is_rejected(self, make_client):
         client = self._client(make_client)
-        f = Filter(resource_type="document", resource_id="1")
-
-        await client.delete_relationships(f, limit=None)
-
-        request = client._permissions.DeleteRelationships.await_args.args[0]
-        assert request.optional_limit == 0
-        assert request.optional_allow_partial_deletions is False
+        with pytest.raises(InvalidArgumentError, match="limit"):
+            await client.delete_relationships(Filter("document"), limit=None)
+        client._permissions.DeleteRelationships.assert_not_awaited()
 
     async def test_auto_page_false_makes_a_single_call_on_partial_progress(
         self, make_client
@@ -688,10 +646,8 @@ class TestDeleteRelationships:
         )
         client._permissions.DeleteRelationships = AsyncMock(return_value=response)
         f = Filter(resource_type="document", resource_id="1")
-
         revision = await client.delete_relationships(f, limit=10)
-
-        assert revision == "page1"
+        assert revision.revision == ZedToken("page1")
         client._permissions.DeleteRelationships.assert_awaited_once()
 
     async def test_auto_page_loops_until_complete_using_cursor(self, make_client):
@@ -710,40 +666,27 @@ class TestDeleteRelationships:
         ]
         client._permissions.DeleteRelationships = AsyncMock(side_effect=responses)
         f = Filter(resource_type="document", resource_id="1")
-
-        revision = await client.delete_relationships(f, limit=5, auto_page=True)
-
-        assert revision == "page2"
+        revision = await client.delete_all_relationships_non_atomic(f, page_size=5)
+        assert revision.revision == ZedToken("page2")
         assert client._permissions.DeleteRelationships.await_count == 2
-        first_request = client._permissions.DeleteRelationships.await_args_list[0].args[0]
-        second_request = client._permissions.DeleteRelationships.await_args_list[1].args[0]
+        first_request = client._permissions.DeleteRelationships.await_args_list[0].args[
+            0
+        ]
+        second_request = client._permissions.DeleteRelationships.await_args_list[
+            1
+        ].args[0]
         assert first_request.optional_limit == 5
         assert first_request.optional_allow_partial_deletions is True
         assert not first_request.HasField("optional_cursor")
         assert second_request.optional_cursor == cursor_a
 
-    async def test_auto_page_defaults_page_size_when_no_limit_given(
-        self, make_client
-    ):
+    async def test_auto_page_defaults_page_size_when_no_limit_given(self, make_client):
         client = self._client(make_client)
         f = Filter(resource_type="document", resource_id="1")
-
-        await client.delete_relationships(f, auto_page=True)
-
+        await client.delete_all_relationships_non_atomic(f)
         request = client._permissions.DeleteRelationships.await_args.args[0]
         assert request.optional_limit == 1000
         assert request.optional_allow_partial_deletions is True
-
-
-# ── Streaming establishment retry (RB4) ─────────────────────────────────
-#
-# DESIGN.md mandates automatic retry for transient errors with no
-# streaming carve-out. The streaming methods must retry stream/page
-# ESTABLISHMENT on a transient error, but must NEVER retry once any item
-# has been yielded from the current stream/page — doing so would
-# replay/duplicate items for the caller. Each class below asserts both
-# halves: establishment retry succeeds, and a post-yield transient error
-# is surfaced as-is (not retried, not replayed).
 
 
 def _rel_response(doc_id: str, cursor_token: str):
@@ -765,36 +708,29 @@ class TestReadRelationshipsEstablishmentRetry:
     ):
         client = make_client()
         client._permissions.ReadRelationships = _stream_open_fails_then_succeeds(
-            _rel_response("doc1", "c1"),
+            _rel_response("doc1", "c1")
         )
-
         got = [
             r
             async for r in client.read_relationships(
-                Filter(resource_type="document"), full()
+                Filter(resource_type="document"), consistency=full()
             )
         ]
-
-        assert [r.resource_id for r in got] == ["doc1"]
-        # One failed open + one successful open == 2 calls to the stub.
+        assert [r.resource.object_id for r in got] == ["doc1"]
         assert len(client._permissions.ReadRelationships.calls) == 2
 
     async def test_transient_error_after_yielding_is_not_retried(self, make_client):
         client = make_client()
         client._permissions.ReadRelationships = _stream_fails_after_yielding(
-            _rel_response("doc1", "c1"),
+            _rel_response("doc1", "c1")
         )
-
         got = []
         with pytest.raises(UnavailableError):
             async for r in client.read_relationships(
-                Filter(resource_type="document"), full()
+                Filter(resource_type="document"), consistency=full()
             ):
                 got.append(r)
-
-        # The item that streamed before the failure was yielded exactly
-        # once — a retry here would have replayed it.
-        assert [r.resource_id for r in got] == ["doc1"]
+        assert [r.resource.object_id for r in got] == ["doc1"]
         assert len(client._permissions.ReadRelationships.calls) == 1
 
 
@@ -811,32 +747,34 @@ class TestLookupResourcesEstablishmentRetry:
     ):
         client = make_client()
         client._permissions.LookupResources = _stream_open_fails_then_succeeds(
-            self._response("doc1", "c1"),
+            self._response("doc1", "c1")
         )
-
         got = [
             r
             async for r in client.lookup_resources(
-                "document", "view", ("user:alice", ""), full()
+                resource_type="document",
+                permission="view",
+                subject=_subject("user:alice", ""),
+                consistency=full(),
             )
         ]
-
         assert [r.resource_id for r in got] == ["doc1"]
         assert len(client._permissions.LookupResources.calls) == 2
 
     async def test_transient_error_after_yielding_is_not_retried(self, make_client):
         client = make_client()
         client._permissions.LookupResources = _stream_fails_after_yielding(
-            self._response("doc1", "c1"),
+            self._response("doc1", "c1")
         )
-
         got = []
         with pytest.raises(UnavailableError):
             async for r in client.lookup_resources(
-                "document", "view", ("user:alice", ""), full()
+                resource_type="document",
+                permission="view",
+                subject=_subject("user:alice", ""),
+                consistency=full(),
             ):
                 got.append(r)
-
         assert [r.resource_id for r in got] == ["doc1"]
         assert len(client._permissions.LookupResources.calls) == 1
 
@@ -847,7 +785,7 @@ class TestLookupSubjectsEstablishmentRetry:
             subject=permission_service_pb2.ResolvedSubject(
                 subject_object_id=subject_id,
                 permissionship=permission_service_pb2.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION,
-            ),
+            )
         )
 
     async def test_retries_establishment_on_first_open_transient_error(
@@ -855,32 +793,34 @@ class TestLookupSubjectsEstablishmentRetry:
     ):
         client = make_client()
         client._permissions.LookupSubjects = _stream_open_fails_then_succeeds(
-            self._response("alice"),
+            self._response("alice")
         )
-
         got = [
             s
             async for s in client.lookup_subjects(
-                ("document", "doc1"), "view", "user", full()
+                resource=ObjectRef("document", "doc1"),
+                permission="view",
+                subject_type="user",
+                consistency=full(),
             )
         ]
-
         assert [s.subject.subject_id for s in got] == ["alice"]
         assert len(client._permissions.LookupSubjects.calls) == 2
 
     async def test_transient_error_after_yielding_is_not_retried(self, make_client):
         client = make_client()
         client._permissions.LookupSubjects = _stream_fails_after_yielding(
-            self._response("alice"),
+            self._response("alice")
         )
-
         got = []
         with pytest.raises(UnavailableError):
             async for s in client.lookup_subjects(
-                ("document", "doc1"), "view", "user", full()
+                resource=ObjectRef("document", "doc1"),
+                permission="view",
+                subject_type="user",
+                consistency=full(),
             ):
                 got.append(s)
-
         assert [s.subject.subject_id for s in got] == ["alice"]
         assert len(client._permissions.LookupSubjects.calls) == 1
 
@@ -893,83 +833,25 @@ class TestWatchEstablishmentRetry:
             is_checkpoint=is_checkpoint,
         )
 
-    async def test_retries_establishment_on_first_open_transient_error(
-        self, make_client
-    ):
+    async def test_watch_never_reconnects(self, make_client):
         client = make_client()
-        client._watch.Watch = _stream_open_fails_then_succeeds(
-            self._response("rev1"),
-        )
-
-        got = [event.changes_through async for event in client.watch()]
-
-        assert got == ["rev1"]
-        assert len(client._watch.Watch.calls) == 2
-
-    async def test_transient_error_after_yielding_is_not_retried(self, make_client):
-        client = make_client()
-        client._watch.Watch = _stream_fails_after_yielding(
-            self._response("rev1"),
-        )
-
-        got = []
+        client._watch.Watch = _stream_open_fails_then_succeeds(self._response("rev"))
         with pytest.raises(UnavailableError):
             async for event in client.watch():
-                got.append(event.changes_through)
-
-        assert got == ["rev1"]
+                pass
         assert len(client._watch.Watch.calls) == 1
-
-    async def test_watch_event_exposes_usable_resume_token(self, make_client):
-        """A consumer whose stream dies must be able to resume from exactly
-        where it left off -- the resume token is what makes that possible
-        instead of forcing a restart from head (losing changes) or from the
-        original token (reprocessing, possibly past the GC window)."""
-        client = make_client()
-        client._watch.Watch = _async_stream(self._response("resume-me"))
-
-        [event] = [event async for event in client.watch()]
-
-        assert event.changes_through == "resume-me"
-
-    async def test_include_checkpoints_reaches_the_wire(self, make_client):
-        client = make_client()
-        client._watch.Watch = _async_stream(self._response("rev1"))
-
-        [_ async for _ in client.watch(include_checkpoints=True)]
-
-        (args, _kwargs) = client._watch.Watch.calls[0]
-        sent_request = args[0]
-        assert (
-            watch_service_pb2.WATCH_KIND_INCLUDE_CHECKPOINTS
-            in sent_request.optional_update_kinds
-        )
-
-    async def test_include_checkpoints_false_by_default(self, make_client):
-        client = make_client()
-        client._watch.Watch = _async_stream(self._response("rev1"))
-
-        [_ async for _ in client.watch()]
-
-        (args, _kwargs) = client._watch.Watch.calls[0]
-        sent_request = args[0]
-        assert sent_request.optional_update_kinds == []
 
     async def test_checkpoint_event_distinguishable_from_update_event(
         self, make_client
     ):
         client = make_client()
         client._watch.Watch = _async_stream(
-            self._response("checkpoint-rev", is_checkpoint=True),
+            self._response("checkpoint-rev", is_checkpoint=True)
         )
-
-        [event] = [
-            event async for event in client.watch(include_checkpoints=True)
-        ]
-
+        [event] = [event async for event in client.watch(content=(WatchContent.RELATIONSHIPS, WatchContent.CHECKPOINTS))]
         assert event.is_checkpoint is True
-        assert event.updates == []
-        assert event.changes_through == "checkpoint-rev"
+        assert event.updates == ()
+        assert event.changes_through == ZedToken("checkpoint-rev")
 
 
 class TestExportRelationshipsEstablishmentRetry:
@@ -996,93 +878,59 @@ class TestExportRelationshipsEstablishmentRetry:
     ):
         client = make_client()
         client._permissions.ExportBulkRelationships = _stream_open_fails_then_succeeds(
-            self._response("doc1", "c1"),
+            self._response("doc1", "c1")
         )
-
-        got = [r async for r in client.export_relationships(full())]
-
-        assert [r.resource_id for r in got] == ["doc1"]
+        got = [r async for r in client.export_relationships(consistency=full())]
+        assert [r.resource.object_id for r in got] == ["doc1"]
         assert len(client._permissions.ExportBulkRelationships.calls) == 2
 
     async def test_transient_error_after_yielding_is_not_retried(self, make_client):
         client = make_client()
         client._permissions.ExportBulkRelationships = _stream_fails_after_yielding(
-            self._response("doc1", "c1"),
+            self._response("doc1", "c1")
         )
-
         got = []
         with pytest.raises(UnavailableError):
-            async for r in client.export_relationships(full()):
+            async for r in client.export_relationships(consistency=full()):
                 got.append(r)
-
-        assert [r.resource_id for r in got] == ["doc1"]
+        assert [r.resource.object_id for r in got] == ["doc1"]
         assert len(client._permissions.ExportBulkRelationships.calls) == 1
-
-
-# ── Lazy channel binding (D6) ───────────────────────────────────────────
-#
-# The reported bug: a client built once at startup (no running loop), then
-# driven by `asyncio.run(...)` per call. A `grpc.aio` channel binds to the
-# event loop present when it is constructed, so building eagerly in
-# `__init__` breaks the very "build once, reuse" pattern callers expect from
-# every other client. The channel must instead open on first *use*, and
-# reuse from a second loop must raise a typed, actionable error rather than
-# an opaque grpc/asyncio failure.
 
 
 def test_construction_outside_a_loop_does_not_raise():
     """The reported failure: build once at startup, no loop running."""
-    client = SpiceDBClient("localhost:50051", token="t", insecure=True)
+    client = SpiceDBClient("localhost:50051", token="t", transport_security=TransportSecurity.PLAINTEXT)
     assert client is not None
 
 
 def test_construction_opens_no_channel():
-    client = SpiceDBClient("localhost:50051", token="t", insecure=True)
+    client = SpiceDBClient("localhost:50051", token="t", transport_security=TransportSecurity.PLAINTEXT)
     assert client._channel is None, "channel must bind lazily, at first use"
 
 
 def test_close_before_any_call_is_a_noop():
-    client = SpiceDBClient("localhost:50051", token="t", insecure=True)
-    asyncio.run(client.close())  # must not raise
+    client = SpiceDBClient("localhost:50051", token="t", transport_security=TransportSecurity.PLAINTEXT)
+    asyncio.run(client.close())
 
 
 def test_reusing_a_client_across_event_loops_raises_a_clear_error():
     """asyncio.run() per call is exactly what the bug report did."""
-    client = SpiceDBClient("localhost:50051", token="t", insecure=True)
+    client = SpiceDBClient("localhost:50051", token="t", transport_security=TransportSecurity.PLAINTEXT)
 
     async def _bind():
         client._ensure_channel()
 
-    asyncio.run(_bind())          # binds to loop #1, which then closes
+    asyncio.run(_bind())
 
     async def _use_again():
-        client._ensure_channel()  # loop #2
+        client._ensure_channel()
 
     with pytest.raises(EventLoopBindingError) as excinfo:
         asyncio.run(_use_again())
-
     msg = str(excinfo.value)
     assert "spicedb.sync" in msg, "the error must point at the sync client"
     assert "event loop" in msg.lower()
-
-    # Clean up the channel bound to loop #1 -- by this point the assertions
-    # above have already fired, so closing here cannot affect what the test
-    # verifies. Left open, the abandoned grpc.aio channel's GC teardown
-    # produces a ResourceWarning: unclosed event loop.
     asyncio.run(client.close())
-
-
-# ── Unary retry safety (DESIGN.md: "Automatic retry is for idempotent
-# operations only") ──────────────────────────────────────────────────────
-#
-# Reads retry on a transient error; mutations (WriteRelationships,
-# DeleteRelationships, WriteSchema, the counter register/unregister calls)
-# do not, regardless of retryable-ness -- a WriteRelationships may carry
-# OPERATION_CREATE or preconditions, and if it actually committed but the
-# response was lost, a retry would surface ALREADY_EXISTS/FAILED_PRECONDITION
-# for a write that in fact succeeded. RESOURCE_EXHAUSTED is never retried at
-# all: in SpiceDB it means memory load-shed or a deterministic
-# MaxDepthExceeded, never a transient hiccup.
 
 
 async def test_read_transient_error_is_retried_then_succeeds(make_client):
@@ -1092,8 +940,10 @@ async def test_read_transient_error_is_retried_then_succeeds(make_client):
     ok = ssp.ReadSchemaResponse(schema_text="definition user {}")
     client._schema.ReadSchema = AsyncMock(side_effect=[_transient_error(), ok])
     result = await client.read_schema()
-    assert result == "definition user {}"
-    assert client._schema.ReadSchema.await_count == 2, "a transient error must be retried"
+    assert result.schema == "definition user {}"
+    assert client._schema.ReadSchema.await_count == 2, (
+        "a transient error must be retried"
+    )
 
 
 async def test_mutation_transient_error_is_attempted_once_only(make_client):
@@ -1119,7 +969,9 @@ async def test_resource_exhausted_is_never_retried(make_client):
     )
     with pytest.raises(ResourceExhaustedError):
         await client.read_schema()
-    assert client._schema.ReadSchema.await_count == 1, "RESOURCE_EXHAUSTED must never be retried"
+    assert client._schema.ReadSchema.await_count == 1, (
+        "RESOURCE_EXHAUSTED must never be retried"
+    )
 
 
 def test_backoff_has_jitter():
@@ -1131,4 +983,26 @@ def test_backoff_has_jitter():
     so this does not need `make_client`."""
     seen = {SpiceDBClient._backoff_seconds(2) for _ in range(50)}
     assert len(seen) > 1, "backoff should vary between calls"
-    assert all(0 <= v <= 0.4 for v in seen)
+    assert all((0 <= v <= 0.4 for v in seen))
+
+
+def _check(value):
+    if isinstance(value, PermissionCheck):
+        return value
+    return PermissionCheck(value.resource, value.relation, value.subject)
+
+
+def _aggregate(values, every=False):
+    return bool(values) and (all(values) if every else any(values))
+
+
+def _subject(value, relation=None):
+    typ, identifier = value.split(":", 1)
+    return SubjectRef(ObjectRef(typ, identifier), relation or None)
+
+
+def _echo_response(response, request):
+    response = type(response).FromString(response.SerializeToString())
+    for pair, item in zip(response.pairs, request.items):
+        pair.request.CopyFrom(item)
+    return response

@@ -32,3 +32,10 @@ export * from "./gen/authzed/api/v1/permission_service_pb.js";
 export * from "./gen/authzed/api/v1/schema_service_pb.js";
 export * from "./gen/authzed/api/v1/watch_service_pb.js";
 export * from "./gen/authzed/api/v1/experimental_service_pb.js";
+export * from "./gen/authzed/api/v1/debug_pb.js";
+export * from "./gen/authzed/api/materialize/v0/roaringlookupresources_pb.js";
+
+export * from "./gen/authzed/api/materialize/v0/relationships_pb.js";
+export { WatchPermissionSetsService } from "./gen/authzed/api/materialize/v0/watchpermissionsets_pb.js";
+export * as MaterializePermissionSetsProtocol from "./gen/authzed/api/materialize/v0/watchpermissionsets_pb.js";
+export { WatchPermissionsService } from "./gen/authzed/api/materialize/v0/watchpermissions_pb.js";

@@ -34,17 +34,20 @@ RSpec.describe 'WatchChanges' do
     # below are real changes: a TOUCH of an already-identical relationship is
     # not a change, and SpiceDB emits no watch event for it.
     txn = SpiceDB::Transaction.new
-    txn.touch(SpiceDB::Relationship.from_triple('document', 'firstdoc', 'viewer', 'user', 'alice'))
-    revision = client.write(txn)
+    txn.touch(SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'firstdoc'), relation: 'viewer',
+                                        subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user',
+                                                                                                        object_id: 'alice'), relation: nil)))
+    revision = client.write(txn).revision
 
     # Written after the subscription revision is fixed, so the stream is
     # guaranteed to carry it and the consumer below cannot block on the happy
     # path.
     txn = SpiceDB::Transaction.new
-    txn.touch(SpiceDB::Relationship.from_triple('document', 'seconddoc', 'editor', 'user', 'bob'))
+    txn.touch(SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'seconddoc'), relation: 'editor',
+                                        subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: 'bob'), relation: nil)))
     client.write(txn)
 
-    events = client.updates(['document'], start_revision: revision)
+    events = client.watch(filters: [SpiceDB::Filter.new(resource_type: 'document')], start_revision: revision)
 
     observed = nil
     resume_token = nil
@@ -65,25 +68,25 @@ RSpec.describe 'WatchChanges' do
       end
     end
 
-    expect(resume_token).not_to be_empty
+    expect(resume_token.to_s).not_to be_empty
 
     # Exactly the one update written after the subscription revision, and it is
     # the one that was written -- not merely "an update".
     expect(observed.length).to eq(1)
     update = observed.first
     expect(update).to be_a(SpiceDB::Update)
-    expect(update.relationship.resource_type).to eq('document')
-    expect(update.relationship.resource_id).to eq('seconddoc')
-    expect(update.relationship.resource_relation).to eq('editor')
-    expect(update.relationship.subject_type).to eq('user')
-    expect(update.relationship.subject_id).to eq('bob')
+    expect(update.relationship.resource.object_type).to eq('document')
+    expect(update.relationship.resource.object_id).to eq('seconddoc')
+    expect(update.relationship.relation).to eq('editor')
+    expect(update.relationship.subject.object.object_type).to eq('user')
+    expect(update.relationship.subject.object.object_id).to eq('bob')
     # TOUCH is a write, so it can only be the mapping for an explicit
     # OPERATION_TOUCH -- never a default an unrecognized operation falls into.
     expect(%i[create touch]).to include(update.operation)
   end
 
   it 'receives a checkpoint event distinguishable from an update event' do
-    # include_checkpoints: true asks the server for periodic checkpoint
+    # content: [SpiceDB::WatchContent::RELATIONSHIPS, SpiceDB::WatchContent::CHECKPOINTS] asks the server for periodic checkpoint
     # events in addition to relationship updates -- recommended if this
     # SpiceDB instance is running behind a proxy that aborts idle
     # connections, since a checkpoint keeps the stream alive even when
@@ -91,14 +94,19 @@ RSpec.describe 'WatchChanges' do
     # must check `is_checkpoint` to tell "nothing changed, here is a fresh
     # resume point" from "here are changes".
     txn = SpiceDB::Transaction.new
-    txn.touch(SpiceDB::Relationship.from_triple('document', 'firstdoc', 'viewer', 'user', 'alice'))
-    revision = client.write(txn)
+    txn.touch(SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'firstdoc'), relation: 'viewer',
+                                        subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user',
+                                                                                                        object_id: 'alice'), relation: nil)))
+    revision = client.write(txn).revision
 
     txn = SpiceDB::Transaction.new
-    txn.touch(SpiceDB::Relationship.from_triple('document', 'thirddoc', 'viewer', 'user', 'carol'))
+    txn.touch(SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'thirddoc'), relation: 'viewer',
+                                        subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user',
+                                                                                                        object_id: 'carol'), relation: nil)))
     client.write(txn)
 
-    events_enum = client.updates(['document'], start_revision: revision, include_checkpoints: true)
+    events_enum = client.watch(filters: [SpiceDB::Filter.new(resource_type: 'document')], start_revision: revision,
+                               content: [SpiceDB::WatchContent::RELATIONSHIPS, SpiceDB::WatchContent::CHECKPOINTS])
 
     seen_checkpoint = false
     seen_update = false

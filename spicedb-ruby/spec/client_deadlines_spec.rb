@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative '../lib/spicedb'
+require_relative 'support/native_helpers'
 require 'spicedb_proto'
 require 'grpc'
 
@@ -97,7 +98,10 @@ RSpec.describe 'SpiceDB::Client call deadlines' do
     result
   end
 
-  let(:rel) { SpiceDB::Relationship.from_triple('document', 'readme', 'viewer', 'user', 'jimmy') }
+  let(:rel) do
+    SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'readme'), relation: 'viewer',
+                              subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: 'jimmy'), relation: nil))
+  end
 
   it 'fails a unary call against a stub that never responds with DeadlineExceededError, not a hang' do
     server, port = start_server
@@ -105,7 +109,7 @@ RSpec.describe 'SpiceDB::Client call deadlines' do
       client = SpiceDB::Client.new_plaintext("localhost:#{port}", 'testtoken', default_timeout: 0.2)
       start = Time.now
       expect do
-        run_with_watchdog { client.check_permissions(SpiceDB::Consistency.full, 'view', rel) }
+        run_with_watchdog { client.check_bulk([rel].flatten.map { |item| permission_check(item, 'view') }, consistency: SpiceDB::Consistency.full) }
       end.to raise_error(SpiceDB::DeadlineExceededError)
       elapsed = Time.now - start
       client.close
@@ -148,7 +152,10 @@ RSpec.describe 'SpiceDB::Client call deadlines' do
       client = SpiceDB::Client.new_plaintext("localhost:#{port}", 'testtoken', default_timeout: STALL_SECONDS * 10)
       start = Time.now
       expect do
-        run_with_watchdog { client.check_permissions(SpiceDB::Consistency.full, 'view', rel, timeout: 0.2) }
+        run_with_watchdog do
+          client.check_bulk([rel].flatten.map { |item| permission_check(item, 'view') },
+                            consistency: SpiceDB::Consistency.full, timeout: 0.2)
+        end
       end.to raise_error(SpiceDB::DeadlineExceededError)
       elapsed = Time.now - start
       client.close
@@ -168,13 +175,13 @@ RSpec.describe 'SpiceDB::Client call deadlines' do
       client = SpiceDB::Client.new_plaintext("localhost:#{port}", 'testtoken', default_timeout: 0.1)
       filter = SpiceDB::Filter.new(resource_type: 'document')
       start = Time.now
-      got = run_with_watchdog { client.read_relationships(SpiceDB::Consistency.full, filter).to_a }
+      got = run_with_watchdog { client.read_relationships(filter, consistency: SpiceDB::Consistency.full).to_a }
       elapsed = Time.now - start
       client.close
     ensure
       server.stop
     end
-    expect(got.map(&:resource_id)).to eq(['a'])
+    expect(got.map { |rel| rel.resource.object_id }).to eq(['a'])
     expect(elapsed).to be >= STALL_SECONDS,
                        'the stream must outlive the tiny unary default -- it should have waited out the ' \
                        "server's #{STALL_SECONDS}s stall (elapsed=#{elapsed.round(2)}s)"
@@ -231,8 +238,8 @@ RSpec.describe 'SpiceDB::Client call deadlines' do
 
     it 'falls back to the client default when no per-call timeout is given' do
       client = SpiceDB::Client.new_plaintext('localhost:50051', 'testtoken', default_timeout: 7.5)
-      expect(client.send(:effective_timeout, nil)).to eq(7.5)
-      expect(client.send(:effective_timeout, 1.5)).to eq(1.5)
+      expect(client.send(:unary_budget, nil).remaining).to be_within(0.1).of(7.5)
+      expect(client.send(:unary_budget, 1.5).remaining).to be_within(0.1).of(1.5)
     end
   end
 end

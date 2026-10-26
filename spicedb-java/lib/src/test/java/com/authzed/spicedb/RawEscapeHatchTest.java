@@ -93,6 +93,7 @@ class RawEscapeHatchTest {
                       for (int i = 0; i < request.getItemsCount(); i++) {
                         response.addPairs(
                             build.buf.gen.authzed.api.v1.CheckBulkPermissionsPair.newBuilder()
+                                .setRequest(request.getItems(i))
                                 .setItem(
                                     build.buf.gen.authzed.api.v1.CheckBulkPermissionsResponseItem
                                         .newBuilder()
@@ -168,10 +169,17 @@ class RawEscapeHatchTest {
     try (RecordingServer server = new RecordingServer()) {
       try (SpiceDBClient client = clientFor(server)) {
         CheckResult result =
-            client.checkPermission(
-                com.authzed.spicedb.Consistency.full(),
-                "view",
-                Relationship.of("document", "readme", "view", "user", "jimmy"));
+            client
+                .checkBulk(
+                    java.util.List.of(
+                        TestRequests.check(
+                            Relationship.of(
+                                new ObjectRef("document", "readme"),
+                                "view",
+                                SubjectRef.direct(new ObjectRef("user", "jimmy"))),
+                            "view",
+                            com.authzed.spicedb.Consistency.full())))
+                .get(0);
         assertTrue(result.hasPermission());
 
         PermissionsServiceGrpc.newBlockingStub(client.rawChannel()).checkPermission(request());

@@ -2,8 +2,6 @@ package client
 
 import (
 	"context"
-	"fmt"
-	"io"
 	"iter"
 
 	v1 "github.com/authzed/spicedb-clients/proto-clients/spicedb-go-proto/gen/authzed/api/v1"
@@ -16,141 +14,141 @@ const (
 	defaultExportPageSize  = 512
 )
 
-// ImportRelationships streams relationships to SpiceDB for bulk import,
-// returning the number of relationships loaded. Relationships are automatically
-// batched into chunks of 1,000.
-//
-// If any relationship's caveat context cannot be converted to protobuf, the
-// import stops immediately and returns a CodeInvalidArgument error naming
-// the offending relationship — never a partial import written with a
-// silently dropped context, which bulk import would otherwise persist at
-// scale.
-func (c *Client) ImportRelationships(ctx context.Context, rels iter.Seq[rel.Relationship]) (numLoaded uint64, err error) {
-	// Returning early -- e.g. when a relationship's caveat context fails to
-	// convert to protobuf, or when a Send fails mid-stream -- must still
-	// release the client-streaming call opened below. grpc-go's
-	// ClientConn.NewStream contract is explicit: unless the context is
-	// cancelled, Close is called, or RecvMsg drains to a non-nil error, "a
-	// goroutine and a context will be leaked", and SpiceDB keeps the
-	// server-side dispatch open for as long as the connection lives.
-	// Cancelling on the way out covers every exit path, including these
-	// early returns, the same way ExportRelationships below covers its own.
-	// See root DESIGN.md, "RULE: Abandoning a stream must release it".
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+type ImportRelationshipsRequest struct{ Relationships iter.Seq[rel.Relationship] }
+type ImportRelationshipsResult struct{ ImportedCount uint64 }
 
-	stream, err := c.psc.ImportBulkRelationships(ctx)
-	if err != nil {
-		return 0, mapGRPCError("import relationships", err)
+// ImportRelationships uses bounded batches with backpressure, and never retries uploads.
+// If the producer panics, deferred cancellation releases the started upload.
+func (c *Client) ImportRelationships(ctx context.Context, request ImportRelationshipsRequest, opts ...ImportRelationshipsOption) (ImportRelationshipsResult, error) {
+	o := operationOptions{}
+	for _, opt := range opts {
+		opt(&o)
 	}
-
+	ctx, cancel, e := c.operation(ctx, o, true)
+	if e != nil {
+		return ImportRelationshipsResult{}, e
+	}
+	defer cancel()
+	if request.Relationships == nil {
+		return ImportRelationshipsResult{}, invalid("relationships iterator required")
+	}
+	stream, e := c.psc.ImportBulkRelationships(ctx)
+	if e != nil {
+		return ImportRelationshipsResult{}, mapGRPCError("import relationships", e)
+	}
 	batch := make([]*v1.Relationship, 0, defaultImportBatchSize)
-
-	for r := range rels {
-		p, err := r.ToProto()
-		if err != nil {
-			return 0, &Error{
-				Code:    CodeInvalidArgument,
-				Message: fmt.Sprintf("spicedb: import relationships: %s", err),
-				err:     err,
-			}
+	send := func() error {
+		if e := ctx.Err(); e != nil {
+			return mapGRPCError("import relationships", e)
+		}
+		if e := stream.Send(&v1.ImportBulkRelationshipsRequest{Relationships: batch}); e != nil {
+			return mapGRPCError("import relationships", e)
+		}
+		batch = make([]*v1.Relationship, 0, defaultImportBatchSize)
+		return nil
+	}
+	for r := range request.Relationships {
+		if e := ctx.Err(); e != nil {
+			return ImportRelationshipsResult{}, mapGRPCError("import relationships", e)
+		}
+		p, e := relationship(r)
+		if e != nil {
+			return ImportRelationshipsResult{}, e
 		}
 		batch = append(batch, p)
-		if len(batch) >= defaultImportBatchSize {
-			if err := stream.Send(&v1.ImportBulkRelationshipsRequest{
-				Relationships: batch,
-			}); err != nil {
-				return 0, mapGRPCError("import relationships", err)
+		if len(batch) == defaultImportBatchSize {
+			if e := send(); e != nil {
+				return ImportRelationshipsResult{}, e
 			}
-			batch = batch[:0]
 		}
 	}
-
-	// Send remaining batch
 	if len(batch) > 0 {
-		if err := stream.Send(&v1.ImportBulkRelationshipsRequest{
-			Relationships: batch,
-		}); err != nil {
-			return 0, mapGRPCError("import relationships", err)
+		if e := send(); e != nil {
+			return ImportRelationshipsResult{}, e
 		}
 	}
-
-	resp, err := stream.CloseAndRecv()
-	if err != nil {
-		return 0, mapGRPCError("import relationships", err)
+	resp, e := stream.CloseAndRecv()
+	if e != nil {
+		return ImportRelationshipsResult{}, mapGRPCError("import relationships", e)
 	}
-	return resp.GetNumLoaded(), nil
+	return ImportRelationshipsResult{resp.GetNumLoaded()}, nil
 }
 
-// ExportRelationships returns an iterator over all relationships matching the
-// optional filter, streamed from SpiceDB in bulk. Cursors are handled
-// transparently — the client automatically re-fetches pages of 512
-// relationships.
-func (c *Client) ExportRelationships(ctx context.Context, cs consistency.Strategy, f *rel.Filter) iter.Seq2[rel.Relationship, error] {
+type ExportRelationshipsRequest struct{ Consistency consistency.Strategy }
+
+func (c *Client) ExportRelationships(ctx context.Context, request ExportRelationshipsRequest, opts ...ExportRelationshipsOption) iter.Seq2[rel.Relationship, error] {
+	o := operationOptions{pageSize: defaultExportPageSize}
+	for _, opt := range opts {
+		opt(&o)
+	}
+	cs, ce := strategy(request.Consistency)
+	var f *v1.RelationshipFilter
+	var fe error
+	if o.filter != nil {
+		f, fe = filter(*o.filter)
+	}
 	return func(yield func(rel.Relationship, error) bool) {
-		// Abandoning this iterator -- a `break` in the consuming range
-		// loop, or any early return -- must release the stream. grpc-go's
-		// ClientConn.NewStream contract is explicit: unless the context is
-		// cancelled, Close is called, or RecvMsg drains to a non-nil error,
-		// "a goroutine and a context will be leaked", and SpiceDB keeps the
-		// server-side dispatch open for as long as the connection lives.
-		// Cancelling on the way out covers every exit path, including the
-		// early return taken when the consumer breaks. See root DESIGN.md,
-		// "RULE: Abandoning a stream must release it".
-		ctx, cancel := context.WithCancel(ctx)
-		defer cancel()
-
-		var filterProto *v1.RelationshipFilter
-		if f != nil {
-			p, err := f.ToProto()
-			if err != nil {
-				yield(rel.Relationship{}, &Error{
-					Code:    CodeInvalidArgument,
-					Message: fmt.Sprintf("spicedb: export relationships: %s", err),
-					err:     err,
-				})
-				return
-			}
-			filterProto = p
+		ctx, cancel, e := c.operation(ctx, o, true)
+		if e != nil {
+			yield(rel.Relationship{}, e)
+			return
 		}
-
-		var cursor *v1.Cursor
+		defer cancel()
+		if ce != nil {
+			yield(rel.Relationship{}, ce)
+			return
+		}
+		if fe != nil {
+			yield(rel.Relationship{}, fe)
+			return
+		}
+		var cur *v1.Cursor
+		var total uint64
+		exposed := false
 		for {
-			req := &v1.ExportBulkRelationshipsRequest{
-				Consistency:    cs.V1Consistency,
-				OptionalLimit:  defaultExportPageSize,
-				OptionalCursor: cursor,
+			size := o.pageSize
+			if o.limit > 0 {
+				size = uint32(min(uint64(size), o.limit-total))
 			}
-			if filterProto != nil {
-				req.OptionalRelationshipFilter = filterProto
-			}
-
-			stream, err := c.psc.ExportBulkRelationships(ctx, req)
-			if err != nil {
-				yield(rel.Relationship{}, mapGRPCError("export relationships", err))
-				return
-			}
-
-			var pageCount int
-			for {
-				resp, err := stream.Recv()
-				if err == io.EOF {
-					break
-				}
-				if err != nil {
-					yield(rel.Relationship{}, mapGRPCError("export relationships", err))
+			req := &v1.ExportBulkRelationshipsRequest{Consistency: cs, OptionalLimit: size, OptionalCursor: cur, OptionalRelationshipFilter: f}
+			pageCtx, pageCancel := context.WithCancel(ctx)
+			count := uint32(0)
+			prev := cur.GetToken()
+			for resp, e := range receive(pageCtx, "export relationships", !exposed, func(ctx context.Context) (receiver[*v1.ExportBulkRelationshipsResponse], error) {
+				return c.psc.ExportBulkRelationships(ctx, req)
+			}) {
+				if e != nil {
+					pageCancel()
+					yield(rel.Relationship{}, e)
 					return
 				}
-				cursor = resp.GetAfterResultCursor()
-				for _, r := range resp.GetRelationships() {
-					pageCount++
-					if !yield(rel.FromProto(r), nil) {
+				cur = resp.GetAfterResultCursor()
+				for _, p := range resp.GetRelationships() {
+					r, e := nativeRelationship(p)
+					if e != nil {
+						pageCancel()
+						yield(rel.Relationship{}, e)
+						return
+					}
+					count++
+					total++
+					exposed = true
+					if !yield(r, nil) {
+						pageCancel()
+						return
+					}
+					if o.limit > 0 && total >= o.limit {
+						pageCancel()
 						return
 					}
 				}
 			}
-
-			if pageCount < defaultExportPageSize {
+			pageCancel()
+			if count < size {
+				return
+			}
+			if cur.GetToken() == "" || cur.GetToken() == prev {
+				yield(rel.Relationship{}, &Error{Code: CodeInternal, Message: "spicedb: export page did not advance cursor"})
 				return
 			}
 		}

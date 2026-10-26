@@ -51,6 +51,15 @@ public class RetryPolicyTest
 
     private sealed class CountingService(Counts counts) : PermissionsService.PermissionsServiceBase
     {
+        public override async Task<CheckPermissionResponse> CheckPermission(CheckPermissionRequest request, ServerCallContext context)
+        {
+            var bulk = new CheckBulkPermissionsRequest { Consistency = request.Consistency };
+            bulk.Items.Add(new CheckBulkPermissionsRequestItem { Resource = request.Resource, Permission = request.Permission, Subject = request.Subject, Context = request.Context });
+            var response = await CheckBulkPermissions(bulk, context);
+            var item = response.Pairs[0].Item;
+            return new CheckPermissionResponse { Permissionship = item.Permissionship, PartialCaveatInfo = item.PartialCaveatInfo, CheckedAt = response.CheckedAt };
+        }
+
         public override Task<CheckBulkPermissionsResponse> CheckBulkPermissions(
             CheckBulkPermissionsRequest request, ServerCallContext context)
         {
@@ -105,7 +114,7 @@ public class RetryPolicyTest
     }
 
     private static Relationship Doc() =>
-        Relationship.FromTriple("document", "readme", "view", "user", "alice");
+        new Relationship(new ObjectRef("document", "readme"), "view", new SubjectRef(new ObjectRef("user", "alice")));
 
     [Fact]
     public async Task ARead_IsRetriedTransparently()
@@ -117,7 +126,7 @@ public class RetryPolicyTest
         var (app, client) = await StartAsync(counts);
         try
         {
-            var result = await client.CheckPermissionAsync(Full(), "view", Doc());
+            var result = await client.CheckAsync(new PermissionCheck(Doc().Resource, "view", Doc().Subject, Full()), null, default);
             Assert.True(result.HasPermission);
             Assert.True(
                 counts.Check == 3,
@@ -142,8 +151,8 @@ public class RetryPolicyTest
         try
         {
             var txn = new Transaction();
-            txn.Touch(Relationship.FromTriple("document", "readme", "viewer", "user", "alice"));
-            await Assert.ThrowsAsync<UnavailableException>(() => client.WriteAsync(txn));
+            txn.Touch(new Relationship(new ObjectRef("document", "readme"), "viewer", new SubjectRef(new ObjectRef("user", "alice"))));
+            await Assert.ThrowsAsync<UnavailableException>(() => client.WriteAsync(txn, null, default));
             Assert.True(
                 counts.Write == 1,
                 $"a mutation must not be retried silently: WriteRelationships saw {counts.Write} " +
@@ -168,7 +177,7 @@ public class RetryPolicyTest
         try
         {
             await Assert.ThrowsAsync<ResourceExhaustedException>(
-                () => client.CheckPermissionAsync(Full(), "view", Doc()));
+                () => client.CheckAsync(new PermissionCheck(Doc().Resource, "view", Doc().Subject, Full()), null, default));
             Assert.True(
                 counts.Check == 1,
                 $"RESOURCE_EXHAUSTED must not be retried: saw {counts.Check} attempts, which " +

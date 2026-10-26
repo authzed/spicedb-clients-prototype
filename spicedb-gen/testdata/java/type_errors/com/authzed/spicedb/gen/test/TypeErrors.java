@@ -1,4 +1,5 @@
 package com.authzed.spicedb.gen.test;
+import com.authzed.spicedb.*;
 
 import static com.authzed.spicedb.Consistency.*;
 import static com.authzed.spicedb.gen.test.Permissions.*;
@@ -19,5 +20,18 @@ class TypeErrors {
     void cannotWriteTeamMemberAsEditor(TypedClient tc) {
         // Team members cannot be assigned as editors (only users can).
         Document("readme").editor(Team("eng").member());
+    }
+    void writesReturnResults(TypedClient tc, SpiceDBClient client) {
+        ZedToken bare = tc.touch(java.util.List.of());
+        Consistency.atLeast(tc.create(java.util.List.of()));
+        ZedToken nativeBare = client.write(new Transaction());
+    }
+    void modesAndRevisionsAreTyped() {
+        CheckOptions.builder().tracing(true);
+        LookupOptions.builder().debug("enabled");
+        LookupOptions.builder().permissionshipFilter("has_permission_only");
+        WatchOptions.builder().content(true);
+        ClientOptions.builder().remotePlaintextCredentials(true);
+        Consistency.atLeast("revision");
     }
 }

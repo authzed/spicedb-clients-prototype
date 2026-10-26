@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, ClassVar, TypeAlias
 
-from spicedb import Transaction, Relationship, Filter
+from spicedb import Transaction, Relationship, Filter, ObjectRef, SubjectRef, Caveat
 
 
 # --- Base value types ---
@@ -39,14 +39,10 @@ class TypedRelationship:
 
     def _to_relationship(self) -> Relationship:
         return Relationship(
-            resource_type=self._resource_type,
-            resource_id=self._resource_id,
-            resource_relation=self._relation,
-            subject_type=self._subject_type,
-            subject_id=self._subject_id,
-            subject_relation=self._subject_rel,
-            caveat_name=self._caveat_name,
-            caveat_context=self._caveat_ctx,
+            resource=ObjectRef(self._resource_type, self._resource_id),
+            relation=self._relation,
+            subject=SubjectRef(ObjectRef(self._subject_type, self._subject_id), self._subject_rel or None),
+            caveat=Caveat(self._caveat_name, self._caveat_ctx) if self._caveat_name else None,
             expiration=self._expiration,
         )
 

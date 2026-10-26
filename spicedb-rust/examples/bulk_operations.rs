@@ -6,7 +6,7 @@ use futures::StreamExt;
 use spicedb::client::SpiceDBClient;
 use spicedb::consistency;
 use spicedb::error::SpiceDBError;
-use spicedb::types::{DeleteOptions, Filter, Relationship, Transaction};
+use spicedb::types::{DeleteAllOptions, Filter, Relationship, Transaction};
 
 const SCHEMA: &str = r#"definition user {}
 
@@ -28,9 +28,13 @@ async fn main() {
         std::env::var("SPICEDB_ENDPOINT").unwrap_or_else(|_| "localhost:50051".to_string());
     let token = std::env::var("SPICEDB_TOKEN").unwrap_or_else(|_| "testtoken".to_string());
 
-    let client = SpiceDBClient::new_plaintext(endpoint, token)
-        .await
-        .expect("failed to create client");
+    let client = SpiceDBClient::new_plaintext(
+        endpoint,
+        token,
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("failed to create client");
 
     // Clear before writing the schema, not after using it. Every example runs
     // against one SpiceDB and writes a whole schema, and SpiceDB refuses a
@@ -43,14 +47,19 @@ async fn main() {
     // definition yet, which SpiceDB reports as FailedPrecondition
     // (ERROR_REASON_UNKNOWN_DEFINITION). Anything else -- an unreachable
     // server, a bad token -- must still fail the example.
-    match client.delete_relationships(&Filter::new("document")).await {
+    match client
+        .delete_all_relationships_non_atomic(spicedb::DeleteAllRequest::new(
+            (Filter::new("document")).clone(),
+        ))
+        .await
+    {
         Ok(_) | Err(SpiceDBError::FailedPrecondition(_)) => {}
         Err(e) => panic!("cleanup before schema write failed: {e:?}"),
     }
 
     // Write schema
     client
-        .write_schema(SCHEMA)
+        .write_schema(spicedb::WriteSchemaRequest::new(SCHEMA))
         .await
         .expect("write schema failed");
 
@@ -60,33 +69,63 @@ async fn main() {
     let rels: Vec<Relationship> = users
         .iter()
         .map(|user| {
-            Relationship::new("document", "report", "viewer", "user", *user, "")
-                .expect("invalid relationship")
+            (|| -> Result<spicedb::Relationship, spicedb::SpiceDBError> {
+                spicedb::Relationship::new(
+                    spicedb::ObjectRef::new("document", "report")?,
+                    "viewer",
+                    spicedb::SubjectRef::new(spicedb::ObjectRef::new("user", *user)?, None)?,
+                )
+            })()
+            .expect("invalid relationship")
         })
         .collect();
 
     for rel in &rels {
         txn.touch(rel);
     }
-    let revision = client.write(&txn).await.expect("bulk write failed");
+    let revision = client
+        .write(spicedb::WriteRequest::new((txn).clone()))
+        .await
+        .expect("bulk write failed");
 
     println!(
-        "wrote {} relationships at revision: {revision}",
+        "wrote {} relationships at revision: {revision:?}",
         users.len()
     );
-    assert!(!revision.is_empty(), "expected non-empty revision");
+    assert!(
+        !revision.revision.as_ref().is_empty(),
+        "expected non-empty revision"
+    );
 
     // Bulk check permissions
     let check_rels: Vec<Relationship> = users
         .iter()
         .map(|user| {
-            Relationship::new("document", "report", "view", "user", *user, "")
-                .expect("invalid relationship")
+            (|| -> Result<spicedb::Relationship, spicedb::SpiceDBError> {
+                spicedb::Relationship::new(
+                    spicedb::ObjectRef::new("document", "report")?,
+                    "view",
+                    spicedb::SubjectRef::new(spicedb::ObjectRef::new("user", *user)?, None)?,
+                )
+            })()
+            .expect("invalid relationship")
         })
         .collect();
 
     let results = client
-        .check_permissions(&consistency::at_least(&revision), "view", &check_rels)
+        .check_bulk(spicedb::BulkCheckRequest::new(
+            check_rels
+                .iter()
+                .map(|r| {
+                    spicedb::PermissionCheck::new(
+                        (r).resource().clone(),
+                        "view",
+                        (r).subject().clone(),
+                        (consistency::at_least((&revision.revision).into())).clone(),
+                    )
+                })
+                .collect(),
+        ))
         .await
         .expect("bulk check failed");
 
@@ -104,8 +143,23 @@ async fn main() {
 
     // Check all
     let all_allowed = client
-        .check_all(&consistency::at_least(&revision), "view", &check_rels)
+        .check_bulk(spicedb::BulkCheckRequest::new(
+            check_rels
+                .iter()
+                .map(|r| {
+                    spicedb::PermissionCheck::new(
+                        (r).resource().clone(),
+                        "view",
+                        (r).subject().clone(),
+                        (consistency::at_least((&revision.revision).into())).clone(),
+                    )
+                })
+                .collect(),
+        ))
         .await
+        .map(|results| {
+            !results.is_empty() && results.iter().all(spicedb::CheckResult::has_permission)
+        })
         .expect("check all failed");
 
     println!("all users can view: {all_allowed}");
@@ -113,8 +167,23 @@ async fn main() {
 
     // Check any
     let any_allowed = client
-        .check_any(&consistency::at_least(&revision), "view", &check_rels)
+        .check_bulk(spicedb::BulkCheckRequest::new(
+            check_rels
+                .iter()
+                .map(|r| {
+                    spicedb::PermissionCheck::new(
+                        (r).resource().clone(),
+                        "view",
+                        (r).subject().clone(),
+                        (consistency::at_least((&revision.revision).into())).clone(),
+                    )
+                })
+                .collect(),
+        ))
         .await
+        .map(|results| {
+            !results.is_empty() && results.iter().any(spicedb::CheckResult::has_permission)
+        })
         .expect("check any failed");
 
     println!("any user can view: {any_allowed}");
@@ -130,31 +199,37 @@ async fn main() {
     // in millions of relationships from a generator or a DB cursor is never
     // forced to materialize the whole thing into a Vec first.
     let import_rels = (0..100).map(|i| {
-        Relationship::new(
-            "document",
-            format!("bulk-doc-{i}"),
-            "viewer",
-            "user",
-            "alice",
-            "",
-        )
+        (|| -> Result<spicedb::Relationship, spicedb::SpiceDBError> {
+            spicedb::Relationship::new(
+                spicedb::ObjectRef::new("document", format!("bulk-doc-{i}"))?,
+                "viewer",
+                spicedb::SubjectRef::new(spicedb::ObjectRef::new("user", "alice")?, None)?,
+            )
+        })()
         .expect("invalid relationship")
     });
 
     let count = client
-        .import_relationships(import_rels)
+        .import_relationships(spicedb::ImportRelationshipsRequest::new(
+            futures::stream::iter((import_rels).into_iter().map(Ok)),
+        ))
         .await
         .expect("import failed");
 
-    println!("imported {count} relationships");
-    assert_eq!(count, 100, "expected all 100 relationships to be imported");
+    println!("imported {count:?} relationships");
+    assert_eq!(
+        count.imported_count, 100,
+        "expected all 100 relationships to be imported"
+    );
 
     // Bulk export relationships. This example cleared `document` before
     // writing, so the whole store is exactly what it wrote: three viewers of
     // document:report plus the hundred imported above. Asserting the number
     // means an export that stopped after the first page, or dropped a page's
     // results, fails here -- the count used to be printed and nothing more.
-    let stream = client.export_relationships(&consistency::full(), None);
+    let stream = client.export_relationships(spicedb::ExportRelationshipsRequest::new(
+        (consistency::full()).clone(),
+    ));
     tokio::pin!(stream);
 
     let mut exported = Vec::new();
@@ -173,13 +248,15 @@ async fn main() {
     assert!(
         exported
             .iter()
-            .any(|r| r.resource_id == "report" && r.subject_id == "alice"),
+            .any(|r| r.resource().object_id() == "report"
+                && r.subject().object().object_id() == "alice"),
         "expected the export to include document:report#viewer@user:alice"
     );
     assert!(
         exported
             .iter()
-            .any(|r| r.resource_id == "bulk-doc-99" && r.subject_id == "alice"),
+            .any(|r| r.resource().object_id() == "bulk-doc-99"
+                && r.subject().object().object_id() == "alice"),
         "expected the export to include the last imported relationship"
     );
 
@@ -191,19 +268,23 @@ async fn main() {
     // the same loop that now threads each response's `after_result_cursor`
     // into the next page's `optional_cursor` (mirroring
     // `read_relationships`'s transparent-continuation pattern, see
-    // `DeleteOptions` docs). Asserting nothing is left afterward means a
+    // `DeleteAllOptions` docs). Asserting nothing is left afterward means a
     // loop that stopped early -- because paging broke, or because it choked
     // on the cursor field this datastore never actually populates -- fails
     // here instead of silently leaving relationships behind.
     client
-        .delete_relationships_with(
-            &Filter::new("document"),
-            &DeleteOptions::new().with_limit(20),
+        .delete_all_relationships_non_atomic(
+            spicedb::DeleteAllRequest::new((Filter::new("document")).clone()).with_options(
+                (DeleteAllOptions::new().with_page_size(std::num::NonZeroU32::new(20).unwrap()))
+                    .clone(),
+            ),
         )
         .await
         .expect("paged cleanup failed");
 
-    let stream = client.export_relationships(&consistency::full(), None);
+    let stream = client.export_relationships(spicedb::ExportRelationshipsRequest::new(
+        (consistency::full()).clone(),
+    ));
     tokio::pin!(stream);
     let mut remaining = Vec::new();
     while let Some(rel) = stream.next().await {

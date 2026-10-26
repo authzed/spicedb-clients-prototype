@@ -3,6 +3,7 @@ package com.authzed.spicedb.examples;
 import static com.authzed.spicedb.Consistency.*;
 import static org.assertj.core.api.Assertions.*;
 
+import com.authzed.spicedb.*;
 import com.authzed.spicedb.CheckOptions;
 import com.authzed.spicedb.CheckResult;
 import com.authzed.spicedb.Filter;
@@ -70,23 +71,33 @@ class CallDeadlinesTest {
     // just a unit test against a stalling stub.
     client =
         SpiceDBClient.createPlaintext(
-            SpiceDBIntegrationTest.ENDPOINT, SpiceDBIntegrationTest.TOKEN, Duration.ofSeconds(5));
+            SpiceDBIntegrationTest.ENDPOINT,
+            SpiceDBIntegrationTest.TOKEN,
+            ClientOptions.builder().defaultTimeout(Duration.ofSeconds(5)).build());
     // The schema here is narrower than the shared one in SpiceDBIntegrationTest, and every
     // example runs against the same SpiceDB. SpiceDB refuses a WriteSchema that drops a relation
     // while a relationship still exists under it, so clear before writing, not after: an earlier
     // example leaving document:report#editor@user:alice behind is enough to fail this outright.
     SpiceDBIntegrationTest.clearDocumentRelationships(client);
     client.writeSchema(SCHEMA);
-    client.deleteRelationships(Filter.of("document"));
+    client.deleteAllRelationshipsNonAtomic(Filter.of("document"));
 
     var txn = new Transaction();
-    txn.touch(Relationship.of("document", "readme", "viewer", "user", "alice"));
+    txn.touch(
+        Relationship.of(
+            new ObjectRef("document", "readme"),
+            "viewer",
+            SubjectRef.direct(new ObjectRef("user", "alice"))));
     client.write(txn);
 
     // Bound by the 5s default set above.
     CheckResult result =
-        client.checkPermission(
-            full(), "view", Relationship.of("document", "readme", "view", "user", "alice"));
+        client.check(
+            new PermissionCheck(
+                new ObjectRef("document", "readme"),
+                "view",
+                SubjectRef.direct(new ObjectRef("user", "alice")),
+                full()));
     assertThat(result.hasPermission()).isTrue();
   }
 
@@ -101,20 +112,26 @@ class CallDeadlinesTest {
     // example leaving document:report#editor@user:alice behind is enough to fail this outright.
     SpiceDBIntegrationTest.clearDocumentRelationships(client);
     client.writeSchema(SCHEMA);
-    client.deleteRelationships(Filter.of("document"));
+    client.deleteAllRelationshipsNonAtomic(Filter.of("document"));
 
     var txn = new Transaction();
-    txn.touch(Relationship.of("document", "readme", "viewer", "user", "alice"));
+    txn.touch(
+        Relationship.of(
+            new ObjectRef("document", "readme"),
+            "viewer",
+            SubjectRef.direct(new ObjectRef("user", "alice"))));
     // 2 seconds is generous for a real call against a local SpiceDB -- this exercises the real
     // timeout overload end-to-end, not testing how small a timeout can be.
-    client.write(txn, Duration.ofSeconds(2));
+    client.write(txn, WriteOptions.builder().timeout(Duration.ofSeconds(2)).build());
 
     CheckResult result =
-        client.checkPermissionWithOptions(
-            full(),
-            "view",
-            Relationship.of("document", "readme", "view", "user", "alice"),
-            CheckOptions.none().withTimeout(Duration.ofSeconds(2)));
+        client.check(
+            new PermissionCheck(
+                new ObjectRef("document", "readme"),
+                "view",
+                SubjectRef.direct(new ObjectRef("user", "alice")),
+                full()),
+            CheckOptions.builder().timeout(Duration.ofSeconds(2)).build());
     assertThat(result.hasPermission()).isTrue();
   }
 
@@ -135,11 +152,15 @@ class CallDeadlinesTest {
     // example leaving document:report#editor@user:alice behind is enough to fail this outright.
     SpiceDBIntegrationTest.clearDocumentRelationships(client);
     client.writeSchema(SCHEMA);
-    client.deleteRelationships(Filter.of("document"));
+    client.deleteAllRelationshipsNonAtomic(Filter.of("document"));
 
     List<Relationship> relationships = new ArrayList<>();
     for (int i = 0; i < 50; i++) {
-      relationships.add(Relationship.of("document", "bulk-" + i, "viewer", "user", "alice"));
+      relationships.add(
+          Relationship.of(
+              new ObjectRef("document", "bulk-" + i),
+              "viewer",
+              SubjectRef.direct(new ObjectRef("user", "alice"))));
     }
     long numLoaded = client.importRelationships(relationships);
     assertThat(numLoaded).isEqualTo(50);
@@ -148,9 +169,15 @@ class CallDeadlinesTest {
     // exclusion is from the *default*, not from the ability to bound the call at all.
     List<Relationship> moreRelationships = new ArrayList<>();
     for (int i = 0; i < 50; i++) {
-      moreRelationships.add(Relationship.of("document", "bulk2-" + i, "viewer", "user", "alice"));
+      moreRelationships.add(
+          Relationship.of(
+              new ObjectRef("document", "bulk2-" + i),
+              "viewer",
+              SubjectRef.direct(new ObjectRef("user", "alice"))));
     }
-    long numLoadedBounded = client.importRelationships(moreRelationships, Duration.ofSeconds(30));
+    long numLoadedBounded =
+        client.importRelationships(
+            moreRelationships, ImportOptions.builder().timeout(Duration.ofSeconds(30)).build());
     assertThat(numLoadedBounded).isEqualTo(50);
   }
 
@@ -174,13 +201,19 @@ class CallDeadlinesTest {
     try (ServerSocket wedged = wedgedListener()) {
       client =
           SpiceDBClient.createPlaintext(
-              endpointOf(wedged), SpiceDBIntegrationTest.TOKEN, WEDGED_TIMEOUT);
+              endpointOf(wedged),
+              SpiceDBIntegrationTest.TOKEN,
+              ClientOptions.builder().defaultTimeout(WEDGED_TIMEOUT).build());
 
       expectDeadlineToFire(
           "defaultTimeout",
           () ->
-              client.checkPermission(
-                  full(), "view", Relationship.of("document", "readme", "view", "user", "alice")));
+              client.check(
+                  new PermissionCheck(
+                      new ObjectRef("document", "readme"),
+                      "view",
+                      SubjectRef.direct(new ObjectRef("user", "alice")),
+                      full())));
     }
   }
 
@@ -195,11 +228,13 @@ class CallDeadlinesTest {
       expectDeadlineToFire(
           "per-call timeout",
           () ->
-              client.checkPermissionWithOptions(
-                  full(),
-                  "view",
-                  Relationship.of("document", "readme", "view", "user", "alice"),
-                  CheckOptions.none().withTimeout(WEDGED_TIMEOUT)));
+              client.check(
+                  new PermissionCheck(
+                      new ObjectRef("document", "readme"),
+                      "view",
+                      SubjectRef.direct(new ObjectRef("user", "alice")),
+                      full()),
+                  CheckOptions.builder().timeout(WEDGED_TIMEOUT).build()));
     }
   }
 

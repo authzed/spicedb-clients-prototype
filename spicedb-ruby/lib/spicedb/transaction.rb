@@ -11,7 +11,7 @@ module SpiceDB
   #   txn.create(relationship)
   #   txn.touch(other_relationship)
   #   txn.must_not_match(filter)
-  #   revision = client.write(txn)
+  #   revision = client.write(txn).revision
   class Transaction
     # @return [Array<Hash>] the list of relationship updates
     attr_reader :updates

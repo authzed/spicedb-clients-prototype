@@ -109,14 +109,19 @@ RSpec.describe 'CustomTLS', :no_spicedb do
   end
 
   let(:pki) { self.class.pki }
-  let(:rel) { SpiceDB::Relationship.from_triple('document', 'readme', 'viewer', 'user', 'alice') }
+  let(:rel) do
+    SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'readme'), relation: 'viewer',
+                              subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: 'alice'), relation: nil))
+  end
 
   it 'reaches a SpiceDB behind a private CA' do
     server, port = start_tls_server
     begin
       SpiceDB::Client.new_custom_tls("localhost:#{port}", SPICEDB_TOKEN,
                                      ca_cert: pki[:ca], default_timeout: 10) do |client|
-        results = client.check_permissions(SpiceDB::Consistency.full, 'view', rel)
+        results = client.check_bulk([rel].flatten.map do |rel|
+          SpiceDB::PermissionCheck.new(resource: rel.resource, permission: 'view', subject: rel.subject)
+        end, consistency: SpiceDB::Consistency.full)
         expect(results.first.has_permission?).to be true
       end
     ensure
@@ -130,7 +135,9 @@ RSpec.describe 'CustomTLS', :no_spicedb do
       SpiceDB::Client.new_custom_tls("localhost:#{port}", SPICEDB_TOKEN,
                                      ca_cert: pki[:ca], client_cert: pki[:client_cert],
                                      client_key: pki[:client_key], default_timeout: 10) do |client|
-        results = client.check_permissions(SpiceDB::Consistency.full, 'view', rel)
+        results = client.check_bulk([rel].flatten.map do |rel|
+          SpiceDB::PermissionCheck.new(resource: rel.resource, permission: 'view', subject: rel.subject)
+        end, consistency: SpiceDB::Consistency.full)
         expect(results.first.has_permission?).to be true
       end
     ensure
@@ -144,6 +151,6 @@ RSpec.describe 'CustomTLS', :no_spicedb do
     # configured when it was not.
     expect do
       SpiceDB::Client.new_custom_tls('spicedb.internal:443', SPICEDB_TOKEN)
-    end.to raise_error(ArgumentError, /new_system_tls/)
+    end.to raise_error(SpiceDB::InvalidArgumentError, /new_system_tls/)
   end
 end

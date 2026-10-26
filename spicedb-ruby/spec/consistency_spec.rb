@@ -31,26 +31,26 @@ RSpec.describe SpiceDB::Consistency do
 
   describe '.at_least' do
     it 'returns an at_least strategy with the given revision' do
-      cs = described_class.at_least('zedtoken123')
+      cs = described_class.at_least(SpiceDB::ZedToken.new('zedtoken123'))
       expect(cs.type).to eq(:at_least)
-      expect(cs.revision).to eq('zedtoken123')
+      expect(cs.revision).to eq(SpiceDB::ZedToken.new('zedtoken123'))
     end
 
     it 'converts to proto with at_least_as_fresh token' do
-      cs = described_class.at_least('zedtoken123')
+      cs = described_class.at_least(SpiceDB::ZedToken.new('zedtoken123'))
       expect(cs.to_proto).to eq({ at_least_as_fresh: { token: 'zedtoken123' } })
     end
   end
 
   describe '.snapshot' do
     it 'returns a snapshot strategy with the given revision' do
-      cs = described_class.snapshot('zedtoken456')
+      cs = described_class.snapshot(SpiceDB::ZedToken.new('zedtoken456'))
       expect(cs.type).to eq(:snapshot)
-      expect(cs.revision).to eq('zedtoken456')
+      expect(cs.revision).to eq(SpiceDB::ZedToken.new('zedtoken456'))
     end
 
     it 'converts to proto with at_exact_snapshot token' do
-      cs = described_class.snapshot('zedtoken456')
+      cs = described_class.snapshot(SpiceDB::ZedToken.new('zedtoken456'))
       expect(cs.to_proto).to eq({ at_exact_snapshot: { token: 'zedtoken456' } })
     end
   end
@@ -61,15 +61,15 @@ RSpec.describe SpiceDB::Consistency do
       expect(cs.type).to eq(:full)
     end
 
-    it 'returns Full when revision is empty' do
-      cs = described_class.at_least_or_full('')
-      expect(cs.type).to eq(:full)
+    it 'preserves an empty opaque token' do
+      cs = described_class.at_least_or_full(SpiceDB::ZedToken.new(''))
+      expect(cs.type).to eq(:at_least)
     end
 
     it 'returns AtLeast when revision is present' do
-      cs = described_class.at_least_or_full('zedtoken789')
+      cs = described_class.at_least_or_full(SpiceDB::ZedToken.new('zedtoken789'))
       expect(cs.type).to eq(:at_least)
-      expect(cs.revision).to eq('zedtoken789')
+      expect(cs.revision).to eq(SpiceDB::ZedToken.new('zedtoken789'))
     end
   end
 
@@ -79,15 +79,15 @@ RSpec.describe SpiceDB::Consistency do
       expect(cs.type).to eq(:min_latency)
     end
 
-    it 'returns MinLatency when revision is empty' do
-      cs = described_class.at_least_or_min_latency('')
-      expect(cs.type).to eq(:min_latency)
+    it 'preserves an empty opaque token' do
+      cs = described_class.at_least_or_min_latency(SpiceDB::ZedToken.new(''))
+      expect(cs.type).to eq(:at_least)
     end
 
     it 'returns AtLeast when revision is present' do
-      cs = described_class.at_least_or_min_latency('zedtoken789')
+      cs = described_class.at_least_or_min_latency(SpiceDB::ZedToken.new('zedtoken789'))
       expect(cs.type).to eq(:at_least)
-      expect(cs.revision).to eq('zedtoken789')
+      expect(cs.revision).to eq(SpiceDB::ZedToken.new('zedtoken789'))
     end
   end
 

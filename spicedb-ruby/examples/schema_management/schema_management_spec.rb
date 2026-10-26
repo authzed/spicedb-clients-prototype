@@ -7,16 +7,18 @@ RSpec.describe 'SchemaManagement' do
     revision = client.write_schema(TEST_SCHEMA)
 
     expect(revision).not_to be_nil
-    expect(revision).not_to be_empty
+    expect(revision.to_s).not_to be_empty
   end
 
   it 'reads back a previously written schema' do
     client.write_schema(TEST_SCHEMA)
 
-    schema_text, revision = client.read_schema
+    result = client.read_schema
+    schema_text = result.schema
+    revision = result.revision
 
     expect(revision).not_to be_nil
-    expect(revision).not_to be_empty
+    expect(revision.to_s).not_to be_empty
     expect(schema_text).to include('definition user')
     expect(schema_text).to include('definition document')
     expect(schema_text).to include('permission view')
@@ -43,9 +45,9 @@ RSpec.describe 'SchemaManagement' do
     revision = client.write_schema(updated_schema)
 
     expect(revision).not_to be_nil
-    expect(revision).not_to be_empty
+    expect(revision.to_s).not_to be_empty
 
-    schema_text, _rev = client.read_schema
+    schema_text = client.read_schema.schema
     expect(schema_text).to include('relation admin')
     expect(schema_text).to include('permission manage')
   end

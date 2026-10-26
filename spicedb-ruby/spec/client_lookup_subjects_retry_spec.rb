@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative '../lib/spicedb'
+require_relative 'support/native_helpers'
 require 'spicedb_proto'
 require 'grpc'
 
@@ -90,7 +91,7 @@ RSpec.describe 'SpiceDB::Client#lookup_subjects retry safety' do
     call_count = 0
     allow(permissions_service).to receive(:lookup_subjects) do
       call_count += 1
-      stream
+      FixtureOperation.new(stream)
     end
     client.instance_variable_set(
       :@proto_client, double('proto_client', permissions: permissions_service)
@@ -98,7 +99,8 @@ RSpec.describe 'SpiceDB::Client#lookup_subjects retry safety' do
 
     seen = []
     expect do
-      client.lookup_subjects(SpiceDB::Consistency.full, 'document', 'doc1', 'view', 'user').each do |s|
+      client.lookup_subjects(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'doc1'), permission: 'view', subject_type: 'user',
+                             consistency: SpiceDB::Consistency.full).each do |s|
         seen << s.subject.subject_id
       end
     end.to raise_error(SpiceDB::UnavailableError)
@@ -111,13 +113,16 @@ RSpec.describe 'SpiceDB::Client#lookup_subjects retry safety' do
     stream = SubjectStreams::FailsOnOpen.new(responses, GRPC::Unavailable.new('stream never opened'))
 
     permissions_service = double('permissions_service')
-    allow(permissions_service).to receive(:lookup_subjects).and_return(stream)
+    allow(permissions_service).to receive(:lookup_subjects).and_return(FixtureOperation.new(stream))
     client.instance_variable_set(
       :@proto_client, double('proto_client', permissions: permissions_service)
     )
 
-    seen = client.lookup_subjects(SpiceDB::Consistency.full, 'document', 'doc1', 'view', 'user')
-                 .map { |s| s.subject.subject_id }
+    seen = client.lookup_subjects(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'doc1'), permission: 'view', subject_type: 'user',
+                                  consistency: SpiceDB::Consistency.full)
+                 .map do |s|
+      s.subject.subject_id
+    end
 
     expect(seen).to eq(%w[sally jimmy]),
                     'a transient failure at establishment delivered nothing, so retrying it ' \

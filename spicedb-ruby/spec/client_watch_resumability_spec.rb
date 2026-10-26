@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative '../lib/spicedb'
+require_relative 'support/native_helpers'
 require 'spicedb_proto'
 require 'grpc'
 
@@ -30,7 +31,7 @@ RSpec.describe 'SpiceDB::Client#updates resumability' do
     watch_service = double('watch_service')
     allow(watch_service).to receive(:watch) do |req|
       captured_request = req
-      responses
+      FixtureOperation.new(responses)
     end
 
     proto_client = double('proto_client', watch: watch_service)
@@ -43,24 +44,24 @@ RSpec.describe 'SpiceDB::Client#updates resumability' do
       changes_through: Authzed::Api::V1::ZedToken.new(token: 'resume-me')
     )])
 
-    got = client.updates(['document']).to_a
+    got = client.watch(object_types: ['document']).to_a
 
     expect(got.length).to eq(1)
-    expect(got.first.changes_through).to eq('resume-me')
+    expect(got.first.changes_through).to eq(SpiceDB::ZedToken.new('resume-me'))
   end
 
-  it 'requests no update kinds by default' do
+  it 'requests relationship updates by default' do
     captured = stub_watch([])
 
-    client.updates(['document']).to_a
+    client.watch(object_types: ['document']).to_a
 
-    expect(captured.call.optional_update_kinds).to eq([])
+    expect(captured.call.optional_update_kinds).to eq([:WATCH_KIND_INCLUDE_RELATIONSHIP_UPDATES])
   end
 
   it 'reaches the wire with WATCH_KIND_INCLUDE_CHECKPOINTS when include_checkpoints is true' do
     captured = stub_watch([])
 
-    client.updates(['document'], include_checkpoints: true).to_a
+    client.watch(object_types: ['document'], content: [SpiceDB::WatchContent::RELATIONSHIPS, SpiceDB::WatchContent::CHECKPOINTS]).to_a
 
     kinds = captured.call.optional_update_kinds
     expect(kinds).to include(:WATCH_KIND_INCLUDE_CHECKPOINTS)
@@ -87,16 +88,16 @@ RSpec.describe 'SpiceDB::Client#updates resumability' do
                  )
                ])
 
-    got = client.updates(['document'], include_checkpoints: true).to_a
+    got = client.watch(object_types: ['document'], content: [SpiceDB::WatchContent::RELATIONSHIPS, SpiceDB::WatchContent::CHECKPOINTS]).to_a
 
     expect(got.length).to eq(2)
 
     expect(got[0].is_checkpoint).to be true
     expect(got[0].updates).to eq([])
-    expect(got[0].changes_through).to eq('checkpoint-rev')
+    expect(got[0].changes_through).to eq(SpiceDB::ZedToken.new('checkpoint-rev'))
 
     expect(got[1].is_checkpoint).to be false
     expect(got[1].updates.length).to eq(1)
-    expect(got[1].changes_through).to eq('update-rev')
+    expect(got[1].changes_through).to eq(SpiceDB::ZedToken.new('update-rev'))
   end
 end

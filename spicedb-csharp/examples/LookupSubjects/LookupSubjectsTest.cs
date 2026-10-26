@@ -39,12 +39,12 @@ public class LookupSubjectsTest
         // that drops a relation while a relationship still exists under it, so
         // clear first.
         await SpiceDBTestServer.ClearDocumentRelationshipsAsync(client);
-        await client.WriteSchemaAsync(Schema);
+        await client.WriteSchemaAsync(Schema, null, default);
 
         var txn = new Transaction();
-        txn.Touch(Relationship.FromTriple("document", "firstdoc", "viewer", "user", "alice"));
-        txn.Touch(Relationship.FromTriple("document", "firstdoc", "editor", "user", "bob"));
-        await client.WriteAsync(txn);
+        txn.Touch(new Relationship(new ObjectRef("document", "firstdoc"), "viewer", new SubjectRef(new ObjectRef("user", "alice"))));
+        txn.Touch(new Relationship(new ObjectRef("document", "firstdoc"), "editor", new SubjectRef(new ObjectRef("user", "bob"))));
+        await client.WriteAsync(txn, null, default);
 
         // Lookup subjects who can view the document. Each result is a native
         // LookupSubject: Subject carries the subject ID plus permissionship,
@@ -52,13 +52,13 @@ public class LookupSubjectsTest
         // match — callers MUST check ExcludedSubjects before treating a
         // wildcard Subject as a blanket grant.
         var subjectIDs = new HashSet<string>();
-        await foreach (var result in client.LookupSubjectsAsync(
-            Full(), "document", "firstdoc", "view", "user"))
+        await foreach (var result in client.LookupSubjectsAsync(Full(), new ObjectRef("document", "firstdoc"), "view", "user", null, default))
         {
             Assert.Equal(Permissionship.HasPermission, result.Subject.Permissionship);
             Assert.Empty(result.ExcludedSubjects); // no wildcard relationships yet
-            Assert.NotEmpty(result.LookedUpAt);
-            subjectIDs.Add(result.Subject.SubjectID);
+            Assert.NotEmpty(result.LookedUpAt.Value);
+            if (result.Subject.Permissionship == Permissionship.HasPermission && result.Subject.SubjectID != "*" && result.ExcludedSubjects.Count == 0)
+                subjectIDs.Add(result.Subject.SubjectID);
         }
 
         // The exact set, not merely "alice and bob are somewhere in it": a
@@ -73,20 +73,19 @@ public class LookupSubjectsTest
         await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
 
         await SpiceDBTestServer.ClearDocumentRelationshipsAsync(client);
-        await client.WriteSchemaAsync(Schema);
+        await client.WriteSchemaAsync(Schema, null, default);
 
         var txn = new Transaction();
         // Grant view to every user (wildcard), except those in `banned`.
-        txn.Touch(Relationship.FromTriple("document", "publicdoc", "viewer", "user", "*"));
-        txn.Touch(Relationship.FromTriple("document", "publicdoc", "banned", "user", "eve"));
-        await client.WriteAsync(txn);
+        txn.Touch(new Relationship(new ObjectRef("document", "publicdoc"), "viewer", new SubjectRef(new ObjectRef("user", "*"))));
+        txn.Touch(new Relationship(new ObjectRef("document", "publicdoc"), "banned", new SubjectRef(new ObjectRef("user", "eve"))));
+        await client.WriteAsync(txn, null, default);
 
         var sawWildcard = false;
         var excludedIDs = new HashSet<string>();
-        await foreach (var result in client.LookupSubjectsAsync(
-            Full(), "document", "publicdoc", "view", "user"))
+        await foreach (var result in client.LookupSubjectsAsync(Full(), new ObjectRef("document", "publicdoc"), "view", "user", null, default))
         {
-            if (result.Subject.SubjectID != "*")
+            if (result.Subject.SubjectID != "*" || result.Subject.Permissionship != Permissionship.HasPermission)
             {
                 continue;
             }

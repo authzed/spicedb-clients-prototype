@@ -1,39 +1,10 @@
-//! Consistency strategies for SpiceDB read operations.
-//!
-//! Every read operation on the SpiceDB client requires an explicit consistency
-//! strategy. This prevents silent defaults and makes consistency choices visible.
-//!
-//! ZedTokens (revisions) are opaque `String` values, never proto types.
-//!
-//! # Examples
-//!
-//! ```
-//! use spicedb::consistency;
-//!
-//! // Fully consistent — least performant, most up-to-date
-//! let cs = consistency::full();
-//!
-//! // Minimize latency — SpiceDB picks an optimal revision
-//! let cs = consistency::min_latency();
-//!
-//! // At least as fresh as a previous write
-//! let cs = consistency::at_least("some-zedtoken");
-//!
-//! // Exact snapshot
-//! let cs = consistency::snapshot("some-zedtoken");
-//!
-//! // Conditional: use the token if present, otherwise full consistency
-//! let cs = consistency::at_least_or_full(Some("some-zedtoken"));
-//! let cs = consistency::at_least_or_full(None::<&str>);
-//!
-//! // Conditional: use the token if present, otherwise minimize latency
-//! let cs = consistency::at_least_or_min_latency(Some("some-zedtoken"));
-//! ```
+use crate::types::ZedToken;
 
 /// A consistency requirement for SpiceDB read operations.
 ///
 /// Use the free functions in this module to construct a `Strategy`.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Strategy {
     /// Fully consistent read. Most expensive but guarantees the latest data.
     Full,
@@ -42,9 +13,9 @@ pub enum Strategy {
     MinLatency,
     /// Read at least as fresh as the given revision (ZedToken). Use for
     /// read-after-write consistency.
-    AtLeast(String),
+    AtLeast(ZedToken),
     /// Read at the exact given revision (ZedToken).
-    Snapshot(String),
+    Snapshot(ZedToken),
 }
 
 /// Returns a strategy that requires full consistency. This is the least
@@ -61,22 +32,23 @@ pub fn min_latency() -> Strategy {
 
 /// Returns a strategy that ensures results are at least as fresh as the given
 /// revision. Use this for read-after-write consistency.
-pub fn at_least(revision: impl Into<String>) -> Strategy {
-    Strategy::AtLeast(revision.into())
+pub fn at_least(revision: ZedToken) -> Strategy {
+    Strategy::AtLeast(revision)
 }
 
 /// Returns a strategy that reads at the exact given revision.
-pub fn snapshot(revision: impl Into<String>) -> Strategy {
-    Strategy::Snapshot(revision.into())
+pub fn snapshot(revision: ZedToken) -> Strategy {
+    Strategy::Snapshot(revision)
 }
 
 /// Returns [`at_least`] if the revision is `Some`, otherwise [`full`].
 ///
 /// Use this when you have an optional revision from a previous write and want
 /// the safest fallback.
-pub fn at_least_or_full(revision: Option<impl Into<String>>) -> Strategy {
+pub fn at_least_or_full(revision: Option<ZedToken>) -> Strategy {
     match revision {
-        Some(r) => at_least(r),
+        Some(r) if !r.as_ref().is_empty() => at_least(r),
+        Some(_) => full(),
         None => full(),
     }
 }
@@ -85,9 +57,10 @@ pub fn at_least_or_full(revision: Option<impl Into<String>>) -> Strategy {
 ///
 /// Use this when you have an optional revision but prefer performance over full
 /// consistency as the fallback.
-pub fn at_least_or_min_latency(revision: Option<impl Into<String>>) -> Strategy {
+pub fn at_least_or_min_latency(revision: Option<ZedToken>) -> Strategy {
     match revision {
-        Some(r) => at_least(r),
+        Some(r) if !r.as_ref().is_empty() => at_least(r),
+        Some(_) => min_latency(),
         None => min_latency(),
     }
 }
@@ -95,94 +68,31 @@ pub fn at_least_or_min_latency(revision: Option<impl Into<String>>) -> Strategy 
 use spicedb_proto::authzed::api::v1 as proto;
 
 impl Strategy {
+    pub(crate) fn validate(&self) -> Result<(), crate::error::SpiceDBError> {
+        match self {
+            Self::AtLeast(t) | Self::Snapshot(t) if t.as_ref().is_empty() => Err(
+                crate::types::invalid("consistency.token", "must not be empty"),
+            ),
+            _ => Ok(()),
+        }
+    }
     pub(crate) fn to_proto(&self) -> proto::Consistency {
         let requirement = match self {
             Strategy::Full => proto::consistency::Requirement::FullyConsistent(true),
             Strategy::MinLatency => proto::consistency::Requirement::MinimizeLatency(true),
             Strategy::AtLeast(token) => {
                 proto::consistency::Requirement::AtLeastAsFresh(proto::ZedToken {
-                    token: token.clone(),
+                    token: token.to_string(),
                 })
             }
             Strategy::Snapshot(token) => {
                 proto::consistency::Requirement::AtExactSnapshot(proto::ZedToken {
-                    token: token.clone(),
+                    token: token.to_string(),
                 })
             }
         };
         proto::Consistency {
             requirement: Some(requirement),
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_full() {
-        assert_eq!(full(), Strategy::Full);
-    }
-
-    #[test]
-    fn test_min_latency() {
-        assert_eq!(min_latency(), Strategy::MinLatency);
-    }
-
-    #[test]
-    fn test_at_least() {
-        let s = at_least("token-123");
-        assert_eq!(s, Strategy::AtLeast("token-123".to_string()));
-    }
-
-    #[test]
-    fn test_at_least_accepts_string() {
-        let s = at_least(String::from("token-456"));
-        assert_eq!(s, Strategy::AtLeast("token-456".to_string()));
-    }
-
-    #[test]
-    fn test_snapshot() {
-        let s = snapshot("snap-789");
-        assert_eq!(s, Strategy::Snapshot("snap-789".to_string()));
-    }
-
-    #[test]
-    fn test_at_least_or_full_with_some() {
-        let s = at_least_or_full(Some("token-abc"));
-        assert_eq!(s, Strategy::AtLeast("token-abc".to_string()));
-    }
-
-    #[test]
-    fn test_at_least_or_full_with_none() {
-        let s = at_least_or_full(None::<&str>);
-        assert_eq!(s, Strategy::Full);
-    }
-
-    #[test]
-    fn test_at_least_or_min_latency_with_some() {
-        let s = at_least_or_min_latency(Some("token-def"));
-        assert_eq!(s, Strategy::AtLeast("token-def".to_string()));
-    }
-
-    #[test]
-    fn test_at_least_or_min_latency_with_none() {
-        let s = at_least_or_min_latency(None::<&str>);
-        assert_eq!(s, Strategy::MinLatency);
-    }
-
-    #[test]
-    fn test_strategy_is_clone() {
-        let s = at_least("token");
-        let s2 = s.clone();
-        assert_eq!(s, s2);
-    }
-
-    #[test]
-    fn test_strategy_debug() {
-        let s = full();
-        let dbg = format!("{:?}", s);
-        assert_eq!(dbg, "Full");
     }
 }

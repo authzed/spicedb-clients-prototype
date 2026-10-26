@@ -16,45 +16,28 @@ along with it) if a regression reintroduces an unbounded call.
 """
 
 from __future__ import annotations
-
+from spicedb import TransportSecurity
+from spicedb import PermissionCheck
 import asyncio
 import threading
 import time
 from collections.abc import Callable
 from concurrent import futures
 from typing import Any, TypeVar
-
 import grpc
 import grpc.aio
 import pytest
 from authzed.api.v1 import permission_service_pb2 as psp
-
 from spicedb import Filter, Relationship
 from spicedb.aio import SpiceDBClient as AioSpiceDBClient
 from spicedb.consistency import full
 from spicedb.errors import DeadlineExceededError
 from spicedb.sync import SpiceDBClient as SyncSpiceDBClient
 
-# One relationship, because `check_permissions` with zero relationships now
-# sends no request at all -- and a call that never reaches the wire can
-# never demonstrate a deadline.
 _ONE_REL = Relationship.from_triple("document:readme", "view", "user:alice")
-
 TOKEN = "test-token"
-
-# How long a "never responds" handler stalls before finally answering. Every
-# per-test deadline below is far smaller than this, so a passing test proves
-# the client's timeout fired -- it did not just get lucky with scheduling.
 _STALL_SECONDS = 2.0
-
-# Wall-clock budget for a single watchdog-wrapped call. Generous relative to
-# the deadlines under test (all <= 0.3s) so it never flakes, but far below
-# `_STALL_SECONDS` plus this module's own regression-safety margin -- if the
-# fix regresses, the call still returns (the fake server does eventually
-# answer), so THIS bound exists only to keep a truly-hung client (e.g. a
-# retry loop bug) from wedging the suite instead of failing loudly.
 _WATCHDOG_SECONDS = 10.0
-
 T = TypeVar("T")
 
 
@@ -69,7 +52,7 @@ def _run_with_watchdog(fn: Callable[[], T], timeout: float = _WATCHDOG_SECONDS) 
     def _target() -> None:
         try:
             box["value"] = fn()
-        except BaseException as e:  # noqa: BLE001 - re-raised on the test thread below
+        except BaseException as e:
             box["error"] = e
 
     t = threading.Thread(target=_target, daemon=True)
@@ -81,7 +64,7 @@ def _run_with_watchdog(fn: Callable[[], T], timeout: float = _WATCHDOG_SECONDS) 
         )
     if "error" in box:
         raise box["error"]
-    return box["value"]  # type: ignore[no-any-return]
+    return box["value"]
 
 
 class _StallingHandlers:
@@ -152,10 +135,7 @@ def _serve(handlers: _StallingHandlers) -> tuple[grpc.Server, int]:
     )
     port = server.add_insecure_port("localhost:0")
     server.start()
-    return server, port
-
-
-# ── sync ────────────────────────────────────────────────────────────────
+    return (server, port)
 
 
 def test_sync_unary_call_times_out_with_deadline_exceeded_error():
@@ -165,18 +145,19 @@ def test_sync_unary_call_times_out_with_deadline_exceeded_error():
     server, port = _serve(_StallingHandlers())
     try:
         client = SyncSpiceDBClient(
-            f"localhost:{port}", token=TOKEN, insecure=True, default_timeout=0.2
+            f"localhost:{port}", token=TOKEN, transport_security=TransportSecurity.PLAINTEXT, default_timeout=0.2
         )
         start = time.monotonic()
         with pytest.raises(DeadlineExceededError):
-            _run_with_watchdog(lambda: client.check_permissions(full(), _ONE_REL))
+            _run_with_watchdog(
+                lambda: client.check_bulk([_check(_ONE_REL)], consistency=full())
+            )
         elapsed = time.monotonic() - start
         client.close()
     finally:
         server.stop(0)
     assert elapsed < _STALL_SECONDS, (
-        "the call must fail at the ~0.2s client default, not wait out the "
-        f"server's {_STALL_SECONDS}s stall (elapsed={elapsed:.2f}s)"
+        f"the call must fail at the ~0.2s client default, not wait out the server's {_STALL_SECONDS}s stall (elapsed={elapsed:.2f}s)"
     )
 
 
@@ -184,27 +165,25 @@ def test_sync_per_call_timeout_overrides_client_default():
     """A per-call `timeout=` overrides a much larger client default."""
     server, port = _serve(_StallingHandlers())
     try:
-        # Client default is larger than the server's stall -- if the
-        # per-call override did not take effect, this call would succeed
-        # (or at least not fail quickly) instead of timing out fast.
         client = SyncSpiceDBClient(
             f"localhost:{port}",
             token=TOKEN,
-            insecure=True,
+            transport_security=TransportSecurity.PLAINTEXT,
             default_timeout=_STALL_SECONDS * 10,
         )
         start = time.monotonic()
         with pytest.raises(DeadlineExceededError):
             _run_with_watchdog(
-                lambda: client.check_permissions(full(), _ONE_REL, timeout=0.2)
+                lambda: client.check_bulk(
+                    [_check(_ONE_REL)], consistency=full(), timeout=0.2
+                )
             )
         elapsed = time.monotonic() - start
         client.close()
     finally:
         server.stop(0)
     assert elapsed < _STALL_SECONDS, (
-        "the per-call timeout=0.2 must override the large client default "
-        f"(elapsed={elapsed:.2f}s)"
+        f"the per-call timeout=0.2 must override the large client default (elapsed={elapsed:.2f}s)"
     )
 
 
@@ -212,26 +191,24 @@ def test_sync_streaming_call_does_not_inherit_unary_default():
     """A streaming call must not be cut off by the (tiny) unary default."""
     server, port = _serve(_StallingHandlers())
     try:
-        # default_timeout is far smaller than the server's stall. If
-        # read_relationships() inherited it, this would raise
-        # DeadlineExceededError instead of yielding the item.
         client = SyncSpiceDBClient(
-            f"localhost:{port}", token=TOKEN, insecure=True, default_timeout=0.1
+            f"localhost:{port}", token=TOKEN, transport_security=TransportSecurity.PLAINTEXT, default_timeout=0.1
         )
         start = time.monotonic()
         got = _run_with_watchdog(
             lambda: list(
-                client.read_relationships(Filter(resource_type="document"), full())
+                client.read_relationships(
+                    Filter(resource_type="document"), consistency=full()
+                )
             )
         )
         elapsed = time.monotonic() - start
         client.close()
     finally:
         server.stop(0)
-    assert [r.resource_id for r in got] == ["a"]
+    assert [r.resource.object_id for r in got] == ["a"]
     assert elapsed >= _STALL_SECONDS, (
-        "the stream must outlive the tiny unary default -- it should have "
-        f"waited out the server's {_STALL_SECONDS}s stall (elapsed={elapsed:.2f}s)"
+        f"the stream must outlive the tiny unary default -- it should have waited out the server's {_STALL_SECONDS}s stall (elapsed={elapsed:.2f}s)"
     )
 
 
@@ -245,7 +222,7 @@ def test_sync_import_relationships_does_not_inherit_unary_default():
     server, port = _serve(_StallingHandlers())
     try:
         client = SyncSpiceDBClient(
-            f"localhost:{port}", token=TOKEN, insecure=True, default_timeout=0.1
+            f"localhost:{port}", token=TOKEN, transport_security=TransportSecurity.PLAINTEXT, default_timeout=0.1
         )
         rel = Relationship.from_triple("document:bulk", "viewer", "user:alice")
         start = time.monotonic()
@@ -256,9 +233,7 @@ def test_sync_import_relationships_does_not_inherit_unary_default():
         server.stop(0)
     assert num_loaded == 1
     assert elapsed >= _STALL_SECONDS, (
-        "import_relationships must outlive the tiny unary default -- it "
-        f"should have waited out the server's {_STALL_SECONDS}s stall "
-        f"(elapsed={elapsed:.2f}s)"
+        f"import_relationships must outlive the tiny unary default -- it should have waited out the server's {_STALL_SECONDS}s stall (elapsed={elapsed:.2f}s)"
     )
 
 
@@ -268,36 +243,31 @@ def test_sync_import_relationships_with_explicit_timeout_still_fires():
     stalling server."""
     server, port = _serve(_StallingHandlers())
     try:
-        client = SyncSpiceDBClient(f"localhost:{port}", token=TOKEN, insecure=True)
+        client = SyncSpiceDBClient(f"localhost:{port}", token=TOKEN, transport_security=TransportSecurity.PLAINTEXT)
         rel = Relationship.from_triple("document:bulk", "viewer", "user:alice")
         start = time.monotonic()
         with pytest.raises(DeadlineExceededError):
-            _run_with_watchdog(
-                lambda: client.import_relationships([rel], timeout=0.2)
-            )
+            _run_with_watchdog(lambda: client.import_relationships([rel], timeout=0.2))
         elapsed = time.monotonic() - start
         client.close()
     finally:
         server.stop(0)
     assert elapsed < _STALL_SECONDS, (
-        "an explicit timeout=0.2 on import_relationships must still fire "
-        f"(elapsed={elapsed:.2f}s)"
+        f"an explicit timeout=0.2 on import_relationships must still fire (elapsed={elapsed:.2f}s)"
     )
-
-
-# ── aio ─────────────────────────────────────────────────────────────────
 
 
 async def test_aio_unary_call_times_out_with_deadline_exceeded_error():
     server, port = _serve(_StallingHandlers())
     try:
         client = AioSpiceDBClient(
-            f"localhost:{port}", token=TOKEN, insecure=True, default_timeout=0.2
+            f"localhost:{port}", token=TOKEN, transport_security=TransportSecurity.PLAINTEXT, default_timeout=0.2
         )
         start = time.monotonic()
         with pytest.raises(DeadlineExceededError):
             await asyncio.wait_for(
-                client.check_permissions(full(), _ONE_REL), timeout=_WATCHDOG_SECONDS
+                client.check_bulk([_check(_ONE_REL)], consistency=full()),
+                timeout=_WATCHDOG_SECONDS,
             )
         elapsed = time.monotonic() - start
         await client.close()
@@ -312,13 +282,13 @@ async def test_aio_per_call_timeout_overrides_client_default():
         client = AioSpiceDBClient(
             f"localhost:{port}",
             token=TOKEN,
-            insecure=True,
+            transport_security=TransportSecurity.PLAINTEXT,
             default_timeout=_STALL_SECONDS * 10,
         )
         start = time.monotonic()
         with pytest.raises(DeadlineExceededError):
             await asyncio.wait_for(
-                client.check_permissions(full(), _ONE_REL, timeout=0.2),
+                client.check_bulk([_check(_ONE_REL)], consistency=full(), timeout=0.2),
                 timeout=_WATCHDOG_SECONDS,
             )
         elapsed = time.monotonic() - start
@@ -332,14 +302,14 @@ async def test_aio_streaming_call_does_not_inherit_unary_default():
     server, port = _serve(_StallingHandlers())
     try:
         client = AioSpiceDBClient(
-            f"localhost:{port}", token=TOKEN, insecure=True, default_timeout=0.1
+            f"localhost:{port}", token=TOKEN, transport_security=TransportSecurity.PLAINTEXT, default_timeout=0.1
         )
 
         async def _collect() -> list[Relationship]:
             return [
                 r
                 async for r in client.read_relationships(
-                    Filter(resource_type="document"), full()
+                    Filter(resource_type="document"), consistency=full()
                 )
             ]
 
@@ -349,7 +319,7 @@ async def test_aio_streaming_call_does_not_inherit_unary_default():
         await client.close()
     finally:
         server.stop(0)
-    assert [r.resource_id for r in got] == ["a"]
+    assert [r.resource.object_id for r in got] == ["a"]
     assert elapsed >= _STALL_SECONDS
 
 
@@ -361,7 +331,7 @@ async def test_aio_import_relationships_does_not_inherit_unary_default():
     server, port = _serve(_StallingHandlers())
     try:
         client = AioSpiceDBClient(
-            f"localhost:{port}", token=TOKEN, insecure=True, default_timeout=0.1
+            f"localhost:{port}", token=TOKEN, transport_security=TransportSecurity.PLAINTEXT, default_timeout=0.1
         )
         rel = Relationship.from_triple("document:bulk", "viewer", "user:alice")
         start = time.monotonic()
@@ -374,16 +344,14 @@ async def test_aio_import_relationships_does_not_inherit_unary_default():
         server.stop(0)
     assert num_loaded == 1
     assert elapsed >= _STALL_SECONDS, (
-        "import_relationships must outlive the tiny unary default -- it "
-        f"should have waited out the server's {_STALL_SECONDS}s stall "
-        f"(elapsed={elapsed:.2f}s)"
+        f"import_relationships must outlive the tiny unary default -- it should have waited out the server's {_STALL_SECONDS}s stall (elapsed={elapsed:.2f}s)"
     )
 
 
 async def test_aio_import_relationships_with_explicit_timeout_still_fires():
     server, port = _serve(_StallingHandlers())
     try:
-        client = AioSpiceDBClient(f"localhost:{port}", token=TOKEN, insecure=True)
+        client = AioSpiceDBClient(f"localhost:{port}", token=TOKEN, transport_security=TransportSecurity.PLAINTEXT)
         rel = Relationship.from_triple("document:bulk", "viewer", "user:alice")
         start = time.monotonic()
         with pytest.raises(DeadlineExceededError):
@@ -396,25 +364,27 @@ async def test_aio_import_relationships_with_explicit_timeout_still_fires():
     finally:
         server.stop(0)
     assert elapsed < _STALL_SECONDS, (
-        "an explicit timeout=0.2 on import_relationships must still fire "
-        f"(elapsed={elapsed:.2f}s)"
+        f"an explicit timeout=0.2 on import_relationships must still fire (elapsed={elapsed:.2f}s)"
     )
-
-
-# ── default value / resolution (no server needed) ─────────────────────────
 
 
 def test_default_timeout_is_thirty_seconds():
     """Documents the chosen default -- see spicedb/sync/client.py's
     `_DEFAULT_TIMEOUT_SECONDS` docstring for why 30s, mirroring
     authzed-node's `DEFAULT_DEADLINE_MS`."""
-    client = SyncSpiceDBClient("localhost:50051", token=TOKEN, insecure=True)
+    client = SyncSpiceDBClient("localhost:50051", token=TOKEN, transport_security=TransportSecurity.PLAINTEXT)
     assert client._default_timeout == 30.0
 
 
 def test_effective_timeout_falls_back_to_client_default():
     client = SyncSpiceDBClient(
-        "localhost:50051", token=TOKEN, insecure=True, default_timeout=7.5
+        "localhost:50051", token=TOKEN, transport_security=TransportSecurity.PLAINTEXT, default_timeout=7.5
     )
-    assert client._effective_timeout(None) == 7.5
-    assert client._effective_timeout(1.5) == 1.5
+    assert 7.4 < client._budget(None).remaining() <= 7.5
+    assert 1.4 < client._budget(1.5).remaining() <= 1.5
+
+
+def _check(value):
+    if isinstance(value, PermissionCheck):
+        return value
+    return PermissionCheck(value.resource, value.relation, value.subject)

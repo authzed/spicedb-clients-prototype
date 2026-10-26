@@ -8,7 +8,7 @@
 // default). Uses the Moq'd gRPC client seam also used by
 // StreamingErrorMappingTests/LookupResultTests.
 //
-// Also covers DeleteRelationshipsWithOptionsAsync/DeleteRelationshipsOptions
+// Also covers DeleteRelationshipsWithOptionsAsync/DeleteAllOptions
 // (same knobs plus `Cursor`, which reaches `optional_cursor`) and the
 // auto-paging loop's transparent use of `after_result_cursor` between pages.
 
@@ -25,13 +25,13 @@ public class DeleteRelationshipsTests
 {
     private static DeleteRelationshipsResponse CompleteResponse(string token = "rev1") => new()
     {
-        DeletedAt = new ZedToken { Token = token },
+        DeletedAt = new Authzed.Api.V1.ZedToken { Token = token },
         DeletionProgress = DeleteRelationshipsResponse.Types.DeletionProgress.Complete,
     };
 
     private static DeleteRelationshipsResponse PartialResponse(string token = "rev-partial") => new()
     {
-        DeletedAt = new ZedToken { Token = token },
+        DeletedAt = new Authzed.Api.V1.ZedToken { Token = token },
         DeletionProgress = DeleteRelationshipsResponse.Types.DeletionProgress.Partial,
     };
 
@@ -65,6 +65,26 @@ public class DeleteRelationshipsTests
         return mock;
     }
 
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    public async Task NonAtomicDeletionOmitsAbsentOrEmptyResponseCursors(string? cursor)
+    {
+        var captured = new List<DeleteRelationshipsRequest>();
+        var partial = PartialResponse();
+        var complete = CompleteResponse();
+        partial.RelationshipsDeletedCount = 2;
+        complete.RelationshipsDeletedCount = 1;
+        if (cursor is not null) { partial.AfterResultCursor = new Cursor { Token = cursor }; complete.AfterResultCursor = new Cursor { Token = cursor }; }
+        var mock = MockThatCaptures(captured, partial, complete);
+        await using var client = NewClient(mock.Object);
+        var result = await client.DeleteAllRelationshipsNonAtomicAsync(new Filter("document"), new DeleteAllOptions { ResumeCursor = "" });
+        captured.Should().HaveCount(2);
+        captured.Should().OnlyContain(request => request.OptionalCursor == null);
+        result.ResumeCursor.Should().Be(cursor);
+        result.DeletedCount.Should().Be(3);
+    }
+
     // ── Default behavior (no options) is unchanged ──────────────────────────
 
     [Fact]
@@ -74,9 +94,9 @@ public class DeleteRelationshipsTests
         var mock = MockThatCaptures(captured, CompleteResponse("rev1"));
         await using var client = NewClient(mock.Object);
 
-        var revision = await client.DeleteRelationshipsAsync(new Filter("document"));
+        var revision = await client.DeleteAllRelationshipsNonAtomicAsync(new Filter("document"), null, default);
 
-        revision.Should().Be("rev1");
+        revision.Revision.Value.Should().Be("rev1");
         captured.Should().HaveCount(1);
         captured[0].OptionalPreconditions.Should().BeEmpty();
         captured[0].OptionalLimit.Should().Be(1_000u);
@@ -92,13 +112,10 @@ public class DeleteRelationshipsTests
         var mock = MockThatCaptures(captured, CompleteResponse());
         await using var client = NewClient(mock.Object);
 
-        var guard = new Filter("document").WithResourceID("doc1");
-        var forbidden = new Filter("document").WithResourceID("doc2");
+        var guard = new Filter("document").WithResourceId("doc1");
+        var forbidden = new Filter("document").WithResourceId("doc2");
 
-        await client.DeleteRelationshipsAsync(
-            new Filter("document"),
-            mustMatch: [guard],
-            mustNotMatch: [forbidden]);
+        await client.DeleteAllRelationshipsNonAtomicAsync(new Filter("document"), new DeleteAllOptions { MustMatch = [guard], MustNotMatch = [forbidden] }, default);
 
         captured.Should().HaveCount(1);
         var preconditions = captured[0].OptionalPreconditions;
@@ -118,9 +135,7 @@ public class DeleteRelationshipsTests
         var mock = MockThatCaptures(captured, CompleteResponse());
         await using var client = NewClient(mock.Object);
 
-        await client.DeleteRelationshipsAsync(
-            new Filter("document"),
-            mustMatch: [new Filter("document").WithResourceID("doc1")]);
+        await client.DeleteAllRelationshipsNonAtomicAsync(new Filter("document"), new DeleteAllOptions { MustMatch = [new Filter("document").WithResourceId("doc1")] }, default);
 
         captured[0].OptionalPreconditions.Should().ContainSingle();
         captured[0].OptionalPreconditions[0].Operation.Should().Be(Precondition.Types.Operation.MustMatch);
@@ -135,7 +150,7 @@ public class DeleteRelationshipsTests
         var mock = MockThatCaptures(captured, CompleteResponse());
         await using var client = NewClient(mock.Object);
 
-        await client.DeleteRelationshipsAsync(new Filter("document"), limit: 5);
+        await client.DeleteAllRelationshipsNonAtomicAsync(new Filter("document"), new DeleteAllOptions { PageSize = 5 }, default);
 
         captured.Should().HaveCount(1);
         captured[0].OptionalLimit.Should().Be(5u);
@@ -151,14 +166,11 @@ public class DeleteRelationshipsTests
         var mock = MockThatCaptures(captured, PartialResponse("rev-p1"), CompleteResponse("rev-final"));
         await using var client = NewClient(mock.Object);
 
-        var guard = new Filter("document").WithResourceID("doc1");
+        var guard = new Filter("document").WithResourceId("doc1");
 
-        var revision = await client.DeleteRelationshipsAsync(
-            new Filter("document"),
-            mustMatch: [guard],
-            limit: 2);
+        var revision = await client.DeleteAllRelationshipsNonAtomicAsync(new Filter("document"), new DeleteAllOptions { MustMatch = [guard], PageSize = 2 }, default);
 
-        revision.Should().Be("rev-final");
+        revision.Revision.Value.Should().Be("rev-final");
         captured.Should().HaveCount(2);
         foreach (var req in captured)
         {
@@ -177,9 +189,9 @@ public class DeleteRelationshipsTests
         var mock = new Mock<PermissionsService.PermissionsServiceClient>();
         await using var client = NewClient(mock.Object);
 
-        var act = async () => await client.DeleteRelationshipsAsync(null!);
+        var act = async () => await client.DeleteAllRelationshipsNonAtomicAsync(null!, null, default);
 
-        await act.Should().ThrowAsync<ArgumentNullException>();
+        await act.Should().ThrowAsync<InvalidArgumentException>();
     }
 
     // ── DeleteRelationshipsWithOptionsAsync mirrors the plain overload ─────
@@ -191,9 +203,9 @@ public class DeleteRelationshipsTests
         var mock = MockThatCaptures(captured, CompleteResponse("rev1"));
         await using var client = NewClient(mock.Object);
 
-        var revision = await client.DeleteRelationshipsWithOptionsAsync(new Filter("document"), null!);
+        var revision = await client.DeleteAllRelationshipsNonAtomicAsync(new Filter("document"), null!, default);
 
-        revision.Should().Be("rev1");
+        revision.Revision.Value.Should().Be("rev1");
         captured.Should().HaveCount(1);
         captured[0].OptionalPreconditions.Should().BeEmpty();
         captured[0].OptionalLimit.Should().Be(1_000u);
@@ -208,17 +220,15 @@ public class DeleteRelationshipsTests
         var mock = MockThatCaptures(captured, CompleteResponse());
         await using var client = NewClient(mock.Object);
 
-        var guard = new Filter("document").WithResourceID("doc1");
-        var forbidden = new Filter("document").WithResourceID("doc2");
+        var guard = new Filter("document").WithResourceId("doc1");
+        var forbidden = new Filter("document").WithResourceId("doc2");
 
-        await client.DeleteRelationshipsWithOptionsAsync(
-            new Filter("document"),
-            new DeleteRelationshipsOptions
-            {
-                MustMatch = [guard],
-                MustNotMatch = [forbidden],
-                Limit = 5,
-            });
+        await client.DeleteAllRelationshipsNonAtomicAsync(new Filter("document"), new DeleteAllOptions
+        {
+            MustMatch = [guard],
+            MustNotMatch = [forbidden],
+            PageSize = 5,
+        }, default);
 
         captured.Should().HaveCount(1);
         captured[0].OptionalLimit.Should().Be(5u);
@@ -237,9 +247,7 @@ public class DeleteRelationshipsTests
         var mock = MockThatCaptures(captured, CompleteResponse());
         await using var client = NewClient(mock.Object);
 
-        await client.DeleteRelationshipsWithOptionsAsync(
-            new Filter("document"),
-            new DeleteRelationshipsOptions { Cursor = "resume-token" });
+        await client.DeleteAllRelationshipsNonAtomicAsync(new Filter("document"), new DeleteAllOptions { ResumeCursor = "resume-token" }, default);
 
         captured.Should().HaveCount(1);
         captured[0].OptionalCursor.Should().NotBeNull();
@@ -255,9 +263,9 @@ public class DeleteRelationshipsTests
         var mock = MockThatCaptures(captured, partial, CompleteResponse("rev-final"));
         await using var client = NewClient(mock.Object);
 
-        var revision = await client.DeleteRelationshipsAsync(new Filter("document"), limit: 2);
+        var revision = await client.DeleteAllRelationshipsNonAtomicAsync(new Filter("document"), new DeleteAllOptions { PageSize = 2 }, default);
 
-        revision.Should().Be("rev-final");
+        revision.Revision.Value.Should().Be("rev-final");
         captured.Should().HaveCount(2);
         captured[0].OptionalCursor.Should().BeNull();
         captured[1].OptionalCursor.Should().NotBeNull();
@@ -272,8 +280,8 @@ public class DeleteRelationshipsTests
         var mock = new Mock<PermissionsService.PermissionsServiceClient>();
         await using var client = NewClient(mock.Object);
 
-        var act = async () => await client.DeleteRelationshipsWithOptionsAsync(null!, new DeleteRelationshipsOptions());
+        var act = async () => await client.DeleteAllRelationshipsNonAtomicAsync(null!, new DeleteAllOptions(), default);
 
-        await act.Should().ThrowAsync<ArgumentNullException>();
+        await act.Should().ThrowAsync<InvalidArgumentException>();
     }
 }

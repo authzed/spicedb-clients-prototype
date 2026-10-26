@@ -46,11 +46,20 @@ public class ErrorMappingTest
     private const string StaleToken = "stale-zedtoken";
 
     private static Relationship Doc() =>
-        Relationship.FromTriple("document", "readme", "view", "user", "alice");
+        new Relationship(new ObjectRef("document", "readme"), "view", new SubjectRef(new ObjectRef("user", "alice")));
 
     /// <summary>A minimal SpiceDB that answers only what this example asks of it.</summary>
     private sealed class StandInService : PermissionsService.PermissionsServiceBase
     {
+        public override async Task<CheckPermissionResponse> CheckPermission(CheckPermissionRequest request, ServerCallContext context)
+        {
+            var bulk = new CheckBulkPermissionsRequest { Consistency = request.Consistency };
+            bulk.Items.Add(new CheckBulkPermissionsRequestItem { Resource = request.Resource, Permission = request.Permission, Subject = request.Subject, Context = request.Context });
+            var response = await CheckBulkPermissions(bulk, context);
+            var item = response.Pairs[0].Item;
+            return new CheckPermissionResponse { Permissionship = item.Permissionship, PartialCaveatInfo = item.PartialCaveatInfo, CheckedAt = response.CheckedAt };
+        }
+
         public override Task<CheckBulkPermissionsResponse> CheckBulkPermissions(
             CheckBulkPermissionsRequest request, ServerCallContext context)
         {
@@ -82,6 +91,15 @@ public class ErrorMappingTest
 
     private sealed class RotatedTokenService : PermissionsService.PermissionsServiceBase
     {
+        public override async Task<CheckPermissionResponse> CheckPermission(CheckPermissionRequest request, ServerCallContext context)
+        {
+            var bulk = new CheckBulkPermissionsRequest { Consistency = request.Consistency };
+            bulk.Items.Add(new CheckBulkPermissionsRequestItem { Resource = request.Resource, Permission = request.Permission, Subject = request.Subject, Context = request.Context });
+            var response = await CheckBulkPermissions(bulk, context);
+            var item = response.Pairs[0].Item;
+            return new CheckPermissionResponse { Permissionship = item.Permissionship, PartialCaveatInfo = item.PartialCaveatInfo, CheckedAt = response.CheckedAt };
+        }
+
         public override Task<CheckBulkPermissionsResponse> CheckBulkPermissions(
             CheckBulkPermissionsRequest request, ServerCallContext context) =>
             throw new RpcException(new Status(StatusCode.Unauthenticated, "invalid token"));
@@ -115,7 +133,7 @@ public class ErrorMappingTest
             await using var client = SpiceDBClient.CreateFromChannel(channel, "some-token");
 
             var ex = await Assert.ThrowsAsync<OutOfRangeException>(
-                () => client.CheckPermissionAsync(AtLeast(StaleToken), "view", Doc()));
+                () => client.CheckAsync(new PermissionCheck(Doc().Resource, "view", Doc().Subject, AtLeast(new SpiceDB.Client.ZedToken(StaleToken))), null, default));
 
             // Clause 2: the underlying status survives the mapping, so google.rpc.Status
             // details and SpiceDB's ErrorReason stay reachable rather than being reduced
@@ -123,7 +141,7 @@ public class ErrorMappingTest
             Assert.NotNull(ex.InnerException);
 
             // The recovery the rule calls mechanical, in full. Nothing parses a message.
-            var result = await client.CheckPermissionAsync(Full(), "view", Doc());
+            var result = await client.CheckAsync(new PermissionCheck(Doc().Resource, "view", Doc().Subject, Full()), null, default);
             Assert.True(result.HasPermission);
         }
         finally
@@ -142,7 +160,7 @@ public class ErrorMappingTest
             await using var client = SpiceDBClient.CreateFromChannel(channel, "rotated-token");
 
             var ex = await Assert.ThrowsAsync<UnauthenticatedException>(
-                () => client.CheckPermissionAsync(Full(), "view", Doc()));
+                () => client.CheckAsync(new PermissionCheck(Doc().Resource, "view", Doc().Subject, Full()), null, default));
 
             // Asserting the negative is the half that would silently rot if every code
             // collapsed into one class.
@@ -160,9 +178,8 @@ public class ErrorMappingTest
         // PERMISSION_DENIED, not UNAUTHENTICATED. Recorded here because it is the case a
         // reader will actually hit first, and assuming otherwise is how a
         // credential-refresh branch ends up unreachable in production code.
-        await using var client = SpiceDBClient.CreatePlaintext(
-            SpiceDBTestServer.Endpoint, "definitely-the-wrong-key");
+        await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, "definitely-the-wrong-key");
 
-        await Assert.ThrowsAsync<PermissionDeniedException>(() => client.ReadSchemaAsync());
+        await Assert.ThrowsAsync<PermissionDeniedException>(() => client.ReadSchemaAsync(null, default));
     }
 }

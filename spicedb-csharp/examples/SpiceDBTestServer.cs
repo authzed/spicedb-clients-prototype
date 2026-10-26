@@ -42,7 +42,7 @@ internal static class SpiceDBTestServer
     {
         try
         {
-            await client.DeleteRelationshipsAsync(new Filter("document"));
+            await client.DeleteAllRelationshipsNonAtomicAsync(new Filter("document"), null, default);
         }
         catch (FailedPreconditionException)
         {

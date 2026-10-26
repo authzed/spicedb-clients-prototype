@@ -1,830 +1,293 @@
-# SpiceDB Client Libraries — Idiomatic Design Vision
-
-## Philosophy
-
-SpiceDB clients should feel native to each language. Users should not need to
-know about protobuf or gRPC to use them. The client API should guide users
-toward correct, performant usage patterns ("pit of success").
-
-## Backwards Compatibility Mandate
-
-**Public API surfaces are append-only, unless otherwise specified.**
-
-- Never remove methods or types from the public API, unless removed from the underlying protocol buffer API
-- Never change method signatures, unless forward compatible
-- Deprecate with new alternatives — add new methods instead of changing existing ones, unless existing methods can be changed in a forward-compatible manner
-- This applies even when idiomatic improvements suggest changes, unless explicitly specified to be a `BREAKING CHANGE`. If so, then that specification tests precedence, confirmation must be received from the runner before the changes are made, and the breaking change should be documented in the release notes
-  for each client, with at least one example of how to migrate forward
-- Examples must *ALWAYS* compile and pass testing, unless the user has *EXPLICITLY* approved the breaking change.
-  Compiling and passing is necessary but not sufficient: an example must also be wired into a
-  runner and must be capable of failing — see **RULE: An example must be executed by CI and must
-  be able to fail**
-
-## Deprecation Propagation
-
-When a method is deprecated in the proto/gRPC definitions, it MUST be marked as
-deprecated in both the proto client and the idiomatic client.
-
-Language-appropriate deprecation mechanisms:
-
-- **Go**: `// Deprecated: use XYZ instead.` comment on the function/method
-- **Python**: `@deprecated` decorator (Python 3.13+) or `warnings.warn(..., DeprecationWarning)`
-- **TypeScript**: `@deprecated` JSDoc tag
-- **C#**: `[Obsolete("Use XYZ instead")]` attribute
-- **Java**: `@Deprecated` annotation + `@deprecated` Javadoc tag
-- **Ruby**: `warn "[DEPRECATION] ..."` in method body
-- **Rust**: `#[deprecated(note = "Use XYZ instead")]` attribute
-
-Deprecated methods must remain functional until removed from the proto definitions.
-
-## API Coverage
-
-Idiomatic clients MUST expose all non-deprecated APIs from the proto layer in
-some idiomatic form. No proto API should be silently omitted — if it exists in
-the proto client, users must be able to access it through the idiomatic client.
-
-APIs from the `ExperimentalService` (or any service/method marked experimental
-in the proto definitions) must be clearly marked as experimental in the
-idiomatic client using language-appropriate mechanisms (Go: `// Experimental:`
-comment, Python: docstring note, TypeScript: `@experimental` JSDoc tag). This
-signals to users that the API may change without following the backwards
-compatibility mandate.
-
-## Common Idioms (All Languages)
-
-All idiomatic clients should provide:
-
-1. **Simple constructors** with sensible defaults — security posture should be
-   obvious from the constructor name (e.g., plaintext vs TLS)
-2. **Native error types** — not raw gRPC status codes. Errors should be
-   inspectable using language-native patterns (Go: sentinel errors + errors.Is,
-   Python: exception hierarchy, TypeScript: typed error classes)
-3. **Iterator/async patterns** for streaming RPCs — use the most natural
-   mechanism for the language (Go: iter.Seq2, Python: async iterators in
-   `spicedb.aio` and plain iterators in `spicedb.sync`, TypeScript:
-   AsyncIterableIterator)
-4. **Builder or options patterns** for complex requests — users should not need
-   to construct nested proto messages
-5. **First-class ZedToken support** — consistency tokens should be opaque
-   (strings, not proto types) and required as explicit parameters, never
-   silently defaulted
-6. **Automatic retry** with exponential backoff for transient gRPC errors
-7. **Consistency helper** should be provided to take in a ZedToken and, if
-   present use at least as fresh and, if not present (i.e. its empty), return
-   full consistency instead. Another should be provided to return minimize
-   latency instead. Both should have descriptive names.
-
-## RULE: A system-TLS constructor must reach a real server
-
-A client's default secure constructor — Go `NewSystemTLS`, Rust and Ruby
-`new_system_tls`, Java `createSystemTls`, C# `CreateSystemTls`, or whatever else a
-language calls it — must use its ecosystem's **default trust source**, and must be
-covered by a test that **completes a real TLS handshake**.
-
-1. **The client library does not supply the roots.** The constructor must take its
-   trust anchors from the platform store or from whatever its language runtime or gRPC
-   implementation uses by default. Delegating to that default *is* system TLS in that
-   ecosystem: Go `credentials.NewTLS(nil)`, C# `ChannelCredentials.SecureSsl`, Python
-   `grpc.ssl_channel_credentials()`, Ruby `GRPC::Core::ChannelCredentials.new`, Java
-   `useTransportSecurity()`, connect-node's default in TypeScript, and tonic's
-   `.with_native_roots()` in Rust all satisfy this clause. What is prohibited is the
-   *client library* vendoring, embedding, compiling in, or otherwise selecting its own
-   root-certificate set in place of that default — including selecting the empty set,
-   which is the defect this clause exists to catch: Rust handed tonic a config with no
-   trust anchors at all, so no handshake could ever succeed.
-
-   The genuine hazard this leaves visible: not every runtime default *is* the OS store.
-   gRPC's C-core (Python's `grpcio`, Ruby's `grpc`) compiles in its own `roots.pem`, and
-   Node ships a bundled Mozilla store, so on those clients a CA an operator installed on
-   the host is not honoured. That is a property of the ecosystem, not a violation of
-   this clause. Giving callers a way to supply their own CA bundle is the remedy, and it
-   is not optional where the hazard applies:
-
-   **A client whose default trust source is not one the operator can write to MUST let a
-   caller supply their own.** For those clients — Python and Ruby on gRPC's C-core,
-   TypeScript on Node's bundled store — the delegation this clause permits is conditional
-   on that override existing: without it a private-CA deployment is unreachable with no
-   supported workaround, which is a defect under this clause rather than a gap outside
-   it. Where the default *is* an operator-writable store — the OS store for Go, C# and
-   Rust, the JDK's `cacerts` for Java — installing the CA on the host already serves that
-   case through the default constructor, so this clause requires nothing further. An
-   override is still worth having there (chiefly for mutual TLS, and for pinning a CA the
-   host does not trust), but its absence is not a violation of this rule. Scope the "must"
-   that way and the enumeration below is consistent with it; read it as universal and it
-   is not.
-
-   Where each client's escape hatch lives, since they are not uniform and three of them
-   are not new API at all:
-
-   - **Go** — `WithDialOptions(grpc.WithTransportCredentials(...))`. Later dial options
-     overwrite earlier ones, so a caller's credentials win over the client's default.
-   - **C#** — `CreateFromChannel`, which takes a caller-built `GrpcChannel` and therefore
-     any `HttpClientHandler`/`SocketsHttpHandler` TLS configuration.
-   - **Java** — `ClientOption.apply(ManagedChannelBuilder)`. `grpc-netty-shaded` is
-     declared `api` in `proto-clients/spicedb-java-proto/build.gradle.kts`, so it reaches
-     consumers transitively and the builder is usable from their code.
-   - **Python** — `ca_cert=`, `client_cert=`, `client_key=` (PEM bytes) on both
-     `spicedb.sync.SpiceDBClient` and `spicedb.aio.SpiceDBClient`.
-   - **TypeScript** — `tls: { caCert, clientCert, clientKey }` on `SpiceDBClientOptions`
-     and `createSpiceDBClient`, threaded to `Http2SessionManager`'s session options.
-   - **Ruby** — `SpiceDB::Client.new_custom_tls(endpoint, token, ca_cert:, client_cert:,
-     client_key:)`.
-   - **Rust** — none. Not required by the clause above, since tonic's `tls-native-roots`
-     reads the OS trust store at runtime and an operator-installed CA is therefore already
-     honoured by `new_system_tls`. Two gaps remain and are stated plainly in
-     `spicedb-rust/DESIGN.md` rather than papered over: an image with no OS trust store at
-     all, and **mutual TLS, which this client cannot do at all** — reading the host's
-     roots says nothing about presenting a client certificate, so `tls-native-roots` does
-     not cover it.
-
-   Supplying trust material is a TLS concern and must never double as a transport switch.
-   A client must refuse the combination of custom trust material and an insecure
-   transport rather than silently discarding the material, and the escape hatch must not
-   become a construction path that skips the guard in **RULE: Credentials over insecure
-   transport require an explicit opt-in**.
-
-   This clause is enforced by code review, not by the handshake test: a connection to a
-   public endpoint succeeds under almost any plausible root set, so the test cannot tell
-   a delegated default from a vendored bundle. What the test does catch — and must keep
-   catching — is the empty trust store.
-2. **The test must complete a handshake.** A test that never gets as far as a TLS
-   handshake proves nothing, whichever way it asserts. Asserting a connection *fails*
-   cannot distinguish an unreachable host, a DNS error, and an empty trust store, so it
-   passes for the wrong reason while reading as TLS coverage. Asserting a constructor
-   *succeeds* is no better wherever the language connects lazily — Ruby's channel is
-   built without dialling, so `new_system_tls('grpc.example.com:443', …)` "passes"
-   without a packet leaving the process. Assert a completed handshake against a
-   reachable endpoint; where the constructor is lazy, force the connection inside the
-   test (an RPC, or the language's explicit connect) so the assertion cannot be
-   satisfied without one.
-3. Where the handshake test needs the network, gate it behind an environment variable
-   and run it in a CI job that has network access. Gating is acceptable; absence is not.
-   The CI step must fail if the test did not actually run — a bare name filter that
-   matches nothing exits 0 in most test runners, which reproduces this rule's own
-   failure mode one layer up.
-
-A client whose default secure constructor cannot reach a public endpoint is not
-shippable, and no amount of green CI substitutes for one honest handshake.
-
-## RULE: Credentials over insecure transport require an explicit opt-in
-
-All seven clients send their bearer token to any host over plaintext with no host check
-whatsoever. An exhaustive search for `127.0.0.1`, `loopback`, and `localhost` across every
-client and every proto tier turned up only doc-comment samples — zero runtime conditionals
-anywhere.
-
-Three clients go further: each contains code written specifically to bypass its transport's
-own refusal to attach call credentials to an insecure channel, with a comment explaining why.
-
-- **Go** — a `PerRPCCredentials` implementation whose `RequireTransportSecurity()` returns
-  `!insecure`, so grpc-go's check passes exactly when the connection is insecure.
-- **C#** — a `CallInvoker.Intercept` that sets the header raw, with the comment *"since
-  CompositeChannelCredentials requires secure transport"*.
-- **Ruby** — a `BearerTokenInterceptor` merging metadata directly, with the comment *"channel
-  credentials can't carry call credentials over a plaintext channel"* — grpc-ruby's C-core
-  actually raises on the composed path, so the bypass avoids a hard failure.
-
-Python, Java, TypeScript, and Rust never engage a checked mechanism at all: plain metadata or
-headers is the only path their underlying libraries offer for an insecure channel, so there is
-no refusal for them to defeat — the guard was simply never built. gRPC's refusal to attach call
-credentials to an insecure channel exists precisely to prevent this. Routing around it —
-deliberately, as in the three clients above, or by omission, as in the other four — is what
-this rule now governs.
-
-1. **A client MUST NOT send credentials over an insecure transport to a non-loopback host
-   unless the caller has explicitly opted in through a named parameter.** Named means a
-   reader cannot mistake it for a default: a distinct, documented option the caller supplies
-   on purpose, never a boolean that does double duty as the plaintext-transport switch.
-2. **A warning is not sufficient.** A log line the developer never reads does not close a
-   credential leak. The client must refuse, or require the explicit opt-in above, before it
-   proceeds — logging while sending the credential anyway does not satisfy this rule.
-3. **The official Python client sets the precedent.** Its insecure posture lives on a
-   separately-named `InsecureClient` a caller must reach for deliberately, not a flag on the
-   default constructor. A client whose only route to insecure operation is a boolean on its
-   primary entry point does not meet this bar.
-4. **The refusal must be the client's own typed argument error.** A caller who catches
-   this needs to catch something, and the thing to catch must be the same shape as every
-   other argument this client refuses before an RPC. Each client already reports the
-   analogous case — a filter whose subject constraint the wire cannot express, see
-   **RULE: A conversion that cannot preserve meaning must fail**, clause 1 — as its own
-   `InvalidArgument`-family error: Go's `ErrInvalidArgument` sentinel, Python's
-   `InvalidArgumentError`, TypeScript's `InvalidArgumentError`, Java's
-   `InvalidArgumentException`, C#'s `InvalidArgumentException`, Ruby's
-   `SpiceDB::InvalidArgumentError`, Rust's `SpiceDBError::InvalidArgument`. This refusal
-   is the same category — caller-supplied input the client rejects before any connection
-   exists — and takes the same type.
-
-   One rule, seven idiomatic spellings; the *type* is per-language, the *category* is
-   not. What this forbids is a client reaching for a language-native argument exception
-   (`ArgumentError`, `IllegalArgumentException`, a bare `Error`) for this one case while
-   using its own hierarchy everywhere else, which is what made the seven clients
-   disagree: a caller writing `except InvalidArgumentError` in one language and
-   `rescue ArgumentError` in another is catching the same mistake two different ways for
-   no reason a reader can infer.
-
-   **Where the guard runs is not where it is reported.** All seven detect this in the
-   proto tier, which has its own error types and must not depend on the idiomatic layer.
-   The idiomatic constructor is therefore responsible for mapping that refusal into its
-   own error before it reaches a caller — the proto tier's type is an implementation
-   detail, and a caller of the idiomatic API should never see it.
-
-Name the failure this rule exists to prevent: a developer copies `insecure: true` from a
-localhost example into a staging config, and a long-lived SpiceDB token — a complete
-authorization bypass in anyone else's hands — goes onto the wire in cleartext with nothing
-signalling that it happened.
-
-**The guard's answer must be the transport's answer.** Whether an endpoint counts as loopback
-is decided by asking the same parser the client dials with — `System.Uri` for Grpc.Net.Client,
-`http::Uri` for tonic, WHATWG `URL` for Connect-ES over Node http2, `URI.create("//" + name)`
-for grpc-java's `DnsNameResolver`, grpc-go's own target resolution — not by a hand-rolled
-string split. A split that disagrees with the transport anywhere is a bypass: given
-`127.0.0.1:443@evil.com`, a last-colon split reads the host as `127.0.0.1` while a URI parser
-reads `127.0.0.1:443` as *userinfo* and connects to `evil.com`. Where a binding genuinely cannot
-reach its transport's parser (Python and Ruby hand the target to grpc's C-core, which parses it
-in C++), the client must say so explicitly and fail closed instead: refuse any endpoint
-containing a character that could move the authority under URI parsing — `@`, `/`, `?`, `#`,
-whitespace.
-
-A consequence, and it is intended: **the precise set of loopback spellings is per-client, and
-uniformity across clients is explicitly not promised.** Parsers differ in what they normalize —
-IPv4-mapped IPv6, bracketed hostnames, percent-encoding — so `::ffff:127.0.0.1` or
-`[localhost]:50051` may be loopback in one client and not another. That is correct. Forcing the
-seven to agree would mean writing normalization the parsers themselves do not do, which is the
-hand-rolled string manipulation this rule exists to remove. What every client must guarantee is
-the security property, not the spelling: an endpoint the guard calls loopback is one the
-transport dials on loopback, and everything else takes the named opt-in. Divergences that
-fail closed are acceptable; a divergence that fails open is the bug.
-
-## RULE: Only an unconditional grant is true
-
-**Binding on every client, in every language, with no exceptions.**
-
-`CheckPermissionResponse.permissionship` has three non-error values:
-`NO_PERMISSION`, `HAS_PERMISSION`, and `CONDITIONAL_PERMISSION`. A
-`CONDITIONAL_PERMISSION` means the server found a matching relationship but could
-**not** evaluate its caveat, because the required context was not supplied. The
-server is saying "I need more information" — it is **not** saying yes.
-
-Therefore:
-
-1. **Only `HAS_PERMISSION` may ever be treated as a grant.** `CONDITIONAL_PERMISSION`,
-   `NO_PERMISSION`, and `UNSPECIFIED` are all not-a-grant. An unrecognized future
-   enum value is also not-a-grant.
-2. **Every predicate that answers "does this subject have the permission" —
-   `HasPermission()`, `has_permission`, `has_permission?`, `hasPermission()` — must
-   return true for `HAS_PERMISSION` and false for everything else.** A single
-   equality comparison, never a disjunction.
-3. **Aggregate predicates count only `HAS_PERMISSION`.** `check_any` returns true
-   only if some result is an unconditional grant; `check_all` only if every result
-   is. A conditional never contributes to a true.
-4. **Where a language can make a check result behave as a boolean, it must yield
-   the same answer.** Python's `CheckResult.__bool__` returns `has_permission`, so
-   `if result:` is safe.
-5. **Where a language cannot** — Ruby (every object but `nil`/`false` is truthy) and
-   TypeScript (objects are unconditionally truthy), with no override available —
-   **no documentation, docstring, README, or example in that client may show a
-   check result used directly as a condition.** Every sample must go through the
-   predicate. This is a hard requirement, not a style preference: in those clients a
-   bare `if result` silently grants on an unevaluated caveat, and the docs are the
-   only thing standing between a reader and that bug. Go, Rust, C#, and Java are
-   safe by construction — `if result` does not compile.
-6. **The third state must remain reachable.** Collapsing the check surface to a
-   bare boolean is forbidden, because it makes "denied" indistinguishable from
-   "you did not supply the caveat context." Callers must be able to tell those
-   apart, and to learn which context was missing.
-7. **An aggregate over zero checks is not a grant.** `check_all` (Python, Ruby, Rust),
-   `CheckAll`/`CheckAllWithContext` (Go), `checkAll` (TypeScript, Java), and
-   `CheckAllAsync`/`CheckAllWithContextAsync` (C#) MUST return false for an empty input set.
-   Every language's `all`/`every` primitive is vacuously true on an empty sequence, so the
-   idiomatic implementation is the bug: all seven clients had this defect independently. Guard
-   the empty case explicitly, before the aggregate, and test it. `check_any` is already correctly
-   false on empty — that asymmetry is intentional and must not be "made consistent."
-
-The failure this rule exists to prevent is real and shipped: one client previously
-returned `true` for `CONDITIONAL_PERMISSION` by design, granting access on a caveat
-that was never evaluated.
-
-## The Check Surface: a three-valued result, not a boolean
-
-**Binding on every client.** The **RULE: Only an unconditional grant is true**, above, says what
-a check *means*; this section says what a check *returns*. Per-client `DESIGN.md`s inherit from
-here — they name the fields in their own idiom, they do not redefine the contract.
-
-Both check methods — the singular (`check_permission`) and the plural
-(`check_permissions`) — return a `CheckResult`, never a bare `bool`. `CheckResult`
-carries exactly three pieces of state:
-
-| Concept | Contract |
-|---|---|
-| `permissionship` | The server's answer, from the four-valued shared `Permissionship` enum: unspecified, no-permission, has-permission, conditional-permission. Unrecognized future wire values map to *unspecified*, which is not a grant. |
-| `missing_context` | The caveat context keys the server needed and did not receive, from `CheckPermissionResponse.partial_caveat_info.missing_required_context`. Empty unless the result is conditional. It must carry the server's actual key names — a bare "something was missing" flag does not satisfy this. |
-| `checked_at` | The `ZedToken` from `CheckPermissionResponse.checked_at`. Threading it into the client's `at_least`-equivalent consistency strategy is how a caller gets read-your-writes through the public API. |
-
-Plus the predicate (`has_permission`), governed by the RULE.
-
-Invariants that hold in all seven clients:
-
-1. **One `Permissionship` type serves both check and lookup.** A caller learns the
-   concept once. Lookups never yield *no-permission* (a non-matching pair is simply
-   absent from the stream); *no-permission* only appears on a check, where "no" is
-   itself an answer. Where a language exposes the enum's ordinal, the value is an
-   implementation detail: no client serializes it, compares it ordinally, or relies
-   on its ordering. Every client maps to and from the wire explicitly, so the native
-   ordinals may differ between clients and from the proto's, harmlessly and by
-   design.
-2. **`checked_at` on a bulk check is response-level, not per-item — and a
-   response is one chunk, not necessarily the whole call.**
-   `CheckBulkPermissionsResponseItem` has no token of its own, so the one token on
-   the enclosing response is propagated onto every result *from that response*.
-   Every client splits a check over more than 1,000 items into one request per
-   chunk (SpiceDB rejects a request carrying more than `maxBulkCheckCount`, and
-   nothing in the proto enforces that cap), so a caller passing more than 1,000
-   relationships gets results whose `checked_at` differs across chunk boundaries.
-   Within one chunk the token is uniform; across the returned collection it is
-   not. A caller threading a token into an at-least-as-fresh read must therefore
-   pick a specific result's token rather than assuming one exists for the call.
-3. **`check_any` / `check_all` stay boolean and count only an unconditional grant**
-   (RULE clause 3). Callers needing the third state use the plural method.
-4. **A per-item error in a bulk check is raised as a typed error**, never coerced
-   into a falsy or unspecified result — otherwise permission-denied, invalid-argument,
-   and a real "no" become indistinguishable.
-5. **Reads and writes yield a revision too.** The write surface returns the revision
-   it committed at wherever the proto carries one, and every yielded lookup item
-   carries `looked_up_at` (identical for every item in one stream — it is a property
-   of the call, not the item). Bulk import is the one exception, because
-   `ImportBulkRelationshipsResponse` has no token on the wire at all.
-
-## Caveat Context on the Check and Write Surfaces
-
-**Binding on every client.** `missing_context` names the keys the server needed;
-this is the API that supplies them. Without it the diagnostic would not be
-actionable.
-
-Every client accepts caveat context on a check in **both** forms:
-
-- **Call-level** — a default applied to every relationship in the call.
-- **Per-item** — attached to one relationship, overriding the call-level default
-  for that relationship only.
-
-**Merge rule: key-level, item wins.** For each item the client sends
-`{...call_level, ...item_level}`. The item's keys win on conflict; call-level keys
-the item does not mention are **retained**. Wholesale replacement is forbidden — an
-item supplying one key would silently drop every shared key, and the caveat would
-then fail for missing context, landing the caller back in the conditional state this
-work exists to make legible.
-
-```
-call-level:  {now: 42, region: "us"}
-item-level:  {region: "eu"}
-sent for that item: {now: 42, region: "eu"}
-```
-
-An item that supplies no context inherits the call-level context unchanged. When
-neither is supplied, **no `context` field is set on the wire at all** — not an empty
-struct.
-
-Two further requirements:
-
-- **Check-time context is not write-time caveat context.** The context attached to a
-  relationship on write (`with_caveat` and friends, stored in
-  `Relationship.optional_caveat.context`) and the context supplied at check time
-  (`CheckPermissionRequest.context` field 5 /
-  `CheckBulkPermissionsRequestItem.context` field 4) are different wire fields with
-  different lifetimes. A client must keep them as separate concepts and must never
-  send one where the other belongs.
-- **Types are preserved on every caveat-context path.** Caveat context values go onto
-  `google.protobuf.Value`'s `kind` oneof by type — numbers as numbers, booleans as booleans,
-  null as null, nested maps and lists recursively — on the check path (`CheckPermissionRequest.context`,
-  `CheckBulkPermissionsRequestItem.context`) **and** on the write path
-  (`Relationship.optional_caveat.context`), in both directions. Stringifying a numeric parameter
-  makes a caveat like `now < 100` fail to evaluate, and it fails *quietly*, as another
-  conditional result. Write-time is the worse half: a bad check context fails one call, while a
-  bad write context is persisted and mis-evaluates every future check against that
-  relationship — re-checking never repairs it, only rewriting does.
-
-`check_any` / `check_all` accept the same context shape as `check_permissions` — they
-aggregate over the same request and must be able to evaluate caveats.
-
-## RULE: A conversion that cannot preserve meaning must fail
-
-Dropping a value, stringifying it, or widening a filter are all silent-wrong-answer machines: the
-call succeeds, the caller proceeds, and the damage surfaces later somewhere else. But the correct
-response to an unrepresentable value is not one behavior — it depends on **who supplied it**:
-
-1. **Caller-supplied data the client cannot represent MUST raise a typed error naming what could
-   not be converted.** Caveat context that will not convert, and a filter whose constraint the
-   wire format cannot express, are both requests the caller made. The caller can see the failure
-   and fix their input, so the client does not approximate the value and does not discard it — it
-   fails loudly instead of guessing.
-2. **Server-supplied values the client does not recognise MUST NOT raise, and MUST map to the
-   safe, non-permissive default — never a grant, and never a write.** A `permissionship` value
-   added to the wire after a client shipped is not the caller's mistake, and the caller has no
-   input to correct. Raising here would break forward compatibility: a server rolling out a new
-   enum value would make every deployed client throw on every check. This is the same posture
-   already stated for the grant path — *RULE: Only an unconditional grant is true*, clause 1
-   ("An unrecognized future enum value is also not-a-grant") and the `permissionship` row of the
-   Check Surface table ("Unrecognized future wire values map to *unspecified*, which is not a
-   grant") — restated here as the general rule for any server-originated enum, not only
-   `permissionship`.
-
-The two clauses are not in tension: one governs data the caller can fix by raising loudly, the
-other governs data the caller cannot fix by degrading safely. Confusing the two directions is the
-failure mode either way — raising on an unrecognised server enum turns a routine server upgrade
-into a client-side outage, and silently discarding unrepresentable caller data turns a caller's
-mistake into a silent wrong answer.
-
-## RULE: Error mapping must not lose the server's detail
-
-`OUT_OF_RANGE` is mapped to a typed error in 0 of 7 clients. `UNAUTHENTICATED` is mapped in
-only one — Go; the other six leave it indistinguishable from an internal server fault. Every
-proto tier already generates SpiceDB's `ErrorReason` enum from `error_reason.proto`, and not
-one idiomatic client references it anywhere. Six clients do preserve the underlying error
-object — as `cause`, `innerException`, or via `Unwrap` — so the information is reachable but
-unparsed. Rust discards it outright: `from_grpc_status(code: i32, message: String)` reduces the
-status to a code and a string before mapping ever runs, a lossy boundary its own doc comment
-admits.
-
-1. **A client MUST map `OUT_OF_RANGE` and `UNAUTHENTICATED` to typed errors**, not left to fall
-   through to a generic status-code wrapper. These are not exotic codes: they are the two a
-   caller actually hits in production, and every other mapped code in a client's error
-   hierarchy already sets the precedent for treating them the same way.
-2. **A client MUST preserve the underlying status object on every typed error**, so
-   `google.rpc.Status`'s details and SpiceDB's `ErrorReason` remain reachable to a caller who
-   wants them — as `cause`, `inner`, `Unwrap()`, or the language's equivalent. A mapping step
-   that reduces a status to a bare code and string, as Rust's does, has already thrown the
-   information away before it can be used; parsing must work against the original status,
-   never against a string rebuilt from it.
-
-Name both consequences:
-
-- `OUT_OF_RANGE` is SpiceDB's code for an expired or garbage-collected ZedToken. It is the
-  single most actionable recoverable error in a token-threading application, and its correct
-  handling is mechanical — discard the stale token, re-read at full consistency, retry.
-  Collapsed into a generic error, every caller must string-match a message to recover an error
-  the client already knew the shape of.
-- `UNAUTHENTICATED` is the most common error a new integration produces — a wrong, expired, or
-  rotated API token. In six clients it is currently indistinguishable from an internal server
-  fault, so a caller cannot write "refresh credentials on auth failure, page someone on
-  internal error" — the one distinction that error most needs to carry.
-
-## RULE: Automatic retry is for idempotent operations only
-
-A client MUST NOT silently retry a mutation whose replay changes the outcome. A
-`WriteRelationships` containing `OPERATION_CREATE`, or any request carrying preconditions, is
-not idempotent: if it commits and the response is lost, the retry returns `ALREADY_EXISTS` or
-`FAILED_PRECONDITION` and the caller concludes a write failed that in fact succeeded. Retry
-reads freely; retry mutations only when the caller opts in.
-
-`RESOURCE_EXHAUSTED` MUST NOT be in the retryable set. In SpiceDB it signals memory load-shed or
-a deterministic `MaxDepthExceeded` — the first is made worse by retrying and the second can
-never succeed.
-
-Backoff MUST be jittered. Without jitter every client in a fleet retries on the same schedule
-after a restart, converting a recovery into a thundering herd.
-
-## RULE: Every RPC wrapper must have one place to add an option
-
-The upstream API gains optional fields continually -- `LookupResourcesRequest.with_debug`
-arrived exactly this way -- and each one has to land somewhere in every client's public
-surface. Where a client has no designated place for it, the option lands as a new parameter
-or as a new method, and both are compounding mistakes.
-
-A new parameter is not a compatible change in every language. C# substitutes an optional
-parameter's default at the *call site*, so adding one is binary-breaking for every
-already-compiled assembly; Go function types are identical only if both are variadic or
-neither is, so appending `opts ...Option` breaks assignment and any interface a consumer
-declared over the old shape. Regeneration run 33810252060 broke `spicedb-csharp` in
-precisely this way, and would have broken it again on the next option, and the one after.
-
-A new method per option is the same mistake in slow motion. `check_permission`,
-`check_permission_with_context`, `check_permission_with_timeout` is the combinatorial
-beginning of a surface nobody can hold in their head: the third option makes it eight
-methods, and every one of them has to be documented, tested and exampled.
-
-1. **Every RPC wrapper MUST have a single options container per operation**, and a new
-   option MUST be added as a member of that container rather than as a parameter or a
-   method.
-2. **Where the language offers variadic or keyword arguments, those are the container.**
-   Go's `opts ...LookupResourcesOption`, Python and Ruby keyword arguments, and
-   TypeScript's optional trailing `options` object all satisfy this rule as they stand.
-3. **Where it does not, the operation MUST be offered in two forms**: `someApi` for the
-   common case, and `someApiWithOptions` taking the container. The simple call stays
-   simple, and every future option has somewhere to go without another method appearing.
-4. **A client MUST NOT add a per-option method variant.** `...WithContext` and
-   `...WithTimeout` are what this rule replaces; their options belong in the container.
-
-The point is not that a container is prettier. It is that the next optional field the API
-adds must be a one-line change in seven clients, rather than seven separate judgement calls
-about where to put it -- which is how one of them ends up breaking.
-
-## RULE: A unary call must have a deadline
-
-A wedged SpiceDB — one that accepts the connection but never answers — hangs every caller that
-has no bound on the call. It hangs them silently: the connection is open and nothing looks wrong
-at the transport level, so no error is ever produced, and automatic retry cannot help because
-there is nothing to retry against. Callers queue up behind the wedged call until the connection
-pool is exhausted, and an outage that started with one bad call spreads to requests that have
-nothing to do with it.
-
-1. **A client MUST let a caller bound a unary call.** Every unary RPC — `CheckPermission`,
-   `WriteRelationships`, `ReadSchema`, and the rest — must accept a deadline or timeout from the
-   caller, expressed in the language's idiomatic form: a context deadline in Go, a timeout
-   parameter or cancellation token elsewhere.
-2. **A client SHOULD apply a default when the caller supplies none.** An opt-in-only parameter
-   leaves the defect intact for everyone who does not opt in — in practice, most callers. The
-   default must be finite; treating "no timeout" as the default reproduces the defect this rule
-   exists to close. `authzed-node` sets the precedent: it ships a `DEFAULT_DEADLINE_MS`, with a
-   comment citing `grpc/grpc-node#541`, a known gRPC failure mode the default exists to guard
-   against.
-3. **Streaming calls MUST NOT inherit the unary default.** This excludes every RPC that isn't
-   plain unary — server-streaming (`watch`, `export`, and the lookup streams: `LookupResources`,
-   `LookupSubjects`, and their variants), client-streaming (`ImportBulkRelationships`), and any
-   future bidirectional RPC alike. The rule is about call *shape*, not which end does the
-   streaming: `watch` is long-lived because it waits on the server for as long as the process
-   cares to keep watching; `ImportBulkRelationships` is long-lived because its duration scales
-   with the size of the dataset the *caller* is feeding it, and a caller legitimately streaming in
-   millions of relationships can take minutes to do so. No fixed default is correct for either
-   shape, and applying one would make the transfer itself the outage — the caller's data volume,
-   not a wedged server, would be what trips it.
-
-   What replaces the default differs by which end is streaming, and the difference is not
-   cosmetic:
-
-   - **Server-streaming calls MUST offer cancellation, not a deadline.** A deadline answers "how
-     long may this take?", and for `watch` the honest answer is "as long as the process cares to
-     keep watching" — there is no duration that is wrong to allow and no duration whose expiry
-     means something went wrong. The question a caller of a long-lived stream actually needs to
-     answer is "I am done with this, stop" — which is cancellation, and which is a *caller*
-     decision made at an arbitrary later moment rather than a bound guessed up front. So these
-     calls take no per-call timeout, and instead satisfy **RULE: Abandoning a stream must release
-     it**, below. Offering a deadline here instead would be worse than offering nothing: whatever
-     value a caller picked would eventually fire mid-stream and look like a server fault.
-   - **Client-streaming calls SHOULD keep an explicit per-call override.**
-     `ImportBulkRelationships` is the caller's own upload, so the caller *does* know roughly how
-     long their dataset should take and may legitimately want to cap it. That override must be
-     opt-in and default to unbounded, since only the caller knows the volume.
-
-   A caller who needs a hard wall-clock bound on a server stream still has one — cancel it from a
-   timer. The point is that the client must not pick that timer's value for them.
-
-A client with no deadline anywhere is one wedged server away from an outage that looks, from the
-caller's side, exactly like a hang with no cause.
-
-**On worst-case latency**: what a timeout of `t` bounds depends on where the retry loop lives, and
-the two shapes in this repo differ by more than 4x on the same nominal value. A client MUST
-document which shape it has; a caller reasoning about an end-to-end budget cannot infer it from the
-parameter name.
-
-- **Per-attempt budget** (six clients: Python, TypeScript, Java, C#, Ruby, Rust). The client hand-
-  rolls its retry loop and applies `t` fresh to each attempt, deliberately: a budget that shrank
-  across attempts would make a call that legitimately needs several retries *more* likely to fail
-  than one that needs none. So `t` bounds each attempt, not the call — worst-case latency is
-  `t × (retries + 1)` plus backoff between them, and for an auto-paging call (e.g. a filtered
-  delete) the same `t` applies fresh to each page.
-- **Absolute deadline** (Go). Retry is grpc-go's own service-config `retryPolicy`, which reuses the
-  caller's `context.Context` across every attempt. A context deadline is a point in time, not a
-  duration, so it bounds the whole operation: attempts, backoff, and pagination all draw down the
-  same budget, and a retry that starts after the deadline has passed fails immediately.
-
-Concretely, `t = 30s` on a read that exhausts its retries means up to ~120 s plus backoff in the
-six, and at most 30 s in Go. Neither is wrong — Go's is what a `context.Context` *means*, and
-reimplementing per-attempt budgets on top of it would fight the language's central convention —
-but a caller porting a timeout value between clients is not carrying its meaning with it. In the
-per-attempt clients, a caller who needs a true end-to-end bound must impose it themselves, above
-the client.
-
-## RULE: Abandoning a stream must release it
-
-Streaming RPCs invite a common idiom: take the first N results and stop. If stopping early does
-not tell the server to stop, the client has traded a fast return for a leak — the server keeps a
-dispatch open per abandoned stream, for as long as the underlying connection lives, because
-nothing ever told it the caller walked away.
-
-1. **A client MUST expose cancellation for every streaming call.** The caller-facing surface — an
-   async iterator, a generator, a channel — must offer an explicit, working way to stop consuming
-   before the stream is exhausted.
-2. **The transport MUST actually release the stream on abandonment.** Exposing a cancel method
-   that the transport underneath ignores does not satisfy this rule; the caller believes the
-   stream is closed and it is not. Verify this against the transport the client actually ships,
-   not the one implied by its API.
-3. **A `for`-loop `break` calling a generator's `return()` is not sufficient on its own.** Where a
-   language's iteration protocol closes a generator by calling `return()` on `break`, that
-   mechanism only releases the stream if the transport underneath honors it — and this is a trap
-   precisely because the call site looks identical whether it does or not. Connect-ES is a
-   concrete instance: it deliberately omits `return()` on its iterator, so a `break` in consuming
-   code never releases the underlying HTTP/2 stream. A client built on a transport with this
-   property must wire cancellation through an explicit path and must not rely on the loop idiom
-   alone.
-
-A client that cannot cancel an in-flight stream leaks a server-side dispatch per abandoned call —
-silently, since the leak is invisible from the caller's side of a `break`.
-
-## RULE: An example must be executed by CI and must be able to fail
-
-The `examples/` directory in every client is the repo's integration-test tier: it is the only
-place where client code runs against a real SpiceDB. An example earns that status only if two
-things are true of it — **something runs it on every relevant change**, and **it fails when the
-behaviour it demonstrates breaks**. An example that satisfies neither is not a test; it is a
-code sample that the repo's own coverage claims have been counting as a test.
-
-Two distinct failure modes produce that outcome, and they need naming separately because the
-remedies do not overlap.
-
-1. **An example nothing runs.** Membership in a runner is a separate fact from existence on
-   disk, and nothing reconciles them by default. All twelve C# examples sat outside every
-   solution file for the repo's entire history, so `dotnet build`/`dotnet test` never saw them —
-   the code compiled in no one's CI. Rust's `IntegrationTest` documented itself as running
-   examples against a container it did start, on the right port, with the right key, while its
-   body ran `cargo test -- --ignored`: two ignored test functions and zero examples, so every
-   runtime assertion in all thirteen Rust examples was dead code that had never executed once.
-   Both defects were invisible because the target *appeared* to cover the directory.
-
-   Therefore: **each client MUST reconcile the example set on disk against an expected set
-   named in the runner, by name, in both directions** — failing on a name expected but absent,
-   and on a name present but not expected. Where membership is additionally enumerated by hand —
-   a `.sln`, a project list, a manifest — that enumeration MUST be diffed against the directory
-   the same way, because a snapshot that is correct today is reintroduced as a defect by the
-   next example added.
-
-   **A count is not a reconciliation, and MUST NOT be used as one.** This is the sharpest thing
-   this rule has to say, because counting is the obvious implementation and it fails on the most
-   ordinary edit there is: rename an example and the count is unchanged, so the runner executes
-   a set that is no longer the set anyone reviewed, and reports green. Deletion is the only
-   drift a count catches. Six clients here shipped exactly that guard and it survived a full
-   review before the hole was found by renaming a directory. Pin the names; let the count fall
-   out of the list as a consequence.
-
-   The same reconciliation covers name-filtered runs, which are the other half of this clause. A
-   name or tag filter that matches nothing exits successfully in every test framework this repo
-   uses: `pytest -k`, `rspec --tag`, `cargo test` with a filter, and a hardcoded skip in a runner
-   loop all report green on an empty selection. `.github/workflows/rust.yaml` greps its output
-   for `"1 passed"` for exactly this reason. So: **a runner MUST NOT select examples by name or
-   tag filter where it can name them explicitly instead** — a reconciled list of names, passed to
-   the test command, cannot silently select nothing. Where a filter is unavoidable, or where the
-   test framework may skip what it was handed, **the runner MUST read back what actually
-   executed** — a JUnit or TRX report, an rspec JSON report, a libtest pass count — and fail
-   unless every expected example contributed at least one *executed* case. A skipped case is not
-   an executed one: counting it lets a fully-disabled example satisfy the assertion that it ran.
-
-   Skipping an example is permitted — some need machinery that does not exist yet — but a skip
-   MUST be listed by name in the runner, checked to still exist on disk, and printed with its
-   reason, never the silent residue of a filter.
-
-2. **An example that cannot fail.** Executing an example proves nothing if its assertions hold
-   regardless of the behaviour under test. `spicedb-typescript`'s custom-TLS example asserted
-   `Array.isArray(results)` over a zero-item result — true of an empty array, and therefore true
-   when no TLS handshake was ever attempted, which is precisely what was happening. This is the
-   same defect as **RULE: A system-TLS constructor must reach a real server** names for
-   constructors ("asserting a constructor succeeds is no better wherever the language connects
-   lazily"), generalised to the examples tier.
-
-   Therefore: **every example MUST assert on the specific behaviour it exists to demonstrate,
-   and that assertion MUST fail if the behaviour is removed.** Concretely, an assertion is
-   insufficient under this rule when it is satisfied by an empty result, by a type check alone,
-   by a constructor returning non-null, or by any conditional whose guard can be false on a
-   normal run — a `if (stillCalculating) { ...asserts... }` after a fixed sleep asserts nothing
-   on the run where the guard is false, and reports green either way. The test for compliance is
-   mechanical: delete the behaviour and confirm the example goes red.
-
-An example directory is a claim about coverage. Both clauses exist so that the claim is checkable
-by machine rather than by reading, because every instance above survived repeated human review of
-the very directories it lived in.
-
-## What NOT To Do
-
-- No auto-generated feeling — the API should read like hand-written code
-- No protobuf types in the public API — wrap them in language-native types
-- No requiring users to construct nested proto messages
-- No silent defaults for consistency — make users choose explicitly
-- No exposing gRPC internals (channels, stubs, metadata) in the primary API
-  (escape hatches for advanced use are acceptable as clearly marked secondary API)
-- **No treating a conditional permission as a grant** — see **RULE: Only an unconditional grant
-  is true**
-
-### Where each client's raw escape hatch lives
-
-**Every client can issue an unwrapped RPC on its own connection, with its own
-credentials, through a documented accessor** — that is the property this section exists
-to guarantee, and it is what makes the bullet *"No exposing gRPC internals (channels,
-stubs, metadata) in the primary API (escape hatches for advanced use are acceptable as
-clearly marked secondary API)"*, above, a complete answer rather than half of one. A gap
-in an idiomatic surface therefore has a workaround short of a fork, and the workaround
-never requires rebuilding the connection.
-
-What the accessor returns is not uniform, because "the underlying thing" differs per
-ecosystem. Each entry below states its shape: **accessor** (hands back what the client
-already built) or **configuration** (shapes the connection before it exists). Several
-clients have both.
-
-- **Go** — *accessor:* `(*client.Client).RawProto()`, returning `*proto.Client` with the
-  four generated service clients. *Configuration:* `WithDialOptions(...)` on
-  `NewWithOpts`, which takes any `grpc.DialOption`.
-- **Python** — *accessor:* `raw_grpc()` on both `spicedb.sync.SpiceDBClient` and
-  `spicedb.aio.SpiceDBClient`, returning `spicedb.raw.RawGrpc` (the live channel plus the
-  bearer-token metadata, since this client authenticates per call).
-- **TypeScript** — *accessor:* `SpiceDBClient.raw()`, returning the `SpiceDBProtoClient`
-  with the four generated Connect clients.
-- **Rust** — *accessor:* `SpiceDBClient::raw_proto()`, returning `&SpiceDBProtoClient`;
-  the generated crate is re-exported as `spicedb::spicedb_proto` so callers can name its
-  types.
-- **Java** — *accessor:* `SpiceDBClient.rawChannel()`, returning this client's own
-  `io.grpc.Channel` with its bearer metadata already attached, so any generated stub is
-  one `newStub` call away. The lifecycle stays with the client because
-  `ClientInterceptors.intercept` returns a package-private `Channel` subclass whose delegate
-  is unreachable — a cast to `ManagedChannel` throws — not merely because the return type
-  says `Channel`. (The idiomatic client does not wrap `spicedb-java-proto`'s
-  `SpiceDBProtoClient`, which exists but is unused there; it builds its own stubs.) *Configuration:* `ClientOption.apply(ManagedChannelBuilder)`,
-  documented as an escape hatch on `ClientOption#apply`. `grpc-netty-shaded` and the
-  generated stubs are declared `api` in
-  `proto-clients/spicedb-java-proto/build.gradle.kts`, so both reach consumer code.
-- **C#** — *accessor:* `SpiceDBClient.RawProto()`, returning the `SpiceDBProtoClient` with
-  the five generated service clients. *Configuration:* `CreateFromChannel(channel, key)`,
-  which takes a caller-built `GrpcChannel`; that channel stays **caller-owned**, since
-  disposing the client does not dispose it — the idiomatic .NET pattern is one
-  DI-registered singleton channel shared across the application.
-- **Ruby** — *accessor:* `SpiceDB::Client#proto_client`, an `attr_reader` documented as
-  "the underlying proto client for advanced use cases", whose `permissions`/`schema`/
-  `watch`/`experimental`/`materialize` stubs are already authenticated (composed call
-  credentials on the secure path, a `BearerTokenInterceptor` on the plaintext one).
-
-Three constraints bind all of them:
-
-1. **An accessor must never become a constructor.** Handing back an already-built
-   channel, stub, or client is fine; growing a parameter for an endpoint, token, or
-   transport setting is not — that would be a new path that builds a connection, and
-   **RULE: Credentials over insecure transport require an explicit opt-in** is enforced
-   on the paths that already do (one each in Go, Python, TypeScript, Rust, C# and Ruby;
-   Java has three — `SpiceDBClient.java`'s plaintext, custom and system-TLS factories,
-   with the guard on the first two and the third TLS-only by construction). Each client's
-   tests pin this directly, by asserting the accessor takes no arguments.
-
-   **The configuration hatches carry a disclosure, and it is not decoration.** A guard
-   that recognizes named options cannot see what an arbitrary builder callback or dial
-   option does to the connection, so each of those hatches states in its own doc comment
-   what its guard can and cannot see — Java on `ClientOption#apply` and `create`, C# on
-   `CreateFromChannel`, Go on `WithDialOptions` in both tiers. Go's is the mildest case
-   and shows why the disclosure belongs there anyway: caller dial options are appended
-   last and later ones win, so a caller can replace the transport credentials this library
-   chose; it fails closed only because the bearer credentials' `RequireTransportSecurity`
-   makes grpc-go refuse to attach the token to a downgraded transport. A hatch whose
-   disclosure is missing is a hatch whose reader has to derive that themselves.
-2. **A configuration hatch is not a substitute for an accessor.** Rebuilding the
-   connection to make one raw call means replicating the client's transport configuration
-   by hand; get it wrong and the raw path runs with *different transport security than the
-   idiomatic one* while the call site reads as though it were the same server. That is a
-   correctness hazard, not an inconvenience — which is why the accessor is the guaranteed
-   property above and the configuration hatch is an extra.
-3. **Exposing a built channel is not a trust-material hatch.** TLS is configured before a
-   channel exists, so these accessors do not satisfy **RULE: A system-TLS constructor must
-   reach a real server**, clause 1. That clause keeps its own per-client list, and Rust's
-   entry there is still "none".
-
-## CI Workflow Conventions
-
-The repo uses one GitHub Actions workflow file per language plus `spicedb-gen.yaml` and `meta.yaml`. Rules for maintaining and extending CI:
-
-1. **Per-language file.** Every language has its own `.github/workflows/<lang>.yaml`. Do not add language-specific jobs to a shared workflow. Cross-cutting checks (e.g., `mage gen:all` nodiff, YAML lint) live in `meta.yaml`.
-
-2. **Standard job set per language workflow.** Each language workflow contains: `paths-filter`, `lint`, `unit`, `integration`, and `apicompat` (if the language appears in `apiCompatLanguages` in the root `Magefile.go`). All four work-jobs gate on `paths-filter.outputs.changed == 'true'`. `apicompat` additionally gates on `github.event_name == 'pull_request'` so it has a base ref to diff against.
-
-   **A language belongs in `apiCompatLanguages` when its public surface can be diffed mechanically.** Six can: Go (`go-apidiff`), Python (`griffe`), TypeScript (`api-extractor` against a committed report), C# (`Microsoft.DotNet.ApiCompat.Tool`), Java (`japicmp`) and Rust (`cargo-semver-checks`). Ruby is absent, and the reason is cost rather than impossibility. `rbs prototype runtime` generates signatures from the loaded gem with nothing hand-written, and `rbs diff` compares two sets — verified to catch method removal, arity changes, keyword removal, visibility narrowing and `Data.define` member changes on this client. It is not wired up because `rbs diff` is marked experimental with no output-compatibility guarantee, and because it needs two details that are easy to get wrong: it exits 0 even when it reports breaking changes, so a gate must test output emptiness rather than exit status, and pure additions must be filtered or every added method fails the build. Until someone takes that on, a breaking change to `spicedb-ruby` is caught by its tests and by review rather than by a gate, which is weaker. Note that the static `rbs prototype rb` is not sufficient here: it renders `Data.define` constants as bare `untyped`, and this client has 28 of them.
-
-3. **Acknowledging a deliberate break.** `apicompat` is skipped on a pull request labelled
-   `breaking-change-acknowledged`, and prints a notice saying so. Nothing else grants an
-   exception: `mage updateAllowBreak` is a local convenience the CI check never consults, so
-   without the label an intentional break has no route through CI but to merge red.
-
-   The label is per-PR and visible on the PR itself, which is the point — an intentional break
-   should be a decision someone took and left a record of, rather than a config toggle that
-   quietly stays on. Label the PR, then re-run the `apicompat` job; remove the label and re-run
-   to put the check back.
-
-   The job reads the label from the API, not from `github.event`. The `pull_request` payload is
-   a snapshot taken when the event fired, so a label added afterwards is invisible to it — and
-   re-running replays that same stored payload, so a re-run would not see it either. Adding
-   `labeled` to the workflow's trigger types would fix that by re-running all of CI on every
-   label change of any kind, which is a lot of compute for a rare deliberate break. Reading live
-   state costs one API call and needs `pull-requests: read` on the job.
-
-   The skip is total rather than selective. `mage apiCompat` exits 1 both for real findings and
-   for its own failures, so this cannot suppress only the former; a labelled PR also loses the
-   signal that the check itself is broken. That is the cost of keeping the mechanism simple
-   enough to trust, and it is bounded to the one PR carrying the label.
-
-4. **paths-filter scope.** Each filter must watch the workflow file itself, the language's `proto-clients/spicedb-<lang>-proto/**`, the language's `spicedb-<lang>/**`, root `Magefile.go`, and root `go.mod` / `go.sum`. Workflow edits without filter coverage produce a silently-skipping CI.
-
-   **A filter must also watch what the job's code is compiled against, not only where that code lives.** `spicedb-gen.yaml` watched `spicedb-gen/**` alone, but the generator's templates emit code importing `spicedb-go/{client,consistency,rel}`, `spicedb-typescript/src`, `spicedb-python/spicedb`, and `spicedb-java/lib/src/main/java`, and every `testdata/` project builds against those live in-repo sources. A signature change in a consumed package could therefore break generation while every generator job skipped and reported green — which is exactly how a dropped-error regression reached review (finding F4). Scope such entries to the packages actually imported; a blanket `spicedb-*/**` runs the suite on every client change and invites someone to revert the whole filter as noise. Note the filter is necessary but not sufficient: pair it with a test that actually fails on the regression, since a discarded return value still compiles.
-
-5. **Runner sizing.** Default to `depot-ubuntu-24.04-arm-4`. Use `arm-small` for trivial steps (paths-filter, apicompat, yaml lint). Use `arm-8` only for cross-cutting work that touches every language (e.g. `meta.gen-nodiff`). Justify any size deviation in a comment.
-
-6. **Action pinning.** Third-party actions (anything outside `actions/*` and `authzed/*`) pin to commit SHA with `# vX.Y.Z` comment. Dependabot's `github-actions` ecosystem keeps these current.
-
-7. **Integration tests.** Each `mage <lang> integrationTest` target is self-contained — it starts its own docker-compose, runs tests, tears down. CI runs at most one `integrationTest` per job (they all bind `localhost:50051`). Cross-language parallelism is fine because each runner is isolated.
-
-8. **Adding a new language.** Checklist:
-   - Create `.github/workflows/<lang>.yaml` from an existing one (Go is a good template if compiled, Python if interpreted).
-   - Add the language's directories to `.github/dependabot.yml`.
-   - Add a per-language Quick Start in `README.md` (typed if `spicedb-gen` supports it, idiomatic otherwise).
-   - Add the language to `languages` (and `apiCompatLanguages` if applicable) in the root `Magefile.go`.
-
-9. **Adding a new job type.** If you find yourself wanting a new kind of check (e.g., security scanning, license check), add it to **every** language workflow at once, document it here, and add a paths-filter clause if it should be skippable.
+# SpiceDB Client Libraries — Native API Design
+
+This document defines the shared principles and behavior of the client libraries.
+Each language's `DESIGN.md` specifies its native API and implementation details.
+
+## API principles
+
+- **Share semantics while following each language's conventions.**
+  - Prefer native types, iteration, cancellation, ownership, and errors over
+    identical method names or argument order.
+  - Ordinary operations must not require protobuf or gRPC knowledge.
+
+- **Keep one canonical, extensible API for each operation.**
+  - Add optional behavior through an options container rather than parallel
+    method families. Use functional options, keyword arguments, option objects,
+    or builders as appropriate to the language.
+  - Prefer named enums over string options or boolean flags that select behavior,
+    making choices discoverable and allowing additional modes without changing
+    the operation's signature. Reserve booleans for inherently binary values.
+  - Bulk operations accept collections without consuming the operation's only
+    variadic argument slot. Singular and bulk checks remain distinct operations.
+  - Cover every non-deprecated protocol RPC, including schema inspection,
+    expansion, import/export, watch, counters, and materialize services.
+  - Mark experimental operations and upstream deprecations using native mechanisms.
+
+- **Keep protocol access secondary and ownership explicit.**
+  - The primary API uses native request and result types.
+  - A documented escape hatch may expose the existing authenticated connection
+    or protocol client; it must not create a connection or transfer ownership.
+  - Supplied connections remain caller-owned unless ownership is explicitly transferred.
+  - Generate protocol bindings from the upstream schema; do not edit generated
+    protocol source by hand.
+
+- **Evolve public APIs deliberately.**
+  - Public APIs are append-only unless a breaking change is explicitly approved.
+  - Keep designs, implementations, tests, examples, generated fixtures, API
+    reports, and README snippets consistent.
+  - Describe changes in each client's existing Unreleased changelog section;
+    include before/after migration examples for breaking changes.
+
+## Domain types and checks
+
+- **Separate object identity, persisted relationships, and permission questions.**
+  - `ObjectRef` identifies an object by type and ID. `SubjectRef` adds an optional
+    userset relation; absence means a direct subject. Wildcards retain server semantics.
+  - `Relationship` contains resource, relation, subject, optional persisted
+    caveat context, and expiration. It never carries check-time context.
+  - `PermissionCheck` (`CheckRequest` in TypeScript) contains resource,
+    permission, subject, and optional evaluation context.
+
+- **Return extensible native results from relationship writes.**
+  - Every client returns `WriteResult` with a native `ZedToken` revision rather
+    than returning the token alone. Generated touch/create/delete helpers return
+    the same result; callers explicitly extract its revision for later reads.
+
+- **Make consistency an explicit caller decision.**
+  - Every consistency-bearing read requires a strategy, in its request or a
+    required argument. Reject mixed bulk strategies or tokens before any RPC.
+  - Provide full, minimize-latency, at-least-token, and exactly-token strategies.
+    Fallback helpers must explicitly name the strategy used when a token is absent.
+  - Every language exposes a dedicated native `ZedToken` value type with an opaque
+    representation and lossless string construction and serialization. Public APIs
+    accept and return this type rather than plain strings; token behavior belongs
+    on the type.
+
+- **Return authorization results that cannot silently turn uncertainty into a grant.**
+  - Singular and bulk checks return `CheckResult`, with permissionship, missing
+    context keys, and the checked-at revision.
+  - Only an unconditional grant satisfies the permission predicate. Conditional,
+    denied, and unspecified results remain distinguishable; unknown values never grant.
+  - Ruby and JavaScript examples use the explicit predicate rather than object
+    truthiness. Python may provide safe boolean conversion.
+  - Any aggregate helpers count unconditional grants only and return false for
+    empty input.
+  - Preserve singular response expiration independently of tracing.
+
+- **Make unconditional resource lookup results easy to select safely.**
+  - `LookupResources` exposes a named client-side permissionship filter: all
+    results (default), or unconditional `HAS_PERMISSION` results only.
+  - Filtering excludes conditional and unknown states before yielding. Limits
+    count yielded matches; pagination advances through skipped results.
+  - Examples presenting accessible resource IDs select unconditional results
+    explicitly. Examples resolving caveats may retain conditional results and
+    must distinguish them from grants. Generated facades forward the filter.
+
+- **Preserve the association between bulk inputs and results.**
+  - Validate response cardinality and each echoed request before exposing
+    decisions; reject missing, duplicated, mismatched, or reordered pairs.
+  - Per-item failures remain typed errors with the caller's absolute input index.
+  - Split checks into at most 1,000 items per request. Each result carries its
+    own chunk's revision; chunks do not imply a shared snapshot.
+
+- **Preserve caller data and represent immutability honestly.**
+  - Merge call-level check context with per-item overrides by key; the item wins.
+    Absent context remains absent on the wire.
+  - Preserve JSON types recursively, including null. Reject unrepresentable
+    caller data with a typed error naming the affected field or key.
+  - Immutable values snapshot nested caller-owned collections. Mutable builders
+    are documented as mutable and snapshot data when producing immutable values.
+  - Model mutually exclusive variants structurally where supported, such as
+    Rust enums and TypeScript discriminated unions. Represent unknown server states explicitly.
+
+## Check debug tracing
+
+- **Make tracing an optional diagnostic on both singular and bulk checks.**
+  - Tracing defaults to disabled. Singular checks use `CheckPermission` and its
+    `with_tracing` flag; bulk checks apply their flag to every chunk.
+  - Check tracing is distinct from lookup `with_debug` and never changes the
+    permission predicate.
+
+- **Return complete, structured native traces.**
+  - `CheckResult` carries an optional native trace; absent traces remain absent.
+    Bulk results retain their own per-item traces.
+  - Preserve schema and recursive check details: resource, subject, permission,
+    permission type, result, caveat evaluation, duration, resolution, expiration,
+    operation ID, and source.
+  - Caveat evaluation includes expression, result, native context, missing keys,
+    and name. Resolution preserves cached-result versus subproblems presence,
+    including an explicitly false cached flag.
+  - Use native timestamps, durations, and safe unknown enum values, without
+    exposing protobuf objects or reducing the trace to a formatted string.
+
+- **Preserve tracing through typed wrappers and verify it against the server.**
+  - Generated facades forward the option and return the same trace-bearing result.
+  - Tests cover flag transmission, recursive conversion, absent traces, and
+    per-item bulk traces. A live example asserts populated singular trace data.
+
+## Deadlines, cancellation, and retry
+
+- **Treat a deadline as a budget for the entire operation.**
+  - Unary calls default to 30 seconds. The budget covers attempts, backoff,
+    chunks, and automatically fetched pages, starting when execution begins.
+  - Use monotonic time and pass only the remaining budget to subsequent work.
+    An earlier caller deadline wins; an attempt timeout may shorten the budget,
+    never extend it.
+  - Streams and imports have no default lifetime timeout, but accept explicit
+    total deadlines. Finite lookups and exports support deadlines even when
+    their underlying RPC streams.
+
+- **Carry native cancellation through every layer.**
+  - Check cancellation before new work and during backoff; distinguish caller
+    cancellation from a server-originated cancelled status.
+  - Go preserves context error identity; Python propagates task cancellation;
+    TypeScript accepts `AbortSignal`; C# preserves the caller's cancellation token.
+  - Rust releases owned calls when futures or streams are dropped. Java and
+    Ruby expose working explicit stream cancellation.
+
+- **Retry only when replay is safe.**
+  - Retry idempotent reads on `UNAVAILABLE` or `ABORTED`, up to three retries,
+    using full-jitter exponential backoff starting at 100 ms.
+  - Never automatically retry `RESOURCE_EXHAUSTED` or replay mutations,
+    including writes, deletes, imports, and counter registration.
+  - Stream establishment may retry only before any item is exposed. Never
+    restart a partially consumed stream.
+  - All retries share the original deadline and cancellation signal.
+
+## Streams and ownership
+
+- **Make resource release deterministic and visible in the API.**
+  - Every stream has a supported close or cancel path that releases the actual
+    transport, including while waiting for the next item.
+  - Use native loop or scope cleanup; do not rely on garbage collection.
+  - Python supports `with`/`async with`; Ruby supports block consumption and a
+    closeable Enumerable; Java uses try-with-resources.
+  - TypeScript returns `AsyncIterableIterator` directly. Go iterator exit,
+    C# enumerator disposal, and Rust drop release their calls.
+  - Tests observe server-side termination after early abandonment.
+
+- **Import incrementally with backpressure and predictable cleanup.**
+  - Accept native iterable or async-iterable inputs.
+  - Producer errors, cancellation, and conversion failures cancel an active upload.
+
+## Filters and deletion
+
+- **Expose full relationship filters on every watch API.**
+  - Accept native relationship filters and forward them to the protocol's
+    relationship-filter field; multiple filters match with OR semantics.
+  - Examples prefer filters, including a resource-type-only filter for a whole
+    type. Reject nonempty object types combined with nonempty relationship filters.
+  - Snapshot caller-owned collections and preserve exact subject relation scope.
+
+- **Filters must preserve the caller's exact intended scope.**
+  - Distinguish subject relation filters `Any`, `Direct`, and `Named(name)`.
+    Absence means Any; Direct is a present empty relation filter.
+  - Converting a relationship to an exact filter preserves all identifying tuple
+    fields, including the subject relation. Caveat and expiration are not filterable identity.
+  - Reject filters the protocol cannot represent; never silently widen them.
+
+- **Separate bounded deletion from deletion to completion.**
+  - Bounded deletion requires a positive total limit, issues one bounded request,
+    and returns revision, count, completion, and any server resume cursor.
+  - Name the operation `deleteAllRelationshipsNonAtomic` using native language
+    conventions. It uses a separate positive page size, defaulting to 1,000, and
+    one operation budget. An `autoPage` flag must not change the meaning of a limit.
+  - Forward each non-empty response deletion cursor to the next batch unchanged.
+    An absent or empty cursor is omitted on the next request. Failure progress
+    retains the cursor from the latest acknowledged response.
+  - Re-evaluate preconditions on each request. Each batch is atomic; the entire
+    operation is not, and completed batches remain committed on failure.
+  - Native `DeleteResult` exposes its revision as `revision`, matching
+    `WriteResult` and following each language's naming conventions.
+  - Unknown completion states are errors, never evidence of completion or permission
+    to continue deleting.
+
+- **Report acknowledged progress without claiming certainty about lost responses.**
+  - Provide discoverable typed access to progress on failures and cancellation,
+    preserving the language's native cancellation behavior.
+  - Interrupted delete-all attaches cumulative acknowledged count and the latest
+    revision and available cursor to its native error or cancellation result.
+  - Preserve acknowledged progress even when the latest response is malformed.
+  - An unacknowledged request may have committed. Do not report otherwise or
+    automatically replay it.
+
+## Errors and transport security
+
+- **Expose native errors without losing server diagnostics.**
+  - Map statuses, including `OUT_OF_RANGE` and `UNAUTHENTICATED`, to typed errors.
+  - Preserve the original status or cause and structured ErrorInfo reason,
+    domain, and metadata. Local validation uses the documented invalid-argument category.
+
+- **Use secure transport defaults and explicit trust configuration.**
+  - Secure constructors delegate to the ecosystem's default trust source.
+    Python, Ruby, and Node support custom CA material because their defaults may
+    differ from the host's managed trust store.
+  - Reject TLS material combined with plaintext. Document actual TLS and mTLS
+    capabilities rather than inferring them from system-root support.
+
+- **Require an explicit decision before sending credentials over remote plaintext.**
+  - Every client library must expose a documented, named opt-in that permits
+    authenticated plaintext connections to non-loopback hosts, including remote
+    hostnames and IP addresses. This capability must be available through the
+    normal public API, without requiring a raw transport escape hatch.
+  - Reject remote plaintext credentials unless that opt-in is supplied. Validate
+    using the transport's endpoint parser or fail closed when it is unavailable.
+  - Constructors communicate transport posture. Raw access does not bypass validation.
+  - Configuration escape hatches document where arbitrary settings can supersede guards.
+
+## Generation and validation
+
+- **Keep typed generation a thin facade over the native clients.**
+  - Forward options, consistency, cancellation, tokens, results, and stream ownership.
+  - Generated clients expose every native capability directly unless a documented
+    language constraint prevents it. Keep schema-aware signatures where useful;
+    use native request/options/results for the remaining operations, including
+    non-atomic filter deletion and watch.
+  - Schema-derived context may feed permission checks, but must not become
+    check-only data on persisted relationships.
+  - Generate fixtures from templates, then compile, type-check, and execute them.
+    Include positive and negative type tests.
+
+- **Verify observable behavior rather than merely successful execution.**
+  - Reconcile examples against their runners by name, execute them in CI, and
+    require assertions that fail when the demonstrated behavior is removed.
+  - Explicitly report skips; a filter matching zero tests is not a passing check.
+  - Cover immutability, JSON conversion, context precedence, safe unknown values,
+    exact filters, deletion bounds/progress, cancellation, and shared deadlines.
+  - Security and lifecycle tests exercise real TLS handshakes and transport release.
+
+## CI conventions
+
+- **Give each language an independently runnable workflow.**
+  - Use `.github/workflows/<lang>.yaml`; keep cross-cutting checks in `meta.yaml`
+    and generator checks in `spicedb-gen.yaml`.
+  - Include `paths-filter`, `lint`, `unit`, `integration`, and, where supported,
+    `apicompat`. Work jobs require changed paths; compatibility jobs also require a PR.
+  - Integration targets start and stop their own Docker services. Run at most
+    one integration target per job because targets share the default local port.
+
+- **Keep compatibility decisions visible and scoped to a change.**
+  - Mechanically checked languages belong in `apiCompatLanguages`: Go, Python,
+    TypeScript, C#, Java, and Rust. Ruby relies on tests and review until a
+    reliable signature-diff gate is integrated.
+  - The PR label `breaking-change-acknowledged` explicitly skips compatibility
+    checks. Read its current state from the API with `pull-requests: read`;
+    a local `mage updateAllowBreak` does not grant a CI exception.
+  - The skip also suppresses compatibility-tool failures, so it remains limited
+    to the labelled PR and is announced in job output.
+
+- **Trigger checks for every dependency they actually consume.**
+  - Language filters include their workflow, native and protocol directories,
+    root `Magefile.go`, and root Go module files.
+  - Generator filters include the native packages imported by generated fixtures.
+    Pair filter coverage with tests that detect incompatible changes.
+
+- **Keep workflow infrastructure consistent and proportionate.**
+  - Default to `depot-ubuntu-24.04-arm-4`; use `arm-small` for trivial checks and
+    `arm-8` for cross-language work. Explain deviations in comments.
+  - Pin actions outside `actions/*` and `authzed/*` to commit SHAs with version
+    comments; maintain them through Dependabot.
+  - A new language adds its workflow, dependency update configuration, README
+    quick start, and root language registration, including compatibility where applicable.
+  - Add new cross-language check types consistently to every language workflow,
+    including appropriate path filters.

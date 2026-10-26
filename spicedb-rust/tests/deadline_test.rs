@@ -24,7 +24,7 @@ use spicedb::client::SpiceDBClient;
 use spicedb::consistency;
 use spicedb::error::SpiceDBError;
 use spicedb::types::CheckOptions;
-use spicedb::types::{Filter, Relationship};
+use spicedb::types::Filter;
 use spicedb_proto::authzed::api::v1 as proto;
 
 use support::{spawn_permissions_server, MockPermissionsService};
@@ -71,13 +71,25 @@ async fn unary_call_against_a_stub_that_never_responds_times_out_with_deadline_e
         .await
         .expect("client should connect to mock server");
 
-    let rel = Relationship::new("document", "doc1", "view", "user", "alice", "")
+    let rel = spicedb::Relationship::from_tuple("document:doc1#view@user:alice")
         .expect("valid relationship");
 
     let start = std::time::Instant::now();
     let result = tokio::time::timeout(
         WATCHDOG,
-        client.check_permissions(&consistency::full(), "view", &[rel]),
+        client.check_bulk(spicedb::BulkCheckRequest::new(
+            [rel]
+                .iter()
+                .map(|r| {
+                    spicedb::PermissionCheck::new(
+                        (r).resource().clone(),
+                        "view",
+                        (r).subject().clone(),
+                        (consistency::full()).clone(),
+                    )
+                })
+                .collect(),
+        )),
     )
     .await
     .expect("call did not return within the watchdog -- deadline enforcement regressed");
@@ -111,17 +123,27 @@ async fn per_call_timeout_overrides_a_much_larger_client_default() {
         .await
         .expect("client should connect to mock server");
 
-    let rel = Relationship::new("document", "doc1", "view", "user", "alice", "")
+    let rel = spicedb::Relationship::from_tuple("document:doc1#view@user:alice")
         .expect("valid relationship");
 
     let start = std::time::Instant::now();
     let result = tokio::time::timeout(
         WATCHDOG,
-        client.check_permissions_with_options(
-            &consistency::full(),
-            "view",
-            &[rel],
-            &CheckOptions::new().with_timeout(Duration::from_millis(200)),
+        client.check_bulk(
+            spicedb::BulkCheckRequest::new(
+                [rel]
+                    .iter()
+                    .map(|r| {
+                        spicedb::PermissionCheck::new(
+                            (r).resource().clone(),
+                            "view",
+                            (r).subject().clone(),
+                            (consistency::full()).clone(),
+                        )
+                    })
+                    .collect(),
+            )
+            .with_options((CheckOptions::new().with_timeout(Duration::from_millis(200))).clone()),
         ),
     )
     .await
@@ -178,7 +200,10 @@ async fn streaming_call_does_not_inherit_the_unary_default() {
     let filter = Filter::new("document");
     let start = std::time::Instant::now();
     let items: Vec<_> = tokio::time::timeout(WATCHDOG, async {
-        let stream = client.read_relationships(&consistency::full(), &filter);
+        let stream = client.read_relationships(spicedb::ReadRelationshipsRequest::new(
+            (filter).clone(),
+            (consistency::full()).clone(),
+        ));
         tokio::pin!(stream);
         stream.collect::<Vec<_>>().await
     })
@@ -188,7 +213,12 @@ async fn streaming_call_does_not_inherit_the_unary_default() {
 
     let resource_ids: Vec<String> = items
         .into_iter()
-        .map(|r| r.expect("stream must not fail").resource_id)
+        .map(|r| {
+            r.expect("stream must not fail")
+                .resource()
+                .object_id()
+                .to_owned()
+        })
         .collect();
     assert_eq!(resource_ids, vec!["a".to_string()]);
     assert!(
@@ -219,20 +249,25 @@ async fn import_relationships_does_not_inherit_the_unary_default() {
         .await
         .expect("client should connect to mock server");
 
-    let rel = Relationship::new("document", "doc1", "viewer", "user", "alice", "")
+    let rel = spicedb::Relationship::from_tuple("document:doc1#viewer@user:alice")
         .expect("valid relationship");
 
     let start = std::time::Instant::now();
-    let result = tokio::time::timeout(WATCHDOG, client.import_relationships(vec![rel]))
-        .await
-        .expect(
-            "call did not return within the watchdog -- import_relationships must not inherit \
+    let result = tokio::time::timeout(
+        WATCHDOG,
+        client.import_relationships(spicedb::ImportRelationshipsRequest::new(
+            futures::stream::iter((vec![rel]).into_iter().map(Ok)),
+        )),
+    )
+    .await
+    .expect(
+        "call did not return within the watchdog -- import_relationships must not inherit \
              the unary default",
-        );
+    );
     let elapsed = start.elapsed();
 
     let num_loaded = result.expect("a stalling server must still eventually respond");
-    assert_eq!(num_loaded, 1);
+    assert_eq!(num_loaded.imported_count, 1);
     assert!(
         elapsed >= STALL,
         "import_relationships must outlive the tiny unary default -- it should have waited out \
@@ -255,13 +290,20 @@ async fn import_relationships_with_timeout_still_bounds_the_call() {
         .await
         .expect("client should connect to mock server");
 
-    let rel = Relationship::new("document", "doc1", "viewer", "user", "alice", "")
+    let rel = spicedb::Relationship::from_tuple("document:doc1#viewer@user:alice")
         .expect("valid relationship");
 
     let start = std::time::Instant::now();
     let result = tokio::time::timeout(
         WATCHDOG,
-        client.import_relationships_with_timeout(vec![rel], Duration::from_millis(200)),
+        client.import_relationships(
+            spicedb::ImportRelationshipsRequest::new(futures::stream::iter(
+                (vec![rel]).into_iter().map(Ok),
+            ))
+            .with_options(
+                spicedb::ImportRelationshipsOptions::new().with_timeout(Duration::from_millis(200)),
+            ),
+        ),
     )
     .await
     .expect("call did not return within the watchdog -- deadline enforcement regressed");

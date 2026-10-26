@@ -10,8 +10,11 @@ consistency constructors, the error hierarchy) is shared by both flavors and
 imported from here.
 """
 
+from spicedb.token import ZedToken
+from spicedb.options import Tracing, LookupPermissionshipFilter, LookupDebug, Wildcards, WatchContent, TransportSecurity, RemoteCredentials
 from spicedb.consistency import (
     Consistency,
+    ConsistencyMode,
     at_least,
     at_least_or_full,
     at_least_or_min_latency,
@@ -35,6 +38,7 @@ from spicedb.errors import (
     UnavailableError,
 )
 from spicedb.types import (
+    SchemaTypeReference,
     CheckResult,
     Filter,
     IntermediateNode,
@@ -63,9 +67,27 @@ from spicedb.types import (
     WatchEvent,
 )
 
+from spicedb.types import (
+    PermissionSetCursor,
+    PermissionSetRef,
+    PermissionSetMember,
+    PermissionSetOperation,
+    PermissionSetChange,
+    PermissionSetCheckpoint,
+    PermissionSetsLookupRequired,
+    WatchedPermission,
+    PermissionSetSchemaChange,
+    UnknownPermissionSetEvent,
+    PermissionSetEvent,
+    PermissionSetLookup,
+    PermissionSetFile,
+    PermissionSetDownload,
+)
+
 __all__ = [
     # Consistency
     "Consistency",
+    "ConsistencyMode",
     "full",
     "min_latency",
     "at_least",
@@ -117,3 +139,78 @@ __all__ = [
     "OutOfRangeError",
     "EventLoopBindingError",
 ]
+
+from spicedb.types import (
+    PermissionCheck,
+    Caveat,
+    JSONObject,
+    JSONValue,
+    SubjectFilter,
+    SubjectRelationFilter,
+    SubjectRelationMode,
+    SchemaFilter,
+    WriteResult,
+    DeleteResult,
+    DeleteProgress,
+    SchemaResult,
+    ExpandResult,
+    RelationsResult,
+    SchemaDiffResult,
+    CountResult,
+    RoaringLookupResourcesResult,
+    DebugInformation,
+    CheckDebugTrace,
+    CaveatEvaluation,
+    CaveatResult,
+    PermissionType,
+)
+from spicedb._streams import Stream, AsyncStream
+
+__all__ += [
+    "PermissionCheck",
+    "Caveat",
+    "JSONObject",
+    "JSONValue",
+    "SubjectFilter",
+    "SubjectRelationFilter",
+    "SubjectRelationMode",
+    "SchemaFilter",
+    "WriteResult",
+    "DeleteResult",
+    "DeleteProgress",
+    "SchemaResult",
+    "ExpandResult",
+    "RelationsResult",
+    "SchemaDiffResult",
+    "CountResult",
+    "RoaringLookupResourcesResult",
+    "DebugInformation",
+    "CheckDebugTrace",
+    "CaveatEvaluation",
+    "CaveatResult",
+    "PermissionType",
+    "Stream",
+    "AsyncStream",
+]
+
+
+__all__ += ["SchemaTypeReference"]
+
+__all__ += [
+    "PermissionSetCursor",
+    "PermissionSetRef",
+    "PermissionSetMember",
+    "PermissionSetOperation",
+    "PermissionSetChange",
+    "PermissionSetCheckpoint",
+    "PermissionSetsLookupRequired",
+    "WatchedPermission",
+    "PermissionSetSchemaChange",
+    "UnknownPermissionSetEvent",
+    "PermissionSetEvent",
+    "PermissionSetLookup",
+    "PermissionSetFile",
+    "PermissionSetDownload",
+]
+
+__all__ += ["LookupPermissionshipFilter", "ZedToken", "Tracing", "LookupDebug", "Wildcards", "WatchContent", "TransportSecurity", "RemoteCredentials"]

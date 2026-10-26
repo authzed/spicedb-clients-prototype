@@ -1,10 +1,10 @@
 """Unit tests for spicedb.types — no SpiceDB instance needed."""
+from spicedb import ZedToken
 
+from spicedb import PermissionCheck, Caveat, SubjectFilter, SubjectRelationFilter
 from datetime import datetime, timezone
-
 import pytest
 from authzed.api.v1 import core_pb2, permission_service_pb2
-
 from spicedb.errors import InvalidArgumentError
 from spicedb.types import (
     CheckResult,
@@ -33,57 +33,53 @@ from spicedb.types import (
 class TestRelationship:
     def test_basic_construction(self):
         r = Relationship(
-            resource_type="document",
-            resource_id="readme",
-            resource_relation="viewer",
-            subject_type="user",
-            subject_id="alice",
+            ObjectRef("document", "readme"),
+            "viewer",
+            SubjectRef(ObjectRef("user", "alice"), relation=None),
         )
-        assert r.resource_type == "document"
-        assert r.resource_id == "readme"
-        assert r.resource_relation == "viewer"
-        assert r.subject_type == "user"
-        assert r.subject_id == "alice"
-        assert r.subject_relation == ""
-        assert r.caveat_name is None
-        assert r.caveat_context is None
+        assert r.resource.object_type == "document"
+        assert r.resource.object_id == "readme"
+        assert r.relation == "viewer"
+        assert r.subject.object.object_type == "user"
+        assert r.subject.object.object_id == "alice"
+        assert r.subject.relation is None
+        assert r.caveat is None
         assert r.expiration is None
 
     def test_from_triple(self):
         r = Relationship.from_triple("document:readme", "viewer", "user:alice")
-        assert r.resource_type == "document"
-        assert r.resource_id == "readme"
-        assert r.resource_relation == "viewer"
-        assert r.subject_type == "user"
-        assert r.subject_id == "alice"
-        assert r.subject_relation == ""
+        assert r.resource.object_type == "document"
+        assert r.resource.object_id == "readme"
+        assert r.relation == "viewer"
+        assert r.subject.object.object_type == "user"
+        assert r.subject.object.object_id == "alice"
+        assert r.subject.relation is None
 
     def test_from_triple_with_subject_relation(self):
         r = Relationship.from_triple(
             "document:readme", "viewer", "group:engineers#member"
         )
-        assert r.subject_type == "group"
-        assert r.subject_id == "engineers"
-        assert r.subject_relation == "member"
+        assert r.subject.object.object_type == "group"
+        assert r.subject.object.object_id == "engineers"
+        assert r.subject.relation == "member"
 
     def test_from_tuple(self):
         r = Relationship.from_tuple("document:readme#viewer", "user:alice")
-        assert r.resource_type == "document"
-        assert r.resource_id == "readme"
-        assert r.resource_relation == "viewer"
-        assert r.subject_type == "user"
-        assert r.subject_id == "alice"
+        assert r.resource.object_type == "document"
+        assert r.resource.object_id == "readme"
+        assert r.relation == "viewer"
+        assert r.subject.object.object_type == "user"
+        assert r.subject.object.object_id == "alice"
 
     def test_from_triple_with_caveat(self):
         r = Relationship.from_triple(
             "document:readme",
             "viewer",
             "user:alice",
-            caveat_name="is_weekday",
-            caveat_context={"day": "monday"},
+            caveat=Caveat("is_weekday", {"day": "monday"}),
         )
-        assert r.caveat_name == "is_weekday"
-        assert r.caveat_context == {"day": "monday"}
+        assert r.caveat.name == "is_weekday"
+        assert r.caveat.context == {"day": "monday"}
 
     def test_from_triple_with_expiration(self):
         exp = datetime(2030, 1, 1, tzinfo=timezone.utc)
@@ -94,69 +90,58 @@ class TestRelationship:
 
     def test_check_context_defaults_to_none(self):
         r = Relationship.from_triple("document:readme", "viewer", "user:alice")
-        assert r.check_context is None
+        assert not hasattr(r, "check_context")
 
     def test_from_triple_with_check_context(self):
-        r = Relationship.from_triple(
-            "document:readme",
-            "viewer",
-            "user:alice",
-            check_context={"now": 42},
+        r = _check_context(
+            Relationship.from_triple("document:readme", "viewer", "user:alice"),
+            {"now": 42},
         )
-        assert r.check_context == {"now": 42}
-        # check_context is check-time-only and distinct from caveat_context
-        # (write-time) -- setting one must not set the other.
-        assert r.caveat_context is None
+        assert r.context == {"now": 42}
+        assert not hasattr(r, "caveat")
 
     def test_from_tuple_with_check_context(self):
-        r = Relationship.from_tuple(
-            "document:readme#viewer", "user:alice", check_context={"now": 42}
+        r = _check_context(
+            Relationship.from_tuple("document:readme#viewer", "user:alice"), {"now": 42}
         )
-        assert r.check_context == {"now": 42}
+        assert r.context == {"now": 42}
 
     def test_check_context_has_no_wire_representation(self):
-        """check_context must never be written to the server -- it has no
-        field on core_pb2.Relationship, so _to_proto() must not touch it and
-        a proto round-trip must not resurrect it."""
-        r = Relationship.from_triple(
-            "document:readme",
-            "viewer",
-            "user:alice",
-            check_context={"now": 42},
+        relationship = Relationship.from_triple(
+            "document:readme", "viewer", "user:alice"
         )
-        proto = r._to_proto()
-        r2 = Relationship._from_proto(proto)
-        assert r2.check_context is None
+        check = PermissionCheck(
+            relationship.resource, "view", relationship.subject, {"now": 42}
+        )
+        assert check.context == {"now": 42}
+        assert not hasattr(relationship, "check_context")
+        assert not hasattr(relationship._to_proto(), "context")
 
     def test_frozen(self):
         r = Relationship.from_triple("document:readme", "viewer", "user:alice")
         try:
-            r.resource_type = "other"  # type: ignore[misc]
+            r.resource.object_type = "other"
             assert False, "should have raised"
         except AttributeError:
             pass
 
     def test_roundtrip_proto(self):
         r = Relationship(
-            resource_type="document",
-            resource_id="readme",
-            resource_relation="viewer",
-            subject_type="user",
-            subject_id="alice",
-            subject_relation="",
-            caveat_name="is_weekday",
-            caveat_context={"day": "monday"},
+            ObjectRef("document", "readme"),
+            "viewer",
+            SubjectRef(ObjectRef("user", "alice"), relation=None),
+            caveat=Caveat("is_weekday", {"day": "monday"}),
         )
         proto = r._to_proto()
         r2 = Relationship._from_proto(proto)
-        assert r2.resource_type == r.resource_type
-        assert r2.resource_id == r.resource_id
-        assert r2.resource_relation == r.resource_relation
-        assert r2.subject_type == r.subject_type
-        assert r2.subject_id == r.subject_id
-        assert r2.subject_relation == r.subject_relation
-        assert r2.caveat_name == r.caveat_name
-        assert r2.caveat_context == r.caveat_context
+        assert r2.resource.object_type == r.resource.object_type
+        assert r2.resource.object_id == r.resource.object_id
+        assert r2.relation == r.relation
+        assert r2.subject.object.object_type == r.subject.object.object_type
+        assert r2.subject.object.object_id == r.subject.object.object_id
+        assert r2.subject.relation == r.subject.relation
+        assert r2.caveat.name == r.caveat.name
+        assert r2.caveat.context == r.caveat.context
 
     def test_roundtrip_proto_minimal(self):
         r = Relationship.from_triple("document:readme", "viewer", "user:alice")
@@ -176,8 +161,7 @@ class TestFilter:
             resource_type="document",
             resource_id="readme",
             relation="viewer",
-            subject_type="user",
-            subject_id="alice",
+            subject=SubjectFilter("user", subject_id="alice"),
         )
         proto = f._to_proto()
         assert proto.resource_type == "document"
@@ -189,43 +173,26 @@ class TestFilter:
     def test_filter_with_subject_relation(self):
         f = Filter(
             resource_type="document",
-            subject_type="group",
-            subject_relation="member",
+            subject=SubjectFilter(
+                "group", relation=SubjectRelationFilter.named("member")
+            ),
         )
         proto = f._to_proto()
         assert proto.optional_subject_filter.optional_relation.relation == "member"
 
     def test_subject_id_without_subject_type_raises(self):
-        """Regression test for the offboarding hazard this finding
-        describes: _to_proto used to build a subject filter only inside the
-        `if self.subject_type:` branch, so `Filter("document",
-        subject_id="alice")` silently produced a proto filter with NO
-        subject constraint at all -- delete_relationships called with that
-        filter would delete every relationship on every document, not just
-        alice's. _to_proto must now raise instead of silently widening.
-        """
-        f = Filter(resource_type="document", subject_id="alice")
-
-        with pytest.raises(InvalidArgumentError) as exc_info:
-            f._to_proto()
-
-        assert "subject_id" in str(exc_info.value)
-        assert "subject_type" in str(exc_info.value)
+        with pytest.raises(InvalidArgumentError, match="subject_type"):
+            SubjectFilter("", subject_id="alice")
 
     def test_subject_relation_without_subject_type_raises(self):
-        f = Filter(resource_type="document", subject_relation="member")
-
-        with pytest.raises(InvalidArgumentError) as exc_info:
-            f._to_proto()
-
-        assert "subject_relation" in str(exc_info.value)
-        assert "subject_type" in str(exc_info.value)
+        with pytest.raises(InvalidArgumentError, match="subject_type"):
+            SubjectFilter("", relation=SubjectRelationFilter.named("member"))
 
     def test_subject_type_alone_does_not_raise(self):
         """Companion to the two raise cases above -- proves SubjectType
         alone (no subject_id) still builds a valid subject filter and is
         not accidentally caught by the new guard."""
-        f = Filter(resource_type="document", subject_type="user")
+        f = Filter(resource_type="document", subject=SubjectFilter("user"))
         proto = f._to_proto()
         assert proto.optional_subject_filter.subject_type == "user"
         assert proto.optional_subject_filter.optional_subject_id == ""
@@ -234,7 +201,7 @@ class TestFilter:
         """Companion proving the valid combination (subject_type supplied
         alongside subject_id) still works correctly."""
         f = Filter(
-            resource_type="document", subject_type="user", subject_id="alice"
+            resource_type="document", subject=SubjectFilter("user", subject_id="alice")
         )
         proto = f._to_proto()
         assert proto.optional_subject_filter.subject_type == "user"
@@ -247,21 +214,21 @@ class TestTransaction:
         txn = Transaction()
         txn.create(r)
         assert len(txn._updates) == 1
-        assert txn._updates[0].operation == 1  # OPERATION_CREATE
+        assert txn._updates[0].operation == 1
 
     def test_touch(self):
         r = Relationship.from_triple("document:readme", "viewer", "user:alice")
         txn = Transaction()
         txn.touch(r)
         assert len(txn._updates) == 1
-        assert txn._updates[0].operation == 2  # OPERATION_TOUCH
+        assert txn._updates[0].operation == 2
 
     def test_delete(self):
         r = Relationship.from_triple("document:readme", "viewer", "user:alice")
         txn = Transaction()
         txn.delete(r)
         assert len(txn._updates) == 1
-        assert txn._updates[0].operation == 3  # OPERATION_DELETE
+        assert txn._updates[0].operation == 3
 
     def test_chaining(self):
         r1 = Relationship.from_triple("document:readme", "viewer", "user:alice")
@@ -275,14 +242,14 @@ class TestTransaction:
         txn = Transaction()
         txn.must_not_match(f)
         assert len(txn._preconditions) == 1
-        assert txn._preconditions[0].operation == 1  # OPERATION_MUST_NOT_MATCH
+        assert txn._preconditions[0].operation == 1
 
     def test_must_match(self):
         f = Filter(resource_type="document", resource_id="readme")
         txn = Transaction()
         txn.must_match(f)
         assert len(txn._preconditions) == 1
-        assert txn._preconditions[0].operation == 2  # OPERATION_MUST_MATCH
+        assert txn._preconditions[0].operation == 2
 
 
 class TestUpdate:
@@ -291,16 +258,15 @@ class TestUpdate:
             f"document:{resource_id}", "viewer", "user:alice"
         )
         return core_pb2.RelationshipUpdate(
-            operation=operation,
-            relationship=rel._to_proto(),
+            operation=operation, relationship=rel._to_proto()
         )
 
     def test_from_proto_create(self):
         proto = self._proto_update(core_pb2.RelationshipUpdate.OPERATION_CREATE)
         update = Update._from_proto(proto)
         assert update.operation == UpdateOperation.CREATE
-        assert update.relationship.resource_id == "readme"
-        assert update.relationship.subject_id == "alice"
+        assert update.relationship.resource.object_id == "readme"
+        assert update.relationship.subject.object.object_id == "alice"
 
     def test_from_proto_touch(self):
         proto = self._proto_update(core_pb2.RelationshipUpdate.OPERATION_TOUCH)
@@ -318,9 +284,6 @@ class TestUpdate:
         assert update.operation == UpdateOperation.UNSPECIFIED
 
     def test_from_proto_unknown_op_maps_to_unspecified(self):
-        # An out-of-range int (not a valid enum value on the wire) must not
-        # raise a bare KeyError -- that would kill a live watch() stream with
-        # a non-SpiceDBError.
         proto = self._proto_update(core_pb2.RelationshipUpdate.OPERATION_TOUCH)
         proto.operation = 99
         update = Update._from_proto(proto)
@@ -330,7 +293,7 @@ class TestUpdate:
         proto = self._proto_update(core_pb2.RelationshipUpdate.OPERATION_TOUCH)
         update = Update._from_proto(proto)
         try:
-            update.operation = UpdateOperation.CREATE  # type: ignore[misc]
+            update.operation = UpdateOperation.CREATE
             assert False, "should have raised"
         except AttributeError:
             pass
@@ -364,12 +327,11 @@ class TestPermissionTreeFromProto:
                     core_pb2.SubjectReference(
                         object=core_pb2.ObjectReference(
                             object_type="user", object_id="carol"
-                        ),
-                    ),
+                        )
+                    )
                 ]
             ),
         )
-
         inner_intermediate = core_pb2.PermissionRelationshipTree(
             expanded_object=self._object_ref(),
             expanded_relation="view",
@@ -378,7 +340,6 @@ class TestPermissionTreeFromProto:
                 children=[inner_leaf],
             ),
         )
-
         root_leaf = core_pb2.PermissionRelationshipTree(
             expanded_object=self._object_ref(),
             expanded_relation="view",
@@ -393,12 +354,11 @@ class TestPermissionTreeFromProto:
                     core_pb2.SubjectReference(
                         object=core_pb2.ObjectReference(
                             object_type="user", object_id="bob"
-                        ),
+                        )
                     ),
                 ]
             ),
         )
-
         root = core_pb2.PermissionRelationshipTree(
             expanded_object=self._object_ref(),
             expanded_relation="view",
@@ -407,9 +367,7 @@ class TestPermissionTreeFromProto:
                 children=[root_leaf, inner_intermediate],
             ),
         )
-
         got = _permission_tree_from_proto(root)
-
         want = PermissionTree(
             expanded_object=ObjectRef(object_type="document", object_id="doc1"),
             expanded_relation="view",
@@ -424,14 +382,9 @@ class TestPermissionTreeFromProto:
                         leaf=LeafNode(
                             subjects=[
                                 SubjectRef(
-                                    subject_type="user",
-                                    subject_id="alice",
-                                    optional_relation="member",
+                                    ObjectRef("user", "alice"), relation="member"
                                 ),
-                                SubjectRef(
-                                    subject_type="user",
-                                    subject_id="bob",
-                                ),
+                                SubjectRef(ObjectRef("user", "bob")),
                             ]
                         ),
                     ),
@@ -450,27 +403,23 @@ class TestPermissionTreeFromProto:
                                     expanded_relation="view",
                                     leaf=LeafNode(
                                         subjects=[
-                                            SubjectRef(
-                                                subject_type="user",
-                                                subject_id="carol",
-                                            ),
+                                            SubjectRef(ObjectRef("user", "carol"))
                                         ]
                                     ),
-                                ),
+                                )
                             ],
                         ),
                     ),
                 ],
             ),
         )
-
         assert got == want
 
     def test_unspecified_operation(self):
         root = core_pb2.PermissionRelationshipTree(
             intermediate=core_pb2.AlgebraicSubjectSet(
-                operation=core_pb2.AlgebraicSubjectSet.OPERATION_UNSPECIFIED,
-            ),
+                operation=core_pb2.AlgebraicSubjectSet.OPERATION_UNSPECIFIED
+            )
         )
         got = _permission_tree_from_proto(root)
         assert got.intermediate is not None
@@ -479,8 +428,8 @@ class TestPermissionTreeFromProto:
     def test_exclusion_operation(self):
         root = core_pb2.PermissionRelationshipTree(
             intermediate=core_pb2.AlgebraicSubjectSet(
-                operation=core_pb2.AlgebraicSubjectSet.OPERATION_EXCLUSION,
-            ),
+                operation=core_pb2.AlgebraicSubjectSet.OPERATION_EXCLUSION
+            )
         )
         got = _permission_tree_from_proto(root)
         assert got.intermediate is not None
@@ -488,25 +437,14 @@ class TestPermissionTreeFromProto:
 
     def test_frozen(self):
         root = core_pb2.PermissionRelationshipTree(
-            expanded_object=self._object_ref(),
-            expanded_relation="view",
+            expanded_object=self._object_ref(), expanded_relation="view"
         )
         tree = _permission_tree_from_proto(root)
         try:
-            tree.expanded_relation = "other"  # type: ignore[misc]
+            tree.expanded_relation = "other"
             assert False, "should have raised"
         except AttributeError:
             pass
-
-
-# ── Lookup types / mappers ─────────────────────────────────────────────
-#
-# Mirrors spicedb-go's lookup_types_test.go (client/lookup_types_test.go):
-# permissionshipFromProto, partialCaveatFromProto, resolvedSubjectFromProto.
-# Python protobuf submessages are never `None` on attribute access (you get
-# a default instance), so — unlike the Go mappers, which take nilable
-# pointers — `_partial_caveat_from_proto` takes the *containing* message and
-# checks `HasField` to decide presence.
 
 
 class TestPermissionshipFromProto:
@@ -582,15 +520,6 @@ class TestResolvedSubjectFromProto:
         )
 
 
-# ── Check results / mappers ─────────────────────────────────────────────
-#
-# Mirrors spicedb-go's client/check_types_test.go. Unlike LookupPermissionship,
-# CheckPermissionResponse.Permissionship has a fourth value (NO_PERMISSION),
-# since a single check answers a yes/no/conditional question about one
-# specific pair rather than streaming only the matches. Lookups never yield
-# NO_PERMISSION -- a non-match is simply absent from the stream.
-
-
 class TestCheckPermissionshipFromProto:
     def test_unspecified(self):
         assert (
@@ -646,9 +575,7 @@ class TestCheckResultHasPermission:
         self, permissionship, expected
     ):
         result = CheckResult(
-            permissionship=permissionship,
-            missing_context=[],
-            checked_at="",
+            permissionship=permissionship, missing_context=[], checked_at=ZedToken("")
         )
         assert result.has_permission is expected
 
@@ -656,10 +583,10 @@ class TestCheckResultHasPermission:
         result = CheckResult(
             permissionship=Permissionship.HAS_PERMISSION,
             missing_context=[],
-            checked_at="deadbeef",
+            checked_at=ZedToken("deadbeef"),
         )
         try:
-            result.permissionship = Permissionship.NO_PERMISSION  # type: ignore[misc]
+            result.permissionship = Permissionship.NO_PERMISSION
             assert False, "should have raised"
         except AttributeError:
             pass
@@ -684,9 +611,7 @@ class TestCheckResultBool:
     )
     def test_bool_matches_has_permission(self, permissionship, expected):
         result = CheckResult(
-            permissionship=permissionship,
-            missing_context=[],
-            checked_at="",
+            permissionship=permissionship, missing_context=[], checked_at=ZedToken("")
         )
         assert bool(result) is expected
         assert bool(result) is result.has_permission
@@ -697,8 +622,12 @@ class TestCheckResultBool:
         result = CheckResult(
             permissionship=Permissionship.CONDITIONAL_PERMISSION,
             missing_context=["now"],
-            checked_at="deadbeef",
+            checked_at=ZedToken("deadbeef"),
         )
         assert not result
         if result:
             assert False, "a CONDITIONAL_PERMISSION result must be falsy"
+
+
+def _check_context(value, context):
+    return PermissionCheck(value.resource, value.relation, value.subject, context)

@@ -8,7 +8,7 @@ RSpec.describe 'SchemaReflection' do
   end
 
   it 'reflects the current schema definitions' do
-    result = client.reflect_schema(SpiceDB::Consistency.full)
+    result = client.reflect_schema(consistency: SpiceDB::Consistency.full)
 
     expect(result).to be_a(SpiceDB::ReflectSchemaResult)
     expect(result.definitions).not_to be_empty
@@ -29,11 +29,9 @@ RSpec.describe 'SchemaReflection' do
   end
 
   it 'finds computable permissions for a relation' do
-    permissions, revision = client.computable_permissions(
-      SpiceDB::Consistency.full,
-      'document',
-      'viewer'
-    )
+    result = client.computable_permissions(definition_name: 'document', relation_name: 'viewer', consistency: SpiceDB::Consistency.full)
+    permissions = result.relations
+    revision = result.revision
 
     expect(revision).not_to be_nil
     expect(permissions).not_to be_empty
@@ -46,11 +44,9 @@ RSpec.describe 'SchemaReflection' do
   end
 
   it 'finds dependent relations for a permission' do
-    relations, revision = client.dependent_relations(
-      SpiceDB::Consistency.full,
-      'document',
-      'view'
-    )
+    result = client.dependent_relations(definition_name: 'document', permission_name: 'view', consistency: SpiceDB::Consistency.full)
+    relations = result.relations
+    revision = result.revision
 
     expect(revision).not_to be_nil
     expect(relations).not_to be_empty
@@ -77,7 +73,9 @@ RSpec.describe 'SchemaReflection' do
       }
     SCHEMA
 
-    diffs, revision = client.diff_schema(SpiceDB::Consistency.full, new_schema)
+    result = client.diff_schema(new_schema, consistency: SpiceDB::Consistency.full)
+    diffs = result.diffs
+    revision = result.revision
 
     expect(revision).not_to be_nil
     expect(diffs).not_to be_empty

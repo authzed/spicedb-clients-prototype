@@ -50,18 +50,11 @@ public class UnrepresentableValuesTest
         // A value with no protobuf representation fails loudly, naming the key. Dropping
         // it would leave a caveat evaluating against context the caller believes it sent,
         // and a caller with a large context map should not have to bisect it.
-        await using var client = SpiceDBClient.CreatePlaintext(
-            SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
+        await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
 
-        var rel = Relationship.FromTriple("document", "readme", "viewer", "user", "alice")
-            .WithCaveat("only_on_tuesday", new Dictionary<string, object?>
-            {
-                ["day"] = "tuesday",
-                ["impostor"] = new object(),
-            });
-
-        var txn = new Transaction();
-        var ex = Assert.ThrowsAny<Exception>(() => { txn.Touch(rel); });
+        var ex = Assert.Throws<SpiceDB.Client.InvalidArgumentException>(() =>
+            new Relationship(new ObjectRef("document", "readme"), "viewer", new SubjectRef(new ObjectRef("user", "alice")))
+                .WithCaveat("only_on_tuesday", new Dictionary<string, object?> { ["day"] = "tuesday", ["impostor"] = new object() }));
         Assert.Contains("impostor", ex.Message);
         Assert.DoesNotContain("day", ex.Message);
     }
@@ -73,17 +66,15 @@ public class UnrepresentableValuesTest
         // simply drops it, so the filter silently WIDENS. Applied to
         // DeleteRelationshipsAsync that is the difference between deleting alice's
         // relationships and deleting every relationship on every document.
-        await using var client = SpiceDBClient.CreatePlaintext(
-            SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
+        await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
 
         var ex = await Assert.ThrowsAnyAsync<Exception>(
-            () => client.DeleteRelationshipsAsync(new Filter("document").WithSubjectID("alice")));
+            () => client.DeleteAllRelationshipsNonAtomicAsync(new Filter("document").WithSubjectId("alice"), null, default));
         Assert.Contains("SubjectType", ex.Message);
 
         // The same filter with the missing piece supplied converts fine, which is what
         // makes the check above a real constraint rather than a blanket ban.
-        await client.DeleteRelationshipsAsync(
-            new Filter("document").WithSubjectType("user").WithSubjectID("alice"));
+        await client.DeleteAllRelationshipsNonAtomicAsync(new Filter("document").WithSubjectType("user").WithSubjectId("alice"), null, default);
     }
 
     /// <summary>
@@ -91,6 +82,15 @@ public class UnrepresentableValuesTest
     /// </summary>
     private sealed class FutureService : PermissionsService.PermissionsServiceBase
     {
+        public override async Task<CheckPermissionResponse> CheckPermission(CheckPermissionRequest request, ServerCallContext context)
+        {
+            var bulk = new CheckBulkPermissionsRequest { Consistency = request.Consistency };
+            bulk.Items.Add(new CheckBulkPermissionsRequestItem { Resource = request.Resource, Permission = request.Permission, Subject = request.Subject, Context = request.Context });
+            var response = await CheckBulkPermissions(bulk, context);
+            var item = response.Pairs[0].Item;
+            return new CheckPermissionResponse { Permissionship = item.Permissionship, PartialCaveatInfo = item.PartialCaveatInfo, CheckedAt = response.CheckedAt };
+        }
+
         public override Task<CheckBulkPermissionsResponse> CheckBulkPermissions(
             CheckBulkPermissionsRequest request, ServerCallContext context)
         {
@@ -137,9 +137,7 @@ public class UnrepresentableValuesTest
             using var channel = GrpcChannel.ForAddress(address);
             await using var client = SpiceDBClient.CreateFromChannel(channel, "some-token");
 
-            var result = await client.CheckPermissionAsync(
-                Full(), "view",
-                Relationship.FromTriple("document", "readme", "view", "user", "alice"));
+            var result = await client.CheckAsync(new PermissionCheck(new Relationship(new ObjectRef("document", "readme"), "view", new SubjectRef(new ObjectRef("user", "alice"))).Resource, "view", new Relationship(new ObjectRef("document", "readme"), "view", new SubjectRef(new ObjectRef("user", "alice"))).Subject, Full()), null, default);
 
             Assert.False(
                 result.HasPermission,

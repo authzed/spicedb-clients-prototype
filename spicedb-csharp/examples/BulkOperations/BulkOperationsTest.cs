@@ -25,18 +25,18 @@ public class BulkOperationsTest
     {
         await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
 
-        await client.WriteSchemaAsync(Schema);
+        await client.WriteSchemaAsync(Schema, null, default);
 
         // Bulk write relationships
         var users = new[] { "alice", "bob", "charlie" };
         var txn = new Transaction();
         foreach (var user in users)
         {
-            txn.Touch(Relationship.FromTriple("document", "report", "viewer", "user", user));
+            txn.Touch(new Relationship(new ObjectRef("document", "report"), "viewer", new SubjectRef(new ObjectRef("user", user))));
         }
 
-        var revision = await client.WriteAsync(txn);
-        Assert.NotEmpty(revision);
+        var revision = (await client.WriteAsync(txn, null, default)).Revision;
+        Assert.NotEmpty(revision.Value);
 
         // Bulk check permissions. Inputs over 1,000 relationships are split
         // into one CheckBulkPermissions request per 1,000 automatically and
@@ -44,11 +44,10 @@ public class BulkOperationsTest
         // request carrying more than 10,000. Nothing here changes for a
         // larger array.
         var checks = users
-            .Select(u => Relationship.FromTriple("document", "report", "view", "user", u))
+            .Select(u => new Relationship(new ObjectRef("document", "report"), "view", new SubjectRef(new ObjectRef("user", u))))
             .ToArray();
 
-        var results = await client.CheckPermissionsAsync(
-            AtLeast(revision), "view", default, checks);
+        var results = await client.CheckBulkAsync(checks.Select(r => new PermissionCheck(r.Resource, "view", r.Subject, AtLeast(revision))).ToArray(), null, default);
 
         for (var i = 0; i < users.Length; i++)
         {
@@ -63,23 +62,22 @@ public class BulkOperationsTest
     {
         await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
 
-        await client.WriteSchemaAsync(Schema);
+        await client.WriteSchemaAsync(Schema, null, default);
 
         var users = new[] { "alice", "bob", "charlie" };
         var txn = new Transaction();
         foreach (var user in users)
         {
-            txn.Touch(Relationship.FromTriple("document", "report", "viewer", "user", user));
+            txn.Touch(new Relationship(new ObjectRef("document", "report"), "viewer", new SubjectRef(new ObjectRef("user", user))));
         }
 
-        var revision = await client.WriteAsync(txn);
+        var revision = (await client.WriteAsync(txn, null, default)).Revision;
 
         var checks = users
-            .Select(u => Relationship.FromTriple("document", "report", "view", "user", u))
+            .Select(u => new Relationship(new ObjectRef("document", "report"), "view", new SubjectRef(new ObjectRef("user", u))))
             .ToArray();
 
-        var allAllowed = await client.CheckAllAsync(
-            AtLeast(revision), "view", default, checks);
+        var allAllowed = await client.CheckAllAsync(checks.Select(r => new PermissionCheck(r.Resource, "view", r.Subject, AtLeast(revision))).ToArray(), null, default);
 
         Assert.True(allAllowed, "expected all users to have view permission");
     }
@@ -89,20 +87,19 @@ public class BulkOperationsTest
     {
         await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
 
-        await client.WriteSchemaAsync(Schema);
+        await client.WriteSchemaAsync(Schema, null, default);
 
         var txn = new Transaction();
-        txn.Touch(Relationship.FromTriple("document", "report", "viewer", "user", "alice"));
-        var revision = await client.WriteAsync(txn);
+        txn.Touch(new Relationship(new ObjectRef("document", "report"), "viewer", new SubjectRef(new ObjectRef("user", "alice"))));
+        var revision = (await client.WriteAsync(txn, null, default)).Revision;
 
         var checks = new[]
         {
-            Relationship.FromTriple("document", "report", "view", "user", "alice"),
-            Relationship.FromTriple("document", "report", "view", "user", "nobody"),
+            new Relationship(new ObjectRef("document", "report"), "view", new SubjectRef(new ObjectRef("user", "alice"))),
+            new Relationship(new ObjectRef("document", "report"), "view", new SubjectRef(new ObjectRef("user", "nobody"))),
         };
 
-        var anyAllowed = await client.CheckAnyAsync(
-            AtLeast(revision), "view", default, checks);
+        var anyAllowed = await client.CheckAnyAsync(checks.Select(r => new PermissionCheck(r.Resource, "view", r.Subject, AtLeast(revision))).ToArray(), null, default);
 
         Assert.True(anyAllowed, "expected at least one user to have view permission");
     }
@@ -112,29 +109,29 @@ public class BulkOperationsTest
     {
         await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
 
-        await client.WriteSchemaAsync(Schema);
+        await client.WriteSchemaAsync(Schema, null, default);
 
         // Bulk import relationships from an async stream. Relationships are
         // automatically batched into chunks of 1,000 under the hood.
         var users = new[] { "alice", "bob", "charlie" };
         var imported = users
-            .Select(u => Relationship.FromTriple("document", "imported-doc", "viewer", "user", u))
+            .Select(u => new Relationship(new ObjectRef("document", "imported-doc"), "viewer", new SubjectRef(new ObjectRef("user", u))))
             .ToArray();
 
-        var numLoaded = await client.ImportRelationshipsAsync(ToAsyncEnumerable(imported));
+        var numLoaded = await client.ImportRelationshipsAsync(ToAsyncEnumerable(imported), null, default);
         Assert.Equal((ulong)imported.Length, numLoaded);
 
         // Bulk export relationships back out, filtered to the resource we
         // just imported. Cursors are handled transparently by the client.
-        var filter = new Filter("document").WithResourceID("imported-doc");
+        var filter = new Filter("document").WithResourceId("imported-doc");
 
         var exported = new List<Relationship>();
-        await foreach (var rel in client.ExportRelationshipsAsync(Full(), filter))
+        await foreach (var rel in client.ExportRelationshipsAsync(Full(), filter, null, default))
         {
             exported.Add(rel);
         }
 
-        var exportedSubjectIDs = exported.Select(r => r.SubjectID).ToHashSet();
+        var exportedSubjectIDs = exported.Select(r => r.Subject.Object.ObjectId).ToHashSet();
         foreach (var user in users)
         {
             Assert.Contains(user, exportedSubjectIDs);

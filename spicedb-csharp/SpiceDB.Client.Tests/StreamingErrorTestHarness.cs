@@ -57,7 +57,7 @@ internal sealed class ThrowingClientStreamWriter<T> : IClientStreamWriter<T>
         _error = error;
     }
 
-    public WriteOptions? WriteOptions { get; set; }
+    public Grpc.Core.WriteOptions? WriteOptions { get; set; }
 
     public Task WriteAsync(T message) => Task.FromException(_error);
 

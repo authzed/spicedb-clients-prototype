@@ -4,7 +4,6 @@ import grpc
 from authzed.api.v1 import error_reason_pb2
 from google.protobuf import any_pb2
 from google.rpc import error_details_pb2, status_pb2
-
 from spicedb.errors import (
     AlreadyExistsError,
     CancelledError,
@@ -52,20 +51,19 @@ class TestErrorFromStatusProto:
     generic INTERNAL error (CI-2)."""
 
     def test_maps_invalid_argument(self):
-        status = status_pb2.Status(code=3, message="bad item")  # INVALID_ARGUMENT
+        status = status_pb2.Status(code=3, message="bad item")
         err = error_from_status_proto(status)
         assert isinstance(err, InvalidArgumentError)
         assert not isinstance(err, NotFoundError)
         assert str(err) == "bad item"
 
     def test_maps_not_found(self):
-        status = status_pb2.Status(code=5, message="resource missing")  # NOT_FOUND
+        status = status_pb2.Status(code=5, message="resource missing")
         err = error_from_status_proto(status)
         assert isinstance(err, NotFoundError)
         assert str(err) == "resource missing"
 
     def test_unmapped_code_falls_back_to_base_error(self):
-        # code=2 is UNKNOWN, which has no dedicated SpiceDBError subclass.
         status = status_pb2.Status(code=2, message="something odd")
         err = error_from_status_proto(status)
         assert type(err) is SpiceDBError
@@ -166,7 +164,9 @@ class _RichRpcError(grpc.RpcError):
     """Stands in for a real gRPC error carrying rich status details, which
     arrive in the `grpc-status-details-bin` trailer."""
 
-    def __init__(self, code: grpc.StatusCode, details: str, status: status_pb2.Status | None):
+    def __init__(
+        self, code: grpc.StatusCode, details: str, status: status_pb2.Status | None
+    ):
         self._code = code
         self._details = details
         self._trailers = (
@@ -194,19 +194,17 @@ class TestErrorReasonIsReachable:
 
     def test_reason_and_metadata_survive_to_spicedb_error(self):
         status = _status_with_error_info(
-            8,  # RESOURCE_EXHAUSTED
+            8,
             "max depth exceeded",
             "ERROR_REASON_MAXIMUM_DEPTH_EXCEEDED",
             {"maximum_depth_allowed": "50"},
         )
         err = to_spicedb_error(
-            _RichRpcError(grpc.StatusCode.RESOURCE_EXHAUSTED, "max depth exceeded", status)
+            _RichRpcError(
+                grpc.StatusCode.RESOURCE_EXHAUSTED, "max depth exceeded", status
+            )
         )
-
         assert isinstance(err, ResourceExhaustedError)
-        # The exposed reason is exactly the authzed.api.v1.ErrorReason enum
-        # name, so a caller can compare against the generated enum without this
-        # client carrying a hand-maintained copy of it.
         assert err.reason == "ERROR_REASON_MAXIMUM_DEPTH_EXCEEDED"
         assert err.reason == error_reason_pb2.ErrorReason.Name(
             error_reason_pb2.ERROR_REASON_MAXIMUM_DEPTH_EXCEEDED
@@ -216,16 +214,12 @@ class TestErrorReasonIsReachable:
 
     def test_precondition_metadata_names_the_failing_precondition(self):
         status = _status_with_error_info(
-            9,  # FAILED_PRECONDITION
+            9,
             "precondition failed",
             "ERROR_REASON_WRITE_OR_DELETE_PRECONDITION_FAILURE",
-            {
-                "precondition_resource_id": "firstdoc",
-                "precondition_relation": "viewer",
-            },
+            {"precondition_resource_id": "firstdoc", "precondition_relation": "viewer"},
         )
         err = error_from_status_proto(status)
-
         assert isinstance(err, FailedPreconditionError)
         assert err.reason == "ERROR_REASON_WRITE_OR_DELETE_PRECONDITION_FAILURE"
         assert err.reason_metadata["precondition_resource_id"] == "firstdoc"
@@ -236,13 +230,9 @@ class TestErrorReasonIsReachable:
         server-supplied: root DESIGN.md's "A conversion that cannot preserve
         meaning must fail" requires it to degrade safely, not to raise."""
         status = _status_with_error_info(
-            3,  # INVALID_ARGUMENT
-            "from the future",
-            "ERROR_REASON_INVENTED_BY_A_NEWER_SERVER",
-            {"k": "v"},
+            3, "from the future", "ERROR_REASON_INVENTED_BY_A_NEWER_SERVER", {"k": "v"}
         )
         err = error_from_status_proto(status)
-
         assert isinstance(err, InvalidArgumentError)
         assert err.reason == "ERROR_REASON_INVENTED_BY_A_NEWER_SERVER"
         assert err.reason_metadata == {"k": "v"}
@@ -291,7 +281,9 @@ class TestNewlyMappedCodes:
         """A wrong, expired, or rotated token must be distinguishable from an
         internal server fault, so a caller can refresh credentials on one and
         page someone on the other."""
-        err = to_spicedb_error(_SyncRpcError(grpc.StatusCode.UNAUTHENTICATED, "bad token"))
+        err = to_spicedb_error(
+            _SyncRpcError(grpc.StatusCode.UNAUTHENTICATED, "bad token")
+        )
         assert isinstance(err, UnauthenticatedError)
         assert type(err) is not SpiceDBError
         assert not isinstance(err, PermissionDeniedError)

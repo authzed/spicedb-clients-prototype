@@ -92,7 +92,7 @@ public class ChannelOwnershipTests
         try
         {
             var client = SpiceDBClient.CreateFromChannel(channel, "test-token");
-            var before = await client.ReadSchemaAsync();
+            var before = await client.ReadSchemaAsync(null, default);
             before.Schema.Should().Be(SchemaText);
 
             await client.DisposeAsync();
@@ -128,11 +128,11 @@ public class ChannelOwnershipTests
         {
             var authority = new Uri(address).Authority;
             var client = SpiceDBClient.CreatePlaintext(authority, "test-token");
-            (await client.ReadSchemaAsync()).Schema.Should().Be(SchemaText);
+            (await client.ReadSchemaAsync(null, default)).Schema.Should().Be(SchemaText);
 
             await client.DisposeAsync();
 
-            var act = async () => await client.ReadSchemaAsync();
+            var act = async () => await client.ReadSchemaAsync(null, default);
             await act.Should().ThrowAsync<ObjectDisposedException>();
         }
         finally

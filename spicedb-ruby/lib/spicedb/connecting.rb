@@ -27,7 +27,7 @@ module SpiceDB
     # By itself, this only works against a loopback +endpoint+ (localhost,
     # 127.0.0.0/8, ::1, or a unix socket target) -- the local-development case that
     # is the entire reason a plaintext connection exists. For any other endpoint,
-    # pass +allow_insecure_remote_credentials: true+, on purpose, if you genuinely
+    # pass +remote_credentials: RemoteCredentials::ALLOW_PLAINTEXT+, on purpose, if you genuinely
     # mean to send a bearer token in cleartext to a remote host. See root
     # DESIGN.md, "RULE: Credentials over insecure transport require an explicit
     # opt-in".
@@ -37,17 +37,17 @@ module SpiceDB
     # @param default_timeout [Numeric] seconds applied to every unary call that
     #   does not pass its own `timeout:` (see {Client::DEFAULT_TIMEOUT_SECONDS}). NOT
     #   applied to streaming calls.
-    # @param allow_insecure_remote_credentials [Boolean] explicit opt-in to send
+    # @param remote_credentials [RemoteCredentials] explicit opt-in to send
     #   credentials in cleartext to a non-loopback endpoint.
     # @yield [client] optionally yields the client for block-scoped usage
     # @return [Client]
     # @raise [ArgumentError] if endpoint is not loopback and
-    #   allow_insecure_remote_credentials is false.
+    #   remote_credentials is LOOPBACK_ONLY.
     def new_plaintext(endpoint, token, default_timeout: Client::DEFAULT_TIMEOUT_SECONDS,
-                      allow_insecure_remote_credentials: false, &)
+                      remote_credentials: RemoteCredentials::LOOPBACK_ONLY, max_retries: 3, &)
       yield_or_return(
-        new(endpoint: endpoint, token: token, insecure: true, default_timeout: default_timeout,
-            allow_insecure_remote_credentials: allow_insecure_remote_credentials),
+        new(endpoint: endpoint, token: token, transport: TransportSecurity::PLAINTEXT, default_timeout: default_timeout,
+            remote_credentials: remote_credentials, max_retries: max_retries),
         &
       )
     end
@@ -71,9 +71,9 @@ module SpiceDB
     #   applied to streaming calls.
     # @yield [client] optionally yields the client for block-scoped usage
     # @return [Client]
-    def new_system_tls(endpoint, token, default_timeout: Client::DEFAULT_TIMEOUT_SECONDS, &)
+    def new_system_tls(endpoint, token, default_timeout: Client::DEFAULT_TIMEOUT_SECONDS, max_retries: 3, &)
       yield_or_return(
-        new(endpoint: endpoint, token: token, insecure: false, default_timeout: default_timeout),
+        new(endpoint: endpoint, token: token, transport: TransportSecurity::TLS, default_timeout: default_timeout, max_retries: max_retries),
         &
       )
     end
@@ -112,9 +112,9 @@ module SpiceDB
     #   be a quiet way to believe a private CA was configured when it was not. Also
     #   if exactly one of +client_cert+/+client_key+ is supplied.
     def new_custom_tls(endpoint, token, ca_cert: nil, client_cert: nil, client_key: nil,
-                       default_timeout: Client::DEFAULT_TIMEOUT_SECONDS, &)
+                       default_timeout: Client::DEFAULT_TIMEOUT_SECONDS, max_retries: 3, &)
       if ca_cert.nil? && client_cert.nil? && client_key.nil?
-        raise ArgumentError,
+        raise InvalidArgumentError,
               'spicedb: new_custom_tls needs at least one of ca_cert:, client_cert: or ' \
               'client_key: -- with none of them it would silently be new_system_tls, which ' \
               'uses the roots compiled into gRPC. Call new_system_tls directly if that is ' \
@@ -122,8 +122,8 @@ module SpiceDB
       end
 
       yield_or_return(
-        new(endpoint: endpoint, token: token, insecure: false, default_timeout: default_timeout,
-            ca_cert: ca_cert, client_cert: client_cert, client_key: client_key),
+        new(endpoint: endpoint, token: token, transport: TransportSecurity::TLS, default_timeout: default_timeout,
+            ca_cert: ca_cert, client_cert: client_cert, client_key: client_key, max_retries: max_retries),
         &
       )
     end

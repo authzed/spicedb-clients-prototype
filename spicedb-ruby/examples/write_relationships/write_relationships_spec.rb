@@ -3,29 +3,35 @@
 require_relative '../spec_helper'
 
 RSpec.describe 'WriteRelationships' do
-  it 'writes relationships with touch and returns a revision' do
+  it 'writes relationships with touch and returns a native result' do
     client.write_schema(TEST_SCHEMA)
 
     txn = SpiceDB::Transaction.new
-    txn.touch(SpiceDB::Relationship.from_triple('document', 'firstdoc', 'viewer', 'user', 'alice'))
-    txn.touch(SpiceDB::Relationship.from_triple('document', 'firstdoc', 'editor', 'user', 'bob'))
+    txn.touch(SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'firstdoc'), relation: 'viewer',
+                                        subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user',
+                                                                                                        object_id: 'alice'), relation: nil)))
+    txn.touch(SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'firstdoc'), relation: 'editor',
+                                        subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: 'bob'), relation: nil)))
 
-    revision = client.write(txn)
+    result = client.write(txn)
 
-    expect(revision).not_to be_nil
-    expect(revision).not_to be_empty
+    expect(result).to be_a(SpiceDB::WriteResult)
+    expect(result.revision).to be_a(SpiceDB::ZedToken)
+    expect(result.revision.to_s).not_to be_empty
   end
 
   it 'writes relationships with create operation' do
     client.write_schema(TEST_SCHEMA)
 
     txn = SpiceDB::Transaction.new
-    txn.create(SpiceDB::Relationship.from_triple('document', 'newdoc', 'owner', 'user', 'charlie'))
+    txn.create(SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'newdoc'), relation: 'owner',
+                                         subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user',
+                                                                                                         object_id: 'charlie'), relation: nil)))
 
-    revision = client.write(txn)
+    revision = client.write(txn).revision
 
     expect(revision).not_to be_nil
-    expect(revision).not_to be_empty
+    expect(revision.to_s).not_to be_empty
   end
 
   it 'supports preconditions with must_not_match' do
@@ -35,17 +41,18 @@ RSpec.describe 'WriteRelationships' do
     precondition_filter = SpiceDB::Filter.new(resource_type: 'document')
                                          .with_resource_id('firstdoc')
                                          .with_relation('owner')
-                                         .with_subject_type('user')
-                                         .with_subject_id('mallory')
+                                         .with_subject(SpiceDB::SubjectFilter.new(subject_type: 'user', subject_id: 'mallory'))
 
     txn = SpiceDB::Transaction.new
-    txn.touch(SpiceDB::Relationship.from_triple('document', 'firstdoc', 'viewer', 'user', 'alice'))
+    txn.touch(SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'firstdoc'), relation: 'viewer',
+                                        subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user',
+                                                                                                        object_id: 'alice'), relation: nil)))
     txn.must_not_match(precondition_filter)
 
-    revision = client.write(txn)
+    revision = client.write(txn).revision
 
     expect(revision).not_to be_nil
-    expect(revision).not_to be_empty
+    expect(revision.to_s).not_to be_empty
   end
 
   it 'surfaces the reason and its metadata when a precondition fails' do
@@ -59,11 +66,12 @@ RSpec.describe 'WriteRelationships' do
     unsatisfiable = SpiceDB::Filter.new(resource_type: 'document')
                                    .with_resource_id('firstdoc')
                                    .with_relation('owner')
-                                   .with_subject_type('user')
-                                   .with_subject_id('nobody')
+                                   .with_subject(SpiceDB::SubjectFilter.new(subject_type: 'user', subject_id: 'nobody'))
 
     txn = SpiceDB::Transaction.new
-    txn.touch(SpiceDB::Relationship.from_triple('document', 'seconddoc', 'viewer', 'user', 'alice'))
+    txn.touch(SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'seconddoc'), relation: 'viewer',
+                                        subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user',
+                                                                                                        object_id: 'alice'), relation: nil)))
     txn.must_match(unsatisfiable)
 
     error = nil
@@ -84,16 +92,20 @@ RSpec.describe 'WriteRelationships' do
 
     # First, create a relationship
     txn = SpiceDB::Transaction.new
-    txn.touch(SpiceDB::Relationship.from_triple('document', 'firstdoc', 'viewer', 'user', 'alice'))
+    txn.touch(SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'firstdoc'), relation: 'viewer',
+                                        subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user',
+                                                                                                        object_id: 'alice'), relation: nil)))
     client.write(txn)
 
     # Then, delete it
     txn = SpiceDB::Transaction.new
-    txn.delete(SpiceDB::Relationship.from_triple('document', 'firstdoc', 'viewer', 'user', 'alice'))
+    txn.delete(SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'firstdoc'), relation: 'viewer',
+                                         subject: SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user',
+                                                                                                         object_id: 'alice'), relation: nil)))
 
-    revision = client.write(txn)
+    revision = client.write(txn).revision
 
     expect(revision).not_to be_nil
-    expect(revision).not_to be_empty
+    expect(revision.to_s).not_to be_empty
   end
 end

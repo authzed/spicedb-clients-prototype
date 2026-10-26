@@ -7,22 +7,45 @@ import (
 	"github.com/authzed/spicedb-clients/spicedb-go/consistency"
 )
 
-// ReadSchema returns the current SpiceDB schema.
-func (c *Client) ReadSchema(ctx context.Context) (schema string, revision string, err error) {
-	resp, err := c.ssc.ReadSchema(ctx, &v1.ReadSchemaRequest{})
-	if err != nil {
-		return "", "", mapGRPCError("read schema", err)
-	}
-	return resp.GetSchemaText(), resp.GetReadAt().GetToken(), nil
+type ReadSchemaRequest struct{}
+type ReadSchemaResult struct {
+	Schema   string
+	Revision consistency.ZedToken
 }
+type WriteSchemaRequest struct{ Schema string }
+type WriteSchemaResult struct{ Revision consistency.ZedToken }
 
-// WriteSchema writes a new schema to SpiceDB, returning the revision.
-func (c *Client) WriteSchema(ctx context.Context, schema string) (revision string, err error) {
-	resp, err := c.ssc.WriteSchema(ctx, &v1.WriteSchemaRequest{Schema: schema})
-	if err != nil {
-		return "", mapGRPCError("write schema", err)
+func (c *Client) ReadSchema(ctx context.Context, request ReadSchemaRequest, opts ...ReadSchemaOption) (ReadSchemaResult, error) {
+	o := operationOptions{}
+	for _, opt := range opts {
+		opt(&o)
 	}
-	return resp.GetWrittenAt().GetToken(), nil
+	ctx, cancel, e := c.operation(ctx, o, false)
+	if e != nil {
+		return ReadSchemaResult{}, e
+	}
+	defer cancel()
+	resp, e := retry(ctx, "read schema", func() (*v1.ReadSchemaResponse, error) { return c.ssc.ReadSchema(ctx, &v1.ReadSchemaRequest{}) })
+	if e != nil {
+		return ReadSchemaResult{}, e
+	}
+	return ReadSchemaResult{resp.GetSchemaText(), consistency.NewZedToken(resp.GetReadAt().GetToken())}, nil
+}
+func (c *Client) WriteSchema(ctx context.Context, request WriteSchemaRequest, opts ...WriteSchemaOption) (WriteSchemaResult, error) {
+	o := operationOptions{}
+	for _, opt := range opts {
+		opt(&o)
+	}
+	ctx, cancel, e := c.operation(ctx, o, false)
+	if e != nil {
+		return WriteSchemaResult{}, e
+	}
+	defer cancel()
+	resp, e := c.ssc.WriteSchema(ctx, &v1.WriteSchemaRequest{Schema: request.Schema})
+	if e != nil {
+		return WriteSchemaResult{}, mapGRPCError("write schema", e)
+	}
+	return WriteSchemaResult{consistency.NewZedToken(resp.GetWrittenAt().GetToken())}, nil
 }
 
 // SchemaDefinition represents a definition in a SpiceDB schema, including its
@@ -36,6 +59,7 @@ type SchemaDefinition struct {
 
 // SchemaRelation represents a relation within a schema definition.
 type SchemaRelation struct {
+	SubjectTypes         []SchemaTypeReference
 	Name                 string
 	Comment              string
 	ParentDefinitionName string
@@ -67,58 +91,42 @@ type SchemaCaveatParameter struct {
 type ReflectSchemaResult struct {
 	Definitions []SchemaDefinition
 	Caveats     []SchemaCaveat
-	Revision    string
+	Revision    consistency.ZedToken
 }
 
 // ReflectSchema returns the definitions and caveats in the current schema.
-func (c *Client) ReflectSchema(ctx context.Context, cs consistency.Strategy) (*ReflectSchemaResult, error) {
-	resp, err := c.ssc.ReflectSchema(ctx, &v1.ReflectSchemaRequest{
-		Consistency: cs.V1Consistency,
+type ReflectSchemaRequest struct{ Consistency consistency.Strategy }
+
+func (c *Client) ReflectSchema(ctx context.Context, request ReflectSchemaRequest, opts ...ReflectSchemaOption) (ReflectSchemaResult, error) {
+	o := operationOptions{}
+	for _, opt := range opts {
+		opt(&o)
+	}
+	ctx, cancel, e := c.operation(ctx, o, false)
+	if e != nil {
+		return ReflectSchemaResult{}, e
+	}
+	defer cancel()
+	cs, e := strategy(request.Consistency)
+	if e != nil {
+		return ReflectSchemaResult{}, e
+	}
+	resp, err := retry(ctx, "reflect schema", func() (*v1.ReflectSchemaResponse, error) {
+		return c.ssc.ReflectSchema(ctx, &v1.ReflectSchemaRequest{Consistency: cs, OptionalFilters: schemaFilters(o.schemaFilters)})
 	})
 	if err != nil {
-		return nil, mapGRPCError("reflect schema", err)
+		return ReflectSchemaResult{}, err
 	}
 
-	result := &ReflectSchemaResult{
-		Revision: resp.GetReadAt().GetToken(),
+	result := ReflectSchemaResult{
+		Revision: consistency.NewZedToken(resp.GetReadAt().GetToken()),
 	}
 
 	for _, def := range resp.GetDefinitions() {
-		sd := SchemaDefinition{
-			Name:    def.GetName(),
-			Comment: def.GetComment(),
-		}
-		for _, rel := range def.GetRelations() {
-			sd.Relations = append(sd.Relations, SchemaRelation{
-				Name:                 rel.GetName(),
-				Comment:              rel.GetComment(),
-				ParentDefinitionName: rel.GetParentDefinitionName(),
-			})
-		}
-		for _, perm := range def.GetPermissions() {
-			sd.Permissions = append(sd.Permissions, SchemaPermission{
-				Name:                 perm.GetName(),
-				Comment:              perm.GetComment(),
-				ParentDefinitionName: perm.GetParentDefinitionName(),
-			})
-		}
-		result.Definitions = append(result.Definitions, sd)
+		result.Definitions = append(result.Definitions, nativeDefinition(def))
 	}
-
-	for _, cav := range resp.GetCaveats() {
-		sc := SchemaCaveat{
-			Name:       cav.GetName(),
-			Comment:    cav.GetComment(),
-			Expression: cav.GetExpression(),
-		}
-		for _, param := range cav.GetParameters() {
-			sc.Parameters = append(sc.Parameters, SchemaCaveatParameter{
-				Name:             param.GetName(),
-				Type:             param.GetType(),
-				ParentCaveatName: param.GetParentCaveatName(),
-			})
-		}
-		result.Caveats = append(result.Caveats, sc)
+	for _, caveat := range resp.GetCaveats() {
+		result.Caveats = append(result.Caveats, nativeCaveat(caveat))
 	}
 
 	return result, nil
@@ -131,54 +139,91 @@ type RelationReference struct {
 	IsPermission   bool
 }
 
-// ComputablePermissions returns the permissions that are computable for the
-// given relation on a definition.
-func (c *Client) ComputablePermissions(ctx context.Context, cs consistency.Strategy, definitionName, relationName string) ([]RelationReference, string, error) {
-	resp, err := c.ssc.ComputablePermissions(ctx, &v1.ComputablePermissionsRequest{
-		Consistency:    cs.V1Consistency,
-		DefinitionName: definitionName,
-		RelationName:   relationName,
-	})
-	if err != nil {
-		return nil, "", mapGRPCError("computable permissions", err)
-	}
-
-	refs := make([]RelationReference, len(resp.GetPermissions()))
-	for i, perm := range resp.GetPermissions() {
-		refs[i] = RelationReference{
-			DefinitionName: perm.GetDefinitionName(),
-			RelationName:   perm.GetRelationName(),
-			IsPermission:   perm.GetIsPermission(),
-		}
-	}
-	return refs, resp.GetReadAt().GetToken(), nil
+type ComputablePermissionsRequest struct {
+	DefinitionName, RelationName string
+	Consistency                  consistency.Strategy
+}
+type ComputablePermissionsResult struct {
+	Permissions []RelationReference
+	Revision    consistency.ZedToken
+}
+type DependentRelationsRequest struct {
+	DefinitionName, PermissionName string
+	Consistency                    consistency.Strategy
+}
+type DependentRelationsResult struct {
+	Relations []RelationReference
+	Revision  consistency.ZedToken
 }
 
-// DependentRelations returns the relations that the given permission depends on.
-func (c *Client) DependentRelations(ctx context.Context, cs consistency.Strategy, definitionName, permissionName string) ([]RelationReference, string, error) {
-	resp, err := c.ssc.DependentRelations(ctx, &v1.DependentRelationsRequest{
-		Consistency:    cs.V1Consistency,
-		DefinitionName: definitionName,
-		PermissionName: permissionName,
+func nativeRelationReferences(ps []*v1.ReflectionRelationReference) []RelationReference {
+	out := make([]RelationReference, len(ps))
+	for i, p := range ps {
+		out[i] = RelationReference{p.GetDefinitionName(), p.GetRelationName(), p.GetIsPermission()}
+	}
+	return out
+}
+func (c *Client) ComputablePermissions(ctx context.Context, request ComputablePermissionsRequest, opts ...ComputablePermissionsOption) (ComputablePermissionsResult, error) {
+	o := operationOptions{}
+	for _, opt := range opts {
+		opt(&o)
+	}
+	ctx, cancel, e := c.operation(ctx, o, false)
+	if e != nil {
+		return ComputablePermissionsResult{}, e
+	}
+	defer cancel()
+	cs, e := strategy(request.Consistency)
+	if e != nil {
+		return ComputablePermissionsResult{}, e
+	}
+	if request.DefinitionName == "" || request.RelationName == "" {
+		return ComputablePermissionsResult{}, invalid("definition and relation required")
+	}
+	resp, e := retry(ctx, "computable permissions", func() (*v1.ComputablePermissionsResponse, error) {
+		return c.ssc.ComputablePermissions(ctx, &v1.ComputablePermissionsRequest{Consistency: cs, DefinitionName: request.DefinitionName, RelationName: request.RelationName, OptionalDefinitionNameFilter: o.definitionFilter})
 	})
-	if err != nil {
-		return nil, "", mapGRPCError("dependent relations", err)
+	if e != nil {
+		return ComputablePermissionsResult{}, e
 	}
-
-	refs := make([]RelationReference, len(resp.GetRelations()))
-	for i, rel := range resp.GetRelations() {
-		refs[i] = RelationReference{
-			DefinitionName: rel.GetDefinitionName(),
-			RelationName:   rel.GetRelationName(),
-			IsPermission:   rel.GetIsPermission(),
-		}
+	return ComputablePermissionsResult{nativeRelationReferences(resp.GetPermissions()), consistency.NewZedToken(resp.GetReadAt().GetToken())}, nil
+}
+func (c *Client) DependentRelations(ctx context.Context, request DependentRelationsRequest, opts ...DependentRelationsOption) (DependentRelationsResult, error) {
+	o := operationOptions{}
+	for _, opt := range opts {
+		opt(&o)
 	}
-	return refs, resp.GetReadAt().GetToken(), nil
+	ctx, cancel, e := c.operation(ctx, o, false)
+	if e != nil {
+		return DependentRelationsResult{}, e
+	}
+	defer cancel()
+	cs, e := strategy(request.Consistency)
+	if e != nil {
+		return DependentRelationsResult{}, e
+	}
+	if request.DefinitionName == "" || request.PermissionName == "" {
+		return DependentRelationsResult{}, invalid("definition and permission required")
+	}
+	resp, e := retry(ctx, "dependent relations", func() (*v1.DependentRelationsResponse, error) {
+		return c.ssc.DependentRelations(ctx, &v1.DependentRelationsRequest{Consistency: cs, DefinitionName: request.DefinitionName, PermissionName: request.PermissionName})
+	})
+	if e != nil {
+		return DependentRelationsResult{}, e
+	}
+	return DependentRelationsResult{nativeRelationReferences(resp.GetRelations()), consistency.NewZedToken(resp.GetReadAt().GetToken())}, nil
 }
 
 // SchemaDiff represents a single difference between two schemas. The Kind
 // field describes what changed, and the associated fields contain the details.
 type SchemaDiff struct {
+	Definition         *SchemaDefinition
+	Relation           *SchemaRelation
+	Permission         *SchemaPermission
+	Caveat             *SchemaCaveat
+	Parameter          *SchemaCaveatParameter
+	ChangedSubjectType *SchemaTypeReference
+	PreviousType       string
 	// Kind is a human-readable description of the diff type (e.g.
 	// "definition_added", "relation_removed", "permission_expr_changed").
 	Kind string
@@ -192,66 +237,222 @@ type SchemaDiff struct {
 	CaveatName string
 }
 
-// DiffSchema compares the current schema against the given comparison schema,
-// returning the differences.
-func (c *Client) DiffSchema(ctx context.Context, cs consistency.Strategy, comparisonSchema string) ([]SchemaDiff, string, error) {
-	resp, err := c.ssc.DiffSchema(ctx, &v1.DiffSchemaRequest{
-		Consistency:      cs.V1Consistency,
-		ComparisonSchema: comparisonSchema,
-	})
-	if err != nil {
-		return nil, "", mapGRPCError("diff schema", err)
-	}
-
-	var diffs []SchemaDiff
-	for _, d := range resp.GetDiffs() {
-		sd := schemaDiffFromProto(d)
-		diffs = append(diffs, sd)
-	}
-	return diffs, resp.GetReadAt().GetToken(), nil
+type DiffSchemaRequest struct {
+	ComparisonSchema string
+	Consistency      consistency.Strategy
+}
+type DiffSchemaResult struct {
+	Diffs    []SchemaDiff
+	Revision consistency.ZedToken
 }
 
+func (c *Client) DiffSchema(ctx context.Context, request DiffSchemaRequest, opts ...DiffSchemaOption) (DiffSchemaResult, error) {
+	o := operationOptions{}
+	for _, opt := range opts {
+		opt(&o)
+	}
+	ctx, cancel, e := c.operation(ctx, o, false)
+	if e != nil {
+		return DiffSchemaResult{}, e
+	}
+	defer cancel()
+	cs, e := strategy(request.Consistency)
+	if e != nil {
+		return DiffSchemaResult{}, e
+	}
+	resp, e := retry(ctx, "diff schema", func() (*v1.DiffSchemaResponse, error) {
+		return c.ssc.DiffSchema(ctx, &v1.DiffSchemaRequest{Consistency: cs, ComparisonSchema: request.ComparisonSchema})
+	})
+	if e != nil {
+		return DiffSchemaResult{}, e
+	}
+	out := DiffSchemaResult{Revision: consistency.NewZedToken(resp.GetReadAt().GetToken())}
+	for _, d := range resp.GetDiffs() {
+		out.Diffs = append(out.Diffs, schemaDiffFromProto(d))
+	}
+	return out, nil
+}
+
+// SchemaTypeReference preserves the reflection type-reference variant and its presence.
+type SchemaTypeReferenceKind uint8
+
+const (
+	SchemaTypeUnknown SchemaTypeReferenceKind = iota
+	SchemaTypeTerminal
+	SchemaTypeRelation
+	SchemaTypeWildcard
+)
+
+type SchemaTypeReference struct {
+	DefinitionName, CaveatName string
+	Kind                       SchemaTypeReferenceKind
+	Relation                   string
+	Enabled                    bool
+}
+
+func nativeTypeReference(p *v1.ReflectionTypeReference) SchemaTypeReference {
+	r := SchemaTypeReference{DefinitionName: p.GetSubjectDefinitionName(), CaveatName: p.GetOptionalCaveatName()}
+	switch v := p.GetTyperef().(type) {
+	case *v1.ReflectionTypeReference_IsTerminalSubject:
+		r.Kind = SchemaTypeTerminal
+		r.Enabled = v.IsTerminalSubject
+	case *v1.ReflectionTypeReference_OptionalRelationName:
+		r.Kind = SchemaTypeRelation
+		r.Relation = v.OptionalRelationName
+	case *v1.ReflectionTypeReference_IsPublicWildcard:
+		r.Kind = SchemaTypeWildcard
+		r.Enabled = v.IsPublicWildcard
+	}
+	return r
+}
+func nativeRelation(p *v1.ReflectionRelation) SchemaRelation {
+	r := SchemaRelation{Name: p.GetName(), Comment: p.GetComment(), ParentDefinitionName: p.GetParentDefinitionName()}
+	for _, subject := range p.GetSubjectTypes() {
+		r.SubjectTypes = append(r.SubjectTypes, nativeTypeReference(subject))
+	}
+	return r
+}
+func nativePermission(p *v1.ReflectionPermission) SchemaPermission {
+	return SchemaPermission{Name: p.GetName(), Comment: p.GetComment(), ParentDefinitionName: p.GetParentDefinitionName()}
+}
+func nativeParameter(p *v1.ReflectionCaveatParameter) SchemaCaveatParameter {
+	return SchemaCaveatParameter{Name: p.GetName(), Type: p.GetType(), ParentCaveatName: p.GetParentCaveatName()}
+}
+func nativeDefinition(p *v1.ReflectionDefinition) SchemaDefinition {
+	r := SchemaDefinition{Name: p.GetName(), Comment: p.GetComment()}
+	for _, relation := range p.GetRelations() {
+		r.Relations = append(r.Relations, nativeRelation(relation))
+	}
+	for _, permission := range p.GetPermissions() {
+		r.Permissions = append(r.Permissions, nativePermission(permission))
+	}
+	return r
+}
+func nativeCaveat(p *v1.ReflectionCaveat) SchemaCaveat {
+	r := SchemaCaveat{Name: p.GetName(), Comment: p.GetComment(), Expression: p.GetExpression()}
+	for _, parameter := range p.GetParameters() {
+		r.Parameters = append(r.Parameters, nativeParameter(parameter))
+	}
+	return r
+}
 func schemaDiffFromProto(d *v1.ReflectionSchemaDiff) SchemaDiff {
+	r := SchemaDiff{Kind: "unknown"}
 	switch v := d.GetDiff().(type) {
 	case *v1.ReflectionSchemaDiff_DefinitionAdded:
-		return SchemaDiff{Kind: "definition_added", DefinitionName: v.DefinitionAdded.GetName()}
+		r.Kind = "definition_added"
+		value := nativeDefinition(v.DefinitionAdded)
+		r.Definition = &value
 	case *v1.ReflectionSchemaDiff_DefinitionRemoved:
-		return SchemaDiff{Kind: "definition_removed", DefinitionName: v.DefinitionRemoved.GetName()}
+		r.Kind = "definition_removed"
+		value := nativeDefinition(v.DefinitionRemoved)
+		r.Definition = &value
 	case *v1.ReflectionSchemaDiff_DefinitionDocCommentChanged:
-		return SchemaDiff{Kind: "definition_doc_comment_changed", DefinitionName: v.DefinitionDocCommentChanged.GetName()}
+		r.Kind = "definition_doc_comment_changed"
+		value := nativeDefinition(v.DefinitionDocCommentChanged)
+		r.Definition = &value
 	case *v1.ReflectionSchemaDiff_RelationAdded:
-		return SchemaDiff{Kind: "relation_added", DefinitionName: v.RelationAdded.GetParentDefinitionName(), RelationName: v.RelationAdded.GetName()}
+		r.Kind = "relation_added"
+		value := nativeRelation(v.RelationAdded)
+		r.Relation = &value
 	case *v1.ReflectionSchemaDiff_RelationRemoved:
-		return SchemaDiff{Kind: "relation_removed", DefinitionName: v.RelationRemoved.GetParentDefinitionName(), RelationName: v.RelationRemoved.GetName()}
+		r.Kind = "relation_removed"
+		value := nativeRelation(v.RelationRemoved)
+		r.Relation = &value
 	case *v1.ReflectionSchemaDiff_RelationDocCommentChanged:
-		return SchemaDiff{Kind: "relation_doc_comment_changed", DefinitionName: v.RelationDocCommentChanged.GetParentDefinitionName(), RelationName: v.RelationDocCommentChanged.GetName()}
-	case *v1.ReflectionSchemaDiff_RelationSubjectTypeAdded:
-		return SchemaDiff{Kind: "relation_subject_type_added", DefinitionName: v.RelationSubjectTypeAdded.GetRelation().GetParentDefinitionName(), RelationName: v.RelationSubjectTypeAdded.GetRelation().GetName()}
-	case *v1.ReflectionSchemaDiff_RelationSubjectTypeRemoved:
-		return SchemaDiff{Kind: "relation_subject_type_removed", DefinitionName: v.RelationSubjectTypeRemoved.GetRelation().GetParentDefinitionName(), RelationName: v.RelationSubjectTypeRemoved.GetRelation().GetName()}
+		r.Kind = "relation_doc_comment_changed"
+		value := nativeRelation(v.RelationDocCommentChanged)
+		r.Relation = &value
 	case *v1.ReflectionSchemaDiff_PermissionAdded:
-		return SchemaDiff{Kind: "permission_added", DefinitionName: v.PermissionAdded.GetParentDefinitionName(), PermissionName: v.PermissionAdded.GetName()}
+		r.Kind = "permission_added"
+		value := nativePermission(v.PermissionAdded)
+		r.Permission = &value
 	case *v1.ReflectionSchemaDiff_PermissionRemoved:
-		return SchemaDiff{Kind: "permission_removed", DefinitionName: v.PermissionRemoved.GetParentDefinitionName(), PermissionName: v.PermissionRemoved.GetName()}
+		r.Kind = "permission_removed"
+		value := nativePermission(v.PermissionRemoved)
+		r.Permission = &value
 	case *v1.ReflectionSchemaDiff_PermissionDocCommentChanged:
-		return SchemaDiff{Kind: "permission_doc_comment_changed", DefinitionName: v.PermissionDocCommentChanged.GetParentDefinitionName(), PermissionName: v.PermissionDocCommentChanged.GetName()}
+		r.Kind = "permission_doc_comment_changed"
+		value := nativePermission(v.PermissionDocCommentChanged)
+		r.Permission = &value
 	case *v1.ReflectionSchemaDiff_PermissionExprChanged:
-		return SchemaDiff{Kind: "permission_expr_changed", DefinitionName: v.PermissionExprChanged.GetParentDefinitionName(), PermissionName: v.PermissionExprChanged.GetName()}
+		r.Kind = "permission_expr_changed"
+		value := nativePermission(v.PermissionExprChanged)
+		r.Permission = &value
 	case *v1.ReflectionSchemaDiff_CaveatAdded:
-		return SchemaDiff{Kind: "caveat_added", CaveatName: v.CaveatAdded.GetName()}
+		r.Kind = "caveat_added"
+		value := nativeCaveat(v.CaveatAdded)
+		r.Caveat = &value
 	case *v1.ReflectionSchemaDiff_CaveatRemoved:
-		return SchemaDiff{Kind: "caveat_removed", CaveatName: v.CaveatRemoved.GetName()}
+		r.Kind = "caveat_removed"
+		value := nativeCaveat(v.CaveatRemoved)
+		r.Caveat = &value
 	case *v1.ReflectionSchemaDiff_CaveatDocCommentChanged:
-		return SchemaDiff{Kind: "caveat_doc_comment_changed", CaveatName: v.CaveatDocCommentChanged.GetName()}
+		r.Kind = "caveat_doc_comment_changed"
+		value := nativeCaveat(v.CaveatDocCommentChanged)
+		r.Caveat = &value
 	case *v1.ReflectionSchemaDiff_CaveatExprChanged:
-		return SchemaDiff{Kind: "caveat_expr_changed", CaveatName: v.CaveatExprChanged.GetName()}
+		r.Kind = "caveat_expr_changed"
+		value := nativeCaveat(v.CaveatExprChanged)
+		r.Caveat = &value
 	case *v1.ReflectionSchemaDiff_CaveatParameterAdded:
-		return SchemaDiff{Kind: "caveat_parameter_added", CaveatName: v.CaveatParameterAdded.GetParentCaveatName()}
+		r.Kind = "caveat_parameter_added"
+		value := nativeParameter(v.CaveatParameterAdded)
+		r.Parameter = &value
 	case *v1.ReflectionSchemaDiff_CaveatParameterRemoved:
-		return SchemaDiff{Kind: "caveat_parameter_removed", CaveatName: v.CaveatParameterRemoved.GetParentCaveatName()}
+		r.Kind = "caveat_parameter_removed"
+		value := nativeParameter(v.CaveatParameterRemoved)
+		r.Parameter = &value
+	case *v1.ReflectionSchemaDiff_RelationSubjectTypeAdded:
+		r.Kind = "relation_subject_type_added"
+		relation := nativeRelation(v.RelationSubjectTypeAdded.GetRelation())
+		r.Relation = &relation
+		subject := nativeTypeReference(v.RelationSubjectTypeAdded.GetChangedSubjectType())
+		r.ChangedSubjectType = &subject
+	case *v1.ReflectionSchemaDiff_RelationSubjectTypeRemoved:
+		r.Kind = "relation_subject_type_removed"
+		relation := nativeRelation(v.RelationSubjectTypeRemoved.GetRelation())
+		r.Relation = &relation
+		subject := nativeTypeReference(v.RelationSubjectTypeRemoved.GetChangedSubjectType())
+		r.ChangedSubjectType = &subject
 	case *v1.ReflectionSchemaDiff_CaveatParameterTypeChanged:
-		return SchemaDiff{Kind: "caveat_parameter_type_changed", CaveatName: v.CaveatParameterTypeChanged.GetParameter().GetParentCaveatName()}
-	default:
-		return SchemaDiff{Kind: "unknown"}
+		r.Kind = "caveat_parameter_type_changed"
+		param := nativeParameter(v.CaveatParameterTypeChanged.GetParameter())
+		r.Parameter = &param
+		r.PreviousType = v.CaveatParameterTypeChanged.GetPreviousType()
 	}
+	if r.Definition != nil {
+		r.DefinitionName = r.Definition.Name
+	}
+	if r.Relation != nil {
+		r.DefinitionName = r.Relation.ParentDefinitionName
+		r.RelationName = r.Relation.Name
+	}
+	if r.Permission != nil {
+		r.DefinitionName = r.Permission.ParentDefinitionName
+		r.PermissionName = r.Permission.Name
+	}
+	if r.Caveat != nil {
+		r.CaveatName = r.Caveat.Name
+	}
+	if r.Parameter != nil {
+		r.CaveatName = r.Parameter.ParentCaveatName
+	}
+	return r
+}
+
+type SchemaFilter struct{ DefinitionName, CaveatName, RelationName, PermissionName string }
+
+func schemaFilters(filters []SchemaFilter) []*v1.ReflectionSchemaFilter {
+	out := make([]*v1.ReflectionSchemaFilter, len(filters))
+	for i, f := range filters {
+		out[i] = &v1.ReflectionSchemaFilter{OptionalDefinitionNameFilter: f.DefinitionName, OptionalCaveatNameFilter: f.CaveatName, OptionalRelationNameFilter: f.RelationName, OptionalPermissionNameFilter: f.PermissionName}
+	}
+	return out
+}
+func WithReflectSchemaFilters(filters []SchemaFilter) ReflectSchemaOption {
+	snapshot := append([]SchemaFilter(nil), filters...)
+	return func(o *operationOptions) { o.schemaFilters = snapshot }
+}
+func WithComputablePermissionsDefinitionFilter(name string) ComputablePermissionsOption {
+	return func(o *operationOptions) { o.definitionFilter = name }
 }

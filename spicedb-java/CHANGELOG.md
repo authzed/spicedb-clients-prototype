@@ -2,37 +2,60 @@
 
 ## Unreleased
 
+### Added
+
+- Add a fluent `PermissionCheck` builder with required-field validation and immutable context snapshots.
+
 ### Changed
 
-- **2026-09-04: check and lookup options moved onto `CheckOptions` and `LookupOptions`.**
-  Root DESIGN.md, "RULE: Every RPC wrapper must have one place to add an option" (new).
-  **Breaking.** Each check operation had three overloads — plain, one taking a `Duration`, one
-  taking a context `Map` — which is twelve methods for four operations, and meant a caller could
-  set a timeout *or* a context and **never both**, because no overload accepted the pair. The
-  lookups had picked up a second `lookupResources` overload for `with_debug` on the same trajectory.
+- Behavioral options use enums: replace `.tracing(true)` with
+  `.tracing(CheckTracing.ENABLED)`, `.debug(true)` with `.debug(LookupDebug.ENABLED)`,
+  and `.includeCheckpoints(true)` with `.content(WatchContent.RELATIONSHIPS_AND_CHECKPOINTS)`.
+  Null mode values are rejected. Plaintext credentials require
+  `.remotePlaintextCredentials(RemotePlaintextCredentials.ALLOW)` for remote endpoints,
+  including generated typed factories; the default is `REJECT`.
+- Native `ZedToken` retains exact string contents through `value()` and `toString()`;
+  missing response revision fields remain null rather than becoming empty tokens.
 
-  Each operation now has one `...WithOptions` form beside its plain one, taking an immutable
-  `CheckOptions` (`context`, `timeout`) or `LookupOptions` (`debug`) built the way `Filter` is:
-  `CheckOptions.none().withContext(...).withTimeout(...)`. Setting both is now expressible, and
-  the next option upstream adds is a component on an existing record rather than another overload.
-
-  Callers of the plain forms are unaffected. Callers of the `Duration` or `Map` overloads move to
-  `...WithOptions` with the value wrapped.
+- **BREAKING CHANGE — 2026-10-26 approved prototype reset.** Checks now accept
+  `PermissionCheck`; `Relationship` contains stored tuple data only. Replace
+  `checkPermission(c, "view", relationship)` with
+  `check(new PermissionCheck(resource, "view", subject, c))`. Replace
+  `checkPermissions(c, "view", r1, r2)` with `checkBulk(List.of(q1, q2))`.
+- Connection constructors take immutable `ClientOptions`: replace the positional
+  timeout/boolean forms with `.defaultTimeout(duration)` and
+  `.remotePlaintextCredentials(RemotePlaintextCredentials.ALLOW)` builder settings. TLS options support
+  custom CA and paired client certificate/key PEM paths, with real mTLS coverage.
+- Every operation accepts its immutable options builder as the final overload.
+  Replace `checkPermissionWithOptions(..., CheckOptions.none().withContext(ctx))`
+  with `check(request, CheckOptions.builder().context(ctx).tracing(CheckTracing.ENABLED).build())`.
+  Singular checks use `CheckPermission`; native recursive diagnostics preserve
+  schema, caveat evaluation, timing, resolution presence, expiration and source.
+- Replace string revisions with `new ZedToken(value)` and flat tuple construction
+  with `Relationship.of(new ObjectRef(type, id), relation, SubjectRef.direct(object))`.
+  Subject filters explicitly distinguish Any, Direct and Named.
+- Replace unbounded `deleteRelationships(filter)` with `deleteAllRelationshipsNonAtomic(filter)`.
+  `deleteRelationships(filter, limit)` performs exactly one capped mutation and
+  returns count, revision, completion and cursor. Partial failures retain typed
+  acknowledged progress; deletes are never automatically replayed.
+- Unary retries, bulk chunks and delete pages share a total deadline. Streams
+  start explicit timeouts lazily and close active RPCs; interruption uses native
+  cancellation. Imports observe transport readiness and close source iterators.
+- JSON inputs are recursively validated and snapshotted, including null values.
+  Result collections are immutable. Existing compatibility gates remain in place;
+  this reset intentionally breaks the pre-reset prototype surface.
 
 ### Added
 
-- **2026-09-24: proto client regenerated — `RoaringLookupResourcesService` added to
-  `authzed.api.materialize.v0`.** The regen adds one new RPC,
-  `ExperimentalRoaringLookupResources`, to the same `materialize` package as the
-  `RelationshipsService`/`WatchPermissionsService`/`WatchPermissionSetsService` trio this
-  client already does not wrap. It returns a roaring64 bitmap of the resource IDs a subject
-  can access, for callers indexing SpiceDB results into a search engine; consuming it usefully
-  means decoding a roaring bitmap, which is out of scope for anything this client's other
-  methods do. Left unwrapped for the same reason the rest of `materialize` is: it remains out
-  of scope, not a client-side gap, and every other idiomatic client in this repo makes the same
-  call. The rest of the regen is a protobuf compiler patch bump (4.36.1 -> 4.36.2) reflected in
-  generated-file headers/descriptors across `com.authzed.api.v1`/`com.authzed.api.materialize.v0`
-  — no functional change there either. No code changes.
+- Native experimental wrappers cover roaring lookup, filter counts, permission-set
+  watch, lookup and download. Bitmap bytes and event alternatives are preserved;
+  deprecated WatchPermissions remains raw-only.
+- Canonical contract, recursive tracing, mixed consistency, bounded deletion,
+  deletion progress, shared deadlines, interruption and upload cleanup regressions.
+  Typed generation forwards check/write/lookup options, native revisions, stream
+  lifetime and explicit client ownership.
+
+Earlier entries below describe the development history before this breaking reset.
 
 - **2026-09-10: proto client regenerated — `deleteRelationships` now resumes with a cursor when
   the server hands one back.** `DeleteRelationshipsRequest` gained `optional_cursor` and
@@ -867,3 +890,14 @@ Initial release of the idiomatic Java SpiceDB client.
 - **BSR Generated SDKs**: proto dependencies resolved from Buf Schema Registry Maven packages
 - **10 examples** covering all major API surfaces, doubling as JUnit 5 integration tests
 - **Requires Java 17+**
+
+- Add optional client-side LookupResources permissionship filtering, retaining all results by default. Filtered limits count unconditional grants across pages; LookupSubjects rejects the resource-only option. Update safe lookup examples.
+
+- Relationship writes now return native `WriteResult` containing the revision instead of a bare token. Read its revision field when constructing consistency or watch options.
+
+- Rename the unbounded deletion helper to `deleteAllRelationshipsNonAtomic` with no compatibility alias. Each batch is transactional, but completed batches remain committed on later failure or cancellation. Native `DeleteResult` now exposes `revision()` for the revision token.
+- Forward nonempty deletion response cursors to subsequent batches, omit empty cursors on the wire, and retain acknowledged cursor values in results and failure progress.
+
+- Expose watch relationship filters through `WatchOptions.builder().relationshipFilters(List<Filter>)`, preserving immutable snapshots and full native filter constraints. Reject simultaneous object-type and relationship filters locally; update watch examples to use relationship filters.
+
+- Generated Java `TypedClient` now directly forwards native relationship deletion (bounded and non-atomic), watch filters, bulk checks, schema/reflection, counters, import/export, and materialize operations. Existing schema-aware permission/subject signatures and owned/borrowed lifecycle behavior remain intact.

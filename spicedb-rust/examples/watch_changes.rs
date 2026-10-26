@@ -26,7 +26,7 @@ use std::time::Duration;
 use futures::StreamExt;
 use spicedb::client::SpiceDBClient;
 use spicedb::error::SpiceDBError;
-use spicedb::types::{Filter, Relationship, Transaction, UpdateOperation, WatchOptions};
+use spicedb::types::{Filter, Transaction, UpdateOperation, WatchOptions};
 
 const SCHEMA: &str = r#"definition user {}
 
@@ -48,7 +48,7 @@ const UPDATE_TIMEOUT: Duration = Duration::from_secs(30);
 #[derive(Default)]
 struct Observed {
     update: Option<spicedb::types::Update>,
-    checkpoint_revision: Option<String>,
+    checkpoint_revision: Option<spicedb::ZedToken>,
 }
 
 #[tokio::main]
@@ -60,9 +60,13 @@ async fn main() {
         std::env::var("SPICEDB_ENDPOINT").unwrap_or_else(|_| "localhost:50051".to_string());
     let token = std::env::var("SPICEDB_TOKEN").unwrap_or_else(|_| "testtoken".to_string());
 
-    let client = SpiceDBClient::new_plaintext(endpoint, token)
-        .await
-        .expect("failed to create client");
+    let client = SpiceDBClient::new_plaintext(
+        endpoint,
+        token,
+        spicedb::RemoteCredentialsPolicy::LoopbackOnly,
+    )
+    .await
+    .expect("failed to create client");
 
     // Clear before writing the schema, not after using it. Every example runs
     // against one SpiceDB and writes a whole schema, and SpiceDB refuses a
@@ -77,37 +81,48 @@ async fn main() {
     // definition yet, which SpiceDB reports as FailedPrecondition
     // (ERROR_REASON_UNKNOWN_DEFINITION). Anything else -- an unreachable
     // server, a bad token -- must still fail the example.
-    match client.delete_relationships(&Filter::new("document")).await {
+    match client
+        .delete_all_relationships_non_atomic(spicedb::DeleteAllRequest::new(
+            (Filter::new("document")).clone(),
+        ))
+        .await
+    {
         Ok(_) | Err(SpiceDBError::FailedPrecondition(_)) => {}
         Err(e) => panic!("cleanup before schema write failed: {e:?}"),
     }
 
     client
-        .write_schema(SCHEMA)
+        .write_schema(spicedb::WriteSchemaRequest::new(SCHEMA))
         .await
         .expect("write schema failed");
 
     // A seed write fixes the revision to watch from, so the stream cannot
     // replay what earlier examples left behind and cannot miss the write made
     // below.
-    let seed = Relationship::new("document", "watched", "viewer", "user", "seed", "")
+    let seed = spicedb::Relationship::from_tuple("document:watched#viewer@user:seed")
         .expect("invalid relationship");
     let mut seed_txn = Transaction::new();
     seed_txn.touch(&seed);
-    let start_revision = client.write(&seed_txn).await.expect("seed write failed");
+    let start_revision = client
+        .write(spicedb::WriteRequest::new((seed_txn).clone()))
+        .await
+        .expect("seed write failed");
 
     // The update this example is waiting for. Written after the subscription
     // revision is fixed, so the stream is guaranteed to carry it.
-    let target = Relationship::new("document", "watched", "editor", "user", "bob", "")
+    let target = spicedb::Relationship::from_tuple("document:watched#editor@user:bob")
         .expect("invalid relationship");
     let mut txn = Transaction::new();
     txn.touch(&target);
-    client.write(&txn).await.expect("write failed");
+    client
+        .write(spicedb::WriteRequest::new((txn).clone()))
+        .await
+        .expect("write failed");
 
-    let object_types = vec!["document".to_string()];
+    let filters = vec![spicedb::Filter::new("document")];
 
     // ── Pass 1: consume until the expected update, then abandon ──────────
-    let observed = consume_until_target(&client, &object_types, &start_revision).await;
+    let observed = consume_until_target(&client, &filters, &start_revision.revision).await;
 
     let update = observed
         .update
@@ -115,11 +130,11 @@ async fn main() {
     println!("observed the expected update: {}", update.relationship);
 
     // The update must be the one that was written, not merely "an update".
-    assert_eq!(update.relationship.resource_type, "document");
-    assert_eq!(update.relationship.resource_id, "watched");
-    assert_eq!(update.relationship.resource_relation, "editor");
-    assert_eq!(update.relationship.subject_type, "user");
-    assert_eq!(update.relationship.subject_id, "bob");
+    assert_eq!(update.relationship.resource().object_type(), "document");
+    assert_eq!(update.relationship.resource().object_id(), "watched");
+    assert_eq!(update.relationship.relation(), "editor");
+    assert_eq!(update.relationship.subject().object().object_type(), "user");
+    assert_eq!(update.relationship.subject().object().object_id(), "bob");
     // TOUCH is a write, so it can only be the mapping for an explicit
     // OPERATION_TOUCH -- never a default an unrecognized operation falls into.
     assert!(
@@ -142,7 +157,7 @@ async fn main() {
     // the same revision has to work and has to deliver the same update again:
     // a start cursor that does not round-trip, or a client left wedged by the
     // abandoned stream, fails here rather than passing quietly.
-    let resumed = consume_until_target(&client, &object_types, &start_revision).await;
+    let resumed = consume_until_target(&client, &filters, &start_revision.revision).await;
     let resumed_update = resumed
         .update
         .expect("resuming from the same revision on a fresh stream delivered no update");
@@ -151,12 +166,14 @@ async fn main() {
         update.relationship.to_string(),
         "resuming from the same revision must replay the same update"
     );
-    println!("resumed from {start_revision} and saw the same update again");
+    println!("resumed from {start_revision:?} and saw the same update again");
 
     // Clean up so later examples that write a narrower schema aren't blocked
     // by leftover relationships.
     client
-        .delete_relationships(&Filter::new("document"))
+        .delete_all_relationships_non_atomic(spicedb::DeleteAllRequest::new(
+            (Filter::new("document")).clone(),
+        ))
         .await
         .expect("cleanup failed");
 }
@@ -171,14 +188,17 @@ async fn main() {
 /// keeps the stream alive even when nothing has changed.
 async fn consume_until_target(
     client: &SpiceDBClient,
-    object_types: &[String],
-    start_revision: &str,
+    filters: &[spicedb::Filter],
+    start_revision: &spicedb::ZedToken,
 ) -> Observed {
-    let stream = client.updates_with(
-        object_types,
-        &WatchOptions::new()
-            .with_start_revision(start_revision)
-            .with_checkpoints(),
+    let stream = client.updates(
+        spicedb::UpdatesRequest::new(vec![]).with_options(
+            (WatchOptions::new()
+                .with_filters(filters.to_vec())
+                .with_start_revision(start_revision.clone())
+                .with_checkpoints(spicedb::CheckpointMode::Include))
+            .clone(),
+        ),
     );
     tokio::pin!(stream);
 
@@ -216,14 +236,14 @@ async fn consume_until_target(
                     // real consumer must NOT treat this as a write -- re-read the
                     // relationship, or fail the mirror closed. The update is still
                     // delivered rather than dropped, so you can see it happened.
-                    UpdateOperation::Unspecified => "UNSPECIFIED (unrecognized by this client)",
+                    _ => "UNSPECIFIED (unrecognized by this client)",
                 };
                 println!("{}: {}", op_name, update.relationship);
 
-                if update.relationship.resource_type == "document"
-                    && update.relationship.resource_id == "watched"
-                    && update.relationship.resource_relation == "editor"
-                    && update.relationship.subject_id == "bob"
+                if update.relationship.resource().object_type() == "document"
+                    && update.relationship.resource().object_id() == "watched"
+                    && update.relationship.relation() == "editor"
+                    && update.relationship.subject().object().object_id() == "bob"
                     && observed.update.is_none()
                 {
                     observed.update = Some(update.clone());

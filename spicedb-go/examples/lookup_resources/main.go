@@ -17,6 +17,8 @@ import (
 	"log"
 	"os"
 
+	"github.com/authzed/spicedb-clients/spicedb-go/examples/internal/exampleutil"
+
 	"github.com/authzed/spicedb-clients/spicedb-go/client"
 	"github.com/authzed/spicedb-clients/spicedb-go/consistency"
 	"github.com/authzed/spicedb-clients/spicedb-go/rel"
@@ -38,7 +40,7 @@ func main() {
 	ctx := context.Background()
 
 	// Setup: write schema and data
-	_, err = c.WriteSchema(ctx, `definition user {}
+	_, err = c.WriteSchema(ctx, client.WriteSchemaRequest{Schema: `definition user {}
 
 definition document {
 	relation viewer: user
@@ -47,26 +49,26 @@ definition document {
 	permission view = viewer + editor + owner
 	permission edit = editor + owner
 	permission delete = owner
-}`)
+}`})
 	if err != nil {
 		log.Fatalf("write schema failed: %v", err)
 	}
 
 	var txn rel.Txn
-	if err := txn.Touch(rel.MustFromTriple("document", "firstdoc", "viewer", "user", "alice", "")); err != nil {
+	if err := txn.Touch(exampleutil.Must(rel.NewRelationship(exampleutil.Object("document", "firstdoc"), "viewer", exampleutil.Subject(exampleutil.Object("user", "alice"), "")))); err != nil {
 		log.Fatalf("failed to add relationship to transaction: %v", err)
 	}
-	if err := txn.Touch(rel.MustFromTriple("document", "seconddoc", "editor", "user", "alice", "")); err != nil {
+	if err := txn.Touch(exampleutil.Must(rel.NewRelationship(exampleutil.Object("document", "seconddoc"), "editor", exampleutil.Subject(exampleutil.Object("user", "alice"), "")))); err != nil {
 		log.Fatalf("failed to add relationship to transaction: %v", err)
 	}
-	_, err = c.Write(ctx, txn)
+	_, err = c.Write(ctx, client.WriteRequest{Transaction: txn})
 	if err != nil {
 		log.Fatalf("write relationships failed: %v", err)
 	}
 
-	// Lookup resources
+	// Lookup unconditional grants; conditional results need more caveat context.
 	found := map[string]bool{}
-	for resource, err := range c.LookupResources(ctx, consistency.Full(), "document", "view", "user", "alice") {
+	for resource, err := range c.LookupResources(ctx, client.LookupResourcesRequest{Consistency: consistency.Full(), ResourceType: "document", Permission: "view", Subject: exampleutil.Subject(exampleutil.Object("user", "alice"), "")}, client.WithLookupResourcesPermissionshipFilter(client.LookupHasPermissionOnly)) {
 		if err != nil {
 			log.Fatalf("lookup failed: %v", err)
 		}
@@ -90,7 +92,7 @@ definition document {
 	// Clean up so later examples that write a narrower schema aren't blocked
 	// by leftover relationships (examples run in sequence against one shared
 	// SpiceDB instance).
-	if _, err := c.DeleteRelationships(ctx, rel.NewFilter("document")); err != nil {
+	if _, err := c.DeleteAllRelationshipsNonAtomic(ctx, client.DeleteAllRequest{Filter: exampleutil.Must(rel.NewFilter("document"))}); err != nil {
 		log.Fatalf("cleanup failed: %v", err)
 	}
 
@@ -100,13 +102,13 @@ definition document {
 	// one recursion per link. The only viewer relationship sits at the far
 	// end of the chain, so resolving alice's access has to walk the whole
 	// thing.
-	_, err = c.WriteSchema(ctx, `definition user {}
+	_, err = c.WriteSchema(ctx, client.WriteSchemaRequest{Schema: `definition user {}
 
 definition node {
 	relation parent: node
 	relation viewer: user
 	permission view = viewer + parent->view
-}`)
+}`})
 	if err != nil {
 		log.Fatalf("write schema (depth demo) failed: %v", err)
 	}
@@ -117,20 +119,14 @@ definition node {
 	const chainLength = 100
 	var chainTxn rel.Txn
 	for i := range chainLength {
-		if err := chainTxn.Touch(rel.MustFromTriple(
-			"node", fmt.Sprintf("n%d", i), "parent",
-			"node", fmt.Sprintf("n%d", i+1), "",
-		)); err != nil {
+		if err := chainTxn.Touch(exampleutil.Must(rel.NewRelationship(exampleutil.Must(rel.NewObject("node", fmt.Sprintf("n%d", i))), "parent", exampleutil.Must(rel.NewSubject(exampleutil.Must(rel.NewObject("node", fmt.Sprintf("n%d", i+1))), ""))))); err != nil {
 			log.Fatalf("failed to add relationship to transaction: %v", err)
 		}
 	}
-	if err := chainTxn.Touch(rel.MustFromTriple(
-		"node", fmt.Sprintf("n%d", chainLength), "viewer",
-		"user", "alice", "",
-	)); err != nil {
+	if err := chainTxn.Touch(exampleutil.Must(rel.NewRelationship(exampleutil.Must(rel.NewObject("node", fmt.Sprintf("n%d", chainLength))), "viewer", exampleutil.Subject(exampleutil.Object("user", "alice"), "")))); err != nil {
 		log.Fatalf("failed to add relationship to transaction: %v", err)
 	}
-	if _, err := c.Write(ctx, chainTxn); err != nil {
+	if _, err := c.Write(ctx, client.WriteRequest{Transaction: chainTxn}); err != nil {
 		log.Fatalf("write relationships (depth demo) failed: %v", err)
 	}
 
@@ -138,7 +134,7 @@ definition node {
 	// whose Reason names the limit that was hit, but ReasonMetadata carries no
 	// traversal detail.
 	var withoutDebug error
-	for _, err := range c.LookupResources(ctx, consistency.Full(), "node", "view", "user", "alice") {
+	for _, err := range c.LookupResources(ctx, client.LookupResourcesRequest{Consistency: consistency.Full(), ResourceType: "node", Permission: "view", Subject: exampleutil.Subject(exampleutil.Object("user", "alice"), "")}) {
 		withoutDebug = err
 	}
 	var spicedbErr *client.Error
@@ -153,7 +149,7 @@ definition node {
 	// With the option: the same failure now carries a traversal trace in
 	// ReasonMetadata, describing the dispatch path that hit the limit.
 	var withDebug error
-	for _, err := range c.LookupResources(ctx, consistency.Full(), "node", "view", "user", "alice", client.WithLookupResourcesDebug()) {
+	for _, err := range c.LookupResources(ctx, client.LookupResourcesRequest{Consistency: consistency.Full(), ResourceType: "node", Permission: "view", Subject: exampleutil.Subject(exampleutil.Object("user", "alice"), "")}, client.WithLookupResourcesDebug(client.DebugEnabled)) {
 		withDebug = err
 	}
 	var spicedbDebugErr *client.Error
@@ -167,7 +163,7 @@ definition node {
 	fmt.Printf("with WithLookupResourcesDebug: %s, traversal trace: %s\n", spicedbDebugErr.Reason, trace)
 
 	// Clean up so later examples aren't blocked by leftover relationships.
-	if _, err := c.DeleteRelationships(ctx, rel.NewFilter("node")); err != nil {
+	if _, err := c.DeleteAllRelationshipsNonAtomic(ctx, client.DeleteAllRequest{Filter: exampleutil.Must(rel.NewFilter("node"))}); err != nil {
 		log.Fatalf("cleanup (depth demo) failed: %v", err)
 	}
 }

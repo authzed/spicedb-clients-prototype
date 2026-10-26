@@ -51,10 +51,10 @@ to fail".
 
 | Directory | Description |
 |-----------|-------------|
-| `check_permission/` | Basic permission check |
+| `check_permission/` | Singular native checks, caveat context and recursive debug tracing |
 | `write_relationships/` | Writing relationships |
 | `read_relationships/` | Reading relationships with iterators |
-| `delete_relationships/` | Deleting relationships, including precondition-guarded deletes |
+| `delete_relationships/` | Bounded deletion and completion deletion with preconditions |
 | `lookup_resources/` | Resource lookup |
 | `lookup_subjects/` | Subject lookup |
 | `watch_changes/` | Watching for changes with a bounded consumer that cancels the stream explicitly |
@@ -67,5 +67,6 @@ to fail".
 | `bulk_operations/` | Bulk checks, batch writes, and bulk import/export |
 | `expand_permission_tree/` | Expanding a permission into its tree of subjects |
 | `schema_reflection/` | Schema reflection, computable permissions, dependent relations, diff |
+| `materialize_operations/` | Native experimental materialize calls and stream cancellation against a local stand-in |
 | `relationship_counters/` | Registering, reading, and unregistering relationship counters |
 | `raw_escape_hatch/` | The `RawProto()` escape hatch: driving the generated service client on this client's own connection to send `OptionalTransactionMetadata` (a proto field this package does not wrap) and to call the single-check `CheckPermission` RPC |

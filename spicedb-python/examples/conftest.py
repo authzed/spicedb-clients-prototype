@@ -1,39 +1,21 @@
 """Shared fixtures for example integration tests."""
+from spicedb import TransportSecurity
 
 import os
-
 import pytest
-
 from spicedb import Filter
 from spicedb.aio import SpiceDBClient
 from spicedb.errors import FailedPreconditionError
 
-
-# Endpoint and token come from the environment so the examples run against
-# whichever SpiceDB the caller started; the defaults match
-# docker-compose.test.yml. `mage integrationTest` exports both.
 ENDPOINT = os.environ.get("SPICEDB_ENDPOINT") or "localhost:50051"
 TOKEN = os.environ.get("SPICEDB_TOKEN") or "somerandomkeyhere"
-
-
-SCHEMA = """\
-definition user {}
-
-definition document {
-    relation viewer: user
-    relation editor: user
-    relation owner: user
-    permission view = viewer + editor + owner
-    permission edit = editor + owner
-    permission delete = owner
-}
-"""
+SCHEMA = "definition user {}\n\ndefinition document {\n    relation viewer: user\n    relation editor: user\n    relation owner: user\n    permission view = viewer + editor + owner\n    permission edit = editor + owner\n    permission delete = owner\n}\n"
 
 
 def clear_documents_sync(c) -> None:
     """Synchronous twin of :func:`clear_documents`, for the ``sync_*`` examples."""
     try:
-        c.delete_relationships(Filter(resource_type="document"))
+        c.delete_all_relationships_non_atomic(Filter(resource_type="document"))
     except FailedPreconditionError:
         pass
 
@@ -52,7 +34,7 @@ async def clear_documents(c) -> None:
     other: an unreachable server or a bad token must still fail the example.
     """
     try:
-        await c.delete_relationships(Filter(resource_type="document"))
+        await c.delete_all_relationships_non_atomic(Filter(resource_type="document"))
     except FailedPreconditionError:
         pass
 
@@ -60,9 +42,7 @@ async def clear_documents(c) -> None:
 @pytest.fixture
 async def client():
     """Create a client connected to a local SpiceDB and write the test schema."""
-    async with SpiceDBClient(
-        ENDPOINT, token=TOKEN, insecure=True
-    ) as c:
+    async with SpiceDBClient(ENDPOINT, token=TOKEN, transport_security=TransportSecurity.PLAINTEXT) as c:
         await clear_documents(c)
         await c.write_schema(SCHEMA)
         yield c

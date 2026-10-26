@@ -33,8 +33,7 @@ public class StreamingErrorMappingTests
 
         var act = async () =>
         {
-            await foreach (var _ in client.ReadRelationshipsAsync(
-                Consistency.Full(), new Filter("document")))
+            await foreach (var _ in client.ReadRelationshipsAsync(Consistency.Full(), new Filter("document"), null, default))
             {
             }
         };
@@ -71,8 +70,7 @@ public class StreamingErrorMappingTests
         var seen = 0;
         var act = async () =>
         {
-            await foreach (var _ in client.ReadRelationshipsAsync(
-                Consistency.Full(), new Filter("document")))
+            await foreach (var _ in client.ReadRelationshipsAsync(Consistency.Full(), new Filter("document"), null, default))
             {
                 seen++;
             }
@@ -101,7 +99,7 @@ public class StreamingErrorMappingTests
 
         var act = async () =>
         {
-            await foreach (var _ in client.UpdatesAsync())
+            await foreach (var _ in client.UpdatesAsync([], null, new WatchOptions { Content = WatchContent.Relationships }, default))
             {
             }
         };
@@ -128,8 +126,7 @@ public class StreamingErrorMappingTests
 
         var act = async () =>
         {
-            await foreach (var _ in client.LookupResourcesAsync(
-                Consistency.Full(), "document", "view", "user", "alice"))
+            await foreach (var _ in client.LookupResourcesAsync(Consistency.Full(), "document", "view", new SubjectRef(new ObjectRef("user", "alice")), null, default))
             {
             }
         };
@@ -156,8 +153,7 @@ public class StreamingErrorMappingTests
 
         var act = async () =>
         {
-            await foreach (var _ in client.LookupSubjectsAsync(
-                Consistency.Full(), "document", "doc1", "view", "user"))
+            await foreach (var _ in client.LookupSubjectsAsync(Consistency.Full(), new ObjectRef("document", "doc1"), "view", "user", null, default))
             {
             }
         };
@@ -184,7 +180,7 @@ public class StreamingErrorMappingTests
 
         var act = async () =>
         {
-            await foreach (var _ in client.ExportRelationshipsAsync(Consistency.Full()))
+            await foreach (var _ in client.ExportRelationshipsAsync(Consistency.Full(), new Filter("document"), null, default))
             {
             }
         };
@@ -209,7 +205,7 @@ public class StreamingErrorMappingTests
 
         await using var client = NewClient(permissions: mockPermissions.Object);
 
-        var act = async () => await client.ImportRelationshipsAsync(OneRelationship());
+        var act = async () => await client.ImportRelationshipsAsync(OneRelationship(), null, default);
 
         await act.Should().ThrowAsync<NotFoundException>();
     }
@@ -218,7 +214,7 @@ public class StreamingErrorMappingTests
 
     private static async IAsyncEnumerable<Relationship> OneRelationship()
     {
-        yield return Relationship.FromTriple("document", "doc1", "viewer", "user", "alice");
+        yield return new Relationship(new ObjectRef("document", "doc1"), "viewer", new SubjectRef(new ObjectRef("user", "alice")));
         await Task.CompletedTask;
     }
 

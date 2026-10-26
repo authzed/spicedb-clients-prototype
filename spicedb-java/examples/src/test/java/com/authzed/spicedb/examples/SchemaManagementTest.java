@@ -2,6 +2,7 @@ package com.authzed.spicedb.examples;
 
 import static org.assertj.core.api.Assertions.*;
 
+import com.authzed.spicedb.*;
 import com.authzed.spicedb.SpiceDBClient;
 import org.junit.jupiter.api.Test;
 
@@ -13,16 +14,16 @@ class SchemaManagementTest extends SpiceDBIntegrationTest {
 
   @Test
   void write_schema_returns_revision() {
-    String revision = client.writeSchema(SCHEMA);
+    ZedToken revision = client.writeSchema(SCHEMA);
 
-    assertThat(revision).isNotEmpty();
+    assertThat(revision.value()).isNotEmpty();
   }
 
   @Test
   void read_schema_returns_written_definitions() {
     SpiceDBClient.SchemaResult result = client.readSchema();
 
-    assertThat(result.revision()).isNotEmpty();
+    assertThat(result.revision().value()).isNotEmpty();
     assertThat(result.schema()).contains("definition user");
     assertThat(result.schema()).contains("definition document");
     assertThat(result.schema()).contains("permission view");
@@ -46,9 +47,9 @@ class SchemaManagementTest extends SpiceDBIntegrationTest {
                 permission manage = admin
             }""";
 
-    String revision = client.writeSchema(updatedSchema);
+    ZedToken revision = client.writeSchema(updatedSchema);
 
-    assertThat(revision).isNotEmpty();
+    assertThat(revision.value()).isNotEmpty();
 
     SpiceDBClient.SchemaResult result = client.readSchema();
     assertThat(result.schema()).contains("relation admin: user");

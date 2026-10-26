@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { LookupPermissionshipFilter, Tracing, TransportSecurity, RemoteCredentials, ZedToken, InvalidArgumentError } from "@spicedb/client";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { full, type Relationship } from "@spicedb/client";
 import { TypedClient, Document, User, Team } from "./permissions";
 
@@ -26,20 +27,38 @@ describe("TypedClient", () => {
     let tc: TypedClient;
 
     beforeAll(async () => {
-        tc = TypedClient.create("localhost:50051", "somerandomkeyhere", { insecure: true });
-        await tc.client.writeSchema(SCHEMA);
+        tc = TypedClient.create(process.env.SPICEDB_ENDPOINT ?? "localhost:50051", process.env.SPICEDB_TOKEN ?? "somerandomkeyhere", { transportSecurity: TransportSecurity.Plaintext });
+        await tc.writeSchema(SCHEMA);
+    });
+
+    afterAll(() => tc.close());
+
+    it("exposes bounded and non-atomic filter deletion directly", async () => {
+        await tc.touch(["a", "b", "c"].map(id => Document("parity-delete").viewer(User(id))));
+        const filter = { resourceType: "document", resourceId: "parity-delete" };
+        const first = await tc.deleteRelationships(filter, { limit: 1 });
+        expect(first.deletedCount).toBe(1n);
+        const remaining = await tc.deleteAllRelationshipsNonAtomic(filter, { pageSize: 1 });
+        expect(remaining.deletedCount).toBe(2n);
+        expect(remaining.progress).toBe("complete");
+        expect(remaining.revision).toBeInstanceOf(ZedToken);
     });
 
     describe("touch + check", () => {
         it("writes relationships and checks permissions", async () => {
-            await tc.touch(
+            await tc.touch([
                 Document("readme").viewer(User("alice")),
                 Document("readme").editor(User("bob")),
                 Document("readme").owner(User("charlie")),
                 Document("readme").viewer(Team("eng").member()),
-            );
+            ]);
 
-            expect((await tc.check(full(), Document("readme").view, User("alice"))).hasPermission()).toBe(true);
+            const traced = await tc.check(full(), Document("readme").view, User("alice"), { tracing: Tracing.Enabled });
+            expect(traced.hasPermission()).toBe(true);
+            expect(traced.checkedAt).toBeInstanceOf(ZedToken);
+            expect(traced.checkedAt.toString()).not.toBe("");
+            expect(traced.debugTrace?.schemaUsed).toContain("definition document");
+            expect(traced.debugTrace?.check).toBeDefined();
             expect((await tc.check(full(), Document("readme").edit, User("alice"))).hasPermission()).toBe(false);
             expect((await tc.check(full(), Document("readme").view, User("bob"))).hasPermission()).toBe(true);
             expect((await tc.check(full(), Document("readme").edit, User("bob"))).hasPermission()).toBe(true);
@@ -52,9 +71,9 @@ describe("TypedClient", () => {
             // it's reachable here only because tc.check() returns the full
             // CheckResult instead of a bool. Before Task 4/11, TypeScript's
             // check() would have returned `true` for this case: a fail-open bug.
-            await tc.touch(
+            await tc.touch([
                 Document("readme").viewer(User("frank").withIpRange({})),
-            );
+            ]);
 
             const result = await tc.check(full(), Document("readme").view, User("frank"));
             expect(result.hasPermission()).toBe(false);
@@ -81,9 +100,9 @@ describe("TypedClient", () => {
             // still resolve it via the subject's OWN embedded context
             // (User(...).withIpRange(ctx) passed directly as the check subject) --
             // this is what makes the fix functional for the simplest call shape.
-            await tc.touch(
+            await tc.touch([
                 Document("readme").viewer(User("grace").withIpRange({})),
-            );
+            ]);
 
             const result = await tc.check(
                 full(), Document("readme").view, User("grace").withIpRange({ allowedCidr: "0.0.0.0/0" }),
@@ -95,9 +114,9 @@ describe("TypedClient", () => {
             // The call-level default is a WRONG cidr that would fail the caveat
             // on its own; the subject's own embedded context supplies the
             // CORRECT cidr, which must win per-key.
-            await tc.touch(
+            await tc.touch([
                 Document("readme").viewer(User("henry").withIpRange({})),
-            );
+            ]);
 
             const result = await tc.check(
                 full(), Document("readme").view,
@@ -114,9 +133,9 @@ describe("TypedClient", () => {
             // key-level merge, "end" would be silently dropped and the caveat
             // (start != "" && end != "") would come back conditional on a
             // MISSING "end", not a grant.
-            await tc.touch(
+            await tc.touch([
                 Document("readme").viewer(User("ivan").withTimeWindow({})),
-            );
+            ]);
 
             const result = await tc.check(
                 full(), Document("readme").view,
@@ -131,7 +150,7 @@ describe("TypedClient", () => {
     describe("lookupResources", () => {
         it("finds resources a user can view", async () => {
             const ids: string[] = [];
-            for await (const res of await tc.lookupResources(full(), Document.view, User("alice"))) {
+            for await (const res of tc.lookupResources(full(), Document.view, User("alice"), { permissionshipFilter: LookupPermissionshipFilter.HasPermissionOnly })) {
                 ids.push(res.resourceId);
             }
             expect(ids).toContain("readme");
@@ -141,7 +160,8 @@ describe("TypedClient", () => {
     describe("lookupSubjects", () => {
         it("finds users who can view a document", async () => {
             const ids: string[] = [];
-            for await (const sub of await tc.lookupSubjects(full(), Document("readme").view, User)) {
+            for await (const sub of tc.lookupSubjects(full(), Document("readme").view, User)) {
+                if (sub.subject.permissionship !== "hasPermission" || sub.subject.subjectId === "*") continue;
                 ids.push(sub.subject.subjectId);
             }
             expect(ids).toContain("alice");
@@ -158,5 +178,15 @@ describe("TypedClient", () => {
             }
             expect(rels.length).toBeGreaterThan(0);
         });
+    });
+});
+
+describe("typed connection policies", () => {
+    it("forwards explicit remote plaintext policy through the normal factory", () => {
+        expect(() => TypedClient.create("remote.example.invalid:50051", "secret", { transportSecurity: TransportSecurity.Plaintext })).toThrow(InvalidArgumentError);
+        const allowed = TypedClient.create("remote.example.invalid:50051", "secret", {
+            transportSecurity: TransportSecurity.Plaintext, remoteCredentials: RemoteCredentials.AllowPlaintext,
+        });
+        allowed.close();
     });
 });

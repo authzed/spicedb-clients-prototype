@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Full-surface interface and test double
+
+- `SpiceDBApi` (extends `PermissionsApi` and `AutoCloseable`) mirrors every
+  public instance method of `SpiceDBClient`; a reflection test keeps them
+  identical. `SpiceDBClient` and `InMemorySpiceDB` both implement it. The
+  double runs `checkAny`, `checkAll`, `deleteAllRelationshipsNonAtomic` and
+  `close` in memory; the other operations are recorded, consult the fault hook
+  and throw `UNIMPLEMENTED`, and `rawChannel()` returns `null`.
+- `InMemorySpiceDB.Fault.batch()` carries an import batch's relationships at
+  `FaultStage.IMPORT_BATCH`; batch faults now run after the whole input is
+  read.
+- `InMemorySpiceDB.cursorAfter(n)` builds the resume cursor the double puts on
+  the n-th matching read or export item; its format is stable for tests.
+- `InMemorySpiceDB.setReadSchemaRevision(SchemaRevision.OMITTED)` makes
+  `readSchema` report no revision, as some SpiceDB deployments do.
+
 ### Per-operation retries and a fault-injecting test double
 
 - `ClientOptions.builder().operationRetryPolicy(ClientOperation, RetryPolicy)`

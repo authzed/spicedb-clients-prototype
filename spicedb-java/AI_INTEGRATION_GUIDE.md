@@ -251,12 +251,17 @@ SpiceDBException expected = ErrorMapper.newError(Status.Code.FAILED_PRECONDITION
 db.failNext(
     ClientOperation.WRITE, InMemorySpiceDB.serverError(Status.Code.UNAVAILABLE, "try again"));
 List<InMemorySpiceDB.Call> writes = db.callsOf(ClientOperation.WRITE);
+String resumeAfterTwo = InMemorySpiceDB.cursorAfter(2);
+db.setReadSchemaRevision(InMemorySpiceDB.SchemaRevision.OMITTED);
 ```
 
 Depend on `PermissionsApi` (`write`, `readRelationships`, `deleteRelationships`,
 `check`, `checkBulk`, `importRelationships`, `exportRelationships`, `readSchema`,
-`writeSchema`, `reflectSchema`); both `SpiceDBClient` and `InMemorySpiceDB` implement it,
-and a `TypedClient` provides one through `tc.client()`. The double applies
+`writeSchema`, `reflectSchema`), or on `SpiceDBApi` for the client's full method set;
+both `SpiceDBClient` and `InMemorySpiceDB` implement both, and a `TypedClient` provides
+one through `tc.client()`. Operations the double cannot run in memory (lookups, expand,
+watch, schema analysis, experimental calls) are recorded and throw `UNIMPLEMENTED` unless
+the fault hook fails them first. The double applies
 preconditions, `CREATE` conflicts and filter semantics like the server. It
 records every call (`calls()`, `callsOf(op)`: arguments and options) and
 injects faults with `setFaultHook` (before a call, each import batch, the

@@ -2,6 +2,7 @@ package com.authzed.spicedb;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -11,6 +12,7 @@ import com.authzed.spicedb.errors.ErrorMapper;
 import com.authzed.spicedb.errors.FailedPreconditionException;
 import com.authzed.spicedb.errors.InvalidArgumentException;
 import com.authzed.spicedb.errors.NotFoundException;
+import com.authzed.spicedb.errors.SpiceDBException;
 import com.authzed.spicedb.errors.UnavailableException;
 import com.authzed.spicedb.testing.InMemorySpiceDB;
 import io.grpc.Metadata;
@@ -162,6 +164,187 @@ class InMemorySpiceDBTest {
                         .contains(m.getName()))
             .count();
     assertEquals(PermissionsApi.class.getMethods().length, clientOps);
+  }
+
+  private static String signature(Method m) {
+    return m.getName()
+        + Arrays.stream(m.getGenericParameterTypes())
+            .map(java.lang.reflect.Type::getTypeName)
+            .toList()
+        + " -> "
+        + m.getGenericReturnType().getTypeName();
+  }
+
+  @Test
+  void fullInterfaceMatchesTheClientsMethodSet() {
+    // SpiceDBApi lists exactly the client's public instance methods, so the double, which
+    // implements it, covers the whole client.
+    var clientMethods =
+        Arrays.stream(SpiceDBClient.class.getMethods())
+            .filter(m -> !java.lang.reflect.Modifier.isStatic(m.getModifiers()))
+            .filter(m -> m.getDeclaringClass() != Object.class)
+            .map(InMemorySpiceDBTest::signature)
+            .collect(java.util.stream.Collectors.toCollection(java.util.TreeSet::new));
+    var interfaceMethods =
+        Arrays.stream(SpiceDBApi.class.getMethods())
+            .map(InMemorySpiceDBTest::signature)
+            .collect(java.util.stream.Collectors.toCollection(java.util.TreeSet::new));
+    // AutoCloseable.close() (throws Exception) is narrowed by SpiceDBApi.close(); both appear.
+    interfaceMethods.remove("close[] -> void");
+    interfaceMethods.add("close[] -> void");
+    assertEquals(clientMethods, interfaceMethods);
+    assertTrue(SpiceDBApi.class.isAssignableFrom(SpiceDBClient.class));
+    assertTrue(SpiceDBApi.class.isAssignableFrom(InMemorySpiceDB.class));
+  }
+
+  /** Code written against the full interface accepts the double. */
+  private static long countAll(SpiceDBApi api) {
+    try (api;
+        var s = api.readRelationships(Consistency.full(), Filter.of("document"))) {
+      return s.count();
+    }
+  }
+
+  @Test
+  void operationsWithoutInMemorySemanticsAreRecordedAndUnimplemented() {
+    var db = new InMemorySpiceDB();
+    var doc = new ObjectRef("document", "a");
+    var alice = SubjectRef.direct(new ObjectRef("user", "alice"));
+
+    var e =
+        assertThrows(
+            SpiceDBException.class, () -> db.expandPermissionTree(Consistency.full(), doc, "view"));
+    assertEquals(Status.Code.UNIMPLEMENTED, e.code());
+    assertEquals(Status.Code.UNIMPLEMENTED, Status.fromThrowable(e).getCode());
+    assertEquals("not implemented by InMemorySpiceDB", e.serverMessage());
+    var expand = db.callsOf(ClientOperation.EXPAND_PERMISSION_TREE).get(0);
+    assertEquals(List.of(Consistency.full(), doc, "view"), expand.arguments());
+
+    // Streams fail where the real client reports a failed call: when consumed.
+    var lookup = db.lookupResources(Consistency.full(), "document", "view", alice);
+    assertEquals(1, db.callsOf(ClientOperation.LOOKUP_RESOURCES).size());
+    try (lookup) {
+      assertEquals(
+          Status.Code.UNIMPLEMENTED, assertThrows(SpiceDBException.class, lookup::toList).code());
+    }
+    try (var s = db.updates(List.of("document"), null)) {
+      assertEquals(
+          Status.Code.UNIMPLEMENTED, assertThrows(SpiceDBException.class, s::toList).code());
+    }
+
+    // The fault hook runs first, so tests can script these operations' failures.
+    db.failNext(
+        ClientOperation.LOOKUP_SUBJECTS,
+        InMemorySpiceDB.serverError(Status.Code.UNAVAILABLE, "down"));
+    try (var s = db.lookupSubjects(Consistency.full(), doc, "view", "user")) {
+      assertThrows(UnavailableException.class, s::toList);
+    }
+    db.failNext(
+        ClientOperation.COUNT_RELATIONSHIPS,
+        InMemorySpiceDB.serverError(Status.Code.NOT_FOUND, "no counter"));
+    assertThrows(NotFoundException.class, () -> db.experimentalCountRelationships("c"));
+
+    // A retry opt-in on a never-idempotent operation is refused, as the client refuses it.
+    var retry =
+        RetryPolicy.builder().maxRetries(1).initialBackoff(java.time.Duration.ofMillis(1)).build();
+    assertThrows(
+        InvalidArgumentException.class,
+        () ->
+            db.experimentalRegisterRelationshipCounter(
+                "c", Filter.of("document"), CallOptions.builder().retryPolicy(retry).build()));
+
+    assertNull(db.rawChannel());
+    db.close();
+  }
+
+  @Test
+  void deleteAllCheckAnyAndCheckAllWorkInMemory() {
+    var db = new InMemorySpiceDB();
+    db.importRelationships(users(4));
+    var folder = new Transaction();
+    folder.touch(rel("folder:f#viewer@user:u0"));
+    db.write(folder);
+    var guarded = DeleteAllOptions.builder().mustMatch(List.of(Filter.of("missing"))).build();
+    assertThrows(
+        FailedPreconditionException.class,
+        () -> db.deleteAllRelationshipsNonAtomic(Filter.of("document"), guarded));
+    assertEquals(4, countViewers(db), "a failed precondition deletes nothing");
+
+    var progress = new java.util.ArrayList<SpiceDBClient.DeleteResult>();
+    var result =
+        db.deleteAllRelationshipsNonAtomic(
+            Filter.of("document"), DeleteAllOptions.builder().onProgress(progress::add).build());
+    assertEquals(4, result.deletedCount());
+    assertTrue(result.completed());
+    assertEquals(List.of(result), progress);
+    assertEquals(1, db.relationships().size(), "other types are untouched");
+    assertEquals(0, countAll(db));
+    assertEquals(2, db.callsOf(ClientOperation.DELETE_ALL_RELATIONSHIPS_NON_ATOMIC).size());
+
+    var doc = new ObjectRef("document", "a");
+    var alice = SubjectRef.direct(new ObjectRef("user", "alice"));
+    db.setCheckResult(doc, "view", alice, Permissionship.HAS_PERMISSION);
+    var yes = new PermissionCheck(doc, "view", alice, Consistency.full());
+    var no = new PermissionCheck(doc, "edit", alice, Consistency.full());
+    assertTrue(db.checkAny(List.of(no, yes)));
+    assertFalse(db.checkAll(List.of(no, yes)));
+    assertTrue(db.checkAll(List.of(yes)));
+    assertFalse(db.checkAll(List.of()));
+    assertEquals(4, db.callsOf(ClientOperation.CHECK_BULK).size(), "recorded as bulk checks");
+  }
+
+  @Test
+  void schemaReadsCanOmitTheRevision() {
+    var db = new InMemorySpiceDB();
+    db.writeSchema("definition user {}");
+    assertNotNull(db.readSchema().revision());
+    db.setReadSchemaRevision(InMemorySpiceDB.SchemaRevision.OMITTED);
+    var read = db.readSchema();
+    assertEquals("definition user {}", read.schema());
+    assertNull(read.revision());
+    db.setReadSchemaRevision(InMemorySpiceDB.SchemaRevision.INCLUDED);
+    assertNotNull(db.readSchema().revision());
+  }
+
+  @Test
+  void importBatchFaultsSeeTheBatchContents() {
+    var db = new InMemorySpiceDB();
+    var batches = new java.util.ArrayList<List<Relationship>>();
+    db.setFaultHook(
+        f -> {
+          if (f.stage() == InMemorySpiceDB.FaultStage.IMPORT_BATCH) {
+            assertEquals(batches.size(), f.item());
+            batches.add(f.batch());
+          } else assertTrue(f.batch().isEmpty());
+          return null;
+        });
+    var input = users(7);
+    db.importRelationships(input, ImportOptions.builder().batchSize(3).build());
+    assertEquals(List.of(input.subList(0, 3), input.subList(3, 6), input.subList(6, 7)), batches);
+  }
+
+  @Test
+  void cursorAfterMatchesTheCursorOnTheNthItem() {
+    var db = new InMemorySpiceDB();
+    db.importRelationships(users(5));
+    List<ReadRelationship> all;
+    try (var s = db.readRelationships(Consistency.full(), Filter.of("document"))) {
+      all = s.toList();
+    }
+    for (int n = 1; n <= all.size(); n++)
+      assertEquals(InMemorySpiceDB.cursorAfter(n), all.get(n - 1).afterResultCursor());
+    try (var s =
+        db.exportRelationships(
+            Consistency.full(),
+            null,
+            ExportOptions.builder().cursor(InMemorySpiceDB.cursorAfter(3)).build())) {
+      var rest = s.toList();
+      assertEquals(2, rest.size());
+      assertEquals(all.get(3).relationship(), rest.get(0).relationship());
+      assertEquals(InMemorySpiceDB.cursorAfter(4), rest.get(0).afterResultCursor());
+    }
+    assertEquals("inmemory-cursor-0", InMemorySpiceDB.cursorAfter(0));
+    assertThrows(InvalidArgumentException.class, () -> InMemorySpiceDB.cursorAfter(-1));
   }
 
   @Test

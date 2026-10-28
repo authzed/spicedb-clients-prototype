@@ -24,7 +24,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 
-public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
+public final class SpiceDBClient implements SpiceDBApi {
 
   private static final int DEFAULT_CHECK_BATCH_SIZE = 1_000;
 

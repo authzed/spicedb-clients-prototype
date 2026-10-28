@@ -63,8 +63,10 @@ class StreamRetries(Enum):
 
     Retries only ever happen before the stream exposes its first item. Watch
     streams never retry unless one call opts in with
-    ``CallOptions(retry_policy=...)``, which governs that call's stream
-    establishment either way. DISABLED leaves unary retry unchanged.
+    ``CallOptions(retry_policy=...)``, or the client sets a policy for the
+    operation with ``operation_retry_policies``; either governs stream
+    establishment regardless of this setting. DISABLED leaves unary retry
+    unchanged.
     """
 
     ENABLED = "enabled"
@@ -134,9 +136,21 @@ class RetryPolicy:
     full-jitter exponential backoff starting at 100 ms and capped at 5 s. Any
     read code may be added, including RESOURCE_EXHAUSTED. Mutations are never
     retried automatically; only a write whose transaction holds only touches
-    and no preconditions, and a schema write, may opt in for one call through
-    ``CallOptions(retry_policy=...)``. Every retry shares the operation's
-    deadline.
+    and no preconditions (``Transaction.is_idempotent()``), and a schema
+    write, may opt in, for one call through ``CallOptions(retry_policy=...)``
+    or for every call of one operation through the client's
+    ``operation_retry_policies``. Every retry shares the operation's deadline.
+
+    Precedence, most specific first: ``CallOptions(retry_policy=...)``, then
+    ``operation_retry_policies={Operation.X: ...}`` given to the client
+    constructor, then the client-wide ``retry_policy``. A per-call or
+    per-operation policy also governs stream establishment (watch included).
+    A per-operation policy for ``Operation.WRITE`` retries only idempotent
+    writes and leaves the others un-retried, without error; operations that
+    are never idempotent (deletes, delete-all, imports, counter registration
+    and unregistration) reject a per-operation policy with retries when the
+    client is built. A zero-retry policy (or ``Retries.DISABLED``) is allowed
+    for any operation.
     """
 
     max_retries: int = 3
@@ -174,6 +188,76 @@ def _retry_policy(value: RetryPolicy | Retries, field: str = "retry_policy") -> 
     return value
 
 
+class Operation(Enum):
+    """One client operation, valued by its method name.
+
+    Keys ``operation_retry_policies`` on the client constructors and names
+    the calls the :mod:`spicedb.testing` doubles record and fail.
+    """
+
+    CHECK = "check"
+    CHECK_BULK = "check_bulk"
+    WRITE = "write"
+    DELETE_RELATIONSHIPS = "delete_relationships"
+    DELETE_ALL_RELATIONSHIPS_NON_ATOMIC = "delete_all_relationships_non_atomic"
+    READ_RELATIONSHIPS = "read_relationships"
+    LOOKUP_RESOURCES = "lookup_resources"
+    LOOKUP_SUBJECTS = "lookup_subjects"
+    EXPORT_RELATIONSHIPS = "export_relationships"
+    IMPORT_RELATIONSHIPS = "import_relationships"
+    WATCH = "watch"
+    READ_SCHEMA = "read_schema"
+    WRITE_SCHEMA = "write_schema"
+    REFLECT_SCHEMA = "reflect_schema"
+    DIFF_SCHEMA = "diff_schema"
+    COMPUTABLE_PERMISSIONS = "computable_permissions"
+    DEPENDENT_RELATIONS = "dependent_relations"
+    EXPAND_PERMISSION_TREE = "expand_permission_tree"
+    EXPERIMENTAL_REGISTER_RELATIONSHIP_COUNTER = "experimental_register_relationship_counter"
+    EXPERIMENTAL_UNREGISTER_RELATIONSHIP_COUNTER = "experimental_unregister_relationship_counter"
+    EXPERIMENTAL_COUNT_RELATIONSHIPS = "experimental_count_relationships"
+    EXPERIMENTAL_COUNT_RELATIONSHIPS_BY_FILTER = "experimental_count_relationships_by_filter"
+    EXPERIMENTAL_ROARING_LOOKUP_RESOURCES = "experimental_roaring_lookup_resources"
+    WATCH_PERMISSION_SETS = "watch_permission_sets"
+    LOOKUP_PERMISSION_SETS = "lookup_permission_sets"
+    DOWNLOAD_PERMISSION_SETS = "download_permission_sets"
+
+
+# Mutations that are never idempotent on replay: a client-wide retrying
+# policy for one of them is rejected when the client is built.
+_NEVER_IDEMPOTENT = frozenset({
+    Operation.DELETE_RELATIONSHIPS,
+    Operation.DELETE_ALL_RELATIONSHIPS_NON_ATOMIC,
+    Operation.IMPORT_RELATIONSHIPS,
+    Operation.EXPERIMENTAL_REGISTER_RELATIONSHIP_COUNTER,
+    Operation.EXPERIMENTAL_UNREGISTER_RELATIONSHIP_COUNTER,
+})
+
+
+def _operation_retry_policies(value) -> dict[Operation, RetryPolicy]:
+    """Validate ``operation_retry_policies`` into a private snapshot."""
+    if value is None:
+        return {}
+    try:
+        items = list(value.items())
+    except AttributeError:
+        raise InvalidArgumentError(
+            "operation_retry_policies: expected a mapping of Operation to RetryPolicy or Retries.DISABLED"
+        ) from None
+    policies: dict[Operation, RetryPolicy] = {}
+    for operation, policy in items:
+        if not isinstance(operation, Operation):
+            raise InvalidArgumentError(f"operation_retry_policies: expected Operation keys, got {operation!r}")
+        resolved = _retry_policy(policy, f"operation_retry_policies[{operation.name}]")
+        if operation in _NEVER_IDEMPOTENT and resolved.max_retries > 0:
+            raise InvalidArgumentError(
+                f"operation_retry_policies[{operation.name}]: {operation.value} cannot be retried: "
+                "it is not idempotent on replay"
+            )
+        policies[operation] = resolved
+    return policies
+
+
 @dataclass
 class ResponseMetadata:
     """Mutable capture of one operation's response headers and trailers.
@@ -200,7 +284,8 @@ class CallOptions:
     ``compression`` are forwarded to grpc. Applies to every attempt, chunk
     and page of the operation.
 
-    ``retry_policy`` overrides the client's retry policy for this one call,
+    ``retry_policy`` overrides the client's retry policy for this one call
+    (and its ``operation_retry_policies`` entry for the operation),
     including stream establishment (before the first item): pass
     ``Retries.DISABLED`` to exempt one stream, such as a supervised watch,
     while the client retries everything else, or a ``RetryPolicy`` to retry

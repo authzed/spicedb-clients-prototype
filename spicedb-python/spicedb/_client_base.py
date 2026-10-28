@@ -21,8 +21,10 @@ from spicedb.options import (
     RetryAttempt,
     RetryPolicy,
     Retries,
+    Operation,
     StreamRetries,
     _NO_RETRIES,
+    _operation_retry_policies,
     _retry_policy,
 )
 
@@ -86,6 +88,7 @@ class ClientConfig:
 
     _default_timeout: float | None
     _retry_policy: RetryPolicy
+    _operation_policies: dict[Operation, RetryPolicy]
     _stream_retries: bool
     _metadata: list[tuple[str, str]]
 
@@ -94,6 +97,7 @@ class ClientConfig:
         default_timeout: float | DefaultDeadline,
         retry_policy: RetryPolicy | Retries,
         stream_retries: StreamRetries,
+        operation_retry_policies=None,
     ) -> None:
         if default_timeout is DefaultDeadline.DISABLED:
             self._default_timeout = None
@@ -108,36 +112,48 @@ class ClientConfig:
         if not isinstance(stream_retries, StreamRetries):
             raise InvalidArgumentError(f"stream_retries: expected StreamRetries, got {stream_retries!r}")
         self._stream_retries = stream_retries is StreamRetries.ENABLED
+        self._operation_policies = _operation_retry_policies(operation_retry_policies)
 
     def _budget(self, timeout):
         return Budget(self._default_timeout if timeout is None else timeout)
 
-    def _policy(self, retry: bool | RetryPolicy, call_options: CallOptions | None = None) -> RetryPolicy:
+    def _policy(self, retry: Operation | RetryPolicy | bool, call_options: CallOptions | None = None) -> RetryPolicy:
         """The policy for one unary call.
 
-        ``retry`` is True for an idempotent read (the per-call override, else
-        the client's policy), or the policy a mutation resolved with
-        :meth:`_mutation_policy`.
+        ``retry`` names an idempotent read (resolved most specific first: the
+        per-call override, the client's policy for that operation, the
+        client-wide policy), or is the policy a mutation resolved with
+        :meth:`_mutation_policy`, or False for no retries.
         """
         if isinstance(retry, RetryPolicy):
             return retry
-        if not retry:
+        if not isinstance(retry, Operation):
             return _NO_RETRIES
-        override = call_retry_policy(call_options)
-        return override if override is not None else self._retry_policy
-
-    def _stream_policy(self, watch: bool, call_options: CallOptions | None = None) -> RetryPolicy:
-        """A per-call override governs this stream's establishment, watch included."""
         override = call_retry_policy(call_options)
         if override is not None:
             return override
+        return self._operation_policies.get(retry, self._retry_policy)
+
+    def _stream_policy(
+        self, watch: bool, call_options: CallOptions | None = None, operation: Operation | None = None
+    ) -> RetryPolicy:
+        """A per-call override, else the client's policy for this operation,
+        governs this stream's establishment, watch included."""
+        override = call_retry_policy(call_options)
+        if override is not None:
+            return override
+        if operation is not None and operation in self._operation_policies:
+            return self._operation_policies[operation]
         if watch or not self._stream_retries:
             return _NO_RETRIES
         return self._retry_policy
 
-    @staticmethod
-    def _mutation_policy(call_options: CallOptions | None, idempotent: bool, operation: str) -> RetryPolicy:
-        return mutation_retry_policy(call_options, idempotent, operation)
+    def _mutation_policy(
+        self, call_options: CallOptions | None, idempotent: bool, name: str, operation: Operation | None = None
+    ) -> RetryPolicy:
+        return mutation_retry_policy(
+            call_options, idempotent, name, self._operation_policies.get(operation) if operation else None
+        )
 
     @staticmethod
     def _backoff_seconds(policy: RetryPolicy, attempt: int) -> float:
@@ -186,15 +202,26 @@ def call_retry_policy(call_options: CallOptions | None) -> RetryPolicy | None:
     return _retry_policy(call_options.retry_policy, "call_options.retry_policy")
 
 
-def mutation_retry_policy(call_options: CallOptions | None, idempotent: bool, operation: str) -> RetryPolicy:
-    """The retry policy for a mutation: none unless this call opted in.
+def mutation_retry_policy(
+    call_options: CallOptions | None,
+    idempotent: bool,
+    operation: str,
+    operation_policy: RetryPolicy | None = None,
+) -> RetryPolicy:
+    """The retry policy for a mutation: none unless the caller opted in.
 
     Only idempotent mutations (a touch-only write without preconditions, a
-    schema write) may opt in; any other mutation given a policy with retries
-    raises before any request.
+    schema write) may opt in. A per-call opt-in with retries on any other
+    mutation raises before any request; the client's per-operation policy
+    (``operation_policy``) applies only to the calls that are idempotent and
+    leaves the others un-retried, without error.
     """
     override = call_retry_policy(call_options)
-    if override is None or override.max_retries == 0:
+    if override is None:
+        if operation_policy is not None and idempotent:
+            return operation_policy
+        return _NO_RETRIES
+    if override.max_retries == 0:
         return _NO_RETRIES
     if not idempotent:
         raise InvalidArgumentError(
@@ -206,10 +233,8 @@ def mutation_retry_policy(call_options: CallOptions | None, idempotent: bool, op
 
 def write_is_idempotent(transaction) -> bool:
     """A write replays safely when it holds only touches and no preconditions."""
-    from spicedb.types import Transaction, UpdateOperation
+    from spicedb.types import Transaction
 
     if not isinstance(transaction, Transaction):
         return False
-    return not transaction.preconditions and all(
-        update.operation is UpdateOperation.TOUCH for update in transaction.updates
-    )
+    return transaction.is_idempotent()

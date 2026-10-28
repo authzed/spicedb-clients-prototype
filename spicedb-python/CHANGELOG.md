@@ -76,6 +76,22 @@
 
 ### Tooling-grade native client
 
+- `operation_retry_policies={Operation.X: policy}` on both clients'
+  constructors and `from_channel` (and the generated typed clients' `connect`
+  and `from_channel`) sets the retry policy for every call of one operation,
+  including stream establishment, between the per-call and client-wide
+  policies in precedence. An `Operation.WRITE` policy retries only idempotent
+  writes and leaves the others un-retried; deletes, delete-all, imports and
+  counter registration/unregistration reject a policy with retries when the
+  client is built (a zero-retry policy is always allowed). `Operation` names
+  every client operation. `Transaction.is_idempotent()` exposes the
+  retry-eligibility rule (touch-only, no preconditions).
+- `spicedb.testing` doubles record every call (`calls()`,
+  `calls_of(operation)`, `Call(operation, index, request, options)`) and
+  inject faults (`set_fault_hook`, `fail_next`) before any call, before each
+  import batch, before an import commits and before each read or export item
+  (`Fault`, `FaultStage`). A failed write or import applies nothing.
+
 - `CallOptions(retry_policy=...)` overrides the client's retry policy for one
   call, including stream establishment (exempt one `watch` with
   `Retries.DISABLED` while the client retries everything else, or opt one

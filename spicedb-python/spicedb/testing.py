@@ -35,14 +35,28 @@ that cannot replay, as the real clients do), and
 :meth:`InMemoryClient.set_response_metadata`. Consistency and timeouts are
 validated and otherwise ignored. Both doubles are safe for use from
 multiple threads.
+
+Every call is recorded (:meth:`InMemoryClient.calls`,
+:meth:`InMemoryClient.calls_of`) as a :class:`Call` holding its
+:class:`spicedb.Operation`, its index among calls of that operation, its
+request and its keyword options exactly as passed, so tests assert on what
+was sent without a strict mock. Faults are injected at defined points
+(:meth:`InMemoryClient.set_fault_hook`, :meth:`InMemoryClient.fail_next`):
+before any call, before each import batch, before an import commits and
+before each read or export item, so failure paths need no fake gRPC server.
+Build injected errors with :meth:`spicedb.SpiceDBError.from_code`, which
+produces exactly what the real client raises for that server failure. A
+failed write or import applies nothing.
 """
 
 from __future__ import annotations
 
+import enum
 import inspect
 import threading
-from collections.abc import AsyncIterable, Callable, Iterable, Sequence
-from dataclasses import replace
+from collections.abc import AsyncIterable, Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass, replace
+from types import MappingProxyType
 from typing import Any
 
 import grpc
@@ -53,7 +67,7 @@ from spicedb._client_base import mutation_retry_policy, response_target, write_i
 from spicedb._streams import AsyncStream, Stream
 from spicedb.consistency import Consistency
 from spicedb.errors import InvalidArgumentError, SpiceDBError
-from spicedb.options import BulkItemErrors, CallOptions, DeletePartial, Paging, Tracing, _option
+from spicedb.options import BulkItemErrors, CallOptions, DeletePartial, Operation, Paging, Tracing, _option
 from spicedb.token import ZedToken
 from spicedb.types import (
     CheckResult,
@@ -77,12 +91,57 @@ from spicedb.types import (
     WriteResult,
 )
 
-__all__ = ["InMemoryClient", "AsyncInMemoryClient"]
+__all__ = ["InMemoryClient", "AsyncInMemoryClient", "Call", "Fault", "FaultStage"]
 
 # SpiceDB's default for a delete request without an explicit limit.
 SERVER_DEFAULT_DELETE_LIMIT = 1000
 
 _NO_SCHEMA = "No schema has been defined; please call WriteSchema to start"
+
+
+@dataclass(frozen=True)
+class Call:
+    """One recorded call of a test double."""
+
+    operation: Operation
+    """Which operation was called."""
+    index: int
+    """Position among calls of this operation, starting at 0."""
+    request: Any
+    """The operation's subject: the transaction for ``write``, the check (or
+    list of checks), the filter for reads, exports and deletes, the list of
+    relationships for an import, the schema text for ``write_schema``; None
+    for ``read_schema`` and ``reflect_schema``."""
+    options: Mapping[str, Any]
+    """Every keyword argument as passed, defaults included (``consistency``,
+    ``cursor``, ``timeout``, ``call_options`` and so on), read-only."""
+
+
+class FaultStage(enum.Enum):
+    """Where in an operation a fault hook is consulted."""
+
+    CALL = "call"
+    """Before the operation does anything; a stream raises on iteration."""
+    IMPORT_BATCH = "import_batch"
+    """Before import batch ``Fault.item`` (0-based); batches have the call's
+    ``batch_size``."""
+    IMPORT_COMMIT = "import_commit"
+    """After every batch, before the import commits."""
+    ITEM = "item"
+    """Before a read or export yields item ``Fault.item`` (0-based)."""
+
+
+@dataclass(frozen=True)
+class Fault:
+    """The point at which a fault hook is consulted."""
+
+    call: Call
+    stage: FaultStage
+    item: int = 0
+    """The batch index for IMPORT_BATCH, the item index for ITEM, else 0."""
+
+
+FaultHook = Callable[[Fault], "BaseException | None"]
 
 
 def _key(relationship: Relationship):
@@ -122,6 +181,9 @@ class _Store:
         self.reflection: ReflectSchemaResult | None = None
         self.headers: tuple[tuple[str, str | bytes], ...] = ()
         self.trailers: tuple[tuple[str, str | bytes], ...] = ()
+        self.calls: list[Call] = []
+        self.counts: dict[Operation, int] = {}
+        self.hook: FaultHook | None = None
         for relationship in relationships:
             if not isinstance(relationship, Relationship):
                 raise InvalidArgumentError("relationships: expected Relationship values")
@@ -129,6 +191,32 @@ class _Store:
 
     def token(self) -> ZedToken:
         return ZedToken(str(self.revision))
+
+    def begin(self, operation: Operation, request: Any, options: dict[str, Any]) -> tuple[Call, BaseException | None]:
+        """Record a call and consult the hook at FaultStage.CALL."""
+        with self.lock:
+            index = self.counts.get(operation, 0)
+            self.counts[operation] = index + 1
+            call = Call(operation, index, request, MappingProxyType(dict(options)))
+            self.calls.append(call)
+        return call, self.fault(call, FaultStage.CALL)
+
+    def fault(self, call: Call, stage: FaultStage, item: int = 0) -> BaseException | None:
+        """The hook's error for one point of a call, or None."""
+        with self.lock:
+            hook = self.hook
+        if hook is None:
+            return None
+        error = hook(Fault(call, stage, item))
+        if error is not None and not isinstance(error, BaseException):
+            raise InvalidArgumentError(f"fault hook: expected an exception or None, got {error!r}")
+        return error
+
+    def begin_or_raise(self, operation: Operation, request: Any, options: dict[str, Any]) -> Call:
+        call, error = self.begin(operation, request, options)
+        if error is not None:
+            raise error
+        return call
 
     def respond(self, call_options: CallOptions | None) -> None:
         """Fill a ``ResponseMetadata`` target with the registered metadata."""
@@ -295,6 +383,49 @@ class InMemoryClient:
             self._store.headers = tuple(tuple(pair) for pair in headers)  # type: ignore[misc]
             self._store.trailers = tuple(tuple(pair) for pair in trailers)  # type: ignore[misc]
 
+    def set_fault_hook(self, hook: Callable[[Fault], BaseException | None] | None) -> None:
+        """Install ``hook``, consulted at every :class:`Fault` point.
+
+        An exception it returns is raised by the operation at that point (a
+        stream raises it on iteration); returning None lets the operation
+        continue. A failed write or import applies nothing. Build errors with
+        :meth:`spicedb.SpiceDBError.from_code` to match the real client. The
+        hook must not call the double. Pass None to remove it.
+        """
+        if hook is not None and not callable(hook):
+            raise InvalidArgumentError("hook: expected callable or None")
+        with self._store.lock:
+            self._store.hook = hook
+
+    def fail_next(self, operation: Operation, error: BaseException) -> None:
+        """Make the next call of ``operation`` raise ``error`` before doing
+        anything; later calls succeed. Replaces any fault hook."""
+        if not isinstance(operation, Operation):
+            raise InvalidArgumentError(f"operation: expected Operation, got {operation!r}")
+        if not isinstance(error, BaseException):
+            raise InvalidArgumentError("error: expected an exception")
+        lock = threading.Lock()
+        pending = [True]
+
+        def hook(fault: Fault) -> BaseException | None:
+            if fault.stage is FaultStage.CALL and fault.call.operation is operation:
+                with lock:
+                    if pending[0]:
+                        pending[0] = False
+                        return error
+            return None
+
+        self.set_fault_hook(hook)
+
+    def calls(self) -> list[Call]:
+        """Every recorded call, in order."""
+        with self._store.lock:
+            return list(self._store.calls)
+
+    def calls_of(self, operation: Operation) -> list[Call]:
+        """The recorded calls of one operation, in order."""
+        return [call for call in self.calls() if call.operation is operation]
+
     def write(
         self,
         transaction: Transaction,
@@ -308,6 +439,9 @@ class InMemoryClient:
         An empty transaction checks its preconditions and returns the
         current revision, as SpiceDB does.
         """
+        self._store.begin_or_raise(
+            Operation.WRITE, transaction, {"metadata": metadata, "timeout": timeout, "call_options": call_options}
+        )
         Budget(timeout)
         if not isinstance(transaction, Transaction):
             raise InvalidArgumentError("transaction: expected Transaction")
@@ -328,6 +462,10 @@ class InMemoryClient:
         call_options: CallOptions | None = None,
     ) -> CheckResult:
         """Return the registered result, stamped with the current revision."""
+        self._store.begin_or_raise(Operation.CHECK, check, {
+            "consistency": consistency, "context": context, "tracing": tracing,
+            "timeout": timeout, "call_options": call_options,
+        })
         Budget(timeout)
         _call_options(call_options)
         _requests.check_request(check, consistency, context, tracing)
@@ -346,6 +484,10 @@ class InMemoryClient:
         call_options: CallOptions | None = None,
     ) -> list[CheckResult]:
         """Return the registered results in input order."""
+        self._store.begin_or_raise(Operation.CHECK_BULK, list(checks), {
+            "consistency": consistency, "context": context, "tracing": tracing,
+            "item_errors": item_errors, "timeout": timeout, "call_options": call_options,
+        })
         _option(item_errors, BulkItemErrors)
         Budget(timeout)
         _call_options(call_options)
@@ -366,6 +508,10 @@ class InMemoryClient:
     ) -> Stream[ReadRelationship]:
         """Yield matching relationships (a snapshot) in insertion order,
         resuming after ``cursor``. Each item's cursor resumes after it."""
+        call, call_error = self._store.begin(Operation.READ_RELATIONSHIPS, filter, {
+            "consistency": consistency, "page_size": page_size, "cursor": cursor,
+            "paging": paging, "timeout": timeout, "call_options": call_options,
+        })
         _option(paging, Paging)
         Budget(timeout)
         _positive(page_size, "page_size")
@@ -378,9 +524,14 @@ class InMemoryClient:
         store = self._store
 
         def factory(_owner):
+            if call_error is not None:
+                raise call_error
             items, read_at = store.page(filter.matches, cursor, "read relationships")
             store.respond(call_options)
-            for relationship, after in items:
+            for i, (relationship, after) in enumerate(items):
+                error = store.fault(call, FaultStage.ITEM, i)
+                if error is not None:
+                    raise error
                 yield ReadRelationship(relationship, after, read_at)
 
         return Stream(factory)
@@ -397,6 +548,10 @@ class InMemoryClient:
     ) -> Stream[ExportedRelationship]:
         """Yield every relationship (or those matching ``filter``) in
         insertion order, resuming after ``cursor``."""
+        call, call_error = self._store.begin(Operation.EXPORT_RELATIONSHIPS, filter, {
+            "consistency": consistency, "page_size": page_size, "cursor": cursor,
+            "timeout": timeout, "call_options": call_options,
+        })
         Budget(timeout)
         _positive(page_size, "page_size")
         _call_options(call_options)
@@ -409,9 +564,14 @@ class InMemoryClient:
         match = filter.matches if filter is not None else (lambda _r: True)
 
         def factory(_owner):
+            if call_error is not None:
+                raise call_error
             items, _ = store.page(match, cursor, "export relationships")
             store.respond(call_options)
-            for relationship, after in items:
+            for i, (relationship, after) in enumerate(items):
+                error = store.fault(call, FaultStage.ITEM, i)
+                if error is not None:
+                    raise error
                 yield ExportedRelationship(relationship, after)
 
         return Stream(factory)
@@ -427,14 +587,25 @@ class InMemoryClient:
         """Add every relationship in one transaction, as SpiceDB does: if any
         already exists (or repeats within the import), nothing is added and
         the error is ``AlreadyExistsError``."""
+        batch = list(relationships)
+        call = self._store.begin_or_raise(
+            Operation.IMPORT_RELATIONSHIPS, batch,
+            {"batch_size": batch_size, "timeout": timeout, "call_options": call_options},
+        )
         Budget(timeout)
         _positive(batch_size, "batch_size")
         mutation_retry_policy(call_options, False, "import relationships")
-        batch = list(relationships)
-        for relationship in batch:
+        for i, relationship in enumerate(batch):
             if not isinstance(relationship, Relationship):
                 raise InvalidArgumentError("relationships: expected Relationship values")
             relationship._to_proto()
+            if i % batch_size == 0:
+                error = self._store.fault(call, FaultStage.IMPORT_BATCH, i // batch_size)
+                if error is not None:
+                    raise error
+        error = self._store.fault(call, FaultStage.IMPORT_COMMIT)
+        if error is not None:
+            raise error
         self._store.respond(call_options)
         return self._store.import_all(batch)
 
@@ -451,6 +622,10 @@ class InMemoryClient:
         call_options: CallOptions | None = None,
     ) -> DeleteResult:
         """Delete with SpiceDB's bounded / all-or-nothing semantics."""
+        self._store.begin_or_raise(Operation.DELETE_RELATIONSHIPS, filter, {
+            "limit": limit, "partial": partial, "must_match": must_match, "must_not_match": must_not_match,
+            "metadata": metadata, "timeout": timeout, "call_options": call_options,
+        })
         allow_partial = _delete_args(limit, partial)
         Budget(timeout)
         mutation_retry_policy(call_options, False, "delete relationships")
@@ -485,6 +660,10 @@ class InMemoryClient:
         A failure after an acknowledged batch carries ``delete_progress``, as
         the real client's does.
         """
+        self._store.begin_or_raise(Operation.DELETE_ALL_RELATIONSHIPS_NON_ATOMIC, filter, {
+            "page_size": page_size, "must_match": must_match, "must_not_match": must_not_match,
+            "metadata": metadata, "on_progress": on_progress, "timeout": timeout, "call_options": call_options,
+        })
         Budget(timeout)
         mutation_retry_policy(call_options, False, "delete relationships")
         _positive(page_size, "page_size")
@@ -513,6 +692,7 @@ class InMemoryClient:
         self, *, timeout: float | None = None, call_options: CallOptions | None = None
     ) -> SchemaResult:
         """Return the schema last written, or raise ``NotFoundError`` as SpiceDB does."""
+        self._store.begin_or_raise(Operation.READ_SCHEMA, None, {"timeout": timeout, "call_options": call_options})
         Budget(timeout)
         _call_options(call_options)
         self._store.respond(call_options)
@@ -525,6 +705,7 @@ class InMemoryClient:
         self, schema: str, *, timeout: float | None = None, call_options: CallOptions | None = None
     ) -> ZedToken:
         """Store the schema text. It is not compiled or validated."""
+        self._store.begin_or_raise(Operation.WRITE_SCHEMA, schema, {"timeout": timeout, "call_options": call_options})
         Budget(timeout)
         mutation_retry_policy(call_options, True, "write schema")
         if not isinstance(schema, str):
@@ -545,6 +726,9 @@ class InMemoryClient:
     ) -> ReflectSchemaResult:
         """Return the result registered with :meth:`set_reflect_schema_result`,
         stamped with the current revision; without one, ``NotFoundError``."""
+        self._store.begin_or_raise(Operation.REFLECT_SCHEMA, None, {
+            "consistency": consistency, "filters": filters, "timeout": timeout, "call_options": call_options,
+        })
         Budget(timeout)
         _call_options(call_options)
         _requests.reflect_schema_request(consistency, filters)
@@ -587,6 +771,22 @@ class AsyncInMemoryClient:
         """Set the headers and trailers every operation reports to a
         ``CallOptions(response_metadata=...)`` target."""
         self._sync.set_response_metadata(headers, trailers)
+
+    def set_fault_hook(self, hook: Callable[[Fault], BaseException | None] | None) -> None:
+        """See :meth:`InMemoryClient.set_fault_hook`."""
+        self._sync.set_fault_hook(hook)
+
+    def fail_next(self, operation: Operation, error: BaseException) -> None:
+        """See :meth:`InMemoryClient.fail_next`."""
+        self._sync.fail_next(operation, error)
+
+    def calls(self) -> list[Call]:
+        """Every recorded call, in order."""
+        return self._sync.calls()
+
+    def calls_of(self, operation: Operation) -> list[Call]:
+        """The recorded calls of one operation, in order."""
+        return self._sync.calls_of(operation)
 
     async def write(
         self,

@@ -9,6 +9,8 @@
 - Bulk checks can return per-item errors next to the other results.
 - A client can wrap a caller-owned channel, and any call can capture the
   server's response headers and trailers.
+- The in-memory double records calls and injects faults (a failed import
+  batch, for one) shaped like the real client's errors.
 """
 
 import asyncio
@@ -27,9 +29,11 @@ from spicedb import (
     Filter,
     InvalidArgumentError,
     ObjectRef,
+    Operation,
     PermissionCheck,
     Relationship,
     ResponseMetadata,
+    SpiceDBError,
     SubjectRef,
     Transaction,
     TransportSecurity,
@@ -39,6 +43,7 @@ from spicedb import (
 )
 from spicedb import sync
 from spicedb.aio import SpiceDBClient
+from spicedb.testing import AsyncInMemoryClient, FaultStage
 
 pytestmark = pytest.mark.integration
 
@@ -188,3 +193,25 @@ async def test_caller_owned_channel_and_response_metadata():
         assert (await SpiceDBClient.from_channel(channel).read_schema()).schema == schema.schema
     finally:
         await channel.close()
+
+
+async def test_failure_paths_with_the_in_memory_double(client: SpiceDBClient):
+    # A restore tool's failure path, tested without a fake server: the double
+    # fails the second import batch the way SpiceDB would, and applies nothing.
+    double = AsyncInMemoryClient()
+    double.set_fault_hook(
+        lambda fault: SpiceDBError.from_code(grpc.StatusCode.ALREADY_EXISTS, "duplicate relationship")
+        if fault.stage is FaultStage.IMPORT_BATCH and fault.item == 1
+        else None
+    )
+    with pytest.raises(AlreadyExistsError):
+        await double.import_relationships(_docs("restore-", 5), batch_size=2)
+    assert double.relationships() == []
+    imported = double.calls_of(Operation.IMPORT_RELATIONSHIPS)[0]
+    assert imported.options["batch_size"] == 2
+
+    # The real client raises the same shape for the same server failure.
+    await _seed(client, _docs("dup-", 1))
+    with pytest.raises(AlreadyExistsError) as real:
+        await client.import_relationships(_docs("dup-", 1))
+    print("double and real client agree:", type(real.value).__name__)

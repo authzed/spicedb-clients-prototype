@@ -797,6 +797,14 @@ class Transaction:
         """A snapshot of the queued preconditions, in order."""
         return tuple(self._precondition_list)
 
+    def is_idempotent(self) -> bool:
+        """Whether replaying this transaction is safe: it holds only touches
+        and no preconditions. This is the rule the client uses to decide
+        whether a ``write`` may be retried."""
+        return not self._precondition_list and all(
+            update.operation is UpdateOperation.TOUCH for update in self._update_list
+        )
+
     def __len__(self) -> int:
         return len(self._update_list)
 

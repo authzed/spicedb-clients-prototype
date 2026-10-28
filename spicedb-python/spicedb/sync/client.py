@@ -18,13 +18,14 @@ from spicedb.options import (
     Paging,
     CallOptions,
     DEFAULT_RETRY_POLICY,
+    Operation,
     _option,
 )
 from spicedb.token import ZedToken, _token_string
 
 import time
 from typing import Any
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 import grpc
 from authzed.api.v1 import (
     core_pb2 as core,
@@ -127,6 +128,7 @@ class SpiceDBClient(ClientConfig):
         default_timeout: float | DefaultDeadline = 30.0,
         retry_policy: RetryPolicy | Retries = DEFAULT_RETRY_POLICY,
         stream_retries: StreamRetries = StreamRetries.ENABLED,
+        operation_retry_policies: Mapping[Operation, RetryPolicy | Retries] | None = None,
     ) -> None:
         insecure = _option(transport_security, TransportSecurity) == "plaintext"
         allow_insecure_remote_credentials = _option(remote_credentials, RemoteCredentials) == "allow"
@@ -141,7 +143,7 @@ class SpiceDBClient(ClientConfig):
             client_cert=client_cert,
             client_key=client_key,
         )
-        self._configure(default_timeout, retry_policy, stream_retries)
+        self._configure(default_timeout, retry_policy, stream_retries, operation_retry_policies)
         self._endpoint = endpoint
         self._insecure = insecure
         self._ca_cert = ca_cert
@@ -161,6 +163,7 @@ class SpiceDBClient(ClientConfig):
         default_timeout: float | DefaultDeadline = 30.0,
         retry_policy: RetryPolicy | Retries = DEFAULT_RETRY_POLICY,
         stream_retries: StreamRetries = StreamRetries.ENABLED,
+        operation_retry_policies: Mapping[Operation, RetryPolicy | Retries] | None = None,
     ) -> SpiceDBClient:
         """Build a client over a caller-owned ``grpc.Channel``.
 
@@ -174,7 +177,7 @@ class SpiceDBClient(ClientConfig):
         if not isinstance(channel, grpc.Channel):
             raise InvalidArgumentError("channel: expected grpc.Channel")
         client = cls.__new__(cls)
-        client._configure(default_timeout, retry_policy, stream_retries)
+        client._configure(default_timeout, retry_policy, stream_retries, operation_retry_policies)
         client._endpoint = None
         client._insecure = False
         client._ca_cert = client._client_cert = client._client_key = None
@@ -239,7 +242,7 @@ class SpiceDBClient(ClientConfig):
     def __exit__(self, exc_type, exc_value, traceback) -> None:
         self.close()
 
-    def _rpc(self, rpc, request, budget: Budget, retry: bool = False, call_options: CallOptions | None = None):
+    def _rpc(self, rpc, request, budget: Budget, retry: Operation | RetryPolicy | bool = False, call_options: CallOptions | None = None):
         policy = self._policy(retry, call_options)
         kwargs = self._call_kwargs(call_options)
         target = response_target(call_options)
@@ -280,7 +283,7 @@ class SpiceDBClient(ClientConfig):
         request = _requests.check_request(check, consistency, context, tracing)
         self._ensure_channel()
         return _mapping.check_result(
-            self._rpc(self._permissions.CheckPermission, request, budget, True, call_options)
+            self._rpc(self._permissions.CheckPermission, request, budget, Operation.CHECK, call_options)
         )
 
     def check_bulk(
@@ -314,7 +317,7 @@ class SpiceDBClient(ClientConfig):
         results = []
         for i, request in enumerate(requests):
             response = self._rpc(
-                self._permissions.CheckBulkPermissions, request, budget, True, call_options
+                self._permissions.CheckBulkPermissions, request, budget, Operation.CHECK_BULK, call_options
             )
             results.extend(
                 _mapping.check_results(response, request.items, i * 1000, return_errors)
@@ -337,7 +340,7 @@ class SpiceDBClient(ClientConfig):
         ``CallOptions(retry_policy=...)``.
         """
         budget = self._budget(timeout)
-        policy = self._mutation_policy(call_options, write_is_idempotent(transaction), "write")
+        policy = self._mutation_policy(call_options, write_is_idempotent(transaction), "write", Operation.WRITE)
         request = _requests.write_request(transaction)
         if metadata is not None:
             request.optional_transaction_metadata.CopyFrom(
@@ -370,7 +373,7 @@ class SpiceDBClient(ClientConfig):
         """
         allow_partial = _option(partial, DeletePartial) == "allowed"
         budget = self._budget(timeout)
-        self._mutation_policy(call_options, False, "delete relationships")
+        self._mutation_policy(call_options, False, "delete relationships", Operation.DELETE_RELATIONSHIPS)
         if allow_partial or limit is not None:
             _positive(limit, "limit")
         self._ensure_channel()
@@ -430,7 +433,7 @@ class SpiceDBClient(ClientConfig):
         called after each acknowledged batch with the cumulative result.
         """
         budget = self._budget(timeout)
-        self._mutation_policy(call_options, False, "delete relationships")
+        self._mutation_policy(call_options, False, "delete relationships", Operation.DELETE_ALL_RELATIONSHIPS_NON_ATOMIC)
         must_match = tuple(must_match)
         must_not_match = tuple(must_not_match)
         metadata = _snapshot(metadata)
@@ -477,7 +480,7 @@ class SpiceDBClient(ClientConfig):
         budget = self._budget(timeout)
         self._ensure_channel()
         response = self._rpc(
-            self._schema.ReadSchema, s.ReadSchemaRequest(), budget, True, call_options
+            self._schema.ReadSchema, s.ReadSchemaRequest(), budget, Operation.READ_SCHEMA, call_options
         )
         return SchemaResult(response.schema_text, ZedToken(response.read_at.token))
 
@@ -486,7 +489,7 @@ class SpiceDBClient(ClientConfig):
     ) -> ZedToken:
         """Write schema. Idempotent, so it may opt in to retries with ``CallOptions(retry_policy=...)``."""
         budget = self._budget(timeout)
-        policy = self._mutation_policy(call_options, True, "write schema")
+        policy = self._mutation_policy(call_options, True, "write schema", Operation.WRITE_SCHEMA)
         self._ensure_channel()
         response = self._rpc(
             self._schema.WriteSchema, s.WriteSchemaRequest(schema=schema), budget, policy, call_options
@@ -509,7 +512,7 @@ class SpiceDBClient(ClientConfig):
             self._permissions.ExpandPermissionTree,
             _requests.expand_request(resource, permission, consistency),
             budget,
-            True,
+            Operation.EXPAND_PERMISSION_TREE,
             call_options,
         )
         return ExpandResult(
@@ -531,7 +534,7 @@ class SpiceDBClient(ClientConfig):
             self._schema.ReflectSchema,
             _requests.reflect_schema_request(consistency, filters),
             budget,
-            True,
+            Operation.REFLECT_SCHEMA,
             call_options,
         )
         return ReflectSchemaResult._from_proto(response)
@@ -554,7 +557,7 @@ class SpiceDBClient(ClientConfig):
         )
         request.optional_definition_name_filter = definition_name_filter or ""
         response = self._rpc(
-            self._schema.ComputablePermissions, request, budget, True, call_options
+            self._schema.ComputablePermissions, request, budget, Operation.COMPUTABLE_PERMISSIONS, call_options
         )
         return RelationsResult(
             [RelationReference._from_proto(x) for x in response.permissions],
@@ -579,7 +582,7 @@ class SpiceDBClient(ClientConfig):
                 consistency, definition_name, permission_name
             ),
             budget,
-            True,
+            Operation.DEPENDENT_RELATIONS,
             call_options,
         )
         return RelationsResult(
@@ -602,7 +605,7 @@ class SpiceDBClient(ClientConfig):
             self._schema.DiffSchema,
             _requests.diff_schema_request(consistency, comparison_schema),
             budget,
-            True,
+            Operation.DIFF_SCHEMA,
             call_options,
         )
         return SchemaDiffResult(
@@ -614,7 +617,7 @@ class SpiceDBClient(ClientConfig):
     ) -> None:
         """Experimental: register a stored relationship counter."""
         budget = self._budget(timeout)
-        self._mutation_policy(call_options, False, "register relationship counter")
+        self._mutation_policy(call_options, False, "register relationship counter", Operation.EXPERIMENTAL_REGISTER_RELATIONSHIP_COUNTER)
         self._ensure_channel()
         self._rpc(
             self._experimental.ExperimentalRegisterRelationshipCounter,
@@ -631,7 +634,7 @@ class SpiceDBClient(ClientConfig):
     ) -> None:
         """Experimental: unregister a stored relationship counter."""
         budget = self._budget(timeout)
-        self._mutation_policy(call_options, False, "unregister relationship counter")
+        self._mutation_policy(call_options, False, "unregister relationship counter", Operation.EXPERIMENTAL_UNREGISTER_RELATIONSHIP_COUNTER)
         self._ensure_channel()
         self._rpc(
             self._experimental.ExperimentalUnregisterRelationshipCounter,
@@ -651,7 +654,7 @@ class SpiceDBClient(ClientConfig):
             self._experimental.ExperimentalCountRelationships,
             e.ExperimentalCountRelationshipsRequest(name=name),
             budget,
-            True,
+            Operation.EXPERIMENTAL_COUNT_RELATIONSHIPS,
             call_options,
         )
         if response.HasField("read_counter_value"):
@@ -681,7 +684,7 @@ class SpiceDBClient(ClientConfig):
             consistency=consistency._to_proto(),
         )
         response = self._rpc(
-            self._materialize.ExperimentalRoaringLookupResources, request, budget, True, call_options
+            self._materialize.ExperimentalRoaringLookupResources, request, budget, Operation.EXPERIMENTAL_ROARING_LOOKUP_RESOURCES, call_options
         )
         return RoaringLookupResourcesResult(
             response.bitmap, response.cardinality, ZedToken(response.at_revision.token)
@@ -700,11 +703,12 @@ class SpiceDBClient(ClientConfig):
         call_options=None,
         start_cursor=None,
         single_request=False,
+        operation=None,
     ):
         # Validate options before any transport work.
         kwargs = self._call_kwargs(call_options)
         target = response_target(call_options)
-        policy = self._stream_policy(watch, call_options)
+        policy = self._stream_policy(watch, call_options, operation)
 
         def factory(owner):
             """Factory."""
@@ -817,6 +821,7 @@ class SpiceDBClient(ClientConfig):
             call_options=call_options,
             start_cursor=start,
             single_request=single,
+            operation=Operation.READ_RELATIONSHIPS,
         )
 
     def lookup_resources(
@@ -876,6 +881,7 @@ class SpiceDBClient(ClientConfig):
             call_options=call_options,
             start_cursor=start,
             single_request=single,
+            operation=Operation.LOOKUP_RESOURCES,
         )
 
     def lookup_subjects(
@@ -927,6 +933,7 @@ class SpiceDBClient(ClientConfig):
             page_size,
             limit,
             call_options=call_options,
+            operation=Operation.LOOKUP_SUBJECTS,
         )
 
     def export_relationships(
@@ -966,6 +973,7 @@ class SpiceDBClient(ClientConfig):
             page_size,
             call_options=call_options,
             start_cursor=start,
+            operation=Operation.EXPORT_RELATIONSHIPS,
         )
 
     def watch(
@@ -997,6 +1005,7 @@ class SpiceDBClient(ClientConfig):
             budget,
             watch=True,
             call_options=call_options,
+            operation=Operation.WATCH,
         )
 
     def import_relationships(
@@ -1015,7 +1024,7 @@ class SpiceDBClient(ClientConfig):
         """
         budget = Budget(timeout)
         _positive(batch_size, "batch_size")
-        self._mutation_policy(call_options, False, "import relationships")
+        self._mutation_policy(call_options, False, "import relationships", Operation.IMPORT_RELATIONSHIPS)
         kwargs = self._call_kwargs(call_options)
         target = response_target(call_options)
         self._ensure_channel()
@@ -1075,7 +1084,7 @@ class SpiceDBClient(ClientConfig):
             self._materialize_relationships.ExperimentalCountRelationshipsByFilter,
             request,
             budget,
-            True,
+            Operation.EXPERIMENTAL_COUNT_RELATIONSHIPS_BY_FILTER,
             call_options,
         )
         return CountResult(response.relationship_count, ZedToken(response.read_at.token))
@@ -1101,6 +1110,7 @@ class SpiceDBClient(ClientConfig):
             budget,
             watch=True,
             call_options=call_options,
+            operation=Operation.WATCH_PERMISSION_SETS,
         )
 
     def lookup_permission_sets(
@@ -1133,6 +1143,7 @@ class SpiceDBClient(ClientConfig):
             budget,
             limit=limit,
             call_options=call_options,
+            operation=Operation.LOOKUP_PERMISSION_SETS,
         )
 
     def download_permission_sets(
@@ -1151,6 +1162,6 @@ class SpiceDBClient(ClientConfig):
         )
         self._ensure_channel()
         response = self._rpc(
-            self._permission_sets.DownloadPermissionSets, request, budget, True, call_options
+            self._permission_sets.DownloadPermissionSets, request, budget, Operation.DOWNLOAD_PERMISSION_SETS, call_options
         )
         return _mapping.permission_set_download(response)

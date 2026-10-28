@@ -73,6 +73,23 @@ RSpec.describe SpiceDBProto::Client do
     end
   end
 
+  describe ".from_channel" do
+    it "builds every stub on the caller's channel and never closes it" do
+      channel = GRPC::Core::Channel.new("localhost:50051", {}, :this_channel_is_insecure)
+      client = described_class.from_channel(channel)
+      services = [client.permissions, client.schema, client.watch, client.experimental,
+                  client.materialize, client.materialize_relationships, client.permission_sets]
+      expect(services.map(&:channel).uniq).to eq([channel])
+      client.close
+      expect { channel.connectivity_state }.not_to raise_error
+      channel.close
+    end
+
+    it "rejects anything but a channel" do
+      expect { described_class.from_channel("localhost:50051") }.to raise_error(ArgumentError)
+    end
+  end
+
   describe "#close" do
     it "does not raise when called" do
       client = described_class.new("localhost:50051", "test-token", insecure: true)

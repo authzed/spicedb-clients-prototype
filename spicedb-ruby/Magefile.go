@@ -54,6 +54,7 @@ var wantExamples = []string{
 	"roaring_lookup_resources",
 	"schema_management",
 	"schema_reflection",
+	"tooling_escape_hatches",
 	"unrepresentable_values",
 	"watch_changes",
 	"write_relationships",

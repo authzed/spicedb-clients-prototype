@@ -1,3 +1,10 @@
 source "https://rubygems.org"
 
 gemspec
+
+# The official legacy gem, used only by spec/authzed_bridge_spec.rb: the spec
+# copies it, runs bridge/authzed_bridge.rb on the copy, and loads both in one
+# process. Pinned so the bridge is tested against a known release.
+group :test do
+  gem "authzed", "1.5.0", require: false
+end

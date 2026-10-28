@@ -49,14 +49,14 @@ class CountingService < Authzed::Api::V1::PermissionsService::Service
 end
 
 RSpec.describe 'Retry policy' do
-  def with_stand_in(service, &block)
+  def with_stand_in(service, **options, &block)
     server = GRPC::RpcServer.new(pool_size: 4)
     port = server.add_http2_port('127.0.0.1:0', :this_port_is_insecure)
     server.handle(service)
     thread = Thread.new { server.run }
     server.wait_till_running
     begin
-      SpiceDB::Client.new_plaintext("127.0.0.1:#{port}", 'some-token', &block)
+      SpiceDB::Client.new_plaintext("127.0.0.1:#{port}", 'some-token', **options, &block)
     ensure
       server.stop
       thread.join(5)
@@ -117,5 +117,33 @@ RSpec.describe 'Retry policy' do
                                       'RESOURCE_EXHAUSTED must not be retried: retrying turns a ' \
                                       'load-shedding SpiceDB into a client-driven retry storm ' \
                                       "(saw #{service.check_attempts} attempts)"
+  end
+
+  def check_readme(client)
+    alice = SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: 'alice'))
+    client.check(SpiceDB::PermissionCheck.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'readme'),
+                                              permission: 'view', subject: alice), consistency: SpiceDB::Consistency.full)
+  end
+
+  it 'lets a caller replace the policy, opting into RESOURCE_EXHAUSTED and logging each retry', :no_spicedb do
+    # A tool with its own policy (zed's --max-retries) supplies it client-wide
+    # instead of stacking it on the default. Mutations still never retry.
+    retries = []
+    policy = SpiceDB::RetryPolicy.new(max_retries: 1, initial_backoff: 0.01,
+                                      retryable_codes: [GRPC::Core::StatusCodes::RESOURCE_EXHAUSTED, GRPC::Core::StatusCodes::UNAVAILABLE],
+                                      on_retry: ->(event) { retries << [event.operation, event.attempt, event.error.class] })
+    service = CountingService.new(check_failures: 1, check_error: GRPC::ResourceExhausted)
+    with_stand_in(service, retry_policy: policy) { |c| expect(check_readme(c).has_permission?).to be(true) }
+
+    expect(service.check_attempts).to eq(2)
+    expect(retries).to eq([['check_permission', 1, SpiceDB::ResourceExhaustedError]])
+  end
+
+  it 'turns every automatic retry off with a named mode', :no_spicedb do
+    service = CountingService.new(check_failures: 1)
+    with_stand_in(service, retries: SpiceDB::Retries::DISABLED) do |c|
+      expect { check_readme(c) }.to raise_error(SpiceDB::UnavailableError)
+    end
+    expect(service.check_attempts).to eq(1)
   end
 end

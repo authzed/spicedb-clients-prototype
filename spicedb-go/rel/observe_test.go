@@ -150,3 +150,15 @@ func TestRelationshipCopyHelpers(t *testing.T) {
 	require.Equal(t, "folder:root#owner@team:eng#member[expiration:2030-01-01T00:00:00Z]", moved.String())
 	require.Equal(t, "document:readme#viewer@user:alice[expiration:2030-01-01T00:00:00Z]", r.String(), "copies leave the original unchanged")
 }
+
+func TestTxnIsIdempotent(t *testing.T) {
+	var empty, touch, create, guarded Txn
+	require.True(t, empty.IsIdempotent())
+	require.NoError(t, touch.Touch(MustFromTuple("document:a#viewer@user:x")))
+	require.True(t, touch.IsIdempotent())
+	require.NoError(t, create.Create(MustFromTuple("document:a#viewer@user:x")))
+	require.False(t, create.IsIdempotent())
+	require.NoError(t, guarded.MustMatch(MustNewFilter("document")))
+	require.NoError(t, guarded.Touch(MustFromTuple("document:a#viewer@user:x")))
+	require.False(t, guarded.IsIdempotent())
+}

@@ -74,9 +74,7 @@ func mergeCheckContext(defaults, item map[string]any) map[string]any {
 // Check uses the singular CheckPermission RPC, including its native tracing flag.
 func (c *Client) Check(ctx context.Context, request PermissionCheck, opts ...CheckOption) (CheckResult, error) {
 	o := operationOptions{}
-	for _, opt := range opts {
-		opt(&o)
-	}
+	applyOptions(c, &o, opts)
 	ctx, cancel, e := c.operation(ctx, o, false)
 	if e != nil {
 		return CheckResult{}, e
@@ -97,9 +95,7 @@ func (c *Client) Check(ctx context.Context, request PermissionCheck, opts ...Che
 }
 func (c *Client) CheckBulk(ctx context.Context, requests []PermissionCheck, opts ...CheckOption) ([]CheckResult, error) {
 	o := operationOptions{}
-	for _, opt := range opts {
-		opt(&o)
-	}
+	applyOptions(c, &o, opts)
 	ctx, cancel, e := c.operation(ctx, o, false)
 	if e != nil {
 		return nil, e
@@ -179,9 +175,7 @@ func (c *Client) checkChunk(ctx context.Context, cs *v1.Consistency, items []*v1
 // CheckIter consumes input with backpressure. Its optional timeout starts at iteration.
 func (c *Client) CheckIter(ctx context.Context, requests iter.Seq[PermissionCheck], opts ...CheckOption) iter.Seq2[CheckResult, error] {
 	o := operationOptions{}
-	for _, opt := range opts {
-		opt(&o)
-	}
+	applyOptions(c, &o, opts)
 	return func(yield func(CheckResult, error) bool) {
 		ctx, cancel, e := c.operation(ctx, o, true)
 		if e != nil {

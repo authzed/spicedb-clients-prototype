@@ -26,9 +26,7 @@ type UnregisterRelationshipCounterResult struct{}
 // Experimental: RegisterRelationshipCounter registers a mutable asynchronous counter.
 func (c *Client) RegisterRelationshipCounter(ctx context.Context, request RegisterRelationshipCounterRequest, opts ...RegisterRelationshipCounterOption) (RegisterRelationshipCounterResult, error) {
 	o := operationOptions{}
-	for _, opt := range opts {
-		opt(&o)
-	}
+	applyOptions(c, &o, opts)
 	if _, e := mutationRetry(o, false, "register relationship counter"); e != nil {
 		return RegisterRelationshipCounterResult{}, e
 	}
@@ -51,9 +49,7 @@ func (c *Client) RegisterRelationshipCounter(ctx context.Context, request Regist
 // Experimental: CountRelationships reads a registered asynchronous counter.
 func (c *Client) CountRelationships(ctx context.Context, request CountRelationshipsRequest, opts ...CountRelationshipsOption) (CountRelationshipsResult, error) {
 	o := operationOptions{}
-	for _, opt := range opts {
-		opt(&o)
-	}
+	applyOptions(c, &o, opts)
 	ctx, cancel, e := c.operation(ctx, o, false)
 	if e != nil {
 		return CountRelationshipsResult{}, e
@@ -77,9 +73,7 @@ func (c *Client) CountRelationships(ctx context.Context, request CountRelationsh
 // Experimental: UnregisterRelationshipCounter removes an asynchronous counter.
 func (c *Client) UnregisterRelationshipCounter(ctx context.Context, request UnregisterRelationshipCounterRequest, opts ...UnregisterRelationshipCounterOption) (UnregisterRelationshipCounterResult, error) {
 	o := operationOptions{}
-	for _, opt := range opts {
-		opt(&o)
-	}
+	applyOptions(c, &o, opts)
 	if _, e := mutationRetry(o, false, "unregister relationship counter"); e != nil {
 		return UnregisterRelationshipCounterResult{}, e
 	}
@@ -109,9 +103,7 @@ type RoaringLookupResourcesResult struct {
 // Experimental: RoaringLookupResources calls materialize on the same authenticated connection.
 func (c *Client) RoaringLookupResources(ctx context.Context, request RoaringLookupResourcesRequest, opts ...RoaringLookupResourcesOption) (RoaringLookupResourcesResult, error) {
 	o := operationOptions{}
-	for _, opt := range opts {
-		opt(&o)
-	}
+	applyOptions(c, &o, opts)
 	ctx, cancel, e := c.operation(ctx, o, false)
 	if e != nil {
 		return RoaringLookupResourcesResult{}, e

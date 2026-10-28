@@ -382,7 +382,7 @@ func bracket(indent int, prefix string, items []string, suffix string) string {
 	}
 	isDef := strings.HasPrefix(prefix, "def ") || strings.HasPrefix(prefix, "async def ")
 	inner := ind + "    " + strings.Join(items, ", ")
-	if len(inner) <= lineLength && !(isDef && len(items) == 1) {
+	if len(inner) <= lineLength && (!isDef || len(items) != 1) {
 		return ind + prefix + "(\n" + inner + "\n" + ind + ")" + suffix
 	}
 	var b strings.Builder
@@ -1090,5 +1090,13 @@ func celTypeToPyType(celType string) string {
 		return "bool"
 	default:
 		return "Any"
+	}
+}
+
+// Options lists the options this generator accepts, for the CLI's help.
+func (g *Generator) Options() []generator.Option {
+	return []generator.Option{
+		{Name: "module", Value: "<name>", Description: "Python package name the generated sync/aio modules import from."},
+		{Name: "rename", Value: "<definition>=<ClassName>[,...]", Description: "Class-name stem for a definition whose generated names collide; schema names on the wire are unchanged."},
 	}
 }

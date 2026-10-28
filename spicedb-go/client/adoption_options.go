@@ -1,6 +1,7 @@
 package client
 
 import (
+	"reflect"
 	"time"
 
 	"google.golang.org/grpc"
@@ -10,10 +11,25 @@ import (
 	"github.com/authzed/spicedb-clients/spicedb-go/rel"
 )
 
-// operationOption is satisfied by every operation's option type
-// (CheckOption, WriteOption, ReadSchemaOption, ...).
-type operationOption interface {
+// OperationOption is the constraint satisfied by every operation's option
+// type (CheckOption, WriteOption, ReadSchemaOption, ...). It lets callers
+// write generic helpers over the generic options, for example:
+//
+//	func noRetry[O client.OperationOption]() O { return client.WithCallRetryPolicy[O](client.RetryPolicy{}) }
+type OperationOption interface {
 	~func(*operationOptions)
+}
+
+// applyOptions applies the client's per-operation defaults for O, then opts.
+func applyOptions[O OperationOption](c *Client, o *operationOptions, opts []O) {
+	if c != nil && c.opRetry != nil {
+		if p, ok := c.opRetry[reflect.TypeFor[O]()]; ok {
+			o.opRetryPolicy = p
+		}
+	}
+	for _, opt := range opts {
+		opt(o)
+	}
 }
 
 // WithCallOptions passes gRPC call options to every RPC the operation makes.
@@ -24,7 +40,7 @@ type operationOption interface {
 //
 // Options apply to each attempt, chunk and page. Call options that change
 // retry or transport security are the caller's responsibility.
-func WithCallOptions[O operationOption](opts ...grpc.CallOption) O {
+func WithCallOptions[O OperationOption](opts ...grpc.CallOption) O {
 	opts = append([]grpc.CallOption(nil), opts...)
 	return func(o *operationOptions) { o.callOptions = append(o.callOptions, opts...) }
 }
@@ -34,7 +50,7 @@ func WithCallOptions[O operationOption](opts ...grpc.CallOption) O {
 // that make several RPCs (retries, chunks, pages), the last RPC's metadata
 // wins. Data that SpiceDB versions before 1.30 send in trailers is reachable
 // this way.
-func WithResponseMetadata[O operationOption](header, trailer *metadata.MD) O {
+func WithResponseMetadata[O OperationOption](header, trailer *metadata.MD) O {
 	var opts []grpc.CallOption
 	if header != nil {
 		opts = append(opts, grpc.Header(header))
@@ -308,12 +324,16 @@ type retrySettings struct {
 	streams bool // whether stream establishment may retry
 }
 
-// retrySettings resolves the client's retry behavior for one operation: a
-// per-call WithCallRetryPolicy wins over the client-wide policy and also
-// governs stream establishment for that call.
+// retrySettings resolves the client's retry behavior for one operation. The
+// most specific policy wins: WithCallRetryPolicy, then the client's
+// WithOperationRetryPolicy for this operation, then the client-wide policy. A
+// call or operation policy also governs stream establishment.
 func (c *Client) retrySettings(o operationOptions) retrySettings {
 	if o.callRetryPolicy != nil {
 		return retrySettings{policy: *o.callRetryPolicy, streams: true}
+	}
+	if o.opRetryPolicy != nil {
+		return retrySettings{policy: *o.opRetryPolicy, streams: true}
 	}
 	return retrySettings{policy: c.retryPolicy(), streams: c == nil || !c.noStreamRetries}
 }
@@ -327,7 +347,7 @@ func (c *Client) retrySettings(o operationOptions) retrySettings {
 // and may opt in through this option: a Write whose transaction contains only
 // touches and no preconditions, and WriteSchema. Any other mutation given a
 // policy with retries fails with ErrInvalidArgument before any RPC.
-func WithCallRetryPolicy[O operationOption](policy RetryPolicy) O {
+func WithCallRetryPolicy[O OperationOption](policy RetryPolicy) O {
 	policy.RetryableCodes = append([]ErrorCode(nil), policy.RetryableCodes...)
 	return func(o *operationOptions) {
 		if policy.MaxRetries < 0 || (policy.MaxRetries > 0 && policy.InitialBackoff <= 0) || policy.MaxBackoff < 0 {
@@ -339,15 +359,60 @@ func WithCallRetryPolicy[O operationOption](policy RetryPolicy) O {
 }
 
 // mutationRetry returns the retry settings for a mutation: none unless the
-// caller opted this call in, which only idempotent mutations may do.
+// caller opted in, which only idempotent mutations may do. A per-call opt-in
+// on a non-idempotent mutation is an error; a client-wide
+// WithOperationRetryPolicy applies only to the calls that are idempotent.
 func mutationRetry(o operationOptions, idempotent bool, op string) (retrySettings, error) {
-	if o.callRetryPolicy == nil || o.callRetryPolicy.MaxRetries == 0 {
-		return retrySettings{}, nil
+	if o.callRetryPolicy != nil && o.callRetryPolicy.MaxRetries > 0 {
+		if !idempotent {
+			return retrySettings{}, invalid("%s cannot be retried: only touch-only writes without preconditions and schema writes are idempotent on replay", op)
+		}
+		return retrySettings{policy: *o.callRetryPolicy}, nil
 	}
-	if !idempotent {
-		return retrySettings{}, invalid("%s cannot be retried: only touch-only writes without preconditions and schema writes are idempotent on replay", op)
+	if o.callRetryPolicy == nil && o.opRetryPolicy != nil && o.opRetryPolicy.MaxRetries > 0 && idempotent {
+		return retrySettings{policy: *o.opRetryPolicy}, nil
 	}
-	return retrySettings{policy: *o.callRetryPolicy}, nil
+	return retrySettings{}, nil
+}
+
+// neverReplayable lists the mutation option types whose operations are never
+// idempotent on replay, so a client-wide retrying policy for them is an error.
+var neverReplayable = map[reflect.Type]string{
+	reflect.TypeFor[DeleteOption]():                        "DeleteRelationships",
+	reflect.TypeFor[DeleteAllOption]():                     "DeleteAllRelationshipsNonAtomic",
+	reflect.TypeFor[ImportRelationshipsOption]():           "ImportRelationships",
+	reflect.TypeFor[RegisterRelationshipCounterOption]():   "RegisterRelationshipCounter",
+	reflect.TypeFor[UnregisterRelationshipCounterOption](): "UnregisterRelationshipCounter",
+}
+
+// WithOperationRetryPolicy sets the retry policy for every call of one
+// operation, identified by its option type, for example
+//
+//	client.WithOperationRetryPolicy[client.UpdatesOption](client.RetryPolicy{})
+//
+// so watches are never reopened while other operations keep the client's
+// policy. A per-call WithCallRetryPolicy still wins. For WriteOption the
+// policy applies only to writes that are idempotent on replay
+// (rel.Txn.IsIdempotent); other writes are not retried. Operations that are
+// never idempotent (deletes, delete-all, imports, counter registration)
+// reject a policy with retries.
+func WithOperationRetryPolicy[O OperationOption](policy RetryPolicy) Option {
+	policy.RetryableCodes = append([]ErrorCode(nil), policy.RetryableCodes...)
+	t := reflect.TypeFor[O]()
+	return func(o *options) {
+		if policy.MaxRetries < 0 || (policy.MaxRetries > 0 && policy.InitialBackoff <= 0) || policy.MaxBackoff < 0 {
+			o.err = invalid("retry policy needs non-negative retries and a positive initial backoff")
+			return
+		}
+		if name, ok := neverReplayable[t]; ok && policy.MaxRetries > 0 {
+			o.err = invalid("%s cannot be retried: it is not idempotent on replay", name)
+			return
+		}
+		if o.opRetry == nil {
+			o.opRetry = map[reflect.Type]*RetryPolicy{}
+		}
+		o.opRetry[t] = &policy
+	}
 }
 
 // Paging selects how ReadRelationships and LookupResources fetch results.
@@ -448,7 +513,7 @@ func (r ResolvedOptions) ResponseMetadata() (header, trailer *metadata.MD) {
 //
 //	r := client.ResolveOptions(opts...) // opts []client.ReadRelationshipsOption
 //	if r.Cursor != "" { ... }
-func ResolveOptions[O operationOption](opts ...O) ResolvedOptions {
+func ResolveOptions[O OperationOption](opts ...O) ResolvedOptions {
 	var o operationOptions
 	switch any(opts).(type) {
 	case []ReadRelationshipsOption:

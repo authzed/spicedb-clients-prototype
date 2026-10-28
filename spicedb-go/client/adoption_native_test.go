@@ -456,3 +456,62 @@ func TestResolveOptions(t *testing.T) {
 	require.Error(t, ResolveOptions(WithImportRelationshipsBatchSize(0)).Err)
 	require.Equal(t, PartialDisallowed, ResolveOptions(WithDeletePartial(PartialDisallowed)).PartialDeletion)
 }
+
+// noRetry is the kind of generic helper the exported OperationOption allows.
+func noRetry[O OperationOption]() O { return WithCallRetryPolicy[O](RetryPolicy{}) }
+
+func TestOperationRetryPolicy(t *testing.T) {
+	ctx := context.Background()
+	retryOnce := RetryPolicy{MaxRetries: 1, RetryableCodes: []ErrorCode{CodeUnavailable}, InitialBackoff: time.Millisecond}
+
+	// A client that never reopens watches, with no per-call option.
+	srv := &adoptionServer{}
+	c := newAdoptionClient(t, srv,
+		WithRetryPolicy(RetryPolicy{MaxRetries: 3, RetryableCodes: []ErrorCode{CodeUnavailable}, InitialBackoff: time.Millisecond}),
+		WithOperationRetryPolicy[UpdatesOption](RetryPolicy{}))
+	for _, err := range c.Updates(ctx, UpdatesRequest{}) {
+		require.ErrorIs(t, err, ErrUnavailable)
+		break
+	}
+	require.EqualValues(t, 1, srv.watchCalls.Load())
+	// ...while another operation keeps the client-wide policy.
+	srv.readSchemaErr = codes.Unavailable
+	_, err := c.ReadSchema(ctx, ReadSchemaRequest{})
+	require.Error(t, err)
+	require.EqualValues(t, 4, srv.readSchema.Load())
+
+	// A per-call option still wins over the operation policy.
+	srv = &adoptionServer{}
+	c = newAdoptionClient(t, srv, WithOperationRetryPolicy[UpdatesOption](RetryPolicy{}))
+	for _, err := range c.Updates(ctx, UpdatesRequest{}, WithCallRetryPolicy[UpdatesOption](retryOnce)) {
+		require.NoError(t, err)
+		break
+	}
+	require.EqualValues(t, 2, srv.watchCalls.Load())
+
+	// A client-wide write policy retries only idempotent writes, silently.
+	srv = &adoptionServer{writeErr: codes.Unavailable}
+	c = newAdoptionClient(t, srv, WithOperationRetryPolicy[WriteOption](retryOnce))
+	var touch, create rel.Txn
+	require.NoError(t, touch.Touch(testTriple("document", "a", "viewer", "user", "alice", "")))
+	require.NoError(t, create.Create(testTriple("document", "a", "viewer", "user", "alice", "")))
+	_, err = c.Write(ctx, WriteRequest{Transaction: touch})
+	require.NoError(t, err)
+	require.EqualValues(t, 2, srv.writes.Load(), "the touch-only write was retried")
+	srv.writes.Store(0)
+	_, err = c.Write(ctx, WriteRequest{Transaction: create})
+	require.ErrorIs(t, err, ErrUnavailable, "a create is not retried, and not rejected")
+	require.EqualValues(t, 1, srv.writes.Load())
+
+	// Never-idempotent operations reject a retrying operation policy at construction.
+	_, err = NewFromConn(&grpc.ClientConn{}, WithOperationRetryPolicy[DeleteOption](retryOnce))
+	require.ErrorIs(t, err, ErrInvalidArgument)
+	_, err = NewFromConn(&grpc.ClientConn{}, WithOperationRetryPolicy[ImportRelationshipsOption](RetryPolicy{}))
+	require.NoError(t, err, "a zero-retry policy is allowed anywhere")
+
+	// Generic helpers over OperationOption compile and work.
+	srv = &adoptionServer{readSchemaErr: codes.Unavailable}
+	_, err = newAdoptionClient(t, srv).ReadSchema(ctx, ReadSchemaRequest{}, noRetry[ReadSchemaOption]())
+	require.Error(t, err)
+	require.EqualValues(t, 1, srv.readSchema.Load())
+}

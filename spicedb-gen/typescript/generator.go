@@ -904,3 +904,12 @@ func celTypeToTS(celType string) string {
 		return "JSONValue"
 	}
 }
+
+// Options lists the options this generator accepts, for the CLI's help.
+func (g *Generator) Options() []generator.Option {
+	return []generator.Option{
+		{Name: "client-module", Value: "<specifier>", Description: `Module specifier the generated file imports the native client from (default "@spicedb/client").`},
+		{Name: "format", Value: "none|prettier", Description: `Format the output with the project's Prettier (default none).`},
+		{Name: "rename", Value: "<definition>=<Name>[,...]", Description: `Identifier stem for a definition whose generated names collide; schema names on the wire are unchanged.`},
+	}
+}

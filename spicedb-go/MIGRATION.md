@@ -113,7 +113,16 @@ Disable or replace the client's policy client-wide (`WithRetries`,
 `client.WithCallRetryPolicy[O](policy)`: for example `RetryPolicy{}` on one
 `Updates` call to never reopen a supervised watch, or a policy on a touch-only
 `Write` or a `WriteSchema` to retry those idempotent writes. Other mutations
-reject the opt-in.
+reject the opt-in. To apply a rule to every call of an operation, set it once
+on the client:
+
+```go
+c, err := client.NewSystemTLS(endpoint, key,
+    client.WithOperationRetryPolicy[client.UpdatesOption](client.RetryPolicy{}), // never reopen watches
+    client.WithOperationRetryPolicy[client.WriteOption](myPolicy))               // retries idempotent writes only
+```
+
+`txn.IsIdempotent()` tells you whether a transaction qualifies.
 
 ## Errors
 

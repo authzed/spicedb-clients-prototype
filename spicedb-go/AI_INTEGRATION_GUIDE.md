@@ -24,7 +24,20 @@ spicedb-gen --schema internal/authz/schema.zed --lang go --go.package=permission
   --out internal/authz/permissions/permissions.gen.go
 ```
 
-Commit the output; regenerate whenever the schema changes; never edit it. The
+Commit the output; regenerate whenever the schema changes; never edit it.
+Run `spicedb-gen --help` for every option. Keep the schema in a `.zed` file
+next to the code and embed it, so the server and the generator read the same
+text:
+
+```go
+//go:generate spicedb-gen --schema schema.zed --lang go --go.package=permissions --out permissions/permissions.gen.go
+
+//go:embed schema.zed
+var Schema string
+```
+
+If the schema can only be produced by Go code, pipe it in:
+`go run ./cmd/printschema | spicedb-gen --schema - --lang go ...`. The
 examples below use this schema:
 
 ```zed

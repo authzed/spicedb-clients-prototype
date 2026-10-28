@@ -76,6 +76,11 @@ current native APIs.
   - Output is formatted with the language's canonical formatter; the output
     package/module name is a generator option.
 
+- **Make every option discoverable.** Each generator implements
+  `generator.OptionDescriber`; `spicedb-gen --help` lists every language's
+  options, and a test fails if a generator stops describing them.
+  `--schema -` reads the schema from standard input.
+
 - **Treat caveat expressions as opaque.** Parsing replaces every caveat body
   with `true` (preserving line numbers) before compiling, so schemas whose
   caveats call functions outside SpiceDB's default CEL environment generate

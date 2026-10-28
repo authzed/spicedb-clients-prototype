@@ -799,3 +799,11 @@ func celTypeToGoType(celType string) string {
 		return "any"
 	}
 }
+
+// Options lists the options this generator accepts, for the CLI's help.
+func (g *Generator) Options() []generator.Option {
+	return []generator.Option{
+		{Name: "package", Value: "<name>", Description: `Go package name of the generated file (default "permissions").`},
+		{Name: "rename", Value: "<definition>=<GoName>[,...]", Description: `Go identifier stem for a definition whose generated names collide; schema names on the wire are unchanged.`},
+	}
+}

@@ -26,9 +26,7 @@ type UpdatesRequest struct {
 
 func (c *Client) Updates(ctx context.Context, request UpdatesRequest, opts ...UpdatesOption) iter.Seq2[WatchEvent, error] {
 	o := operationOptions{}
-	for _, opt := range opts {
-		opt(&o)
-	}
+	applyOptions(c, &o, opts)
 	types := append([]string(nil), request.ObjectTypes...)
 	var filters []*v1.RelationshipFilter
 	var validationErr error

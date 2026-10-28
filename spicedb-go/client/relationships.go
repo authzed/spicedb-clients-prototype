@@ -23,9 +23,7 @@ type WriteResult struct{ Revision consistency.ZedToken }
 
 func (c *Client) Write(ctx context.Context, request WriteRequest, opts ...WriteOption) (WriteResult, error) {
 	o := operationOptions{}
-	for _, opt := range opts {
-		opt(&o)
-	}
+	applyOptions(c, &o, opts)
 	ctx, cancel, e := c.operation(ctx, o, false)
 	if e != nil {
 		return WriteResult{}, e
@@ -61,11 +59,7 @@ func (c *Client) Write(ctx context.Context, request WriteRequest, opts ...WriteO
 	}
 	// An empty transaction is sent as is: SpiceDB accepts it, evaluates any
 	// preconditions, and returns the current revision.
-	touchOnly := len(ps) == 0
-	for _, u := range req.Updates {
-		touchOnly = touchOnly && u.GetOperation() == v1.RelationshipUpdate_OPERATION_TOUCH
-	}
-	rs, e := mutationRetry(o, touchOnly, "write")
+	rs, e := mutationRetry(o, request.Transaction.IsIdempotent(), "write")
 	if e != nil {
 		return WriteResult{}, e
 	}
@@ -97,9 +91,7 @@ type ReadRelationshipsRequest struct {
 
 func (c *Client) ReadRelationships(ctx context.Context, request ReadRelationshipsRequest, opts ...ReadRelationshipsOption) iter.Seq2[ReadRelationship, error] {
 	o := operationOptions{pageSize: defaultReadPageSize}
-	for _, opt := range opts {
-		opt(&o)
-	}
+	applyOptions(c, &o, opts)
 	f, fe := filter(request.Filter)
 	initialConsistency, ce := strategy(request.Consistency)
 	return func(yield func(ReadRelationship, error) bool) {
@@ -231,9 +223,7 @@ func (c *Client) deletePage(ctx context.Context, f *v1.RelationshipFilter, limit
 // a zero Limit uses the server's configured default.
 func (c *Client) DeleteRelationships(ctx context.Context, request DeleteRequest, opts ...DeleteOption) (DeleteResult, error) {
 	o := operationOptions{}
-	for _, opt := range opts {
-		opt(&o)
-	}
+	applyOptions(c, &o, opts)
 	if _, e := mutationRetry(o, false, "delete relationships"); e != nil {
 		return DeleteResult{}, e
 	}
@@ -258,9 +248,7 @@ func (c *Client) DeleteRelationships(ctx context.Context, request DeleteRequest,
 // Concurrent writes and ambiguous page failures can prevent exact recovery.
 func (c *Client) DeleteAllRelationshipsNonAtomic(ctx context.Context, request DeleteAllRequest, opts ...DeleteAllOption) (DeleteResult, error) {
 	o := operationOptions{pageSize: defaultDeletePageSize}
-	for _, opt := range opts {
-		opt(&o)
-	}
+	applyOptions(c, &o, opts)
 	if _, e := mutationRetry(o, false, "delete relationships"); e != nil {
 		return DeleteResult{}, e
 	}

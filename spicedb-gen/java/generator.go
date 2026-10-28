@@ -680,7 +680,7 @@ func buildTemplateData(s *schema.Schema, pkg string) (TemplateData, error) {
 
 func describeVariant(k variantKey) string {
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("subject %q", k.Def))
+	fmt.Fprintf(&b, "subject %q", k.Def)
 	if k.Rel != "" {
 		b.WriteString("#" + k.Rel)
 	}
@@ -1335,5 +1335,14 @@ func celTypeToJavaType(celType string) string {
 		return "String"
 	default:
 		return "Object"
+	}
+}
+
+// Options lists the options this generator accepts, for the CLI's help.
+func (g *Generator) Options() []generator.Option {
+	return []generator.Option{
+		{Name: "package", Value: "<java.package>", Description: "Java package of the generated classes (required)."},
+		{Name: "formatter", Value: "<command>", Description: "Command that reads Java source on stdin and writes formatted source on stdout."},
+		{Name: "rename", Value: "<definition>=<JavaName>[,...]", Description: "Identifier stem for a definition whose generated names collide; schema names on the wire are unchanged."},
 	}
 }

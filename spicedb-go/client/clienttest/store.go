@@ -20,6 +20,12 @@
 // limits, the export filter, and WithResponseMetadata targets (filled from
 // SetResponseMetadata). Other options are accepted and ignored; inspect them
 // with client.ResolveOptions if a test needs to.
+//
+// Every call is recorded (Calls), with its request and resolved options, so
+// tests can assert on what was sent without a strict mock. Faults can be
+// injected at defined points (SetFaultHook, FailNext): before any operation,
+// before each import batch, before an import commits, and before each read or
+// export item, so failure paths need no fake gRPC server.
 package clienttest
 
 import (
@@ -48,6 +54,9 @@ type Store struct {
 	header    metadata.MD
 	trailer   metadata.MD
 	hasSchema bool
+	calls     []Call
+	counts    map[string]int
+	hook      func(Fault) error
 }
 
 // NewStore returns a Store holding the given relationships.
@@ -62,8 +71,12 @@ func NewStore(initial ...rel.Relationship) *Store {
 // noSchema is SpiceDB's message for reading a schema before any was written.
 const noSchema = "no schema has been defined; please call WriteSchema to start"
 
-// serverError builds the error the real client returns when SpiceDB answers
-// operation op with code and message.
+// ServerError builds the error the real client returns when SpiceDB answers
+// operation op (an Op constant) with code and message, for fault hooks.
+func ServerError(op string, code client.ErrorCode, message string) *client.Error {
+	return serverError(op, code, message)
+}
+
 func serverError(op string, code client.ErrorCode, message string) *client.Error {
 	err := client.NewError(code, message)
 	err.Message = "spicedb: " + op + ": " + message
@@ -127,6 +140,124 @@ func (s *Store) respond(r client.ResolvedOptions) {
 	}
 }
 
+// Operation names, as recorded in Call.Operation and matched by FailNext. They
+// match the operation names in the real client's error messages.
+const (
+	OpWrite               = "write"
+	OpReadRelationships   = "read relationships"
+	OpExportRelationships = "export relationships"
+	OpImportRelationships = "import relationships"
+	OpDeleteRelationships = "delete relationships"
+	OpReadSchema          = "read schema"
+	OpWriteSchema         = "write schema"
+	OpReflectSchema       = "reflect schema"
+	OpCheck               = "check"
+	OpCheckBulk           = "check bulk"
+)
+
+// Call is one recorded operation.
+type Call struct {
+	// Operation is one of the Op constants.
+	Operation string
+	// Index counts calls of this operation, starting at 0.
+	Index int
+	// Request is the operation's request value (for CheckBulk, the slice of checks).
+	Request any
+	// Options are the call's resolved options.
+	Options client.ResolvedOptions
+}
+
+// Stage identifies where in an operation a fault hook runs.
+type Stage int
+
+const (
+	// StageCall runs before an operation does anything, including before a
+	// stream yields its first item.
+	StageCall Stage = iota
+	// StageImportBatch runs before import batch Fault.Item (0-based) is sent.
+	// Batches have the call's batch size (WithImportRelationshipsBatchSize,
+	// default 1000).
+	StageImportBatch
+	// StageImportCommit runs after every batch, before the import commits.
+	StageImportCommit
+	// StageItem runs before a read or export yields item Fault.Item (0-based).
+	StageItem
+)
+
+// Fault is the point at which a fault hook is consulted.
+type Fault struct {
+	Call  Call
+	Stage Stage
+	// Item is the batch index for StageImportBatch and the item index for
+	// StageItem; 0 otherwise.
+	Item int
+}
+
+// SetFaultHook installs hook, which runs at every Fault point; a non-nil
+// error is returned (or yielded) by the operation at that point, and a failed
+// write or import applies nothing. Build errors with ServerError to match the
+// real client's shape. The hook must not call the Store. Pass nil to remove it.
+func (s *Store) SetFaultHook(hook func(Fault) error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.hook = hook
+}
+
+// FailNext makes the next call of operation fail with err before doing
+// anything; later calls succeed. It replaces any fault hook.
+func (s *Store) FailNext(operation string, err error) {
+	failed := false
+	s.SetFaultHook(func(f Fault) error {
+		if !failed && f.Stage == StageCall && f.Call.Operation == operation {
+			failed = true
+			return err
+		}
+		return nil
+	})
+}
+
+// Calls returns every recorded call, in order.
+func (s *Store) Calls() []Call {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]Call(nil), s.calls...)
+}
+
+// CallsOf returns the recorded calls of one operation, in order.
+func (s *Store) CallsOf(operation string) []Call {
+	var out []Call
+	for _, c := range s.Calls() {
+		if c.Operation == operation {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// begin records a call and runs the StageCall fault hook.
+func (s *Store) begin(operation string, request any, r client.ResolvedOptions) (Call, error) {
+	s.mu.Lock()
+	if s.counts == nil {
+		s.counts = map[string]int{}
+	}
+	call := Call{Operation: operation, Index: s.counts[operation], Request: request, Options: r}
+	s.counts[operation]++
+	s.calls = append(s.calls, call)
+	s.mu.Unlock()
+	return call, s.fault(call, StageCall, 0)
+}
+
+// fault runs the hook, if any, at one point of a call.
+func (s *Store) fault(call Call, stage Stage, item int) error {
+	s.mu.Lock()
+	hook := s.hook
+	s.mu.Unlock()
+	if hook == nil {
+		return nil
+	}
+	return hook(Fault{Call: call, Stage: stage, Item: item})
+}
+
 // Relationships returns a snapshot of every stored relationship.
 func (s *Store) Relationships() []rel.Relationship {
 	s.mu.Lock()
@@ -168,6 +299,9 @@ func (s *Store) SetResponseMetadata(header, trailer metadata.MD) {
 // and returns the current revision, as SpiceDB does.
 func (s *Store) Write(_ context.Context, request client.WriteRequest, opts ...client.WriteOption) (client.WriteResult, error) {
 	r := client.ResolveOptions(opts...)
+	if _, ferr := s.begin(OpWrite, request, r); ferr != nil {
+		return client.WriteResult{}, ferr
+	}
 	if r.Err != nil {
 		return client.WriteResult{}, r.Err
 	}
@@ -248,6 +382,7 @@ func (s *Store) page(f func(rel.Relationship) bool, cursor string, limit uint64)
 // revision. Cursors and limits are honored.
 func (s *Store) ReadRelationships(_ context.Context, request client.ReadRelationshipsRequest, opts ...client.ReadRelationshipsOption) iter.Seq2[client.ReadRelationship, error] {
 	r := client.ResolveOptions(opts...)
+	call, callErr := s.begin(OpReadRelationships, request, r)
 	s.mu.Lock()
 	readAt := s.token()
 	err := r.Err
@@ -264,11 +399,18 @@ func (s *Store) ReadRelationships(_ context.Context, request client.ReadRelation
 	}
 	s.mu.Unlock()
 	return func(yield func(client.ReadRelationship, error) bool) {
+		if callErr != nil {
+			err = callErr
+		}
 		if err != nil {
 			yield(client.ReadRelationship{}, err)
 			return
 		}
 		for i, rr := range matched {
+			if ferr := s.fault(call, StageItem, i); ferr != nil {
+				yield(client.ReadRelationship{}, ferr)
+				return
+			}
 			if !yield(client.ReadRelationship{Relationship: rr, AfterResultCursor: cursors[i], ReadAt: readAt}, nil) {
 				return
 			}
@@ -278,8 +420,9 @@ func (s *Store) ReadRelationships(_ context.Context, request client.ReadRelation
 
 // ExportRelationships yields every relationship (or those matching the export
 // filter option), honoring cursors and limits.
-func (s *Store) ExportRelationships(_ context.Context, _ client.ExportRelationshipsRequest, opts ...client.ExportRelationshipsOption) iter.Seq2[client.ExportedRelationship, error] {
+func (s *Store) ExportRelationships(_ context.Context, request client.ExportRelationshipsRequest, opts ...client.ExportRelationshipsOption) iter.Seq2[client.ExportedRelationship, error] {
 	r := client.ResolveOptions(opts...)
+	call, callErr := s.begin(OpExportRelationships, request, r)
 	s.mu.Lock()
 	match := func(rel.Relationship) bool { return true }
 	if r.ExportFilter != nil {
@@ -294,11 +437,18 @@ func (s *Store) ExportRelationships(_ context.Context, _ client.ExportRelationsh
 	}
 	s.mu.Unlock()
 	return func(yield func(client.ExportedRelationship, error) bool) {
+		if callErr != nil {
+			err = callErr
+		}
 		if err != nil {
 			yield(client.ExportedRelationship{}, err)
 			return
 		}
 		for i, rr := range matched {
+			if ferr := s.fault(call, StageItem, i); ferr != nil {
+				yield(client.ExportedRelationship{}, ferr)
+				return
+			}
 			if !yield(client.ExportedRelationship{Relationship: rr, AfterResultCursor: cursors[i]}, nil) {
 				return
 			}
@@ -311,6 +461,10 @@ func (s *Store) ExportRelationships(_ context.Context, _ client.ExportRelationsh
 // added and the error is ALREADY_EXISTS.
 func (s *Store) ImportRelationships(_ context.Context, request client.ImportRelationshipsRequest, opts ...client.ImportRelationshipsOption) (client.ImportRelationshipsResult, error) {
 	r := client.ResolveOptions(opts...)
+	call, ferr := s.begin(OpImportRelationships, request, r)
+	if ferr != nil {
+		return client.ImportRelationshipsResult{}, ferr
+	}
 	if r.Err != nil {
 		return client.ImportRelationshipsResult{}, r.Err
 	}
@@ -318,11 +472,20 @@ func (s *Store) ImportRelationships(_ context.Context, request client.ImportRela
 		return client.ImportRelationshipsResult{}, invalid("relationships iterator required")
 	}
 	var batch []rel.Relationship
+	batchSize := int(max(r.PageSize, 1))
 	for rr := range request.Relationships {
 		if err := rr.Validate(); err != nil {
 			return client.ImportRelationshipsResult{}, invalid("relationship: %s", err)
 		}
+		if len(batch)%batchSize == 0 {
+			if err := s.fault(call, StageImportBatch, len(batch)/batchSize); err != nil {
+				return client.ImportRelationshipsResult{}, err
+			}
+		}
 		batch = append(batch, rr)
+	}
+	if err := s.fault(call, StageImportCommit, 0); err != nil {
+		return client.ImportRelationshipsResult{}, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -346,6 +509,9 @@ func (s *Store) ImportRelationships(_ context.Context, request client.ImportRela
 // than a positive limit fail with INVALID_ARGUMENT, as SpiceDB does.
 func (s *Store) DeleteRelationships(_ context.Context, request client.DeleteRequest, opts ...client.DeleteOption) (client.DeleteResult, error) {
 	r := client.ResolveOptions(opts...)
+	if _, ferr := s.begin(OpDeleteRelationships, request, r); ferr != nil {
+		return client.DeleteResult{}, ferr
+	}
 	if r.Err != nil {
 		return client.DeleteResult{}, r.Err
 	}
@@ -394,8 +560,11 @@ func (s *Store) DeleteRelationships(_ context.Context, request client.DeleteRequ
 }
 
 // ReadSchema returns the schema last written, or NOT_FOUND, as SpiceDB does.
-func (s *Store) ReadSchema(_ context.Context, _ client.ReadSchemaRequest, opts ...client.ReadSchemaOption) (client.ReadSchemaResult, error) {
+func (s *Store) ReadSchema(_ context.Context, request client.ReadSchemaRequest, opts ...client.ReadSchemaOption) (client.ReadSchemaResult, error) {
 	r := client.ResolveOptions(opts...)
+	if _, ferr := s.begin(OpReadSchema, request, r); ferr != nil {
+		return client.ReadSchemaResult{}, ferr
+	}
 	if r.Err != nil {
 		return client.ReadSchemaResult{}, r.Err
 	}
@@ -411,6 +580,9 @@ func (s *Store) ReadSchema(_ context.Context, _ client.ReadSchemaRequest, opts .
 // WriteSchema stores the schema text. It is not compiled or validated.
 func (s *Store) WriteSchema(_ context.Context, request client.WriteSchemaRequest, opts ...client.WriteSchemaOption) (client.WriteSchemaResult, error) {
 	r := client.ResolveOptions(opts...)
+	if _, ferr := s.begin(OpWriteSchema, request, r); ferr != nil {
+		return client.WriteSchemaResult{}, ferr
+	}
 	if r.Err != nil {
 		return client.WriteSchemaResult{}, r.Err
 	}
@@ -427,6 +599,9 @@ func (s *Store) WriteSchema(_ context.Context, request client.WriteSchemaRequest
 // result, as SpiceDB does for an empty schema.
 func (s *Store) ReflectSchema(_ context.Context, request client.ReflectSchemaRequest, opts ...client.ReflectSchemaOption) (client.ReflectSchemaResult, error) {
 	r := client.ResolveOptions(opts...)
+	if _, ferr := s.begin(OpReflectSchema, request, r); ferr != nil {
+		return client.ReflectSchemaResult{}, ferr
+	}
 	if r.Err != nil {
 		return client.ReflectSchemaResult{}, r.Err
 	}
@@ -448,6 +623,9 @@ func (s *Store) ReflectSchema(_ context.Context, request client.ReflectSchemaReq
 // store's current revision.
 func (s *Store) Check(_ context.Context, request client.PermissionCheck, opts ...client.CheckOption) (client.CheckResult, error) {
 	r := client.ResolveOptions(opts...)
+	if _, ferr := s.begin(OpCheck, request, r); ferr != nil {
+		return client.CheckResult{}, ferr
+	}
 	if r.Err != nil {
 		return client.CheckResult{}, r.Err
 	}
@@ -460,6 +638,9 @@ func (s *Store) Check(_ context.Context, request client.PermissionCheck, opts ..
 // CheckBulk returns the registered results in input order.
 func (s *Store) CheckBulk(_ context.Context, requests []client.PermissionCheck, opts ...client.CheckOption) ([]client.CheckResult, error) {
 	r := client.ResolveOptions(opts...)
+	if _, ferr := s.begin(OpCheckBulk, requests, r); ferr != nil {
+		return nil, ferr
+	}
 	if r.Err != nil {
 		return nil, r.Err
 	}

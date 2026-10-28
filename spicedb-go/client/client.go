@@ -4,6 +4,7 @@ package client
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"time"
 
 	proto "github.com/authzed/spicedb-clients/proto-clients/spicedb-go-proto"
@@ -26,6 +27,7 @@ type Client struct {
 	noDefaultDeadline bool
 	retries           *RetryPolicy // nil means DefaultRetryPolicy
 	noStreamRetries   bool
+	opRetry           map[reflect.Type]*RetryPolicy
 }
 
 // Option configures the client when using NewWithOpts.
@@ -46,6 +48,7 @@ type options struct {
 	retryPolicy           *RetryPolicy
 	retriesDisabled       bool
 	streamRetriesDisabled bool
+	opRetry               map[reflect.Type]*RetryPolicy
 }
 
 // build applies options and returns the client-wide behavior they select.
@@ -61,6 +64,7 @@ func (o *options) apply(c *Client) {
 	c.defaultTimeout = o.defaultTimeout
 	c.noDefaultDeadline = o.noDefaultDeadline
 	c.noStreamRetries = o.streamRetriesDisabled
+	c.opRetry = o.opRetry
 	switch {
 	case o.retriesDisabled:
 		c.retries = &RetryPolicy{}

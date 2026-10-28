@@ -20,9 +20,7 @@ type ExpandPermissionTreeResult struct {
 
 func (c *Client) ExpandPermissionTree(ctx context.Context, request ExpandPermissionTreeRequest, opts ...ExpandPermissionTreeOption) (ExpandPermissionTreeResult, error) {
 	o := operationOptions{}
-	for _, opt := range opts {
-		opt(&o)
-	}
+	applyOptions(c, &o, opts)
 	ctx, cancel, e := c.operation(ctx, o, false)
 	if e != nil {
 		return ExpandPermissionTreeResult{}, e

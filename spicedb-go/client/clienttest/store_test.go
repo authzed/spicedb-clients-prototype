@@ -2,6 +2,7 @@ package clienttest_test
 
 import (
 	"context"
+	"fmt"
 	"iter"
 	"strings"
 	"testing"
@@ -207,4 +208,90 @@ func TestStoreMatchesServerEdgeCases(t *testing.T) {
 	require.ErrorAs(t, err, &e)
 	require.Equal(t, client.CodeInvalidArgument, e.Code)
 	require.Equal(t, "ERROR_REASON_TOO_MANY_RELATIONSHIPS_FOR_TRANSACTIONAL_DELETE", e.Reason)
+}
+
+func tuples(n int) iter.Seq[rel.Relationship] {
+	return func(yield func(rel.Relationship) bool) {
+		for i := 0; i < n; i++ {
+			if !yield(rel.MustFromTuple(fmt.Sprintf("doc:d%d#viewer@user:x", i))) {
+				return
+			}
+		}
+	}
+}
+
+func TestStoreFaultInjection(t *testing.T) {
+	ctx := context.Background()
+
+	// A restore test: the third import batch fails with AlreadyExists, and nothing is applied.
+	s := clienttest.NewStore()
+	s.SetFaultHook(func(f clienttest.Fault) error {
+		if f.Call.Operation == clienttest.OpImportRelationships && f.Stage == clienttest.StageImportBatch && f.Item == 2 {
+			return clienttest.ServerError(clienttest.OpImportRelationships, client.CodeAlreadyExists, "duplicate relationship")
+		}
+		return nil
+	})
+	_, err := s.ImportRelationships(ctx, client.ImportRelationshipsRequest{Relationships: tuples(10)}, client.WithImportRelationshipsBatchSize(3))
+	require.ErrorIs(t, err, client.ErrAlreadyExists)
+	require.Equal(t, "spicedb: import relationships: duplicate relationship", err.Error())
+	require.Empty(t, s.Relationships())
+
+	// The commit itself can fail.
+	s.SetFaultHook(func(f clienttest.Fault) error {
+		if f.Stage == clienttest.StageImportCommit {
+			return clienttest.ServerError(clienttest.OpImportRelationships, client.CodeUnavailable, "lost")
+		}
+		return nil
+	})
+	_, err = s.ImportRelationships(ctx, client.ImportRelationshipsRequest{Relationships: tuples(4)})
+	require.ErrorIs(t, err, client.ErrUnavailable)
+	require.Empty(t, s.Relationships())
+
+	// A backup test: the export fails after K items.
+	s.SetFaultHook(nil)
+	_, err = s.ImportRelationships(ctx, client.ImportRelationshipsRequest{Relationships: tuples(5)})
+	require.NoError(t, err)
+	s.SetFaultHook(func(f clienttest.Fault) error {
+		if f.Call.Operation == clienttest.OpExportRelationships && f.Stage == clienttest.StageItem && f.Item == 3 {
+			return clienttest.ServerError(clienttest.OpExportRelationships, client.CodeUnavailable, "stream reset")
+		}
+		return nil
+	})
+	var got int
+	var streamErr error
+	for _, err := range s.ExportRelationships(ctx, client.ExportRelationshipsRequest{Consistency: consistency.Full()}) {
+		if err != nil {
+			streamErr = err
+			break
+		}
+		got++
+	}
+	require.Equal(t, 3, got)
+	require.ErrorIs(t, streamErr, client.ErrUnavailable)
+
+	// FailNext fails one call of one operation.
+	s.FailNext(clienttest.OpCheck, clienttest.ServerError(clienttest.OpCheck, client.CodeUnavailable, "down"))
+	check := client.PermissionCheck{Resource: rel.MustNewObject("doc", "d0"), Permission: "view",
+		Subject: rel.MustNewSubject(rel.MustNewObject("user", "x"), ""), Consistency: consistency.Full()}
+	_, err = s.Check(ctx, check)
+	require.ErrorIs(t, err, client.ErrUnavailable)
+	_, err = s.Check(ctx, check)
+	require.NoError(t, err)
+}
+
+func TestStoreRecordsCalls(t *testing.T) {
+	ctx := context.Background()
+	s := clienttest.NewStore()
+	for range s.ReadRelationships(ctx, client.ReadRelationshipsRequest{Filter: rel.MustNewFilter("doc"), Consistency: consistency.Full()},
+		client.WithReadRelationshipsCursor("2"), client.WithReadRelationshipsLimit(5)) {
+	}
+	for range s.ReadRelationships(ctx, client.ReadRelationshipsRequest{Filter: rel.MustNewFilter("folder"), Consistency: consistency.Full()}) {
+	}
+	reads := s.CallsOf(clienttest.OpReadRelationships)
+	require.Len(t, reads, 2)
+	require.Equal(t, 0, reads[0].Index)
+	require.Equal(t, 1, reads[1].Index)
+	require.Equal(t, "2", reads[0].Options.Cursor)
+	require.EqualValues(t, 5, reads[0].Options.Limit)
+	require.Equal(t, "folder", reads[1].Request.(client.ReadRelationshipsRequest).Filter.ResourceType())
 }

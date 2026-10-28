@@ -19,9 +19,7 @@ type LookupResourcesRequest struct {
 
 func (c *Client) LookupResources(ctx context.Context, request LookupResourcesRequest, opts ...LookupResourcesOption) iter.Seq2[LookupResource, error] {
 	o := operationOptions{pageSize: defaultLookupPageSize}
-	for _, opt := range opts {
-		opt(&o)
-	}
+	applyOptions(c, &o, opts)
 	initialConsistency, ce := strategy(request.Consistency)
 	ctxStruct, je := contextStruct(o.checkContext)
 	if request.ResourceType == "" || request.Permission == "" || request.Subject.Validate() != nil {
@@ -103,9 +101,7 @@ type LookupSubjectsRequest struct {
 // This wrapper consumes a single stream and does not invent subject cursors.
 func (c *Client) LookupSubjects(ctx context.Context, request LookupSubjectsRequest, opts ...LookupSubjectsOption) iter.Seq2[LookupSubject, error] {
 	o := operationOptions{}
-	for _, opt := range opts {
-		opt(&o)
-	}
+	applyOptions(c, &o, opts)
 	initialConsistency, ce := strategy(request.Consistency)
 	ctxStruct, je := contextStruct(o.checkContext)
 	if request.Resource.Validate() != nil || request.Permission == "" || request.SubjectType == "" {

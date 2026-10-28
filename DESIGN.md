@@ -158,7 +158,11 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     preconditions and create conflicts), filtered reads and deletes, and
     registered check results, plus imports, exports and schema reads and writes.
     Its errors carry the same codes and message shape as the real client's for
-    the same failure. Its surface matches the real client's so one
+    the same failure. It records every call with its request and resolved
+    options, and accepts fault injection at defined points (before any call,
+    before each import batch, before an import commits, before each read or
+    export item), so failure paths and option assertions need neither a fake
+    transport nor a strict mock. Its surface matches the real client's so one
     interface or protocol accepts both: caller-defined where the language is
     structurally typed (Go, TypeScript, Python protocols), library-provided and
     implemented by both where it is nominally typed (C#, Java).
@@ -242,7 +246,14 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     disables retries entirely, for callers that apply their own policy.
   - A per-call retry policy overrides the client's for one operation, including
     stream establishment, so a caller can exempt one stream (a supervised watch)
-    while retrying everything else. Stream-establishment retry has its own named
+    while retrying everything else.
+  - A client-wide per-operation retry policy applies the same override to every
+    call of one operation (never reopen watches, for example). Precedence is
+    per-call, then per-operation, then client-wide. A per-operation write policy
+    retries only writes that are idempotent on replay; operations that never are
+    reject a retrying per-operation policy when the client is built.
+  - The idempotence rule (touch-only, no preconditions) is public on the
+    transaction type, so callers decide eligibility with the client's own rule. Stream-establishment retry has its own named
     setting, so long-lived streams like watch can opt out. No configuration can
     make a mutation replay.
 
@@ -411,6 +422,8 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     Include positive and negative type tests. Each forbidden construct must fail
     on its own: a check that only proves "something failed to compile" lets one
     error mask a regression elsewhere.
+  - The generator's help lists every language's options. A schema may be read
+    from standard input, so schemas kept in source code need no temporary file.
   - Generation fails, naming both sources, when schema names would produce
     colliding identifiers. It never silently renames, and offers an explicit
     per-definition identifier override so production schemas need not change.

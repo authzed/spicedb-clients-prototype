@@ -165,6 +165,21 @@ func (o PreconditionOperation) String() string {
 // String formats the precondition as "OPERATION(filter)".
 func (p Precondition) String() string { return p.Operation.String() + "(" + p.Filter.String() + ")" }
 
+// IsIdempotent reports whether replaying the transaction is safe: it contains
+// only touches and no preconditions. This is the rule the client uses to decide
+// whether a write may be retried.
+func (t Txn) IsIdempotent() bool {
+	if len(t.preconditions) > 0 {
+		return false
+	}
+	for _, u := range t.updates {
+		if u.Operation != UpdateOperationTouch {
+			return false
+		}
+	}
+	return true
+}
+
 // Len returns the number of updates in the transaction without copying them.
 func (t Txn) Len() int { return len(t.updates) }
 

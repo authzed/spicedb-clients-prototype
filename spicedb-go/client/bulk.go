@@ -29,9 +29,7 @@ type ImportRelationshipsResult struct{ ImportedCount uint64 }
 // the failed send reports.
 func (c *Client) ImportRelationships(ctx context.Context, request ImportRelationshipsRequest, opts ...ImportRelationshipsOption) (ImportRelationshipsResult, error) {
 	o := operationOptions{pageSize: defaultImportBatchSize}
-	for _, opt := range opts {
-		opt(&o)
-	}
+	applyOptions(c, &o, opts)
 	if _, e := mutationRetry(o, false, "import relationships"); e != nil {
 		return ImportRelationshipsResult{}, e
 	}
@@ -105,9 +103,7 @@ type ExportedRelationship struct {
 
 func (c *Client) ExportRelationships(ctx context.Context, request ExportRelationshipsRequest, opts ...ExportRelationshipsOption) iter.Seq2[ExportedRelationship, error] {
 	o := operationOptions{pageSize: defaultExportPageSize}
-	for _, opt := range opts {
-		opt(&o)
-	}
+	applyOptions(c, &o, opts)
 	cs, ce := strategy(request.Consistency)
 	var f *v1.RelationshipFilter
 	var fe error

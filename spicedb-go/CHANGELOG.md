@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- `WithOperationRetryPolicy[O]` sets a client-wide retry policy for one
+  operation (e.g. never reopen `Updates`), between per-call and client-wide
+  policies in precedence. `OperationOption` is exported for generic helpers.
+  `rel.Txn.IsIdempotent()` exposes the retry-eligibility rule.
+- `clienttest.Store` records calls (`Calls`, `CallsOf`) and injects faults
+  (`SetFaultHook`, `FailNext`) before calls, import batches, import commits and
+  stream items; `ServerError` builds client-shaped errors.
+- spicedb-gen: `--help` lists each language's options; `--schema -` reads stdin.
+
 - `WithCallRetryPolicy[O]` overrides the retry policy for one call, including
   stream establishment (exempt one Watch while retrying everything else).
   Touch-only writes without preconditions and `WriteSchema` may opt in to

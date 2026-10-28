@@ -17,9 +17,7 @@ type WriteSchemaResult struct{ Revision consistency.ZedToken }
 
 func (c *Client) ReadSchema(ctx context.Context, request ReadSchemaRequest, opts ...ReadSchemaOption) (ReadSchemaResult, error) {
 	o := operationOptions{}
-	for _, opt := range opts {
-		opt(&o)
-	}
+	applyOptions(c, &o, opts)
 	ctx, cancel, e := c.operation(ctx, o, false)
 	if e != nil {
 		return ReadSchemaResult{}, e
@@ -35,9 +33,7 @@ func (c *Client) ReadSchema(ctx context.Context, request ReadSchemaRequest, opts
 }
 func (c *Client) WriteSchema(ctx context.Context, request WriteSchemaRequest, opts ...WriteSchemaOption) (WriteSchemaResult, error) {
 	o := operationOptions{}
-	for _, opt := range opts {
-		opt(&o)
-	}
+	applyOptions(c, &o, opts)
 	ctx, cancel, e := c.operation(ctx, o, false)
 	if e != nil {
 		return WriteSchemaResult{}, e
@@ -107,9 +103,7 @@ type ReflectSchemaRequest struct{ Consistency consistency.Strategy }
 
 func (c *Client) ReflectSchema(ctx context.Context, request ReflectSchemaRequest, opts ...ReflectSchemaOption) (ReflectSchemaResult, error) {
 	o := operationOptions{}
-	for _, opt := range opts {
-		opt(&o)
-	}
+	applyOptions(c, &o, opts)
 	ctx, cancel, e := c.operation(ctx, o, false)
 	if e != nil {
 		return ReflectSchemaResult{}, e
@@ -173,9 +167,7 @@ func nativeRelationReferences(ps []*v1.ReflectionRelationReference) []RelationRe
 }
 func (c *Client) ComputablePermissions(ctx context.Context, request ComputablePermissionsRequest, opts ...ComputablePermissionsOption) (ComputablePermissionsResult, error) {
 	o := operationOptions{}
-	for _, opt := range opts {
-		opt(&o)
-	}
+	applyOptions(c, &o, opts)
 	ctx, cancel, e := c.operation(ctx, o, false)
 	if e != nil {
 		return ComputablePermissionsResult{}, e
@@ -198,9 +190,7 @@ func (c *Client) ComputablePermissions(ctx context.Context, request ComputablePe
 }
 func (c *Client) DependentRelations(ctx context.Context, request DependentRelationsRequest, opts ...DependentRelationsOption) (DependentRelationsResult, error) {
 	o := operationOptions{}
-	for _, opt := range opts {
-		opt(&o)
-	}
+	applyOptions(c, &o, opts)
 	ctx, cancel, e := c.operation(ctx, o, false)
 	if e != nil {
 		return DependentRelationsResult{}, e
@@ -256,9 +246,7 @@ type DiffSchemaResult struct {
 
 func (c *Client) DiffSchema(ctx context.Context, request DiffSchemaRequest, opts ...DiffSchemaOption) (DiffSchemaResult, error) {
 	o := operationOptions{}
-	for _, opt := range opts {
-		opt(&o)
-	}
+	applyOptions(c, &o, opts)
 	ctx, cancel, e := c.operation(ctx, o, false)
 	if e != nil {
 		return DiffSchemaResult{}, e

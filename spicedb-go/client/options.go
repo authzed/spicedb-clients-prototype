@@ -30,6 +30,7 @@ type operationOptions struct {
 	subjectRelation             string
 	callOptions                 []grpc.CallOption
 	callRetryPolicy             *RetryPolicy
+	opRetryPolicy               *RetryPolicy
 	itemErrors                  bool
 	schemaChanges               bool
 	disallowPartialDeletion     bool

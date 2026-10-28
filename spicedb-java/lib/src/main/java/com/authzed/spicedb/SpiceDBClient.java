@@ -43,6 +43,7 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
   private final RetryPolicy retryPolicy;
   private final boolean retriesEnabled;
   private final boolean streamRetriesEnabled;
+  private final java.util.Map<ClientOperation, RetryPolicy> operationRetryPolicies;
 
   private final Channel authenticatedChannel;
 
@@ -70,6 +71,7 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
     this.retryPolicy = options.retryPolicy();
     this.retriesEnabled = options.retries() == Retries.ENABLED;
     this.streamRetriesEnabled = options.streamRetries() == StreamRetries.ENABLED;
+    this.operationRetryPolicies = options.operationRetryPolicies();
     this.authenticatedChannel =
         metadata.keys().isEmpty()
             ? base
@@ -341,7 +343,7 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
     var response =
         withRetry(
             deadline,
-            options.retryPolicy(),
+            retryFor(ClientOperation.CHECK, options.retryPolicy()),
             () ->
                 stub(permissionsStub, options.transport())
                     .withDeadline(deadline)
@@ -391,7 +393,7 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
       var response =
           withRetry(
               deadline,
-              options.retryPolicy(),
+              retryFor(ClientOperation.CHECK_BULK, options.retryPolicy()),
               () ->
                   stub(permissionsStub, options.transport())
                       .withDeadline(deadline)
@@ -479,11 +481,8 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
 
     // An empty transaction is sent as is: SpiceDB accepts it, evaluates any preconditions, and
     // returns the current revision.
-    boolean touchOnly =
-        reqBuilder.getOptionalPreconditionsCount() == 0
-            && reqBuilder.getUpdatesList().stream()
-                .allMatch(u -> u.getOperation() == RelationshipUpdate.Operation.OPERATION_TOUCH);
-    var rs = mutationRetry(options.retryPolicy(), touchOnly, "write");
+    var rs =
+        mutationRetry(ClientOperation.WRITE, options.retryPolicy(), txn.isIdempotent(), "write");
     WriteRelationshipsResponse resp =
         retrying(
             deadline,
@@ -537,7 +536,7 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
         single,
         options.limit(),
         options.timeout(),
-        options.retryPolicy());
+        retryFor(ClientOperation.READ_RELATIONSHIPS, options.retryPolicy()));
   }
 
   public record DeleteResult(
@@ -549,7 +548,8 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
 
   public DeleteResult deleteRelationships(Filter filter, int limit, DeleteOptions options) {
     if (options == null) throw new InvalidArgumentException("options must not be null");
-    mutationRetry(options.retryPolicy(), false, "delete relationships");
+    mutationRetry(
+        ClientOperation.DELETE_RELATIONSHIPS, options.retryPolicy(), false, "delete relationships");
     if (limit <= 0) throw new InvalidArgumentException("limit must be positive");
     return deleteBounded(filter, limit, options);
   }
@@ -562,7 +562,8 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
    */
   public DeleteResult deleteRelationships(Filter filter, DeleteOptions options) {
     if (options == null) throw new InvalidArgumentException("options must not be null");
-    mutationRetry(options.retryPolicy(), false, "delete relationships");
+    mutationRetry(
+        ClientOperation.DELETE_RELATIONSHIPS, options.retryPolicy(), false, "delete relationships");
     if (options.partialDeletion() != PartialDeletion.DISALLOWED)
       throw new InvalidArgumentException(
           "deleteRelationships without a limit requires PartialDeletion.DISALLOWED");
@@ -637,7 +638,11 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
    */
   public DeleteResult deleteAllRelationshipsNonAtomic(Filter filter, DeleteAllOptions options) {
     if (options == null) throw new InvalidArgumentException("options must not be null");
-    mutationRetry(options.retryPolicy(), false, "delete relationships");
+    mutationRetry(
+        ClientOperation.DELETE_ALL_RELATIONSHIPS_NON_ATOMIC,
+        options.retryPolicy(),
+        false,
+        "delete relationships");
     var deadline = deadlineFor(options.timeout());
     long count = 0;
     int pages = 0;
@@ -731,7 +736,7 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
         single,
         options.limit(),
         options.timeout(),
-        options.retryPolicy());
+        retryFor(ClientOperation.LOOKUP_RESOURCES, options.retryPolicy()));
   }
 
   public Stream<LookupResult.LookupSubject> lookupSubjects(
@@ -768,7 +773,7 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
         SpiceDBClient::lookupSubjectFromProto,
         options.timeout(),
         options.limit(),
-        options.retryPolicy());
+        retryFor(ClientOperation.LOOKUP_SUBJECTS, options.retryPolicy()));
   }
 
   // -----------------------------------------------------------------------
@@ -788,7 +793,7 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
     ReadSchemaResponse resp =
         withRetry(
             deadline,
-            options.retryPolicy(),
+            retryFor(ClientOperation.READ_SCHEMA, options.retryPolicy()),
             () ->
                 stub(schemaStub, options.transport())
                     .withDeadline(deadline)
@@ -806,7 +811,8 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
     if (options == null) throw new InvalidArgumentException("options must not be null");
     Duration timeout = options.timeout();
     var deadline = deadlineFor(timeout);
-    var rs = mutationRetry(options.retryPolicy(), true, "write schema");
+    var rs =
+        mutationRetry(ClientOperation.WRITE_SCHEMA, options.retryPolicy(), true, "write schema");
     WriteSchemaResponse resp =
         retrying(
             deadline,
@@ -861,7 +867,7 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
     ReflectSchemaResponse resp =
         withRetry(
             deadline,
-            options.retryPolicy(),
+            retryFor(ClientOperation.REFLECT_SCHEMA, options.retryPolicy()),
             () ->
                 stub(schemaStub, options.transport())
                     .withDeadline(deadline)
@@ -931,7 +937,7 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
     ComputablePermissionsResponse resp =
         withRetry(
             deadline,
-            options.retryPolicy(),
+            retryFor(ClientOperation.COMPUTABLE_PERMISSIONS, options.retryPolicy()),
             () ->
                 stub(schemaStub, options.transport())
                     .withDeadline(deadline)
@@ -972,7 +978,7 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
     DependentRelationsResponse resp =
         withRetry(
             deadline,
-            options.retryPolicy(),
+            retryFor(ClientOperation.DEPENDENT_RELATIONS, options.retryPolicy()),
             () ->
                 stub(schemaStub, options.transport())
                     .withDeadline(deadline)
@@ -1018,7 +1024,7 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
     DiffSchemaResponse resp =
         withRetry(
             deadline,
-            options.retryPolicy(),
+            retryFor(ClientOperation.DIFF_SCHEMA, options.retryPolicy()),
             () ->
                 stub(schemaStub, options.transport())
                     .withDeadline(deadline)
@@ -1055,7 +1061,7 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
     ExpandPermissionTreeResponse resp =
         withRetry(
             deadline,
-            options.retryPolicy(),
+            retryFor(ClientOperation.EXPAND_PERMISSION_TREE, options.retryPolicy()),
             () ->
                 stub(permissionsStub, options.transport())
                     .withDeadline(deadline)
@@ -1080,7 +1086,8 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
 
   public long importRelationships(Iterable<Relationship> relationships, ImportOptions options) {
     if (options == null) throw new InvalidArgumentException("options must not be null");
-    mutationRetry(options.retryPolicy(), false, "import relationships");
+    mutationRetry(
+        ClientOperation.IMPORT_RELATIONSHIPS, options.retryPolicy(), false, "import relationships");
     var scope = new StreamScope(options.timeout());
     var ctx = scope.context();
     var previous = ctx.attach();
@@ -1224,7 +1231,7 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
         () -> {
           var responses =
               openStreamWithRetry(
-                  options.retryPolicy(),
+                  retryFor(ClientOperation.EXPORT_RELATIONSHIPS, options.retryPolicy()),
                   () ->
                       stub(permissionsStub, options.transport())
                           .exportBulkRelationships(b.build()));
@@ -1314,7 +1321,7 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
                 r.getSchemaUpdated()),
         options.timeout(),
         0,
-        options.retryPolicy());
+        retryFor(ClientOperation.WATCH, options.retryPolicy()));
   }
 
   // -----------------------------------------------------------------------
@@ -1329,7 +1336,11 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
   public void experimentalRegisterRelationshipCounter(
       String name, Filter filter, CallOptions options) {
     if (options == null) throw new InvalidArgumentException("options must not be null");
-    mutationRetry(options.retryPolicy(), false, "register relationship counter");
+    mutationRetry(
+        ClientOperation.REGISTER_RELATIONSHIP_COUNTER,
+        options.retryPolicy(),
+        false,
+        "register relationship counter");
     Duration timeout = options.timeout();
     var deadline = deadlineFor(timeout);
     callOnce(
@@ -1356,7 +1367,7 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
     ExperimentalCountRelationshipsResponse resp =
         withRetry(
             deadline,
-            options.retryPolicy(),
+            retryFor(ClientOperation.COUNT_RELATIONSHIPS, options.retryPolicy()),
             () ->
                 stub(experimentalStub, options.transport())
                     .withDeadline(deadline)
@@ -1380,7 +1391,11 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
 
   public void experimentalUnregisterRelationshipCounter(String name, CallOptions options) {
     if (options == null) throw new InvalidArgumentException("options must not be null");
-    mutationRetry(options.retryPolicy(), false, "unregister relationship counter");
+    mutationRetry(
+        ClientOperation.UNREGISTER_RELATIONSHIP_COUNTER,
+        options.retryPolicy(),
+        false,
+        "unregister relationship counter");
     Duration timeout = options.timeout();
     var deadline = deadlineFor(timeout);
     callOnce(
@@ -1430,7 +1445,7 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
     var response =
         withRetry(
             deadline,
-            options.retryPolicy(),
+            retryFor(ClientOperation.ROARING_LOOKUP_RESOURCES, options.retryPolicy()),
             () ->
                 stub(
                         com.authzed.api.materialize.v0.RoaringLookupResourcesServiceGrpc
@@ -1459,7 +1474,7 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
     var response =
         withRetry(
             deadline,
-            options.retryPolicy(),
+            retryFor(ClientOperation.COUNT_RELATIONSHIPS_BY_FILTER, options.retryPolicy()),
             () ->
                 stub(
                         com.authzed.api.materialize.v0.RelationshipsServiceGrpc.newBlockingStub(
@@ -1496,7 +1511,7 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
         Materialize::event,
         options.timeout(),
         0,
-        options.retryPolicy());
+        retryFor(ClientOperation.WATCH_PERMISSION_SETS, options.retryPolicy()));
   }
 
   /** Experimental snapshot lookup with explicit opaque continuation. */
@@ -1537,7 +1552,7 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
                     : null),
         options.timeout(),
         options.limit(),
-        options.retryPolicy());
+        retryFor(ClientOperation.LOOKUP_PERMISSION_SETS, options.retryPolicy()));
   }
 
   /**
@@ -1559,7 +1574,7 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
     var r =
         withRetry(
             deadline,
-            options.retryPolicy(),
+            retryFor(ClientOperation.DOWNLOAD_PERMISSION_SETS, options.retryPolicy()),
             () ->
                 stub(
                         com.authzed.api.materialize.v0.WatchPermissionSetsServiceGrpc
@@ -1653,16 +1668,24 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
   }
 
   /**
-   * The retry behavior for one operation: a per-call policy wins over the client's (including its
-   * disabled modes) and also governs stream establishment for that call.
+   * The retry behavior for one operation: a per-call or per-operation policy wins over the client's
+   * (including its disabled modes) and also governs stream establishment for that call.
    */
   private record RetrySettings(RetryPolicy policy, int maxRetries, boolean streams) {}
 
   private static final RetrySettings NO_RETRIES =
       new RetrySettings(RetryPolicy.defaults(), 0, false);
 
-  private RetrySettings retrySettings(RetryPolicy perCall) {
-    if (perCall != null) return new RetrySettings(perCall, perCall.maxRetries(), true);
+  /**
+   * The most specific policy for one call of {@code operation}: the call's own, then the client's
+   * per-operation policy, or {@code null} for the client-wide behavior.
+   */
+  private RetryPolicy retryFor(ClientOperation operation, RetryPolicy perCall) {
+    return perCall != null ? perCall : operationRetryPolicies.get(operation);
+  }
+
+  private RetrySettings retrySettings(RetryPolicy override) {
+    if (override != null) return new RetrySettings(override, override.maxRetries(), true);
     return new RetrySettings(
         retryPolicy,
         retriesEnabled ? retryPolicy.maxRetries() : 0,
@@ -1670,18 +1693,26 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
   }
 
   /**
-   * The retry settings for a mutation: none unless the caller opted this call in, which only
-   * idempotent mutations (touch-only writes without preconditions, schema writes) may do.
+   * The retry settings for a mutation: none unless the caller opted in, which only idempotent
+   * mutations (touch-only writes without preconditions, schema writes) may do. A per-call opt-in on
+   * a non-idempotent mutation is an error; a per-operation policy applies only to the calls that
+   * are idempotent (never-idempotent operations reject a retrying one when the client is built).
    */
-  private static RetrySettings mutationRetry(
-      RetryPolicy perCall, boolean idempotent, String operation) {
-    if (perCall == null || perCall.maxRetries() == 0) return NO_RETRIES;
-    if (!idempotent)
-      throw new InvalidArgumentException(
-          operation
-              + " cannot be retried: only touch-only writes without preconditions and schema"
-              + " writes are idempotent on replay");
-    return new RetrySettings(perCall, perCall.maxRetries(), false);
+  private RetrySettings mutationRetry(
+      ClientOperation op, RetryPolicy perCall, boolean idempotent, String operation) {
+    if (perCall != null) {
+      if (perCall.maxRetries() == 0) return NO_RETRIES;
+      if (!idempotent)
+        throw new InvalidArgumentException(
+            operation
+                + " cannot be retried: only touch-only writes without preconditions and schema"
+                + " writes are idempotent on replay");
+      return new RetrySettings(perCall, perCall.maxRetries(), false);
+    }
+    var perOperation = operationRetryPolicies.get(op);
+    if (perOperation != null && perOperation.maxRetries() > 0 && idempotent)
+      return new RetrySettings(perOperation, perOperation.maxRetries(), false);
+    return NO_RETRIES;
   }
 
   /** Retries an idempotent read under the call's or the client's {@link RetryPolicy}. */

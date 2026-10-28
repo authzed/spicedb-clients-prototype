@@ -4,6 +4,7 @@ import com.authzed.spicedb.BulkItemErrors;
 import com.authzed.spicedb.CallOptions;
 import com.authzed.spicedb.CheckOptions;
 import com.authzed.spicedb.CheckResult;
+import com.authzed.spicedb.ClientOperation;
 import com.authzed.spicedb.Consistency;
 import com.authzed.spicedb.DeleteOptions;
 import com.authzed.spicedb.ExportOptions;
@@ -34,13 +35,21 @@ import io.grpc.Metadata;
 import io.grpc.Status;
 import java.time.Clock;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
+import java.util.EnumMap;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.NoSuchElementException;
+import java.util.Spliterator;
+import java.util.Spliterators;
+import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.stream.Stream;
+import java.util.stream.StreamSupport;
 
 /**
  * An in-memory test double for {@link PermissionsApi}: the relationship, import/export, schema and
@@ -66,6 +75,11 @@ import java.util.stream.Stream;
  *       unregistered checks are {@code NO_PERMISSION}. The double does not evaluate schema.
  *   <li>Every operation reports the metadata registered with {@link #setResponseMetadata} to the
  *       call's {@link TransportOptions#responseMetadata()} capture.
+ *   <li>Every call is recorded ({@link #calls}, {@link #callsOf}) with its arguments and options,
+ *       so tests can assert on what was sent without a strict mock.
+ *   <li>Faults can be injected ({@link #setFaultHook}, {@link #failNext}) before any call, before
+ *       each import batch, before an import commits, and before each read or export item, so
+ *       failure paths need no fake gRPC server. A failed write or import applies nothing.
  * </ul>
  *
  * <p>Errors have the real client's codes and message shape: server-side failures are built with
@@ -88,6 +102,159 @@ public final class InMemorySpiceDB implements PermissionsApi {
   private SpiceDBClient.ReflectSchemaResult reflectResult;
   private Metadata headers = new Metadata();
   private Metadata trailers = new Metadata();
+  private final List<Call> calls = new ArrayList<>();
+  private final Map<ClientOperation, Integer> callCounts = new EnumMap<>(ClientOperation.class);
+  private Function<Fault, ? extends RuntimeException> faultHook;
+
+  /**
+   * One recorded call.
+   *
+   * @param operation the operation called
+   * @param index counts calls of this operation, starting at 0
+   * @param arguments the call's arguments other than its options, in signature order (for example
+   *     {@code [consistency, filter]} for a read, {@code [filter, limit]} for a bounded delete); a
+   *     bulk check's requests are a snapshot list, and other values are the caller's own objects
+   * @param options the call's options object: the caller's, or the defaults the overload without
+   *     options uses
+   */
+  public record Call(ClientOperation operation, int index, List<Object> arguments, Object options) {
+    public Call {
+      arguments = java.util.Collections.unmodifiableList(new ArrayList<>(arguments));
+    }
+
+    /**
+     * The options cast to the operation's options class, e.g. {@code options(WriteOptions.class)}.
+     */
+    public <T> T options(Class<T> type) {
+      return type.cast(options);
+    }
+  }
+
+  /** Where in an operation a fault hook runs. */
+  public enum FaultStage {
+    /**
+     * Before the operation does anything. Streaming operations run it when the stream is first
+     * consumed, where the real client reports a failed call.
+     */
+    CALL,
+    /**
+     * Before import batch {@link Fault#item()} (0-based) is sent. Batches have the call's {@code
+     * ImportOptions.batchSize} (default 1,000).
+     */
+    IMPORT_BATCH,
+    /** After every import batch, before the import commits. */
+    IMPORT_COMMIT,
+    /** Before a read or export yields item {@link Fault#item()} (0-based). */
+    ITEM
+  }
+
+  /**
+   * The point at which a fault hook is consulted.
+   *
+   * @param item the batch index for {@link FaultStage#IMPORT_BATCH} and the item index for {@link
+   *     FaultStage#ITEM}; 0 otherwise
+   */
+  public record Fault(Call call, FaultStage stage, int item) {}
+
+  /**
+   * Builds the error the real client throws when SpiceDB answers with {@code code} and {@code
+   * message}, for fault hooks. Same as {@link ErrorMapper#newError}.
+   */
+  public static SpiceDBException serverError(Status.Code code, String message) {
+    return ErrorMapper.newError(code, message);
+  }
+
+  /**
+   * Installs {@code hook}, which runs at every {@link Fault} point: a non-null exception it returns
+   * is thrown by the operation at that point (by the stream, for stream items), and a failed write
+   * or import applies nothing. Build errors with {@link #serverError} to match the real client's
+   * shape. The hook must not call this double. Pass {@code null} to remove it.
+   */
+  public synchronized void setFaultHook(Function<Fault, ? extends RuntimeException> hook) {
+    faultHook = hook;
+  }
+
+  /**
+   * Makes the next call of {@code operation} throw {@code error} before doing anything; later calls
+   * succeed. It replaces any fault hook.
+   */
+  public void failNext(ClientOperation operation, RuntimeException error) {
+    if (operation == null || error == null)
+      throw new InvalidArgumentException("operation and error must not be null");
+    var failed = new java.util.concurrent.atomic.AtomicBoolean();
+    setFaultHook(
+        f ->
+            f.stage() == FaultStage.CALL
+                    && f.call().operation() == operation
+                    && failed.compareAndSet(false, true)
+                ? error
+                : null);
+  }
+
+  /** Every recorded call, in order. */
+  public synchronized List<Call> calls() {
+    return List.copyOf(calls);
+  }
+
+  /** The recorded calls of one operation, in order. */
+  public synchronized List<Call> callsOf(ClientOperation operation) {
+    return calls.stream().filter(c -> c.operation() == operation).toList();
+  }
+
+  /** Records a call; non-streaming operations then run its {@link FaultStage#CALL} hook. */
+  private synchronized Call record(ClientOperation operation, Object options, Object... arguments) {
+    int index = callCounts.merge(operation, 1, Integer::sum) - 1;
+    var call = new Call(operation, index, Arrays.asList(arguments), options);
+    calls.add(call);
+    return call;
+  }
+
+  private Call begin(ClientOperation operation, Object options, Object... arguments) {
+    var call = record(operation, options, arguments);
+    fault(call, FaultStage.CALL, 0);
+    return call;
+  }
+
+  /** Runs the fault hook, if any, at one point of a call, throwing the fault it returns. */
+  private void fault(Call call, FaultStage stage, int item) {
+    Function<Fault, ? extends RuntimeException> hook;
+    synchronized (this) {
+      hook = faultHook;
+    }
+    if (hook == null) return;
+    var error = hook.apply(new Fault(call, stage, item));
+    if (error != null) throw error;
+  }
+
+  /**
+   * A lazy stream over {@code items} that runs the call's {@link FaultStage#CALL} hook when first
+   * consumed and the {@link FaultStage#ITEM} hook before each item.
+   */
+  private <T> Stream<T> faultingStream(Call call, List<T> items) {
+    Iterator<T> it =
+        new Iterator<>() {
+          private boolean started;
+          private int next;
+
+          @Override
+          public boolean hasNext() {
+            if (!started) {
+              started = true;
+              fault(call, FaultStage.CALL, 0);
+            }
+            return next < items.size();
+          }
+
+          @Override
+          public T next() {
+            if (!hasNext()) throw new NoSuchElementException();
+            fault(call, FaultStage.ITEM, next);
+            return items.get(next++);
+          }
+        };
+    return StreamSupport.stream(
+        Spliterators.spliteratorUnknownSize(it, Spliterator.ORDERED | Spliterator.NONNULL), false);
+  }
 
   public InMemorySpiceDB() {
     this(Clock.systemUTC());
@@ -206,10 +373,8 @@ public final class InMemorySpiceDB implements PermissionsApi {
   public synchronized WriteResult write(Transaction txn, WriteOptions options) {
     if (txn == null || options == null)
       throw new InvalidArgumentException("transaction and options must not be null");
-    boolean touchOnly =
-        txn.preconditions().isEmpty()
-            && txn.mutations().stream().allMatch(m -> m.operation() == Transaction.Operation.TOUCH);
-    if (!touchOnly) rejectRetry(options.retryPolicy(), "write");
+    begin(ClientOperation.WRITE, options, txn);
+    if (!txn.isIdempotent()) rejectRetry(options.retryPolicy(), "write");
     respond(options.transport());
     checkPreconditions(txn.preconditions());
     if (txn.isEmpty()) return new WriteResult(token());
@@ -250,6 +415,7 @@ public final class InMemorySpiceDB implements PermissionsApi {
       Consistency consistency, Filter filter, ReadOptions options) {
     if (consistency == null || filter == null || options == null)
       throw new InvalidArgumentException("consistency, filter and options must not be null");
+    var call = record(ClientOperation.READ_RELATIONSHIPS, options, consistency, filter);
     var matches = matching(filter);
     int start = cursorStart(options.cursor());
     respond(options.transport());
@@ -258,7 +424,7 @@ public final class InMemorySpiceDB implements PermissionsApi {
       if (options.limit() > 0 && out.size() >= options.limit()) break;
       out.add(new ReadRelationship(matches.get(i), "inmemory-cursor-" + (i + 1), token()));
     }
-    return out.stream();
+    return faultingStream(call, out);
   }
 
   @Override
@@ -270,6 +436,7 @@ public final class InMemorySpiceDB implements PermissionsApi {
   public SpiceDBClient.DeleteResult deleteRelationships(
       Filter filter, int limit, DeleteOptions options) {
     if (options == null) throw new InvalidArgumentException("options must not be null");
+    begin(ClientOperation.DELETE_RELATIONSHIPS, options, filter, limit);
     rejectRetry(options.retryPolicy(), "delete relationships");
     if (limit <= 0) throw new InvalidArgumentException("limit must be positive");
     return delete(filter, limit, options);
@@ -278,6 +445,7 @@ public final class InMemorySpiceDB implements PermissionsApi {
   @Override
   public SpiceDBClient.DeleteResult deleteRelationships(Filter filter, DeleteOptions options) {
     if (options == null) throw new InvalidArgumentException("options must not be null");
+    begin(ClientOperation.DELETE_RELATIONSHIPS, options, filter);
     rejectRetry(options.retryPolicy(), "delete relationships");
     if (options.partialDeletion() != PartialDeletion.DISALLOWED)
       throw new InvalidArgumentException(
@@ -320,6 +488,7 @@ public final class InMemorySpiceDB implements PermissionsApi {
   public synchronized CheckResult check(PermissionCheck request, CheckOptions options) {
     if (request == null || options == null)
       throw new InvalidArgumentException("request and options must not be null");
+    begin(ClientOperation.CHECK, options, request);
     respond(options.transport());
     var r = lookup(request);
     if (r.error() != null) throw r.error();
@@ -345,6 +514,7 @@ public final class InMemorySpiceDB implements PermissionsApi {
       Collection<PermissionCheck> requests, CheckOptions options) {
     if (requests == null || options == null)
       throw new InvalidArgumentException("requests and options must not be null");
+    begin(ClientOperation.CHECK_BULK, options, new ArrayList<>(requests));
     respond(options.transport());
     var out = new ArrayList<CheckResult>();
     int i = 0;
@@ -370,12 +540,17 @@ public final class InMemorySpiceDB implements PermissionsApi {
       Iterable<Relationship> input, ImportOptions options) {
     if (input == null || options == null)
       throw new InvalidArgumentException("relationships and options must not be null");
+    var call = begin(ClientOperation.IMPORT_RELATIONSHIPS, options, input);
     rejectRetry(options.retryPolicy(), "import relationships");
+    int batchSize = Math.max(options.batchSize(), 1);
     var batch = new ArrayList<Relationship>();
     for (var r : input) {
       if (r == null) throw new InvalidArgumentException("relationships must not contain null");
+      if (batch.size() % batchSize == 0)
+        fault(call, FaultStage.IMPORT_BATCH, batch.size() / batchSize);
       batch.add(r);
     }
+    fault(call, FaultStage.IMPORT_COMMIT, 0);
     respond(options.transport());
     var staged = new LinkedHashMap<String, Relationship>();
     for (var r : relationships.values()) if (live(r)) staged.put(key(r), r);
@@ -403,6 +578,7 @@ public final class InMemorySpiceDB implements PermissionsApi {
       Consistency consistency, Filter filter, ExportOptions options) {
     if (consistency == null || options == null)
       throw new InvalidArgumentException("consistency and options must not be null");
+    var call = record(ClientOperation.EXPORT_RELATIONSHIPS, options, consistency, filter);
     Predicate<Relationship> match = filter == null ? r -> true : filter::matches;
     var matches = new ArrayList<Relationship>();
     for (var r : relationships.values()) if (live(r) && match.test(r)) matches.add(r);
@@ -413,7 +589,7 @@ public final class InMemorySpiceDB implements PermissionsApi {
       if (options.limit() > 0 && out.size() >= options.limit()) break;
       out.add(new ExportedRelationship(matches.get(i), "inmemory-cursor-" + (i + 1)));
     }
-    return out.stream();
+    return faultingStream(call, out);
   }
 
   @Override
@@ -425,6 +601,7 @@ public final class InMemorySpiceDB implements PermissionsApi {
   @Override
   public synchronized SpiceDBClient.SchemaResult readSchema(CallOptions options) {
     if (options == null) throw new InvalidArgumentException("options must not be null");
+    begin(ClientOperation.READ_SCHEMA, options);
     respond(options.transport());
     if (schema == null)
       throw ErrorMapper.newError(
@@ -442,6 +619,7 @@ public final class InMemorySpiceDB implements PermissionsApi {
   public synchronized ZedToken writeSchema(String schema, CallOptions options) {
     if (schema == null || options == null)
       throw new InvalidArgumentException("schema and options must not be null");
+    begin(ClientOperation.WRITE_SCHEMA, options, schema);
     respond(options.transport());
     this.schema = schema;
     revision++;
@@ -462,6 +640,7 @@ public final class InMemorySpiceDB implements PermissionsApi {
       Consistency consistency, CallOptions options) {
     if (consistency == null || options == null)
       throw new InvalidArgumentException("consistency and options must not be null");
+    begin(ClientOperation.REFLECT_SCHEMA, options, consistency);
     respond(options.transport());
     if (reflectResult == null)
       throw ErrorMapper.newError(

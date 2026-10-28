@@ -4,12 +4,14 @@ import java.time.Duration;
 
 public final class PermissionSetOptions {
   private final TransportOptions transport;
+  private final RetryPolicy retryPolicy;
   private final Duration timeout;
   private final int limit;
   private final String resumeCursor;
 
   private PermissionSetOptions(Builder b) {
     this.transport = b.transport;
+    this.retryPolicy = b.retryPolicy;
     if (transport == null)
       throw new com.authzed.spicedb.errors.InvalidArgumentException("transport must not be null");
     timeout = b.timeout;
@@ -37,6 +39,14 @@ public final class PermissionSetOptions {
     return new Builder();
   }
 
+  /**
+   * The retry policy overriding the client's for this call, or {@code null} for the client's. See
+   * {@link Builder#retryPolicy}.
+   */
+  public RetryPolicy retryPolicy() {
+    return retryPolicy;
+  }
+
   /** Per-call transport options and response-metadata capture; see {@link TransportOptions}. */
   public TransportOptions transport() {
     return transport;
@@ -48,6 +58,23 @@ public final class PermissionSetOptions {
     private String resumeCursor;
 
     private Builder() {}
+
+    private RetryPolicy retryPolicy = null;
+
+    /**
+     * Overrides the client's retry policy for this one call, including stream establishment
+     * (reopening before the first item). A policy with {@code maxRetries(0)} exempts this call,
+     * such as one supervised watch, while the client keeps retrying everything else.
+     *
+     * <p>Mutations are not retried by default. Only a write whose transaction holds only touches
+     * and no preconditions, and a schema write, are idempotent on replay and may opt in; every
+     * other mutation given a policy with retries fails with {@code InvalidArgumentException} before
+     * any request.
+     */
+    public Builder retryPolicy(RetryPolicy value) {
+      this.retryPolicy = value;
+      return this;
+    }
 
     private TransportOptions transport = TransportOptions.none();
 

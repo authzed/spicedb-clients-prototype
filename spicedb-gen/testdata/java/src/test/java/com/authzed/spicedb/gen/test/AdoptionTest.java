@@ -87,6 +87,8 @@ class AdoptionTest {
             .touch(Organization("").admin(User("alice"))) // empty ID: deferred error
             .touch(Organization("acme").admin(User("bob")));
     assertThrows(InvalidArgumentException.class, txn::build);
+    assertTrue(txn.error().isPresent());
+    assertTrue(txn.updates().isEmpty());
 
     var ok =
         new Txn()
@@ -95,6 +97,10 @@ class AdoptionTest {
             .touch(Organization("acme").admin(User("alice")));
     assertEquals(2, ok.size());
     assertFalse(ok.isEmpty());
+    assertTrue(ok.error().isEmpty());
+    assertEquals(2, ok.updates().size());
+    assertEquals(Transaction.Operation.TOUCH, ok.updates().get(1).operation());
+    assertEquals(1, ok.preconditions().size());
     Transaction nativeTxn = ok.build();
     assertEquals(2, nativeTxn.mutations().size());
     assertEquals(1, nativeTxn.preconditions().size());
@@ -132,6 +138,18 @@ class AdoptionTest {
     assertEquals("organization", byType.subjectType());
     assertEquals("", byType.subjectID());
     assertEquals(SubjectRelationFilter.named("can_admin"), byType.subjectRelation());
+
+    // withSubject pins the subject relation; withSubjectAnyRelation does not.
+    var any = withSubjectAnyRelation(DocumentFilter(), Team("eng").member());
+    assertEquals(SubjectRelationFilter.any(), any.subjectRelation());
+    assertTrue(any.matches(Relationship.fromTuple("document:d#viewer@team:eng#member")));
+    assertTrue(any.matches(Relationship.fromTuple("document:d#viewer@team:eng")));
+    assertFalse(
+        withSubject(DocumentFilter(), Team("eng").member())
+            .matches(Relationship.fromTuple("document:d#viewer@team:eng")));
+    assertFalse(
+        withSubject(DocumentFilter(), User("x"))
+            .matches(Relationship.fromTuple("document:d#viewer@user:x#self")));
 
     assertEquals("admin", OrganizationRelations.ADMIN);
     assertEquals("can_admin", OrganizationPermissions.CAN_ADMIN);

@@ -2,6 +2,10 @@ package com.authzed.spicedb.protoconv;
 
 import com.authzed.api.v1.AlgebraicSubjectSet;
 import com.authzed.api.v1.CaveatEvalInfo;
+import com.authzed.api.v1.CheckBulkPermissionsPair;
+import com.authzed.api.v1.CheckBulkPermissionsRequestItem;
+import com.authzed.api.v1.CheckBulkPermissionsResponse;
+import com.authzed.api.v1.CheckBulkPermissionsResponseItem;
 import com.authzed.api.v1.CheckDebugTrace;
 import com.authzed.api.v1.CheckPermissionResponse;
 import com.authzed.api.v1.ContextualizedCaveat;
@@ -28,6 +32,7 @@ import com.authzed.spicedb.ExportedRelationship;
 import com.authzed.spicedb.Filter;
 import com.authzed.spicedb.LookupResult;
 import com.authzed.spicedb.ObjectRef;
+import com.authzed.spicedb.PermissionCheck;
 import com.authzed.spicedb.PermissionTree;
 import com.authzed.spicedb.Permissionship;
 import com.authzed.spicedb.ReadRelationship;
@@ -488,9 +493,25 @@ public final class ProtoConv {
         subject, excluded, tokenOrNull(resp.hasLookedUpAt(), resp.getLookedUpAt()));
   }
 
+  /**
+   * The server's wire shape for a looked-up subject: besides {@code subject} and {@code
+   * excluded_subjects} it fills the deprecated top-level fields SpiceDB still sends (subject ID,
+   * excluded IDs, permissionship and partial caveat info), so the message matches the server's
+   * response.
+   */
+  @SuppressWarnings("deprecation")
   public static LookupSubjectsResponse toProto(LookupResult.LookupSubject s) {
-    var b = LookupSubjectsResponse.newBuilder().setSubject(toProto(s.subject()));
-    for (var e : s.excludedSubjects()) b.addExcludedSubjects(toProto(e));
+    var subject = toProto(s.subject());
+    var b =
+        LookupSubjectsResponse.newBuilder()
+            .setSubject(subject)
+            .setSubjectObjectId(subject.getSubjectObjectId())
+            .setPermissionship(subject.getPermissionship());
+    if (subject.hasPartialCaveatInfo()) b.setPartialCaveatInfo(subject.getPartialCaveatInfo());
+    for (var e : s.excludedSubjects()) {
+      b.addExcludedSubjects(toProto(e));
+      b.addExcludedSubjectIds(e.subjectId());
+    }
     if (s.lookedUpAt() != null) b.setLookedUpAt(toProto(s.lookedUpAt()));
     return b.build();
   }
@@ -528,6 +549,85 @@ public final class ProtoConv {
     if (r.checkedAt() != null) b.setCheckedAt(toProto(r.checkedAt()));
     if (r.debugTrace() != null) b.setDebugTrace(toProto(r.debugTrace()));
     if (r.expiration() != null) b.setOptionalExpiresAt(toProto(r.expiration()));
+    return b.build();
+  }
+
+  /** A native permission check as a bulk request item (its own context only). */
+  public static CheckBulkPermissionsRequestItem toProto(PermissionCheck check) {
+    return toProto(check, null);
+  }
+
+  /**
+   * A native permission check as the bulk request item the client sends: call-level context ({@code
+   * CheckOptions.context}) merged by top-level key with the check's own, which wins.
+   */
+  public static CheckBulkPermissionsRequestItem toProto(
+      PermissionCheck check, Map<String, Object> callContext) {
+    if (check == null) throw new InvalidArgumentException("check must not be null");
+    var builder =
+        CheckBulkPermissionsRequestItem.newBuilder()
+            .setResource(toProto(check.resource()))
+            .setPermission(check.permission())
+            .setSubject(toProto(check.subject()));
+    boolean callEmpty = callContext == null || callContext.isEmpty();
+    boolean itemEmpty = check.context() == null || check.context().isEmpty();
+    if (!callEmpty || !itemEmpty) {
+      var merged = new LinkedHashMap<String, Object>();
+      if (callContext != null) merged.putAll(callContext);
+      if (check.context() != null) merged.putAll(check.context());
+      builder.setContext(toStruct(merged));
+    }
+    return builder.build();
+  }
+
+  /** See {@link #checkBulkToProto(List, List, Map)}; the checks carry no call-level context. */
+  public static CheckBulkPermissionsResponse checkBulkToProto(
+      List<PermissionCheck> requests, List<CheckResult> results) {
+    return checkBulkToProto(requests, results, null);
+  }
+
+  /**
+   * Rebuilds the server's bulk-check response from the checks and the results {@code checkBulk}
+   * returned for them, in the same order: one pair per item carrying the echoed request item and
+   * either the item's result or, for a result with an {@link CheckResult#error()} ({@code
+   * BulkItemErrors.RETURNED}), its status with details. The response's checked-at is the last
+   * item's revision; {@code checkBulk} may span several requests, each with its own revision.
+   *
+   * @param callContext the {@code CheckOptions.context} the checks were sent with, or {@code null}
+   */
+  public static CheckBulkPermissionsResponse checkBulkToProto(
+      List<PermissionCheck> requests, List<CheckResult> results, Map<String, Object> callContext) {
+    if (requests == null || results == null)
+      throw new InvalidArgumentException("requests and results must not be null");
+    if (requests.size() != results.size())
+      throw new InvalidArgumentException(
+          "check bulk: " + requests.size() + " requests but " + results.size() + " results");
+    var b = CheckBulkPermissionsResponse.newBuilder();
+    for (int i = 0; i < requests.size(); i++) {
+      var pair =
+          CheckBulkPermissionsPair.newBuilder().setRequest(toProto(requests.get(i), callContext));
+      var r = results.get(i);
+      if (r.error() != null) {
+        var status = io.grpc.protobuf.StatusProto.fromThrowable(r.error());
+        pair.setError(
+            status != null
+                ? status
+                : com.google.rpc.Status.newBuilder()
+                    .setCode(r.error().code().value())
+                    .setMessage(String.valueOf(r.error().getMessage()))
+                    .build());
+      } else {
+        var single = toProto(r);
+        var item =
+            CheckBulkPermissionsResponseItem.newBuilder()
+                .setPermissionship(single.getPermissionship());
+        if (single.hasPartialCaveatInfo()) item.setPartialCaveatInfo(single.getPartialCaveatInfo());
+        if (single.hasDebugTrace()) item.setDebugTrace(single.getDebugTrace());
+        pair.setItem(item);
+      }
+      if (r.checkedAt() != null) b.setCheckedAt(toProto(r.checkedAt()));
+      b.addPairs(pair);
+    }
     return b.build();
   }
 

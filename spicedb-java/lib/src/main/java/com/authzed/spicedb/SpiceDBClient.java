@@ -341,6 +341,7 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
     var response =
         withRetry(
             deadline,
+            options.retryPolicy(),
             () ->
                 stub(permissionsStub, options.transport())
                     .withDeadline(deadline)
@@ -390,6 +391,7 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
       var response =
           withRetry(
               deadline,
+              options.retryPolicy(),
               () ->
                   stub(permissionsStub, options.transport())
                       .withDeadline(deadline)
@@ -475,12 +477,21 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
       reqBuilder.addOptionalPreconditions(ProtoConv.toProto(p));
     }
 
+    // An empty transaction is sent as is: SpiceDB accepts it, evaluates any preconditions, and
+    // returns the current revision.
+    boolean touchOnly =
+        reqBuilder.getOptionalPreconditionsCount() == 0
+            && reqBuilder.getUpdatesList().stream()
+                .allMatch(u -> u.getOperation() == RelationshipUpdate.Operation.OPERATION_TOUCH);
+    var rs = mutationRetry(options.retryPolicy(), touchOnly, "write");
     WriteRelationshipsResponse resp =
-        callOnce(
+        retrying(
+            deadline,
             () ->
                 stub(permissionsStub, options.transport())
                     .withDeadline(deadline)
-                    .writeRelationships(reqBuilder.build()));
+                    .writeRelationships(reqBuilder.build()),
+            rs);
     return new WriteResult(
         resp.hasWrittenAt() ? new ZedToken(resp.getWrittenAt().getToken()) : null);
   }
@@ -506,22 +517,27 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
     if (options == null) throw new InvalidArgumentException("options must not be null");
     var proto = toRelationshipFilter(filter);
     Objects.requireNonNull(consistency, "consistency");
+    boolean single = options.paging() == Paging.SINGLE_REQUEST;
+    int requestLimit = pageRequestLimit(single, options.pageSize(), options.limit());
     return pagedStream(
         cursor -> {
           var b =
               ReadRelationshipsRequest.newBuilder()
                   .setConsistency(consistency.toProto())
                   .setRelationshipFilter(proto)
-                  .setOptionalLimit(options.pageSize());
+                  .setOptionalLimit(requestLimit);
           if (cursor != null) b.setOptionalCursor(cursor);
           return stub(permissionsStub, options.transport()).readRelationships(b.build());
         },
         ReadRelationshipsResponse::getAfterResultCursor,
         ProtoConv::fromProto,
         options.cursor(),
-        options.pageSize(),
+        response -> true,
+        requestLimit,
+        single,
         options.limit(),
-        options.timeout());
+        options.timeout(),
+        options.retryPolicy());
   }
 
   public record DeleteResult(
@@ -533,6 +549,7 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
 
   public DeleteResult deleteRelationships(Filter filter, int limit, DeleteOptions options) {
     if (options == null) throw new InvalidArgumentException("options must not be null");
+    mutationRetry(options.retryPolicy(), false, "delete relationships");
     if (limit <= 0) throw new InvalidArgumentException("limit must be positive");
     return deleteBounded(filter, limit, options);
   }
@@ -545,6 +562,7 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
    */
   public DeleteResult deleteRelationships(Filter filter, DeleteOptions options) {
     if (options == null) throw new InvalidArgumentException("options must not be null");
+    mutationRetry(options.retryPolicy(), false, "delete relationships");
     if (options.partialDeletion() != PartialDeletion.DISALLOWED)
       throw new InvalidArgumentException(
           "deleteRelationships without a limit requires PartialDeletion.DISALLOWED");
@@ -619,6 +637,7 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
    */
   public DeleteResult deleteAllRelationshipsNonAtomic(Filter filter, DeleteAllOptions options) {
     if (options == null) throw new InvalidArgumentException("options must not be null");
+    mutationRetry(options.retryPolicy(), false, "delete relationships");
     var deadline = deadlineFor(options.timeout());
     long count = 0;
     int pages = 0;
@@ -685,6 +704,8 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
       throw new InvalidArgumentException(
           "lookupResources uses the required SubjectRef relation, not subjectRelation options");
     var protoSubject = subjectProto(subject);
+    boolean single = options.paging() == Paging.SINGLE_REQUEST;
+    int requestLimit = pageRequestLimit(single, options.pageSize(), options.limit());
     return pagedStream(
         cursor -> {
           var b =
@@ -693,7 +714,7 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
                   .setResourceObjectType(resourceType)
                   .setPermission(permission)
                   .setSubject(protoSubject)
-                  .setOptionalLimit(options.pageSize())
+                  .setOptionalLimit(requestLimit)
                   .setWithDebug(options.debug() == LookupDebug.ENABLED);
           if (cursor != null) b.setOptionalCursor(cursor);
           if (options.context() != null) b.setContext(toProtoStruct(options.context()));
@@ -706,9 +727,11 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
             options.permissionshipFilter() == LookupPermissionshipFilter.ALL
                 || response.getPermissionship()
                     == LookupPermissionship.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION,
-        options.pageSize(),
+        requestLimit,
+        single,
         options.limit(),
-        options.timeout());
+        options.timeout(),
+        options.retryPolicy());
   }
 
   public Stream<LookupResult.LookupSubject> lookupSubjects(
@@ -726,8 +749,11 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
     if (options == null) throw new InvalidArgumentException("options must not be null");
     if (options.permissionshipFilter() != LookupPermissionshipFilter.ALL)
       throw new InvalidArgumentException("lookupSubjects does not support permissionshipFilter");
-    if (options.debug() == LookupDebug.ENABLED || options.pageSize() != 512)
-      throw new InvalidArgumentException("lookupSubjects does not support debug or pageSize");
+    if (options.debug() == LookupDebug.ENABLED
+        || options.pageSize() != 512
+        || options.paging() != Paging.AUTOMATIC)
+      throw new InvalidArgumentException(
+          "lookupSubjects does not support debug, pageSize or paging");
     var builder =
         LookupSubjectsRequest.newBuilder()
             .setConsistency(consistency.toProto())
@@ -741,7 +767,8 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
         () -> stub(permissionsStub, options.transport()).lookupSubjects(builder.build()),
         SpiceDBClient::lookupSubjectFromProto,
         options.timeout(),
-        options.limit());
+        options.limit(),
+        options.retryPolicy());
   }
 
   // -----------------------------------------------------------------------
@@ -761,6 +788,7 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
     ReadSchemaResponse resp =
         withRetry(
             deadline,
+            options.retryPolicy(),
             () ->
                 stub(schemaStub, options.transport())
                     .withDeadline(deadline)
@@ -778,12 +806,15 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
     if (options == null) throw new InvalidArgumentException("options must not be null");
     Duration timeout = options.timeout();
     var deadline = deadlineFor(timeout);
+    var rs = mutationRetry(options.retryPolicy(), true, "write schema");
     WriteSchemaResponse resp =
-        callOnce(
+        retrying(
+            deadline,
             () ->
                 stub(schemaStub, options.transport())
                     .withDeadline(deadline)
-                    .writeSchema(WriteSchemaRequest.newBuilder().setSchema(schema).build()));
+                    .writeSchema(WriteSchemaRequest.newBuilder().setSchema(schema).build()),
+            rs);
     return (resp.hasWrittenAt() ? new ZedToken(resp.getWrittenAt().getToken()) : null);
   }
 
@@ -830,6 +861,7 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
     ReflectSchemaResponse resp =
         withRetry(
             deadline,
+            options.retryPolicy(),
             () ->
                 stub(schemaStub, options.transport())
                     .withDeadline(deadline)
@@ -899,6 +931,7 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
     ComputablePermissionsResponse resp =
         withRetry(
             deadline,
+            options.retryPolicy(),
             () ->
                 stub(schemaStub, options.transport())
                     .withDeadline(deadline)
@@ -939,6 +972,7 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
     DependentRelationsResponse resp =
         withRetry(
             deadline,
+            options.retryPolicy(),
             () ->
                 stub(schemaStub, options.transport())
                     .withDeadline(deadline)
@@ -984,6 +1018,7 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
     DiffSchemaResponse resp =
         withRetry(
             deadline,
+            options.retryPolicy(),
             () ->
                 stub(schemaStub, options.transport())
                     .withDeadline(deadline)
@@ -1020,6 +1055,7 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
     ExpandPermissionTreeResponse resp =
         withRetry(
             deadline,
+            options.retryPolicy(),
             () ->
                 stub(permissionsStub, options.transport())
                     .withDeadline(deadline)
@@ -1044,6 +1080,7 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
 
   public long importRelationships(Iterable<Relationship> relationships, ImportOptions options) {
     if (options == null) throw new InvalidArgumentException("options must not be null");
+    mutationRetry(options.retryPolicy(), false, "import relationships");
     var scope = new StreamScope(options.timeout());
     var ctx = scope.context();
     var previous = ctx.attach();
@@ -1187,6 +1224,7 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
         () -> {
           var responses =
               openStreamWithRetry(
+                  options.retryPolicy(),
                   () ->
                       stub(permissionsStub, options.transport())
                           .exportBulkRelationships(b.build()));
@@ -1275,7 +1313,8 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
                 r.getIsCheckpoint(),
                 r.getSchemaUpdated()),
         options.timeout(),
-        0);
+        0,
+        options.retryPolicy());
   }
 
   // -----------------------------------------------------------------------
@@ -1290,6 +1329,7 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
   public void experimentalRegisterRelationshipCounter(
       String name, Filter filter, CallOptions options) {
     if (options == null) throw new InvalidArgumentException("options must not be null");
+    mutationRetry(options.retryPolicy(), false, "register relationship counter");
     Duration timeout = options.timeout();
     var deadline = deadlineFor(timeout);
     callOnce(
@@ -1316,6 +1356,7 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
     ExperimentalCountRelationshipsResponse resp =
         withRetry(
             deadline,
+            options.retryPolicy(),
             () ->
                 stub(experimentalStub, options.transport())
                     .withDeadline(deadline)
@@ -1339,6 +1380,7 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
 
   public void experimentalUnregisterRelationshipCounter(String name, CallOptions options) {
     if (options == null) throw new InvalidArgumentException("options must not be null");
+    mutationRetry(options.retryPolicy(), false, "unregister relationship counter");
     Duration timeout = options.timeout();
     var deadline = deadlineFor(timeout);
     callOnce(
@@ -1373,9 +1415,10 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
         || options.context() != null
         || options.debug() == LookupDebug.ENABLED
         || options.limit() != 0
-        || options.pageSize() != 512)
+        || options.pageSize() != 512
+        || options.paging() != Paging.AUTOMATIC)
       throw new InvalidArgumentException(
-          "roaring lookup does not support context, debug, limit or pageSize");
+          "roaring lookup does not support context, debug, limit, pageSize or paging");
     var deadline = deadlineFor(options.timeout());
     var request =
         com.authzed.api.materialize.v0.ExperimentalRoaringLookupResourcesRequest.newBuilder()
@@ -1387,6 +1430,7 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
     var response =
         withRetry(
             deadline,
+            options.retryPolicy(),
             () ->
                 stub(
                         com.authzed.api.materialize.v0.RoaringLookupResourcesServiceGrpc
@@ -1415,6 +1459,7 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
     var response =
         withRetry(
             deadline,
+            options.retryPolicy(),
             () ->
                 stub(
                         com.authzed.api.materialize.v0.RelationshipsServiceGrpc.newBlockingStub(
@@ -1450,7 +1495,8 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
                 .watchPermissionSets(b.build()),
         Materialize::event,
         options.timeout(),
-        0);
+        0,
+        options.retryPolicy());
   }
 
   /** Experimental snapshot lookup with explicit opaque continuation. */
@@ -1490,7 +1536,8 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
                     ? Base64.getEncoder().encodeToString(r.getCursor().toByteArray())
                     : null),
         options.timeout(),
-        options.limit());
+        options.limit(),
+        options.retryPolicy());
   }
 
   /**
@@ -1512,6 +1559,7 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
     var r =
         withRetry(
             deadline,
+            options.retryPolicy(),
             () ->
                 stub(
                         com.authzed.api.materialize.v0.WatchPermissionSetsServiceGrpc
@@ -1604,16 +1652,46 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
     return (long) (ThreadLocalRandom.current().nextDouble() * cap);
   }
 
-  private <T> T withRetry(RetryableCall<T> call) {
-    return withRetry(Context.current().getDeadline(), call);
+  /**
+   * The retry behavior for one operation: a per-call policy wins over the client's (including its
+   * disabled modes) and also governs stream establishment for that call.
+   */
+  private record RetrySettings(RetryPolicy policy, int maxRetries, boolean streams) {}
+
+  private static final RetrySettings NO_RETRIES =
+      new RetrySettings(RetryPolicy.defaults(), 0, false);
+
+  private RetrySettings retrySettings(RetryPolicy perCall) {
+    if (perCall != null) return new RetrySettings(perCall, perCall.maxRetries(), true);
+    return new RetrySettings(
+        retryPolicy,
+        retriesEnabled ? retryPolicy.maxRetries() : 0,
+        retriesEnabled && streamRetriesEnabled);
   }
 
-  /** Retries an idempotent read under the client's {@link RetryPolicy}. */
-  private <T> T withRetry(io.grpc.Deadline deadline, RetryableCall<T> call) {
-    return retrying(deadline, call, retriesEnabled ? retryPolicy.maxRetries() : 0);
+  /**
+   * The retry settings for a mutation: none unless the caller opted this call in, which only
+   * idempotent mutations (touch-only writes without preconditions, schema writes) may do.
+   */
+  private static RetrySettings mutationRetry(
+      RetryPolicy perCall, boolean idempotent, String operation) {
+    if (perCall == null || perCall.maxRetries() == 0) return NO_RETRIES;
+    if (!idempotent)
+      throw new InvalidArgumentException(
+          operation
+              + " cannot be retried: only touch-only writes without preconditions and schema"
+              + " writes are idempotent on replay");
+    return new RetrySettings(perCall, perCall.maxRetries(), false);
   }
 
-  private <T> T retrying(io.grpc.Deadline deadline, RetryableCall<T> call, int maxRetries) {
+  /** Retries an idempotent read under the call's or the client's {@link RetryPolicy}. */
+  private <T> T withRetry(io.grpc.Deadline deadline, RetryPolicy perCall, RetryableCall<T> call) {
+    return retrying(deadline, call, retrySettings(perCall));
+  }
+
+  private <T> T retrying(io.grpc.Deadline deadline, RetryableCall<T> call, RetrySettings rs) {
+    var retryPolicy = rs.policy();
+    int maxRetries = rs.maxRetries();
     long backoff = retryPolicy.initialBackoff().toMillis();
     long maxBackoff = retryPolicy.maxBackoff().toMillis();
     for (int attempt = 0; ; attempt++) {
@@ -1693,7 +1771,9 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
    * Opens a server stream, retrying establishment (before any item is exposed) unless {@link
    * StreamRetries#DISABLED} or {@link Retries#DISABLED}.
    */
-  private <T> Iterator<T> openStreamWithRetry(RetryableCall<Iterator<T>> openCall) {
+  private <T> Iterator<T> openStreamWithRetry(
+      RetryPolicy perCall, RetryableCall<Iterator<T>> openCall) {
+    var rs = retrySettings(perCall);
     return retrying(
         Context.current().getDeadline(),
         () -> {
@@ -1703,7 +1783,7 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
           serverStream.hasNext();
           return serverStream;
         },
-        retriesEnabled && streamRetriesEnabled ? retryPolicy.maxRetries() : 0);
+        rs.streams() ? rs : new RetrySettings(rs.policy(), 0, false));
   }
 
   private final Set<StreamScope> activeStreams = java.util.concurrent.ConcurrentHashMap.newKeySet();
@@ -1814,10 +1894,11 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
       RetryableCall<Iterator<P>> open,
       java.util.function.Function<P, T> convert,
       Duration timeout,
-      long limit) {
+      long limit,
+      RetryPolicy perCall) {
     return managedStream(
         () -> {
-          var source = openStreamWithRetry(open);
+          var source = openStreamWithRetry(perCall, open);
           return new Iterator<T>() {
             public boolean hasNext() {
               return source.hasNext();
@@ -1837,22 +1918,12 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
       java.util.function.Function<P, Cursor> cursorOf,
       java.util.function.Function<P, T> convert,
       String startCursor,
-      int pageSize,
-      long limit,
-      Duration timeout) {
-    return pagedStream(
-        open, cursorOf, convert, startCursor, response -> true, pageSize, limit, timeout);
-  }
-
-  private <P, T> Stream<T> pagedStream(
-      java.util.function.Function<Cursor, Iterator<P>> open,
-      java.util.function.Function<P, Cursor> cursorOf,
-      java.util.function.Function<P, T> convert,
-      String startCursor,
       java.util.function.Predicate<P> include,
       int pageSize,
+      boolean singleRequest,
       long limit,
-      Duration timeout) {
+      Duration timeout,
+      RetryPolicy perCall) {
     return managedStream(
         () ->
             new Iterator<T>() {
@@ -1878,11 +1949,11 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
                       return true;
                     }
                   }
-                  if (opened && count < pageSize) {
+                  if (opened && (singleRequest || count < pageSize)) {
                     done = true;
                     return false;
                   }
-                  page = openStreamWithRetry(() -> open.apply(cursor));
+                  page = openStreamWithRetry(perCall, () -> open.apply(cursor));
                   opened = true;
                   count = 0;
                 }
@@ -1900,33 +1971,19 @@ public final class SpiceDBClient implements AutoCloseable, PermissionsApi {
         limit);
   }
 
-  private static CheckBulkPermissionsRequestItem checkItem(
-      PermissionCheck r, Map<String, Object> defaults) {
-    var builder =
-        CheckBulkPermissionsRequestItem.newBuilder()
-            .setResource(objectProto(r.resource()))
-            .setPermission(r.permission())
-            .setSubject(subjectProto(r.subject()));
-    var context = mergeCheckContext(defaults, r.context());
-    if (context != null) builder.setContext(toProtoStruct(context));
-    return builder.build();
+  /**
+   * The limit every request of a paged read sends: the page size (fixed for the whole call, since
+   * SpiceDB rejects a cursor sent with a different limit), or in single-request mode the total
+   * limit alone (0 meaning unbounded).
+   */
+  private static int pageRequestLimit(boolean singleRequest, int pageSize, long limit) {
+    if (singleRequest) return (int) Math.min(limit, 0xFFFFFFFFL);
+    return pageSize;
   }
 
-  private static Map<String, Object> mergeCheckContext(
-      Map<String, Object> callLevel, Map<String, Object> item) {
-    boolean callEmpty = callLevel == null || callLevel.isEmpty();
-    boolean itemEmpty = item == null || item.isEmpty();
-    if (callEmpty && itemEmpty) {
-      return null;
-    }
-    var merged = new LinkedHashMap<String, Object>();
-    if (callLevel != null) {
-      merged.putAll(callLevel);
-    }
-    if (item != null) {
-      merged.putAll(item);
-    }
-    return merged;
+  private static CheckBulkPermissionsRequestItem checkItem(
+      PermissionCheck r, Map<String, Object> defaults) {
+    return ProtoConv.toProto(r, defaults);
   }
 
   /**

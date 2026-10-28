@@ -62,6 +62,19 @@ class AdoptionIntegrationTest {
       }
       """;
 
+  /**
+   * Other suites (PermissionsTest) rewrite the schema without organization/invitation, which
+   * SpiceDB refuses while relationships exist under them: leave none behind.
+   */
+  @org.junit.jupiter.api.AfterEach
+  void removeAdoptionRelationships() {
+    var endpoint = System.getenv().getOrDefault("SPICEDB_ENDPOINT", "localhost:50051");
+    try (var raw = SpiceDBClient.createPlaintext(endpoint, "somerandomkeyhere")) {
+      raw.deleteAllRelationshipsNonAtomic(InvitationFilter());
+      raw.deleteAllRelationshipsNonAtomic(OrganizationFilter());
+    }
+  }
+
   @Test
   void adoptionAgainstServer() {
     var endpoint = System.getenv().getOrDefault("SPICEDB_ENDPOINT", "localhost:50051");

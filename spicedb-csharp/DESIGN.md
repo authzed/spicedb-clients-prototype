@@ -87,11 +87,20 @@
     `StreamRetries.Disabled` opens each server stream (reads, lookups, exports, watch) once.
     Every options type's `RetryPolicy` overrides the client's for one call, stream
     establishment included (`RetryPolicy.None` exempts one supervised watch; a policy
-    re-enables retries for one call under `Retries.Disabled`). Mutations are never replayed
-    automatically: only a touch-only `WriteAsync` without preconditions and `WriteSchemaAsync`
-    may opt in per call; creates, deletes, preconditioned writes, imports and counter
-    (un)registration reject the opt-in with `InvalidArgumentException` before any request. A
-    partially consumed stream is never restarted.
+    re-enables retries for one call under `Retries.Disabled`).
+    `ClientOptions.OperationRetryPolicies` (keyed by the `SpiceDBOperation` enum, one member
+    per client method) applies the same override to every call of one operation, for example
+    `[SpiceDBOperation.Updates] = RetryPolicy.None` so watches are never reopened; the most
+    specific policy wins (per call, then per operation, then client-wide). Mutations are
+    never replayed automatically: only a touch-only `WriteAsync` without preconditions and
+    `WriteSchemaAsync` may opt in, per call or per operation. A per-operation `Write` policy
+    retries only writes whose `Transaction.IsIdempotent` is true (the client's own rule:
+    touches only, no preconditions) and leaves the others single-attempt without error;
+    creates, deletes, preconditioned writes, imports and counter (un)registration reject a
+    per-call opt-in with `InvalidArgumentException` before any request, and deletes,
+    delete-all, imports and counter (un)registration reject a retrying per-operation policy
+    when the client is built (a zero-retry policy is allowed for any operation). A partially
+    consumed stream is never restarted.
   - Enumerator disposal, early loop exit, cancellation and client disposal stop
     active transport calls. Imports apply bounded backpressure and cancel and
     dispose producers on early server rejection, producer failure or cancellation.
@@ -261,6 +270,14 @@
     server failures carry SpiceDB's message (verified against a live server) and
     `ErrorInfo` reason, and local validation is an `InvalidArgumentException` with no
     server message; it rejects per-call mutation retries as the client does.
+    It records every call (`Calls`, `CallsOf(SpiceDBOperation)`) as a `RecordedCall` with
+    the operation, a per-operation index, the arguments and the options object as passed,
+    and accepts fault injection (`SetFaultHook(Func<Fault, Exception?>)`) before any call,
+    before each import batch (batch index, by the call's `BatchSize`), before an import
+    commits and before each read or export item (item index); `FailNext(operation, error)`
+    fails exactly one call, and `InMemorySpiceDBClient.ServerError(code, message, reason)`
+    builds the real client's exception for a server failure. A failed write or import
+    applies nothing.
   - Options are plain init-only objects, so a test double or wrapper reads them directly;
     no resolver is needed.
   - Watch rejects nonempty object types combined with relationship filters because SpiceDB

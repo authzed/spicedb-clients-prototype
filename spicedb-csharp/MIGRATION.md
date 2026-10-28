@@ -107,6 +107,12 @@ Authzed.Net applied no deadline and no retries.
   touch-only `WriteAsync` (no preconditions) or on `WriteSchemaAsync` retries those
   idempotent writes. Other mutations reject the opt-in.
 
+  To apply one policy to every call of an operation, set it once on the client:
+  `new ClientOptions { OperationRetryPolicies = new Dictionary<SpiceDBOperation, RetryPolicy> { [SpiceDBOperation.Updates] = RetryPolicy.None } }`.
+  A per-call policy still wins. A `Write` policy retries only writes for which
+  `txn.IsIdempotent` is true; deletes, imports and counter registration reject a retrying
+  policy when the client is built.
+
 ## Errors
 
 ```csharp

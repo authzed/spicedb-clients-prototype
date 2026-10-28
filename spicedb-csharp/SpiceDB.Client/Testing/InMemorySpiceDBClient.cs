@@ -30,6 +30,14 @@ namespace SpiceDB.Client.Testing;
 /// <see cref="SetResponseMetadata"/>, and a mutation given a <c>RetryPolicy</c> with retries is
 /// rejected as the real client rejects it. Thread-safe.
 /// </para>
+/// <para>
+/// Every call is recorded (<see cref="Calls"/>, <see cref="CallsOf"/>) with its arguments and
+/// options, so tests can assert on what was sent without a strict mock. Faults can be injected
+/// at defined points (<see cref="SetFaultHook"/>, <see cref="FailNext"/>): before any
+/// operation, before each import batch, before an import commits, and before each read or
+/// export item, so failure paths need no fake gRPC server. Build injected errors with
+/// <see cref="ServerError"/> to match the real client's.
+/// </para>
 /// </summary>
 public sealed class InMemorySpiceDBClient : ISpiceDBRelationshipClient, ISpiceDBSchemaClient
 {
@@ -42,6 +50,50 @@ public sealed class InMemorySpiceDBClient : ISpiceDBRelationshipClient, ISpiceDB
     private ReflectSchemaResult? _reflect;
     private Metadata? _headers;
     private Metadata? _trailers;
+    private readonly List<RecordedCall> _calls = [];
+    private readonly Dictionary<SpiceDBOperation, int> _counts = [];
+    private Func<Fault, Exception?>? _hook;
+
+    /// <summary>Every recorded call, in order.</summary>
+    public IReadOnlyList<RecordedCall> Calls { get { lock (_lock) return _calls.ToArray(); } }
+
+    /// <summary>The recorded calls of one operation, in order.</summary>
+    public IReadOnlyList<RecordedCall> CallsOf(SpiceDBOperation operation)
+    {
+        lock (_lock) return _calls.Where(c => c.Operation == operation).ToArray();
+    }
+
+    /// <summary>
+    /// Installs <paramref name="hook"/>, which runs at every <see cref="Fault"/> point; a non-null
+    /// exception is thrown by the operation at that point, and a failed write or import applies
+    /// nothing. Build errors with <see cref="ServerError"/> to match the real client's. The hook
+    /// must not call this double. Pass null to remove it.
+    /// </summary>
+    public void SetFaultHook(Func<Fault, Exception?>? hook)
+    {
+        lock (_lock) _hook = hook;
+    }
+
+    /// <summary>Makes the next call of <paramref name="operation"/> fail with <paramref name="error"/> before doing anything; later calls succeed. Replaces any fault hook.</summary>
+    public void FailNext(SpiceDBOperation operation, Exception error)
+    {
+        Native.Required(error, nameof(error));
+        var failed = 0;
+        SetFaultHook(f => f.Stage == FaultStage.Call && f.Call.Operation == operation && Interlocked.Exchange(ref failed, 1) == 0 ? error : null);
+    }
+
+    /// <summary>
+    /// The exception the real client throws when SpiceDB answers with <paramref name="code"/>
+    /// and <paramref name="message"/> (and, where SpiceDB attaches one, an <c>ErrorInfo</c>
+    /// <paramref name="reason"/>), for fault hooks.
+    /// </summary>
+    public static SpiceDBException ServerError(StatusCode code, string message, string? reason = null)
+    {
+        if (reason is null) return SpiceDBException.Create(code, message);
+        var status = new Google.Rpc.Status { Code = (int)code, Message = message };
+        status.Details.Add(Any.Pack(new ErrorInfo { Reason = reason, Domain = "authzed.com" }));
+        return SpiceDBException.FromRpcException(status.ToRpcException());
+    }
 
     /// <summary>A snapshot of the stored relationships, in insertion order.</summary>
     public IReadOnlyList<Relationship> Relationships { get { lock (_lock) return _relationships.ToArray(); } }
@@ -80,7 +132,7 @@ public sealed class InMemorySpiceDBClient : ISpiceDBRelationshipClient, ISpiceDB
 
     public Task<CheckResult> CheckAsync(PermissionCheck request, CheckOptions? options = null, CancellationToken cancellationToken = default)
     {
-        Begin(cancellationToken, options?.RetryPolicy);
+        Begin(SpiceDBOperation.Check, options, options?.RetryPolicy, cancellationToken, request);
         if (request is null) throw new InvalidArgumentException("Request is required.");
         lock (_lock)
         {
@@ -93,7 +145,7 @@ public sealed class InMemorySpiceDBClient : ISpiceDBRelationshipClient, ISpiceDB
 
     public Task<IReadOnlyList<CheckResult>> CheckBulkAsync(IReadOnlyList<PermissionCheck> requests, CheckOptions? options = null, CancellationToken cancellationToken = default)
     {
-        Begin(cancellationToken, options?.RetryPolicy);
+        Begin(SpiceDBOperation.CheckBulk, options, options?.RetryPolicy, cancellationToken, requests);
         if (requests is null) throw new InvalidArgumentException("Requests are required.");
         var items = requests.ToArray();
         if (items.Any(x => x is null)) throw new InvalidArgumentException("Requests must not contain null.");
@@ -120,9 +172,9 @@ public sealed class InMemorySpiceDBClient : ISpiceDBRelationshipClient, ISpiceDB
 
     public Task<WriteResult> WriteAsync(Transaction transaction, WriteOptions? options = null, CancellationToken cancellationToken = default)
     {
-        Begin(cancellationToken, options?.RetryPolicy);
+        Begin(SpiceDBOperation.Write, options, options?.RetryPolicy, cancellationToken, transaction);
         if (transaction is null) throw new InvalidArgumentException("Transaction is required.");
-        SpiceDBClient.MutationRetry(options?.RetryPolicy, SpiceDBClient.IsTouchOnly(transaction), "Write");
+        SpiceDBClient.MutationRetry(options?.RetryPolicy, transaction.IsIdempotent, "Write");
         lock (_lock)
         {
             Respond(options?.Transport);
@@ -158,8 +210,14 @@ public sealed class InMemorySpiceDBClient : ISpiceDBRelationshipClient, ISpiceDB
 
     public Task<DeleteResult> DeleteRelationshipsAsync(Filter filter, int? limit, DeleteOptions? options = null, CancellationToken cancellationToken = default)
     {
-        Begin(cancellationToken, options?.RetryPolicy);
+        Begin(SpiceDBOperation.DeleteRelationships, options, options?.RetryPolicy, cancellationToken, filter, limit);
         SpiceDBClient.MutationRetry(options?.RetryPolicy, false, "DeleteRelationships");
+        return Task.FromResult(Delete(filter, limit, options));
+    }
+
+    /// <summary>One bounded delete, shared by both delete operations without recording a call.</summary>
+    private DeleteResult Delete(Filter filter, int? limit, DeleteOptions? options)
+    {
         var partial = options?.Partial != PartialDeletion.Disallowed;
         if (limit is { } l && l <= 0) throw new InvalidArgumentException("limit must be positive.");
         if (limit is null && partial) throw new InvalidArgumentException("limit is required unless Partial is PartialDeletion.Disallowed.");
@@ -177,29 +235,32 @@ public sealed class InMemorySpiceDBClient : ISpiceDBRelationshipClient, ISpiceDB
             foreach (var r in deleted) _relationships.Remove(r);
             _revision++;
             var completed = deleted.Count == matches.Count;
-            return Task.FromResult(new DeleteResult(Token(), (ulong)deleted.Count, completed, completed ? null : "mem-delete"));
+            return new DeleteResult(Token(), (ulong)deleted.Count, completed, completed ? null : "mem-delete");
         }
     }
 
-    public async Task<DeleteResult> DeleteAllRelationshipsNonAtomicAsync(Filter filter, DeleteAllOptions? options = null, CancellationToken cancellationToken = default)
+    public Task<DeleteResult> DeleteAllRelationshipsNonAtomicAsync(Filter filter, DeleteAllOptions? options = null, CancellationToken cancellationToken = default)
     {
-        Begin(cancellationToken, options?.RetryPolicy);
+        Begin(SpiceDBOperation.DeleteAllRelationshipsNonAtomic, options, options?.RetryPolicy, cancellationToken, filter);
         SpiceDBClient.MutationRetry(options?.RetryPolicy, false, "DeleteAllRelationshipsNonAtomic");
         var size = options?.PageSize ?? 1000;
         if (size <= 0) throw new InvalidArgumentException("PageSize must be positive.");
+        Native.Required(filter, nameof(filter));
+        var pageOptions = new DeleteOptions { MustMatch = options?.MustMatch ?? [], MustNotMatch = options?.MustNotMatch ?? [], Transport = options?.Transport };
         ulong total = 0;
         while (true)
         {
-            var page = await DeleteRelationshipsAsync(filter, size, new DeleteOptions { MustMatch = options?.MustMatch ?? [], MustNotMatch = options?.MustNotMatch ?? [], Transport = options?.Transport }, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            var page = Delete(filter, size, pageOptions);
             total += page.DeletedCount;
             options?.Progress?.Report(page with { DeletedCount = total });
-            if (page.Completed) return page with { DeletedCount = total };
+            if (page.Completed) return Task.FromResult(page with { DeletedCount = total });
         }
     }
 
     public async IAsyncEnumerable<ReadRelationship> ReadRelationshipsAsync(Consistency consistency, Filter filter, ReadOptions? options = null, [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        Begin(cancellationToken, options?.RetryPolicy);
+        var call = Begin(SpiceDBOperation.ReadRelationships, options, options?.RetryPolicy, cancellationToken, consistency, filter);
         Positive(options?.PageSize ?? 512, "PageSize");
         var limit = Positive(options?.Limit ?? int.MaxValue, "Limit");
         Native.Required(consistency, nameof(consistency));
@@ -211,6 +272,7 @@ public sealed class InMemorySpiceDBClient : ISpiceDBRelationshipClient, ISpiceDB
         {
             cancellationToken.ThrowIfCancellationRequested();
             await Task.Yield();
+            Inject(call, FaultStage.Item, i - start);
             yield return new(snapshot[i], (i + 1).ToString(CultureInfo.InvariantCulture), readAt);
         }
     }
@@ -222,15 +284,17 @@ public sealed class InMemorySpiceDBClient : ISpiceDBRelationshipClient, ISpiceDB
     /// </summary>
     public async Task<ulong> ImportRelationshipsAsync(IAsyncEnumerable<Relationship> relationships, ImportOptions? options = null, CancellationToken cancellationToken = default)
     {
-        Begin(cancellationToken, options?.RetryPolicy);
-        Positive(options?.BatchSize ?? 1000, "BatchSize");
+        var call = Begin(SpiceDBOperation.ImportRelationships, options, options?.RetryPolicy, cancellationToken, relationships);
+        var batchSize = Positive(options?.BatchSize ?? 1000, "BatchSize");
         SpiceDBClient.MutationRetry(options?.RetryPolicy, false, "ImportRelationships");
         var batch = new List<Relationship>();
         await foreach (var relationship in Native.Required(relationships, nameof(relationships)).WithCancellation(cancellationToken))
         {
             Native.Required(relationship, nameof(relationship)).ToProto();
+            if (batch.Count % batchSize == 0) Inject(call, FaultStage.ImportBatch, batch.Count / batchSize);
             batch.Add(relationship);
         }
+        Inject(call, FaultStage.ImportCommit);
         lock (_lock)
         {
             Respond(options?.Transport);
@@ -250,7 +314,7 @@ public sealed class InMemorySpiceDBClient : ISpiceDBRelationshipClient, ISpiceDB
     /// <summary>Yields the relationships matching <paramref name="filter"/> in insertion order, honoring <c>ResumeCursor</c> and <c>Limit</c>.</summary>
     public async IAsyncEnumerable<ExportedRelationship> ExportRelationshipsAsync(Consistency consistency, Filter filter, ExportOptions? options = null, [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        Begin(cancellationToken, options?.RetryPolicy);
+        var call = Begin(SpiceDBOperation.ExportRelationships, options, options?.RetryPolicy, cancellationToken, consistency, filter);
         Positive(options?.PageSize ?? 512, "PageSize");
         var limit = Positive(options?.Limit ?? int.MaxValue, "Limit");
         Native.Required(consistency, nameof(consistency));
@@ -262,6 +326,7 @@ public sealed class InMemorySpiceDBClient : ISpiceDBRelationshipClient, ISpiceDB
         {
             cancellationToken.ThrowIfCancellationRequested();
             await Task.Yield();
+            Inject(call, FaultStage.Item, i - start);
             yield return new(snapshot[i], (i + 1).ToString(CultureInfo.InvariantCulture));
         }
     }
@@ -269,7 +334,7 @@ public sealed class InMemorySpiceDBClient : ISpiceDBRelationshipClient, ISpiceDB
     /// <summary>Returns the schema last written, or fails with <see cref="NotFoundException"/> as SpiceDB does.</summary>
     public Task<SchemaResult> ReadSchemaAsync(CallOptions? options = null, CancellationToken cancellationToken = default)
     {
-        Begin(cancellationToken, options?.RetryPolicy);
+        Begin(SpiceDBOperation.ReadSchema, options, options?.RetryPolicy, cancellationToken);
         options?.Validate();
         lock (_lock)
         {
@@ -282,7 +347,7 @@ public sealed class InMemorySpiceDBClient : ISpiceDBRelationshipClient, ISpiceDB
     /// <summary>Stores the schema text. It is not compiled or validated.</summary>
     public Task<ZedToken> WriteSchemaAsync(string schema, CallOptions? options = null, CancellationToken cancellationToken = default)
     {
-        Begin(cancellationToken, options?.RetryPolicy);
+        Begin(SpiceDBOperation.WriteSchema, options, options?.RetryPolicy, cancellationToken, schema);
         options?.Validate();
         if (string.IsNullOrEmpty(schema)) throw new InvalidArgumentException("Schema must not be empty.");
         lock (_lock)
@@ -297,7 +362,7 @@ public sealed class InMemorySpiceDBClient : ISpiceDBRelationshipClient, ISpiceDB
     /// <summary>Returns the result registered with <see cref="SetReflectSchemaResult"/>, stamped with the current revision; without one, an empty result, as SpiceDB returns for an empty schema.</summary>
     public Task<ReflectSchemaResult> ReflectSchemaAsync(Consistency consistency, CallOptions? options = null, CancellationToken cancellationToken = default)
     {
-        Begin(cancellationToken, options?.RetryPolicy);
+        Begin(SpiceDBOperation.ReflectSchema, options, options?.RetryPolicy, cancellationToken, consistency);
         options?.Validate(reflect: true);
         if (consistency is null) throw new InvalidArgumentException("Consistency is required.");
         lock (_lock)
@@ -307,10 +372,29 @@ public sealed class InMemorySpiceDBClient : ISpiceDBRelationshipClient, ISpiceDB
         }
     }
 
-    private static void Begin(CancellationToken cancellationToken, RetryPolicy? retry)
+    /// <summary>Records a call and runs the <see cref="FaultStage.Call"/> hook, then validates the per-call retry policy.</summary>
+    private RecordedCall Begin(SpiceDBOperation operation, object? options, RetryPolicy? retry, CancellationToken cancellationToken, params object?[] arguments)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        RecordedCall call;
+        lock (_lock)
+        {
+            _counts.TryGetValue(operation, out var index);
+            _counts[operation] = index + 1;
+            call = new(operation, index, arguments, options);
+            _calls.Add(call);
+        }
+        Inject(call, FaultStage.Call);
         retry?.Validated();
+        return call;
+    }
+
+    /// <summary>Runs the fault hook, if any, at one point of a call, throwing what it returns.</summary>
+    private void Inject(RecordedCall call, FaultStage stage, int item = 0)
+    {
+        Func<Fault, Exception?>? hook;
+        lock (_lock) hook = _hook;
+        if (hook?.Invoke(new Fault(call, stage, item)) is { } error) throw error;
     }
 
     private static int Positive(int value, string field) => value > 0 ? value : throw new InvalidArgumentException($"{field} must be positive.");
@@ -334,15 +418,6 @@ public sealed class InMemorySpiceDBClient : ISpiceDBRelationshipClient, ISpiceDB
         var copy = new Metadata();
         foreach (var entry in value) copy.Add(entry);
         return copy;
-    }
-
-    /// <summary>The error the real client throws when SpiceDB answers with this status (and, where SpiceDB attaches one, this <c>ErrorInfo</c> reason).</summary>
-    private static SpiceDBException ServerError(StatusCode code, string message, string? reason = null)
-    {
-        if (reason is null) return SpiceDBException.Create(code, message);
-        var status = new Google.Rpc.Status { Code = (int)code, Message = message };
-        status.Details.Add(Any.Pack(new ErrorInfo { Reason = reason, Domain = "authzed.com" }));
-        return SpiceDBException.FromRpcException(status.ToRpcException());
     }
 
     // SpiceDB's message for both a CREATE conflict and an import duplicate.
@@ -373,3 +448,36 @@ public sealed class InMemorySpiceDBClient : ISpiceDBRelationshipClient, ISpiceDB
 
     private ZedToken Token() => new("mem-" + _revision.ToString(CultureInfo.InvariantCulture));
 }
+
+/// <summary>One call recorded by <see cref="InMemorySpiceDBClient"/>.</summary>
+/// <param name="Operation">The operation called.</param>
+/// <param name="Index">Counts calls of this operation, starting at 0.</param>
+/// <param name="Arguments">The call's arguments in signature order, without the options and cancellation token.</param>
+/// <param name="Options">The call's options object as passed (for example a <see cref="ReadOptions"/>), or null.</param>
+public sealed record RecordedCall(SpiceDBOperation Operation, int Index, IReadOnlyList<object?> Arguments, object? Options)
+{
+    /// <summary>The first argument of type <typeparamref name="T"/>, such as the <see cref="Filter"/> of a read.</summary>
+    public T? Argument<T>() => Arguments.OfType<T>().FirstOrDefault();
+
+    /// <summary>The options as <typeparamref name="T"/>, or null when none were passed.</summary>
+    public T? OptionsAs<T>() where T : class => Options as T;
+}
+
+/// <summary>Where in an operation a fault hook runs.</summary>
+public enum FaultStage
+{
+    /// <summary>Before the operation does anything, including before a stream yields its first item.</summary>
+    Call,
+    /// <summary>Before import batch <see cref="Fault.Item"/> (0-based) is sent. Batches have the call's <see cref="ImportOptions.BatchSize"/> (default 1,000).</summary>
+    ImportBatch,
+    /// <summary>After every batch, before the import commits.</summary>
+    ImportCommit,
+    /// <summary>Before a read or export yields item <see cref="Fault.Item"/> (0-based within the call).</summary>
+    Item,
+}
+
+/// <summary>The point at which a fault hook is consulted.</summary>
+/// <param name="Call">The call in progress.</param>
+/// <param name="Stage">Where in the call.</param>
+/// <param name="Item">The batch index for <see cref="FaultStage.ImportBatch"/> and the item index for <see cref="FaultStage.Item"/>; 0 otherwise.</param>
+public sealed record Fault(RecordedCall Call, FaultStage Stage, int Item);

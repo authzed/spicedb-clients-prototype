@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Per-operation retries and a fault-injecting test double
+
+- `ClientOptions.OperationRetryPolicies` sets the retry policy for every call of one
+  operation, keyed by the new `SpiceDBOperation` enum (one member per client method), for
+  example `[SpiceDBOperation.Updates] = RetryPolicy.None` so the client never reopens a
+  watch. Precedence is per call, then per operation, then client-wide; a per-operation
+  policy also governs stream establishment. A `Write` policy retries only idempotent
+  writes and leaves the others single-attempt without error. Deletes, delete-all, imports
+  and counter registration and unregistration reject a retrying per-operation policy with
+  `InvalidArgumentException` when the client is built; a zero-retry policy is allowed for
+  any operation.
+- `Transaction.IsIdempotent` exposes the client's retry-eligibility rule (touches only, no
+  preconditions).
+- `InMemorySpiceDBClient` records every call (`Calls`, `CallsOf`, as `RecordedCall` with
+  operation, per-operation index, arguments and options) and injects faults
+  (`SetFaultHook`, `FailNext`) before calls, import batches, import commits and read or
+  export items. `InMemorySpiceDBClient.ServerError` builds the real client's exception for a
+  server failure. Its delete-all no longer records its inner page deletes as delete calls.
+
 ### Tooling and test-double follow-ups
 
 - Every options type (`CheckOptions`, `LookupOptions`, `ReadOptions`, `ExportOptions`,

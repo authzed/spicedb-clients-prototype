@@ -27,6 +27,7 @@ public sealed partial class SpiceDBClient : IAsyncDisposable, ISpiceDBRelationsh
     private readonly TimeSpan? _defaultTimeout;
     private readonly RetryPolicy? _retryPolicy;
     private readonly bool _streamRetries;
+    private readonly Dictionary<string, RetryPolicy> _operationRetry;
     private readonly CancellationTokenSource _lifetime = new();
     private int _disposed;
     private SpiceDBClient(SpiceDBProtoClient proto, ClientOptions? options)
@@ -45,6 +46,10 @@ public sealed partial class SpiceDBClient : IAsyncDisposable, ISpiceDBRelationsh
         _defaultTimeout = options?.DefaultDeadline == DefaultDeadline.Disabled ? null : timeout;
         _retryPolicy = options?.Retries == Retries.Disabled ? null : (options?.RetryPolicy ?? RetryPolicy.Default).Validated();
         _streamRetries = options?.StreamRetries != StreamRetries.Disabled;
+        options?.ValidateOperationRetryPolicies();
+        // Keyed by method name, which Begin receives as its caller.
+        _operationRetry = (options?.OperationRetryPolicies ?? new Dictionary<SpiceDBOperation, RetryPolicy>())
+            .ToDictionary(e => e.Key + "Async", e => e.Value, StringComparer.Ordinal);
     }
 
     public static SpiceDBClient CreatePlaintext(string endpoint, string presharedKey, ClientOptions? options = null) => Create(endpoint, presharedKey, options, true);
@@ -53,7 +58,7 @@ public sealed partial class SpiceDBClient : IAsyncDisposable, ISpiceDBRelationsh
     {
         Native.Required(endpoint, nameof(endpoint)); Native.Required(key, "presharedKey");
         ValidTimeout(options?.DefaultTimeout ?? DefaultTimeout);
-        (options?.RetryPolicy ?? RetryPolicy.Default).Validated();
+        (options?.RetryPolicy ?? RetryPolicy.Default).Validated(); options?.ValidateOperationRetryPolicies();
         try { return new(new SpiceDBProtoClient(endpoint, key, insecure, options?.RemotePlaintextCredentials == RemotePlaintextCredentials.Allow), options); }
         catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or UriFormatException) { throw new InvalidArgumentException(ex.Message.Replace("allowInsecureRemoteCredentials", "RemotePlaintextCredentials.Allow", StringComparison.Ordinal), ex); }
     }
@@ -63,7 +68,7 @@ public sealed partial class SpiceDBClient : IAsyncDisposable, ISpiceDBRelationsh
         if (channel is null) throw new InvalidArgumentException("Channel is required.");
         Native.Required(presharedKey, nameof(presharedKey));
         ValidTimeout(options?.DefaultTimeout ?? DefaultTimeout);
-        (options?.RetryPolicy ?? RetryPolicy.Default).Validated();
+        (options?.RetryPolicy ?? RetryPolicy.Default).Validated(); options?.ValidateOperationRetryPolicies();
         // Target omits the scheme. Inspect the transport's parsed address and fail
         // closed if a future Grpc.Net.Client version stops exposing that metadata.
         var address = typeof(GrpcChannel).GetProperty("Address", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(channel) as Uri;
@@ -86,7 +91,7 @@ public sealed partial class SpiceDBClient : IAsyncDisposable, ISpiceDBRelationsh
         if (options?.RemotePlaintextCredentials == RemotePlaintextCredentials.Allow)
             throw new InvalidArgumentException("RemotePlaintextCredentials does not apply to a caller-supplied CallInvoker, which already carries its transport and credentials.");
         ValidTimeout(options?.DefaultTimeout ?? DefaultTimeout);
-        (options?.RetryPolicy ?? RetryPolicy.Default).Validated();
+        (options?.RetryPolicy ?? RetryPolicy.Default).Validated(); options?.ValidateOperationRetryPolicies();
         return new(new SpiceDBProtoClient(callInvoker), options);
     }
     public SpiceDBProtoClient RawProto() => _protoClient ?? throw new InvalidOperationException("The test client has no raw transport.");
@@ -105,22 +110,25 @@ public sealed partial class SpiceDBClient : IAsyncDisposable, ISpiceDBRelationsh
     {
         token.ThrowIfCancellationRequested();
         ObjectDisposedException.ThrowIf(_disposed != 0, this);
-        var policy = retry is null ? _retryPolicy : retry.Validated();
-        return new(timeout is { } t ? ValidTimeout(t) : unary ? _defaultTimeout : null, token, _lifetime.Token, transport, policy, retry is not null || _streamRetries, operation);
+        // The most specific policy wins: per call, then per operation, then client-wide. A
+        // per-call or per-operation policy also governs stream establishment.
+        var specific = retry?.Validated() ?? OperationPolicy(operation);
+        return new(timeout is { } t ? ValidTimeout(t) : unary ? _defaultTimeout : null, token, _lifetime.Token, transport, specific ?? _retryPolicy, specific is not null || _streamRetries, operation);
     }
+    /// <summary>The client's <see cref="ClientOptions.OperationRetryPolicies"/> entry for the calling operation, if any.</summary>
+    private RetryPolicy? OperationPolicy([CallerMemberName] string operation = "") => _operationRetry.GetValueOrDefault(operation);
     /// <summary>
-    /// Whether a mutation may retry under its per-call <paramref name="policy"/>: only when the
-    /// caller opted in and the mutation is idempotent on replay. A non-idempotent mutation given
-    /// a policy with retries is rejected before any request.
+    /// Whether a mutation may retry. A per-call <paramref name="policy"/> with retries is an
+    /// opt-in that only idempotent mutations may make; any other mutation is rejected before any
+    /// request. Without a per-call policy, a client-wide <paramref name="operationPolicy"/>
+    /// applies only to the calls that are idempotent, and leaves the others single-attempt.
     /// </summary>
-    internal static bool MutationRetry(RetryPolicy? policy, bool idempotent, string operation)
+    internal static bool MutationRetry(RetryPolicy? policy, bool idempotent, string operation, RetryPolicy? operationPolicy = null)
     {
-        if (policy is null || policy.MaxRetries == 0) return false;
+        if (policy is null) return operationPolicy is { MaxRetries: > 0 } && idempotent;
+        if (policy.MaxRetries == 0) return false;
         return idempotent ? true : throw new InvalidArgumentException($"{operation} cannot be retried: only touch-only writes without preconditions and schema writes are idempotent on replay.");
     }
-    /// <summary>Whether replaying <paramref name="transaction"/> is idempotent: only touches and no preconditions.</summary>
-    internal static bool IsTouchOnly(Transaction transaction) =>
-        transaction.Preconditions.Count == 0 && transaction.Updates.All(u => u.Operation == UpdateOperation.Touch);
     private sealed class Budget : IDisposable
     {
         private readonly long _start = Stopwatch.GetTimestamp();
@@ -307,7 +315,7 @@ public sealed partial class SpiceDBClient : IAsyncDisposable, ISpiceDBRelationsh
     {
         using var budget = Begin(options?.Timeout, cancellationToken, transport: options?.Transport, retry: options?.RetryPolicy);
         if (transaction is null) throw new InvalidArgumentException("Transaction is required.");
-        var retry = MutationRetry(options?.RetryPolicy, IsTouchOnly(transaction), "Write");
+        var retry = MutationRetry(options?.RetryPolicy, transaction.IsIdempotent, "Write", OperationPolicy());
         // An empty transaction is sent as is: SpiceDB accepts it, evaluates any preconditions
         // and returns the current revision.
         var request = new WriteRelationshipsRequest { OptionalTransactionMetadata = Native.Struct(options?.Metadata) };
@@ -570,7 +578,7 @@ public sealed partial class SpiceDBClient : IAsyncDisposable, ISpiceDBRelationsh
         if (string.IsNullOrEmpty(schema))
             throw new InvalidArgumentException("Schema must not be empty.");
         // Writing the same schema again is idempotent, so a caller may opt this call into retries.
-        var retry = MutationRetry(options?.RetryPolicy, true, "WriteSchema");
+        var retry = MutationRetry(options?.RetryPolicy, true, "WriteSchema", OperationPolicy());
 
         var resp = await Unary(budget, o => _schema.WriteSchemaAsync(new WriteSchemaRequest { Schema = schema }, o.Headers, o.Deadline, o.CancellationToken), retry);
 

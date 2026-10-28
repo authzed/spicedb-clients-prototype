@@ -73,11 +73,86 @@ public sealed class ClientOptions
     private Retries _retries;
     /// <summary><see cref="Client.Retries.Disabled"/> makes every operation a single attempt, for callers that apply their own policy.</summary>
     public Retries Retries { get => _retries; init => _retries = BehaviorOptions.Defined(value, nameof(Retries)); }
-    /// <summary>The retry policy for idempotent reads. Null uses <see cref="Client.RetryPolicy.Default"/>. Mutations never retry under the client-wide policy; each options type's <c>RetryPolicy</c> overrides it per call.</summary>
+    /// <summary>The retry policy for idempotent reads. Null uses <see cref="Client.RetryPolicy.Default"/>. Mutations never retry under the client-wide policy; <see cref="OperationRetryPolicies"/> overrides it for one operation and each options type's <c>RetryPolicy</c> for one call.</summary>
     public RetryPolicy? RetryPolicy { get; init; }
     private StreamRetries _streamRetries;
     /// <summary><see cref="Client.StreamRetries.Disabled"/> opens each server stream (reads, lookups, exports, watch) exactly once.</summary>
     public StreamRetries StreamRetries { get => _streamRetries; init => _streamRetries = BehaviorOptions.Defined(value, nameof(StreamRetries)); }
+    private IReadOnlyDictionary<SpiceDBOperation, RetryPolicy> _operationRetryPolicies = new Dictionary<SpiceDBOperation, RetryPolicy>();
+    /// <summary>
+    /// The retry policy for every call of one operation, including stream establishment, for
+    /// example never reopening watches while everything else keeps the client's policy:
+    /// <code>OperationRetryPolicies = new Dictionary&lt;SpiceDBOperation, RetryPolicy&gt; { [SpiceDBOperation.Updates] = RetryPolicy.None }</code>
+    /// The most specific policy wins: a per-call <c>RetryPolicy</c>, then this, then
+    /// <see cref="RetryPolicy"/>. For <see cref="SpiceDBOperation.Write"/> it applies only to
+    /// writes that are idempotent on replay (<see cref="Transaction.IsIdempotent"/>); other
+    /// writes are not retried and not rejected. Operations that are never idempotent (deletes,
+    /// delete-all, imports, counter registration and unregistration) reject a policy with
+    /// retries when the client is built; a zero-retry policy is allowed for any operation.
+    /// Snapshotted when set.
+    /// </summary>
+    public IReadOnlyDictionary<SpiceDBOperation, RetryPolicy> OperationRetryPolicies
+    {
+        get => _operationRetryPolicies;
+        init => _operationRetryPolicies = new Dictionary<SpiceDBOperation, RetryPolicy>(value ?? throw new InvalidArgumentException("OperationRetryPolicies cannot be null."));
+    }
+
+    /// <summary>Operations that are never idempotent on replay, so a retrying per-operation policy for them is rejected.</summary>
+    private static readonly HashSet<SpiceDBOperation> NeverReplayable =
+    [
+        SpiceDBOperation.DeleteRelationships, SpiceDBOperation.DeleteAllRelationshipsNonAtomic, SpiceDBOperation.ImportRelationships,
+        SpiceDBOperation.ExperimentalRegisterRelationshipCounter, SpiceDBOperation.ExperimentalUnregisterRelationshipCounter,
+    ];
+
+    /// <summary>Validates the per-operation retry policies, so a client is never built from options it would reject later.</summary>
+    internal void ValidateOperationRetryPolicies()
+    {
+        foreach (var (operation, policy) in _operationRetryPolicies)
+        {
+            BehaviorOptions.Defined(operation, nameof(SpiceDBOperation));
+            if (policy is null) throw new InvalidArgumentException($"The retry policy for {operation} cannot be null.");
+            policy.Validated();
+            if (policy.MaxRetries > 0 && NeverReplayable.Contains(operation))
+                throw new InvalidArgumentException($"{operation} cannot be retried: it is not idempotent on replay.");
+        }
+    }
+}
+
+/// <summary>
+/// Identifies one <see cref="SpiceDBClient"/> operation, named after its method without the
+/// <c>Async</c> suffix. Used by <see cref="ClientOptions.OperationRetryPolicies"/> and by the
+/// in-memory test double's call recording and fault injection.
+/// <see cref="SpiceDBClient.CheckAnyAsync"/> and <see cref="SpiceDBClient.CheckAllAsync"/> are
+/// <see cref="CheckBulk"/> calls.
+/// </summary>
+public enum SpiceDBOperation
+{
+    Check,
+    CheckBulk,
+    Write,
+    DeleteRelationships,
+    DeleteAllRelationshipsNonAtomic,
+    ReadRelationships,
+    LookupResources,
+    LookupSubjects,
+    ImportRelationships,
+    ExportRelationships,
+    Updates,
+    ReadSchema,
+    WriteSchema,
+    ReflectSchema,
+    ComputablePermissions,
+    DependentRelations,
+    DiffSchema,
+    ExpandPermissionTree,
+    ExperimentalRegisterRelationshipCounter,
+    ExperimentalCountRelationships,
+    ExperimentalUnregisterRelationshipCounter,
+    ExperimentalRoaringLookupResources,
+    ExperimentalCountRelationshipsByFilter,
+    ExperimentalWatchPermissionSets,
+    ExperimentalLookupPermissionSets,
+    ExperimentalDownloadPermissionSets,
 }
 
 /// <summary>Whether unary operations get the client's default deadline.</summary>
@@ -96,9 +171,9 @@ public sealed record RetryEvent(string Operation, int Attempt, SpiceDBException 
 
 /// <summary>
 /// Retry policy for idempotent reads, set client-wide (<see cref="ClientOptions.RetryPolicy"/>)
-/// or per call (each options type's <c>RetryPolicy</c>). Mutations are never replayed
-/// automatically: only a touch-only write without preconditions and a schema write may opt in
-/// per call; deletes, creates, preconditioned writes, imports and counter registration reject
+/// per operation (<see cref="ClientOptions.OperationRetryPolicies"/>) or per call (each options
+/// type's <c>RetryPolicy</c>). Mutations are never replayed automatically: only a touch-only
+/// write without preconditions and a schema write may opt in; deletes, creates, preconditioned writes, imports and counter registration reject
 /// the opt-in before any request.
 /// </summary>
 public sealed class RetryPolicy

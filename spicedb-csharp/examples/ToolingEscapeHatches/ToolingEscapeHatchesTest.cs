@@ -132,6 +132,60 @@ public class ToolingEscapeHatchesTest
         await watch.DisposeAsync();
     }
 
+    [Fact]
+    public async Task OperationRetryPoliciesApplyToEveryCallOfOneOperation()
+    {
+        // A supervised watch is never reopened by the client (its supervisor resumes it), and
+        // idempotent writes retry, without repeating a per-call option at every call site.
+        var retry = new SpiceDB.Client.RetryPolicy { MaxRetries = 2, InitialBackoff = TimeSpan.FromMilliseconds(50) };
+        await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token, new ClientOptions
+        {
+            OperationRetryPolicies = new Dictionary<SpiceDBOperation, SpiceDB.Client.RetryPolicy>
+            {
+                [SpiceDBOperation.Updates] = SpiceDB.Client.RetryPolicy.None,
+                [SpiceDBOperation.Write] = retry,
+            },
+        });
+        await SpiceDBTestServer.ClearDocumentRelationshipsAsync(client);
+        var start = await client.WriteSchemaAsync(Schema, null, default);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var watch = client.UpdatesAsync(["document"], start, null, cts.Token).GetAsyncEnumerator(cts.Token);
+
+        var touch = new Transaction();
+        touch.Touch(Relationship.FromTuple("document:policy#viewer@user:gina"));
+        Assert.True(touch.IsIdempotent, "the client's own rule: touches only, no preconditions");
+        await client.WriteAsync(touch, null, default);
+        Assert.True(await watch.MoveNextAsync());
+        Assert.Equal("gina", watch.Current.Updates.Single().Relationship.SubjectId);
+        await watch.DisposeAsync();
+
+        // Operations that are never idempotent refuse a retrying policy when the client is built.
+        Assert.Throws<InvalidArgumentException>(() => SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token, new ClientOptions
+        {
+            OperationRetryPolicies = new Dictionary<SpiceDBOperation, SpiceDB.Client.RetryPolicy> { [SpiceDBOperation.ImportRelationships] = retry },
+        }));
+    }
+
+    [Fact]
+    public async Task TestDoubleInjectsFaultsAndRecordsCalls()
+    {
+        // A restore routine's failure path, tested without a fake server: the third import
+        // batch fails as SpiceDB would fail it, and nothing is applied.
+        var store = new SpiceDB.Client.Testing.InMemorySpiceDBClient();
+        store.SetFaultHook(f => f is { Stage: SpiceDB.Client.Testing.FaultStage.ImportBatch, Item: 2 }
+            ? SpiceDB.Client.Testing.InMemorySpiceDBClient.ServerError(StatusCode.AlreadyExists, "duplicate relationship") : null);
+        static async IAsyncEnumerable<Relationship> Backup()
+        {
+            for (var i = 0; i < 10; i++) { await Task.Yield(); yield return Relationship.FromTuple($"document:r{i}#viewer@user:hal"); }
+        }
+        await Assert.ThrowsAsync<AlreadyExistsException>(() => store.ImportRelationshipsAsync(Backup(), new ImportOptions { BatchSize = 3 }, default));
+        Assert.Empty(store.Relationships);
+
+        // Every call is recorded with its options, for assertions without a strict mock.
+        var import = store.CallsOf(SpiceDBOperation.ImportRelationships).Single();
+        Assert.Equal(3, import.OptionsAs<ImportOptions>()!.BatchSize);
+    }
+
     private sealed class Recorder(List<DeleteResult> sink) : IProgress<DeleteResult>
     {
         public void Report(DeleteResult value) => sink.Add(value);

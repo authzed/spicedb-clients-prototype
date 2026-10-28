@@ -12,6 +12,12 @@ public record SubjectRef(ObjectRef object, String relation) {
     }
   }
 
+  /** {@code type:id} or {@code type:id#relation}, as in SpiceDB tuple syntax. */
+  @Override
+  public String toString() {
+    return relation == null ? object.toString() : object + "#" + relation;
+  }
+
   public static SubjectRef direct(ObjectRef object) {
     return new SubjectRef(object, null);
   }

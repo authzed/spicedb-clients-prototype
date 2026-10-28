@@ -2,7 +2,7 @@ package com.authzed.spicedb;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import build.buf.gen.authzed.api.v1.*;
+import com.authzed.api.v1.*;
 import io.grpc.stub.StreamObserver;
 import java.util.*;
 import org.junit.jupiter.api.Test;
@@ -16,7 +16,7 @@ class TracingContractTest {
         Consistency.full());
   }
 
-  private build.buf.gen.authzed.api.v1.DebugInformation trace() {
+  private com.authzed.api.v1.DebugInformation trace() {
     var child =
         CheckDebugTrace.newBuilder()
             .setResource(ObjectReference.newBuilder().setObjectType("document").setObjectId("one"))
@@ -52,7 +52,7 @@ class TracingContractTest {
                                     .build()))
                     .setPartialCaveatInfo(
                         PartialCaveatInfo.newBuilder().addMissingRequiredContext("x")));
-    return build.buf.gen.authzed.api.v1.DebugInformation.newBuilder()
+    return com.authzed.api.v1.DebugInformation.newBuilder()
         .setSchemaUsed("definition user {}")
         .setCheck(root)
         .build();
@@ -73,8 +73,7 @@ class TracingContractTest {
                         .setPermissionship(
                             CheckPermissionResponse.Permissionship.PERMISSIONSHIP_HAS_PERMISSION)
                         .setCheckedAt(
-                            build.buf.gen.authzed.api.v1.ZedToken.newBuilder()
-                                .setToken("revision"));
+                            com.authzed.api.v1.ZedToken.newBuilder().setToken("revision"));
                 if (r.getWithTracing())
                   b.setDebugTrace(trace())
                       .setOptionalExpiresAt(

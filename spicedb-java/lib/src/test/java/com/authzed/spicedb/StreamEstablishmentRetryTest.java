@@ -2,21 +2,21 @@ package com.authzed.spicedb;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import build.buf.gen.authzed.api.v1.ExportBulkRelationshipsRequest;
-import build.buf.gen.authzed.api.v1.ExportBulkRelationshipsResponse;
-import build.buf.gen.authzed.api.v1.LookupPermissionship;
-import build.buf.gen.authzed.api.v1.LookupResourcesRequest;
-import build.buf.gen.authzed.api.v1.LookupResourcesResponse;
-import build.buf.gen.authzed.api.v1.LookupSubjectsRequest;
-import build.buf.gen.authzed.api.v1.LookupSubjectsResponse;
-import build.buf.gen.authzed.api.v1.PermissionsServiceGrpc;
-import build.buf.gen.authzed.api.v1.ReadRelationshipsRequest;
-import build.buf.gen.authzed.api.v1.ReadRelationshipsResponse;
-import build.buf.gen.authzed.api.v1.RelationshipUpdate;
-import build.buf.gen.authzed.api.v1.ResolvedSubject;
-import build.buf.gen.authzed.api.v1.WatchRequest;
-import build.buf.gen.authzed.api.v1.WatchResponse;
-import build.buf.gen.authzed.api.v1.WatchServiceGrpc;
+import com.authzed.api.v1.ExportBulkRelationshipsRequest;
+import com.authzed.api.v1.ExportBulkRelationshipsResponse;
+import com.authzed.api.v1.LookupPermissionship;
+import com.authzed.api.v1.LookupResourcesRequest;
+import com.authzed.api.v1.LookupResourcesResponse;
+import com.authzed.api.v1.LookupSubjectsRequest;
+import com.authzed.api.v1.LookupSubjectsResponse;
+import com.authzed.api.v1.PermissionsServiceGrpc;
+import com.authzed.api.v1.ReadRelationshipsRequest;
+import com.authzed.api.v1.ReadRelationshipsResponse;
+import com.authzed.api.v1.RelationshipUpdate;
+import com.authzed.api.v1.ResolvedSubject;
+import com.authzed.api.v1.WatchRequest;
+import com.authzed.api.v1.WatchResponse;
+import com.authzed.api.v1.WatchServiceGrpc;
 import com.authzed.spicedb.errors.SpiceDBException;
 import io.grpc.Status;
 import io.grpc.stub.StreamObserver;
@@ -94,7 +94,9 @@ class StreamEstablishmentRetryTest {
       SpiceDBClient client = servers.client();
       List<Relationship> results;
       try (Stream<Relationship> stream =
-          client.readRelationships(Consistency.full(), Filter.of("document"))) {
+          client
+              .readRelationships(Consistency.full(), Filter.of("document"))
+              .map(com.authzed.spicedb.ReadRelationship::relationship)) {
         results = stream.toList();
       }
 
@@ -126,7 +128,9 @@ class StreamEstablishmentRetryTest {
     try (TestServers servers = TestServers.start(service)) {
       SpiceDBClient client = servers.client();
       try (Stream<Relationship> stream =
-          client.readRelationships(Consistency.full(), Filter.of("document"))) {
+          client
+              .readRelationships(Consistency.full(), Filter.of("document"))
+              .map(com.authzed.spicedb.ReadRelationship::relationship)) {
         assertThrows(SpiceDBException.class, () -> stream.toList());
       }
       assertEquals(1, attempts.get(), "a transient error after an item was read must not retry");
@@ -327,7 +331,9 @@ class StreamEstablishmentRetryTest {
       SpiceDBClient client = servers.client();
       List<Relationship> results;
       try (Stream<Relationship> stream =
-          client.exportRelationships(Consistency.full(), Filter.of("document"))) {
+          client
+              .exportRelationships(Consistency.full(), Filter.of("document"))
+              .map(com.authzed.spicedb.ExportedRelationship::relationship)) {
         results = stream.toList();
       }
 
@@ -359,7 +365,9 @@ class StreamEstablishmentRetryTest {
     try (TestServers servers = TestServers.start(service)) {
       SpiceDBClient client = servers.client();
       try (Stream<Relationship> stream =
-          client.exportRelationships(Consistency.full(), Filter.of("document"))) {
+          client
+              .exportRelationships(Consistency.full(), Filter.of("document"))
+              .map(com.authzed.spicedb.ExportedRelationship::relationship)) {
         assertThrows(SpiceDBException.class, () -> stream.toList());
       }
       assertEquals(1, attempts.get(), "a transient error after an item was read must not retry");

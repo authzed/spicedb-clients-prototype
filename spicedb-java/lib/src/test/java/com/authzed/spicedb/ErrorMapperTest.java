@@ -2,7 +2,7 @@ package com.authzed.spicedb;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import build.buf.gen.authzed.api.v1.ErrorReason;
+import com.authzed.api.v1.ErrorReason;
 import com.authzed.spicedb.errors.*;
 import com.google.protobuf.Any;
 import com.google.rpc.ErrorInfo;

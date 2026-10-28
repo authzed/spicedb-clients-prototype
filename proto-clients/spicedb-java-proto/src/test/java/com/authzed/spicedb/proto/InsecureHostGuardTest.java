@@ -1,7 +1,7 @@
 package com.authzed.spicedb.proto;
 
-import build.buf.gen.authzed.api.v1.CheckPermissionRequest;
-import build.buf.gen.authzed.api.v1.PermissionsServiceGrpc;
+import com.authzed.api.v1.CheckPermissionRequest;
+import com.authzed.api.v1.PermissionsServiceGrpc;
 import io.grpc.Metadata;
 import io.grpc.Server;
 import io.grpc.ServerCall;

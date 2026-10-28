@@ -4,10 +4,14 @@ import java.time.Duration;
 import java.util.*;
 
 public final class ImportOptions {
+  private final TransportOptions transport;
   private final Duration timeout;
   private final int batchSize;
 
   private ImportOptions(Builder b) {
+    this.transport = b.transport;
+    if (transport == null)
+      throw new com.authzed.spicedb.errors.InvalidArgumentException("transport must not be null");
     this.timeout = b.timeout;
     if (timeout != null && (timeout.isZero() || timeout.isNegative()))
       throw new com.authzed.spicedb.errors.InvalidArgumentException("timeout must be positive");
@@ -28,8 +32,21 @@ public final class ImportOptions {
     return batchSize;
   }
 
+  /** Per-call transport options and response-metadata capture; see {@link TransportOptions}. */
+  public TransportOptions transport() {
+    return transport;
+  }
+
   public static final class Builder {
     private Builder() {}
+
+    private TransportOptions transport = TransportOptions.none();
+
+    /** Per-call transport options and response-metadata capture; see {@link TransportOptions}. */
+    public Builder transport(TransportOptions value) {
+      this.transport = value;
+      return this;
+    }
 
     private Duration timeout = null;
 

@@ -2,7 +2,7 @@ package com.authzed.spicedb;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import build.buf.gen.authzed.api.v1.*;
+import com.authzed.api.v1.*;
 import com.authzed.spicedb.errors.*;
 import io.grpc.stub.*;
 import java.time.Duration;
@@ -27,8 +27,7 @@ class OperationContractTest {
                 var response =
                     DeleteRelationshipsResponse.newBuilder()
                         .setRelationshipsDeletedCount(1)
-                        .setDeletedAt(
-                            build.buf.gen.authzed.api.v1.ZedToken.newBuilder().setToken("revision"))
+                        .setDeletedAt(com.authzed.api.v1.ZedToken.newBuilder().setToken("revision"))
                         .setDeletionProgress(
                             requests.size() == 1
                                 ? DeleteRelationshipsResponse.DeletionProgress
@@ -82,8 +81,7 @@ class OperationContractTest {
                         .setDeletionProgress(
                             DeleteRelationshipsResponse.DeletionProgress.DELETION_PROGRESS_PARTIAL)
                         .setRelationshipsDeletedCount(2)
-                        .setDeletedAt(
-                            build.buf.gen.authzed.api.v1.ZedToken.newBuilder().setToken("opaque"))
+                        .setDeletedAt(com.authzed.api.v1.ZedToken.newBuilder().setToken("opaque"))
                         .setAfterResultCursor(Cursor.newBuilder().setToken("next"))
                         .build());
                 out.onCompleted();
@@ -130,8 +128,7 @@ class OperationContractTest {
                               DeleteRelationshipsResponse.DeletionProgress
                                   .DELETION_PROGRESS_PARTIAL)
                           .setRelationshipsDeletedCount(3)
-                          .setDeletedAt(
-                              build.buf.gen.authzed.api.v1.ZedToken.newBuilder().setToken("ack"))
+                          .setDeletedAt(com.authzed.api.v1.ZedToken.newBuilder().setToken("ack"))
                           .setAfterResultCursor(Cursor.newBuilder().setToken("resume"))
                           .build());
                   out.onCompleted();

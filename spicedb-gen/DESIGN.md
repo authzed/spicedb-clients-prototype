@@ -167,3 +167,39 @@ and options forwarding rather than just generated text fragments.
   forbidden single-line statement. tsc reports an unused directive as an error, so
   each line must fail on its own; the Magefile rejects directives that do not
   precede a one-line statement.
+
+## Java naming rules
+
+- Everything is nested in one `Permissions` class in the `--java.package` package.
+  Each definition `d` gets the factory `D(id)` → record `DRef`, `DFilter()`,
+  name-constant classes `DRelations` / `DPermissions` (`UPPER_SNAKE` constants plus
+  `names()`), a `PermissionRef` constant `D_P` per permission, and, when `d:*` is
+  allowed anywhere, `DWildcard()` → `DWildcardRef`.
+- On `DRef`: permission `p` → `p()` (`Permission<DPSubject>`); relation `r` →
+  writer `r(DRSubject)`, key `rKey(DRKeySubject)` → `RelationshipKey`, check
+  `rRelation()` (`Permission<DRRelationSubject>`), filter `rFilter()`; plus
+  `filter()`, `permissionByName`, `relationByName`, `relationshipByName`. A userset
+  `d#r` on a relation gets the accessor `r()` and the writer moves to `forR`. A
+  userset `d#p` on a permission gets the accessor `pSubject()`, so `p()` stays the
+  permission accessor.
+- Subject variants are records named `<Prefix><Caveat>[Expiring]` (prefix `D`, `DR`
+  or `DWildcard`; the base adds `Ref`), reached by `with<Caveat>(ctx)` and
+  `withExpiration(Instant)`. Admission is a sealed interface per position: writers
+  (`DRSubject`) admit exactly the schema's subject shapes; keys (`DRKeySubject`)
+  admit only base shapes; checks (`DRRelationSubject`, `DPSubject`) admit base and
+  caveated shapes, the members behind userset subjects, and type sentinels (`DType`,
+  `DRType`) for lookups. Sentinels are never writable.
+- Any remaining collision (between types, static members, members of one record, or
+  with the hand-written runtime and the native types it names) fails generation with
+  both sources named, as does an identifier that is a Java reserved word; nothing is
+  silently renamed.
+- Output is google-java-format: the template and the Go writer emit
+  google-java-format's layout directly (the generator is Go and cannot run the Java
+  formatter in-process), and the fixture's `spotlessCheck` (google-java-format
+  1.22.0, the version spicedb-java uses) verifies it. `--java.formatter="<cmd>"`
+  pipes the output through a formatter command, for names long enough to need
+  wrapping the writer does not model.
+- Negative type fixtures mark each forbidden line `// should not compile`.
+  `mage javaTypeErrors` compiles them with every diagnostic (`-Xmaxerrs`) and
+  requires an error on every marked line, no error on any unmarked line, and no
+  "cannot find symbol" on a marked line.

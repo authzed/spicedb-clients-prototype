@@ -4,11 +4,17 @@ import java.time.Duration;
 import java.util.*;
 
 public final class ReadOptions {
+  private final String cursor;
+  private final TransportOptions transport;
   private final Duration timeout;
   private final int pageSize;
   private final long limit;
 
   private ReadOptions(Builder b) {
+    this.cursor = b.cursor;
+    this.transport = b.transport;
+    if (transport == null)
+      throw new com.authzed.spicedb.errors.InvalidArgumentException("transport must not be null");
     this.timeout = b.timeout;
     if (timeout != null && (timeout.isZero() || timeout.isNegative()))
       throw new com.authzed.spicedb.errors.InvalidArgumentException("timeout must be positive");
@@ -36,8 +42,38 @@ public final class ReadOptions {
     return limit;
   }
 
+  /** Per-call transport options and response-metadata capture; see {@link TransportOptions}. */
+  public TransportOptions transport() {
+    return transport;
+  }
+
+  /**
+   * Resume after this after-result cursor. Repeat the original filter, consistency and page size.
+   */
+  public String cursor() {
+    return cursor;
+  }
+
   public static final class Builder {
     private Builder() {}
+
+    private String cursor = null;
+
+    /**
+     * Resume after this after-result cursor. Repeat the original filter, consistency and page size.
+     */
+    public Builder cursor(String value) {
+      this.cursor = value;
+      return this;
+    }
+
+    private TransportOptions transport = TransportOptions.none();
+
+    /** Per-call transport options and response-metadata capture; see {@link TransportOptions}. */
+    public Builder transport(TransportOptions value) {
+      this.transport = value;
+      return this;
+    }
 
     private Duration timeout = null;
 

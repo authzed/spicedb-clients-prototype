@@ -82,9 +82,10 @@ still exists under it, and JUnit's class order is not something to rely on.
 | `ErrorMappingTest` | Recovering from `OUT_OF_RANGE` (stale ZedToken) and `UNAUTHENTICATED` without parsing a message |
 | `InsecureOptInTest` | Why `createPlaintext` is loopback-only, and the named opt-in a remote plaintext host requires |
 | `RetryPolicyTest` | Which calls are retried for you and which are not, counted server-side |
+| `ToolingEscapeHatchesTest` | The tooling surface without `rawChannel()`: paging across pages with cursors and resume, full tuple syntax round-tripped through the server, import conflicts as `AlreadyExistsException`, all-or-nothing delete and delete-all progress, `fromChannel` with retry/deadline modes and `ResponseMetadata`, watch schema changes, gRPC status interop and per-item bulk errors |
 | `UnrepresentableValuesTest` | Caller data that cannot convert fails loudly, naming the key; unknown server enums degrade safely |
 
 The canonical checks take `PermissionCheck` and optional `CheckOptions.builder()`
 values. `CheckPermissionTest.singularCheckReturnsServerTrace` enables tracing and
 asserts real server diagnostics. All returned streams belong in try-with-resources.
-Bounded deletion uses an explicit total limit; delete-all is a separate operation.
+Bounded deletion uses an explicit total limit (or, in the all-or-nothing `PartialDeletion.DISALLOWED` mode, the server default); delete-all is a separate operation.

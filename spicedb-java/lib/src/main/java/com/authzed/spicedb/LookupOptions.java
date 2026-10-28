@@ -4,6 +4,8 @@ import java.time.Duration;
 import java.util.*;
 
 public final class LookupOptions {
+  private final String cursor;
+  private final TransportOptions transport;
   private final LookupPermissionshipFilter permissionshipFilter;
   private final Duration timeout;
   private final Map<String, Object> context;
@@ -13,6 +15,10 @@ public final class LookupOptions {
   private final String subjectRelation;
 
   private LookupOptions(Builder b) {
+    this.cursor = b.cursor;
+    this.transport = b.transport;
+    if (transport == null)
+      throw new com.authzed.spicedb.errors.InvalidArgumentException("transport must not be null");
     this.permissionshipFilter = b.permissionshipFilter;
     if (permissionshipFilter == null)
       throw new com.authzed.spicedb.errors.InvalidArgumentException(
@@ -51,7 +57,9 @@ public final class LookupOptions {
         .debug(debug)
         .pageSize(pageSize)
         .limit(limit)
-        .subjectRelation(subjectRelation);
+        .subjectRelation(subjectRelation)
+        .cursor(cursor)
+        .transport(transport);
   }
 
   public static Builder builder() {
@@ -82,8 +90,40 @@ public final class LookupOptions {
     return limit;
   }
 
+  /** Per-call transport options and response-metadata capture; see {@link TransportOptions}. */
+  public TransportOptions transport() {
+    return transport;
+  }
+
+  /**
+   * Resume lookupResources after this after-result cursor. Repeat the original request and page
+   * size.
+   */
+  public String cursor() {
+    return cursor;
+  }
+
   public static final class Builder {
     private Builder() {}
+
+    private String cursor = null;
+
+    /**
+     * Resume lookupResources after this after-result cursor. Repeat the original request and page
+     * size.
+     */
+    public Builder cursor(String value) {
+      this.cursor = value;
+      return this;
+    }
+
+    private TransportOptions transport = TransportOptions.none();
+
+    /** Per-call transport options and response-metadata capture; see {@link TransportOptions}. */
+    public Builder transport(TransportOptions value) {
+      this.transport = value;
+      return this;
+    }
 
     private String subjectRelation;
 

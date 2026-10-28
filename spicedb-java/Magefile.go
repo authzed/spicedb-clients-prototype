@@ -55,6 +55,7 @@ var wantExamples = []string{
 	"RetryPolicyTest",
 	"SchemaManagementTest",
 	"SchemaReflectionTest",
+	"ToolingEscapeHatchesTest",
 	"UnrepresentableValuesTest",
 	"WatchChangesTest",
 	"WriteRelationshipsTest",

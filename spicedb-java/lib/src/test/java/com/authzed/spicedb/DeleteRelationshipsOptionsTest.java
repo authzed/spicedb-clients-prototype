@@ -2,12 +2,12 @@ package com.authzed.spicedb;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import build.buf.gen.authzed.api.v1.Cursor;
-import build.buf.gen.authzed.api.v1.DeleteRelationshipsRequest;
-import build.buf.gen.authzed.api.v1.DeleteRelationshipsResponse;
-import build.buf.gen.authzed.api.v1.PermissionsServiceGrpc;
-import build.buf.gen.authzed.api.v1.Precondition;
-import build.buf.gen.authzed.api.v1.ZedToken;
+import com.authzed.api.v1.Cursor;
+import com.authzed.api.v1.DeleteRelationshipsRequest;
+import com.authzed.api.v1.DeleteRelationshipsResponse;
+import com.authzed.api.v1.PermissionsServiceGrpc;
+import com.authzed.api.v1.Precondition;
+import com.authzed.api.v1.ZedToken;
 import com.authzed.spicedb.errors.InvalidArgumentException;
 import io.grpc.stub.StreamObserver;
 import java.io.IOException;

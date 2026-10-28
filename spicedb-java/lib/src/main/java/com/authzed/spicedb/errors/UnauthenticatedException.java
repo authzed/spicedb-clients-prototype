@@ -11,10 +11,10 @@ package com.authzed.spicedb.errors;
 public class UnauthenticatedException extends SpiceDBException {
 
   public UnauthenticatedException(String message) {
-    super(message);
+    super(io.grpc.Status.Code.UNAUTHENTICATED, message, null);
   }
 
   public UnauthenticatedException(String message, Throwable cause) {
-    super(message, cause);
+    super(io.grpc.Status.Code.UNAUTHENTICATED, message, cause);
   }
 }

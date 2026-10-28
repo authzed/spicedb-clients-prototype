@@ -1,6 +1,9 @@
 package com.authzed.spicedb.errors;
 
 import com.google.rpc.ErrorInfo;
+import io.grpc.Status;
+import io.grpc.StatusException;
+import io.grpc.StatusRuntimeException;
 import io.grpc.protobuf.StatusProto;
 import java.util.Map;
 
@@ -36,19 +39,93 @@ public class SpiceDBException extends RuntimeException {
   @SuppressWarnings("serial")
   private final Map<String, String> reasonMetadata;
 
+  private final Status.Code code;
+  private final String serverMessage;
+
+  /** Builds an error with code {@code UNKNOWN}; prefer {@link ErrorMapper#newError}. */
   public SpiceDBException(String message) {
-    super(message);
-    this.reason = "";
-    this.reasonDomain = "";
-    this.reasonMetadata = Map.of();
+    this(Status.Code.UNKNOWN, message, null);
   }
 
+  /**
+   * Builds an error from a cause. When the cause chain carries a gRPC status (a server error), that
+   * status is this error's code; otherwise the code is {@code UNKNOWN}.
+   */
   public SpiceDBException(String message, Throwable cause) {
-    super(message, cause);
-    ErrorInfo info = errorInfoOf(cause);
+    this(Status.Code.UNKNOWN, message, cause);
+  }
+
+  /**
+   * Builds an error with an explicit code. Subclasses pass their own code.
+   *
+   * <p>If {@code cause}'s chain already holds a gRPC status (the error came from the server or the
+   * transport), that status is kept as the cause and is authoritative. Otherwise -- a locally
+   * raised or caller-constructed error -- a {@link StatusRuntimeException} with {@code code} and
+   * {@code message} is inserted as the direct cause (wrapping {@code cause}, if any), so gRPC's own
+   * {@link Status#fromThrowable(Throwable)} and {@link io.grpc.protobuf.StatusProto} report the
+   * matching code for every SpiceDB error (root DESIGN.md, "Native errors interoperate with the
+   * ecosystem's standard status inspection in both directions").
+   */
+  protected SpiceDBException(Status.Code code, String message, Throwable cause) {
+    super(message, withStatus(code, message, cause));
+    Status status = statusIn(getCause());
+    this.code = status.getCode();
+    this.serverMessage = statusIn(cause) == null ? null : status.getDescription();
+    ErrorInfo info = errorInfoOf(getCause());
     this.reason = info == null ? "" : info.getReason();
     this.reasonDomain = info == null ? "" : info.getDomain();
     this.reasonMetadata = info == null ? Map.of() : Map.copyOf(info.getMetadataMap());
+  }
+
+  private static Throwable withStatus(Status.Code code, String message, Throwable cause) {
+    if (statusIn(cause) != null) return cause;
+    return Status.fromCode(code == null ? Status.Code.UNKNOWN : code)
+        .withDescription(message)
+        .withCause(cause)
+        .asRuntimeException();
+  }
+
+  /** The first gRPC status in {@code t}'s cause chain, or {@code null}. */
+  static Status statusIn(Throwable t) {
+    for (Throwable c = t; c != null; c = c.getCause()) {
+      if (c instanceof StatusRuntimeException sre) return sre.getStatus();
+      if (c instanceof StatusException se) return se.getStatus();
+    }
+    return null;
+  }
+
+  /**
+   * The gRPC status code this error corresponds to: the server's code for server errors, and the
+   * subclass's code for locally raised or caller-constructed errors (for example {@code
+   * INVALID_ARGUMENT} for {@link InvalidArgumentException}). Agrees with {@code
+   * Status.fromThrowable(this).getCode()}.
+   */
+  public Status.Code code() {
+    return code;
+  }
+
+  /** The gRPC status behind this error, as {@link Status#fromThrowable(Throwable)} reports it. */
+  public Status status() {
+    return Status.fromThrowable(this);
+  }
+
+  /**
+   * The status message exactly as received, without any operation or item context this client adds
+   * to {@link #getMessage()}. For a server error this is verbatim what SpiceDB said, so a proxy can
+   * forward it unchanged. {@code null} for errors raised locally or built by callers.
+   */
+  public String serverMessage() {
+    return serverMessage;
+  }
+
+  /**
+   * A {@link StatusRuntimeException} equivalent to this error, for code that rethrows to a gRPC
+   * layer. Server errors return the original exception (status details and trailers intact).
+   */
+  public StatusRuntimeException toStatusRuntimeException() {
+    for (Throwable c = getCause(); c != null; c = c.getCause())
+      if (c instanceof StatusRuntimeException sre) return sre;
+    return status().asRuntimeException();
   }
 
   /**

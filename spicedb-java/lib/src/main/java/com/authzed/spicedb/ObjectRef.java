@@ -5,4 +5,10 @@ public record ObjectRef(String objectType, String objectId) {
     JsonContext.required(objectType, "objectType");
     JsonContext.required(objectId, "objectId");
   }
+
+  /** {@code type:id}, as in SpiceDB tuple syntax. */
+  @Override
+  public String toString() {
+    return objectType + ":" + objectId;
+  }
 }

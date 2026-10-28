@@ -10,9 +10,9 @@ package com.authzed.spicedb;
  */
 public final class Consistency {
 
-  private final build.buf.gen.authzed.api.v1.Consistency proto;
+  private final com.authzed.api.v1.Consistency proto;
 
-  private Consistency(build.buf.gen.authzed.api.v1.Consistency proto) {
+  private Consistency(com.authzed.api.v1.Consistency proto) {
     this.proto = proto;
   }
 
@@ -20,8 +20,46 @@ public final class Consistency {
    * Returns the underlying proto Consistency for use by the client. Package-private: proto types
    * must never appear in the public API surface.
    */
-  build.buf.gen.authzed.api.v1.Consistency toProto() {
+  com.authzed.api.v1.Consistency toProto() {
     return proto;
+  }
+
+  /** The strategy a {@link Consistency} names. */
+  public enum Kind {
+    FULL,
+    MIN_LATENCY,
+    AT_LEAST,
+    SNAPSHOT
+  }
+
+  /** Which strategy this is. */
+  public Kind kind() {
+    return switch (proto.getRequirementCase()) {
+      case MINIMIZE_LATENCY -> Kind.MIN_LATENCY;
+      case AT_LEAST_AS_FRESH -> Kind.AT_LEAST;
+      case AT_EXACT_SNAPSHOT -> Kind.SNAPSHOT;
+      default -> Kind.FULL;
+    };
+  }
+
+  /** The revision for {@code AT_LEAST} and {@code SNAPSHOT}; {@code null} otherwise. */
+  public ZedToken token() {
+    return switch (kind()) {
+      case AT_LEAST -> new ZedToken(proto.getAtLeastAsFresh().getToken());
+      case SNAPSHOT -> new ZedToken(proto.getAtExactSnapshot().getToken());
+      default -> null;
+    };
+  }
+
+  /** E.g. {@code full}, {@code minLatency}, {@code atLeast(<token>)}, {@code snapshot(<token>)}. */
+  @Override
+  public String toString() {
+    return switch (kind()) {
+      case FULL -> "full";
+      case MIN_LATENCY -> "minLatency";
+      case AT_LEAST -> "atLeast(" + token() + ")";
+      case SNAPSHOT -> "snapshot(" + token() + ")";
+    };
   }
 
   /**
@@ -30,7 +68,7 @@ public final class Consistency {
    */
   public static Consistency full() {
     return new Consistency(
-        build.buf.gen.authzed.api.v1.Consistency.newBuilder().setFullyConsistent(true).build());
+        com.authzed.api.v1.Consistency.newBuilder().setFullyConsistent(true).build());
   }
 
   /**
@@ -39,7 +77,7 @@ public final class Consistency {
    */
   public static Consistency minLatency() {
     return new Consistency(
-        build.buf.gen.authzed.api.v1.Consistency.newBuilder().setMinimizeLatency(true).build());
+        com.authzed.api.v1.Consistency.newBuilder().setMinimizeLatency(true).build());
   }
 
   /**
@@ -55,11 +93,9 @@ public final class Consistency {
           "revision must not be null or empty");
     }
     return new Consistency(
-        build.buf.gen.authzed.api.v1.Consistency.newBuilder()
+        com.authzed.api.v1.Consistency.newBuilder()
             .setAtLeastAsFresh(
-                build.buf.gen.authzed.api.v1.ZedToken.newBuilder()
-                    .setToken(revision.value())
-                    .build())
+                com.authzed.api.v1.ZedToken.newBuilder().setToken(revision.value()).build())
             .build());
   }
 
@@ -75,11 +111,9 @@ public final class Consistency {
           "revision must not be null or empty");
     }
     return new Consistency(
-        build.buf.gen.authzed.api.v1.Consistency.newBuilder()
+        com.authzed.api.v1.Consistency.newBuilder()
             .setAtExactSnapshot(
-                build.buf.gen.authzed.api.v1.ZedToken.newBuilder()
-                    .setToken(revision.value())
-                    .build())
+                com.authzed.api.v1.ZedToken.newBuilder().setToken(revision.value()).build())
             .build());
   }
 

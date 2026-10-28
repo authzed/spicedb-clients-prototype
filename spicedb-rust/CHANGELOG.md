@@ -2,6 +2,68 @@
 
 ## Unreleased
 
+- **Fix:** paged `read_relationships` and `lookup_resources` failed on their
+  second page against a real SpiceDB ("the cursor provided does not have the
+  same arguments as the original API call"): the pager switched later pages to
+  `snapshot(read_at)` and shrank the last page's limit, and SpiceDB hashes both
+  into the cursor. Every page now repeats the caller's consistency and page
+  size (exports too); total limits are enforced client-side.
+- **BREAKING:** `read_relationships` yields `ReadRelationship` and
+  `export_relationships` yields `ExportedRelationship` instead of
+  `Relationship`; both carry `after_result_cursor` (and `read_at` for reads).
+  `LookupResource` gains `after_result_cursor`. Resume with the options'
+  `with_cursor`, repeating the request and page size.
+
+  ```rust,ignore
+  // Before
+  let r: Relationship = item?;
+  // After
+  let r: Relationship = item?.relationship; // or .into_relationship()
+  ```
+- **BREAKING:** `CheckResult` gains `error: Option<SpiceDBError>` and
+  implements `PartialEq` by hand (errors compare by code and text).
+  `CheckOptions::with_bulk_item_errors(BulkItemErrors::Returned)` returns
+  per-item errors on it (never a grant) instead of failing the bulk call.
+- **BREAKING:** `Relationship`'s `Display` now prints SpiceDB's full tuple
+  syntax, including `[caveat:{...}]` and `[expiration:...]`, and `from_tuple`
+  parses it (`...` means a direct subject). Before: `doc:a#viewer@user:bob`
+  for a caveated relationship; after: `doc:a#viewer@user:bob[active:{"now":5}]`.
+- **BREAKING:** integral protobuf numbers in caveat and check contexts read
+  back as JSON integers (`5`), not floats (`5.0`), matching protojson and
+  SpiceDB's tuple formatter.
+- `SpiceDBClient::from_channel(channel).token(..).build()` builds a client over
+  a caller-owned tonic `Channel` (in-memory, embedded SpiceDB); dropping the
+  client leaves the channel usable. The proto tier adds
+  `SpiceDBProtoClient::from_channel(channel, Option<&str>)`.
+- Builder settings `retry_policy(RetryPolicy)`, `retries(RetryMode::Disabled)`,
+  `stream_retries(StreamRetryMode::Disabled)` and
+  `default_deadline(DefaultDeadline::Disabled)`. A policy may opt reads into
+  other codes such as `ResourceExhausted`; mutations are never retried.
+- Every options type takes `with_call_options(CallOptions)`: request metadata
+  on every RPC and `ResponseMetadata` header/trailer capture.
+- `ImportRelationshipsOptions::with_batch_size`; a server abort reports its
+  status (for example `AlreadyExists`), now pinned by tests.
+- `DeleteOptions::with_partial(DeletePartial::Disallowed)` for all-or-nothing
+  deletes, `DeleteRequest::server_default_limit(filter)` in that mode, and
+  `DeleteAllOptions::with_progress(..)` per acknowledged batch.
+- Error interop: `SpiceDBError::new(code, message)`, `code()`,
+  `server_message()`, `to_status()`, `From` conversions with `tonic::Status`
+  in both directions, and `spicedb::error::code_of`.
+- Observable values: `Filter::matches`, `FromStr` for `ObjectRef`,
+  `SubjectRef` and `Relationship`, `Display` for refs, filters, updates,
+  preconditions, operations and transactions, short accessors
+  (`resource_id()`, `subject_id()`, ...), copy helpers `with_resource`,
+  `with_subject`, `with_relation`, `Update::new`, `Precondition::new`, and an
+  optional `serde` feature deriving `Serialize`.
+- `spicedb::protoconv` exports native/protocol conversions;
+  `spicedb::tonic` re-exports tonic.
+- New feature `testing`: `spicedb::testing::InMemorySpiceDB`, an in-memory
+  SpiceDB double reached through a real `SpiceDBClient`.
+- Dependencies: tonic without default features (no server stack), tokio with
+  only `macros`/`rt`/`sync`/`time`, chrono without default features; unused
+  `thiserror` removed. New example `tooling_escape_hatches`; new
+  `AI_INTEGRATION_GUIDE.md`.
+
 - Watch supports native relationship filters through `WatchOptions::with_filters`, with OR semantics and local rejection of simultaneous object types. Examples use type-only relationship filters.
 
 - **BREAKING:** Rename `delete_all_relationships` to `delete_all_relationships_non_atomic` and `DeleteResult.deleted_at` to `DeleteResult.revision`. Each deletion batch is transactional; the complete operation is non-atomic and completed batches remain committed after later failures.

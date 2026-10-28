@@ -1,4 +1,5 @@
 import { TransportSecurity } from "../modes.js";
+import { DEFAULT_RETRY_POLICY, backoffMs } from "../retry.js";
 import { describe, it, expect, vi } from "vitest";
 import { ConnectError, Code } from "@connectrpc/connect";
 import { SpiceDBClient } from "../client.js";
@@ -31,7 +32,7 @@ function clientWithFakeProto(fake: FakeProto, maxRetries = 3): SpiceDBClient {
         endpoint: "localhost:50051",
         token: "test-token",
         transportSecurity: TransportSecurity.Plaintext,
-        maxRetries
+        retryPolicy: { ...DEFAULT_RETRY_POLICY, maxRetries }
     });
     (client as unknown as {
         proto: FakeProto;
@@ -122,13 +123,9 @@ describe("mutation retry safety", () => {
 });
 describe("backoff jitter", () => {
     it("varies between calls instead of following a fixed schedule", () => {
-        const client = clientWithFakeProto({});
-        const backoffMs = (client as unknown as {
-            backoffMs(attempt: number): number;
-        }).backoffMs.bind(client);
         const seen = new Set<number>();
         for (let i = 0; i < 50; i++) {
-            seen.add(backoffMs(2));
+            seen.add(backoffMs(DEFAULT_RETRY_POLICY, 2));
         }
         expect(seen.size).toBeGreaterThan(1);
         for (const v of seen) {

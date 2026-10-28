@@ -53,7 +53,7 @@ describe("native materialize permission-set APIs",()=>{
  });
  it("bounds total results independently of page size and preserves a resume cursor",async()=>{
   const c=client();const rpc=vi.spyOn(c.raw().permissionSets,"lookupPermissionSets").mockImplementation(()=> (async function*(){yield {cursor:{limit:1,startingIndex:5,completedMembers:false,startingKey:"key",cursor:"opaque"}} as P.LookupPermissionSetsResponse;})());
-  const values=await collect(c.experimentalLookupPermissionSets({pageSize:10,limit:1,cursor:{limit:1,startingIndex:4,completedMembers:false,startingKey:"prior",cursor:"before",token:new ZedToken("token")}}));expect(values).toHaveLength(1);expect(values[0].cursor?.cursor).toBe("opaque");expect(rpc).toHaveBeenCalledTimes(1);expect(rpc.mock.calls[0][0].limit).toBe(1);expect(rpc.mock.calls[0][0].optionalStartingAfterCursor?.token?.token).toBe("token");c.close();
+  const values=await collect(c.experimentalLookupPermissionSets({pageSize:10,limit:1,cursor:{limit:1,startingIndex:4,completedMembers:false,startingKey:"prior",cursor:"before",token:new ZedToken("token")}}));expect(values).toHaveLength(1);expect(values[0].cursor?.cursor).toBe("opaque");expect(rpc).toHaveBeenCalledTimes(1);expect(rpc.mock.calls[0][0].limit).toBe(10);expect(rpc.mock.calls[0][0].optionalStartingAfterCursor?.token?.token).toBe("token");c.close();
  });
  it("shares one optional deadline over permission-set pages",async()=>{
   const c=client();let page=0;const rpc=vi.spyOn(c.raw().permissionSets,"lookupPermissionSets").mockImplementation(()=> (async function*(){await delay(30);yield create(P.LookupPermissionSetsResponseSchema,{cursor:{limit:1,startingIndex:++page,completedMembers:false,startingKey:"",cursor:`page-${page}`}});})());

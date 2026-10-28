@@ -34,7 +34,8 @@ describe("lookup permissionship filtering", () => {
         try {
             expect(await ids(client.lookupResources({ ...request, pageSize: 2, limit: 2, permissionshipFilter: LookupPermissionshipFilter.HasPermissionOnly }))).toEqual(["2", "4"]);
             expect(rpc.mock.calls.map(([r]) => r.optionalCursor?.token)).toEqual([undefined, "2", "4"]);
-            expect(rpc.mock.calls.map(([r]) => r.optionalLimit)).toEqual([2, 2, 1]);
+            // One fixed page size: SpiceDB hashes the limit into the cursor.
+            expect(rpc.mock.calls.map(([r]) => r.optionalLimit)).toEqual([2, 2, 2]);
             expect(closed()).toBe(3);
         } finally { client.close(); }
     });

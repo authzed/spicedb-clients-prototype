@@ -17,8 +17,10 @@ export interface RetryEvent {
  * Retry policy for idempotent reads, including stream establishment. A
  * client-wide policy never replays a mutation; a per-call policy
  * (`CallOptions.retryPolicy`) may opt in only the two mutations that are
- * idempotent on replay: touch-only writes without preconditions and
- * `writeSchema`.
+ * idempotent on replay: touch-only writes without preconditions
+ * ({@link Transaction.isIdempotent}) and `writeSchema`. A per-operation
+ * policy (`SpiceDBClientBehaviorOptions.operationRetryPolicies`) for `write`
+ * retries only idempotent writes.
  */
 export interface RetryPolicy {
     /** Retries after the first attempt. Zero means a single attempt. */
@@ -70,14 +72,19 @@ export function backoffMs(policy: RetryPolicy, retry: number): number {
 }
 
 /**
- * @internal Whether a mutation's call opted into retries. Only mutations that
- * are idempotent on replay may; any other mutation given a policy with retries
- * is rejected before any request.
+ * @internal Whether a mutation is retried. A per-call policy with retries may
+ * opt in only a mutation that is idempotent on replay; any other mutation
+ * given one is rejected before any request. Without a per-call policy, the
+ * client's per-operation policy applies only when the mutation is idempotent,
+ * and other calls are simply not retried.
  */
-export function mutationRetry(policy: RetryPolicy | undefined, idempotent: boolean, operation: string): boolean {
-    if (policy === undefined || validRetryPolicy(policy).maxRetries === 0)
-        return false;
-    if (!idempotent)
-        throw new InvalidArgumentError(`${operation} cannot be retried: only touch-only writes without preconditions and schema writes are idempotent on replay`);
-    return true;
+export function mutationRetry(callPolicy: RetryPolicy | undefined, operationPolicy: RetryPolicy | undefined, idempotent: boolean, operation: string): boolean {
+    if (callPolicy !== undefined) {
+        if (validRetryPolicy(callPolicy).maxRetries === 0)
+            return false;
+        if (!idempotent)
+            throw new InvalidArgumentError(`${operation} cannot be retried: only touch-only writes without preconditions and schema writes are idempotent on replay`);
+        return true;
+    }
+    return operationPolicy !== undefined && operationPolicy.maxRetries > 0 && idempotent;
 }

@@ -184,6 +184,34 @@ async function main(): Promise<void> {
             await new Promise<void>((resolve) => server.close(() => resolve()));
         }
     }
+    // ── 5. A client-wide policy for one operation ────────────────────────
+    //
+    // `operationRetryPolicies` sets the policy for every call of one
+    // operation. For `write` it applies only to transactions that are
+    // idempotent on replay (Transaction.isIdempotent): a touch is retried, a
+    // create is simply not retried (no error, unlike the per-call opt-in).
+    {
+        const counts: Counts = { check: 0, write: 0 };
+        const server = countingServer(counts, 0, Code.Unavailable);
+        const port = await listen(server);
+        const client = createSpiceDBClient(`localhost:${port}`, "t", { transportSecurity: TransportSecurity.Plaintext, operationRetryPolicies: { write: { maxRetries: 1, retryableCodes: [Code.Unavailable], initialBackoffMs: 1 } } });
+        try {
+            const touch = new Transaction().touch(relationship("document:readme", "viewer", "user:alice"));
+            assert(touch.isIdempotent(), "a touch-only transaction is idempotent");
+            const touched = await client.write(touch).catch((e: unknown) => e);
+            assert(touched instanceof UnavailableError, `expected the stand-in's failure after the retry: got ${String(touched)}`);
+            assert(counts.write === 2, `a touch under the per-operation policy is attempted 1 + 1 times: saw ${counts.write}`);
+            const created = await client.write(new Transaction().create(relationship("document:readme", "viewer", "user:alice"))).catch((e: unknown) => e);
+            assert(created instanceof UnavailableError, `a create is sent once and its failure reported: got ${String(created)}`);
+            const attempts: number = counts.write; // re-read after the call above
+            assert(attempts === 3, `a create is never replayed: saw ${attempts} attempts`);
+            console.log(`per-operation: touch attempted twice, create once (${counts.write} attempts in all)`);
+        }
+        finally {
+            client.close();
+            await new Promise<void>((resolve) => server.close(() => resolve()));
+        }
+    }
     console.log("retry_policy: reads retried, mutations and load-shed left to the caller");
 }
 main().catch((err: unknown) => {

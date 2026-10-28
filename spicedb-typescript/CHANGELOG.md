@@ -4,6 +4,22 @@
 
 ### Tooling and typed-client follow-ups
 
+- `operationRetryPolicies` (client option, keyed by `OperationName`) sets the
+  retry policy for every call of one operation, e.g. `{ watch: noRetries }`.
+  Precedence: a call's `retryPolicy`, then the operation's, then the
+  client-wide settings; it also governs stream establishment. For `write` it
+  retries only idempotent transactions (others are sent once, not rejected);
+  never-idempotent operations (deletes, delete-all, imports, counter
+  registration and unregistration) reject a policy with retries when the
+  client is built. A zero-retry policy is allowed everywhere.
+- `Transaction.isIdempotent()` exposes the retry-eligibility rule (touch-only,
+  no preconditions) the client uses.
+- `InMemorySpiceDB` records every call (`calls`, `callsOf(operation)`: operation,
+  per-operation index, request, options) and injects faults (`setFaultHook`,
+  `failNext`) at `FaultStage.Call`, `ImportBatch`, `ImportCommit` and `Item`;
+  `InMemorySpiceDB.serverError` builds errors shaped like the client's. A failed
+  write or import applies nothing. `deleteAllRelationshipsNonAtomic` and
+  `checkBulk` record one call, not their internal pages or items.
 - `CallOptions.retryPolicy` overrides the retry policy for one call, including
   stream establishment (exempt one stream while retrying everything else, or
   opt one `watch` into reopening). A touch-only `write` without preconditions

@@ -161,7 +161,13 @@ Retries.Disabled`, `retryPolicy`), and override it for one call with
 `{ ...DEFAULT_RETRY_POLICY, maxRetries: 0 }` on one read stream to never reopen
 it, a policy on one `watch` (opened once by default) to reopen it before its
 first event, or a policy on a touch-only `write` or a `writeSchema` to retry
-those idempotent writes. Other mutations reject the opt-in.
+those idempotent writes. Other mutations reject the opt-in. To apply a policy
+to every call of one operation, set `operationRetryPolicies` on the client
+(`{ watch: { ...DEFAULT_RETRY_POLICY, maxRetries: 0 } }`); a call's own policy
+still wins. For `write` it retries only idempotent transactions
+(`Transaction.isIdempotent()`), and operations that are never idempotent
+(deletes, delete-all, imports, counter registration) reject a policy with
+retries when the client is built.
 
 ## Errors
 

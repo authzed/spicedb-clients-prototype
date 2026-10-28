@@ -175,6 +175,92 @@ public class InMemorySpiceDBClientTests
         sink.Trailers!.GetValue("t").Should().Be("1");
     }
 
+    private static string[] Tuples(int n) => Enumerable.Range(0, n).Select(i => $"document:d{i}#viewer@user:x").ToArray();
+
+    [Fact]
+    public async Task FailedImportBatchAppliesNothing()
+    {
+        var store = new InMemorySpiceDBClient();
+        store.SetFaultHook(f => f is { Stage: FaultStage.ImportBatch, Item: 2 } && f.Call.Operation == SpiceDBOperation.ImportRelationships
+            ? InMemorySpiceDBClient.ServerError(StatusCode.AlreadyExists, "duplicate relationship") : null);
+        var error = await Assert.ThrowsAsync<AlreadyExistsException>(() => store.ImportRelationshipsAsync(Async(Tuples(10)), new ImportOptions { BatchSize = 3 }));
+        (error.Message, error.ServerMessage).Should().Be(("duplicate relationship", "duplicate relationship"));
+        store.Relationships.Should().BeEmpty();
+
+        // Batches follow the call's batch size: 10 items in batches of 3 are batches 0..3.
+        var batches = new List<int>();
+        store.SetFaultHook(f => { if (f.Stage == FaultStage.ImportBatch) batches.Add(f.Item); return null; });
+        await store.ImportRelationshipsAsync(Async(Tuples(10)), new ImportOptions { BatchSize = 3 });
+        batches.Should().Equal(0, 1, 2, 3);
+        store.Relationships.Should().HaveCount(10);
+    }
+
+    [Fact]
+    public async Task FailedImportCommitAppliesNothing()
+    {
+        var store = new InMemorySpiceDBClient();
+        store.SetFaultHook(f => f.Stage == FaultStage.ImportCommit ? InMemorySpiceDBClient.ServerError(StatusCode.Unavailable, "lost") : null);
+        await Assert.ThrowsAsync<UnavailableException>(() => store.ImportRelationshipsAsync(Async(Tuples(4))));
+        store.Relationships.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ExportFailsAfterKItems()
+    {
+        var store = new InMemorySpiceDBClient();
+        await store.ImportRelationshipsAsync(Async(Tuples(5)));
+        store.SetFaultHook(f => f is { Stage: FaultStage.Item, Item: 3 } && f.Call.Operation == SpiceDBOperation.ExportRelationships
+            ? InMemorySpiceDBClient.ServerError(StatusCode.Unavailable, "stream reset") : null);
+        var got = 0;
+        await Assert.ThrowsAsync<UnavailableException>(async () => { await foreach (var _ in store.ExportRelationshipsAsync(Consistency.Full(), new Filter("document"))) got++; });
+        got.Should().Be(3);
+
+        // Reads fail the same way; item indexes count from the resume point.
+        store.SetFaultHook(f => f is { Stage: FaultStage.Item, Item: 1 } ? InMemorySpiceDBClient.ServerError(StatusCode.Unavailable, "stream reset") : null);
+        var read = new List<string>();
+        await Assert.ThrowsAsync<UnavailableException>(async () => { await foreach (var r in store.ReadRelationshipsAsync(Consistency.Full(), new Filter("document"), new ReadOptions { ResumeCursor = "2" })) read.Add(r.Relationship.Resource.ObjectId); });
+        read.Should().Equal("d2");
+    }
+
+    [Fact]
+    public async Task FailNextAffectsExactlyOneCallOfOneOperation()
+    {
+        var store = new InMemorySpiceDBClient();
+        var check = new PermissionCheck(new ObjectRef("document", "d0"), "view", Alice, Consistency.Full());
+        var touch = new Transaction(); touch.Touch(Relationship.FromTuple("document:d0#viewer@user:alice"));
+        store.FailNext(SpiceDBOperation.Check, InMemorySpiceDBClient.ServerError(StatusCode.Unavailable, "down"));
+        await store.WriteAsync(touch); // another operation is unaffected
+        await Assert.ThrowsAsync<UnavailableException>(() => store.CheckAsync(check));
+        (await store.CheckAsync(check)).HasPermission.Should().BeFalse();
+
+        // A failed write applies nothing.
+        store.FailNext(SpiceDBOperation.Write, InMemorySpiceDBClient.ServerError(StatusCode.Unavailable, "down"));
+        var other = new Transaction(); other.Touch(Relationship.FromTuple("document:d1#viewer@user:alice"));
+        await Assert.ThrowsAsync<UnavailableException>(() => store.WriteAsync(other));
+        store.Relationships.Should().ContainSingle();
+
+        // A server error carries SpiceDB's ErrorInfo reason when given one.
+        var shaped = InMemorySpiceDBClient.ServerError(StatusCode.FailedPrecondition, "unable to satisfy write precondition", "ERROR_REASON_WRITE_OR_DELETE_PRECONDITION_FAILURE");
+        shaped.Should().BeOfType<FailedPreconditionException>().Which.Reason.Should().Be("ERROR_REASON_WRITE_OR_DELETE_PRECONDITION_FAILURE");
+    }
+
+    [Fact]
+    public async Task RecordsCallsWithArgumentsAndOptions()
+    {
+        var store = new InMemorySpiceDBClient();
+        await foreach (var _ in store.ReadRelationshipsAsync(Consistency.Full(), new Filter("document"), new ReadOptions { ResumeCursor = "2", Limit = 5 })) { }
+        await foreach (var _ in store.ReadRelationshipsAsync(Consistency.Full(), new Filter("folder"))) { }
+        await store.DeleteAllRelationshipsNonAtomicAsync(new Filter("document"), new DeleteAllOptions { PageSize = 1 });
+
+        var reads = store.CallsOf(SpiceDBOperation.ReadRelationships);
+        reads.Select(c => c.Index).Should().Equal(0, 1);
+        reads[0].OptionsAs<ReadOptions>()!.ResumeCursor.Should().Be("2");
+        reads[0].OptionsAs<ReadOptions>()!.Limit.Should().Be(5);
+        reads[1].Options.Should().BeNull();
+        reads[1].Argument<Filter>()!.ResourceType.Should().Be("folder");
+        store.Calls.Select(c => c.Operation).Should().Equal(SpiceDBOperation.ReadRelationships, SpiceDBOperation.ReadRelationships, SpiceDBOperation.DeleteAllRelationshipsNonAtomic);
+    }
+
     private static async IAsyncEnumerable<Relationship> Async(params string[] tuples)
     {
         foreach (var t in tuples) { await Task.Yield(); yield return Relationship.FromTuple(t); }

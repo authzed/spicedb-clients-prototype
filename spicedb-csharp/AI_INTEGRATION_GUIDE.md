@@ -121,6 +121,7 @@ catch (FailedPreconditionException) { throw new LastAdminException(); }
   retries writes, deletes or imports on its own. A write of only touches without
   preconditions (and a schema write) is idempotent and may opt in per call with
   `new WriteOptions { RetryPolicy = ... }`; other mutations reject that option.
+  `txn.IsIdempotent` reports whether a transaction qualifies, by the client's own rule.
 - An empty `Transaction` is sent: SpiceDB checks its preconditions and returns the current
   revision.
 
@@ -168,6 +169,9 @@ await using var tool = SpiceDBClient.CreateSystemTls(endpoint, token, new Client
 });
 // Or keep client-wide retries and exempt one supervised watch:
 await foreach (var e in tool.UpdatesAsync([], null, new WatchOptions { RetryPolicy = RetryPolicy.None }, ct)) { /* ... */ }
+// Or set one operation's policy for every call (per call > per operation > client-wide);
+// a Write policy retries only idempotent writes, and deletes/imports reject a retrying one:
+//   new ClientOptions { OperationRetryPolicies = new Dictionary<SpiceDBOperation, RetryPolicy> { [SpiceDBOperation.Updates] = RetryPolicy.None } }
 var metadata = new ResponseMetadata();
 await tool.ReadSchemaAsync(new SpiceDB.Client.CallOptions { Transport = new TransportOptions { ResponseMetadata = metadata } }, ct);
 var trailers = metadata.Trailers; // headers and trailers of the last RPC
@@ -208,6 +212,14 @@ fake.SetCheckError(new ObjectRef("organization", "acme"), "can_admin",
     SubjectRef.Direct(new ObjectRef("user", "alice")), SpiceDBException.Create(Grpc.Core.StatusCode.Unavailable, "down"));
 
 ISpiceDBRelationshipClient authz = fake; // production code takes the same interface; SpiceDBClient implements it
+
+// Failure paths without a fake server: fail one call, or fail at a defined point.
+fake.FailNext(SpiceDBOperation.Check, InMemorySpiceDBClient.ServerError(Grpc.Core.StatusCode.Unavailable, "down"));
+fake.SetFaultHook(f => f is { Stage: FaultStage.ImportBatch, Item: 2 }
+    ? InMemorySpiceDBClient.ServerError(Grpc.Core.StatusCode.AlreadyExists, "duplicate") : null); // nothing is applied
+// Assert on what was sent without a strict mock:
+var read = fake.CallsOf(SpiceDBOperation.ReadRelationships)[0];
+var cursor = read.OptionsAs<ReadOptions>()?.ResumeCursor; var filter = read.Argument<Filter>();
 ```
 
 Inject `ISpiceDBRelationshipClient` (checks, bulk checks, writes, reads, bounded and
@@ -219,5 +231,7 @@ preconditions, CREATE conflicts, one-transaction imports and SpiceDB filter sema
 (`SetResponseMetadata`), and throws the same exception types and messages as the real
 client; unregistered checks return `NoPermission`, and `ReflectSchemaAsync` returns what
 `SetReflectSchemaResult` registered. Build expected errors with
-`SpiceDBException.Create(code, message)`. For integration tests, run
+`SpiceDBException.Create(code, message)` or `InMemorySpiceDBClient.ServerError(code, message, reason)`.
+Every call is recorded (`Calls`, `CallsOf`), and fault hooks run before each call, import
+batch, import commit and read or export item; a failed write or import applies nothing. For integration tests, run
 `authzed/spicedb serve-testing` and assert both granted and denied cases.

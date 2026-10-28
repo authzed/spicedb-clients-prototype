@@ -49,6 +49,13 @@ public sealed class Transaction
     /// <summary>A snapshot of the preconditions, in order.</summary>
     public IReadOnlyList<Precondition> Preconditions => _preconditions.ToArray();
 
+    /// <summary>
+    /// Whether replaying the transaction is safe: it contains only touches and no preconditions.
+    /// This is the rule the client uses to decide whether a write may be retried, so callers can
+    /// decide eligibility the same way.
+    /// </summary>
+    public bool IsIdempotent => _preconditions.Count == 0 && _updates.All(u => u.Operation == UpdateOperation.Touch);
+
     internal IReadOnlyList<V1.RelationshipUpdate> V1Updates => _updates.Select(ToProto).ToArray();
     internal IReadOnlyList<V1.Precondition> V1Preconditions => _preconditions.Select(x => x.ToProto()).ToArray();
 

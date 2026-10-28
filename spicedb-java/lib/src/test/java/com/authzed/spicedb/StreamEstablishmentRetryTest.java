@@ -94,7 +94,9 @@ class StreamEstablishmentRetryTest {
       SpiceDBClient client = servers.client();
       List<Relationship> results;
       try (Stream<Relationship> stream =
-          client.readRelationships(Consistency.full(), Filter.of("document"))) {
+          client
+              .readRelationships(Consistency.full(), Filter.of("document"))
+              .map(com.authzed.spicedb.ReadRelationship::relationship)) {
         results = stream.toList();
       }
 
@@ -126,7 +128,9 @@ class StreamEstablishmentRetryTest {
     try (TestServers servers = TestServers.start(service)) {
       SpiceDBClient client = servers.client();
       try (Stream<Relationship> stream =
-          client.readRelationships(Consistency.full(), Filter.of("document"))) {
+          client
+              .readRelationships(Consistency.full(), Filter.of("document"))
+              .map(com.authzed.spicedb.ReadRelationship::relationship)) {
         assertThrows(SpiceDBException.class, () -> stream.toList());
       }
       assertEquals(1, attempts.get(), "a transient error after an item was read must not retry");
@@ -327,7 +331,9 @@ class StreamEstablishmentRetryTest {
       SpiceDBClient client = servers.client();
       List<Relationship> results;
       try (Stream<Relationship> stream =
-          client.exportRelationships(Consistency.full(), Filter.of("document"))) {
+          client
+              .exportRelationships(Consistency.full(), Filter.of("document"))
+              .map(com.authzed.spicedb.ExportedRelationship::relationship)) {
         results = stream.toList();
       }
 
@@ -359,7 +365,9 @@ class StreamEstablishmentRetryTest {
     try (TestServers servers = TestServers.start(service)) {
       SpiceDBClient client = servers.client();
       try (Stream<Relationship> stream =
-          client.exportRelationships(Consistency.full(), Filter.of("document"))) {
+          client
+              .exportRelationships(Consistency.full(), Filter.of("document"))
+              .map(com.authzed.spicedb.ExportedRelationship::relationship)) {
         assertThrows(SpiceDBException.class, () -> stream.toList());
       }
       assertEquals(1, attempts.get(), "a transient error after an item was read must not retry");

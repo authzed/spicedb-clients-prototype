@@ -122,7 +122,9 @@ class StreamCancellationTest {
     try (TestServers servers = TestServers.start(service)) {
       SpiceDBClient client = servers.client();
       Stream<Relationship> stream =
-          client.readRelationships(Consistency.full(), Filter.of("document"));
+          client
+              .readRelationships(Consistency.full(), Filter.of("document"))
+              .map(com.authzed.spicedb.ReadRelationship::relationship);
       Iterator<Relationship> iterator = stream.iterator();
 
       Thread fetchThread =

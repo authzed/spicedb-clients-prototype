@@ -6,11 +6,29 @@ import java.time.Duration;
 
 /** Immutable connection configuration. Certificate paths refer to PEM files. */
 public final class ClientOptions {
+  private final DefaultDeadline defaultDeadline;
+  private final StreamRetries streamRetries;
+  private final Retries retries;
+  private final RetryPolicy retryPolicy;
   private final Duration defaultTimeout;
   private final RemotePlaintextCredentials remotePlaintextCredentials;
   private final Path caCertificate, clientCertificate, clientKey;
 
   private ClientOptions(Builder b) {
+    this.defaultDeadline = b.defaultDeadline;
+    if (defaultDeadline == null)
+      throw new com.authzed.spicedb.errors.InvalidArgumentException(
+          "defaultDeadline must not be null");
+    this.streamRetries = b.streamRetries;
+    if (streamRetries == null)
+      throw new com.authzed.spicedb.errors.InvalidArgumentException(
+          "streamRetries must not be null");
+    this.retries = b.retries;
+    if (retries == null)
+      throw new com.authzed.spicedb.errors.InvalidArgumentException("retries must not be null");
+    this.retryPolicy = b.retryPolicy;
+    if (retryPolicy == null)
+      throw new com.authzed.spicedb.errors.InvalidArgumentException("retryPolicy must not be null");
     defaultTimeout = b.defaultTimeout;
     remotePlaintextCredentials = b.remotePlaintextCredentials;
     if (remotePlaintextCredentials == null)
@@ -50,6 +68,26 @@ public final class ClientOptions {
     return new Builder();
   }
 
+  /** Retry policy for idempotent reads (default {@link RetryPolicy#defaults()}). */
+  public RetryPolicy retryPolicy() {
+    return retryPolicy;
+  }
+
+  /** Whether reads are retried at all (default {@link Retries#ENABLED}). */
+  public Retries retries() {
+    return retries;
+  }
+
+  /** Whether stream establishment is retried (default {@link StreamRetries#ENABLED}). */
+  public StreamRetries streamRetries() {
+    return streamRetries;
+  }
+
+  /** Whether unary calls get the default deadline (default {@link DefaultDeadline#ENABLED}). */
+  public DefaultDeadline defaultDeadline() {
+    return defaultDeadline;
+  }
+
   public static final class Builder {
     private Duration defaultTimeout = Duration.ofSeconds(30);
     private RemotePlaintextCredentials remotePlaintextCredentials =
@@ -57,6 +95,38 @@ public final class ClientOptions {
     private Path caCertificate, clientCertificate, clientKey;
 
     private Builder() {}
+
+    private DefaultDeadline defaultDeadline = DefaultDeadline.ENABLED;
+
+    /** Whether unary calls get the default deadline (default {@link DefaultDeadline#ENABLED}). */
+    public Builder defaultDeadline(DefaultDeadline value) {
+      this.defaultDeadline = value;
+      return this;
+    }
+
+    private StreamRetries streamRetries = StreamRetries.ENABLED;
+
+    /** Whether stream establishment is retried (default {@link StreamRetries#ENABLED}). */
+    public Builder streamRetries(StreamRetries value) {
+      this.streamRetries = value;
+      return this;
+    }
+
+    private Retries retries = Retries.ENABLED;
+
+    /** Whether reads are retried at all (default {@link Retries#ENABLED}). */
+    public Builder retries(Retries value) {
+      this.retries = value;
+      return this;
+    }
+
+    private RetryPolicy retryPolicy = RetryPolicy.defaults();
+
+    /** Retry policy for idempotent reads (default {@link RetryPolicy#defaults()}). */
+    public Builder retryPolicy(RetryPolicy value) {
+      this.retryPolicy = value;
+      return this;
+    }
 
     public Builder defaultTimeout(Duration value) {
       defaultTimeout = value;

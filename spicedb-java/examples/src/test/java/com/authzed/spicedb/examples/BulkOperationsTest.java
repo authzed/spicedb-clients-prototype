@@ -188,7 +188,10 @@ class BulkOperationsTest extends SpiceDBIntegrationTest {
     // hood (512-item pages by default). The returned stream should be closed when done.
     Filter exportFilter = Filter.of("document").withResourceIdPrefix("bulkdoc");
     List<Relationship> exported;
-    try (var stream = client.exportRelationships(full(), exportFilter)) {
+    try (var stream =
+        client
+            .exportRelationships(full(), exportFilter)
+            .map(com.authzed.spicedb.ExportedRelationship::relationship)) {
       exported = stream.toList();
     }
 

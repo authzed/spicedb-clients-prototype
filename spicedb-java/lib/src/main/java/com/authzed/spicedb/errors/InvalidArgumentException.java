@@ -4,10 +4,10 @@ package com.authzed.spicedb.errors;
 public class InvalidArgumentException extends SpiceDBException {
 
   public InvalidArgumentException(String message) {
-    super(message);
+    super(io.grpc.Status.Code.INVALID_ARGUMENT, message, null);
   }
 
   public InvalidArgumentException(String message, Throwable cause) {
-    super(message, cause);
+    super(io.grpc.Status.Code.INVALID_ARGUMENT, message, cause);
   }
 }

@@ -24,6 +24,44 @@ public final class Consistency {
     return proto;
   }
 
+  /** The strategy a {@link Consistency} names. */
+  public enum Kind {
+    FULL,
+    MIN_LATENCY,
+    AT_LEAST,
+    SNAPSHOT
+  }
+
+  /** Which strategy this is. */
+  public Kind kind() {
+    return switch (proto.getRequirementCase()) {
+      case MINIMIZE_LATENCY -> Kind.MIN_LATENCY;
+      case AT_LEAST_AS_FRESH -> Kind.AT_LEAST;
+      case AT_EXACT_SNAPSHOT -> Kind.SNAPSHOT;
+      default -> Kind.FULL;
+    };
+  }
+
+  /** The revision for {@code AT_LEAST} and {@code SNAPSHOT}; {@code null} otherwise. */
+  public ZedToken token() {
+    return switch (kind()) {
+      case AT_LEAST -> new ZedToken(proto.getAtLeastAsFresh().getToken());
+      case SNAPSHOT -> new ZedToken(proto.getAtExactSnapshot().getToken());
+      default -> null;
+    };
+  }
+
+  /** E.g. {@code full}, {@code minLatency}, {@code atLeast(<token>)}, {@code snapshot(<token>)}. */
+  @Override
+  public String toString() {
+    return switch (kind()) {
+      case FULL -> "full";
+      case MIN_LATENCY -> "minLatency";
+      case AT_LEAST -> "atLeast(" + token() + ")";
+      case SNAPSHOT -> "snapshot(" + token() + ")";
+    };
+  }
+
   /**
    * Returns a strategy that requires full consistency. This is the least performant option but
    * guarantees the most up-to-date results.

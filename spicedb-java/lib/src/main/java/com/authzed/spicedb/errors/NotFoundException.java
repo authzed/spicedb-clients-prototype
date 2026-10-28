@@ -4,10 +4,10 @@ package com.authzed.spicedb.errors;
 public class NotFoundException extends SpiceDBException {
 
   public NotFoundException(String message) {
-    super(message);
+    super(io.grpc.Status.Code.NOT_FOUND, message, null);
   }
 
   public NotFoundException(String message, Throwable cause) {
-    super(message, cause);
+    super(io.grpc.Status.Code.NOT_FOUND, message, cause);
   }
 }

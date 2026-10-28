@@ -4,10 +4,10 @@ package com.authzed.spicedb.errors;
 public class AlreadyExistsException extends SpiceDBException {
 
   public AlreadyExistsException(String message) {
-    super(message);
+    super(io.grpc.Status.Code.ALREADY_EXISTS, message, null);
   }
 
   public AlreadyExistsException(String message, Throwable cause) {
-    super(message, cause);
+    super(io.grpc.Status.Code.ALREADY_EXISTS, message, cause);
   }
 }

@@ -1,6 +1,7 @@
 package com.authzed.spicedb.errors;
 
 import io.grpc.Status;
+import io.grpc.StatusException;
 import io.grpc.StatusRuntimeException;
 import java.util.Set;
 
@@ -37,7 +38,47 @@ public final class ErrorMapper {
     if (message == null) {
       message = e.getMessage();
     }
+    return toSpiceDBException(e, message);
+  }
 
+  /** Like {@link #toSpiceDBException(StatusRuntimeException)}, for a checked status exception. */
+  public static SpiceDBException toSpiceDBException(StatusException e) {
+    return toSpiceDBException(
+        e.getStatus().withCause(e).asRuntimeException(e.getTrailers()),
+        e.getStatus().getDescription() == null ? e.getMessage() : e.getStatus().getDescription());
+  }
+
+  /**
+   * Builds the typed error for {@code code}, exactly as a server error with that code and message
+   * would be mapped. For test doubles: every predicate ({@code instanceof}, {@link
+   * SpiceDBException#code()}, {@link #codeOf}, {@code Status.fromThrowable}) treats the result like
+   * a real server error, and {@link SpiceDBException#serverMessage()} is {@code message}.
+   */
+  public static SpiceDBException newError(Status.Code code, String message) {
+    if (code == null) throw new InvalidArgumentException("code must not be null");
+    return toSpiceDBException(Status.fromCode(code).withDescription(message).asRuntimeException());
+  }
+
+  /**
+   * Classifies any throwable by gRPC status code: a {@link SpiceDBException}'s {@link
+   * SpiceDBException#code()}, a raw {@link StatusRuntimeException}/{@link io.grpc.StatusException}
+   * anywhere in the cause chain, {@code CANCELLED} for this client's {@link
+   * java.util.concurrent.CancellationException}s, and {@code UNKNOWN} otherwise.
+   */
+  public static Status.Code codeOf(Throwable t) {
+    if (t == null) return Status.Code.OK;
+    if (t instanceof SpiceDBException e) return e.code();
+    Status status = SpiceDBException.statusIn(t);
+    if (status != null) return status.getCode();
+    if (t instanceof java.util.concurrent.CancellationException) return Status.Code.CANCELLED;
+    return Status.Code.UNKNOWN;
+  }
+
+  /**
+   * Maps {@code e} with a display message that may add client context (for example a bulk item
+   * index); {@link SpiceDBException#serverMessage()} keeps the status message verbatim.
+   */
+  public static SpiceDBException toSpiceDBException(StatusRuntimeException e, String message) {
     return switch (e.getStatus().getCode()) {
       case PERMISSION_DENIED -> new PermissionDeniedException(message, e);
       case NOT_FOUND -> new NotFoundException(message, e);

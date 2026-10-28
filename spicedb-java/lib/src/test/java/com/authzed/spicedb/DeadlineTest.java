@@ -360,7 +360,9 @@ class DeadlineTest {
           runOrThrow(
               () -> {
                 try (var stream =
-                    client.readRelationships(Consistency.full(), Filter.of("document"))) {
+                    client
+                        .readRelationships(Consistency.full(), Filter.of("document"))
+                        .map(com.authzed.spicedb.ReadRelationship::relationship)) {
                   return stream.toList();
                 }
               });

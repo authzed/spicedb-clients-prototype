@@ -54,7 +54,9 @@ class StreamingErrorMappingTest {
     try (TestServers servers = TestServers.start(service)) {
       SpiceDBClient client = servers.client();
       try (Stream<Relationship> stream =
-          client.readRelationships(Consistency.full(), Filter.of("document"))) {
+          client
+              .readRelationships(Consistency.full(), Filter.of("document"))
+              .map(com.authzed.spicedb.ReadRelationship::relationship)) {
         assertThrows(NotFoundException.class, () -> stream.forEach(r -> {}));
       }
     }
@@ -140,7 +142,9 @@ class StreamingErrorMappingTest {
     try (TestServers servers = TestServers.start(service)) {
       SpiceDBClient client = servers.client();
       try (Stream<Relationship> stream =
-          client.exportRelationships(Consistency.full(), Filter.of("document"))) {
+          client
+              .exportRelationships(Consistency.full(), Filter.of("document"))
+              .map(com.authzed.spicedb.ExportedRelationship::relationship)) {
         assertThrows(NotFoundException.class, () -> stream.forEach(r -> {}));
       }
     }

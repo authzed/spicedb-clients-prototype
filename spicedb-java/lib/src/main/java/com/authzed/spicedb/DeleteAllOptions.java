@@ -4,6 +4,8 @@ import java.time.Duration;
 import java.util.*;
 
 public final class DeleteAllOptions {
+  private final java.util.function.Consumer<SpiceDBClient.DeleteResult> onProgress;
+  private final TransportOptions transport;
   private final Duration timeout;
   private final String resumeCursor;
   private final int pageSize;
@@ -11,6 +13,10 @@ public final class DeleteAllOptions {
   private final List<Filter> mustNotMatch;
 
   private DeleteAllOptions(Builder b) {
+    this.onProgress = b.onProgress;
+    this.transport = b.transport;
+    if (transport == null)
+      throw new com.authzed.spicedb.errors.InvalidArgumentException("transport must not be null");
     this.timeout = b.timeout;
     if (timeout != null && (timeout.isZero() || timeout.isNegative()))
       throw new com.authzed.spicedb.errors.InvalidArgumentException("timeout must be positive");
@@ -46,8 +52,36 @@ public final class DeleteAllOptions {
     return mustNotMatch;
   }
 
+  /** Per-call transport options and response-metadata capture; see {@link TransportOptions}. */
+  public TransportOptions transport() {
+    return transport;
+  }
+
+  /** Called after each acknowledged batch with the cumulative count, latest revision and cursor. */
+  public java.util.function.Consumer<SpiceDBClient.DeleteResult> onProgress() {
+    return onProgress;
+  }
+
   public static final class Builder {
     private Builder() {}
+
+    private java.util.function.Consumer<SpiceDBClient.DeleteResult> onProgress = null;
+
+    /**
+     * Called after each acknowledged batch with the cumulative count, latest revision and cursor.
+     */
+    public Builder onProgress(java.util.function.Consumer<SpiceDBClient.DeleteResult> value) {
+      this.onProgress = value;
+      return this;
+    }
+
+    private TransportOptions transport = TransportOptions.none();
+
+    /** Per-call transport options and response-metadata capture; see {@link TransportOptions}. */
+    public Builder transport(TransportOptions value) {
+      this.transport = value;
+      return this;
+    }
 
     private Duration timeout = null;
 

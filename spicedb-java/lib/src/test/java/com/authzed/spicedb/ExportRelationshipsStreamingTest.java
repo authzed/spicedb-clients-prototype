@@ -59,7 +59,9 @@ class ExportRelationshipsStreamingTest {
     try (TestServers servers = TestServers.start(service)) {
       SpiceDBClient client = servers.client();
       try (Stream<Relationship> stream =
-          client.exportRelationships(Consistency.full(), Filter.of("document"))) {
+          client
+              .exportRelationships(Consistency.full(), Filter.of("document"))
+              .map(com.authzed.spicedb.ExportedRelationship::relationship)) {
         Iterator<Relationship> iterator = stream.iterator();
 
         // assertTimeoutPreemptively runs this on a separate thread and

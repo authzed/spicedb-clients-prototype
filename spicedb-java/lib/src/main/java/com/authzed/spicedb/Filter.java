@@ -87,4 +87,66 @@ public record Filter(
     return new Filter(
         resourceType, resourceID, resourceIDPrefix, relation, subjectType, subjectID, rel);
   }
+
+  private static boolean set(String s) {
+    return s != null && !s.isEmpty();
+  }
+
+  /**
+   * Reports whether SpiceDB would match {@code r} with this filter: resource type, resource ID or
+   * ID prefix, relation, subject type and ID, and the subject relation's {@code Any} (any
+   * relation), {@code Direct} (no relation) or {@code Named} distinction. Caveat and expiration are
+   * not filterable identity. For test doubles; never a substitute for a server read.
+   */
+  public boolean matches(Relationship r) {
+    if (r == null) return false;
+    if (!resourceType.equals(r.resourceType())) return false;
+    if (set(resourceID) && !resourceID.equals(r.resourceId())) return false;
+    if (set(resourceIDPrefix) && !r.resourceId().startsWith(resourceIDPrefix)) return false;
+    if (set(relation) && !relation.equals(r.relation())) return false;
+    if (set(subjectType)) {
+      if (!subjectType.equals(r.subjectType())) return false;
+      if (set(subjectID) && !subjectID.equals(r.subjectId())) return false;
+    }
+    if (subjectRelation instanceof SubjectRelationFilter.Direct) return r.subjectRelation() == null;
+    if (subjectRelation instanceof SubjectRelationFilter.Named n)
+      return n.name().equals(r.subjectRelation());
+    return true;
+  }
+
+  /**
+   * A readable form: {@code type:id#relation@subjectType:subjectId[#subjectRelation]}, with {@code
+   * *} for unconstrained parts, {@code prefix%*} for an ID prefix, and {@code #...} for a direct
+   * subject relation.
+   */
+  @Override
+  public String toString() {
+    String id = set(resourceIDPrefix) ? resourceIDPrefix + "%*" : or(resourceID);
+    String s = resourceType + ":" + id + "#" + or(relation) + "@" + or(subjectType);
+    if (set(subjectType)) {
+      s += ":" + or(subjectID);
+      if (subjectRelation instanceof SubjectRelationFilter.Direct) s += "#...";
+      if (subjectRelation instanceof SubjectRelationFilter.Named n) s += "#" + n.name();
+    }
+    return s;
+  }
+
+  private static String or(String v) {
+    return set(v) ? v : "*";
+  }
+
+  /** Structured JSON diagnostic form listing only the constrained fields. */
+  public String toJson() {
+    var m = new java.util.LinkedHashMap<String, Object>();
+    m.put("resourceType", resourceType);
+    if (set(resourceID)) m.put("resourceId", resourceID);
+    if (set(resourceIDPrefix)) m.put("resourceIdPrefix", resourceIDPrefix);
+    if (set(relation)) m.put("relation", relation);
+    if (set(subjectType)) m.put("subjectType", subjectType);
+    if (set(subjectID)) m.put("subjectId", subjectID);
+    if (subjectRelation instanceof SubjectRelationFilter.Direct) m.put("subjectRelation", "...");
+    if (subjectRelation instanceof SubjectRelationFilter.Named n)
+      m.put("subjectRelation", n.name());
+    return Json.write(m);
+  }
 }

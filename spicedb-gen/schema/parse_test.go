@@ -19,12 +19,14 @@ func testdataPath(name string) string {
 func TestParseFile(t *testing.T) {
 	s, err := schema.ParseFile(testdataPath("sample.zed"))
 	require.NoError(t, err)
-	require.Len(t, s.Definitions, 3)
+	require.Len(t, s.Definitions, 5)
 
 	// Verify definition names.
 	assert.Equal(t, "user", s.Definitions[0].Name)
 	assert.Equal(t, "team", s.Definitions[1].Name)
 	assert.Equal(t, "document", s.Definitions[2].Name)
+	assert.Equal(t, "organization", s.Definitions[3].Name)
+	assert.Equal(t, "invitation", s.Definitions[4].Name)
 }
 
 func TestUserDefinition(t *testing.T) {

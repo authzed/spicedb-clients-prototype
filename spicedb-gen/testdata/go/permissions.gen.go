@@ -4,6 +4,8 @@ package permissions
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"iter"
 	"time"
 
@@ -21,23 +23,253 @@ type Subject interface {
 	expirationTime() *time.Time
 }
 
-// Permission represents a permission check target (resource + permission).
+var (
+	// ErrNotInSchema reports a permission or relation name the schema does not define.
+	ErrNotInSchema = errors.New("not in schema")
+	// ErrSubjectNotAllowed reports a subject the schema does not allow on a relation.
+	ErrSubjectNotAllowed = errors.New("subject not allowed by schema")
+)
+
+// Permission is a checkable permission (or relation) on a specific resource.
 type Permission struct {
 	resourceType string
 	resourceID   string
 	permission   string
 }
 
-// PermissionRef represents a permission reference without a specific resource ID (for LookupResources).
+// ResourceType returns the resource's definition name.
+func (p Permission) ResourceType() string { return p.resourceType }
+
+// ResourceID returns the resource's ID.
+func (p Permission) ResourceID() string { return p.resourceID }
+
+// Name returns the permission or relation name.
+func (p Permission) Name() string { return p.permission }
+
+// String formats the permission as "type:id#permission".
+func (p Permission) String() string { return p.resourceType + ":" + p.resourceID + "#" + p.permission }
+
+// Ref returns the permission without its resource ID, for LookupResources.
+func (p Permission) Ref() PermissionRef {
+	return PermissionRef{resourceType: p.resourceType, permission: p.permission}
+}
+
+// PermissionCheck converts the permission into a native check of subject.
+// Subject-attached caveat context becomes check context.
+func (p Permission) PermissionCheck(subject Subject, cs consistency.Strategy) (client.PermissionCheck, error) {
+	resource, err := rel.NewObject(p.resourceType, p.resourceID)
+	if err != nil {
+		return client.PermissionCheck{}, err
+	}
+	ref, err := subjectRef(subject)
+	if err != nil {
+		return client.PermissionCheck{}, err
+	}
+	_, sCtx := subject.caveatInfo()
+	return client.PermissionCheck{
+		Resource: resource, Permission: p.permission, Subject: ref,
+		Consistency: cs, Context: sCtx,
+	}, nil
+}
+
+// PermissionRef is a permission on a resource type, without a resource ID (for LookupResources).
 type PermissionRef struct {
 	resourceType string
 	permission   string
 }
 
-// TypedRelationship wraps a rel.Relationship with type safety.
+// ResourceType returns the resource's definition name.
+func (p PermissionRef) ResourceType() string { return p.resourceType }
+
+// Name returns the permission name.
+func (p PermissionRef) Name() string { return p.permission }
+
+// String formats the permission ref as "type#permission".
+func (p PermissionRef) String() string { return p.resourceType + "#" + p.permission }
+
+// TypedRelationship is a relationship built by schema-checked builders, or a
+// deferred construction error.
 type TypedRelationship struct {
-	r rel.Relationship
+	r   rel.Relationship
 	err error
+}
+
+// FromRelationship wraps a native relationship, such as one read back from
+// SpiceDB. It is NOT schema-checked.
+func FromRelationship(r rel.Relationship) TypedRelationship {
+	return TypedRelationship{r: r, err: r.Validate()}
+}
+
+// ErrRelationship returns a TypedRelationship carrying err, so helpers can
+// defer construction errors to Txn.Build or a write, like generated builders.
+func ErrRelationship(err error) TypedRelationship { return TypedRelationship{err: err} }
+
+// Relationship returns the native relationship, or the deferred construction error.
+func (t TypedRelationship) Relationship() (rel.Relationship, error) { return t.r, t.err }
+
+// Err returns the deferred construction error, if any.
+func (t TypedRelationship) Err() error { return t.err }
+
+// String formats the relationship as a tuple, or describes its error.
+func (t TypedRelationship) String() string {
+	if t.err != nil {
+		return "<invalid relationship: " + t.err.Error() + ">"
+	}
+	return t.r.String()
+}
+
+// Filter returns the exact native filter for this relationship's identity.
+func (t TypedRelationship) Filter() rel.Filter {
+	if t.err != nil {
+		return rel.ErrFilter(t.err)
+	}
+	return t.r.Filter()
+}
+
+// RelationshipKey identifies a relationship by tuple identity alone, without
+// caveat or expiration. Use it to delete or filter relationships on relations
+// whose writers require a caveat or expiration.
+type RelationshipKey struct {
+	r   rel.Relationship
+	err error
+}
+
+// Relationship returns the native relationship, or the deferred construction error.
+func (k RelationshipKey) Relationship() (rel.Relationship, error) { return k.r, k.err }
+
+// String formats the key as a tuple, or describes its error.
+func (k RelationshipKey) String() string { return TypedRelationship(k).String() }
+
+// Filter returns the exact native filter for this key.
+func (k RelationshipKey) Filter() rel.Filter { return TypedRelationship(k).Filter() }
+
+// Deletable is a TypedRelationship or a RelationshipKey.
+type Deletable interface {
+	Relationship() (rel.Relationship, error)
+}
+
+// WithSubject narrows f to subject: its type, its ID (unless subject is a
+// type sentinel) and its exact subject relation (direct or named).
+func WithSubject(f rel.Filter, subject Subject) rel.Filter {
+	sType, sID, sRel := subject.subjectRef()
+	f = f.WithSubjectType(sType)
+	if sID != "" {
+		f = f.WithSubjectID(sID)
+	}
+	if sRel == "" {
+		return f.WithSubjectRelation(rel.DirectRelation())
+	}
+	named, err := rel.NamedRelation(sRel)
+	if err != nil {
+		return rel.ErrFilter(err)
+	}
+	return f.WithSubjectRelation(named)
+}
+
+func resourceFilter(resourceType, resourceID, relation string) rel.Filter {
+	f, err := rel.NewFilter(resourceType)
+	if err != nil {
+		return rel.ErrFilter(err)
+	}
+	if resourceID == "" {
+		return rel.ErrFilter(fmt.Errorf("%s ID is required: %w", resourceType, rel.ErrInvalidFilter))
+	}
+	f = f.WithResourceID(resourceID)
+	if relation != "" {
+		f = f.WithRelation(relation)
+	}
+	return f
+}
+
+// Txn builds one atomic write from typed relationships and native
+// preconditions. The zero value is ready to use. Builder methods return the
+// Txn for chaining and record the first error, which Build and
+// TypedClient.WriteTxn report; later calls after an error are ignored.
+type Txn struct {
+	txn rel.Txn
+	err error
+}
+
+func (t *Txn) add(r Deletable, apply func(*rel.Txn, rel.Relationship) error) *Txn {
+	if t.err != nil {
+		return t
+	}
+	relationship, err := r.Relationship()
+	if err == nil {
+		err = apply(&t.txn, relationship)
+	}
+	t.err = err
+	return t
+}
+
+// Touch upserts the relationship.
+func (t *Txn) Touch(r TypedRelationship) *Txn { return t.add(r, (*rel.Txn).Touch) }
+
+// Create inserts the relationship, failing the write if it exists.
+func (t *Txn) Create(r TypedRelationship) *Txn { return t.add(r, (*rel.Txn).Create) }
+
+// Delete removes the relationship identified by r, a TypedRelationship or a RelationshipKey.
+func (t *Txn) Delete(r Deletable) *Txn { return t.add(r, (*rel.Txn).Delete) }
+
+// MustMatch fails the write unless f matches at least one relationship.
+func (t *Txn) MustMatch(f rel.Filter) *Txn {
+	if t.err == nil {
+		t.err = t.txn.MustMatch(f)
+	}
+	return t
+}
+
+// MustNotMatch fails the write if f matches any relationship.
+func (t *Txn) MustNotMatch(f rel.Filter) *Txn {
+	if t.err == nil {
+		t.err = t.txn.MustNotMatch(f)
+	}
+	return t
+}
+
+// Len returns the number of updates added so far.
+func (t *Txn) Len() int { return t.txn.Len() }
+
+// String lists the transaction's preconditions and updates.
+func (t *Txn) String() string {
+	if t.err != nil {
+		return "<invalid transaction: " + t.err.Error() + ">"
+	}
+	return t.txn.String()
+}
+
+// Build returns an independent native transaction, or the first error.
+func (t *Txn) Build() (rel.Txn, error) {
+	if t.err != nil {
+		return rel.Txn{}, t.err
+	}
+	var out rel.Txn
+	for _, p := range t.txn.Preconditions() {
+		var err error
+		if p.Operation == rel.PreconditionMustMatch {
+			err = out.MustMatch(p.Filter)
+		} else {
+			err = out.MustNotMatch(p.Filter)
+		}
+		if err != nil {
+			return rel.Txn{}, err
+		}
+	}
+	for _, u := range t.txn.Updates() {
+		var err error
+		switch u.Operation {
+		case rel.UpdateOperationCreate:
+			err = out.Create(u.Relationship)
+		case rel.UpdateOperationTouch:
+			err = out.Touch(u.Relationship)
+		default:
+			err = out.Delete(u.Relationship)
+		}
+		if err != nil {
+			return rel.Txn{}, err
+		}
+	}
+	return out, nil
 }
 
 // TypedClient adds schema-aware helpers and exposes every native client capability.
@@ -49,6 +281,16 @@ type TypedClient struct {
 // NewTypedClient creates a new TypedClient wrapping the given SpiceDB client.
 func NewTypedClient(c *client.Client) *TypedClient {
 	return &TypedClient{Client: c}
+}
+
+// WriteTxn applies a typed transaction atomically. Construction errors are
+// reported before any RPC.
+func (tc *TypedClient) WriteTxn(ctx context.Context, txn *Txn, opts ...client.WriteOption) (client.WriteResult, error) {
+	native, err := txn.Build()
+	if err != nil {
+		return client.WriteResult{}, err
+	}
+	return tc.Client.Write(ctx, client.WriteRequest{Transaction: native}, opts...)
 }
 
 // --- Caveat Context Types ---
@@ -73,7 +315,7 @@ func (c IpRangeContext) toMap() map[string]any {
 
 // TimeWindowContext holds context parameters for the time_window caveat.
 type TimeWindowContext struct {
-	End *string
+	End   *string
 	Start *string
 }
 
@@ -100,6 +342,7 @@ func (c TimeWindowContext) toMap() map[string]any {
 
 // --- Subject Ref Types ---
 
+// UserRef is a subject reference to user.
 type UserRef struct {
 	id string
 }
@@ -116,15 +359,22 @@ func (r UserRef) expirationTime() *time.Time {
 	return nil
 }
 
+// WithIpRange returns this subject with caveat context.
 func (r UserRef) WithIpRange(ctx IpRangeContext) UserIpRange {
 	return UserIpRange{id: r.id, context: ctx}
 }
 
+// WithTimeWindow returns this subject with caveat context.
 func (r UserRef) WithTimeWindow(ctx TimeWindowContext) UserTimeWindow {
 	return UserTimeWindow{id: r.id, context: ctx}
 }
 
+// WithExpiration returns this subject with an expiration time.
+func (r UserRef) WithExpiration(t time.Time) UserExpiring {
+	return UserExpiring{id: r.id, expiration: t}
+}
 
+// UserIpRange is a subject reference to user with ip_range.
 type UserIpRange struct {
 	id      string
 	context IpRangeContext
@@ -142,6 +392,7 @@ func (r UserIpRange) expirationTime() *time.Time {
 	return nil
 }
 
+// UserTimeWindow is a subject reference to user with time_window.
 type UserTimeWindow struct {
 	id      string
 	context TimeWindowContext
@@ -159,6 +410,44 @@ func (r UserTimeWindow) expirationTime() *time.Time {
 	return nil
 }
 
+// UserExpiring is a subject reference to user with expiration.
+type UserExpiring struct {
+	id         string
+	expiration time.Time
+}
+
+func (r UserExpiring) subjectRef() (string, string, string) {
+	return "user", r.id, ""
+}
+
+func (r UserExpiring) caveatInfo() (string, map[string]any) {
+	return "", nil
+}
+
+func (r UserExpiring) expirationTime() *time.Time {
+	return &r.expiration
+}
+
+// UserWildcardRef is a subject reference to user:*.
+type UserWildcardRef struct {
+}
+
+func (r UserWildcardRef) subjectRef() (string, string, string) {
+	return "user", "*", ""
+}
+
+func (r UserWildcardRef) caveatInfo() (string, map[string]any) {
+	return "", nil
+}
+
+func (r UserWildcardRef) expirationTime() *time.Time {
+	return nil
+}
+
+// String formats the subject as "type:id" or "type:id#relation".
+func (r UserWildcardRef) String() string { return subjectString(r) }
+
+// TeamMemberRef is a subject reference to team#member.
 type TeamMemberRef struct {
 	id string
 }
@@ -175,9 +464,83 @@ func (r TeamMemberRef) expirationTime() *time.Time {
 	return nil
 }
 
+// String formats the subject as "type:id" or "type:id#relation".
+func (r TeamMemberRef) String() string { return subjectString(r) }
+
+// OrganizationRef is a subject reference to organization.
+type OrganizationRef struct {
+	id string
+}
+
+func (r OrganizationRef) subjectRef() (string, string, string) {
+	return "organization", r.id, ""
+}
+
+func (r OrganizationRef) caveatInfo() (string, map[string]any) {
+	return "", nil
+}
+
+func (r OrganizationRef) expirationTime() *time.Time {
+	return nil
+}
+
+// OrganizationCanAdminRef is a subject reference to organization#can_admin.
+type OrganizationCanAdminRef struct {
+	id string
+}
+
+func (r OrganizationCanAdminRef) subjectRef() (string, string, string) {
+	return "organization", r.id, "can_admin"
+}
+
+func (r OrganizationCanAdminRef) caveatInfo() (string, map[string]any) {
+	return "", nil
+}
+
+func (r OrganizationCanAdminRef) expirationTime() *time.Time {
+	return nil
+}
+
+// String formats the subject as "type:id" or "type:id#relation".
+func (r OrganizationCanAdminRef) String() string { return subjectString(r) }
+
+// WithExpiration returns this subject with an expiration time.
+func (r OrganizationCanAdminRef) WithExpiration(t time.Time) OrganizationCanAdminExpiring {
+	return OrganizationCanAdminExpiring{id: r.id, expiration: t}
+}
+
+// OrganizationCanAdminExpiring is a subject reference to organization#can_admin with expiration.
+type OrganizationCanAdminExpiring struct {
+	id         string
+	expiration time.Time
+}
+
+func (r OrganizationCanAdminExpiring) subjectRef() (string, string, string) {
+	return "organization", r.id, "can_admin"
+}
+
+func (r OrganizationCanAdminExpiring) caveatInfo() (string, map[string]any) {
+	return "", nil
+}
+
+func (r OrganizationCanAdminExpiring) expirationTime() *time.Time {
+	return &r.expiration
+}
+
+// String formats the subject as "type:id" or "type:id#relation".
+func (r OrganizationCanAdminExpiring) String() string { return subjectString(r) }
+
+func subjectString(s Subject) string {
+	t, id, r := s.subjectRef()
+	if r == "" {
+		return t + ":" + id
+	}
+	return t + ":" + id + "#" + r
+}
+
 // --- Type Sentinels ---
 
-// UserType is a type sentinel for LookupSubjects.
+// UserType is a type sentinel for LookupSubjects and WithSubject.
 var UserType = userRefType{}
 
 type userRefType struct{}
@@ -194,15 +557,28 @@ func (userRefType) expirationTime() *time.Time {
 	return nil
 }
 
-func (userRefType) isTeamMemberSubject() {}
-func (userRefType) isDocumentViewerSubject() {}
-func (userRefType) isDocumentEditorSubject() {}
-func (userRefType) isDocumentOwnerSubject() {}
-func (userRefType) isDocumentViewSubject() {}
-func (userRefType) isDocumentEditSubject() {}
-func (userRefType) isDocumentDeleteSubject() {}
+func (userRefType) isTeamMemberSubject()            {}
+func (userRefType) isTeamMemberKeySubject()         {}
+func (userRefType) isDocumentViewerSubject()        {}
+func (userRefType) isDocumentViewerKeySubject()     {}
+func (userRefType) isDocumentEditorSubject()        {}
+func (userRefType) isDocumentEditorKeySubject()     {}
+func (userRefType) isDocumentOwnerSubject()         {}
+func (userRefType) isDocumentOwnerKeySubject()      {}
+func (userRefType) isDocumentViewSubject()          {}
+func (userRefType) isDocumentEditSubject()          {}
+func (userRefType) isDocumentDeleteSubject()        {}
+func (userRefType) isOrganizationAdminSubject()     {}
+func (userRefType) isOrganizationAdminKeySubject()  {}
+func (userRefType) isOrganizationMemberSubject()    {}
+func (userRefType) isOrganizationMemberKeySubject() {}
+func (userRefType) isOrganizationGuestSubject()     {}
+func (userRefType) isOrganizationGuestKeySubject()  {}
+func (userRefType) isOrganizationCanAdminSubject()  {}
+func (userRefType) isOrganizationViewSubject()      {}
+func (userRefType) isInvitationInviterKeySubject()  {}
 
-// TeamMemberType is a type sentinel for LookupSubjects.
+// TeamMemberType is a type sentinel for LookupSubjects and WithSubject.
 var TeamMemberType = teamMemberRefType{}
 
 type teamMemberRefType struct{}
@@ -219,15 +595,119 @@ func (teamMemberRefType) expirationTime() *time.Time {
 	return nil
 }
 
-func (teamMemberRefType) isTeamMemberSubject() {}
-func (teamMemberRefType) isDocumentViewerSubject() {}
-func (teamMemberRefType) isDocumentViewSubject() {}
+func (teamMemberRefType) isTeamMemberSubject()        {}
+func (teamMemberRefType) isTeamMemberKeySubject()     {}
+func (teamMemberRefType) isDocumentViewerSubject()    {}
+func (teamMemberRefType) isDocumentViewerKeySubject() {}
+func (teamMemberRefType) isDocumentViewSubject()      {}
 
-// --- Constructors ---
+// OrganizationType is a type sentinel for LookupSubjects and WithSubject.
+var OrganizationType = organizationRefType{}
+
+type organizationRefType struct{}
+
+func (organizationRefType) subjectRef() (string, string, string) {
+	return "organization", "", ""
+}
+
+func (organizationRefType) caveatInfo() (string, map[string]any) {
+	return "", nil
+}
+
+func (organizationRefType) expirationTime() *time.Time {
+	return nil
+}
+
+func (organizationRefType) isInvitationOrgSubject()    {}
+func (organizationRefType) isInvitationOrgKeySubject() {}
+
+// OrganizationCanAdminType is a type sentinel for LookupSubjects and WithSubject.
+var OrganizationCanAdminType = organizationCanAdminRefType{}
+
+type organizationCanAdminRefType struct{}
+
+func (organizationCanAdminRefType) subjectRef() (string, string, string) {
+	return "organization", "", "can_admin"
+}
+
+func (organizationCanAdminRefType) caveatInfo() (string, map[string]any) {
+	return "", nil
+}
+
+func (organizationCanAdminRefType) expirationTime() *time.Time {
+	return nil
+}
+
+func (organizationCanAdminRefType) isInvitationGrantSubject()         {}
+func (organizationCanAdminRefType) isInvitationGrantKeySubject()      {}
+func (organizationCanAdminRefType) isInvitationTimedGrantKeySubject() {}
+func (organizationCanAdminRefType) isInvitationAcceptSubject()        {}
+
+// --- Definitions ---
 
 // User creates a new UserRef with the given ID.
 func User(id string) UserRef {
 	return UserRef{id: id}
+}
+
+// UserWildcard returns the user:* wildcard subject.
+func UserWildcard() UserWildcardRef {
+	return UserWildcardRef{}
+}
+
+// ID returns the user's ID.
+func (d UserRef) ID() string { return d.id }
+
+// String formats the reference as "user:id".
+func (d UserRef) String() string { return "user:" + d.id }
+
+// UserFilter matches every user relationship.
+func UserFilter() rel.Filter { return rel.MustNewFilter("user") }
+
+// Filter matches every relationship on this user.
+func (d UserRef) Filter() rel.Filter { return resourceFilter("user", d.id, "") }
+
+// UserRelations names every relation on user.
+var UserRelations = struct {
+}{}
+
+// UserPermissions names every permission on user.
+var UserPermissions = struct {
+}{}
+
+// UserRelationNames returns every relation name on user, in schema order.
+func UserRelationNames() []string {
+	return []string{}
+}
+
+// UserPermissionNames returns every permission name on user, in schema order.
+func UserPermissionNames() []string {
+	return []string{}
+}
+
+// PermissionByName returns the named permission on this user, or an
+// error wrapping ErrNotInSchema.
+func (d UserRef) PermissionByName(name string) (Permission, error) {
+	switch name {
+	}
+	return Permission{}, fmt.Errorf("%w: user has no permission %q", ErrNotInSchema, name)
+}
+
+// RelationByName returns a checkable Permission for the named relation on
+// this user, or an error wrapping ErrNotInSchema.
+func (d UserRef) RelationByName(name string) (Permission, error) {
+	switch name {
+	}
+	return Permission{}, fmt.Errorf("%w: user has no relation %q", ErrNotInSchema, name)
+}
+
+// RelationshipByName builds a relationship on the named relation of this
+// user. It fails with ErrNotInSchema for an unknown relation and
+// ErrSubjectNotAllowed for a subject the relation does not admit.
+func (d UserRef) RelationshipByName(relation string, subject Subject) (TypedRelationship, error) {
+	switch relation {
+	}
+	return TypedRelationship{}, fmt.Errorf("%w: user has no relation %q", ErrNotInSchema, relation)
 }
 
 // TeamRef represents a reference to a team resource.
@@ -240,6 +720,101 @@ func Team(id string) TeamRef {
 	return TeamRef{id: id}
 }
 
+// ID returns the team's ID.
+func (d TeamRef) ID() string { return d.id }
+
+// String formats the reference as "team:id".
+func (d TeamRef) String() string { return "team:" + d.id }
+
+// TeamFilter matches every team relationship.
+func TeamFilter() rel.Filter { return rel.MustNewFilter("team") }
+
+// Filter matches every relationship on this team.
+func (d TeamRef) Filter() rel.Filter { return resourceFilter("team", d.id, "") }
+
+// TeamRelations names every relation on team.
+var TeamRelations = struct {
+	Member string
+}{
+	Member: "member",
+}
+
+// TeamPermissions names every permission on team.
+var TeamPermissions = struct {
+}{}
+
+// TeamRelationNames returns every relation name on team, in schema order.
+func TeamRelationNames() []string {
+	return []string{"member"}
+}
+
+// TeamPermissionNames returns every permission name on team, in schema order.
+func TeamPermissionNames() []string {
+	return []string{}
+}
+
+// PermissionByName returns the named permission on this team, or an
+// error wrapping ErrNotInSchema.
+func (d TeamRef) PermissionByName(name string) (Permission, error) {
+	switch name {
+	}
+	return Permission{}, fmt.Errorf("%w: team has no permission %q", ErrNotInSchema, name)
+}
+
+// RelationByName returns a checkable Permission for the named relation on
+// this team, or an error wrapping ErrNotInSchema.
+func (d TeamRef) RelationByName(name string) (Permission, error) {
+	switch name {
+	case "member":
+		return d.MemberRelation(), nil
+	}
+	return Permission{}, fmt.Errorf("%w: team has no relation %q", ErrNotInSchema, name)
+}
+
+// RelationshipByName builds a relationship on the named relation of this
+// team. It fails with ErrNotInSchema for an unknown relation and
+// ErrSubjectNotAllowed for a subject the relation does not admit.
+func (d TeamRef) RelationshipByName(relation string, subject Subject) (TypedRelationship, error) {
+	switch relation {
+	case "member":
+		s, ok := subject.(TeamMemberSubject)
+		if !ok {
+			return TypedRelationship{}, fmt.Errorf("%w: team#member does not admit %s", ErrSubjectNotAllowed, subjectString(subject))
+		}
+		t := d.ForMember(s)
+		return t, t.err
+	}
+	return TypedRelationship{}, fmt.Errorf("%w: team has no relation %q", ErrNotInSchema, relation)
+}
+
+// Member returns this team as a TeamMemberRef subject.
+func (d TeamRef) Member() TeamMemberRef {
+	return TeamMemberRef{id: d.id}
+}
+
+// MemberRelation returns a Permission for checking the member relation directly on this team.
+func (d TeamRef) MemberRelation() Permission {
+	return Permission{resourceType: "team", resourceID: d.id, permission: "member"}
+}
+
+// MemberFilter matches every member relationship on this team.
+func (d TeamRef) MemberFilter() rel.Filter {
+	return resourceFilter("team", d.id, "member")
+}
+
+// ForMember creates a TypedRelationship for the member relation on this team.
+func (d TeamRef) ForMember(subject TeamMemberSubject) TypedRelationship {
+	return typedRelationship("team", d.id, "member", subject)
+}
+
+// MemberKey identifies a member relationship on this team
+// without caveat or expiration, for deletes and exact filters.
+func (d TeamRef) MemberKey(subject TeamMemberKeySubject) RelationshipKey {
+	sType, sID, sRel := subject.subjectRef()
+	r, err := relationship("team", d.id, "member", sType, sID, sRel)
+	return RelationshipKey{r: r, err: err}
+}
+
 // DocumentRef represents a reference to a document resource.
 type DocumentRef struct {
 	id string
@@ -250,13 +825,624 @@ func Document(id string) DocumentRef {
 	return DocumentRef{id: id}
 }
 
-// --- SubRef Methods ---
+// ID returns the document's ID.
+func (d DocumentRef) ID() string { return d.id }
 
-// Member returns a TeamMemberRef for this team.
-func (r TeamRef) Member() TeamMemberRef {
-	return TeamMemberRef{id: r.id}
+// String formats the reference as "document:id".
+func (d DocumentRef) String() string { return "document:" + d.id }
+
+// DocumentFilter matches every document relationship.
+func DocumentFilter() rel.Filter { return rel.MustNewFilter("document") }
+
+// Filter matches every relationship on this document.
+func (d DocumentRef) Filter() rel.Filter { return resourceFilter("document", d.id, "") }
+
+// DocumentRelations names every relation on document.
+var DocumentRelations = struct {
+	Viewer string
+	Editor string
+	Owner  string
+}{
+	Viewer: "viewer",
+	Editor: "editor",
+	Owner:  "owner",
 }
 
+// DocumentPermissions names every permission on document.
+var DocumentPermissions = struct {
+	View   string
+	Edit   string
+	Delete string
+}{
+	View:   "view",
+	Edit:   "edit",
+	Delete: "delete",
+}
+
+// DocumentRelationNames returns every relation name on document, in schema order.
+func DocumentRelationNames() []string {
+	return []string{"viewer", "editor", "owner"}
+}
+
+// DocumentPermissionNames returns every permission name on document, in schema order.
+func DocumentPermissionNames() []string {
+	return []string{"view", "edit", "delete"}
+}
+
+// PermissionByName returns the named permission on this document, or an
+// error wrapping ErrNotInSchema.
+func (d DocumentRef) PermissionByName(name string) (Permission, error) {
+	switch name {
+	case "view":
+		return d.View(), nil
+	case "edit":
+		return d.Edit(), nil
+	case "delete":
+		return d.Delete(), nil
+	}
+	return Permission{}, fmt.Errorf("%w: document has no permission %q", ErrNotInSchema, name)
+}
+
+// RelationByName returns a checkable Permission for the named relation on
+// this document, or an error wrapping ErrNotInSchema.
+func (d DocumentRef) RelationByName(name string) (Permission, error) {
+	switch name {
+	case "viewer":
+		return d.ViewerRelation(), nil
+	case "editor":
+		return d.EditorRelation(), nil
+	case "owner":
+		return d.OwnerRelation(), nil
+	}
+	return Permission{}, fmt.Errorf("%w: document has no relation %q", ErrNotInSchema, name)
+}
+
+// RelationshipByName builds a relationship on the named relation of this
+// document. It fails with ErrNotInSchema for an unknown relation and
+// ErrSubjectNotAllowed for a subject the relation does not admit.
+func (d DocumentRef) RelationshipByName(relation string, subject Subject) (TypedRelationship, error) {
+	switch relation {
+	case "viewer":
+		s, ok := subject.(DocumentViewerSubject)
+		if !ok {
+			return TypedRelationship{}, fmt.Errorf("%w: document#viewer does not admit %s", ErrSubjectNotAllowed, subjectString(subject))
+		}
+		t := d.Viewer(s)
+		return t, t.err
+	case "editor":
+		s, ok := subject.(DocumentEditorSubject)
+		if !ok {
+			return TypedRelationship{}, fmt.Errorf("%w: document#editor does not admit %s", ErrSubjectNotAllowed, subjectString(subject))
+		}
+		t := d.Editor(s)
+		return t, t.err
+	case "owner":
+		s, ok := subject.(DocumentOwnerSubject)
+		if !ok {
+			return TypedRelationship{}, fmt.Errorf("%w: document#owner does not admit %s", ErrSubjectNotAllowed, subjectString(subject))
+		}
+		t := d.Owner(s)
+		return t, t.err
+	}
+	return TypedRelationship{}, fmt.Errorf("%w: document has no relation %q", ErrNotInSchema, relation)
+}
+
+// View returns a Permission for checking view on this document.
+func (d DocumentRef) View() Permission {
+	return Permission{resourceType: "document", resourceID: d.id, permission: "view"}
+}
+
+// Edit returns a Permission for checking edit on this document.
+func (d DocumentRef) Edit() Permission {
+	return Permission{resourceType: "document", resourceID: d.id, permission: "edit"}
+}
+
+// Delete returns a Permission for checking delete on this document.
+func (d DocumentRef) Delete() Permission {
+	return Permission{resourceType: "document", resourceID: d.id, permission: "delete"}
+}
+
+// ViewerRelation returns a Permission for checking the viewer relation directly on this document.
+func (d DocumentRef) ViewerRelation() Permission {
+	return Permission{resourceType: "document", resourceID: d.id, permission: "viewer"}
+}
+
+// ViewerFilter matches every viewer relationship on this document.
+func (d DocumentRef) ViewerFilter() rel.Filter {
+	return resourceFilter("document", d.id, "viewer")
+}
+
+// Viewer creates a TypedRelationship for the viewer relation on this document.
+func (d DocumentRef) Viewer(subject DocumentViewerSubject) TypedRelationship {
+	return typedRelationship("document", d.id, "viewer", subject)
+}
+
+// ViewerKey identifies a viewer relationship on this document
+// without caveat or expiration, for deletes and exact filters.
+func (d DocumentRef) ViewerKey(subject DocumentViewerKeySubject) RelationshipKey {
+	sType, sID, sRel := subject.subjectRef()
+	r, err := relationship("document", d.id, "viewer", sType, sID, sRel)
+	return RelationshipKey{r: r, err: err}
+}
+
+// EditorRelation returns a Permission for checking the editor relation directly on this document.
+func (d DocumentRef) EditorRelation() Permission {
+	return Permission{resourceType: "document", resourceID: d.id, permission: "editor"}
+}
+
+// EditorFilter matches every editor relationship on this document.
+func (d DocumentRef) EditorFilter() rel.Filter {
+	return resourceFilter("document", d.id, "editor")
+}
+
+// Editor creates a TypedRelationship for the editor relation on this document.
+func (d DocumentRef) Editor(subject DocumentEditorSubject) TypedRelationship {
+	return typedRelationship("document", d.id, "editor", subject)
+}
+
+// EditorKey identifies a editor relationship on this document
+// without caveat or expiration, for deletes and exact filters.
+func (d DocumentRef) EditorKey(subject DocumentEditorKeySubject) RelationshipKey {
+	sType, sID, sRel := subject.subjectRef()
+	r, err := relationship("document", d.id, "editor", sType, sID, sRel)
+	return RelationshipKey{r: r, err: err}
+}
+
+// OwnerRelation returns a Permission for checking the owner relation directly on this document.
+func (d DocumentRef) OwnerRelation() Permission {
+	return Permission{resourceType: "document", resourceID: d.id, permission: "owner"}
+}
+
+// OwnerFilter matches every owner relationship on this document.
+func (d DocumentRef) OwnerFilter() rel.Filter {
+	return resourceFilter("document", d.id, "owner")
+}
+
+// Owner creates a TypedRelationship for the owner relation on this document.
+func (d DocumentRef) Owner(subject DocumentOwnerSubject) TypedRelationship {
+	return typedRelationship("document", d.id, "owner", subject)
+}
+
+// OwnerKey identifies a owner relationship on this document
+// without caveat or expiration, for deletes and exact filters.
+func (d DocumentRef) OwnerKey(subject DocumentOwnerKeySubject) RelationshipKey {
+	sType, sID, sRel := subject.subjectRef()
+	r, err := relationship("document", d.id, "owner", sType, sID, sRel)
+	return RelationshipKey{r: r, err: err}
+}
+
+// Organization creates a new OrganizationRef with the given ID.
+func Organization(id string) OrganizationRef {
+	return OrganizationRef{id: id}
+}
+
+// ID returns the organization's ID.
+func (d OrganizationRef) ID() string { return d.id }
+
+// String formats the reference as "organization:id".
+func (d OrganizationRef) String() string { return "organization:" + d.id }
+
+// OrganizationFilter matches every organization relationship.
+func OrganizationFilter() rel.Filter { return rel.MustNewFilter("organization") }
+
+// Filter matches every relationship on this organization.
+func (d OrganizationRef) Filter() rel.Filter { return resourceFilter("organization", d.id, "") }
+
+// OrganizationRelations names every relation on organization.
+var OrganizationRelations = struct {
+	Admin   string
+	Member  string
+	Creator string
+	Guest   string
+}{
+	Admin:   "admin",
+	Member:  "member",
+	Creator: "creator",
+	Guest:   "guest",
+}
+
+// OrganizationPermissions names every permission on organization.
+var OrganizationPermissions = struct {
+	CanAdmin string
+	View     string
+}{
+	CanAdmin: "can_admin",
+	View:     "view",
+}
+
+// OrganizationRelationNames returns every relation name on organization, in schema order.
+func OrganizationRelationNames() []string {
+	return []string{"admin", "member", "creator", "guest"}
+}
+
+// OrganizationPermissionNames returns every permission name on organization, in schema order.
+func OrganizationPermissionNames() []string {
+	return []string{"can_admin", "view"}
+}
+
+// PermissionByName returns the named permission on this organization, or an
+// error wrapping ErrNotInSchema.
+func (d OrganizationRef) PermissionByName(name string) (Permission, error) {
+	switch name {
+	case "can_admin":
+		return d.CanAdmin(), nil
+	case "view":
+		return d.View(), nil
+	}
+	return Permission{}, fmt.Errorf("%w: organization has no permission %q", ErrNotInSchema, name)
+}
+
+// RelationByName returns a checkable Permission for the named relation on
+// this organization, or an error wrapping ErrNotInSchema.
+func (d OrganizationRef) RelationByName(name string) (Permission, error) {
+	switch name {
+	case "admin":
+		return d.AdminRelation(), nil
+	case "member":
+		return d.MemberRelation(), nil
+	case "creator":
+		return d.CreatorRelation(), nil
+	case "guest":
+		return d.GuestRelation(), nil
+	}
+	return Permission{}, fmt.Errorf("%w: organization has no relation %q", ErrNotInSchema, name)
+}
+
+// RelationshipByName builds a relationship on the named relation of this
+// organization. It fails with ErrNotInSchema for an unknown relation and
+// ErrSubjectNotAllowed for a subject the relation does not admit.
+func (d OrganizationRef) RelationshipByName(relation string, subject Subject) (TypedRelationship, error) {
+	switch relation {
+	case "admin":
+		s, ok := subject.(OrganizationAdminSubject)
+		if !ok {
+			return TypedRelationship{}, fmt.Errorf("%w: organization#admin does not admit %s", ErrSubjectNotAllowed, subjectString(subject))
+		}
+		t := d.Admin(s)
+		return t, t.err
+	case "member":
+		s, ok := subject.(OrganizationMemberSubject)
+		if !ok {
+			return TypedRelationship{}, fmt.Errorf("%w: organization#member does not admit %s", ErrSubjectNotAllowed, subjectString(subject))
+		}
+		t := d.Member(s)
+		return t, t.err
+	case "creator":
+		s, ok := subject.(OrganizationCreatorSubject)
+		if !ok {
+			return TypedRelationship{}, fmt.Errorf("%w: organization#creator does not admit %s", ErrSubjectNotAllowed, subjectString(subject))
+		}
+		t := d.Creator(s)
+		return t, t.err
+	case "guest":
+		s, ok := subject.(OrganizationGuestSubject)
+		if !ok {
+			return TypedRelationship{}, fmt.Errorf("%w: organization#guest does not admit %s", ErrSubjectNotAllowed, subjectString(subject))
+		}
+		t := d.Guest(s)
+		return t, t.err
+	}
+	return TypedRelationship{}, fmt.Errorf("%w: organization has no relation %q", ErrNotInSchema, relation)
+}
+
+// CanAdminSubject returns this organization as a OrganizationCanAdminRef subject.
+func (d OrganizationRef) CanAdminSubject() OrganizationCanAdminRef {
+	return OrganizationCanAdminRef{id: d.id}
+}
+
+// CanAdmin returns a Permission for checking can_admin on this organization.
+func (d OrganizationRef) CanAdmin() Permission {
+	return Permission{resourceType: "organization", resourceID: d.id, permission: "can_admin"}
+}
+
+// View returns a Permission for checking view on this organization.
+func (d OrganizationRef) View() Permission {
+	return Permission{resourceType: "organization", resourceID: d.id, permission: "view"}
+}
+
+// AdminRelation returns a Permission for checking the admin relation directly on this organization.
+func (d OrganizationRef) AdminRelation() Permission {
+	return Permission{resourceType: "organization", resourceID: d.id, permission: "admin"}
+}
+
+// AdminFilter matches every admin relationship on this organization.
+func (d OrganizationRef) AdminFilter() rel.Filter {
+	return resourceFilter("organization", d.id, "admin")
+}
+
+// Admin creates a TypedRelationship for the admin relation on this organization.
+func (d OrganizationRef) Admin(subject OrganizationAdminSubject) TypedRelationship {
+	return typedRelationship("organization", d.id, "admin", subject)
+}
+
+// AdminKey identifies a admin relationship on this organization
+// without caveat or expiration, for deletes and exact filters.
+func (d OrganizationRef) AdminKey(subject OrganizationAdminKeySubject) RelationshipKey {
+	sType, sID, sRel := subject.subjectRef()
+	r, err := relationship("organization", d.id, "admin", sType, sID, sRel)
+	return RelationshipKey{r: r, err: err}
+}
+
+// MemberRelation returns a Permission for checking the member relation directly on this organization.
+func (d OrganizationRef) MemberRelation() Permission {
+	return Permission{resourceType: "organization", resourceID: d.id, permission: "member"}
+}
+
+// MemberFilter matches every member relationship on this organization.
+func (d OrganizationRef) MemberFilter() rel.Filter {
+	return resourceFilter("organization", d.id, "member")
+}
+
+// Member creates a TypedRelationship for the member relation on this organization.
+func (d OrganizationRef) Member(subject OrganizationMemberSubject) TypedRelationship {
+	return typedRelationship("organization", d.id, "member", subject)
+}
+
+// MemberKey identifies a member relationship on this organization
+// without caveat or expiration, for deletes and exact filters.
+func (d OrganizationRef) MemberKey(subject OrganizationMemberKeySubject) RelationshipKey {
+	sType, sID, sRel := subject.subjectRef()
+	r, err := relationship("organization", d.id, "member", sType, sID, sRel)
+	return RelationshipKey{r: r, err: err}
+}
+
+// CreatorRelation returns a Permission for checking the creator relation directly on this organization.
+func (d OrganizationRef) CreatorRelation() Permission {
+	return Permission{resourceType: "organization", resourceID: d.id, permission: "creator"}
+}
+
+// CreatorFilter matches every creator relationship on this organization.
+func (d OrganizationRef) CreatorFilter() rel.Filter {
+	return resourceFilter("organization", d.id, "creator")
+}
+
+// Creator creates a TypedRelationship for the creator relation on this organization.
+func (d OrganizationRef) Creator(subject OrganizationCreatorSubject) TypedRelationship {
+	return typedRelationship("organization", d.id, "creator", subject)
+}
+
+// CreatorKey identifies a creator relationship on this organization
+// without caveat or expiration, for deletes and exact filters.
+func (d OrganizationRef) CreatorKey(subject OrganizationCreatorKeySubject) RelationshipKey {
+	sType, sID, sRel := subject.subjectRef()
+	r, err := relationship("organization", d.id, "creator", sType, sID, sRel)
+	return RelationshipKey{r: r, err: err}
+}
+
+// GuestRelation returns a Permission for checking the guest relation directly on this organization.
+func (d OrganizationRef) GuestRelation() Permission {
+	return Permission{resourceType: "organization", resourceID: d.id, permission: "guest"}
+}
+
+// GuestFilter matches every guest relationship on this organization.
+func (d OrganizationRef) GuestFilter() rel.Filter {
+	return resourceFilter("organization", d.id, "guest")
+}
+
+// Guest creates a TypedRelationship for the guest relation on this organization.
+func (d OrganizationRef) Guest(subject OrganizationGuestSubject) TypedRelationship {
+	return typedRelationship("organization", d.id, "guest", subject)
+}
+
+// GuestKey identifies a guest relationship on this organization
+// without caveat or expiration, for deletes and exact filters.
+func (d OrganizationRef) GuestKey(subject OrganizationGuestKeySubject) RelationshipKey {
+	sType, sID, sRel := subject.subjectRef()
+	r, err := relationship("organization", d.id, "guest", sType, sID, sRel)
+	return RelationshipKey{r: r, err: err}
+}
+
+// InvitationRef represents a reference to a invitation resource.
+type InvitationRef struct {
+	id string
+}
+
+// Invitation creates a new InvitationRef with the given ID.
+func Invitation(id string) InvitationRef {
+	return InvitationRef{id: id}
+}
+
+// ID returns the invitation's ID.
+func (d InvitationRef) ID() string { return d.id }
+
+// String formats the reference as "invitation:id".
+func (d InvitationRef) String() string { return "invitation:" + d.id }
+
+// InvitationFilter matches every invitation relationship.
+func InvitationFilter() rel.Filter { return rel.MustNewFilter("invitation") }
+
+// Filter matches every relationship on this invitation.
+func (d InvitationRef) Filter() rel.Filter { return resourceFilter("invitation", d.id, "") }
+
+// InvitationRelations names every relation on invitation.
+var InvitationRelations = struct {
+	Org        string
+	Grant      string
+	TimedGrant string
+	Inviter    string
+}{
+	Org:        "org",
+	Grant:      "grant",
+	TimedGrant: "timed_grant",
+	Inviter:    "inviter",
+}
+
+// InvitationPermissions names every permission on invitation.
+var InvitationPermissions = struct {
+	Accept string
+}{
+	Accept: "accept",
+}
+
+// InvitationRelationNames returns every relation name on invitation, in schema order.
+func InvitationRelationNames() []string {
+	return []string{"org", "grant", "timed_grant", "inviter"}
+}
+
+// InvitationPermissionNames returns every permission name on invitation, in schema order.
+func InvitationPermissionNames() []string {
+	return []string{"accept"}
+}
+
+// PermissionByName returns the named permission on this invitation, or an
+// error wrapping ErrNotInSchema.
+func (d InvitationRef) PermissionByName(name string) (Permission, error) {
+	switch name {
+	case "accept":
+		return d.Accept(), nil
+	}
+	return Permission{}, fmt.Errorf("%w: invitation has no permission %q", ErrNotInSchema, name)
+}
+
+// RelationByName returns a checkable Permission for the named relation on
+// this invitation, or an error wrapping ErrNotInSchema.
+func (d InvitationRef) RelationByName(name string) (Permission, error) {
+	switch name {
+	case "org":
+		return d.OrgRelation(), nil
+	case "grant":
+		return d.GrantRelation(), nil
+	case "timed_grant":
+		return d.TimedGrantRelation(), nil
+	case "inviter":
+		return d.InviterRelation(), nil
+	}
+	return Permission{}, fmt.Errorf("%w: invitation has no relation %q", ErrNotInSchema, name)
+}
+
+// RelationshipByName builds a relationship on the named relation of this
+// invitation. It fails with ErrNotInSchema for an unknown relation and
+// ErrSubjectNotAllowed for a subject the relation does not admit.
+func (d InvitationRef) RelationshipByName(relation string, subject Subject) (TypedRelationship, error) {
+	switch relation {
+	case "org":
+		s, ok := subject.(InvitationOrgSubject)
+		if !ok {
+			return TypedRelationship{}, fmt.Errorf("%w: invitation#org does not admit %s", ErrSubjectNotAllowed, subjectString(subject))
+		}
+		t := d.Org(s)
+		return t, t.err
+	case "grant":
+		s, ok := subject.(InvitationGrantSubject)
+		if !ok {
+			return TypedRelationship{}, fmt.Errorf("%w: invitation#grant does not admit %s", ErrSubjectNotAllowed, subjectString(subject))
+		}
+		t := d.Grant(s)
+		return t, t.err
+	case "timed_grant":
+		s, ok := subject.(InvitationTimedGrantSubject)
+		if !ok {
+			return TypedRelationship{}, fmt.Errorf("%w: invitation#timed_grant does not admit %s", ErrSubjectNotAllowed, subjectString(subject))
+		}
+		t := d.TimedGrant(s)
+		return t, t.err
+	case "inviter":
+		s, ok := subject.(InvitationInviterSubject)
+		if !ok {
+			return TypedRelationship{}, fmt.Errorf("%w: invitation#inviter does not admit %s", ErrSubjectNotAllowed, subjectString(subject))
+		}
+		t := d.Inviter(s)
+		return t, t.err
+	}
+	return TypedRelationship{}, fmt.Errorf("%w: invitation has no relation %q", ErrNotInSchema, relation)
+}
+
+// Accept returns a Permission for checking accept on this invitation.
+func (d InvitationRef) Accept() Permission {
+	return Permission{resourceType: "invitation", resourceID: d.id, permission: "accept"}
+}
+
+// OrgRelation returns a Permission for checking the org relation directly on this invitation.
+func (d InvitationRef) OrgRelation() Permission {
+	return Permission{resourceType: "invitation", resourceID: d.id, permission: "org"}
+}
+
+// OrgFilter matches every org relationship on this invitation.
+func (d InvitationRef) OrgFilter() rel.Filter {
+	return resourceFilter("invitation", d.id, "org")
+}
+
+// Org creates a TypedRelationship for the org relation on this invitation.
+func (d InvitationRef) Org(subject InvitationOrgSubject) TypedRelationship {
+	return typedRelationship("invitation", d.id, "org", subject)
+}
+
+// OrgKey identifies a org relationship on this invitation
+// without caveat or expiration, for deletes and exact filters.
+func (d InvitationRef) OrgKey(subject InvitationOrgKeySubject) RelationshipKey {
+	sType, sID, sRel := subject.subjectRef()
+	r, err := relationship("invitation", d.id, "org", sType, sID, sRel)
+	return RelationshipKey{r: r, err: err}
+}
+
+// GrantRelation returns a Permission for checking the grant relation directly on this invitation.
+func (d InvitationRef) GrantRelation() Permission {
+	return Permission{resourceType: "invitation", resourceID: d.id, permission: "grant"}
+}
+
+// GrantFilter matches every grant relationship on this invitation.
+func (d InvitationRef) GrantFilter() rel.Filter {
+	return resourceFilter("invitation", d.id, "grant")
+}
+
+// Grant creates a TypedRelationship for the grant relation on this invitation.
+func (d InvitationRef) Grant(subject InvitationGrantSubject) TypedRelationship {
+	return typedRelationship("invitation", d.id, "grant", subject)
+}
+
+// GrantKey identifies a grant relationship on this invitation
+// without caveat or expiration, for deletes and exact filters.
+func (d InvitationRef) GrantKey(subject InvitationGrantKeySubject) RelationshipKey {
+	sType, sID, sRel := subject.subjectRef()
+	r, err := relationship("invitation", d.id, "grant", sType, sID, sRel)
+	return RelationshipKey{r: r, err: err}
+}
+
+// TimedGrantRelation returns a Permission for checking the timed_grant relation directly on this invitation.
+func (d InvitationRef) TimedGrantRelation() Permission {
+	return Permission{resourceType: "invitation", resourceID: d.id, permission: "timed_grant"}
+}
+
+// TimedGrantFilter matches every timed_grant relationship on this invitation.
+func (d InvitationRef) TimedGrantFilter() rel.Filter {
+	return resourceFilter("invitation", d.id, "timed_grant")
+}
+
+// TimedGrant creates a TypedRelationship for the timed_grant relation on this invitation.
+func (d InvitationRef) TimedGrant(subject InvitationTimedGrantSubject) TypedRelationship {
+	return typedRelationship("invitation", d.id, "timed_grant", subject)
+}
+
+// TimedGrantKey identifies a timed_grant relationship on this invitation
+// without caveat or expiration, for deletes and exact filters.
+func (d InvitationRef) TimedGrantKey(subject InvitationTimedGrantKeySubject) RelationshipKey {
+	sType, sID, sRel := subject.subjectRef()
+	r, err := relationship("invitation", d.id, "timed_grant", sType, sID, sRel)
+	return RelationshipKey{r: r, err: err}
+}
+
+// InviterRelation returns a Permission for checking the inviter relation directly on this invitation.
+func (d InvitationRef) InviterRelation() Permission {
+	return Permission{resourceType: "invitation", resourceID: d.id, permission: "inviter"}
+}
+
+// InviterFilter matches every inviter relationship on this invitation.
+func (d InvitationRef) InviterFilter() rel.Filter {
+	return resourceFilter("invitation", d.id, "inviter")
+}
+
+// Inviter creates a TypedRelationship for the inviter relation on this invitation.
+func (d InvitationRef) Inviter(subject InvitationInviterSubject) TypedRelationship {
+	return typedRelationship("invitation", d.id, "inviter", subject)
+}
+
+// InviterKey identifies a inviter relationship on this invitation
+// without caveat or expiration, for deletes and exact filters.
+func (d InvitationRef) InviterKey(subject InvitationInviterKeySubject) RelationshipKey {
+	sType, sID, sRel := subject.subjectRef()
+	r, err := relationship("invitation", d.id, "inviter", sType, sID, sRel)
+	return RelationshipKey{r: r, err: err}
+}
 
 // --- Sealed Subject Interfaces ---
 
@@ -267,7 +1453,16 @@ type TeamMemberSubject interface {
 }
 
 func (TeamMemberRef) isTeamMemberSubject() {}
-func (UserRef) isTeamMemberSubject() {}
+func (UserRef) isTeamMemberSubject()       {}
+
+// TeamMemberKeySubject is a sealed interface for subjects allowed in this position.
+type TeamMemberKeySubject interface {
+	Subject
+	isTeamMemberKeySubject()
+}
+
+func (TeamMemberRef) isTeamMemberKeySubject() {}
+func (UserRef) isTeamMemberKeySubject()       {}
 
 // DocumentViewerSubject is a sealed interface for subjects allowed in this position.
 type DocumentViewerSubject interface {
@@ -275,10 +1470,19 @@ type DocumentViewerSubject interface {
 	isDocumentViewerSubject()
 }
 
-func (TeamMemberRef) isDocumentViewerSubject() {}
-func (UserIpRange) isDocumentViewerSubject() {}
-func (UserRef) isDocumentViewerSubject() {}
+func (TeamMemberRef) isDocumentViewerSubject()  {}
+func (UserIpRange) isDocumentViewerSubject()    {}
+func (UserRef) isDocumentViewerSubject()        {}
 func (UserTimeWindow) isDocumentViewerSubject() {}
+
+// DocumentViewerKeySubject is a sealed interface for subjects allowed in this position.
+type DocumentViewerKeySubject interface {
+	Subject
+	isDocumentViewerKeySubject()
+}
+
+func (TeamMemberRef) isDocumentViewerKeySubject() {}
+func (UserRef) isDocumentViewerKeySubject()       {}
 
 // DocumentEditorSubject is a sealed interface for subjects allowed in this position.
 type DocumentEditorSubject interface {
@@ -288,6 +1492,14 @@ type DocumentEditorSubject interface {
 
 func (UserRef) isDocumentEditorSubject() {}
 
+// DocumentEditorKeySubject is a sealed interface for subjects allowed in this position.
+type DocumentEditorKeySubject interface {
+	Subject
+	isDocumentEditorKeySubject()
+}
+
+func (UserRef) isDocumentEditorKeySubject() {}
+
 // DocumentOwnerSubject is a sealed interface for subjects allowed in this position.
 type DocumentOwnerSubject interface {
 	Subject
@@ -296,15 +1508,23 @@ type DocumentOwnerSubject interface {
 
 func (UserRef) isDocumentOwnerSubject() {}
 
+// DocumentOwnerKeySubject is a sealed interface for subjects allowed in this position.
+type DocumentOwnerKeySubject interface {
+	Subject
+	isDocumentOwnerKeySubject()
+}
+
+func (UserRef) isDocumentOwnerKeySubject() {}
+
 // DocumentViewSubject is a sealed interface for subjects allowed in this position.
 type DocumentViewSubject interface {
 	Subject
 	isDocumentViewSubject()
 }
 
-func (TeamMemberRef) isDocumentViewSubject() {}
-func (UserIpRange) isDocumentViewSubject() {}
-func (UserRef) isDocumentViewSubject() {}
+func (TeamMemberRef) isDocumentViewSubject()  {}
+func (UserIpRange) isDocumentViewSubject()    {}
+func (UserRef) isDocumentViewSubject()        {}
 func (UserTimeWindow) isDocumentViewSubject() {}
 
 // DocumentEditSubject is a sealed interface for subjects allowed in this position.
@@ -323,182 +1543,315 @@ type DocumentDeleteSubject interface {
 
 func (UserRef) isDocumentDeleteSubject() {}
 
-// --- Permission Accessors ---
-
-// View returns a Permission for checking view on this document.
-func (d DocumentRef) View() Permission {
-	return Permission{resourceType: "document", resourceID: d.id, permission: "view"}
+// OrganizationAdminSubject is a sealed interface for subjects allowed in this position.
+type OrganizationAdminSubject interface {
+	Subject
+	isOrganizationAdminSubject()
 }
 
-// Edit returns a Permission for checking edit on this document.
-func (d DocumentRef) Edit() Permission {
-	return Permission{resourceType: "document", resourceID: d.id, permission: "edit"}
+func (UserRef) isOrganizationAdminSubject() {}
+
+// OrganizationAdminKeySubject is a sealed interface for subjects allowed in this position.
+type OrganizationAdminKeySubject interface {
+	Subject
+	isOrganizationAdminKeySubject()
 }
 
-// Delete returns a Permission for checking delete on this document.
-func (d DocumentRef) Delete() Permission {
-	return Permission{resourceType: "document", resourceID: d.id, permission: "delete"}
+func (UserRef) isOrganizationAdminKeySubject() {}
+
+// OrganizationMemberSubject is a sealed interface for subjects allowed in this position.
+type OrganizationMemberSubject interface {
+	Subject
+	isOrganizationMemberSubject()
 }
 
+func (UserRef) isOrganizationMemberSubject() {}
+
+// OrganizationMemberKeySubject is a sealed interface for subjects allowed in this position.
+type OrganizationMemberKeySubject interface {
+	Subject
+	isOrganizationMemberKeySubject()
+}
+
+func (UserRef) isOrganizationMemberKeySubject() {}
+
+// OrganizationCreatorSubject is a sealed interface for subjects allowed in this position.
+type OrganizationCreatorSubject interface {
+	Subject
+	isOrganizationCreatorSubject()
+}
+
+func (UserWildcardRef) isOrganizationCreatorSubject() {}
+
+// OrganizationCreatorKeySubject is a sealed interface for subjects allowed in this position.
+type OrganizationCreatorKeySubject interface {
+	Subject
+	isOrganizationCreatorKeySubject()
+}
+
+func (UserWildcardRef) isOrganizationCreatorKeySubject() {}
+
+// OrganizationGuestSubject is a sealed interface for subjects allowed in this position.
+type OrganizationGuestSubject interface {
+	Subject
+	isOrganizationGuestSubject()
+}
+
+func (UserRef) isOrganizationGuestSubject()         {}
+func (UserWildcardRef) isOrganizationGuestSubject() {}
+
+// OrganizationGuestKeySubject is a sealed interface for subjects allowed in this position.
+type OrganizationGuestKeySubject interface {
+	Subject
+	isOrganizationGuestKeySubject()
+}
+
+func (UserRef) isOrganizationGuestKeySubject()         {}
+func (UserWildcardRef) isOrganizationGuestKeySubject() {}
+
+// OrganizationCanAdminSubject is a sealed interface for subjects allowed in this position.
+type OrganizationCanAdminSubject interface {
+	Subject
+	isOrganizationCanAdminSubject()
+}
+
+func (UserRef) isOrganizationCanAdminSubject() {}
+
+// OrganizationViewSubject is a sealed interface for subjects allowed in this position.
+type OrganizationViewSubject interface {
+	Subject
+	isOrganizationViewSubject()
+}
+
+func (UserRef) isOrganizationViewSubject()         {}
+func (UserWildcardRef) isOrganizationViewSubject() {}
+
+// InvitationOrgSubject is a sealed interface for subjects allowed in this position.
+type InvitationOrgSubject interface {
+	Subject
+	isInvitationOrgSubject()
+}
+
+func (OrganizationRef) isInvitationOrgSubject() {}
+
+// InvitationOrgKeySubject is a sealed interface for subjects allowed in this position.
+type InvitationOrgKeySubject interface {
+	Subject
+	isInvitationOrgKeySubject()
+}
+
+func (OrganizationRef) isInvitationOrgKeySubject() {}
+
+// InvitationGrantSubject is a sealed interface for subjects allowed in this position.
+type InvitationGrantSubject interface {
+	Subject
+	isInvitationGrantSubject()
+}
+
+func (OrganizationCanAdminRef) isInvitationGrantSubject() {}
+
+// InvitationGrantKeySubject is a sealed interface for subjects allowed in this position.
+type InvitationGrantKeySubject interface {
+	Subject
+	isInvitationGrantKeySubject()
+}
+
+func (OrganizationCanAdminRef) isInvitationGrantKeySubject() {}
+
+// InvitationTimedGrantSubject is a sealed interface for subjects allowed in this position.
+type InvitationTimedGrantSubject interface {
+	Subject
+	isInvitationTimedGrantSubject()
+}
+
+func (OrganizationCanAdminExpiring) isInvitationTimedGrantSubject() {}
+
+// InvitationTimedGrantKeySubject is a sealed interface for subjects allowed in this position.
+type InvitationTimedGrantKeySubject interface {
+	Subject
+	isInvitationTimedGrantKeySubject()
+}
+
+func (OrganizationCanAdminRef) isInvitationTimedGrantKeySubject() {}
+
+// InvitationInviterSubject is a sealed interface for subjects allowed in this position.
+type InvitationInviterSubject interface {
+	Subject
+	isInvitationInviterSubject()
+}
+
+func (UserExpiring) isInvitationInviterSubject() {}
+
+// InvitationInviterKeySubject is a sealed interface for subjects allowed in this position.
+type InvitationInviterKeySubject interface {
+	Subject
+	isInvitationInviterKeySubject()
+}
+
+func (UserRef) isInvitationInviterKeySubject() {}
+
+// InvitationAcceptSubject is a sealed interface for subjects allowed in this position.
+type InvitationAcceptSubject interface {
+	Subject
+	isInvitationAcceptSubject()
+}
+
+func (OrganizationCanAdminExpiring) isInvitationAcceptSubject() {}
+func (OrganizationCanAdminRef) isInvitationAcceptSubject()      {}
 
 // --- Static Permission Ref Vars ---
 var (
-	Document_View = PermissionRef{resourceType: "document", permission: "view"}
-	Document_Edit = PermissionRef{resourceType: "document", permission: "edit"}
-	Document_Delete = PermissionRef{resourceType: "document", permission: "delete"}
+	Document_View         = PermissionRef{resourceType: "document", permission: "view"}
+	Document_Edit         = PermissionRef{resourceType: "document", permission: "edit"}
+	Document_Delete       = PermissionRef{resourceType: "document", permission: "delete"}
+	Organization_CanAdmin = PermissionRef{resourceType: "organization", permission: "can_admin"}
+	Organization_View     = PermissionRef{resourceType: "organization", permission: "view"}
+	Invitation_Accept     = PermissionRef{resourceType: "invitation", permission: "accept"}
 )
-
-// --- Relation Methods ---
-
-// ForMember creates a TypedRelationship for the member relation on this team.
-func (d TeamRef) ForMember(subject TeamMemberSubject) TypedRelationship {
-	sType, sID, sRel := subject.subjectRef()
-	r, err := relationship("team", d.id, "member", sType, sID, sRel)
-	if err != nil { return TypedRelationship{err: err} }
-	if cName, cCtx := subject.caveatInfo(); cName != "" {
-		r, err = r.WithCaveat(cName, cCtx)
-		if err != nil { return TypedRelationship{err: err} }
-	}
-	if exp := subject.expirationTime(); exp != nil {
-		r = r.WithExpiration(*exp)
-	}
-	return TypedRelationship{r: r}
-}
-
-// Viewer creates a TypedRelationship for the viewer relation on this document.
-func (d DocumentRef) Viewer(subject DocumentViewerSubject) TypedRelationship {
-	sType, sID, sRel := subject.subjectRef()
-	r, err := relationship("document", d.id, "viewer", sType, sID, sRel)
-	if err != nil { return TypedRelationship{err: err} }
-	if cName, cCtx := subject.caveatInfo(); cName != "" {
-		r, err = r.WithCaveat(cName, cCtx)
-		if err != nil { return TypedRelationship{err: err} }
-	}
-	if exp := subject.expirationTime(); exp != nil {
-		r = r.WithExpiration(*exp)
-	}
-	return TypedRelationship{r: r}
-}
-
-// Editor creates a TypedRelationship for the editor relation on this document.
-func (d DocumentRef) Editor(subject DocumentEditorSubject) TypedRelationship {
-	sType, sID, sRel := subject.subjectRef()
-	r, err := relationship("document", d.id, "editor", sType, sID, sRel)
-	if err != nil { return TypedRelationship{err: err} }
-	if cName, cCtx := subject.caveatInfo(); cName != "" {
-		r, err = r.WithCaveat(cName, cCtx)
-		if err != nil { return TypedRelationship{err: err} }
-	}
-	if exp := subject.expirationTime(); exp != nil {
-		r = r.WithExpiration(*exp)
-	}
-	return TypedRelationship{r: r}
-}
-
-// Owner creates a TypedRelationship for the owner relation on this document.
-func (d DocumentRef) Owner(subject DocumentOwnerSubject) TypedRelationship {
-	sType, sID, sRel := subject.subjectRef()
-	r, err := relationship("document", d.id, "owner", sType, sID, sRel)
-	if err != nil { return TypedRelationship{err: err} }
-	if cName, cCtx := subject.caveatInfo(); cName != "" {
-		r, err = r.WithCaveat(cName, cCtx)
-		if err != nil { return TypedRelationship{err: err} }
-	}
-	if exp := subject.expirationTime(); exp != nil {
-		r = r.WithExpiration(*exp)
-	}
-	return TypedRelationship{r: r}
-}
-
 
 // --- Check and Lookup Functions ---
 
 func subjectRef(subject Subject) (rel.SubjectRef, error) {
-    objectType, objectID, relation := subject.subjectRef()
-    object, err := rel.NewObject(objectType, objectID)
-    if err != nil { return rel.SubjectRef{}, err }
-    return rel.NewSubject(object, relation)
+	objectType, objectID, relation := subject.subjectRef()
+	object, err := rel.NewObject(objectType, objectID)
+	if err != nil {
+		return rel.SubjectRef{}, err
+	}
+	return rel.NewSubject(object, relation)
 }
 
 func relationship(resourceType, resourceID, relation, subjectType, subjectID, subjectRelation string) (rel.Relationship, error) {
-    resource, err := rel.NewObject(resourceType, resourceID)
-    if err != nil { return rel.Relationship{}, err }
-    object, err := rel.NewObject(subjectType, subjectID)
-    if err != nil { return rel.Relationship{}, err }
-    subject, err := rel.NewSubject(object, subjectRelation)
-    if err != nil { return rel.Relationship{}, err }
-    return rel.NewRelationship(resource, relation, subject)
+	resource, err := rel.NewObject(resourceType, resourceID)
+	if err != nil {
+		return rel.Relationship{}, err
+	}
+	object, err := rel.NewObject(subjectType, subjectID)
+	if err != nil {
+		return rel.Relationship{}, err
+	}
+	subject, err := rel.NewSubject(object, subjectRelation)
+	if err != nil {
+		return rel.Relationship{}, err
+	}
+	return rel.NewRelationship(resource, relation, subject)
+}
+
+func typedRelationship(resourceType, resourceID, relation string, subject Subject) TypedRelationship {
+	sType, sID, sRel := subject.subjectRef()
+	r, err := relationship(resourceType, resourceID, relation, sType, sID, sRel)
+	if err != nil {
+		return TypedRelationship{err: err}
+	}
+	if cName, cCtx := subject.caveatInfo(); cName != "" {
+		r, err = r.WithCaveat(cName, cCtx)
+		if err != nil {
+			return TypedRelationship{err: err}
+		}
+	}
+	if exp := subject.expirationTime(); exp != nil {
+		r = r.WithExpiration(*exp)
+	}
+	return TypedRelationship{r: r}
 }
 
 // Check preserves the native result, including trace data. Options carry
 // call-level context, tracing and the total operation budget.
 func Check(ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm Permission, subject Subject, opts ...client.CheckOption) (client.CheckResult, error) {
-    resource, err := rel.NewObject(perm.resourceType, perm.resourceID)
-    if err != nil { return client.CheckResult{}, err }
-    ref, err := subjectRef(subject)
-    if err != nil { return client.CheckResult{}, err }
-    _, sCtx := subject.caveatInfo()
-    return tc.Client.Check(ctx, client.PermissionCheck{
-        Resource: resource, Permission: perm.permission, Subject: ref,
-        Consistency: cs, Context: sCtx,
-    }, opts...)
+	check, err := perm.PermissionCheck(subject, cs)
+	if err != nil {
+		return client.CheckResult{}, err
+	}
+	return tc.Client.Check(ctx, check, opts...)
+}
+
+// TypedCheck pairs a permission with the subject to check it for.
+type TypedCheck struct {
+	Permission Permission
+	Subject    Subject
+}
+
+// ChecksFor checks each permission for the same subject.
+func ChecksFor(subject Subject, perms ...Permission) []TypedCheck {
+	checks := make([]TypedCheck, len(perms))
+	for i, p := range perms {
+		checks[i] = TypedCheck{Permission: p, Subject: subject}
+	}
+	return checks
+}
+
+// CheckBulk checks every item with the native bulk check: results are in
+// input order, each carries its own chunk's revision, and per-item failures
+// are *client.BulkCheckError values with the input index.
+func CheckBulk(ctx context.Context, tc *TypedClient, cs consistency.Strategy, checks []TypedCheck, opts ...client.CheckOption) ([]client.CheckResult, error) {
+	native := make([]client.PermissionCheck, len(checks))
+	for i, c := range checks {
+		check, err := c.Permission.PermissionCheck(c.Subject, cs)
+		if err != nil {
+			return nil, &client.BulkCheckError{Index: i, Err: err}
+		}
+		native[i] = check
+	}
+	return tc.Client.CheckBulk(ctx, native, opts...)
 }
 
 func failedStream[T any](err error) iter.Seq2[T, error] {
-    return func(yield func(T, error) bool) { var zero T; yield(zero, err) }
+	return func(yield func(T, error) bool) { var zero T; yield(zero, err) }
 }
 
 // LookupResources preserves the subject's userset relation and native cancellation.
 // For unconditional grants, pass client.WithLookupResourcesPermissionshipFilter(client.LookupHasPermissionOnly).
 // By default, results include conditional permissions that require further caveat context.
 func LookupResources(ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm PermissionRef, subject Subject, opts ...client.LookupResourcesOption) iter.Seq2[client.LookupResource, error] {
-    ref, err := subjectRef(subject)
-    if err != nil { return failedStream[client.LookupResource](err) }
-    return tc.Client.LookupResources(ctx, client.LookupResourcesRequest{
-        ResourceType: perm.resourceType, Permission: perm.permission,
-        Subject: ref, Consistency: cs,
-    }, opts...)
+	ref, err := subjectRef(subject)
+	if err != nil {
+		return failedStream[client.LookupResource](err)
+	}
+	return tc.Client.LookupResources(ctx, client.LookupResourcesRequest{
+		ResourceType: perm.resourceType, Permission: perm.permission,
+		Subject: ref, Consistency: cs,
+	}, opts...)
 }
 
 func LookupSubjects(ctx context.Context, tc *TypedClient, cs consistency.Strategy, perm Permission, subjectType Subject, opts ...client.LookupSubjectsOption) iter.Seq2[client.LookupSubject, error] {
-    resource, err := rel.NewObject(perm.resourceType, perm.resourceID)
-    if err != nil { return failedStream[client.LookupSubject](err) }
-    sType, _, relation := subjectType.subjectRef()
-    if relation != "" { opts = append([]client.LookupSubjectsOption{client.WithLookupSubjectsRelation(relation)}, opts...) }
-    return tc.Client.LookupSubjects(ctx, client.LookupSubjectsRequest{
-        Resource: resource, Permission: perm.permission,
-        SubjectType: sType, Consistency: cs,
-    }, opts...)
+	resource, err := rel.NewObject(perm.resourceType, perm.resourceID)
+	if err != nil {
+		return failedStream[client.LookupSubject](err)
+	}
+	sType, _, relation := subjectType.subjectRef()
+	if relation != "" {
+		opts = append([]client.LookupSubjectsOption{client.WithLookupSubjectsRelation(relation)}, opts...)
+	}
+	return tc.Client.LookupSubjects(ctx, client.LookupSubjectsRequest{
+		Resource: resource, Permission: perm.permission,
+		SubjectType: sType, Consistency: cs,
+	}, opts...)
 }
 
 // --- Write Methods ---
 
 // Touch applies a collection atomically, preserving validation errors before any RPC.
 func (tc *TypedClient) Touch(ctx context.Context, rels []TypedRelationship, opts ...client.WriteOption) (client.WriteResult, error) {
-    var txn rel.Txn
-    for _, r := range rels {
-        if r.err != nil { return client.WriteResult{}, r.err }
-        if err := txn.Touch(r.r); err != nil { return client.WriteResult{}, err }
-    }
-    return tc.Client.Write(ctx, client.WriteRequest{Transaction: txn}, opts...)
+	var txn Txn
+	for _, r := range rels {
+		txn.Touch(r)
+	}
+	return tc.WriteTxn(ctx, &txn, opts...)
 }
 
 // Create applies a collection atomically, preserving validation errors before any RPC.
 func (tc *TypedClient) Create(ctx context.Context, rels []TypedRelationship, opts ...client.WriteOption) (client.WriteResult, error) {
-    var txn rel.Txn
-    for _, r := range rels {
-        if r.err != nil { return client.WriteResult{}, r.err }
-        if err := txn.Create(r.r); err != nil { return client.WriteResult{}, err }
-    }
-    return tc.Client.Write(ctx, client.WriteRequest{Transaction: txn}, opts...)
+	var txn Txn
+	for _, r := range rels {
+		txn.Create(r)
+	}
+	return tc.WriteTxn(ctx, &txn, opts...)
 }
 
 // Delete applies a collection atomically, preserving validation errors before any RPC.
 func (tc *TypedClient) Delete(ctx context.Context, rels []TypedRelationship, opts ...client.WriteOption) (client.WriteResult, error) {
-    var txn rel.Txn
-    for _, r := range rels {
-        if r.err != nil { return client.WriteResult{}, r.err }
-        if err := txn.Delete(r.r); err != nil { return client.WriteResult{}, err }
-    }
-    return tc.Client.Write(ctx, client.WriteRequest{Transaction: txn}, opts...)
+	var txn Txn
+	for _, r := range rels {
+		txn.Delete(r)
+	}
+	return tc.WriteTxn(ctx, &txn, opts...)
 }

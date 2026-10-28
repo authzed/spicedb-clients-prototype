@@ -69,3 +69,21 @@ and options forwarding rather than just generated text fragments.
   - Generated touch/create/delete helpers return the native client's `WriteResult`
     unchanged. Callers extract its revision explicitly; helpers do not unwrap it
     to a bare token.
+
+## Go naming rules
+
+- Each definition `d` gets `D(id) DRef`, `DFilter()`, `DRelations`,
+  `DPermissions`, `DRelationNames()`, `DPermissionNames()`, and, when `d:*` is
+  allowed anywhere, `DWildcard() DWildcardRef`.
+- On `DRef`: permission `p` → `P() Permission`; relation `r` → writer
+  `R(subject)`, key `RKey(subject)`, check `RRelation()`, filter `RFilter()`.
+  A userset `d#r` on a relation gets the accessor `R()` and the writer moves to
+  `ForR`. A userset `d#p` on a permission gets the accessor `PSubject()`, so
+  `P()` stays the permission accessor.
+- Subject variants are named `<Prefix><Caveat>[Expiring]`, where the prefix is
+  `D`, `DR` or `DWildcard` and the base ref adds `Ref`.
+- Any collision between generated identifiers fails generation with both sources
+  named; no identifier is silently renamed. `--go.package` sets the package
+  name, and output is gofmt-formatted.
+- Negative type fixtures mark each forbidden line `// should not compile`. The
+  Magefile compiles with `-gcflags=-e` and requires an error on every marked line.

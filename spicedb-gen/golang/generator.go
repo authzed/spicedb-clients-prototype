@@ -3,6 +3,9 @@ package golang
 import (
 	"bytes"
 	"embed"
+	"fmt"
+	"go/format"
+	"go/token"
 	"sort"
 	"strings"
 	"text/template"
@@ -26,8 +29,12 @@ func (g *Generator) Language() string {
 	return "go"
 }
 
+// DefaultPackage is the generated package name when --go.package is not set.
+const DefaultPackage = "permissions"
+
 // TemplateData holds all pre-computed data needed by the Go template.
 type TemplateData struct {
+	Package            string
 	CaveatContextTypes []CaveatContextData
 	SubjectRefTypes    []SubjectRefTypeData
 	TypeSentinels      []TypeSentinelData
@@ -51,25 +58,32 @@ type CaveatParamData struct {
 	WithMethod string // e.g. "WithAllowedCidr"
 }
 
-// SubjectRefTypeData holds data for a subject ref type (base, caveated, or subref).
+// SubjectRefTypeData holds data for one subject ref type: a base ref (direct,
+// userset or wildcard) or one of its caveated/expiring variants.
 type SubjectRefTypeData struct {
-	TypeName       string // e.g. "UserRef", "UserIPRange", "TeamMemberRef"
+	TypeName       string // e.g. "UserRef", "UserIpRange", "TeamMemberRef", "UserWildcardRef"
 	DefinitionName string // e.g. "user", "team"
 	SubRelation    string // e.g. "member" or ""
+	Wildcard       bool   // subject ID is always "*"
 	CaveatName     string // e.g. "ip_range" or ""
-	CaveatContext  string // e.g. "IPRangeContext" or ""
+	CaveatContext  string // e.g. "IpRangeContext" or ""
 	HasCaveat      bool
 	HasExpiration  bool
-	// WithMethods are the caveat/expiration methods on base ref types
+	// IsDefinitionRef marks the direct base ref of a definition (e.g. UserRef),
+	// which is declared alongside the definition's resource methods.
+	IsDefinitionRef bool
+	// WithMethods convert this ref to a caveated or expiring variant.
 	WithMethods []WithMethodData
 }
 
-// WithMethodData holds data for a With* method on a base ref type.
+// WithMethodData holds data for a With* method on a subject ref type.
 type WithMethodData struct {
-	MethodName   string // e.g. "WithIPRange"
-	ContextType  string // e.g. "IPRangeContext"
-	ReturnType   string // e.g. "UserIPRange"
+	MethodName   string // e.g. "WithIpRange"
+	ContextType  string // e.g. "IpRangeContext"
+	ReturnType   string // e.g. "UserIpRange"
 	IsExpiration bool
+	// CarryContext copies a caveat context into the returned variant.
+	CarryContext bool
 }
 
 // TypeSentinelData holds data for a type sentinel (used for LookupSubjects).
@@ -83,19 +97,35 @@ type TypeSentinelData struct {
 
 // DefinitionData holds pre-computed data for a single definition.
 type DefinitionData struct {
-	Name          string // original name, e.g. "document"
-	PascalName    string // PascalCase name, e.g. "Document"
-	HasSubjectRef bool   // true if {PascalName}Ref exists in SubjectRefTypes
-	Relations     []RelationData
-	Permissions   []PermissionData
-	SubRefMethods []SubRefMethodData
+	Name           string // original name, e.g. "document"
+	PascalName     string // PascalCase name, e.g. "Document"
+	HasSubjectRef  bool   // true if {PascalName}Ref is also a subject ref
+	WildcardType   string // e.g. "UserWildcardRef" when user:* is allowed somewhere
+	Relations      []RelationData
+	Permissions    []PermissionData
+	SubRefMethods  []SubRefMethodData
+	RelationNames  []NameData
+	PermissionKeys []NameData
+}
+
+// NameData pairs a schema name with its Go field name.
+type NameData struct {
+	Name       string
+	PascalName string
 }
 
 // RelationData holds data for a relation on a definition.
 type RelationData struct {
-	Name          string // original name, e.g. "viewer"
-	PascalName    string // e.g. "Viewer"
-	InterfaceName string // e.g. "DocumentViewerSubject"
+	Name             string // original name, e.g. "viewer"
+	PascalName       string // writer method name, e.g. "Viewer" or "ForMember"
+	InterfaceName    string // e.g. "DocumentViewerSubject"
+	KeyMethod        string // e.g. "ViewerKey"
+	KeyInterface     string // e.g. "DocumentViewerKeySubject"
+	CheckMethod      string // e.g. "ViewerRelation"
+	FilterMethod     string // e.g. "ViewerFilter"
+	HasSubjects      bool   // false when no subject type could be generated
+	HasKeyInterface  bool
+	AllowedSubjectsT string // human-readable allowed subjects, for docs
 }
 
 // PermissionData holds data for a permission on a definition.
@@ -107,7 +137,7 @@ type PermissionData struct {
 
 // SubRefMethodData holds data for a sub-ref accessor method on a definition ref.
 type SubRefMethodData struct {
-	MethodName string // e.g. "Member"
+	MethodName string // e.g. "Member" or "CanAdminSubject"
 	ReturnType string // e.g. "TeamMemberRef"
 }
 
@@ -126,24 +156,29 @@ type PermissionVarData struct {
 	PermissionName string // e.g. "view"
 }
 
-// Generate produces generated Go files from the parsed schema.
-// opts contains language-specific options (currently unused).
+// Generate produces generated Go files from the parsed schema. The only
+// language option is "package" (--go.package), the generated package name.
 func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]generator.GeneratedFile, error) {
-	data := buildTemplateData(s)
+	pkg := DefaultPackage
+	for k, v := range opts {
+		switch k {
+		case "package":
+			if !token.IsIdentifier(v) || token.IsKeyword(v) {
+				return nil, fmt.Errorf("--go.package=%q is not a valid Go package name", v)
+			}
+			pkg = v
+		default:
+			return nil, fmt.Errorf("unknown Go option --go.%s", k)
+		}
+	}
+
+	data, err := buildTemplateData(s)
+	if err != nil {
+		return nil, err
+	}
+	data.Package = pkg
 
 	funcMap := template.FuncMap{
-		"hasRelations": func(d DefinitionData) bool {
-			return len(d.Relations) > 0
-		},
-		"hasPermissions": func(d DefinitionData) bool {
-			return len(d.Permissions) > 0
-		},
-		"hasRelationsOrPermissions": func(d DefinitionData) bool {
-			return len(d.Relations) > 0 || len(d.Permissions) > 0
-		},
-		"hasSubRefMethods": func(d DefinitionData) bool {
-			return len(d.SubRefMethods) > 0
-		},
 		"hasWithMethods": func(s SubjectRefTypeData) bool {
 			return len(s.WithMethods) > 0
 		},
@@ -160,70 +195,127 @@ func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]genera
 	if err := tmpl.Execute(&buf, data); err != nil {
 		return nil, err
 	}
+	formatted, err := format.Source(buf.Bytes())
+	if err != nil {
+		return nil, fmt.Errorf("generated Go does not parse (generator bug): %w", err)
+	}
 
 	return []generator.GeneratedFile{
 		{
 			Path:    "permissions.gen.go",
-			Content: buf.Bytes(),
+			Content: formatted,
 		},
 	}, nil
 }
 
-// buildTemplateData pre-computes all data needed by the Go template.
-func buildTemplateData(s *schema.Schema) TemplateData {
-	// Collect all (definition, relation) pairs referenced as subjects.
-	type subRef struct {
-		definition string
-		relation   string
+// subjectBase identifies a subject position independent of caveat and
+// expiration: a direct object, a userset (object#relation, where relation may
+// be a relation or a permission) or a wildcard (type:*).
+type subjectBase struct {
+	definition string
+	relation   string
+	wildcard   bool
+}
+
+func baseOf(st schema.SubjectType) subjectBase {
+	return subjectBase{st.Definition, st.Relation, st.Wildcard}
+}
+
+// prefix is the type-name stem shared by a base and its variants.
+func (b subjectBase) prefix() string {
+	switch {
+	case b.wildcard:
+		return toPascalCase(b.definition) + "Wildcard"
+	case b.relation != "":
+		return toPascalCase(b.definition) + toPascalCase(b.relation)
+	default:
+		return toPascalCase(b.definition)
 	}
-	subRefs := map[subRef]bool{}
+}
+
+func (b subjectBase) refType() string { return b.prefix() + "Ref" }
+
+// goSubjectRefTypeName returns the Go ref type name for a subject type.
+func goSubjectRefTypeName(st schema.SubjectType) string {
+	return variantTypeName(baseOf(st), st.CaveatName, st.Expiration)
+}
+
+func variantTypeName(b subjectBase, caveat string, expiration bool) string {
+	if caveat == "" && !expiration {
+		return b.refType()
+	}
+	name := b.prefix() + toPascalCase(caveat)
+	if expiration {
+		name += "Expiring"
+	}
+	return name
+}
+
+type variantKey struct {
+	base       subjectBase
+	caveat     string
+	expiration bool
+}
+
+// names detects collisions among generated identifiers. Package-level names
+// share one scope; each definition ref has its own method scope.
+type names struct {
+	owners map[string]string
+	err    error
+}
+
+func newNames() *names { return &names{owners: map[string]string{}} }
+
+func (n *names) claim(scope, name, owner string) {
+	key := scope + "." + name
+	if prev, ok := n.owners[key]; ok && prev != owner && n.err == nil {
+		where := "package scope"
+		if scope != "" {
+			where = scope
+		}
+		n.err = fmt.Errorf("schema produces conflicting Go identifier %s in %s (from %s and %s); rename one of them", name, where, prev, owner)
+	}
+	n.owners[key] = owner
+}
+
+// buildTemplateData pre-computes all data needed by the Go template.
+func buildTemplateData(s *schema.Schema) (TemplateData, error) {
+	// Every subject variant a relation admits, plus every subject position a
+	// permission can reach. Permission-reachable usersets need refs too: a
+	// relation may admit org#can_admin even though can_admin is a permission.
+	variants := map[variantKey]bool{}
+	bases := map[subjectBase]bool{}
 	for _, def := range s.Definitions {
 		for _, rel := range def.Relations {
 			for _, st := range rel.AllowedSubjects {
-				if st.Relation != "" {
-					subRefs[subRef{st.Definition, st.Relation}] = true
-				}
+				variants[variantKey{baseOf(st), st.CaveatName, st.Expiration}] = true
+				bases[baseOf(st)] = true
 			}
 		}
 		for _, perm := range def.Permissions {
 			for _, st := range perm.ReachableSubjects {
-				if st.Relation != "" {
-					subRefs[subRef{st.Definition, st.Relation}] = true
-				}
+				bases[baseOf(st)] = true
 			}
 		}
 	}
+	for b := range bases {
+		variants[variantKey{base: b}] = true
+	}
+	// A caveated, expiring subject is built as Base.WithCaveat(ctx).WithExpiration(t),
+	// so its caveated variant must exist as the intermediate step.
+	for v := range variants {
+		if v.caveat != "" && v.expiration {
+			variants[variantKey{v.base, v.caveat, false}] = true
+		}
+	}
 
-	// Collect used caveats (caveat name -> set of definition names that use them).
-	// Also collect per-definition caveat usage: which caveats each definition can have.
 	usedCaveats := map[string]bool{}
-	// defCaveats maps definition name -> list of caveat names used with that definition as subject
-	defCaveats := map[string][]string{}
-	defCaveatsSeen := map[string]map[string]bool{}
-	// defExpiration tracks whether a definition has "with expiration"
-	defExpiration := map[string]bool{}
-
-	for _, def := range s.Definitions {
-		for _, rel := range def.Relations {
-			for _, st := range rel.AllowedSubjects {
-				if st.CaveatName != "" {
-					usedCaveats[st.CaveatName] = true
-					if defCaveatsSeen[st.Definition] == nil {
-						defCaveatsSeen[st.Definition] = map[string]bool{}
-					}
-					if !defCaveatsSeen[st.Definition][st.CaveatName] {
-						defCaveatsSeen[st.Definition][st.CaveatName] = true
-						defCaveats[st.Definition] = append(defCaveats[st.Definition], st.CaveatName)
-					}
-				}
-				if st.Expiration {
-					defExpiration[st.Definition] = true
-				}
-			}
+	for v := range variants {
+		if v.caveat != "" {
+			usedCaveats[v.caveat] = true
 		}
 	}
 
-	// Build CaveatContextTypes
 	var caveatContextTypes []CaveatContextData
 	for _, c := range s.Caveats {
 		if !usedCaveats[c.Name] {
@@ -244,260 +336,248 @@ func buildTemplateData(s *schema.Schema) TemplateData {
 		caveatContextTypes = append(caveatContextTypes, ccd)
 	}
 
-	// Build SubjectRefTypes: base refs, caveated variants, and sub-refs.
-	// Track which definitions have a subject ref.
-	hasSubjectRefMap := map[string]bool{}
-	var subjectRefTypes []SubjectRefTypeData
-	generatedTypes := map[string]bool{}
-
-	// Determine which definitions are used as subjects (base type, no relation).
-	defIsSubject := map[string]bool{}
+	n := newNames()
+	defNames := map[string]bool{}
 	for _, def := range s.Definitions {
+		defNames[def.Name] = true
+	}
+
+	// Subject ref types, in schema order: for each definition, its direct
+	// base, then usersets on its relations and permissions, then wildcard,
+	// each followed by its variants.
+	var orderedBases []subjectBase
+	for _, def := range s.Definitions {
+		candidates := []subjectBase{{definition: def.Name}}
 		for _, rel := range def.Relations {
-			for _, st := range rel.AllowedSubjects {
-				if st.Relation == "" && !st.Wildcard {
-					defIsSubject[st.Definition] = true
-				}
-			}
+			candidates = append(candidates, subjectBase{definition: def.Name, relation: rel.Name})
 		}
 		for _, perm := range def.Permissions {
-			for _, st := range perm.ReachableSubjects {
-				if st.Relation == "" && !st.Wildcard {
-					defIsSubject[st.Definition] = true
-				}
+			candidates = append(candidates, subjectBase{definition: def.Name, relation: perm.Name})
+		}
+		candidates = append(candidates, subjectBase{definition: def.Name, wildcard: true})
+		for _, b := range candidates {
+			if bases[b] {
+				orderedBases = append(orderedBases, b)
 			}
 		}
 	}
 
-	// Generate base ref types for definitions used as subjects
-	for _, def := range s.Definitions {
-		if !defIsSubject[def.Name] {
-			continue
+	knownTypes := map[string]bool{}
+	var subjectRefTypes []SubjectRefTypeData
+	for _, b := range orderedBases {
+		var caveats []string
+		var hasExpiration bool
+		combined := map[string]bool{}
+		for v := range variants {
+			if v.base != b {
+				continue
+			}
+			if v.caveat != "" && !contains(caveats, v.caveat) {
+				caveats = append(caveats, v.caveat)
+			}
+			if v.caveat == "" && v.expiration {
+				hasExpiration = true
+			}
+			if v.caveat != "" && v.expiration {
+				combined[v.caveat] = true
+			}
 		}
-		typeName := toPascalCase(def.Name) + "Ref"
-		if generatedTypes[typeName] {
-			continue
-		}
-		generatedTypes[typeName] = true
-		hasSubjectRefMap[def.Name] = true
+		sort.Strings(caveats)
 
-		srt := SubjectRefTypeData{
-			TypeName:       typeName,
-			DefinitionName: def.Name,
-			HasExpiration:  defExpiration[def.Name],
+		emit := func(caveat string, expiration bool, withs []WithMethodData) {
+			typeName := variantTypeName(b, caveat, expiration)
+			n.claim("", typeName, "subject "+describe(b, caveat, expiration))
+			knownTypes[typeName] = true
+			srt := SubjectRefTypeData{
+				TypeName:        typeName,
+				DefinitionName:  b.definition,
+				SubRelation:     b.relation,
+				Wildcard:        b.wildcard,
+				CaveatName:      caveat,
+				HasCaveat:       caveat != "",
+				HasExpiration:   expiration,
+				IsDefinitionRef: b == subjectBase{definition: b.definition},
+				WithMethods:     withs,
+			}
+			if caveat != "" {
+				srt.CaveatContext = toPascalCase(caveat) + "Context"
+			}
+			subjectRefTypes = append(subjectRefTypes, srt)
 		}
 
-		// Add With* methods for each caveat this def can have
-		for _, caveatName := range defCaveats[def.Name] {
-			caveatedTypeName := toPascalCase(def.Name) + toPascalCase(caveatName)
-			srt.WithMethods = append(srt.WithMethods, WithMethodData{
-				MethodName:  "With" + toPascalCase(caveatName),
-				ContextType: toPascalCase(caveatName) + "Context",
-				ReturnType:  caveatedTypeName,
+		var baseWiths []WithMethodData
+		for _, c := range caveats {
+			baseWiths = append(baseWiths, WithMethodData{
+				MethodName:  "With" + toPascalCase(c),
+				ContextType: toPascalCase(c) + "Context",
+				ReturnType:  variantTypeName(b, c, false),
 			})
 		}
-
-		// Add WithExpiration method if this def can have expiration
-		if defExpiration[def.Name] {
-			expirationTypeName := toPascalCase(def.Name) + "Expiring"
-			srt.WithMethods = append(srt.WithMethods, WithMethodData{
+		if hasExpiration {
+			baseWiths = append(baseWiths, WithMethodData{
 				MethodName:   "WithExpiration",
-				ReturnType:   expirationTypeName,
+				ReturnType:   variantTypeName(b, "", true),
 				IsExpiration: true,
 			})
 		}
-
-		subjectRefTypes = append(subjectRefTypes, srt)
-
-		// Generate caveated variants
-		for _, caveatName := range defCaveats[def.Name] {
-			caveatedTypeName := toPascalCase(def.Name) + toPascalCase(caveatName)
-			if generatedTypes[caveatedTypeName] {
-				continue
-			}
-			generatedTypes[caveatedTypeName] = true
-			subjectRefTypes = append(subjectRefTypes, SubjectRefTypeData{
-				TypeName:       caveatedTypeName,
-				DefinitionName: def.Name,
-				HasCaveat:      true,
-				CaveatName:     caveatName,
-				CaveatContext:  toPascalCase(caveatName) + "Context",
-			})
-		}
-
-		// Generate expiration variant
-		if defExpiration[def.Name] {
-			expirationTypeName := toPascalCase(def.Name) + "Expiring"
-			if !generatedTypes[expirationTypeName] {
-				generatedTypes[expirationTypeName] = true
-				subjectRefTypes = append(subjectRefTypes, SubjectRefTypeData{
-					TypeName:       expirationTypeName,
-					DefinitionName: def.Name,
-					HasExpiration:  true,
+		emit("", false, baseWiths)
+		for _, c := range caveats {
+			var withs []WithMethodData
+			if combined[c] {
+				withs = append(withs, WithMethodData{
+					MethodName:   "WithExpiration",
+					ReturnType:   variantTypeName(b, c, true),
+					IsExpiration: true,
+					CarryContext: true,
 				})
 			}
+			emit(c, false, withs)
+		}
+		if hasExpiration {
+			emit("", true, nil)
+		}
+		for _, c := range caveats {
+			if combined[c] {
+				emit(c, true, nil)
+			}
 		}
 	}
 
-	// Generate sub-ref types
-	for _, def := range s.Definitions {
-		for _, rel := range def.Relations {
-			sr := subRef{def.Name, rel.Name}
-			if !subRefs[sr] {
-				continue
-			}
-			typeName := toPascalCase(def.Name) + toPascalCase(rel.Name) + "Ref"
-			if generatedTypes[typeName] {
-				continue
-			}
-			generatedTypes[typeName] = true
-			subjectRefTypes = append(subjectRefTypes, SubjectRefTypeData{
-				TypeName:       typeName,
-				DefinitionName: def.Name,
-				SubRelation:    rel.Name,
-			})
-		}
-	}
-
-	// Build sealed interfaces - one per relation (allowed subjects) and one per permission (reachable subjects)
+	// Sealed interfaces: one per relation (exact allowed variants), one per
+	// relation key (identity-only base refs), and one per permission.
 	var sealedInterfaces []SealedInterfaceData
-	// Also build a map of type -> list of interfaces it implements, for type sentinels
 	typeInterfaces := map[string][]string{}
-
-	for _, def := range s.Definitions {
-		for _, rel := range def.Relations {
-			ifaceName := toPascalCase(def.Name) + toPascalCase(rel.Name) + "Subject"
-			markerMethod := "is" + ifaceName
-			implementors := collectImplementors(rel.AllowedSubjects, generatedTypes)
-			if len(implementors) == 0 {
-				continue
-			}
-			sealedInterfaces = append(sealedInterfaces, SealedInterfaceData{
-				Name:         ifaceName,
-				MarkerMethod: markerMethod,
-				Implementors: implementors,
-			})
-			for _, impl := range implementors {
-				typeInterfaces[impl] = append(typeInterfaces[impl], markerMethod)
-			}
-		}
-		for _, perm := range def.Permissions {
-			ifaceName := toPascalCase(def.Name) + toPascalCase(perm.Name) + "Subject"
-			markerMethod := "is" + ifaceName
-			implementors := collectImplementors(perm.ReachableSubjects, generatedTypes)
-			if len(implementors) == 0 {
-				continue
-			}
-			sealedInterfaces = append(sealedInterfaces, SealedInterfaceData{
-				Name:         ifaceName,
-				MarkerMethod: markerMethod,
-				Implementors: implementors,
-			})
-			for _, impl := range implementors {
-				typeInterfaces[impl] = append(typeInterfaces[impl], markerMethod)
-			}
+	addInterface := func(name string, implementors []string) {
+		n.claim("", name, "sealed interface "+name)
+		marker := "is" + name
+		sealedInterfaces = append(sealedInterfaces, SealedInterfaceData{Name: name, MarkerMethod: marker, Implementors: implementors})
+		for _, impl := range implementors {
+			typeInterfaces[impl] = append(typeInterfaces[impl], marker)
 		}
 	}
 
-	// Build type sentinels for definitions used as base subjects
+	// Type sentinels for direct and userset bases.
 	var typeSentinels []TypeSentinelData
-	for _, def := range s.Definitions {
-		if !defIsSubject[def.Name] {
-			continue
-		}
-		refTypeName := toPascalCase(def.Name) + "Ref"
-		varName := toPascalCase(def.Name) + "Type"
-		internalType := toLowerCamel(def.Name) + "RefType"
-		ts := TypeSentinelData{
-			VarName:        varName,
-			InternalType:   internalType,
-			DefinitionName: def.Name,
-		}
-		// Copy marker methods from the corresponding ref type
-		if markers, ok := typeInterfaces[refTypeName]; ok {
-			ts.MarkerMethods = markers
-		}
-		typeSentinels = append(typeSentinels, ts)
-	}
 
-	// Build type sentinels for sub-ref types too
-	for _, def := range s.Definitions {
-		for _, rel := range def.Relations {
-			sr := subRef{def.Name, rel.Name}
-			if !subRefs[sr] {
-				continue
-			}
-			refTypeName := toPascalCase(def.Name) + toPascalCase(rel.Name) + "Ref"
-			varName := toPascalCase(def.Name) + toPascalCase(rel.Name) + "Type"
-			internalType := toLowerCamel(def.Name) + toPascalCase(rel.Name) + "RefType"
-			ts := TypeSentinelData{
-				VarName:        varName,
-				InternalType:   internalType,
-				DefinitionName: def.Name,
-				SubRelation:    rel.Name,
-			}
-			if markers, ok := typeInterfaces[refTypeName]; ok {
-				ts.MarkerMethods = markers
-			}
-			typeSentinels = append(typeSentinels, ts)
-		}
-	}
-
-	// Build DefinitionData
 	var definitions []DefinitionData
 	for _, def := range s.Definitions {
+		pascal := toPascalCase(def.Name)
+		refType := pascal + "Ref"
 		dd := DefinitionData{
 			Name:          def.Name,
-			PascalName:    toPascalCase(def.Name),
-			HasSubjectRef: hasSubjectRefMap[def.Name],
+			PascalName:    pascal,
+			HasSubjectRef: bases[subjectBase{definition: def.Name}],
+		}
+		if !dd.HasSubjectRef {
+			n.claim("", refType, "definition "+def.Name)
+		}
+		n.claim("", pascal, "constructor for definition "+def.Name)
+		n.claim("", pascal+"Filter", "type filter for definition "+def.Name)
+		n.claim("", pascal+"Relations", "relation names for definition "+def.Name)
+		n.claim("", pascal+"Permissions", "permission names for definition "+def.Name)
+		n.claim("", pascal+"RelationNames", "relation name list for definition "+def.Name)
+		n.claim("", pascal+"PermissionNames", "permission name list for definition "+def.Name)
+		if bases[subjectBase{definition: def.Name, wildcard: true}] {
+			dd.WildcardType = subjectBase{definition: def.Name, wildcard: true}.refType()
+			n.claim("", pascal+"Wildcard", "wildcard constructor for definition "+def.Name)
+		}
+		for _, m := range []string{"Filter", "PermissionByName", "RelationByName", "RelationshipByName", "String", "ID"} {
+			n.claim(refType, m, "built-in method "+m)
+		}
+
+		// Sub-ref accessors. A relation userset's accessor takes the relation's
+		// name and its writer moves to For<Name>. A permission userset's
+		// accessor is <Name>Subject, since <Name> is the permission accessor.
+		subRefRelations := map[string]bool{}
+		for _, rel := range def.Relations {
+			b := subjectBase{definition: def.Name, relation: rel.Name}
+			if !bases[b] {
+				continue
+			}
+			subRefRelations[rel.Name] = true
+			dd.SubRefMethods = append(dd.SubRefMethods, SubRefMethodData{MethodName: toPascalCase(rel.Name), ReturnType: b.refType()})
+		}
+		for _, perm := range def.Permissions {
+			b := subjectBase{definition: def.Name, relation: perm.Name}
+			if !bases[b] {
+				continue
+			}
+			dd.SubRefMethods = append(dd.SubRefMethods, SubRefMethodData{MethodName: toPascalCase(perm.Name) + "Subject", ReturnType: b.refType()})
+		}
+		for _, sr := range dd.SubRefMethods {
+			n.claim(refType, sr.MethodName, "subject accessor returning "+sr.ReturnType)
 		}
 
 		for _, rel := range def.Relations {
-			dd.Relations = append(dd.Relations, RelationData{
+			rp := toPascalCase(rel.Name)
+			rd := RelationData{
 				Name:          rel.Name,
-				PascalName:    toPascalCase(rel.Name),
-				InterfaceName: toPascalCase(def.Name) + toPascalCase(rel.Name) + "Subject",
-			})
+				PascalName:    rp,
+				InterfaceName: pascal + rp + "Subject",
+				KeyMethod:     rp + "Key",
+				KeyInterface:  pascal + rp + "KeySubject",
+				CheckMethod:   rp + "Relation",
+				FilterMethod:  rp + "Filter",
+			}
+			if subRefRelations[rel.Name] {
+				rd.PascalName = "For" + rp
+			}
+			implementors := collectImplementors(rel.AllowedSubjects, knownTypes)
+			var keyImplementors []string
+			seen := map[string]bool{}
+			for _, st := range rel.AllowedSubjects {
+				t := baseOf(st).refType()
+				if !seen[t] && knownTypes[t] {
+					seen[t] = true
+					keyImplementors = append(keyImplementors, t)
+				}
+			}
+			sort.Strings(keyImplementors)
+			if len(implementors) > 0 {
+				rd.HasSubjects = true
+				addInterface(rd.InterfaceName, implementors)
+				n.claim(refType, rd.PascalName, "writer for relation "+rel.Name)
+				n.claim(refType, rd.KeyMethod, "key for relation "+rel.Name)
+			}
+			if len(keyImplementors) > 0 {
+				rd.HasKeyInterface = true
+				addInterface(rd.KeyInterface, keyImplementors)
+			}
+			n.claim(refType, rd.CheckMethod, "check accessor for relation "+rel.Name)
+			n.claim(refType, rd.FilterMethod, "filter for relation "+rel.Name)
+			dd.Relations = append(dd.Relations, rd)
+			dd.RelationNames = append(dd.RelationNames, NameData{Name: rel.Name, PascalName: rp})
 		}
 
 		for _, perm := range def.Permissions {
-			dd.Permissions = append(dd.Permissions, PermissionData{
-				Name:          perm.Name,
-				PascalName:    toPascalCase(perm.Name),
-				InterfaceName: toPascalCase(def.Name) + toPascalCase(perm.Name) + "Subject",
-			})
-		}
-
-		// Build sub-ref methods and detect conflicts with relation names.
-		// When a sub-ref name conflicts with a relation name (e.g., team.member is
-		// both a relation and a sub-ref), the sub-ref method always wins (no args,
-		// returns the ref type), and the relation write method gets a "For" prefix
-		// (e.g., ForMember).
-		subRefNames := map[string]bool{}
-		for _, rel := range def.Relations {
-			sr := subRef{def.Name, rel.Name}
-			if !subRefs[sr] {
-				continue
+			pp := toPascalCase(perm.Name)
+			pd := PermissionData{Name: perm.Name, PascalName: pp, InterfaceName: pascal + pp + "Subject"}
+			if implementors := collectImplementors(perm.ReachableSubjects, knownTypes); len(implementors) > 0 {
+				addInterface(pd.InterfaceName, implementors)
 			}
-			methodName := toPascalCase(rel.Name)
-			returnType := toPascalCase(def.Name) + toPascalCase(rel.Name) + "Ref"
-			subRefNames[methodName] = true
-			dd.SubRefMethods = append(dd.SubRefMethods, SubRefMethodData{
-				MethodName: methodName,
-				ReturnType: returnType,
-			})
+			n.claim(refType, pp, "permission "+perm.Name)
+			n.claim("", pascal+"_"+pp, "permission ref var for "+def.Name+"#"+perm.Name)
+			dd.Permissions = append(dd.Permissions, pd)
+			dd.PermissionKeys = append(dd.PermissionKeys, NameData{Name: perm.Name, PascalName: pp})
 		}
-		// Rename conflicting relation methods with "For" prefix
-		for i, rel := range dd.Relations {
-			if subRefNames[rel.PascalName] {
-				dd.Relations[i].PascalName = "For" + rel.PascalName
-			}
-		}
-
 		definitions = append(definitions, dd)
 	}
 
-	// Build permission vars
+	for _, b := range orderedBases {
+		if b.wildcard {
+			continue
+		}
+		sentinel := TypeSentinelData{
+			VarName:        b.prefix() + "Type",
+			InternalType:   toLowerCamel(b.definition) + toPascalCase(b.relation) + "RefType",
+			DefinitionName: b.definition,
+			SubRelation:    b.relation,
+			MarkerMethods:  typeInterfaces[b.refType()],
+		}
+		n.claim("", sentinel.VarName, "type sentinel for "+describe(b, "", false))
+		typeSentinels = append(typeSentinels, sentinel)
+	}
+
 	var permissionVars []PermissionVarData
 	for _, def := range s.Definitions {
 		for _, perm := range def.Permissions {
@@ -510,6 +590,17 @@ func buildTemplateData(s *schema.Schema) TemplateData {
 		}
 	}
 
+	// Identifiers the static part of the template declares.
+	for _, fixed := range []string{"Subject", "Permission", "PermissionRef", "TypedRelationship", "RelationshipKey",
+		"Deletable", "TypedClient", "NewTypedClient", "Txn", "TypedCheck", "ChecksFor", "Check", "CheckBulk",
+		"LookupResources", "LookupSubjects", "FromRelationship", "ErrRelationship", "WithSubject",
+		"ErrNotInSchema", "ErrSubjectNotAllowed"} {
+		n.claim("", fixed, "generated support code")
+	}
+	if n.err != nil {
+		return TemplateData{}, n.err
+	}
+
 	return TemplateData{
 		CaveatContextTypes: caveatContextTypes,
 		SubjectRefTypes:    subjectRefTypes,
@@ -517,7 +608,33 @@ func buildTemplateData(s *schema.Schema) TemplateData {
 		Definitions:        definitions,
 		SealedInterfaces:   sealedInterfaces,
 		PermissionVars:     permissionVars,
+	}, nil
+}
+
+func describe(b subjectBase, caveat string, expiration bool) string {
+	s := b.definition
+	switch {
+	case b.wildcard:
+		s += ":*"
+	case b.relation != "":
+		s += "#" + b.relation
 	}
+	if caveat != "" {
+		s += " with " + caveat
+	}
+	if expiration {
+		s += " with expiration"
+	}
+	return s
+}
+
+func contains(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 // collectImplementors returns the list of type names that should implement a sealed interface.
@@ -535,20 +652,6 @@ func collectImplementors(subjects []schema.SubjectType, knownTypes map[string]bo
 	// Sort for deterministic output
 	sort.Strings(result)
 	return result
-}
-
-// goSubjectRefTypeName returns the Go ref type name for a subject type.
-func goSubjectRefTypeName(st schema.SubjectType) string {
-	if st.Relation != "" {
-		return toPascalCase(st.Definition) + toPascalCase(st.Relation) + "Ref"
-	}
-	if st.CaveatName != "" {
-		return toPascalCase(st.Definition) + toPascalCase(st.CaveatName)
-	}
-	if st.Expiration {
-		return toPascalCase(st.Definition) + "Expiring"
-	}
-	return toPascalCase(st.Definition) + "Ref"
 }
 
 // toPascalCase converts a snake_case or lowercase string to PascalCase.

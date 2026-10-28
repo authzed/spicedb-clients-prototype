@@ -7,6 +7,10 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/magefile/mage/sh"
@@ -114,11 +118,10 @@ func GoIntegrationTest() error {
 
 	// 4. Verify type_errors_test.go does NOT compile (type safety check)
 	fmt.Println("==> Verifying type errors are caught at compile time...")
-	err := runInDir("testdata/go", "go", "test", "-c", "-o", os.DevNull, "-tags", "typeerror")
-	if err == nil {
-		return fmt.Errorf("type_errors_test.go compiled successfully but should have failed")
+	if err := verifyGoTypeErrors("testdata/go", "type_errors_test.go"); err != nil {
+		return err
 	}
-	fmt.Println("    (expected compile failure confirmed)")
+	fmt.Println("    (every marked line fails to compile)")
 
 	// 5. Start SpiceDB via docker-compose
 	fmt.Println("==> Starting SpiceDB...")
@@ -318,4 +321,42 @@ func runInDir(dir, name string, args ...string) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+// GoTypeErrors verifies the Go negative type fixtures against the checked-in
+// generated code, without starting SpiceDB.
+func GoTypeErrors() error {
+	return verifyGoTypeErrors("testdata/go", "type_errors_test.go")
+}
+
+// verifyGoTypeErrors compiles dir's tests with the typeerror tag, reporting
+// every error (-gcflags=-e), and requires a compile error on each line of file
+// marked "// should not compile". A single failing line must not mask the
+// others, which is what a bare "did it fail to build" check allows.
+func verifyGoTypeErrors(dir, file string) error {
+	src, err := os.ReadFile(filepath.Join(dir, file))
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command("go", "test", "-c", "-o", os.DevNull, "-tags", "typeerror", "-gcflags=-e", ".")
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return fmt.Errorf("%s compiled successfully but should have failed", file)
+	}
+	failed := map[int]bool{}
+	for _, m := range regexp.MustCompile(regexp.QuoteMeta(file)+`:(\d+):`).FindAllStringSubmatch(string(out), -1) {
+		n, _ := strconv.Atoi(m[1])
+		failed[n] = true
+	}
+	var missing []string
+	for i, line := range strings.Split(string(src), "\n") {
+		if strings.Contains(line, "// should not compile") && !failed[i+1] {
+			missing = append(missing, fmt.Sprintf("%d: %s", i+1, strings.TrimSpace(line)))
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("these lines compiled but should not have:\n%s\ncompiler output:\n%s", strings.Join(missing, "\n"), out)
+	}
+	return nil
 }

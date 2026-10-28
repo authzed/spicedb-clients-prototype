@@ -2,12 +2,16 @@ PATH
   remote: .
   specs:
     spicedb-proto (0.1.0)
-      google-protobuf (~> 4.29)
-      grpc (~> 1.67)
+      google-protobuf (>= 3.25, < 5)
+      googleapis-common-protos-types (>= 1.11, < 2)
+      grpc (>= 1.67, < 2)
 
 GEM
   remote: https://rubygems.org/
   specs:
+    authzed (1.5.0)
+      grpc (~> 1.41)
+      grpc-tools (~> 1.41)
     bigdecimal (4.1.3)
     diff-lcs (1.6.2)
     google-protobuf (4.36.2-aarch64-linux-gnu)
@@ -30,6 +34,7 @@ GEM
     grpc (1.84.0-x86_64-linux-gnu)
       google-protobuf (>= 3.25, < 5.0)
       googleapis-common-protos-types (~> 1.0)
+    grpc-tools (1.85.0)
     rake (13.4.2)
     rspec (3.13.2)
       rspec-core (~> 3.13.0)
@@ -51,10 +56,12 @@ PLATFORMS
   x86_64-linux
 
 DEPENDENCIES
+  authzed (= 1.5.0)
   rspec (~> 3.13)
   spicedb-proto!
 
 CHECKSUMS
+  authzed (1.5.0) sha256=998c2583e50571c917d85810484cd66ca5afcbec9520a5d452de55b6668f20dd
   bigdecimal (4.1.3) sha256=61ebe1e5e559bdc3cc6f2c0ee7f427321fc838f59611c294356eb04d6e21cf66
   bundler (4.0.18) sha256=02d9a17429de1847b4e0c9f27a9ee4b20c0a74c0a641b4e77195d6019e3618ac
   diff-lcs (1.6.2) sha256=9ae0d2cba7d4df3075fe8cd8602a8604993efc0dfa934cff568969efb1909962
@@ -65,6 +72,7 @@ CHECKSUMS
   grpc (1.84.0-aarch64-linux-gnu) sha256=38bcb6998cca338718e39e2b89785964850f71444279a033c296ceb40406cfad
   grpc (1.84.0-arm64-darwin) sha256=aee56ed688f44750832fbc50c17eb1c75ce1c0d38693dc08d4f37560e1646277
   grpc (1.84.0-x86_64-linux-gnu) sha256=3e9be3e4c4734a2a4977aa34446c604b1542a21fe67e4b7772be01602eac6bb3
+  grpc-tools (1.85.0) sha256=5db02e77dee25c5e207fb85f8aaa41350eb4689e267c4970872c4efee6c59a9a
   rake (13.4.2) sha256=cb825b2bd5f1f8e91ca37bddb4b9aaf345551b4731da62949be002fa89283701
   rspec (3.13.2) sha256=206284a08ad798e61f86d7ca3e376718d52c0bc944626b2349266f239f820587
   rspec-core (3.13.6) sha256=a8823c6411667b60a8bca135364351dda34cd55e44ff94c4be4633b37d828b2d

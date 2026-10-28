@@ -8,7 +8,53 @@ with minimal boilerplate for connection setup and authentication.
 ## Generated Files
 
 Everything under `lib/gen/` is produced by `buf generate` and MUST NOT be
-manually modified. These files are regenerated on every `mage gen`.
+manually modified. These files are regenerated on every `mage gen`. There are
+no hand-maintained files inside `lib/gen/`: the `authzed` gem's only
+hand-written helpers (`Authzed::Api::V1::Client`, `Authzed::GrpcUtil::BearerToken`)
+live outside its generated packages and stay in that gem.
+
+## Canonical binding
+
+This gem is the single Ruby binding for `authzed.api.v1` and
+`authzed.api.materialize.v0` (root DESIGN.md, "Be the single copy of the
+protocol bindings in any process"). Ruby's
+`Google::Protobuf::DescriptorPool.generated_pool` admits one definition per
+proto file.
+
+- Generated files keep the official `authzed` gem's require paths
+  (`authzed/api/v1/core_pb`, ...). `lib/spicedb_proto.rb` puts `lib/gen` first
+  on the load path and requires every generated file by feature name, so later
+  requires of those paths are no-ops on this copy.
+- If another copy of an `authzed.api` file was already loaded (an unbridged
+  `authzed` gem), loading raises `SpiceDBProto::BindingConflictError` (a
+  `LoadError`) naming the other file, instead of silently binding to it or
+  surfacing protobuf's bare "duplicate file name".
+- `google/api/*` and `google/rpc/*` are not shipped: `mage gen` deletes buf's
+  copies (`pruneSharedImports`) and the gemspec depends on
+  `googleapis-common-protos-types`, which grpc itself loads. Shipping both
+  raised "duplicate file name google/api/annotations.proto" whenever that
+  gem's copy loaded first. `buf/validate`, `validate` and
+  `protoc-gen-openapiv2` are still generated here.
+- `bridge/authzed_bridge.rb` (not packaged in the gem) rewrites an `authzed`
+  checkout: it deletes every protoc-generated `*_pb.rb`, refusing first if any
+  deleted require path would not be served by `lib/gen` or
+  googleapis-common-protos-types; prepends `require 'spicedb_proto'` to
+  `lib/authzed.rb`; and adds a `spicedb-proto` runtime dependency to its
+  gemspecs. It is idempotent.
+- `spec/authzed_bridge_spec.rb` copies the pinned `authzed` 1.5.0 test
+  dependency, shows the unbridged copy conflicts, bridges it, and in a fresh
+  Ruby process per load order loads both: one `core_pb.rb` (this gem's) is
+  loaded, `authzed.api.v1.CheckPermissionRequest` resolves to this gem's file,
+  the legacy service's message classes and stub classes are identical to this
+  gem's, `Authzed::Api::V1::Client` constructs, and every deleted require path
+  still resolves.
+
+### Dependencies
+
+Runtime floors are the lowest versions the specs pass on: `grpc >= 1.67`,
+`google-protobuf >= 3.25` (the serialized-descriptor generated format),
+`googleapis-common-protos-types >= 1.11`. `rspec` is a development dependency;
+the `authzed` gem is a Gemfile `:test` dependency only.
 
 ## Additional Code (for Claude)
 
@@ -56,7 +102,14 @@ Create a `lib/spicedb_proto/client.rb` file with:
    TLS were configured), and on `client_cert` without `client_key` or the
    reverse.
 
-3. **`#close`** -- closes the underlying gRPC channel
+2b. **`.from_channel(channel, interceptors: [])`** -- wraps a caller-owned
+   `GRPC::Core::Channel` (root DESIGN.md: every client has a constructor from an
+   existing connection). No credential or TLS argument applies; `interceptors`
+   are passed to every stub (call credentials on a plaintext channel). Raises
+   `ArgumentError` for anything but a `GRPC::Core::Channel`.
+
+3. **`#close`** -- closes the underlying gRPC channel when this client created
+   it; a channel supplied to `.from_channel` stays open
 
 4. **`SpiceDBProto::BearerTokenInterceptor`** -- a `GRPC::ClientInterceptor`
    subclass that injects the bearer token into request metadata for insecure

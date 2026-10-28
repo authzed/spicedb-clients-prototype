@@ -13,8 +13,12 @@ Gem::Specification.new do |spec|
   spec.files         = Dir["lib/**/*.rb"]
   spec.require_paths = ["lib"]
 
-  spec.add_dependency "grpc", "~> 1.67"
-  spec.add_dependency "google-protobuf", "~> 4.29"
+  # Lowest versions this gem actually needs (root DESIGN.md, "Document the path
+  # off the legacy libraries"); verified by running the specs against them.
+  spec.add_dependency "grpc", ">= 1.67", "< 2"
+  spec.add_dependency "google-protobuf", ">= 3.25", "< 5"
+  # google/api and google/rpc bindings; this gem does not generate its own copy.
+  spec.add_dependency "googleapis-common-protos-types", ">= 1.11", "< 2"
 
   spec.add_development_dependency "rspec", "~> 3.13"
 end

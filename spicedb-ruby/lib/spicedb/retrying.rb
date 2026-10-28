@@ -25,13 +25,42 @@ module SpiceDB
 
     # @api private
     #
-    # Whether replaying +transaction+ is idempotent: only touches, and no
-    # preconditions.
-    def self.idempotent_write?(transaction)
-      transaction.preconditions.empty? && transaction.updates.all? { |update| update.operation == :touch }
+    # Validates the client's +operation_retry_policies:+ (operation name =>
+    # RetryPolicy) and returns a frozen copy. Operations that are never
+    # idempotent on replay accept only a policy without retries.
+    def self.operation_policies(policies)
+      raise InvalidArgumentError, 'operation_retry_policies: expected a Hash of operation => RetryPolicy' unless policies.is_a?(Hash)
+
+      policies.to_h do |operation, policy|
+        unless Client::OPERATIONS.include?(operation)
+          raise InvalidArgumentError, "operation_retry_policies: unknown operation #{operation.inspect}; expected one of Client::OPERATIONS"
+        end
+        raise InvalidArgumentError, "operation_retry_policies: #{operation}: expected SpiceDB::RetryPolicy" unless policy.is_a?(RetryPolicy)
+        if policy.max_retries.positive? && Client::NEVER_IDEMPOTENT_OPERATIONS.include?(operation)
+          raise InvalidArgumentError, "#{operation} cannot be retried: it is not idempotent on replay"
+        end
+
+        [operation, policy]
+      end.freeze
     end
 
     private
+
+    # The policy a read or stream runs under before the client-wide one: the
+    # call's own +retry_policy:+, else the client's policy for +operation+.
+    def operation_retry_policy(operation, per_call) = per_call.nil? ? @operation_retry_policies[operation] : per_call
+
+    # The policy a mutation runs under, or nil. A per-call +retry_policy:+
+    # wins (and raises for a non-idempotent call, see ::mutation_policy); the
+    # client's policy for +operation+ applies only when this call is
+    # +idempotent+, and leaves other calls unretried without an error.
+    def mutation_retry_policy(operation, per_call, idempotent)
+      policy = Retrying.mutation_policy(per_call, idempotent, operation.to_s)
+      return policy unless per_call.nil?
+
+      configured = @operation_retry_policies[operation]
+      configured if idempotent && configured&.max_retries&.positive?
+    end
 
     def deadline_for(budget)
       budget.is_a?(Budget) ? budget.deadline : Budget.new(budget).deadline
@@ -43,8 +72,9 @@ module SpiceDB
       policy.on_retry&.call(RetryEvent.new(operation: operation&.to_s, attempt: attempt, error: SpiceDB.to_spicedb_error(error), delay: delay))
     end
 
-    # The policy one operation runs under: the call's own +retry_policy:+
-    # wins; otherwise the client's, unless retries are disabled.
+    # The policy one operation runs under: the call's own +retry_policy:+ (or
+    # the client's policy for that operation, already resolved into the
+    # budget) wins; otherwise the client's, unless retries are disabled.
     def call_retry_policy(budget)
       return budget.retry_policy if budget.is_a?(Budget) && budget.retry_policy
 

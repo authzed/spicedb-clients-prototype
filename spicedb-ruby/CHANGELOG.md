@@ -10,6 +10,13 @@
 
 ## Unreleased
 
+### Client-wide per-operation retries and a fault-injecting test double (2026-10-28)
+
+- `operation_retry_policies: { watch: SpiceDB::RetryPolicy.new(max_retries: 0) }` sets the retry policy for every call of one operation (keys from `SpiceDB::Client::OPERATIONS`), including stream establishment. Precedence is per-call `retry_policy:`, then per-operation, then client-wide. A `:write` entry retries only idempotent transactions and leaves others unretried without an error; `Client::NEVER_IDEMPOTENT_OPERATIONS` (deletes, delete-all, imports, counter registration) raise `InvalidArgumentError` for an entry with retries when the client is built. A zero-retry entry is accepted for any operation.
+- `Transaction#idempotent?` exposes the retry-eligibility rule (touch-only, no preconditions).
+- `SpiceDB::Testing::Store` records every call (`calls`, `calls_of(:operation)`, as `Testing::Call` with `operation`, `index`, `request` and keyword `options`) and injects faults: `fault_hook=` is consulted at `Testing::FaultStage::CALL`, `IMPORT_BATCH`, `IMPORT_COMMIT` and `ITEM` and raises the exception it returns (a failed write or import applies nothing); `fail_next(operation, error)` fails exactly one call; `Store.server_error(code, message, reason:)` builds client-shaped errors.
+- **Breaking (test double):** `Store#read_relationships` and `#export_relationships` without a block return a re-iterable `Enumerator` instead of a frozen `Array`, so faults can interrupt them after some items. Before: `store.read_relationships(...).last`. After: `store.read_relationships(...).to_a.last`.
+
 ### Retest follow-ups (2026-10-28)
 
 - **Fix:** server error reasons (`reason`, `reason_domain`, `reason_metadata`) were silently empty unless the application had loaded `google/protobuf/well_known_types` itself: decoding the ErrorInfo detail needs `Any#unpack`, and its absence was swallowed. The library now loads it.

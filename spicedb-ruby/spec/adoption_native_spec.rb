@@ -393,7 +393,7 @@ RSpec.describe 'adoption: native client behavior' do # rubocop:disable Metrics/B
     end
 
     it 'accepts call_options on every public operation' do
-      operations = SpiceDB::Client.public_instance_methods(false) - %i[close proto_client retry_policy]
+      operations = SpiceDB::Client.public_instance_methods(false) - %i[close proto_client retry_policy operation_retry_policies]
       missing = operations.reject { |name| SpiceDB::Client.instance_method(name).parameters.include?(%i[key call_options]) }
       expect(missing).to eq([])
     end

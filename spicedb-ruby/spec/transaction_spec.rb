@@ -106,4 +106,14 @@ RSpec.describe SpiceDB::Transaction do
       expect(txn).not_to be_empty
     end
   end
+
+  describe '#idempotent?' do
+    it 'is true only for touches without preconditions' do
+      expect(described_class.new).to be_idempotent
+      expect(described_class.new.touch(rel)).to be_idempotent
+      expect(described_class.new.create(rel)).not_to be_idempotent
+      expect(described_class.new.touch(rel).delete(rel)).not_to be_idempotent
+      expect(described_class.new.must_match(rel.to_filter).touch(rel)).not_to be_idempotent
+    end
+  end
 end

@@ -82,7 +82,10 @@ client's for that call, including stream establishment: for example
 `RetryPolicy.new(max_retries: 0)` on one call, or a policy on a touch-only
 `write` (no preconditions) or a `write_schema` to retry those idempotent
 writes. Other mutations reject the opt-in. Watch never re-establishes its
-stream unless the call passes a policy.
+stream unless the call passes a policy. To set a policy for every call of one
+operation, pass `operation_retry_policies: { watch: SpiceDB::RetryPolicy.new(max_retries: 0) }`
+to the constructor (a per-call `retry_policy:` still wins); a `:write` entry
+retries only transactions where `txn.idempotent?`.
 
 ## Consistency on schema reads
 
@@ -210,7 +213,10 @@ Data SpiceDB versions before 1.30 sent only in trailers is reachable this way;
 double with the client's `write`, `read_relationships`, `delete_relationships`,
 `import_relationships`, `export_relationships`, `read_schema`, `write_schema`,
 `reflect_schema`, `check` and `check_bulk` signatures, raising the errors the
-client would. Options are plain keyword arguments, so a test inspects them
-directly. Build expected errors with
+client would. Options are plain keyword arguments, and the store records
+every call with them (`store.calls_of(:check).first.options`). Inject failures
+with `store.fail_next(:write, SpiceDB::Testing::Store.server_error(code, msg))`
+or a `store.fault_hook = ->(fault) { ... }` that sees each call, import batch,
+import commit and read/export item. Build expected errors with
 `SpiceDB::Error.from_code(GRPC::Core::StatusCodes::FAILED_PRECONDITION, 'msg')`
 instead of `GRPC::FailedPrecondition.new`.

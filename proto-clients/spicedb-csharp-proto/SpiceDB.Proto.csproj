@@ -20,7 +20,7 @@
 
 <!-- Test dependencies -->
   <ItemGroup>
-    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.10.*" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.11.*" />
     <PackageReference Include="xunit" Version="2.9.*" />
     <PackageReference Include="xunit.runner.visualstudio" Version="4.0.*">
       <PrivateAssets>all</PrivateAssets>

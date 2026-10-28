@@ -9,10 +9,25 @@
 //!
 //! It applies SpiceDB's relationship semantics — filter matching (via
 //! [`Filter::matches`]), preconditions, `CREATE` conflicts and atomic
-//! transactions, paged reads with cursors, bounded and all-or-nothing deletes —
-//! but evaluates no schema: permission checks return results registered with
-//! [`InMemorySpiceDB::set_check_result`] (default `NoPermission`). RPCs it does
-//! not model return `UNIMPLEMENTED`.
+//! transactions (an empty write checks its preconditions and returns the
+//! current revision), paged reads and exports with cursors, limits and the
+//! export filter, all-or-nothing imports, bounded and all-or-nothing deletes —
+//! and serves `SchemaService` reads and writes of the schema text. It
+//! evaluates no schema: permission checks return results registered with
+//! [`InMemorySpiceDB::set_check_result`] (default `NoPermission`), and
+//! `reflect_schema` returns the result registered with
+//! [`InMemorySpiceDB::set_reflect_schema_result`]. RPCs it does not model
+//! return `UNIMPLEMENTED`.
+//!
+//! Because the double is a server behind a real client, every option is
+//! honored exactly as the client sends it (cursors, limits, page sizes,
+//! filters, per-call retry policies, request metadata), and errors have the
+//! real client's codes and shape: server failures are mapped by the client
+//! with [`SpiceDBError::server_message`] set, and local validation fails in
+//! the client before any request, as it does against SpiceDB. Headers
+//! registered with [`InMemorySpiceDB::set_response_metadata`] are sent on
+//! every successful response, so [`ResponseMetadata`](crate::ResponseMetadata)
+//! captures them.
 //!
 //! ```
 //! # #[tokio::main(flavor = "current_thread")]
@@ -46,6 +61,8 @@ use spicedb_proto::authzed::api::v1 as proto;
 use spicedb_proto::authzed::api::v1::permissions_service_server::{
     PermissionsService, PermissionsServiceServer,
 };
+use spicedb_proto::authzed::api::v1::schema_service_server::{SchemaService, SchemaServiceServer};
+use tonic::metadata::MetadataMap;
 use tonic::transport::{Channel, Endpoint, Server};
 use tonic::{Code, Request, Response, Status};
 use tonic_types::{ErrorDetails, StatusExt};
@@ -62,9 +79,18 @@ struct State {
     relationships: Vec<Relationship>,
     revision: u64,
     checks: HashMap<String, Permissionship>,
+    schema: Option<String>,
+    reflection: Option<ReflectSchemaResult>,
+    headers: MetadataMap,
 }
 
 impl State {
+    /// A successful response carrying the registered headers.
+    fn respond<T>(&self, message: T) -> Response<T> {
+        let mut response = Response::new(message);
+        *response.metadata_mut() = self.headers.clone();
+        response
+    }
     fn token(&self) -> proto::ZedToken {
         proto::ZedToken {
             token: self.revision.to_string(),
@@ -167,17 +193,47 @@ impl InMemorySpiceDB {
             .insert(check_key(resource, permission, subject), permissionship);
     }
 
+    /// Registers the result `reflect_schema` returns (its revision is
+    /// replaced with the store's current one). Without one, `reflect_schema`
+    /// fails with `NotFound`. Build it with field assignment:
+    ///
+    /// ```
+    /// use spicedb::{ReflectSchemaResult, SchemaDefinition};
+    /// let mut user = SchemaDefinition::default();
+    /// user.name = "user".into();
+    /// let mut reflection = ReflectSchemaResult::default();
+    /// reflection.definitions.push(user);
+    /// spicedb::testing::InMemorySpiceDB::new().set_reflect_schema_result(reflection);
+    /// ```
+    pub fn set_reflect_schema_result(&self, result: ReflectSchemaResult) {
+        self.lock().reflection = Some(result);
+    }
+
+    /// The schema text last written with `write_schema`.
+    pub fn schema(&self) -> Option<String> {
+        self.lock().schema.clone()
+    }
+
+    /// Headers sent on every successful response, for code that reads them
+    /// through [`ResponseMetadata`](crate::ResponseMetadata).
+    pub fn set_response_metadata(&self, headers: MetadataMap) {
+        self.lock().headers = headers;
+    }
+
     /// An in-memory channel to this double. Each connection the channel makes
     /// is served on the current Tokio runtime.
     pub fn channel(&self) -> Channel {
         let service = PermissionsServiceServer::new(Service(self.clone()));
+        let schema = SchemaServiceServer::new(Service(self.clone()));
         Endpoint::from_static("http://in-memory.spicedb").connect_with_connector_lazy(
             tower::service_fn(move |_: tonic::codegen::http::Uri| {
                 let (client_io, server_io) = tokio::io::duplex(64 * 1024);
                 let service = service.clone();
+                let schema = schema.clone();
                 tokio::spawn(async move {
                     let _ = Server::builder()
                         .add_service(service)
+                        .add_service(schema)
                         .serve_with_incoming(futures::stream::iter([Ok::<_, std::io::Error>(
                             server_io,
                         )]))
@@ -225,13 +281,7 @@ impl PermissionsService for Service {
             "relationship_filter",
         )?);
         filter.to_proto().map_err(Status::from)?;
-        let start = match &request.optional_cursor {
-            Some(c) => c
-                .token
-                .parse::<usize>()
-                .map_err(|_| Status::invalid_argument("invalid cursor"))?,
-            None => 0,
-        };
+        let start = parse_cursor(request.optional_cursor.as_ref())?;
         let limit = match request.optional_limit {
             0 => usize::MAX,
             n => n as usize,
@@ -255,7 +305,7 @@ impl PermissionsService for Service {
                 })
             })
             .collect();
-        Ok(Response::new(Box::pin(futures::stream::iter(items))))
+        Ok(state.respond(Box::pin(futures::stream::iter(items))))
     }
 
     async fn write_relationships(
@@ -265,6 +315,12 @@ impl PermissionsService for Service {
         let request = request.into_inner();
         let mut state = self.0.lock();
         state.check_preconditions(&request.optional_preconditions)?;
+        if request.updates.is_empty() {
+            // SpiceDB accepts an empty write and returns the current revision.
+            return Ok(state.respond(proto::WriteRelationshipsResponse {
+                written_at: Some(state.token()),
+            }));
+        }
         let mut staged = State {
             relationships: state.relationships.clone(),
             ..State::default()
@@ -296,7 +352,7 @@ impl PermissionsService for Service {
         }
         state.relationships = staged.relationships;
         state.revision += 1;
-        Ok(Response::new(proto::WriteRelationshipsResponse {
+        Ok(state.respond(proto::WriteRelationshipsResponse {
             written_at: Some(state.token()),
         }))
     }
@@ -342,7 +398,7 @@ impl PermissionsService for Service {
         });
         state.revision += 1;
         let complete = deleted == matching;
-        Ok(Response::new(proto::DeleteRelationshipsResponse {
+        Ok(state.respond(proto::DeleteRelationshipsResponse {
             deleted_at: Some(state.token()),
             deletion_progress: if complete {
                 proto::delete_relationships_response::DeletionProgress::Complete as i32
@@ -366,7 +422,7 @@ impl PermissionsService for Service {
             &request.permission,
             &request.subject,
         )?;
-        Ok(Response::new(proto::CheckPermissionResponse {
+        Ok(state.respond(proto::CheckPermissionResponse {
             checked_at: Some(state.token()),
             permissionship,
             ..Default::default()
@@ -402,7 +458,7 @@ impl PermissionsService for Service {
                 response: Some(response),
             });
         }
-        Ok(Response::new(proto::CheckBulkPermissionsResponse {
+        Ok(state.respond(proto::CheckBulkPermissionsResponse {
             checked_at: Some(state.token()),
             pairs,
         }))
@@ -429,18 +485,157 @@ impl PermissionsService for Service {
         unimplemented("LookupSubjects")
     }
 
+    /// One transaction, as SpiceDB does: a relationship that already exists
+    /// (or repeats within the import) fails it with `ALREADY_EXISTS` and
+    /// nothing is added.
     async fn import_bulk_relationships(
         &self,
-        _: Request<tonic::Streaming<proto::ImportBulkRelationshipsRequest>>,
+        request: Request<tonic::Streaming<proto::ImportBulkRelationshipsRequest>>,
     ) -> Result<Response<proto::ImportBulkRelationshipsResponse>, Status> {
-        unimplemented("ImportBulkRelationships")
+        let mut stream = request.into_inner();
+        let mut batch = Vec::new();
+        while let Some(message) = stream.message().await? {
+            for r in &message.relationships {
+                batch.push(protoconv::relationship_from_proto(r).map_err(Status::from)?);
+            }
+        }
+        let mut state = self.0.lock();
+        let mut staged = State {
+            relationships: state.relationships.clone(),
+            ..State::default()
+        };
+        for r in &batch {
+            if staged.index(r).is_some() {
+                return Err(Status::already_exists(format!(
+                    "found duplicate relationship `{r}` while importing"
+                )));
+            }
+            staged.relationships.push(r.clone());
+        }
+        state.relationships = staged.relationships;
+        state.revision += 1;
+        Ok(state.respond(proto::ImportBulkRelationshipsResponse {
+            num_loaded: batch.len() as u64,
+        }))
     }
 
+    /// Every relationship (or those matching the request's filter), one per
+    /// response so each carries its own cursor, honoring cursor and limit.
     async fn export_bulk_relationships(
         &self,
-        _: Request<proto::ExportBulkRelationshipsRequest>,
+        request: Request<proto::ExportBulkRelationshipsRequest>,
     ) -> Result<Response<Self::ExportBulkRelationshipsStream>, Status> {
-        unimplemented("ExportBulkRelationships")
+        let request = request.into_inner();
+        let filter = request
+            .optional_relationship_filter
+            .as_ref()
+            .map(protoconv::filter_from_proto);
+        if let Some(f) = &filter {
+            f.to_proto().map_err(Status::from)?;
+        }
+        let start = parse_cursor(request.optional_cursor.as_ref())?;
+        let limit = match request.optional_limit {
+            0 => usize::MAX,
+            n => n as usize,
+        };
+        let state = self.0.lock();
+        let items: Vec<_> = state
+            .relationships
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| filter.as_ref().is_none_or(|f| f.matches(r)))
+            .filter(|(i, _)| *i >= start)
+            .take(limit)
+            .map(|(i, r)| {
+                Ok(proto::ExportBulkRelationshipsResponse {
+                    after_result_cursor: Some(proto::Cursor {
+                        token: (i + 1).to_string(),
+                    }),
+                    relationships: vec![r.to_proto()],
+                })
+            })
+            .collect();
+        Ok(state.respond(Box::pin(futures::stream::iter(items))))
+    }
+}
+
+fn parse_cursor(cursor: Option<&proto::Cursor>) -> Result<usize, Status> {
+    match cursor {
+        Some(c) => c
+            .token
+            .parse::<usize>()
+            .map_err(|_| Status::invalid_argument("invalid cursor")),
+        None => Ok(0),
+    }
+}
+
+const NO_SCHEMA: &str = "No schema has been defined; please call WriteSchema to start";
+
+#[tonic::async_trait]
+impl SchemaService for Service {
+    /// The schema last written, or `NOT_FOUND` as SpiceDB returns.
+    async fn read_schema(
+        &self,
+        _: Request<proto::ReadSchemaRequest>,
+    ) -> Result<Response<proto::ReadSchemaResponse>, Status> {
+        let state = self.0.lock();
+        let schema = state
+            .schema
+            .clone()
+            .ok_or_else(|| Status::not_found(NO_SCHEMA))?;
+        Ok(state.respond(proto::ReadSchemaResponse {
+            schema_text: schema,
+            read_at: Some(state.token()),
+        }))
+    }
+
+    /// Stores the schema text. It is not compiled or validated.
+    async fn write_schema(
+        &self,
+        request: Request<proto::WriteSchemaRequest>,
+    ) -> Result<Response<proto::WriteSchemaResponse>, Status> {
+        let mut state = self.0.lock();
+        state.schema = Some(request.into_inner().schema);
+        state.revision += 1;
+        Ok(state.respond(proto::WriteSchemaResponse {
+            written_at: Some(state.token()),
+        }))
+    }
+
+    /// The registered reflection at the current revision, or `NOT_FOUND`.
+    async fn reflect_schema(
+        &self,
+        _: Request<proto::ReflectSchemaRequest>,
+    ) -> Result<Response<proto::ReflectSchemaResponse>, Status> {
+        let state = self.0.lock();
+        let reflection = state
+            .reflection
+            .as_ref()
+            .ok_or_else(|| Status::not_found(NO_SCHEMA))?;
+        let mut response = protoconv::reflect_schema_result_to_proto(reflection);
+        response.read_at = Some(state.token());
+        Ok(state.respond(response))
+    }
+
+    async fn computable_permissions(
+        &self,
+        _: Request<proto::ComputablePermissionsRequest>,
+    ) -> Result<Response<proto::ComputablePermissionsResponse>, Status> {
+        unimplemented("ComputablePermissions")
+    }
+
+    async fn dependent_relations(
+        &self,
+        _: Request<proto::DependentRelationsRequest>,
+    ) -> Result<Response<proto::DependentRelationsResponse>, Status> {
+        unimplemented("DependentRelations")
+    }
+
+    async fn diff_schema(
+        &self,
+        _: Request<proto::DiffSchemaRequest>,
+    ) -> Result<Response<proto::DiffSchemaResponse>, Status> {
+        unimplemented("DiffSchema")
     }
 }
 

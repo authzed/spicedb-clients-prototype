@@ -2,6 +2,7 @@
 mod operations;
 use operations::wire;
 pub(crate) use operations::{call_once, retry_call};
+use operations::{mutation_call, mutation_policy};
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -313,9 +314,18 @@ impl SpiceDBClient {
             .collect();
 
         let preconditions = preconditions_to_proto(txn.preconditions())?;
+        // An empty transaction is sent as is: SpiceDB accepts it, evaluates
+        // any preconditions, and returns the current revision. Only a
+        // touch-only write without preconditions is idempotent on replay.
+        let touch_only = preconditions.is_empty()
+            && txn
+                .updates()
+                .iter()
+                .all(|(op, _)| *op == UpdateOperation::Touch);
+        let policy = mutation_policy(touch_only, "write")?;
 
-        let resp = self
-            .call_once(|| async {
+        let resp = mutation_call(
+            || async {
                 let request = wire(proto::WriteRelationshipsRequest {
                     updates: updates.clone(),
                     optional_preconditions: preconditions.clone(),
@@ -326,8 +336,10 @@ impl SpiceDBClient {
                     .clone()
                     .write_relationships(request)
                     .await
-            })
-            .await?;
+            },
+            policy,
+        )
+        .await?;
 
         Ok(resp
             .into_inner()
@@ -358,14 +370,18 @@ impl SpiceDBClient {
     }
 
     async fn write_schema_impl(&self, schema: &str) -> Result<String, SpiceDBError> {
-        let resp = self
-            .call_once(|| async {
+        // Writing the same schema twice is idempotent, so a caller may opt in.
+        let policy = mutation_policy(true, "write schema")?;
+        let resp = mutation_call(
+            || async {
                 let request = wire(proto::WriteSchemaRequest {
                     schema: schema.to_string(),
                 });
                 self.proto.schema.clone().write_schema(request).await
-            })
-            .await?;
+            },
+            policy,
+        )
+        .await?;
 
         Ok(resp
             .into_inner()
@@ -562,6 +578,7 @@ impl SpiceDBClient {
         filter: &Filter,
     ) -> Result<(), SpiceDBError> {
         let filter = filter.to_proto()?;
+        mutation_policy(false, "register relationship counter")?;
         self.call_once(|| async {
             let request = wire(proto::ExperimentalRegisterRelationshipCounterRequest {
                 name: name.to_string(),
@@ -622,6 +639,7 @@ impl SpiceDBClient {
         &self,
         name: &str,
     ) -> Result<(), SpiceDBError> {
+        mutation_policy(false, "unregister relationship counter")?;
         self.call_once(|| async {
             let request = wire(proto::ExperimentalUnregisterRelationshipCounterRequest {
                 name: name.to_string(),

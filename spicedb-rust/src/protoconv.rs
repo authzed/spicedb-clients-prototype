@@ -251,6 +251,96 @@ pub fn check_result_to_proto(r: &CheckResult) -> proto::CheckPermissionResponse 
     }
 }
 
+/// A permission check as the bulk request item `check_bulk` sends for it.
+pub fn check_request_to_proto(
+    c: &PermissionCheck,
+) -> Result<proto::CheckBulkPermissionsRequestItem, SpiceDBError> {
+    check_item_to_proto(c, None)
+}
+
+fn check_item_to_proto(
+    c: &PermissionCheck,
+    call_context: Option<&Context>,
+) -> Result<proto::CheckBulkPermissionsRequestItem, SpiceDBError> {
+    let context = merge_check_context(call_context, c.context.as_ref());
+    if let Some(context) = &context {
+        validate_context(context)?;
+    }
+    Ok(proto::CheckBulkPermissionsRequestItem {
+        resource: Some(c.resource.to_proto()),
+        permission: c.permission.clone(),
+        subject: Some(c.subject.to_proto()),
+        context: context.as_ref().map(check_context_to_proto),
+    })
+}
+
+/// A bulk check (its request and the results `check_bulk` returned for it,
+/// in the same order) as the `CheckBulkPermissionsResponse` SpiceDB sends:
+/// one pair per item, carrying the item's result or, for a result with
+/// [`CheckResult::error`] set ([`BulkItemErrors::Returned`](crate::BulkItemErrors::Returned)),
+/// its status exactly as the server sent it. Call-level context is merged
+/// into each item as `check_bulk` sends it. The response's checked-at is the
+/// last item's revision; `check_bulk` may span several requests, each with
+/// its own revision.
+pub fn check_bulk_to_proto(
+    request: &BulkCheckRequest,
+    results: &[CheckResult],
+) -> Result<proto::CheckBulkPermissionsResponse, SpiceDBError> {
+    if request.items.len() != results.len() {
+        return Err(invalid(
+            "results",
+            &format!(
+                "{} requests but {} results",
+                request.items.len(),
+                results.len()
+            ),
+        ));
+    }
+    let mut response = proto::CheckBulkPermissionsResponse::default();
+    for (item, result) in request.items.iter().zip(results) {
+        let pair_request = check_item_to_proto(item, request.options.context.as_ref())?;
+        let pair_response = match &result.error {
+            Some(err) => proto::check_bulk_permissions_pair::Response::Error(rpc_status(err)),
+            None => {
+                let single = check_result_to_proto(result);
+                proto::check_bulk_permissions_pair::Response::Item(
+                    proto::CheckBulkPermissionsResponseItem {
+                        permissionship: single.permissionship,
+                        partial_caveat_info: single.partial_caveat_info,
+                        debug_trace: single.debug_trace,
+                    },
+                )
+            }
+        };
+        if let Some(t) = token(&result.checked_at) {
+            response.checked_at = Some(t);
+        }
+        response.pairs.push(proto::CheckBulkPermissionsPair {
+            request: Some(pair_request),
+            response: Some(pair_response),
+        });
+    }
+    Ok(response)
+}
+
+/// An error's status as a `google.rpc.Status`: the server's own (with its
+/// details) when it came from the server, otherwise its code and message.
+fn rpc_status(err: &SpiceDBError) -> spicedb_proto::google::rpc::Status {
+    let status = err.to_status();
+    if !status.details().is_empty() {
+        if let Ok(decoded) =
+            <spicedb_proto::google::rpc::Status as prost::Message>::decode(status.details())
+        {
+            return decoded;
+        }
+    }
+    spicedb_proto::google::rpc::Status {
+        code: status.code() as i32,
+        message: status.message().to_string(),
+        details: Vec::new(),
+    }
+}
+
 pub fn debug_information_to_proto(d: &DebugInformation) -> proto::DebugInformation {
     proto::DebugInformation {
         check: d.check.as_ref().map(check_trace_to_proto),
@@ -333,17 +423,30 @@ fn resolved_subject_to_proto(s: &ResolvedSubject) -> proto::ResolvedSubject {
     }
 }
 
+/// A looked-up subject as the `LookupSubjectsResponse` SpiceDB sends,
+/// including wildcard exclusions. It also fills the deprecated top-level
+/// fields (subject ID, excluded IDs, permissionship and partial caveat info)
+/// that SpiceDB still populates, so the message matches the server's.
 #[allow(deprecated)]
 pub fn lookup_subject_to_proto(s: &LookupSubject) -> proto::LookupSubjectsResponse {
+    let subject = resolved_subject_to_proto(&s.subject);
     proto::LookupSubjectsResponse {
         looked_up_at: token(&s.looked_up_at),
-        subject: Some(resolved_subject_to_proto(&s.subject)),
+        subject_object_id: subject.subject_object_id.clone(),
+        excluded_subject_ids: s
+            .excluded_subjects
+            .iter()
+            .map(|e| e.subject_id.clone())
+            .collect(),
+        permissionship: subject.permissionship,
+        partial_caveat_info: subject.partial_caveat_info.clone(),
+        subject: Some(subject),
         excluded_subjects: s
             .excluded_subjects
             .iter()
             .map(resolved_subject_to_proto)
             .collect(),
-        ..Default::default()
+        after_result_cursor: None,
     }
 }
 
@@ -416,5 +519,74 @@ pub fn write_result_to_proto(r: &WriteResult) -> proto::WriteRelationshipsRespon
 pub fn write_schema_result_to_proto(r: &WriteSchemaResult) -> proto::WriteSchemaResponse {
     proto::WriteSchemaResponse {
         written_at: token(&r.revision),
+    }
+}
+
+fn schema_type_to_proto(t: &SchemaTypeReference) -> proto::ReflectionTypeReference {
+    use proto::reflection_type_reference::Typeref;
+    proto::ReflectionTypeReference {
+        subject_definition_name: t.subject_definition_name.clone(),
+        optional_caveat_name: t.caveat_name.clone().unwrap_or_default(),
+        typeref: t.reference.as_ref().map(|r| match r {
+            SchemaSubjectType::Terminal(v) => Typeref::IsTerminalSubject(*v),
+            SchemaSubjectType::Relation(v) => Typeref::OptionalRelationName(v.clone()),
+            SchemaSubjectType::PublicWildcard(v) => Typeref::IsPublicWildcard(*v),
+        }),
+    }
+}
+
+fn schema_relation_to_proto(r: &SchemaRelation) -> proto::ReflectionRelation {
+    proto::ReflectionRelation {
+        name: r.name.clone(),
+        comment: r.comment.clone(),
+        parent_definition_name: r.parent_definition_name.clone(),
+        subject_types: r.subject_types.iter().map(schema_type_to_proto).collect(),
+    }
+}
+
+fn schema_permission_to_proto(p: &SchemaPermission) -> proto::ReflectionPermission {
+    proto::ReflectionPermission {
+        name: p.name.clone(),
+        comment: p.comment.clone(),
+        parent_definition_name: p.parent_definition_name.clone(),
+    }
+}
+
+/// A reflected schema as the `ReflectSchemaResponse` SpiceDB sends.
+pub fn reflect_schema_result_to_proto(r: &ReflectSchemaResult) -> proto::ReflectSchemaResponse {
+    proto::ReflectSchemaResponse {
+        definitions: r
+            .definitions
+            .iter()
+            .map(|d| proto::ReflectionDefinition {
+                name: d.name.clone(),
+                comment: d.comment.clone(),
+                relations: d.relations.iter().map(schema_relation_to_proto).collect(),
+                permissions: d
+                    .permissions
+                    .iter()
+                    .map(schema_permission_to_proto)
+                    .collect(),
+            })
+            .collect(),
+        caveats: r
+            .caveats
+            .iter()
+            .map(|c| proto::ReflectionCaveat {
+                name: c.name.clone(),
+                comment: c.comment.clone(),
+                expression: c.expression.clone(),
+                parameters: c
+                    .parameters
+                    .iter()
+                    .map(|p| proto::ReflectionCaveatParameter {
+                        name: p.name.clone(),
+                        r#type: p.type_name.clone(),
+                        parent_caveat_name: p.parent_caveat_name.clone(),
+                    })
+                    .collect(),
+            })
+            .collect(),
+        read_at: token(&r.revision),
     }
 }

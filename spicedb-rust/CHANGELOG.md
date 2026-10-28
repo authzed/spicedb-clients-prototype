@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- `CallOptions::with_retry_policy(RetryPolicy)` overrides the client's retry
+  policy for one call, including stream establishment (open one supervised
+  watch exactly once while the client retries everything else). A touch-only
+  `write` without preconditions and `write_schema` may opt in to retries per
+  call; every other mutation rejects the opt-in with `InvalidArgument` before
+  any request.
+- `ReadRelationshipsOptions::with_paging` and
+  `LookupResourcesOptions::with_paging(Paging::SingleRequest)` send exactly one
+  request, as the raw API does.
+- `protoconv::check_bulk_to_proto` and `check_request_to_proto`;
+  `lookup_subject_to_proto` fills the deprecated fields SpiceDB still sends;
+  `reflect_schema_result_to_proto`.
+- `testing::InMemorySpiceDB` serves imports, exports, `read_schema`,
+  `write_schema` and `reflect_schema` (`set_reflect_schema_result`), accepts
+  empty writes like SpiceDB, and sends `set_response_metadata` headers.
+  `ReflectSchemaResult` and the schema reflection types derive `Default`.
+- Writes sent with an empty transaction are documented and tested as reaching
+  the server (SpiceDB checks their preconditions and returns the current
+  revision); bulk-item and delete-progress errors are tested to convert to the
+  server's status with its message once.
+
 - **Fix:** paged `read_relationships` and `lookup_resources` failed on their
   second page against a real SpiceDB ("the cursor provided does not have the
   same arguments as the original API call"): the pager switched later pages to

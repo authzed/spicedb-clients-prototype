@@ -31,6 +31,9 @@ tokio::task_local! { static EXEC: Exec; }
 
 impl Plan {
     fn start(&self) -> Result<Exec, SpiceDBError> {
+        if let Some(policy) = &self.call.retry {
+            policy.validate()?;
+        }
         Ok(Exec {
             deadline: deadline(self.timeout)?,
             call: self.call.clone(),
@@ -41,12 +44,21 @@ impl Plan {
 }
 
 impl SpiceDBClient {
+    /// A per-call retry policy wins over the client's, and also governs stream
+    /// establishment for that call.
     pub(crate) fn plan(&self, timeout: Option<Duration>, call: &CallOptions) -> Plan {
+        let (retry, stream_retries) = match &call.retry {
+            Some(policy) => (Some(Arc::new(policy.clone())), true),
+            None => (
+                self.retry.clone(),
+                self.stream_retries == crate::options::StreamRetryMode::Enabled,
+            ),
+        };
         Plan {
             timeout,
             call: call.clone(),
-            retry: self.retry.clone(),
-            stream_retries: self.stream_retries == crate::options::StreamRetryMode::Enabled,
+            retry,
+            stream_retries,
         }
     }
 }
@@ -107,6 +119,21 @@ fn stream_budget<T: Send + 'static>(
                 None => break,
             }
         }
+    }
+}
+
+/// The `optional_limit` every request of a paged read sends: the page size,
+/// fixed for the whole call (SpiceDB rejects a cursor sent with a different
+/// limit), or in single-request mode the total limit alone (0 meaning
+/// unbounded).
+fn page_request_limit(
+    paging: &crate::options::Paging,
+    page_size: std::num::NonZeroU32,
+    limit: Option<u32>,
+) -> u32 {
+    match paging {
+        crate::options::Paging::SingleRequest => limit.unwrap_or(0),
+        _ => page_size.get(),
     }
 }
 
@@ -173,6 +200,42 @@ where
     Fut: Future<Output = Result<tonic::Response<T>, tonic::Status>>,
 {
     attempt_loop(f, false, None).await
+}
+
+/// The retry policy for a mutation: none unless the caller opted this call in
+/// with [`CallOptions::with_retry_policy`], which only mutations that are
+/// idempotent on replay may do. Checked before any request is sent.
+pub(crate) fn mutation_policy(
+    idempotent: bool,
+    operation: &str,
+) -> Result<Option<Arc<RetryPolicy>>, SpiceDBError> {
+    let policy = EXEC
+        .try_with(|e| e.call.retry.clone())
+        .ok()
+        .flatten()
+        .filter(|p| p.max_retries > 0);
+    match policy {
+        None => Ok(None),
+        Some(_) if !idempotent => Err(invalid(
+            "retry_policy",
+            &format!(
+                "{operation} cannot be retried: only touch-only writes without preconditions and schema writes are idempotent on replay"
+            ),
+        )),
+        Some(policy) => Ok(Some(Arc::new(policy))),
+    }
+}
+
+/// A mutation under the retry policy [`mutation_policy`] returned.
+pub(crate) async fn mutation_call<F, Fut, T>(
+    f: F,
+    policy: Option<Arc<RetryPolicy>>,
+) -> Result<tonic::Response<T>, SpiceDBError>
+where
+    F: Fn() -> Fut,
+    Fut: Future<Output = Result<tonic::Response<T>, tonic::Status>>,
+{
+    attempt_loop(f, true, policy).await
 }
 
 /// An idempotent unary read under the client's retry policy.
@@ -693,6 +756,7 @@ impl SpiceDBClient {
                 &request.options.call,
             ),
             async {
+                mutation_policy(false, "delete relationships")?;
                 let allow_partial =
                     request.options.partial != crate::options::DeletePartial::Disallowed;
                 if allow_partial && request.limit.is_none() {
@@ -729,6 +793,7 @@ impl SpiceDBClient {
                 &request.options.call,
             ),
             async {
+                mutation_policy(false, "delete relationships")?;
                 let mut cursor = request.options.cursor.clone();
                 loop {
                     let mut page = self
@@ -865,7 +930,8 @@ impl SpiceDBClient {
                 request.consistency.validate()?;
                 let filter = request.filter.to_proto()?;
                 let consistency = request.consistency.to_proto();
-                let page_size = request.options.page_size.get();
+                let single = request.options.paging == crate::options::Paging::SingleRequest;
+                let page_size = page_request_limit(&request.options.paging, request.options.page_size, request.options.limit);
                 let mut cursor = request.options.cursor.map(|token| proto::Cursor { token });
                 let mut remaining = request.options.limit.unwrap_or(u32::MAX);
                 while remaining > 0 {
@@ -898,7 +964,7 @@ impl SpiceDBClient {
                             }
                         }
                     }
-                    if remaining == 0 || count < page_size {
+                    if single || remaining == 0 || count < page_size {
                         break;
                     }
                     if cursor.is_none() {
@@ -928,7 +994,8 @@ impl SpiceDBClient {
                     validate_context(c)?;
                 }
                 let consistency = request.consistency.to_proto();
-                let page_size = request.options.page_size.get();
+                let single = request.options.paging == crate::options::Paging::SingleRequest;
+                let page_size = page_request_limit(&request.options.paging, request.options.page_size, request.options.limit);
                 let mut cursor = request.options.cursor.map(|token| proto::Cursor { token });
                 let mut remaining = request.options.limit.unwrap_or(u32::MAX);
                 while remaining > 0 {
@@ -974,7 +1041,7 @@ impl SpiceDBClient {
                             break;
                         }
                     }
-                    if remaining == 0 || count < page_size {
+                    if single || remaining == 0 || count < page_size {
                         break;
                     }
                     if cursor.as_ref().is_none_or(|c| c.token.is_empty()) || cursor == previous_cursor {
@@ -1224,6 +1291,7 @@ impl SpiceDBClient {
         request: ImportRelationshipsRequest,
     ) -> Result<ImportRelationshipsResult, SpiceDBError> {
         bounded(self.plan(request.options.timeout, &request.options.call), async {
+            mutation_policy(false, "import relationships")?;
             let failure=std::sync::Arc::new(std::sync::Mutex::new(None));let producer_failure=failure.clone();
             let failed=std::sync::Arc::new(tokio::sync::Notify::new());let producer_failed=failed.clone();
             let source=request.relationships;

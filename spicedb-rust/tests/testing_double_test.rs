@@ -6,9 +6,12 @@ use std::num::NonZeroU32;
 use futures::StreamExt;
 use spicedb::testing::InMemorySpiceDB;
 use spicedb::{
-    consistency, BulkCheckRequest, DeleteOptions, DeletePartial, DeleteRequest, Filter,
+    consistency, BulkCheckRequest, CallOptions, DeleteOptions, DeletePartial, DeleteRequest,
+    ExportRelationshipsOptions, ExportRelationshipsRequest, Filter, ImportRelationshipsRequest,
     PermissionCheck, Permissionship, ReadRelationshipsOptions, ReadRelationshipsRequest,
-    Relationship, SpiceDBError, Transaction, WriteRequest,
+    ReadSchemaRequest, ReflectSchemaRequest, ReflectSchemaResult, Relationship, ResponseMetadata,
+    SchemaDefinition, SpiceDBError, Transaction, WriteRequest, WriteSchemaOptions,
+    WriteSchemaRequest,
 };
 
 fn rel(s: &str) -> Relationship {
@@ -172,4 +175,162 @@ async fn checks_return_registered_results() {
         .unwrap();
     assert_eq!(results[0].permissionship, Permissionship::NoPermission);
     assert_eq!(results[1].permissionship, Permissionship::HasPermission);
+}
+
+#[tokio::test]
+async fn errors_have_the_real_clients_shape() {
+    let fake = InMemorySpiceDB::with_relationships([rel("org:acme#admin@user:alice")]);
+    let client = fake.client().unwrap();
+
+    // A server failure is mapped by the real client: server message kept.
+    let mut txn = Transaction::new();
+    txn.must_match(Filter::new("org").with_relation("owner"));
+    let err = client.write(WriteRequest::new(txn)).await.unwrap_err();
+    assert!(
+        matches!(err, SpiceDBError::FailedPrecondition(_)),
+        "{err:?}"
+    );
+    let message = err.server_message().expect("a server error");
+    assert!(message.starts_with("unable to satisfy write precondition `"));
+    assert_eq!(err.to_string(), format!("failed precondition: {message}"));
+
+    // Local validation fails in the client, before any request.
+    let err = Box::pin(client.read_relationships(ReadRelationshipsRequest::new(
+        Filter::new(""),
+        consistency::full(),
+    )))
+    .next()
+    .await
+    .unwrap()
+    .unwrap_err();
+    assert!(matches!(err, SpiceDBError::InvalidArgument(_)), "{err:?}");
+    assert_eq!(err.server_message(), None);
+
+    // An empty write checks its preconditions and returns the revision.
+    let before = fake.relationships();
+    let written = client
+        .write(WriteRequest::new(Transaction::new()))
+        .await
+        .unwrap();
+    assert!(!written.revision.as_ref().is_empty());
+    assert_eq!(fake.relationships(), before);
+}
+
+fn relationships(tuples: &[&str]) -> ImportRelationshipsRequest {
+    let items: Vec<Result<Relationship, SpiceDBError>> =
+        tuples.iter().map(|t| Ok(rel(t))).collect();
+    ImportRelationshipsRequest::new(futures::stream::iter(items))
+}
+
+#[tokio::test]
+async fn imports_exports_and_schema_operations() {
+    let fake = InMemorySpiceDB::new();
+    let client = fake.client().unwrap();
+    let imported = client
+        .import_relationships(relationships(&[
+            "doc:a#viewer@user:x",
+            "doc:b#viewer@user:x",
+            "doc:c#viewer@user:x",
+            "folder:f#viewer@user:x",
+        ]))
+        .await
+        .unwrap();
+    assert_eq!(imported.imported_count, 4);
+
+    // An import is one transaction.
+    let err = client
+        .import_relationships(relationships(&[
+            "doc:z#viewer@user:x",
+            "doc:a#viewer@user:x",
+        ]))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, SpiceDBError::AlreadyExists(_)), "{err:?}");
+    assert_eq!(
+        fake.relationships().len(),
+        4,
+        "a failed import adds nothing"
+    );
+
+    // Export honors the filter, limits and cursors.
+    let export = |options: ExportRelationshipsOptions| {
+        client
+            .export_relationships(
+                ExportRelationshipsRequest::new(consistency::full()).with_options(options),
+            )
+            .map(|r| r.unwrap())
+            .collect::<Vec<_>>()
+    };
+    let folders =
+        export(ExportRelationshipsOptions::new().with_filter(Filter::new("folder"))).await;
+    assert_eq!(folders.len(), 1);
+    assert_eq!(folders[0].relationship, rel("folder:f#viewer@user:x"));
+    let first = export(
+        ExportRelationshipsOptions::new()
+            .with_filter(Filter::new("doc"))
+            .with_limit(2),
+    )
+    .await;
+    assert_eq!(first.len(), 2);
+    let rest = export(
+        ExportRelationshipsOptions::new()
+            .with_filter(Filter::new("doc"))
+            .with_cursor(first[1].after_result_cursor.clone().unwrap()),
+    )
+    .await;
+    assert_eq!(rest.len(), 1);
+    assert_eq!(rest[0].relationship.resource_id(), "c");
+
+    // Schema reads and writes.
+    let err = client
+        .read_schema(ReadSchemaRequest::new())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, SpiceDBError::NotFound(_)), "{err:?}");
+    client
+        .write_schema(WriteSchemaRequest::new("definition user {}"))
+        .await
+        .unwrap();
+    let schema = client.read_schema(ReadSchemaRequest::new()).await.unwrap();
+    assert_eq!(schema.schema_text, "definition user {}");
+    assert_eq!(fake.schema().as_deref(), Some("definition user {}"));
+
+    // Reflection returns the registered result.
+    let reflect = ReflectSchemaRequest::new(consistency::min_latency());
+    let err = client.reflect_schema(reflect.clone()).await.unwrap_err();
+    assert!(matches!(err, SpiceDBError::NotFound(_)), "{err:?}");
+    let mut user = SchemaDefinition::default();
+    user.name = "user".into();
+    let mut registered = ReflectSchemaResult::default();
+    registered.definitions.push(user);
+    fake.set_reflect_schema_result(registered);
+    let reflected = client.reflect_schema(reflect).await.unwrap();
+    assert_eq!(reflected.definitions[0].name, "user");
+    assert!(!reflected.revision.as_ref().is_empty());
+}
+
+#[tokio::test]
+async fn response_metadata_reaches_the_clients_capture() {
+    let fake = InMemorySpiceDB::new();
+    let mut headers = spicedb::tonic::metadata::MetadataMap::new();
+    headers.insert("io.spicedb.respmeta.version", "v1.99".parse().unwrap());
+    fake.set_response_metadata(headers);
+    let client = fake.client().unwrap();
+    let captured = ResponseMetadata::new();
+    client
+        .write_schema(
+            WriteSchemaRequest::new("definition user {}")
+                .with_options(WriteSchemaOptions::new().with_call_options(
+                    CallOptions::new().with_response_metadata(captured.clone()),
+                )),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        captured
+            .headers()
+            .get("io.spicedb.respmeta.version")
+            .unwrap(),
+        "v1.99"
+    );
 }

@@ -52,11 +52,15 @@ definition invitation {
 ```
 
 Naming: `Organization(id)` builds a ref. Permission `p` → `p()`. Relation `r` →
-writer `r(subject)`, key `rKey(subject)`, check `rRelation()`, filter
-`rFilter()`. A userset on a permission → `pSubject()` (e.g. `canAdminSubject()`).
+writer `r(subject)`, key `rKey(subject)` (only for relations admitting a
+caveated or expiring subject), check `rRelation()`, filter `rFilter()`. A userset on a permission → `pSubject()` (e.g. `canAdminSubject()`).
 `user:*` → `UserWildcard()`. Name constants: `OrganizationRelations.ADMIN`,
 `OrganizationPermissions.CAN_ADMIN`, `Organization_View`. Collisions and Java
-reserved words fail generation; nothing is renamed silently.
+reserved words fail generation; nothing is renamed silently. Keep the schema and
+pass `--java.rename=<definition>=<JavaName>` (e.g. `subject=SubjectDef` for
+`definition subject`) to change only a definition's Java identifiers.
+`withSubject(filter, subject)` always pins the subject relation (direct for a
+plain ref); `withSubjectAnyRelation` matches direct and userset subjects.
 
 ## Connect once
 
@@ -149,7 +153,9 @@ try {
 - Delete what you just read:
   `new Txn().delete(TypedRelationship.fromRelationship(r.relationship()))`.
 - **Do not retry a failed write blindly**; it may have committed. The client
-  never retries writes, deletes or imports.
+  never retries writes, deletes or imports on its own. A write of touches
+  without preconditions, and `writeSchema`, may opt in per call with
+  `WriteOptions.builder().retryPolicy(...)`; other mutations reject that.
 
 ## Read relationships
 
@@ -242,7 +248,8 @@ SpiceDBException expected = ErrorMapper.newError(Status.Code.FAILED_PRECONDITION
 ```
 
 Depend on `PermissionsApi` (`write`, `readRelationships`, `deleteRelationships`,
-`check`, `checkBulk`); both `SpiceDBClient` and `InMemorySpiceDB` implement it,
+`check`, `checkBulk`, `importRelationships`, `exportRelationships`, `readSchema`,
+`writeSchema`, `reflectSchema`); both `SpiceDBClient` and `InMemorySpiceDB` implement it,
 and a `TypedClient` provides one through `tc.client()`. The double applies
 preconditions, `CREATE` conflicts and filter semantics like the server.
 For integration tests, run `authzed/spicedb serve-testing` and assert both

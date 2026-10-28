@@ -39,19 +39,23 @@ new permissive static factory overloads.
 | --- | --- |
 | permission usersets | `organization.canAdminSubject()` → `OrganizationCanAdminRef` (+ `withExpiration(Instant)` → `OrganizationCanAdminExpiring`); `canAdmin()` stays the permission |
 | observability | `Permission.resourceType()/resourceId()/name()/toString()` (`type:id#perm`), `ref()`; `PermissionRef.name()/toString()` (`type#perm`) |
-| transactions | `new Txn().touch/create/delete/mustMatch/mustNotMatch`, `size()`, `build()` → native `Transaction`; `TypedClient.writeTxn` |
+| transactions | `new Txn().touch/create/delete/mustMatch/mustNotMatch`, `size()`, `updates()`, `preconditions()`, `error()`, `build()` → native `Transaction`; `TypedClient.writeTxn` |
 | native round trip | `TypedRelationship.toRelationship()`, `fromRelationship(Relationship)` (not schema-checked), `ofError(RuntimeException)`, `error()`, `toFilter()`, `toString()`, `equals` |
 | bulk checks | `Permission.forSubject(S)`, `checksFor(subject, permissions...)`, `TypedClient.checkBulk(Consistency, List<TypedCheck>)`, `Permission.permissionCheck(S, Consistency)` |
-| filters/constants | `OrganizationFilter()`, `ref.filter()`, `ref.adminFilter()`, `withSubject(Filter, Subject)`, `OrganizationRelations.ADMIN`, `OrganizationPermissions.CAN_ADMIN` |
+| filters/constants | `OrganizationFilter()`, `ref.filter()`, `ref.adminFilter()`, `withSubject(Filter, Subject)` (pins the subject relation), `withSubjectAnyRelation(Filter, Subject)`, `OrganizationRelations.ADMIN`, `OrganizationPermissions.CAN_ADMIN` |
 | wildcards | `UserWildcard()` → `UserWildcardRef`; `user:*`-only writers admit only it |
-| identity keys | `ref.inviterKey(subject)` → `RelationshipKey` (base subjects only), accepted by `Txn.delete` |
+| identity keys | `ref.inviterKey(subject)` → `RelationshipKey` (base subjects only), accepted by `Txn.delete`; generated only for relations admitting caveated or expiring subjects |
+| identifier overrides | `--java.rename=subject=SubjectDef` renames a definition's Java identifiers only (wire names unchanged) |
 | relation checks | `ref.memberRelation()` → `Permission<OrganizationMemberRelationSubject>` |
 | by-name | `permissionByName`, `relationByName`, `relationshipByName` (throw `NotInSchemaException` / `SubjectNotAllowedException`), `Permission.forDynamicSubject(Subject)`, `XRelations.names()`, `XPermissions.names()` |
 
 ## Verification ledger
 
 - `go test ./java/` pins the generated surface, the package option, the formatter option,
-  the 100-column limit and collision failures.
+  the 100-column limit and collision failures; `TestRenameResolvesDefinitionCollisions`
+  generates a schema with `definition subject` and a caveat calling an undeclared function,
+  checks the rename option's validation, and (without `-short`) compiles and format-checks
+  the renamed output in the fixture project.
 - `testdata/java` compiles the generated fixture, runs `spotlessCheck` (google-java-format
   1.22.0) against it, runs `AdoptionTest` (no server), `TypedParityTest`, the forwarding
   tests, and the live `PermissionsTest`/`AdoptionIntegrationTest`.

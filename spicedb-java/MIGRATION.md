@@ -159,6 +159,27 @@ authzed-java stubs have no deadline and no retries. spicedb-java:
   `.retryPolicy(RetryPolicy.builder()...)`, or turn retries off with
   `.retries(Retries.DISABLED)` / `.streamRetries(StreamRetries.DISABLED)` if
   you already have a policy, so the two do not stack.
+- overrides that policy for one call with `.retryPolicy(...)` on the
+  operation's options: for example
+  `WatchOptions.builder().retryPolicy(RetryPolicy.builder().maxRetries(0).build())`
+  to never reopen a supervised watch, or a policy on a touch-only `write` or a
+  `writeSchema` to retry those idempotent writes. Other mutations reject the
+  opt-in.
+
+## Consistency on schema reads
+
+Every schema read except `readSchema` (whose request has no consistency) takes
+an explicit `Consistency`, including `reflectSchema`, `diffSchema`,
+`computablePermissions` and `dependentRelations`. Where your raw requests left
+consistency unset, pass `Consistency.minLatency()`, which is what SpiceDB applies
+when it is absent.
+
+## Single-request paging
+
+A raw `LookupResources`/`ReadRelationships` call without a limit is one
+unbounded request; this client pages by default. To reproduce the raw call (and
+its final cursor), pass `LookupOptions.builder().paging(Paging.SINGLE_REQUEST)`
+(or the `ReadOptions` equivalent).
 
 ## Errors
 
@@ -219,5 +240,6 @@ not part of the published dependencies.
 
 Replace hand-written stub fakes with `com.authzed.spicedb.testing.InMemorySpiceDB`,
 which implements the same `PermissionsApi` interface as `SpiceDBClient` and
-applies preconditions, `CREATE` conflicts and filter semantics like the server.
-Build expected errors with `ErrorMapper.newError(Status.Code.X, message)`.
+applies preconditions, `CREATE` conflicts and filter semantics like the server,
+and also covers imports, exports and schema reads and writes, with errors shaped
+like the client's. Build expected errors with `ErrorMapper.newError(Status.Code.X, message)`.

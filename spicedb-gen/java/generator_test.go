@@ -382,9 +382,10 @@ definition doc {
 		},
 		{
 			name: "two relations produce one interface",
-			schema: `definition user {}
+			schema: `use expiration
+definition user {}
 definition doc {
-	relation viewer: user
+	relation viewer: user with expiration
 	relation viewer_key: user
 }`,
 			want: []string{`"DocViewerKeySubject"`, `relation "viewer" (key subjects)`, `relation "viewer_key" (writer subjects)`},

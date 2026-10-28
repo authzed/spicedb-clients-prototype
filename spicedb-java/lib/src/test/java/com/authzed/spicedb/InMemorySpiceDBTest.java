@@ -2,6 +2,7 @@ package com.authzed.spicedb;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -11,6 +12,7 @@ import com.authzed.spicedb.errors.FailedPreconditionException;
 import com.authzed.spicedb.errors.InvalidArgumentException;
 import com.authzed.spicedb.errors.NotFoundException;
 import com.authzed.spicedb.testing.InMemorySpiceDB;
+import io.grpc.Metadata;
 import io.grpc.Status;
 import java.lang.reflect.Method;
 import java.time.Clock;
@@ -150,9 +152,115 @@ class InMemorySpiceDBTest {
                             "readRelationships",
                             "deleteRelationships",
                             "check",
-                            "checkBulk")
+                            "checkBulk",
+                            "importRelationships",
+                            "exportRelationships",
+                            "readSchema",
+                            "writeSchema",
+                            "reflectSchema")
                         .contains(m.getName()))
             .count();
     assertEquals(PermissionsApi.class.getMethods().length, clientOps);
+  }
+
+  @Test
+  void errorsMatchTheRealClientsShape() {
+    var db = new InMemorySpiceDB();
+    var guarded = new Transaction();
+    guarded.mustMatch(Filter.of("org").withRelation("owner"));
+    var e = assertThrows(FailedPreconditionException.class, () -> db.write(guarded));
+    assertTrue(e.getMessage().startsWith("unable to satisfy write precondition `"));
+    assertEquals(e.getMessage(), e.serverMessage(), "server errors keep SpiceDB's message");
+
+    // Local validation looks like the client's local validation: no server message.
+    var local =
+        assertThrows(
+            InvalidArgumentException.class, () -> db.deleteRelationships(Filter.of("d"), 0));
+    assertNull(local.serverMessage());
+
+    // A per-call retry opt-in on a non-idempotent mutation is refused, as the client does.
+    var retry =
+        RetryPolicy.builder().maxRetries(1).initialBackoff(java.time.Duration.ofMillis(1)).build();
+    var create = new Transaction();
+    create.create(rel("document:a#viewer@user:alice"));
+    assertThrows(
+        InvalidArgumentException.class,
+        () -> db.write(create, WriteOptions.builder().retryPolicy(retry).build()));
+    var touch = new Transaction();
+    touch.touch(rel("document:a#viewer@user:alice"));
+    db.write(touch, WriteOptions.builder().retryPolicy(retry).build());
+
+    // An empty write checks preconditions and returns the current revision.
+    var before = db.write(new Transaction()).revision();
+    assertEquals(before, db.write(new Transaction()).revision());
+    var emptyGuarded = new Transaction();
+    emptyGuarded.mustNotMatch(Filter.of("document"));
+    assertThrows(FailedPreconditionException.class, () -> db.write(emptyGuarded));
+  }
+
+  @Test
+  void importsExportsAndSchemaOperations() {
+    var db = new InMemorySpiceDB();
+    var tuples =
+        List.of(
+            "document:a#viewer@user:x",
+            "document:b#viewer@user:x",
+            "document:c#viewer@user:x",
+            "folder:f#viewer@user:x");
+    assertEquals(4, db.importRelationships(tuples.stream().map(Relationship::fromTuple).toList()));
+    assertThrows(
+        AlreadyExistsException.class,
+        () ->
+            db.importRelationships(
+                List.of(rel("document:z#viewer@user:x"), rel("document:a#viewer@user:x"))));
+    assertEquals(4, db.relationships().size(), "a failed import adds nothing");
+
+    List<ExportedRelationship> first;
+    try (var s =
+        db.exportRelationships(
+            Consistency.full(), Filter.of("document"), ExportOptions.builder().limit(2).build())) {
+      first = s.toList();
+    }
+    assertEquals(2, first.size());
+    try (var s =
+        db.exportRelationships(
+            Consistency.full(),
+            Filter.of("document"),
+            ExportOptions.builder().cursor(first.get(1).afterResultCursor()).build())) {
+      assertEquals(List.of("document:c#viewer@user:x"), s.map(Object::toString).toList());
+    }
+    try (var s = db.exportRelationships(Consistency.full(), null)) {
+      assertEquals(4, s.count());
+    }
+
+    assertThrows(NotFoundException.class, db::readSchema);
+    db.writeSchema("definition user {}");
+    assertEquals("definition user {}", db.readSchema().schema());
+    assertThrows(NotFoundException.class, () -> db.reflectSchema(Consistency.minLatency()));
+    db.setReflectSchemaResult(
+        new SpiceDBClient.ReflectSchemaResult(
+            List.of(new SpiceDBClient.SchemaDefinition("user", "", List.of(), List.of())),
+            List.of(),
+            null));
+    var reflected = db.reflectSchema(Consistency.minLatency());
+    assertEquals("user", reflected.definitions().get(0).name());
+    assertEquals(db.readSchema().revision(), reflected.revision());
+  }
+
+  @Test
+  void responseMetadataIsReportedToTheCapture() {
+    var db = new InMemorySpiceDB();
+    var key = Metadata.Key.of("io.spicedb.respmeta.version", Metadata.ASCII_STRING_MARSHALLER);
+    var headers = new Metadata();
+    headers.put(key, "v1.99");
+    db.setResponseMetadata(headers, new Metadata());
+    var capture = new ResponseMetadata();
+    db.writeSchema(
+        "definition user {}",
+        CallOptions.builder()
+            .transport(TransportOptions.builder().responseMetadata(capture).build())
+            .build());
+    assertEquals("v1.99", capture.headers().get(key));
+    assertTrue(capture.trailers() != null);
   }
 }

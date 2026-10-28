@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+### Per-call retries, single-request paging, test double and generator additions
+
+- Every options class has `retryPolicy(RetryPolicy)`, which overrides the
+  client's retry policy for that call, including stream establishment (a
+  `maxRetries(0)` policy exempts one watch while the client retries everything
+  else). Mutations stay unretried by default: a `write` whose transaction holds
+  only touches and no preconditions, and `writeSchema`, may opt in; deletes,
+  delete-all, imports, counter registration and every other write reject the
+  opt-in with `InvalidArgumentException` before any request.
+- `write` sends an empty `Transaction` (SpiceDB evaluates its preconditions and
+  returns the current revision); `InMemorySpiceDB` now matches.
+- `ReadOptions`/`LookupOptions.paging(Paging.SINGLE_REQUEST)` sends exactly one
+  request, as the raw API does: its limit is `limit` (unbounded when 0), the page
+  size is ignored and no follow-up page is fetched. `lookupSubjects` and the
+  roaring lookup reject it.
+- `ProtoConv.toProto(PermissionCheck[, callContext])` builds a bulk request item,
+  `ProtoConv.checkBulkToProto(requests, results[, callContext])` rebuilds a whole
+  bulk-check response (per-item errors as statuses with details), and
+  `ProtoConv.toProto(LookupSubject)` fills the deprecated top-level fields SpiceDB
+  still sends.
+- `InMemorySpiceDB` and `PermissionsApi` add `importRelationships`,
+  `exportRelationships` (cursor, limit, filter), `readSchema`, `writeSchema` and
+  `reflectSchema` (`setReflectSchemaResult`); the double fills the call's
+  `ResponseMetadata` from `setResponseMetadata` and refuses a retry opt-in on
+  non-idempotent mutations like the client. `ResponseMetadata.recordHeaders` and
+  `recordTrailers` are public so doubles and wrappers can report metadata.
+- Generated typed clients: `--java.rename=<definition>=<JavaName>` (comma-
+  separated) changes a definition's Java identifiers without changing the names
+  sent to SpiceDB, and the collision error suggests it; caveats calling functions
+  outside SpiceDB's default CEL environment generate (expressions are opaque);
+  `Txn.updates()`, `preconditions()` and `error()`; `withSubjectAnyRelation`
+  beside `withSubject` (which always pins the subject relation); `rKey(subject)`
+  is generated only for relations admitting a caveated or expiring subject.
+
 ### Adoption changes (2026-10-28)
 
 - **BREAKING:** the protocol classes are `com.authzed.api.v1.*` /

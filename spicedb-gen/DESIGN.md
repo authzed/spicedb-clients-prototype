@@ -190,7 +190,9 @@ and options forwarding rather than just generated text fragments.
   `names()`), a `PermissionRef` constant `D_P` per permission, and, when `d:*` is
   allowed anywhere, `DWildcard()` → `DWildcardRef`.
 - On `DRef`: permission `p` → `p()` (`Permission<DPSubject>`); relation `r` →
-  writer `r(DRSubject)`, key `rKey(DRKeySubject)` → `RelationshipKey`, check
+  writer `r(DRSubject)`, key `rKey(DRKeySubject)` → `RelationshipKey` (only when
+  `r` admits a caveated or expiring subject; otherwise the writer's
+  `TypedRelationship` already identifies the tuple), check
   `rRelation()` (`Permission<DRRelationSubject>`), filter `rFilter()`; plus
   `filter()`, `permissionByName`, `relationByName`, `relationshipByName`. A userset
   `d#r` on a relation gets the accessor `r()` and the writer moves to `forR`. A
@@ -206,7 +208,17 @@ and options forwarding rather than just generated text fragments.
 - Any remaining collision (between types, static members, members of one record, or
   with the hand-written runtime and the native types it names) fails generation with
   both sources named, as does an identifier that is a Java reserved word; nothing is
-  silently renamed.
+  silently renamed. `--java.rename=<definition>=<JavaName>` (comma-separated for
+  several; `JavaName` must start with an upper-case letter) overrides a definition's
+  identifier stem without changing the schema names sent to SpiceDB, e.g.
+  `--java.rename=subject=SubjectDef` for `definition subject` (whose `SubjectRef`
+  would shadow the native type); unknown definitions and invalid names fail, and
+  the collision error suggests the option.
+- `Txn` exposes `updates()`, `preconditions()` (copies; empty after a construction
+  error) and `error()`. `withSubject` always pins the subject relation (direct for
+  a subject without one); `withSubjectAnyRelation` does not. Generated comments
+  never interpolate a schema name after an article, so they need no "a"/"an"
+  selection.
 - Output is google-java-format: the template and the Go writer emit
   google-java-format's layout directly (the generator is Go and cannot run the Java
   formatter in-process), and the fixture's `spotlessCheck` (google-java-format

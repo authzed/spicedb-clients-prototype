@@ -24,11 +24,16 @@ public final class ResponseMetadata {
     return trailers;
   }
 
-  void recordHeaders(Metadata value) {
+  /**
+   * Records response headers. The client calls this for every call; test doubles and wrappers call
+   * it to report metadata as the real client would.
+   */
+  public void recordHeaders(Metadata value) {
     headers = value;
   }
 
-  void recordTrailers(Metadata value) {
+  /** Records response trailers; see {@link #recordHeaders}. */
+  public void recordTrailers(Metadata value) {
     trailers = value;
   }
 }

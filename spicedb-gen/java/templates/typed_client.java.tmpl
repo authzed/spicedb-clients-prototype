@@ -390,6 +390,21 @@ public final class Permissions {
       return updates == 0;
     }
 
+    /** A copy of the updates added so far, or an empty list after a construction error. */
+    public List<Transaction.Mutation> updates() {
+      return firstError != null ? List.of() : List.copyOf(build().mutations());
+    }
+
+    /** A copy of the preconditions added so far, or an empty list after a construction error. */
+    public List<Transaction.Precondition> preconditions() {
+      return firstError != null ? List.of() : List.copyOf(build().preconditions());
+    }
+
+    /** The first construction error, if any; {@link #build()} throws it. */
+    public Optional<RuntimeException> error() {
+      return Optional.ofNullable(firstError);
+    }
+
     /** A new native transaction; throws the first deferred construction error. */
     public Transaction build() {
       if (firstError != null) {
@@ -438,7 +453,12 @@ public final class Permissions {
 
   // --- Helpers ---
 
-  /** Narrows a filter to a subject: its type, its ID unless a type sentinel, and its relation. */
+  /**
+   * Narrows a filter to a subject: its type, its ID unless a type sentinel, and its exact subject
+   * relation. It always constrains the subject relation: a subject without one ({@code User("x")})
+   * matches only direct relationships, never usersets such as {@code team:eng#member}. Use {@link
+   * #withSubjectAnyRelation} to leave the relation unconstrained.
+   */
   public static Filter withSubject(Filter filter, Subject subject) {
     var narrowed = filter.withSubjectType(subject.definitionName());
     if (!subject.id().isEmpty()) {
@@ -448,6 +468,18 @@ public final class Permissions {
         subject.subRelation().isEmpty()
             ? SubjectRelationFilter.direct()
             : SubjectRelationFilter.named(subject.subRelation()));
+  }
+
+  /**
+   * Narrows a filter to a subject's type and its ID (unless a type sentinel), matching any subject
+   * relation, direct or userset.
+   */
+  public static Filter withSubjectAnyRelation(Filter filter, Subject subject) {
+    var narrowed = filter.withSubjectType(subject.definitionName());
+    if (!subject.id().isEmpty()) {
+      narrowed = narrowed.withSubjectId(subject.id());
+    }
+    return narrowed.withSubjectRelation(SubjectRelationFilter.any());
   }
 
   private static Filter resourceFilter(String resourceType, String resourceId, String relation) {

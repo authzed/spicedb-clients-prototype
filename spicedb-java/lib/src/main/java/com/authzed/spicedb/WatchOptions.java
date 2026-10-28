@@ -6,6 +6,7 @@ import java.util.*;
 public final class WatchOptions {
   private final WatchSchemaChanges schemaChanges;
   private final TransportOptions transport;
+  private final RetryPolicy retryPolicy;
   private final List<Filter> relationshipFilters;
   private final Duration timeout;
   private final WatchContent content;
@@ -16,6 +17,7 @@ public final class WatchOptions {
       throw new com.authzed.spicedb.errors.InvalidArgumentException(
           "schemaChanges must not be null");
     this.transport = b.transport;
+    this.retryPolicy = b.retryPolicy;
     if (transport == null)
       throw new com.authzed.spicedb.errors.InvalidArgumentException("transport must not be null");
     this.relationshipFilters = b.relationshipFilters;
@@ -43,6 +45,14 @@ public final class WatchOptions {
     return content;
   }
 
+  /**
+   * The retry policy overriding the client's for this call, or {@code null} for the client's. See
+   * {@link Builder#retryPolicy}.
+   */
+  public RetryPolicy retryPolicy() {
+    return retryPolicy;
+  }
+
   /** Per-call transport options and response-metadata capture; see {@link TransportOptions}. */
   public TransportOptions transport() {
     return transport;
@@ -61,6 +71,23 @@ public final class WatchOptions {
     /** Whether to request schema-change events (default {@link WatchSchemaChanges#EXCLUDED}). */
     public Builder schemaChanges(WatchSchemaChanges value) {
       this.schemaChanges = value;
+      return this;
+    }
+
+    private RetryPolicy retryPolicy = null;
+
+    /**
+     * Overrides the client's retry policy for this one call, including stream establishment
+     * (reopening before the first item). A policy with {@code maxRetries(0)} exempts this call,
+     * such as one supervised watch, while the client keeps retrying everything else.
+     *
+     * <p>Mutations are not retried by default. Only a write whose transaction holds only touches
+     * and no preconditions, and a schema write, are idempotent on replay and may opt in; every
+     * other mutation given a policy with retries fails with {@code InvalidArgumentException} before
+     * any request.
+     */
+    public Builder retryPolicy(RetryPolicy value) {
+      this.retryPolicy = value;
       return this;
     }
 

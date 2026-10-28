@@ -16,6 +16,7 @@ import com.authzed.spicedb.Consistency;
 import com.authzed.spicedb.Relationship;
 import com.authzed.spicedb.SpiceDBClient;
 import com.authzed.spicedb.Transaction;
+import com.authzed.spicedb.errors.InvalidArgumentException;
 import com.authzed.spicedb.errors.ResourceExhaustedException;
 import com.authzed.spicedb.errors.UnavailableException;
 import io.grpc.Server;
@@ -23,6 +24,7 @@ import io.grpc.ServerBuilder;
 import io.grpc.Status;
 import io.grpc.stub.StreamObserver;
 import java.io.IOException;
+import java.time.Duration;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
@@ -179,6 +181,57 @@ class RetryPolicyTest {
               "RESOURCE_EXHAUSTED must not be retried: retrying turns a load-shedding SpiceDB into"
                   + " a client-driven retry storm")
           .isEqualTo(1);
+    } finally {
+      server.shutdownNow().awaitTermination();
+    }
+  }
+
+  @Test
+  void anIdempotentWriteMayOptInPerCall() throws Exception {
+    // A transaction of touches without preconditions is idempotent: replaying it after a lost
+    // response leaves the same state. The caller may opt that one call into retries. A create (or
+    // any precondition) is refused before anything is sent.
+    var service = new CountingService(0, Status.UNAVAILABLE);
+    Server server = serve(service);
+    var once = RetryPolicy.builder().maxRetries(1).initialBackoff(Duration.ofMillis(1)).build();
+    try (SpiceDBClient client =
+        SpiceDBClient.createPlaintext("127.0.0.1:" + server.getPort(), "t")) {
+      var touch = new Transaction();
+      touch.touch(DOC.withRelation("viewer"));
+      assertThatThrownBy(
+              () -> client.write(touch, WriteOptions.builder().retryPolicy(once).build()))
+          .isInstanceOf(UnavailableException.class);
+      assertThat(service.writeAttempts.get()).as("one attempt plus one retry").isEqualTo(2);
+
+      var create = new Transaction();
+      create.create(DOC.withRelation("viewer"));
+      assertThatThrownBy(
+              () -> client.write(create, WriteOptions.builder().retryPolicy(once).build()))
+          .isInstanceOf(InvalidArgumentException.class);
+      assertThat(service.writeAttempts.get()).as("refused before any request").isEqualTo(2);
+    } finally {
+      server.shutdownNow().awaitTermination();
+    }
+  }
+
+  @Test
+  void oneCallCanBeExemptedFromRetries() throws Exception {
+    // A per-call policy with zero retries exempts one call (or one stream, such as a supervised
+    // watch) while the client keeps retrying everything else.
+    var service = new CountingService(1, Status.UNAVAILABLE);
+    Server server = serve(service);
+    try (SpiceDBClient client =
+        SpiceDBClient.createPlaintext("127.0.0.1:" + server.getPort(), "t")) {
+      var check = new PermissionCheck(DOC.resource(), "view", DOC.subject(), Consistency.full());
+      assertThatThrownBy(
+              () ->
+                  client.checkBulk(
+                      java.util.List.of(check),
+                      CheckOptions.builder()
+                          .retryPolicy(RetryPolicy.builder().maxRetries(0).build())
+                          .build()))
+          .isInstanceOf(UnavailableException.class);
+      assertThat(service.checkAttempts.get()).isEqualTo(1);
     } finally {
       server.shutdownNow().awaitTermination();
     }

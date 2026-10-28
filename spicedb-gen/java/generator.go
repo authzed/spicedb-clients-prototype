@@ -5,8 +5,10 @@ import (
 	"embed"
 	"fmt"
 	"os/exec"
+	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"text/template"
 
 	"github.com/authzed/spicedb-clients/spicedb-gen/generator"
@@ -28,10 +30,44 @@ func (g *Generator) Language() string {
 	return "java"
 }
 
+// renameMu serializes Generate, which installs per-call definition renames for defIdent.
+var (
+	renameMu   sync.Mutex
+	defRenames map[string]string
+)
+
+// defIdent is the Java identifier stem for a schema definition: its PascalCase name, or the
+// --java.rename override for it.
+func defIdent(name string) string {
+	if r, ok := defRenames[name]; ok {
+		return r
+	}
+	return toPascalCase(name)
+}
+
+var javaTypeIdent = regexp.MustCompile(`^[A-Z][A-Za-z0-9_$]*$`)
+
+// parseRenames parses --java.rename=def=JavaName[,def=JavaName...].
+func parseRenames(v string) (map[string]string, error) {
+	out := map[string]string{}
+	for _, pair := range strings.Split(v, ",") {
+		def, ident, ok := strings.Cut(strings.TrimSpace(pair), "=")
+		if !ok || def == "" || !javaTypeIdent.MatchString(ident) || javaReserved[ident] {
+			return nil, fmt.Errorf("--java.rename entry %q must be <definition>=<JavaName> (an identifier starting with an upper-case letter)", pair)
+		}
+		out[def] = ident
+	}
+	return out, nil
+}
+
 // Generate produces generated Java files from the parsed schema.
 //
 // Options:
 //   - "package" (required): the Java package of the generated Permissions class.
+//   - "rename" (optional): --java.rename=def=JavaName[,def=JavaName...] sets the Java identifier
+//     stem for definitions whose names would otherwise collide with generated or native
+//     identifiers (e.g. "subject=SubjectDef" for a schema with `definition subject`). Renames
+//     change Java identifiers only; the schema names sent to SpiceDB never change.
 //   - "formatter" (optional): a command that reads Java source on stdin and writes the
 //     formatted source to stdout, e.g. "google-java-format -". The template already emits
 //     google-java-format output for ordinary schema names; the formatter is the escape hatch for
@@ -41,6 +77,35 @@ func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]genera
 	if !ok || pkg == "" {
 		return nil, fmt.Errorf("java generator requires --java.package=<package> option")
 	}
+
+	renames := map[string]string{}
+	for k, v := range opts {
+		switch k {
+		case "package", "formatter":
+		case "rename":
+			r, err := parseRenames(v)
+			if err != nil {
+				return nil, err
+			}
+			renames = r
+		default:
+			return nil, fmt.Errorf("unknown Java option --java.%s", k)
+		}
+	}
+	known := map[string]bool{}
+	for _, def := range s.Definitions {
+		known[def.Name] = true
+	}
+	for def := range renames {
+		if !known[def] {
+			return nil, fmt.Errorf("--java.rename names %q, which is not a definition in the schema", def)
+		}
+	}
+
+	renameMu.Lock()
+	defer renameMu.Unlock()
+	defRenames = renames
+	defer func() { defRenames = nil }()
 
 	data, err := buildTemplateData(s, pkg)
 	if err != nil {
@@ -141,7 +206,7 @@ func checkKeyOf(st schema.SubjectType) variantKey {
 }
 
 func prefixOf(k variantKey) string {
-	p := toPascalCase(k.Def)
+	p := defIdent(k.Def)
 	switch {
 	case k.Rel != "":
 		p += toPascalCase(k.Rel)
@@ -164,9 +229,9 @@ func typeNameOf(k variantKey) string {
 
 func sentinelNameOf(k variantKey) string {
 	if k.Rel != "" {
-		return toPascalCase(k.Def) + toPascalCase(k.Rel) + "Type"
+		return defIdent(k.Def) + toPascalCase(k.Rel) + "Type"
 	}
-	return toPascalCase(k.Def) + "Type"
+	return defIdent(k.Def) + "Type"
 }
 
 type transition struct {
@@ -205,7 +270,8 @@ func (r *registry) claim(namespace, name, source string) error {
 		if prev == source {
 			return nil
 		}
-		return fmt.Errorf("java: generated identifier %q (%s) collides: %s and %s both produce it; rename one in the schema",
+		return fmt.Errorf("java: generated identifier %q (%s) collides: %s and %s both produce it; "+
+			"rename one in the schema, or keep the schema and pass --java.rename=<definition>=<JavaName> to change a definition's Java identifiers",
 			name, namespace, prev, source)
 	}
 	r.owners[key] = source
@@ -240,7 +306,7 @@ var fixedTypes = []string{
 	"Objects", "Optional", "Stream", "Collection", "ArrayList", "HashMap", "String", "Object",
 }
 
-var fixedStaticMethods = []string{"withSubject", "checksFor", "subjectRef", "subjectString", "resourceFilter", "notAllowed"}
+var fixedStaticMethods = []string{"withSubject", "withSubjectAnyRelation", "checksFor", "subjectRef", "subjectString", "resourceFilter", "notAllowed"}
 
 // refMembers are the members every definition ref record declares besides schema-derived ones.
 var refMembers = []string{
@@ -357,6 +423,9 @@ func usersetSubRefs(s *schema.Schema) map[variantKey]bool {
 
 type relInfo struct {
 	name, writer, writerIface, keyIface, checkIface string
+	// needsKey is set when some admitted subject carries a caveat or expiration; otherwise the
+	// writer's TypedRelationship already identifies the tuple, and a key would duplicate it.
+	needsKey bool
 }
 
 type permInfo struct {
@@ -428,7 +497,7 @@ func buildTemplateData(s *schema.Schema, pkg string) (TemplateData, error) {
 	defRels := map[string][]relInfo{}
 	defPerms := map[string][]permInfo{}
 	for _, d := range s.Definitions {
-		dp := toPascalCase(d.Name)
+		dp := defIdent(d.Name)
 		for _, r := range d.Relations {
 			rp := toPascalCase(r.Name)
 			info := relInfo{
@@ -445,13 +514,18 @@ func buildTemplateData(s *schema.Schema, pkg string) (TemplateData, error) {
 			for _, st := range r.AllowedSubjects {
 				writerPermits = append(writerPermits, typeNameOf(keyOf(st)))
 				keyPermits = append(keyPermits, typeNameOf(keyOf(st).base()))
+				if st.CaveatName != "" || st.Expiration {
+					info.needsKey = true
+				}
 			}
 			src := fmt.Sprintf("definition %q relation %q", d.Name, r.Name)
 			if err := addIface(info.writerIface, src+" (writer subjects)", writerPermits); err != nil {
 				return TemplateData{}, err
 			}
-			if err := addIface(info.keyIface, src+" (key subjects)", keyPermits); err != nil {
-				return TemplateData{}, err
+			if info.needsKey {
+				if err := addIface(info.keyIface, src+" (key subjects)", keyPermits); err != nil {
+					return TemplateData{}, err
+				}
 			}
 			checks := checkPermits(b.checkKeys(r.AllowedSubjects, map[string]bool{d.Name + "#" + r.Name: true}))
 			if err := addIface(info.checkIface, src+" (relation check subjects)", checks); err != nil {
@@ -813,7 +887,7 @@ func renderSentinel(k variantKey, ifaces []string) string {
 }
 
 func (b *builder) renderDefinition(d schema.Definition, rels []relInfo, perms []permInfo, subRefs map[variantKey]bool) (string, []string, DefinitionData, error) {
-	dp := toPascalCase(d.Name)
+	dp := defIdent(d.Name)
 	refKey := variantKey{Def: d.Name}
 	v := b.variants[refKey]
 	dd := DefinitionData{Name: d.Name, RefType: v.typeName, Writers: map[string]string{}, SubRefMethods: map[string]string{}}
@@ -887,9 +961,13 @@ func (b *builder) renderDefinition(d schema.Definition, rels []relInfo, perms []
 			w.dedent()
 			w.line("}")
 		}
-		for _, m := range []struct{ name, what string }{
-			{r.writer, "writer"}, {rc + "Key", "key"}, {rc + "Relation", "relation check"}, {rc + "Filter", "filter"},
-		} {
+		claims := []struct{ name, what string }{
+			{r.writer, "writer"}, {rc + "Relation", "relation check"}, {rc + "Filter", "filter"},
+		}
+		if r.needsKey {
+			claims = append(claims, struct{ name, what string }{rc + "Key", "key"})
+		}
+		for _, m := range claims {
 			if err := members.claim("member", m.name, src(fmt.Sprintf("relation %q (%s)", r.name, m.what))); err != nil {
 				return "", nil, dd, err
 			}
@@ -902,13 +980,15 @@ func (b *builder) renderDefinition(d schema.Definition, rels []relInfo, perms []
 		w.call("return TypedRelationship.of(", args, ");")
 		w.dedent()
 		w.line("}")
-		w.blank()
-		w.line("/** Identifies a relationship by tuple alone, for deletes and exact filters. */")
-		w.line("public RelationshipKey " + rc + "Key(" + r.keyIface + " subject) {")
-		w.indent()
-		w.call("return RelationshipKey.of(", args, ");")
-		w.dedent()
-		w.line("}")
+		if r.needsKey {
+			w.blank()
+			w.line("/** Identifies a relationship by tuple alone, for deletes and exact filters. */")
+			w.line("public RelationshipKey " + rc + "Key(" + r.keyIface + " subject) {")
+			w.indent()
+			w.call("return RelationshipKey.of(", args, ");")
+			w.dedent()
+			w.line("}")
+		}
 		w.blank()
 		w.line("/** Checks the relation itself (not a permission). */")
 		w.line("public Permission<" + r.checkIface + "> " + rc + "Relation() {")

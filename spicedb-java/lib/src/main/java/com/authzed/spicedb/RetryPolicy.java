@@ -10,7 +10,9 @@ import java.util.function.Consumer;
 /**
  * Client-wide retry policy for idempotent reads (and, unless {@link StreamRetries#DISABLED}, stream
  * establishment). Mutations -- writes, deletes, imports, counter registration -- are never replayed
- * under any policy.
+ * automatically. Every operation's options also accept a policy ({@code retryPolicy(...)}) that
+ * overrides this one for that call; only a write of touches without preconditions and a schema
+ * write, being idempotent on replay, may use it to opt into retries.
  *
  * <p>The default retries {@code UNAVAILABLE} and {@code ABORTED} up to three times with full-jitter
  * exponential backoff starting at 100 ms. A policy may opt into other read codes, such as {@code

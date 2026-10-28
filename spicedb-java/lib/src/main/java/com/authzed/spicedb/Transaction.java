@@ -120,6 +120,17 @@ public final class Transaction {
     return mutations.isEmpty();
   }
 
+  /**
+   * Whether replaying this transaction is safe: it contains only touches and no preconditions (an
+   * empty transaction is). This is the rule the client uses to decide whether a write may be
+   * retried.
+   */
+  public boolean isIdempotent() {
+    if (!preconditions.isEmpty()) return false;
+    for (var m : mutations) if (m.operation() != Operation.TOUCH) return false;
+    return true;
+  }
+
   /** The number of mutations, without copying them. */
   public int size() {
     return mutations.size();

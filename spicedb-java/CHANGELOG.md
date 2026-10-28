@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Per-operation retries and a fault-injecting test double
+
+- `ClientOptions.builder().operationRetryPolicy(ClientOperation, RetryPolicy)`
+  sets the retry policy for every call of one operation (for example
+  `ClientOperation.WATCH` with `maxRetries(0)` never reopens a watch), including
+  stream establishment. Precedence is per call, then per operation, then
+  client-wide. A `WRITE` policy retries only idempotent transactions and leaves
+  other writes unretried; deletes, delete-all, imports and counter
+  registration/unregistration reject a retrying policy when `ClientOptions` is
+  built (a zero-retry policy is accepted).
+- `Transaction.isIdempotent()` exposes the client's retry-eligibility rule
+  (touches only, no preconditions).
+- `InMemorySpiceDB` records every call (`calls()`, `callsOf(ClientOperation)`:
+  operation, per-operation index, arguments and options) and injects faults
+  (`setFaultHook`, `failNext`) before calls, import batches, the import commit
+  and read/export items; `serverError` builds client-shaped errors. Read and
+  export streams from the double are now lazy, so a call fault surfaces when
+  the stream is consumed, as with the real client.
+
 ### Per-call retries, single-request paging, test double and generator additions
 
 - Every options class has `retryPolicy(RetryPolicy)`, which overrides the

@@ -236,4 +236,51 @@ class RetryPolicyTest {
       server.shutdownNow().awaitTermination();
     }
   }
+
+  @Test
+  void oneOperationCanBeConfiguredClientWide() throws Exception {
+    // A client-wide per-operation policy applies to every call of one operation, with no per-call
+    // option: here bulk checks are never retried (as a supervised watch would never be reopened),
+    // and idempotent writes are, while every other operation keeps the client's policy. A per-call
+    // policy would still win over either.
+    var service = new CountingService(1, Status.UNAVAILABLE);
+    Server server = serve(service);
+    var once = RetryPolicy.builder().maxRetries(1).initialBackoff(Duration.ofMillis(1)).build();
+    var options =
+        ClientOptions.builder()
+            .operationRetryPolicy(
+                ClientOperation.CHECK_BULK, RetryPolicy.builder().maxRetries(0).build())
+            .operationRetryPolicy(ClientOperation.WRITE, once)
+            .build();
+    try (SpiceDBClient client =
+        SpiceDBClient.createPlaintext("127.0.0.1:" + server.getPort(), "t", options)) {
+      var check = new PermissionCheck(DOC.resource(), "view", DOC.subject(), Consistency.full());
+      assertThatThrownBy(() -> client.checkBulk(java.util.List.of(check)))
+          .isInstanceOf(UnavailableException.class);
+      assertThat(service.checkAttempts.get()).isEqualTo(1);
+
+      // The write policy retries only transactions that are idempotent on replay; any other write
+      // is sent once, without an error about the policy.
+      var touch = new Transaction();
+      touch.touch(DOC.withRelation("viewer"));
+      assertThat(touch.isIdempotent()).isTrue();
+      assertThatThrownBy(() -> client.write(touch)).isInstanceOf(UnavailableException.class);
+      assertThat(service.writeAttempts.get()).as("one attempt plus one retry").isEqualTo(2);
+      var create = new Transaction();
+      create.create(DOC.withRelation("viewer"));
+      assertThat(create.isIdempotent()).isFalse();
+      assertThatThrownBy(() -> client.write(create)).isInstanceOf(UnavailableException.class);
+      assertThat(service.writeAttempts.get()).as("sent once").isEqualTo(3);
+    } finally {
+      server.shutdownNow().awaitTermination();
+    }
+
+    // Operations that are never safe to replay refuse a retrying policy when the client is built.
+    assertThatThrownBy(
+            () ->
+                ClientOptions.builder()
+                    .operationRetryPolicy(ClientOperation.DELETE_RELATIONSHIPS, once)
+                    .build())
+        .isInstanceOf(InvalidArgumentException.class);
+  }
 }

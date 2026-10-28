@@ -165,6 +165,11 @@ authzed-java stubs have no deadline and no retries. spicedb-java:
   to never reopen a supervised watch, or a policy on a touch-only `write` or a
   `writeSchema` to retry those idempotent writes. Other mutations reject the
   opt-in.
+- sets that override for every call of one operation with
+  `ClientOptions.builder().operationRetryPolicy(ClientOperation.WATCH, ...)`
+  (a per-call policy still wins). A `WRITE` policy retries only transactions
+  where `isIdempotent()` is true; deletes, imports and counter registration
+  accept only a zero-retry policy.
 
 ## Consistency on schema reads
 
@@ -242,4 +247,8 @@ Replace hand-written stub fakes with `com.authzed.spicedb.testing.InMemorySpiceD
 which implements the same `PermissionsApi` interface as `SpiceDBClient` and
 applies preconditions, `CREATE` conflicts and filter semantics like the server,
 and also covers imports, exports and schema reads and writes, with errors shaped
-like the client's. Build expected errors with `ErrorMapper.newError(Status.Code.X, message)`.
+like the client's. Build expected errors with `ErrorMapper.newError(Status.Code.X, message)`
+(or `InMemorySpiceDB.serverError`). Instead of a strict mock, assert on the
+recorded `calls()`/`callsOf(op)` (arguments and options), and replace stubbed
+failures with `failNext(op, error)` or a `setFaultHook` that fails at a call,
+an import batch, the import commit, or a read/export item.

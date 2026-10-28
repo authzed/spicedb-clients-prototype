@@ -11,6 +11,7 @@ import com.authzed.spicedb.errors.ErrorMapper;
 import com.authzed.spicedb.errors.FailedPreconditionException;
 import com.authzed.spicedb.errors.InvalidArgumentException;
 import com.authzed.spicedb.errors.NotFoundException;
+import com.authzed.spicedb.errors.UnavailableException;
 import com.authzed.spicedb.testing.InMemorySpiceDB;
 import io.grpc.Metadata;
 import io.grpc.Status;
@@ -262,5 +263,147 @@ class InMemorySpiceDBTest {
             .build());
     assertEquals("v1.99", capture.headers().get(key));
     assertTrue(capture.trailers() != null);
+  }
+
+  private static List<Relationship> users(int n) {
+    var out = new java.util.ArrayList<Relationship>();
+    for (int i = 0; i < n; i++) out.add(rel("document:d" + i + "#viewer@user:u" + i));
+    return out;
+  }
+
+  @Test
+  void anImportBatchFaultAppliesNothing() {
+    var db = new InMemorySpiceDB();
+    db.setFaultHook(
+        f ->
+            f.stage() == InMemorySpiceDB.FaultStage.IMPORT_BATCH && f.item() == 2
+                ? InMemorySpiceDB.serverError(Status.Code.ALREADY_EXISTS, "duplicate")
+                : null);
+    var e =
+        assertThrows(
+            AlreadyExistsException.class,
+            () -> db.importRelationships(users(7), ImportOptions.builder().batchSize(3).build()));
+    assertEquals("duplicate", e.serverMessage());
+    assertTrue(db.relationships().isEmpty(), "a failed import applies nothing");
+
+    // The commit point fails after every batch was sent, still applying nothing.
+    db.setFaultHook(
+        f ->
+            f.stage() == InMemorySpiceDB.FaultStage.IMPORT_COMMIT
+                ? InMemorySpiceDB.serverError(Status.Code.UNAVAILABLE, "gone")
+                : null);
+    assertThrows(UnavailableException.class, () -> db.importRelationships(users(2)));
+    assertTrue(db.relationships().isEmpty());
+    db.setFaultHook(null);
+    assertEquals(2, db.importRelationships(users(2)));
+  }
+
+  @Test
+  void anExportFailsAfterKItems() {
+    var db = new InMemorySpiceDB();
+    db.importRelationships(users(5));
+    db.setFaultHook(
+        f ->
+            f.stage() == InMemorySpiceDB.FaultStage.ITEM && f.item() == 3
+                ? InMemorySpiceDB.serverError(Status.Code.UNAVAILABLE, "stream broke")
+                : null);
+    var seen = new java.util.ArrayList<ExportedRelationship>();
+    try (var s = db.exportRelationships(Consistency.full(), null)) {
+      var it = s.iterator();
+      assertThrows(
+          UnavailableException.class,
+          () -> {
+            while (it.hasNext()) seen.add(it.next());
+          });
+    }
+    assertEquals(3, seen.size(), "exactly the items before the fault are yielded");
+
+    // Reads use the same point.
+    try (var s = db.readRelationships(Consistency.full(), Filter.of("document"))) {
+      assertThrows(UnavailableException.class, s::toList);
+    }
+  }
+
+  @Test
+  void failNextAffectsExactlyOneCall() {
+    var db = new InMemorySpiceDB();
+    db.failNext(
+        ClientOperation.WRITE, InMemorySpiceDB.serverError(Status.Code.UNAVAILABLE, "try again"));
+    var txn = new Transaction();
+    txn.touch(rel("document:a#viewer@user:alice"));
+    assertEquals(0, countViewers(db), "other operations are unaffected");
+    assertThrows(UnavailableException.class, () -> db.write(txn));
+    assertEquals(0, countViewers(db), "a failed write applies nothing");
+    db.write(txn);
+    db.write(txn);
+    assertEquals(1, countViewers(db));
+
+    // Streaming operations fail where the real client would: when the stream is consumed.
+    db.failNext(
+        ClientOperation.READ_RELATIONSHIPS,
+        InMemorySpiceDB.serverError(Status.Code.UNAVAILABLE, "try again"));
+    try (var s = db.readRelationships(Consistency.full(), Filter.of("document"))) {
+      assertThrows(UnavailableException.class, s::toList);
+    }
+    assertEquals(1, countViewers(db));
+  }
+
+  @Test
+  void recordedCallsExposeArgumentsAndOptions() {
+    var db = new InMemorySpiceDB();
+    var txn = new Transaction();
+    txn.touch(rel("document:a#viewer@user:alice"));
+    var retry = RetryPolicy.builder().maxRetries(1).build();
+    db.write(txn, WriteOptions.builder().retryPolicy(retry).build());
+    db.write(txn);
+    var check =
+        PermissionCheck.builder()
+            .resource(new ObjectRef("document", "a"))
+            .permission("view")
+            .subject(SubjectRef.direct(new ObjectRef("user", "alice")))
+            .consistency(Consistency.full())
+            .build();
+    db.check(check, CheckOptions.builder().tracing(CheckTracing.ENABLED).build());
+    try (var s =
+        db.readRelationships(
+            Consistency.minLatency(),
+            Filter.of("document"),
+            ReadOptions.builder().limit(5).build())) {
+      s.toList();
+    }
+
+    var calls = db.calls();
+    assertEquals(
+        List.of(
+            ClientOperation.WRITE,
+            ClientOperation.WRITE,
+            ClientOperation.CHECK,
+            ClientOperation.READ_RELATIONSHIPS),
+        calls.stream().map(InMemorySpiceDB.Call::operation).toList());
+    var writes = db.callsOf(ClientOperation.WRITE);
+    assertEquals(0, writes.get(0).index());
+    assertEquals(1, writes.get(1).index());
+    assertEquals(List.of(txn), writes.get(0).arguments());
+    assertEquals(retry, writes.get(0).options(WriteOptions.class).retryPolicy());
+    assertNull(writes.get(1).options(WriteOptions.class).retryPolicy(), "defaults are recorded");
+    assertEquals(
+        CheckTracing.ENABLED,
+        db.callsOf(ClientOperation.CHECK).get(0).options(CheckOptions.class).tracing());
+    var read = db.callsOf(ClientOperation.READ_RELATIONSHIPS).get(0);
+    assertEquals(List.of(Consistency.minLatency(), Filter.of("document")), read.arguments());
+    assertEquals(5, read.options(ReadOptions.class).limit());
+
+    // The fault hook sees the call it interrupts.
+    var seen = new java.util.ArrayList<InMemorySpiceDB.Fault>();
+    db.setFaultHook(
+        f -> {
+          seen.add(f);
+          return null;
+        });
+    db.writeSchema("definition user {}");
+    assertEquals(1, seen.size());
+    assertEquals(InMemorySpiceDB.FaultStage.CALL, seen.get(0).stage());
+    assertEquals(ClientOperation.WRITE_SCHEMA, seen.get(0).call().operation());
+    assertEquals(List.of("definition user {}"), seen.get(0).call().arguments());
   }
 }

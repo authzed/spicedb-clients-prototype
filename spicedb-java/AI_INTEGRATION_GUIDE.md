@@ -156,6 +156,7 @@ try {
   never retries writes, deletes or imports on its own. A write of touches
   without preconditions, and `writeSchema`, may opt in per call with
   `WriteOptions.builder().retryPolicy(...)`; other mutations reject that.
+  `txn.isIdempotent()` is the client's own eligibility rule.
 
 ## Read relationships
 
@@ -200,6 +201,8 @@ var toolOptions =
         .retries(Retries.DISABLED) // or .retryPolicy(RetryPolicy.builder().maxRetries(2).build())
         .defaultDeadline(DefaultDeadline.DISABLED)
         .streamRetries(StreamRetries.DISABLED)
+        // every call of one operation; a per-call .retryPolicy(...) still wins
+        .operationRetryPolicy(ClientOperation.WATCH, RetryPolicy.builder().maxRetries(0).build())
         .build();
 var metadata = new ResponseMetadata();
 client.readSchema(
@@ -245,12 +248,19 @@ db.setCheckResult(
     SubjectRef.direct(new ObjectRef("user", "alice")),
     Permissionship.HAS_PERMISSION);
 SpiceDBException expected = ErrorMapper.newError(Status.Code.FAILED_PRECONDITION, "guard");
+db.failNext(
+    ClientOperation.WRITE, InMemorySpiceDB.serverError(Status.Code.UNAVAILABLE, "try again"));
+List<InMemorySpiceDB.Call> writes = db.callsOf(ClientOperation.WRITE);
 ```
 
 Depend on `PermissionsApi` (`write`, `readRelationships`, `deleteRelationships`,
 `check`, `checkBulk`, `importRelationships`, `exportRelationships`, `readSchema`,
 `writeSchema`, `reflectSchema`); both `SpiceDBClient` and `InMemorySpiceDB` implement it,
 and a `TypedClient` provides one through `tc.client()`. The double applies
-preconditions, `CREATE` conflicts and filter semantics like the server.
+preconditions, `CREATE` conflicts and filter semantics like the server. It
+records every call (`calls()`, `callsOf(op)`: arguments and options) and
+injects faults with `setFaultHook` (before a call, each import batch, the
+import commit, each read/export item) or `failNext`; a failed write or import
+applies nothing.
 For integration tests, run `authzed/spicedb serve-testing` and assert both
 granted and denied cases.

@@ -997,6 +997,11 @@ class SpiceDBClient(ClientConfig):
         def batches():
             try:
                 yield from _requests.import_batches(relationships, batch_size)
+            except GeneratorExit:
+                # grpc closes the request iterator when the call ends -- for
+                # example when the server aborts with ALREADY_EXISTS. That is
+                # not a producer failure; the call's own status is the error.
+                raise
             except BaseException as error:
                 failures.append(error)
                 if call is not None:

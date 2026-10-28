@@ -229,8 +229,10 @@ and options forwarding rather than just generated text fragments.
   `with_expiration(t)`; a caveated, expiring subject chains through its
   caveated variant.
 - On `D`: permission `p` → property `p` (a narrowed `Permission`); relation
-  `r` → writer `r(subject)`, key `r_key(subject)` → `RelationshipKey`, check
-  property `r_relation`, filter `r_filter()`; plus `filter()`,
+  `r` → writer `r(subject)`, key `r_key(subject)` → `RelationshipKey` (only
+  when `r` admits a caveated or expiring subject; elsewhere the writer's
+  `TypedRelationship` already identifies the tuple), check property
+  `r_relation`, filter `r_filter()`; plus `filter()`,
   `permission_by_name`, `relation_by_name` and `relationship_by_name` (raising
   `NotInSchemaError` / `SubjectNotAllowedError`). A userset `d#r` on a
   relation gets the property `r` and the writer moves to `for_r`. A userset
@@ -249,14 +251,28 @@ and options forwarding rather than just generated text fragments.
   `to_relationship()`, `from_relationship()` (not schema-checked) and
   `from_error()`; writers defer construction errors into it. `TypedTransaction`
   defers the first error to `build()`/`TypedClient.write_txn`, which never
-  shadows the native `write`. `with_subject(filter, subject_or_class)` narrows
-  native filters. `TypedClient.check_dynamic` checks by-name permissions with
+  shadows the native `write`, and exposes `updates`, `preconditions` (native
+  values, empty after an error) and `error`. `with_subject(filter,
+  subject_or_class)` narrows native filters and always pins the subject
+  relation (direct for a subject without one); `with_subject_any_relation`
+  leaves it unconstrained. `TypedClient.check_dynamic` checks by-name permissions with
   runtime subject validation.
 - Sync and aio clients render from one template. Any collision between
   generated identifiers fails generation naming both sources; nothing is
-  silently renamed. `--python.module` names the types module (default
+  silently renamed. `--python.rename=<definition>=<ClassName>`
+  (comma-separated for several) overrides a definition's class-name stem
+  (and its `UPPER_SNAKE` constant stem) without changing the schema names sent
+  to SpiceDB, e.g. `--python.rename=subject=SubjectDef` for a schema with
+  `definition subject`; unknown definitions and non-PascalCase names fail, and
+  the collision error suggests it. A test generates such a schema (with a
+  caveat calling an undeclared CEL function) and type-checks it with pyright.
+  `--python.module` names the types module (default
   `permissions`); `sync.py`/`aio.py` import it relatively. Output is
   `ruff format` clean at the default line length without running ruff.
+- `check`, `lookup_resources` and `lookup_subjects` get one `@overload` per
+  admitted permission/relation when there are at least two; a lone overload
+  becomes the implementation's signature, since Python rejects a single
+  overload.
 - Negative type fixtures mark each forbidden line `# should not type-check`.
   The Magefile runs pyright with JSON output and requires an error on every
   marked line and on no other line.

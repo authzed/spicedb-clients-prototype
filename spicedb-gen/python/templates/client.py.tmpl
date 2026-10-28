@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from collections.abc import {{if .Async}}AsyncIterable, {{end}}Callable, Iterable, Sequence
-from typing import Any, overload
+from typing import Any{{if .HasOverloads}}, overload{{end}}
 
 import grpc{{if .Async}}.aio{{end}}
 from spicedb import (
@@ -24,6 +24,7 @@ from spicedb import (
     LookupResource,
     LookupSubject,
     ObjectRef,
+    Paging,
     PermissionCheck,
     PermissionSetCursor,
     PermissionSetDownload,
@@ -152,7 +153,7 @@ class TypedClient:
         {{$await}}self.client.close()
 
     # -- check --
-{{range $c := .Checkables}}{{if $c.SubjectUnion}}
+{{if gt (len .CheckOverloads) 1}}{{range $c := .CheckOverloads}}
     @overload
     {{$def}} check(
         self,
@@ -169,8 +170,8 @@ class TypedClient:
     {{$def}} check(
         self,
         c: Consistency,
-        p: Any,
-        s: Any,
+        p: {{.CheckImpl.P}},
+        s: {{.CheckImpl.S}},
         *,
         context: JSONObject | None = None,
         tracing: Tracing = Tracing.DISABLED,
@@ -283,7 +284,7 @@ class TypedClient:
         )
 
     # -- lookup_resources --
-{{range $c := .Checkables}}{{if and $c.SubjectUnion $c.RefClassName}}
+{{if gt (len .LookupResourcesOverloads) 1}}{{range $c := .LookupResourcesOverloads}}
     @overload
     def lookup_resources(
         self,
@@ -297,6 +298,7 @@ class TypedClient:
         page_size: int = 1000,
         debug: LookupDebug = LookupDebug.DISABLED,
         cursor: str | None = None,
+        paging: Paging = Paging.AUTOMATIC,
         timeout: float | None = None,
         call_options: CallOptions | None = None,
     ) -> {{$stream}}[LookupResource]: ...
@@ -304,8 +306,8 @@ class TypedClient:
     def lookup_resources(
         self,
         c: Consistency,
-        p: Any,
-        s: Any,
+        p: {{.LookupResourcesImpl.P}},
+        s: {{.LookupResourcesImpl.S}},
         *,
         context: JSONObject | None = None,
         permissionship_filter: LookupPermissionshipFilter = LookupPermissionshipFilter.ALL,
@@ -313,6 +315,7 @@ class TypedClient:
         page_size: int = 1000,
         debug: LookupDebug = LookupDebug.DISABLED,
         cursor: str | None = None,
+        paging: Paging = Paging.AUTOMATIC,
         timeout: float | None = None,
         call_options: CallOptions | None = None,
     ) -> {{$stream}}[LookupResource]:
@@ -328,12 +331,13 @@ class TypedClient:
             page_size=page_size,
             debug=debug,
             cursor=cursor,
+            paging=paging,
             timeout=timeout,
             call_options=call_options,
         )
 
     # -- lookup_subjects --
-{{range $c := .Checkables}}{{if $c.LookupTypes}}
+{{if gt (len .LookupSubjectsOverloads) 1}}{{range $c := .LookupSubjectsOverloads}}
     @overload
     def lookup_subjects(
         self,
@@ -352,8 +356,8 @@ class TypedClient:
     def lookup_subjects(
         self,
         c: Consistency,
-        p: Any,
-        t: Any,
+        p: {{.LookupSubjectsImpl.P}},
+        t: {{.LookupSubjectsImpl.S}},
         *,
         context: JSONObject | None = None,
         page_size: int | None = None,
@@ -385,6 +389,7 @@ class TypedClient:
         *,
         page_size: int = 1000,
         cursor: str | None = None,
+        paging: Paging = Paging.AUTOMATIC,
         timeout: float | None = None,
         call_options: CallOptions | None = None,
     ) -> {{$stream}}[ReadRelationship]:
@@ -394,6 +399,7 @@ class TypedClient:
             consistency=c,
             page_size=page_size,
             cursor=cursor,
+            paging=paging,
             timeout=timeout,
             call_options=call_options,
         )

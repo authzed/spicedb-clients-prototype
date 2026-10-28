@@ -26,9 +26,10 @@ require_relative '../spec_helper'
 class CountingService < Authzed::Api::V1::PermissionsService::Service
   attr_reader :check_attempts, :write_attempts
 
-  def initialize(check_failures: 0, check_error: nil)
+  def initialize(check_failures: 0, check_error: nil, write_failures: Float::INFINITY)
     @check_attempts = 0
     @write_attempts = 0
+    @write_failures = write_failures
     @check_failures = check_failures
     @check_error = check_error || GRPC::Unavailable
     super()
@@ -43,8 +44,10 @@ class CountingService < Authzed::Api::V1::PermissionsService::Service
 
   def write_relationships(_request, _call)
     @write_attempts += 1
-    # Always fails, transiently. A retrying client would come back.
-    raise GRPC::Unavailable, 'transient, from the stand-in'
+    # Fails transiently (by default, always). A retrying client would come back.
+    raise GRPC::Unavailable, 'transient, from the stand-in' if @write_attempts <= @write_failures
+
+    Authzed::Api::V1::WriteRelationshipsResponse.new(written_at: Authzed::Api::V1::ZedToken.new(token: 'written'))
   end
 end
 
@@ -143,6 +146,42 @@ RSpec.describe 'Retry policy' do
     service = CountingService.new(check_failures: 1)
     with_stand_in(service, retries: SpiceDB::Retries::DISABLED) do |c|
       expect { check_readme(c) }.to raise_error(SpiceDB::UnavailableError)
+    end
+    expect(service.check_attempts).to eq(1)
+  end
+
+  def readme_viewer(operation)
+    alice = SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: 'alice'))
+    relationship = SpiceDB::Relationship.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'readme'), relation: 'viewer',
+                                             subject: alice)
+    SpiceDB::Transaction.new.public_send(operation, relationship)
+  end
+
+  it 'lets one idempotent write opt in to retries, and refuses the opt-in elsewhere', :no_spicedb do
+    # A touch-only write without preconditions converges to the same state
+    # however often it is replayed, so the caller may opt that one call in.
+    # A create (or a delete, or anything preconditioned) is refused before
+    # any request: replaying it after a lost response would misreport it.
+    once = SpiceDB::RetryPolicy.new(max_retries: 1, initial_backoff: 0.01)
+    service = CountingService.new(write_failures: 1)
+    with_stand_in(service) do |c|
+      expect(c.write(readme_viewer(:touch), retry_policy: once).revision.to_s).to eq('written')
+      expect { c.write(readme_viewer(:create), retry_policy: once) }.to raise_error(SpiceDB::InvalidArgumentError)
+    end
+    expect(service.write_attempts).to eq(2), 'one failure, one retried success, and no request for the refused create'
+  end
+
+  it 'exempts one call from the client policy', :no_spicedb do
+    # A per-call policy wins for that call (and, for a stream, its
+    # establishment): here one check is never retried while the client keeps
+    # retrying every other read.
+    service = CountingService.new(check_failures: 1)
+    with_stand_in(service) do |c|
+      alice = SpiceDB::SubjectRef.new(object: SpiceDB::ObjectRef.new(object_type: 'user', object_id: 'alice'))
+      check = SpiceDB::PermissionCheck.new(resource: SpiceDB::ObjectRef.new(object_type: 'document', object_id: 'readme'), permission: 'view',
+                                           subject: alice)
+      expect { c.check(check, consistency: SpiceDB::Consistency.full, retry_policy: SpiceDB::RetryPolicy.new(max_retries: 0)) }
+        .to raise_error(SpiceDB::UnavailableError)
     end
     expect(service.check_attempts).to eq(1)
   end

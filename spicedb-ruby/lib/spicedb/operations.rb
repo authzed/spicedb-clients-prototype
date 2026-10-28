@@ -2,20 +2,24 @@
 
 module SpiceDB
   module Operations
+    MAX_UINT32 = (2**32) - 1
+    private_constant :MAX_UINT32
+
     private
 
-    def unary_budget(timeout, call_options = nil)
+    def unary_budget(timeout, call_options = nil, retry_policy: nil)
       raise Error, 'client is closed' if @closed
 
-      Budget.new(timeout || (@default_deadline == DefaultDeadline::ENABLED ? @default_timeout : nil), call_options: call_options)
+      Budget.new(timeout || (@default_deadline == DefaultDeadline::ENABLED ? @default_timeout : nil), call_options: call_options,
+                                                                                                      retry_policy: retry_policy)
     end
 
-    def stream_budget(timeout, call_options = nil)
-      Budget.new(timeout, call_options: call_options)
+    def stream_budget(timeout, call_options = nil, retry_policy: nil)
+      Budget.new(timeout, call_options: call_options, retry_policy: retry_policy)
     end
 
-    def with_budget(timeout, call_options = nil, retryable: true, operation: nil)
-      budget = unary_budget(timeout, call_options)
+    def with_budget(timeout, call_options = nil, retryable: true, operation: nil, retry_policy: nil)
+      budget = unary_budget(timeout, call_options, retry_policy: retry_policy)
       with_retry(budget: budget, retryable: retryable, operation: operation) { yield budget }
     end
 
@@ -96,12 +100,18 @@ module SpiceDB
       stream.close if block_given?
     end
 
-    def stream_retry?(error, produced, attempt)
-      produced.zero? && @retries == Retries::ENABLED && @stream_retries == StreamRetries::ENABLED &&
-        attempt < @retry_policy.max_retries && @retry_policy.retryable?(error)
+    # The policy that may re-establish a stream before it exposes an item: the
+    # call's own +retry_policy:+ (which also overrides StreamRetries::DISABLED
+    # and watch's default of never re-establishing), else the client's.
+    def stream_retry_policy(budget, retryable)
+      return budget.retry_policy if budget.retry_policy
+      return nil unless retryable && @stream_retries == StreamRetries::ENABLED
+
+      call_retry_policy(budget)
     end
 
     def consume_rpc(stream, service, operation, request, budget, retryable: true)
+      policy = stream_retry_policy(budget, retryable)
       produced = 0
       attempt = 0
       begin
@@ -117,13 +127,13 @@ module SpiceDB
         raise StopIteration if stream.closed?
 
         record_metadata(budget, call, e) if call && e.is_a?(GRPC::BadStatus)
-        if retryable && stream_retry?(e, produced, attempt)
+        if policy && produced.zero? && attempt < policy.max_retries && policy.retryable?(e)
           call&.cancel
           stream.detach(call) if call
           call = nil
           attempt += 1
-          delay = @retry_policy.delay(attempt)
-          notify_retry(operation, attempt, e, delay)
+          delay = policy.delay(attempt)
+          notify_retry(policy, operation, attempt, e, delay)
           budget.sleep(delay)
           retry
         end
@@ -155,14 +165,19 @@ module SpiceDB
     # different arguments. The cursor itself pins later pages to the first
     # page's revision. A total limit is enforced here, never by shrinking the
     # last page's limit.
-    def paged_stream(service, operation, request, page_size, limit, budget, cursor, mapper, include_result: nil, &)
+    #
+    # With +paging: Paging::SINGLE_REQUEST+ exactly one request is sent, as
+    # the raw API does: its limit is +limit+ (0, unbounded, without one), the
+    # page size is ignored, and no follow-up page is requested.
+    def paged_stream(service, operation, request, page_size, limit, budget, cursor, mapper, include_result: nil, paging: Paging::AUTOMATIC, &)
       positive(page_size, 'page_size')
       positive(limit, 'limit') if limit
+      single = Paging.validate(paging) == Paging::SINGLE_REQUEST
       stream = make_stream do |owner, out|
         delivered = 0
         loop do
           count = 0
-          request.optional_limit = page_size
+          request.optional_limit = single ? [limit || 0, MAX_UINT32].min : page_size
           request.optional_cursor = cursor_proto(cursor)
           previous = cursor
           consume_rpc(owner, service, operation, request, budget) do |response|
@@ -175,7 +190,7 @@ module SpiceDB
             out << result
             break if limit && delivered >= limit
           end
-          break if count < page_size || (limit && delivered >= limit)
+          break if single || count < page_size || (limit && delivered >= limit)
           raise Error, 'paged stream did not advance its cursor' if cursor.nil? || cursor.empty? || cursor == previous
         end
       end

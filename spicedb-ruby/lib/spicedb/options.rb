@@ -53,7 +53,8 @@ module SpiceDB
   end
 
   # Whether idempotent reads retry at all. DISABLED is for callers applying
-  # their own policy; mutations never retry under any setting.
+  # their own policy; a per-call +retry_policy:+ still applies to that call.
+  # Mutations never retry unless one call opts in (see Client#write).
   class Retries < Option
     cases :ENABLED, :DISABLED
   end
@@ -62,6 +63,15 @@ module SpiceDB
   # DISABLED suits long-lived streams such as watch.
   class StreamRetries < Option
     cases :ENABLED, :DISABLED
+  end
+
+  # How read_relationships and lookup_resources fetch results. AUTOMATIC (the
+  # default) pages until results or the limit run out; SINGLE_REQUEST sends
+  # exactly one request, as the raw API does: its limit is +limit:+ (or
+  # unbounded without one), +page_size:+ is ignored and no follow-up page is
+  # requested. Items still carry their cursors.
+  class Paging < Option
+    cases :AUTOMATIC, :SINGLE_REQUEST
   end
 
   # How check_bulk reports a per-item failure: RAISED fails the call with the

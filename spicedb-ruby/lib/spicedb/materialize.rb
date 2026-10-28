@@ -12,27 +12,29 @@ module SpiceDB
   DownloadPermissionSetsResult = Values.record(:files, :timestamp, :revision)
 
   module Materialize
-    def experimental_count_relationships_by_filter(filter, timeout: nil, call_options: nil)
-      budget = unary_budget(timeout, call_options)
+    def experimental_count_relationships_by_filter(filter, timeout: nil, call_options: nil, retry_policy: nil)
+      budget = unary_budget(timeout, call_options, retry_policy: retry_policy)
       request = Authzed::Api::Materialize::V0::ExperimentalCountRelationshipsByFilterRequest.new(relationship_filter: filter_to_proto(filter))
       response = rpc(@proto_client.materialize_relationships, :experimental_count_relationships_by_filter, request, budget)
       CountResult.new(relationship_count: response.relationship_count, revision: ZedToken.from_proto(response.read_at), still_calculating: false)
     end
 
-    def experimental_watch_permission_sets(start_revision: nil, timeout: nil, call_options: nil, &)
+    def experimental_watch_permission_sets(start_revision: nil, timeout: nil, call_options: nil, retry_policy: nil, &)
       request = Authzed::Api::Materialize::V0::WatchPermissionSetsRequest.new(optional_starting_after: token_to_proto(start_revision))
-      response_stream(:permission_sets, :watch_permission_sets, request, stream_budget(timeout, call_options), retryable: false,
-                                                                                                               mapper: method(:permission_set_event), &)
+      response_stream(:permission_sets, :watch_permission_sets, request, stream_budget(timeout, call_options, retry_policy: retry_policy),
+                      retryable: false,
+                      mapper: method(:permission_set_event), &)
     end
 
     # One bounded lookup exposes the cursor for explicit durable resumption.
-    def experimental_lookup_permission_sets(limit: 1000, at_revision: nil, cursor: nil, timeout: nil, call_options: nil, &)
+    def experimental_lookup_permission_sets(limit: 1000, at_revision: nil, cursor: nil, timeout: nil, call_options: nil, retry_policy: nil, &)
       positive(limit, 'limit')
       request = Authzed::Api::Materialize::V0::LookupPermissionSetsRequest.new(limit: limit,
                                                                                optional_at_revision: token_to_proto(at_revision),
                                                                                optional_starting_after_cursor: cursor &&
         Authzed::Api::Materialize::V0::Cursor.new(**cursor.to_h, token: token_to_proto(cursor.token)))
-      response_stream(:permission_sets, :lookup_permission_sets, request, stream_budget(timeout, call_options), mapper: lambda { |response|
+      budget = stream_budget(timeout, call_options, retry_policy: retry_policy)
+      response_stream(:permission_sets, :lookup_permission_sets, request, budget, mapper: lambda { |response|
         wire = response.cursor
         PermissionSetLookup.new(change: permission_set_change(response.change), cursor: wire && PermissionSetCursor.new(
           limit: wire.limit, token: ZedToken.from_proto(wire.token), starting_index: wire.starting_index,
@@ -41,8 +43,8 @@ module SpiceDB
       }, &)
     end
 
-    def experimental_download_permission_sets(at_revision: nil, timeout: nil, call_options: nil)
-      budget = unary_budget(timeout, call_options)
+    def experimental_download_permission_sets(at_revision: nil, timeout: nil, call_options: nil, retry_policy: nil)
+      budget = unary_budget(timeout, call_options, retry_policy: retry_policy)
       request = Authzed::Api::Materialize::V0::DownloadPermissionSetsRequest.new(optional_at_revision: token_to_proto(at_revision))
       response = rpc(@proto_client.permission_sets, :download_permission_sets, request, budget)
       DownloadPermissionSetsResult.new(files: response.files.map { |file| DownloadFile.new(name: file.name, url: file.url) },

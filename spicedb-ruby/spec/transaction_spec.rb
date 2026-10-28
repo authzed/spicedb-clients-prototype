@@ -19,8 +19,8 @@ RSpec.describe SpiceDB::Transaction do
       txn.create(rel)
 
       expect(txn.updates.length).to eq(1)
-      expect(txn.updates[0][:operation]).to eq(:create)
-      expect(txn.updates[0][:relationship]).to eq(rel)
+      expect(txn.updates[0].operation).to eq(:create)
+      expect(txn.updates[0].relationship).to eq(rel)
     end
 
     it 'returns self for chaining' do
@@ -36,8 +36,8 @@ RSpec.describe SpiceDB::Transaction do
       txn.touch(rel)
 
       expect(txn.updates.length).to eq(1)
-      expect(txn.updates[0][:operation]).to eq(:touch)
-      expect(txn.updates[0][:relationship]).to eq(rel)
+      expect(txn.updates[0].operation).to eq(:touch)
+      expect(txn.updates[0].relationship).to eq(rel)
     end
   end
 
@@ -47,8 +47,8 @@ RSpec.describe SpiceDB::Transaction do
       txn.delete(rel)
 
       expect(txn.updates.length).to eq(1)
-      expect(txn.updates[0][:operation]).to eq(:delete)
-      expect(txn.updates[0][:relationship]).to eq(rel)
+      expect(txn.updates[0].operation).to eq(:delete)
+      expect(txn.updates[0].relationship).to eq(rel)
     end
   end
 
@@ -60,7 +60,7 @@ RSpec.describe SpiceDB::Transaction do
       txn.delete(rel)
 
       expect(txn.updates.length).to eq(3)
-      expect(txn.updates.map { |u| u[:operation] }).to eq(%i[create touch delete])
+      expect(txn.updates.map(&:operation)).to eq(%i[create touch delete])
     end
   end
 
@@ -71,8 +71,8 @@ RSpec.describe SpiceDB::Transaction do
       txn.must_not_match(filter)
 
       expect(txn.preconditions.length).to eq(1)
-      expect(txn.preconditions[0][:operation]).to eq(:must_not_match)
-      expect(txn.preconditions[0][:filter]).to eq(filter)
+      expect(txn.preconditions[0].operation).to eq(:must_not_match)
+      expect(txn.preconditions[0].filter).to eq(filter)
     end
 
     it 'returns self for chaining' do
@@ -90,8 +90,8 @@ RSpec.describe SpiceDB::Transaction do
       txn.must_match(filter)
 
       expect(txn.preconditions.length).to eq(1)
-      expect(txn.preconditions[0][:operation]).to eq(:must_match)
-      expect(txn.preconditions[0][:filter]).to eq(filter)
+      expect(txn.preconditions[0].operation).to eq(:must_match)
+      expect(txn.preconditions[0].filter).to eq(filter)
     end
   end
 

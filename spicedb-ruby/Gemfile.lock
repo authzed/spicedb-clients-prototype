@@ -2,14 +2,15 @@ PATH
   remote: ../proto-clients/spicedb-ruby-proto
   specs:
     spicedb-proto (0.1.0)
-      google-protobuf (~> 4.29)
-      grpc (~> 1.67)
+      google-protobuf (>= 3.25, < 5)
+      googleapis-common-protos-types (>= 1.11, < 2)
+      grpc (>= 1.67, < 2)
 
 PATH
   remote: .
   specs:
     spicedb (0.1.0)
-      grpc (~> 1.60)
+      grpc (>= 1.67, < 2)
       spicedb-proto (~> 0.1)
 
 GEM

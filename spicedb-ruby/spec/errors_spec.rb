@@ -23,8 +23,9 @@ RSpec.describe 'SpiceDB::Errors' do
       expect(SpiceDB::ResourceExhaustedError.superclass).to eq(SpiceDB::Error)
     end
 
-    it 'SpiceDB::Error inherits from StandardError' do
-      expect(SpiceDB::Error.superclass).to eq(StandardError)
+    it 'SpiceDB::Error is a GRPC::BadStatus (and so a StandardError)' do
+      expect(SpiceDB::Error.superclass).to eq(GRPC::BadStatus)
+      expect(SpiceDB::Error.ancestors).to include(StandardError)
     end
 
     it 'errors can be raised and rescued' do

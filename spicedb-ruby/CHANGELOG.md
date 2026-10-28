@@ -10,6 +10,28 @@
 
 ## Unreleased
 
+### Adoption fixes (2026-10-28)
+
+- **Fix:** paged `read_relationships` and `lookup_resources` failed on their second page against a real SpiceDB ("the cursor provided does not have the same arguments as the original API call"): the pager switched later pages to an exact snapshot and shrank the last page's limit, and SpiceDB hashes both into the cursor. Every page now repeats the caller's consistency and `page_size:`; the cursor pins the revision and `limit:` is enforced client-side.
+- **Fix:** `spicedb-proto` no longer ships its own `google/api` and `google/rpc` bindings, which raised `duplicate file name google/api/annotations.proto` whenever `googleapis-common-protos-types` (loaded by grpc itself) loaded first. It now depends on that gem.
+- **BREAKING:** `SpiceDB::Error` now subclasses `GRPC::BadStatus` and reports `code` (a `GRPC::Core::StatusCodes` value) for server, local and caller-built errors; codes without a dedicated class (ABORTED, INTERNAL, ...) keep their code on `SpiceDB::Error`. Before: `rescue StandardError` was the only common ancestor with grpc errors. After: `rescue GRPC::BadStatus => e; e.code` catches both. New `server_message` (verbatim), `SpiceDB::Error.from_code(code, message)`, `SpiceDB.code_of(err)` and `SpiceDB.error_class_of(err)` (accept raw `GRPC::BadStatus`).
+- **BREAKING:** `read_relationships` yields `SpiceDB::ReadRelationship` (`relationship`, `cursor`, `read_at`) and `export_relationships` yields `SpiceDB::ExportedRelationship` (`relationship`, `cursor`). Relationship readers delegate, so `item.subject_id`/`item.to_s` keep working; pass `item.relationship` where a `Relationship` is required (`Transaction` accepts items directly). `LookupResource` gains `cursor`. Resume with `cursor:` and the same request and page size.
+- **BREAKING:** `max_retries:` is replaced. Before: `Client.new_plaintext(ep, key, max_retries: 0)`. After: `retries: SpiceDB::Retries::DISABLED`, or `retry_policy: SpiceDB::RetryPolicy.new(max_retries:, retryable_codes:, initial_backoff:, max_backoff:, on_retry:)` (may opt into RESOURCE_EXHAUSTED). New `stream_retries: SpiceDB::StreamRetries::DISABLED`. Mutations never retry.
+- **BREAKING:** `Transaction#updates` and `#preconditions` return frozen `SpiceDB::Update` / `SpiceDB::Precondition` values instead of hashes. Before: `txn.updates[0][:operation]`. After: `txn.updates[0].operation`. New `Transaction#length`/`size`, `to_s`, `as_json`/`to_json`.
+- **BREAKING:** `delete_relationships(filter, limit:)` takes `limit:` as an optional keyword; it is still required in the default `partial: SpiceDB::DeletePartial::ALLOWED` mode. `DeletePartial::DISALLOWED` is all-or-nothing and may omit `limit:` for the server default. `delete_all_relationships_non_atomic(on_progress:)` reports each acknowledged batch's cumulative `DeleteResult`.
+- `Client.from_channel(channel, interceptors: [], **options)` wraps a caller-owned `GRPC::Core::Channel`; `close` leaves it open. (`SpiceDBProto::Client.from_channel` underneath.)
+- `default_deadline: SpiceDB::DefaultDeadline::DISABLED` removes the 30-second default; per-call `timeout:` still applies.
+- Every operation accepts `call_options: SpiceDB::CallOptions.new(metadata:, credentials:, response_metadata:)`; `SpiceDB::ResponseMetadata` captures headers and trailers.
+- `SpiceDB::ProtoConv` exports native<->protocol conversions, including check results with traces, lookups, expand trees, write results and read items.
+- `check_bulk(item_errors: SpiceDB::BulkItemErrors::RETURNED)` returns per-item errors on `CheckResult#error` (never a grant) instead of failing the call.
+- `import_relationships(batch_size:)` sets relationships per message, and an aborted import raises the server's status (for example `AlreadyExistsError`).
+- `Filter#matches?`, `to_s` on `ObjectRef`, `SubjectRef`, `Filter`, `Update` and `Precondition`, `as_json`/`to_json` on relationships, filters, updates and preconditions.
+- `Relationship.from_tuple`/`#to_s` cover SpiceDB's full syntax (`[caveat:{...}]`, `[expiration:...]`, `...`). New `resource_type`, `resource_id`, `subject_type`, `subject_id`, `subject_relation`, `with_resource`, `with_relation`, `with_subject`.
+- `require 'spicedb/testing'`: `SpiceDB::Testing::Store`, an in-memory double for `write`, `read_relationships`, `delete_relationships`, `check` and `check_bulk`.
+- `spicedb-proto` is the canonical binding: `bridge/authzed_bridge.rb` rewrites the `authzed` gem onto it, and loading an unbridged copy raises `SpiceDBProto::BindingConflictError`. See MIGRATION.md.
+- Dependency floors: `grpc >= 1.67`, `google-protobuf >= 3.25`, `googleapis-common-protos-types >= 1.11`.
+- New `MIGRATION.md` (from the `authzed` gem), `AI_INTEGRATION_GUIDE.md`, and the `tooling_escape_hatches` example.
+
 ### Native tokens and named options
 
 - Revision inputs and results use immutable `SpiceDB::ZedToken`; absent revisions are `nil`. Persist tokens with `to_s` and reconstruct them with `ZedToken.new(stored_string)`.

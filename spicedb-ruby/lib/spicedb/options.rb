@@ -45,4 +45,34 @@ module SpiceDB
   class WatchContent < Option
     cases :RELATIONSHIPS, :CHECKPOINTS, :SCHEMA
   end
+
+  # Whether unary operations without their own +timeout:+ get the client's
+  # default budget. DISABLED runs them unbounded.
+  class DefaultDeadline < Option
+    cases :ENABLED, :DISABLED
+  end
+
+  # Whether idempotent reads retry at all. DISABLED is for callers applying
+  # their own policy; mutations never retry under any setting.
+  class Retries < Option
+    cases :ENABLED, :DISABLED
+  end
+
+  # Whether a stream may be re-established before it has exposed an item.
+  # DISABLED suits long-lived streams such as watch.
+  class StreamRetries < Option
+    cases :ENABLED, :DISABLED
+  end
+
+  # How check_bulk reports a per-item failure: RAISED fails the call with the
+  # first item's error; RETURNED puts each item's error on its CheckResult.
+  class BulkItemErrors < Option
+    cases :RAISED, :RETURNED
+  end
+
+  # ALLOWED deletes up to the limit and reports partial progress. DISALLOWED
+  # is all-or-nothing: the server rejects a delete exceeding its limit.
+  class DeletePartial < Option
+    cases :ALLOWED, :DISALLOWED
+  end
 end

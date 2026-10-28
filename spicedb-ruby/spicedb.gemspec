@@ -19,10 +19,11 @@ Gem::Specification.new do |spec|
   spec.metadata['changelog_uri']   = 'https://github.com/authzed/spicedb-clients/blob/main/spicedb-ruby/DESIGN.md'
   spec.metadata['rubygems_mfa_required'] = 'true'
 
-  spec.files         = Dir['lib/**/*.rb', 'DESIGN.md', 'CLAUDE.md', 'LICENSE']
+  spec.files         = Dir['lib/**/*.rb', 'DESIGN.md', 'MIGRATION.md', 'AI_INTEGRATION_GUIDE.md', 'CLAUDE.md', 'LICENSE']
   spec.require_paths = ['lib']
 
-  spec.add_dependency 'grpc', '~> 1.60'
+  # Lowest versions that work; development tools stay development dependencies.
+  spec.add_dependency 'grpc', '>= 1.67', '< 2'
   spec.add_dependency 'spicedb-proto', '~> 0.1'
 
   spec.add_development_dependency 'rspec', '~> 3.13'

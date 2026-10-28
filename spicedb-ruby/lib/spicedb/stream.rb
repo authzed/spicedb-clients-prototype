@@ -71,7 +71,12 @@ module SpiceDB
 
   # One monotonic budget is shared by every attempt and page of an operation.
   class Budget
-    def initialize(timeout)
+    attr_reader :call_options
+
+    def initialize(timeout, call_options: nil)
+      raise InvalidArgumentError, 'call_options: expected SpiceDB::CallOptions' unless call_options.nil? || call_options.is_a?(CallOptions)
+
+      @call_options = call_options
       raise InvalidArgumentError, 'timeout must be finite and positive' unless timeout.nil? || (timeout.is_a?(Numeric) && timeout.finite? && timeout.positive?)
 
       @end = timeout && (monotonic + timeout)

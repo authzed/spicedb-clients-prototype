@@ -11,20 +11,30 @@ module SpiceDB
       budget.is_a?(Budget) ? budget.deadline : Budget.new(budget).deadline
     end
 
-    def backoff_delay(attempt) = rand * (BASE_RETRY_DELAY * (2**(attempt - 1)))
+    def backoff_delay(attempt) = @retry_policy.delay(attempt)
 
-    def with_retry(budget:, max_retries: @max_retries)
+    def notify_retry(operation, attempt, error, delay)
+      callback = @retry_policy.on_retry
+      callback&.call(RetryEvent.new(operation: operation&.to_s, attempt: attempt, error: SpiceDB.to_spicedb_error(error), delay: delay))
+    end
+
+    # Retries only when +retryable+ (never for mutations), retries are
+    # enabled, and the client's RetryPolicy names the error's code.
+    def with_retry(budget:, retryable: true, operation: nil)
       require_proto_client!
       attempt = 0
       begin
         budget.remaining
         yield
       rescue StandardError => e
-        if SpiceDB.transient?(e) && attempt < max_retries
+        if retryable && @retries == Retries::ENABLED && attempt < @retry_policy.max_retries && @retry_policy.retryable?(e)
           attempt += 1
-          budget.sleep(backoff_delay(attempt))
+          delay = @retry_policy.delay(attempt)
+          notify_retry(operation, attempt, e, delay)
+          budget.sleep(delay)
           retry
         end
+        raise if e.is_a?(Error)
         raise SpiceDB.to_spicedb_error(e) if e.respond_to?(:code)
 
         raise

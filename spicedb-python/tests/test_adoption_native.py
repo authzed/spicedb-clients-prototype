@@ -26,6 +26,7 @@ from spicedb import (
     Caveat,
     DefaultDeadline,
     DeletePartial,
+    Paging,
     DeadlineExceededError,
     Filter,
     FailedPreconditionError,
@@ -144,7 +145,7 @@ def test_local_validation_and_deadline_report_codes():
         raise _rpc_error(grpc.StatusCode.UNAVAILABLE)
 
     client._schema.ReadSchema = Mock(side_effect=slow)
-    client._backoff_seconds = lambda _: 1.0
+    client._backoff_seconds = lambda *_: 1.0
     with pytest.raises(SpiceDBError) as caught:
         client.read_schema()
     assert code_of(caught.value) is grpc.StatusCode.DEADLINE_EXCEEDED
@@ -434,6 +435,206 @@ def test_retries_disabled_and_stream_retries_disabled():
     client._schema.ReadSchema = Mock(side_effect=[_rpc_error(), ssp.ReadSchemaResponse()])
     client.read_schema()  # unary retry unaffected
     assert client._schema.ReadSchema.call_count == 2
+
+
+_RETRY_ONCE = CallOptions(retry_policy=RetryPolicy(max_retries=1, initial_backoff=0))
+
+
+def _touch() -> Transaction:
+    return Transaction().touch(Relationship.from_tuple("document:a#viewer@user:alice"))
+
+
+@pytest.mark.parametrize("client_type", [SyncClient, AioClient])
+async def test_per_call_retry_policy(client_type):
+    async def run(value):
+        return await value if client_type is AioClient else value
+
+    def stub(*responses):
+        return (AsyncMock if client_type is AioClient else Mock)(side_effect=list(responses))
+
+    client = client_type("localhost:1", token="t", transport_security=TransportSecurity.PLAINTEXT)
+    client._ensure_channel = Mock()
+    written = psp.WriteRelationshipsResponse(written_at=core_pb2.ZedToken(token="w"))
+
+    # Mutations are never retried by default.
+    client._permissions = Mock(WriteRelationships=stub(_rpc_error(), written))
+    with pytest.raises(SpiceDBError):
+        await run(client.write(_touch()))
+    assert client._permissions.WriteRelationships.call_count == 1
+
+    # A touch-only write without preconditions may opt in for one call.
+    client._permissions = Mock(WriteRelationships=stub(_rpc_error(), written))
+    assert (await run(client.write(_touch(), call_options=_RETRY_ONCE))).revision == ZedToken("w")
+    assert client._permissions.WriteRelationships.call_count == 2
+
+    # Non-idempotent mutations refuse the opt-in before any request.
+    client._permissions = Mock(WriteRelationships=stub(written))
+    created = Transaction().create(Relationship.from_tuple("document:a#viewer@user:alice"))
+    guarded = _touch().must_match(Filter("document"))
+    for txn in (created, guarded):
+        with pytest.raises(InvalidArgumentError):
+            await run(client.write(txn, call_options=_RETRY_ONCE))
+    for refused in (
+        lambda: client.delete_relationships(Filter("document"), limit=1, call_options=_RETRY_ONCE),
+        lambda: client.delete_all_relationships_non_atomic(Filter("document"), call_options=_RETRY_ONCE),
+        lambda: client.import_relationships([], call_options=_RETRY_ONCE),
+        lambda: client.experimental_register_relationship_counter("c", Filter("document"), call_options=_RETRY_ONCE),
+        lambda: client.experimental_unregister_relationship_counter("c", call_options=_RETRY_ONCE),
+    ):
+        with pytest.raises(InvalidArgumentError):
+            await run(refused())
+    assert client._permissions.WriteRelationships.call_count == 0
+    # Opting out (no retries) is always allowed.
+    client._permissions = Mock(DeleteRelationships=stub(psp.DeleteRelationshipsResponse(deletion_progress=1)))
+    await run(client.delete_relationships(
+        Filter("document"), limit=1, call_options=CallOptions(retry_policy=Retries.DISABLED)))
+
+    # Schema writes are idempotent and may opt in.
+    client._schema = Mock(WriteSchema=stub(_rpc_error(), ssp.WriteSchemaResponse()))
+    await run(client.write_schema("definition user {}", call_options=_RETRY_ONCE))
+    assert client._schema.WriteSchema.call_count == 2
+
+    # A read can be exempted from the client's retries for one call.
+    client._schema = Mock(ReadSchema=stub(_rpc_error(), ssp.ReadSchemaResponse()))
+    with pytest.raises(SpiceDBError):
+        await run(client.read_schema(call_options=CallOptions(retry_policy=Retries.DISABLED)))
+    assert client._schema.ReadSchema.call_count == 1
+
+
+@pytest.mark.parametrize("client_type", [SyncClient, AioClient])
+async def test_per_call_retry_policy_governs_stream_establishment(client_type):
+    async def drain(stream):
+        return [x async for x in stream] if client_type is AioClient else list(stream)
+
+    client = client_type("localhost:1", token="t", transport_security=TransportSecurity.PLAINTEXT,
+                         retry_policy=RetryPolicy(initial_backoff=0))
+    client._ensure_channel = Mock()
+    read, _ = _paged_reads(1)
+    calls = []
+
+    def flaky(request, **kwargs):
+        calls.append(request)
+        if len(calls) == 1:
+            raise _rpc_error()
+        return read(request, **kwargs)
+
+    # The client retries stream establishment; one call is exempted.
+    client._permissions = Mock(ReadRelationships=flaky)
+    with pytest.raises(SpiceDBError):
+        await drain(client.read_relationships(
+            Filter("document"), consistency=full(), call_options=CallOptions(retry_policy=Retries.DISABLED)))
+    assert len(calls) == 1
+    calls.clear()
+    assert len(await drain(client.read_relationships(Filter("document"), consistency=full()))) == 1
+    assert len(calls) == 2
+
+    # Watch never retries by default; one call may opt in before its first event.
+    watches = []
+
+    def watch(request, **kwargs):
+        watches.append(request)
+        if len(watches) == 1:
+            raise _rpc_error()
+        return _Call([])
+
+    client._watch = Mock(Watch=watch)
+    with pytest.raises(SpiceDBError):
+        await drain(client.watch())
+    watches.clear()
+    await drain(client.watch(call_options=CallOptions(retry_policy=RetryPolicy(initial_backoff=0))))
+    assert len(watches) == 2
+
+
+@pytest.mark.parametrize("client_type", [SyncClient, AioClient])
+async def test_empty_write_is_sent_to_the_server(client_type):
+    client = client_type("localhost:1", token="t", transport_security=TransportSecurity.PLAINTEXT)
+    client._ensure_channel = Mock()
+    response = psp.WriteRelationshipsResponse(written_at=core_pb2.ZedToken(token="w"))
+    rpc = (AsyncMock if client_type is AioClient else Mock)(return_value=response)
+    client._permissions = Mock(WriteRelationships=rpc)
+    result = client.write(Transaction().must_match(Filter("document")))
+    result = await result if client_type is AioClient else result
+    assert result.revision == ZedToken("w")
+    sent = rpc.call_args.args[0]
+    assert len(sent.updates) == 0 and len(sent.optional_preconditions) == 1
+
+
+@pytest.mark.parametrize("client_type", [SyncClient, AioClient])
+async def test_single_request_paging(client_type):
+    async def drain(stream):
+        return [x async for x in stream] if client_type is AioClient else list(stream)
+
+    client = client_type("localhost:1", token="t", transport_security=TransportSecurity.PLAINTEXT)
+    client._ensure_channel = Mock()
+    reads = []
+
+    def read(request, **kwargs):
+        reads.append(request)
+        return _Call([
+            psp.ReadRelationshipsResponse(
+                relationship=Relationship.from_tuple(f"document:{i}#viewer@user:u")._to_proto(),
+                after_result_cursor=core_pb2.Cursor(token=str(i + 1)),
+            )
+            for i in range(2)
+        ])
+
+    client._permissions = Mock(ReadRelationships=read)
+    items = await drain(client.read_relationships(
+        Filter("document"), consistency=full(), page_size=1, paging=Paging.SINGLE_REQUEST))
+    assert [x.after_result_cursor for x in items] == ["1", "2"]
+    assert len(reads) == 1, "exactly one request, though a full page would ask for more"
+    assert reads[0].optional_limit == 0, "no limit means unbounded"
+
+    lookups = []
+
+    def lookup(request, **kwargs):
+        lookups.append(request)
+        return _Call([
+            psp.LookupResourcesResponse(
+                resource_object_id=str(i), permissionship=psp.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION,
+                after_result_cursor=core_pb2.Cursor(token=f"c{i}"),
+            )
+            for i in range(3)
+        ])
+
+    client._permissions = Mock(LookupResources=lookup)
+    common = dict(resource_type="document", permission="view", subject=SubjectRef(ObjectRef("user", "u")),
+                  consistency=full(), page_size=1, paging=Paging.SINGLE_REQUEST)
+    items = await drain(client.lookup_resources(**common))
+    assert [x.after_result_cursor for x in items] == ["c0", "c1", "c2"]
+    assert len(lookups) == 1 and lookups[0].optional_limit == 0
+    lookups.clear()
+    await drain(client.lookup_resources(limit=7, **common))
+    assert len(lookups) == 1 and lookups[0].optional_limit == 7
+    with pytest.raises(InvalidArgumentError):
+        client.lookup_resources(**{**common, "paging": "single"})
+
+
+def test_wrapped_item_and_progress_errors_report_the_server_message_once():
+    """Bulk item and delete-progress failures are not wrappers in Python: the
+    item error is the server's own error (with ``input_index``) and progress is
+    an attribute on the original error, so the status message appears once."""
+    client = _sync()
+    status = status_pb2.Status(code=grpc.StatusCode.FAILED_PRECONDITION.value[0], message="no such permission")
+    check = PermissionCheck(ObjectRef("document", "a"), "view", SubjectRef(ObjectRef("user", "u")))
+    request = psp.CheckBulkPermissionsRequestItem(
+        resource=check.resource._to_proto(), permission="view", subject=check.subject._to_proto())
+    client._permissions.CheckBulkPermissions = Mock(return_value=psp.CheckBulkPermissionsResponse(
+        pairs=[psp.CheckBulkPermissionsPair(request=request, error=status)]))
+    with pytest.raises(FailedPreconditionError) as caught:
+        client.check_bulk([check], consistency=full())
+    assert caught.value.details() == str(caught.value) == "no such permission"
+    assert caught.value.input_index == 0
+
+    client._permissions.DeleteRelationships = Mock(side_effect=[
+        psp.DeleteRelationshipsResponse(relationships_deleted_count=1, deletion_progress=2,
+                                        after_result_cursor=core_pb2.Cursor(token="c")),
+        _rpc_error(grpc.StatusCode.UNAVAILABLE, "gone"),
+    ])
+    with pytest.raises(SpiceDBError) as caught:
+        client.delete_all_relationships_non_atomic(Filter("document"), call_options=CallOptions(retry_policy=Retries.DISABLED))
+    assert caught.value.details() == "gone"
+    assert caught.value.delete_progress.deleted_count == 1
 
 
 @pytest.mark.parametrize("bad", [None, 0, -1, float("inf"), "30"])

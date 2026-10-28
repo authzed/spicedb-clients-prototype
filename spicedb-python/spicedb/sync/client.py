@@ -15,6 +15,7 @@ from spicedb.options import (
     StreamRetries,
     BulkItemErrors,
     DeletePartial,
+    Paging,
     CallOptions,
     DEFAULT_RETRY_POLICY,
     _option,
@@ -52,7 +53,7 @@ from spicedb import _mapping, _requests
 from spicedb._auth import bearer_metadata, require_insecure_transport_allowed
 from spicedb._tls import channel_credentials, require_tls_material_usable
 from spicedb._budget import Budget
-from spicedb._client_base import ClientConfig, _positive, capture_sync, response_target
+from spicedb._client_base import ClientConfig, _positive, write_is_idempotent, capture_sync, response_target
 from spicedb._streams import Stream
 from spicedb.consistency import Consistency
 from spicedb.errors import (
@@ -239,7 +240,7 @@ class SpiceDBClient(ClientConfig):
         self.close()
 
     def _rpc(self, rpc, request, budget: Budget, retry: bool = False, call_options: CallOptions | None = None):
-        policy = self._policy(retry)
+        policy = self._policy(retry, call_options)
         kwargs = self._call_kwargs(call_options)
         target = response_target(call_options)
         attempt = 0
@@ -258,7 +259,7 @@ class SpiceDBClient(ClientConfig):
                 converted = to_spicedb_error(error)
                 if not self._should_retry(policy, error, attempt):
                     raise converted from error
-                delay = budget.delay(self._backoff_seconds(attempt))
+                delay = budget.delay(self._backoff_seconds(policy, attempt))
                 self._retry_attempt(policy, rpc, attempt, converted, delay)
                 attempt += 1
                 time.sleep(delay)
@@ -328,8 +329,15 @@ class SpiceDBClient(ClientConfig):
         timeout: float | None = None,
         call_options: CallOptions | None = None,
     ) -> WriteResult:
-        """Write."""
+        """Write the transaction atomically.
+
+        An empty transaction is sent as is: SpiceDB evaluates its
+        preconditions and returns the current revision. A transaction holding
+        only touches and no preconditions may opt in to retries with
+        ``CallOptions(retry_policy=...)``.
+        """
         budget = self._budget(timeout)
+        policy = self._mutation_policy(call_options, write_is_idempotent(transaction), "write")
         request = _requests.write_request(transaction)
         if metadata is not None:
             request.optional_transaction_metadata.CopyFrom(
@@ -337,7 +345,7 @@ class SpiceDBClient(ClientConfig):
             )
         self._ensure_channel()
         response = self._rpc(
-            self._permissions.WriteRelationships, request, budget, False, call_options
+            self._permissions.WriteRelationships, request, budget, policy, call_options
         )
         return WriteResult(revision=ZedToken(response.written_at.token))
 
@@ -362,6 +370,7 @@ class SpiceDBClient(ClientConfig):
         """
         allow_partial = _option(partial, DeletePartial) == "allowed"
         budget = self._budget(timeout)
+        self._mutation_policy(call_options, False, "delete relationships")
         if allow_partial or limit is not None:
             _positive(limit, "limit")
         self._ensure_channel()
@@ -421,6 +430,7 @@ class SpiceDBClient(ClientConfig):
         called after each acknowledged batch with the cumulative result.
         """
         budget = self._budget(timeout)
+        self._mutation_policy(call_options, False, "delete relationships")
         must_match = tuple(must_match)
         must_not_match = tuple(must_not_match)
         metadata = _snapshot(metadata)
@@ -474,11 +484,12 @@ class SpiceDBClient(ClientConfig):
     def write_schema(
         self, schema: str, *, timeout: float | None = None, call_options: CallOptions | None = None
     ) -> ZedToken:
-        """Write schema."""
+        """Write schema. Idempotent, so it may opt in to retries with ``CallOptions(retry_policy=...)``."""
         budget = self._budget(timeout)
+        policy = self._mutation_policy(call_options, True, "write schema")
         self._ensure_channel()
         response = self._rpc(
-            self._schema.WriteSchema, s.WriteSchemaRequest(schema=schema), budget, False, call_options
+            self._schema.WriteSchema, s.WriteSchemaRequest(schema=schema), budget, policy, call_options
         )
         return ZedToken(response.written_at.token)
 
@@ -603,6 +614,7 @@ class SpiceDBClient(ClientConfig):
     ) -> None:
         """Experimental: register a stored relationship counter."""
         budget = self._budget(timeout)
+        self._mutation_policy(call_options, False, "register relationship counter")
         self._ensure_channel()
         self._rpc(
             self._experimental.ExperimentalRegisterRelationshipCounter,
@@ -619,6 +631,7 @@ class SpiceDBClient(ClientConfig):
     ) -> None:
         """Experimental: unregister a stored relationship counter."""
         budget = self._budget(timeout)
+        self._mutation_policy(call_options, False, "unregister relationship counter")
         self._ensure_channel()
         self._rpc(
             self._experimental.ExperimentalUnregisterRelationshipCounter,
@@ -686,11 +699,12 @@ class SpiceDBClient(ClientConfig):
         include=None,
         call_options=None,
         start_cursor=None,
+        single_request=False,
     ):
         # Validate options before any transport work.
         kwargs = self._call_kwargs(call_options)
         target = response_target(call_options)
-        policy = self._stream_policy(watch)
+        policy = self._stream_policy(watch, call_options)
 
         def factory(owner):
             """Factory."""
@@ -704,7 +718,10 @@ class SpiceDBClient(ClientConfig):
                     # page size: SpiceDB hashes both into the cursor and rejects
                     # a cursor sent with different arguments. Limits are
                     # enforced client-side below, never by shrinking a page.
-                    request = request_factory(cursor, page_size)
+                    # Single-request mode sends one request, as the raw
+                    # API does: its limit is the total limit (0 means
+                    # unbounded) and no follow-up page is fetched.
+                    request = request_factory(cursor, (limit or 0) if single_request else page_size)
                     attempt = 0
                     while True:
                         call = None
@@ -742,7 +759,7 @@ class SpiceDBClient(ClientConfig):
                             converted = to_spicedb_error(error)
                             if delivered or not self._should_retry(policy, error, attempt):
                                 raise converted from error
-                            delay = budget.delay(self._backoff_seconds(attempt))
+                            delay = budget.delay(self._backoff_seconds(policy, attempt))
                             self._retry_attempt(policy, rpc_factory(), attempt, converted, delay)
                             attempt += 1
                             time.sleep(delay)
@@ -750,7 +767,7 @@ class SpiceDBClient(ClientConfig):
                         finally:
                             if call is not None:
                                 call.cancel()
-                    if page_size is None or page_count < page_size or cursor is None:
+                    if single_request or page_size is None or page_count < page_size or cursor is None:
                         return
             finally:
                 if owner._call is not None:
@@ -767,6 +784,7 @@ class SpiceDBClient(ClientConfig):
         consistency: Consistency,
         page_size: int = 1000,
         cursor: str | None = None,
+        paging: Paging = Paging.AUTOMATIC,
         timeout: float | None = None,
         call_options: CallOptions | None = None,
     ) -> Stream[ReadRelationship]:
@@ -774,7 +792,10 @@ class SpiceDBClient(ClientConfig):
 
         To resume, pass an item's ``after_result_cursor`` as ``cursor`` with
         the same filter, consistency and page size.
+        ``paging=Paging.SINGLE_REQUEST`` sends exactly one unbounded request,
+        as the raw API does.
         """
+        single = _option(paging, Paging) == "single_request"
         budget = Budget(timeout)
         _positive(page_size, "page_size")
         filter._to_proto()
@@ -795,6 +816,7 @@ class SpiceDBClient(ClientConfig):
             page_size,
             call_options=call_options,
             start_cursor=start,
+            single_request=single,
         )
 
     def lookup_resources(
@@ -810,6 +832,7 @@ class SpiceDBClient(ClientConfig):
         page_size: int = 1000,
         debug: LookupDebug = LookupDebug.DISABLED,
         cursor: str | None = None,
+        paging: Paging = Paging.AUTOMATIC,
         timeout: float | None = None,
         call_options: CallOptions | None = None,
     ) -> Stream[LookupResource]:
@@ -818,8 +841,11 @@ class SpiceDBClient(ClientConfig):
         HAS_PERMISSION_ONLY filters client-side to unconditional grants; limit
         counts yielded matches and skipped results still advance pagination.
         Resume from an item's ``after_result_cursor`` via ``cursor`` with the
-        same request and page size.
+        same request and page size. ``paging=Paging.SINGLE_REQUEST`` sends
+        exactly one request, as the raw API does: its limit is ``limit``
+        (unbounded without one) and ``page_size`` is ignored.
         """
+        single = _option(paging, Paging) == "single_request"
         _option(permissionship_filter, LookupPermissionshipFilter)
         _option(debug, LookupDebug)
         budget = Budget(timeout)
@@ -849,6 +875,7 @@ class SpiceDBClient(ClientConfig):
             if permissionship_filter is LookupPermissionshipFilter.HAS_PERMISSION_ONLY else None,
             call_options=call_options,
             start_cursor=start,
+            single_request=single,
         )
 
     def lookup_subjects(
@@ -988,6 +1015,7 @@ class SpiceDBClient(ClientConfig):
         """
         budget = Budget(timeout)
         _positive(batch_size, "batch_size")
+        self._mutation_policy(call_options, False, "import relationships")
         kwargs = self._call_kwargs(call_options)
         target = response_target(call_options)
         self._ensure_channel()

@@ -55,6 +55,8 @@ func TestTxnDefersFirstError(t *testing.T) {
 		Delete(Organization("acme").Member(User("alice"))).
 		Touch(Organization("acme").Admin(User("alice")))
 	require.Equal(t, 2, ok.Len())
+	require.Len(t, ok.Updates(), 2)
+	require.Len(t, ok.Preconditions(), 1)
 	native, err := ok.Build()
 	require.NoError(t, err)
 	require.Equal(t, "[MUST_NOT_MATCH(organization:acme#admin@*), DELETE(organization:acme#member@user:alice), TOUCH(organization:acme#admin@user:alice)]", native.String())
@@ -66,6 +68,13 @@ func TestTypedFilters(t *testing.T) {
 	require.Equal(t, "organization:acme#admin@*", Organization("acme").AdminFilter().String())
 	require.Equal(t, "organization:acme#admin@user:alice#...", WithSubject(Organization("acme").AdminFilter(), User("alice")).String())
 	require.Equal(t, "invitation:*#*@organization:*#can_admin", WithSubject(InvitationFilter(), OrganizationCanAdminType).String())
+	// WithSubject pins the subject relation; WithSubjectAnyRelation does not.
+	any := WithSubjectAnyRelation(DocumentFilter(), Team("eng").Member())
+	require.Equal(t, "document:*#*@team:eng", any.String())
+	require.True(t, any.Matches(rel.MustFromTuple("document:d#viewer@team:eng#member")))
+	require.True(t, any.Matches(rel.MustFromTuple("document:d#viewer@team:eng")))
+	require.False(t, WithSubject(DocumentFilter(), Team("eng").Member()).Matches(rel.MustFromTuple("document:d#viewer@team:eng")))
+	require.False(t, WithSubject(DocumentFilter(), User("x")).Matches(rel.MustFromTuple("document:d#viewer@user:x#self")))
 	require.Equal(t, "admin", OrganizationRelations.Admin)
 	require.Equal(t, "can_admin", OrganizationPermissions.CanAdmin)
 	require.Error(t, Organization("").Filter().Validate(), "an empty ID must not widen to the whole type")

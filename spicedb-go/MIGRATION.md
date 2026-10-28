@@ -100,6 +100,21 @@ result, err := c.Check(ctx, client.PermissionCheck{
 allowed := result.HasPermission()
 ```
 
+## Consistency on schema reads
+
+Every read takes an explicit consistency, including `ReflectSchema` and the
+other schema reads. Where your raw requests left consistency unset, pass
+`consistency.MinLatency()`, which is what SpiceDB applies when it is absent.
+
+## Retries for tools with their own policy
+
+Disable or replace the client's policy client-wide (`WithRetries`,
+`WithRetryPolicy`), and override it per call with
+`client.WithCallRetryPolicy[O](policy)`: for example `RetryPolicy{}` on one
+`Updates` call to never reopen a supervised watch, or a policy on a touch-only
+`Write` or a `WriteSchema` to retry those idempotent writes. Other mutations
+reject the opt-in.
+
 ## Errors
 
 Errors are `*client.Error`. Match them with the sentinels, or keep using
@@ -152,6 +167,11 @@ result, err := c.Write(ctx, client.WriteRequest{Transaction: txn})
 ```
 
 ## Paging, cursors and transport data
+
+Raw `LookupResources`/`ReadRelationships` calls without a limit are one
+unbounded request; this client pages by default. To reproduce the raw call
+(and its final cursor), pass `client.WithLookupResourcesPaging(client.PagingSingleRequest)`
+(or the `ReadRelationships` equivalent).
 
 Reads, exports and resource lookups page internally, and each item carries its
 `AfterResultCursor` (and, for reads, `ReadAt`). To resume, repeat the same

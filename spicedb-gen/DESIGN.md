@@ -76,6 +76,12 @@ current native APIs.
   - Output is formatted with the language's canonical formatter; the output
     package/module name is a generator option.
 
+- **Treat caveat expressions as opaque.** Parsing replaces every caveat body
+  with `true` (preserving line numbers) before compiling, so schemas whose
+  caveats call functions outside SpiceDB's default CEL environment generate
+  normally. Only names and parameter types are used; SpiceDB validates
+  expressions on write.
+
 ## Verification
 
 Generate all four target fixtures from testdata/sample.zed, build/type-check,
@@ -113,8 +119,16 @@ and options forwarding rather than just generated text fragments.
 - Subject variants are named `<Prefix><Caveat>[Expiring]`, where the prefix is
   `D`, `DR` or `DWildcard` and the base ref adds `Ref`.
 - Any collision between generated identifiers fails generation with both sources
-  named; no identifier is silently renamed. `--go.package` sets the package
-  name, and output is gofmt-formatted.
+  named; no identifier is silently renamed. `--go.rename=<definition>=<GoName>`
+  (comma-separated for several) overrides a definition's identifier stem
+  without changing the schema names sent to SpiceDB, e.g.
+  `--go.rename=subject=SubjectDef` for a schema with `definition subject`.
+  `--go.package` sets the package name, and output is gofmt-formatted.
+- `RKey(subject)` is generated only for relations admitting a caveated or
+  expiring subject; elsewhere the writer's `TypedRelationship` already
+  identifies the tuple. The typed `Txn` exposes `Updates()`, `Preconditions()`
+  and `Err()`. `WithSubject` always pins the subject relation (direct for a
+  subject without one); `WithSubjectAnyRelation` does not.
 - Negative type fixtures mark each forbidden line `// should not compile`. The
   Magefile compiles with `-gcflags=-e` and requires an error on every marked line.
 

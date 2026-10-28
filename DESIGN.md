@@ -41,6 +41,14 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
   - Native↔protocol conversions for requests, results, relationships, filters,
     preconditions, consistency, updates and traces are exported in a secondary
     namespace, so tools that persist or print protocol-shaped data reuse them.
+    Conversions to response messages reproduce the server's wire shape,
+    including whole bulk-check responses with per-item errors and deprecated
+    fields the server still populates.
+  - Match the server's own acceptance rules. A client rejects locally only what
+    the server would reject or what the protocol cannot express; for example an
+    empty relationship write is sent (SpiceDB evaluates its preconditions and
+    returns the current revision), and watch rejects object types combined with
+    filters because the server does.
   - Generate protocol bindings from the upstream schema; do not edit generated
     protocol source by hand. The only hand-maintained files in a generated
     package are legacy helpers that must share the generated types' package (see
@@ -148,7 +156,9 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     rather than reimplementing filter semantics.
   - Each client ships an in-memory test double for relationship writes (with
     preconditions and create conflicts), filtered reads and deletes, and
-    registered check results. Its surface matches the real client's so one
+    registered check results, plus imports, exports and schema reads and writes.
+    Its errors carry the same codes and message shape as the real client's for
+    the same failure. Its surface matches the real client's so one
     interface or protocol accepts both: caller-defined where the language is
     structurally typed (Go, TypeScript, Python protocols), library-provided and
     implemented by both where it is nominally typed (C#, Java).
@@ -156,6 +166,10 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     one call: panicking variants where that is idiomatic (Go `Must*`), or a
     one-call parse from tuple text where call-site assertion is the convention
     (Rust `FromStr` plus `.expect()`). Languages whose constructors throw need neither.
+  - Option values may be opaque, but each client exposes a way to resolve a
+    call's options into an inspectable snapshot (cursor, limits, page size,
+    response-metadata targets, retry override), so test doubles and wrappers
+    can honor them without a fake transport.
   - Relationship accessors offer short paths for the most common fields
     (resource ID and subject ID) in addition to the nested object accessors.
   - Tuple parsing and formatting cover SpiceDB's full syntax, including
@@ -214,15 +228,21 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
   - By default, retry idempotent reads on `UNAVAILABLE` or `ABORTED`, up to three
     retries, using full-jitter exponential backoff starting at 100 ms. The default
     never retries `RESOURCE_EXHAUSTED`.
-  - Never replay mutations, including writes, deletes, imports, and counter
-    registration, under any policy.
+  - Never replay a mutation automatically. A caller may opt a single call into
+    retries only where replay is idempotent: a relationship write containing
+    only touches and no preconditions, and a schema write. Creates, deletes,
+    preconditioned writes, imports and counter registration refuse the opt-in
+    before any request.
   - Stream establishment may retry only before any item is exposed. Never
     restart a partially consumed stream.
   - All retries share the original deadline and cancellation signal.
   - A client-wide retry policy option replaces the default: max attempts,
     retryable read codes (a caller may opt into others, such as
     `RESOURCE_EXHAUSTED`), backoff, and an on-retry callback. A named mode
-    disables retries entirely, for callers that apply their own policy. Stream-establishment retry has its own named
+    disables retries entirely, for callers that apply their own policy.
+  - A per-call retry policy overrides the client's for one operation, including
+    stream establishment, so a caller can exempt one stream (a supervised watch)
+    while retrying everything else. Stream-establishment retry has its own named
     setting, so long-lived streams like watch can opt out. No configuration can
     make a mutation replay.
 
@@ -260,6 +280,8 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     the cursor itself pins later pages to the first page's revision. Enforce a
     total limit client-side rather than by shrinking the last page's limit.
     Live tests must read across more than one page.
+  - A named single-request mode sends exactly one request, as the raw API does:
+    its limit is the total limit or unbounded, and no follow-up page is fetched.
 
 ## Filters and deletion
 
@@ -326,6 +348,9 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     classification helpers also accept raw transport status errors.
   - Provide a public constructor for native errors from a code and message, so
     test doubles produce errors that every predicate treats like real ones.
+  - Wrapper errors (bulk item, deletion progress) report their inner status
+    through the status accessor, so the server's message appears once rather
+    than under repeated operation prefixes.
 
 - **Use secure transport defaults and explicit trust configuration.**
   - Secure constructors delegate to the ecosystem's default trust source.
@@ -376,7 +401,7 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     produce native exact filters, type-level filters, relation-scoped filters,
     native permission checks, and relation-name constants.
   - A typed transaction builder mixes touch, create, delete and preconditions in
-    one atomic write. It defers the first construction error to build/write time
+    one atomic write and exposes its pending updates and preconditions. It defers the first construction error to build/write time
     instead of requiring a check per step, and never shadows a promoted native method.
   - Typed bulk checks forward native options and preserve input order, per-chunk
     revisions and per-item errors.
@@ -387,7 +412,12 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     on its own: a check that only proves "something failed to compile" lets one
     error mask a regression elsewhere.
   - Generation fails, naming both sources, when schema names would produce
-    colliding identifiers. It never silently renames.
+    colliding identifiers. It never silently renames, and offers an explicit
+    per-definition identifier override so production schemas need not change.
+  - Caveat expressions are opaque to generation: only caveat names and
+    parameter types are read, so caveats calling functions outside SpiceDB's
+    default CEL environment generate normally. The server validates
+    expressions when the schema is written.
 
 - **Guide AI coding agents to the right tier and safe integration.**
   - The root `AI_INTEGRATION_GUIDE.md` is the language-neutral decision guide:

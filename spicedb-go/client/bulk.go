@@ -32,6 +32,9 @@ func (c *Client) ImportRelationships(ctx context.Context, request ImportRelation
 	for _, opt := range opts {
 		opt(&o)
 	}
+	if _, e := mutationRetry(o, false, "import relationships"); e != nil {
+		return ImportRelationshipsResult{}, e
+	}
 	ctx, cancel, e := c.operation(ctx, o, true)
 	if e != nil {
 		return ImportRelationshipsResult{}, e
@@ -138,7 +141,7 @@ func (c *Client) ExportRelationships(ctx context.Context, request ExportRelation
 			pageCtx, pageCancel := context.WithCancel(ctx)
 			count := uint32(0)
 			prev := cur.GetToken()
-			for resp, e := range receive(pageCtx, c, "export relationships", !exposed, func(ctx context.Context) (receiver[*v1.ExportBulkRelationshipsResponse], error) {
+			for resp, e := range receive(pageCtx, c.retrySettings(o), "export relationships", !exposed, func(ctx context.Context) (receiver[*v1.ExportBulkRelationshipsResponse], error) {
 				return c.psc.ExportBulkRelationships(ctx, req, o.callOptions...)
 			}) {
 				if e != nil {

@@ -93,3 +93,16 @@ func TestCodeOfClassifiesRawStatusErrors(t *testing.T) {
 	require.Equal(t, CodeUnknown, CodeOf(errors.New("plain")))
 	require.Equal(t, CodeUnknown, CodeOf(nil))
 }
+
+func TestWrappedErrorsReportTheServerMessageOnce(t *testing.T) {
+	inner := mapGRPCError("check bulk", status.Error(codes.FailedPrecondition, "no such permission"))
+	item := &BulkCheckError{Index: 0, Err: inner}
+	require.Equal(t, "spicedb: check item 0: spicedb: check bulk: no such permission", item.Error(), "Error() keeps full context")
+	st := status.Convert(item)
+	require.Equal(t, codes.FailedPrecondition, st.Code())
+	require.Equal(t, "no such permission", st.Message())
+
+	progress := &DeleteProgressError{Err: mapGRPCError("delete relationships", status.Error(codes.Unavailable, "gone"))}
+	require.Equal(t, "gone", status.Convert(progress).Message())
+	require.Equal(t, codes.Canceled, status.Code(&DeleteProgressError{Err: mapGRPCError("delete relationships", context.Canceled)}))
+}

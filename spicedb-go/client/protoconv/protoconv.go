@@ -9,6 +9,7 @@
 package protoconv
 
 import (
+	"fmt"
 	"time"
 
 	v1 "github.com/authzed/spicedb-clients/proto-clients/spicedb-go-proto/gen/authzed/api/v1"
@@ -16,6 +17,7 @@ import (
 	"github.com/authzed/spicedb-clients/spicedb-go/consistency"
 	"github.com/authzed/spicedb-clients/spicedb-go/internal/conv"
 	"github.com/authzed/spicedb-clients/spicedb-go/rel"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -207,11 +209,22 @@ func resolvedSubject(s client.ResolvedSubject) *v1.ResolvedSubject {
 	return &v1.ResolvedSubject{SubjectObjectId: s.SubjectID, Permissionship: lookupPermissionship(s.Permissionship), PartialCaveatInfo: partialCaveat(missing)}
 }
 
-// LookupSubjectToProto converts a looked-up subject, including wildcard exclusions.
+// LookupSubjectToProto converts a looked-up subject, including wildcard
+// exclusions. It also fills the deprecated top-level fields (subject ID,
+// excluded IDs, permissionship and partial caveat info) that SpiceDB still
+// sends, so the message matches the server's wire response.
 func LookupSubjectToProto(s client.LookupSubject) *v1.LookupSubjectsResponse {
-	p := &v1.LookupSubjectsResponse{LookedUpAt: conv.ZedToken(s.LookedUpAt), Subject: resolvedSubject(s.Subject)}
+	subject := resolvedSubject(s.Subject)
+	p := &v1.LookupSubjectsResponse{
+		LookedUpAt:        conv.ZedToken(s.LookedUpAt),
+		Subject:           subject,
+		SubjectObjectId:   subject.GetSubjectObjectId(),
+		Permissionship:    subject.GetPermissionship(),
+		PartialCaveatInfo: subject.GetPartialCaveatInfo(),
+	}
 	for _, e := range s.ExcludedSubjects {
 		p.ExcludedSubjects = append(p.ExcludedSubjects, resolvedSubject(e))
+		p.ExcludedSubjectIds = append(p.ExcludedSubjectIds, e.SubjectID)
 	}
 	return p
 }
@@ -271,6 +284,54 @@ func PermissionTreeToProto(t client.PermissionTree) *v1.PermissionRelationshipTr
 		return nil
 	}
 	return p
+}
+
+// CheckRequestToProto converts a native permission check to a bulk request item.
+func CheckRequestToProto(c client.PermissionCheck) (*v1.CheckBulkPermissionsRequestItem, error) {
+	ctx, err := conv.ContextStruct(c.Context)
+	if err != nil {
+		return nil, err
+	}
+	return &v1.CheckBulkPermissionsRequestItem{
+		Resource: conv.Object(c.Resource), Permission: c.Permission, Subject: conv.Subject(c.Subject), Context: ctx,
+	}, nil
+}
+
+// CheckBulkToProto converts a bulk check (its requests and the results
+// CheckBulk returned for them, in the same order) to the server's response
+// message: one pair per item, carrying either the item's result or, for a
+// result with Err set (WithBulkItemErrors(ItemErrorsReturned)), its status.
+// The response's checked-at is the last item's revision; CheckBulk may span
+// several requests, each with its own revision.
+func CheckBulkToProto(requests []client.PermissionCheck, results []client.CheckResult) (*v1.CheckBulkPermissionsResponse, error) {
+	if len(requests) != len(results) {
+		return nil, fmt.Errorf("check bulk: %d requests but %d results", len(requests), len(results))
+	}
+	p := &v1.CheckBulkPermissionsResponse{}
+	for i, req := range requests {
+		item, err := CheckRequestToProto(req)
+		if err != nil {
+			return nil, fmt.Errorf("check bulk item %d: %w", i, err)
+		}
+		pair := &v1.CheckBulkPermissionsPair{Request: item}
+		r := results[i]
+		if r.Err != nil {
+			pair.Response = &v1.CheckBulkPermissionsPair_Error{Error: status.Convert(r.Err).Proto()}
+		} else {
+			single, err := CheckResultToProto(r)
+			if err != nil {
+				return nil, fmt.Errorf("check bulk item %d: %w", i, err)
+			}
+			pair.Response = &v1.CheckBulkPermissionsPair_Item{Item: &v1.CheckBulkPermissionsResponseItem{
+				Permissionship: single.GetPermissionship(), PartialCaveatInfo: single.GetPartialCaveatInfo(), DebugTrace: single.GetDebugTrace(),
+			}}
+		}
+		if t := conv.ZedToken(r.CheckedAt); t != nil {
+			p.CheckedAt = t
+		}
+		p.Pairs = append(p.Pairs, pair)
+	}
+	return p, nil
 }
 
 // WriteResultToProto converts a relationship write result.

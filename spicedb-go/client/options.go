@@ -29,10 +29,12 @@ type operationOptions struct {
 	filter                      *rel.Filter
 	subjectRelation             string
 	callOptions                 []grpc.CallOption
+	callRetryPolicy             *RetryPolicy
 	itemErrors                  bool
 	schemaChanges               bool
 	disallowPartialDeletion     bool
 	deleteProgress              func(DeleteResult)
+	singleRequest               bool
 	err                         error
 }
 
@@ -69,9 +71,9 @@ func (c *Client) operation(ctx context.Context, o operationOptions, stream bool)
 }
 
 // retry runs an idempotent read under the client's retry policy.
-func retry[T any](ctx context.Context, c *Client, op string, call func() (T, error)) (T, error) {
+func retry[T any](ctx context.Context, rs retrySettings, op string, call func() (T, error)) (T, error) {
 	var zero T
-	policy := c.retryPolicy()
+	policy := rs.policy
 	for attempt := 0; ; attempt++ {
 		if e := ctx.Err(); e != nil {
 			return zero, mapGRPCError(op, e)

@@ -19,7 +19,7 @@
 
 - **Apply one operation budget and deterministic cancellation.**
   - Unary defaults are 30 seconds (`WithDefaultDeadline(DefaultDeadlineDisabled)` removes the default; the caller's context still applies); explicit positive timeouts cover attempts, backoff, chunks and pages. Caller deadlines win. Streams and imports have no default lifetime deadline.
-  - By default, idempotent reads retry only Unavailable and Aborted, at most three retries, with full-jitter exponential backoff starting at 100 milliseconds; `WithRetryPolicy`, `WithRetries(RetriesDisabled)` and `WithStreamRetries(StreamRetriesDisabled)` change that client-wide. Mutations are never replayed under any policy; streams never restart after exposing an item.
+  - By default, idempotent reads retry only Unavailable and Aborted, at most three retries, with full-jitter exponential backoff starting at 100 milliseconds; `WithRetryPolicy`, `WithRetries(RetriesDisabled)` and `WithStreamRetries(StreamRetriesDisabled)` change that client-wide, and `WithCallRetryPolicy[O]` overrides it for one call (including stream establishment). Mutations are never replayed automatically; only touch-only `Write` calls without preconditions and `WriteSchema` may opt in per call, and every other mutation rejects the opt-in; streams never restart after exposing an item.
   - Iterator exit, exhaustion, failure and cancellation release transport. Imports consume incrementally in 1,000-item batches (`WithImportRelationshipsBatchSize`; one call is one transaction), report the server's final status when it aborts the stream, and cancel active uploads on producer or conversion failures. Native context cancellation identity is preserved.
 
 - **Preserve exact filter scope and acknowledged deletion progress.**
@@ -33,7 +33,7 @@
   - Each nonempty server cursor becomes the next batch cursor. Empty or absent cursors retain the filter-based fallback; results and failure progress retain the last acknowledged cursor.
 
 - **Preserve native stream and schema data.**
-  - Reads, lookups and exports support limits and page sizes without confusing their meanings. Lookup subjects retains wildcard exclusions and conditional context. Paging repeats the caller's consistency and page size on every page (SpiceDB hashes both into the cursor, which pins the revision); items carry `AfterResultCursor` (and `ReadAt` for reads) and resume via `With*Cursor` with the same request and page size.
+  - Reads, lookups and exports support limits and page sizes without confusing their meanings. Lookup subjects retains wildcard exclusions and conditional context. Paging repeats the caller's consistency and page size on every page (SpiceDB hashes both into the cursor, which pins the revision); items carry `AfterResultCursor` (and `ReadAt` for reads) and resume via `With*Cursor` with the same request and page size. `With{ReadRelationships,LookupResources}Paging(PagingSingleRequest)` sends one request like the raw API.
   - Watch accepts a native starting token, `WithUpdatesCheckpoints(CheckpointsIncluded)` and `WithUpdatesSchemaChanges(SchemaChangesIncluded)`; events retain update data, changes-through revision, checkpoint and schema-updated facts.
   - Schema reflection/diff, tagged permission trees, counters and materialize operations preserve structured native variants, revisions, safe unknown states and optional values. Materialize cursors retain all fields; download URLs are returned without fetching them.
 
@@ -56,7 +56,10 @@
 - **Make native values observable and testable.**
   - `rel` values implement `String`, and relationships, updates, filters and preconditions implement `MarshalJSON` and `slog.LogValuer` as diagnostic forms (there is no `UnmarshalJSON`). `Txn.Len` avoids copying.
   - `Filter.Matches` applies server filter semantics client-side. `ErrFilter` carries a construction error that `Validate` reports, so typed builders fail closed instead of widening scope. `Must*` constructors exist for constants and tests.
-  - `client/clienttest.Store` is an in-memory double whose methods match `*client.Client` signatures.
+  - `client/clienttest.Store` is an in-memory double whose methods match `*client.Client` signatures for writes, reads, deletes, imports, exports, schema operations and checks; its errors have the real client's codes and `spicedb: <op>: <server message>` shape. `client.ResolveOptions[O]` resolves any operation's options into an inspectable `ResolvedOptions` (with operation defaults), which the store uses to honor cursors, limits, export filters and `WithResponseMetadata` targets.
+  - `Write` sends empty transactions (SpiceDB checks their preconditions and returns the current revision). Watch rejects object types with filters because SpiceDB does. Schema reads require an explicit consistency like every other read; `consistency.MinLatency()` matches the raw API's default.
+  - `BulkCheckError` and `DeleteProgressError` implement `GRPCStatus` with the inner status, so `status.Convert` reports the server message once.
+  - `protoconv.CheckBulkToProto` rebuilds a whole bulk-check response (per-item errors as statuses); `LookupSubjectToProto` fills the deprecated fields SpiceDB still sends.
 
 - **Keep the library's requirements minimal.**
   - Magefiles live in `magefiles/` with their own `go.mod`, so consumers never inherit mage or the repository root module. gRPC, protobuf, genproto and gateway requirements stay at the lowest versions that work (currently authzed-go v1.11.0's); Dependabot version bumps are disabled for this module.

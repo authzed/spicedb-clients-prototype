@@ -50,16 +50,13 @@ func (c *Client) LookupResources(ctx context.Context, request LookupResourcesReq
 		// SpiceDB rejects a cursor sent with different arguments, and the
 		// cursor pins later pages to the first page's revision. The total
 		// limit is enforced here.
-		size := o.pageSize
-		if o.limit > 0 {
-			size = uint32(min(uint64(size), o.limit))
-		}
+		size := o.pageRequestLimit()
 		for {
 			req := &v1.LookupResourcesRequest{Consistency: cs, ResourceObjectType: request.ResourceType, Permission: request.Permission, Subject: subject(request.Subject), Context: ctxStruct, OptionalLimit: size, OptionalCursor: cur, WithDebug: o.debug}
 			pageCtx, pageCancel := context.WithCancel(ctx)
 			count := uint32(0)
 			prev := cur.GetToken()
-			for resp, e := range receive(pageCtx, c, "lookup resources", !exposed, func(ctx context.Context) (receiver[*v1.LookupResourcesResponse], error) {
+			for resp, e := range receive(pageCtx, c.retrySettings(o), "lookup resources", !exposed, func(ctx context.Context) (receiver[*v1.LookupResourcesResponse], error) {
 				return c.psc.LookupResources(ctx, req, o.callOptions...)
 			}) {
 				if e != nil {
@@ -85,7 +82,7 @@ func (c *Client) LookupResources(ctx context.Context, request LookupResourcesReq
 				}
 			}
 			pageCancel()
-			if count < size {
+			if o.singleRequest || count < size {
 				return
 			}
 			if cur.GetToken() == "" || cur.GetToken() == prev {
@@ -135,7 +132,7 @@ func (c *Client) LookupSubjects(ctx context.Context, request LookupSubjectsReque
 			req.OptionalConcreteLimit = uint32(o.limit)
 		}
 		var count uint64
-		for resp, e := range receive(ctx, c, "lookup subjects", true, func(ctx context.Context) (receiver[*v1.LookupSubjectsResponse], error) {
+		for resp, e := range receive(ctx, c.retrySettings(o), "lookup subjects", true, func(ctx context.Context) (receiver[*v1.LookupSubjectsResponse], error) {
 			return c.psc.LookupSubjects(ctx, req, o.callOptions...)
 		}) {
 			if e != nil {

@@ -5,6 +5,9 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
+
+	"github.com/authzed/spicedb-clients/spicedb-go/consistency"
+	"github.com/authzed/spicedb-clients/spicedb-go/rel"
 )
 
 // operationOption is satisfied by every operation's option type
@@ -297,4 +300,206 @@ func (p RetryPolicy) delayBound(attempt int) time.Duration {
 		return p.InitialBackoff << 20
 	}
 	return d
+}
+
+// retrySettings is the retry behavior for one operation.
+type retrySettings struct {
+	policy  RetryPolicy
+	streams bool // whether stream establishment may retry
+}
+
+// retrySettings resolves the client's retry behavior for one operation: a
+// per-call WithCallRetryPolicy wins over the client-wide policy and also
+// governs stream establishment for that call.
+func (c *Client) retrySettings(o operationOptions) retrySettings {
+	if o.callRetryPolicy != nil {
+		return retrySettings{policy: *o.callRetryPolicy, streams: true}
+	}
+	return retrySettings{policy: c.retryPolicy(), streams: c == nil || !c.noStreamRetries}
+}
+
+// WithCallRetryPolicy overrides the client's retry policy for one call. Use
+// RetryPolicy{} (zero retries) to exempt a single call or stream, such as a
+// supervised Watch, from retries while the client retries everything else.
+// For a stream it also governs reopening before the first item.
+//
+// Mutations are not retried by default. Two writes are idempotent on replay
+// and may opt in through this option: a Write whose transaction contains only
+// touches and no preconditions, and WriteSchema. Any other mutation given a
+// policy with retries fails with ErrInvalidArgument before any RPC.
+func WithCallRetryPolicy[O operationOption](policy RetryPolicy) O {
+	policy.RetryableCodes = append([]ErrorCode(nil), policy.RetryableCodes...)
+	return func(o *operationOptions) {
+		if policy.MaxRetries < 0 || (policy.MaxRetries > 0 && policy.InitialBackoff <= 0) || policy.MaxBackoff < 0 {
+			o.err = invalid("retry policy needs non-negative retries and a positive initial backoff")
+			return
+		}
+		o.callRetryPolicy = &policy
+	}
+}
+
+// mutationRetry returns the retry settings for a mutation: none unless the
+// caller opted this call in, which only idempotent mutations may do.
+func mutationRetry(o operationOptions, idempotent bool, op string) (retrySettings, error) {
+	if o.callRetryPolicy == nil || o.callRetryPolicy.MaxRetries == 0 {
+		return retrySettings{}, nil
+	}
+	if !idempotent {
+		return retrySettings{}, invalid("%s cannot be retried: only touch-only writes without preconditions and schema writes are idempotent on replay", op)
+	}
+	return retrySettings{policy: *o.callRetryPolicy}, nil
+}
+
+// Paging selects how ReadRelationships and LookupResources fetch results.
+type Paging uint8
+
+const (
+	// PagingAutomatic fetches page after page (page size from the page-size
+	// option) until results or the limit run out. This is the default.
+	PagingAutomatic Paging = iota
+	// PagingSingleRequest sends exactly one request, as the raw API does: its
+	// limit is the limit option (or unbounded without one), the page-size
+	// option is ignored, and no follow-up page is requested. Each item still
+	// carries its after-result cursor.
+	PagingSingleRequest
+)
+
+func pagingOption(o *operationOptions, mode Paging) {
+	if mode != PagingAutomatic && mode != PagingSingleRequest {
+		o.err = invalid("unknown paging mode")
+		return
+	}
+	o.singleRequest = mode == PagingSingleRequest
+}
+
+// WithReadRelationshipsPaging selects automatic paging or a single request.
+func WithReadRelationshipsPaging(mode Paging) ReadRelationshipsOption {
+	return func(o *operationOptions) { pagingOption(o, mode) }
+}
+
+// WithLookupResourcesPaging selects automatic paging or a single request.
+func WithLookupResourcesPaging(mode Paging) LookupResourcesOption {
+	return func(o *operationOptions) { pagingOption(o, mode) }
+}
+
+// pageRequestLimit is the OptionalLimit every request of a paged read sends:
+// fixed for the whole call (SpiceDB rejects a cursor sent with a different
+// limit), capped by the total limit, and the total limit alone (0 meaning
+// unbounded) in single-request mode.
+func (o operationOptions) pageRequestLimit() uint32 {
+	if o.singleRequest {
+		return uint32(min(o.limit, uint64(^uint32(0))))
+	}
+	if o.limit > 0 {
+		return uint32(min(uint64(o.pageSize), o.limit))
+	}
+	return o.pageSize
+}
+
+// ResolvedOptions is what a set of operation options asks for, for test
+// doubles and wrappers that need to observe per-call options (option values
+// are otherwise opaque). It is a snapshot: changing it changes nothing.
+type ResolvedOptions struct {
+	// Err is the first invalid option, which the real client would return.
+	Err     error
+	Timeout time.Duration
+	// PageSize is the page size; for ImportRelationships it is the batch
+	// size and for DeleteAllRelationshipsNonAtomic the batch limit. Operation
+	// defaults are applied.
+	PageSize uint32
+	// Limit is the total result limit; 0 means none.
+	Limit                      uint64
+	Cursor                     string
+	Paging                     Paging
+	CallOptions                []grpc.CallOption
+	RetryPolicy                *RetryPolicy
+	CheckContext               map[string]any
+	Tracing                    CheckTracing
+	BulkItemErrors             BulkItemErrors
+	LookupDebug                LookupDebug
+	LookupPermissionshipFilter LookupPermissionshipFilter
+	LookupSubjectsRelation     string
+	ExportFilter               *rel.Filter
+	WatchStart                 consistency.ZedToken
+	WatchCheckpoints           WatchCheckpoints
+	WatchSchemaChanges         WatchSchemaChanges
+	Preconditions              []rel.Precondition
+	PartialDeletion            PartialDeletion
+	DeleteProgress             func(DeleteResult)
+	TransactionMetadata        map[string]any
+}
+
+// ResponseMetadata returns the header and trailer targets requested with
+// WithResponseMetadata (nil when absent), so a test double can fill them.
+func (r ResolvedOptions) ResponseMetadata() (header, trailer *metadata.MD) {
+	for _, opt := range r.CallOptions {
+		switch o := opt.(type) {
+		case grpc.HeaderCallOption:
+			header = o.HeaderAddr
+		case grpc.TrailerCallOption:
+			trailer = o.TrailerAddr
+		}
+	}
+	return header, trailer
+}
+
+// ResolveOptions applies options of one operation's option type and reports
+// what they ask for, with that operation's defaults applied:
+//
+//	r := client.ResolveOptions(opts...) // opts []client.ReadRelationshipsOption
+//	if r.Cursor != "" { ... }
+func ResolveOptions[O operationOption](opts ...O) ResolvedOptions {
+	var o operationOptions
+	switch any(opts).(type) {
+	case []ReadRelationshipsOption:
+		o.pageSize = defaultReadPageSize
+	case []LookupResourcesOption:
+		o.pageSize = defaultLookupPageSize
+	case []ExportRelationshipsOption:
+		o.pageSize = defaultExportPageSize
+	case []ImportRelationshipsOption:
+		o.pageSize = defaultImportBatchSize
+	case []DeleteAllOption:
+		o.pageSize = defaultDeletePageSize
+	}
+	for _, opt := range opts {
+		opt(&o)
+	}
+	r := ResolvedOptions{
+		Err: o.err, Timeout: o.timeout, PageSize: o.pageSize, Limit: o.limit, Cursor: o.cursor,
+		CallOptions: append([]grpc.CallOption(nil), o.callOptions...), CheckContext: o.checkContext,
+		LookupPermissionshipFilter: o.lookupPermissionshipFilter, LookupSubjectsRelation: o.subjectRelation,
+		WatchStart: o.start, Preconditions: append([]rel.Precondition(nil), o.preconditions...),
+		DeleteProgress: o.deleteProgress, TransactionMetadata: o.metadata,
+	}
+	if o.callRetryPolicy != nil {
+		p := *o.callRetryPolicy
+		r.RetryPolicy = &p
+	}
+	if o.filter != nil {
+		f := *o.filter
+		r.ExportFilter = &f
+	}
+	if o.singleRequest {
+		r.Paging = PagingSingleRequest
+	}
+	if o.tracing {
+		r.Tracing = TracingEnabled
+	}
+	if o.itemErrors {
+		r.BulkItemErrors = ItemErrorsReturned
+	}
+	if o.debug {
+		r.LookupDebug = DebugEnabled
+	}
+	if o.checkpoints {
+		r.WatchCheckpoints = CheckpointsIncluded
+	}
+	if o.schemaChanges {
+		r.WatchSchemaChanges = SchemaChangesIncluded
+	}
+	if o.disallowPartialDeletion {
+		r.PartialDeletion = PartialDisallowed
+	}
+	return r
 }

@@ -220,6 +220,23 @@ func (e *Error) GRPCStatus() *status.Status {
 	return status.New(code, msg)
 }
 
+// statusOf returns err's own gRPC status: an *Error's (via GRPCStatus), a raw
+// status error's, or one classified by CodeOf with err's message.
+func statusOf(err error) *status.Status {
+	var e *Error
+	if errors.As(err, &e) {
+		return e.GRPCStatus()
+	}
+	if st, ok := status.FromError(err); ok {
+		return st
+	}
+	code, ok := errorCodeToGRPC[CodeOf(err)]
+	if !ok {
+		code = codes.Unknown
+	}
+	return status.New(code, err.Error())
+}
+
 func errorCodeOf(c codes.Code) ErrorCode { return grpcCodeToErrorCode[c] }
 
 // CodeOf classifies any error as a native ErrorCode: an *Error anywhere in the

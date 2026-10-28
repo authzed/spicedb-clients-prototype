@@ -6,6 +6,8 @@ import (
 	"io"
 	"iter"
 
+	"google.golang.org/grpc/status"
+
 	v1 "github.com/authzed/spicedb-clients/proto-clients/spicedb-go-proto/gen/authzed/api/v1"
 	"github.com/authzed/spicedb-clients/spicedb-go/consistency"
 	"github.com/authzed/spicedb-clients/spicedb-go/rel"
@@ -57,12 +59,21 @@ func (c *Client) Write(ctx context.Context, request WriteRequest, opts ...WriteO
 		}
 		req.Updates = append(req.Updates, &v1.RelationshipUpdate{Operation: op, Relationship: r})
 	}
-	if len(req.Updates) == 0 {
-		return WriteResult{}, invalid("transaction requires updates")
+	// An empty transaction is sent as is: SpiceDB accepts it, evaluates any
+	// preconditions, and returns the current revision.
+	touchOnly := len(ps) == 0
+	for _, u := range req.Updates {
+		touchOnly = touchOnly && u.GetOperation() == v1.RelationshipUpdate_OPERATION_TOUCH
 	}
-	resp, e := c.psc.WriteRelationships(ctx, req, o.callOptions...)
+	rs, e := mutationRetry(o, touchOnly, "write")
 	if e != nil {
-		return WriteResult{}, mapGRPCError("write", e)
+		return WriteResult{}, e
+	}
+	resp, e := retry(ctx, rs, "write", func() (*v1.WriteRelationshipsResponse, error) {
+		return c.psc.WriteRelationships(ctx, req, o.callOptions...)
+	})
+	if e != nil {
+		return WriteResult{}, e
 	}
 	return WriteResult{consistency.NewZedToken(resp.GetWrittenAt().GetToken())}, nil
 }
@@ -115,14 +126,11 @@ func (c *Client) ReadRelationships(ctx context.Context, request ReadRelationship
 		// Every page therefore repeats the caller's consistency and one page
 		// size; the cursor itself pins later pages to the first page's
 		// revision, and the total limit is enforced here.
-		pageSize := o.pageSize
-		if o.limit > 0 {
-			pageSize = uint32(min(uint64(pageSize), o.limit))
-		}
+		pageSize := o.pageRequestLimit()
 		for {
 			req := &v1.ReadRelationshipsRequest{Consistency: cs, RelationshipFilter: f, OptionalLimit: pageSize, OptionalCursor: cur}
 			pageCtx, pageCancel := context.WithCancel(ctx)
-			seq := receive(pageCtx, c, "read relationships", !exposed, func(ctx context.Context) (receiver[*v1.ReadRelationshipsResponse], error) {
+			seq := receive(pageCtx, c.retrySettings(o), "read relationships", !exposed, func(ctx context.Context) (receiver[*v1.ReadRelationshipsResponse], error) {
 				return c.psc.ReadRelationships(ctx, req, o.callOptions...)
 			})
 			count := uint32(0)
@@ -154,7 +162,7 @@ func (c *Client) ReadRelationships(ctx context.Context, request ReadRelationship
 				}
 			}
 			pageCancel()
-			if count < pageSize {
+			if o.singleRequest || count < pageSize {
 				return
 			}
 			if cur.GetToken() == "" || cur.GetToken() == previous {
@@ -187,6 +195,10 @@ func (e *DeleteProgressError) Error() string {
 	return fmt.Sprintf("spicedb: delete interrupted after %d acknowledged deletions: %v", e.Progress.DeletedCount, e.Err)
 }
 func (e *DeleteProgressError) Unwrap() error { return e.Err }
+
+// GRPCStatus reports the underlying failure's status without the progress
+// prefix Error adds.
+func (e *DeleteProgressError) GRPCStatus() *status.Status { return statusOf(e.Err) }
 func deleteResult(p *v1.DeleteRelationshipsResponse) DeleteResult {
 	return DeleteResult{Revision: consistency.NewZedToken(p.GetDeletedAt().GetToken()), DeletedCount: p.GetRelationshipsDeletedCount(), Complete: p.GetDeletionProgress() == v1.DeleteRelationshipsResponse_DELETION_PROGRESS_COMPLETE, Cursor: p.GetAfterResultCursor().GetToken()}
 }
@@ -222,6 +234,9 @@ func (c *Client) DeleteRelationships(ctx context.Context, request DeleteRequest,
 	for _, opt := range opts {
 		opt(&o)
 	}
+	if _, e := mutationRetry(o, false, "delete relationships"); e != nil {
+		return DeleteResult{}, e
+	}
 	ctx, cancel, e := c.operation(ctx, o, false)
 	if e != nil {
 		return DeleteResult{}, e
@@ -245,6 +260,9 @@ func (c *Client) DeleteAllRelationshipsNonAtomic(ctx context.Context, request De
 	o := operationOptions{pageSize: defaultDeletePageSize}
 	for _, opt := range opts {
 		opt(&o)
+	}
+	if _, e := mutationRetry(o, false, "delete relationships"); e != nil {
+		return DeleteResult{}, e
 	}
 	ctx, cancel, e := c.operation(ctx, o, false)
 	if e != nil {
@@ -287,9 +305,9 @@ func (c *Client) DeleteAllRelationshipsNonAtomic(ctx context.Context, request De
 type receiver[T any] interface{ Recv() (T, error) }
 
 // receive retries establishment and the first receive only before any item is exposed.
-func receive[T any](ctx context.Context, c *Client, op string, mayRetry bool, open func(context.Context) (receiver[T], error)) iter.Seq2[T, error] {
-	policy := c.retryPolicy()
-	if c != nil && c.noStreamRetries {
+func receive[T any](ctx context.Context, rs retrySettings, op string, mayRetry bool, open func(context.Context) (receiver[T], error)) iter.Seq2[T, error] {
+	policy := rs.policy
+	if !rs.streams {
 		mayRetry = false
 	}
 	return func(yield func(T, error) bool) {

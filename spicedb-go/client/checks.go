@@ -33,6 +33,11 @@ func (e *BulkCheckError) Error() string {
 	return fmt.Sprintf("spicedb: check item %d: %v", e.Index, e.Err)
 }
 func (e *BulkCheckError) Unwrap() error { return e.Err }
+
+// GRPCStatus reports the item's own status (the server's message once, without
+// the item and operation prefixes Error adds), so status.Convert and
+// status.Code see the same thing as for the unwrapped error.
+func (e *BulkCheckError) GRPCStatus() *status.Status { return statusOf(e.Err) }
 func checkItem(r PermissionCheck, defaults map[string]any) (*v1.CheckBulkPermissionsRequestItem, error) {
 	if e := r.Resource.Validate(); e != nil {
 		return nil, invalid("resource: %s", e)
@@ -82,7 +87,7 @@ func (c *Client) Check(ctx context.Context, request PermissionCheck, opts ...Che
 		return CheckResult{}, e
 	}
 	cs, _ := strategy(request.Consistency)
-	resp, e := retry(ctx, c, "check", func() (*v1.CheckPermissionResponse, error) {
+	resp, e := retry(ctx, c.retrySettings(o), "check", func() (*v1.CheckPermissionResponse, error) {
 		return c.psc.CheckPermission(ctx, &v1.CheckPermissionRequest{Consistency: cs, Resource: item.Resource, Permission: item.Permission, Subject: item.Subject, Context: item.Context, WithTracing: o.tracing}, o.callOptions...)
 	})
 	if e != nil {
@@ -141,7 +146,7 @@ func (c *Client) CheckBulk(ctx context.Context, requests []PermissionCheck, opts
 // index, for errors.
 func (c *Client) checkChunk(ctx context.Context, cs *v1.Consistency, items []*v1.CheckBulkPermissionsRequestItem, indices []int, o operationOptions) ([]CheckResult, error) {
 	offset := indices[0]
-	resp, e := retry(ctx, c, "check bulk", func() (*v1.CheckBulkPermissionsResponse, error) {
+	resp, e := retry(ctx, c.retrySettings(o), "check bulk", func() (*v1.CheckBulkPermissionsResponse, error) {
 		return c.psc.CheckBulkPermissions(ctx, &v1.CheckBulkPermissionsRequest{Consistency: cs, Items: items, WithTracing: o.tracing}, o.callOptions...)
 	})
 	if e != nil {

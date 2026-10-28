@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -14,6 +15,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
@@ -39,6 +41,36 @@ type adoptionServer struct {
 	deletes       []*v1.DeleteRelationshipsRequest
 	deletePages   []*v1.DeleteRelationshipsResponse
 	schemaDelay   time.Duration
+	writes        atomic.Int32
+	writeErr      codes.Code
+	schemaWrites  atomic.Int32
+	lookups       []*v1.LookupResourcesRequest
+}
+
+func (s *adoptionServer) WriteRelationships(context.Context, *v1.WriteRelationshipsRequest) (*v1.WriteRelationshipsResponse, error) {
+	if s.writes.Add(1) == 1 && s.writeErr != codes.OK {
+		return nil, status.Error(s.writeErr, "transient")
+	}
+	return &v1.WriteRelationshipsResponse{WrittenAt: &v1.ZedToken{Token: "w"}}, nil
+}
+
+func (s *adoptionServer) WriteSchema(context.Context, *v1.WriteSchemaRequest) (*v1.WriteSchemaResponse, error) {
+	if s.schemaWrites.Add(1) == 1 {
+		return nil, status.Error(codes.Unavailable, "transient")
+	}
+	return &v1.WriteSchemaResponse{WrittenAt: &v1.ZedToken{Token: "s"}}, nil
+}
+
+func (s *adoptionServer) LookupResources(req *v1.LookupResourcesRequest, stream grpc.ServerStreamingServer[v1.LookupResourcesResponse]) error {
+	s.mu.Lock()
+	s.lookups = append(s.lookups, req)
+	s.mu.Unlock()
+	for i := 0; i < 3; i++ {
+		if err := stream.Send(&v1.LookupResourcesResponse{ResourceObjectId: fmt.Sprint(i), Permissionship: v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_HAS_PERMISSION, AfterResultCursor: &v1.Cursor{Token: fmt.Sprint("c", i)}}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *adoptionServer) ReadSchema(ctx context.Context, _ *v1.ReadSchemaRequest) (*v1.ReadSchemaResponse, error) {
@@ -326,4 +358,101 @@ func TestCallOptionsReachEveryOperation(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 2, called)
 	require.False(t, errors.Is(err, ErrInvalidArgument))
+}
+
+func TestPerCallRetryPolicy(t *testing.T) {
+	ctx := context.Background()
+	retryOnce := RetryPolicy{MaxRetries: 1, RetryableCodes: []ErrorCode{CodeUnavailable}, InitialBackoff: time.Millisecond}
+	touch := func() rel.Txn {
+		var txn rel.Txn
+		require.NoError(t, txn.Touch(testTriple("document", "a", "viewer", "user", "alice", "")))
+		return txn
+	}
+
+	// Mutations are never retried by default.
+	srv := &adoptionServer{writeErr: codes.Unavailable}
+	c := newAdoptionClient(t, srv)
+	_, err := c.Write(ctx, WriteRequest{Transaction: touch()})
+	require.ErrorIs(t, err, ErrUnavailable)
+	require.EqualValues(t, 1, srv.writes.Load())
+
+	// A touch-only write may opt in for one call.
+	srv = &adoptionServer{writeErr: codes.Unavailable}
+	c = newAdoptionClient(t, srv)
+	_, err = c.Write(ctx, WriteRequest{Transaction: touch()}, WithCallRetryPolicy[WriteOption](retryOnce))
+	require.NoError(t, err)
+	require.EqualValues(t, 2, srv.writes.Load())
+
+	// Non-idempotent writes refuse the opt-in before any RPC.
+	var create rel.Txn
+	require.NoError(t, create.Create(testTriple("document", "a", "viewer", "user", "alice", "")))
+	var guarded rel.Txn
+	require.NoError(t, guarded.MustMatch(testFilter("document")))
+	require.NoError(t, guarded.Touch(testTriple("document", "a", "viewer", "user", "alice", "")))
+	for _, txn := range []rel.Txn{create, guarded} {
+		before := srv.writes.Load()
+		_, err = c.Write(ctx, WriteRequest{Transaction: txn}, WithCallRetryPolicy[WriteOption](retryOnce))
+		require.ErrorIs(t, err, ErrInvalidArgument)
+		require.Equal(t, before, srv.writes.Load())
+	}
+	_, err = c.DeleteRelationships(ctx, DeleteRequest{Filter: testFilter("document"), Limit: 1}, WithCallRetryPolicy[DeleteOption](retryOnce))
+	require.ErrorIs(t, err, ErrInvalidArgument)
+
+	// Schema writes are idempotent and may opt in.
+	_, err = c.WriteSchema(ctx, WriteSchemaRequest{Schema: "definition user {}"}, WithCallRetryPolicy[WriteSchemaOption](retryOnce))
+	require.NoError(t, err)
+	require.EqualValues(t, 2, srv.schemaWrites.Load())
+
+	// One stream can be exempted while the client keeps retrying others.
+	srv = &adoptionServer{}
+	c = newAdoptionClient(t, srv, WithRetryPolicy(RetryPolicy{MaxRetries: 3, RetryableCodes: []ErrorCode{CodeUnavailable}, InitialBackoff: time.Millisecond}))
+	for _, err := range c.Updates(ctx, UpdatesRequest{}, WithCallRetryPolicy[UpdatesOption](RetryPolicy{})) {
+		require.ErrorIs(t, err, ErrUnavailable)
+		break
+	}
+	require.EqualValues(t, 1, srv.watchCalls.Load())
+}
+
+func TestEmptyWriteIsSentToTheServer(t *testing.T) {
+	srv := &adoptionServer{}
+	result, err := newAdoptionClient(t, srv).Write(context.Background(), WriteRequest{})
+	require.NoError(t, err)
+	require.Equal(t, "w", result.Revision.String())
+	require.EqualValues(t, 1, srv.writes.Load())
+}
+
+func TestLookupResourcesSingleRequest(t *testing.T) {
+	srv := &adoptionServer{}
+	c := newAdoptionClient(t, srv)
+	req := LookupResourcesRequest{ResourceType: "document", Permission: "view", Subject: testSubject("user", "alice", ""), Consistency: consistency.Full()}
+	var cursors []string
+	for r, err := range c.LookupResources(context.Background(), req, WithLookupResourcesPaging(PagingSingleRequest)) {
+		require.NoError(t, err)
+		cursors = append(cursors, r.AfterResultCursor)
+	}
+	require.Equal(t, []string{"c0", "c1", "c2"}, cursors)
+	require.Len(t, srv.lookups, 1, "exactly one request")
+	require.Zero(t, srv.lookups[0].GetOptionalLimit(), "no limit option means unbounded")
+}
+
+func TestResolveOptions(t *testing.T) {
+	var header metadata.MD
+	r := ResolveOptions(
+		WithReadRelationshipsCursor("k"),
+		WithReadRelationshipsLimit(7),
+		WithResponseMetadata[ReadRelationshipsOption](&header, nil),
+		WithCallRetryPolicy[ReadRelationshipsOption](RetryPolicy{}),
+	)
+	require.NoError(t, r.Err)
+	require.Equal(t, "k", r.Cursor)
+	require.EqualValues(t, 7, r.Limit)
+	require.EqualValues(t, defaultReadPageSize, r.PageSize, "operation defaults apply")
+	require.NotNil(t, r.RetryPolicy)
+	h, tr := r.ResponseMetadata()
+	require.Same(t, &header, h)
+	require.Nil(t, tr)
+
+	require.EqualValues(t, 3, ResolveOptions(WithImportRelationshipsBatchSize(3)).PageSize)
+	require.Error(t, ResolveOptions(WithImportRelationshipsBatchSize(0)).Err)
+	require.Equal(t, PartialDisallowed, ResolveOptions(WithDeletePartial(PartialDisallowed)).PartialDeletion)
 }

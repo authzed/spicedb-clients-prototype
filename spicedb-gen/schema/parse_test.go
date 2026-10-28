@@ -264,3 +264,33 @@ func TestViewPermissionReachableSubjectsWithCaveats(t *testing.T) {
 	assert.Contains(t, viewPerm.ReachableSubjects, schema.SubjectType{Definition: "user", CaveatName: "time_window"})
 	assert.Contains(t, viewPerm.ReachableSubjects, schema.SubjectType{Definition: "team", Relation: "member"})
 }
+
+func TestCaveatExpressionsAreOpaque(t *testing.T) {
+	s, err := schema.ParseString(`
+caveat custom_fn(request map<any>, allowed list<string>) {
+	customLookup(request).name in allowed && {"}": "{"}["}"] == "{" // not a closing brace: }
+}
+
+caveat multi_line(a int) {
+	a > 1 &&
+	undeclaredHelper(a)
+}
+
+definition user {}
+
+definition document {
+	relation viewer: user with custom_fn | user with multi_line
+	permission view = viewer
+}`)
+	require.NoError(t, err)
+	require.Len(t, s.Caveats, 2)
+	assert.Equal(t, "custom_fn", s.Caveats[0].Name)
+	require.Len(t, s.Caveats[0].Params, 2)
+	assert.Equal(t, "allowed", s.Caveats[0].Params[0].Name)
+	assert.Equal(t, "multi_line", s.Caveats[1].Name)
+	require.Len(t, s.Definitions, 2)
+
+	// Errors outside caveat bodies keep their original line numbers.
+	_, err = schema.ParseString("caveat c(a int) {\n\tfoo(a)\n}\n\ndefinition user {\n\tpermission view = +\n}")
+	require.ErrorContains(t, err, "line 6")
+}

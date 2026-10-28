@@ -171,7 +171,7 @@ func TestStreamsRetryOnlyBeforeExposure(t *testing.T) {
 			calls := 0
 			items := 0
 			errors := 0
-			for _, e := range receive(context.Background(), nil, "test", true, func(context.Context) (receiver[int], error) {
+			for _, e := range receive(context.Background(), retrySettings{policy: DefaultRetryPolicy(), streams: true}, "test", true, func(context.Context) (receiver[int], error) {
 				calls++
 				if partial {
 					return &scriptedReceiver{values: []int{1}, err: status.Error(codes.Unavailable, "after item")}, nil

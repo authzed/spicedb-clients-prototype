@@ -8,6 +8,7 @@ import (
 	"go/token"
 	"sort"
 	"strings"
+	"sync"
 	"text/template"
 
 	"github.com/authzed/spicedb-clients/spicedb-gen/generator"
@@ -156,10 +157,43 @@ type PermissionVarData struct {
 	PermissionName string // e.g. "view"
 }
 
-// Generate produces generated Go files from the parsed schema. The only
-// language option is "package" (--go.package), the generated package name.
+// renameMu serializes Generate, which installs per-call definition renames
+// for defIdent.
+var (
+	renameMu   sync.Mutex
+	defRenames map[string]string
+)
+
+// defIdent is the Go identifier stem for a schema definition: its PascalCase
+// name, or the --go.rename override for it.
+func defIdent(name string) string {
+	if r, ok := defRenames[name]; ok {
+		return r
+	}
+	return toPascalCase(name)
+}
+
+// parseRenames parses --go.rename=def=GoName[,def=GoName...].
+func parseRenames(v string) (map[string]string, error) {
+	out := map[string]string{}
+	for _, pair := range strings.Split(v, ",") {
+		def, ident, ok := strings.Cut(strings.TrimSpace(pair), "=")
+		if !ok || def == "" || !token.IsIdentifier(ident) || !token.IsExported(ident) {
+			return nil, fmt.Errorf("--go.rename entry %q must be <definition>=<ExportedGoName>", pair)
+		}
+		out[def] = ident
+	}
+	return out, nil
+}
+
+// Generate produces generated Go files from the parsed schema. Options:
+// "package" (--go.package) sets the generated package name; "rename"
+// (--go.rename=def=GoName,...) sets the Go identifier stem for definitions
+// whose names would otherwise collide with generated identifiers. Renames
+// change Go identifiers only; the schema names sent to SpiceDB never change.
 func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]generator.GeneratedFile, error) {
 	pkg := DefaultPackage
+	renames := map[string]string{}
 	for k, v := range opts {
 		switch k {
 		case "package":
@@ -167,10 +201,30 @@ func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]genera
 				return nil, fmt.Errorf("--go.package=%q is not a valid Go package name", v)
 			}
 			pkg = v
+		case "rename":
+			r, err := parseRenames(v)
+			if err != nil {
+				return nil, err
+			}
+			renames = r
 		default:
 			return nil, fmt.Errorf("unknown Go option --go.%s", k)
 		}
 	}
+	known := map[string]bool{}
+	for _, def := range s.Definitions {
+		known[def.Name] = true
+	}
+	for def := range renames {
+		if !known[def] {
+			return nil, fmt.Errorf("--go.rename names %q, which is not a definition in the schema", def)
+		}
+	}
+
+	renameMu.Lock()
+	defer renameMu.Unlock()
+	defRenames = renames
+	defer func() { defRenames = nil }()
 
 	data, err := buildTemplateData(s)
 	if err != nil {
@@ -183,6 +237,7 @@ func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]genera
 			return len(s.WithMethods) > 0
 		},
 		"toLowerCamel": toLowerCamel,
+		"a":            withArticle,
 		"trimSuffix":   strings.TrimSuffix,
 	}
 
@@ -225,11 +280,11 @@ func baseOf(st schema.SubjectType) subjectBase {
 func (b subjectBase) prefix() string {
 	switch {
 	case b.wildcard:
-		return toPascalCase(b.definition) + "Wildcard"
+		return defIdent(b.definition) + "Wildcard"
 	case b.relation != "":
-		return toPascalCase(b.definition) + toPascalCase(b.relation)
+		return defIdent(b.definition) + toPascalCase(b.relation)
 	default:
-		return toPascalCase(b.definition)
+		return defIdent(b.definition)
 	}
 }
 
@@ -273,7 +328,8 @@ func (n *names) claim(scope, name, owner string) {
 		if scope != "" {
 			where = scope
 		}
-		n.err = fmt.Errorf("schema produces conflicting Go identifier %s in %s (from %s and %s); rename one of them", name, where, prev, owner)
+		n.err = fmt.Errorf("schema produces conflicting Go identifier %s in %s (from %s and %s); "+
+			"rename the schema element, or keep the schema and pass --go.rename=<definition>=<GoName> to change a definition's Go identifiers", name, where, prev, owner)
 	}
 	n.owners[key] = owner
 }
@@ -461,7 +517,7 @@ func buildTemplateData(s *schema.Schema) (TemplateData, error) {
 
 	var definitions []DefinitionData
 	for _, def := range s.Definitions {
-		pascal := toPascalCase(def.Name)
+		pascal := defIdent(def.Name)
 		refType := pascal + "Ref"
 		dd := DefinitionData{
 			Name:          def.Name,
@@ -533,13 +589,26 @@ func buildTemplateData(s *schema.Schema) (TemplateData, error) {
 				}
 			}
 			sort.Strings(keyImplementors)
+			// A key is only distinct from the writer when some admitted subject
+			// carries a caveat or expiration; otherwise the writer's
+			// TypedRelationship already identifies the tuple for deletes and
+			// filters, and a key would duplicate it.
+			needsKey := false
+			for _, st := range rel.AllowedSubjects {
+				if st.CaveatName != "" || st.Expiration {
+					needsKey = true
+				}
+			}
+			if !needsKey {
+				keyImplementors = nil
+			}
 			if len(implementors) > 0 {
 				rd.HasSubjects = true
 				addInterface(rd.InterfaceName, implementors)
 				n.claim(refType, rd.PascalName, "writer for relation "+rel.Name)
-				n.claim(refType, rd.KeyMethod, "key for relation "+rel.Name)
 			}
 			if len(keyImplementors) > 0 {
+				n.claim(refType, rd.KeyMethod, "key for relation "+rel.Name)
 				rd.HasKeyInterface = true
 				addInterface(rd.KeyInterface, keyImplementors)
 			}
@@ -582,8 +651,8 @@ func buildTemplateData(s *schema.Schema) (TemplateData, error) {
 	for _, def := range s.Definitions {
 		for _, perm := range def.Permissions {
 			permissionVars = append(permissionVars, PermissionVarData{
-				VarName:        toPascalCase(def.Name) + "_" + toPascalCase(perm.Name),
-				InterfaceName:  toPascalCase(def.Name) + toPascalCase(perm.Name) + "Subject",
+				VarName:        defIdent(def.Name) + "_" + toPascalCase(perm.Name),
+				InterfaceName:  defIdent(def.Name) + toPascalCase(perm.Name) + "Subject",
 				ResourceType:   def.Name,
 				PermissionName: perm.Name,
 			})
@@ -593,7 +662,7 @@ func buildTemplateData(s *schema.Schema) (TemplateData, error) {
 	// Identifiers the static part of the template declares.
 	for _, fixed := range []string{"Subject", "Permission", "PermissionRef", "TypedRelationship", "RelationshipKey",
 		"Deletable", "TypedClient", "NewTypedClient", "Txn", "TypedCheck", "ChecksFor", "Check", "CheckBulk",
-		"LookupResources", "LookupSubjects", "FromRelationship", "ErrRelationship", "WithSubject",
+		"LookupResources", "LookupSubjects", "FromRelationship", "ErrRelationship", "WithSubject", "WithSubjectAnyRelation",
 		"ErrNotInSchema", "ErrSubjectNotAllowed"} {
 		n.claim("", fixed, "generated support code")
 	}
@@ -652,6 +721,15 @@ func collectImplementors(subjects []schema.SubjectType, knownTypes map[string]bo
 	// Sort for deterministic output
 	sort.Strings(result)
 	return result
+}
+
+// withArticle prefixes word with "a" or "an", chosen by its first letter, for
+// generated comments ("an inviter relationship", "a viewer relationship").
+func withArticle(word string) string {
+	if word != "" && strings.ContainsRune("aeiouAEIOU", rune(word[0])) {
+		return "an " + word
+	}
+	return "a " + word
 }
 
 // toPascalCase converts a snake_case or lowercase string to PascalCase.

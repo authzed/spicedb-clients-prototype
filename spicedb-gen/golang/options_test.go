@@ -2,6 +2,9 @@ package golang
 
 import (
 	"go/format"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -69,4 +72,48 @@ definition doc {
 	permission view = viewer
 }`, nil)
 	require.ErrorContains(t, err, "ViewerRelation")
+}
+
+const collidingSchema = `
+caveat custom_fn(request map<any>) {
+	customLookup(request).allowed
+}
+
+definition subject {}
+
+definition resource {
+	relation viewer: subject | subject with custom_fn
+	permission view = viewer
+}`
+
+func TestRenameResolvesDefinitionCollisions(t *testing.T) {
+	_, err := generate(t, collidingSchema, nil)
+	require.ErrorContains(t, err, "Subject")
+	require.ErrorContains(t, err, "--go.rename", "the collision error must say how to keep the schema")
+
+	out, err := generate(t, collidingSchema, map[string]string{"rename": "subject=SubjectDef"})
+	require.NoError(t, err)
+	flat := squash(out)
+	assert.Contains(t, flat, "func SubjectDef(id string) SubjectDefRef")
+	assert.Contains(t, flat, `return "subject", r.id, ""`, "the wire name stays the schema name")
+	assert.Contains(t, flat, "func (r SubjectDefRef) WithCustomFn(ctx CustomFnContext) SubjectDefCustomFn")
+
+	for _, bad := range []string{"subject", "subject=lower", "nope=Nope"} {
+		_, err := generate(t, collidingSchema, map[string]string{"rename": bad})
+		assert.Error(t, err, bad)
+	}
+
+	if testing.Short() {
+		return
+	}
+	// The renamed output compiles against the real native client.
+	dir, err := os.MkdirTemp("../testdata/go", "zz_rename_")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "permissions.gen.go"), []byte(out), 0o644))
+	cmd := exec.Command("go", "vet", "./"+filepath.Base(dir))
+	cmd.Dir = "../testdata/go"
+	cmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod")
+	vetOut, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(vetOut))
 }

@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- `WithCallRetryPolicy[O]` overrides the retry policy for one call, including
+  stream establishment (exempt one Watch while retrying everything else).
+  Touch-only writes without preconditions and `WriteSchema` may opt in to
+  retries per call; other mutations reject the opt-in before any request.
+- `Write` now sends empty transactions instead of rejecting them, matching
+  SpiceDB, which evaluates their preconditions and returns the current revision.
+- `WithReadRelationshipsPaging` / `WithLookupResourcesPaging(PagingSingleRequest)`
+  send exactly one request, as the raw API does.
+- `ResolveOptions[O]` resolves an operation's options into `ResolvedOptions`
+  for test doubles and wrappers.
+- `clienttest.Store` adds `ImportRelationships`, `ExportRelationships`,
+  `ReadSchema`, `WriteSchema` and `ReflectSchema`, honors cursors, limits,
+  export filters and response-metadata targets, and returns errors shaped like
+  the real client's (`spicedb: <op>: <server message>`).
+- `BulkCheckError` and `DeleteProgressError` implement `GRPCStatus`, so
+  `status.Convert` reports the server's message once.
+- `protoconv.CheckBulkToProto` and `CheckRequestToProto`; `LookupSubjectToProto`
+  fills the deprecated fields SpiceDB still sends.
+- Generated typed clients: `--go.rename=<definition>=<GoName>`, caveats calling
+  custom CEL functions generate (expressions are opaque), typed `Txn.Updates()`,
+  `Preconditions()` and `Err()`, `WithSubjectAnyRelation`, keys only where a
+  relation needs them, and article fixes in comments.
+
 - **Fix:** paged `ReadRelationships` and `LookupResources` failed on their
   second page ("the cursor provided does not have the same arguments as the
   original API call"): the pager switched later pages to an exact snapshot and

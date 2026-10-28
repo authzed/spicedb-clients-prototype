@@ -149,7 +149,10 @@ type Deletable interface {
 }
 
 // WithSubject narrows f to subject: its type, its ID (unless subject is a
-// type sentinel) and its exact subject relation (direct or named).
+// type sentinel) and its exact subject relation. It always constrains the
+// subject relation: a subject without one (User("x")) matches only direct
+// relationships, never usersets such as team:eng#member. Use
+// WithSubjectAnyRelation to leave the subject relation unconstrained.
 func WithSubject(f rel.Filter, subject Subject) rel.Filter {
 	sType, sID, sRel := subject.subjectRef()
 	f = f.WithSubjectType(sType)
@@ -164,6 +167,17 @@ func WithSubject(f rel.Filter, subject Subject) rel.Filter {
 		return rel.ErrFilter(err)
 	}
 	return f.WithSubjectRelation(named)
+}
+
+// WithSubjectAnyRelation narrows f to subject's type and ID (unless subject is
+// a type sentinel) and matches any subject relation, direct or userset.
+func WithSubjectAnyRelation(f rel.Filter, subject Subject) rel.Filter {
+	sType, sID, _ := subject.subjectRef()
+	f = f.WithSubjectType(sType).WithSubjectRelation(rel.AnyRelation())
+	if sID != "" {
+		f = f.WithSubjectID(sID)
+	}
+	return f
 }
 
 func resourceFilter(resourceType, resourceID, relation string) rel.Filter {
@@ -229,6 +243,25 @@ func (t *Txn) MustNotMatch(f rel.Filter) *Txn {
 
 // Len returns the number of updates added so far.
 func (t *Txn) Len() int { return t.txn.Len() }
+
+// Updates returns a copy of the updates added so far, or nil after an error.
+func (t *Txn) Updates() []rel.Update {
+	if t.err != nil {
+		return nil
+	}
+	return t.txn.Updates()
+}
+
+// Preconditions returns a copy of the preconditions added so far, or nil after an error.
+func (t *Txn) Preconditions() []rel.Precondition {
+	if t.err != nil {
+		return nil
+	}
+	return t.txn.Preconditions()
+}
+
+// Err returns the first construction error, if any.
+func (t *Txn) Err() error { return t.err }
 
 // String lists the transaction's preconditions and updates.
 func (t *Txn) String() string {
@@ -557,26 +590,20 @@ func (userRefType) expirationTime() *time.Time {
 	return nil
 }
 
-func (userRefType) isTeamMemberSubject()            {}
-func (userRefType) isTeamMemberKeySubject()         {}
-func (userRefType) isDocumentViewerSubject()        {}
-func (userRefType) isDocumentViewerKeySubject()     {}
-func (userRefType) isDocumentEditorSubject()        {}
-func (userRefType) isDocumentEditorKeySubject()     {}
-func (userRefType) isDocumentOwnerSubject()         {}
-func (userRefType) isDocumentOwnerKeySubject()      {}
-func (userRefType) isDocumentViewSubject()          {}
-func (userRefType) isDocumentEditSubject()          {}
-func (userRefType) isDocumentDeleteSubject()        {}
-func (userRefType) isOrganizationAdminSubject()     {}
-func (userRefType) isOrganizationAdminKeySubject()  {}
-func (userRefType) isOrganizationMemberSubject()    {}
-func (userRefType) isOrganizationMemberKeySubject() {}
-func (userRefType) isOrganizationGuestSubject()     {}
-func (userRefType) isOrganizationGuestKeySubject()  {}
-func (userRefType) isOrganizationCanAdminSubject()  {}
-func (userRefType) isOrganizationViewSubject()      {}
-func (userRefType) isInvitationInviterKeySubject()  {}
+func (userRefType) isTeamMemberSubject()           {}
+func (userRefType) isDocumentViewerSubject()       {}
+func (userRefType) isDocumentViewerKeySubject()    {}
+func (userRefType) isDocumentEditorSubject()       {}
+func (userRefType) isDocumentOwnerSubject()        {}
+func (userRefType) isDocumentViewSubject()         {}
+func (userRefType) isDocumentEditSubject()         {}
+func (userRefType) isDocumentDeleteSubject()       {}
+func (userRefType) isOrganizationAdminSubject()    {}
+func (userRefType) isOrganizationMemberSubject()   {}
+func (userRefType) isOrganizationGuestSubject()    {}
+func (userRefType) isOrganizationCanAdminSubject() {}
+func (userRefType) isOrganizationViewSubject()     {}
+func (userRefType) isInvitationInviterKeySubject() {}
 
 // TeamMemberType is a type sentinel for LookupSubjects and WithSubject.
 var TeamMemberType = teamMemberRefType{}
@@ -596,7 +623,6 @@ func (teamMemberRefType) expirationTime() *time.Time {
 }
 
 func (teamMemberRefType) isTeamMemberSubject()        {}
-func (teamMemberRefType) isTeamMemberKeySubject()     {}
 func (teamMemberRefType) isDocumentViewerSubject()    {}
 func (teamMemberRefType) isDocumentViewerKeySubject() {}
 func (teamMemberRefType) isDocumentViewSubject()      {}
@@ -618,8 +644,7 @@ func (organizationRefType) expirationTime() *time.Time {
 	return nil
 }
 
-func (organizationRefType) isInvitationOrgSubject()    {}
-func (organizationRefType) isInvitationOrgKeySubject() {}
+func (organizationRefType) isInvitationOrgSubject() {}
 
 // OrganizationCanAdminType is a type sentinel for LookupSubjects and WithSubject.
 var OrganizationCanAdminType = organizationCanAdminRefType{}
@@ -639,7 +664,6 @@ func (organizationCanAdminRefType) expirationTime() *time.Time {
 }
 
 func (organizationCanAdminRefType) isInvitationGrantSubject()         {}
-func (organizationCanAdminRefType) isInvitationGrantKeySubject()      {}
 func (organizationCanAdminRefType) isInvitationTimedGrantKeySubject() {}
 func (organizationCanAdminRefType) isInvitationAcceptSubject()        {}
 
@@ -807,14 +831,6 @@ func (d TeamRef) ForMember(subject TeamMemberSubject) TypedRelationship {
 	return typedRelationship("team", d.id, "member", subject)
 }
 
-// MemberKey identifies a member relationship on this team
-// without caveat or expiration, for deletes and exact filters.
-func (d TeamRef) MemberKey(subject TeamMemberKeySubject) RelationshipKey {
-	sType, sID, sRel := subject.subjectRef()
-	r, err := relationship("team", d.id, "member", sType, sID, sRel)
-	return RelationshipKey{r: r, err: err}
-}
-
 // DocumentRef represents a reference to a document resource.
 type DocumentRef struct {
 	id string
@@ -980,14 +996,6 @@ func (d DocumentRef) Editor(subject DocumentEditorSubject) TypedRelationship {
 	return typedRelationship("document", d.id, "editor", subject)
 }
 
-// EditorKey identifies a editor relationship on this document
-// without caveat or expiration, for deletes and exact filters.
-func (d DocumentRef) EditorKey(subject DocumentEditorKeySubject) RelationshipKey {
-	sType, sID, sRel := subject.subjectRef()
-	r, err := relationship("document", d.id, "editor", sType, sID, sRel)
-	return RelationshipKey{r: r, err: err}
-}
-
 // OwnerRelation returns a Permission for checking the owner relation directly on this document.
 func (d DocumentRef) OwnerRelation() Permission {
 	return Permission{resourceType: "document", resourceID: d.id, permission: "owner"}
@@ -1001,14 +1009,6 @@ func (d DocumentRef) OwnerFilter() rel.Filter {
 // Owner creates a TypedRelationship for the owner relation on this document.
 func (d DocumentRef) Owner(subject DocumentOwnerSubject) TypedRelationship {
 	return typedRelationship("document", d.id, "owner", subject)
-}
-
-// OwnerKey identifies a owner relationship on this document
-// without caveat or expiration, for deletes and exact filters.
-func (d DocumentRef) OwnerKey(subject DocumentOwnerKeySubject) RelationshipKey {
-	sType, sID, sRel := subject.subjectRef()
-	r, err := relationship("document", d.id, "owner", sType, sID, sRel)
-	return RelationshipKey{r: r, err: err}
 }
 
 // Organization creates a new OrganizationRef with the given ID.
@@ -1125,7 +1125,7 @@ func (d OrganizationRef) RelationshipByName(relation string, subject Subject) (T
 	return TypedRelationship{}, fmt.Errorf("%w: organization has no relation %q", ErrNotInSchema, relation)
 }
 
-// CanAdminSubject returns this organization as a OrganizationCanAdminRef subject.
+// CanAdminSubject returns this organization as an OrganizationCanAdminRef subject.
 func (d OrganizationRef) CanAdminSubject() OrganizationCanAdminRef {
 	return OrganizationCanAdminRef{id: d.id}
 }
@@ -1155,14 +1155,6 @@ func (d OrganizationRef) Admin(subject OrganizationAdminSubject) TypedRelationsh
 	return typedRelationship("organization", d.id, "admin", subject)
 }
 
-// AdminKey identifies a admin relationship on this organization
-// without caveat or expiration, for deletes and exact filters.
-func (d OrganizationRef) AdminKey(subject OrganizationAdminKeySubject) RelationshipKey {
-	sType, sID, sRel := subject.subjectRef()
-	r, err := relationship("organization", d.id, "admin", sType, sID, sRel)
-	return RelationshipKey{r: r, err: err}
-}
-
 // MemberRelation returns a Permission for checking the member relation directly on this organization.
 func (d OrganizationRef) MemberRelation() Permission {
 	return Permission{resourceType: "organization", resourceID: d.id, permission: "member"}
@@ -1176,14 +1168,6 @@ func (d OrganizationRef) MemberFilter() rel.Filter {
 // Member creates a TypedRelationship for the member relation on this organization.
 func (d OrganizationRef) Member(subject OrganizationMemberSubject) TypedRelationship {
 	return typedRelationship("organization", d.id, "member", subject)
-}
-
-// MemberKey identifies a member relationship on this organization
-// without caveat or expiration, for deletes and exact filters.
-func (d OrganizationRef) MemberKey(subject OrganizationMemberKeySubject) RelationshipKey {
-	sType, sID, sRel := subject.subjectRef()
-	r, err := relationship("organization", d.id, "member", sType, sID, sRel)
-	return RelationshipKey{r: r, err: err}
 }
 
 // CreatorRelation returns a Permission for checking the creator relation directly on this organization.
@@ -1201,14 +1185,6 @@ func (d OrganizationRef) Creator(subject OrganizationCreatorSubject) TypedRelati
 	return typedRelationship("organization", d.id, "creator", subject)
 }
 
-// CreatorKey identifies a creator relationship on this organization
-// without caveat or expiration, for deletes and exact filters.
-func (d OrganizationRef) CreatorKey(subject OrganizationCreatorKeySubject) RelationshipKey {
-	sType, sID, sRel := subject.subjectRef()
-	r, err := relationship("organization", d.id, "creator", sType, sID, sRel)
-	return RelationshipKey{r: r, err: err}
-}
-
 // GuestRelation returns a Permission for checking the guest relation directly on this organization.
 func (d OrganizationRef) GuestRelation() Permission {
 	return Permission{resourceType: "organization", resourceID: d.id, permission: "guest"}
@@ -1224,15 +1200,7 @@ func (d OrganizationRef) Guest(subject OrganizationGuestSubject) TypedRelationsh
 	return typedRelationship("organization", d.id, "guest", subject)
 }
 
-// GuestKey identifies a guest relationship on this organization
-// without caveat or expiration, for deletes and exact filters.
-func (d OrganizationRef) GuestKey(subject OrganizationGuestKeySubject) RelationshipKey {
-	sType, sID, sRel := subject.subjectRef()
-	r, err := relationship("organization", d.id, "guest", sType, sID, sRel)
-	return RelationshipKey{r: r, err: err}
-}
-
-// InvitationRef represents a reference to a invitation resource.
+// InvitationRef represents a reference to an invitation resource.
 type InvitationRef struct {
 	id string
 }
@@ -1367,14 +1335,6 @@ func (d InvitationRef) Org(subject InvitationOrgSubject) TypedRelationship {
 	return typedRelationship("invitation", d.id, "org", subject)
 }
 
-// OrgKey identifies a org relationship on this invitation
-// without caveat or expiration, for deletes and exact filters.
-func (d InvitationRef) OrgKey(subject InvitationOrgKeySubject) RelationshipKey {
-	sType, sID, sRel := subject.subjectRef()
-	r, err := relationship("invitation", d.id, "org", sType, sID, sRel)
-	return RelationshipKey{r: r, err: err}
-}
-
 // GrantRelation returns a Permission for checking the grant relation directly on this invitation.
 func (d InvitationRef) GrantRelation() Permission {
 	return Permission{resourceType: "invitation", resourceID: d.id, permission: "grant"}
@@ -1388,14 +1348,6 @@ func (d InvitationRef) GrantFilter() rel.Filter {
 // Grant creates a TypedRelationship for the grant relation on this invitation.
 func (d InvitationRef) Grant(subject InvitationGrantSubject) TypedRelationship {
 	return typedRelationship("invitation", d.id, "grant", subject)
-}
-
-// GrantKey identifies a grant relationship on this invitation
-// without caveat or expiration, for deletes and exact filters.
-func (d InvitationRef) GrantKey(subject InvitationGrantKeySubject) RelationshipKey {
-	sType, sID, sRel := subject.subjectRef()
-	r, err := relationship("invitation", d.id, "grant", sType, sID, sRel)
-	return RelationshipKey{r: r, err: err}
 }
 
 // TimedGrantRelation returns a Permission for checking the timed_grant relation directly on this invitation.
@@ -1436,7 +1388,7 @@ func (d InvitationRef) Inviter(subject InvitationInviterSubject) TypedRelationsh
 	return typedRelationship("invitation", d.id, "inviter", subject)
 }
 
-// InviterKey identifies a inviter relationship on this invitation
+// InviterKey identifies an inviter relationship on this invitation
 // without caveat or expiration, for deletes and exact filters.
 func (d InvitationRef) InviterKey(subject InvitationInviterKeySubject) RelationshipKey {
 	sType, sID, sRel := subject.subjectRef()
@@ -1454,15 +1406,6 @@ type TeamMemberSubject interface {
 
 func (TeamMemberRef) isTeamMemberSubject() {}
 func (UserRef) isTeamMemberSubject()       {}
-
-// TeamMemberKeySubject is a sealed interface for subjects allowed in this position.
-type TeamMemberKeySubject interface {
-	Subject
-	isTeamMemberKeySubject()
-}
-
-func (TeamMemberRef) isTeamMemberKeySubject() {}
-func (UserRef) isTeamMemberKeySubject()       {}
 
 // DocumentViewerSubject is a sealed interface for subjects allowed in this position.
 type DocumentViewerSubject interface {
@@ -1492,14 +1435,6 @@ type DocumentEditorSubject interface {
 
 func (UserRef) isDocumentEditorSubject() {}
 
-// DocumentEditorKeySubject is a sealed interface for subjects allowed in this position.
-type DocumentEditorKeySubject interface {
-	Subject
-	isDocumentEditorKeySubject()
-}
-
-func (UserRef) isDocumentEditorKeySubject() {}
-
 // DocumentOwnerSubject is a sealed interface for subjects allowed in this position.
 type DocumentOwnerSubject interface {
 	Subject
@@ -1507,14 +1442,6 @@ type DocumentOwnerSubject interface {
 }
 
 func (UserRef) isDocumentOwnerSubject() {}
-
-// DocumentOwnerKeySubject is a sealed interface for subjects allowed in this position.
-type DocumentOwnerKeySubject interface {
-	Subject
-	isDocumentOwnerKeySubject()
-}
-
-func (UserRef) isDocumentOwnerKeySubject() {}
 
 // DocumentViewSubject is a sealed interface for subjects allowed in this position.
 type DocumentViewSubject interface {
@@ -1551,14 +1478,6 @@ type OrganizationAdminSubject interface {
 
 func (UserRef) isOrganizationAdminSubject() {}
 
-// OrganizationAdminKeySubject is a sealed interface for subjects allowed in this position.
-type OrganizationAdminKeySubject interface {
-	Subject
-	isOrganizationAdminKeySubject()
-}
-
-func (UserRef) isOrganizationAdminKeySubject() {}
-
 // OrganizationMemberSubject is a sealed interface for subjects allowed in this position.
 type OrganizationMemberSubject interface {
 	Subject
@@ -1566,14 +1485,6 @@ type OrganizationMemberSubject interface {
 }
 
 func (UserRef) isOrganizationMemberSubject() {}
-
-// OrganizationMemberKeySubject is a sealed interface for subjects allowed in this position.
-type OrganizationMemberKeySubject interface {
-	Subject
-	isOrganizationMemberKeySubject()
-}
-
-func (UserRef) isOrganizationMemberKeySubject() {}
 
 // OrganizationCreatorSubject is a sealed interface for subjects allowed in this position.
 type OrganizationCreatorSubject interface {
@@ -1583,14 +1494,6 @@ type OrganizationCreatorSubject interface {
 
 func (UserWildcardRef) isOrganizationCreatorSubject() {}
 
-// OrganizationCreatorKeySubject is a sealed interface for subjects allowed in this position.
-type OrganizationCreatorKeySubject interface {
-	Subject
-	isOrganizationCreatorKeySubject()
-}
-
-func (UserWildcardRef) isOrganizationCreatorKeySubject() {}
-
 // OrganizationGuestSubject is a sealed interface for subjects allowed in this position.
 type OrganizationGuestSubject interface {
 	Subject
@@ -1599,15 +1502,6 @@ type OrganizationGuestSubject interface {
 
 func (UserRef) isOrganizationGuestSubject()         {}
 func (UserWildcardRef) isOrganizationGuestSubject() {}
-
-// OrganizationGuestKeySubject is a sealed interface for subjects allowed in this position.
-type OrganizationGuestKeySubject interface {
-	Subject
-	isOrganizationGuestKeySubject()
-}
-
-func (UserRef) isOrganizationGuestKeySubject()         {}
-func (UserWildcardRef) isOrganizationGuestKeySubject() {}
 
 // OrganizationCanAdminSubject is a sealed interface for subjects allowed in this position.
 type OrganizationCanAdminSubject interface {
@@ -1634,14 +1528,6 @@ type InvitationOrgSubject interface {
 
 func (OrganizationRef) isInvitationOrgSubject() {}
 
-// InvitationOrgKeySubject is a sealed interface for subjects allowed in this position.
-type InvitationOrgKeySubject interface {
-	Subject
-	isInvitationOrgKeySubject()
-}
-
-func (OrganizationRef) isInvitationOrgKeySubject() {}
-
 // InvitationGrantSubject is a sealed interface for subjects allowed in this position.
 type InvitationGrantSubject interface {
 	Subject
@@ -1649,14 +1535,6 @@ type InvitationGrantSubject interface {
 }
 
 func (OrganizationCanAdminRef) isInvitationGrantSubject() {}
-
-// InvitationGrantKeySubject is a sealed interface for subjects allowed in this position.
-type InvitationGrantKeySubject interface {
-	Subject
-	isInvitationGrantKeySubject()
-}
-
-func (OrganizationCanAdminRef) isInvitationGrantKeySubject() {}
 
 // InvitationTimedGrantSubject is a sealed interface for subjects allowed in this position.
 type InvitationTimedGrantSubject interface {

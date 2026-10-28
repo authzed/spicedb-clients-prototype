@@ -7,7 +7,9 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	rpcstatus "google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/test/bufconn"
@@ -56,11 +58,15 @@ var (
 			}},
 		}},
 	}}
+	// As SpiceDB sends it: the deprecated top-level fields mirror Subject.
 	lookupSubjectsResponse = &v1.LookupSubjectsResponse{
-		LookedUpAt: &v1.ZedToken{Token: "rev3"},
-		Subject:    &v1.ResolvedSubject{SubjectObjectId: "*", Permissionship: v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_HAS_PERMISSION},
+		LookedUpAt:      &v1.ZedToken{Token: "rev3"},
+		Subject:         &v1.ResolvedSubject{SubjectObjectId: "*", Permissionship: v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_HAS_PERMISSION},
+		SubjectObjectId: "*",
+		Permissionship:  v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_HAS_PERMISSION,
 		ExcludedSubjects: []*v1.ResolvedSubject{{SubjectObjectId: "bob", Permissionship: v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_CONDITIONAL_PERMISSION,
 			PartialCaveatInfo: &v1.PartialCaveatInfo{MissingRequiredContext: []string{"k"}}}},
+		ExcludedSubjectIds: []string{"bob"},
 	}
 	readResponses = []*v1.ReadRelationshipsResponse{
 		{ReadAt: &v1.ZedToken{Token: "rev4"}, AfterResultCursor: &v1.Cursor{Token: "c1"}, Relationship: &v1.Relationship{Resource: obj("document", "a"), Relation: "viewer", Subject: &v1.SubjectReference{Object: obj("user", "alice")},
@@ -87,6 +93,22 @@ func (s *server) CheckPermission(ctx context.Context, _ *v1.CheckPermissionReque
 	_ = grpc.SetHeader(ctx, metadata.Pairs("io.spicedb.respmeta.version", "v1.99.0"))
 	_ = grpc.SetTrailer(ctx, metadata.Pairs("trailer-key", "trailer-value"))
 	return checkResponse, nil
+}
+
+func (s *server) CheckBulkPermissions(_ context.Context, req *v1.CheckBulkPermissionsRequest) (*v1.CheckBulkPermissionsResponse, error) {
+	resp := &v1.CheckBulkPermissionsResponse{CheckedAt: &v1.ZedToken{Token: "bulk-rev"}}
+	for _, item := range req.GetItems() {
+		pair := &v1.CheckBulkPermissionsPair{Request: item}
+		if item.GetResource().GetObjectId() == "broken" {
+			pair.Response = &v1.CheckBulkPermissionsPair_Error{Error: &rpcstatus.Status{Code: int32(codes.FailedPrecondition), Message: "permission view not found"}}
+		} else {
+			pair.Response = &v1.CheckBulkPermissionsPair_Item{Item: &v1.CheckBulkPermissionsResponseItem{
+				Permissionship:    v1.CheckPermissionResponse_PERMISSIONSHIP_CONDITIONAL_PERMISSION,
+				PartialCaveatInfo: &v1.PartialCaveatInfo{MissingRequiredContext: []string{"cidr"}}}}
+		}
+		resp.Pairs = append(resp.Pairs, pair)
+	}
+	return resp, nil
 }
 
 func (s *server) ExpandPermissionTree(context.Context, *v1.ExpandPermissionTreeRequest) (*v1.ExpandPermissionTreeResponse, error) {
@@ -241,4 +263,34 @@ func TestRelationshipLevelRoundTrips(t *testing.T) {
 	backP, err := protoconv.PreconditionFromProto(pp)
 	require.NoError(t, err)
 	require.Equal(t, pre.String(), backP.String())
+}
+
+func TestCheckBulkRoundTripsTheServersResponse(t *testing.T) {
+	c, _, _ := newClient(t)
+	requests := []client.PermissionCheck{check(t), check(t), check(t)}
+	requests[1].Resource = rel.MustNewObject("document", "broken")
+	requests[2].Context = map[string]any{"cidr": "10.0.0.0/8"}
+	results, err := c.CheckBulk(context.Background(), requests, client.WithBulkItemErrors(client.ItemErrorsReturned))
+	require.NoError(t, err)
+
+	got, err := protoconv.CheckBulkToProto(requests, results)
+	require.NoError(t, err)
+	want := &v1.CheckBulkPermissionsResponse{CheckedAt: &v1.ZedToken{Token: "bulk-rev"}}
+	for _, r := range requests {
+		item, err := protoconv.CheckRequestToProto(r)
+		require.NoError(t, err)
+		pair := &v1.CheckBulkPermissionsPair{Request: item}
+		if r.Resource.ID() == "broken" {
+			pair.Response = &v1.CheckBulkPermissionsPair_Error{Error: &rpcstatus.Status{Code: int32(codes.FailedPrecondition), Message: "permission view not found"}}
+		} else {
+			pair.Response = &v1.CheckBulkPermissionsPair_Item{Item: &v1.CheckBulkPermissionsResponseItem{
+				Permissionship:    v1.CheckPermissionResponse_PERMISSIONSHIP_CONDITIONAL_PERMISSION,
+				PartialCaveatInfo: &v1.PartialCaveatInfo{MissingRequiredContext: []string{"cidr"}}}}
+		}
+		want.Pairs = append(want.Pairs, pair)
+	}
+	require.True(t, proto.Equal(want, got), "want %v\ngot  %v", want, got)
+
+	_, err = protoconv.CheckBulkToProto(requests[:1], results)
+	require.Error(t, err)
 }

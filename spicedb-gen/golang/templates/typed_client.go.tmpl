@@ -149,7 +149,10 @@ type Deletable interface {
 }
 
 // WithSubject narrows f to subject: its type, its ID (unless subject is a
-// type sentinel) and its exact subject relation (direct or named).
+// type sentinel) and its exact subject relation. It always constrains the
+// subject relation: a subject without one (User("x")) matches only direct
+// relationships, never usersets such as team:eng#member. Use
+// WithSubjectAnyRelation to leave the subject relation unconstrained.
 func WithSubject(f rel.Filter, subject Subject) rel.Filter {
 	sType, sID, sRel := subject.subjectRef()
 	f = f.WithSubjectType(sType)
@@ -164,6 +167,17 @@ func WithSubject(f rel.Filter, subject Subject) rel.Filter {
 		return rel.ErrFilter(err)
 	}
 	return f.WithSubjectRelation(named)
+}
+
+// WithSubjectAnyRelation narrows f to subject's type and ID (unless subject is
+// a type sentinel) and matches any subject relation, direct or userset.
+func WithSubjectAnyRelation(f rel.Filter, subject Subject) rel.Filter {
+	sType, sID, _ := subject.subjectRef()
+	f = f.WithSubjectType(sType).WithSubjectRelation(rel.AnyRelation())
+	if sID != "" {
+		f = f.WithSubjectID(sID)
+	}
+	return f
 }
 
 func resourceFilter(resourceType, resourceID, relation string) rel.Filter {
@@ -229,6 +243,25 @@ func (t *Txn) MustNotMatch(f rel.Filter) *Txn {
 
 // Len returns the number of updates added so far.
 func (t *Txn) Len() int { return t.txn.Len() }
+
+// Updates returns a copy of the updates added so far, or nil after an error.
+func (t *Txn) Updates() []rel.Update {
+	if t.err != nil {
+		return nil
+	}
+	return t.txn.Updates()
+}
+
+// Preconditions returns a copy of the preconditions added so far, or nil after an error.
+func (t *Txn) Preconditions() []rel.Precondition {
+	if t.err != nil {
+		return nil
+	}
+	return t.txn.Preconditions()
+}
+
+// Err returns the first construction error, if any.
+func (t *Txn) Err() error { return t.err }
 
 // String lists the transaction's preconditions and updates.
 func (t *Txn) String() string {
@@ -404,7 +437,7 @@ func ({{$ts.InternalType}}) {{$mm}}() {}
 // --- Definitions ---
 {{range $def := .Definitions}}
 {{- if not $def.HasSubjectRef}}
-// {{$def.PascalName}}Ref represents a reference to a {{$def.Name}} resource.
+// {{$def.PascalName}}Ref represents a reference to {{a $def.Name}} resource.
 type {{$def.PascalName}}Ref struct {
 	id string
 }
@@ -510,7 +543,7 @@ func (d {{$def.PascalName}}Ref) RelationshipByName(relation string, subject Subj
 	return TypedRelationship{}, fmt.Errorf("%w: {{$def.Name}} has no relation %q", ErrNotInSchema, relation)
 }
 {{range $sr := $def.SubRefMethods}}
-// {{$sr.MethodName}} returns this {{$def.Name}} as a {{$sr.ReturnType}} subject.
+// {{$sr.MethodName}} returns this {{$def.Name}} as {{a $sr.ReturnType}} subject.
 func (d {{$def.PascalName}}Ref) {{$sr.MethodName}}() {{$sr.ReturnType}} {
 	return {{$sr.ReturnType}}{id: d.id}
 }
@@ -540,7 +573,7 @@ func (d {{$def.PascalName}}Ref) {{$r.PascalName}}(subject {{$r.InterfaceName}}) 
 {{- end}}
 {{- if $r.HasKeyInterface}}
 
-// {{$r.KeyMethod}} identifies a {{$r.Name}} relationship on this {{$def.Name}}
+// {{$r.KeyMethod}} identifies {{a $r.Name}} relationship on this {{$def.Name}}
 // without caveat or expiration, for deletes and exact filters.
 func (d {{$def.PascalName}}Ref) {{$r.KeyMethod}}(subject {{$r.KeyInterface}}) RelationshipKey {
 	sType, sID, sRel := subject.subjectRef()

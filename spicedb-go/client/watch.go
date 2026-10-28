@@ -69,7 +69,7 @@ func (c *Client) Updates(ctx context.Context, request UpdatesRequest, opts ...Up
 				req.OptionalUpdateKinds = append(req.OptionalUpdateKinds, v1.WatchKind_WATCH_KIND_INCLUDE_SCHEMA_UPDATES)
 			}
 		}
-		for resp, e := range receive(ctx, c, "watch", true, func(ctx context.Context) (receiver[*v1.WatchResponse], error) {
+		for resp, e := range receive(ctx, c.retrySettings(o), "watch", true, func(ctx context.Context) (receiver[*v1.WatchResponse], error) {
 			return c.wsc.Watch(ctx, req, o.callOptions...)
 		}) {
 			if e != nil {

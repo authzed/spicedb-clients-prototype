@@ -29,6 +29,9 @@ func (c *Client) RegisterRelationshipCounter(ctx context.Context, request Regist
 	for _, opt := range opts {
 		opt(&o)
 	}
+	if _, e := mutationRetry(o, false, "register relationship counter"); e != nil {
+		return RegisterRelationshipCounterResult{}, e
+	}
 	ctx, cancel, e := c.operation(ctx, o, false)
 	if e != nil {
 		return RegisterRelationshipCounterResult{}, e
@@ -59,7 +62,7 @@ func (c *Client) CountRelationships(ctx context.Context, request CountRelationsh
 	if request.Name == "" {
 		return CountRelationshipsResult{}, invalid("counter name required")
 	}
-	resp, e := retry(ctx, c, "count relationships", func() (*v1.ExperimentalCountRelationshipsResponse, error) {
+	resp, e := retry(ctx, c.retrySettings(o), "count relationships", func() (*v1.ExperimentalCountRelationshipsResponse, error) {
 		return c.esc.ExperimentalCountRelationships(ctx, &v1.ExperimentalCountRelationshipsRequest{Name: request.Name}, o.callOptions...)
 	})
 	if e != nil {
@@ -76,6 +79,9 @@ func (c *Client) UnregisterRelationshipCounter(ctx context.Context, request Unre
 	o := operationOptions{}
 	for _, opt := range opts {
 		opt(&o)
+	}
+	if _, e := mutationRetry(o, false, "unregister relationship counter"); e != nil {
+		return UnregisterRelationshipCounterResult{}, e
 	}
 	ctx, cancel, e := c.operation(ctx, o, false)
 	if e != nil {
@@ -122,7 +128,7 @@ func (c *Client) RoaringLookupResources(ctx context.Context, request RoaringLook
 		return RoaringLookupResourcesResult{}, invalid("client has no connection")
 	}
 	stub := materialize.NewRoaringLookupResourcesServiceClient(c.proto.Connection())
-	resp, e := retry(ctx, c, "roaring lookup resources", func() (*materialize.ExperimentalRoaringLookupResourcesResponse, error) {
+	resp, e := retry(ctx, c.retrySettings(o), "roaring lookup resources", func() (*materialize.ExperimentalRoaringLookupResourcesResponse, error) {
 		return stub.ExperimentalRoaringLookupResources(ctx, &materialize.ExperimentalRoaringLookupResourcesRequest{Consistency: cs, ResourceObjectType: request.ResourceType, Permission: request.Permission, Subject: subject(request.Subject)}, o.callOptions...)
 	})
 	if e != nil {

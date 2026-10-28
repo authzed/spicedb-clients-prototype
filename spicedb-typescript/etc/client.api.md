@@ -4,8 +4,27 @@
 
 ```ts
 
+import { CheckPermissionRequest } from '@spicedb/proto';
+import { CheckPermissionResponse } from '@spicedb/proto';
+import { Code } from '@connectrpc/connect';
+import { ConnectError } from '@connectrpc/connect';
+import { Consistency as Consistency_2 } from '@spicedb/proto';
+import { DebugInformation as DebugInformation_2 } from '@spicedb/proto';
+import { ExpandPermissionTreeResponse } from '@spicedb/proto';
+import { LookupResourcesResponse } from '@spicedb/proto';
+import { LookupSubjectsResponse } from '@spicedb/proto';
+import { ObjectReference } from '@spicedb/proto';
+import { Precondition as Precondition_2 } from '@spicedb/proto';
+import { ReadRelationshipsResponse } from '@spicedb/proto';
+import { Relationship as Relationship_2 } from '@spicedb/proto';
+import { RelationshipFilter as RelationshipFilter_2 } from '@spicedb/proto';
+import { RelationshipUpdate as RelationshipUpdate_2 } from '@spicedb/proto';
 import { SpiceDBProtoClient } from '@spicedb/proto';
+import { SubjectReference } from '@spicedb/proto';
 import { TlsOptions } from '@spicedb/proto';
+import type { Transport } from '@connectrpc/connect';
+import { WriteRelationshipsResponse } from '@spicedb/proto';
+import { ZedToken as ZedToken_2 } from '@spicedb/proto';
 
 // @public
 export class AlreadyExistsError extends SpiceDBError {
@@ -21,8 +40,19 @@ export function atLeastOrFull(revision: ZedToken | undefined): Consistency;
 // @public (undocumented)
 export function atLeastOrMinLatency(revision: ZedToken | undefined): Consistency;
 
-// @public (undocumented)
+// @public
+export enum BulkItemErrors {
+    // (undocumented)
+    Fail = "fail",
+    // (undocumented)
+    Returned = "returned"
+}
+
+// @public
 export interface CallOptions {
+    readonly headers?: HeadersInit;
+    readonly onHeader?: (headers: Headers) => void;
+    readonly onTrailer?: (trailers: Headers) => void;
     // (undocumented)
     readonly signal?: AbortSignal;
     // (undocumented)
@@ -85,8 +115,19 @@ export interface CheckDebugTrace {
 export interface CheckOptions extends CallOptions {
     // (undocumented)
     readonly context?: JSONObject;
+    readonly itemErrors?: BulkItemErrors;
     // (undocumented)
     readonly tracing?: Tracing;
+}
+
+// @public
+export interface CheckRegistration {
+    // (undocumented)
+    readonly permission: string;
+    // (undocumented)
+    readonly resource: ObjectRef;
+    // (undocumented)
+    readonly subject: SubjectRef;
 }
 
 // @public (undocumented)
@@ -103,13 +144,17 @@ export interface CheckRequest {
     readonly subject: SubjectRef;
 }
 
+// @public
+function checkRequestToProto(request: CheckRequest, defaultContext?: CheckRequest["context"]): CheckPermissionRequest;
+
 // @public (undocumented)
 export class CheckResult {
-    constructor(permissionship: Permissionship, missingContext: readonly string[], checkedAt: ZedToken, debugTrace?: DebugInformation, expiration?: Date);
+    constructor(permissionship: Permissionship, missingContext: readonly string[], checkedAt: ZedToken, debugTrace?: DebugInformation, expiration?: Date, error?: SpiceDBError);
     // (undocumented)
     readonly checkedAt: ZedToken;
     // (undocumented)
     readonly debugTrace?: DebugInformation;
+    readonly error?: SpiceDBError;
     // (undocumented)
     readonly expiration?: Date;
     // (undocumented)
@@ -119,6 +164,14 @@ export class CheckResult {
     // (undocumented)
     readonly permissionship: Permissionship;
 }
+
+// @public (undocumented)
+function checkResultFromProto(response: CheckPermissionResponse): CheckResult;
+
+// @public
+function checkResultToProto(result: CheckResult): CheckPermissionResponse;
+
+export { Code }
 
 // @public (undocumented)
 export interface ComputablePermissionsRequest {
@@ -134,7 +187,16 @@ export interface ComputablePermissionsRequest {
 
 // @public
 export class Consistency {
+    // (undocumented)
+    toJSON(): string;
+    toString(): string;
 }
+
+// @public (undocumented)
+function consistencyFromProto(consistency: Consistency_2): Consistency;
+
+// @public (undocumented)
+function consistencyToProto(consistency: Consistency): Consistency_2;
 
 // @public (undocumented)
 export function createSpiceDBClient(endpoint: string, token: string, options?: Omit<SpiceDBClientOptions, "endpoint" | "token">): SpiceDBClient;
@@ -153,19 +215,48 @@ export interface DebugInformation {
 }
 
 // @public (undocumented)
+function debugInformationFromProto(debug: DebugInformation_2): DebugInformation;
+
+// @public (undocumented)
+function debugInformationToProto(debug: DebugInformation): DebugInformation_2;
+
+// @public
+export const DEFAULT_RETRY_POLICY: RetryPolicy;
+
+// @public
+export enum DefaultDeadline {
+    // (undocumented)
+    Disabled = "disabled",
+    // (undocumented)
+    Enabled = "enabled"
+}
+
+// @public (undocumented)
 export interface DeleteAllOptions extends CallOptions, Preconditions {
     // (undocumented)
     readonly cursor?: string;
+    readonly onProgress?: (progress: DeleteResult) => void;
     // (undocumented)
     readonly pageSize?: number;
 }
 
-// @public (undocumented)
-export interface DeleteOptions extends CallOptions, Preconditions {
-    // (undocumented)
-    readonly cursor?: string;
-    // (undocumented)
+// Warning: (ae-forgotten-export) The symbol "DeleteOptionsBase" needs to be exported by the entry point index.d.ts
+//
+// @public
+export type DeleteOptions = (DeleteOptionsBase & {
+    readonly partial?: DeletePartial.Allowed;
     readonly limit: number;
+}) | (DeleteOptionsBase & {
+    readonly partial: DeletePartial.Disallowed;
+    readonly limit?: number;
+});
+
+// @public
+export enum DeletePartial {
+    // (undocumented)
+    Allowed = "allowed",
+    // (undocumented)
+    Disallowed = "disallowed"
 }
 
 // @public (undocumented)
@@ -214,6 +305,9 @@ export interface DownloadPermissionSetsResult {
     readonly timestamp?: Date;
 }
 
+// @public
+export function errorCode(err: unknown): Code;
+
 // @public (undocumented)
 export interface ExpandPermissionTreeRequest {
     // (undocumented)
@@ -233,10 +327,20 @@ export interface ExpandResult {
 }
 
 // @public (undocumented)
+function expandResultFromProto(response: ExpandPermissionTreeResponse): ExpandResult;
+
+// @public (undocumented)
+function expandResultToProto(result: ExpandResult): ExpandPermissionTreeResponse;
+
+// @public
+export interface ExportedRelationship extends Relationship {
+    readonly afterResultCursor?: string;
+}
+
+// @public (undocumented)
 export interface ExportRelationshipsRequest {
     // (undocumented)
     readonly consistency: Consistency;
-    // (undocumented)
     readonly cursor?: string;
     // (undocumented)
     readonly filter?: RelationshipFilter;
@@ -250,7 +354,45 @@ export class FailedPreconditionError extends SpiceDBError {
 }
 
 // @public (undocumented)
+function filterFromProto(filter: RelationshipFilter_2): RelationshipFilter;
+
+// @public
+export function filterMatches(filter: RelationshipFilter, rel: Relationship): boolean;
+
+// @public (undocumented)
+function filterToProto(filter: RelationshipFilter): RelationshipFilter_2;
+
+// @public
+export function filterToString(filter: RelationshipFilter): string;
+
+// @public (undocumented)
 export function full(): Consistency;
+
+// @public
+export interface ImportOptions extends CallOptions {
+    readonly batchSize?: number;
+}
+
+// @public
+export class InMemorySpiceDB {
+    constructor(initial?: Iterable<Relationship>);
+    // (undocumented)
+    check(request: CheckRequest, options?: CheckOptions): Promise<CheckResult>;
+    // (undocumented)
+    checkBulk(requests: readonly CheckRequest[], options?: CheckOptions): Promise<readonly CheckResult[]>;
+    // (undocumented)
+    close(): void;
+    // (undocumented)
+    deleteAllRelationshipsNonAtomic(filter: RelationshipFilter, options?: DeleteAllOptions): Promise<DeleteResult>;
+    // (undocumented)
+    deleteRelationships(filter: RelationshipFilter, options: DeleteOptions): Promise<DeleteResult>;
+    // (undocumented)
+    readRelationships(request: ReadRelationshipsRequest, options?: CallOptions): AsyncIterableIterator<ReadRelationship>;
+    get relationships(): readonly Relationship[];
+    setCheckResult(registration: CheckRegistration, result: Permissionship | SpiceDBError): void;
+    // (undocumented)
+    write(transaction: Transaction, options?: CallOptions): Promise<WriteResult>;
+}
 
 // @public
 export class InvalidArgumentError extends SpiceDBError {
@@ -304,6 +446,7 @@ export enum LookupPermissionshipFilter {
 
 // @public (undocumented)
 export interface LookupResource {
+    readonly afterResultCursor?: string;
     // (undocumented)
     readonly lookedUpAt: ZedToken;
     // (undocumented)
@@ -313,6 +456,9 @@ export interface LookupResource {
     // (undocumented)
     readonly resourceId: string;
 }
+
+// @public (undocumented)
+function lookupResourceFromProto(response: LookupResourcesResponse): LookupResource;
 
 // @public (undocumented)
 export interface LookupResourcesRequest {
@@ -338,6 +484,9 @@ export interface LookupResourcesRequest {
 }
 
 // @public (undocumented)
+function lookupResourceToProto(resource: LookupResource): LookupResourcesResponse;
+
+// @public (undocumented)
 export interface LookupSubject {
     // (undocumented)
     readonly excludedSubjects: readonly ResolvedSubject[];
@@ -346,6 +495,9 @@ export interface LookupSubject {
     // (undocumented)
     readonly subject: ResolvedSubject;
 }
+
+// @public (undocumented)
+function lookupSubjectFromProto(response: LookupSubjectsResponse): LookupSubject;
 
 // @public (undocumented)
 export interface LookupSubjectsRequest {
@@ -370,6 +522,9 @@ export interface LookupSubjectsRequest {
 }
 
 // @public (undocumented)
+function lookupSubjectToProto(subject: LookupSubject): LookupSubjectsResponse;
+
+// @public (undocumented)
 export function minLatency(): Consistency;
 
 // @public
@@ -378,12 +533,21 @@ export class NotFoundError extends SpiceDBError {
 }
 
 // @public (undocumented)
+function objectFromProto(object: ObjectReference | undefined): ObjectRef;
+
+// @public (undocumented)
 export interface ObjectRef {
     // (undocumented)
     readonly objectId: string;
     // (undocumented)
     readonly objectType: string;
 }
+
+// @public
+export function objectRefToString(object: ObjectRef): string;
+
+// @public (undocumented)
+function objectToProto(object: ObjectRef): ObjectReference;
 
 // @public
 export class OperationAbortError extends DOMException {
@@ -513,6 +677,17 @@ export type PermissionTreeNode = {
     readonly kind: "unspecified";
 };
 
+// @public
+export interface Precondition {
+    // (undocumented)
+    readonly filter: RelationshipFilter;
+    // (undocumented)
+    readonly operation: "mustMatch" | "mustNotMatch";
+}
+
+// @public (undocumented)
+function preconditionFromProto(precondition: Precondition_2): Precondition;
+
 // @public (undocumented)
 export interface Preconditions {
     // (undocumented)
@@ -522,16 +697,69 @@ export interface Preconditions {
 }
 
 // @public (undocumented)
+function preconditionToProto(precondition: Precondition): Precondition_2;
+
+// @public
+export function preconditionToString(precondition: Precondition): string;
+
+declare namespace protoconv {
+    export {
+        objectToProto,
+        objectFromProto,
+        subjectToProto,
+        subjectFromProto,
+        relationshipToProto,
+        relationshipFromProto,
+        filterToProto,
+        filterFromProto,
+        preconditionToProto,
+        preconditionFromProto,
+        updateToProto,
+        updateFromProto,
+        consistencyToProto,
+        consistencyFromProto,
+        zedTokenToProto,
+        zedTokenFromProto,
+        checkRequestToProto,
+        checkResultFromProto,
+        checkResultToProto,
+        debugInformationToProto,
+        debugInformationFromProto,
+        lookupResourceFromProto,
+        lookupResourceToProto,
+        lookupSubjectFromProto,
+        lookupSubjectToProto,
+        expandResultFromProto,
+        expandResultToProto,
+        readRelationshipFromProto,
+        readRelationshipToProto,
+        writeResultFromProto,
+        writeResultToProto
+    }
+}
+
+// @public
+export interface ReadRelationship extends Relationship {
+    readonly afterResultCursor?: string;
+    readonly readAt: ZedToken;
+}
+
+// @public (undocumented)
+function readRelationshipFromProto(response: ReadRelationshipsResponse): ReadRelationship;
+
+// @public (undocumented)
 export interface ReadRelationshipsRequest {
     // (undocumented)
     readonly consistency: Consistency;
-    // (undocumented)
     readonly cursor?: string;
     // (undocumented)
     readonly filter: RelationshipFilter;
-    // (undocumented)
+    readonly limit?: number;
     readonly pageSize?: number;
 }
+
+// @public (undocumented)
+function readRelationshipToProto(rel: ReadRelationship): ReadRelationshipsResponse;
 
 // @public (undocumented)
 export interface ReflectSchemaRequest {
@@ -603,10 +831,27 @@ export interface RelationshipFilter {
 }
 
 // @public (undocumented)
-export function relationshipFromTuple(tuple: string, subject: string): Relationship;
+function relationshipFromProto(rel: Relationship_2): Relationship;
+
+// @public
+export function relationshipFromTuple(tuple: string): Relationship;
 
 // @public (undocumented)
 export function relationshipToFilter(rel: Relationship): RelationshipFilter;
+
+// @public (undocumented)
+function relationshipToProto(rel: Relationship): Relationship_2;
+
+// @public
+export function relationshipToString(rel: Relationship): string;
+
+// @public
+export interface RelationshipUpdate {
+    // (undocumented)
+    readonly operation: "create" | "touch" | "delete";
+    // (undocumented)
+    readonly relationship: Relationship;
+}
 
 // @public (undocumented)
 export interface RelationsResult {
@@ -637,6 +882,31 @@ export interface ResolvedSubject {
 // @public
 export class ResourceExhaustedError extends SpiceDBError {
     constructor(message: string, options?: SpiceDBErrorOptions);
+}
+
+// @public
+export enum Retries {
+    // (undocumented)
+    Disabled = "disabled",
+    // (undocumented)
+    Enabled = "enabled"
+}
+
+// @public
+export interface RetryEvent {
+    readonly attempt: number;
+    readonly delayMs: number;
+    readonly error: SpiceDBError;
+    readonly operation: string;
+}
+
+// @public
+export interface RetryPolicy {
+    readonly initialBackoffMs: number;
+    readonly maxBackoffMs?: number;
+    readonly maxRetries: number;
+    readonly onRetry?: (event: RetryEvent) => void;
+    readonly retryableCodes: readonly Code[];
 }
 
 // @public (undocumented)
@@ -829,17 +1099,15 @@ export class SpiceDBClient {
     // (undocumented)
     experimentalUnregisterRelationshipCounter(name: string, options?: CallOptions): Promise<void>;
     experimentalWatchPermissionSets(request?: WatchPermissionSetsRequest, options?: CallOptions): AsyncIterableIterator<PermissionSetEvent>;
-    // (undocumented)
-    exportRelationships(request: ExportRelationshipsRequest, options?: CallOptions): AsyncIterableIterator<Relationship>;
-    // (undocumented)
-    importRelationships(relationships: Iterable<Relationship> | AsyncIterable<Relationship>, options?: CallOptions): Promise<bigint>;
+    exportRelationships(request: ExportRelationshipsRequest, options?: CallOptions): AsyncIterableIterator<ExportedRelationship>;
+    static fromTransport(transport: Transport, options?: SpiceDBClientBehaviorOptions): SpiceDBClient;
+    importRelationships(relationships: Iterable<Relationship> | AsyncIterable<Relationship>, options?: ImportOptions): Promise<bigint>;
     // (undocumented)
     lookupResources(request: LookupResourcesRequest, options?: CallOptions): AsyncIterableIterator<LookupResource>;
     // (undocumented)
     lookupSubjects(request: LookupSubjectsRequest, options?: CallOptions): AsyncIterableIterator<LookupSubject>;
     raw(): SpiceDBProtoClient;
-    // (undocumented)
-    readRelationships(request: ReadRelationshipsRequest, options?: CallOptions): AsyncIterableIterator<Relationship>;
+    readRelationships(request: ReadRelationshipsRequest, options?: CallOptions): AsyncIterableIterator<ReadRelationship>;
     // (undocumented)
     readSchema(options?: CallOptions): Promise<SchemaResult>;
     // (undocumented)
@@ -852,16 +1120,21 @@ export class SpiceDBClient {
     writeSchema(schema: string, options?: CallOptions): Promise<ZedToken>;
 }
 
-// @public (undocumented)
-export interface SpiceDBClientOptions {
-    // (undocumented)
+// @public
+export interface SpiceDBClientBehaviorOptions {
+    readonly defaultDeadline?: DefaultDeadline;
     readonly defaultTimeoutMs?: number;
+    readonly retries?: Retries;
+    readonly retryPolicy?: RetryPolicy;
+    readonly streamRetries?: StreamRetries;
+}
+
+// @public (undocumented)
+export interface SpiceDBClientOptions extends SpiceDBClientBehaviorOptions {
     // (undocumented)
     readonly endpoint: string;
     // (undocumented)
     readonly headers?: Readonly<Record<string, string>>;
-    // (undocumented)
-    readonly maxRetries?: number;
     // (undocumented)
     readonly remoteCredentials?: RemoteCredentials;
     // (undocumented)
@@ -875,23 +1148,38 @@ export interface SpiceDBClientOptions {
 // @public
 export class SpiceDBError extends Error {
     constructor(message: string, options?: SpiceDBErrorOptions);
+    readonly code: Code;
     // (undocumented)
     readonly deleteProgress?: DeleteResult;
+    static from(error: unknown): SpiceDBError;
+    static fromCode(code: Code, message: string, options?: Omit<SpiceDBErrorOptions, "code">): SpiceDBError;
     // (undocumented)
     readonly inputIndex?: number;
     readonly reason: string;
     readonly reasonDomain: string;
     readonly reasonMetadata: Readonly<Record<string, string>>;
+    readonly serverMessage?: string;
+    toConnectError(): ConnectError;
 }
 
 // @public
 export interface SpiceDBErrorOptions extends ErrorOptions {
+    code?: Code;
     reason?: string;
     reasonDomain?: string;
     reasonMetadata?: Readonly<Record<string, string>>;
+    serverMessage?: string;
 }
 
 export { SpiceDBProtoClient }
+
+// @public
+export enum StreamRetries {
+    // (undocumented)
+    Disabled = "disabled",
+    // (undocumented)
+    Enabled = "enabled"
+}
 
 // @public (undocumented)
 export interface SubjectFilter {
@@ -904,12 +1192,18 @@ export interface SubjectFilter {
 }
 
 // @public (undocumented)
+function subjectFromProto(subject: SubjectReference | undefined): SubjectRef;
+
+// @public (undocumented)
 export interface SubjectRef {
     // (undocumented)
     readonly object: ObjectRef;
     // (undocumented)
     readonly relation?: string;
 }
+
+// @public
+export function subjectRefToString(subject: SubjectRef): string;
 
 // @public (undocumented)
 export type SubjectRelationFilter = {
@@ -931,7 +1225,13 @@ export enum SubjectRelationKind {
     Named = "named"
 }
 
+// @public (undocumented)
+function subjectToProto(subject: SubjectRef): SubjectReference;
+
 export { TlsOptions }
+
+// @public
+export function toConnectError(err: unknown): ConnectError;
 
 // @public (undocumented)
 export type TraceResolution = {
@@ -958,12 +1258,23 @@ export class Transaction {
     create(rel: Relationship): this;
     // (undocumented)
     delete(rel: Relationship): this;
+    get length(): number;
+    get metadata(): JSONObject | undefined;
     // (undocumented)
     mustMatch(filter: RelationshipFilter): this;
     // (undocumented)
     mustNotMatch(filter: RelationshipFilter): this;
+    get preconditions(): readonly Precondition[];
+    // (undocumented)
+    toJSON(): {
+        updates: readonly RelationshipUpdate[];
+        preconditions: readonly Precondition[];
+        metadata?: JSONObject;
+    };
+    toString(): string;
     // (undocumented)
     touch(rel: Relationship): this;
+    get updates(): readonly RelationshipUpdate[];
     // (undocumented)
     withMetadata(metadata: JSONObject): this;
 }
@@ -988,6 +1299,15 @@ export class UnauthenticatedError extends SpiceDBError {
 export class UnavailableError extends SpiceDBError {
     constructor(message: string, options?: SpiceDBErrorOptions);
 }
+
+// @public (undocumented)
+function updateFromProto(update: RelationshipUpdate_2): RelationshipUpdate;
+
+// @public (undocumented)
+function updateToProto(update: RelationshipUpdate): RelationshipUpdate_2;
+
+// @public
+export function updateToString(update: RelationshipUpdate): string;
 
 // @public (undocumented)
 export interface WatchChange {
@@ -1067,6 +1387,12 @@ export interface WriteResult {
     readonly revision: ZedToken;
 }
 
+// @public (undocumented)
+function writeResultFromProto(response: WriteRelationshipsResponse): WriteResult;
+
+// @public (undocumented)
+function writeResultToProto(result: WriteResult): WriteRelationshipsResponse;
+
 // @public
 export class ZedToken {
     constructor(value: string);
@@ -1078,6 +1404,10 @@ export class ZedToken {
     toString(): string;
 }
 
-// (No @packageDocumentation comment for this package)
+// @public (undocumented)
+function zedTokenFromProto(token: ZedToken_2 | undefined): ZedToken;
+
+// @public (undocumented)
+function zedTokenToProto(token: ZedToken): ZedToken_2;
 
 ```

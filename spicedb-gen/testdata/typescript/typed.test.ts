@@ -1,27 +1,12 @@
+import { readFileSync } from "node:fs";
 import { LookupPermissionshipFilter, Tracing, TransportSecurity, RemoteCredentials, ZedToken, InvalidArgumentError } from "@spicedb/client";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { full, type Relationship } from "@spicedb/client";
 import { TypedClient, Document, User, Team } from "./permissions";
 
-const SCHEMA = `
-caveat ip_range(allowed_cidr string) {
-    allowed_cidr == "0.0.0.0/0"
-}
-caveat time_window(start string, end string) {
-    start != "" && end != ""
-}
-definition user {}
-definition team {
-    relation member: user | team#member
-}
-definition document {
-    relation viewer: user | user with ip_range | user with time_window | team#member
-    relation editor: user
-    relation owner: user
-    permission view = viewer + editor + owner
-    permission edit = editor + owner
-    permission delete = owner
-}`;
+// The full sample schema, shared with adoption.test.ts: test files run in
+// parallel against one SpiceDB, so they must all write the same schema.
+const SCHEMA = readFileSync(new URL("../sample.zed", import.meta.url), "utf8");
 
 describe("TypedClient", () => {
     let tc: TypedClient;

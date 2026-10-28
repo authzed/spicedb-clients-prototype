@@ -4,54 +4,454 @@ import {
     SpiceDBClient,
     createSpiceDBClient,
     Transaction,
+    InvalidArgumentError,
+    SubjectRelationKind,
+    relationshipToFilter,
+    relationshipToString,
     type CheckResult,
+    type CheckRequest,
+    type Consistency,
     type Relationship,
+    type RelationshipFilter,
+    type SubjectRef,
     type LookupResource,
     type LookupSubject,
+    type ReadRelationship,
     type CheckOptions,
     type CallOptions,
     type LookupResourcesRequest,
     type LookupSubjectsRequest,
     type ReadRelationshipsRequest,
-    type RelationshipFilter,
     type SpiceDBClientOptions,
     type JSONObject,
     type JSONValue,
     type WriteResult,
 } from "@spicedb/client";
-import { full } from "@spicedb/client";
-type Consistency = ReturnType<typeof full>;
 
-export interface LookupResourcesOptions extends CallOptions,
-    Omit<LookupResourcesRequest, "resourceType" | "permission" | "subject" | "consistency"> {}
+export interface LookupResourcesOptions
+    extends CallOptions,
+        Omit<LookupResourcesRequest, "resourceType" | "permission" | "subject" | "consistency"> {}
 /** The selector supplies the subject type. subjectRelation is a native relation name,
  * validated by the server; it is not constrained by the generated selector. */
-export interface LookupSubjectsOptions extends CallOptions,
-    Omit<LookupSubjectsRequest, "resource" | "permission" | "subjectType" | "consistency"> {}
-export interface ReadRelationshipsOptions extends CallOptions,
-    Omit<ReadRelationshipsRequest, "filter" | "consistency"> {}
+export interface LookupSubjectsOptions
+    extends CallOptions,
+        Omit<LookupSubjectsRequest, "resource" | "permission" | "subjectType" | "consistency"> {}
+export interface ReadRelationshipsOptions
+    extends CallOptions,
+        Omit<ReadRelationshipsRequest, "filter" | "consistency"> {}
+
+// --- Support ---
+
+/** A permission, relation or definition name that is not in the schema. */
+export class NotInSchemaError extends InvalidArgumentError {
+    constructor(message: string) {
+        super(message);
+        this.name = "NotInSchemaError";
+    }
+}
+
+/** A subject the schema does not admit on a relation. */
+export class SubjectNotAllowedError extends InvalidArgumentError {
+    constructor(message: string) {
+        super(message);
+        this.name = "SubjectNotAllowedError";
+    }
+}
+
+/** Any generated subject ref. `_ref` names its exact generated type. */
+export interface AnySubject {
+    readonly _ref: string;
+    readonly _type: string;
+    readonly _id: string;
+    readonly _relation?: string;
+    readonly _caveat?: string;
+    readonly _caveatContext?: JSONObject;
+    readonly _expiration?: Date;
+}
+
+/** A subject type for filters: a definition factory such as `User`, or a userset sentinel such as `TeamMemberType`. */
+export type SubjectType =
+    | ((id: string) => { readonly _type: string })
+    | { readonly _type: string; readonly _relation: string };
+
+function subjectRef(subject: AnySubject): SubjectRef {
+    return {
+        object: { objectType: subject._type, objectId: subject._id },
+        ...(subject._relation === undefined ? {} : { relation: subject._relation }),
+    };
+}
+
+/** The request fields of a lookup/read options object, without the CallOptions that go to the call itself. */
+function requestFields<T extends CallOptions>(options: T | undefined): Omit<T, keyof CallOptions> {
+    const { signal, timeoutMs, headers, onHeader, onTrailer, ...request } = options ?? ({} as T);
+    return request;
+}
+
+function subjectString(subject: AnySubject): string {
+    return `${subject._type}:${subject._id}${subject._relation === undefined ? "" : `#${subject._relation}`}`;
+}
+
+/** A permission or relation on one resource, for checks. */
+export class Permission<T extends string = string, P extends string = string> {
+    readonly _type: T;
+    readonly _id: string;
+    readonly _permission: P;
+    constructor(type: T, id: string, permission: P) {
+        this._type = type;
+        this._id = id;
+        this._permission = permission;
+        Object.freeze(this);
+    }
+    /** The resource's type. */
+    get resourceType(): T {
+        return this._type;
+    }
+    /** The resource's ID. */
+    get resourceId(): string {
+        return this._id;
+    }
+    /** The permission or relation name. */
+    get name(): P {
+        return this._permission;
+    }
+    /** The permission without its resource ID, for lookups. */
+    ref(): PermissionRef<T, P> {
+        return new PermissionRef(this._type, this._permission);
+    }
+    /** The native check request for `subject`; a caveated subject's context becomes the check's context. */
+    checkRequest(subject: AnySubject, consistency: Consistency, context?: JSONObject): CheckRequest {
+        if (!this._id) throw new InvalidArgumentError(`${this._type}: resource ID must be nonempty`);
+        const merged = subject._caveatContext === undefined ? context : { ...context, ...subject._caveatContext };
+        return {
+            resource: { objectType: this._type, objectId: this._id },
+            permission: this._permission,
+            subject: subjectRef(subject),
+            consistency,
+            ...(merged === undefined ? {} : { context: merged }),
+        };
+    }
+    /** `type:id#permission` */
+    toString(): string {
+        return `${this._type}:${this._id}#${this._permission}`;
+    }
+    toJSON(): string {
+        return this.toString();
+    }
+}
+
+/** A permission on a resource type, for lookups. */
+export class PermissionRef<T extends string = string, P extends string = string> {
+    readonly _type: T;
+    readonly _permission: P;
+    constructor(type: T, permission: P) {
+        this._type = type;
+        this._permission = permission;
+        Object.freeze(this);
+    }
+    get resourceType(): T {
+        return this._type;
+    }
+    get name(): P {
+        return this._permission;
+    }
+    /** `type#permission` */
+    toString(): string {
+        return `${this._type}#${this._permission}`;
+    }
+    toJSON(): string {
+        return this.toString();
+    }
+}
+
+function deferred(build: () => Relationship): { value?: Relationship; error?: Error } {
+    try {
+        return { value: build() };
+    } catch (error) {
+        return { error: error instanceof Error ? error : new InvalidArgumentError(String(error)) };
+    }
+}
+
+/**
+ * A relationship built by a generated writer, `fromRelationship` or
+ * `errRelationship`. A construction error is kept and thrown by
+ * `relationship()`, so a `TypedTransaction` can defer it to `build()`.
+ */
+export class TypedRelationship {
+    readonly #value?: Relationship;
+    readonly #error?: Error;
+    /** @internal Use generated writers, fromRelationship or errRelationship. */
+    constructor(build: () => Relationship) {
+        const { value, error } = deferred(build);
+        this.#value = value;
+        this.#error = error;
+        Object.freeze(this);
+    }
+    /** The construction error, if any. */
+    get error(): Error | undefined {
+        return this.#error;
+    }
+    /** The native relationship; throws the construction error. */
+    relationship(): Relationship {
+        if (this.#error !== undefined) throw this.#error;
+        return this.#value!;
+    }
+    /** The identity-only key (no caveat or expiration), for deletes and exact filters. */
+    key(): RelationshipKey {
+        return new RelationshipKey(() => identity(this.relationship()));
+    }
+    /** The exact native filter for this relationship. */
+    filter(): RelationshipFilter {
+        return relationshipToFilter(this.relationship());
+    }
+    /** SpiceDB tuple syntax, or `<invalid relationship: ...>`. */
+    toString(): string {
+        return this.#error === undefined
+            ? relationshipToString(this.#value!)
+            : `<invalid relationship: ${this.#error.message}>`;
+    }
+    toJSON(): Relationship | { readonly error: string } {
+        return this.#error === undefined ? this.#value! : { error: this.#error.message };
+    }
+}
+
+/** A relationship identified by tuple identity alone, for deletes and exact filters. */
+export class RelationshipKey {
+    readonly #value?: Relationship;
+    readonly #error?: Error;
+    /** @internal Use generated key builders or TypedRelationship.key(). */
+    constructor(build: () => Relationship) {
+        const { value, error } = deferred(build);
+        this.#value = value;
+        this.#error = error;
+        Object.freeze(this);
+    }
+    get error(): Error | undefined {
+        return this.#error;
+    }
+    /** The native relationship without caveat or expiration; throws the construction error. */
+    relationship(): Relationship {
+        if (this.#error !== undefined) throw this.#error;
+        return this.#value!;
+    }
+    /** The exact native filter for this relationship. */
+    filter(): RelationshipFilter {
+        return relationshipToFilter(this.relationship());
+    }
+    toString(): string {
+        return this.#error === undefined
+            ? relationshipToString(this.#value!)
+            : `<invalid relationship: ${this.#error.message}>`;
+    }
+    toJSON(): Relationship | { readonly error: string } {
+        return this.#error === undefined ? this.#value! : { error: this.#error.message };
+    }
+}
+
+function identity(rel: Relationship): Relationship {
+    return { resource: rel.resource, relation: rel.relation, subject: rel.subject };
+}
+
+function nativeRelationship(
+    type: string,
+    id: string,
+    relation: string,
+    subject: AnySubject,
+    identityOnly: boolean,
+): Relationship {
+    if (!id) throw new InvalidArgumentError(`${type}#${relation}: resource ID must be nonempty`);
+    if (!subject._id) throw new InvalidArgumentError(`${type}#${relation}: subject ID must be nonempty`);
+    const caveat =
+        identityOnly || subject._caveat === undefined
+            ? {}
+            : { caveat: { name: subject._caveat, context: subject._caveatContext } };
+    const expiration = identityOnly || subject._expiration === undefined ? {} : { expiration: subject._expiration };
+    return {
+        resource: { objectType: type, objectId: id },
+        relation,
+        subject: subjectRef(subject),
+        ...caveat,
+        ...expiration,
+    };
+}
+
+function relationshipOf(type: string, id: string, relation: string, subject: AnySubject): TypedRelationship {
+    return new TypedRelationship(() => nativeRelationship(type, id, relation, subject, false));
+}
+
+function keyOf(type: string, id: string, relation: string, subject: AnySubject): RelationshipKey {
+    return new RelationshipKey(() => nativeRelationship(type, id, relation, subject, true));
+}
+
+/** Wraps a native relationship, e.g. one read back from SpiceDB. Not schema-checked. */
+export function fromRelationship(rel: Relationship): TypedRelationship {
+    return new TypedRelationship(() => {
+        if (!rel?.resource || !rel.relation || !rel.subject?.object)
+            throw new InvalidArgumentError("relationship requires resource, relation, and subject");
+        return rel;
+    });
+}
+
+/** A typed relationship carrying `error`, for helpers that defer failures into a transaction. */
+export function errRelationship(error: Error): TypedRelationship {
+    return new TypedRelationship(() => {
+        throw error;
+    });
+}
+
+function resourceFilter(type: string, id: string, relation?: string): RelationshipFilter {
+    if (!id)
+        throw new InvalidArgumentError(
+            `${type}: resource ID must be nonempty; use ${type}'s type filter for the whole type`,
+        );
+    return { resourceType: type, resourceId: id, ...(relation === undefined ? {} : { relation }) };
+}
+
+/** Narrows `filter` to a subject: an exact subject ref, a definition factory (any ID) or a userset sentinel. */
+export function withSubject(filter: RelationshipFilter, subject: AnySubject | SubjectType): RelationshipFilter {
+    if (typeof subject === "function") return { ...filter, subject: { subjectType: subject("")._type } };
+    if (!("_ref" in subject))
+        return {
+            ...filter,
+            subject: {
+                subjectType: subject._type,
+                relation: { kind: SubjectRelationKind.Named, relation: subject._relation },
+            },
+        };
+    return {
+        ...filter,
+        subject: {
+            subjectType: subject._type,
+            subjectId: subject._id,
+            relation:
+                subject._relation === undefined
+                    ? { kind: SubjectRelationKind.Direct }
+                    : { kind: SubjectRelationKind.Named, relation: subject._relation },
+        },
+    };
+}
+
+function permissionByName<T extends string, P extends string>(
+    type: T,
+    id: string,
+    known: readonly P[],
+    name: string,
+    what: string,
+): Permission<T, P> {
+    if (!(known as readonly string[]).includes(name))
+        throw new NotInSchemaError(`${type} has no ${what} named "${name}"`);
+    return new Permission(type, id, name as P);
+}
+
+function relationshipByName(
+    type: string,
+    id: string,
+    allowed: Readonly<Record<string, readonly string[]>>,
+    relation: string,
+    subject: AnySubject,
+): TypedRelationship {
+    const refs = Object.prototype.hasOwnProperty.call(allowed, relation) ? allowed[relation] : undefined;
+    if (refs === undefined) throw new NotInSchemaError(`${type} has no relation named "${relation}"`);
+    if (!refs.includes(subject._ref))
+        throw new SubjectNotAllowedError(
+            `${type}#${relation} does not admit ${subject._ref} (${subjectString(subject)})`,
+        );
+    return relationshipOf(type, id, relation, subject);
+}
+
+/**
+ * A typed transaction: touches, creates, deletes and preconditions in one
+ * atomic write. The first construction error is deferred to `build()` (and
+ * `TypedClient.writeTransaction`), so assembling one needs no check per step.
+ */
+export class TypedTransaction {
+    readonly #updates: {
+        readonly operation: "touch" | "create" | "delete";
+        readonly value: TypedRelationship | RelationshipKey;
+    }[] = [];
+    readonly #preconditions: {
+        readonly operation: "mustMatch" | "mustNotMatch";
+        readonly filter: RelationshipFilter;
+    }[] = [];
+    #metadata?: JSONObject;
+    touch(rel: TypedRelationship): this {
+        this.#updates.push({ operation: "touch", value: rel });
+        return this;
+    }
+    create(rel: TypedRelationship): this {
+        this.#updates.push({ operation: "create", value: rel });
+        return this;
+    }
+    /** Deletes by tuple identity; a key needs no caveat context or expiration. */
+    delete(rel: TypedRelationship | RelationshipKey): this {
+        this.#updates.push({ operation: "delete", value: rel });
+        return this;
+    }
+    mustMatch(filter: RelationshipFilter): this {
+        this.#preconditions.push({ operation: "mustMatch", filter });
+        return this;
+    }
+    mustNotMatch(filter: RelationshipFilter): this {
+        this.#preconditions.push({ operation: "mustNotMatch", filter });
+        return this;
+    }
+    withMetadata(metadata: JSONObject): this {
+        this.#metadata = metadata;
+        return this;
+    }
+    /** The number of updates (preconditions excluded). */
+    get length(): number {
+        return this.#updates.length;
+    }
+    /** The native transaction; throws the first deferred construction error. */
+    build(): Transaction {
+        const txn = new Transaction();
+        for (const p of this.#preconditions) txn[p.operation](p.filter);
+        for (const u of this.#updates) txn[u.operation](u.value.relationship());
+        if (this.#metadata !== undefined) txn.withMetadata(this.#metadata);
+        return txn;
+    }
+    toString(): string {
+        try {
+            return this.build().toString();
+        } catch (error) {
+            return `<invalid transaction: ${error instanceof Error ? error.message : String(error)}>`;
+        }
+    }
+}
+
+/** One item of a typed bulk check. */
+export interface TypedCheck {
+    readonly permission: Permission;
+    readonly subject: AnySubject;
+    readonly context?: JSONObject;
+}
+
+/** Checks of several permissions for one subject, in order. */
+export function checksFor(subject: AnySubject, ...permissions: readonly Permission[]): TypedCheck[] {
+    return permissions.map((permission) => ({ permission, subject }));
+}
 
 // --- Caveat Contexts ---
+
 export interface IpRangeContext {
     allowedCidr?: string;
 }
-// ipRangeContextToRaw translates IpRangeContext's camelCase, TypeScript-facing field
-// names back to the RAW schema parameter names SpiceDB's CEL evaluator looks up (e.g.
-// "allowedCidr" -> "allowed_cidr"). A field left undefined is omitted entirely, not sent as an
-// explicit null/undefined value.
+
+// ipRangeContextToRaw translates IpRangeContext's camelCase field names back to the
+// raw schema parameter names SpiceDB's CEL evaluator looks up. Undefined fields are omitted.
 function ipRangeContextToRaw(ctx: IpRangeContext): JSONObject {
     const raw: Record<string, JSONValue> = {};
     if (ctx.allowedCidr !== undefined) raw["allowed_cidr"] = ctx.allowedCidr;
     return raw;
 }
+
 export interface TimeWindowContext {
     end?: string;
     start?: string;
 }
-// timeWindowContextToRaw translates TimeWindowContext's camelCase, TypeScript-facing field
-// names back to the RAW schema parameter names SpiceDB's CEL evaluator looks up (e.g.
-// "allowedCidr" -> "allowed_cidr"). A field left undefined is omitted entirely, not sent as an
-// explicit null/undefined value.
+
+// timeWindowContextToRaw translates TimeWindowContext's camelCase field names back to the
+// raw schema parameter names SpiceDB's CEL evaluator looks up. Undefined fields are omitted.
 function timeWindowContextToRaw(ctx: TimeWindowContext): JSONObject {
     const raw: Record<string, JSONValue> = {};
     if (ctx.end !== undefined) raw["end"] = ctx.end;
@@ -59,90 +459,629 @@ function timeWindowContextToRaw(ctx: TimeWindowContext): JSONObject {
     return raw;
 }
 
-// --- Types ---
-type UserRef = { _type: "user"; _id: string; _caveat?: never };
-type TeamRef = { _type: "team"; _id: string; _caveat?: never };
-type TeamMemberRef = { _type: "team"; _id: string; _relation: "member"; _caveat?: never };
-type DocumentRef = { _type: "document"; _id: string; _caveat?: never };
-type UserIpRangeRef = { _type: "user"; _id: string; _caveat: "ip_range"; _caveatContext: JSONObject };
-type UserTimeWindowRef = { _type: "user"; _id: string; _caveat: "time_window"; _caveatContext: JSONObject };
+// --- Subject refs ---
 
-// --- Factories ---
+export interface UserIpRangeRef extends AnySubject {
+    readonly _ref: "UserIpRangeRef";
+    readonly _type: "user";
+    readonly _caveat: "ip_range";
+    readonly _caveatContext: JSONObject;
+    toString(): string;
+}
 
-export function User(id: string) {
-    return {
-        _type: "user" as const,
+function makeUserIpRangeRef(id: string, ctx?: JSONObject, at?: Date): UserIpRangeRef {
+    const ref: UserIpRangeRef = {
+        _ref: "UserIpRangeRef",
+        _type: "user",
         _id: id,
-        _caveat: undefined as undefined,
-        // Caveat methods
-        withIpRange: (ctx: IpRangeContext): UserIpRangeRef => ({
-            _type: "user", _id: id, _caveat: "ip_range" as const, _caveatContext: ipRangeContextToRaw(ctx),
-        }),
-        withTimeWindow: (ctx: TimeWindowContext): UserTimeWindowRef => ({
-            _type: "user", _id: id, _caveat: "time_window" as const, _caveatContext: timeWindowContextToRaw(ctx),
-        }),
+        _caveatContext: ctx ?? {},
+        _caveat: "ip_range",
+        toString: () => `user:${id}`,
     };
+    return Object.freeze(ref);
 }
 
-export function Team(id: string) {
-    return {
-        _type: "team" as const,
+export interface UserTimeWindowRef extends AnySubject {
+    readonly _ref: "UserTimeWindowRef";
+    readonly _type: "user";
+    readonly _caveat: "time_window";
+    readonly _caveatContext: JSONObject;
+    toString(): string;
+}
+
+function makeUserTimeWindowRef(id: string, ctx?: JSONObject, at?: Date): UserTimeWindowRef {
+    const ref: UserTimeWindowRef = {
+        _ref: "UserTimeWindowRef",
+        _type: "user",
         _id: id,
-        // Relations
-        member: ((subject?: UserRef | TeamMemberRef): TeamMemberRef | { _type: "team"; _id: string; _relation: "member"; _subject: UserRef | TeamMemberRef } => subject === undefined
-            ? ({ _type: "team", _id: id, _relation: "member" }) as TeamMemberRef
-            : ({ _type: "team" as const, _id: id, _relation: "member" as const, _subject: subject })) as { (): TeamMemberRef; (subject: UserRef | TeamMemberRef): { _type: "team"; _id: string; _relation: "member"; _subject: UserRef | TeamMemberRef } },
+        _caveatContext: ctx ?? {},
+        _caveat: "time_window",
+        toString: () => `user:${id}`,
     };
+    return Object.freeze(ref);
 }
 
-export function Document(id: string) {
-    return {
-        _type: "document" as const,
+export interface UserExpiringRef extends AnySubject {
+    readonly _ref: "UserExpiringRef";
+    readonly _type: "user";
+    readonly _expiration: Date;
+    toString(): string;
+}
+
+function makeUserExpiringRef(id: string, ctx?: JSONObject, at?: Date): UserExpiringRef {
+    const ref: UserExpiringRef = {
+        _ref: "UserExpiringRef",
+        _type: "user",
         _id: id,
-        // Permissions
-        view: { _type: "document" as const, _id: id, _permission: "view" as const },
-        edit: { _type: "document" as const, _id: id, _permission: "edit" as const },
-        delete: { _type: "document" as const, _id: id, _permission: "delete" as const },
-        // Relations
-        viewer: (subject: UserRef | UserIpRangeRef | UserTimeWindowRef | TeamMemberRef) => ({
-            _type: "document" as const, _id: id,
-            _relation: "viewer" as const, _subject: subject,
-        }),
-        editor: (subject: UserRef) => ({
-            _type: "document" as const, _id: id,
-            _relation: "editor" as const, _subject: subject,
-        }),
-        owner: (subject: UserRef) => ({
-            _type: "document" as const, _id: id,
-            _relation: "owner" as const, _subject: subject,
-        }),
+        _expiration: new Date(at!.getTime()),
+        toString: () => `user:${id}`,
     };
-}
-Document.view = { _type: "document" as const, _permission: "view" as const };
-Document.edit = { _type: "document" as const, _permission: "edit" as const };
-Document.delete = { _type: "document" as const, _permission: "delete" as const };
-
-export interface TypedRelationship {
-    readonly _type: string;
-    readonly _relation: string;
-    readonly _id: string;
-    readonly _subject: {
-        readonly _type: string;
-        readonly _id: string;
-        readonly _relation?: string;
-        readonly _caveat?: string;
-        readonly _caveatContext?: JSONObject;
-    };
+    return Object.freeze(ref);
 }
 
-function toRelationship(r: TypedRelationship): Relationship {
-    return {
-        resource: { objectType: r._type, objectId: r._id },
-        relation: r._relation,
-        subject: { object: { objectType: r._subject._type, objectId: r._subject._id }, relation: r._subject._relation },
-        caveat: r._subject._caveat === undefined ? undefined : { name: r._subject._caveat, context: r._subject._caveatContext },
-    };
+export interface UserWildcardRef extends AnySubject {
+    readonly _ref: "UserWildcardRef";
+    readonly _type: "user";
+    readonly _id: "*";
+    toString(): string;
 }
+
+function makeUserWildcardRef(id: string, ctx?: JSONObject, at?: Date): UserWildcardRef {
+    const ref: UserWildcardRef = {
+        _ref: "UserWildcardRef",
+        _type: "user",
+        _id: "*",
+        toString: () => `user:${"*"}`,
+    };
+    return Object.freeze(ref);
+}
+
+export interface TeamMemberRef extends AnySubject {
+    readonly _ref: "TeamMemberRef";
+    readonly _type: "team";
+    readonly _relation: "member";
+    toString(): string;
+}
+
+function makeTeamMemberRef(id: string, ctx?: JSONObject, at?: Date): TeamMemberRef {
+    const ref: TeamMemberRef = {
+        _ref: "TeamMemberRef",
+        _type: "team",
+        _id: id,
+        _relation: "member",
+        toString: () => `team:${id}#member`,
+    };
+    return Object.freeze(ref);
+}
+
+export interface OrganizationCanAdminRef extends AnySubject {
+    readonly _ref: "OrganizationCanAdminRef";
+    readonly _type: "organization";
+    readonly _relation: "can_admin";
+    withExpiration(at: Date): OrganizationCanAdminExpiringRef;
+    toString(): string;
+}
+
+function makeOrganizationCanAdminRef(id: string, ctx?: JSONObject, at?: Date): OrganizationCanAdminRef {
+    const ref: OrganizationCanAdminRef = {
+        _ref: "OrganizationCanAdminRef",
+        _type: "organization",
+        _id: id,
+        _relation: "can_admin",
+        withExpiration: (expiresAt: Date) => makeOrganizationCanAdminExpiringRef(id, ctx, expiresAt),
+        toString: () => `organization:${id}#can_admin`,
+    };
+    return Object.freeze(ref);
+}
+
+export interface OrganizationCanAdminExpiringRef extends AnySubject {
+    readonly _ref: "OrganizationCanAdminExpiringRef";
+    readonly _type: "organization";
+    readonly _relation: "can_admin";
+    readonly _expiration: Date;
+    toString(): string;
+}
+
+function makeOrganizationCanAdminExpiringRef(id: string, ctx?: JSONObject, at?: Date): OrganizationCanAdminExpiringRef {
+    const ref: OrganizationCanAdminExpiringRef = {
+        _ref: "OrganizationCanAdminExpiringRef",
+        _type: "organization",
+        _id: id,
+        _relation: "can_admin",
+        _expiration: new Date(at!.getTime()),
+        toString: () => `organization:${id}#can_admin`,
+    };
+    return Object.freeze(ref);
+}
+
+// --- Definitions ---
+
+export type UserRelationName = never;
+export type UserPermissionName = never;
+/** Relation names of `user`, keyed by camelCase. */
+export const UserRelations = Object.freeze({} as const);
+/** Permission names of `user`, keyed by camelCase. */
+export const UserPermissions = Object.freeze({} as const);
+/** Every relation name of `user`, in schema order, for startup verification. */
+export const UserRelationNames: readonly UserRelationName[] = Object.freeze([]);
+/** Every permission name of `user`, in schema order, for startup verification. */
+export const UserPermissionNames: readonly UserPermissionName[] = Object.freeze([]);
+const UserAllowed: Readonly<Record<string, readonly string[]>> = Object.freeze({});
+
+export interface UserRef extends AnySubject {
+    readonly _ref: "UserRef";
+    readonly _type: "user";
+    withIpRange(ctx: IpRangeContext): UserIpRangeRef;
+    withTimeWindow(ctx: TimeWindowContext): UserTimeWindowRef;
+    withExpiration(at: Date): UserExpiringRef;
+    /** The exact resource filter (`user:id`). */
+    filter(): RelationshipFilter;
+    /** The permission named `name`; throws NotInSchemaError for names not in the schema. */
+    permissionByName(name: string): Permission<"user", UserPermissionName>;
+    /** The check accessor for the relation named `name`; throws NotInSchemaError. */
+    relationByName(name: string): Permission<"user", UserRelationName>;
+    /** A relationship on the relation named `relation`; throws NotInSchemaError or SubjectNotAllowedError. */
+    relationshipByName(relation: string, subject: AnySubject): TypedRelationship;
+    toString(): string;
+}
+
+function makeUserRef(id: string): UserRef {
+    const ref: UserRef = {
+        _ref: "UserRef",
+        _type: "user",
+        _id: id,
+        withIpRange: (context: IpRangeContext) => makeUserIpRangeRef(id, ipRangeContextToRaw(context)),
+        withTimeWindow: (context: TimeWindowContext) => makeUserTimeWindowRef(id, timeWindowContextToRaw(context)),
+        withExpiration: (expiresAt: Date) => makeUserExpiringRef(id, undefined, expiresAt),
+        filter: () => resourceFilter("user", id),
+        permissionByName: (name: string) => permissionByName("user", id, UserPermissionNames, name, "permission"),
+        relationByName: (name: string) => permissionByName("user", id, UserRelationNames, name, "relation"),
+        relationshipByName: (relation: string, subject: AnySubject) =>
+            relationshipByName("user", id, UserAllowed, relation, subject),
+        toString: () => `user:${id}`,
+    };
+    return Object.freeze(ref);
+}
+
+/** A `user` resource or subject. */
+export function User(id: string): UserRef {
+    return makeUserRef(id);
+}
+
+/** A filter for every `user` relationship. */
+export function UserFilter(): RelationshipFilter {
+    return { resourceType: "user" };
+}
+
+/** The `user:*` wildcard subject. */
+export function UserWildcard(): UserWildcardRef {
+    return makeUserWildcardRef("*");
+}
+
+export type TeamRelationName = "member";
+export type TeamPermissionName = never;
+/** Relation names of `team`, keyed by camelCase. */
+export const TeamRelations = Object.freeze({
+    member: "member",
+} as const);
+/** Permission names of `team`, keyed by camelCase. */
+export const TeamPermissions = Object.freeze({} as const);
+/** Every relation name of `team`, in schema order, for startup verification. */
+export const TeamRelationNames: readonly TeamRelationName[] = Object.freeze(["member"]);
+/** Every permission name of `team`, in schema order, for startup verification. */
+export const TeamPermissionNames: readonly TeamPermissionName[] = Object.freeze([]);
+const TeamAllowed: Readonly<Record<string, readonly string[]>> = Object.freeze({
+    member: ["UserRef", "TeamMemberRef"],
+});
+export type TeamMemberSubject = UserRef | TeamMemberRef;
+export type TeamMemberKeySubject = UserRef | TeamMemberRef;
+export type TeamMemberRelationCheckSubject = UserRef | TeamMemberRef;
+
+export interface TeamRef extends AnySubject {
+    readonly _ref: "TeamRef";
+    readonly _type: "team";
+    member(): TeamMemberRef;
+    member(subject: TeamMemberSubject): TypedRelationship;
+    memberKey(subject: TeamMemberKeySubject): RelationshipKey;
+    readonly memberRelation: Permission<"team", "member">;
+    memberFilter(): RelationshipFilter;
+    /** The exact resource filter (`team:id`). */
+    filter(): RelationshipFilter;
+    /** The permission named `name`; throws NotInSchemaError for names not in the schema. */
+    permissionByName(name: string): Permission<"team", TeamPermissionName>;
+    /** The check accessor for the relation named `name`; throws NotInSchemaError. */
+    relationByName(name: string): Permission<"team", TeamRelationName>;
+    /** A relationship on the relation named `relation`; throws NotInSchemaError or SubjectNotAllowedError. */
+    relationshipByName(relation: string, subject: AnySubject): TypedRelationship;
+    toString(): string;
+}
+
+function makeTeamRef(id: string): TeamRef {
+    const ref: TeamRef = {
+        _ref: "TeamRef",
+        _type: "team",
+        _id: id,
+        member: ((subject?: TeamMemberSubject) =>
+            subject === undefined
+                ? makeTeamMemberRef(id)
+                : relationshipOf("team", id, "member", subject)) as TeamRef["member"],
+        memberKey: (subject: TeamMemberKeySubject) => keyOf("team", id, "member", subject),
+        memberRelation: new Permission("team", id, "member"),
+        memberFilter: () => resourceFilter("team", id, "member"),
+        filter: () => resourceFilter("team", id),
+        permissionByName: (name: string) => permissionByName("team", id, TeamPermissionNames, name, "permission"),
+        relationByName: (name: string) => permissionByName("team", id, TeamRelationNames, name, "relation"),
+        relationshipByName: (relation: string, subject: AnySubject) =>
+            relationshipByName("team", id, TeamAllowed, relation, subject),
+        toString: () => `team:${id}`,
+    };
+    return Object.freeze(ref);
+}
+
+/** A `team` resource or subject. */
+export function Team(id: string): TeamRef {
+    return makeTeamRef(id);
+}
+
+/** A filter for every `team` relationship. */
+export function TeamFilter(): RelationshipFilter {
+    return { resourceType: "team" };
+}
+
+export type DocumentRelationName = "viewer" | "editor" | "owner";
+export type DocumentPermissionName = "view" | "edit" | "delete";
+/** Relation names of `document`, keyed by camelCase. */
+export const DocumentRelations = Object.freeze({
+    viewer: "viewer",
+    editor: "editor",
+    owner: "owner",
+} as const);
+/** Permission names of `document`, keyed by camelCase. */
+export const DocumentPermissions = Object.freeze({
+    view: "view",
+    edit: "edit",
+    delete: "delete",
+} as const);
+/** Every relation name of `document`, in schema order, for startup verification. */
+export const DocumentRelationNames: readonly DocumentRelationName[] = Object.freeze(["viewer", "editor", "owner"]);
+/** Every permission name of `document`, in schema order, for startup verification. */
+export const DocumentPermissionNames: readonly DocumentPermissionName[] = Object.freeze(["view", "edit", "delete"]);
+const DocumentAllowed: Readonly<Record<string, readonly string[]>> = Object.freeze({
+    viewer: ["UserRef", "UserIpRangeRef", "UserTimeWindowRef", "TeamMemberRef"],
+    editor: ["UserRef"],
+    owner: ["UserRef"],
+});
+export type DocumentViewerSubject = UserRef | UserIpRangeRef | UserTimeWindowRef | TeamMemberRef;
+export type DocumentViewerKeySubject = UserRef | TeamMemberRef;
+export type DocumentViewerRelationCheckSubject = UserRef | UserIpRangeRef | UserTimeWindowRef | TeamMemberRef;
+export type DocumentEditorSubject = UserRef;
+export type DocumentEditorKeySubject = UserRef;
+export type DocumentEditorRelationCheckSubject = UserRef;
+export type DocumentOwnerSubject = UserRef;
+export type DocumentOwnerKeySubject = UserRef;
+export type DocumentOwnerRelationCheckSubject = UserRef;
+export type DocumentViewCheckSubject = UserRef | UserIpRangeRef | UserTimeWindowRef | TeamMemberRef;
+export type DocumentEditCheckSubject = UserRef;
+export type DocumentDeleteCheckSubject = UserRef;
+
+export interface DocumentRef extends AnySubject {
+    readonly _ref: "DocumentRef";
+    readonly _type: "document";
+    readonly view: Permission<"document", "view">;
+    readonly edit: Permission<"document", "edit">;
+    readonly delete: Permission<"document", "delete">;
+    viewer(subject: DocumentViewerSubject): TypedRelationship;
+    viewerKey(subject: DocumentViewerKeySubject): RelationshipKey;
+    readonly viewerRelation: Permission<"document", "viewer">;
+    viewerFilter(): RelationshipFilter;
+    editor(subject: DocumentEditorSubject): TypedRelationship;
+    editorKey(subject: DocumentEditorKeySubject): RelationshipKey;
+    readonly editorRelation: Permission<"document", "editor">;
+    editorFilter(): RelationshipFilter;
+    owner(subject: DocumentOwnerSubject): TypedRelationship;
+    ownerKey(subject: DocumentOwnerKeySubject): RelationshipKey;
+    readonly ownerRelation: Permission<"document", "owner">;
+    ownerFilter(): RelationshipFilter;
+    /** The exact resource filter (`document:id`). */
+    filter(): RelationshipFilter;
+    /** The permission named `name`; throws NotInSchemaError for names not in the schema. */
+    permissionByName(name: string): Permission<"document", DocumentPermissionName>;
+    /** The check accessor for the relation named `name`; throws NotInSchemaError. */
+    relationByName(name: string): Permission<"document", DocumentRelationName>;
+    /** A relationship on the relation named `relation`; throws NotInSchemaError or SubjectNotAllowedError. */
+    relationshipByName(relation: string, subject: AnySubject): TypedRelationship;
+    toString(): string;
+}
+
+function makeDocumentRef(id: string): DocumentRef {
+    const ref: DocumentRef = {
+        _ref: "DocumentRef",
+        _type: "document",
+        _id: id,
+        view: new Permission("document", id, "view"),
+        edit: new Permission("document", id, "edit"),
+        delete: new Permission("document", id, "delete"),
+        viewer: (subject: DocumentViewerSubject) => relationshipOf("document", id, "viewer", subject),
+        viewerKey: (subject: DocumentViewerKeySubject) => keyOf("document", id, "viewer", subject),
+        viewerRelation: new Permission("document", id, "viewer"),
+        viewerFilter: () => resourceFilter("document", id, "viewer"),
+        editor: (subject: DocumentEditorSubject) => relationshipOf("document", id, "editor", subject),
+        editorKey: (subject: DocumentEditorKeySubject) => keyOf("document", id, "editor", subject),
+        editorRelation: new Permission("document", id, "editor"),
+        editorFilter: () => resourceFilter("document", id, "editor"),
+        owner: (subject: DocumentOwnerSubject) => relationshipOf("document", id, "owner", subject),
+        ownerKey: (subject: DocumentOwnerKeySubject) => keyOf("document", id, "owner", subject),
+        ownerRelation: new Permission("document", id, "owner"),
+        ownerFilter: () => resourceFilter("document", id, "owner"),
+        filter: () => resourceFilter("document", id),
+        permissionByName: (name: string) =>
+            permissionByName("document", id, DocumentPermissionNames, name, "permission"),
+        relationByName: (name: string) => permissionByName("document", id, DocumentRelationNames, name, "relation"),
+        relationshipByName: (relation: string, subject: AnySubject) =>
+            relationshipByName("document", id, DocumentAllowed, relation, subject),
+        toString: () => `document:${id}`,
+    };
+    return Object.freeze(ref);
+}
+
+/** A `document` resource or subject. */
+export function Document(id: string): DocumentRef {
+    return makeDocumentRef(id);
+}
+Document.view = new PermissionRef("document", "view");
+Document.edit = new PermissionRef("document", "edit");
+Document.delete = new PermissionRef("document", "delete");
+
+/** A filter for every `document` relationship. */
+export function DocumentFilter(): RelationshipFilter {
+    return { resourceType: "document" };
+}
+
+export type OrganizationRelationName = "admin" | "member" | "creator" | "guest";
+export type OrganizationPermissionName = "can_admin" | "view";
+/** Relation names of `organization`, keyed by camelCase. */
+export const OrganizationRelations = Object.freeze({
+    admin: "admin",
+    member: "member",
+    creator: "creator",
+    guest: "guest",
+} as const);
+/** Permission names of `organization`, keyed by camelCase. */
+export const OrganizationPermissions = Object.freeze({
+    canAdmin: "can_admin",
+    view: "view",
+} as const);
+/** Every relation name of `organization`, in schema order, for startup verification. */
+export const OrganizationRelationNames: readonly OrganizationRelationName[] = Object.freeze([
+    "admin",
+    "member",
+    "creator",
+    "guest",
+]);
+/** Every permission name of `organization`, in schema order, for startup verification. */
+export const OrganizationPermissionNames: readonly OrganizationPermissionName[] = Object.freeze(["can_admin", "view"]);
+const OrganizationAllowed: Readonly<Record<string, readonly string[]>> = Object.freeze({
+    admin: ["UserRef"],
+    member: ["UserRef"],
+    creator: ["UserWildcardRef"],
+    guest: ["UserRef", "UserWildcardRef"],
+});
+export type OrganizationAdminSubject = UserRef;
+export type OrganizationAdminKeySubject = UserRef;
+export type OrganizationAdminRelationCheckSubject = UserRef;
+export type OrganizationMemberSubject = UserRef;
+export type OrganizationMemberKeySubject = UserRef;
+export type OrganizationMemberRelationCheckSubject = UserRef;
+export type OrganizationCreatorSubject = UserWildcardRef;
+export type OrganizationCreatorKeySubject = UserWildcardRef;
+export type OrganizationCreatorRelationCheckSubject = UserRef;
+export type OrganizationGuestSubject = UserRef | UserWildcardRef;
+export type OrganizationGuestKeySubject = UserRef | UserWildcardRef;
+export type OrganizationGuestRelationCheckSubject = UserRef;
+export type OrganizationCanAdminCheckSubject = UserRef;
+export type OrganizationViewCheckSubject = UserRef;
+
+export interface OrganizationRef extends AnySubject {
+    readonly _ref: "OrganizationRef";
+    readonly _type: "organization";
+    readonly canAdmin: Permission<"organization", "can_admin">;
+    readonly view: Permission<"organization", "view">;
+    admin(subject: OrganizationAdminSubject): TypedRelationship;
+    adminKey(subject: OrganizationAdminKeySubject): RelationshipKey;
+    readonly adminRelation: Permission<"organization", "admin">;
+    adminFilter(): RelationshipFilter;
+    member(subject: OrganizationMemberSubject): TypedRelationship;
+    memberKey(subject: OrganizationMemberKeySubject): RelationshipKey;
+    readonly memberRelation: Permission<"organization", "member">;
+    memberFilter(): RelationshipFilter;
+    creator(subject: OrganizationCreatorSubject): TypedRelationship;
+    creatorKey(subject: OrganizationCreatorKeySubject): RelationshipKey;
+    readonly creatorRelation: Permission<"organization", "creator">;
+    creatorFilter(): RelationshipFilter;
+    guest(subject: OrganizationGuestSubject): TypedRelationship;
+    guestKey(subject: OrganizationGuestKeySubject): RelationshipKey;
+    readonly guestRelation: Permission<"organization", "guest">;
+    guestFilter(): RelationshipFilter;
+    canAdminSubject(): OrganizationCanAdminRef;
+    /** The exact resource filter (`organization:id`). */
+    filter(): RelationshipFilter;
+    /** The permission named `name`; throws NotInSchemaError for names not in the schema. */
+    permissionByName(name: string): Permission<"organization", OrganizationPermissionName>;
+    /** The check accessor for the relation named `name`; throws NotInSchemaError. */
+    relationByName(name: string): Permission<"organization", OrganizationRelationName>;
+    /** A relationship on the relation named `relation`; throws NotInSchemaError or SubjectNotAllowedError. */
+    relationshipByName(relation: string, subject: AnySubject): TypedRelationship;
+    toString(): string;
+}
+
+function makeOrganizationRef(id: string): OrganizationRef {
+    const ref: OrganizationRef = {
+        _ref: "OrganizationRef",
+        _type: "organization",
+        _id: id,
+        canAdmin: new Permission("organization", id, "can_admin"),
+        view: new Permission("organization", id, "view"),
+        admin: (subject: OrganizationAdminSubject) => relationshipOf("organization", id, "admin", subject),
+        adminKey: (subject: OrganizationAdminKeySubject) => keyOf("organization", id, "admin", subject),
+        adminRelation: new Permission("organization", id, "admin"),
+        adminFilter: () => resourceFilter("organization", id, "admin"),
+        member: (subject: OrganizationMemberSubject) => relationshipOf("organization", id, "member", subject),
+        memberKey: (subject: OrganizationMemberKeySubject) => keyOf("organization", id, "member", subject),
+        memberRelation: new Permission("organization", id, "member"),
+        memberFilter: () => resourceFilter("organization", id, "member"),
+        creator: (subject: OrganizationCreatorSubject) => relationshipOf("organization", id, "creator", subject),
+        creatorKey: (subject: OrganizationCreatorKeySubject) => keyOf("organization", id, "creator", subject),
+        creatorRelation: new Permission("organization", id, "creator"),
+        creatorFilter: () => resourceFilter("organization", id, "creator"),
+        guest: (subject: OrganizationGuestSubject) => relationshipOf("organization", id, "guest", subject),
+        guestKey: (subject: OrganizationGuestKeySubject) => keyOf("organization", id, "guest", subject),
+        guestRelation: new Permission("organization", id, "guest"),
+        guestFilter: () => resourceFilter("organization", id, "guest"),
+        canAdminSubject: () => makeOrganizationCanAdminRef(id),
+        filter: () => resourceFilter("organization", id),
+        permissionByName: (name: string) =>
+            permissionByName("organization", id, OrganizationPermissionNames, name, "permission"),
+        relationByName: (name: string) =>
+            permissionByName("organization", id, OrganizationRelationNames, name, "relation"),
+        relationshipByName: (relation: string, subject: AnySubject) =>
+            relationshipByName("organization", id, OrganizationAllowed, relation, subject),
+        toString: () => `organization:${id}`,
+    };
+    return Object.freeze(ref);
+}
+
+/** A `organization` resource or subject. */
+export function Organization(id: string): OrganizationRef {
+    return makeOrganizationRef(id);
+}
+Organization.canAdmin = new PermissionRef("organization", "can_admin");
+Organization.view = new PermissionRef("organization", "view");
+
+/** A filter for every `organization` relationship. */
+export function OrganizationFilter(): RelationshipFilter {
+    return { resourceType: "organization" };
+}
+
+export type InvitationRelationName = "org" | "grant" | "timed_grant" | "inviter";
+export type InvitationPermissionName = "accept";
+/** Relation names of `invitation`, keyed by camelCase. */
+export const InvitationRelations = Object.freeze({
+    org: "org",
+    grant: "grant",
+    timedGrant: "timed_grant",
+    inviter: "inviter",
+} as const);
+/** Permission names of `invitation`, keyed by camelCase. */
+export const InvitationPermissions = Object.freeze({
+    accept: "accept",
+} as const);
+/** Every relation name of `invitation`, in schema order, for startup verification. */
+export const InvitationRelationNames: readonly InvitationRelationName[] = Object.freeze([
+    "org",
+    "grant",
+    "timed_grant",
+    "inviter",
+]);
+/** Every permission name of `invitation`, in schema order, for startup verification. */
+export const InvitationPermissionNames: readonly InvitationPermissionName[] = Object.freeze(["accept"]);
+const InvitationAllowed: Readonly<Record<string, readonly string[]>> = Object.freeze({
+    org: ["OrganizationRef"],
+    grant: ["OrganizationCanAdminRef"],
+    timed_grant: ["OrganizationCanAdminExpiringRef"],
+    inviter: ["UserExpiringRef"],
+});
+export type InvitationOrgSubject = OrganizationRef;
+export type InvitationOrgKeySubject = OrganizationRef;
+export type InvitationOrgRelationCheckSubject = OrganizationRef;
+export type InvitationGrantSubject = OrganizationCanAdminRef;
+export type InvitationGrantKeySubject = OrganizationCanAdminRef;
+export type InvitationGrantRelationCheckSubject = OrganizationCanAdminRef | UserRef;
+export type InvitationTimedGrantSubject = OrganizationCanAdminExpiringRef;
+export type InvitationTimedGrantKeySubject = OrganizationCanAdminRef;
+export type InvitationTimedGrantRelationCheckSubject = OrganizationCanAdminRef | UserRef;
+export type InvitationInviterSubject = UserExpiringRef;
+export type InvitationInviterKeySubject = UserRef;
+export type InvitationInviterRelationCheckSubject = UserRef;
+export type InvitationAcceptCheckSubject = OrganizationCanAdminRef | UserRef;
+
+export interface InvitationRef extends AnySubject {
+    readonly _ref: "InvitationRef";
+    readonly _type: "invitation";
+    readonly accept: Permission<"invitation", "accept">;
+    org(subject: InvitationOrgSubject): TypedRelationship;
+    orgKey(subject: InvitationOrgKeySubject): RelationshipKey;
+    readonly orgRelation: Permission<"invitation", "org">;
+    orgFilter(): RelationshipFilter;
+    grant(subject: InvitationGrantSubject): TypedRelationship;
+    grantKey(subject: InvitationGrantKeySubject): RelationshipKey;
+    readonly grantRelation: Permission<"invitation", "grant">;
+    grantFilter(): RelationshipFilter;
+    timedGrant(subject: InvitationTimedGrantSubject): TypedRelationship;
+    timedGrantKey(subject: InvitationTimedGrantKeySubject): RelationshipKey;
+    readonly timedGrantRelation: Permission<"invitation", "timed_grant">;
+    timedGrantFilter(): RelationshipFilter;
+    inviter(subject: InvitationInviterSubject): TypedRelationship;
+    inviterKey(subject: InvitationInviterKeySubject): RelationshipKey;
+    readonly inviterRelation: Permission<"invitation", "inviter">;
+    inviterFilter(): RelationshipFilter;
+    /** The exact resource filter (`invitation:id`). */
+    filter(): RelationshipFilter;
+    /** The permission named `name`; throws NotInSchemaError for names not in the schema. */
+    permissionByName(name: string): Permission<"invitation", InvitationPermissionName>;
+    /** The check accessor for the relation named `name`; throws NotInSchemaError. */
+    relationByName(name: string): Permission<"invitation", InvitationRelationName>;
+    /** A relationship on the relation named `relation`; throws NotInSchemaError or SubjectNotAllowedError. */
+    relationshipByName(relation: string, subject: AnySubject): TypedRelationship;
+    toString(): string;
+}
+
+function makeInvitationRef(id: string): InvitationRef {
+    const ref: InvitationRef = {
+        _ref: "InvitationRef",
+        _type: "invitation",
+        _id: id,
+        accept: new Permission("invitation", id, "accept"),
+        org: (subject: InvitationOrgSubject) => relationshipOf("invitation", id, "org", subject),
+        orgKey: (subject: InvitationOrgKeySubject) => keyOf("invitation", id, "org", subject),
+        orgRelation: new Permission("invitation", id, "org"),
+        orgFilter: () => resourceFilter("invitation", id, "org"),
+        grant: (subject: InvitationGrantSubject) => relationshipOf("invitation", id, "grant", subject),
+        grantKey: (subject: InvitationGrantKeySubject) => keyOf("invitation", id, "grant", subject),
+        grantRelation: new Permission("invitation", id, "grant"),
+        grantFilter: () => resourceFilter("invitation", id, "grant"),
+        timedGrant: (subject: InvitationTimedGrantSubject) => relationshipOf("invitation", id, "timed_grant", subject),
+        timedGrantKey: (subject: InvitationTimedGrantKeySubject) => keyOf("invitation", id, "timed_grant", subject),
+        timedGrantRelation: new Permission("invitation", id, "timed_grant"),
+        timedGrantFilter: () => resourceFilter("invitation", id, "timed_grant"),
+        inviter: (subject: InvitationInviterSubject) => relationshipOf("invitation", id, "inviter", subject),
+        inviterKey: (subject: InvitationInviterKeySubject) => keyOf("invitation", id, "inviter", subject),
+        inviterRelation: new Permission("invitation", id, "inviter"),
+        inviterFilter: () => resourceFilter("invitation", id, "inviter"),
+        filter: () => resourceFilter("invitation", id),
+        permissionByName: (name: string) =>
+            permissionByName("invitation", id, InvitationPermissionNames, name, "permission"),
+        relationByName: (name: string) => permissionByName("invitation", id, InvitationRelationNames, name, "relation"),
+        relationshipByName: (relation: string, subject: AnySubject) =>
+            relationshipByName("invitation", id, InvitationAllowed, relation, subject),
+        toString: () => `invitation:${id}`,
+    };
+    return Object.freeze(ref);
+}
+
+/** A `invitation` resource or subject. */
+export function Invitation(id: string): InvitationRef {
+    return makeInvitationRef(id);
+}
+Invitation.accept = new PermissionRef("invitation", "accept");
+
+/** A filter for every `invitation` relationship. */
+export function InvitationFilter(): RelationshipFilter {
+    return { resourceType: "invitation" };
+}
+
+// --- Userset subject types, for withSubject ---
+export const TeamMemberType = Object.freeze({ _type: "team", _relation: "member" } as const);
+export const OrganizationCanAdminType = Object.freeze({ _type: "organization", _relation: "can_admin" } as const);
 
 // --- TypedClient ---
 export class TypedClient {
@@ -152,87 +1091,266 @@ export class TypedClient {
         this.client = client;
     }
 
-    static create(endpoint: string, token: string, options?: Omit<SpiceDBClientOptions, "endpoint" | "token">): TypedClient {
+    static create(
+        endpoint: string,
+        token: string,
+        options?: Omit<SpiceDBClientOptions, "endpoint" | "token">,
+    ): TypedClient {
         return new TypedClient(createSpiceDBClient(endpoint, token, options));
     }
 
-    // Check overloads
-    async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "view" }, s: UserRef | UserIpRangeRef | UserTimeWindowRef | TeamMemberRef, options?: CheckOptions): Promise<CheckResult>;
-    async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "edit" }, s: UserRef, options?: CheckOptions): Promise<CheckResult>;
-    async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "delete" }, s: UserRef, options?: CheckOptions): Promise<CheckResult>;
-    async check(c: Consistency, p: { _type: string; _id: string; _permission: string }, s: { _type: string; _id: string; _relation?: string; _caveat?: string; _caveatContext?: JSONObject }, options?: CheckOptions): Promise<CheckResult> {
-        // s._caveatContext (e.g. from User("dave").withIpRange(ctx)) is the
-        // ITEM-LEVEL context for this one check -- it wins per-key over
-        // options.context (the call-level default) via check's own
-        // mergeCheckContext; call-level keys the subject doesn't mention are
-        // retained.
-        return this.client.check({
-            resource: { objectType: p._type, objectId: p._id },
-            permission: p._permission, consistency: c,
-            subject: { object: { objectType: s._type, objectId: s._id }, relation: s._relation },
-            context: s._caveatContext,
-        }, options);
+    // Check overloads: one per permission and per relation.
+    async check(
+        c: Consistency,
+        p: Permission<"team", "member">,
+        s: TeamMemberRelationCheckSubject,
+        options?: CheckOptions,
+    ): Promise<CheckResult>;
+    async check(
+        c: Consistency,
+        p: Permission<"document", "viewer">,
+        s: DocumentViewerRelationCheckSubject,
+        options?: CheckOptions,
+    ): Promise<CheckResult>;
+    async check(
+        c: Consistency,
+        p: Permission<"document", "editor">,
+        s: DocumentEditorRelationCheckSubject,
+        options?: CheckOptions,
+    ): Promise<CheckResult>;
+    async check(
+        c: Consistency,
+        p: Permission<"document", "owner">,
+        s: DocumentOwnerRelationCheckSubject,
+        options?: CheckOptions,
+    ): Promise<CheckResult>;
+    async check(
+        c: Consistency,
+        p: Permission<"document", "view">,
+        s: DocumentViewCheckSubject,
+        options?: CheckOptions,
+    ): Promise<CheckResult>;
+    async check(
+        c: Consistency,
+        p: Permission<"document", "edit">,
+        s: DocumentEditCheckSubject,
+        options?: CheckOptions,
+    ): Promise<CheckResult>;
+    async check(
+        c: Consistency,
+        p: Permission<"document", "delete">,
+        s: DocumentDeleteCheckSubject,
+        options?: CheckOptions,
+    ): Promise<CheckResult>;
+    async check(
+        c: Consistency,
+        p: Permission<"organization", "admin">,
+        s: OrganizationAdminRelationCheckSubject,
+        options?: CheckOptions,
+    ): Promise<CheckResult>;
+    async check(
+        c: Consistency,
+        p: Permission<"organization", "member">,
+        s: OrganizationMemberRelationCheckSubject,
+        options?: CheckOptions,
+    ): Promise<CheckResult>;
+    async check(
+        c: Consistency,
+        p: Permission<"organization", "creator">,
+        s: OrganizationCreatorRelationCheckSubject,
+        options?: CheckOptions,
+    ): Promise<CheckResult>;
+    async check(
+        c: Consistency,
+        p: Permission<"organization", "guest">,
+        s: OrganizationGuestRelationCheckSubject,
+        options?: CheckOptions,
+    ): Promise<CheckResult>;
+    async check(
+        c: Consistency,
+        p: Permission<"organization", "can_admin">,
+        s: OrganizationCanAdminCheckSubject,
+        options?: CheckOptions,
+    ): Promise<CheckResult>;
+    async check(
+        c: Consistency,
+        p: Permission<"organization", "view">,
+        s: OrganizationViewCheckSubject,
+        options?: CheckOptions,
+    ): Promise<CheckResult>;
+    async check(
+        c: Consistency,
+        p: Permission<"invitation", "org">,
+        s: InvitationOrgRelationCheckSubject,
+        options?: CheckOptions,
+    ): Promise<CheckResult>;
+    async check(
+        c: Consistency,
+        p: Permission<"invitation", "grant">,
+        s: InvitationGrantRelationCheckSubject,
+        options?: CheckOptions,
+    ): Promise<CheckResult>;
+    async check(
+        c: Consistency,
+        p: Permission<"invitation", "timed_grant">,
+        s: InvitationTimedGrantRelationCheckSubject,
+        options?: CheckOptions,
+    ): Promise<CheckResult>;
+    async check(
+        c: Consistency,
+        p: Permission<"invitation", "inviter">,
+        s: InvitationInviterRelationCheckSubject,
+        options?: CheckOptions,
+    ): Promise<CheckResult>;
+    async check(
+        c: Consistency,
+        p: Permission<"invitation", "accept">,
+        s: InvitationAcceptCheckSubject,
+        options?: CheckOptions,
+    ): Promise<CheckResult>;
+    async check(c: Consistency, p: Permission, s: AnySubject, options?: CheckOptions): Promise<CheckResult> {
+        // A caveated subject's own context is item-level context: it wins per
+        // key over options.context, the call-level default.
+        return this.client.check(p.checkRequest(s, c), options);
+    }
+
+    /** Typed bulk check: forwards native options and preserves input order, per-chunk revisions and per-item errors. */
+    async checkBulkTyped(
+        c: Consistency,
+        checks: readonly TypedCheck[],
+        options?: CheckOptions,
+    ): Promise<readonly CheckResult[]> {
+        return this.client.checkBulk(
+            checks.map((check) => check.permission.checkRequest(check.subject, c, check.context)),
+            options,
+        );
+    }
+
+    /** Writes a typed transaction atomically; throws its first deferred construction error before any RPC. */
+    async writeTransaction(txn: TypedTransaction, options?: CallOptions): Promise<WriteResult> {
+        return this.client.write(txn.build(), options);
     }
 
     // Writes accept a collection so cancellation and total budget options remain available.
     async touch(rels: readonly TypedRelationship[], options?: CallOptions): Promise<WriteResult> {
-        const txn = new Transaction();
-        for (const r of rels) txn.touch(toRelationship(r));
-        return this.client.write(txn, options);
+        return this.writeTransaction(
+            rels.reduce((txn, r) => txn.touch(r), new TypedTransaction()),
+            options,
+        );
     }
 
     async create(rels: readonly TypedRelationship[], options?: CallOptions): Promise<WriteResult> {
-        const txn = new Transaction();
-        for (const r of rels) txn.create(toRelationship(r));
-        return this.client.write(txn, options);
+        return this.writeTransaction(
+            rels.reduce((txn, r) => txn.create(r), new TypedTransaction()),
+            options,
+        );
     }
 
-    async delete(rels: readonly TypedRelationship[], options?: CallOptions): Promise<WriteResult> {
-        const txn = new Transaction();
-        for (const r of rels) txn.delete(toRelationship(r));
-        return this.client.write(txn, options);
+    async delete(rels: readonly (TypedRelationship | RelationshipKey)[], options?: CallOptions): Promise<WriteResult> {
+        return this.writeTransaction(
+            rels.reduce((txn, r) => txn.delete(r), new TypedTransaction()),
+            options,
+        );
     }
 
-    close(): void { this.client.close(); }
+    close(): void {
+        this.client.close();
+    }
 
     // LookupResources overloads
-    lookupResources(c: Consistency, p: { _type: "document"; _permission: "view" }, s: UserRef | UserIpRangeRef | UserTimeWindowRef | TeamMemberRef, options?: LookupResourcesOptions): AsyncIterableIterator<LookupResource>;
-    lookupResources(c: Consistency, p: { _type: "document"; _permission: "edit" }, s: UserRef, options?: LookupResourcesOptions): AsyncIterableIterator<LookupResource>;
-    lookupResources(c: Consistency, p: { _type: "document"; _permission: "delete" }, s: UserRef, options?: LookupResourcesOptions): AsyncIterableIterator<LookupResource>;
-    lookupResources(c: Consistency, p: { _type: string; _permission: string }, s: { _type: string; _id: string; _relation?: string }, options?: LookupResourcesOptions): AsyncIterableIterator<LookupResource> {
-        const { signal, timeoutMs, ...requestOptions } = options ?? {};
-        return this.client.lookupResources({
-            ...requestOptions,
-            resourceType: p._type, permission: p._permission,
-            subject: { object: { objectType: s._type, objectId: s._id }, relation: s._relation },
-            consistency: c,
-        }, options);
+    lookupResources(
+        c: Consistency,
+        p: PermissionRef<"document", "view">,
+        s: DocumentViewCheckSubject,
+        options?: LookupResourcesOptions,
+    ): AsyncIterableIterator<LookupResource>;
+    lookupResources(
+        c: Consistency,
+        p: PermissionRef<"document", "edit">,
+        s: DocumentEditCheckSubject,
+        options?: LookupResourcesOptions,
+    ): AsyncIterableIterator<LookupResource>;
+    lookupResources(
+        c: Consistency,
+        p: PermissionRef<"document", "delete">,
+        s: DocumentDeleteCheckSubject,
+        options?: LookupResourcesOptions,
+    ): AsyncIterableIterator<LookupResource>;
+    lookupResources(
+        c: Consistency,
+        p: PermissionRef<"organization", "can_admin">,
+        s: OrganizationCanAdminCheckSubject,
+        options?: LookupResourcesOptions,
+    ): AsyncIterableIterator<LookupResource>;
+    lookupResources(
+        c: Consistency,
+        p: PermissionRef<"organization", "view">,
+        s: OrganizationViewCheckSubject,
+        options?: LookupResourcesOptions,
+    ): AsyncIterableIterator<LookupResource>;
+    lookupResources(
+        c: Consistency,
+        p: PermissionRef<"invitation", "accept">,
+        s: InvitationAcceptCheckSubject,
+        options?: LookupResourcesOptions,
+    ): AsyncIterableIterator<LookupResource>;
+    lookupResources(
+        c: Consistency,
+        p: PermissionRef,
+        s: AnySubject,
+        options?: LookupResourcesOptions,
+    ): AsyncIterableIterator<LookupResource> {
+        const requestOptions = requestFields(options);
+        return this.client.lookupResources(
+            {
+                ...requestOptions,
+                resourceType: p._type,
+                permission: p._permission,
+                subject: subjectRef(s),
+                consistency: c,
+            },
+            options,
+        );
     }
 
-    // LookupSubjects overloads
-    lookupSubjects(c: Consistency, p: { _type: "document"; _id: string; _permission: "view" }, subjectType: (id: string) => { _type: string }, options?: LookupSubjectsOptions): AsyncIterableIterator<LookupSubject>;
-    lookupSubjects(c: Consistency, p: { _type: "document"; _id: string; _permission: "edit" }, subjectType: (id: string) => { _type: string }, options?: LookupSubjectsOptions): AsyncIterableIterator<LookupSubject>;
-    lookupSubjects(c: Consistency, p: { _type: "document"; _id: string; _permission: "delete" }, subjectType: (id: string) => { _type: string }, options?: LookupSubjectsOptions): AsyncIterableIterator<LookupSubject>;
-    lookupSubjects(c: Consistency, p: { _type: string; _id: string; _permission: string }, subjectType: (id: string) => { _type: string }, options?: LookupSubjectsOptions): AsyncIterableIterator<LookupSubject> {
-        const { signal, timeoutMs, ...requestOptions } = options ?? {};
-        return this.client.lookupSubjects({
-            ...requestOptions,
-            subjectType: subjectType("")._type,
-            permission: p._permission,
-            resource: { objectType: p._type, objectId: p._id },
-            consistency: c,
-        }, options);
+    lookupSubjects(
+        c: Consistency,
+        p: Permission,
+        subjectType: (id: string) => { _type: string },
+        options?: LookupSubjectsOptions,
+    ): AsyncIterableIterator<LookupSubject> {
+        const requestOptions = requestFields(options);
+        return this.client.lookupSubjects(
+            {
+                ...requestOptions,
+                subjectType: subjectType("")._type,
+                permission: p._permission,
+                resource: { objectType: p._type, objectId: p._id },
+                consistency: c,
+            },
+            options,
+        );
     }
 
-    // ReadRelationships
-    readRelationships(c: Consistency, filter: RelationshipFilter | { _type: string; _id?: string; _relation?: string }, options?: ReadRelationshipsOptions): AsyncIterableIterator<Relationship> {
-        const { signal, timeoutMs, ...requestOptions } = options ?? {};
-        return this.client.readRelationships({
-            ...requestOptions,
-            filter: "resourceType" in filter ? filter : { resourceType: filter._type, resourceId: filter._id, relation: filter._relation },
-            consistency: c,
-        }, options);
+    readRelationships(
+        c: Consistency,
+        filter: RelationshipFilter | { _type: string; _id?: string; _relation?: string },
+        options?: ReadRelationshipsOptions,
+    ): AsyncIterableIterator<ReadRelationship> {
+        const requestOptions = requestFields(options);
+        return this.client.readRelationships(
+            {
+                ...requestOptions,
+                filter:
+                    "resourceType" in filter
+                        ? filter
+                        : { resourceType: filter._type, resourceId: filter._id, relation: filter._relation },
+                consistency: c,
+            },
+            options,
+        );
     }
+
     // Native capabilities retain their full typed signatures and stream ownership.
     raw(...args: Parameters<SpiceDBClient["raw"]>): ReturnType<SpiceDBClient["raw"]> {
         return this.client.raw(...args);
@@ -243,19 +1361,29 @@ export class TypedClient {
     write(...args: Parameters<SpiceDBClient["write"]>): ReturnType<SpiceDBClient["write"]> {
         return this.client.write(...args);
     }
-    deleteRelationships(...args: Parameters<SpiceDBClient["deleteRelationships"]>): ReturnType<SpiceDBClient["deleteRelationships"]> {
+    deleteRelationships(
+        ...args: Parameters<SpiceDBClient["deleteRelationships"]>
+    ): ReturnType<SpiceDBClient["deleteRelationships"]> {
         return this.client.deleteRelationships(...args);
     }
-    deleteAllRelationshipsNonAtomic(...args: Parameters<SpiceDBClient["deleteAllRelationshipsNonAtomic"]>): ReturnType<SpiceDBClient["deleteAllRelationshipsNonAtomic"]> {
+    deleteAllRelationshipsNonAtomic(
+        ...args: Parameters<SpiceDBClient["deleteAllRelationshipsNonAtomic"]>
+    ): ReturnType<SpiceDBClient["deleteAllRelationshipsNonAtomic"]> {
         return this.client.deleteAllRelationshipsNonAtomic(...args);
     }
-    expandPermissionTree(...args: Parameters<SpiceDBClient["expandPermissionTree"]>): ReturnType<SpiceDBClient["expandPermissionTree"]> {
+    expandPermissionTree(
+        ...args: Parameters<SpiceDBClient["expandPermissionTree"]>
+    ): ReturnType<SpiceDBClient["expandPermissionTree"]> {
         return this.client.expandPermissionTree(...args);
     }
-    importRelationships(...args: Parameters<SpiceDBClient["importRelationships"]>): ReturnType<SpiceDBClient["importRelationships"]> {
+    importRelationships(
+        ...args: Parameters<SpiceDBClient["importRelationships"]>
+    ): ReturnType<SpiceDBClient["importRelationships"]> {
         return this.client.importRelationships(...args);
     }
-    exportRelationships(...args: Parameters<SpiceDBClient["exportRelationships"]>): ReturnType<SpiceDBClient["exportRelationships"]> {
+    exportRelationships(
+        ...args: Parameters<SpiceDBClient["exportRelationships"]>
+    ): ReturnType<SpiceDBClient["exportRelationships"]> {
         return this.client.exportRelationships(...args);
     }
     readSchema(...args: Parameters<SpiceDBClient["readSchema"]>): ReturnType<SpiceDBClient["readSchema"]> {
@@ -267,41 +1395,60 @@ export class TypedClient {
     reflectSchema(...args: Parameters<SpiceDBClient["reflectSchema"]>): ReturnType<SpiceDBClient["reflectSchema"]> {
         return this.client.reflectSchema(...args);
     }
-    computablePermissions(...args: Parameters<SpiceDBClient["computablePermissions"]>): ReturnType<SpiceDBClient["computablePermissions"]> {
+    computablePermissions(
+        ...args: Parameters<SpiceDBClient["computablePermissions"]>
+    ): ReturnType<SpiceDBClient["computablePermissions"]> {
         return this.client.computablePermissions(...args);
     }
-    dependentRelations(...args: Parameters<SpiceDBClient["dependentRelations"]>): ReturnType<SpiceDBClient["dependentRelations"]> {
+    dependentRelations(
+        ...args: Parameters<SpiceDBClient["dependentRelations"]>
+    ): ReturnType<SpiceDBClient["dependentRelations"]> {
         return this.client.dependentRelations(...args);
     }
     diffSchema(...args: Parameters<SpiceDBClient["diffSchema"]>): ReturnType<SpiceDBClient["diffSchema"]> {
         return this.client.diffSchema(...args);
     }
-    experimentalRegisterRelationshipCounter(...args: Parameters<SpiceDBClient["experimentalRegisterRelationshipCounter"]>): ReturnType<SpiceDBClient["experimentalRegisterRelationshipCounter"]> {
+    experimentalRegisterRelationshipCounter(
+        ...args: Parameters<SpiceDBClient["experimentalRegisterRelationshipCounter"]>
+    ): ReturnType<SpiceDBClient["experimentalRegisterRelationshipCounter"]> {
         return this.client.experimentalRegisterRelationshipCounter(...args);
     }
-    experimentalCountRelationships(...args: Parameters<SpiceDBClient["experimentalCountRelationships"]>): ReturnType<SpiceDBClient["experimentalCountRelationships"]> {
+    experimentalCountRelationships(
+        ...args: Parameters<SpiceDBClient["experimentalCountRelationships"]>
+    ): ReturnType<SpiceDBClient["experimentalCountRelationships"]> {
         return this.client.experimentalCountRelationships(...args);
     }
-    experimentalUnregisterRelationshipCounter(...args: Parameters<SpiceDBClient["experimentalUnregisterRelationshipCounter"]>): ReturnType<SpiceDBClient["experimentalUnregisterRelationshipCounter"]> {
+    experimentalUnregisterRelationshipCounter(
+        ...args: Parameters<SpiceDBClient["experimentalUnregisterRelationshipCounter"]>
+    ): ReturnType<SpiceDBClient["experimentalUnregisterRelationshipCounter"]> {
         return this.client.experimentalUnregisterRelationshipCounter(...args);
     }
     watch(...args: Parameters<SpiceDBClient["watch"]>): ReturnType<SpiceDBClient["watch"]> {
         return this.client.watch(...args);
     }
-    experimentalCountRelationshipsByFilter(...args: Parameters<SpiceDBClient["experimentalCountRelationshipsByFilter"]>): ReturnType<SpiceDBClient["experimentalCountRelationshipsByFilter"]> {
+    experimentalCountRelationshipsByFilter(
+        ...args: Parameters<SpiceDBClient["experimentalCountRelationshipsByFilter"]>
+    ): ReturnType<SpiceDBClient["experimentalCountRelationshipsByFilter"]> {
         return this.client.experimentalCountRelationshipsByFilter(...args);
     }
-    experimentalWatchPermissionSets(...args: Parameters<SpiceDBClient["experimentalWatchPermissionSets"]>): ReturnType<SpiceDBClient["experimentalWatchPermissionSets"]> {
+    experimentalWatchPermissionSets(
+        ...args: Parameters<SpiceDBClient["experimentalWatchPermissionSets"]>
+    ): ReturnType<SpiceDBClient["experimentalWatchPermissionSets"]> {
         return this.client.experimentalWatchPermissionSets(...args);
     }
-    experimentalLookupPermissionSets(...args: Parameters<SpiceDBClient["experimentalLookupPermissionSets"]>): ReturnType<SpiceDBClient["experimentalLookupPermissionSets"]> {
+    experimentalLookupPermissionSets(
+        ...args: Parameters<SpiceDBClient["experimentalLookupPermissionSets"]>
+    ): ReturnType<SpiceDBClient["experimentalLookupPermissionSets"]> {
         return this.client.experimentalLookupPermissionSets(...args);
     }
-    experimentalDownloadPermissionSets(...args: Parameters<SpiceDBClient["experimentalDownloadPermissionSets"]>): ReturnType<SpiceDBClient["experimentalDownloadPermissionSets"]> {
+    experimentalDownloadPermissionSets(
+        ...args: Parameters<SpiceDBClient["experimentalDownloadPermissionSets"]>
+    ): ReturnType<SpiceDBClient["experimentalDownloadPermissionSets"]> {
         return this.client.experimentalDownloadPermissionSets(...args);
     }
-    experimentalRoaringLookupResources(...args: Parameters<SpiceDBClient["experimentalRoaringLookupResources"]>): ReturnType<SpiceDBClient["experimentalRoaringLookupResources"]> {
+    experimentalRoaringLookupResources(
+        ...args: Parameters<SpiceDBClient["experimentalRoaringLookupResources"]>
+    ): ReturnType<SpiceDBClient["experimentalRoaringLookupResources"]> {
         return this.client.experimentalRoaringLookupResources(...args);
     }
-
 }

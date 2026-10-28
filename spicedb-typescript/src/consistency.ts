@@ -8,6 +8,19 @@ export class Consistency {
     /** @internal */ static _wrap(proto: ProtoConsistency): Consistency { return new Consistency(clone(ConsistencySchema, proto)); }
     /** @internal */ _toProto(): ProtoConsistency { return clone(ConsistencySchema, this.proto); }
     /** @internal */ _key(): string { const r = this.proto.requirement; return `${r.case}:${typeof r.value === "object" ? r.value.token : String(r.value)}`; }
+    /** `full()`, `minLatency()`, `atLeast(<token>)` or `snapshot(<token>)`. */
+    toString(): string {
+        const r = this.proto.requirement;
+        switch (r.case) {
+            case "fullyConsistent": return "full()";
+            case "minimizeLatency": return "minLatency()";
+            case "atLeastAsFresh": return `atLeast(${r.value.token})`;
+            case "atExactSnapshot": return `snapshot(${r.value.token})`;
+            default: return "unspecified";
+        }
+    }
+    toJSON(): string { return this.toString(); }
+    /** @internal */ [Symbol.for("nodejs.util.inspect.custom")](): string { return `Consistency ${this.toString()}`; }
 }
 export function full(): Consistency { return Consistency._wrap(create(ConsistencySchema, { requirement: { case: "fullyConsistent", value: true } })); }
 export function minLatency(): Consistency { return Consistency._wrap(create(ConsistencySchema, { requirement: { case: "minimizeLatency", value: true } })); }

@@ -1,7 +1,10 @@
 # spicedb-typescript Examples
 
 Each subdirectory is a standalone, runnable TypeScript example that also serves
-as an integration test.
+as an integration test. For integration patterns (typed vs native client,
+fail-closed checks, atomic writes, tests) start with
+[AI_INTEGRATION_GUIDE.md](../AI_INTEGRATION_GUIDE.md); for moving from
+`@authzed/authzed-node`, see [MIGRATION.md](../MIGRATION.md).
 
 ## Running
 
@@ -70,6 +73,7 @@ to fail".
 - `delete_relationships_autopage/` — bounded `deleteRelationships({ limit })`
   followed by `deleteAllRelationshipsNonAtomic({ pageSize })`, asserting counts and completion.
 - `schema_management/` — reading and writing the SpiceDB schema.
+- `tooling_escape_hatches/` — `SpiceDBClient.fromTransport`, per-call headers and trailer capture, multi-page reads/lookups with cursors and resume, import batch size and `ALREADY_EXISTS` on duplicates, bulk item errors, all-or-nothing delete and delete-all progress, watch schema changes, and full tuple syntax.
 - `call_deadlines/` — `defaultTimeoutMs` on `createSpiceDBClient`, a per-call
   `timeoutMs` override, confirming bulk import isn't bounded by the unary
   default, and proving the timeout actually bites: a listener that accepts the

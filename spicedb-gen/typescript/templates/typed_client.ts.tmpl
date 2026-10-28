@@ -4,45 +4,395 @@ import {
     SpiceDBClient,
     createSpiceDBClient,
     Transaction,
+    InvalidArgumentError,
+    SubjectRelationKind,
+    relationshipToFilter,
+    relationshipToString,
     type CheckResult,
+    type CheckRequest,
+    type Consistency,
     type Relationship,
+    type RelationshipFilter,
+    type SubjectRef,
     type LookupResource,
     type LookupSubject,
+    type ReadRelationship,
     type CheckOptions,
     type CallOptions,
     type LookupResourcesRequest,
     type LookupSubjectsRequest,
     type ReadRelationshipsRequest,
-    type RelationshipFilter,
     type SpiceDBClientOptions,
     type JSONObject,
     type JSONValue,
     type WriteResult,
-} from "@spicedb/client";
-import { full } from "@spicedb/client";
-type Consistency = ReturnType<typeof full>;
+} from "{{.ClientModule}}";
 
-export interface LookupResourcesOptions extends CallOptions,
-    Omit<LookupResourcesRequest, "resourceType" | "permission" | "subject" | "consistency"> {}
+export interface LookupResourcesOptions
+    extends CallOptions, Omit<LookupResourcesRequest, "resourceType" | "permission" | "subject" | "consistency"> {}
 /** The selector supplies the subject type. subjectRelation is a native relation name,
  * validated by the server; it is not constrained by the generated selector. */
-export interface LookupSubjectsOptions extends CallOptions,
-    Omit<LookupSubjectsRequest, "resource" | "permission" | "subjectType" | "consistency"> {}
-export interface ReadRelationshipsOptions extends CallOptions,
-    Omit<ReadRelationshipsRequest, "filter" | "consistency"> {}
+export interface LookupSubjectsOptions
+    extends CallOptions, Omit<LookupSubjectsRequest, "resource" | "permission" | "subjectType" | "consistency"> {}
+export interface ReadRelationshipsOptions extends CallOptions, Omit<ReadRelationshipsRequest, "filter" | "consistency"> {}
+
+// --- Support ---
+
+/** A permission, relation or definition name that is not in the schema. */
+export class NotInSchemaError extends InvalidArgumentError {
+    constructor(message: string) {
+        super(message);
+        this.name = "NotInSchemaError";
+    }
+}
+
+/** A subject the schema does not admit on a relation. */
+export class SubjectNotAllowedError extends InvalidArgumentError {
+    constructor(message: string) {
+        super(message);
+        this.name = "SubjectNotAllowedError";
+    }
+}
+
+/** Any generated subject ref. `_ref` names its exact generated type. */
+export interface AnySubject {
+    readonly _ref: string;
+    readonly _type: string;
+    readonly _id: string;
+    readonly _relation?: string;
+    readonly _caveat?: string;
+    readonly _caveatContext?: JSONObject;
+    readonly _expiration?: Date;
+}
+
+/** A subject type for filters: a definition factory such as `User`, or a userset sentinel such as `TeamMemberType`. */
+export type SubjectType = ((id: string) => { readonly _type: string }) | { readonly _type: string; readonly _relation: string };
+
+function subjectRef(subject: AnySubject): SubjectRef {
+    return {
+        object: { objectType: subject._type, objectId: subject._id },
+        ...(subject._relation === undefined ? {} : { relation: subject._relation }),
+    };
+}
+
+/** The request fields of a lookup/read options object, without the CallOptions that go to the call itself. */
+function requestFields<T extends CallOptions>(options: T | undefined): Omit<T, keyof CallOptions> {
+    const { signal, timeoutMs, headers, onHeader, onTrailer, ...request } = options ?? ({} as T);
+    return request;
+}
+
+function subjectString(subject: AnySubject): string {
+    return `${subject._type}:${subject._id}${subject._relation === undefined ? "" : `#${subject._relation}`}`;
+}
+
+/** A permission or relation on one resource, for checks. */
+export class Permission<T extends string = string, P extends string = string> {
+    readonly _type: T;
+    readonly _id: string;
+    readonly _permission: P;
+    constructor(type: T, id: string, permission: P) {
+        this._type = type;
+        this._id = id;
+        this._permission = permission;
+        Object.freeze(this);
+    }
+    /** The resource's type. */
+    get resourceType(): T {
+        return this._type;
+    }
+    /** The resource's ID. */
+    get resourceId(): string {
+        return this._id;
+    }
+    /** The permission or relation name. */
+    get name(): P {
+        return this._permission;
+    }
+    /** The permission without its resource ID, for lookups. */
+    ref(): PermissionRef<T, P> {
+        return new PermissionRef(this._type, this._permission);
+    }
+    /** The native check request for `subject`; a caveated subject's context becomes the check's context. */
+    checkRequest(subject: AnySubject, consistency: Consistency, context?: JSONObject): CheckRequest {
+        if (!this._id) throw new InvalidArgumentError(`${this._type}: resource ID must be nonempty`);
+        const merged = subject._caveatContext === undefined ? context : { ...context, ...subject._caveatContext };
+        return {
+            resource: { objectType: this._type, objectId: this._id },
+            permission: this._permission,
+            subject: subjectRef(subject),
+            consistency,
+            ...(merged === undefined ? {} : { context: merged }),
+        };
+    }
+    /** `type:id#permission` */
+    toString(): string {
+        return `${this._type}:${this._id}#${this._permission}`;
+    }
+    toJSON(): string {
+        return this.toString();
+    }
+}
+
+/** A permission on a resource type, for lookups. */
+export class PermissionRef<T extends string = string, P extends string = string> {
+    readonly _type: T;
+    readonly _permission: P;
+    constructor(type: T, permission: P) {
+        this._type = type;
+        this._permission = permission;
+        Object.freeze(this);
+    }
+    get resourceType(): T {
+        return this._type;
+    }
+    get name(): P {
+        return this._permission;
+    }
+    /** `type#permission` */
+    toString(): string {
+        return `${this._type}#${this._permission}`;
+    }
+    toJSON(): string {
+        return this.toString();
+    }
+}
+
+function deferred(build: () => Relationship): { value?: Relationship; error?: Error } {
+    try {
+        return { value: build() };
+    } catch (error) {
+        return { error: error instanceof Error ? error : new InvalidArgumentError(String(error)) };
+    }
+}
+
+/**
+ * A relationship built by a generated writer, `fromRelationship` or
+ * `errRelationship`. A construction error is kept and thrown by
+ * `relationship()`, so a `TypedTransaction` can defer it to `build()`.
+ */
+export class TypedRelationship {
+    readonly #value?: Relationship;
+    readonly #error?: Error;
+    /** @internal Use generated writers, fromRelationship or errRelationship. */
+    constructor(build: () => Relationship) {
+        const { value, error } = deferred(build);
+        this.#value = value;
+        this.#error = error;
+        Object.freeze(this);
+    }
+    /** The construction error, if any. */
+    get error(): Error | undefined {
+        return this.#error;
+    }
+    /** The native relationship; throws the construction error. */
+    relationship(): Relationship {
+        if (this.#error !== undefined) throw this.#error;
+        return this.#value!;
+    }
+    /** The identity-only key (no caveat or expiration), for deletes and exact filters. */
+    key(): RelationshipKey {
+        return new RelationshipKey(() => identity(this.relationship()));
+    }
+    /** The exact native filter for this relationship. */
+    filter(): RelationshipFilter {
+        return relationshipToFilter(this.relationship());
+    }
+    /** SpiceDB tuple syntax, or `<invalid relationship: ...>`. */
+    toString(): string {
+        return this.#error === undefined ? relationshipToString(this.#value!) : `<invalid relationship: ${this.#error.message}>`;
+    }
+    toJSON(): Relationship | { readonly error: string } {
+        return this.#error === undefined ? this.#value! : { error: this.#error.message };
+    }
+}
+
+/** A relationship identified by tuple identity alone, for deletes and exact filters. */
+export class RelationshipKey {
+    readonly #value?: Relationship;
+    readonly #error?: Error;
+    /** @internal Use generated key builders or TypedRelationship.key(). */
+    constructor(build: () => Relationship) {
+        const { value, error } = deferred(build);
+        this.#value = value;
+        this.#error = error;
+        Object.freeze(this);
+    }
+    get error(): Error | undefined {
+        return this.#error;
+    }
+    /** The native relationship without caveat or expiration; throws the construction error. */
+    relationship(): Relationship {
+        if (this.#error !== undefined) throw this.#error;
+        return this.#value!;
+    }
+    /** The exact native filter for this relationship. */
+    filter(): RelationshipFilter {
+        return relationshipToFilter(this.relationship());
+    }
+    toString(): string {
+        return this.#error === undefined ? relationshipToString(this.#value!) : `<invalid relationship: ${this.#error.message}>`;
+    }
+    toJSON(): Relationship | { readonly error: string } {
+        return this.#error === undefined ? this.#value! : { error: this.#error.message };
+    }
+}
+
+function identity(rel: Relationship): Relationship {
+    return { resource: rel.resource, relation: rel.relation, subject: rel.subject };
+}
+
+function nativeRelationship(type: string, id: string, relation: string, subject: AnySubject, identityOnly: boolean): Relationship {
+    if (!id) throw new InvalidArgumentError(`${type}#${relation}: resource ID must be nonempty`);
+    if (!subject._id) throw new InvalidArgumentError(`${type}#${relation}: subject ID must be nonempty`);
+    const caveat = identityOnly || subject._caveat === undefined ? {} : { caveat: { name: subject._caveat, context: subject._caveatContext } };
+    const expiration = identityOnly || subject._expiration === undefined ? {} : { expiration: subject._expiration };
+    return {
+        resource: { objectType: type, objectId: id },
+        relation,
+        subject: subjectRef(subject),
+        ...caveat,
+        ...expiration,
+    };
+}
+
+function relationshipOf(type: string, id: string, relation: string, subject: AnySubject): TypedRelationship {
+    return new TypedRelationship(() => nativeRelationship(type, id, relation, subject, false));
+}
+
+function keyOf(type: string, id: string, relation: string, subject: AnySubject): RelationshipKey {
+    return new RelationshipKey(() => nativeRelationship(type, id, relation, subject, true));
+}
+
+/** Wraps a native relationship, e.g. one read back from SpiceDB. Not schema-checked. */
+export function fromRelationship(rel: Relationship): TypedRelationship {
+    return new TypedRelationship(() => {
+        if (!rel?.resource || !rel.relation || !rel.subject?.object)
+            throw new InvalidArgumentError("relationship requires resource, relation, and subject");
+        return rel;
+    });
+}
+
+/** A typed relationship carrying `error`, for helpers that defer failures into a transaction. */
+export function errRelationship(error: Error): TypedRelationship {
+    return new TypedRelationship(() => {
+        throw error;
+    });
+}
+
+function resourceFilter(type: string, id: string, relation?: string): RelationshipFilter {
+    if (!id) throw new InvalidArgumentError(`${type}: resource ID must be nonempty; use ${type}'s type filter for the whole type`);
+    return { resourceType: type, resourceId: id, ...(relation === undefined ? {} : { relation }) };
+}
+
+/** Narrows `filter` to a subject: an exact subject ref, a definition factory (any ID) or a userset sentinel. */
+export function withSubject(filter: RelationshipFilter, subject: AnySubject | SubjectType): RelationshipFilter {
+    if (typeof subject === "function") return { ...filter, subject: { subjectType: subject("")._type } };
+    if (!("_ref" in subject))
+        return { ...filter, subject: { subjectType: subject._type, relation: { kind: SubjectRelationKind.Named, relation: subject._relation } } };
+    return {
+        ...filter,
+        subject: {
+            subjectType: subject._type,
+            subjectId: subject._id,
+            relation:
+                subject._relation === undefined
+                    ? { kind: SubjectRelationKind.Direct }
+                    : { kind: SubjectRelationKind.Named, relation: subject._relation },
+        },
+    };
+}
+
+function permissionByName<T extends string, P extends string>(type: T, id: string, known: readonly P[], name: string, what: string): Permission<T, P> {
+    if (!(known as readonly string[]).includes(name)) throw new NotInSchemaError(`${type} has no ${what} named "${name}"`);
+    return new Permission(type, id, name as P);
+}
+
+function relationshipByName(type: string, id: string, allowed: Readonly<Record<string, readonly string[]>>, relation: string, subject: AnySubject): TypedRelationship {
+    const refs = Object.prototype.hasOwnProperty.call(allowed, relation) ? allowed[relation] : undefined;
+    if (refs === undefined) throw new NotInSchemaError(`${type} has no relation named "${relation}"`);
+    if (!refs.includes(subject._ref)) throw new SubjectNotAllowedError(`${type}#${relation} does not admit ${subject._ref} (${subjectString(subject)})`);
+    return relationshipOf(type, id, relation, subject);
+}
+
+/**
+ * A typed transaction: touches, creates, deletes and preconditions in one
+ * atomic write. The first construction error is deferred to `build()` (and
+ * `TypedClient.writeTransaction`), so assembling one needs no check per step.
+ */
+export class TypedTransaction {
+    readonly #updates: { readonly operation: "touch" | "create" | "delete"; readonly value: TypedRelationship | RelationshipKey }[] = [];
+    readonly #preconditions: { readonly operation: "mustMatch" | "mustNotMatch"; readonly filter: RelationshipFilter }[] = [];
+    #metadata?: JSONObject;
+    touch(rel: TypedRelationship): this {
+        this.#updates.push({ operation: "touch", value: rel });
+        return this;
+    }
+    create(rel: TypedRelationship): this {
+        this.#updates.push({ operation: "create", value: rel });
+        return this;
+    }
+    /** Deletes by tuple identity; a key needs no caveat context or expiration. */
+    delete(rel: TypedRelationship | RelationshipKey): this {
+        this.#updates.push({ operation: "delete", value: rel });
+        return this;
+    }
+    mustMatch(filter: RelationshipFilter): this {
+        this.#preconditions.push({ operation: "mustMatch", filter });
+        return this;
+    }
+    mustNotMatch(filter: RelationshipFilter): this {
+        this.#preconditions.push({ operation: "mustNotMatch", filter });
+        return this;
+    }
+    withMetadata(metadata: JSONObject): this {
+        this.#metadata = metadata;
+        return this;
+    }
+    /** The number of updates (preconditions excluded). */
+    get length(): number {
+        return this.#updates.length;
+    }
+    /** The native transaction; throws the first deferred construction error. */
+    build(): Transaction {
+        const txn = new Transaction();
+        for (const p of this.#preconditions) txn[p.operation](p.filter);
+        for (const u of this.#updates) txn[u.operation](u.value.relationship());
+        if (this.#metadata !== undefined) txn.withMetadata(this.#metadata);
+        return txn;
+    }
+    toString(): string {
+        try {
+            return this.build().toString();
+        } catch (error) {
+            return `<invalid transaction: ${error instanceof Error ? error.message : String(error)}>`;
+        }
+    }
+}
+
+/** One item of a typed bulk check. */
+export interface TypedCheck {
+    readonly permission: Permission;
+    readonly subject: AnySubject;
+    readonly context?: JSONObject;
+}
+
+/** Checks of several permissions for one subject, in order. */
+export function checksFor(subject: AnySubject, ...permissions: readonly Permission[]): TypedCheck[] {
+    return permissions.map((permission) => ({ permission, subject }));
+}
 {{- if .CaveatContexts}}
 
 // --- Caveat Contexts ---
 {{- range .CaveatContexts}}
+
 export interface {{.InterfaceName}} {
 {{- range .Fields}}
     {{.Name}}?: {{.TSType}};
 {{- end}}
 }
-// {{.ConverterFuncName}} translates {{.InterfaceName}}'s camelCase, TypeScript-facing field
-// names back to the RAW schema parameter names SpiceDB's CEL evaluator looks up (e.g.
-// "allowedCidr" -> "allowed_cidr"). A field left undefined is omitted entirely, not sent as an
-// explicit null/undefined value.
+
+// {{.ConverterFuncName}} translates {{.InterfaceName}}'s camelCase field names back to the
+// raw schema parameter names SpiceDB's CEL evaluator looks up. Undefined fields are omitted.
 function {{.ConverterFuncName}}(ctx: {{.InterfaceName}}): JSONObject {
     const raw: Record<string, JSONValue> = {};
 {{- range .Fields}}
@@ -53,109 +403,213 @@ function {{.ConverterFuncName}}(ctx: {{.InterfaceName}}): JSONObject {
 {{- end}}
 {{- end}}
 
-// --- Types ---
+// --- Subject refs ---
+{{- range .RefTypes}}
+
+export interface {{.TypeName}} extends AnySubject {
+    readonly _ref: "{{.TypeName}}";
+    readonly _type: "{{.Definition}}";
+{{- if .Wildcard}}
+    readonly _id: "*";
+{{- end}}
+{{- if .Relation}}
+    readonly _relation: "{{.Relation}}";
+{{- end}}
+{{- if .Caveat}}
+    readonly _caveat: "{{.Caveat}}";
+    readonly _caveatContext: JSONObject;
+{{- end}}
+{{- if .Expiration}}
+    readonly _expiration: Date;
+{{- end}}
+{{- range .WithMethods}}
+{{- if .IsExpiration}}
+    withExpiration(at: Date): {{.ReturnType}};
+{{- else}}
+    {{.MethodName}}(ctx: {{.ContextType}}): {{.ReturnType}};
+{{- end}}
+{{- end}}
+    toString(): string;
+}
+
+function {{.Maker}}(id: string, ctx?: JSONObject, at?: Date): {{.TypeName}} {
+    const ref: {{.TypeName}} = {
+        _ref: "{{.TypeName}}",
+        _type: "{{.Definition}}",
+        _id: {{if .Wildcard}}"*"{{else}}id{{end}},
+{{- if .Relation}}
+        _relation: "{{.Relation}}",
+{{- end}}
+{{- if .Caveat}}
+        _caveatContext: ctx ?? {},
+        _caveat: "{{.Caveat}}",
+{{- end}}
+{{- if .Expiration}}
+        _expiration: new Date(at!.getTime()),
+{{- end}}
+{{- range .WithMethods}}
+{{- if .IsExpiration}}
+        withExpiration: (expiresAt: Date) => {{.ReturnMaker}}(id, ctx, expiresAt),
+{{- else}}
+        {{.MethodName}}: (context: {{.ContextType}}) => {{.ReturnMaker}}(id, {{.Converter}}(context)),
+{{- end}}
+{{- end}}
+        toString: () => `{{.Definition}}:${ {{- if .Wildcard}}"*"{{else}}id{{end -}} }{{.TupleRelation}}`,
+    };
+    return Object.freeze(ref);
+}
+{{- end}}
+
+// --- Definitions ---
 {{- range $def := .Definitions}}
-type {{$def.PascalName}}Ref = { _type: "{{$def.Name}}"; _id: string; _caveat?: never };
-{{- range $sr := $def.SubRefTypes}}
-type {{$sr.RefTypeName}} = { _type: "{{$def.Name}}"; _id: string; _relation: "{{$sr.Relation}}"; _caveat?: never };
-{{- end}}
-{{- end}}
-{{- if .CaveatedSubjectTypes}}
-{{- range .CaveatedSubjectTypes}}
-{{- if .HasRelation}}
-type {{.TypeName}} = { _type: "{{.Definition}}"; _id: string; _relation: "{{.Relation}}"; _caveat: "{{.CaveatName}}"; _caveatContext: JSONObject };
-{{- else}}
-type {{.TypeName}} = { _type: "{{.Definition}}"; _id: string; _caveat: "{{.CaveatName}}"; _caveatContext: JSONObject };
-{{- end}}
-{{- end}}
-{{- end}}
 
-// --- Factories ---
-{{range $def := .Definitions}}
-{{- if not (hasRelationsOrPermissions $def)}}
-{{- if hasCaveatMethods $def}}
-export function {{$def.PascalName}}(id: string) {
-    return {
-        _type: "{{$def.Name}}" as const,
-        _id: id,
-        _caveat: undefined as undefined,
-        // Caveat methods
-{{- range $def.CaveatMethods}}
-        {{.MethodName}}: (ctx: {{.ContextType}}): {{.ReturnType}} => ({
-            _type: "{{$def.Name}}", _id: id, _caveat: "{{.CaveatName}}" as const, _caveatContext: {{.ConverterFuncName}}(ctx),
-        }),
+export type {{$def.PascalName}}RelationName = {{if $def.RelationNames}}{{range $i, $n := $def.RelationNames}}{{if $i}} | {{end}}"{{$n.Name}}"{{end}}{{else}}never{{end}};
+export type {{$def.PascalName}}PermissionName = {{if $def.PermissionNames}}{{range $i, $n := $def.PermissionNames}}{{if $i}} | {{end}}"{{$n.Name}}"{{end}}{{else}}never{{end}};
+/** Relation names of `{{$def.Name}}`, keyed by camelCase. */
+export const {{$def.PascalName}}Relations = Object.freeze({
+{{- range $def.RelationNames}}
+    {{.Camel}}: "{{.Name}}",
 {{- end}}
-    };
-}
-{{- else}}
-export function {{$def.PascalName}}(id: string): {{$def.PascalName}}Ref {
-    return { _type: "{{$def.Name}}", _id: id };
-}
+} as const);
+/** Permission names of `{{$def.Name}}`, keyed by camelCase. */
+export const {{$def.PascalName}}Permissions = Object.freeze({
+{{- range $def.PermissionNames}}
+    {{.Camel}}: "{{.Name}}",
 {{- end}}
-{{- else}}
-export function {{$def.PascalName}}(id: string) {
-    return {
-        _type: "{{$def.Name}}" as const,
-        _id: id,
-{{- if hasPermissions $def}}
-        // Permissions
-{{- range $def.Permissions}}
-        {{.Name}}: { _type: "{{$def.Name}}" as const, _id: id, _permission: "{{.Name}}" as const },
-{{- end}}
-{{- end}}
-{{- if hasRelations $def}}
-        // Relations
+} as const);
+/** Every relation name of `{{$def.Name}}`, in schema order, for startup verification. */
+export const {{$def.PascalName}}RelationNames: readonly {{$def.PascalName}}RelationName[] = Object.freeze([{{range $i, $n := $def.RelationNames}}{{if $i}}, {{end}}"{{$n.Name}}"{{end}}]);
+/** Every permission name of `{{$def.Name}}`, in schema order, for startup verification. */
+export const {{$def.PascalName}}PermissionNames: readonly {{$def.PascalName}}PermissionName[] = Object.freeze([{{range $i, $n := $def.PermissionNames}}{{if $i}}, {{end}}"{{$n.Name}}"{{end}}]);
+const {{$def.PascalName}}Allowed: Readonly<Record<string, readonly string[]>> = Object.freeze({
 {{- range $def.Relations}}
-{{- if .IsSubRef}}
-        {{.Name}}: ((subject?: {{.SubjectUnion}}): {{.SubRefTypeName}} | { _type: "{{$def.Name}}"; _id: string; _relation: "{{.Name}}"; _subject: {{.SubjectUnion}} } => subject === undefined
-            ? ({ _type: "{{$def.Name}}", _id: id, _relation: "{{.Name}}" }) as {{.SubRefTypeName}}
-            : ({ _type: "{{$def.Name}}" as const, _id: id, _relation: "{{.Name}}" as const, _subject: subject })) as { (): {{.SubRefTypeName}}; (subject: {{.SubjectUnion}}): { _type: "{{$def.Name}}"; _id: string; _relation: "{{.Name}}"; _subject: {{.SubjectUnion}} } },
-{{- else}}
-        {{.Name}}: (subject: {{.SubjectUnion}}) => ({
-            _type: "{{$def.Name}}" as const, _id: id,
-            _relation: "{{.Name}}" as const, _subject: subject,
-        }),
+    {{.Name}}: [{{quoteList .AllowedRefs}}],
 {{- end}}
+});
+{{- range $def.Relations}}
+{{- if .HasSubjects}}
+export type {{.SubjectType}} = {{.SubjectUnion}};
 {{- end}}
+{{- if .HasKeySubject}}
+export type {{.KeyType}} = {{.KeyUnion}};
 {{- end}}
-{{- if hasCaveatMethods $def}}
-        // Caveat methods
-{{- range $def.CaveatMethods}}
-        {{.MethodName}}: (ctx: {{.ContextType}}): {{.ReturnType}} => ({
-            _type: "{{$def.Name}}", _id: id, _caveat: "{{.CaveatName}}" as const, _caveatContext: {{.ConverterFuncName}}(ctx),
-        }),
+export type {{.CheckSubject}} = {{.CheckUnion}};
 {{- end}}
-{{- end}}
-    };
-}
-{{- end}}
-{{- if hasPermissions $def}}
 {{- range $def.Permissions}}
-{{$def.PascalName}}.{{.Name}} = { _type: "{{$def.Name}}" as const, _permission: "{{.Name}}" as const };
+export type {{.CheckSubject}} = {{.CheckUnion}};
+{{- end}}
+
+export interface {{$def.RefType}} extends AnySubject {
+    readonly _ref: "{{$def.RefType}}";
+    readonly _type: "{{$def.Name}}";
+{{- range $def.Permissions}}
+    readonly {{.Prop}}: Permission<"{{$def.Name}}", "{{.Name}}">;
+{{- end}}
+{{- range $def.Relations}}
+{{- if .HasSubjects}}
+{{- if .SubRefType}}
+    {{.Prop}}(): {{.SubRefType}};
+{{- end}}
+    {{.Prop}}(subject: {{.SubjectType}}): TypedRelationship;
+{{- else if .SubRefType}}
+    {{.Prop}}(): {{.SubRefType}};
+{{- end}}
+{{- if .HasKeySubject}}
+    {{.KeyMethod}}(subject: {{.KeyType}}): RelationshipKey;
+{{- end}}
+    readonly {{.CheckProp}}: Permission<"{{$def.Name}}", "{{.Name}}">;
+    {{.FilterMethod}}(): RelationshipFilter;
+{{- end}}
+{{- range $def.PermSubRefs}}
+    {{.Method}}(): {{.ReturnType}};
+{{- end}}
+{{- range $def.WithMethods}}
+{{- if .IsExpiration}}
+    withExpiration(at: Date): {{.ReturnType}};
+{{- else}}
+    {{.MethodName}}(ctx: {{.ContextType}}): {{.ReturnType}};
 {{- end}}
 {{- end}}
-{{end}}
-export interface TypedRelationship {
-    readonly _type: string;
-    readonly _relation: string;
-    readonly _id: string;
-    readonly _subject: {
-        readonly _type: string;
-        readonly _id: string;
-        readonly _relation?: string;
-        readonly _caveat?: string;
-        readonly _caveatContext?: JSONObject;
-    };
+    /** The exact resource filter (`{{$def.Name}}:id`). */
+    filter(): RelationshipFilter;
+    /** The permission named `name`; throws NotInSchemaError for names not in the schema. */
+    permissionByName(name: string): Permission<"{{$def.Name}}", {{$def.PascalName}}PermissionName>;
+    /** The check accessor for the relation named `name`; throws NotInSchemaError. */
+    relationByName(name: string): Permission<"{{$def.Name}}", {{$def.PascalName}}RelationName>;
+    /** A relationship on the relation named `relation`; throws NotInSchemaError or SubjectNotAllowedError. */
+    relationshipByName(relation: string, subject: AnySubject): TypedRelationship;
+    toString(): string;
 }
 
-function toRelationship(r: TypedRelationship): Relationship {
-    return {
-        resource: { objectType: r._type, objectId: r._id },
-        relation: r._relation,
-        subject: { object: { objectType: r._subject._type, objectId: r._subject._id }, relation: r._subject._relation },
-        caveat: r._subject._caveat === undefined ? undefined : { name: r._subject._caveat, context: r._subject._caveatContext },
+function {{$def.Maker}}(id: string): {{$def.RefType}} {
+    const ref: {{$def.RefType}} = {
+        _ref: "{{$def.RefType}}",
+        _type: "{{$def.Name}}",
+        _id: id,
+{{- range $def.Permissions}}
+        {{.Prop}}: new Permission("{{$def.Name}}", id, "{{.Name}}"),
+{{- end}}
+{{- range $def.Relations}}
+{{- if and .HasSubjects .SubRefType}}
+        {{.Prop}}: ((subject?: {{.SubjectType}}) =>
+            subject === undefined ? {{.SubRefMaker}}(id) : relationshipOf("{{$def.Name}}", id, "{{.Name}}", subject)) as {{$def.RefType}}["{{.Prop}}"],
+{{- else if .HasSubjects}}
+        {{.Prop}}: (subject: {{.SubjectType}}) => relationshipOf("{{$def.Name}}", id, "{{.Name}}", subject),
+{{- else if .SubRefType}}
+        {{.Prop}}: () => {{.SubRefMaker}}(id),
+{{- end}}
+{{- if .HasKeySubject}}
+        {{.KeyMethod}}: (subject: {{.KeyType}}) => keyOf("{{$def.Name}}", id, "{{.Name}}", subject),
+{{- end}}
+        {{.CheckProp}}: new Permission("{{$def.Name}}", id, "{{.Name}}"),
+        {{.FilterMethod}}: () => resourceFilter("{{$def.Name}}", id, "{{.Name}}"),
+{{- end}}
+{{- range $def.PermSubRefs}}
+        {{.Method}}: () => {{.Maker}}(id),
+{{- end}}
+{{- range $def.WithMethods}}
+{{- if .IsExpiration}}
+        withExpiration: (expiresAt: Date) => {{.ReturnMaker}}(id, undefined, expiresAt),
+{{- else}}
+        {{.MethodName}}: (context: {{.ContextType}}) => {{.ReturnMaker}}(id, {{.Converter}}(context)),
+{{- end}}
+{{- end}}
+        filter: () => resourceFilter("{{$def.Name}}", id),
+        permissionByName: (name: string) => permissionByName("{{$def.Name}}", id, {{$def.PascalName}}PermissionNames, name, "permission"),
+        relationByName: (name: string) => permissionByName("{{$def.Name}}", id, {{$def.PascalName}}RelationNames, name, "relation"),
+        relationshipByName: (relation: string, subject: AnySubject) => relationshipByName("{{$def.Name}}", id, {{$def.PascalName}}Allowed, relation, subject),
+        toString: () => `{{$def.Name}}:${id}`,
     };
+    return Object.freeze(ref);
 }
+
+/** A `{{$def.Name}}` resource or subject. */
+export function {{$def.PascalName}}(id: string): {{$def.RefType}} {
+    return {{$def.Maker}}(id);
+}
+{{- range $def.Permissions}}
+{{$def.PascalName}}.{{.Prop}} = new PermissionRef("{{$def.Name}}", "{{.Name}}");
+{{- end}}
+
+/** A filter for every `{{$def.Name}}` relationship. */
+export function {{$def.PascalName}}Filter(): RelationshipFilter {
+    return { resourceType: "{{$def.Name}}" };
+}
+{{- if $def.WildcardType}}
+
+/** The `{{$def.Name}}:*` wildcard subject. */
+export function {{$def.PascalName}}Wildcard(): {{$def.WildcardType}} {
+    return {{$def.WildcardMaker}}("*");
+}
+{{- end}}
+{{- end}}
+{{- if .UsersetTypes}}
+
+// --- Userset subject types, for withSubject ---
+{{- range .UsersetTypes}}
+export const {{.VarName}} = Object.freeze({ _type: "{{.Definition}}", _relation: "{{.Relation}}" } as const);
+{{- end}}
+{{- end}}
 
 // --- TypedClient ---
 export class TypedClient {
@@ -169,89 +623,84 @@ export class TypedClient {
         return new TypedClient(createSpiceDBClient(endpoint, token, options));
     }
 
-    // Check overloads
-{{- range $def := .Definitions}}
-{{- range $def.Permissions}}
-    async check(c: Consistency, p: { _type: "{{$def.Name}}"; _id: string; _permission: "{{.Name}}" }, s: {{.SubjectUnion}}, options?: CheckOptions): Promise<CheckResult>;
+    // Check overloads: one per permission and per relation.
+{{- range .CheckOverloads}}
+    async check(c: Consistency, p: Permission<"{{.ResourceType}}", "{{.Name}}">, s: {{.SubjectUnion}}, options?: CheckOptions): Promise<CheckResult>;
 {{- end}}
-{{- end}}
-    async check(c: Consistency, p: { _type: string; _id: string; _permission: string }, s: { _type: string; _id: string; _relation?: string; _caveat?: string; _caveatContext?: JSONObject }, options?: CheckOptions): Promise<CheckResult> {
-        // s._caveatContext (e.g. from User("dave").withIpRange(ctx)) is the
-        // ITEM-LEVEL context for this one check -- it wins per-key over
-        // options.context (the call-level default) via check's own
-        // mergeCheckContext; call-level keys the subject doesn't mention are
-        // retained.
-        return this.client.check({
-            resource: { objectType: p._type, objectId: p._id },
-            permission: p._permission, consistency: c,
-            subject: { object: { objectType: s._type, objectId: s._id }, relation: s._relation },
-            context: s._caveatContext,
-        }, options);
+    async check(c: Consistency, p: Permission, s: AnySubject, options?: CheckOptions): Promise<CheckResult> {
+        // A caveated subject's own context is item-level context: it wins per
+        // key over options.context, the call-level default.
+        return this.client.check(p.checkRequest(s, c), options);
+    }
+
+    /** Typed bulk check: forwards native options and preserves input order, per-chunk revisions and per-item errors. */
+    async checkBulkTyped(c: Consistency, checks: readonly TypedCheck[], options?: CheckOptions): Promise<readonly CheckResult[]> {
+        return this.client.checkBulk(
+            checks.map((check) => check.permission.checkRequest(check.subject, c, check.context)),
+            options,
+        );
+    }
+
+    /** Writes a typed transaction atomically; throws its first deferred construction error before any RPC. */
+    async writeTransaction(txn: TypedTransaction, options?: CallOptions): Promise<WriteResult> {
+        return this.client.write(txn.build(), options);
     }
 
     // Writes accept a collection so cancellation and total budget options remain available.
     async touch(rels: readonly TypedRelationship[], options?: CallOptions): Promise<WriteResult> {
-        const txn = new Transaction();
-        for (const r of rels) txn.touch(toRelationship(r));
-        return this.client.write(txn, options);
+        return this.writeTransaction(rels.reduce((txn, r) => txn.touch(r), new TypedTransaction()), options);
     }
 
     async create(rels: readonly TypedRelationship[], options?: CallOptions): Promise<WriteResult> {
-        const txn = new Transaction();
-        for (const r of rels) txn.create(toRelationship(r));
-        return this.client.write(txn, options);
+        return this.writeTransaction(rels.reduce((txn, r) => txn.create(r), new TypedTransaction()), options);
     }
 
-    async delete(rels: readonly TypedRelationship[], options?: CallOptions): Promise<WriteResult> {
-        const txn = new Transaction();
-        for (const r of rels) txn.delete(toRelationship(r));
-        return this.client.write(txn, options);
+    async delete(rels: readonly (TypedRelationship | RelationshipKey)[], options?: CallOptions): Promise<WriteResult> {
+        return this.writeTransaction(rels.reduce((txn, r) => txn.delete(r), new TypedTransaction()), options);
     }
 
-    close(): void { this.client.close(); }
+    close(): void {
+        this.client.close();
+    }
 
     // LookupResources overloads
-{{- range $def := .Definitions}}
-{{- range $def.Permissions}}
-    lookupResources(c: Consistency, p: { _type: "{{$def.Name}}"; _permission: "{{.Name}}" }, s: {{.SubjectUnion}}, options?: LookupResourcesOptions): AsyncIterableIterator<LookupResource>;
+{{- range .Lookups}}
+    lookupResources(c: Consistency, p: PermissionRef<"{{.ResourceType}}", "{{.Name}}">, s: {{.SubjectUnion}}, options?: LookupResourcesOptions): AsyncIterableIterator<LookupResource>;
 {{- end}}
-{{- end}}
-    lookupResources(c: Consistency, p: { _type: string; _permission: string }, s: { _type: string; _id: string; _relation?: string }, options?: LookupResourcesOptions): AsyncIterableIterator<LookupResource> {
-        const { signal, timeoutMs, ...requestOptions } = options ?? {};
-        return this.client.lookupResources({
-            ...requestOptions,
-            resourceType: p._type, permission: p._permission,
-            subject: { object: { objectType: s._type, objectId: s._id }, relation: s._relation },
-            consistency: c,
-        }, options);
+    lookupResources(c: Consistency, p: PermissionRef, s: AnySubject, options?: LookupResourcesOptions): AsyncIterableIterator<LookupResource> {
+        const requestOptions = requestFields(options);
+        return this.client.lookupResources(
+            { ...requestOptions, resourceType: p._type, permission: p._permission, subject: subjectRef(s), consistency: c },
+            options,
+        );
     }
 
-    // LookupSubjects overloads
-{{- range $def := .Definitions}}
-{{- range $def.Permissions}}
-    lookupSubjects(c: Consistency, p: { _type: "{{$def.Name}}"; _id: string; _permission: "{{.Name}}" }, subjectType: (id: string) => { _type: string }, options?: LookupSubjectsOptions): AsyncIterableIterator<LookupSubject>;
-{{- end}}
-{{- end}}
-    lookupSubjects(c: Consistency, p: { _type: string; _id: string; _permission: string }, subjectType: (id: string) => { _type: string }, options?: LookupSubjectsOptions): AsyncIterableIterator<LookupSubject> {
-        const { signal, timeoutMs, ...requestOptions } = options ?? {};
-        return this.client.lookupSubjects({
-            ...requestOptions,
-            subjectType: subjectType("")._type,
-            permission: p._permission,
-            resource: { objectType: p._type, objectId: p._id },
-            consistency: c,
-        }, options);
+    lookupSubjects(c: Consistency, p: Permission, subjectType: (id: string) => { _type: string }, options?: LookupSubjectsOptions): AsyncIterableIterator<LookupSubject> {
+        const requestOptions = requestFields(options);
+        return this.client.lookupSubjects(
+            {
+                ...requestOptions,
+                subjectType: subjectType("")._type,
+                permission: p._permission,
+                resource: { objectType: p._type, objectId: p._id },
+                consistency: c,
+            },
+            options,
+        );
     }
 
-    // ReadRelationships
-    readRelationships(c: Consistency, filter: RelationshipFilter | { _type: string; _id?: string; _relation?: string }, options?: ReadRelationshipsOptions): AsyncIterableIterator<Relationship> {
-        const { signal, timeoutMs, ...requestOptions } = options ?? {};
-        return this.client.readRelationships({
-            ...requestOptions,
-            filter: "resourceType" in filter ? filter : { resourceType: filter._type, resourceId: filter._id, relation: filter._relation },
-            consistency: c,
-        }, options);
+    readRelationships(c: Consistency, filter: RelationshipFilter | { _type: string; _id?: string; _relation?: string }, options?: ReadRelationshipsOptions): AsyncIterableIterator<ReadRelationship> {
+        const requestOptions = requestFields(options);
+        return this.client.readRelationships(
+            {
+                ...requestOptions,
+                filter: "resourceType" in filter ? filter : { resourceType: filter._type, resourceId: filter._id, relation: filter._relation },
+                consistency: c,
+            },
+            options,
+        );
     }
+
     // Native capabilities retain their full typed signatures and stream ownership.
     raw(...args: Parameters<SpiceDBClient["raw"]>): ReturnType<SpiceDBClient["raw"]> {
         return this.client.raw(...args);
@@ -322,5 +771,4 @@ export class TypedClient {
     experimentalRoaringLookupResources(...args: Parameters<SpiceDBClient["experimentalRoaringLookupResources"]>): ReturnType<SpiceDBClient["experimentalRoaringLookupResources"]> {
         return this.client.experimentalRoaringLookupResources(...args);
     }
-
 }

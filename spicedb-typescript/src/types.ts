@@ -1,4 +1,4 @@
-import { SubjectRelationKind } from "./modes.js";
+import { SubjectRelationKind, mode } from "./modes.js";
 import { create, clone, type JsonObject } from "@bufbuild/protobuf";
 import { timestampFromDate } from "@bufbuild/protobuf/wkt";
 import { type Relationship as ProtoRelationship, RelationshipSchema, ObjectReferenceSchema, SubjectReferenceSchema, ContextualizedCaveatSchema, RelationshipUpdateSchema, RelationshipUpdate_Operation, type RelationshipFilter as ProtoRelationshipFilter, RelationshipFilterSchema, SubjectFilterSchema, SubjectFilter_RelationFilterSchema, type Precondition as ProtoPrecondition, PreconditionSchema, Precondition_Operation, DeleteRelationshipsRequestSchema, CursorSchema, type PermissionRelationshipTree as ProtoPermissionRelationshipTree, AlgebraicSubjectSet_Operation, type ReflectionDefinition as ProtoReflectionDefinition, type ReflectionCaveat as ProtoReflectionCaveat, type ReflectionRelationReference as ProtoReflectionRelationReference, type ReflectionSchemaDiff as ProtoReflectionSchemaDiff, type PartialCaveatInfo as ProtoPartialCaveatInfo, type ResolvedSubject as ProtoResolvedSubject, type LookupResourcesResponse as ProtoLookupResourcesResponse, type LookupSubjectsResponse as ProtoLookupSubjectsResponse, LookupPermissionship, type CheckPermissionResponse as ProtoCheckPermissionResponse, type CheckBulkPermissionsResponseItem as ProtoCheckBulkPermissionsResponseItem, } from "@spicedb/proto";
@@ -10,7 +10,9 @@ export interface JSONObject {
 }
 export { ZedToken } from "./token.js";
 import { ZedToken, serverToken } from "./token.js";
-import type { Tracing, LookupDebug, LookupPermissionshipFilter, Wildcards, WatchContent } from "./modes.js";
+import type { Tracing, LookupDebug, LookupPermissionshipFilter, Wildcards, WatchContent, BulkItemErrors } from "./modes.js";
+import { DeletePartial } from "./modes.js";
+import type { SpiceDBError } from "./errors.js";
 export interface ObjectRef {
     readonly objectType: string;
     readonly objectId: string;
@@ -57,25 +59,72 @@ export interface RelationshipFilter {
     readonly relation?: string;
     readonly subject?: SubjectFilter;
 }
+/**
+ * Options accepted by every operation. `signal` and `timeoutMs` bound the whole
+ * operation (attempts, backoff, chunks and pages).
+ *
+ * `headers`, `onHeader` and `onTrailer` are the transport escape hatch: they
+ * are forwarded to every RPC the operation makes (each attempt, chunk and
+ * page), so `onHeader`/`onTrailer` may be called more than once. This is the
+ * supported route to transport-level data, including data that SpiceDB
+ * versions before 1.30 send in trailers; it needs no `raw()` client.
+ */
 export interface CallOptions {
     readonly signal?: AbortSignal;
     readonly timeoutMs?: number;
+    /** Extra request headers for this call. They are applied after the client's own, so they can override them. */
+    readonly headers?: HeadersInit;
+    /** Called with each RPC's response headers. */
+    readonly onHeader?: (headers: Headers) => void;
+    /** Called with each RPC's response trailers. */
+    readonly onTrailer?: (trailers: Headers) => void;
 }
 export interface CheckOptions extends CallOptions {
     readonly context?: JSONObject;
     readonly tracing?: Tracing;
+    /** `checkBulk` only: report per-item failures on `CheckResult.error` instead of failing the call. Defaults to `BulkItemErrors.Fail`. */
+    readonly itemErrors?: BulkItemErrors;
+}
+/** Options for `importRelationships`. */
+export interface ImportOptions extends CallOptions {
+    /**
+     * Relationships per stream message (default 1,000). One import call is one
+     * stream and one transaction whatever the batch size; make several calls for
+     * several transactions.
+     */
+    readonly batchSize?: number;
 }
 export interface Preconditions {
     readonly mustMatch?: readonly RelationshipFilter[];
     readonly mustNotMatch?: readonly RelationshipFilter[];
 }
-export interface DeleteOptions extends CallOptions, Preconditions {
-    readonly limit: number;
+interface DeleteOptionsBase extends CallOptions, Preconditions {
     readonly cursor?: string;
 }
+/**
+ * Options for one bounded `deleteRelationships` request. By default
+ * (`DeletePartial.Allowed`) a positive `limit` is required and the server
+ * deletes up to it, reporting whether it completed. With
+ * `partial: DeletePartial.Disallowed` the delete is all-or-nothing: the server
+ * rejects a delete that exceeds the limit instead of deleting part of it, and
+ * `limit` may be omitted to use the server's default.
+ */
+export type DeleteOptions = (DeleteOptionsBase & {
+    readonly partial?: DeletePartial.Allowed;
+    readonly limit: number;
+}) | (DeleteOptionsBase & {
+    readonly partial: DeletePartial.Disallowed;
+    readonly limit?: number;
+});
 export interface DeleteAllOptions extends CallOptions, Preconditions {
     readonly pageSize?: number;
     readonly cursor?: string;
+    /**
+     * Called after every acknowledged batch with the cumulative result so far
+     * (count, latest revision and cursor). It runs inline and should be quick;
+     * the operation budget keeps running.
+     */
+    readonly onProgress?: (progress: DeleteResult) => void;
 }
 export interface DeleteResult {
     readonly revision: ZedToken;
@@ -90,8 +139,34 @@ export interface WriteResult {
 export interface ReadRelationshipsRequest {
     readonly filter: RelationshipFilter;
     readonly consistency: Consistency;
+    /** Relationships per page; every page repeats it. Default 1,000. */
     readonly pageSize?: number;
+    /**
+     * Resume after the item whose `afterResultCursor` this is. SpiceDB accepts
+     * a cursor only for an identical call: repeat the filter, consistency and
+     * page size.
+     */
     readonly cursor?: string;
+    /** Total relationships to yield, enforced client-side. */
+    readonly limit?: number;
+}
+/**
+ * A relationship yielded by `readRelationships`: the relationship's own
+ * fields plus paging state, so it can be used anywhere a `Relationship` is.
+ */
+export interface ReadRelationship extends Relationship {
+    /** Resume after this item by passing it as the request `cursor`. */
+    readonly afterResultCursor?: string;
+    /** The revision the item's page was read at. */
+    readonly readAt: ZedToken;
+}
+/** A relationship yielded by `exportRelationships`, with paging state. */
+export interface ExportedRelationship extends Relationship {
+    /**
+     * The cursor after this item's response batch. Resuming from it skips the
+     * rest of that batch, so persist it once the batch's items are handled.
+     */
+    readonly afterResultCursor?: string;
 }
 export interface LookupResourcesRequest {
     /** Client-side filtering; limits count yielded matches. Defaults to All. */
@@ -151,6 +226,7 @@ export interface ExportRelationshipsRequest {
     readonly consistency: Consistency;
     readonly filter?: RelationshipFilter;
     readonly pageSize?: number;
+    /** Resume after the batch whose `afterResultCursor` this is. */
     readonly cursor?: string;
 }
 export interface WatchRequest {
@@ -295,6 +371,8 @@ export interface PartialCaveatInfo {
 }
 export interface LookupResource {
     readonly resourceId: string;
+    /** Resume after this item by passing it as the request `cursor` (repeat the request and page size). */
+    readonly afterResultCursor?: string;
     readonly permissionship: Permissionship;
     readonly partialCaveat?: PartialCaveatInfo;
     readonly lookedUpAt: ZedToken;
@@ -347,17 +425,29 @@ export class CheckResult {
     readonly missingContext: readonly string[];
     readonly debugTrace?: DebugInformation;
     readonly expiration?: Date;
-    constructor(readonly permissionship: Permissionship, missingContext: readonly string[], readonly checkedAt: ZedToken, debugTrace?: DebugInformation, expiration?: Date) {
+    /**
+     * A per-item failure, set only by `checkBulk` with
+     * `itemErrors: BulkItemErrors.Returned`. An errored result has
+     * `"unspecified"` permissionship and never grants. Its `inputIndex` is the
+     * caller's absolute input index.
+     */
+    readonly error?: SpiceDBError;
+    constructor(readonly permissionship: Permissionship, missingContext: readonly string[], readonly checkedAt: ZedToken, debugTrace?: DebugInformation, expiration?: Date, error?: SpiceDBError) {
         this.missingContext = immutableSnapshot(missingContext);
         this.debugTrace = debugTrace === undefined ? undefined : immutableSnapshot(debugTrace);
         this.expiration = expiration === undefined ? undefined : immutableSnapshot(expiration);
+        if (error !== undefined) {
+            if (permissionship !== "unspecified")
+                throw new InvalidArgumentError("an errored CheckResult must have unspecified permissionship");
+            this.error = error;
+        }
         Object.freeze(this);
     }
     hasPermission(): boolean { return this.permissionship === "hasPermission"; }
 }
 /** @internal Deep copy collection ownership at the API boundary. */
 export function immutableSnapshot<T>(value: T): T {
-    if (value === null || typeof value !== "object" || value instanceof Consistency || value instanceof ZedToken)
+    if (value === null || typeof value !== "object" || value instanceof Consistency || value instanceof ZedToken || value instanceof Error)
         return value;
     if (value instanceof Date) {
         if (!Number.isFinite(value.getTime()))
@@ -457,11 +547,178 @@ export function relationship(resource: string, relation: string, subject: string
     const i = subject.indexOf("#");
     return immutableSnapshot({ resource: parse(resource), relation, subject: { object: parse(i < 0 ? subject : subject.slice(0, i)), ...(i < 0 ? {} : { relation: subject.slice(i + 1) }) } });
 }
-export function relationshipFromTuple(tuple: string, subject: string): Relationship {
-    const i = tuple.indexOf("#");
-    if (i < 1)
-        throw new InvalidArgumentError(`invalid resource tuple: ${tuple}`);
-    return relationship(tuple.slice(0, i), tuple.slice(i + 1), subject);
+/**
+ * Parses SpiceDB's relationship tuple syntax, including the optional caveat
+ * and expiration suffixes, in that order:
+ *
+ * ```text
+ * document:readme#viewer@user:alice
+ * document:readme#viewer@team:eng#member[ip_range:{"cidr":"10.0.0.0/8"}][expiration:2030-01-02T03:04:05Z]
+ * ```
+ *
+ * A subject relation of `...` means a direct subject. `[name]` is a caveat with
+ * no context. Expiration accepts RFC 3339; JavaScript dates keep millisecond
+ * precision, so finer digits are truncated. {@link relationshipToString}
+ * produces text this function parses.
+ */
+export function relationshipFromTuple(tuple: string): Relationship {
+    const bracket = tuple.indexOf("[");
+    const main = bracket < 0 ? tuple : tuple.slice(0, bracket);
+    let suffix = bracket < 0 ? "" : tuple.slice(bracket);
+    const at = main.split("@");
+    if (at.length !== 2)
+        throw new InvalidArgumentError(`invalid tuple (requires one "@"): ${tuple}`);
+    const resource = at[0].split("#");
+    if (resource.length !== 2 || !resource[1])
+        throw new InvalidArgumentError(`invalid tuple (requires resource#relation): ${tuple}`);
+    const subject = at[1].split("#");
+    if (subject.length > 2 || (subject.length === 2 && !subject[1]))
+        throw new InvalidArgumentError(`invalid tuple subject: ${tuple}`);
+    const object = (text: string): ObjectRef => {
+        const i = text.indexOf(":");
+        if (i < 1 || i === text.length - 1)
+            throw new InvalidArgumentError(`invalid object reference in tuple: ${text}`);
+        return { objectType: text.slice(0, i), objectId: text.slice(i + 1) };
+    };
+    const subjectRelation = subject.length === 2 && subject[1] !== "..." ? subject[1] : undefined;
+    let caveat: Caveat | undefined;
+    let expiration: Date | undefined;
+    const expirationPrefix = "[expiration:";
+    if (suffix && (!suffix.startsWith(expirationPrefix) || suffix.startsWith(expirationPrefix + "{"))) {
+        const parsed = parseCaveatBracket(suffix);
+        caveat = parsed.caveat;
+        suffix = parsed.rest;
+    }
+    if (suffix) {
+        if (!suffix.startsWith(expirationPrefix) || !suffix.endsWith("]"))
+            throw new InvalidArgumentError(`invalid tuple suffix: ${suffix}`);
+        expiration = parseRfc3339(suffix.slice(expirationPrefix.length, -1));
+    }
+    return immutableSnapshot({
+        resource: object(resource[0]), relation: resource[1],
+        subject: { object: object(subject[0]), ...(subjectRelation === undefined ? {} : { relation: subjectRelation }) },
+        ...(caveat === undefined ? {} : { caveat }), ...(expiration === undefined ? {} : { expiration }),
+    });
+}
+function parseCaveatBracket(text: string): { caveat: Caveat; rest: string } {
+    const body = text.slice(1);
+    const end = body.search(/[:\]]/);
+    if (end <= 0)
+        throw new InvalidArgumentError(`invalid tuple caveat: ${text}`);
+    const name = body.slice(0, end);
+    if (body[end] === "]")
+        return { caveat: { name }, rest: body.slice(end + 1) };
+    // Scan one JSON object so a "]" inside a context string does not end the bracket.
+    const json = body.slice(end + 1);
+    let depth = 0, inString = false, i = 0;
+    for (; i < json.length; i++) {
+        const c = json[i];
+        if (inString) {
+            if (c === "\\") i++;
+            else if (c === "\"") inString = false;
+        }
+        else if (c === "\"") inString = true;
+        else if (c === "{" || c === "[") depth++;
+        else if (c === "}" || c === "]") {
+            depth--;
+            if (depth === 0) break;
+        }
+    }
+    if (json[0] !== "{" || depth !== 0 || json[i + 1] !== "]")
+        throw new InvalidArgumentError(`invalid tuple caveat: ${text}`);
+    let context: unknown;
+    try {
+        context = JSON.parse(json.slice(0, i + 1));
+    }
+    catch (error) {
+        throw new InvalidArgumentError(`invalid tuple caveat context: ${text}`, { cause: error });
+    }
+    return { caveat: { name, context: jsonSnapshot(context, "caveat.context") }, rest: json.slice(i + 2) };
+}
+function parseRfc3339(text: string): Date {
+    const m = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:\d{2})$/.exec(text);
+    if (!m)
+        throw new InvalidArgumentError(`invalid tuple expiration: ${text}`);
+    const date = new Date(`${m[1]}.${(m[2] ?? "").padEnd(3, "0").slice(0, 3)}${m[3]}`);
+    if (!Number.isFinite(date.getTime()))
+        throw new InvalidArgumentError(`invalid tuple expiration: ${text}`);
+    return date;
+}
+function sortedJson(value: unknown): string {
+    return JSON.stringify(value, (_key, v: unknown) => v !== null && typeof v === "object" && !Array.isArray(v)
+        ? Object.fromEntries(Object.entries(v as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
+        : v);
+}
+function formatRfc3339(date: Date): string {
+    return date.toISOString().replace(/\.(\d*?)0*Z$/, (_m, digits: string) => (digits ? `.${digits}Z` : "Z"));
+}
+/** Formats an object as `type:id`. */
+export function objectRefToString(object: ObjectRef): string { return `${object.objectType}:${object.objectId}`; }
+/** Formats a subject as `type:id` or `type:id#relation`. */
+export function subjectRefToString(subject: SubjectRef): string {
+    return objectRefToString(subject.object) + (subject.relation === undefined ? "" : `#${subject.relation}`);
+}
+/**
+ * Formats a relationship in SpiceDB's tuple syntax, including the caveat and
+ * expiration when present. Caveat context keys are sorted; expiration is UTC
+ * RFC 3339. {@link relationshipFromTuple} parses the result.
+ */
+export function relationshipToString(rel: Relationship): string {
+    let text = `${objectRefToString(rel.resource)}#${rel.relation}@${subjectRefToString(rel.subject)}`;
+    if (rel.caveat !== undefined)
+        text += rel.caveat.context !== undefined && Object.keys(rel.caveat.context).length > 0
+            ? `[${rel.caveat.name}:${sortedJson(rel.caveat.context)}]`
+            : `[${rel.caveat.name}]`;
+    if (rel.expiration !== undefined)
+        text += `[expiration:${formatRfc3339(rel.expiration)}]`;
+    return text;
+}
+/**
+ * Formats a filter in a zed-like form, using `*` for unset fields, e.g.
+ * `document:*#viewer@user:alice`, `document:doc-%*#*@*`, or
+ * `team:eng#member@user:*#...` for a direct-subject filter.
+ */
+export function filterToString(filter: RelationshipFilter): string {
+    const or = (v: string | undefined) => (v ? v : "*");
+    const id = filter.resourceIdPrefix ? `${filter.resourceIdPrefix}%*` : or(filter.resourceId);
+    let text = `${filter.resourceType}:${id}#${or(filter.relation)}@${or(filter.subject?.subjectType)}`;
+    if (filter.subject) {
+        text += `:${or(filter.subject.subjectId)}`;
+        const relation = filter.subject.relation;
+        if (relation?.kind === SubjectRelationKind.Direct)
+            text += "#...";
+        else if (relation?.kind === SubjectRelationKind.Named)
+            text += `#${relation.relation}`;
+    }
+    return text;
+}
+/**
+ * Reports whether `filter` matches `rel` with SpiceDB's semantics: resource
+ * type, ID or ID prefix, relation, subject type and ID, and the subject
+ * relation's Any/Direct/Named distinction. Caveats and expiration are not
+ * filterable. Test doubles use this rather than reimplementing the rules.
+ */
+export function filterMatches(filter: RelationshipFilter, rel: Relationship): boolean {
+    if (filter.resourceType !== rel.resource.objectType)
+        return false;
+    if (filter.resourceId !== undefined && filter.resourceId !== "" && filter.resourceId !== rel.resource.objectId)
+        return false;
+    if (filter.resourceIdPrefix !== undefined && !rel.resource.objectId.startsWith(filter.resourceIdPrefix))
+        return false;
+    if (filter.relation !== undefined && filter.relation !== "" && filter.relation !== rel.relation)
+        return false;
+    const subject = filter.subject;
+    if (subject === undefined)
+        return true;
+    if (subject.subjectType !== rel.subject.object.objectType)
+        return false;
+    if (subject.subjectId !== undefined && subject.subjectId !== "" && subject.subjectId !== rel.subject.object.objectId)
+        return false;
+    switch (subject.relation?.kind) {
+        case SubjectRelationKind.Direct: return rel.subject.relation === undefined || rel.subject.relation === "";
+        case SubjectRelationKind.Named: return rel.subject.relation === subject.relation.relation;
+        default: return true;
+    }
 }
 export function relationshipToFilter(rel: Relationship): RelationshipFilter {
     return immutableSnapshot({ resourceType: rel.resource.objectType, resourceId: rel.resource.objectId, relation: rel.relation, subject: { subjectType: rel.subject.object.objectType, subjectId: rel.subject.object.objectId, relation: rel.subject.relation === undefined ? { kind: SubjectRelationKind.Direct } : { kind: SubjectRelationKind.Named, relation: rel.subject.relation } } });
@@ -497,22 +754,95 @@ export function positiveLimit(value: number, field: string): number {
 export function toProtoDeleteRelationshipsRequest(filter: RelationshipFilter, options: DeleteOptions) {
     if (!options)
         throw new InvalidArgumentError("deleteRelationships options.limit is required");
-    return create(DeleteRelationshipsRequestSchema, { relationshipFilter: toProtoRelationshipFilter(filter), optionalPreconditions: toProtoDeletePreconditions(options), optionalLimit: positiveLimit(options.limit, "limit"), optionalAllowPartialDeletions: true, optionalCursor: options.cursor ? create(CursorSchema, { token: options.cursor }) : undefined });
+    const partial = mode(options.partial, DeletePartial, DeletePartial.Allowed, "partial");
+    const limit = partial === DeletePartial.Disallowed && options.limit === undefined ? 0 : positiveLimit(options.limit as number, "limit");
+    return create(DeleteRelationshipsRequestSchema, { relationshipFilter: toProtoRelationshipFilter(filter), optionalPreconditions: toProtoDeletePreconditions(options), optionalLimit: limit, optionalAllowPartialDeletions: partial === DeletePartial.Allowed, optionalCursor: options.cursor ? create(CursorSchema, { token: options.cursor }) : undefined });
 }
-/** Explicitly mutable transaction builder. Each append snapshots caller-owned values. */
+/** One relationship mutation in a transaction or watch event. */
+export interface RelationshipUpdate {
+    readonly operation: "create" | "touch" | "delete";
+    readonly relationship: Relationship;
+}
+/** One write precondition. */
+export interface Precondition {
+    readonly operation: "mustMatch" | "mustNotMatch";
+    readonly filter: RelationshipFilter;
+}
+const UPDATE_OPS = { create: RelationshipUpdate_Operation.CREATE, touch: RelationshipUpdate_Operation.TOUCH, delete: RelationshipUpdate_Operation.DELETE } as const;
+const PRECONDITION_OPS = { mustMatch: Precondition_Operation.MUST_MATCH, mustNotMatch: Precondition_Operation.MUST_NOT_MATCH } as const;
+/** Formats an update as `TOUCH(document:readme#viewer@user:alice)`. */
+export function updateToString(update: RelationshipUpdate): string { return `${update.operation.toUpperCase()}(${relationshipToString(update.relationship)})`; }
+/** Formats a precondition as `MUST_MATCH(document:readme#viewer@*)`. */
+export function preconditionToString(precondition: Precondition): string {
+    return `${precondition.operation === "mustMatch" ? "MUST_MATCH" : "MUST_NOT_MATCH"}(${filterToString(precondition.filter)})`;
+}
+/** @internal */
+export function toProtoUpdate(update: RelationshipUpdate) {
+    const operation = UPDATE_OPS[update.operation];
+    if (operation === undefined)
+        throw new InvalidArgumentError(`unsupported update operation ${String(update.operation)}`);
+    return create(RelationshipUpdateSchema, { operation, relationship: toProtoRelationship(update.relationship) });
+}
+/** @internal */
+export function toProtoPreconditionValue(precondition: Precondition): ProtoPrecondition {
+    const operation = PRECONDITION_OPS[precondition.operation];
+    if (operation === undefined)
+        throw new InvalidArgumentError(`unsupported precondition operation ${String(precondition.operation)}`);
+    return toProtoPrecondition(operation, precondition.filter);
+}
+/**
+ * Explicitly mutable transaction builder. Each append validates and snapshots
+ * caller-owned values. `length` counts updates without copying; `toString()`,
+ * `toJSON()` and Node's inspector show its contents.
+ */
 export class Transaction {
-    /** @internal */ private _updates: ReturnType<typeof makeUpdate>[] = [];
-    /** @internal */ private _preconditions: ProtoPrecondition[] = [];
+    /** @internal */ private _updates: { native: RelationshipUpdate; proto: ReturnType<typeof toProtoUpdate> }[] = [];
+    /** @internal */ private _preconditions: { native: Precondition; proto: ProtoPrecondition }[] = [];
     /** @internal */ private _metadata?: JSONObject;
-    create(rel: Relationship): this { this._updates.push(makeUpdate(RelationshipUpdate_Operation.CREATE, rel)); return this; }
-    touch(rel: Relationship): this { this._updates.push(makeUpdate(RelationshipUpdate_Operation.TOUCH, rel)); return this; }
-    delete(rel: Relationship): this { this._updates.push(makeUpdate(RelationshipUpdate_Operation.DELETE, rel)); return this; }
-    mustMatch(filter: RelationshipFilter): this { this._preconditions.push(toProtoPrecondition(Precondition_Operation.MUST_MATCH, filter)); return this; }
-    mustNotMatch(filter: RelationshipFilter): this { this._preconditions.push(toProtoPrecondition(Precondition_Operation.MUST_NOT_MATCH, filter)); return this; }
+    create(rel: Relationship): this { return this.update("create", rel); }
+    touch(rel: Relationship): this { return this.update("touch", rel); }
+    delete(rel: Relationship): this { return this.update("delete", rel); }
+    mustMatch(filter: RelationshipFilter): this { return this.precondition("mustMatch", filter); }
+    mustNotMatch(filter: RelationshipFilter): this { return this.precondition("mustNotMatch", filter); }
     withMetadata(metadata: JSONObject): this { this._metadata = jsonSnapshot(metadata, "metadata"); return this; }
-    /** @internal */ _build() { return { updates: this._updates.map(u => clone(RelationshipUpdateSchema, u)), optionalPreconditions: this._preconditions.map(p => clone(PreconditionSchema, p)), optionalTransactionMetadata: this._metadata as JsonObject | undefined }; }
+    /** The number of updates (preconditions excluded). */
+    get length(): number { return this._updates.length; }
+    /** Immutable snapshots of the updates, in order. */
+    get updates(): readonly RelationshipUpdate[] { return Object.freeze(this._updates.map(u => u.native)); }
+    /** Immutable snapshots of the preconditions, in order. */
+    get preconditions(): readonly Precondition[] { return Object.freeze(this._preconditions.map(p => p.native)); }
+    /** Transaction metadata, if set. */
+    get metadata(): JSONObject | undefined { return this._metadata; }
+    /** `[MUST_NOT_MATCH(organization:acme#admin@*), DELETE(...), TOUCH(...)]` */
+    toString(): string { return `[${[...this._preconditions.map(p => preconditionToString(p.native)), ...this._updates.map(u => updateToString(u.native))].join(", ")}]`; }
+    toJSON(): { updates: readonly RelationshipUpdate[]; preconditions: readonly Precondition[]; metadata?: JSONObject } {
+        return { updates: this.updates, preconditions: this.preconditions, ...(this._metadata === undefined ? {} : { metadata: this._metadata }) };
+    }
+    /** @internal Node's util.inspect / console.log form. */
+    [Symbol.for("nodejs.util.inspect.custom")](): string { return `Transaction ${this.toString()}`; }
+    private update(operation: RelationshipUpdate["operation"], rel: Relationship): this {
+        const native = immutableSnapshot({ operation, relationship: nativeRelationshipFields(rel) });
+        this._updates.push({ native, proto: toProtoUpdate(native) });
+        return this;
+    }
+    private precondition(operation: Precondition["operation"], filter: RelationshipFilter): this {
+        const native = immutableSnapshot({ operation, filter });
+        this._preconditions.push({ native, proto: toProtoPreconditionValue(native) });
+        return this;
+    }
+    /** @internal */ _build() { return { updates: this._updates.map(u => clone(RelationshipUpdateSchema, u.proto)), optionalPreconditions: this._preconditions.map(p => clone(PreconditionSchema, p.proto)), optionalTransactionMetadata: this._metadata as JsonObject | undefined }; }
 }
-function makeUpdate(operation: RelationshipUpdate_Operation, rel: Relationship) { return create(RelationshipUpdateSchema, { operation, relationship: toProtoRelationship(rel) }); }
+/** @internal Copies only a relationship's own fields (dropping paging state such as `afterResultCursor`). */
+export function nativeRelationshipFields(rel: Relationship): Relationship {
+    if (!rel?.resource || !rel.subject?.object)
+        throw new InvalidArgumentError("relationship requires resource, relation, and subject");
+    return {
+        resource: { objectType: rel.resource.objectType, objectId: rel.resource.objectId }, relation: rel.relation,
+        subject: { object: { objectType: rel.subject.object.objectType, objectId: rel.subject.object.objectId }, ...(rel.subject.relation === undefined ? {} : { relation: rel.subject.relation }) },
+        ...(rel.caveat === undefined ? {} : { caveat: { name: rel.caveat.name, ...(rel.caveat.context === undefined ? {} : { context: rel.caveat.context }) } }),
+        ...(rel.expiration === undefined ? {} : { expiration: rel.expiration }),
+    };
+}
 /** @internal */
 export function toTreeOperation(op: AlgebraicSubjectSet_Operation): TreeOperation { return (["unspecified", "union", "intersection", "exclusion"] as const)[op] ?? "unspecified"; }
 /** @internal */
@@ -754,9 +1084,10 @@ export function resolvedSubjectFromProto(v?: ProtoResolvedSubject): ResolvedSubj
  * Maps a proto `LookupResourcesResponse` to its native equivalent.
  * @internal
  */
-export function fromProtoLookupResource(resp: ProtoLookupResourcesResponse): LookupResource {
+export function fromProtoLookupResource(resp: ProtoLookupResourcesResponse, cursor = resp.afterResultCursor?.token): LookupResource {
     return {
         resourceId: resp.resourceObjectId,
+        ...(cursor ? { afterResultCursor: cursor } : {}),
         permissionship: permissionshipFromProto(resp.permissionship),
         partialCaveat: partialCaveatFromProto(resp.partialCaveatInfo),
         lookedUpAt: serverToken(resp.lookedUpAt?.token),

@@ -50,6 +50,7 @@ var wantExamples = []string{
 	"read_relationships",
 	"retry_policy",
 	"schema_management",
+	"tooling_escape_hatches",
 	"unrepresentable_values",
 	"watch_changes",
 	"write_relationships",

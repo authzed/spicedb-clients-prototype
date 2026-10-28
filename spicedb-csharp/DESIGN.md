@@ -237,6 +237,11 @@
 
 - **Document the path off Authzed.Net and keep dependency floors low.**
   - `MIGRATION.md` covers moving from `Authzed.Net`, with before/after snippets.
+  - `AI_INTEGRATION_GUIDE.md` is the concrete C# guide for AI coding agents (native tier
+    for all code until a C# generator exists, fail-closed checks, atomic writes, paging,
+    tooling options, errors, the in-memory double). The `SpiceDBClient` doc comment and
+    `examples/README.md` point to it. Every snippet is compiled against the current API
+    (extracted into a throwaway project) whenever the guide or the APIs it shows change.
   - `SpiceDB.Client` and `SpiceDB.Proto` declare exact lowest working versions
     (`Grpc.Net.Client`/`Grpc.Core.Api`/`Grpc.StatusProto` 2.80.0, `Google.Protobuf`
     3.34.1, `Google.Api.CommonProtos` 2.17.0, matching `Authzed.Net` 1.6.0) instead of

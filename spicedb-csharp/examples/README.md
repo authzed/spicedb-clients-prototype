@@ -1,5 +1,9 @@
 # spicedb-csharp Examples
 
+For how to integrate this client into an application (and guidance for AI coding agents),
+see [../AI_INTEGRATION_GUIDE.md](../AI_INTEGRATION_GUIDE.md); for moving off Authzed.Net, see
+[../MIGRATION.md](../MIGRATION.md).
+
 Each subdirectory is a standalone xUnit test project that also serves as an
 integration test.
 

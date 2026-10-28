@@ -10,7 +10,11 @@ using MaterializeV0 = Authzed.Api.Materialize.V0;
 [assembly: InternalsVisibleTo("SpiceDB.Client.Tests")]
 namespace SpiceDB.Client;
 
-/// <summary>Native asynchronous SpiceDB API. RawProto is the authenticated secondary protocol escape hatch.</summary>
+/// <summary>
+/// Native asynchronous SpiceDB API. RawProto is the authenticated secondary protocol escape hatch.
+/// Integrating with an AI coding agent? Start with spicedb-csharp/AI_INTEGRATION_GUIDE.md: tier
+/// choice, fail-closed checks, atomic writes, paging, tooling options, errors and test doubles.
+/// </summary>
 public sealed partial class SpiceDBClient : IAsyncDisposable, ISpiceDBRelationshipClient
 {
     public static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(30);

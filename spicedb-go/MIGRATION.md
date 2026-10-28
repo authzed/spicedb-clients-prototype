@@ -28,15 +28,15 @@ work without it.
 ```go
 // authzed-go
 c, err := authzed.NewClient("spicedb:50051",
-	grpcutil.WithInsecureBearerToken("key"),
-	grpc.WithTransportCredentials(insecure.NewCredentials()))
+    grpcutil.WithInsecureBearerToken("key"),
+    grpc.WithTransportCredentials(insecure.NewCredentials()))
 
 // gochugaru
 c, err := client.NewPlaintext("spicedb:50051", "key")
 
 // spicedb-go
 c, err := client.NewPlaintext("spicedb:50051", "key",
-	client.WithRemotePlaintextCredentials(client.RemotePlaintextAllowed))
+    client.WithRemotePlaintextCredentials(client.RemotePlaintextAllowed))
 ```
 
 `NewSystemTLS` uses the system trust store. `NewWithOpts` with
@@ -66,9 +66,9 @@ Tools with their own policy should not stack it on the client's:
 
 ```go
 c, err := client.NewPlaintext(endpoint, key,
-	client.WithDefaultDeadline(client.DefaultDeadlineDisabled), // no 30s budget
-	client.WithRetries(client.RetriesDisabled),                  // or WithRetryPolicy(...)
-	client.WithStreamRetries(client.StreamRetriesDisabled))     // e.g. never reopen Watch
+    client.WithDefaultDeadline(client.DefaultDeadlineDisabled), // no 30s budget
+    client.WithRetries(client.RetriesDisabled),                  // or WithRetryPolicy(...)
+    client.WithStreamRetries(client.StreamRetriesDisabled))     // e.g. never reopen Watch
 ```
 
 ## Checks
@@ -83,19 +83,19 @@ is not a grant: `result.Permissionship` and `result.MissingContext` say why.
 ```go
 // authzed-go
 resp, err := c.CheckPermission(ctx, &v1.CheckPermissionRequest{
-	Consistency: &v1.Consistency{Requirement: &v1.Consistency_FullyConsistent{FullyConsistent: true}},
-	Resource:    &v1.ObjectReference{ObjectType: "document", ObjectId: "readme"},
-	Permission:  "view",
-	Subject:     &v1.SubjectReference{Object: &v1.ObjectReference{ObjectType: "user", ObjectId: "alice"}},
+    Consistency: &v1.Consistency{Requirement: &v1.Consistency_FullyConsistent{FullyConsistent: true}},
+    Resource:    &v1.ObjectReference{ObjectType: "document", ObjectId: "readme"},
+    Permission:  "view",
+    Subject:     &v1.SubjectReference{Object: &v1.ObjectReference{ObjectType: "user", ObjectId: "alice"}},
 })
 allowed := resp.Permissionship == v1.CheckPermissionResponse_PERMISSIONSHIP_HAS_PERMISSION
 
 // spicedb-go
 result, err := c.Check(ctx, client.PermissionCheck{
-	Resource:    rel.MustNewObject("document", "readme"),
-	Permission:  "view",
-	Subject:     rel.MustNewSubject(rel.MustNewObject("user", "alice"), ""),
-	Consistency: consistency.Full(),
+    Resource:    rel.MustNewObject("document", "readme"),
+    Permission:  "view",
+    Subject:     rel.MustNewSubject(rel.MustNewObject("user", "alice"), ""),
+    Consistency: consistency.Full(),
 })
 allowed := result.HasPermission()
 ```

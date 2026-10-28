@@ -58,7 +58,7 @@ silently.
 ```go
 c, err := client.NewSystemTLS("spicedb.example.com:443", os.Getenv("SPICEDB_TOKEN"))
 if err != nil {
-	return err
+    return err
 }
 defer c.Close()
 tc := permissions.NewTypedClient(c) // tc also has every native method
@@ -73,9 +73,9 @@ SpiceDB's test server); `Close` leaves that connection open.
 
 ```go
 result, err := permissions.Check(ctx, tc, consistency.MinLatency(),
-	permissions.Organization(orgID).View(), permissions.User(userID))
+    permissions.Organization(orgID).View(), permissions.User(userID))
 if err != nil || !result.HasPermission() {
-	return ErrForbidden // errors and Conditional results both deny
+    return ErrForbidden // errors and Conditional results both deny
 }
 ```
 
@@ -86,8 +86,8 @@ if err != nil || !result.HasPermission() {
 
 ```go
 results, err := permissions.CheckBulk(ctx, tc, consistency.MinLatency(),
-	permissions.ChecksFor(permissions.User(userID),
-		permissions.Organization("a").View(), permissions.Organization("b").View()))
+    permissions.ChecksFor(permissions.User(userID),
+        permissions.Organization("a").View(), permissions.Organization("b").View()))
 // results[i] matches input i; only results[i].HasPermission() grants.
 ```
 
@@ -103,12 +103,12 @@ perm, err := permissions.Organization(orgID).PermissionByName(name) // errors.Is
 
 ```go
 for res, err := range permissions.LookupResources(ctx, tc, consistency.MinLatency(),
-	permissions.Organization_View, permissions.User(userID),
-	client.WithLookupResourcesPermissionshipFilter(client.LookupHasPermissionOnly)) {
-	if err != nil {
-		return err
-	}
-	ids = append(ids, res.ResourceID)
+    permissions.Organization_View, permissions.User(userID),
+    client.WithLookupResourcesPermissionshipFilter(client.LookupHasPermissionOnly)) {
+    if err != nil {
+        return err
+    }
+    ids = append(ids, res.ResourceID)
 }
 ```
 
@@ -118,12 +118,12 @@ Omit the filter only if you handle `Conditional` results explicitly.
 
 ```go
 txn := (&permissions.Txn{}).
-	MustMatch(permissions.WithSubject(permissions.Organization(orgID).AdminFilter(), permissions.User(otherAdmin))). // invariant: another admin remains
-	Delete(permissions.Organization(orgID).Admin(permissions.User(userID))).
-	Touch(permissions.Organization(orgID).Member(permissions.User(userID)))
+    MustMatch(permissions.WithSubject(permissions.Organization(orgID).AdminFilter(), permissions.User(otherAdmin))). // invariant: another admin remains
+    Delete(permissions.Organization(orgID).Admin(permissions.User(userID))).
+    Touch(permissions.Organization(orgID).Member(permissions.User(userID)))
 written, err := tc.WriteTxn(ctx, txn) // the first construction error surfaces here, before any RPC
 if errors.Is(err, client.ErrFailedPrecondition) {
-	return ErrLastAdmin
+    return ErrLastAdmin
 }
 ```
 
@@ -136,13 +136,13 @@ if errors.Is(err, client.ErrFailedPrecondition) {
 
 ```go
 for r, err := range tc.ReadRelationships(ctx, client.ReadRelationshipsRequest{
-	Filter:      permissions.Organization(orgID).AdminFilter(),
-	Consistency: consistency.MinLatency(),
+    Filter:      permissions.Organization(orgID).AdminFilter(),
+    Consistency: consistency.MinLatency(),
 }) {
-	if err != nil {
-		return err
-	}
-	admins = append(admins, r.SubjectID())
+    if err != nil {
+        return err
+    }
+    admins = append(admins, r.SubjectID())
 }
 ```
 
@@ -155,17 +155,17 @@ Each item also carries `r.AfterResultCursor` and `r.ReadAt`. To resume, pass
 r := rel.MustFromTuple("document:readme#viewer@user:alice") // constants and tests only
 var txn rel.Txn
 if err := txn.Touch(r); err != nil {
-	return err
+    return err
 }
 written, err := c.Write(ctx, client.WriteRequest{Transaction: txn})
 ```
 
 ```go
 result, err := c.Check(ctx, client.PermissionCheck{
-	Resource:    rel.MustNewObject("document", "readme"),
-	Permission:  "view",
-	Subject:     rel.MustNewSubject(rel.MustNewObject("user", "alice"), ""),
-	Consistency: consistency.AtLeast(written.Revision),
+    Resource:    rel.MustNewObject("document", "readme"),
+    Permission:  "view",
+    Subject:     rel.MustNewSubject(rel.MustNewObject("user", "alice"), ""),
+    Consistency: consistency.AtLeast(written.Revision),
 })
 ```
 
@@ -196,8 +196,8 @@ including raw status errors. Forward `(*client.Error).ServerMessage`, not
 ```go
 store := clienttest.NewStore(rel.MustFromTuple("organization:acme#admin@user:alice"))
 store.SetCheckResult(rel.MustNewObject("organization", "acme"), "view",
-	rel.MustNewSubject(rel.MustNewObject("user", "alice"), ""),
-	client.CheckResult{Permissionship: client.PermissionshipHasPermission})
+    rel.MustNewSubject(rel.MustNewObject("user", "alice"), ""),
+    client.CheckResult{Permissionship: client.PermissionshipHasPermission})
 ```
 
 Depend on a small interface of the `*client.Client` methods you use; both

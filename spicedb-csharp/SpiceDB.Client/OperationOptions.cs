@@ -7,6 +7,14 @@ public sealed class CallOptions
     public TimeSpan? Timeout { get; init; }
     /// <summary>Per-call transport escape hatch: request headers, call credentials and response metadata capture.</summary>
     public TransportOptions? Transport { get; init; }
+    /// <summary>
+    /// Overrides the client's retry policy for this call only, including reopening a stream
+    /// before its first item (whatever <see cref="ClientOptions.StreamRetries"/> says).
+    /// <see cref="Client.RetryPolicy.None"/> exempts this call. Mutations stay single-attempt
+    /// unless they opt in here, which only touch-only writes without preconditions and schema
+    /// writes may; other mutations reject a policy with retries before any request.
+    /// </summary>
+    public RetryPolicy? RetryPolicy { get; init; }
     private IReadOnlyList<SchemaFilter> _schemaFilters = Array.Empty<SchemaFilter>();
     public IReadOnlyList<SchemaFilter> SchemaFilters { get => _schemaFilters; init => _schemaFilters = Native.List(value); }
     public string? DefinitionNameFilter { get; init; }
@@ -65,7 +73,7 @@ public sealed class ClientOptions
     private Retries _retries;
     /// <summary><see cref="Client.Retries.Disabled"/> makes every operation a single attempt, for callers that apply their own policy.</summary>
     public Retries Retries { get => _retries; init => _retries = BehaviorOptions.Defined(value, nameof(Retries)); }
-    /// <summary>The retry policy for idempotent reads. Null uses <see cref="Client.RetryPolicy.Default"/>. Mutations never retry under any policy.</summary>
+    /// <summary>The retry policy for idempotent reads. Null uses <see cref="Client.RetryPolicy.Default"/>. Mutations never retry under the client-wide policy; each options type's <c>RetryPolicy</c> overrides it per call.</summary>
     public RetryPolicy? RetryPolicy { get; init; }
     private StreamRetries _streamRetries;
     /// <summary><see cref="Client.StreamRetries.Disabled"/> opens each server stream (reads, lookups, exports, watch) exactly once.</summary>
@@ -87,13 +95,18 @@ public enum StreamRetries { Enabled, Disabled }
 public sealed record RetryEvent(string Operation, int Attempt, SpiceDBException Error, TimeSpan Delay);
 
 /// <summary>
-/// Retry policy for idempotent reads. Writes, deletes, imports and counter registration are
-/// never retried, whatever the policy says.
+/// Retry policy for idempotent reads, set client-wide (<see cref="ClientOptions.RetryPolicy"/>)
+/// or per call (each options type's <c>RetryPolicy</c>). Mutations are never replayed
+/// automatically: only a touch-only write without preconditions and a schema write may opt in
+/// per call; deletes, creates, preconditioned writes, imports and counter registration reject
+/// the opt-in before any request.
 /// </summary>
 public sealed class RetryPolicy
 {
     /// <summary>Three retries of Unavailable and Aborted, full-jitter backoff starting at 100ms.</summary>
     public static RetryPolicy Default { get; } = new();
+    /// <summary>No retries. As a per-call override it exempts one call (such as a supervised watch) while the client retries everything else.</summary>
+    public static RetryPolicy None { get; } = new() { MaxRetries = 0 };
     /// <summary>Retries after the first attempt. Zero disables retries.</summary>
     public int MaxRetries { get; init; } = 3;
     private IReadOnlyList<StatusCode> _codes = [StatusCode.Unavailable, StatusCode.Aborted];
@@ -111,19 +124,51 @@ public sealed class RetryPolicy
             : this;
 }
 
+/// <summary>How a paged read fetches results.</summary>
+public enum Paging
+{
+    /// <summary>Fetches page after page of <c>PageSize</c> until results or <c>Limit</c> run out. The default.</summary>
+    Automatic,
+    /// <summary>
+    /// Sends exactly one request, as the raw API does: its limit is <c>Limit</c> (unbounded
+    /// when null), <c>PageSize</c> is ignored, and no follow-up page is requested. Each item
+    /// still carries its after-result cursor.
+    /// </summary>
+    SingleRequest,
+}
+
 public sealed class ReadOptions
 {
     public TimeSpan? Timeout { get; init; }
     public TransportOptions? Transport { get; init; }
+    /// <summary>
+    /// Overrides the client's retry policy for this call only, including reopening a stream
+    /// before its first item (whatever <see cref="ClientOptions.StreamRetries"/> says).
+    /// <see cref="Client.RetryPolicy.None"/> exempts this call. Mutations stay single-attempt
+    /// unless they opt in here, which only touch-only writes without preconditions and schema
+    /// writes may; other mutations reject a policy with retries before any request.
+    /// </summary>
+    public RetryPolicy? RetryPolicy { get; init; }
     /// <summary>Relationships per page (default 512). Every page repeats this size and the caller's consistency.</summary>
     public int PageSize { get; init; } = 512; public int? Limit { get; init; }
     /// <summary>Resumes after the item whose <see cref="ReadRelationship.AfterResultCursor"/> this is. Repeat the request, consistency and page size.</summary>
     public string? ResumeCursor { get; init; }
+    private Paging _paging;
+    /// <summary><see cref="Client.Paging.SingleRequest"/> sends one request like the raw API, with <see cref="Limit"/> (or no limit) and no follow-up page.</summary>
+    public Paging Paging { get => _paging; init => _paging = BehaviorOptions.Defined(value, nameof(Paging)); }
 }
 public sealed class ExportOptions
 {
     public TimeSpan? Timeout { get; init; }
     public TransportOptions? Transport { get; init; }
+    /// <summary>
+    /// Overrides the client's retry policy for this call only, including reopening a stream
+    /// before its first item (whatever <see cref="ClientOptions.StreamRetries"/> says).
+    /// <see cref="Client.RetryPolicy.None"/> exempts this call. Mutations stay single-attempt
+    /// unless they opt in here, which only touch-only writes without preconditions and schema
+    /// writes may; other mutations reject a policy with retries before any request.
+    /// </summary>
+    public RetryPolicy? RetryPolicy { get; init; }
     public int PageSize { get; init; } = 512; public int? Limit { get; init; }
     /// <summary>Resumes after the response whose <see cref="ExportedRelationship.AfterResultCursor"/> this is. Repeat the request and page size.</summary>
     public string? ResumeCursor { get; init; }
@@ -132,6 +177,14 @@ public sealed class ImportOptions
 {
     public TimeSpan? Timeout { get; init; }
     public TransportOptions? Transport { get; init; }
+    /// <summary>
+    /// Overrides the client's retry policy for this call only, including reopening a stream
+    /// before its first item (whatever <see cref="ClientOptions.StreamRetries"/> says).
+    /// <see cref="Client.RetryPolicy.None"/> exempts this call. Mutations stay single-attempt
+    /// unless they opt in here, which only touch-only writes without preconditions and schema
+    /// writes may; other mutations reject a policy with retries before any request.
+    /// </summary>
+    public RetryPolicy? RetryPolicy { get; init; }
     /// <summary>Relationships per stream message (default 1,000). One import call is one stream and one transaction; make several calls for several transactions.</summary>
     public int BatchSize { get; init; } = 1000;
 }
@@ -139,6 +192,14 @@ public sealed class WatchOptions
 {
     public TimeSpan? Timeout { get; init; }
     public TransportOptions? Transport { get; init; }
+    /// <summary>
+    /// Overrides the client's retry policy for this call only, including reopening a stream
+    /// before its first item (whatever <see cref="ClientOptions.StreamRetries"/> says).
+    /// <see cref="Client.RetryPolicy.None"/> exempts this call. Mutations stay single-attempt
+    /// unless they opt in here, which only touch-only writes without preconditions and schema
+    /// writes may; other mutations reject a policy with retries before any request.
+    /// </summary>
+    public RetryPolicy? RetryPolicy { get; init; }
     private WatchContent _content = WatchContent.Relationships;
     public WatchContent Content { get => _content; init => _content = BehaviorOptions.Content(value); }
     private IReadOnlyList<Filter> _relationshipFilters = Array.Empty<Filter>();
@@ -148,6 +209,14 @@ public sealed class WriteOptions
 {
     public TimeSpan? Timeout { get; init; }
     public TransportOptions? Transport { get; init; }
+    /// <summary>
+    /// Overrides the client's retry policy for this call only, including reopening a stream
+    /// before its first item (whatever <see cref="ClientOptions.StreamRetries"/> says).
+    /// <see cref="Client.RetryPolicy.None"/> exempts this call. Mutations stay single-attempt
+    /// unless they opt in here, which only touch-only writes without preconditions and schema
+    /// writes may; other mutations reject a policy with retries before any request.
+    /// </summary>
+    public RetryPolicy? RetryPolicy { get; init; }
     private IReadOnlyDictionary<string, object?>? _metadata; public IReadOnlyDictionary<string, object?>? Metadata { get => _metadata; init => _metadata = Native.Context(value); }
 }
 
@@ -165,6 +234,14 @@ public sealed class DeleteOptions
     private IReadOnlyDictionary<string, object?>? _metadata; public IReadOnlyDictionary<string, object?>? Metadata { get => _metadata; init => _metadata = Native.Context(value); }
     public TimeSpan? Timeout { get; init; }
     public TransportOptions? Transport { get; init; }
+    /// <summary>
+    /// Overrides the client's retry policy for this call only, including reopening a stream
+    /// before its first item (whatever <see cref="ClientOptions.StreamRetries"/> says).
+    /// <see cref="Client.RetryPolicy.None"/> exempts this call. Mutations stay single-attempt
+    /// unless they opt in here, which only touch-only writes without preconditions and schema
+    /// writes may; other mutations reject a policy with retries before any request.
+    /// </summary>
+    public RetryPolicy? RetryPolicy { get; init; }
     private PartialDeletion _partial;
     /// <summary><see cref="PartialDeletion.Disallowed"/> makes the delete all-or-nothing.</summary>
     public PartialDeletion Partial { get => _partial; init => _partial = BehaviorOptions.Defined(value, nameof(Partial)); }
@@ -178,6 +255,14 @@ public sealed class DeleteAllOptions
     private IReadOnlyDictionary<string, object?>? _metadata; public IReadOnlyDictionary<string, object?>? Metadata { get => _metadata; init => _metadata = Native.Context(value); }
     public TimeSpan? Timeout { get; init; }
     public TransportOptions? Transport { get; init; }
+    /// <summary>
+    /// Overrides the client's retry policy for this call only, including reopening a stream
+    /// before its first item (whatever <see cref="ClientOptions.StreamRetries"/> says).
+    /// <see cref="Client.RetryPolicy.None"/> exempts this call. Mutations stay single-attempt
+    /// unless they opt in here, which only touch-only writes without preconditions and schema
+    /// writes may; other mutations reject a policy with retries before any request.
+    /// </summary>
+    public RetryPolicy? RetryPolicy { get; init; }
     public int PageSize { get; init; } = 1000;
     public string? ResumeCursor { get; init; }
     /// <summary>

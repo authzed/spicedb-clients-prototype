@@ -46,6 +46,8 @@ public sealed class PermissionSetLookupOptions
 {
     public TimeSpan? Timeout { get; init; }
     public TransportOptions? Transport { get; init; }
+    /// <summary>Overrides the client's retry policy for this call only, including reopening the stream before its first item. <see cref="Client.RetryPolicy.None"/> exempts it.</summary>
+    public RetryPolicy? RetryPolicy { get; init; }
     public PermissionSetCursor? ResumeCursor { get; init; }
 }
 public sealed partial class SpiceDBClient
@@ -53,7 +55,7 @@ public sealed partial class SpiceDBClient
     /// <summary>Experimental materialize count by relationship filter.</summary>
     public async Task<CountResult> ExperimentalCountRelationshipsByFilterAsync(Filter filter, CallOptions? options = null, CancellationToken cancellationToken = default)
     {
-        using var budget = Begin(options?.Timeout, cancellationToken, transport: options?.Transport);
+        using var budget = Begin(options?.Timeout, cancellationToken, transport: options?.Transport, retry: options?.RetryPolicy);
         options?.Validate();
         var response = await Unary(budget, o => RawProto().MaterializeRelationships.ExperimentalCountRelationshipsByFilterAsync(new() { RelationshipFilter = filter.ToProto() }, o.Headers, o.Deadline, o.CancellationToken));
         return new() { RelationshipCount = response.RelationshipCount, Revision = new(response.ReadAt?.Token ?? "") };
@@ -61,7 +63,7 @@ public sealed partial class SpiceDBClient
     /// <summary>Experimental materialized permission-set watch. Dispose the enumerator to release the call.</summary>
     public async IAsyncEnumerable<PermissionSetEvent> ExperimentalWatchPermissionSetsAsync(ZedToken? startRevision, CallOptions? options = null, [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        using var budget = Begin(options?.Timeout, cancellationToken, false, transport: options?.Transport);
+        using var budget = Begin(options?.Timeout, cancellationToken, false, transport: options?.Transport, retry: options?.RetryPolicy);
         options?.Validate();
         var request = new M.WatchPermissionSetsRequest { OptionalStartingAfter = startRevision is { } token ? new() { Token = token.Value } : null };
         await foreach (var response in Stream(budget, o => RawProto().MaterializePermissionSets.WatchPermissionSets(request, o.Headers, o.Deadline, o.CancellationToken)))
@@ -77,7 +79,7 @@ public sealed partial class SpiceDBClient
     /// <summary>Experimental explicit single-page lookup. Retain the last cursor to request the next page.</summary>
     public async IAsyncEnumerable<LookupPermissionSet> ExperimentalLookupPermissionSetsAsync(int limit, ZedToken? atRevision, PermissionSetLookupOptions? options = null, [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        using var budget = Begin(options?.Timeout, cancellationToken, false, transport: options?.Transport);
+        using var budget = Begin(options?.Timeout, cancellationToken, false, transport: options?.Transport, retry: options?.RetryPolicy);
         var request = new M.LookupPermissionSetsRequest { Limit = (uint)Positive(limit, nameof(limit)), OptionalAtRevision = atRevision is { } token ? new() { Token = token.Value } : null, OptionalStartingAfterCursor = options?.ResumeCursor?.ToProto() };
         await foreach (var response in Stream(budget, o => RawProto().MaterializePermissionSets.LookupPermissionSets(request, o.Headers, o.Deadline, o.CancellationToken)))
             yield return new(response.Change is null ? null : MapSetChange(response.Change), PermissionSetCursor.FromProto(response.Cursor));
@@ -85,7 +87,7 @@ public sealed partial class SpiceDBClient
     /// <summary>Experimental download metadata; returned URLs are not fetched automatically.</summary>
     public async Task<DownloadPermissionSetsResult> ExperimentalDownloadPermissionSetsAsync(ZedToken? atRevision, CallOptions? options = null, CancellationToken cancellationToken = default)
     {
-        using var budget = Begin(options?.Timeout, cancellationToken, transport: options?.Transport);
+        using var budget = Begin(options?.Timeout, cancellationToken, transport: options?.Transport, retry: options?.RetryPolicy);
         options?.Validate();
         var request = new M.DownloadPermissionSetsRequest { OptionalAtRevision = atRevision is { } token ? new() { Token = token.Value } : null };
         var response = await Unary(budget, o => RawProto().MaterializePermissionSets.DownloadPermissionSetsAsync(request, o.Headers, o.Deadline, o.CancellationToken));

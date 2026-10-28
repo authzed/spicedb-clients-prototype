@@ -377,9 +377,7 @@ public class AdoptionNativeTests
             DebugTrace = new() { SchemaUsed = "schema", Check = new() { Permission = "view", PermissionType = Authzed.Api.V1.CheckDebugTrace.Types.PermissionType.Permission, Result = Authzed.Api.V1.CheckDebugTrace.Types.Permissionship.HasPermission, Resource = new() { ObjectType = "document", ObjectId = "1" }, Subject = new() { Object = new() { ObjectType = "user", ObjectId = "a" } }, SubProblems = new() { Traces = { new Authzed.Api.V1.CheckDebugTrace { Permission = "viewer", WasCachedResult = false } } }, TraceOperationId = "op", Source = "src" } },
         };
         ProtoConvert.ToProto(ProtoConvert.FromProto(wire)).Should().Be(wire);
-        var lookup = new LookupSubjectsResponse { LookedUpAt = new() { Token = "r" }, Subject = new() { SubjectObjectId = "*", Permissionship = Authzed.Api.V1.LookupPermissionship.HasPermission } };
-        lookup.ExcludedSubjects.Add(new Authzed.Api.V1.ResolvedSubject { SubjectObjectId = "bob", Permissionship = Authzed.Api.V1.LookupPermissionship.HasPermission });
-        ProtoConvert.ToProto(ProtoConvert.FromProto(lookup)).Should().Be(lookup);
+        // LookupSubjectsResponse round trips are in PerCallRetryAndPagingTests, with the deprecated fields SpiceDB still sends.
         var expand = new ExpandPermissionTreeResponse { ExpandedAt = new() { Token = "r" }, TreeRoot = new() { ExpandedRelation = "view", ExpandedObject = new() { ObjectType = "document", ObjectId = "1" }, Intermediate = new() { Operation = AlgebraicSubjectSet.Types.Operation.Union, Children = { new PermissionRelationshipTree { ExpandedRelation = "viewer", Leaf = new() { Subjects = { new SubjectReference { Object = new() { ObjectType = "user", ObjectId = "a" } } } } } } } } };
         ProtoConvert.ToProto(ProtoConvert.FromProto(expand)).Should().Be(expand);
         var read = new ReadRelationshipsResponse { Relationship = Relationship.FromTuple("document:1#viewer@user:a").ToProto(), ReadAt = new() { Token = "r" }, AfterResultCursor = new() { Token = "c" } };

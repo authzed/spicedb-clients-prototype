@@ -118,7 +118,11 @@ catch (FailedPreconditionException) { throw new LastAdminException(); }
   (`new Relationship(resource, relation, subject)`); SpiceDB deletes by identity.
 - Delete what you just read: `txn.Delete(item.Relationship)`.
 - **Do not retry a failed write blindly**; it may have committed. The client never
-  retries writes, deletes or imports.
+  retries writes, deletes or imports on its own. A write of only touches without
+  preconditions (and a schema write) is idempotent and may opt in per call with
+  `new WriteOptions { RetryPolicy = ... }`; other mutations reject that option.
+- An empty `Transaction` is sent: SpiceDB checks its preconditions and returns the current
+  revision.
 
 ## Read relationships
 
@@ -137,7 +141,9 @@ await foreach (var item in client.ReadRelationshipsAsync(Consistency.MinLatency(
 Each item also carries `item.ReadAt`. To resume, pass
 `new ReadOptions { PageSize = 500, ResumeCursor = cursor }` with the **same request,
 consistency and page size**. `LookupResourcesAsync` and `ExportRelationshipsAsync` work
-the same way.
+the same way. To send exactly one request like the raw API (limit = `Limit` or unbounded,
+no follow-up page), set `Paging = Paging.SingleRequest` on `ReadOptions` or
+`LookupOptions`.
 
 ## Schema-agnostic code (native tier)
 
@@ -158,15 +164,19 @@ await using var tool = SpiceDBClient.CreateSystemTls(endpoint, token, new Client
 {
     Retries = Retries.Disabled,                // or RetryPolicy = new RetryPolicy { ..., OnRetry = e => log(e) }
     DefaultDeadline = DefaultDeadline.Disabled, // the caller's token and per-call Timeout still apply
-    StreamRetries = StreamRetries.Disabled,     // never reopen a supervised watch
+    StreamRetries = StreamRetries.Disabled,     // never reopen any stream
 });
+// Or keep client-wide retries and exempt one supervised watch:
+await foreach (var e in tool.UpdatesAsync([], null, new WatchOptions { RetryPolicy = RetryPolicy.None }, ct)) { /* ... */ }
 var metadata = new ResponseMetadata();
 await tool.ReadSchemaAsync(new SpiceDB.Client.CallOptions { Transport = new TransportOptions { ResponseMetadata = metadata } }, ct);
 var trailers = metadata.Trailers; // headers and trailers of the last RPC
 ```
 
 Protocol-shaped output (JSON, backups): `ProtoConvert.ToProto(relationship)` in
-`SpiceDB.Client.Protocol`, then `Google.Protobuf.JsonFormatter`. Use `RawProto()` only
+`SpiceDB.Client.Protocol`, then `Google.Protobuf.JsonFormatter`. Responses convert to the
+server's exact wire shape, including `ProtoConvert.ToCheckBulkResponse(requests, results, options)`
+for a whole bulk check with per-item error statuses. Use `RawProto()` only
 when no native operation or option covers the need.
 
 ## Errors
@@ -201,9 +211,13 @@ ISpiceDBRelationshipClient authz = fake; // production code takes the same inter
 ```
 
 Inject `ISpiceDBRelationshipClient` (checks, bulk checks, writes, reads, bounded and
-complete deletes) where code under test talks to SpiceDB; both `SpiceDBClient` and
-`InMemorySpiceDBClient` implement it with identical signatures. The double applies
-preconditions, CREATE conflicts and SpiceDB filter semantics (`Filter.Matches`);
-unregistered checks return `NoPermission`. Build expected errors with
+complete deletes, imports, exports) and `ISpiceDBSchemaClient` (read, write and reflect
+schema) where code under test talks to SpiceDB; both `SpiceDBClient` and
+`InMemorySpiceDBClient` implement them with identical signatures. The double applies
+preconditions, CREATE conflicts, one-transaction imports and SpiceDB filter semantics
+(`Filter.Matches`), honors cursors, limits and response-metadata sinks
+(`SetResponseMetadata`), and throws the same exception types and messages as the real
+client; unregistered checks return `NoPermission`, and `ReflectSchemaAsync` returns what
+`SetReflectSchemaResult` registered. Build expected errors with
 `SpiceDBException.Create(code, message)`. For integration tests, run
 `authzed/spicedb serve-testing` and assert both granted and denied cases.

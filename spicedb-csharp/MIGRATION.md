@@ -72,7 +72,10 @@ var result = await client.CheckAsync(new PermissionCheck(
 var allowed = result.HasPermission; // only an unconditional grant
 ```
 
-- Consistency is a required argument on every read; there is no implicit default.
+- Consistency is a required argument on every read; there is no implicit default. That
+  includes the schema reads (`ReflectSchemaAsync`, `ComputablePermissionsAsync`,
+  `DependentRelationsAsync`, `DiffSchemaAsync`): where your raw requests left consistency
+  unset, pass `Consistency.MinLatency()`, which is what SpiceDB applies when it is absent.
 - Singular checks call `CheckPermission`. Bulk checks (`CheckBulkAsync`) split into chunks
   of 1,000, validate every echoed item, and throw for the first failed item unless
   `CheckOptions.ItemErrors = BulkItemErrors.Returned`.
@@ -94,9 +97,15 @@ Authzed.Net applied no deadline and no retries.
   new ClientOptions { Retries = Retries.Disabled }
   // or keep the client's retries but log them / add codes
   new ClientOptions { RetryPolicy = new RetryPolicy { RetryableCodes = [StatusCode.Unavailable, StatusCode.ResourceExhausted], OnRetry = e => log(e) } }
-  // and never reopen a supervised watch
+  // and never reopen any stream
   new ClientOptions { StreamRetries = StreamRetries.Disabled }
   ```
+
+  Every options type also takes a per-call `RetryPolicy` that overrides the client's for
+  that call, stream establishment included: `new WatchOptions { RetryPolicy = RetryPolicy.None }`
+  never reopens one supervised watch while everything else keeps retrying, and a policy on a
+  touch-only `WriteAsync` (no preconditions) or on `WriteSchemaAsync` retries those
+  idempotent writes. Other mutations reject the opt-in.
 
 ## Errors
 
@@ -119,7 +128,8 @@ catch (SpiceDBException e) when (e.StatusCode == StatusCode.FailedPrecondition) 
   `RpcException` and cancellation exceptions alike.
 - Local validation failures are `InvalidArgumentException` before any RPC.
 - Test doubles: `SpiceDBException.Create(StatusCode.NotFound, "...")`, or use
-  `SpiceDB.Client.Testing.InMemorySpiceDBClient` behind `ISpiceDBRelationshipClient`.
+  `SpiceDB.Client.Testing.InMemorySpiceDBClient` behind `ISpiceDBRelationshipClient` and
+  `ISpiceDBSchemaClient`.
 
 ## Relationships and reads
 
@@ -138,6 +148,11 @@ await foreach (var item in client.ReadRelationshipsAsync(SpiceDB.Client.Consiste
   and `ToString()` use SpiceDB's tuple syntax.
 - To resume, pass an item's `AfterResultCursor` as `ReadOptions.ResumeCursor` with the
   same request and page size.
+- Raw `ReadRelationships`/`LookupResources` calls without a limit are one unbounded
+  request; this client pages by default. To reproduce the raw call (and its final cursor),
+  set `Paging = Paging.SingleRequest` on `ReadOptions` or `LookupOptions`.
+- An empty transaction is sent like the raw call: SpiceDB checks its preconditions and
+  returns the current revision.
 - Writes take a `Transaction` and return `WriteResult`; read `.Revision`.
 - `DeleteRelationshipsAsync` is one bounded request; `DeleteAllRelationshipsNonAtomicAsync`
   deletes in batches and is not atomic as a whole.

@@ -85,8 +85,13 @@
     `ResourceExhausted`, `InitialBackoff`, `MaxBackoff`, and an `OnRetry` callback receiving
     a `RetryEvent`); `Retries.Disabled` makes every operation one attempt;
     `StreamRetries.Disabled` opens each server stream (reads, lookups, exports, watch) once.
-    Mutations (writes, deletes, imports, counter registration) are never replayed under any
-    policy, and a partially consumed stream is never restarted.
+    Every options type's `RetryPolicy` overrides the client's for one call, stream
+    establishment included (`RetryPolicy.None` exempts one supervised watch; a policy
+    re-enables retries for one call under `Retries.Disabled`). Mutations are never replayed
+    automatically: only a touch-only `WriteAsync` without preconditions and `WriteSchemaAsync`
+    may opt in per call; creates, deletes, preconditioned writes, imports and counter
+    (un)registration reject the opt-in with `InvalidArgumentException` before any request. A
+    partially consumed stream is never restarted.
   - Enumerator disposal, early loop exit, cancellation and client disposal stop
     active transport calls. Imports apply bounded backpressure and cancel and
     dispose producers on early server rejection, producer failure or cancellation.
@@ -104,12 +109,17 @@
     `ExportedRelationship` (relationship, `AfterResultCursor`; export responses carry no
     revision), and `LookupResource` carries `AfterResultCursor` beside `LookedUpAt`.
     `ReadOptions`, `ExportOptions` and `LookupOptions` accept `ResumeCursor`; resuming
-    requires the same request and page size. Cursors are strings, never `ZedToken`. Permission-set lookup is one bounded
+    requires the same request and page size. `ReadOptions.Paging` and `LookupOptions.Paging`
+    = `Paging.SingleRequest` send exactly one request like the raw API (limit = `Limit` or
+    unbounded, page size ignored, no follow-up page); LookupSubjects and roaring lookup
+    reject it. Cursors are strings, never `ZedToken`. Permission-set lookup is one bounded
     page with `PermissionSetLookupOptions.ResumeCursor` for continuation.
   - `Transaction` collects create/touch/delete operations and match/nonmatch
     preconditions, snapshotting them for writes. Metadata remains native JSON.
     `Count` reports the update count without copying; `Updates` (`RelationshipUpdate`) and
     `Preconditions` (native `Precondition` with `PreconditionOperation`) expose snapshots.
+    An empty transaction is sent, as SpiceDB accepts it: the server evaluates its
+    preconditions and returns the current revision.
   - Imports send `ImportOptions.BatchSize` relationships per message (default 1,000). One
     call is one stream and one transaction; callers wanting several transactions make
     several calls. When the server aborts the stream (for example `ALREADY_EXISTS` for a
@@ -183,10 +193,15 @@
     `CancellationToken`, so per-call deadline or token overrides are not exposed.
   - `SpiceDB.Client.Protocol.ProtoConvert` exports native↔protocol conversions: object and
     subject refs, relationships, updates, filters, preconditions, consistency, tokens,
-    `PermissionCheck`→`CheckPermissionRequest`, `Transaction`→`WriteRelationshipsRequest`,
-    and results (`CheckResult` with its recursive trace, `LookupResource`, `LookupSubject`,
+    `PermissionCheck`→`CheckPermissionRequest` or bulk request item
+    (`ToCheckBulkRequestItem`), `Transaction`→`WriteRelationshipsRequest`, and results
+    (`CheckResult` with its recursive trace, `LookupResource`, `LookupSubject`,
     `ExpandResult`/`PermissionTree`, `ReadRelationship`, `WriteResult`). The client uses
-    the same conversions.
+    the same conversions. Responses reproduce the server's wire shape:
+    `ToCheckBulkResponse(requests, results, options)` rebuilds a whole bulk-check response
+    (per-item errors as the server's own `google.rpc.Status`, details included), and a
+    `LookupSubject` fills the deprecated top-level fields SpiceDB still sends. Tests
+    round-trip server responses, including a live lookup-subjects stream.
   - `CheckOptions.ItemErrors = BulkItemErrors.Returned` makes bulk checks return every
     item; a failed item's `CheckResult.Error` holds its typed exception (with `InputIndex`),
     its permissionship is `Unspecified`, and `HasPermission` is false. `Fail` (default)
@@ -201,6 +216,10 @@
     the code. The server's `RpcException` stays the `InnerException`.
   - `ServerMessage` holds the server's status message verbatim (null for local errors);
     `Message` is the display message.
+  - There are no wrapper exception types: a bulk item's error is the item's own typed
+    exception (with `InputIndex`), and deletion progress is attached to the failure itself
+    (`DeleteProgress`). `Status`, `ToRpcException()` and `Message` therefore report the
+    server's message once, never under operation prefixes.
   - Caller cancellation stays a native `OperationCanceledException` carrying the caller's
     token. `SpiceDBException.CodeOf(exception)` classifies any exception: native errors,
     raw `RpcException`s, cancellation (`Cancelled`), `TimeoutException`
@@ -230,10 +249,23 @@
     compile-time constants and tests; there are no separate panicking (`Must*`) variants.
   - `SpiceDB.Client.Testing.InMemorySpiceDBClient` is the in-memory double. It and
     `SpiceDBClient` both implement `ISpiceDBRelationshipClient` (checks, bulk checks,
-    writes, bounded and complete deletes, reads, with identical signatures), because C#
-    cannot apply a caller-defined interface to a sealed class after the fact. It applies
-    preconditions, CREATE conflicts and filters through `Filter.Matches`, and returns
-    registered check results or errors (`SetCheckResult`, `SetCheckError`).
+    writes, bounded and complete deletes, reads, imports, exports) and
+    `ISpiceDBSchemaClient` (read, write and reflect schema), with identical signatures,
+    because C# cannot apply a caller-defined interface to a sealed class after the fact. It
+    applies preconditions, CREATE conflicts, one-transaction imports and filters through
+    `Filter.Matches`, honors cursors, limits and `TransportOptions.ResponseMetadata` sinks
+    (`SetResponseMetadata`), and returns registered check results or errors
+    (`SetCheckResult`, `SetCheckError`) and a registered reflection
+    (`SetReflectSchemaResult`, empty without one, as SpiceDB reflects an empty schema).
+    Its errors have the real client's types, codes and messages for the same failure:
+    server failures carry SpiceDB's message (verified against a live server) and
+    `ErrorInfo` reason, and local validation is an `InvalidArgumentException` with no
+    server message; it rejects per-call mutation retries as the client does.
+  - Options are plain init-only objects, so a test double or wrapper reads them directly;
+    no resolver is needed.
+  - Watch rejects nonempty object types combined with relationship filters because SpiceDB
+    does. Schema reads that take a consistency require it like every other read;
+    `Consistency.MinLatency()` matches the raw API's default.
 
 - **Document the path off Authzed.Net and keep dependency floors low.**
   - `MIGRATION.md` covers moving from `Authzed.Net`, with before/after snippets.

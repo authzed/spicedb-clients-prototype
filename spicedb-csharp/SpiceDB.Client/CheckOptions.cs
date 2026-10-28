@@ -15,6 +15,8 @@ public sealed class CheckOptions
     public IReadOnlyDictionary<string, object?>? Context { get => _context; init => _context = Native.Context(value); }
     public TimeSpan? Timeout { get; init; }
     public TransportOptions? Transport { get; init; }
+    /// <summary>Overrides the client's retry policy for this call only. <see cref="Client.RetryPolicy.None"/> exempts it.</summary>
+    public RetryPolicy? RetryPolicy { get; init; }
     private CheckTracing _tracing;
     public CheckTracing Tracing { get => _tracing; init => _tracing = BehaviorOptions.Defined(value, nameof(Tracing)); }
     private BulkItemErrors _itemErrors;

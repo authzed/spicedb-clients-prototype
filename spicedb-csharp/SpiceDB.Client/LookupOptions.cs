@@ -9,6 +9,8 @@ public sealed class LookupOptions
     public IReadOnlyDictionary<string, object?>? Context { get => _context; init => _context = Native.Context(value); }
     public TimeSpan? Timeout { get; init; }
     public TransportOptions? Transport { get; init; }
+    /// <summary>Overrides the client's retry policy for this call only, including reopening the stream before its first item. <see cref="Client.RetryPolicy.None"/> exempts it.</summary>
+    public RetryPolicy? RetryPolicy { get; init; }
     /// <summary>LookupResources only: resumes after the item whose <see cref="LookupResource.AfterResultCursor"/> this is. Repeat the request and page size.</summary>
     public string? ResumeCursor { get; init; }
     private LookupPermissionshipFilter _permissionshipFilter;
@@ -18,4 +20,7 @@ public sealed class LookupOptions
     public int? PageSize { get; init; }
     public int? Limit { get; init; }
     public string? SubjectRelation { get; init; }
+    private Paging _paging;
+    /// <summary>LookupResources only: <see cref="Client.Paging.SingleRequest"/> sends one request like the raw API, with <see cref="Limit"/> (or no limit) and no follow-up page.</summary>
+    public Paging Paging { get => _paging; init => _paging = BehaviorOptions.Defined(value, nameof(Paging)); }
 }

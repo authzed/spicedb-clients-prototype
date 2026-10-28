@@ -72,5 +72,15 @@ public class LookupResourcesTest
         var rest = new List<LookupResource>();
         await foreach (var r in client.LookupResourcesAsync(Full(), "document", "view", pager, new LookupOptions { PageSize = 2, ResumeCursor = first[2].AfterResultCursor }, default)) rest.Add(r);
         Assert.Equal(7, first.Concat(rest).Select(r => r.ResourceID).Distinct().Count());
+
+        // Single-request mode sends one request like the raw API: the page size is ignored,
+        // the limit (or none) goes on the request, and no follow-up page is fetched.
+        var single = new List<LookupResource>();
+        await foreach (var r in client.LookupResourcesAsync(AtLeast(written.Revision), "document", "view", pager, new LookupOptions { Paging = Paging.SingleRequest, PageSize = 2 }, default)) single.Add(r);
+        Assert.Equal(7, single.Select(r => r.ResourceID).Distinct().Count());
+        var limited = new List<LookupResource>();
+        await foreach (var r in client.LookupResourcesAsync(AtLeast(written.Revision), "document", "view", pager, new LookupOptions { Paging = Paging.SingleRequest, Limit = 3 }, default)) limited.Add(r);
+        Assert.Equal(3, limited.Count);
+        Assert.NotNull(limited[2].AfterResultCursor);
     }
 }

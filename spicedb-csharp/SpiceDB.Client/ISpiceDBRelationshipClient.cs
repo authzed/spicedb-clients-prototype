@@ -14,4 +14,18 @@ public interface ISpiceDBRelationshipClient
     Task<DeleteResult> DeleteRelationshipsAsync(Filter filter, int? limit, DeleteOptions? options = null, CancellationToken cancellationToken = default);
     Task<DeleteResult> DeleteAllRelationshipsNonAtomicAsync(Filter filter, DeleteAllOptions? options = null, CancellationToken cancellationToken = default);
     IAsyncEnumerable<ReadRelationship> ReadRelationshipsAsync(Consistency consistency, Filter filter, ReadOptions? options = null, CancellationToken cancellationToken = default);
+    Task<ulong> ImportRelationshipsAsync(IAsyncEnumerable<Relationship> relationships, ImportOptions? options = null, CancellationToken cancellationToken = default);
+    IAsyncEnumerable<ExportedRelationship> ExportRelationshipsAsync(Consistency consistency, Filter filter, ExportOptions? options = null, CancellationToken cancellationToken = default);
+}
+
+/// <summary>
+/// The schema surface shared by <see cref="SpiceDBClient"/> and
+/// <see cref="Testing.InMemorySpiceDBClient"/>: reading, writing and reflecting the schema.
+/// Signatures match the real client's methods exactly.
+/// </summary>
+public interface ISpiceDBSchemaClient
+{
+    Task<SchemaResult> ReadSchemaAsync(CallOptions? options = null, CancellationToken cancellationToken = default);
+    Task<ZedToken> WriteSchemaAsync(string schema, CallOptions? options = null, CancellationToken cancellationToken = default);
+    Task<ReflectSchemaResult> ReflectSchemaAsync(Consistency consistency, CallOptions? options = null, CancellationToken cancellationToken = default);
 }

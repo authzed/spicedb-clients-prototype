@@ -35,7 +35,7 @@ public sealed class InsecureRemoteHostException : InvalidOperationException
 
 public sealed class SpiceDBProtoClient : IDisposable
 {
-    private readonly GrpcChannel _channel;
+    private readonly GrpcChannel? _channel;
 
     /// <summary>
     /// Whether <see cref="Dispose"/> may tear down <see cref="_channel"/>: true only
@@ -274,6 +274,29 @@ public sealed class SpiceDBProtoClient : IDisposable
     }
 
     /// <summary>
+    /// Creates a proto client over an existing, caller-owned <see cref="CallInvoker"/>, such as
+    /// an in-memory or test-server channel's invoker. Adds no credentials: the invoker already
+    /// carries whatever it needs. <see cref="Dispose"/> never disposes anything behind it.
+    /// </summary>
+    /// <param name="callInvoker">The invoker every service client uses.</param>
+    public SpiceDBProtoClient(CallInvoker callInvoker)
+    {
+        ArgumentNullException.ThrowIfNull(callInvoker);
+        _channel = null;
+        _ownsChannel = false;
+        Permissions = new PermissionsService.PermissionsServiceClient(callInvoker);
+        Schema = new SchemaService.SchemaServiceClient(callInvoker);
+        Watch = new WatchService.WatchServiceClient(callInvoker);
+        Experimental = new ExperimentalService.ExperimentalServiceClient(callInvoker);
+        Materialize = new RoaringLookupResourcesService.RoaringLookupResourcesServiceClient(callInvoker);
+        MaterializeRelationships = new RelationshipsService.RelationshipsServiceClient(callInvoker);
+        MaterializePermissionSets = new WatchPermissionSetsService.WatchPermissionSetsServiceClient(callInvoker);
+#pragma warning disable CS0618
+        MaterializeWatchPermissions = new WatchPermissionsService.WatchPermissionsServiceClient(callInvoker);
+#pragma warning restore CS0618
+    }
+
+    /// <summary>
     /// Disposes the underlying gRPC channel, but only if this client created it.
     /// <para>
     /// A channel passed to <see cref="SpiceDBProtoClient(GrpcChannel, string)"/> is left
@@ -286,7 +309,7 @@ public sealed class SpiceDBProtoClient : IDisposable
     {
         if (_ownsChannel)
         {
-            _channel.Dispose();
+            _channel?.Dispose();
         }
     }
 

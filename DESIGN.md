@@ -147,7 +147,9 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
   - Each client ships an in-memory test double for relationship writes (with
     preconditions and create conflicts), filtered reads and deletes, and
     registered check results. Its surface matches the real client's so one
-    caller-defined interface or protocol accepts both.
+    interface or protocol accepts both: caller-defined where the language is
+    structurally typed (Go, TypeScript, Python protocols), library-provided and
+    implemented by both where it is nominally typed (C#, Java).
   - Languages whose constructors return errors provide panicking/asserting
     variants for compile-time constants and tests, such as Go `Must*`.
   - Relationship accessors offer short paths for the most common fields

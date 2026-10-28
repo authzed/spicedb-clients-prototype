@@ -134,7 +134,7 @@ type's own string conversion.
 | Python | `spicedb-gen --lang python` | `spicedb-python` (`import spicedb`) | not yet |
 | TypeScript | `spicedb-gen --lang typescript` | `@spicedb/client` | not yet |
 | Java | `spicedb-gen --lang java` | `com.authzed` (`spicedb-java`) | not yet |
-| C# | — | `SpiceDB.Client` | not yet |
+| C# | — | `SpiceDB.Client` | [spicedb-csharp/AI_INTEGRATION_GUIDE.md](spicedb-csharp/AI_INTEGRATION_GUIDE.md) |
 | Ruby | — | `spicedb` gem | not yet |
 | Rust | — | `spicedb` crate | not yet |
 

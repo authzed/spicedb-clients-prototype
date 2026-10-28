@@ -13,6 +13,7 @@ module SpiceDB
 
   module Materialize
     def experimental_count_relationships_by_filter(filter, timeout: nil, call_options: nil, retry_policy: nil)
+      retry_policy = operation_retry_policy(:experimental_count_relationships_by_filter, retry_policy)
       budget = unary_budget(timeout, call_options, retry_policy: retry_policy)
       request = Authzed::Api::Materialize::V0::ExperimentalCountRelationshipsByFilterRequest.new(relationship_filter: filter_to_proto(filter))
       response = rpc(@proto_client.materialize_relationships, :experimental_count_relationships_by_filter, request, budget)
@@ -20,6 +21,7 @@ module SpiceDB
     end
 
     def experimental_watch_permission_sets(start_revision: nil, timeout: nil, call_options: nil, retry_policy: nil, &)
+      retry_policy = operation_retry_policy(:experimental_watch_permission_sets, retry_policy)
       request = Authzed::Api::Materialize::V0::WatchPermissionSetsRequest.new(optional_starting_after: token_to_proto(start_revision))
       response_stream(:permission_sets, :watch_permission_sets, request, stream_budget(timeout, call_options, retry_policy: retry_policy),
                       retryable: false,
@@ -28,6 +30,7 @@ module SpiceDB
 
     # One bounded lookup exposes the cursor for explicit durable resumption.
     def experimental_lookup_permission_sets(limit: 1000, at_revision: nil, cursor: nil, timeout: nil, call_options: nil, retry_policy: nil, &)
+      retry_policy = operation_retry_policy(:experimental_lookup_permission_sets, retry_policy)
       positive(limit, 'limit')
       request = Authzed::Api::Materialize::V0::LookupPermissionSetsRequest.new(limit: limit,
                                                                                optional_at_revision: token_to_proto(at_revision),
@@ -44,6 +47,7 @@ module SpiceDB
     end
 
     def experimental_download_permission_sets(at_revision: nil, timeout: nil, call_options: nil, retry_policy: nil)
+      retry_policy = operation_retry_policy(:experimental_download_permission_sets, retry_policy)
       budget = unary_budget(timeout, call_options, retry_policy: retry_policy)
       request = Authzed::Api::Materialize::V0::DownloadPermissionSetsRequest.new(optional_at_revision: token_to_proto(at_revision))
       response = rpc(@proto_client.permission_sets, :download_permission_sets, request, budget)

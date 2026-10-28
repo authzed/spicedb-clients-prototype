@@ -27,7 +27,24 @@ module SpiceDB
     DEFAULT_CHECK_BATCH_SIZE = 1000
     DEFAULT_TIMEOUT_SECONDS = 30
 
-    attr_reader :proto_client, :retry_policy
+    # Every operation's name, as accepted by +operation_retry_policies:+.
+    OPERATIONS = %i[
+      check check_bulk write delete_relationships delete_all_relationships_non_atomic read_relationships lookup_resources
+      lookup_subjects watch read_schema write_schema reflect_schema computable_permissions dependent_relations diff_schema
+      expand_permission_tree import_relationships export_relationships experimental_register_relationship_counter
+      experimental_count_relationships experimental_unregister_relationship_counter experimental_roaring_lookup_resources
+      experimental_count_relationships_by_filter experimental_watch_permission_sets experimental_lookup_permission_sets
+      experimental_download_permission_sets
+    ].freeze
+
+    # Operations that are never idempotent on replay; +operation_retry_policies:+
+    # accepts only a policy without retries for them.
+    NEVER_IDEMPOTENT_OPERATIONS = %i[
+      delete_relationships delete_all_relationships_non_atomic import_relationships
+      experimental_register_relationship_counter experimental_unregister_relationship_counter
+    ].freeze
+
+    attr_reader :proto_client, :retry_policy, :operation_retry_policies
 
     # Operation options shared by every constructor:
     #
@@ -39,6 +56,14 @@ module SpiceDB
     # @param retries [Retries] DISABLED turns off every automatic retry
     # @param stream_retries [StreamRetries] DISABLED never re-establishes a
     #   stream, e.g. for watch
+    # @param operation_retry_policies [Hash{Symbol => RetryPolicy}] the retry
+    #   policy for every call of one operation (keys from OPERATIONS), e.g.
+    #   +{ watch: RetryPolicy.new(max_retries: 0) }+. A call's own
+    #   +retry_policy:+ wins over it, and it wins over the client-wide policy
+    #   (including stream establishment and Retries/StreamRetries::DISABLED).
+    #   For +:write+ it retries only idempotent transactions
+    #   (Transaction#idempotent?) and leaves others unretried; operations in
+    #   NEVER_IDEMPOTENT_OPERATIONS reject a policy with retries.
     def initialize(endpoint:, token:, transport: TransportSecurity::TLS, remote_credentials: RemoteCredentials::LOOPBACK_ONLY,
                    ca_cert: nil, client_cert: nil, client_key: nil, **)
       configure(**)
@@ -78,6 +103,7 @@ module SpiceDB
     end
 
     def check(check, consistency:, context: nil, timeout: nil, tracing: Tracing::DISABLED, call_options: nil, retry_policy: nil)
+      retry_policy = operation_retry_policy(:check, retry_policy)
       budget = unary_budget(timeout, call_options, retry_policy: retry_policy)
       item = check_request(check, context)
       request = Authzed::Api::V1::CheckPermissionRequest.new(**item,
@@ -90,6 +116,7 @@ module SpiceDB
     # on its CheckResult#error (never a grant) instead of failing the call.
     def check_bulk(checks, consistency:, context: nil, timeout: nil, tracing: Tracing::DISABLED,
                    item_errors: BulkItemErrors::RAISED, call_options: nil, retry_policy: nil)
+      retry_policy = operation_retry_policy(:check_bulk, retry_policy)
       tracing = Tracing.validate(tracing)
       return_errors = BulkItemErrors.validate(item_errors) == BulkItemErrors::RETURNED
       budget = unary_budget(timeout, call_options, retry_policy: retry_policy)
@@ -125,11 +152,13 @@ module SpiceDB
     # Writes are never retried by default. A transaction of only touches and
     # no preconditions is idempotent on replay, so one call may opt in with
     # +retry_policy:+; any other transaction given a policy with retries
-    # raises InvalidArgumentError before any request.
+    # raises InvalidArgumentError before any request. A client-wide
+    # +operation_retry_policies:+ entry for +:write+ retries only idempotent
+    # transactions (Transaction#idempotent?) and leaves others unretried.
     def write(transaction, timeout: nil, metadata: nil, call_options: nil, retry_policy: nil)
       raise InvalidArgumentError, 'write: expected Transaction' unless transaction.is_a?(Transaction)
 
-      policy = Retrying.mutation_policy(retry_policy, Retrying.idempotent_write?(transaction), 'write')
+      policy = mutation_retry_policy(:write, retry_policy, transaction.idempotent?)
       budget = unary_budget(timeout, call_options, retry_policy: policy)
       updates = transaction.updates.map do |item|
         Authzed::Api::V1::RelationshipUpdate.new(operation: OPERATION_MAP.fetch(item.operation),
@@ -148,7 +177,7 @@ module SpiceDB
     # +limit+ may be nil to use the server's default.
     def delete_relationships(filter, limit: nil, partial: DeletePartial::ALLOWED, must_match: [], must_not_match: [],
                              timeout: nil, cursor: nil, call_options: nil, retry_policy: nil)
-      Retrying.mutation_policy(retry_policy, false, 'delete_relationships')
+      mutation_retry_policy(:delete_relationships, retry_policy, false)
       DeletePartial.validate(partial)
       positive(limit, 'limit') unless partial == DeletePartial::DISALLOWED && limit.nil?
       budget = unary_budget(timeout, call_options)
@@ -162,7 +191,7 @@ module SpiceDB
     # DeleteResult.
     def delete_all_relationships_non_atomic(filter, page_size: 1000, must_match: [], must_not_match: [], timeout: nil, cursor: nil,
                                             on_progress: nil, call_options: nil, retry_policy: nil)
-      Retrying.mutation_policy(retry_policy, false, 'delete_all_relationships_non_atomic')
+      mutation_retry_policy(:delete_all_relationships_non_atomic, retry_policy, false)
       raise InvalidArgumentError, 'on_progress must respond to call' unless on_progress.nil? || on_progress.respond_to?(:call)
 
       budget = unary_budget(timeout, call_options)
@@ -187,6 +216,7 @@ module SpiceDB
     # one request like the raw API.
     def read_relationships(filter, consistency:, page_size: 1000, limit: nil, timeout: nil, cursor: nil, call_options: nil,
                            retry_policy: nil, paging: Paging::AUTOMATIC, &)
+      retry_policy = operation_retry_policy(:read_relationships, retry_policy)
       request = Authzed::Api::V1::ReadRelationshipsRequest.new(consistency: build_consistency(consistency), relationship_filter: filter_to_proto(filter))
       mapper = lambda do |response, after|
         ReadRelationship.new(relationship: relationship_from_proto(response.relationship), cursor: after,
@@ -199,6 +229,7 @@ module SpiceDB
     def lookup_resources(resource_type:, permission:, subject:, consistency:, context: nil, limit: nil, # rubocop:disable Metrics/ParameterLists
                          page_size: 1000, timeout: nil, permissionship_filter: LookupPermissionshipFilter::ALL, cursor: nil,
                          call_options: nil, retry_policy: nil, paging: Paging::AUTOMATIC, &)
+      retry_policy = operation_retry_policy(:lookup_resources, retry_policy)
       LookupPermissionshipFilter.validate(permissionship_filter)
       request = Authzed::Api::V1::LookupResourcesRequest.new(consistency: build_consistency(consistency),
                                                              resource_object_type: resource_type, permission: permission, subject: subject_to_proto(subject),
@@ -210,6 +241,7 @@ module SpiceDB
 
     def lookup_subjects(resource:, permission:, subject_type:, consistency:, subject_relation: nil,
                         context: nil, timeout: nil, limit: nil, call_options: nil, retry_policy: nil, &)
+      retry_policy = operation_retry_policy(:lookup_subjects, retry_policy)
       request = Authzed::Api::V1::LookupSubjectsRequest.new(consistency: build_consistency(consistency),
                                                             resource: object_to_proto(resource), permission: permission, subject_object_type: subject_type,
                                                             optional_subject_relation: subject_relation || '',
@@ -222,16 +254,19 @@ module SpiceDB
     # Nonempty object_types and filters are mutually exclusive. Include
     # WatchContent::SCHEMA to receive schema-change events
     # (WatchEvent#schema_updated); it combines with CHECKPOINTS. Watch never
-    # re-establishes its stream unless this call passes +retry_policy:+,
-    # which then governs establishment before the first event.
+    # re-establishes its stream unless this call passes +retry_policy:+ (or
+    # the client's +operation_retry_policies:+ sets one for +:watch+), which
+    # then governs establishment before the first event.
     def watch(object_types: [], start_revision: nil, content: [WatchContent::RELATIONSHIPS], filters: [], timeout: nil,
               call_options: nil, retry_policy: nil, &)
+      retry_policy = operation_retry_policy(:watch, retry_policy)
       response_stream(:watch, :watch, watch_request(object_types, start_revision, content,
                                                     filters: filters), stream_budget(timeout, call_options, retry_policy: retry_policy),
                       retryable: false, mapper: method(:watch_event_from_proto), &)
     end
 
     def read_schema(timeout: nil, call_options: nil, retry_policy: nil)
+      retry_policy = operation_retry_policy(:read_schema, retry_policy)
       schema, revision = with_budget(timeout, call_options, operation: :read_schema, retry_policy: retry_policy) { |budget| call_read_schema(budget) }
       SchemaResult.new(schema: schema, revision: revision)
     end
@@ -239,18 +274,20 @@ module SpiceDB
     # Never retried by default; a schema write is idempotent on replay, so one
     # call may opt in with +retry_policy:+.
     def write_schema(schema, timeout: nil, call_options: nil, retry_policy: nil)
-      policy = Retrying.mutation_policy(retry_policy, true, 'write_schema')
+      policy = mutation_retry_policy(:write_schema, retry_policy, true)
       with_budget(timeout, call_options, retryable: !policy.nil?, operation: :write_schema, retry_policy: policy) do |budget|
         call_write_schema(schema, budget)
       end
     end
 
     def reflect_schema(consistency:, filters: [], timeout: nil, call_options: nil, retry_policy: nil)
+      retry_policy = operation_retry_policy(:reflect_schema, retry_policy)
       with_budget(timeout, call_options, operation: :reflect_schema, retry_policy: retry_policy) { |budget| call_reflect_schema(consistency, budget, filters) }
     end
 
     def computable_permissions(definition_name:, relation_name:, consistency:, definition_name_filter: nil, timeout: nil, call_options: nil,
                                retry_policy: nil)
+      retry_policy = operation_retry_policy(:computable_permissions, retry_policy)
       refs, revision = with_budget(timeout, call_options, operation: :computable_permissions, retry_policy: retry_policy) do |budget|
         call_computable_permissions(consistency, definition_name, relation_name, budget, definition_name_filter)
       end
@@ -258,6 +295,7 @@ module SpiceDB
     end
 
     def dependent_relations(definition_name:, permission_name:, consistency:, timeout: nil, call_options: nil, retry_policy: nil)
+      retry_policy = operation_retry_policy(:dependent_relations, retry_policy)
       refs, revision = with_budget(timeout, call_options, operation: :dependent_relations, retry_policy: retry_policy) do |budget|
         call_dependent_relations(consistency, definition_name, permission_name, budget)
       end
@@ -265,6 +303,7 @@ module SpiceDB
     end
 
     def diff_schema(comparison_schema, consistency:, timeout: nil, call_options: nil, retry_policy: nil)
+      retry_policy = operation_retry_policy(:diff_schema, retry_policy)
       diffs, revision = with_budget(timeout, call_options, operation: :diff_schema, retry_policy: retry_policy) do |budget|
         call_diff_schema(consistency, comparison_schema, budget)
       end
@@ -272,6 +311,7 @@ module SpiceDB
     end
 
     def expand_permission_tree(resource:, permission:, consistency:, timeout: nil, call_options: nil, retry_policy: nil)
+      retry_policy = operation_retry_policy(:expand_permission_tree, retry_policy)
       with_budget(timeout, call_options, operation: :expand_permission_tree, retry_policy: retry_policy) do |budget|
         call_expand_permission_tree(consistency, resource.object_type, resource.object_id, permission, budget)
       end
@@ -283,7 +323,7 @@ module SpiceDB
     # example AlreadyExistsError for a duplicate). Never retried; a
     # +retry_policy:+ with retries raises InvalidArgumentError.
     def import_relationships(relationships, timeout: nil, batch_size: DEFAULT_IMPORT_BATCH_SIZE, call_options: nil, retry_policy: nil)
-      Retrying.mutation_policy(retry_policy, false, 'import_relationships')
+      mutation_retry_policy(:import_relationships, retry_policy, false)
       positive(batch_size, 'batch_size')
       budget = stream_budget(timeout, call_options)
       with_retry(budget: budget, retryable: false) { call_import_relationships(relationships, budget, batch_size) }
@@ -294,6 +334,7 @@ module SpiceDB
     # page size.
     def export_relationships(filter = nil, consistency:, page_size: 1000, timeout: nil, limit: nil, cursor: nil, call_options: nil,
                              retry_policy: nil, &)
+      retry_policy = operation_retry_policy(:export_relationships, retry_policy)
       request = Authzed::Api::V1::ExportBulkRelationshipsRequest.new(consistency: build_consistency(consistency),
                                                                      optional_relationship_filter: filter && filter_to_proto(filter),
                                                                      optional_cursor: cursor_proto(cursor))
@@ -302,23 +343,25 @@ module SpiceDB
     end
 
     def experimental_register_relationship_counter(name, filter, timeout: nil, call_options: nil, retry_policy: nil)
-      Retrying.mutation_policy(retry_policy, false, 'experimental_register_relationship_counter')
+      mutation_retry_policy(:experimental_register_relationship_counter, retry_policy, false)
       with_budget(timeout, call_options, retryable: false) { |budget| call_register_relationship_counter(name, filter, budget) }
     end
 
     def experimental_count_relationships(name, timeout: nil, call_options: nil, retry_policy: nil)
+      retry_policy = operation_retry_policy(:experimental_count_relationships, retry_policy)
       with_budget(timeout, call_options, operation: :experimental_count_relationships, retry_policy: retry_policy) do |budget|
         call_count_relationships(name, budget)
       end
     end
 
     def experimental_unregister_relationship_counter(name, timeout: nil, call_options: nil, retry_policy: nil)
-      Retrying.mutation_policy(retry_policy, false, 'experimental_unregister_relationship_counter')
+      mutation_retry_policy(:experimental_unregister_relationship_counter, retry_policy, false)
       with_budget(timeout, call_options, retryable: false) { |budget| call_unregister_relationship_counter(name, budget) }
     end
 
     def experimental_roaring_lookup_resources(resource_type:, permission:, subject:, consistency:, timeout: nil, call_options: nil,
                                               retry_policy: nil)
+      retry_policy = operation_retry_policy(:experimental_roaring_lookup_resources, retry_policy)
       budget = unary_budget(timeout, call_options, retry_policy: retry_policy)
       request = Authzed::Api::Materialize::V0::ExperimentalRoaringLookupResourcesRequest.new(
         consistency: build_consistency(consistency), resource_object_type: resource_type,
@@ -332,7 +375,7 @@ module SpiceDB
     private
 
     def configure(default_timeout: DEFAULT_TIMEOUT_SECONDS, default_deadline: DefaultDeadline::ENABLED, retry_policy: RetryPolicy.new,
-                  retries: Retries::ENABLED, stream_retries: StreamRetries::ENABLED)
+                  retries: Retries::ENABLED, stream_retries: StreamRetries::ENABLED, operation_retry_policies: {})
       Budget.new(default_timeout)
       raise InvalidArgumentError, 'default_timeout is required' if default_timeout.nil?
       raise InvalidArgumentError, 'retry_policy: expected SpiceDB::RetryPolicy' unless retry_policy.is_a?(RetryPolicy)
@@ -342,6 +385,7 @@ module SpiceDB
       @retry_policy = retry_policy
       @retries = Retries.validate(retries)
       @stream_retries = StreamRetries.validate(stream_retries)
+      @operation_retry_policies = Retrying.operation_policies(operation_retry_policies)
       @streams = []
       @mutex = Mutex.new
       @closed = false

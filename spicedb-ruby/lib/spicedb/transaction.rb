@@ -83,6 +83,12 @@ module SpiceDB
     # @return [Boolean] true if this transaction has no updates
     def empty? = @updates.empty?
 
+    # Whether replaying the transaction is safe: it contains only touches and
+    # no preconditions. This is the rule the client uses to decide whether a
+    # write may be retried (per call or by +operation_retry_policies:+).
+    # @return [Boolean]
+    def idempotent? = @preconditions.empty? && @updates.all? { |update| update.operation == :touch }
+
     # @return [Integer] the number of updates, without copying them
     def length = @updates.length
     alias size length

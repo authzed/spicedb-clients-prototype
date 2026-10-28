@@ -149,6 +149,10 @@ capture.trailer # e.g. io.spicedb.respmeta.* and x-request-id
 Every operation accepts `call_options:` and a per-call `retry_policy:`
 that overrides the client's for that call, including stream establishment
 (`retry_policy: SpiceDB::RetryPolicy.new(max_retries: 0)` exempts one call).
+`operation_retry_policies: { watch: SpiceDB::RetryPolicy.new(max_retries: 0) }`
+on the constructor sets one operation's policy for every call (a per-call
+policy still wins); a `:write` entry retries only `txn.idempotent?` writes,
+and deletes, imports and counter registration reject one with retries.
 Protocol-shaped output: `SpiceDB::ProtoConv.relationship_to_proto(relationship).to_json`;
 `ProtoConv.check_bulk_to_proto(checks, results)` rebuilds a whole bulk-check
 response, per-item errors included.
@@ -190,5 +194,11 @@ Inject the client into your code; `SpiceDB::Testing::Store` has the same
 create conflicts, cursors, limits and filter semantics (`Filter#matches?`).
 Its errors have the client's classes, codes and messages (the server's message
 for server failures). `set_reflect_schema_result` and `set_response_metadata`
-register what reflection and `call_options:` capture return. For integration tests, run
+register what reflection and `call_options:` capture return. `store.calls_of(:write)`
+returns recorded calls (`request`, keyword `options`); `store.fail_next(:check, err)`
+fails one call, and `store.fault_hook = ->(fault) { ... }` can fail an import batch
+(`fault.stage == SpiceDB::Testing::FaultStage::IMPORT_BATCH`, `fault.item`) or a
+read/export after some items (`FaultStage::ITEM`); return
+`SpiceDB::Testing::Store.server_error(GRPC::Core::StatusCodes::UNAVAILABLE, 'down')`
+from the hook. For integration tests, run
 `authzed/spicedb serve-testing` and assert both granted and denied cases.

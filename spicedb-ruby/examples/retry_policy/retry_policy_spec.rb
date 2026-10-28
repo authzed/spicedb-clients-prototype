@@ -185,4 +185,40 @@ RSpec.describe 'Retry policy' do
     end
     expect(service.check_attempts).to eq(1)
   end
+
+  it 'sets a policy for every call of one operation, client-wide', :no_spicedb do
+    # operation_retry_policies sits between a per-call retry_policy (which
+    # still wins) and the client-wide policy. A write policy retries only
+    # idempotent transactions (Transaction#idempotent?) and leaves others
+    # unretried, without an error; deletes, imports and counter registration
+    # reject a retrying policy when the client is built.
+    once = SpiceDB::RetryPolicy.new(max_retries: 1, initial_backoff: 0.01)
+    never = SpiceDB::RetryPolicy.new(max_retries: 0)
+    service = CountingService.new(check_failures: 1, write_failures: 1)
+    with_stand_in(service, operation_retry_policies: { check: never, write: once }) do |c|
+      expect { check_readme(c) }.to raise_error(SpiceDB::UnavailableError)
+      expect(readme_viewer(:touch)).to be_idempotent
+      expect(c.write(readme_viewer(:touch)).revision.to_s).to eq('written')
+    end
+    expect(service.check_attempts).to eq(1)
+    expect(service.write_attempts).to eq(2)
+
+    expect { SpiceDB::Client.new_plaintext('127.0.0.1:1', 'some-token', operation_retry_policies: { delete_relationships: once }) }
+      .to raise_error(SpiceDB::InvalidArgumentError, /not idempotent/)
+  end
+
+  it 'records calls and injects faults in the in-memory test double', :no_spicedb do
+    # A restore test: the third import batch fails, and nothing is applied.
+    require 'spicedb/testing'
+    store = SpiceDB::Testing::Store.new
+    store.fault_hook = lambda do |fault|
+      next unless fault.stage == SpiceDB::Testing::FaultStage::IMPORT_BATCH && fault.item == 2
+
+      SpiceDB::Testing::Store.server_error(GRPC::Core::StatusCodes::ALREADY_EXISTS, 'duplicate relationship')
+    end
+    relationships = (0...10).map { |index| SpiceDB::Relationship.from_tuple("document:d#{index}#viewer@user:alice") }
+    expect { store.import_relationships(relationships, batch_size: 3) }.to raise_error(SpiceDB::AlreadyExistsError)
+    expect(store.relationships).to be_empty
+    expect(store.calls_of(:import_relationships).first.options[:batch_size]).to eq(3)
+  end
 end

@@ -5,6 +5,27 @@ require_relative '../spicedb'
 module SpiceDB
   # Test support. Load it explicitly: `require 'spicedb/testing'`.
   module Testing
+    # One recorded Store operation: +operation+ is the method name (one of
+    # Store::OPERATIONS), +index+ counts calls of that operation from 0,
+    # +request+ is its positional argument (the transaction, filter, check,
+    # checks, relationships or schema; nil for read_schema and
+    # reflect_schema), and +options+ is a frozen Hash of every keyword
+    # argument as the call bound it, defaults included.
+    Call = Data.define(:operation, :index, :request, :options)
+
+    # Where in an operation a fault hook runs. CALL: before the operation
+    # does anything. IMPORT_BATCH: before import batch Fault#item (0-based,
+    # of the call's +batch_size:+). IMPORT_COMMIT: after every batch, before
+    # the import commits. ITEM: before a read or export yields item
+    # Fault#item (0-based).
+    class FaultStage < Option
+      cases :CALL, :IMPORT_BATCH, :IMPORT_COMMIT, :ITEM
+    end
+
+    # The point at which the fault hook is consulted; +item+ is the batch or
+    # item index for IMPORT_BATCH and ITEM, nil otherwise.
+    Fault = Data.define(:call, :stage, :item)
+
     # An in-memory stand-in for SpiceDB::Client. Its #write,
     # #read_relationships, #delete_relationships, #import_relationships,
     # #export_relationships, #read_schema, #write_schema, #reflect_schema,
@@ -31,11 +52,31 @@ module SpiceDB
     # +retry_policy:+ on a non-idempotent mutation is rejected as the client
     # rejects it. Every option is a plain keyword argument, so a test that
     # needs one can inspect it directly. It is safe for concurrent use.
+    #
+    # Every call is recorded (#calls, #calls_of) with its request and keyword
+    # options, so tests can assert on what was sent without a strict mock.
+    # Faults can be injected (#fault_hook=, #fail_next) before any operation,
+    # before each import batch, before an import commits, and before each read
+    # or export item, so failure paths need no fake gRPC server. Reads and
+    # exports return a re-iterable Enumerator (or yield to a block), so a
+    # fault can interrupt them after some items.
     # Unused keyword arguments keep the real client's exact signatures.
-    # rubocop:disable-next Lint/UnusedMethodArgument
     class Store
       NO_SCHEMA = 'no schema has been defined; please call WriteSchema to start'
       private_constant :NO_SCHEMA
+
+      # The operations the store implements, as recorded in Call#operation
+      # and accepted by #fail_next: the client's method names.
+      OPERATIONS = %i[write read_relationships delete_relationships import_relationships export_relationships read_schema write_schema
+                      reflect_schema check check_bulk].freeze
+
+      # Builds the error the client raises when SpiceDB answers with +code+
+      # (a GRPC::Core::StatusCodes value) and +message+, for fault hooks: its
+      # +message+ and +server_message+ are +message+, and a +reason+ is
+      # SpiceDB's ErrorInfo reason.
+      def self.server_error(code, message, reason: '')
+        Error.from_code(code, message, server_message: message, reason: reason, reason_domain: reason.empty? ? '' : 'authzed.com')
+      end
 
       def initialize(relationships = [])
         @mutex = Mutex.new
@@ -46,8 +87,43 @@ module SpiceDB
         @reflection = nil
         @header = {}
         @trailer = {}
+        @calls = []
+        @counts = Hash.new(0)
+        @fault_hook = nil
         relationships.each { |relationship| @relationships[key(relationship)] = relationship }
       end
+
+      # Installs +hook+ (anything responding to +call+, or nil to remove it),
+      # called with a Fault at every fault point. When it returns an
+      # exception, the operation raises it at that point; a failed write or
+      # import applies nothing. Build server-shaped errors with
+      # Store.server_error. The hook must not call the store.
+      def fault_hook=(hook)
+        raise InvalidArgumentError, 'fault_hook: expected a callable or nil' unless hook.nil? || hook.respond_to?(:call)
+
+        @mutex.synchronize { @fault_hook = hook }
+      end
+
+      # Makes the next call of +operation+ (one of OPERATIONS) raise +error+
+      # before doing anything; later calls succeed. Replaces any fault hook.
+      def fail_next(operation, error)
+        raise InvalidArgumentError, "fail_next: unknown operation #{operation.inspect}" unless OPERATIONS.include?(operation)
+
+        failed = false
+        self.fault_hook = lambda do |fault|
+          next nil if failed || fault.stage != FaultStage::CALL || fault.call.operation != operation
+
+          failed = true
+          error
+        end
+        self
+      end
+
+      # @return [Array<Call>] every recorded call, in order
+      def calls = @mutex.synchronize { @calls.dup.freeze }
+
+      # @return [Array<Call>] the recorded calls of +operation+, in order
+      def calls_of(operation) = calls.select { |call| call.operation == operation }.freeze
 
       # @return [Array<SpiceDB::Relationship>] the stored relationships, in insertion order
       def relationships = @mutex.synchronize { @relationships.values.freeze }
@@ -84,9 +160,10 @@ module SpiceDB
       end
 
       def write(transaction, timeout: nil, metadata: nil, call_options: nil, retry_policy: nil)
+        begin_call(:write, transaction, binding)
         raise InvalidArgumentError, 'write: expected Transaction' unless transaction.is_a?(Transaction)
 
-        Retrying.mutation_policy(retry_policy, Retrying.idempotent_write?(transaction), 'write')
+        Retrying.mutation_policy(retry_policy, transaction.idempotent?, 'write')
         operation(call_options) do
           transaction.preconditions.each { |precondition| check_precondition(precondition) }
           next WriteResult.new(revision: current_revision) if transaction.empty?
@@ -110,6 +187,7 @@ module SpiceDB
 
       def read_relationships(filter, consistency:, page_size: 1000, limit: nil, timeout: nil, cursor: nil, call_options: nil,
                              retry_policy: nil, paging: Paging::AUTOMATIC, &)
+        call = begin_call(:read_relationships, filter, binding)
         raise InvalidArgumentError, 'expected Filter' unless filter.is_a?(Filter)
 
         validate_paging(page_size, limit, retry_policy)
@@ -120,13 +198,13 @@ module SpiceDB
             ReadRelationship.new(relationship: relationship, cursor: after, read_at: token)
           end
         end
-        return items.each(&) if block_given?
-
-        items.freeze
+        stream = item_stream(call, items)
+        block_given? ? stream.each(&) : stream
       end
 
       def export_relationships(filter = nil, consistency:, page_size: 1000, timeout: nil, limit: nil, cursor: nil, call_options: nil,
                                retry_policy: nil, &)
+        call = begin_call(:export_relationships, filter, binding)
         raise InvalidArgumentError, 'expected Filter' unless filter.nil? || filter.is_a?(Filter)
 
         validate_paging(page_size, limit, retry_policy)
@@ -135,19 +213,25 @@ module SpiceDB
             ExportedRelationship.new(relationship: relationship, cursor: after)
           end
         end
-        return items.each(&) if block_given?
-
-        items.freeze
+        stream = item_stream(call, items)
+        block_given? ? stream.each(&) : stream
       end
 
       # Adds every relationship in one transaction, as SpiceDB does: if any
       # already exists (or repeats within the import), nothing is added and
       # AlreadyExistsError is raised. Returns the number imported.
       def import_relationships(relationships, timeout: nil, batch_size: Client::DEFAULT_IMPORT_BATCH_SIZE, call_options: nil, retry_policy: nil)
+        call = begin_call(:import_relationships, relationships, binding)
         Retrying.mutation_policy(retry_policy, false, 'import_relationships')
         positive(batch_size, 'batch_size')
-        batch = relationships.to_a
-        batch.each { |relationship| raise InvalidArgumentError, 'import: expected Relationship' unless relationship.is_a?(Relationship) }
+        batch = []
+        relationships.each do |relationship|
+          raise InvalidArgumentError, 'import: expected Relationship' unless relationship.is_a?(Relationship)
+
+          fault(call, FaultStage::IMPORT_BATCH, batch.length / batch_size) if (batch.length % batch_size).zero?
+          batch << relationship
+        end
+        fault(call, FaultStage::IMPORT_COMMIT)
         operation(call_options) do
           staged = @relationships.dup
           batch.each do |relationship|
@@ -166,6 +250,7 @@ module SpiceDB
       # +limit+ raise InvalidArgumentError, as SpiceDB does.
       def delete_relationships(filter, limit: nil, partial: DeletePartial::ALLOWED, must_match: [], must_not_match: [], timeout: nil,
                                cursor: nil, call_options: nil, retry_policy: nil)
+        begin_call(:delete_relationships, filter, binding)
         Retrying.mutation_policy(retry_policy, false, 'delete_relationships')
         DeletePartial.validate(partial)
         positive(limit, 'limit') unless partial == DeletePartial::DISALLOWED && limit.nil?
@@ -187,6 +272,7 @@ module SpiceDB
 
       # Returns the schema last written; NotFoundError before any, as SpiceDB does.
       def read_schema(timeout: nil, call_options: nil, retry_policy: nil)
+        begin_call(:read_schema, nil, binding)
         validate_policy(retry_policy)
         operation(call_options) do
           raise server_error(GRPC::Core::StatusCodes::NOT_FOUND, NO_SCHEMA) if @schema.nil?
@@ -197,6 +283,7 @@ module SpiceDB
 
       # Stores the schema text without compiling or validating it.
       def write_schema(schema, timeout: nil, call_options: nil, retry_policy: nil)
+        begin_call(:write_schema, schema, binding)
         Retrying.mutation_policy(retry_policy, true, 'write_schema')
         raise InvalidArgumentError, 'write_schema: expected String' unless schema.is_a?(String)
 
@@ -207,6 +294,7 @@ module SpiceDB
       end
 
       def reflect_schema(consistency:, filters: [], timeout: nil, call_options: nil, retry_policy: nil)
+        begin_call(:reflect_schema, nil, binding)
         validate_policy(retry_policy)
         operation(call_options) do
           reflection = @reflection || ReflectSchemaResult.new(definitions: [], caveats: [], revision: nil)
@@ -215,6 +303,7 @@ module SpiceDB
       end
 
       def check(check, consistency:, context: nil, timeout: nil, tracing: Tracing::DISABLED, call_options: nil, retry_policy: nil)
+        begin_call(:check, check, binding)
         raise InvalidArgumentError, 'check: expected PermissionCheck' unless check.is_a?(PermissionCheck)
 
         validate_policy(retry_policy)
@@ -223,6 +312,7 @@ module SpiceDB
 
       def check_bulk(checks, consistency:, context: nil, timeout: nil, tracing: Tracing::DISABLED, item_errors: BulkItemErrors::RAISED,
                      call_options: nil, retry_policy: nil)
+        begin_call(:check_bulk, checks, binding)
         BulkItemErrors.validate(item_errors)
         validate_policy(retry_policy)
         checks = checks.to_a
@@ -231,6 +321,39 @@ module SpiceDB
       end
 
       private
+
+      # Records a call of +operation+ with its +request+ and the keyword
+      # options bound in +bound+ (the operation's binding), then consults the
+      # fault hook at FaultStage::CALL.
+      def begin_call(operation, request, bound)
+        names = self.class.instance_method(operation).parameters.filter_map { |type, name| name if %i[key keyreq].include?(type) }
+        options = names.to_h { |name| [name, bound.local_variable_get(name)] }.freeze
+        call = @mutex.synchronize do
+          index = @counts[operation]
+          @counts[operation] += 1
+          Call.new(operation: operation, index: index, request: request, options: options).tap { |recorded| @calls << recorded }
+        end
+        fault(call, FaultStage::CALL)
+        call
+      end
+
+      # Consults the fault hook at one point of +call+ and raises what it returns.
+      def fault(call, stage, item = nil)
+        hook = @mutex.synchronize { @fault_hook }
+        error = hook&.call(Fault.new(call: call, stage: stage, item: item))
+        raise error if error
+      end
+
+      # A re-iterable Enumerator over +items+ that consults the fault hook
+      # before each one.
+      def item_stream(call, items)
+        Enumerator.new do |out|
+          items.each_with_index do |item, index|
+            fault(call, FaultStage::ITEM, index)
+            out << item
+          end
+        end
+      end
 
       # Runs +block+ under the lock and records the registered response
       # metadata, on success or failure, as the client does.
@@ -271,10 +394,7 @@ module SpiceDB
         raise InvalidArgumentError, "#{name} must be a positive integer" unless value.is_a?(Integer) && value.positive?
       end
 
-      # The error the client raises when SpiceDB answers with +code+ and +message+.
-      def server_error(code, message, reason: '')
-        Error.from_code(code, message, server_message: message, reason: reason, reason_domain: reason.empty? ? '' : 'authzed.com')
-      end
+      def server_error(...) = Store.server_error(...)
 
       def recreate_error(relationship)
         server_error(GRPC::Core::StatusCodes::ALREADY_EXISTS,

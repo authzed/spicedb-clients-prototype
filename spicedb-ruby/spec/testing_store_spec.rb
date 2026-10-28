@@ -64,7 +64,7 @@ RSpec.describe SpiceDB::Testing::Store do
     docs = SpiceDB::Filter.new(resource_type: 'doc')
     first = store.read_relationships(docs, consistency: full, limit: 2)
     expect(first.map(&:resource_id)).to eq(%w[a b])
-    expect(store.read_relationships(docs, consistency: full, cursor: first.last.cursor).map(&:resource_id)).to eq(%w[c])
+    expect(store.read_relationships(docs, consistency: full, cursor: first.to_a.last.cursor).map(&:resource_id)).to eq(%w[c])
     expect { store.read_relationships(docs, consistency: full, cursor: 'bogus') }.to raise_error(SpiceDB::InvalidArgumentError) do |error|
       expect(error.server_message).to start_with('error decoding cursor')
     end

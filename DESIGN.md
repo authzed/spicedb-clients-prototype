@@ -407,7 +407,11 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     shapes, defaults (deadlines, retries), error matching, transport security
     opt-ins, constructor arguments, and accessor paths.
   - Library modules declare the lowest dependency versions they actually need,
-    and keep build tooling out of the requirements consumers inherit.
+    and keep build tooling out of the requirements consumers inherit. "Need"
+    includes security: a floor is raised when an older version lets a guard be
+    bypassed (grpc for Python and Ruby before 1.73 resolves `UNIX://host/...`
+    as a DNS target, defeating the remote-plaintext loopback check). Verify
+    floors by running the suites at exactly those versions.
 
 - **Verify observable behavior rather than merely successful execution.**
   - Reconcile examples against their runners by name, execute them in CI, and

@@ -135,7 +135,7 @@ type's own string conversion.
 | TypeScript | `spicedb-gen --lang typescript` (`--typescript.format=prettier`) | `@spicedb/client` | [spicedb-typescript/AI_INTEGRATION_GUIDE.md](spicedb-typescript/AI_INTEGRATION_GUIDE.md) |
 | Java | `spicedb-gen --lang java --java.package=<pkg>` | `com.authzed.spicedb.*` (`spicedb-java`) | [spicedb-java/AI_INTEGRATION_GUIDE.md](spicedb-java/AI_INTEGRATION_GUIDE.md) |
 | C# | — | `SpiceDB.Client` | [spicedb-csharp/AI_INTEGRATION_GUIDE.md](spicedb-csharp/AI_INTEGRATION_GUIDE.md) |
-| Ruby | — | `spicedb` gem | not yet |
+| Ruby | — | `spicedb` gem | [spicedb-ruby/AI_INTEGRATION_GUIDE.md](spicedb-ruby/AI_INTEGRATION_GUIDE.md) |
 | Rust | — | `spicedb` crate | [spicedb-rust/AI_INTEGRATION_GUIDE.md](spicedb-rust/AI_INTEGRATION_GUIDE.md) |
 
 Each client also has `DESIGN.md` (behavior), `CHANGELOG.md` and, where a legacy

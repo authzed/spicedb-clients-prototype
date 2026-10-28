@@ -1,7 +1,10 @@
 # spicedb-typescript Examples
 
 Each subdirectory is a standalone, runnable TypeScript example that also serves
-as an integration test.
+as an integration test. For integration patterns (typed vs native client,
+fail-closed checks, atomic writes, tests) start with
+[AI_INTEGRATION_GUIDE.md](../AI_INTEGRATION_GUIDE.md); for moving from
+`@authzed/authzed-node`, see [MIGRATION.md](../MIGRATION.md).
 
 ## Running
 

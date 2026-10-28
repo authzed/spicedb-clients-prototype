@@ -1,3 +1,14 @@
+/**
+ * The idiomatic TypeScript client for SpiceDB.
+ *
+ * Integrating SpiceDB into an application (including with an AI coding agent)?
+ * Start with `AI_INTEGRATION_GUIDE.md` in this package: it shows when to use the
+ * generated typed client (`spicedb-gen --lang typescript`) versus this native
+ * client, and the safe patterns for checks, writes, reads, errors and tests.
+ * Moving from `@authzed/authzed-node`? See `MIGRATION.md`.
+ *
+ * @packageDocumentation
+ */
 export { SpiceDBClient, createSpiceDBClient, type SpiceDBClientOptions, type SpiceDBClientBehaviorOptions, type SpiceDBProtoClient, type TlsOptions } from "./client.js";
 export { Consistency, full, minLatency, atLeast, snapshot, atLeastOrFull, atLeastOrMinLatency } from "./consistency.js";
 export { OperationAbortError } from "./operation.js";

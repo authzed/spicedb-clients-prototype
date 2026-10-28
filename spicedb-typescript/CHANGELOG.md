@@ -2,6 +2,80 @@
 
 ## Unreleased
 
+### Adoption changes (2026-10-28)
+
+- **Fix:** paged `lookupResources` (and `experimentalLookupPermissionSets`)
+  failed on a later page whenever `limit` was not a multiple of `pageSize`
+  ("the cursor provided does not have the same arguments as the original API
+  call"): the pager shrank the last page's limit, and SpiceDB hashes the limit
+  into the cursor. Every page now repeats the caller's consistency and page
+  size; totals are enforced client-side.
+- **BREAKING:** the `maxRetries` client option is replaced by a retry policy.
+  Before: `createSpiceDBClient(e, t, { maxRetries: 0 })`.
+  After: `createSpiceDBClient(e, t, { retries: Retries.Disabled })`, or
+  `{ retryPolicy: { ...DEFAULT_RETRY_POLICY, maxRetries: 1 } }`. A policy sets
+  `maxRetries`, `retryableCodes` (opt into others such as `Code.ResourceExhausted`),
+  `initialBackoffMs`, `maxBackoffMs` and an `onRetry` callback.
+  `streamRetries: StreamRetries.Disabled` opens server streams once. Mutations
+  are never retried.
+- **BREAKING:** `relationshipFromTuple` parses one full tuple, including
+  `[caveat:{...}]` and `[expiration:...]`.
+  Before: `relationshipFromTuple("document:readme#viewer", "user:alice")`.
+  After: `relationshipFromTuple("document:readme#viewer@user:alice")`.
+  `relationshipToString(rel)` formats the same syntax.
+- **BREAKING (generated clients):** subject refs carry a `_ref` discriminator,
+  writers return a `TypedRelationship` class (`relationship()`, `toString()`,
+  `filter()`, `key()`), multi-word relation and permission members are
+  camelCase, and check overloads take `Permission<"type", "name">` values.
+  Before: `Invitation("i").timed_grant(...)`, `TypedRelationship` was a plain
+  object type. After: `Invitation("i").timedGrant(...)`, and hand-built
+  `{ _type, _id }` subject literals are no longer accepted (use the factories).
+- `SpiceDBClient.fromTransport(transport, options?)` builds a client over a
+  caller-owned Connect `Transport` (in-memory, test server, preconfigured
+  HTTP/2); `close()` leaves it open.
+- Every operation's `CallOptions` accepts `headers`, `onHeader` and `onTrailer`,
+  forwarded to every attempt, chunk and page.
+- `defaultDeadline: DefaultDeadline.Disabled` removes the 30 s default budget.
+- Errors: every `SpiceDBError` has `code` (Connect's `Code`) and, for server
+  errors, `serverMessage` (verbatim). `toConnectError()`, `errorCode(err)`,
+  `toConnectError(err)`, `SpiceDBError.from(err)` and
+  `SpiceDBError.fromCode(code, message)` interoperate with `ConnectError` in
+  both directions. `Code` is re-exported.
+- `checkBulk(requests, { itemErrors: BulkItemErrors.Returned })` returns every
+  item, with per-item failures on `CheckResult.error`.
+- `importRelationships(rels, { batchSize })`; an import the server aborts
+  reports the server's status (e.g. `AlreadyExistsError`).
+- `deleteRelationships(filter, { partial: DeletePartial.Disallowed })` is
+  all-or-nothing and may omit `limit`; `deleteAllRelationshipsNonAtomic(filter,
+  { onProgress })` reports each acknowledged batch.
+- `readRelationships` yields `ReadRelationship` (adds `afterResultCursor`,
+  `readAt`) and accepts a client-side `limit`; `exportRelationships` yields
+  `ExportedRelationship` (adds `afterResultCursor`); `LookupResource` adds
+  `afterResultCursor`.
+- Observability: `relationshipToString`, `objectRefToString`,
+  `subjectRefToString`, `filterToString`, `updateToString`,
+  `preconditionToString`; `Transaction.length`, `updates`, `preconditions`,
+  `toString()`, `toJSON()`; `Consistency.toString()`/`toJSON()`.
+- `filterMatches(filter, rel)` applies SpiceDB's filter semantics client-side.
+- `protoconv` namespace: native <-> protocol conversions for tools.
+- `InMemorySpiceDB`: an in-memory test double for `write`, `readRelationships`,
+  `deleteRelationships`, `deleteAllRelationshipsNonAtomic`, `check` and
+  `checkBulk` with the client's signatures.
+- Generated clients (spicedb-gen): permission-userset subjects
+  (`Organization(id).canAdminSubject()`), wildcard refs (`UserWildcard()`),
+  expiring variants (`.withExpiration(at)`), identity-only keys
+  (`Invitation(id).inviterKey(user)`), relation checks (`memberRelation`),
+  `TypedTransaction` with `TypedClient.writeTransaction`, `checkBulkTyped` and
+  `checksFor`, `fromRelationship`/`errRelationship`, typed filters
+  (`OrganizationFilter()`, `ref.filter()`, `ref.adminFilter()`, `withSubject`),
+  name constants and lists, validated `permissionByName`/`relationByName`/
+  `relationshipByName`, observable `Permission`/`PermissionRef`, and
+  `--typescript.client-module` / `--typescript.format=prettier`.
+- Dependencies: `@bufbuild/protobuf` ^2.11.0 and `@connectrpc/connect` ^2.0.0
+  (lowest verified); `@types/node` is an optional peer (>=20.19.0).
+- See `MIGRATION.md` for moving from `@authzed/authzed-node`, and
+  `AI_INTEGRATION_GUIDE.md` for integration patterns.
+
 - Resource lookups accept `permissionshipFilter: LookupPermissionshipFilter.HasPermissionOnly` to exclude conditional and unknown results locally. The default is `All`; limits count yielded matches.
 
 ### Changed

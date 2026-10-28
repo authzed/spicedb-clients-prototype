@@ -87,3 +87,53 @@ and options forwarding rather than just generated text fragments.
   name, and output is gofmt-formatted.
 - Negative type fixtures mark each forbidden line `// should not compile`. The
   Magefile compiles with `-gcflags=-e` and requires an error on every marked line.
+
+## TypeScript naming rules
+
+- Each definition `d` (PascalCase `D`) gets `D(id): DRef`, `DFilter()`,
+  `DRelations`/`DPermissions` (camelCase key → raw name), `DRelationNames`,
+  `DPermissionNames`, the `DRelationName`/`DPermissionName` literal unions, a
+  `D.<permission>` `PermissionRef` static for lookups, and, when `d:*` is allowed
+  anywhere, `DWildcard(): DWildcardRef`. Userset subject types get sentinels such
+  as `TeamMemberType` for `withSubject`.
+- On `DRef` (members are camelCase): permission `p` → property `p:
+  Permission<"d", "p">`; relation `r` → writer `r(subject)`, key `rKey(subject)`
+  (base refs only), check property `rRelation`, filter `rFilter()`. A userset
+  `d#r` on a relation adds the no-argument overload `r(): DRRef` (TypeScript
+  overloads by arity, so the writer keeps its name). A userset `d#p` on a
+  permission gets `pSubject()`, so `p` stays the permission. Every ref also has
+  `filter()`, `permissionByName`, `relationByName`, `relationshipByName` and
+  `toString()`.
+- Subject variants are named `<Prefix><Caveat>[Expiring]Ref` with prefix `D`,
+  `DR` or `DWildcard`, reached by `withCaveatName(ctx)` and `withExpiration(at)`.
+  Every ref carries a `_ref` literal naming its type, so structurally similar
+  variants never assign to each other: a wildcard-only relation admits only
+  `DWildcardRef`, an expiration-only relation only `...ExpiringRef`.
+- Check subjects: a permission or relation check accepts its reachable subjects
+  without expiration, a wildcard as its concrete base type, and usersets
+  expanded to the subjects that can be their members (so `accept = grant` with
+  `grant: organization#can_admin` checks a `UserRef`).
+- Support types: `Permission`, `PermissionRef`, `TypedRelationship` and
+  `RelationshipKey` (nominal through `#private` fields, so a key never passes as
+  a writable relationship), `TypedTransaction` (written by
+  `TypedClient.writeTransaction`, so it never shadows native `write`),
+  `TypedCheck`/`checksFor` with `TypedClient.checkBulkTyped`, `fromRelationship`,
+  `errRelationship`, `withSubject`, `NotInSchemaError`, `SubjectNotAllowedError`.
+- Any collision between generated identifiers fails generation with both sources
+  named, including schema names that would shadow a global or support name
+  (`Date`, `Permission`), a built-in ref member (`filter`, `toString`), or a
+  function property for a permission static (`name`, `length`). Nothing is
+  silently renamed.
+- Options: `--typescript.client-module=<specifier>` sets the module the output
+  imports the native client from (default `@spicedb/client`).
+  `--typescript.format=prettier` formats the output with the Prettier installed in
+  the current project (`npx --no-install prettier`, honoring its configuration);
+  the default `none` emits the generator's normalized layout. TypeScript has no
+  toolchain-bundled formatter, and a Go binary cannot assume Node, so formatting
+  is an explicit option rather than the default. The fixture is generated with
+  `--typescript.format=prettier` and the Magefile checks it with
+  `prettier --check`.
+- Negative type fixtures put `// @ts-expect-error` on the line before each
+  forbidden single-line statement. tsc reports an unused directive as an error, so
+  each line must fail on its own; the Magefile rejects directives that do not
+  precede a one-line statement.

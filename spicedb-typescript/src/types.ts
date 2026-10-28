@@ -551,8 +551,10 @@ export function relationship(resource: string, relation: string, subject: string
  * Parses SpiceDB's relationship tuple syntax, including the optional caveat
  * and expiration suffixes, in that order:
  *
- *     document:readme#viewer@user:alice
- *     document:readme#viewer@team:eng#member[ip_range:{"cidr":"10.0.0.0/8"}][expiration:2030-01-02T03:04:05Z]
+ * ```text
+ * document:readme#viewer@user:alice
+ * document:readme#viewer@team:eng#member[ip_range:{"cidr":"10.0.0.0/8"}][expiration:2030-01-02T03:04:05Z]
+ * ```
  *
  * A subject relation of `...` means a direct subject. `[name]` is a caveat with
  * no context. Expiration accepts RFC 3339; JavaScript dates keep millisecond

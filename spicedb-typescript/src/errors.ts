@@ -119,8 +119,8 @@ export class SpiceDBError extends Error {
    *
    * `ConnectError.from(nativeError)` cannot do this itself: ConnectError's
    * `Symbol.hasInstance` recognizes only its own prototype or the name
-   * "ConnectError", so no subclass with its own name passes `instanceof
-   * ConnectError`. Use this method, {@link toConnectError} or
+   * "ConnectError", so no subclass with its own name passes
+   * `instanceof ConnectError`. Use this method, {@link toConnectError} or
    * {@link errorCode} instead.
    */
   toConnectError(): ConnectError {

@@ -36,7 +36,7 @@ IpRangeContext(allowed_cidr=42)  # should not type-check
 # editor does not admit a caveated user.
 Document("x").editor(User("x").with_ip_range(IpRangeContext()))  # should not type-check
 
-# G1: grant admits only organization#can_admin, a permission userset.
+# grant admits only organization#can_admin, a permission userset.
 Invitation("x").grant(User("alice"))  # should not type-check
 Invitation("x").grant(Organization("acme"))  # should not type-check
 # can_admin stays the permission accessor; the subject is can_admin_subject.
@@ -44,12 +44,12 @@ Invitation("x").grant(Organization("acme").can_admin)  # should not type-check
 # timed_grant admits only the expiring userset.
 Invitation("x").timed_grant(Organization("acme").can_admin_subject)  # should not type-check
 
-# T6: creator admits only user:*, never a concrete user; guest admits both.
+# creator admits only user:*, never a concrete user; guest admits both.
 Organization("x").creator(User("alice"))  # should not type-check
 Organization("x").creator_key(User("alice"))  # should not type-check
 Organization("x").admin(UserWildcard())  # should not type-check
 
-# T7: inviter admits only expiring users; its key admits only the base user.
+# inviter admits only expiring users; its key admits only the base user.
 Invitation("x").inviter(User("alice"))  # should not type-check
 Invitation("x").inviter_key(User("alice").with_expiration(datetime.now()))  # should not type-check
 # Keys delete; they never write.

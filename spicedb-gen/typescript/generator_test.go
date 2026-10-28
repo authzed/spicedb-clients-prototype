@@ -90,7 +90,7 @@ func TestGenerateSampleSchema(t *testing.T) {
 func TestAdoptionPositions(t *testing.T) {
 	output := generateSample(t, nil)
 
-	// G1: permission usersets get subject refs, with expiring variants.
+	// permission usersets get subject refs, with expiring variants.
 	assert.Contains(t, output, "export interface OrganizationCanAdminRef extends AnySubject {")
 	assert.Contains(t, output, "    canAdminSubject(): OrganizationCanAdminRef;")
 	assert.Contains(t, output, "    readonly canAdmin: Permission<\"organization\", \"can_admin\">;")
@@ -98,22 +98,22 @@ func TestAdoptionPositions(t *testing.T) {
 	assert.Contains(t, output, "export type InvitationGrantSubject = OrganizationCanAdminRef;")
 	assert.Contains(t, output, "export type InvitationTimedGrantSubject = OrganizationCanAdminExpiringRef;")
 
-	// T6: wildcard refs.
+	// wildcard refs.
 	assert.Contains(t, output, "export function UserWildcard(): UserWildcardRef {")
 	assert.Contains(t, output, "export type OrganizationCreatorSubject = UserWildcardRef;")
 	assert.Contains(t, output, "export type OrganizationGuestSubject = UserRef | UserWildcardRef;")
 
-	// T7: identity-only keys take base refs.
+	// identity-only keys take base refs.
 	assert.Contains(t, output, "export type InvitationInviterSubject = UserExpiringRef;")
 	assert.Contains(t, output, "export type InvitationInviterKeySubject = UserRef;")
 	assert.Contains(t, output, "inviterKey(subject: InvitationInviterKeySubject): RelationshipKey;")
 
-	// T8: relation checks; usersets expand to their members for checks.
+	// relation checks; usersets expand to their members for checks.
 	assert.Contains(t, output, "readonly memberRelation: Permission<\"organization\", \"member\">;")
 	assert.Contains(t, output, "export type InvitationAcceptCheckSubject = OrganizationCanAdminRef | UserRef;")
 	assert.Contains(t, output, "export type OrganizationCreatorRelationCheckSubject = UserRef;")
 
-	// T5 + T9: filters, constants and by-name lookups.
+	// filters, constants and by-name lookups.
 	assert.Contains(t, output, "export function OrganizationFilter(): RelationshipFilter {")
 	assert.Contains(t, output, "adminFilter(): RelationshipFilter;")
 	assert.Contains(t, output, "export const OrganizationCanAdminType = Object.freeze({ _type: \"organization\", _relation: \"can_admin\" } as const);")

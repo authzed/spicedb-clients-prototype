@@ -1,4 +1,4 @@
-// Adoption items from the zed/cloud-api/SDBE trial migrations (root DESIGN.md:
+// Client capabilities added for tooling and migration (root DESIGN.md:
 // "Keep protocol access secondary and ownership explicit", "Make native values
 // observable and testable without the server", "Expose native errors without
 // losing server diagnostics", retry/deadline/import/paging/delete rules).
@@ -23,7 +23,7 @@ const docViewer = (doc: string, user: string) => relationship(`document:${doc}`,
 const wireRel = (doc: string) => ({ resource: { objectType: "document", objectId: doc }, relation: "viewer", subject: { object: { objectType: "user", objectId: "u" }, optionalRelation: "" } });
 const checkReq = (id: string) => ({ resource: { objectType: "document", objectId: id }, permission: "view", subject: { object: { objectType: "user", objectId: "alice" } }, consistency: full() });
 
-describe("N1/N2/N5 error interop", () => {
+describe("error interop", () => {
     it("gives every native error a Connect code, including local and caller-built errors", () => {
         expect(new InvalidArgumentError("bad").code).toBe(Code.InvalidArgument);
         expect(new DeadlineExceededError("late").code).toBe(Code.DeadlineExceeded);
@@ -59,7 +59,7 @@ describe("N1/N2/N5 error interop", () => {
     });
 });
 
-describe("N2 filterMatches", () => {
+describe("filterMatches", () => {
     const rel = relationship("document:readme", "viewer", "team:eng#member");
     it.each<[RelationshipFilter, boolean]>([
         [{ resourceType: "document" }, true],
@@ -81,7 +81,7 @@ describe("N2 filterMatches", () => {
     });
 });
 
-describe("N4/N17 observable values and tuple syntax", () => {
+describe("observable values and tuple syntax", () => {
     // Canonical output of SpiceDB's own tuple.String(tuple.Parse(s)) for the
     // corpus in spicedb-gen/tuplecompat (generated with SpiceDB v1.54's parser).
     const spicedbFormatted = [
@@ -132,7 +132,7 @@ describe("N4/N17 observable values and tuple syntax", () => {
     });
 });
 
-describe("N6 fromTransport", () => {
+describe("fromTransport", () => {
     it("uses a caller-owned transport, applies behavior options, and leaves the transport open on close", async () => {
         let calls = 0;
         const transport = createRouterTransport(({ service }: ConnectRouter) => {
@@ -153,7 +153,7 @@ describe("N6 fromTransport", () => {
     });
 });
 
-describe("N9/N10 retry policy and default deadline", () => {
+describe("retry policy and default deadline", () => {
     function flakySchema(failures: Code[]) {
         let calls = 0;
         const transport = createRouterTransport(({ service }: ConnectRouter) => {
@@ -215,7 +215,7 @@ describe("N9/N10 retry policy and default deadline", () => {
     });
 });
 
-describe("N14 transport escape hatch", () => {
+describe("transport escape hatch", () => {
     it("forwards per-call headers and captures response headers and trailers", async () => {
         const transport = createRouterTransport(({ service }: ConnectRouter) => {
             service(SchemaService, { readSchema(_req, ctx) {
@@ -231,7 +231,7 @@ describe("N14 transport escape hatch", () => {
     });
 });
 
-describe("N8 paging: stable consistency and page size, cursors, read-at", () => {
+describe("paging: stable consistency and page size, cursors, read-at", () => {
     it("readRelationships repeats consistency and page size and enforces limit client-side", async () => {
         const requests: ProtoReadRequest[] = [];
         const transport = createRouterTransport(({ service }: ConnectRouter) => {
@@ -285,7 +285,7 @@ describe("N8 paging: stable consistency and page size, cursors, read-at", () => 
     });
 });
 
-describe("N12 bulk item errors", () => {
+describe("bulk item errors", () => {
     const transport = createRouterTransport(({ service }: ConnectRouter) => {
         service(PermissionsService, { checkBulkPermissions(req) {
             return create(CheckBulkPermissionsResponseSchema, { checkedAt: create(ZedTokenSchema, { token: "rev" }), pairs: req.items.map((item, i) => create(CheckBulkPermissionsPairSchema, { request: item,
@@ -310,7 +310,7 @@ describe("N12 bulk item errors", () => {
     });
 });
 
-describe("N7/N13 import", () => {
+describe("import", () => {
     it("sends the configured batch size", async () => {
         const sizes: number[] = [];
         const transport = createRouterTransport(({ service }: ConnectRouter) => {
@@ -338,7 +338,7 @@ describe("N7/N13 import", () => {
     });
 });
 
-describe("N16 deletion modes and progress", () => {
+describe("deletion modes and progress", () => {
     it("sends all-or-nothing deletes with an optional limit", async () => {
         const requests: ProtoDeleteRequest[] = [];
         const transport = createRouterTransport(({ service }: ConnectRouter) => {
@@ -366,7 +366,7 @@ describe("N16 deletion modes and progress", () => {
     });
 });
 
-describe("N11 protoconv", () => {
+describe("protoconv", () => {
     it("round-trips relationships, filters, preconditions, updates, consistency and results", () => {
         const rel = relationshipFromTuple("document:a#viewer@team:eng#member[c:{\"k\":[1,null]}][expiration:2030-01-02T03:04:05Z]");
         expect(protoconv.relationshipFromProto(protoconv.relationshipToProto(rel))).toEqual(rel);

@@ -267,41 +267,41 @@ func TestBuildTemplateData(t *testing.T) {
 }
 
 // TestAdoptionPositions pins the generated surface for the schema positions that
-// real migrations could not express: permission usersets (G1), wildcards (T6),
-// expiration-only relations and identity keys (T7), relation checks (T8),
-// by-name lookups (T9) and typed filters/constants (T5).
+// real migrations could not express: permission usersets, wildcards,
+// expiration-only relations and identity keys, relation checks,
+// by-name lookups and typed filters/constants.
 func TestAdoptionPositions(t *testing.T) {
 	content := generateSample(t)
 	for _, want := range []string{
-		// G1
+		// permission usersets
 		"public OrganizationCanAdminRef canAdminSubject() {",
 		"public Permission<OrganizationCanAdminSubject> canAdmin() {",
 		"public sealed interface InvitationGrantSubject extends Subject permits OrganizationCanAdminRef {}",
 		"public OrganizationCanAdminExpiring withExpiration(Instant expiration) {",
 		"permits OrganizationCanAdminExpiring {}",
-		// T6
+		// wildcards
 		"public static UserWildcardRef UserWildcard() {",
 		"public sealed interface OrganizationCreatorSubject extends Subject permits UserWildcardRef {}",
 		"permits UserRef, UserWildcardRef {}",
-		// T7
+		// identity keys
 		"public sealed interface InvitationInviterSubject extends Subject permits UserExpiring {}",
 		"public sealed interface InvitationInviterKeySubject extends Subject permits UserRef {}",
 		"public RelationshipKey inviterKey(InvitationInviterKeySubject subject) {",
 		"public record UserExpiring(String id, Instant expiration)",
-		// T8
+		// relation checks
 		"public Permission<OrganizationMemberRelationSubject> memberRelation() {",
-		// T9
+		// by-name lookups
 		"public Permission<?> permissionByName(String name) {",
 		"public Permission<?> relationByName(String name) {",
 		"public TypedRelationship relationshipByName(String relation, Subject subject) {",
 		"if (subject instanceof OrganizationCreatorSubject s) {",
 		"public static final class OrganizationRelations {",
 		`public static final String CAN_ADMIN = "can_admin";`,
-		// T5
+		// filters and constants
 		"public static Filter OrganizationFilter() {",
 		"public Filter adminFilter() {",
 		"public static Filter withSubject(Filter filter, Subject subject) {",
-		// T2 / T4 / T3
+		// transactions, bulk checks and native round trips
 		"public WriteResult writeTxn(Txn txn, WriteOptions options) {",
 		"public List<CheckResult> checkBulk(Consistency c, List<TypedCheck> checks) {",
 		"public static TypedRelationship fromRelationship(Relationship relationship) {",

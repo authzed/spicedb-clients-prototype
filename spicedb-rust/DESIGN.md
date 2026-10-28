@@ -89,5 +89,5 @@
   - *All-or-nothing delete and delete-all progress:* `DeletePartial::Disallowed`, `DeleteRequest::server_default_limit`, `DeleteAllOptions::with_progress` (above).
   - *MIGRATION.md:* not applicable; there is no official `authzed-*` Rust predecessor.
   - *Dependency floors:* tonic is used without default features (`codegen`, `prost`, `channel`); tokio only with `macros`, `rt`, `sync`, `time`; chrono without default features. Server, tower and hyper-util are optional behind `testing`, serde behind `serde`. Floors for chrono, futures, rand, serde_json, tonic-types and async-stream were verified by pinning them in the lockfile and running the suite; tonic 0.12 / prost 0.13 / tokio are floored by tonic 0.12's own requirements and move as one generation. Build and test tooling stays in dev-dependencies or the Go Magefile.
-  - *Typed generation (G1, G2, T1–T9):* not applicable; `spicedb-gen` has no Rust backend.
+  - *Typed generation:* not applicable; `spicedb-gen` has no Rust backend.
   - *AI integration guide:* `AI_INTEGRATION_GUIDE.md`, linked from the crate documentation; its snippets are compile-checked against the current API.

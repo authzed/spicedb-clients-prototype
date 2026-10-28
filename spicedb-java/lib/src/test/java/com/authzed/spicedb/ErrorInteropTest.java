@@ -28,7 +28,7 @@ import java.util.List;
 import java.util.concurrent.CancellationException;
 import org.junit.jupiter.api.Test;
 
-/** N1/N2/N5: native errors interoperate with gRPC status inspection in both directions. */
+/** Native errors interoperate with gRPC status inspection in both directions. */
 class ErrorInteropTest {
 
   private static PermissionCheck aCheck() {

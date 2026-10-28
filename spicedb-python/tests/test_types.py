@@ -560,7 +560,7 @@ class TestCheckPermissionshipFromProto:
 
 
 class TestCheckResultHasPermission:
-    """T1: has_permission must be True ONLY for HAS_PERMISSION -- a
+    """has_permission must be True ONLY for HAS_PERMISSION -- a
     CONDITIONAL_PERMISSION result is NOT a grant (fail-closed: a caveat the
     server couldn't evaluate must never be treated as satisfied)."""
 

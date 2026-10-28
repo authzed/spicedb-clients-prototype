@@ -101,7 +101,7 @@ func TestSampleSchemaSurface(t *testing.T) {
 		// A definition used as a subject and as a resource is one class.
 		"class Organization:\n",
 		"class User:\n",
-		// G1: permission usersets get a subject class, accessor and variants.
+		// permission usersets get a subject class, accessor and variants.
 		"class OrganizationCanAdmin:\n",
 		"class OrganizationCanAdminExpiring:\n",
 		"    def can_admin_subject(self) -> OrganizationCanAdmin:\n",
@@ -112,26 +112,26 @@ func TestSampleSchemaSurface(t *testing.T) {
 		// Relation usersets keep the relation's name; the writer moves to for_.
 		"    def member(self) -> TeamMember:\n",
 		"    def for_member(self, subject: TeamMemberSubject) -> TypedRelationship:\n",
-		// T6: wildcard refs with exact admission.
+		// wildcard refs with exact admission.
 		"class UserWildcard:\n",
 		"OrganizationCreatorSubject: TypeAlias = UserWildcard\n",
 		"OrganizationGuestSubject: TypeAlias = User | UserWildcard\n",
-		// T7: expiration-only writers and identity-only keys.
+		// expiration-only writers and identity-only keys.
 		"InvitationInviterSubject: TypeAlias = UserExpiring\n",
 		"InvitationInviterKeySubject: TypeAlias = User\n",
 		"    def inviter_key(self, subject: InvitationInviterKeySubject) -> RelationshipKey:\n",
-		// T8: relation checks.
+		// relation checks.
 		"    def member_relation(self) -> _OrganizationMemberRelation:\n",
 		// Checks follow usersets: accept is reachable by users through can_admin.
 		"InvitationAcceptSubject: TypeAlias = OrganizationCanAdmin | User\n",
-		// T5: filters and name constants.
+		// filters and name constants.
 		"    def type_filter(cls) -> Filter:\n",
 		"    def admin_filter(self) -> Filter:\n",
 		"class OrganizationRelations:\n",
 		`    CAN_ADMIN: Final = "can_admin"`,
 		"ORGANIZATION_PERMISSION_NAMES: Final[tuple[str, ...]] = (\n",
 		`DOCUMENT_VIEW: Final = _DocumentViewRef("document", "view")`,
-		// T9: by-name lookups.
+		// by-name lookups.
 		"    def permission_by_name(self, name: str) -> Permission:\n",
 		"    def relation_by_name(self, name: str) -> Permission:\n",
 		"            if isinstance(subject, OrganizationCreatorSubject):\n",
@@ -144,7 +144,7 @@ func TestSampleSchemaSurface(t *testing.T) {
 
 	for _, name := range []string{"sync.py", "aio.py"} {
 		client := files[name]
-		// T2: write_txn applies typed transactions; write stays the native write.
+		// write_txn applies typed transactions; write stays the native write.
 		assert.Contains(t, client, "def write_txn(\n        self,\n        txn: TypedTransaction,\n", name)
 		assert.Contains(t, client, "def write(\n        self,\n        transaction: Transaction,\n", name)
 		assert.Contains(t, client, "txn.build(),", name)

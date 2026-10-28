@@ -242,20 +242,20 @@ class TestSyncAdoption:
 
     def test_adoption(self, tc: SyncTypedClient) -> None:
         cs = full()
-        # G1 + T6: permission userset and wildcard subjects write and check.
+        # permission userset and wildcard subjects write and check.
         tc.write_txn(adoption_txn())
         assert tc.check(cs, INV.accept, User("alice")).has_permission, "alice accepts through can_admin"
         assert tc.check(cs, ACME.view, User("anyone")).has_permission, "user:* guest grants view"
 
-        # T8: relation checks.
+        # relation checks.
         assert tc.check(cs, ACME.member_relation, User("bob")).has_permission
         assert not tc.check(cs, ACME.member_relation, User("alice")).has_permission
 
-        # T4: typed bulk check through the native check_bulk, in input order.
+        # typed bulk check through the native check_bulk, in input order.
         results = tc.check_bulk(checks_for(User("bob"), ACME.can_admin, ACME.view, ACME.member_relation), consistency=cs)
         assert [r.has_permission for r in results] == [False, True, True]
 
-        # T2: a precondition guards a mixed delete+touch; a failing guard writes nothing.
+        # a precondition guards a mixed delete+touch; a failing guard writes nothing.
         tc.write_txn(
             TypedTransaction()
             .must_not_match(with_subject(ACME.admin_filter(), User("bob")))
@@ -266,7 +266,7 @@ class TestSyncAdoption:
             tc.write_txn(guard_txn("carol"))
         assert not tc.check(cs, ACME.member_relation, User("carol")).has_permission
 
-        # T3 + T5: read back with a typed filter and delete what was read.
+        # read back with a typed filter and delete what was read.
         txn, admins = TypedTransaction(), []
         for item in tc.read_relationships(cs, ACME.admin_filter()):
             admins.append(item.relationship.subject.object.object_id)
@@ -275,11 +275,11 @@ class TestSyncAdoption:
         tc.write_txn(txn)
         assert list(tc.read_relationships(cs, ACME.admin_filter())) == []
 
-        # T7: delete an expiration-only relationship by identity alone.
+        # delete an expiration-only relationship by identity alone.
         tc.delete(INV.inviter_key(User("alice")))
         assert list(tc.read_relationships(cs, INV.inviter_filter())) == []
 
-        # T9: by-name lookups drive real checks.
+        # by-name lookups drive real checks.
         assert tc.check_dynamic(cs, ACME.permission_by_name("view"), User("anyone")).has_permission
 
 

@@ -27,7 +27,7 @@ using LookupSubject = SpiceDB.Client.LookupSubject;
 
 namespace SpiceDB.Client.Tests;
 
-/// <summary>Adoption items N1-N17 that need no server; real loopback gRPC where transport behavior matters.</summary>
+/// <summary>Adoption items that need no server; real loopback gRPC where transport behavior matters.</summary>
 public class AdoptionNativeTests
 {
     private static SpiceDBClient Client(PermissionsService.PermissionsServiceClient? permissions = null, SchemaService.SchemaServiceClient? schema = null, WatchService.WatchServiceClient? watch = null, ClientOptions? options = null) =>
@@ -37,7 +37,7 @@ public class AdoptionNativeTests
     private static AsyncUnaryCall<T> Failing<T>(StatusCode code, string message = "boom") =>
         new(Task.FromException<T>(new RpcException(new GrpcStatus(code, message))), Task.FromResult(new Metadata()), () => new GrpcStatus(code, message), () => new Metadata(), () => { });
 
-    // ── N1/N2/N5: error interop ───────────────────────────────────────────
+    // ── error interop ───────────────────────────────────────────
 
     [Theory]
     [InlineData(StatusCode.NotFound, typeof(NotFoundException))]
@@ -89,7 +89,7 @@ public class AdoptionNativeTests
         error.ToRpcException().GetRpcStatus()!.GetDetail<ErrorInfo>()!.Reason.Should().Be("ERROR_REASON_X");
     }
 
-    // ── N4/N17: observable values, tuples, copy helpers ───────────────────
+    // ── observable values, tuples, copy helpers ───────────────────
 
     [Theory]
     [InlineData("document:readme#viewer@user:alice")]
@@ -176,7 +176,7 @@ public class AdoptionNativeTests
         named.ToFilter().Matches(direct).Should().BeFalse();
     }
 
-    // ── N9/N10: retry policy and default deadline ─────────────────────────
+    // ── retry policy and default deadline ─────────────────────────
 
     private static (Mock<SchemaService.SchemaServiceClient> Mock, Func<int> Calls, List<DateTime?> Deadlines) FailingSchema(StatusCode code, int failures)
     {
@@ -256,7 +256,7 @@ public class AdoptionNativeTests
         deadlines[2].Should().NotBeNull();
     }
 
-    // ── N12: per-item bulk errors ─────────────────────────────────────────
+    // ── per-item bulk errors ─────────────────────────────────────────
 
     [Fact]
     public async Task BulkItemErrorsReturnedKeepsEveryItem()
@@ -282,7 +282,7 @@ public class AdoptionNativeTests
         (await Assert.ThrowsAsync<InvalidArgumentException>(() => client.CheckBulkAsync([Check("1"), Check("2")]))).InputIndex.Should().Be(1);
     }
 
-    // ── N16: all-or-nothing delete and delete-all progress ────────────────
+    // ── all-or-nothing delete and delete-all progress ────────────────
 
     [Fact]
     public async Task AllOrNothingDeleteMayOmitLimitAndDeleteAllReportsProgress()
@@ -313,7 +313,7 @@ public class AdoptionNativeTests
 
     private sealed class SyncProgress<T>(Action<T> report) : IProgress<T> { public void Report(T value) => report(value); }
 
-    // ── N8: paging state and resume ───────────────────────────────────────
+    // ── paging state and resume ───────────────────────────────────────
 
     [Fact]
     public async Task ReadsYieldCursorAndReadAtResumeAndRepeatPageSize()
@@ -339,7 +339,7 @@ public class AdoptionNativeTests
         requests.Should().OnlyContain(r => r.OptionalLimit == 2 && r.Consistency.MinimizeLatency);
     }
 
-    // ── N11: exported protocol conversions ────────────────────────────────
+    // ── exported protocol conversions ────────────────────────────────
 
     [Fact]
     public void ProtoConvertRoundTripsNativeValues()
@@ -387,7 +387,7 @@ public class AdoptionNativeTests
         ProtoConvert.ToProto(ProtoConvert.FromProto(new WriteRelationshipsResponse { WrittenAt = new() { Token = "w" } })).WrittenAt.Token.Should().Be("w");
     }
 
-    // ── Real loopback gRPC: N6, N7, N14 ───────────────────────────────────
+    // ── Real loopback gRPC ───────────────────────────────────
 
     public sealed class Service : PermissionsService.PermissionsServiceBase
     {

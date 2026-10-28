@@ -54,7 +54,7 @@ fn live_token() -> String {
     std::env::var("SPICEDB_TOKEN").unwrap_or_else(|_| "testtoken".to_string())
 }
 
-/// T4: writes a caveated relationship, checks the permission with no caveat
+/// Writes a caveated relationship, checks the permission with no caveat
 /// context supplied, and asserts the server reports a `ConditionalPermission`
 /// result rather than a grant — the server needed `now` to evaluate `active`
 /// and did not receive it.

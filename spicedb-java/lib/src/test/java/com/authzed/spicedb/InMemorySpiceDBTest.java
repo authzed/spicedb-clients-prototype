@@ -20,7 +20,7 @@ import java.util.Arrays;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
-/** N2 test double: same surface as the client, server write/read/delete semantics. */
+/** Test double: same surface as the client, server write/read/delete semantics. */
 class InMemorySpiceDBTest {
 
   private static Relationship rel(String t) {

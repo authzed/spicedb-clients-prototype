@@ -13,7 +13,7 @@ import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 
-/** N2 (filter matching), N4 (string/JSON forms, size), N17 (tuples, copy helpers), accessors. */
+/** Filter matching, string/JSON forms and size, tuples and copy helpers, accessors. */
 class NativeValuesTest {
 
   private static Relationship rel(String tuple) {

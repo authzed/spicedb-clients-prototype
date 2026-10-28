@@ -45,13 +45,13 @@ tc.deleteRelationships({ resourceType: "document" }, {});
 // @ts-expect-error Watch filters use native typed filter fields.
 tc.watch({ relationshipFilters: [{ resourceType: 42 }] });
 
-// --- Adoption cases (G1, T2, T6, T7, T8). Each line must fail on its own. ---
-// T6: creator admits only user:*, never a concrete user
+// --- Adoption cases. Each line must fail on its own. ---
+// creator admits only user:*, never a concrete user
 // @ts-expect-error a wildcard-only relation rejects a concrete subject
 Organization("x").creator(User("alice"));
 // @ts-expect-error a concrete-only relation rejects the wildcard
 Organization("x").admin(UserWildcard());
-// G1: grant admits only organization#can_admin, a permission userset
+// grant admits only organization#can_admin, a permission userset
 // @ts-expect-error grant rejects a user
 Invitation("x").grant(User("alice"));
 // @ts-expect-error grant rejects the organization itself
@@ -60,7 +60,7 @@ Invitation("x").grant(Organization("acme"));
 Invitation("x").grant(Organization("acme").canAdmin);
 // @ts-expect-error timed_grant admits only the expiring userset
 Invitation("x").timedGrant(Organization("acme").canAdminSubject());
-// T7: inviter admits only expiring users; its key admits only the base user
+// inviter admits only expiring users; its key admits only the base user
 // @ts-expect-error inviter requires an expiration
 Invitation("x").inviter(User("alice"));
 // @ts-expect-error a key is identity-only and rejects an expiring subject
@@ -69,7 +69,7 @@ Invitation("x").inviterKey(User("alice").withExpiration(new Date()));
 new TypedTransaction().touch(Invitation("x").inviterKey(User("alice")));
 // @ts-expect-error the typed transaction does not shadow the native write
 tc.write(new TypedTransaction());
-// T8: a relation check accepts only the relation's subjects
+// a relation check accepts only the relation's subjects
 // @ts-expect-error organization#member checks a user, not a team member
 tc.check(full(), Organization("x").memberRelation, Team("eng").member());
 // @ts-expect-error a relation check accessor is not a writer

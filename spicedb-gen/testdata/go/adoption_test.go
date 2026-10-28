@@ -110,7 +110,7 @@ func TestAdoptionAgainstServer(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	// G1 + T6: permission userset and wildcard subjects write and check.
+	// permission userset and wildcard subjects write and check.
 	_, err = tc.WriteTxn(ctx, (&Txn{}).
 		Touch(acme.Admin(User("alice"))).
 		Touch(acme.Member(User("bob"))).
@@ -128,7 +128,7 @@ func TestAdoptionAgainstServer(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, guest.HasPermission(), "user:* guest grants view to anyone")
 
-	// T8: relation checks.
+	// relation checks.
 	member, err := Check(ctx, tc, cs, acme.MemberRelation(), User("bob"))
 	require.NoError(t, err)
 	require.True(t, member.HasPermission())
@@ -136,7 +136,7 @@ func TestAdoptionAgainstServer(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, member.HasPermission(), "admin is not the member relation")
 
-	// T4: typed bulk check, input order preserved.
+	// typed bulk check, input order preserved.
 	results, err := CheckBulk(ctx, tc, cs, ChecksFor(User("bob"), acme.CanAdmin(), acme.View(), acme.MemberRelation()))
 	require.NoError(t, err)
 	require.Len(t, results, 3)
@@ -144,7 +144,7 @@ func TestAdoptionAgainstServer(t *testing.T) {
 	require.True(t, results[1].HasPermission())
 	require.True(t, results[2].HasPermission())
 
-	// T2: a precondition guards a mixed delete+touch; the failing guard writes nothing.
+	// a precondition guards a mixed delete+touch; the failing guard writes nothing.
 	_, err = tc.WriteTxn(ctx, (&Txn{}).
 		MustNotMatch(WithSubject(acme.AdminFilter(), User("bob"))).
 		Delete(acme.Member(User("bob"))).
@@ -155,7 +155,7 @@ func TestAdoptionAgainstServer(t *testing.T) {
 		Touch(acme.Member(User("carol"))))
 	require.ErrorIs(t, err, client.ErrFailedPrecondition)
 
-	// T3 + T5: read back with a typed filter and delete what was read.
+	// read back with a typed filter and delete what was read.
 	var admins []string
 	txn := &Txn{}
 	for r, err := range tc.ReadRelationships(ctx, client.ReadRelationshipsRequest{Filter: acme.AdminFilter(), Consistency: cs}) {
@@ -167,7 +167,7 @@ func TestAdoptionAgainstServer(t *testing.T) {
 	_, err = tc.WriteTxn(ctx, txn)
 	require.NoError(t, err)
 
-	// T7: delete an expiration-only relationship by identity alone.
+	// delete an expiration-only relationship by identity alone.
 	_, err = tc.WriteTxn(ctx, (&Txn{}).Delete(inv.InviterKey(User("alice"))))
 	require.NoError(t, err)
 	for _, err := range tc.ReadRelationships(ctx, client.ReadRelationshipsRequest{Filter: inv.InviterFilter(), Consistency: cs}) {

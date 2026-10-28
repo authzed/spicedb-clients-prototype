@@ -10,7 +10,7 @@ import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 
-/** N11: exported native↔protocol conversions round-trip. */
+/** Exported native↔protocol conversions round-trip. */
 class ProtoConvTest {
 
   @Test

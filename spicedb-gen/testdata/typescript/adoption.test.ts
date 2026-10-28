@@ -1,8 +1,8 @@
 // Typed-client capabilities found missing while migrating real services:
-// permission usersets (G1), observable permissions (T1), typed transactions
-// (T2), native round trips (T3), typed bulk checks (T4), typed filters and
-// name constants (T5), wildcard refs (T6), identity-only keys (T7), relation
-// checks (T8) and by-name lookups (T9). The first group needs no server.
+// permission usersets, observable permissions, typed transactions,
+// native round trips, typed bulk checks, typed filters and
+// name constants, wildcard refs, identity-only keys, relation
+// checks and by-name lookups. The first group needs no server.
 import { readFileSync } from "node:fs";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { full, relationship, BulkItemErrors, FailedPreconditionError, InvalidArgumentError, TransportSecurity, filterToString, filterMatches } from "@spicedb/client";
@@ -13,7 +13,7 @@ import {
 } from "./permissions";
 
 describe("typed values without a server", () => {
-    it("T1: permissions and refs are observable", () => {
+    it("permissions and refs are observable", () => {
         const p = Organization("acme").canAdmin;
         expect(p).toBeInstanceOf(Permission);
         expect([p.resourceType, p.resourceId, p.name]).toEqual(["organization", "acme", "can_admin"]);
@@ -27,7 +27,7 @@ describe("typed values without a server", () => {
         expect(JSON.stringify({ p })).toBe("{\"p\":\"organization:acme#can_admin\"}");
     });
 
-    it("G1 + T3: permission usersets write, print, and round-trip with native relationships", () => {
+    it("permission usersets write, print, and round-trip with native relationships", () => {
         const typed = Invitation("inv").grant(Organization("acme").canAdminSubject());
         expect(typed.toString()).toBe("invitation:inv#grant@organization:acme#can_admin");
         const native = typed.relationship();
@@ -40,7 +40,7 @@ describe("typed values without a server", () => {
         expect(expiring.toString()).toBe("invitation:inv#timed_grant@organization:acme#can_admin[expiration:2100-01-01T00:00:00Z]");
     });
 
-    it("T2: a typed transaction defers its first error and mixes operations", () => {
+    it("a typed transaction defers its first error and mixes operations", () => {
         const bad = new TypedTransaction().touch(Organization("").admin(User("alice"))).touch(Organization("acme").admin(User("bob")));
         expect(() => bad.build()).toThrow(InvalidArgumentError);
         expect(bad.toString()).toMatch(/^<invalid transaction: /);
@@ -52,7 +52,7 @@ describe("typed values without a server", () => {
         expect(ok.build().toString()).toBe("[MUST_NOT_MATCH(organization:acme#admin@*), DELETE(organization:acme#member@user:alice), TOUCH(organization:acme#admin@user:alice)]");
     });
 
-    it("T5: typed filters and name constants", () => {
+    it("typed filters and name constants", () => {
         expect(filterToString(OrganizationFilter())).toBe("organization:*#*@*");
         expect(filterToString(Organization("acme").filter())).toBe("organization:acme#*@*");
         expect(filterToString(Organization("acme").adminFilter())).toBe("organization:acme#admin@*");
@@ -67,7 +67,7 @@ describe("typed values without a server", () => {
         expect(filterMatches(key.filter(), Invitation("inv").inviter(User("alice").withExpiration(new Date(Date.now() + 1000))).relationship())).toBe(true);
     });
 
-    it("T6 + T7: wildcard refs and identity-only keys", () => {
+    it("wildcard refs and identity-only keys", () => {
         expect(Organization("acme").creator(UserWildcard()).toString()).toBe("organization:acme#creator@user:*");
         expect(Organization("acme").guest(User("bob")).toString()).toBe("organization:acme#guest@user:bob");
         const key = Invitation("inv").inviterKey(User("alice"));
@@ -75,7 +75,7 @@ describe("typed values without a server", () => {
         expect(Invitation("inv").inviter(User("alice").withExpiration(new Date("2100-01-01T00:00:00Z"))).key().toString()).toBe(key.toString());
     });
 
-    it("T9: validated by-name lookups and name lists", () => {
+    it("validated by-name lookups and name lists", () => {
         const org = Organization("acme");
         expect(org.permissionByName("can_admin")).toEqual(org.canAdmin);
         expect(() => org.permissionByName("admin")).toThrow(NotInSchemaError);
@@ -88,7 +88,7 @@ describe("typed values without a server", () => {
         expect(OrganizationRelationNames).toEqual(["admin", "member", "creator", "guest"]);
     });
 
-    it("T4: permissions produce native check requests", () => {
+    it("permissions produce native check requests", () => {
         const request = Document("readme").view.checkRequest(User("alice").withIpRange({ allowedCidr: "10.0.0.0/8" }), full(), { other: 1 });
         expect(request).toMatchObject({ resource: { objectType: "document", objectId: "readme" }, permission: "view", subject: { object: { objectType: "user", objectId: "alice" } }, context: { other: 1, allowed_cidr: "10.0.0.0/8" } });
     });
@@ -113,7 +113,7 @@ describe("adoption against a live SpiceDB", () => {
 
     it("writes, checks, reads back and deletes through typed APIs", async () => {
         const later = new Date(Date.now() + 3_600_000);
-        // G1 + T6: permission-userset and wildcard subjects write and check.
+        // permission-userset and wildcard subjects write and check.
         await tc.writeTransaction(new TypedTransaction()
             .touch(acme.admin(User("alice")))
             .touch(acme.member(User("bob")))
@@ -127,15 +127,15 @@ describe("adoption against a live SpiceDB", () => {
         expect((await tc.check(full(), acme.view, User("anyone"))).hasPermission()).toBe(true);
         expect((await tc.check(full(), acme.creatorRelation, User("anyone"))).hasPermission()).toBe(true);
 
-        // T8: relation checks.
+        // relation checks.
         expect((await tc.check(full(), acme.memberRelation, User("bob"))).hasPermission()).toBe(true);
         expect((await tc.check(full(), acme.memberRelation, User("alice"))).hasPermission()).toBe(false);
 
-        // T4: typed bulk check, in input order, forwarding native options.
+        // typed bulk check, in input order, forwarding native options.
         const results = await tc.checkBulkTyped(full(), checksFor(User("bob"), acme.canAdmin, acme.view, acme.memberRelation), { itemErrors: BulkItemErrors.Returned });
         expect(results.map(r => r.hasPermission())).toEqual([false, true, true]);
 
-        // T2: a precondition guards a mixed delete+touch; a failing guard writes nothing.
+        // a precondition guards a mixed delete+touch; a failing guard writes nothing.
         await tc.writeTransaction(new TypedTransaction()
             .mustNotMatch(withSubject(acme.adminFilter(), User("bob")))
             .delete(acme.member(User("bob")))
@@ -144,7 +144,7 @@ describe("adoption against a live SpiceDB", () => {
             .mustNotMatch(withSubject(acme.adminFilter(), User("bob")))
             .touch(acme.member(User("carol"))))).rejects.toBeInstanceOf(FailedPreconditionError);
 
-        // T3 + T5: read back with a typed filter and delete what was read.
+        // read back with a typed filter and delete what was read.
         const admins: string[] = [];
         const txn = new TypedTransaction();
         for await (const r of tc.readRelationships(full(), acme.adminFilter())) {
@@ -154,7 +154,7 @@ describe("adoption against a live SpiceDB", () => {
         expect(admins.sort()).toEqual(["alice", "bob"]);
         await tc.writeTransaction(txn);
 
-        // T7: delete an expiration-only relationship by identity alone.
+        // delete an expiration-only relationship by identity alone.
         await tc.delete([inv.inviterKey(User("alice"))]);
         for await (const r of tc.readRelationships(full(), inv.inviterFilter()))
             throw new Error(`inviter relationship should be deleted: ${r.relation}`);

@@ -12,7 +12,7 @@
 
 ## Unreleased
 
-### One protocol copy, dependency floors and the path off authzed-py (P1, D1, D2)
+### One protocol copy, dependency floors and the path off authzed-py
 
 - spicedb-python-proto is now the single copy of the `authzed.api.*`
   bindings in a process. It ships only namespace packages (no shared
@@ -37,7 +37,7 @@
   pendulum for a validator nothing here calls).
 - New `MIGRATION.md` (from authzed-py) and `AI_INTEGRATION_GUIDE.md`.
 
-### Generated typed client (adoption items G1, G2, T1-T9)
+### Generated typed client
 
 - Generation no longer fails for a definition used as both a subject and a
   resource. Usersets on permissions get subject refs
@@ -74,7 +74,7 @@
   type-checks), and `check` raises `SubjectNotAllowedError` at runtime for a
   subject the schema cannot grant.
 
-### Tooling-grade native client (adoption items N1-N17)
+### Tooling-grade native client
 
 - **Fix:** paged `lookup_resources` and `lookup_subjects` with a `limit` that
   is not a multiple of `page_size` failed on their last page ("the cursor

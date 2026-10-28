@@ -1,4 +1,4 @@
-"""Tooling-grade native behaviors (adoption items N1-N17), without a server.
+"""Tooling-grade native behaviors, without a server.
 
 Each test fails if the behavior it names is removed. Transport-level behavior
 (import abort status, response metadata, caller-owned channels) runs against
@@ -68,7 +68,7 @@ def _rpc_error(code=grpc.StatusCode.UNAVAILABLE, details="boom"):
     return grpc.aio.AioRpcError(code, grpc.aio.Metadata(), grpc.aio.Metadata(), details=details)
 
 
-# --- N1, N2, N5: errors -----------------------------------------------------
+# --- errors -----------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -150,7 +150,7 @@ def test_local_validation_and_deadline_report_codes():
     assert code_of(caught.value) is grpc.StatusCode.DEADLINE_EXCEEDED
 
 
-# --- N2: filter matching ----------------------------------------------------
+# --- filter matching ----------------------------------------------------
 
 _REL = Relationship.from_tuple("document:doc-1#viewer@group:eng#member")
 _DIRECT = Relationship.from_tuple("document:doc-1#viewer@user:alice")
@@ -182,7 +182,7 @@ def test_filter_matches_uses_server_semantics(filter, rel, expected):
     assert filter.matches(rel) is expected
 
 
-# --- N4: observable values --------------------------------------------------
+# --- observable values --------------------------------------------------
 
 
 def test_transaction_length_strings_and_json():
@@ -240,7 +240,7 @@ def test_short_relationship_accessors():
     assert _DIRECT.subject_relation is None
 
 
-# --- N17: tuple syntax and copy helpers ---------------------------------------
+# --- tuple syntax and copy helpers ---------------------------------------
 
 # The same fixtures spicedb-gen/tuplecompat checks against SpiceDB's parser.
 TUPLES = [
@@ -298,7 +298,7 @@ def test_copy_helpers_keep_caveat_and_expiration():
     assert str(rel) == "document:a#viewer@user:b[c][expiration:2030-01-02T03:04:05Z]"
 
 
-# --- Paging (bug fix) and N8 --------------------------------------------------
+# --- Paging (bug fix) and cursors --------------------------------------------------
 
 
 class _Call:
@@ -391,7 +391,7 @@ def test_export_items_share_their_response_cursor():
     assert client._permissions.ExportBulkRelationships.call_args.args[0].optional_cursor.token == "c0"
 
 
-# --- N9, N10: retry policy and default deadline -------------------------------
+# --- retry policy and default deadline -------------------------------
 
 
 def test_retry_policy_codes_callback_and_mutations():
@@ -451,7 +451,7 @@ def test_default_deadline_disabled_sends_no_deadline():
     assert 0 < client._schema.ReadSchema.call_args.kwargs["timeout"] <= 5
 
 
-# --- N12: per-item bulk errors -------------------------------------------------
+# --- per-item bulk errors -------------------------------------------------
 
 
 def test_bulk_item_errors_returned_never_grant():
@@ -478,7 +478,7 @@ def test_bulk_item_errors_returned_never_grant():
     assert not failed and failed.permissionship is Permissionship.UNSPECIFIED
 
 
-# --- N16: deletes ----------------------------------------------------------------
+# --- deletes ----------------------------------------------------------------
 
 
 def test_delete_partial_modes():
@@ -524,7 +524,7 @@ async def test_delete_all_reports_progress_per_batch():
     await aio.close()
 
 
-# --- N13, N14: import batch size and call options --------------------------------
+# --- import batch size and call options --------------------------------
 
 
 def test_import_batch_size_and_call_options_are_forwarded():
@@ -551,7 +551,7 @@ def test_call_options_cannot_replace_the_client_token():
         client.read_schema(call_options=CallOptions(metadata=(("authorization", "Bearer x"),)))
 
 
-# --- N6, N7, N14 against a real in-process server ---------------------------------
+# --- against a real in-process server ---------------------------------
 
 
 class _Server:

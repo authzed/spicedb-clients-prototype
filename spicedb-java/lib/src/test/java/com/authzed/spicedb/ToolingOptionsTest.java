@@ -58,7 +58,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
-/** N6-N16 against an in-process server. */
+/** Tooling options against an in-process server. */
 class ToolingOptionsTest {
 
   /** In-process server plus a channel the test owns. */
@@ -103,7 +103,7 @@ class ToolingOptionsTest {
     return SpiceDBClient.toProtoRelationship(Relationship.fromTuple(tuple));
   }
 
-  // ------------------------------------------------------------------ N6
+  // ------------------------------------------------------------------ from channel
 
   @Test
   void fromChannelUsesCallerOwnedChannelAndNeverClosesIt() throws Exception {
@@ -136,7 +136,7 @@ class ToolingOptionsTest {
     }
   }
 
-  // ------------------------------------------------------------------ N7, N13
+  // ------------------------------------------------------------------ import
 
   @Test
   void importReportsTheServersAbortStatusAndHonorsBatchSize() throws Exception {
@@ -193,7 +193,7 @@ class ToolingOptionsTest {
     }
   }
 
-  // ------------------------------------------------------------------ N8 + paging bug
+  // ------------------------------------------------------------------ paging
 
   @Test
   void readPagesRepeatConsistencyAndPageSizeAndExposeCursors() throws Exception {
@@ -308,7 +308,7 @@ class ToolingOptionsTest {
     }
   }
 
-  // ------------------------------------------------------------------ N9
+  // ------------------------------------------------------------------ retry policy
 
   /** A schema service that fails with {@code code} for the first {@code failures} calls. */
   private static SchemaServiceGrpc.SchemaServiceImplBase flakySchema(
@@ -417,7 +417,7 @@ class ToolingOptionsTest {
     }
   }
 
-  // ------------------------------------------------------------------ N10
+  // ------------------------------------------------------------------ default deadline
 
   @Test
   void defaultDeadlineCanBeDisabled() throws Exception {
@@ -443,7 +443,7 @@ class ToolingOptionsTest {
     }
   }
 
-  // ------------------------------------------------------------------ N12
+  // ------------------------------------------------------------------ bulk item errors
 
   @Test
   void bulkItemErrorsCanBeReturnedPerItem() throws Exception {
@@ -502,7 +502,7 @@ class ToolingOptionsTest {
     }
   }
 
-  // ------------------------------------------------------------------ N14
+  // ------------------------------------------------------------------ transport options
 
   @Test
   void transportOptionsAdjustCallsAndCaptureMetadata() throws Exception {
@@ -558,7 +558,7 @@ class ToolingOptionsTest {
     }
   }
 
-  // ------------------------------------------------------------------ N15
+  // ------------------------------------------------------------------ watch schema changes
 
   @Test
   void watchRequestsAndReportsSchemaChanges() throws Exception {
@@ -593,7 +593,7 @@ class ToolingOptionsTest {
     }
   }
 
-  // ------------------------------------------------------------------ N16
+  // ------------------------------------------------------------------ deletion modes
 
   @Test
   void allOrNothingDeleteAndDeleteAllProgress() throws Exception {

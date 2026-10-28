@@ -37,16 +37,16 @@ new permissive static factory overloads.
 
 | Item | Generated Java API |
 | --- | --- |
-| G1 permission usersets | `organization.canAdminSubject()` → `OrganizationCanAdminRef` (+ `withExpiration(Instant)` → `OrganizationCanAdminExpiring`); `canAdmin()` stays the permission |
-| T1 observability | `Permission.resourceType()/resourceId()/name()/toString()` (`type:id#perm`), `ref()`; `PermissionRef.name()/toString()` (`type#perm`) |
-| T2 transactions | `new Txn().touch/create/delete/mustMatch/mustNotMatch`, `size()`, `build()` → native `Transaction`; `TypedClient.writeTxn` |
-| T3 native round trip | `TypedRelationship.toRelationship()`, `fromRelationship(Relationship)` (not schema-checked), `ofError(RuntimeException)`, `error()`, `toFilter()`, `toString()`, `equals` |
-| T4 bulk checks | `Permission.forSubject(S)`, `checksFor(subject, permissions...)`, `TypedClient.checkBulk(Consistency, List<TypedCheck>)`, `Permission.permissionCheck(S, Consistency)` |
-| T5 filters/constants | `OrganizationFilter()`, `ref.filter()`, `ref.adminFilter()`, `withSubject(Filter, Subject)`, `OrganizationRelations.ADMIN`, `OrganizationPermissions.CAN_ADMIN` |
-| T6 wildcards | `UserWildcard()` → `UserWildcardRef`; `user:*`-only writers admit only it |
-| T7 identity keys | `ref.inviterKey(subject)` → `RelationshipKey` (base subjects only), accepted by `Txn.delete` |
-| T8 relation checks | `ref.memberRelation()` → `Permission<OrganizationMemberRelationSubject>` |
-| T9 by-name | `permissionByName`, `relationByName`, `relationshipByName` (throw `NotInSchemaException` / `SubjectNotAllowedException`), `Permission.forDynamicSubject(Subject)`, `XRelations.names()`, `XPermissions.names()` |
+| permission usersets | `organization.canAdminSubject()` → `OrganizationCanAdminRef` (+ `withExpiration(Instant)` → `OrganizationCanAdminExpiring`); `canAdmin()` stays the permission |
+| observability | `Permission.resourceType()/resourceId()/name()/toString()` (`type:id#perm`), `ref()`; `PermissionRef.name()/toString()` (`type#perm`) |
+| transactions | `new Txn().touch/create/delete/mustMatch/mustNotMatch`, `size()`, `build()` → native `Transaction`; `TypedClient.writeTxn` |
+| native round trip | `TypedRelationship.toRelationship()`, `fromRelationship(Relationship)` (not schema-checked), `ofError(RuntimeException)`, `error()`, `toFilter()`, `toString()`, `equals` |
+| bulk checks | `Permission.forSubject(S)`, `checksFor(subject, permissions...)`, `TypedClient.checkBulk(Consistency, List<TypedCheck>)`, `Permission.permissionCheck(S, Consistency)` |
+| filters/constants | `OrganizationFilter()`, `ref.filter()`, `ref.adminFilter()`, `withSubject(Filter, Subject)`, `OrganizationRelations.ADMIN`, `OrganizationPermissions.CAN_ADMIN` |
+| wildcards | `UserWildcard()` → `UserWildcardRef`; `user:*`-only writers admit only it |
+| identity keys | `ref.inviterKey(subject)` → `RelationshipKey` (base subjects only), accepted by `Txn.delete` |
+| relation checks | `ref.memberRelation()` → `Permission<OrganizationMemberRelationSubject>` |
+| by-name | `permissionByName`, `relationByName`, `relationshipByName` (throw `NotInSchemaException` / `SubjectNotAllowedException`), `Permission.forDynamicSubject(Subject)`, `XRelations.names()`, `XPermissions.names()` |
 
 ## Verification ledger
 

@@ -7,13 +7,14 @@ against each flavor, so a change that (for example) silently drops `await`
 in the wrong place or leaves an async iterator in the sync client fails
 here, not just at import time.
 
-Requires SpiceDB at localhost:50051.
+Requires SpiceDB at SPICEDB_ENDPOINT (default localhost:50051).
 """
 
 from __future__ import annotations
 from spicedb import WriteResult, ZedToken, at_least, TransportSecurity, Tracing, LookupPermissionshipFilter
 
 import os
+from pathlib import Path
 
 import pytest
 from spicedb import full, Filter, Permissionship
@@ -26,35 +27,13 @@ from testdata.permissions import (
     TeamMember,
     IpRangeContext,
     TimeWindowContext,
-    DocumentView,
+    DOCUMENT_VIEW,
 )
 from testdata.aio import TypedClient as AsyncTypedClient
 from testdata.sync import TypedClient as SyncTypedClient
 
-SCHEMA = """
-caveat ip_range(allowed_cidr string) {
-    allowed_cidr == "0.0.0.0/0"
-}
-
-caveat time_window(start string, end string) {
-    start != "" && end != ""
-}
-
-definition user {}
-
-definition team {
-    relation member: user | team#member
-}
-
-definition document {
-    relation viewer: user | user with ip_range | user with time_window | team#member
-    relation editor: user
-    relation owner: user
-    permission view = viewer + editor + owner
-    permission edit = editor + owner
-    permission delete = owner
-}
-"""
+# The shared fixture schema, so every suite in a session writes the same one.
+SCHEMA = (Path(__file__).resolve().parents[1] / "sample.zed").read_text()
 
 
 class TestAsyncTypedClient:
@@ -137,7 +116,7 @@ class TestAsyncTypedClient:
 
         ids = [
             r.resource_id
-            async for r in tc.lookup_resources(full(), DocumentView, User("alice"), permissionship_filter=LookupPermissionshipFilter.HAS_PERMISSION_ONLY)
+            async for r in tc.lookup_resources(full(), DOCUMENT_VIEW, User("alice"), permissionship_filter=LookupPermissionshipFilter.HAS_PERMISSION_ONLY)
         ]
         assert "readme" in ids
 
@@ -192,7 +171,7 @@ class TestAsyncTypedClient:
         txn.create(Document("rfc").viewer(User("alice")))
         txn.touch(Document("rfc").editor(User("bob")))
         txn.delete(Document("rfc").owner(User("eve")))
-        revision = (await tc.write(txn)).revision
+        revision = (await tc.write_txn(txn)).revision
         assert str(revision)  # non-empty revision token
 
         assert (await tc.check(full(), Document("rfc").view, User("alice"))).has_permission is True
@@ -226,7 +205,7 @@ class TestAsyncTypedClient:
         )
 
         with pytest.raises(Exception):
-            await tc.write(txn)
+            await tc.write_txn(txn)
 
     @pytest.mark.integration
     async def test_typed_transaction_must_match_precondition(
@@ -242,7 +221,7 @@ class TestAsyncTypedClient:
         txn.must_match(
             Filter(resource_type="document", resource_id="protected", relation="owner")
         )
-        revision = (await tc.write(txn)).revision
+        revision = (await tc.write_txn(txn)).revision
         assert str(revision)
 
         # Now try with a document that has no owner; must_match should fail.
@@ -253,7 +232,7 @@ class TestAsyncTypedClient:
         )
 
         with pytest.raises(Exception):
-            await tc.write(txn2)
+            await tc.write_txn(txn2)
 
     @pytest.mark.integration
     async def test_caveat_time_window(self, tc: AsyncTypedClient) -> None:
@@ -389,7 +368,7 @@ class TestSyncTypedClient:
 
         ids = [
             r.resource_id
-            for r in tc.lookup_resources(full(), DocumentView, User("alice"), permissionship_filter=LookupPermissionshipFilter.HAS_PERMISSION_ONLY)
+            for r in tc.lookup_resources(full(), DOCUMENT_VIEW, User("alice"), permissionship_filter=LookupPermissionshipFilter.HAS_PERMISSION_ONLY)
         ]
         assert "readme-sync" in ids
 
@@ -444,7 +423,7 @@ class TestSyncTypedClient:
         txn.create(Document("rfc-sync").viewer(User("alice")))
         txn.touch(Document("rfc-sync").editor(User("bob")))
         txn.delete(Document("rfc-sync").owner(User("eve")))
-        revision = tc.write(txn).revision
+        revision = tc.write_txn(txn).revision
         assert str(revision)  # non-empty revision token
 
         assert tc.check(full(), Document("rfc-sync").view, User("alice")).has_permission is True
@@ -478,7 +457,7 @@ class TestSyncTypedClient:
         )
 
         with pytest.raises(Exception):
-            tc.write(txn)
+            tc.write_txn(txn)
 
     @pytest.mark.integration
     def test_typed_transaction_must_match_precondition(
@@ -494,7 +473,7 @@ class TestSyncTypedClient:
         txn.must_match(
             Filter(resource_type="document", resource_id="protected-sync", relation="owner")
         )
-        revision = tc.write(txn).revision
+        revision = tc.write_txn(txn).revision
         assert str(revision)
 
         # Now try with a document that has no owner; must_match should fail.
@@ -505,7 +484,7 @@ class TestSyncTypedClient:
         )
 
         with pytest.raises(Exception):
-            tc.write(txn2)
+            tc.write_txn(txn2)
 
     @pytest.mark.integration
     def test_caveat_time_window(self, tc: SyncTypedClient) -> None:
@@ -555,7 +534,7 @@ def write_result_contract(tc: SyncTypedClient) -> None:
     at_least(revision)
     created: WriteResult = tc.create(Document("two").viewer(User("alice")))
     deleted: WriteResult = tc.delete(Document("two").viewer(User("alice")))
-    written: WriteResult = tc.write(TypedTransaction())
+    written: WriteResult = tc.write_txn(TypedTransaction())
     assert created and deleted and written
 
 
@@ -564,5 +543,5 @@ async def async_write_result_contract(tc: AsyncTypedClient) -> None:
     at_least(result.revision)
     created: WriteResult = await tc.create(Document("two").viewer(User("alice")))
     deleted: WriteResult = await tc.delete(Document("two").viewer(User("alice")))
-    written: WriteResult = await tc.write(TypedTransaction())
+    written: WriteResult = await tc.write_txn(TypedTransaction())
     assert created and deleted and written

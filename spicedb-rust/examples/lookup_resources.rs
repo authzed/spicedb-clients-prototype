@@ -111,4 +111,33 @@ async fn main() {
         resource_ids.contains(&"seconddoc".to_string()),
         "expected seconddoc in results"
     );
+
+    // Single-request mode sends exactly one request, as the raw API does:
+    // without a limit it is unbounded, and its last item's cursor is the
+    // raw call's final cursor.
+    let single = client.lookup_resources(
+        spicedb::LookupResourcesRequest::new(
+            "document",
+            "view",
+            spicedb::SubjectRef::new(spicedb::ObjectRef::new("user", "alice").unwrap(), None)
+                .unwrap(),
+            consistency::full(),
+        )
+        .with_options(
+            spicedb::LookupResourcesOptions::new().with_paging(spicedb::Paging::SingleRequest),
+        ),
+    );
+    tokio::pin!(single);
+    let mut single_ids = Vec::new();
+    while let Some(result) = single.next().await {
+        let result = result.expect("single-request lookup failed");
+        assert!(
+            result.after_result_cursor.is_some(),
+            "each item carries its cursor"
+        );
+        single_ids.push(result.resource_id);
+    }
+    single_ids.sort();
+    assert_eq!(single_ids, vec!["firstdoc", "seconddoc"]);
+    println!("single request: {single_ids:?}");
 }

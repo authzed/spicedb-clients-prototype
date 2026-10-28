@@ -1,7 +1,8 @@
 //! Adoption items for tooling consumers (zed and friends): caller-owned
 //! channels, retry/deadline policy, per-call metadata, paging state and the
 //! paging-argument bug, import abort status and batch size, bulk item errors,
-//! all-or-nothing delete and delete-all progress, and error interop.
+//! all-or-nothing delete and delete-all progress, error interop, per-call
+//! retry policies, single-request paging and protocol round trips.
 //!
 //! The mock below emulates SpiceDB's cursor rule: a cursor is only accepted
 //! with the same consistency and limit as the request that produced it.
@@ -22,15 +23,17 @@ use spicedb::{
     consistency, BulkCheckRequest, BulkItemErrors, CallOptions, CheckOptions, DefaultDeadline,
     DeleteAllOptions, DeleteAllRequest, DeleteOptions, DeletePartial, DeleteRequest,
     ExportRelationshipsOptions, ExportRelationshipsRequest, Filter, ImportRelationshipsOptions,
-    ImportRelationshipsRequest, LookupResourcesOptions, LookupResourcesRequest, ObjectRef,
-    PermissionCheck, ReadRelationshipsOptions, ReadRelationshipsRequest, Relationship,
-    ResponseMetadata, RetryMode, RetryPolicy, SpiceDBClient, SpiceDBError, StreamRetryMode,
-    SubjectRef, UpdatesRequest, WatchOptions,
+    ImportRelationshipsRequest, LookupResourcesOptions, LookupResourcesRequest,
+    LookupSubjectsRequest, ObjectRef, Paging, PermissionCheck, ReadRelationshipsOptions,
+    ReadRelationshipsRequest, Relationship, ResponseMetadata, RetryMode, RetryPolicy,
+    SpiceDBClient, SpiceDBError, StreamRetryMode, SubjectRef, Transaction, UpdatesRequest,
+    WatchOptions, WriteOptions, WriteRequest, WriteSchemaOptions, WriteSchemaRequest,
 };
 use spicedb_proto::authzed::api::v1 as proto;
 use spicedb_proto::authzed::api::v1::permissions_service_server::{
     PermissionsService, PermissionsServiceServer,
 };
+use spicedb_proto::authzed::api::v1::schema_service_server::{SchemaService, SchemaServiceServer};
 use spicedb_proto::authzed::api::v1::watch_service_server::{WatchService, WatchServiceServer};
 use tonic::transport::{Endpoint, Server};
 use tonic::{Code, Request, Response, Status};
@@ -48,6 +51,8 @@ struct Seen {
     custom_header: Mutex<Vec<Option<String>>>,
     import_messages: Mutex<Vec<usize>>,
     deletes: Mutex<Vec<proto::DeleteRelationshipsRequest>>,
+    writes: AtomicUsize,
+    schema_writes: AtomicUsize,
 }
 
 #[derive(Clone, Default)]
@@ -61,6 +66,10 @@ struct Mock {
     abort_import: bool,
     /// Delay every unary check by this long.
     check_stall: Option<Duration>,
+    /// Fail the first relationship write with this code, when set.
+    write_failure: Option<Code>,
+    /// Fail the second delete page with UNAVAILABLE.
+    fail_second_delete: bool,
 }
 
 impl Mock {
@@ -109,7 +118,11 @@ impl Mock {
         }
         paged.push((consistency, limit, cursor.clone()));
         let start: usize = cursor.map_or(0, |c| c.parse().unwrap());
-        let end = (start + limit as usize).min(self.rows);
+        // A zero limit is unbounded, as in SpiceDB.
+        let end = match limit {
+            0 => self.rows,
+            n => (start + n as usize).min(self.rows),
+        };
         Ok(start..end)
     }
 }
@@ -254,6 +267,9 @@ impl PermissionsService for Mock {
         let mut deletes = self.seen.deletes.lock().unwrap();
         deletes.push(r);
         let n = deletes.len();
+        if self.fail_second_delete && n == 2 {
+            return Err(Status::unavailable("datastore gone"));
+        }
         Ok(Response::new(proto::DeleteRelationshipsResponse {
             deleted_at: token(&format!("rev-{n}")),
             deletion_progress: if n < 3 { 2 } else { 1 },
@@ -289,9 +305,16 @@ impl PermissionsService for Mock {
     }
     async fn write_relationships(
         &self,
-        _: Request<proto::WriteRelationshipsRequest>,
+        request: Request<proto::WriteRelationshipsRequest>,
     ) -> Result<Response<proto::WriteRelationshipsResponse>, Status> {
-        Err(Status::unimplemented(""))
+        self.record(&request);
+        let n = self.seen.writes.fetch_add(1, Ordering::SeqCst) + 1;
+        if let (1, Some(code)) = (n, self.write_failure) {
+            return Err(Status::new(code, "transient"));
+        }
+        Ok(Response::new(proto::WriteRelationshipsResponse {
+            written_at: token("w"),
+        }))
     }
     async fn expand_permission_tree(
         &self,
@@ -301,8 +324,100 @@ impl PermissionsService for Mock {
     }
     async fn lookup_subjects(
         &self,
-        _: Request<proto::LookupSubjectsRequest>,
+        request: Request<proto::LookupSubjectsRequest>,
     ) -> Result<Response<Self::LookupSubjectsStream>, Status> {
+        self.record(&request);
+        Ok(Response::new(Box::pin(futures::stream::iter(
+            lookup_subjects_responses().into_iter().map(Ok),
+        ))))
+    }
+}
+
+/// LookupSubjects responses as SpiceDB sends them: the deprecated top-level
+/// fields mirror `subject` and `excluded_subjects`.
+#[allow(deprecated)]
+fn lookup_subjects_responses() -> Vec<proto::LookupSubjectsResponse> {
+    let has = proto::LookupPermissionship::HasPermission as i32;
+    let conditional = proto::LookupPermissionship::ConditionalPermission as i32;
+    let caveat = Some(proto::PartialCaveatInfo {
+        missing_required_context: vec!["k".into()],
+    });
+    vec![
+        proto::LookupSubjectsResponse {
+            looked_up_at: token("rev-3"),
+            subject: Some(proto::ResolvedSubject {
+                subject_object_id: "*".into(),
+                permissionship: has,
+                partial_caveat_info: None,
+            }),
+            subject_object_id: "*".into(),
+            permissionship: has,
+            excluded_subjects: vec![proto::ResolvedSubject {
+                subject_object_id: "bob".into(),
+                permissionship: conditional,
+                partial_caveat_info: caveat.clone(),
+            }],
+            excluded_subject_ids: vec!["bob".into()],
+            ..Default::default()
+        },
+        proto::LookupSubjectsResponse {
+            looked_up_at: token("rev-3"),
+            subject: Some(proto::ResolvedSubject {
+                subject_object_id: "carol".into(),
+                permissionship: conditional,
+                partial_caveat_info: caveat.clone(),
+            }),
+            subject_object_id: "carol".into(),
+            permissionship: conditional,
+            partial_caveat_info: caveat,
+            ..Default::default()
+        },
+    ]
+}
+
+#[tonic::async_trait]
+impl SchemaService for Mock {
+    async fn read_schema(
+        &self,
+        _: Request<proto::ReadSchemaRequest>,
+    ) -> Result<Response<proto::ReadSchemaResponse>, Status> {
+        Err(Status::unimplemented(""))
+    }
+    /// Fails the first write with UNAVAILABLE.
+    async fn write_schema(
+        &self,
+        request: Request<proto::WriteSchemaRequest>,
+    ) -> Result<Response<proto::WriteSchemaResponse>, Status> {
+        self.record(&request);
+        if self.seen.schema_writes.fetch_add(1, Ordering::SeqCst) == 0 {
+            return Err(Status::unavailable("transient"));
+        }
+        Ok(Response::new(proto::WriteSchemaResponse {
+            written_at: token("s"),
+        }))
+    }
+    async fn reflect_schema(
+        &self,
+        _: Request<proto::ReflectSchemaRequest>,
+    ) -> Result<Response<proto::ReflectSchemaResponse>, Status> {
+        Err(Status::unimplemented(""))
+    }
+    async fn computable_permissions(
+        &self,
+        _: Request<proto::ComputablePermissionsRequest>,
+    ) -> Result<Response<proto::ComputablePermissionsResponse>, Status> {
+        Err(Status::unimplemented(""))
+    }
+    async fn dependent_relations(
+        &self,
+        _: Request<proto::DependentRelationsRequest>,
+    ) -> Result<Response<proto::DependentRelationsResponse>, Status> {
+        Err(Status::unimplemented(""))
+    }
+    async fn diff_schema(
+        &self,
+        _: Request<proto::DiffSchemaRequest>,
+    ) -> Result<Response<proto::DiffSchemaResponse>, Status> {
         Err(Status::unimplemented(""))
     }
 }
@@ -324,6 +439,7 @@ async fn serve(mock: Mock) -> tonic::transport::Channel {
     let addr = support::spawn_server(
         Server::builder()
             .add_service(PermissionsServiceServer::new(mock.clone()))
+            .add_service(SchemaServiceServer::new(mock.clone()))
             .add_service(WatchServiceServer::new(mock)),
     )
     .await;
@@ -865,4 +981,346 @@ fn constructed_errors_behave_like_server_errors() {
     };
     assert_eq!(code_of(&wrapped), Code::NotFound);
     assert_eq!(code_of(&std::io::Error::other("x")), Code::Unknown);
+}
+
+// ---------------------------------------------------------------------------
+// Per-call retry policy.
+// ---------------------------------------------------------------------------
+
+fn retry_once() -> CallOptions {
+    CallOptions::new().with_retry_policy(
+        RetryPolicy::new()
+            .with_max_retries(1)
+            .with_retryable_codes(vec![Code::Unavailable])
+            .with_initial_backoff(Duration::from_millis(1)),
+    )
+}
+
+fn touch() -> Transaction {
+    let mut txn = Transaction::new();
+    txn.touch(&Relationship::from_tuple("document:a#viewer@user:alice").unwrap());
+    txn
+}
+
+#[tokio::test]
+async fn mutations_are_not_retried_unless_an_idempotent_call_opts_in() {
+    // Never retried by default.
+    let mock = Mock {
+        write_failure: Some(Code::Unavailable),
+        ..Default::default()
+    };
+    let seen = mock.seen.clone();
+    let c = client(mock).await;
+    let err = c.write(WriteRequest::new(touch())).await.unwrap_err();
+    assert_eq!(err.code(), Code::Unavailable);
+    assert_eq!(seen.writes.load(Ordering::SeqCst), 1);
+
+    // A touch-only write may opt in for one call.
+    let mock = Mock {
+        write_failure: Some(Code::Unavailable),
+        ..Default::default()
+    };
+    let seen = mock.seen.clone();
+    let c = client(mock).await;
+    let written = c
+        .write(
+            WriteRequest::new(touch())
+                .with_options(WriteOptions::new().with_call_options(retry_once())),
+        )
+        .await
+        .unwrap();
+    assert_eq!(written.revision.as_ref(), "w");
+    assert_eq!(seen.writes.load(Ordering::SeqCst), 2);
+
+    // Creates and preconditioned writes refuse the opt-in before any request.
+    let mut create = Transaction::new();
+    create.create(&Relationship::from_tuple("document:a#viewer@user:alice").unwrap());
+    let mut guarded = touch();
+    guarded.must_match(Filter::new("document"));
+    for txn in [create, guarded] {
+        let before = seen.calls.load(Ordering::SeqCst);
+        let err = c
+            .write(
+                WriteRequest::new(txn)
+                    .with_options(WriteOptions::new().with_call_options(retry_once())),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, SpiceDBError::InvalidArgument(_)), "{err:?}");
+        assert_eq!(seen.calls.load(Ordering::SeqCst), before, "no request sent");
+    }
+
+    // Every other mutation refuses it too, before any request.
+    let before = seen.calls.load(Ordering::SeqCst);
+    let filter = Filter::new("document");
+    let delete = c
+        .delete_relationships(
+            DeleteRequest::new(filter.clone(), NonZeroU32::new(1).unwrap())
+                .with_options(DeleteOptions::new().with_call_options(retry_once())),
+        )
+        .await
+        .unwrap_err();
+    let delete_all = c
+        .delete_all_relationships_non_atomic(
+            DeleteAllRequest::new(filter)
+                .with_options(DeleteAllOptions::new().with_call_options(retry_once())),
+        )
+        .await
+        .unwrap_err();
+    let import = c
+        .import_relationships(
+            rels(3).with_options(ImportRelationshipsOptions::new().with_call_options(retry_once())),
+        )
+        .await
+        .unwrap_err();
+    for err in [delete, delete_all, import] {
+        assert!(matches!(err, SpiceDBError::InvalidArgument(_)), "{err:?}");
+    }
+    assert_eq!(seen.calls.load(Ordering::SeqCst), before, "no request sent");
+
+    // A zero-retry policy is not an opt-in, so mutations accept it.
+    let zero = CallOptions::new().with_retry_policy(RetryPolicy::new().with_max_retries(0));
+    c.delete_relationships(
+        DeleteRequest::new(Filter::new("document"), NonZeroU32::new(1).unwrap())
+            .with_options(DeleteOptions::new().with_call_options(zero)),
+    )
+    .await
+    .unwrap();
+
+    // Schema writes are idempotent and may opt in.
+    let schema = c
+        .write_schema(
+            WriteSchemaRequest::new("definition user {}")
+                .with_options(WriteSchemaOptions::new().with_call_options(retry_once())),
+        )
+        .await
+        .unwrap();
+    assert_eq!(schema.revision.as_ref(), "s");
+    assert_eq!(seen.schema_writes.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn a_per_call_policy_overrides_the_clients_including_streams() {
+    let mock = Mock::default();
+    let seen = mock.seen.clone();
+    let channel = serve(mock).await;
+    let fast = RetryPolicy::new().with_initial_backoff(Duration::from_millis(1));
+
+    // One watch is exempted while the client keeps retrying everything else.
+    let c = SpiceDBClient::from_channel(channel.clone())
+        .retry_policy(fast.clone())
+        .build()
+        .unwrap();
+    let once = CallOptions::new().with_retry_policy(RetryPolicy::new().with_max_retries(0));
+    let mut stream = Box::pin(c.updates(
+        UpdatesRequest::new(vec![]).with_options(WatchOptions::new().with_call_options(once)),
+    ));
+    assert!(stream.next().await.unwrap().is_err());
+    assert_eq!(seen.calls.swap(0, Ordering::SeqCst), 1);
+
+    // And a client with retries and stream retries disabled can retry one call.
+    let c = SpiceDBClient::from_channel(channel)
+        .retries(RetryMode::Disabled)
+        .stream_retries(StreamRetryMode::Disabled)
+        .build()
+        .unwrap();
+    let twice = CallOptions::new().with_retry_policy(fast.with_max_retries(1));
+    let mut stream = Box::pin(c.updates(
+        UpdatesRequest::new(vec![]).with_options(WatchOptions::new().with_call_options(twice)),
+    ));
+    assert!(stream.next().await.unwrap().is_err());
+    assert_eq!(seen.calls.load(Ordering::SeqCst), 2);
+
+    // An invalid per-call policy fails before any request.
+    let bad = CallOptions::new().with_retry_policy(
+        RetryPolicy::new()
+            .with_max_retries(1)
+            .with_initial_backoff(Duration::ZERO),
+    );
+    let err = c
+        .check(question().with_options(CheckOptions::new().with_call_options(bad)))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, SpiceDBError::InvalidArgument(_)), "{err:?}");
+    assert_eq!(seen.calls.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn an_empty_write_is_sent_to_the_server() {
+    let mock = Mock::default();
+    let seen = mock.seen.clone();
+    let written = client(mock)
+        .await
+        .write(WriteRequest::new(Transaction::new()))
+        .await
+        .unwrap();
+    assert_eq!(written.revision.as_ref(), "w");
+    assert_eq!(seen.writes.load(Ordering::SeqCst), 1);
+}
+
+// ---------------------------------------------------------------------------
+// Single-request paging.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn single_request_paging_sends_exactly_one_request() {
+    let mock = Mock {
+        rows: 5,
+        ..Default::default()
+    };
+    let seen = mock.seen.clone();
+    let c = client(mock).await;
+    let subject = question().subject().clone();
+    let lookup = |options: LookupResourcesOptions| {
+        c.lookup_resources(
+            LookupResourcesRequest::new("document", "view", subject.clone(), consistency::full())
+                .with_options(options),
+        )
+        .map(|r| r.unwrap().after_result_cursor.unwrap())
+        .collect::<Vec<_>>()
+    };
+    let cursors = lookup(
+        LookupResourcesOptions::new()
+            .with_paging(Paging::SingleRequest)
+            .with_page_size(NonZeroU32::new(2).unwrap()),
+    )
+    .await;
+    assert_eq!(cursors, vec!["1", "2", "3", "4", "5"]);
+    {
+        let paged = seen.paged.lock().unwrap();
+        assert_eq!(paged.len(), 1, "exactly one request");
+        assert_eq!(paged[0].1, 0, "no limit means unbounded; page size ignored");
+    }
+    seen.paged.lock().unwrap().clear();
+
+    // With a limit, the request carries it and nothing more is fetched.
+    let read: Vec<_> = c
+        .read_relationships(
+            ReadRelationshipsRequest::new(Filter::new("document"), consistency::full())
+                .with_options(
+                    ReadRelationshipsOptions::new()
+                        .with_paging(Paging::SingleRequest)
+                        .with_limit(3),
+                ),
+        )
+        .map(|r| r.unwrap())
+        .collect()
+        .await;
+    assert_eq!(read.len(), 3);
+    let paged = seen.paged.lock().unwrap();
+    assert_eq!(paged.len(), 1);
+    assert_eq!(paged[0].1, 3);
+}
+
+// ---------------------------------------------------------------------------
+// Wrapper errors report the server's status once.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn wrapper_errors_report_the_server_message_once() {
+    let c = client(Mock {
+        fail_second_delete: true,
+        ..Default::default()
+    })
+    .await;
+    let results = c
+        .check_bulk(
+            BulkCheckRequest::new(vec![question(), question()])
+                .with_options(CheckOptions::new().with_bulk_item_errors(BulkItemErrors::Returned)),
+        )
+        .await
+        .unwrap();
+    let item = results[1].error.clone().unwrap();
+    assert_eq!(
+        item.to_string(),
+        "check item 1: not found: object definition `nope` not found",
+        "Display keeps full context"
+    );
+    let status = tonic::Status::from(&item);
+    assert_eq!(status.code(), Code::NotFound);
+    assert_eq!(status.message(), "object definition `nope` not found");
+    assert_eq!(
+        item.server_message(),
+        Some("object definition `nope` not found")
+    );
+
+    let err = c
+        .delete_all_relationships_non_atomic(DeleteAllRequest::new(Filter::new("document")))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, SpiceDBError::DeleteProgress { .. }),
+        "{err:?}"
+    );
+    let status = err.to_status();
+    assert_eq!(status.code(), Code::Unavailable);
+    assert_eq!(status.message(), "datastore gone");
+}
+
+// ---------------------------------------------------------------------------
+// Protocol conversions reproduce the server's responses.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn check_bulk_round_trips_the_servers_response() {
+    let c = client(Mock::default()).await;
+    let mut context = std::collections::HashMap::new();
+    context.insert("cidr".to_string(), serde_json::json!("10.0.0.0/8"));
+    let request = BulkCheckRequest::new(vec![question(), question(), question()]).with_options(
+        CheckOptions::new()
+            .with_bulk_item_errors(BulkItemErrors::Returned)
+            .with_context(context),
+    );
+    let results = c.check_bulk(request.clone()).await.unwrap();
+    let got = spicedb::protoconv::check_bulk_to_proto(&request, &results).unwrap();
+
+    // What the mock sent: each request item echoed, item 1 an error.
+    let mut want = proto::CheckBulkPermissionsResponse {
+        checked_at: token("rev-1"),
+        pairs: vec![],
+    };
+    for i in 0..3 {
+        let mut item = spicedb::protoconv::check_request_to_proto(&question()).unwrap();
+        item.context = got.pairs[i].request.as_ref().unwrap().context.clone();
+        assert!(item.context.is_some(), "call context is merged into items");
+        want.pairs.push(proto::CheckBulkPermissionsPair {
+            request: Some(item),
+            response: Some(if i == 1 {
+                proto::check_bulk_permissions_pair::Response::Error(
+                    spicedb_proto::google::rpc::Status {
+                        code: Code::NotFound as i32,
+                        message: "object definition `nope` not found".into(),
+                        details: vec![],
+                    },
+                )
+            } else {
+                proto::check_bulk_permissions_pair::Response::Item(
+                    proto::CheckBulkPermissionsResponseItem {
+                        permissionship: 2,
+                        ..Default::default()
+                    },
+                )
+            }),
+        });
+    }
+    assert_eq!(got, want);
+
+    let err = spicedb::protoconv::check_bulk_to_proto(&request, &results[..1]).unwrap_err();
+    assert!(matches!(err, SpiceDBError::InvalidArgument(_)), "{err:?}");
+}
+
+#[tokio::test]
+async fn lookup_subjects_round_trips_the_servers_response() {
+    let c = client(Mock::default()).await;
+    let got: Vec<_> = c
+        .lookup_subjects(LookupSubjectsRequest::new(
+            ObjectRef::new("document", "d0").unwrap(),
+            "view",
+            "user",
+            consistency::full(),
+        ))
+        .map(|s| spicedb::protoconv::lookup_subject_to_proto(&s.unwrap()))
+        .collect()
+        .await;
+    assert_eq!(got, lookup_subjects_responses());
 }

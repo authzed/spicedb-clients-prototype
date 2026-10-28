@@ -143,7 +143,12 @@ match client.write(WriteRequest::new(txn)).await {
 - To delete by filter, use `delete_relationships(DeleteRequest::new(filter, limit))`
   (bounded, one RPC) or `delete_all_relationships_non_atomic` (pages; not atomic).
 - **Do not retry a failed write blindly**; it may have committed. The client
-  never replays mutations.
+  never replays mutations automatically. Only a touch-only write without
+  preconditions (and `write_schema`) may opt in per call with
+  `CallOptions::new().with_retry_policy(policy)`; every other mutation rejects
+  the opt-in with `InvalidArgument` before sending anything.
+- An empty transaction is sent like any other: SpiceDB checks its
+  preconditions and returns the current revision.
 
 ## Read relationships
 
@@ -165,7 +170,9 @@ while let Some(item) = stream.next().await {
 To resume, repeat the **same request and page size** with
 `ReadRelationshipsOptions::new().with_cursor(cursor)`. Lookups
 (`LookupResource::after_result_cursor`) and exports
-(`ExportedRelationship::after_result_cursor`) work the same way.
+(`ExportedRelationship::after_result_cursor`) work the same way. Reads and
+resource lookups page automatically; `with_paging(Paging::SingleRequest)` sends
+exactly one request like the raw API (limit = `with_limit` or unbounded).
 
 ## Schema-agnostic code (native tier)
 
@@ -211,8 +218,21 @@ let version = captured.headers().get("io.spicedb.debug.version").cloned();
 ```
 
 Every operation's options take `with_call_options` (request metadata,
-response header/trailer capture). Protocol-shaped output:
-`spicedb::protoconv::relationship_to_proto(&r)` and friends.
+response header/trailer capture, and a per-call retry policy that overrides the
+client's, including stream establishment):
+
+```rust
+// Open this one supervised watch exactly once; everything else keeps retrying.
+let once = CallOptions::new().with_retry_policy(RetryPolicy::new().with_max_retries(0));
+let events = tool.updates(
+    UpdatesRequest::new(vec![]).with_options(WatchOptions::new().with_call_options(once)),
+);
+```
+
+Protocol-shaped output: `spicedb::protoconv::relationship_to_proto(&r)` and
+friends, including `check_bulk_to_proto(&request, &results)` for a whole bulk
+check response and `lookup_subject_to_proto`, which also fills the deprecated
+fields SpiceDB still sends.
 
 ## Errors
 
@@ -230,7 +250,8 @@ validation and deadlines; `tonic::Status::from(err)` converts it, and
 `spicedb::error::code_of(&e)` classifies any error, including a raw
 `tonic::Status`. Forward `err.server_message()`, not `err.to_string()`, when
 relaying an error to another party; `err.reason()` is SpiceDB's
-`ERROR_REASON_*`.
+`ERROR_REASON_*`. Bulk-item and delete-progress errors convert to their inner
+server status, so the server's message appears once.
 
 ## Test
 
@@ -249,9 +270,12 @@ let client = fake.client()?; // a real SpiceDBClient over an in-memory channel
 
 Code under test keeps taking a `SpiceDBClient`; no trait is needed. The double
 applies SpiceDB's write semantics (preconditions, `create` conflicts, atomic
-transactions), filtered and paged reads, bounded and all-or-nothing deletes,
-and registered check results (default `NoPermission`); `fake.relationships()`
-shows the store. Build expected errors with
+transactions, empty writes), filtered and paged reads and exports, atomic
+imports, bounded and all-or-nothing deletes, schema reads and writes, and
+registered check and reflection results (`set_check_result`, default
+`NoPermission`; `set_reflect_schema_result`); `fake.relationships()` shows the
+store. Errors come through the real client, so they have its codes and
+messages, and every option is honored as sent on the wire. Build expected errors with
 `SpiceDBError::new(tonic::Code::FailedPrecondition, "...")`. For integration
 tests, run `authzed/spicedb serve-testing` and assert both granted and denied
 cases.

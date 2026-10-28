@@ -116,6 +116,48 @@ async fn main() {
         write_counts.write()
     );
 
+    // ── 2b. An idempotent mutation may opt in, one call at a time ────────
+    //
+    // A touch-only write without preconditions converges to the same state
+    // however often it is replayed, so the caller may pass a per-call retry
+    // policy. The stand-in still fails every write, so one retry means two
+    // attempts. A create cannot opt in: it fails locally, before any request.
+    let retry_once = spicedb::CallOptions::new().with_retry_policy(
+        spicedb::RetryPolicy::new()
+            .with_max_retries(1)
+            .with_initial_backoff(std::time::Duration::from_millis(1)),
+    );
+    let before = write_counts.write();
+    let err = write_client
+        .write(
+            spicedb::WriteRequest::new(txn.clone())
+                .with_options(spicedb::WriteOptions::new().with_call_options(retry_once.clone())),
+        )
+        .await
+        .expect_err("the stand-in always fails writes");
+    assert!(matches!(err, SpiceDBError::Unavailable(_)), "{err:?}");
+    assert_eq!(
+        write_counts.write() - before,
+        2,
+        "an opted-in touch-only write should be attempted twice"
+    );
+    let mut create = Transaction::new();
+    create.create(&write_rel);
+    let err = write_client
+        .write(
+            spicedb::WriteRequest::new(create)
+                .with_options(spicedb::WriteOptions::new().with_call_options(retry_once)),
+        )
+        .await
+        .expect_err("a create must refuse the retry opt-in");
+    assert!(matches!(err, SpiceDBError::InvalidArgument(_)), "{err:?}");
+    assert_eq!(
+        write_counts.write() - before,
+        2,
+        "the refused opt-in must not send a request"
+    );
+    println!("idempotent mutation: a touch-only write opted in and was attempted twice; a create refused the opt-in locally");
+
     // ── 3. RESOURCE_EXHAUSTED is not retryable, even on a read ───────────
     //
     // In SpiceDB this code means memory load-shed or a deterministic

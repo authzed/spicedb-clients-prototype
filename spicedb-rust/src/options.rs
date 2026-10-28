@@ -36,6 +36,12 @@ impl<T: ?Sized> PartialEq for Callback<T> {
     }
 }
 impl<T: ?Sized> Eq for Callback<T> {}
+// A callback only ever receives a borrowed event and the client keeps no
+// state that a panic inside it could leave half-updated (response-metadata
+// capture recovers from poisoning), so options holding one stay unwind-safe
+// like the rest of the options values.
+impl<T: ?Sized> std::panic::UnwindSafe for Callback<T> {}
+impl<T: ?Sized> std::panic::RefUnwindSafe for Callback<T> {}
 
 /// A retry about to happen, passed to [`RetryPolicy::with_on_retry`].
 #[derive(Debug, Clone)]
@@ -52,7 +58,9 @@ pub struct RetryEvent {
 /// Retry policy for idempotent reads and stream establishment.
 ///
 /// Mutations (writes, deletes, imports, counter registration) are never
-/// retried, whatever the policy says. The default is three retries of
+/// retried automatically. A caller may opt a single idempotent mutation into
+/// retries with [`CallOptions::with_retry_policy`]: a write containing only
+/// touches and no preconditions, or a schema write. The default is three retries of
 /// `Unavailable` and `Aborted` with full-jitter exponential backoff starting at
 /// 100 ms and capped at 5 s.
 ///
@@ -223,8 +231,8 @@ impl PartialEq for ResponseMetadata {
 }
 impl Eq for ResponseMetadata {}
 
-/// The per-call transport escape hatch, accepted by every operation's options
-/// through `with_call_options`.
+/// Per-call execution and transport settings, accepted by every operation's
+/// options through `with_call_options`.
 ///
 /// It is the supported route to transport-level data, so ordinary callers
 /// never need [`raw_proto`](crate::SpiceDBClient::raw_proto) for it. Request
@@ -244,11 +252,22 @@ impl Eq for ResponseMetadata {}
 ///     .with_response_metadata(captured.clone());
 /// let options = spicedb::ReadSchemaOptions::new().with_call_options(call);
 /// ```
+///
+/// [`with_retry_policy`](Self::with_retry_policy) overrides the client's retry
+/// policy for this one call, for example to open one supervised watch exactly
+/// once while the client keeps retrying everything else:
+///
+/// ```
+/// use spicedb::{CallOptions, RetryPolicy, WatchOptions};
+/// let once = CallOptions::new().with_retry_policy(RetryPolicy::new().with_max_retries(0));
+/// let options = WatchOptions::new().with_call_options(once);
+/// ```
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 pub struct CallOptions {
     pub(crate) metadata: MetadataMap,
     pub(crate) capture: Option<ResponseMetadata>,
+    pub(crate) retry: Option<RetryPolicy>,
 }
 
 impl CallOptions {
@@ -265,11 +284,28 @@ impl CallOptions {
         self.capture = Some(capture);
         self
     }
+    /// Overrides the client's retry policy (including
+    /// [`RetryMode::Disabled`]) for this call. For a server stream it also
+    /// governs reopening before the first item, whatever the client's
+    /// [`StreamRetryMode`]; `RetryPolicy::new().with_max_retries(0)` exempts
+    /// one call or stream from retries.
+    ///
+    /// Mutations are not retried by default. Two are idempotent on replay and
+    /// may opt in here: a `write` whose transaction contains only touches and
+    /// no preconditions, and `write_schema`. Any other mutation (creates,
+    /// deletes, preconditioned writes, imports, counter registration,
+    /// delete-all) given a policy with retries fails with `InvalidArgument`
+    /// before any request.
+    pub fn with_retry_policy(mut self, policy: RetryPolicy) -> Self {
+        self.retry = Some(policy);
+        self
+    }
 }
 impl PartialEq for CallOptions {
     fn eq(&self, other: &Self) -> bool {
         self.metadata.clone().into_headers() == other.metadata.clone().into_headers()
             && self.capture == other.capture
+            && self.retry == other.retry
     }
 }
 impl Eq for CallOptions {}
@@ -302,4 +338,20 @@ pub enum DeletePartial {
     /// ([`DeleteRequest::server_default_limit`](crate::DeleteRequest::server_default_limit))
     /// to use the server's configured default.
     Disallowed,
+}
+
+/// How [`read_relationships`](crate::SpiceDBClient::read_relationships) and
+/// [`lookup_resources`](crate::SpiceDBClient::lookup_resources) fetch results.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Paging {
+    /// Fetch page after page (page size from the options' `with_page_size`)
+    /// until results or the limit run out.
+    #[default]
+    Automatic,
+    /// Send exactly one request, as the raw API does: its limit is the
+    /// options' `with_limit` (or unbounded without one), the page size is
+    /// ignored, and no follow-up page is requested. Each item still carries
+    /// its after-result cursor.
+    SingleRequest,
 }

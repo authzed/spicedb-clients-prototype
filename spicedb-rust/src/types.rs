@@ -504,8 +504,8 @@ pub struct WatchOptions {
 }
 
 impl WatchOptions {
-    /// Per-call transport escape hatch: request metadata and response
-    /// header/trailer capture. See [`CallOptions`](crate::CallOptions).
+    /// Per-call settings: request metadata, response header/trailer capture
+    /// and a retry-policy override. See [`CallOptions`](crate::CallOptions).
     pub fn with_call_options(mut self, call: crate::options::CallOptions) -> Self {
         self.call = call;
         self
@@ -644,7 +644,7 @@ impl Transaction {
 }
 
 /// Schema reflection types returned by `reflect_schema`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct SchemaDefinition {
     pub name: String,
@@ -654,7 +654,7 @@ pub struct SchemaDefinition {
 }
 
 /// A relation within a schema definition.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct SchemaRelation {
     pub subject_types: Vec<SchemaTypeReference>,
@@ -664,7 +664,7 @@ pub struct SchemaRelation {
 }
 
 /// A permission within a schema definition.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct SchemaPermission {
     pub name: String,
@@ -673,7 +673,7 @@ pub struct SchemaPermission {
 }
 
 /// A caveat defined in a SpiceDB schema.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct SchemaCaveat {
     pub name: String,
@@ -683,7 +683,7 @@ pub struct SchemaCaveat {
 }
 
 /// A parameter of a caveat.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct SchemaCaveatParameter {
     pub name: String,
@@ -692,7 +692,7 @@ pub struct SchemaCaveatParameter {
 }
 
 /// The result of a schema reflection call.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct ReflectSchemaResult {
     pub definitions: Vec<SchemaDefinition>,
@@ -1315,8 +1315,8 @@ impl CheckOptions {
         self.item_errors = mode;
         self
     }
-    /// Per-call transport escape hatch: request metadata and response
-    /// header/trailer capture. See [`CallOptions`](crate::CallOptions).
+    /// Per-call settings: request metadata, response header/trailer capture
+    /// and a retry-policy override. See [`CallOptions`](crate::CallOptions).
     pub fn with_call_options(mut self, call: crate::options::CallOptions) -> Self {
         self.call = call;
         self
@@ -1550,8 +1550,8 @@ pub struct WriteOptions {
     pub(crate) transaction_metadata: Option<Context>,
 }
 impl WriteOptions {
-    /// Per-call transport escape hatch: request metadata and response
-    /// header/trailer capture. See [`CallOptions`](crate::CallOptions).
+    /// Per-call settings: request metadata, response header/trailer capture
+    /// and a retry-policy override. See [`CallOptions`](crate::CallOptions).
     pub fn with_call_options(mut self, call: crate::options::CallOptions) -> Self {
         self.call = call;
         self
@@ -1594,6 +1594,7 @@ pub struct ReadRelationshipsOptions {
     pub(crate) page_size: std::num::NonZeroU32,
     pub(crate) limit: Option<u32>,
     pub(crate) cursor: Option<String>,
+    pub(crate) paging: crate::options::Paging,
 }
 impl Default for ReadRelationshipsOptions {
     fn default() -> Self {
@@ -1603,12 +1604,13 @@ impl Default for ReadRelationshipsOptions {
             page_size: std::num::NonZeroU32::new(512).unwrap(),
             limit: None,
             cursor: None,
+            paging: crate::options::Paging::Automatic,
         }
     }
 }
 impl ReadRelationshipsOptions {
-    /// Per-call transport escape hatch: request metadata and response
-    /// header/trailer capture. See [`CallOptions`](crate::CallOptions).
+    /// Per-call settings: request metadata, response header/trailer capture
+    /// and a retry-policy override. See [`CallOptions`](crate::CallOptions).
     pub fn with_call_options(mut self, call: crate::options::CallOptions) -> Self {
         self.call = call;
         self
@@ -1626,6 +1628,14 @@ impl ReadRelationshipsOptions {
     }
     pub fn with_limit(mut self, value: u32) -> Self {
         self.limit = Some(value);
+        self
+    }
+    /// [`Paging::SingleRequest`](crate::Paging::SingleRequest) sends exactly
+    /// one request, as the raw API does: its limit is
+    /// [`with_limit`](Self::with_limit) or unbounded, the page size is ignored,
+    /// and no follow-up page is fetched. The default pages automatically.
+    pub fn with_paging(mut self, mode: crate::options::Paging) -> Self {
+        self.paging = mode;
         self
     }
     pub fn with_cursor(mut self, value: impl Into<String>) -> Self {
@@ -1672,6 +1682,7 @@ pub struct LookupResourcesOptions {
     pub(crate) page_size: std::num::NonZeroU32,
     pub(crate) limit: Option<u32>,
     pub(crate) cursor: Option<String>,
+    pub(crate) paging: crate::options::Paging,
     pub(crate) context: Option<Context>,
     pub(crate) debug: DebugMode,
 }
@@ -1684,14 +1695,15 @@ impl Default for LookupResourcesOptions {
             page_size: std::num::NonZeroU32::new(512).unwrap(),
             limit: None,
             cursor: None,
+            paging: crate::options::Paging::Automatic,
             context: None,
             debug: DebugMode::Disabled,
         }
     }
 }
 impl LookupResourcesOptions {
-    /// Per-call transport escape hatch: request metadata and response
-    /// header/trailer capture. See [`CallOptions`](crate::CallOptions).
+    /// Per-call settings: request metadata, response header/trailer capture
+    /// and a retry-policy override. See [`CallOptions`](crate::CallOptions).
     pub fn with_call_options(mut self, call: crate::options::CallOptions) -> Self {
         self.call = call;
         self
@@ -1714,6 +1726,14 @@ impl LookupResourcesOptions {
     }
     pub fn with_limit(mut self, value: u32) -> Self {
         self.limit = Some(value);
+        self
+    }
+    /// [`Paging::SingleRequest`](crate::Paging::SingleRequest) sends exactly
+    /// one request, as the raw API does: its limit is
+    /// [`with_limit`](Self::with_limit) or unbounded, the page size is ignored,
+    /// and no follow-up page is fetched. The default pages automatically.
+    pub fn with_paging(mut self, mode: crate::options::Paging) -> Self {
+        self.paging = mode;
         self
     }
     pub fn with_cursor(mut self, value: impl Into<String>) -> Self {
@@ -1781,8 +1801,8 @@ impl Default for LookupSubjectsOptions {
     }
 }
 impl LookupSubjectsOptions {
-    /// Per-call transport escape hatch: request metadata and response
-    /// header/trailer capture. See [`CallOptions`](crate::CallOptions).
+    /// Per-call settings: request metadata, response header/trailer capture
+    /// and a retry-policy override. See [`CallOptions`](crate::CallOptions).
     pub fn with_call_options(mut self, call: crate::options::CallOptions) -> Self {
         self.call = call;
         self
@@ -1847,8 +1867,8 @@ pub struct ReadSchemaOptions {
     pub(crate) timeout: Option<std::time::Duration>,
 }
 impl ReadSchemaOptions {
-    /// Per-call transport escape hatch: request metadata and response
-    /// header/trailer capture. See [`CallOptions`](crate::CallOptions).
+    /// Per-call settings: request metadata, response header/trailer capture
+    /// and a retry-policy override. See [`CallOptions`](crate::CallOptions).
     pub fn with_call_options(mut self, call: crate::options::CallOptions) -> Self {
         self.call = call;
         self
@@ -1889,8 +1909,8 @@ pub struct WriteSchemaOptions {
     pub(crate) timeout: Option<std::time::Duration>,
 }
 impl WriteSchemaOptions {
-    /// Per-call transport escape hatch: request metadata and response
-    /// header/trailer capture. See [`CallOptions`](crate::CallOptions).
+    /// Per-call settings: request metadata, response header/trailer capture
+    /// and a retry-policy override. See [`CallOptions`](crate::CallOptions).
     pub fn with_call_options(mut self, call: crate::options::CallOptions) -> Self {
         self.call = call;
         self
@@ -1929,8 +1949,8 @@ pub struct ReflectSchemaOptions {
     pub(crate) filters: Vec<ReflectionFilter>,
 }
 impl ReflectSchemaOptions {
-    /// Per-call transport escape hatch: request metadata and response
-    /// header/trailer capture. See [`CallOptions`](crate::CallOptions).
+    /// Per-call settings: request metadata, response header/trailer capture
+    /// and a retry-policy override. See [`CallOptions`](crate::CallOptions).
     pub fn with_call_options(mut self, call: crate::options::CallOptions) -> Self {
         self.call = call;
         self
@@ -1973,8 +1993,8 @@ pub struct ComputablePermissionsOptions {
     pub(crate) definition_name_filter: Option<String>,
 }
 impl ComputablePermissionsOptions {
-    /// Per-call transport escape hatch: request metadata and response
-    /// header/trailer capture. See [`CallOptions`](crate::CallOptions).
+    /// Per-call settings: request metadata, response header/trailer capture
+    /// and a retry-policy override. See [`CallOptions`](crate::CallOptions).
     pub fn with_call_options(mut self, call: crate::options::CallOptions) -> Self {
         self.call = call;
         self
@@ -2024,8 +2044,8 @@ pub struct DependentRelationsOptions {
     pub(crate) timeout: Option<std::time::Duration>,
 }
 impl DependentRelationsOptions {
-    /// Per-call transport escape hatch: request metadata and response
-    /// header/trailer capture. See [`CallOptions`](crate::CallOptions).
+    /// Per-call settings: request metadata, response header/trailer capture
+    /// and a retry-policy override. See [`CallOptions`](crate::CallOptions).
     pub fn with_call_options(mut self, call: crate::options::CallOptions) -> Self {
         self.call = call;
         self
@@ -2071,8 +2091,8 @@ pub struct DiffSchemaOptions {
     pub(crate) timeout: Option<std::time::Duration>,
 }
 impl DiffSchemaOptions {
-    /// Per-call transport escape hatch: request metadata and response
-    /// header/trailer capture. See [`CallOptions`](crate::CallOptions).
+    /// Per-call settings: request metadata, response header/trailer capture
+    /// and a retry-policy override. See [`CallOptions`](crate::CallOptions).
     pub fn with_call_options(mut self, call: crate::options::CallOptions) -> Self {
         self.call = call;
         self
@@ -2115,8 +2135,8 @@ pub struct ExpandPermissionTreeOptions {
     pub(crate) timeout: Option<std::time::Duration>,
 }
 impl ExpandPermissionTreeOptions {
-    /// Per-call transport escape hatch: request metadata and response
-    /// header/trailer capture. See [`CallOptions`](crate::CallOptions).
+    /// Per-call settings: request metadata, response header/trailer capture
+    /// and a retry-policy override. See [`CallOptions`](crate::CallOptions).
     pub fn with_call_options(mut self, call: crate::options::CallOptions) -> Self {
         self.call = call;
         self
@@ -2178,8 +2198,8 @@ impl Default for ExportRelationshipsOptions {
     }
 }
 impl ExportRelationshipsOptions {
-    /// Per-call transport escape hatch: request metadata and response
-    /// header/trailer capture. See [`CallOptions`](crate::CallOptions).
+    /// Per-call settings: request metadata, response header/trailer capture
+    /// and a retry-policy override. See [`CallOptions`](crate::CallOptions).
     pub fn with_call_options(mut self, call: crate::options::CallOptions) -> Self {
         self.call = call;
         self
@@ -2251,8 +2271,8 @@ pub struct ExperimentalRegisterRelationshipCounterOptions {
     pub(crate) timeout: Option<std::time::Duration>,
 }
 impl ExperimentalRegisterRelationshipCounterOptions {
-    /// Per-call transport escape hatch: request metadata and response
-    /// header/trailer capture. See [`CallOptions`](crate::CallOptions).
+    /// Per-call settings: request metadata, response header/trailer capture
+    /// and a retry-policy override. See [`CallOptions`](crate::CallOptions).
     pub fn with_call_options(mut self, call: crate::options::CallOptions) -> Self {
         self.call = call;
         self
@@ -2292,8 +2312,8 @@ pub struct ExperimentalCountRelationshipsOptions {
     pub(crate) timeout: Option<std::time::Duration>,
 }
 impl ExperimentalCountRelationshipsOptions {
-    /// Per-call transport escape hatch: request metadata and response
-    /// header/trailer capture. See [`CallOptions`](crate::CallOptions).
+    /// Per-call settings: request metadata, response header/trailer capture
+    /// and a retry-policy override. See [`CallOptions`](crate::CallOptions).
     pub fn with_call_options(mut self, call: crate::options::CallOptions) -> Self {
         self.call = call;
         self
@@ -2331,8 +2351,8 @@ pub struct ExperimentalUnregisterRelationshipCounterOptions {
     pub(crate) timeout: Option<std::time::Duration>,
 }
 impl ExperimentalUnregisterRelationshipCounterOptions {
-    /// Per-call transport escape hatch: request metadata and response
-    /// header/trailer capture. See [`CallOptions`](crate::CallOptions).
+    /// Per-call settings: request metadata, response header/trailer capture
+    /// and a retry-policy override. See [`CallOptions`](crate::CallOptions).
     pub fn with_call_options(mut self, call: crate::options::CallOptions) -> Self {
         self.call = call;
         self
@@ -2373,8 +2393,8 @@ pub struct ExperimentalRoaringLookupResourcesOptions {
     pub(crate) timeout: Option<std::time::Duration>,
 }
 impl ExperimentalRoaringLookupResourcesOptions {
-    /// Per-call transport escape hatch: request metadata and response
-    /// header/trailer capture. See [`CallOptions`](crate::CallOptions).
+    /// Per-call settings: request metadata, response header/trailer capture
+    /// and a retry-policy override. See [`CallOptions`](crate::CallOptions).
     pub fn with_call_options(mut self, call: crate::options::CallOptions) -> Self {
         self.call = call;
         self
@@ -2433,8 +2453,8 @@ impl DeleteOptions {
         self.partial = mode;
         self
     }
-    /// Per-call transport escape hatch: request metadata and response
-    /// header/trailer capture. See [`CallOptions`](crate::CallOptions).
+    /// Per-call settings: request metadata, response header/trailer capture
+    /// and a retry-policy override. See [`CallOptions`](crate::CallOptions).
     pub fn with_call_options(mut self, call: crate::options::CallOptions) -> Self {
         self.call = call;
         self
@@ -2539,8 +2559,8 @@ impl DeleteAllOptions {
         self.progress = Some(crate::options::Callback::new(f));
         self
     }
-    /// Per-call transport escape hatch: request metadata and response
-    /// header/trailer capture. See [`CallOptions`](crate::CallOptions).
+    /// Per-call settings: request metadata, response header/trailer capture
+    /// and a retry-policy override. See [`CallOptions`](crate::CallOptions).
     pub fn with_call_options(mut self, call: crate::options::CallOptions) -> Self {
         self.call = call;
         self
@@ -2608,8 +2628,8 @@ pub struct ExperimentalCountRelationshipsByFilterOptions {
     pub(crate) timeout: Option<std::time::Duration>,
 }
 impl ExperimentalCountRelationshipsByFilterOptions {
-    /// Per-call transport escape hatch: request metadata and response
-    /// header/trailer capture. See [`CallOptions`](crate::CallOptions).
+    /// Per-call settings: request metadata, response header/trailer capture
+    /// and a retry-policy override. See [`CallOptions`](crate::CallOptions).
     pub fn with_call_options(mut self, call: crate::options::CallOptions) -> Self {
         self.call = call;
         self
@@ -2648,8 +2668,8 @@ pub struct WatchPermissionSetsOptions {
     pub(crate) start_revision: Option<ZedToken>,
 }
 impl WatchPermissionSetsOptions {
-    /// Per-call transport escape hatch: request metadata and response
-    /// header/trailer capture. See [`CallOptions`](crate::CallOptions).
+    /// Per-call settings: request metadata, response header/trailer capture
+    /// and a retry-policy override. See [`CallOptions`](crate::CallOptions).
     pub fn with_call_options(mut self, call: crate::options::CallOptions) -> Self {
         self.call = call;
         self
@@ -2696,8 +2716,8 @@ pub struct LookupPermissionSetsOptions {
     pub(crate) cursor: Option<PermissionSetCursor>,
 }
 impl LookupPermissionSetsOptions {
-    /// Per-call transport escape hatch: request metadata and response
-    /// header/trailer capture. See [`CallOptions`](crate::CallOptions).
+    /// Per-call settings: request metadata, response header/trailer capture
+    /// and a retry-policy override. See [`CallOptions`](crate::CallOptions).
     pub fn with_call_options(mut self, call: crate::options::CallOptions) -> Self {
         self.call = call;
         self
@@ -2744,8 +2764,8 @@ pub struct DownloadPermissionSetsOptions {
     pub(crate) at_revision: Option<ZedToken>,
 }
 impl DownloadPermissionSetsOptions {
-    /// Per-call transport escape hatch: request metadata and response
-    /// header/trailer capture. See [`CallOptions`](crate::CallOptions).
+    /// Per-call settings: request metadata, response header/trailer capture
+    /// and a retry-policy override. See [`CallOptions`](crate::CallOptions).
     pub fn with_call_options(mut self, call: crate::options::CallOptions) -> Self {
         self.call = call;
         self
@@ -2863,8 +2883,8 @@ pub struct ImportRelationshipsOptions {
     pub(crate) batch_size: Option<std::num::NonZeroU32>,
 }
 impl ImportRelationshipsOptions {
-    /// Per-call transport escape hatch: request metadata and response
-    /// header/trailer capture. See [`CallOptions`](crate::CallOptions).
+    /// Per-call settings: request metadata, response header/trailer capture
+    /// and a retry-policy override. See [`CallOptions`](crate::CallOptions).
     pub fn with_call_options(mut self, call: crate::options::CallOptions) -> Self {
         self.call = call;
         self
@@ -3012,7 +3032,7 @@ pub struct ExperimentalCountRelationshipsByFilterResult {
 #[path = "result_tests.rs"]
 mod result_tests;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct SchemaTypeReference {
     pub subject_definition_name: String,

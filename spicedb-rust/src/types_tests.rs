@@ -193,7 +193,10 @@ fn test_merge_check_context_merge_rule() {
 #[test]
 fn test_check_context_to_proto_round_trips() {
     let mut ctx = HashMap::new();
-    ctx.insert("now".to_string(), serde_json::json!(42.0));
+    // Protobuf numbers are doubles; integral values come back as JSON
+    // integers and fractional ones as floats.
+    ctx.insert("now".to_string(), serde_json::json!(42));
+    ctx.insert("ratio".to_string(), serde_json::json!(0.5));
     ctx.insert("region".to_string(), serde_json::json!("us"));
 
     let proto_struct = check_context_to_proto(&ctx);

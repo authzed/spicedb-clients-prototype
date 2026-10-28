@@ -334,6 +334,129 @@ impl Error for SpiceDBError {
     }
 }
 
+impl SpiceDBError {
+    /// Builds an error exactly as if the server had returned `code` with
+    /// `message`, for test doubles and adapters.
+    ///
+    /// The result is indistinguishable from a mapped server error: it lands in
+    /// the matching variant, [`code`](Self::code) and [`status`](Self::status)
+    /// report `code`, [`server_message`](Self::server_message) is `message`,
+    /// and it converts into a [`tonic::Status`] with the same code.
+    ///
+    /// ```
+    /// use spicedb::SpiceDBError;
+    /// let err = SpiceDBError::new(tonic::Code::FailedPrecondition, "precondition failed");
+    /// assert!(matches!(err, SpiceDBError::FailedPrecondition(_)));
+    /// assert_eq!(tonic::Status::from(err).code(), tonic::Code::FailedPrecondition);
+    /// ```
+    pub fn new(code: Code, message: impl Into<String>) -> Self {
+        from_grpc_status(Status::new(code, message.into()))
+    }
+
+    /// The gRPC code this error corresponds to.
+    ///
+    /// Defined for every error, not only server errors: local validation is
+    /// `InvalidArgument`, an elapsed client deadline is `DeadlineExceeded`, a
+    /// transport failure is `Unavailable` (as tonic reports it), and locally
+    /// detected protocol violations are `Internal`. Bulk-item and
+    /// delete-progress wrappers report their cause's code.
+    pub fn code(&self) -> Code {
+        match self {
+            SpiceDBError::BulkItem { source, .. } | SpiceDBError::DeleteProgress { source, .. } => {
+                source.code()
+            }
+            SpiceDBError::PermissionDenied(_) => Code::PermissionDenied,
+            SpiceDBError::Unauthenticated(_) => Code::Unauthenticated,
+            SpiceDBError::NotFound(_) => Code::NotFound,
+            SpiceDBError::AlreadyExists(_) => Code::AlreadyExists,
+            SpiceDBError::InvalidArgument(_) => Code::InvalidArgument,
+            SpiceDBError::FailedPrecondition(_) => Code::FailedPrecondition,
+            SpiceDBError::OutOfRange(_) => Code::OutOfRange,
+            SpiceDBError::Unavailable(_) => Code::Unavailable,
+            SpiceDBError::Cancelled(_) => Code::Cancelled,
+            SpiceDBError::DeadlineExceeded(_) => Code::DeadlineExceeded,
+            SpiceDBError::ResourceExhausted(_) => Code::ResourceExhausted,
+            SpiceDBError::Transport(_) => Code::Unavailable,
+            SpiceDBError::Status { code, .. } => Code::from_i32(*code),
+        }
+    }
+
+    /// The server's status message, verbatim, for callers that forward errors
+    /// and must reproduce exactly what SpiceDB said. `None` for errors detected
+    /// locally. [`message`](Self::message) may add context (such as a bulk item
+    /// index); this never does.
+    pub fn server_message(&self) -> Option<&str> {
+        self.status().map(Status::message)
+    }
+
+    /// Converts to a [`tonic::Status`] whose code is [`code`](Self::code).
+    ///
+    /// A server error returns its original status (details, metadata and
+    /// message intact). Any other error gets a new status carrying its code and
+    /// message.
+    pub fn to_status(&self) -> Status {
+        let code = self.code();
+        match self.status() {
+            Some(status) if status.code() == code => status.clone(),
+            _ => Status::new(code, self.message().to_string()),
+        }
+    }
+}
+
+/// `?` and `.into()` turn a native error into a [`tonic::Status`] with the
+/// matching code, e.g. when a tonic service forwards a SpiceDB failure.
+impl From<SpiceDBError> for Status {
+    fn from(err: SpiceDBError) -> Self {
+        err.to_status()
+    }
+}
+
+impl From<&SpiceDBError> for Status {
+    fn from(err: &SpiceDBError) -> Self {
+        err.to_status()
+    }
+}
+
+/// Maps a raw [`tonic::Status`] the same way the client maps server responses,
+/// so `?` works on raw protocol calls inside a function returning
+/// `Result<_, SpiceDBError>`.
+impl From<Status> for SpiceDBError {
+    fn from(status: Status) -> Self {
+        from_grpc_status(status)
+    }
+}
+
+/// Classifies any error by gRPC code: a [`SpiceDBError`] (see
+/// [`SpiceDBError::code`]), a raw [`tonic::Status`], or any error whose
+/// `source()` chain contains either. Anything else is `Code::Unknown`.
+///
+/// Use it where code is shared between native and raw protocol calls, or where
+/// a test double returns raw statuses:
+///
+/// ```
+/// use spicedb::error::code_of;
+/// let raw = tonic::Status::already_exists("dup");
+/// assert_eq!(code_of(&raw), tonic::Code::AlreadyExists);
+/// let native = spicedb::SpiceDBError::new(tonic::Code::NotFound, "gone");
+/// assert_eq!(code_of(&native), tonic::Code::NotFound);
+/// ```
+pub fn code_of(err: &(dyn Error + 'static)) -> Code {
+    let mut current = Some(err);
+    while let Some(e) = current {
+        if let Some(native) = e.downcast_ref::<SpiceDBError>() {
+            return native.code();
+        }
+        if let Some(status) = e.downcast_ref::<Status>() {
+            if status.code() == Code::Cancelled && has_timeout_expired(status) {
+                return Code::DeadlineExceeded;
+            }
+            return status.code();
+        }
+        current = e.source();
+    }
+    Code::Unknown
+}
+
 /// gRPC status codes used for error mapping and retry logic.
 /// These mirror tonic::Code values.
 mod codes {

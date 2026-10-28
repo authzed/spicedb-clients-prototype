@@ -11,10 +11,14 @@ description = "SpiceDB proto client for Rust — thin wrapper over tonic-generat
 doctest = false
 
 [dependencies]
-tonic = { version = "0.12", features = ["channel", "tls", "tls-native-roots"] }
+# Library requirements are the lowest versions that build and pass the tests
+# (root DESIGN.md, "Library modules declare the lowest dependency versions they
+# actually need"). tonic 0.12 and prost 0.13 are one coherent generation: never
+# bump one major without the other and tonic-build. Default features are off so
+# consumers do not inherit tonic's server stack; tests enable it below.
+tonic = { version = "0.12", default-features = false, features = ["codegen", "prost", "channel", "tls", "tls-native-roots"] }
 prost = "0.13"
 prost-types = "0.13"
-tokio = { version = "1", features = ["full"] }
 
 [build-dependencies]
 tonic-build = "0.12"
@@ -27,3 +31,5 @@ protoc-bin-vendored = "3.2.0"
 # Stream tonic::transport::Server::serve_with_incoming expects, so the test
 # can learn the ephemeral port before the server starts serving.
 tokio-stream = "0.1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "sync", "time"] }
+tonic = { version = "0.12", features = ["server"] }

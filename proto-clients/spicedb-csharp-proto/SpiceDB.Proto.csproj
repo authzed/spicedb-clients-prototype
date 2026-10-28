@@ -12,7 +12,7 @@
     <PackageReference Include="Google.Api.CommonProtos" Version="2.17.*" />
     <PackageReference Include="Grpc.Net.Client" Version="2.84.*" />
     <PackageReference Include="Grpc.Core.Api" Version="2.84.*" />
-    <PackageReference Include="Grpc.Tools" Version="2.84.*">
+    <PackageReference Include="Grpc.Tools" Version="2.85.*">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
     </PackageReference>
@@ -20,7 +20,7 @@
 
 <!-- Test dependencies -->
   <ItemGroup>
-    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.10.*" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.11.*" />
     <PackageReference Include="xunit" Version="2.9.*" />
     <PackageReference Include="xunit.runner.visualstudio" Version="4.0.*">
       <PrivateAssets>all</PrivateAssets>

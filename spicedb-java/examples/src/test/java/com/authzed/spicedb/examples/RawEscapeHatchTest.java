@@ -3,15 +3,15 @@ package com.authzed.spicedb.examples;
 import static com.authzed.spicedb.Consistency.*;
 import static org.assertj.core.api.Assertions.*;
 
-import build.buf.gen.authzed.api.v1.CheckPermissionRequest;
-import build.buf.gen.authzed.api.v1.CheckPermissionResponse;
-import build.buf.gen.authzed.api.v1.Consistency;
-import build.buf.gen.authzed.api.v1.ObjectReference;
-import build.buf.gen.authzed.api.v1.PermissionsServiceGrpc;
-import build.buf.gen.authzed.api.v1.RelationshipUpdate;
-import build.buf.gen.authzed.api.v1.SubjectReference;
-import build.buf.gen.authzed.api.v1.WriteRelationshipsRequest;
-import build.buf.gen.authzed.api.v1.WriteRelationshipsResponse;
+import com.authzed.api.v1.CheckPermissionRequest;
+import com.authzed.api.v1.CheckPermissionResponse;
+import com.authzed.api.v1.Consistency;
+import com.authzed.api.v1.ObjectReference;
+import com.authzed.api.v1.PermissionsServiceGrpc;
+import com.authzed.api.v1.RelationshipUpdate;
+import com.authzed.api.v1.SubjectReference;
+import com.authzed.api.v1.WriteRelationshipsRequest;
+import com.authzed.api.v1.WriteRelationshipsResponse;
 import com.authzed.spicedb.*;
 import com.authzed.spicedb.CheckResult;
 import com.authzed.spicedb.Filter;
@@ -52,7 +52,7 @@ import org.junit.jupiter.api.Test;
  */
 class RawEscapeHatchTest extends SpiceDBIntegrationTest {
 
-  // Note the fully-qualified `build.buf.gen.authzed.api.v1.Relationship` and
+  // Note the fully-qualified `com.authzed.api.v1.Relationship` and
   // `com.authzed.spicedb.Transaction` below. `Relationship` exists in both the idiomatic
   // package and the generated one, and a raw call takes the generated type; a static import
   // would hide exactly the tier boundary this example is about, so each name says which tier
@@ -76,7 +76,7 @@ class RawEscapeHatchTest extends SpiceDBIntegrationTest {
                     RelationshipUpdate.newBuilder()
                         .setOperation(RelationshipUpdate.Operation.OPERATION_TOUCH)
                         .setRelationship(
-                            build.buf.gen.authzed.api.v1.Relationship.newBuilder()
+                            com.authzed.api.v1.Relationship.newBuilder()
                                 .setResource(
                                     ObjectReference.newBuilder()
                                         .setObjectType("document")

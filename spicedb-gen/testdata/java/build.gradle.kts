@@ -6,13 +6,6 @@ group = "com.authzed.spicedb.gen.test"
 version = "0.0.1"
 
 repositories {
-    maven {
-        name = "buf"
-        url = uri("https://buf.build/gen/maven")
-        content {
-            includeGroup("build.buf.gen")
-        }
-    }
     mavenCentral()
 }
 

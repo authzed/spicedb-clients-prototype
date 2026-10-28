@@ -56,12 +56,12 @@ public record DebugInformation(String schemaUsed, CheckTrace check) {
       String traceOperationId,
       String source) {}
 
-  static DebugInformation fromProto(build.buf.gen.authzed.api.v1.DebugInformation info) {
+  static DebugInformation fromProto(com.authzed.api.v1.DebugInformation info) {
     return new DebugInformation(
         info.getSchemaUsed(), info.hasCheck() ? trace(info.getCheck()) : null);
   }
 
-  private static CheckTrace trace(build.buf.gen.authzed.api.v1.CheckDebugTrace t) {
+  private static CheckTrace trace(com.authzed.api.v1.CheckDebugTrace t) {
     var r = t.getResource();
     var s = t.getSubject();
     var o = s.getObject();

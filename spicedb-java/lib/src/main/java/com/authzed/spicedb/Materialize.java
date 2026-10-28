@@ -69,13 +69,12 @@ public final class Materialize {
     }
   }
 
-  static SetRef set(build.buf.gen.authzed.api.materialize.v0.SetReference s) {
+  static SetRef set(com.authzed.api.materialize.v0.SetReference s) {
     return new SetRef(
         new ObjectRef(s.getObjectType(), s.getObjectId()), s.getPermissionOrRelation());
   }
 
-  static PermissionSetChange change(
-      build.buf.gen.authzed.api.materialize.v0.PermissionSetChange c) {
+  static PermissionSetChange change(com.authzed.api.materialize.v0.PermissionSetChange c) {
     var op =
         switch (c.getOperation()) {
           case SET_OPERATION_ADDED -> SetOperation.ADDED;
@@ -100,8 +99,7 @@ public final class Materialize {
         child);
   }
 
-  static PermissionSetEvent event(
-      build.buf.gen.authzed.api.materialize.v0.WatchPermissionSetsResponse r) {
+  static PermissionSetEvent event(com.authzed.api.materialize.v0.WatchPermissionSetsResponse r) {
     if (r.hasChange()) return new Change(change(r.getChange()));
     if (r.hasCompletedRevision())
       return new CompletedRevision(new ZedToken(r.getCompletedRevision().getToken()));

@@ -2,15 +2,15 @@ package com.authzed.spicedb;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import build.buf.gen.authzed.api.v1.LookupPermissionship;
-import build.buf.gen.authzed.api.v1.LookupResourcesRequest;
-import build.buf.gen.authzed.api.v1.LookupResourcesResponse;
-import build.buf.gen.authzed.api.v1.LookupSubjectsRequest;
-import build.buf.gen.authzed.api.v1.LookupSubjectsResponse;
-import build.buf.gen.authzed.api.v1.PartialCaveatInfo;
-import build.buf.gen.authzed.api.v1.PermissionsServiceGrpc;
-import build.buf.gen.authzed.api.v1.ResolvedSubject;
-import build.buf.gen.authzed.api.v1.ZedToken;
+import com.authzed.api.v1.LookupPermissionship;
+import com.authzed.api.v1.LookupResourcesRequest;
+import com.authzed.api.v1.LookupResourcesResponse;
+import com.authzed.api.v1.LookupSubjectsRequest;
+import com.authzed.api.v1.LookupSubjectsResponse;
+import com.authzed.api.v1.PartialCaveatInfo;
+import com.authzed.api.v1.PermissionsServiceGrpc;
+import com.authzed.api.v1.ResolvedSubject;
+import com.authzed.api.v1.ZedToken;
 import io.grpc.stub.StreamObserver;
 import java.io.IOException;
 import java.util.ArrayList;
@@ -51,7 +51,7 @@ class LookupResultsTest {
                       .setResourceObjectId("doc" + i)
                       .setPermissionshipValue(values[i])
                       .setAfterResultCursor(
-                          build.buf.gen.authzed.api.v1.Cursor.newBuilder().setToken("" + (i + 1)))
+                          com.authzed.api.v1.Cursor.newBuilder().setToken("" + (i + 1)))
                       .setLookedUpAt(ZedToken.newBuilder().setToken("revision"))
                       .build());
             out.onCompleted();

@@ -2,15 +2,15 @@ package com.authzed.spicedb;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import build.buf.gen.authzed.api.v1.CheckBulkPermissionsResponse;
-import build.buf.gen.authzed.api.v1.ImportBulkRelationshipsRequest;
-import build.buf.gen.authzed.api.v1.ImportBulkRelationshipsResponse;
-import build.buf.gen.authzed.api.v1.ObjectReference;
-import build.buf.gen.authzed.api.v1.PermissionsServiceGrpc;
-import build.buf.gen.authzed.api.v1.ReadRelationshipsRequest;
-import build.buf.gen.authzed.api.v1.ReadRelationshipsResponse;
-import build.buf.gen.authzed.api.v1.Relationship;
-import build.buf.gen.authzed.api.v1.SubjectReference;
+import com.authzed.api.v1.CheckBulkPermissionsResponse;
+import com.authzed.api.v1.ImportBulkRelationshipsRequest;
+import com.authzed.api.v1.ImportBulkRelationshipsResponse;
+import com.authzed.api.v1.ObjectReference;
+import com.authzed.api.v1.PermissionsServiceGrpc;
+import com.authzed.api.v1.ReadRelationshipsRequest;
+import com.authzed.api.v1.ReadRelationshipsResponse;
+import com.authzed.api.v1.Relationship;
+import com.authzed.api.v1.SubjectReference;
 import com.authzed.spicedb.errors.DeadlineExceededException;
 import io.grpc.Context;
 import io.grpc.ManagedChannel;
@@ -59,7 +59,7 @@ class DeadlineTest {
         new PermissionsServiceGrpc.PermissionsServiceImplBase() {
           @Override
           public void checkBulkPermissions(
-              build.buf.gen.authzed.api.v1.CheckBulkPermissionsRequest request,
+              com.authzed.api.v1.CheckBulkPermissionsRequest request,
               StreamObserver<CheckBulkPermissionsResponse> responseObserver) {
             waitOutStallOrCancellation(STALL_MS);
             responseObserver.onNext(CheckBulkPermissionsResponse.getDefaultInstance());
@@ -102,7 +102,7 @@ class DeadlineTest {
         new PermissionsServiceGrpc.PermissionsServiceImplBase() {
           @Override
           public void checkBulkPermissions(
-              build.buf.gen.authzed.api.v1.CheckBulkPermissionsRequest request,
+              com.authzed.api.v1.CheckBulkPermissionsRequest request,
               StreamObserver<CheckBulkPermissionsResponse> responseObserver) {
             waitOutStallOrCancellation(STALL_MS);
             responseObserver.onNext(CheckBulkPermissionsResponse.getDefaultInstance());
@@ -151,20 +151,19 @@ class DeadlineTest {
         new PermissionsServiceGrpc.PermissionsServiceImplBase() {
           @Override
           public void checkBulkPermissions(
-              build.buf.gen.authzed.api.v1.CheckBulkPermissionsRequest request,
+              com.authzed.api.v1.CheckBulkPermissionsRequest request,
               StreamObserver<CheckBulkPermissionsResponse> responseObserver) {
             waitOutStallOrCancellation(STALL_MS);
             responseObserver.onNext(
                 CheckBulkPermissionsResponse.newBuilder()
                     .addPairs(
-                        build.buf.gen.authzed.api.v1.CheckBulkPermissionsPair.newBuilder()
+                        com.authzed.api.v1.CheckBulkPermissionsPair.newBuilder()
                             .setRequest(request.getItems(0))
                             .setItem(
-                                build.buf.gen.authzed.api.v1.CheckBulkPermissionsResponseItem
-                                    .newBuilder()
+                                com.authzed.api.v1.CheckBulkPermissionsResponseItem.newBuilder()
                                     .setPermissionship(
-                                        build.buf.gen.authzed.api.v1.CheckPermissionResponse
-                                            .Permissionship.PERMISSIONSHIP_HAS_PERMISSION)
+                                        com.authzed.api.v1.CheckPermissionResponse.Permissionship
+                                            .PERMISSIONSHIP_HAS_PERMISSION)
                                     .build())
                             .build())
                     .build());

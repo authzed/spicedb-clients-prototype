@@ -2,12 +2,12 @@ package com.authzed.spicedb.examples;
 
 import static org.assertj.core.api.Assertions.*;
 
-import build.buf.gen.authzed.api.v1.CheckBulkPermissionsPair;
-import build.buf.gen.authzed.api.v1.CheckBulkPermissionsRequest;
-import build.buf.gen.authzed.api.v1.CheckBulkPermissionsResponse;
-import build.buf.gen.authzed.api.v1.CheckBulkPermissionsResponseItem;
-import build.buf.gen.authzed.api.v1.CheckPermissionResponse;
-import build.buf.gen.authzed.api.v1.PermissionsServiceGrpc;
+import com.authzed.api.v1.CheckBulkPermissionsPair;
+import com.authzed.api.v1.CheckBulkPermissionsRequest;
+import com.authzed.api.v1.CheckBulkPermissionsResponse;
+import com.authzed.api.v1.CheckBulkPermissionsResponseItem;
+import com.authzed.api.v1.CheckPermissionResponse;
+import com.authzed.api.v1.PermissionsServiceGrpc;
 import com.authzed.spicedb.*;
 import com.authzed.spicedb.CheckResult;
 import com.authzed.spicedb.Consistency;

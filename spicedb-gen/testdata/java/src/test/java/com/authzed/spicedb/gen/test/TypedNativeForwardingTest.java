@@ -2,7 +2,7 @@ package com.authzed.spicedb.gen.test;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import build.buf.gen.authzed.api.v1.*;
+import com.authzed.api.v1.*;
 import com.authzed.spicedb.CallOptions;
 import com.authzed.spicedb.DeleteAllOptions;
 import com.authzed.spicedb.DeleteOptions;
@@ -102,7 +102,7 @@ class TypedNativeForwardingTest {
   void importExportAndExperimentalCapabilitiesUseNativeStreamsAndOptions() throws Exception {
     var imported = new ArrayList<ImportBulkRelationshipsRequest>();
     var exported = new ArrayList<ExportBulkRelationshipsRequest>();
-    var materialized = new ArrayList<build.buf.gen.authzed.api.materialize.v0.ExperimentalCountRelationshipsByFilterRequest>();
+    var materialized = new ArrayList<com.authzed.api.materialize.v0.ExperimentalCountRelationshipsByFilterRequest>();
     var wireRelationship = Relationship.newBuilder().setResource(ObjectReference.newBuilder().setObjectType("document").setObjectId("one")).setRelation("viewer").setSubject(SubjectReference.newBuilder().setObject(ObjectReference.newBuilder().setObjectType("user").setObjectId("alice"))).build();
     var service = new PermissionsServiceGrpc.PermissionsServiceImplBase() {
       public StreamObserver<ImportBulkRelationshipsRequest> importBulkRelationships(StreamObserver<ImportBulkRelationshipsResponse> out) {
@@ -116,9 +116,9 @@ class TypedNativeForwardingTest {
         exported.add(request); out.onNext(ExportBulkRelationshipsResponse.newBuilder().addRelationships(wireRelationship).build()); out.onCompleted();
       }
     };
-    var materialize = new build.buf.gen.authzed.api.materialize.v0.RelationshipsServiceGrpc.RelationshipsServiceImplBase() {
-      public void experimentalCountRelationshipsByFilter(build.buf.gen.authzed.api.materialize.v0.ExperimentalCountRelationshipsByFilterRequest request, StreamObserver<build.buf.gen.authzed.api.materialize.v0.ExperimentalCountRelationshipsByFilterResponse> out) {
-        materialized.add(request); out.onNext(build.buf.gen.authzed.api.materialize.v0.ExperimentalCountRelationshipsByFilterResponse.newBuilder().setRelationshipCount(7).setReadAt(ZedToken.newBuilder().setToken("count-revision")).build()); out.onCompleted();
+    var materialize = new com.authzed.api.materialize.v0.RelationshipsServiceGrpc.RelationshipsServiceImplBase() {
+      public void experimentalCountRelationshipsByFilter(com.authzed.api.materialize.v0.ExperimentalCountRelationshipsByFilterRequest request, StreamObserver<com.authzed.api.materialize.v0.ExperimentalCountRelationshipsByFilterResponse> out) {
+        materialized.add(request); out.onNext(com.authzed.api.materialize.v0.ExperimentalCountRelationshipsByFilterResponse.newBuilder().setRelationshipCount(7).setReadAt(ZedToken.newBuilder().setToken("count-revision")).build()); out.onCompleted();
       }
     };
     var server = io.grpc.ServerBuilder.forPort(0).addService(service).addService(materialize).build().start();

@@ -1,6 +1,6 @@
 package com.authzed.spicedb;
 
-import build.buf.gen.authzed.api.v1.*;
+import com.authzed.api.v1.*;
 import com.authzed.spicedb.errors.ErrorMapper;
 import com.authzed.spicedb.errors.InvalidArgumentException;
 import com.authzed.spicedb.errors.SpiceDBException;
@@ -1024,7 +1024,7 @@ public final class SpiceDBClient implements AutoCloseable {
           if (failure.get() != null) throw importFailure(failure.get());
           break;
         }
-        var batch = new ArrayList<build.buf.gen.authzed.api.v1.Relationship>(options.batchSize());
+        var batch = new ArrayList<com.authzed.api.v1.Relationship>(options.batchSize());
         while (batch.size() < options.batchSize()
             && !done.get()
             && !ctx.isCancelled()
@@ -1100,7 +1100,7 @@ public final class SpiceDBClient implements AutoCloseable {
           var responses =
               openStreamWithRetry(() -> permissionsStub.exportBulkRelationships(b.build()));
           return new Iterator<Relationship>() {
-            Iterator<build.buf.gen.authzed.api.v1.Relationship> batch = Collections.emptyIterator();
+            Iterator<com.authzed.api.v1.Relationship> batch = Collections.emptyIterator();
 
             public boolean hasNext() {
               while (!batch.hasNext()) {
@@ -1155,7 +1155,7 @@ public final class SpiceDBClient implements AutoCloseable {
     if (objectTypes != null) b.addAllOptionalObjectTypes(List.copyOf(objectTypes));
     if (startRevision != null)
       b.setOptionalStartCursor(
-          build.buf.gen.authzed.api.v1.ZedToken.newBuilder().setToken(startRevision.value()));
+          com.authzed.api.v1.ZedToken.newBuilder().setToken(startRevision.value()));
     if (options.content() == WatchContent.RELATIONSHIPS_AND_CHECKPOINTS)
       b.addOptionalUpdateKinds(WatchKind.WATCH_KIND_INCLUDE_RELATIONSHIP_UPDATES)
           .addOptionalUpdateKinds(WatchKind.WATCH_KIND_INCLUDE_CHECKPOINTS);
@@ -1274,8 +1274,7 @@ public final class SpiceDBClient implements AutoCloseable {
     var deadline =
         io.grpc.Deadline.after(effectiveTimeout(options.timeout()).toNanos(), TimeUnit.NANOSECONDS);
     var request =
-        build.buf.gen.authzed.api.materialize.v0.ExperimentalRoaringLookupResourcesRequest
-            .newBuilder()
+        com.authzed.api.materialize.v0.ExperimentalRoaringLookupResourcesRequest.newBuilder()
             .setConsistency(consistency.toProto())
             .setResourceObjectType(resourceType)
             .setPermission(permission)
@@ -1285,8 +1284,8 @@ public final class SpiceDBClient implements AutoCloseable {
         withRetry(
             deadline,
             () ->
-                build.buf.gen.authzed.api.materialize.v0.RoaringLookupResourcesServiceGrpc
-                    .newBlockingStub(authenticatedChannel)
+                com.authzed.api.materialize.v0.RoaringLookupResourcesServiceGrpc.newBlockingStub(
+                        authenticatedChannel)
                     .withDeadline(deadline)
                     .experimentalRoaringLookupResources(request));
     return new Materialize.RoaringLookupResourcesResult(
@@ -1305,15 +1304,14 @@ public final class SpiceDBClient implements AutoCloseable {
     var deadline =
         io.grpc.Deadline.after(effectiveTimeout(options.timeout()).toNanos(), TimeUnit.NANOSECONDS);
     var request =
-        build.buf.gen.authzed.api.materialize.v0.ExperimentalCountRelationshipsByFilterRequest
-            .newBuilder()
+        com.authzed.api.materialize.v0.ExperimentalCountRelationshipsByFilterRequest.newBuilder()
             .setRelationshipFilter(toRelationshipFilter(filter))
             .build();
     var response =
         withRetry(
             deadline,
             () ->
-                build.buf.gen.authzed.api.materialize.v0.RelationshipsServiceGrpc.newBlockingStub(
+                com.authzed.api.materialize.v0.RelationshipsServiceGrpc.newBlockingStub(
                         authenticatedChannel)
                     .withDeadline(deadline)
                     .experimentalCountRelationshipsByFilter(request));
@@ -1332,13 +1330,13 @@ public final class SpiceDBClient implements AutoCloseable {
   public Stream<Materialize.PermissionSetEvent> experimentalWatchPermissionSets(
       ZedToken startRevision, CallOptions options) {
     if (options == null) throw new InvalidArgumentException("options must not be null");
-    var b = build.buf.gen.authzed.api.materialize.v0.WatchPermissionSetsRequest.newBuilder();
+    var b = com.authzed.api.materialize.v0.WatchPermissionSetsRequest.newBuilder();
     if (startRevision != null)
       b.setOptionalStartingAfter(
-          build.buf.gen.authzed.api.v1.ZedToken.newBuilder().setToken(startRevision.value()));
+          com.authzed.api.v1.ZedToken.newBuilder().setToken(startRevision.value()));
     return lazyStream(
         () ->
-            build.buf.gen.authzed.api.materialize.v0.WatchPermissionSetsServiceGrpc.newBlockingStub(
+            com.authzed.api.materialize.v0.WatchPermissionSetsServiceGrpc.newBlockingStub(
                     authenticatedChannel)
                 .watchPermissionSets(b.build()),
         Materialize::event,
@@ -1356,22 +1354,22 @@ public final class SpiceDBClient implements AutoCloseable {
       ZedToken atRevision, PermissionSetOptions options) {
     if (options == null) throw new InvalidArgumentException("options must not be null");
     var b =
-        build.buf.gen.authzed.api.materialize.v0.LookupPermissionSetsRequest.newBuilder()
+        com.authzed.api.materialize.v0.LookupPermissionSetsRequest.newBuilder()
             .setLimit(options.limit());
     if (atRevision != null)
       b.setOptionalAtRevision(
-          build.buf.gen.authzed.api.v1.ZedToken.newBuilder().setToken(atRevision.value()));
+          com.authzed.api.v1.ZedToken.newBuilder().setToken(atRevision.value()));
     if (options.resumeCursor() != null)
       try {
         b.setOptionalStartingAfterCursor(
-            build.buf.gen.authzed.api.materialize.v0.Cursor.parseFrom(
+            com.authzed.api.materialize.v0.Cursor.parseFrom(
                 Base64.getDecoder().decode(options.resumeCursor())));
       } catch (Exception e) {
         throw new InvalidArgumentException("invalid permission-set cursor", e);
       }
     return lazyStream(
         () ->
-            build.buf.gen.authzed.api.materialize.v0.WatchPermissionSetsServiceGrpc.newBlockingStub(
+            com.authzed.api.materialize.v0.WatchPermissionSetsServiceGrpc.newBlockingStub(
                     authenticatedChannel)
                 .lookupPermissionSets(b.build()),
         r ->
@@ -1397,16 +1395,16 @@ public final class SpiceDBClient implements AutoCloseable {
     if (options == null) throw new InvalidArgumentException("options must not be null");
     var deadline =
         io.grpc.Deadline.after(effectiveTimeout(options.timeout()).toNanos(), TimeUnit.NANOSECONDS);
-    var b = build.buf.gen.authzed.api.materialize.v0.DownloadPermissionSetsRequest.newBuilder();
+    var b = com.authzed.api.materialize.v0.DownloadPermissionSetsRequest.newBuilder();
     if (atRevision != null)
       b.setOptionalAtRevision(
-          build.buf.gen.authzed.api.v1.ZedToken.newBuilder().setToken(atRevision.value()));
+          com.authzed.api.v1.ZedToken.newBuilder().setToken(atRevision.value()));
     var r =
         withRetry(
             deadline,
             () ->
-                build.buf.gen.authzed.api.materialize.v0.WatchPermissionSetsServiceGrpc
-                    .newBlockingStub(authenticatedChannel)
+                com.authzed.api.materialize.v0.WatchPermissionSetsServiceGrpc.newBlockingStub(
+                        authenticatedChannel)
                     .withDeadline(deadline)
                     .downloadPermissionSets(b.build()));
     return new Materialize.DownloadPermissionSetsResult(
@@ -1822,9 +1820,9 @@ public final class SpiceDBClient implements AutoCloseable {
         .build();
   }
 
-  static build.buf.gen.authzed.api.v1.Relationship toProtoRelationship(Relationship r) {
+  static com.authzed.api.v1.Relationship toProtoRelationship(Relationship r) {
     var builder =
-        build.buf.gen.authzed.api.v1.Relationship.newBuilder()
+        com.authzed.api.v1.Relationship.newBuilder()
             .setResource(
                 ObjectReference.newBuilder()
                     .setObjectType(r.resource().objectType())
@@ -1866,7 +1864,7 @@ public final class SpiceDBClient implements AutoCloseable {
     return builder.build();
   }
 
-  static Relationship fromProtoRelationship(build.buf.gen.authzed.api.v1.Relationship pr) {
+  static Relationship fromProtoRelationship(com.authzed.api.v1.Relationship pr) {
     String caveatName = null;
     Map<String, Object> caveatContext = null;
     if (pr.hasOptionalCaveat()) {
@@ -1908,7 +1906,7 @@ public final class SpiceDBClient implements AutoCloseable {
   }
 
   private static LookupResult.PartialCaveatInfo partialCaveatFromProto(
-      build.buf.gen.authzed.api.v1.PartialCaveatInfo v) {
+      com.authzed.api.v1.PartialCaveatInfo v) {
     if (v == null) {
       return null;
     }
@@ -1926,7 +1924,7 @@ public final class SpiceDBClient implements AutoCloseable {
   }
 
   private static StatusRuntimeException perItemStatusException(
-      build.buf.gen.google.rpc.Status errorStatus, String messagePrefix) {
+      com.google.rpc.Status errorStatus, String messagePrefix) {
     String message = messagePrefix + errorStatus.getMessage();
     try {
       return StatusProto.toStatusRuntimeException(
@@ -1961,7 +1959,7 @@ public final class SpiceDBClient implements AutoCloseable {
   }
 
   private static LookupResult.ResolvedSubject resolvedSubjectFromProto(
-      build.buf.gen.authzed.api.v1.ResolvedSubject v) {
+      com.authzed.api.v1.ResolvedSubject v) {
     if (v == null) {
       return new LookupResult.ResolvedSubject("", Permissionship.UNSPECIFIED, null);
     }

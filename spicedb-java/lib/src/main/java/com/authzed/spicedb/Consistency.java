@@ -10,9 +10,9 @@ package com.authzed.spicedb;
  */
 public final class Consistency {
 
-  private final build.buf.gen.authzed.api.v1.Consistency proto;
+  private final com.authzed.api.v1.Consistency proto;
 
-  private Consistency(build.buf.gen.authzed.api.v1.Consistency proto) {
+  private Consistency(com.authzed.api.v1.Consistency proto) {
     this.proto = proto;
   }
 
@@ -20,7 +20,7 @@ public final class Consistency {
    * Returns the underlying proto Consistency for use by the client. Package-private: proto types
    * must never appear in the public API surface.
    */
-  build.buf.gen.authzed.api.v1.Consistency toProto() {
+  com.authzed.api.v1.Consistency toProto() {
     return proto;
   }
 
@@ -30,7 +30,7 @@ public final class Consistency {
    */
   public static Consistency full() {
     return new Consistency(
-        build.buf.gen.authzed.api.v1.Consistency.newBuilder().setFullyConsistent(true).build());
+        com.authzed.api.v1.Consistency.newBuilder().setFullyConsistent(true).build());
   }
 
   /**
@@ -39,7 +39,7 @@ public final class Consistency {
    */
   public static Consistency minLatency() {
     return new Consistency(
-        build.buf.gen.authzed.api.v1.Consistency.newBuilder().setMinimizeLatency(true).build());
+        com.authzed.api.v1.Consistency.newBuilder().setMinimizeLatency(true).build());
   }
 
   /**
@@ -55,11 +55,9 @@ public final class Consistency {
           "revision must not be null or empty");
     }
     return new Consistency(
-        build.buf.gen.authzed.api.v1.Consistency.newBuilder()
+        com.authzed.api.v1.Consistency.newBuilder()
             .setAtLeastAsFresh(
-                build.buf.gen.authzed.api.v1.ZedToken.newBuilder()
-                    .setToken(revision.value())
-                    .build())
+                com.authzed.api.v1.ZedToken.newBuilder().setToken(revision.value()).build())
             .build());
   }
 
@@ -75,11 +73,9 @@ public final class Consistency {
           "revision must not be null or empty");
     }
     return new Consistency(
-        build.buf.gen.authzed.api.v1.Consistency.newBuilder()
+        com.authzed.api.v1.Consistency.newBuilder()
             .setAtExactSnapshot(
-                build.buf.gen.authzed.api.v1.ZedToken.newBuilder()
-                    .setToken(revision.value())
-                    .build())
+                com.authzed.api.v1.ZedToken.newBuilder().setToken(revision.value()).build())
             .build());
   }
 

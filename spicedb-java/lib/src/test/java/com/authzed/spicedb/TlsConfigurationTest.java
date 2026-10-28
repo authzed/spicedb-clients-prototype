@@ -2,7 +2,7 @@ package com.authzed.spicedb;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import build.buf.gen.authzed.api.v1.*;
+import com.authzed.api.v1.*;
 import io.grpc.netty.shaded.io.grpc.netty.*;
 import io.grpc.netty.shaded.io.netty.handler.ssl.ClientAuth;
 import io.grpc.stub.StreamObserver;

@@ -2,9 +2,9 @@ package com.authzed.spicedb;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import build.buf.gen.authzed.api.v1.ExportBulkRelationshipsRequest;
-import build.buf.gen.authzed.api.v1.ExportBulkRelationshipsResponse;
-import build.buf.gen.authzed.api.v1.PermissionsServiceGrpc;
+import com.authzed.api.v1.ExportBulkRelationshipsRequest;
+import com.authzed.api.v1.ExportBulkRelationshipsResponse;
+import com.authzed.api.v1.PermissionsServiceGrpc;
 import io.grpc.stub.StreamObserver;
 import java.io.IOException;
 import java.time.Duration;

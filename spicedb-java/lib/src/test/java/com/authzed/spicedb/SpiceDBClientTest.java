@@ -2,11 +2,11 @@ package com.authzed.spicedb;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import build.buf.gen.authzed.api.v1.AlgebraicSubjectSet;
-import build.buf.gen.authzed.api.v1.DirectSubjectSet;
-import build.buf.gen.authzed.api.v1.ObjectReference;
-import build.buf.gen.authzed.api.v1.PermissionRelationshipTree;
-import build.buf.gen.authzed.api.v1.SubjectReference;
+import com.authzed.api.v1.AlgebraicSubjectSet;
+import com.authzed.api.v1.DirectSubjectSet;
+import com.authzed.api.v1.ObjectReference;
+import com.authzed.api.v1.PermissionRelationshipTree;
+import com.authzed.api.v1.SubjectReference;
 import com.google.protobuf.Value;
 import java.time.Instant;
 import java.util.Arrays;
@@ -432,7 +432,7 @@ class SpiceDBClientTest {
   void expandResultExposesNoProtoType() {
     for (var component : SpiceDBClient.ExpandResult.class.getRecordComponents()) {
       assertFalse(
-          component.getType().getPackageName().startsWith("build.buf.gen"),
+          component.getType().getPackageName().startsWith("com.authzed.api"),
           "ExpandResult must not expose proto types, found: " + component.getType());
     }
   }

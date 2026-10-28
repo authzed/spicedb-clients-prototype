@@ -31,7 +31,9 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
   - Every client has a constructor from an existing connection or channel, such as
     an in-memory or buffered-listener connection. Close never closes a supplied
     connection. Operation options (deadlines, retry policy) still apply;
-    credential and transport options do not, because the connection already carries them.
+    transport options do not. Credential options apply only where the
+    language's connection type cannot carry credentials itself (a tonic
+    `Channel`), in which case the constructor accepts the token alone.
   - Every operation accepts a transport escape hatch: per-call transport options
     and capture of response headers and trailers. This is the supported route to
     transport-level data, including data that pre-1.30 servers send in trailers.
@@ -150,8 +152,10 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     interface or protocol accepts both: caller-defined where the language is
     structurally typed (Go, TypeScript, Python protocols), library-provided and
     implemented by both where it is nominally typed (C#, Java).
-  - Languages whose constructors return errors provide panicking/asserting
-    variants for compile-time constants and tests, such as Go `Must*`.
+  - Languages whose constructors return errors make constants and test fixtures
+    one call: panicking variants where that is idiomatic (Go `Must*`), or a
+    one-call parse from tuple text where call-site assertion is the convention
+    (Rust `FromStr` plus `.expect()`). Languages whose constructors throw need neither.
   - Relationship accessors offer short paths for the most common fields
     (resource ID and subject ID) in addition to the nested object accessors.
   - Tuple parsing and formatting cover SpiceDB's full syntax, including

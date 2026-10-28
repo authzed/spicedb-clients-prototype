@@ -136,7 +136,7 @@ type's own string conversion.
 | Java | `spicedb-gen --lang java --java.package=<pkg>` | `com.authzed.spicedb.*` (`spicedb-java`) | [spicedb-java/AI_INTEGRATION_GUIDE.md](spicedb-java/AI_INTEGRATION_GUIDE.md) |
 | C# | — | `SpiceDB.Client` | [spicedb-csharp/AI_INTEGRATION_GUIDE.md](spicedb-csharp/AI_INTEGRATION_GUIDE.md) |
 | Ruby | — | `spicedb` gem | not yet |
-| Rust | — | `spicedb` crate | not yet |
+| Rust | — | `spicedb` crate | [spicedb-rust/AI_INTEGRATION_GUIDE.md](spicedb-rust/AI_INTEGRATION_GUIDE.md) |
 
 Each client also has `DESIGN.md` (behavior), `CHANGELOG.md` and, where a legacy
 library exists, `MIGRATION.md`.

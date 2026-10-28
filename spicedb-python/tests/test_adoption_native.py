@@ -8,6 +8,7 @@ a real in-process gRPC server; paging and retry run against recording stubs.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 from concurrent import futures
 from datetime import datetime, timezone
@@ -32,6 +33,7 @@ from spicedb import (
     FailedPreconditionError,
     InvalidArgumentError,
     NotFoundError,
+    Operation,
     ObjectRef,
     PermissionCheck,
     Permissionship,
@@ -543,6 +545,137 @@ async def test_per_call_retry_policy_governs_stream_establishment(client_type):
     watches.clear()
     await drain(client.watch(call_options=CallOptions(retry_policy=RetryPolicy(initial_backoff=0))))
     assert len(watches) == 2
+
+
+@pytest.mark.parametrize("client_type", [SyncClient, AioClient])
+async def test_operation_retry_policies(client_type):
+    async def run(value):
+        return await value if client_type is AioClient else value
+
+    async def drain(stream):
+        return [x async for x in stream] if client_type is AioClient else list(stream)
+
+    def stub(*responses):
+        return (AsyncMock if client_type is AioClient else Mock)(side_effect=list(responses))
+
+    def build(**kwargs):
+        client = client_type("localhost:1", token="t", transport_security=TransportSecurity.PLAINTEXT, **kwargs)
+        client._ensure_channel = Mock()
+        return client
+
+    retry_once = RetryPolicy(max_retries=1, initial_backoff=0)
+    watches = []
+
+    def watch(request, **kwargs):
+        watches.append(request)
+        if len(watches) == 1:
+            raise _rpc_error()
+        return _Call([])
+
+    # A client built with a zero-retry watch policy never reopens a watch,
+    # with no per-call option, even though it retries streams otherwise.
+    client = build(retry_policy=RetryPolicy(initial_backoff=0),
+                   operation_retry_policies={Operation.WATCH: Retries.DISABLED})
+    client._watch = Mock(Watch=watch)
+    with pytest.raises(SpiceDBError):
+        await drain(client.watch())
+    assert len(watches) == 1
+
+    # A per-operation policy governs stream establishment both ways: one
+    # that retries reopens a watch before its first event...
+    watches.clear()
+    client = build(operation_retry_policies={Operation.WATCH: retry_once})
+    client._watch = Mock(Watch=watch)
+    await drain(client.watch())
+    assert len(watches) == 2
+    # ...and a per-call option still wins over it.
+    watches.clear()
+    with pytest.raises(SpiceDBError):
+        await drain(client.watch(call_options=CallOptions(retry_policy=Retries.DISABLED)))
+    assert len(watches) == 1
+
+    # A zero-retry read policy applies to that operation only; others keep
+    # the client-wide policy.
+    client = build(retry_policy=RetryPolicy(initial_backoff=0),
+                   operation_retry_policies={Operation.READ_SCHEMA: Retries.DISABLED})
+    client._schema = Mock(ReadSchema=stub(_rpc_error(), ssp.ReadSchemaResponse()),
+                          ReflectSchema=stub(_rpc_error(), ssp.ReflectSchemaResponse()))
+    with pytest.raises(SpiceDBError):
+        await run(client.read_schema())
+    assert client._schema.ReadSchema.call_count == 1
+    await run(client.reflect_schema(consistency=full()))
+    assert client._schema.ReflectSchema.call_count == 2
+    client._schema = Mock(ReadSchema=stub(_rpc_error(), ssp.ReadSchemaResponse()))
+    await run(client.read_schema(call_options=_RETRY_ONCE))
+    assert client._schema.ReadSchema.call_count == 2
+
+    # A per-operation write policy retries only idempotent writes, silently.
+    client = build(operation_retry_policies={Operation.WRITE: retry_once, Operation.WRITE_SCHEMA: retry_once})
+    written = psp.WriteRelationshipsResponse(written_at=core_pb2.ZedToken(token="w"))
+    client._permissions = Mock(WriteRelationships=stub(_rpc_error(), written))
+    assert (await run(client.write(_touch()))).revision == ZedToken("w")
+    assert client._permissions.WriteRelationships.call_count == 2
+    client._permissions = Mock(WriteRelationships=stub(_rpc_error(), written))
+    created = Transaction().create(Relationship.from_tuple("document:a#viewer@user:alice"))
+    with pytest.raises(SpiceDBError) as raised:
+        await run(client.write(created))
+    assert raised.value.code() is grpc.StatusCode.UNAVAILABLE  # not retried, and not rejected
+    assert client._permissions.WriteRelationships.call_count == 1
+    client._permissions = Mock(WriteRelationships=stub(_rpc_error(), written))
+    with pytest.raises(SpiceDBError):  # a per-call opt-out wins
+        await run(client.write(_touch(), call_options=CallOptions(retry_policy=Retries.DISABLED)))
+    assert client._permissions.WriteRelationships.call_count == 1
+    client._schema = Mock(WriteSchema=stub(_rpc_error(), ssp.WriteSchemaResponse()))
+    await run(client.write_schema("definition user {}"))
+    assert client._schema.WriteSchema.call_count == 2
+
+
+@pytest.mark.parametrize("client_type", [SyncClient, AioClient])
+def test_operation_retry_policies_are_validated_at_construction(client_type):
+    def build(policies):
+        return client_type("localhost:1", token="t", transport_security=TransportSecurity.PLAINTEXT,
+                           operation_retry_policies=policies)
+
+    never = [
+        Operation.DELETE_RELATIONSHIPS,
+        Operation.DELETE_ALL_RELATIONSHIPS_NON_ATOMIC,
+        Operation.IMPORT_RELATIONSHIPS,
+        Operation.EXPERIMENTAL_REGISTER_RELATIONSHIP_COUNTER,
+        Operation.EXPERIMENTAL_UNREGISTER_RELATIONSHIP_COUNTER,
+    ]
+    for operation in never:
+        with pytest.raises(InvalidArgumentError, match="not idempotent on replay"):
+            build({operation: RetryPolicy()})
+        # A zero-retry policy is allowed for any operation.
+        build({operation: Retries.DISABLED})
+        build({operation: RetryPolicy(max_retries=0)})
+    for bad in ({"watch": Retries.DISABLED}, {Operation.WATCH: 3}, [Operation.WATCH]):
+        with pytest.raises(InvalidArgumentError):
+            build(bad)
+    # The caller's mapping is snapshotted.
+    policies = {Operation.WATCH: Retries.DISABLED}
+    client = build(policies)
+    policies[Operation.WATCH] = RetryPolicy()
+    assert client._operation_policies[Operation.WATCH].max_retries == 0
+
+
+def test_operation_enum_names_every_client_operation():
+    for client_type in (SyncClient, AioClient):
+        names = {
+            name for name, member in inspect.getmembers(client_type, callable)
+            if not name.startswith("_") and "call_options" in inspect.signature(member).parameters
+        }
+        assert names == {operation.value for operation in Operation}
+
+
+def test_transaction_is_idempotent_is_the_retry_rule():
+    rel_ = Relationship.from_tuple("document:a#viewer@user:alice")
+    assert Transaction().is_idempotent()
+    assert Transaction().touch(rel_).touch(rel_).is_idempotent()
+    assert not Transaction().touch(rel_).create(rel_).is_idempotent()
+    assert not Transaction().delete(rel_).is_idempotent()
+    assert not Transaction().touch(rel_).must_match(Filter("document")).is_idempotent()
+    assert not Transaction().touch(rel_).must_not_match(Filter("document")).is_idempotent()
 
 
 @pytest.mark.parametrize("client_type", [SyncClient, AioClient])

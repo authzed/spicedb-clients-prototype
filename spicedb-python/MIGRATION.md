@@ -205,6 +205,13 @@ authzed-py had no default deadline and no retries.
   or a `RetryPolicy` on a touch-only `write` (no preconditions) or a
   `write_schema` to retry those idempotent writes. Every other mutation
   raises `InvalidArgumentError` for the opt-in before sending anything.
+- Set the policy for every call of one operation when building the client:
+  `operation_retry_policies={Operation.WATCH: RetryPolicy(...)}` (reopen
+  watches before their first event), `{Operation.READ_SCHEMA:
+  Retries.DISABLED}`, or `{Operation.WRITE: RetryPolicy(...)}`, which retries
+  only writes for which `Transaction.is_idempotent()` holds. Deletes,
+  imports and counter registration reject a policy with retries when the
+  client is built.
 - Writes are never replayed otherwise. An empty `Transaction` is sent like
   authzed-py's empty `WriteRelationshipsRequest`: SpiceDB evaluates its
   preconditions and returns the current revision.

@@ -37,7 +37,8 @@ from spicedb import (
 )
 from spicedb.aio import SpiceDBClient as AioClient
 from spicedb.sync import SpiceDBClient as SyncClient
-from spicedb.testing import AsyncInMemoryClient, InMemoryClient
+from spicedb import Operation, UnavailableError
+from spicedb.testing import AsyncInMemoryClient, Call, Fault, FaultStage, InMemoryClient
 
 SHARED = [
     "write",
@@ -244,3 +245,151 @@ async def test_doubles_fill_response_metadata():
     assert await store.import_relationships(produce()) == 1
     async with store.export_relationships(consistency=full()) as stream:
         assert [r.relationship async for r in stream] == [rel("doc:a#viewer@user:x")]
+
+
+# --- call recording and fault injection ------------------------------------
+
+
+def _tuples(n: int) -> list[Relationship]:
+    return [Relationship.from_tuple(f"document:d{i}#viewer@user:x") for i in range(n)]
+
+
+def _unavailable(message: str = "unavailable") -> SpiceDBError:
+    return SpiceDBError.from_code(grpc.StatusCode.UNAVAILABLE, message)
+
+
+def test_fault_injection_import_batches_commit_and_stream_items():
+    client = InMemoryClient()
+
+    # A restore test: the third import batch fails with ALREADY_EXISTS and
+    # nothing is applied.
+    seen: list[Fault] = []
+
+    def batch_two(fault: Fault):
+        seen.append(fault)
+        if fault.stage is FaultStage.IMPORT_BATCH and fault.item == 2:
+            return SpiceDBError.from_code(grpc.StatusCode.ALREADY_EXISTS, "duplicate relationship")
+        return None
+
+    client.set_fault_hook(batch_two)
+    with pytest.raises(AlreadyExistsError) as raised:
+        client.import_relationships(_tuples(10), batch_size=3)
+    assert str(raised.value) == "duplicate relationship"
+    assert raised.value.server_message == "duplicate relationship"
+    assert client.relationships() == []
+    assert [(f.stage, f.item) for f in seen] == [
+        (FaultStage.CALL, 0),
+        (FaultStage.IMPORT_BATCH, 0),
+        (FaultStage.IMPORT_BATCH, 1),
+        (FaultStage.IMPORT_BATCH, 2),
+    ]
+
+    # The commit itself can fail, and nothing is applied.
+    client.set_fault_hook(lambda f: _unavailable("lost") if f.stage is FaultStage.IMPORT_COMMIT else None)
+    with pytest.raises(UnavailableError):
+        client.import_relationships(_tuples(4))
+    assert client.relationships() == []
+
+    # A backup test: the export fails after K items.
+    client.set_fault_hook(None)
+    assert client.import_relationships(_tuples(5)) == 5
+    client.set_fault_hook(
+        lambda f: _unavailable("stream reset")
+        if f.call.operation is Operation.EXPORT_RELATIONSHIPS and f.stage is FaultStage.ITEM and f.item == 3
+        else None
+    )
+    got = []
+    with pytest.raises(UnavailableError):
+        for item in client.export_relationships(consistency=full()):
+            got.append(item)
+    assert len(got) == 3
+
+    # Reads fail at items too.
+    client.set_fault_hook(lambda f: _unavailable() if f.stage is FaultStage.ITEM and f.item == 1 else None)
+    got = []
+    with pytest.raises(UnavailableError):
+        for item in client.read_relationships(Filter("document"), consistency=full()):
+            got.append(item)
+    assert len(got) == 1
+
+    # A failed write applies nothing.
+    client.fail_next(Operation.WRITE, _unavailable())
+    with pytest.raises(UnavailableError):
+        client.write(Transaction().touch(Relationship.from_tuple("document:new#viewer@user:x")))
+    assert len(client.relationships()) == 5
+    with pytest.raises(InvalidArgumentError):
+        client.set_fault_hook(lambda f: "not an exception")  # type: ignore[arg-type,return-value]
+        client.read_schema()
+
+
+def test_fail_next_affects_exactly_one_call():
+    client = InMemoryClient()
+    check = PermissionCheck(ObjectRef("document", "d0"), "view", SubjectRef(ObjectRef("user", "x")))
+    client.fail_next(Operation.CHECK, _unavailable("down"))
+    with pytest.raises(NotFoundError):
+        client.read_schema()  # another operation is unaffected
+    with pytest.raises(UnavailableError) as raised:
+        client.check(check, consistency=full())
+    assert raised.value.code() is grpc.StatusCode.UNAVAILABLE
+    assert client.check(check, consistency=full()).permissionship is Permissionship.NO_PERMISSION
+    assert client.check(check, consistency=full()).permissionship is Permissionship.NO_PERMISSION
+
+    # A stream's call fault surfaces on iteration, as a server error does.
+    client.fail_next(Operation.READ_RELATIONSHIPS, _unavailable("down"))
+    stream = client.read_relationships(Filter("document"), consistency=full())
+    with pytest.raises(UnavailableError):
+        list(stream)
+    assert list(client.read_relationships(Filter("document"), consistency=full())) == []
+    with pytest.raises(InvalidArgumentError):
+        client.fail_next("check", _unavailable())  # type: ignore[arg-type]
+
+
+def test_calls_are_recorded_with_their_options():
+    client = InMemoryClient()
+    options = CallOptions(metadata=(("x-test", "1"),))
+    list(client.read_relationships(
+        Filter("document"), consistency=full(), cursor="2", page_size=5, call_options=options))
+    list(client.read_relationships(Filter("folder"), consistency=min_latency()))
+    client.write_schema("definition user {}")
+
+    reads = client.calls_of(Operation.READ_RELATIONSHIPS)
+    assert [c.index for c in reads] == [0, 1]
+    assert reads[0].options["cursor"] == "2"
+    assert reads[0].options["page_size"] == 5
+    assert reads[0].options["call_options"] is options
+    assert reads[1].options["cursor"] is None
+    assert reads[1].options["consistency"] == min_latency()
+    assert reads[1].request == Filter("folder")
+    assert [c.operation for c in client.calls()] == [
+        Operation.READ_RELATIONSHIPS, Operation.READ_RELATIONSHIPS, Operation.WRITE_SCHEMA,
+    ]
+    schema_call = client.calls()[2]
+    assert isinstance(schema_call, Call)
+    assert (schema_call.index, schema_call.request) == (0, "definition user {}")
+    with pytest.raises(TypeError):
+        reads[0].options["cursor"] = "3"  # type: ignore[index]
+
+
+async def test_async_double_records_and_injects():
+    client = AsyncInMemoryClient()
+
+    async def source():
+        for r in _tuples(4):
+            yield r
+
+    client.set_fault_hook(
+        lambda f: SpiceDBError.from_code(grpc.StatusCode.ALREADY_EXISTS, "dup")
+        if f.stage is FaultStage.IMPORT_BATCH and f.item == 1 else None
+    )
+    with pytest.raises(AlreadyExistsError):
+        await client.import_relationships(source(), batch_size=2)
+    assert client.relationships() == []
+    client.set_fault_hook(None)
+    assert await client.import_relationships(source(), batch_size=2) == 4
+    client.fail_next(Operation.EXPORT_RELATIONSHIPS, _unavailable())
+    with pytest.raises(UnavailableError):
+        [x async for x in client.export_relationships(consistency=full())]
+    assert len([x async for x in client.export_relationships(consistency=full())]) == 4
+    imports = client.calls_of(Operation.IMPORT_RELATIONSHIPS)
+    assert [(c.index, c.options["batch_size"], len(c.request)) for c in imports] == [(0, 2, 4), (1, 2, 4)]
+    assert client.calls() == client._sync.calls()

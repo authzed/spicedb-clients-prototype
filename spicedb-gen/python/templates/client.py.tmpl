@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from collections.abc import {{if .Async}}AsyncIterable, {{end}}Callable, Iterable, Sequence
+from collections.abc import {{if .Async}}AsyncIterable, {{end}}Callable, Iterable, Mapping, Sequence
 from typing import Any{{if .HasOverloads}}, overload{{end}}
 
 import grpc{{if .Async}}.aio{{end}}
@@ -24,6 +24,7 @@ from spicedb import (
     LookupResource,
     LookupSubject,
     ObjectRef,
+    Operation,
     Paging,
     PermissionCheck,
     PermissionSetCursor,
@@ -92,6 +93,8 @@ class TypedClient:
         default_timeout: float | DefaultDeadline = 30.0,
         retry_policy: RetryPolicy | Retries = DEFAULT_RETRY_POLICY,
         stream_retries: StreamRetries = StreamRetries.ENABLED,
+        operation_retry_policies: Mapping[Operation, RetryPolicy | Retries]
+        | None = None,
     ) -> TypedClient:
         """Build the underlying SpiceDBClient and wrap it.
 
@@ -112,6 +115,7 @@ class TypedClient:
                 default_timeout=default_timeout,
                 retry_policy=retry_policy,
                 stream_retries=stream_retries,
+                operation_retry_policies=operation_retry_policies,
             )
         )
 
@@ -123,6 +127,8 @@ class TypedClient:
         default_timeout: float | DefaultDeadline = 30.0,
         retry_policy: RetryPolicy | Retries = DEFAULT_RETRY_POLICY,
         stream_retries: StreamRetries = StreamRetries.ENABLED,
+        operation_retry_policies: Mapping[Operation, RetryPolicy | Retries]
+        | None = None,
     ) -> TypedClient:
         """Wrap a client over a caller-owned channel; close() never closes it."""
         return cls(
@@ -131,6 +137,7 @@ class TypedClient:
                 default_timeout=default_timeout,
                 retry_policy=retry_policy,
                 stream_retries=stream_retries,
+                operation_retry_policies=operation_retry_policies,
             )
         )
 {{if .Async}}

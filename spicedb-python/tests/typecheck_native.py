@@ -21,6 +21,8 @@ from spicedb import (
 )
 from spicedb.sync import SpiceDBClient, Stream
 from spicedb.aio import SpiceDBClient as AioClient, AsyncStream
+from spicedb.testing import Call, FaultStage, InMemoryClient
+from spicedb import Operation, UnavailableError
 
 resource = ObjectRef("document", "one")
 subject = SubjectRef(ObjectRef("user", "alice"))
@@ -114,6 +116,17 @@ def adoption_option_types(client: SpiceDBClient, aio: AioClient) -> None:
     SpiceDBClient("localhost:50051", token="t", default_timeout=None)  # type: ignore[arg-type]
     SpiceDBClient("localhost:50051", token="t", retry_policy=0)  # type: ignore[arg-type]
     SpiceDBClient("localhost:50051", token="t", max_retries=0)  # type: ignore[call-arg]
+    SpiceDBClient("localhost:50051", token="t", operation_retry_policies={Operation.WATCH: Retries.DISABLED})
+    AioClient("localhost:50051", token="t", operation_retry_policies={Operation.WRITE: RetryPolicy(max_retries=1)})
+    SpiceDBClient("localhost:50051", token="t", operation_retry_policies={"watch": Retries.DISABLED})  # type: ignore[dict-item]
+    idempotent: bool = Transaction().is_idempotent()
+    assert idempotent
+    fake = InMemoryClient()
+    fake.fail_next(Operation.CHECK, UnavailableError("down"))
+    fake.set_fault_hook(lambda f: None if f.stage is FaultStage.ITEM else None)
+    recorded: list[Call] = fake.calls_of(Operation.READ_RELATIONSHIPS)
+    assert recorded[0].options["cursor"] is None
+    fake.fail_next("check", UnavailableError("down"))  # type: ignore[arg-type]
     results: list[CheckResult] = client.check_bulk([check], consistency=full(), item_errors=BulkItemErrors.RETURN)
     assert results[0].error is None
     client.check_bulk([check], consistency=full(), item_errors=True)  # type: ignore[arg-type]

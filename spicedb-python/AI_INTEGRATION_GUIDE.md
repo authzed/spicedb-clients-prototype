@@ -10,7 +10,7 @@ Concrete Python for the rules in the repository-wide
 | `spicedb` | `import spicedb` / `from spicedb import ...` | values, filters, `Transaction`, consistency, `ZedToken`, options, results |
 | `spicedb.sync` / `spicedb.aio` | `from spicedb.sync import SpiceDBClient` | native client, blocking or asyncio (same names and arguments) |
 | `spicedb.errors` | `from spicedb.errors import FailedPreconditionError` | typed errors (`SpiceDBError` is a `grpc.RpcError`) |
-| `spicedb.testing` | `from spicedb.testing import InMemoryClient` | in-memory test doubles (`InMemoryClient`, `AsyncInMemoryClient`) |
+| `spicedb.testing` | `from spicedb.testing import InMemoryClient` | in-memory test doubles (`InMemoryClient`, `AsyncInMemoryClient`; `Call`, `Fault`, `FaultStage`) |
 | `spicedb.protoconv` | `from spicedb import protoconv` | protocol conversions (tools only) |
 
 Do **not** install the legacy `authzed` package (authzed-py) beside this
@@ -209,6 +209,8 @@ c = SpiceDBClient(
     retry_policy=Retries.DISABLED,  # or RetryPolicy(max_retries=5, on_retry=print)
     default_timeout=DefaultDeadline.DISABLED,
     stream_retries=StreamRetries.DISABLED,
+    # Most specific wins: per call, then per operation, then client-wide.
+    operation_retry_policies={Operation.WATCH: Retries.DISABLED},
 )
 md = ResponseMetadata()
 c.read_schema(call_options=CallOptions(response_metadata=md))
@@ -219,6 +221,10 @@ Every operation accepts `call_options=CallOptions(metadata=..., wait_for_ready=.
 compression=..., response_metadata=..., retry_policy=...)`; `retry_policy`
 overrides the client's for that call, including stream establishment
 (`c.watch(call_options=CallOptions(retry_policy=Retries.DISABLED))`).
+`operation_retry_policies` does the same for every call of one operation; an
+`Operation.WRITE` policy retries only writes where `txn.is_idempotent()`
+(touch-only, no preconditions), and deletes and imports refuse one with
+retries when the client is built.
 Protocol-shaped output: `spicedb.protoconv` (`relationship_to_proto`,
 `check_result_to_proto`, `check_bulk_to_proto`, ...) with
 `google.protobuf.json_format`.
@@ -264,6 +270,21 @@ assert isinstance(err, FailedPreconditionError)
 (`set_reflect_schema_result`) with the real clients' signatures, SpiceDB's
 precondition and create-conflict semantics, and errors shaped like the real
 client's. `set_response_metadata` fills `CallOptions(response_metadata=...)`.
+Calls are recorded and faults injected, so failure paths need no fake server:
+
+```python
+fake.fail_next(Operation.CHECK, SpiceDBError.from_code(grpc.StatusCode.UNAVAILABLE, "down"))
+fake.set_fault_hook(  # fail import batch 2 (0-based); nothing is applied
+    lambda f: SpiceDBError.from_code(grpc.StatusCode.ALREADY_EXISTS, "duplicate")
+    if f.stage is FaultStage.IMPORT_BATCH and f.item == 2
+    else None
+)
+last_read = fake.calls_of(Operation.READ_RELATIONSHIPS)[-1]
+print(last_read.request, last_read.options["cursor"])
+```
+
+`FaultStage` is `CALL`, `IMPORT_BATCH`, `IMPORT_COMMIT` or `ITEM` (before each
+read or export item).
 Type your code against the methods you use, e.g.:
 
 ```python

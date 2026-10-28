@@ -8,9 +8,10 @@ module SpiceDB
     # One recorded Store operation: +operation+ is the method name (one of
     # Store::OPERATIONS), +index+ counts calls of that operation from 0,
     # +request+ is its positional argument (the transaction, filter, check,
-    # checks, relationships or schema; nil for read_schema and
-    # reflect_schema), and +options+ is a frozen Hash of every keyword
-    # argument as the call bound it, defaults included.
+    # checks, relationships, schema or counter name; nil for operations
+    # taking only keywords, such as read_schema or lookup_resources), and
+    # +options+ is a frozen Hash of every keyword argument as the call bound
+    # it, defaults included.
     Call = Data.define(:operation, :index, :request, :options)
 
     # Where in an operation a fault hook runs. CALL: before the operation
@@ -23,15 +24,34 @@ module SpiceDB
     end
 
     # The point at which the fault hook is consulted; +item+ is the batch or
-    # item index for IMPORT_BATCH and ITEM, nil otherwise.
-    Fault = Data.define(:call, :stage, :item)
+    # item index for IMPORT_BATCH and ITEM, nil otherwise; +batch+ is the
+    # frozen Array of that batch's relationships at IMPORT_BATCH, nil
+    # otherwise.
+    Fault = Data.define(:call, :stage, :item, :batch) do
+      def initialize(call:, stage:, item: nil, batch: nil) = super
+    end
 
-    # An in-memory stand-in for SpiceDB::Client. Its #write,
-    # #read_relationships, #delete_relationships, #import_relationships,
+    # Whether Store#read_schema reports a revision. INCLUDED (the default)
+    # reports the store's revision; OMITTED reports none (+revision+ is nil),
+    # as some hosted SpiceDB deployments do, so code that falls back to
+    # another revision source can be tested.
+    class SchemaRevision < Option
+      cases :INCLUDED, :OMITTED
+    end
+
+    # An in-memory stand-in for SpiceDB::Client. It has every public method
+    # of the client with the same parameters (a spec keeps the two in sync),
+    # so code written against the client accepts either. #write,
+    # #read_relationships, #delete_relationships,
+    # #delete_all_relationships_non_atomic, #import_relationships,
     # #export_relationships, #read_schema, #write_schema, #reflect_schema,
-    # #check and #check_bulk take the same arguments and return the same
-    # native values as the client's, so code written against those methods
-    # accepts either.
+    # #check and #check_bulk return the same native values as the client's;
+    # #close does nothing. The other operations (lookups, watch, expand,
+    # schema introspection and the experimental operations) have no
+    # in-memory semantics: they are recorded and consult the fault hook like
+    # any call, then raise the client's error for an UNIMPLEMENTED status
+    # (a SpiceDB::Error whose +code+ is UNIMPLEMENTED); streaming ones raise
+    # it when iterated.
     #
     # It applies SpiceDB's relationship semantics -- Filter#matches?,
     # preconditions, CREATE conflicts, atomic transactions and imports -- and
@@ -65,10 +85,9 @@ module SpiceDB
       NO_SCHEMA = 'no schema has been defined; please call WriteSchema to start'
       private_constant :NO_SCHEMA
 
-      # The operations the store implements, as recorded in Call#operation
-      # and accepted by #fail_next: the client's method names.
-      OPERATIONS = %i[write read_relationships delete_relationships import_relationships export_relationships read_schema write_schema
-                      reflect_schema check check_bulk].freeze
+      # The operations the store records, as in Call#operation and accepted
+      # by #fail_next: every client operation (Client::OPERATIONS).
+      OPERATIONS = Client::OPERATIONS
 
       # Builds the error the client raises when SpiceDB answers with +code+
       # (a GRPC::Core::StatusCodes value) and +message+, for fault hooks: its
@@ -76,6 +95,16 @@ module SpiceDB
       # SpiceDB's ErrorInfo reason.
       def self.server_error(code, message, reason: '')
         Error.from_code(code, message, server_message: message, reason: reason, reason_domain: reason.empty? ? '' : 'authzed.com')
+      end
+
+      # The cursor that resumes a read or export after the first +count+
+      # matching relationships (in insertion order): the same cursor the
+      # store puts on item number +count+ (1-based). The format, +count+ in
+      # decimal, is stable for tests.
+      def self.cursor_after(count)
+        raise InvalidArgumentError, 'cursor_after: expected a non-negative Integer' unless count.is_a?(Integer) && !count.negative?
+
+        count.to_s
       end
 
       def initialize(relationships = [])
@@ -90,6 +119,7 @@ module SpiceDB
         @calls = []
         @counts = Hash.new(0)
         @fault_hook = nil
+        @schema_revision = SchemaRevision::INCLUDED
         relationships.each { |relationship| @relationships[key(relationship)] = relationship }
       end
 
@@ -147,6 +177,12 @@ module SpiceDB
 
         @mutex.synchronize { @reflection = result }
         self
+      end
+
+      # Selects whether #read_schema reports a revision (a SchemaRevision).
+      def read_schema_revision=(mode)
+        SchemaRevision.validate(mode)
+        @mutex.synchronize { @schema_revision = mode }
       end
 
       # Sets the headers and trailers every operation records into a
@@ -224,13 +260,9 @@ module SpiceDB
         call = begin_call(:import_relationships, relationships, binding)
         Retrying.mutation_policy(retry_policy, false, 'import_relationships')
         positive(batch_size, 'batch_size')
-        batch = []
-        relationships.each do |relationship|
-          raise InvalidArgumentError, 'import: expected Relationship' unless relationship.is_a?(Relationship)
-
-          fault(call, FaultStage::IMPORT_BATCH, batch.length / batch_size) if (batch.length % batch_size).zero?
-          batch << relationship
-        end
+        batch = relationships.to_a
+        batch.each { |relationship| raise InvalidArgumentError, 'import: expected Relationship' unless relationship.is_a?(Relationship) }
+        batch.each_slice(batch_size).with_index { |slice, index| fault(call, FaultStage::IMPORT_BATCH, index, slice.freeze) }
         fault(call, FaultStage::IMPORT_COMMIT)
         operation(call_options) do
           staged = @relationships.dup
@@ -270,14 +302,38 @@ module SpiceDB
         end
       end
 
+      # Deletes every matching relationship in one step after checking the
+      # preconditions, calls +on_progress+ once with the result, and returns
+      # it (complete, no cursor). +page_size+ is validated and +cursor+
+      # accepted; neither otherwise matters.
+      def delete_all_relationships_non_atomic(filter, page_size: 1000, must_match: [], must_not_match: [], timeout: nil, cursor: nil,
+                                              on_progress: nil, call_options: nil, retry_policy: nil)
+        begin_call(:delete_all_relationships_non_atomic, filter, binding)
+        Retrying.mutation_policy(retry_policy, false, 'delete_all_relationships_non_atomic')
+        raise InvalidArgumentError, 'on_progress must respond to call' unless on_progress.nil? || on_progress.respond_to?(:call)
+        raise InvalidArgumentError, 'expected Filter' unless filter.is_a?(Filter)
+
+        positive(page_size, 'page_size')
+        result = operation(call_options) do
+          must_match.each { |item| check_precondition(Precondition.new(operation: :must_match, filter: item)) }
+          must_not_match.each { |item| check_precondition(Precondition.new(operation: :must_not_match, filter: item)) }
+          matched = @relationships.select { |_identity, relationship| filter.matches?(relationship) }.keys
+          matched.each { |identity| @relationships.delete(identity) }
+          DeleteResult.new(revision: next_revision, deleted_count: matched.length, progress: :complete, cursor: nil)
+        end
+        on_progress&.call(result)
+        result
+      end
+
       # Returns the schema last written; NotFoundError before any, as SpiceDB does.
+      # Its revision is nil after +read_schema_revision = SchemaRevision::OMITTED+.
       def read_schema(timeout: nil, call_options: nil, retry_policy: nil)
         begin_call(:read_schema, nil, binding)
         validate_policy(retry_policy)
         operation(call_options) do
           raise server_error(GRPC::Core::StatusCodes::NOT_FOUND, NO_SCHEMA) if @schema.nil?
 
-          SchemaResult.new(schema: @schema, revision: current_revision)
+          SchemaResult.new(schema: @schema, revision: @schema_revision == SchemaRevision::OMITTED ? nil : current_revision)
         end
       end
 
@@ -320,7 +376,118 @@ module SpiceDB
         operation(call_options) { checks.map { |item| lookup_check(item) } }.freeze
       end
 
+      # Does nothing: the store holds no transport.
+      def close = nil
+
+      # nil: the store has no protocol client.
+      def proto_client = nil
+
+      # nil: the store never retries.
+      def retry_policy = nil
+
+      # Empty: the store never retries.
+      def operation_retry_policies = {}.freeze
+
+      # The remaining operations have no in-memory semantics: each is
+      # recorded, consults the fault hook, validates its retry policy as the
+      # client does, and raises UNIMPLEMENTED (streams when iterated).
+
+      def lookup_resources(resource_type:, permission:, subject:, consistency:, context: nil, limit: nil, # rubocop:disable Metrics/ParameterLists
+                           page_size: 1000, timeout: nil, permissionship_filter: LookupPermissionshipFilter::ALL, cursor: nil,
+                           call_options: nil, retry_policy: nil, paging: Paging::AUTOMATIC, &)
+        unimplemented_stream(:lookup_resources, nil, binding, retry_policy, &)
+      end
+
+      def lookup_subjects(resource:, permission:, subject_type:, consistency:, subject_relation: nil,
+                          context: nil, timeout: nil, limit: nil, call_options: nil, retry_policy: nil, &)
+        unimplemented_stream(:lookup_subjects, nil, binding, retry_policy, &)
+      end
+
+      def watch(object_types: [], start_revision: nil, content: [WatchContent::RELATIONSHIPS], filters: [], timeout: nil,
+                call_options: nil, retry_policy: nil, &)
+        unimplemented_stream(:watch, nil, binding, retry_policy, &)
+      end
+
+      def computable_permissions(definition_name:, relation_name:, consistency:, definition_name_filter: nil, timeout: nil, call_options: nil,
+                                 retry_policy: nil)
+        unimplemented(:computable_permissions, nil, binding, retry_policy)
+      end
+
+      def dependent_relations(definition_name:, permission_name:, consistency:, timeout: nil, call_options: nil, retry_policy: nil)
+        unimplemented(:dependent_relations, nil, binding, retry_policy)
+      end
+
+      def diff_schema(comparison_schema, consistency:, timeout: nil, call_options: nil, retry_policy: nil)
+        unimplemented(:diff_schema, comparison_schema, binding, retry_policy)
+      end
+
+      def expand_permission_tree(resource:, permission:, consistency:, timeout: nil, call_options: nil, retry_policy: nil)
+        unimplemented(:expand_permission_tree, nil, binding, retry_policy)
+      end
+
+      def experimental_register_relationship_counter(name, filter, timeout: nil, call_options: nil, retry_policy: nil)
+        unimplemented(:experimental_register_relationship_counter, name, binding, retry_policy)
+      end
+
+      def experimental_count_relationships(name, timeout: nil, call_options: nil, retry_policy: nil)
+        unimplemented(:experimental_count_relationships, name, binding, retry_policy)
+      end
+
+      def experimental_unregister_relationship_counter(name, timeout: nil, call_options: nil, retry_policy: nil)
+        unimplemented(:experimental_unregister_relationship_counter, name, binding, retry_policy)
+      end
+
+      def experimental_roaring_lookup_resources(resource_type:, permission:, subject:, consistency:, timeout: nil, call_options: nil,
+                                                retry_policy: nil)
+        unimplemented(:experimental_roaring_lookup_resources, nil, binding, retry_policy)
+      end
+
+      def experimental_count_relationships_by_filter(filter, timeout: nil, call_options: nil, retry_policy: nil)
+        unimplemented(:experimental_count_relationships_by_filter, filter, binding, retry_policy)
+      end
+
+      def experimental_watch_permission_sets(start_revision: nil, timeout: nil, call_options: nil, retry_policy: nil, &)
+        unimplemented_stream(:experimental_watch_permission_sets, nil, binding, retry_policy, &)
+      end
+
+      def experimental_lookup_permission_sets(limit: 1000, at_revision: nil, cursor: nil, timeout: nil, call_options: nil, retry_policy: nil, &)
+        unimplemented_stream(:experimental_lookup_permission_sets, nil, binding, retry_policy, &)
+      end
+
+      def experimental_download_permission_sets(at_revision: nil, timeout: nil, call_options: nil, retry_policy: nil)
+        unimplemented(:experimental_download_permission_sets, nil, binding, retry_policy)
+      end
+
       private
+
+      # Records +operation+, consults the fault hook and validates
+      # +retry_policy+, then raises UNIMPLEMENTED.
+      def unimplemented(operation, request, bound, retry_policy)
+        begin_unimplemented(operation, request, bound, retry_policy)
+        raise unimplemented_error(operation)
+      end
+
+      # As #unimplemented, but UNIMPLEMENTED is raised when the returned
+      # stream is iterated (at once when a block is given), as the client's
+      # streams surface server errors.
+      def unimplemented_stream(operation, request, bound, retry_policy, &)
+        begin_unimplemented(operation, request, bound, retry_policy)
+        stream = Enumerator.new { raise unimplemented_error(operation) }
+        block_given? ? stream.each(&) : stream
+      end
+
+      def begin_unimplemented(operation, request, bound, retry_policy)
+        begin_call(operation, request, bound)
+        if Client::NEVER_IDEMPOTENT_OPERATIONS.include?(operation)
+          Retrying.mutation_policy(retry_policy, false, operation.to_s)
+        else
+          validate_policy(retry_policy)
+        end
+      end
+
+      def unimplemented_error(operation)
+        server_error(GRPC::Core::StatusCodes::UNIMPLEMENTED, "#{operation} is not implemented by SpiceDB::Testing::Store")
+      end
 
       # Records a call of +operation+ with its +request+ and the keyword
       # options bound in +bound+ (the operation's binding), then consults the
@@ -338,9 +505,9 @@ module SpiceDB
       end
 
       # Consults the fault hook at one point of +call+ and raises what it returns.
-      def fault(call, stage, item = nil)
+      def fault(call, stage, item = nil, batch = nil)
         hook = @mutex.synchronize { @fault_hook }
-        error = hook&.call(Fault.new(call: call, stage: stage, item: item))
+        error = hook&.call(Fault.new(call: call, stage: stage, item: item, batch: batch))
         raise error if error
       end
 
@@ -376,7 +543,7 @@ module SpiceDB
           start = cursor.to_i
         end
         matching = @relationships.values.select(&)
-        items = matching.each_with_index.map { |relationship, index| [relationship, (index + 1).to_s] }.drop(start)
+        items = matching.each_with_index.map { |relationship, index| [relationship, Store.cursor_after(index + 1)] }.drop(start)
         limit ? items.first(limit) : items
       end
 

@@ -10,6 +10,13 @@
 
 ## Unreleased
 
+### Full-client test double (2026-10-28)
+
+- `SpiceDB::Testing::Store` now has every public method of `SpiceDB::Client` with the same parameters, enforced by a spec. `delete_all_relationships_non_atomic` works in memory (preconditions first, one `on_progress` call), `close` does nothing and `proto_client` is nil. Lookups, watch, expand, schema introspection and the experimental operations are recorded, consult the fault hook and raise a `SpiceDB::Error` with code `UNIMPLEMENTED` (streams when iterated). `Store::OPERATIONS` is now `Client::OPERATIONS`.
+- `Testing::Fault#batch` holds the batch's relationships at `FaultStage::IMPORT_BATCH`. Every relationship is validated before the first batch fault.
+- `store.read_schema_revision = SpiceDB::Testing::SchemaRevision::OMITTED` makes `read_schema` report a nil revision, as some hosted deployments do.
+- `Store.cursor_after(n)` builds the cursor that resumes a read or export after the first `n` matching relationships: the cursor the store puts on item `n`. Its format (`n` in decimal) is stable for tests.
+
 ### Client-wide per-operation retries and a fault-injecting test double (2026-10-28)
 
 - `operation_retry_policies: { watch: SpiceDB::RetryPolicy.new(max_retries: 0) }` sets the retry policy for every call of one operation (keys from `SpiceDB::Client::OPERATIONS`), including stream establishment. Precedence is per-call `retry_policy:`, then per-operation, then client-wide. A `:write` entry retries only idempotent transactions and leaves others unretried without an error; `Client::NEVER_IDEMPOTENT_OPERATIONS` (deletes, delete-all, imports, counter registration) raise `InvalidArgumentError` for an entry with retries when the client is built. A zero-retry entry is accepted for any operation.

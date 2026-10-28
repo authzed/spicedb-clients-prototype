@@ -187,18 +187,24 @@ store.set_check_result(SpiceDB::PermissionCheck.new(resource: SpiceDB::ObjectRef
 expected = SpiceDB::Error.from_code(GRPC::Core::StatusCodes::FAILED_PRECONDITION, 'precondition failed')
 ```
 
-Inject the client into your code; `SpiceDB::Testing::Store` has the same
-`write`, `read_relationships`, `delete_relationships`, `import_relationships`,
-`export_relationships`, `read_schema`, `write_schema`, `reflect_schema`,
-`check` and `check_bulk` parameters and results, applying preconditions,
-create conflicts, cursors, limits and filter semantics (`Filter#matches?`).
+Inject the client into your code; `SpiceDB::Testing::Store` has every client
+method with the same parameters. `write`, `read_relationships`,
+`delete_relationships`, `delete_all_relationships_non_atomic`,
+`import_relationships`, `export_relationships`, `read_schema`, `write_schema`,
+`reflect_schema`, `check` and `check_bulk` return the client's results, applying
+preconditions, create conflicts, cursors, limits and filter semantics
+(`Filter#matches?`); the other operations are recorded and raise a
+`SpiceDB::Error` with code `UNIMPLEMENTED`.
 Its errors have the client's classes, codes and messages (the server's message
 for server failures). `set_reflect_schema_result` and `set_response_metadata`
 register what reflection and `call_options:` capture return. `store.calls_of(:write)`
 returns recorded calls (`request`, keyword `options`); `store.fail_next(:check, err)`
 fails one call, and `store.fault_hook = ->(fault) { ... }` can fail an import batch
-(`fault.stage == SpiceDB::Testing::FaultStage::IMPORT_BATCH`, `fault.item`) or a
-read/export after some items (`FaultStage::ITEM`); return
+(`fault.stage == SpiceDB::Testing::FaultStage::IMPORT_BATCH`, `fault.item`,
+`fault.batch`) or a read/export after some items (`FaultStage::ITEM`); return
 `SpiceDB::Testing::Store.server_error(GRPC::Core::StatusCodes::UNAVAILABLE, 'down')`
-from the hook. For integration tests, run
+from the hook. Resume a read or export with
+`cursor: SpiceDB::Testing::Store.cursor_after(n)`, and set
+`store.read_schema_revision = SpiceDB::Testing::SchemaRevision::OMITTED` to test
+code that handles schema reads without a revision. For integration tests, run
 `authzed/spicedb serve-testing` and assert both granted and denied cases.

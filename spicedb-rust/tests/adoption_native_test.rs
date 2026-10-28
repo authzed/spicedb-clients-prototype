@@ -24,7 +24,7 @@ use spicedb::{
     DeleteAllOptions, DeleteAllRequest, DeleteOptions, DeletePartial, DeleteRequest,
     ExportRelationshipsOptions, ExportRelationshipsRequest, Filter, ImportRelationshipsOptions,
     ImportRelationshipsRequest, LookupResourcesOptions, LookupResourcesRequest,
-    LookupSubjectsRequest, ObjectRef, Paging, PermissionCheck, ReadRelationshipsOptions,
+    LookupSubjectsRequest, ObjectRef, Operation, Paging, PermissionCheck, ReadRelationshipsOptions,
     ReadRelationshipsRequest, Relationship, ResponseMetadata, RetryMode, RetryPolicy,
     SpiceDBClient, SpiceDBError, StreamRetryMode, SubjectRef, Transaction, UpdatesRequest,
     WatchOptions, WriteOptions, WriteRequest, WriteSchemaOptions, WriteSchemaRequest,
@@ -1323,4 +1323,167 @@ async fn lookup_subjects_round_trips_the_servers_response() {
         .collect()
         .await;
     assert_eq!(got, lookup_subjects_responses());
+}
+
+// ---------------------------------------------------------------------------
+// Client-wide per-operation retry policy.
+// ---------------------------------------------------------------------------
+
+fn retry_policy_once() -> RetryPolicy {
+    RetryPolicy::new()
+        .with_max_retries(1)
+        .with_retryable_codes(vec![Code::Unavailable])
+        .with_initial_backoff(Duration::from_millis(1))
+}
+
+#[tokio::test]
+async fn a_client_with_a_zero_retry_watch_policy_never_reopens_a_watch() {
+    let mock = Mock {
+        check_failure: Some(Code::Unavailable),
+        ..Default::default()
+    };
+    let seen = mock.seen.clone();
+    let channel = serve(mock).await;
+    let fast = RetryPolicy::new()
+        .with_max_retries(3)
+        .with_initial_backoff(Duration::from_millis(1));
+    let c = SpiceDBClient::from_channel(channel)
+        .retry_policy(fast)
+        .operation_retry_policy(Operation::Updates, RetryPolicy::new().with_max_retries(0))
+        .build()
+        .unwrap();
+
+    // No per-call option: the watch is opened exactly once.
+    let mut stream = Box::pin(c.updates(UpdatesRequest::new(vec![])));
+    assert_eq!(
+        stream.next().await.unwrap().unwrap_err().code(),
+        Code::Unavailable
+    );
+    assert_eq!(seen.calls.swap(0, Ordering::SeqCst), 1);
+
+    // Other operations keep the client-wide policy.
+    c.check(question()).await.unwrap_err();
+    assert_eq!(
+        seen.calls.swap(0, Ordering::SeqCst),
+        4,
+        "1 attempt + 3 retries"
+    );
+
+    // A per-call policy still wins over the operation's.
+    let mut stream = Box::pin(
+        c.updates(
+            UpdatesRequest::new(vec![])
+                .with_options(WatchOptions::new().with_call_options(retry_once())),
+        ),
+    );
+    assert!(stream.next().await.unwrap().is_err());
+    assert_eq!(seen.calls.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn an_operation_policy_governs_streams_despite_the_client_modes() {
+    let mock = Mock::default();
+    let seen = mock.seen.clone();
+    let c = SpiceDBClient::from_channel(serve(mock).await)
+        .retries(RetryMode::Disabled)
+        .stream_retries(StreamRetryMode::Disabled)
+        .operation_retry_policy(Operation::Updates, retry_policy_once())
+        .build()
+        .unwrap();
+    let mut stream = Box::pin(c.updates(UpdatesRequest::new(vec![])));
+    assert!(stream.next().await.unwrap().is_err());
+    assert_eq!(seen.calls.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn an_operation_write_policy_retries_only_idempotent_writes() {
+    async fn write_client(mock: Mock) -> SpiceDBClient {
+        SpiceDBClient::from_channel(serve(mock).await)
+            .operation_retry_policy(Operation::Write, retry_policy_once())
+            .build()
+            .unwrap()
+    }
+    fn failing_once() -> Mock {
+        Mock {
+            write_failure: Some(Code::Unavailable),
+            ..Default::default()
+        }
+    }
+
+    // A touch-only write is retried.
+    let mock = failing_once();
+    let seen = mock.seen.clone();
+    let c = write_client(mock).await;
+    assert!(touch().is_idempotent());
+    c.write(WriteRequest::new(touch())).await.unwrap();
+    assert_eq!(seen.writes.load(Ordering::SeqCst), 2);
+
+    // A create is sent once and fails with the server's error, not a
+    // rejection of the policy.
+    let mock = failing_once();
+    let seen = mock.seen.clone();
+    let c = write_client(mock).await;
+    let mut create = Transaction::new();
+    create.create(&Relationship::from_tuple("document:a#viewer@user:alice").unwrap());
+    assert!(!create.is_idempotent());
+    let err = c.write(WriteRequest::new(create)).await.unwrap_err();
+    assert_eq!(err.code(), Code::Unavailable);
+    assert_eq!(seen.writes.load(Ordering::SeqCst), 1);
+
+    // A per-call zero-retry policy wins over the operation's.
+    let mock = failing_once();
+    let seen = mock.seen.clone();
+    let c = write_client(mock).await;
+    let zero = CallOptions::new().with_retry_policy(RetryPolicy::new().with_max_retries(0));
+    c.write(WriteRequest::new(touch()).with_options(WriteOptions::new().with_call_options(zero)))
+        .await
+        .unwrap_err();
+    assert_eq!(seen.writes.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn never_idempotent_operations_reject_a_retrying_operation_policy() {
+    let channel = serve(Mock::default()).await;
+    for operation in [
+        Operation::DeleteRelationships,
+        Operation::DeleteAllRelationshipsNonAtomic,
+        Operation::ImportRelationships,
+        Operation::ExperimentalRegisterRelationshipCounter,
+        Operation::ExperimentalUnregisterRelationshipCounter,
+    ] {
+        let err = SpiceDBClient::from_channel(channel.clone())
+            .operation_retry_policy(operation, retry_policy_once())
+            .build()
+            .err()
+            .expect("rejected");
+        assert!(matches!(err, SpiceDBError::InvalidArgument(_)), "{err:?}");
+        assert!(err.to_string().contains(&operation.to_string()), "{err}");
+
+        // A zero-retry policy is allowed for any operation.
+        SpiceDBClient::from_channel(channel.clone())
+            .operation_retry_policy(operation, RetryPolicy::new().with_max_retries(0))
+            .build()
+            .unwrap();
+    }
+    // An invalid policy is rejected when the client is built.
+    let err = SpiceDBClient::from_channel(channel)
+        .operation_retry_policy(
+            Operation::Check,
+            RetryPolicy::new()
+                .with_max_retries(1)
+                .with_initial_backoff(Duration::ZERO),
+        )
+        .build()
+        .err()
+        .expect("rejected");
+    assert!(matches!(err, SpiceDBError::InvalidArgument(_)), "{err:?}");
+    // The endpoint builder validates before connecting.
+    let err = SpiceDBClient::builder("localhost:1", "t")
+        .plaintext()
+        .operation_retry_policy(Operation::DeleteRelationships, retry_policy_once())
+        .build()
+        .await
+        .err()
+        .expect("rejected");
+    assert!(matches!(err, SpiceDBError::InvalidArgument(_)), "{err:?}");
 }

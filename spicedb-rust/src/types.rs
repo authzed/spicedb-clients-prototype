@@ -637,6 +637,18 @@ impl Transaction {
         self.updates.len()
     }
 
+    /// Whether replaying the transaction is safe: it contains only touches
+    /// and no preconditions. This is the rule the client uses to decide
+    /// whether a write may be retried. An empty transaction without
+    /// preconditions is idempotent.
+    pub fn is_idempotent(&self) -> bool {
+        self.preconditions.is_empty()
+            && self
+                .updates
+                .iter()
+                .all(|(op, _)| *op == UpdateOperation::Touch)
+    }
+
     // TODO: When spicedb-proto types are available, add:
     //
     // pub(crate) fn to_proto_updates(&self) -> Vec<proto::RelationshipUpdate> { ... }

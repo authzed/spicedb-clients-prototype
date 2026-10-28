@@ -10,7 +10,7 @@ Concrete Rust for the rules in the repository-wide
 | `spicedb::{ObjectRef, SubjectRef, Relationship, Filter, Transaction}` | objects, subjects, relationships, filters, transactions (re-exported from `spicedb::types`) |
 | `spicedb::consistency` | `full()`, `min_latency()`, `at_least(token)`, `snapshot(token)`; `ZedToken` is in the crate root |
 | `spicedb::SpiceDBError`, `spicedb::error::code_of` | typed errors and `tonic::Status` interop |
-| `spicedb::{RetryPolicy, RetryMode, StreamRetryMode, DefaultDeadline, CallOptions, ResponseMetadata}` | client-wide policy and the per-call transport escape hatch |
+| `spicedb::{RetryPolicy, RetryMode, StreamRetryMode, Operation, DefaultDeadline, CallOptions, ResponseMetadata}` | client-wide and per-operation policy and the per-call transport escape hatch |
 | `spicedb::protoconv` | protocol conversions (tools that print or persist protocol-shaped data only) |
 | `spicedb::testing::InMemorySpiceDB` | in-memory test double (feature `testing`, use it from `[dev-dependencies]`) |
 | `spicedb::spicedb_proto`, `client.raw_proto()` | raw tonic escape hatch; not for building ordinary requests |
@@ -147,6 +147,9 @@ match client.write(WriteRequest::new(txn)).await {
   preconditions (and `write_schema`) may opt in per call with
   `CallOptions::new().with_retry_policy(policy)`; every other mutation rejects
   the opt-in with `InvalidArgument` before sending anything.
+  `txn.is_idempotent()` is that rule. A client-wide
+  `.operation_retry_policy(Operation::Write, policy)` retries only idempotent
+  writes and sends the rest once.
 - An empty transaction is sent like any other: SpiceDB checks its
   preconditions and returns the current revision.
 
@@ -207,6 +210,8 @@ let tool = SpiceDBClient::from_channel(channel)
     // or .retries(RetryMode::Disabled)
     .default_deadline(DefaultDeadline::Disabled)
     .stream_retries(StreamRetryMode::Disabled)
+    // Never reopen watches, with no per-call option (per-call policies still win).
+    .operation_retry_policy(Operation::Updates, RetryPolicy::new().with_max_retries(0))
     .build()?;
 let captured = ResponseMetadata::new();
 tool.read_schema(ReadSchemaRequest::new().with_options(
@@ -276,6 +281,27 @@ registered check and reflection results (`set_check_result`, default
 `NoPermission`; `set_reflect_schema_result`); `fake.relationships()` shows the
 store. Errors come through the real client, so they have its codes and
 messages, and every option is honored as sent on the wire. Build expected errors with
-`SpiceDBError::new(tonic::Code::FailedPrecondition, "...")`. For integration
+`SpiceDBError::new(tonic::Code::FailedPrecondition, "...")`.
+
+Failure paths and option assertions need no hand-written server: the double
+records every RPC and injects faults before any RPC, before each import batch,
+before an import commits and before each read or export item.
+
+```rust
+use spicedb::testing::{server_error, FaultStage};
+fake.fail_next(Operation::Check, server_error(tonic::Code::PermissionDenied, "denied"));
+fake.set_fault_hook(|f| match (f.call.operation(), f.stage, f.item) {
+    (Operation::ExportRelationships, FaultStage::Item, 3) => {
+        Some(server_error(tonic::Code::Unavailable, "stream reset"))
+    }
+    _ => None,
+});
+let reads = fake.calls_of(Operation::ReadRelationships);
+let sent = reads[0].request::<spicedb::spicedb_proto::authzed::api::v1::ReadRelationshipsRequest>();
+let request_id = reads[0].metadata().get("x-request-id");
+```
+
+Each RPC is one recorded call, so client retries and pages appear separately,
+and an injected `Unavailable` is retried by the client as SpiceDB's would be. For integration
 tests, run `authzed/spicedb serve-testing` and assert both granted and denied
 cases.

@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Builder setting `operation_retry_policy(Operation, RetryPolicy)` sets a
+  client-wide retry policy for every call of one operation (e.g. never reopen
+  `updates`), between the per-call and client-wide policies in precedence and
+  also governing stream establishment. For `Operation::Write` it retries only
+  idempotent writes and sends the rest once; never-idempotent operations
+  (deletes, delete-all, imports, counter registration and unregistration)
+  reject a retrying policy when the client is built. `Operation` names every
+  client operation. `Transaction::is_idempotent()` exposes the
+  retry-eligibility rule the client uses.
+- `testing::InMemorySpiceDB` records every RPC (`calls`, `calls_of`) with its
+  operation, per-operation index, protocol request and request metadata, and
+  injects faults (`set_fault_hook`, `clear_fault_hook`, `fail_next`) before an
+  RPC, before each import batch, before an import commits and before each read
+  or export item; `testing::server_error` and `server_error_with_reason` build
+  SpiceDB-shaped statuses.
+
 - `CallOptions::with_retry_policy(RetryPolicy)` overrides the client's retry
   policy for one call, including stream establishment (open one supervised
   watch exactly once while the client retries everything else). A touch-only

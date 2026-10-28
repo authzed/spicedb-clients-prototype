@@ -1,6 +1,6 @@
 //! Canonical request-shaped operations. Every future and stream owns its transport handle.
 use super::*;
-use crate::options::{CallOptions, RetryEvent, RetryPolicy};
+use crate::options::{CallOptions, Operation, RetryEvent, RetryPolicy};
 use futures::StreamExt;
 use std::future::Future;
 use std::sync::Arc;
@@ -15,6 +15,8 @@ pub(crate) struct Plan {
     call: CallOptions,
     retry: Option<Arc<RetryPolicy>>,
     stream_retries: bool,
+    // The client's per-operation policy, consulted by mutations.
+    operation_retry: Option<Arc<RetryPolicy>>,
 }
 
 /// [`Plan`] with its deadline started, in scope for every RPC the operation
@@ -25,6 +27,8 @@ struct Exec {
     call: CallOptions,
     retry: Option<Arc<RetryPolicy>>,
     stream_retries: bool,
+    // The client's per-operation policy, consulted by mutations.
+    operation_retry: Option<Arc<RetryPolicy>>,
 }
 
 tokio::task_local! { static EXEC: Exec; }
@@ -39,17 +43,26 @@ impl Plan {
             call: self.call.clone(),
             retry: self.retry.clone(),
             stream_retries: self.stream_retries,
+            operation_retry: self.operation_retry.clone(),
         })
     }
 }
 
 impl SpiceDBClient {
-    /// A per-call retry policy wins over the client's, and also governs stream
-    /// establishment for that call.
-    pub(crate) fn plan(&self, timeout: Option<Duration>, call: &CallOptions) -> Plan {
-        let (retry, stream_retries) = match &call.retry {
-            Some(policy) => (Some(Arc::new(policy.clone())), true),
-            None => (
+    /// The most specific retry policy wins: the per-call policy, then the
+    /// client's policy for this operation, then the client-wide policy. A
+    /// per-call or per-operation policy also governs stream establishment.
+    pub(crate) fn plan(
+        &self,
+        operation: Operation,
+        timeout: Option<Duration>,
+        call: &CallOptions,
+    ) -> Plan {
+        let operation_retry = self.operation_retry.get(&operation).cloned();
+        let (retry, stream_retries) = match (&call.retry, &operation_retry) {
+            (Some(policy), _) => (Some(Arc::new(policy.clone())), true),
+            (None, Some(policy)) => (Some(policy.clone()), true),
+            (None, None) => (
                 self.retry.clone(),
                 self.stream_retries == crate::options::StreamRetryMode::Enabled,
             ),
@@ -59,6 +72,7 @@ impl SpiceDBClient {
             call: call.clone(),
             retry,
             stream_retries,
+            operation_retry,
         }
     }
 }
@@ -202,19 +216,23 @@ where
     attempt_loop(f, false, None).await
 }
 
-/// The retry policy for a mutation: none unless the caller opted this call in
-/// with [`CallOptions::with_retry_policy`], which only mutations that are
-/// idempotent on replay may do. Checked before any request is sent.
+/// The retry policy for a mutation: none unless the caller opted in, which
+/// only mutations that are idempotent on replay may do. A per-call opt-in
+/// ([`CallOptions::with_retry_policy`]) on any other mutation is an error; a
+/// client-wide per-operation policy applies only to the calls that are
+/// idempotent (never-idempotent operations reject one at build time). Checked
+/// before any request is sent.
 pub(crate) fn mutation_policy(
     idempotent: bool,
     operation: &str,
 ) -> Result<Option<Arc<RetryPolicy>>, SpiceDBError> {
-    let policy = EXEC
-        .try_with(|e| e.call.retry.clone())
-        .ok()
-        .flatten()
-        .filter(|p| p.max_retries > 0);
-    match policy {
+    let (call, per_operation) = EXEC
+        .try_with(|e| (e.call.retry.clone(), e.operation_retry.clone()))
+        .unwrap_or((None, None));
+    let Some(call) = call else {
+        return Ok(per_operation.filter(|p| idempotent && p.max_retries > 0));
+    };
+    match Some(call).filter(|p| p.max_retries > 0) {
         None => Ok(None),
         Some(_) if !idempotent => Err(invalid(
             "retry_policy",
@@ -307,7 +325,11 @@ impl SpiceDBClient {
     pub async fn check(&self, request: PermissionCheck) -> Result<CheckResult, SpiceDBError> {
         let options = request.options.clone().unwrap_or_default();
         bounded(
-            self.plan(self.effective_timeout(options.timeout), &options.call),
+            self.plan(
+                Operation::Check,
+                self.effective_timeout(options.timeout),
+                &options.call,
+            ),
             async {
                 request.validate()?;
                 let context =
@@ -364,6 +386,7 @@ impl SpiceDBClient {
     ) -> Result<Vec<CheckResult>, SpiceDBError> {
         bounded(
             self.plan(
+                Operation::CheckBulk,
                 self.effective_timeout(request.options.timeout),
                 &request.options.call,
             ),
@@ -483,6 +506,7 @@ impl SpiceDBClient {
     pub async fn write(&self, request: WriteRequest) -> Result<WriteResult, SpiceDBError> {
         bounded(
             self.plan(
+                Operation::Write,
                 self.effective_timeout(request.options.timeout),
                 &request.options.call,
             ),
@@ -512,6 +536,7 @@ impl SpiceDBClient {
     ) -> Result<ReadSchemaResult, SpiceDBError> {
         bounded(
             self.plan(
+                Operation::ReadSchema,
                 self.effective_timeout(request.options.timeout),
                 &request.options.call,
             ),
@@ -531,6 +556,7 @@ impl SpiceDBClient {
     ) -> Result<WriteSchemaResult, SpiceDBError> {
         bounded(
             self.plan(
+                Operation::WriteSchema,
                 self.effective_timeout(request.options.timeout),
                 &request.options.call,
             ),
@@ -548,6 +574,7 @@ impl SpiceDBClient {
     ) -> Result<ReflectSchemaResult, SpiceDBError> {
         bounded(
             self.plan(
+                Operation::ReflectSchema,
                 self.effective_timeout(request.options.timeout),
                 &request.options.call,
             ),
@@ -565,6 +592,7 @@ impl SpiceDBClient {
     ) -> Result<ComputablePermissionsResult, SpiceDBError> {
         bounded(
             self.plan(
+                Operation::ComputablePermissions,
                 self.effective_timeout(request.options.timeout),
                 &request.options.call,
             ),
@@ -594,6 +622,7 @@ impl SpiceDBClient {
     ) -> Result<DependentRelationsResult, SpiceDBError> {
         bounded(
             self.plan(
+                Operation::DependentRelations,
                 self.effective_timeout(request.options.timeout),
                 &request.options.call,
             ),
@@ -622,6 +651,7 @@ impl SpiceDBClient {
     ) -> Result<DiffSchemaResult, SpiceDBError> {
         bounded(
             self.plan(
+                Operation::DiffSchema,
                 self.effective_timeout(request.options.timeout),
                 &request.options.call,
             ),
@@ -644,6 +674,7 @@ impl SpiceDBClient {
     ) -> Result<ExpandPermissionTreeResult, SpiceDBError> {
         bounded(
             self.plan(
+                Operation::ExpandPermissionTree,
                 self.effective_timeout(request.options.timeout),
                 &request.options.call,
             ),
@@ -668,6 +699,7 @@ impl SpiceDBClient {
     ) -> Result<ExperimentalRegisterRelationshipCounterResult, SpiceDBError> {
         bounded(
             self.plan(
+                Operation::ExperimentalRegisterRelationshipCounter,
                 self.effective_timeout(request.options.timeout),
                 &request.options.call,
             ),
@@ -690,6 +722,7 @@ impl SpiceDBClient {
     ) -> Result<ExperimentalCountRelationshipsResult, SpiceDBError> {
         bounded(
             self.plan(
+                Operation::ExperimentalCountRelationships,
                 self.effective_timeout(request.options.timeout),
                 &request.options.call,
             ),
@@ -708,6 +741,7 @@ impl SpiceDBClient {
     ) -> Result<ExperimentalUnregisterRelationshipCounterResult, SpiceDBError> {
         bounded(
             self.plan(
+                Operation::ExperimentalUnregisterRelationshipCounter,
                 self.effective_timeout(request.options.timeout),
                 &request.options.call,
             ),
@@ -727,6 +761,7 @@ impl SpiceDBClient {
     ) -> Result<ExperimentalRoaringLookupResourcesResult, SpiceDBError> {
         bounded(
             self.plan(
+                Operation::ExperimentalRoaringLookupResources,
                 self.effective_timeout(request.options.timeout),
                 &request.options.call,
             ),
@@ -752,6 +787,7 @@ impl SpiceDBClient {
     ) -> Result<DeleteResult, SpiceDBError> {
         bounded(
             self.plan(
+                Operation::DeleteRelationships,
                 self.effective_timeout(request.options.timeout),
                 &request.options.call,
             ),
@@ -789,6 +825,7 @@ impl SpiceDBClient {
         let mut progress: Option<DeleteResult> = None;
         let result = bounded(
             self.plan(
+                Operation::DeleteAllRelationshipsNonAtomic,
                 self.effective_timeout(request.options.timeout),
                 &request.options.call,
             ),
@@ -925,7 +962,11 @@ impl SpiceDBClient {
     ) -> impl Stream<Item = Result<ReadRelationship, SpiceDBError>> + Send + 'static {
         let permissions = self.proto.permissions.clone();
         stream_budget(
-            self.plan(request.options.timeout, &request.options.call),
+            self.plan(
+                Operation::ReadRelationships,
+                request.options.timeout,
+                &request.options.call,
+            ),
             async_stream::try_stream! {
                 request.consistency.validate()?;
                 let filter = request.filter.to_proto()?;
@@ -985,7 +1026,11 @@ impl SpiceDBClient {
     ) -> impl Stream<Item = Result<LookupResource, SpiceDBError>> + Send + 'static {
         let permissions = self.proto.permissions.clone();
         stream_budget(
-            self.plan(request.options.timeout, &request.options.call),
+            self.plan(
+                Operation::LookupResources,
+                request.options.timeout,
+                &request.options.call,
+            ),
             async_stream::try_stream! {
                 request.consistency.validate()?;
                 required("resource_type", &request.resource_type)?;
@@ -1059,7 +1104,11 @@ impl SpiceDBClient {
     ) -> impl Stream<Item = Result<LookupSubject, SpiceDBError>> + Send + 'static {
         let permissions = self.proto.permissions.clone();
         stream_budget(
-            self.plan(request.options.timeout, &request.options.call),
+            self.plan(
+                Operation::LookupSubjects,
+                request.options.timeout,
+                &request.options.call,
+            ),
             async_stream::try_stream! {
                 request.consistency.validate()?;
                 required("permission", &request.permission)?;
@@ -1148,7 +1197,11 @@ impl SpiceDBClient {
     ) -> impl Stream<Item = Result<ExportedRelationship, SpiceDBError>> + Send + 'static {
         let permissions = self.proto.permissions.clone();
         stream_budget(
-            self.plan(request.options.timeout, &request.options.call),
+            self.plan(
+                Operation::ExportRelationships,
+                request.options.timeout,
+                &request.options.call,
+            ),
             async_stream::try_stream! {
                 request.consistency.validate()?;
                 let filter = request.options.filter.map(|f| f.to_proto()).transpose()?;
@@ -1208,7 +1261,11 @@ impl SpiceDBClient {
     ) -> impl Stream<Item = Result<WatchEvent, SpiceDBError>> + Send + 'static {
         let watch = self.proto.watch.clone();
         stream_budget(
-            self.plan(request.options.timeout, &request.options.call),
+            self.plan(
+                Operation::Updates,
+                request.options.timeout,
+                &request.options.call,
+            ),
             async_stream::try_stream! {
                 if !request.object_types.is_empty() && !request.options.filters.is_empty() {
                     Err(invalid(
@@ -1290,7 +1347,7 @@ impl SpiceDBClient {
         &self,
         request: ImportRelationshipsRequest,
     ) -> Result<ImportRelationshipsResult, SpiceDBError> {
-        bounded(self.plan(request.options.timeout, &request.options.call), async {
+        bounded(self.plan(Operation::ImportRelationships, request.options.timeout, &request.options.call), async {
             mutation_policy(false, "import relationships")?;
             let failure=std::sync::Arc::new(std::sync::Mutex::new(None));let producer_failure=failure.clone();
             let failed=std::sync::Arc::new(tokio::sync::Notify::new());let producer_failed=failed.clone();
@@ -1404,6 +1461,7 @@ impl SpiceDBClient {
     ) -> Result<ExperimentalCountRelationshipsByFilterResult, SpiceDBError> {
         bounded(
             self.plan(
+                Operation::ExperimentalCountRelationshipsByFilter,
                 self.effective_timeout(request.options.timeout),
                 &request.options.call,
             ),
@@ -1438,7 +1496,11 @@ impl SpiceDBClient {
     ) -> impl Stream<Item = Result<PermissionSetEvent, SpiceDBError>> + Send + 'static {
         let service = self.proto.permission_sets.clone();
         stream_budget(
-            self.plan(request.options.timeout, &request.options.call),
+            self.plan(
+                Operation::WatchPermissionSets,
+                request.options.timeout,
+                &request.options.call,
+            ),
             async_stream::try_stream! {
                 let value=materialize_proto::WatchPermissionSetsRequest{optional_starting_after:request.options.start_revision.map(|t|t.to_proto())};
                 let mut stream=open_stream(||async{service.clone().watch_permission_sets(wire(value.clone())).await}).await?.into_inner();
@@ -1485,7 +1547,11 @@ impl SpiceDBClient {
     ) -> impl Stream<Item = Result<LookupPermissionSetsResult, SpiceDBError>> + Send + 'static {
         let service = self.proto.permission_sets.clone();
         stream_budget(
-            self.plan(request.options.timeout, &request.options.call),
+            self.plan(
+                Operation::LookupPermissionSets,
+                request.options.timeout,
+                &request.options.call,
+            ),
             async_stream::try_stream! {
                 let value = materialize_proto::LookupPermissionSetsRequest {
                     limit: request.limit.get(),
@@ -1516,6 +1582,7 @@ impl SpiceDBClient {
     ) -> Result<DownloadPermissionSetsResult, SpiceDBError> {
         bounded(
             self.plan(
+                Operation::DownloadPermissionSets,
                 self.effective_timeout(request.options.timeout),
                 &request.options.call,
             ),

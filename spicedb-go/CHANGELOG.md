@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+- The proto tier is now the canonical Go binding for `authzed.api.v1` and
+  `authzed.api.materialize.v0`. It no longer depends on authzed-go, and it
+  generates vtproto, protoc-gen-validate and grpc-gateway output plus
+  authzed-go's `HandwrittenValidate` helpers, so authzed-go can alias it via
+  `cmd/authzed-go-bridge` and both can be linked into one binary.
+- `*client.Error` implements `GRPCStatus`, so `status.Code`,
+  `status.FromError` and `status.Convert` report the matching gRPC code for
+  server errors, local cancellation and validation errors, and errors built by
+  callers. New `client.CodeOf(err)` classifies any error, including raw gRPC
+  status errors. New `client.NewError(code, message)` builds errors for test
+  doubles. New `Error.ServerMessage` holds the server's message verbatim.
+- New `client/clienttest.Store`: an in-memory double for `Write`,
+  `ReadRelationships`, `DeleteRelationships`, `Check` and `CheckBulk` with
+  SpiceDB filter, precondition and CREATE semantics.
+- `rel`: `Filter.Matches` (client-side matching with server semantics),
+  `rel.ErrFilter` (a filter that carries a deferred construction error),
+  `MustNewObject`, `MustNewSubject`, `MustNewRelationship`, `MustNewFilter`,
+  `MustFromTuple`, `Txn.Len`, short `Relationship` accessors
+  (`ResourceType`, `ResourceID`, `SubjectType`, `SubjectID`,
+  `SubjectRelation`), `String` on `ObjectRef`, `SubjectRef`, `Filter`,
+  `Update`, `Precondition`, `Txn` and both operation enums, and
+  `MarshalJSON`/`slog.LogValuer` on `Relationship`, `Update`, `Filter` and
+  `Precondition`.
+- The module no longer requires the repository root module or mage (the
+  magefile moved to `magefiles/`), and its gRPC/protobuf/gateway requirements
+  are lowered to the versions authzed-go v1.11.0 already requires.
+- Generated typed clients (spicedb-gen): permission-userset subjects
+  (`org.CanAdminSubject()`), wildcard refs (`UserWildcard()`), identity-only
+  relationship keys (`invitation.InviterKey(user)`), relation checks
+  (`org.MemberRelation()`), a typed `Txn` with `TypedClient.WriteTxn`, typed
+  `CheckBulk`, native round trips (`TypedRelationship.Relationship`,
+  `FromRelationship`, `ErrRelationship`), typed filters and relation/permission
+  name constants, validated by-name lookups, `Permission` accessors and
+  `String`, `--go.package`, and gofmt-clean output. See MIGRATION.md.
+
 - Generated `TypedClient` now directly exposes all native methods through client embedding, including bounded/non-atomic filter deletion, watch, import/export, schema, and Materialize operations. Native options and lifecycle ownership are preserved; existing schema-aware helpers and the `Client` accessor remain available.
 
 - Watch supports native relationship filters through `UpdatesRequest.Filters`, with OR semantics and local rejection of simultaneous object types. Examples use type-only relationship filters.

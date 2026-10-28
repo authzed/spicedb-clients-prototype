@@ -551,8 +551,8 @@ const file_authzed_api_v1_error_reason_proto_rawDesc = "" +
 	"#ERROR_REASON_COUNTER_NOT_REGISTERED\x10\x1b\x12%\n" +
 	"!ERROR_REASON_WILDCARD_NOT_ALLOWED\x10\x1c\x12/\n" +
 	"+ERROR_REASON_TRANSACTION_METADATA_TOO_LARGE\x10\x1d\x12'\n" +
-	"#ERROR_REASON_DATASTORE_NOT_MIGRATED\x10\x1eBJ\n" +
-	"\x12com.authzed.api.v1P\x01Z2github.com/authzed/authzed-go/proto/authzed/api/v1b\x06proto3"
+	"#ERROR_REASON_DATASTORE_NOT_MIGRATED\x10\x1eBo\n" +
+	"\x12com.authzed.api.v1P\x01ZWgithub.com/authzed/spicedb-clients/proto-clients/spicedb-go-proto/gen/authzed/api/v1;v1b\x06proto3"
 
 var (
 	file_authzed_api_v1_error_reason_proto_rawDescOnce sync.Once

@@ -1,0 +1,10 @@
+module github.com/authzed/spicedb-clients/spicedb-go/magefiles
+
+go 1.26.6
+
+require (
+	github.com/authzed/spicedb-clients v0.0.0
+	github.com/magefile/mage v1.17.2
+)
+
+replace github.com/authzed/spicedb-clients => ../..

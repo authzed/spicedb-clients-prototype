@@ -8,7 +8,29 @@ with minimal boilerplate for connection setup and authentication.
 ## Generated Files
 
 Everything under `gen/` is produced by `buf generate` and MUST NOT be manually
-modified. These files are regenerated on every `mage gen`.
+modified, with one exception listed below. These files are regenerated on
+every `mage gen`.
+
+## Canonical binding
+
+This module is the single Go binding for `authzed.api.v1` and
+`authzed.api.materialize.v0` (root DESIGN.md, "Be the single copy of the
+protocol bindings in any process"). It must never depend on authzed-go's
+generated packages, and it must generate everything authzed-go generates on
+these message types so that authzed-go can alias it:
+
+- `buf.gen.yaml` runs protoc-gen-go, grpc-go, vtprotobuf
+  (`marshal+unmarshal+size+clone+equal`), protoc-gen-validate and
+  grpc-gateway. Packages are named `v1` and `v0`; managed mode rewrites only
+  `go_package`, so embedded descriptors keep every other upstream file option.
+- `gen/authzed/api/v1/00_handwritten_validation.go` is hand-maintained (buf
+  never writes it). It carries authzed-go's `HandwrittenValidate` methods,
+  which must live in the same package as the types.
+- `cmd/authzed-go-bridge` rewrites an authzed-go checkout so its
+  `proto/authzed/api/{v1,materialize/v0}` packages become type aliases,
+  constants, variables and forwarding functions over this module. Its test
+  links a generated bridge beside the canonical packages and must not panic.
+  Run it in authzed-go whenever this module's exported surface changes.
 
 ## Additional Code (for Claude)
 

@@ -175,6 +175,18 @@ func (r SubjectRelationFilter) Name() string             { return r.name }
 type Filter struct {
 	resourceType, resourceID, resourceIDPrefix, relation, subjectType, subjectID string
 	subjectRelation                                                              SubjectRelationFilter
+	err                                                                          error
+}
+
+// ErrFilter returns a filter that carries err: Validate reports it, so any
+// read, delete or precondition using the filter fails before an RPC, and
+// Matches never matches. Builders that cannot construct a filter return one
+// instead of widening the filter's scope.
+func ErrFilter(err error) Filter {
+	if err == nil {
+		err = ErrInvalidFilter
+	}
+	return Filter{err: err}
 }
 
 func NewFilter(resourceType string) (Filter, error) {
@@ -197,6 +209,9 @@ func (f Filter) SubjectType() string                                { return f.s
 func (f Filter) SubjectID() string                                  { return f.subjectID }
 func (f Filter) SubjectRelation() SubjectRelationFilter             { return f.subjectRelation }
 func (f Filter) Validate() error {
+	if f.err != nil {
+		return f.err
+	}
 	if f.resourceType == "" || (f.resourceID != "" && f.resourceIDPrefix != "") || (f.subjectType == "" && (f.subjectID != "" || f.subjectRelation.kind != RelationAny)) {
 		return ErrInvalidFilter
 	}

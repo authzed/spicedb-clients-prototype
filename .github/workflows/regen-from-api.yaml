@@ -109,7 +109,7 @@ jobs:
           # literal string silently became a check of nothing.
           grep -q 'CI_REGENERATION' internal/clauderun/clauderun.go \
             || { echo "::error::CI_REGENERATION gate missing from internal/clauderun — the Magefile branch has not landed on this base"; exit 1; }
-          grep -q 'internal/clauderun' proto-clients/spicedb-go-proto/Magefile.go \
+          grep -q 'internal/clauderun' proto-clients/spicedb-go-proto/magefiles/Magefile.go \
             || { echo "::error::proto Magefile does not use internal/clauderun — the Magefile branch has not landed on this base"; exit 1; }
           grep -q 'bufGenTemplate' Magefile.go \
             || { echo "::error::BUFTAG pinning helper missing — the Magefile branch has not landed on this base"; exit 1; }

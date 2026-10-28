@@ -31,6 +31,21 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
   - Generate protocol bindings from the upstream schema; do not edit generated
     protocol source by hand.
 
+- **Be the single copy of the protocol bindings in any process.**
+  - Protocol runtimes admit one definition per proto file and message name: Go's
+    `protoregistry`, the Python and Ruby descriptor pools, and the JVM class path.
+    A second, independently generated copy of `authzed.api.*` panics or misbinds
+    at load time. The proto tier is the canonical binding. It must never be
+    generated as a sibling copy beside a legacy `authzed-*` library.
+  - Legacy libraries migrate by re-exporting (aliasing) the proto tier, not the
+    other way around, so they can be deprecated without a flag day. The proto tier
+    therefore generates everything legacy consumers use on those message types,
+    such as Go fast-path marshalling, validation, and gateway output, and carries
+    any legacy hand-written helpers bound to those types.
+  - Each proto tier ships the bridge generator for its legacy library and a test
+    that loads both in one process. Until a language's bridge exists, its README
+    documents the conflict instead of implying coexistence.
+
 - **Evolve public APIs deliberately.**
   - Public APIs are append-only unless a breaking change is explicitly approved.
   - Keep designs, implementations, tests, examples, generated fixtures, API
@@ -99,6 +114,20 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     are documented as mutable and snapshot data when producing immutable values.
   - Model mutually exclusive variants structurally where supported, such as
     Rust enums and TypeScript discriminated unions. Represent unknown server states explicitly.
+
+- **Make native values observable and testable without the server.**
+  - Relationships, updates, filters, preconditions and transaction builders have
+    readable string forms and structured log/serialization forms. No native value
+    logs, prints or serializes as an empty object. Transactions expose their update
+    count without copying.
+  - Relationship filters match a native relationship client-side with server
+    semantics: resource type, ID or ID prefix, relation, subject type and ID, and
+    the `Any`/`Direct`/`Named` subject relation distinction. Test doubles use this
+    rather than reimplementing filter semantics.
+  - Languages whose constructors return errors provide panicking/asserting
+    variants for compile-time constants and tests, such as Go `Must*`.
+  - Relationship accessors offer short paths for the most common fields
+    (resource ID and subject ID) in addition to the nested object accessors.
 
 ## Check debug tracing
 
@@ -217,6 +246,16 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
   - Map statuses, including `OUT_OF_RANGE` and `UNAUTHENTICATED`, to typed errors.
   - Preserve the original status or cause and structured ErrorInfo reason,
     domain, and metadata. Local validation uses the documented invalid-argument category.
+  - Keep the server's status message verbatim in its own field. The display
+    message may add operation context, but callers that forward errors must be
+    able to reproduce exactly what the server said.
+  - Native errors interoperate with the ecosystem's standard status inspection in
+    both directions. A native error reports its matching transport status code
+    through the language's status accessor, including errors for local
+    cancellation, local validation, and errors built by caller code. Code
+    classification helpers also accept raw transport status errors.
+  - Provide a public constructor for native errors from a code and message, so
+    test doubles produce errors that every predicate treats like real ones.
 
 - **Use secure transport defaults and explicit trust configuration.**
   - Secure constructors delegate to the ecosystem's default trust source.
@@ -245,8 +284,44 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     non-atomic filter deletion and watch.
   - Schema-derived context may feed permission checks, but must not become
     check-only data on persisted relationships.
+
+- **Generate every schema position a caller can name, with exact constraints.**
+  - Usersets on permissions (`org#can_admin`) get subject refs just like usersets
+    on relations. Name collisions resolve with one documented rule per language.
+  - Wildcard subjects (`user:*`) get a distinct wildcard ref. A wildcard-only
+    relation admits only that ref; `user | user:*` admits both.
+  - Relations are checkable as well as writable, through an accessor that cannot
+    collide with writer, subject-ref or permission accessors.
+  - Deletes and exact filters identify a relationship by tuple identity alone.
+    Callers never invent caveat context or expiration to delete one.
+  - Validated by-name lookups resolve runtime permission and relation names to
+    typed values, rejecting names (and subjects) the schema does not allow.
+    Generated name lists support startup verification.
+
+- **Make generated values composable with the native layer in both directions.**
+  - Typed permissions, permission refs and relationships expose their resource
+    type, ID, permission or relation and a canonical string form.
+  - Typed relationships convert to native relationships, and native relationships
+    wrap into typed ones, documented as not schema-checked. Typed values also
+    produce native exact filters, type-level filters, relation-scoped filters,
+    native permission checks, and relation-name constants.
+  - A typed transaction builder mixes touch, create, delete and preconditions in
+    one atomic write. It defers the first construction error to build/write time
+    instead of requiring a check per step, and never shadows a promoted native method.
+  - Typed bulk checks forward native options and preserve input order, per-chunk
+    revisions and per-item errors.
+  - Generated output is formatted with the language's canonical formatter, and
+    the output package or module name is configurable.
   - Generate fixtures from templates, then compile, type-check, and execute them.
     Include positive and negative type tests.
+
+- **Document the path off the legacy libraries.**
+  - Each client with an official `authzed-*` predecessor ships `MIGRATION.md`
+    with before/after snippets for every observable behavior change: request
+    shapes, defaults (deadlines, retries), error matching, transport security
+    opt-ins, constructor arguments, and accessor paths.
+  - Library modules declare the lowest dependency versions they actually need,
+    and keep build tooling out of the requirements consumers inherit.
 
 - **Verify observable behavior rather than merely successful execution.**
   - Reconcile examples against their runners by name, execute them in CI, and

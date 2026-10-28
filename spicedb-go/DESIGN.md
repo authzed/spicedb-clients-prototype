@@ -42,6 +42,15 @@
   - Plaintext credentials to remote hostnames or IPs require `WithRemotePlaintextCredentials(RemotePlaintextAllowed)`. The default is `RemotePlaintextRejected`; loopback and local sockets work without the opt-in. `WithInsecure` selects plaintext for configurable constructors.
   - Endpoint validation uses the protocol transport parser and fails closed. Unknown policy values are invalid. Arbitrary dial overrides remain caller-controlled; credentials retain transport guards.
   - `Close` is idempotent. Native errors preserve status, causes, reason, domain and metadata; `errors.Is` and `errors.As` work for status, item and progress errors.
+  - `*Error` implements `GRPCStatus`: a server error returns the server's status (details included); any other error returns a status built from `Code` and its message. `CodeOf` classifies `*Error`, raw status and context errors. `ServerMessage` holds the server's message verbatim; `Message` adds the operation. `NewError` builds errors for test doubles.
+
+- **Make native values observable and testable.**
+  - `rel` values implement `String`, and relationships, updates, filters and preconditions implement `MarshalJSON` and `slog.LogValuer` as diagnostic forms (there is no `UnmarshalJSON`). `Txn.Len` avoids copying.
+  - `Filter.Matches` applies server filter semantics client-side. `ErrFilter` carries a construction error that `Validate` reports, so typed builders fail closed instead of widening scope. `Must*` constructors exist for constants and tests.
+  - `client/clienttest.Store` is an in-memory double whose methods match `*client.Client` signatures.
+
+- **Keep the library's requirements minimal.**
+  - Magefiles live in `magefiles/` with their own `go.mod`, so consumers never inherit mage or the repository root module. gRPC, protobuf, genproto and gateway requirements stay at the lowest versions that work (currently authzed-go v1.11.0's); Dependabot version bumps are disabled for this module.
 
 - **Keep documentation and generated clients executable.**
   - Generated facades forward native consistency, tokens, options, results and cancellation. Regenerated fixtures include positive execution and negative type checks.
@@ -62,3 +71,4 @@
 - **Keep generated clients at native capability parity.**
   - Generated `TypedClient` embeds `*client.Client`, exposing every native method directly with identical request, option, result, stream, and lifecycle semantics. `Client` remains available for interoperability; no native capability is excluded.
   - Schema-aware free functions and relationship helpers keep their existing compile-time constraints and forward native options. A reflection contract detects missing or changed promoted capabilities.
+  - Typed transactions (`Txn`) defer the first error to `Build`/`WriteTxn`; `WriteTxn` never shadows native `Write`. Typed relationships round-trip with `rel.Relationship`. `RelationshipKey` identifies a tuple without caveat or expiration. Generated name collisions fail generation with a message naming both sources.

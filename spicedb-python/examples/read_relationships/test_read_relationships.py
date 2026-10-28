@@ -19,7 +19,9 @@ async def test_read_relationships(client: SpiceDBClient):
     await client.write(txn)
     filter = Filter(resource_type="document", resource_id="firstdoc", relation="viewer")
     found = []
-    async for rel in client.read_relationships(filter, consistency=full()):
+    async for item in client.read_relationships(filter, consistency=full()):
+        # Each item carries its after-result cursor and read-at revision.
+        rel = item.relationship
         print(
             f"found relationship: {rel.subject.object.object_type}:{rel.subject.object.object_id}"
         )

@@ -12,6 +12,78 @@
 
 ## Unreleased
 
+### Tooling-grade native client (adoption items N1-N17)
+
+- **Fix:** paged `lookup_resources` and `lookup_subjects` with a `limit` that
+  is not a multiple of `page_size` failed on their last page ("the cursor
+  provided does not have the same arguments as the original API call"): the
+  pager shrank the last page's limit, and SpiceDB hashes the limit into the
+  cursor. Every page now repeats the caller's consistency and page size;
+  limits are enforced client-side.
+- **Fix:** the sync `import_relationships` could report `GeneratorExit` or a
+  cancelled future instead of the server's status when the server aborted
+  the upload (e.g. ALREADY_EXISTS for a duplicate). It now always raises the
+  call's final status (`AlreadyExistsError`).
+- **BREAKING:** `read_relationships` yields `ReadRelationship` and
+  `export_relationships` yields `ExportedRelationship`, each wrapping the
+  relationship with its `after_result_cursor` (plus `read_at` for reads;
+  exports carry no revision). Before: `for rel in client.read_relationships(f,
+  consistency=full()): rel.resource`. After: `for item in ...:
+  item.relationship.resource`. `LookupResource` gains `after_result_cursor`.
+  All three accept `cursor=` to resume with the same request and page size.
+- **BREAKING:** the constructors' `max_retries: int` is replaced by
+  `retry_policy: RetryPolicy | Retries`. Before: `SpiceDBClient(...,
+  max_retries=0)`. After: `SpiceDBClient(..., retry_policy=Retries.DISABLED)`
+  or `retry_policy=RetryPolicy(max_retries=1, retryable_codes=frozenset({...}),
+  initial_backoff=0.1, max_backoff=5.0, on_retry=log)`. Any read code may be
+  retried, including RESOURCE_EXHAUSTED; mutations never are. New
+  `stream_retries=StreamRetries.DISABLED` stops stream re-establishment.
+- **BREAKING:** `Relationship.from_tuple` parses one SpiceDB tuple string,
+  including `[caveat]`, `[caveat:{json}]` and `[expiration:RFC 3339]`, and
+  `str(relationship)` formats it. Before:
+  `Relationship.from_tuple("document:a#viewer", "user:b")`. After:
+  `Relationship.from_tuple("document:a#viewer@user:b")`. New copy helpers
+  `with_resource`, `with_relation`, `with_subject`; `str()` on `ObjectRef` and
+  `SubjectRef`.
+- **BREAKING:** `Transaction` stores native values. Its private
+  `_updates`/`_preconditions` proto lists are gone; use `len(txn)` (an empty
+  transaction is falsy), `txn.updates` (`Update`) and `txn.preconditions`
+  (new `Precondition` / `PreconditionOperation`).
+- **BREAKING:** `delete_relationships(limit=...)` is optional and paired with
+  `partial: DeletePartial`. Before: `limit` was required. After: the default
+  `DeletePartial.ALLOWED` still requires a positive `limit`;
+  `partial=DeletePartial.DISALLOWED` is all-or-nothing (SpiceDB rejects a
+  delete exceeding the limit with `InvalidArgumentError`) and may omit
+  `limit` for the server default. `delete_all_relationships_non_atomic` gains
+  `on_progress` (sync or, on aio, async callable) called after each batch.
+- **BREAKING (behavior):** `SpiceDBError` now subclasses `grpc.RpcError` and
+  implements `code()`, `details()`, `trailing_metadata()` and
+  `initial_metadata()` for every error, including local validation, local
+  deadlines and errors built by caller code. Code that catches
+  `grpc.RpcError` around client calls now also catches native errors.
+  New `SpiceDBError.from_code(code, message, *, reason=...)`, `code_of(exc)`
+  (accepts raw `grpc.RpcError`, `asyncio.CancelledError`, `TimeoutError`)
+  and `error.server_message` (the server's text, verbatim).
+- `SpiceDBClient.from_channel(channel, ...)` wraps a caller-owned
+  `grpc.Channel` / `grpc.aio.Channel`; `close()` leaves it open.
+- `default_timeout=DefaultDeadline.DISABLED` removes the 30 s default.
+- Every operation accepts `call_options=CallOptions(metadata=...,
+  wait_for_ready=..., compression=..., response_metadata=ResponseMetadata())`
+  to send gRPC call options and capture response headers/trailers.
+- `check_bulk(item_errors=BulkItemErrors.RETURN)` returns per-item errors on
+  the new `CheckResult.error` (never a grant) instead of raising.
+- `import_relationships(batch_size=...)` sets relationships per message.
+- `Filter.matches(relationship)`; `str()`/`to_dict()` on relationships,
+  filters, updates, preconditions and transactions; short `Relationship`
+  accessors `resource_type`, `resource_id`, `subject_type`, `subject_id`,
+  `subject_relation`.
+- New `spicedb.protoconv` (native/proto conversions) and `spicedb.testing`
+  (`InMemoryClient`, `AsyncInMemoryClient` test doubles with the real
+  clients' signatures).
+- Watch schema changes (`WatchContent.SCHEMA`, combinable with
+  `CHECKPOINTS`; `WatchEvent.schema_updated`) are now covered by a live
+  example. New example `examples/tooling_escape_hatches/`.
+
 ### Native tokens and named modes (breaking)
 
 - Revision inputs/results now use immutable `ZedToken`. Migrate

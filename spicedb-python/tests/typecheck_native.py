@@ -2,6 +2,15 @@
 from spicedb import DeleteResult, WriteResult, Transaction, LookupPermissionshipFilter, Tracing, ZedToken, at_least, TransportSecurity, RemoteCredentials
 
 from spicedb import (
+    BulkItemErrors,
+    CallOptions,
+    DefaultDeadline,
+    DeletePartial,
+    ReadRelationship,
+    ResponseMetadata,
+    Retries,
+    RetryPolicy,
+    StreamRetries,
     ObjectRef,
     SubjectRef,
     PermissionCheck,
@@ -24,11 +33,11 @@ def sync_types(client: SpiceDBClient) -> None:
         check, consistency=full(), tracing=Tracing.ENABLED, timeout=1
     )
     results: list[CheckResult] = client.check_bulk([check], consistency=full())
-    stream: Stream[Relationship] = client.read_relationships(
+    stream: Stream[ReadRelationship] = client.read_relationships(
         Filter("document"), consistency=full()
     )
     with stream as values:
-        item: Relationship = next(values)
+        item: Relationship = next(values).relationship
         assert item == relationship
     assert result.has_permission and results
     client.check(relationship, consistency=full())  # type: ignore[arg-type]
@@ -38,11 +47,11 @@ def sync_types(client: SpiceDBClient) -> None:
 
 async def async_types(client: AioClient) -> None:
     result: CheckResult = await client.check(check, consistency=full())
-    stream: AsyncStream[Relationship] = client.read_relationships(
+    stream: AsyncStream[ReadRelationship] = client.read_relationships(
         Filter("document"), consistency=full()
     )
     async with stream as values:
-        item: Relationship = await anext(values)
+        item: Relationship = (await anext(values)).relationship
         assert item == relationship
     assert result.has_permission
 
@@ -97,3 +106,23 @@ def watch_filter_types(client: SpiceDBClient, aio: AioClient) -> None:
     aio.watch(filters=[Filter("document", resource_id_prefix="team/")])
     client.watch(filters=["document"])  # type: ignore[list-item]
     aio.watch(filters=["document"])  # type: ignore[list-item]
+
+
+def adoption_option_types(client: SpiceDBClient, aio: AioClient) -> None:
+    SpiceDBClient("localhost:50051", token="t", default_timeout=DefaultDeadline.DISABLED, retry_policy=Retries.DISABLED, stream_retries=StreamRetries.DISABLED)
+    AioClient("localhost:50051", token="t", retry_policy=RetryPolicy(max_retries=1))
+    SpiceDBClient("localhost:50051", token="t", default_timeout=None)  # type: ignore[arg-type]
+    SpiceDBClient("localhost:50051", token="t", retry_policy=0)  # type: ignore[arg-type]
+    SpiceDBClient("localhost:50051", token="t", max_retries=0)  # type: ignore[call-arg]
+    results: list[CheckResult] = client.check_bulk([check], consistency=full(), item_errors=BulkItemErrors.RETURN)
+    assert results[0].error is None
+    client.check_bulk([check], consistency=full(), item_errors=True)  # type: ignore[arg-type]
+    client.delete_relationships(Filter("document"), partial=DeletePartial.DISALLOWED)
+    client.delete_relationships(Filter("document"), partial=False)  # type: ignore[arg-type]
+    captured = ResponseMetadata()
+    client.read_schema(call_options=CallOptions(metadata=(("x", "y"),), response_metadata=captured))
+    client.read_schema(call_options={"metadata": ()})  # type: ignore[arg-type]
+    cursor: str | None = next(client.read_relationships(Filter("document"), consistency=full())).after_result_cursor
+    client.read_relationships(Filter("document"), consistency=full(), cursor=cursor)
+    client.import_relationships([relationship], batch_size=10)
+    aio.lookup_resources(resource_type="document", permission="view", subject=subject, consistency=full(), cursor="c")

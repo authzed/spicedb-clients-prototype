@@ -89,7 +89,7 @@ async def test_bulk_import_export(client: SpiceDBClient):
     assert num_loaded_from_generator == len(more_users)
     filter = Filter(resource_type="document", resource_id="archive")
     exported = [
-        rel async for rel in client.export_relationships(filter, consistency=full())
+        item.relationship async for item in client.export_relationships(filter, consistency=full())
     ]
     print(f"exported {len(exported)} relationships")
     exported_subject_ids = {rel.subject.object.object_id for rel in exported}

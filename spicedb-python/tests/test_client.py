@@ -1,6 +1,6 @@
 """Unit tests for SpiceDBClient construction — no SpiceDB instance needed."""
 from spicedb import ZedToken
-from spicedb import TransportSecurity, WatchContent
+from spicedb import TransportSecurity, WatchContent, RetryPolicy
 
 from spicedb import ObjectRef, SubjectRef, PermissionCheck, SubjectFilter
 import asyncio
@@ -716,7 +716,7 @@ class TestReadRelationshipsEstablishmentRetry:
                 Filter(resource_type="document"), consistency=full()
             )
         ]
-        assert [r.resource.object_id for r in got] == ["doc1"]
+        assert [r.relationship.resource.object_id for r in got] == ["doc1"]
         assert len(client._permissions.ReadRelationships.calls) == 2
 
     async def test_transient_error_after_yielding_is_not_retried(self, make_client):
@@ -730,7 +730,7 @@ class TestReadRelationshipsEstablishmentRetry:
                 Filter(resource_type="document"), consistency=full()
             ):
                 got.append(r)
-        assert [r.resource.object_id for r in got] == ["doc1"]
+        assert [r.relationship.resource.object_id for r in got] == ["doc1"]
         assert len(client._permissions.ReadRelationships.calls) == 1
 
 
@@ -881,7 +881,7 @@ class TestExportRelationshipsEstablishmentRetry:
             self._response("doc1", "c1")
         )
         got = [r async for r in client.export_relationships(consistency=full())]
-        assert [r.resource.object_id for r in got] == ["doc1"]
+        assert [r.relationship.resource.object_id for r in got] == ["doc1"]
         assert len(client._permissions.ExportBulkRelationships.calls) == 2
 
     async def test_transient_error_after_yielding_is_not_retried(self, make_client):
@@ -893,7 +893,7 @@ class TestExportRelationshipsEstablishmentRetry:
         with pytest.raises(UnavailableError):
             async for r in client.export_relationships(consistency=full()):
                 got.append(r)
-        assert [r.resource.object_id for r in got] == ["doc1"]
+        assert [r.relationship.resource.object_id for r in got] == ["doc1"]
         assert len(client._permissions.ExportBulkRelationships.calls) == 1
 
 
@@ -936,7 +936,7 @@ def test_reusing_a_client_across_event_loops_raises_a_clear_error():
 async def test_read_transient_error_is_retried_then_succeeds(make_client):
     from authzed.api.v1 import schema_service_pb2 as ssp
 
-    client = make_client(max_retries=2)
+    client = make_client(retry_policy=RetryPolicy(max_retries=2))
     ok = ssp.ReadSchemaResponse(schema_text="definition user {}")
     client._schema.ReadSchema = AsyncMock(side_effect=[_transient_error(), ok])
     result = await client.read_schema()
@@ -949,7 +949,7 @@ async def test_read_transient_error_is_retried_then_succeeds(make_client):
 async def test_mutation_transient_error_is_attempted_once_only(make_client):
     from spicedb import Transaction
 
-    client = make_client(max_retries=3)
+    client = make_client(retry_policy=RetryPolicy(max_retries=3))
     client._permissions.WriteRelationships = AsyncMock(side_effect=_transient_error())
     txn = Transaction()
     txn.create(Relationship.from_triple("document:a", "viewer", "user:jimmy"))
@@ -963,7 +963,7 @@ async def test_mutation_transient_error_is_attempted_once_only(make_client):
 async def test_resource_exhausted_is_never_retried(make_client):
     from spicedb.errors import ResourceExhaustedError
 
-    client = make_client(max_retries=3)
+    client = make_client(retry_policy=RetryPolicy(max_retries=3))
     client._schema.ReadSchema = AsyncMock(
         side_effect=_transient_error(grpc.StatusCode.RESOURCE_EXHAUSTED)
     )
@@ -979,9 +979,10 @@ def test_backoff_has_jitter():
     exact value. Without jitter every client in a fleet retries on the
     same schedule after a server restart (thundering herd).
 
-    `_backoff_seconds` is a staticmethod with no channel/loop dependency,
-    so this does not need `make_client`."""
-    seen = {SpiceDBClient._backoff_seconds(2) for _ in range(50)}
+    `_backoff_seconds` reads only the client's retry policy, so this does
+    not need a channel."""
+    client = SpiceDBClient("localhost:50051", token="t", transport_security=TransportSecurity.PLAINTEXT)
+    seen = {client._backoff_seconds(2) for _ in range(50)}
     assert len(seen) > 1, "backoff should vary between calls"
     assert all((0 <= v <= 0.4 for v in seen))
 

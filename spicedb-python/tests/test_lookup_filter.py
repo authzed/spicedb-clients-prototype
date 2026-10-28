@@ -73,5 +73,5 @@ async def test_filter_pagination_limit_and_cleanup(client_type, filtered):
         with results:
             ids = [r.resource_id for r in results]
     assert ids == (["2", "4"] if filtered else ["0", "1"])
-    assert requests == ([(0, 2), (2, 2), (4, 1)] if filtered else [(0, 2)])
+    assert requests == ([(0, 2), (2, 2), (4, 2)] if filtered else [(0, 2)])
     assert all(call.cancelled for call in calls)

@@ -18,7 +18,7 @@ tell a verified chain from a disabled one.
 """
 
 from __future__ import annotations
-from spicedb import TransportSecurity
+from spicedb import TransportSecurity, Retries
 from spicedb import PermissionCheck
 import pathlib
 import subprocess
@@ -211,11 +211,11 @@ def test_sync_ca_cert_completes_a_handshake_the_default_roots_reject(certs):
             token=TOKEN,
             ca_cert=certs.ca,
             default_timeout=_TIMEOUT,
-            max_retries=0,
+            retry_policy=Retries.DISABLED,
         ) as client:
             assert len(client.check_bulk([_check(_ONE_REL)], consistency=full())) == 1
         with SpiceDBClient(
-            f"localhost:{port}", token=TOKEN, default_timeout=_TIMEOUT, max_retries=0
+            f"localhost:{port}", token=TOKEN, default_timeout=_TIMEOUT, retry_policy=Retries.DISABLED
         ) as untrusting:
             with pytest.raises(SpiceDBError):
                 untrusting.check_bulk([_check(_ONE_REL)], consistency=full())
@@ -241,14 +241,14 @@ async def test_aio_ca_cert_completes_a_handshake_the_default_roots_reject(certs)
             token=TOKEN,
             ca_cert=certs.ca,
             default_timeout=_TIMEOUT,
-            max_retries=0,
+            retry_policy=Retries.DISABLED,
         ) as client:
             assert (
                 len(await client.check_bulk([_check(_ONE_REL)], consistency=full()))
                 == 1
             )
         async with SpiceDBClient(
-            f"localhost:{port}", token=TOKEN, default_timeout=_TIMEOUT, max_retries=0
+            f"localhost:{port}", token=TOKEN, default_timeout=_TIMEOUT, retry_policy=Retries.DISABLED
         ) as untrusting:
             with pytest.raises(SpiceDBError):
                 await untrusting.check_bulk([_check(_ONE_REL)], consistency=full())
@@ -275,7 +275,7 @@ def test_sync_client_cert_satisfies_a_server_requiring_mutual_tls(certs):
             client_cert=certs.client_cert,
             client_key=certs.client_key,
             default_timeout=_TIMEOUT,
-            max_retries=0,
+            retry_policy=Retries.DISABLED,
         ) as client:
             assert len(client.check_bulk([_check(_ONE_REL)], consistency=full())) == 1
         with SpiceDBClient(
@@ -283,7 +283,7 @@ def test_sync_client_cert_satisfies_a_server_requiring_mutual_tls(certs):
             token=TOKEN,
             ca_cert=certs.ca,
             default_timeout=_TIMEOUT,
-            max_retries=0,
+            retry_policy=Retries.DISABLED,
         ) as anonymous:
             with pytest.raises(SpiceDBError):
                 anonymous.check_bulk([_check(_ONE_REL)], consistency=full())
@@ -303,7 +303,7 @@ async def test_aio_client_cert_satisfies_a_server_requiring_mutual_tls(certs):
             client_cert=certs.client_cert,
             client_key=certs.client_key,
             default_timeout=_TIMEOUT,
-            max_retries=0,
+            retry_policy=Retries.DISABLED,
         ) as client:
             assert (
                 len(await client.check_bulk([_check(_ONE_REL)], consistency=full()))
@@ -314,7 +314,7 @@ async def test_aio_client_cert_satisfies_a_server_requiring_mutual_tls(certs):
             token=TOKEN,
             ca_cert=certs.ca,
             default_timeout=_TIMEOUT,
-            max_retries=0,
+            retry_policy=Retries.DISABLED,
         ) as anonymous:
             with pytest.raises(SpiceDBError):
                 await anonymous.check_bulk([_check(_ONE_REL)], consistency=full())

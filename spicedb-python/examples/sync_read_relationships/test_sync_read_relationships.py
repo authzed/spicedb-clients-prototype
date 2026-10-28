@@ -1,6 +1,6 @@
 """Example: Reading relationships from synchronous code.
 
-`read_relationships` returns a plain `Iterator[Relationship]` -- consume it
+`read_relationships` returns a plain `Iterator[ReadRelationship]` -- consume it
 with a regular `for` loop, no `async for` required. Pagination across
 multiple RPC pages happens transparently inside the iterator; the loop below
 doesn't need to know or care how many pages the server used to deliver the
@@ -36,7 +36,8 @@ def test_read_relationships_sync():
             resource_type="document", resource_id="sync-firstdoc", relation="viewer"
         )
         found = []
-        for rel in client.read_relationships(filter, consistency=full()):
+        for item in client.read_relationships(filter, consistency=full()):
+            rel = item.relationship
             print(
                 f"found relationship: {rel.subject.object.object_type}:{rel.subject.object.object_id}"
             )

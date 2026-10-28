@@ -190,8 +190,8 @@ def write_request(
     txn: Transaction,
 ) -> permission_service_pb2.WriteRelationshipsRequest:
     return permission_service_pb2.WriteRelationshipsRequest(
-        updates=txn._updates,
-        optional_preconditions=txn._preconditions,
+        updates=txn._update_protos(),
+        optional_preconditions=txn._precondition_protos(),
     )
 
 
@@ -201,7 +201,9 @@ def delete_relationships_request(
     must_not_match: list[Filter] | None,
     limit: int | None,
     cursor: core_pb2.Cursor | None = None,
+    allow_partial: bool | None = None,
 ) -> permission_service_pb2.DeleteRelationshipsRequest:
+    """``allow_partial`` defaults to "a limit was given" (bounded deletion)."""
     preconditions = [
         permission_service_pb2.Precondition(
             operation=permission_service_pb2.Precondition.OPERATION_MUST_MATCH,
@@ -219,7 +221,9 @@ def delete_relationships_request(
         relationship_filter=filter._to_proto(),
         optional_preconditions=preconditions,
         optional_limit=limit if limit is not None else 0,
-        optional_allow_partial_deletions=limit is not None,
+        optional_allow_partial_deletions=(limit is not None)
+        if allow_partial is None
+        else allow_partial,
         optional_cursor=cursor,
     )
 

@@ -16,8 +16,18 @@ from google.rpc import error_details_pb2, status_pb2
 _STATUS_DETAILS_TRAILER = "grpc-status-details-bin"
 
 
-class SpiceDBError(Exception):
+class SpiceDBError(grpc.RpcError):
     """Base exception for all SpiceDB errors.
+
+    Every SpiceDB error is also a ``grpc.RpcError`` and answers the same
+    status accessors: ``code()`` returns the matching ``grpc.StatusCode`` and
+    ``details()`` the message, for server errors, local validation
+    (``INVALID_ARGUMENT``), local deadlines (``DEADLINE_EXCEEDED``) and errors
+    built by caller code alike. So existing ``except grpc.RpcError as e:
+    e.code()`` handlers keep matching, and ``grpc_status.rpc_status.from_call``
+    reads ``trailing_metadata()``. Build one from a code with
+    :meth:`from_code`; classify any error, including a raw ``grpc.RpcError``
+    or ``asyncio.CancelledError``, with :func:`code_of`.
 
     Beyond the message, a SpiceDB error carries the server's structured
     explanation of the failure when the server sent one -- the
@@ -37,7 +47,14 @@ class SpiceDBError(Exception):
         reason_metadata: The specifics behind the reason, such as which
             precondition failed or what depth limit was hit. Empty dict when
             the server attached no `ErrorInfo`.
+        server_message: The server's status message, verbatim, for errors the
+            server (or a test double standing in for it via :meth:`from_code`)
+            produced; None for errors raised locally. Forward this when a
+            caller must reproduce exactly what SpiceDB said.
     """
+
+    grpc_code: grpc.StatusCode = grpc.StatusCode.UNKNOWN
+    """The status code every instance of this class reports by default."""
 
     def __init__(
         self,
@@ -46,6 +63,7 @@ class SpiceDBError(Exception):
         reason: str = "",
         reason_domain: str = "",
         reason_metadata: dict[str, str] | None = None,
+        server_message: str | None = None,
     ) -> None:
         super().__init__(message)
         self.status: Any = None
@@ -54,42 +72,135 @@ class SpiceDBError(Exception):
         self.reason = reason
         self.reason_domain = reason_domain
         self.reason_metadata: dict[str, str] = dict(reason_metadata or {})
+        self.server_message = server_message
+        self._code: grpc.StatusCode = type(self).grpc_code
+
+    @classmethod
+    def from_code(
+        cls,
+        code: grpc.StatusCode,
+        message: str,
+        *,
+        reason: str = "",
+        reason_domain: str = "",
+        reason_metadata: dict[str, str] | None = None,
+    ) -> SpiceDBError:
+        """Build the typed error a server would produce for ``code``.
+
+        Returns the matching subclass (``NotFoundError`` for ``NOT_FOUND``,
+        and so on) or a base ``SpiceDBError`` carrying ``code`` for codes
+        without a dedicated class. ``server_message`` is ``message``, as for a
+        server error, so test doubles produce errors every predicate treats
+        like real ones.
+        """
+        if not isinstance(code, grpc.StatusCode):
+            raise InvalidArgumentError(f"code: expected grpc.StatusCode, got {code!r}")
+        error_type = _CODE_TO_ERROR.get(code, SpiceDBError)
+        result = error_type(
+            message,
+            reason=reason,
+            reason_domain=reason_domain,
+            reason_metadata=reason_metadata,
+            server_message=message,
+        )
+        result._code = code
+        return result
+
+    def code(self) -> grpc.StatusCode:
+        """The ``grpc.StatusCode`` this error corresponds to (as ``grpc.RpcError.code()``)."""
+        return self._code
+
+    def details(self) -> str:
+        """The error message (as ``grpc.RpcError.details()``)."""
+        return str(self.args[0]) if self.args and self.args[0] is not None else ""
+
+    def trailing_metadata(self) -> tuple[tuple[str, Any], ...]:
+        """Trailers for ``grpc_status.rpc_status.from_call`` compatibility.
+
+        A server error returns the server's own trailers. Any other error
+        returns a ``grpc-status-details-bin`` entry built from its code,
+        message and reason, so rich-status helpers read caller-built and local
+        errors the same way as server ones.
+        """
+        original = getattr(self.status, "trailing_metadata", None)
+        if callable(original):
+            try:
+                return tuple(original() or ())
+            except Exception:  # noqa: BLE001 -- a broken trailer is not fatal
+                return ()
+        status = status_pb2.Status(code=self._code.value[0], message=self.details())
+        if self.reason:
+            info = error_details_pb2.ErrorInfo(
+                reason=self.reason,
+                domain=self.reason_domain,
+                metadata=self.reason_metadata,
+            )
+            status.details.add().Pack(info)
+        return ((_STATUS_DETAILS_TRAILER, status.SerializeToString()),)
+
+    def initial_metadata(self) -> tuple[tuple[str, Any], ...]:
+        """Response headers of the failed call, when the server sent any."""
+        original = getattr(self.status, "initial_metadata", None)
+        if callable(original):
+            try:
+                return tuple(original() or ())
+            except Exception:  # noqa: BLE001
+                return ()
+        return ()
 
 
 class PermissionDeniedError(SpiceDBError):
     """The caller does not have permission to execute the operation."""
 
+    grpc_code = grpc.StatusCode.PERMISSION_DENIED
+
 
 class NotFoundError(SpiceDBError):
     """The requested resource was not found."""
+
+    grpc_code = grpc.StatusCode.NOT_FOUND
 
 
 class AlreadyExistsError(SpiceDBError):
     """The resource already exists."""
 
+    grpc_code = grpc.StatusCode.ALREADY_EXISTS
+
 
 class InvalidArgumentError(SpiceDBError):
     """The request contained an invalid argument."""
+
+    grpc_code = grpc.StatusCode.INVALID_ARGUMENT
 
 
 class FailedPreconditionError(SpiceDBError):
     """A precondition for the operation was not met."""
 
+    grpc_code = grpc.StatusCode.FAILED_PRECONDITION
+
 
 class UnavailableError(SpiceDBError):
     """The service is currently unavailable."""
+
+    grpc_code = grpc.StatusCode.UNAVAILABLE
 
 
 class CancelledError(SpiceDBError):
     """The operation was cancelled."""
 
+    grpc_code = grpc.StatusCode.CANCELLED
+
 
 class DeadlineExceededError(SpiceDBError):
     """The operation deadline was exceeded before it could complete."""
 
+    grpc_code = grpc.StatusCode.DEADLINE_EXCEEDED
+
 
 class ResourceExhaustedError(SpiceDBError):
     """A resource quota or limit was exhausted, such as a rate limit."""
+
+    grpc_code = grpc.StatusCode.RESOURCE_EXHAUSTED
 
 
 class UnauthenticatedError(SpiceDBError):
@@ -102,6 +213,8 @@ class UnauthenticatedError(SpiceDBError):
     fault: refresh credentials on this one, page someone on that one.
     """
 
+    grpc_code = grpc.StatusCode.UNAUTHENTICATED
+
 
 class OutOfRangeError(SpiceDBError):
     """A ZedToken names a revision that is no longer available.
@@ -110,6 +223,8 @@ class OutOfRangeError(SpiceDBError):
     expired or been garbage-collected. Recovery is mechanical: discard the
     stale token and re-read at full consistency.
     """
+
+    grpc_code = grpc.StatusCode.OUT_OF_RANGE
 
 
 class EventLoopBindingError(SpiceDBError):
@@ -120,6 +235,8 @@ class EventLoopBindingError(SpiceDBError):
     `asyncio.run()` once per request against a client built at startup -- cannot
     work. Use `spicedb.sync.SpiceDBClient` from synchronous code instead.
     """
+
+    grpc_code = grpc.StatusCode.FAILED_PRECONDITION
 
 
 _CODE_TO_ERROR: dict[grpc.StatusCode, type[SpiceDBError]] = {
@@ -218,9 +335,13 @@ def to_spicedb_error(err: grpc.RpcError) -> SpiceDBError:
     exception as `reason`/`reason_domain`/`reason_metadata`; the original error
     stays reachable as `__cause__` because every call site raises `from`.
     """
+    if isinstance(err, SpiceDBError):
+        return err
     code = err.code()
     cls = _CODE_TO_ERROR.get(code, SpiceDBError)
-    result = cls(err.details(), **_reason_kwargs(_rich_status(err)))
+    details = err.details()
+    result = cls(details, server_message=details, **_reason_kwargs(_rich_status(err)))
+    result._code = code
     result.status = err
     return result
 
@@ -231,9 +352,38 @@ def error_from_status_proto(status: status_pb2.Status) -> SpiceDBError:
     reason instead of fabricating a generic error."""
     code = _INT_TO_STATUS_CODE.get(status.code)
     cls = _CODE_TO_ERROR.get(code, SpiceDBError) if code is not None else SpiceDBError
-    result = cls(status.message, **_reason_kwargs(status))
+    result = cls(status.message, server_message=status.message, **_reason_kwargs(status))
+    result._code = code if code is not None else grpc.StatusCode.UNKNOWN
     result.status = status
     return result
+
+
+def code_of(error: BaseException | None) -> grpc.StatusCode:
+    """Classify any error by ``grpc.StatusCode``.
+
+    Accepts native SpiceDB errors, raw ``grpc.RpcError`` (sync or aio),
+    ``asyncio.CancelledError`` (``CANCELLED``) and ``TimeoutError``
+    (``DEADLINE_EXCEEDED``). ``None`` is ``OK``; anything else is ``UNKNOWN``.
+    """
+    import asyncio
+
+    if error is None:
+        return grpc.StatusCode.OK
+    if isinstance(error, grpc.RpcError):
+        code = getattr(error, "code", None)
+        if callable(code):
+            try:
+                value = code()
+            except Exception:  # noqa: BLE001
+                return grpc.StatusCode.UNKNOWN
+            if isinstance(value, grpc.StatusCode):
+                return value
+        return grpc.StatusCode.UNKNOWN
+    if isinstance(error, asyncio.CancelledError):
+        return grpc.StatusCode.CANCELLED
+    if isinstance(error, TimeoutError):
+        return grpc.StatusCode.DEADLINE_EXCEEDED
+    return grpc.StatusCode.UNKNOWN
 
 
 def is_transient(err: Exception) -> bool:
@@ -246,4 +396,4 @@ def is_transient(err: Exception) -> bool:
     """
     if isinstance(err, grpc.RpcError):
         return err.code() in _TRANSIENT_CODES
-    return isinstance(err, UnavailableError)
+    return False

@@ -1,7 +1,7 @@
 """Positive static contracts for direct native capabilities on typed clients."""
 from collections.abc import AsyncIterable, Iterable
 from spicedb import (
-    Filter, DeleteResult, WatchEvent, Relationship, PermissionCheck, CheckResult,
+    Filter, DeleteResult, WatchEvent, Relationship, ExportedRelationship, PermissionCheck, CheckResult,
     WriteResult, Transaction, CountResult, SchemaResult, PermissionSetLookup,
     PermissionSetCursor, ZedToken, full, WatchContent, LookupDebug, Wildcards,
 )
@@ -9,7 +9,7 @@ from spicedb.sync import Stream
 from spicedb.aio import AsyncStream
 from testdata.sync import TypedClient
 from testdata.aio import TypedClient as AioTypedClient
-from testdata.permissions import Document, DocumentView, User
+from testdata.permissions import Document, DOCUMENT_VIEW, User
 
 
 def native_capabilities(client: TypedClient, producer: Iterable[Relationship], cursor: PermissionSetCursor) -> None:
@@ -21,10 +21,10 @@ def native_capabilities(client: TypedClient, producer: Iterable[Relationship], c
     written: WriteResult = client.write(Transaction(), metadata={"typed": True})
     schema: SchemaResult = client.read_schema()
     imported: int = client.import_relationships(producer)
-    exported: Stream[Relationship] = client.export_relationships(filter, consistency=full())
+    exported: Stream[ExportedRelationship] = client.export_relationships(filter, consistency=full())
     counted: CountResult = client.experimental_count_relationships_by_filter(filter)
     sets: Stream[PermissionSetLookup] = client.lookup_permission_sets(cursor=cursor, at_revision=ZedToken("revision"))
-    client.lookup_resources(full(), DocumentView, User("alice"), limit=2, page_size=1, debug=LookupDebug.ENABLED)
+    client.lookup_resources(full(), DOCUMENT_VIEW, User("alice"), limit=2, page_size=1, debug=LookupDebug.ENABLED)
     client.lookup_subjects(full(), Document("one").view, User, limit=2, wildcards=Wildcards.EXCLUDE)
     assert bounded and all_deleted and watched and checked and written and schema and imported and exported and counted and sets
 
@@ -37,7 +37,7 @@ async def async_native_capabilities(client: AioTypedClient, producer: AsyncItera
     checked: list[CheckResult] = await client.check_bulk(checks, consistency=full())
     written: WriteResult = await client.write(Transaction())
     imported: int = await client.import_relationships(producer)
-    exported: AsyncStream[Relationship] = client.export_relationships(filter, consistency=full())
+    exported: AsyncStream[ExportedRelationship] = client.export_relationships(filter, consistency=full())
     counted: CountResult = await client.experimental_count_relationships_by_filter(filter)
     sets: AsyncStream[PermissionSetLookup] = client.lookup_permission_sets()
     assert bounded and all_deleted and watched and checked and written and imported and exported and counted and sets

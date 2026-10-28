@@ -173,6 +173,101 @@ pub enum StreamRetryMode {
     Disabled,
 }
 
+/// One client operation, named after its [`SpiceDBClient`](crate::SpiceDBClient)
+/// method. Selects the operation a client-wide per-operation retry policy
+/// applies to
+/// ([`operation_retry_policy`](crate::SpiceDBClientBuilder::operation_retry_policy)),
+/// and names recorded calls in the `testing` double.
+///
+/// `Display` prints the method name (`delete_relationships`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[non_exhaustive]
+pub enum Operation {
+    Check,
+    CheckBulk,
+    Write,
+    ReadRelationships,
+    DeleteRelationships,
+    DeleteAllRelationshipsNonAtomic,
+    LookupResources,
+    LookupSubjects,
+    ExpandPermissionTree,
+    ImportRelationships,
+    ExportRelationships,
+    /// Watch ([`updates`](crate::SpiceDBClient::updates)).
+    Updates,
+    ReadSchema,
+    WriteSchema,
+    ReflectSchema,
+    ComputablePermissions,
+    DependentRelations,
+    DiffSchema,
+    ExperimentalRegisterRelationshipCounter,
+    ExperimentalCountRelationships,
+    ExperimentalUnregisterRelationshipCounter,
+    ExperimentalCountRelationshipsByFilter,
+    ExperimentalRoaringLookupResources,
+    WatchPermissionSets,
+    LookupPermissionSets,
+    DownloadPermissionSets,
+}
+
+impl Operation {
+    /// Whether the operation is a mutation that is never idempotent on
+    /// replay, so no retry policy may retry it.
+    pub(crate) fn never_replayable(self) -> bool {
+        matches!(
+            self,
+            Operation::DeleteRelationships
+                | Operation::DeleteAllRelationshipsNonAtomic
+                | Operation::ImportRelationships
+                | Operation::ExperimentalRegisterRelationshipCounter
+                | Operation::ExperimentalUnregisterRelationshipCounter
+        )
+    }
+}
+
+impl fmt::Display for Operation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Operation::Check => "check",
+            Operation::CheckBulk => "check_bulk",
+            Operation::Write => "write",
+            Operation::ReadRelationships => "read_relationships",
+            Operation::DeleteRelationships => "delete_relationships",
+            Operation::DeleteAllRelationshipsNonAtomic => "delete_all_relationships_non_atomic",
+            Operation::LookupResources => "lookup_resources",
+            Operation::LookupSubjects => "lookup_subjects",
+            Operation::ExpandPermissionTree => "expand_permission_tree",
+            Operation::ImportRelationships => "import_relationships",
+            Operation::ExportRelationships => "export_relationships",
+            Operation::Updates => "updates",
+            Operation::ReadSchema => "read_schema",
+            Operation::WriteSchema => "write_schema",
+            Operation::ReflectSchema => "reflect_schema",
+            Operation::ComputablePermissions => "computable_permissions",
+            Operation::DependentRelations => "dependent_relations",
+            Operation::DiffSchema => "diff_schema",
+            Operation::ExperimentalRegisterRelationshipCounter => {
+                "experimental_register_relationship_counter"
+            }
+            Operation::ExperimentalCountRelationships => "experimental_count_relationships",
+            Operation::ExperimentalUnregisterRelationshipCounter => {
+                "experimental_unregister_relationship_counter"
+            }
+            Operation::ExperimentalCountRelationshipsByFilter => {
+                "experimental_count_relationships_by_filter"
+            }
+            Operation::ExperimentalRoaringLookupResources => {
+                "experimental_roaring_lookup_resources"
+            }
+            Operation::WatchPermissionSets => "watch_permission_sets",
+            Operation::LookupPermissionSets => "lookup_permission_sets",
+            Operation::DownloadPermissionSets => "download_permission_sets",
+        })
+    }
+}
+
 /// Whether unary operations get the client's default deadline when no
 /// per-call timeout is set.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

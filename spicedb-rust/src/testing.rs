@@ -29,6 +29,18 @@
 //! every successful response, so [`ResponseMetadata`](crate::ResponseMetadata)
 //! captures them.
 //!
+//! Every RPC the double receives is recorded ([`InMemorySpiceDB::calls`]) with
+//! its operation, per-operation index, protocol request and request metadata:
+//! options are recorded as the client sent them (cursors, limits, page sizes,
+//! filters, consistency in the request; [`CallOptions`](crate::CallOptions)
+//! metadata and the remaining deadline as `grpc-timeout` in the metadata).
+//! Because the client's retries and pages are separate RPCs, they are recorded
+//! separately. Faults can be injected ([`InMemorySpiceDB::set_fault_hook`],
+//! [`InMemorySpiceDB::fail_next`]) before any RPC, before each import batch,
+//! before an import commits and before each read or export item; the client
+//! maps an injected [`server_error`] exactly as it maps SpiceDB's, so failure
+//! paths need no hand-written gRPC server.
+//!
 //! ```
 //! # #[tokio::main(flavor = "current_thread")]
 //! # async fn main() -> Result<(), spicedb::SpiceDBError> {
@@ -52,7 +64,9 @@
 // tonic services return `Status` errors by design.
 #![allow(clippy::result_large_err)]
 
+use std::any::Any;
 use std::collections::HashMap;
+use std::fmt::Debug;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
@@ -68,6 +82,7 @@ use tonic::{Code, Request, Response, Status};
 use tonic_types::{ErrorDetails, StatusExt};
 
 use crate::error::SpiceDBError;
+use crate::options::Operation;
 use crate::protoconv;
 use crate::types::*;
 use crate::SpiceDBClient;
@@ -82,6 +97,102 @@ struct State {
     schema: Option<String>,
     reflection: Option<ReflectSchemaResult>,
     headers: MetadataMap,
+    calls: Vec<Call>,
+    counts: HashMap<Operation, usize>,
+    hook: Option<FaultHook>,
+}
+
+type FaultHook = Arc<dyn Fn(&Fault) -> Option<Status> + Send + Sync>;
+
+/// A recorded protocol request, downcast with [`Call::request`].
+trait Recorded: Any + Debug + Send + Sync {
+    fn as_any(&self) -> &dyn Any;
+}
+impl<T: Any + Debug + Send + Sync> Recorded for T {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+/// One RPC the double received.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct Call {
+    operation: Operation,
+    index: usize,
+    request: Arc<dyn Recorded>,
+    metadata: MetadataMap,
+}
+
+impl Call {
+    /// The client operation that sends this RPC. Pages of
+    /// `delete_all_relationships_non_atomic` are
+    /// [`Operation::DeleteRelationships`] RPCs.
+    pub fn operation(&self) -> Operation {
+        self.operation
+    }
+    /// Counts RPCs of this operation, starting at 0.
+    pub fn index(&self) -> usize {
+        self.index
+    }
+    /// The protocol request, if it is a `T`, for example
+    /// `call.request::<spicedb::spicedb_proto::authzed::api::v1::ReadRelationshipsRequest>()`.
+    /// An import's request is an `ImportBulkRelationshipsRequest` without
+    /// relationships (they arrive in batches; see [`FaultStage::ImportBatch`]
+    /// and [`InMemorySpiceDB::relationships`]).
+    pub fn request<T: Any>(&self) -> Option<&T> {
+        (*self.request).as_any().downcast_ref()
+    }
+    /// The request metadata, including [`CallOptions`](crate::CallOptions)
+    /// request metadata and `grpc-timeout`.
+    pub fn metadata(&self) -> &MetadataMap {
+        &self.metadata
+    }
+}
+
+/// Where in an RPC a fault hook runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum FaultStage {
+    /// Before the RPC does anything, including before a stream sends its
+    /// first item. The client sees the error as SpiceDB's: reads and stream
+    /// establishment retry `Unavailable` under the client's policy.
+    Call,
+    /// Before import batch [`Fault::item`] (0-based) is applied. A batch is
+    /// one message, so it has the call's batch size
+    /// ([`ImportRelationshipsOptions::with_batch_size`](crate::ImportRelationshipsOptions::with_batch_size),
+    /// default 1,000).
+    ImportBatch,
+    /// After every batch was received, before the import commits.
+    ImportCommit,
+    /// Before a read or export sends item [`Fault::item`] (0-based). The
+    /// stream ends with the error; the client never restarts a stream that
+    /// exposed data.
+    Item,
+}
+
+/// The point at which a fault hook is consulted.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct Fault {
+    pub call: Call,
+    pub stage: FaultStage,
+    /// The batch index for [`FaultStage::ImportBatch`], the item index for
+    /// [`FaultStage::Item`], 0 otherwise.
+    pub item: usize,
+}
+
+/// A status shaped like SpiceDB's, for fault hooks. The client maps it as it
+/// maps a real server failure: the matching [`SpiceDBError`] variant, with
+/// `message` as [`SpiceDBError::server_message`].
+pub fn server_error(code: Code, message: impl Into<String>) -> Status {
+    Status::new(code, message)
+}
+
+/// [`server_error`] with SpiceDB's `ErrorInfo` reason (domain `authzed.com`),
+/// for code that branches on [`SpiceDBError::reason`].
+pub fn server_error_with_reason(code: Code, message: impl Into<String>, reason: &str) -> Status {
+    reasoned(code, message.into(), reason)
 }
 
 impl State {
@@ -172,6 +283,140 @@ impl InMemorySpiceDB {
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Installs `hook`, which runs at every [`Fault`] point (without the
+    /// store's lock held). A returned status fails the RPC at that point, and
+    /// a failed write or import applies nothing. Build statuses with
+    /// [`server_error`]. Replaces any previous hook.
+    ///
+    /// ```
+    /// # #[tokio::main(flavor = "current_thread")]
+    /// # async fn main() {
+    /// use spicedb::testing::{server_error, FaultStage, InMemorySpiceDB};
+    /// use spicedb::{ImportRelationshipsOptions, ImportRelationshipsRequest, Operation, Relationship};
+    /// let fake = InMemorySpiceDB::new();
+    /// fake.set_fault_hook(|fault| match (fault.call.operation(), fault.stage, fault.item) {
+    ///     (Operation::ImportRelationships, FaultStage::ImportBatch, 1) => {
+    ///         Some(server_error(tonic::Code::AlreadyExists, "duplicate relationship"))
+    ///     }
+    ///     _ => None,
+    /// });
+    /// let rels: Vec<Relationship> = (0..4)
+    ///     .map(|i| format!("doc:d{i}#viewer@user:x").parse().unwrap())
+    ///     .collect();
+    /// let request = ImportRelationshipsRequest::new(futures::stream::iter(rels.into_iter().map(Ok)))
+    ///     .with_options(ImportRelationshipsOptions::new().with_batch_size(std::num::NonZeroU32::new(2).unwrap()));
+    /// let err = fake.client().unwrap().import_relationships(request).await.unwrap_err();
+    /// assert_eq!(err.code(), tonic::Code::AlreadyExists);
+    /// assert!(fake.relationships().is_empty());
+    /// # }
+    /// ```
+    pub fn set_fault_hook(&self, hook: impl Fn(&Fault) -> Option<Status> + Send + Sync + 'static) {
+        self.lock().hook = Some(Arc::new(hook));
+    }
+
+    /// Removes the fault hook.
+    pub fn clear_fault_hook(&self) {
+        self.lock().hook = None;
+    }
+
+    /// Fails the next RPC of `operation` with `status` before it does
+    /// anything; later RPCs succeed. Replaces any fault hook. With a
+    /// retryable code (`Unavailable`), a read or stream establishment is
+    /// retried by the client under its policy and then succeeds.
+    pub fn fail_next(&self, operation: Operation, status: Status) {
+        let pending = Mutex::new(Some(status));
+        self.set_fault_hook(move |fault| {
+            if fault.stage == FaultStage::Call && fault.call.operation == operation {
+                return pending.lock().unwrap_or_else(|e| e.into_inner()).take();
+            }
+            None
+        });
+    }
+
+    /// Every recorded RPC, in order.
+    pub fn calls(&self) -> Vec<Call> {
+        self.lock().calls.clone()
+    }
+
+    /// The recorded RPCs of one operation, in order.
+    pub fn calls_of(&self, operation: Operation) -> Vec<Call> {
+        self.lock()
+            .calls
+            .iter()
+            .filter(|c| c.operation == operation)
+            .cloned()
+            .collect()
+    }
+
+    /// Records an RPC and runs the [`FaultStage::Call`] hook.
+    fn begin<T: Any + Debug + Send + Sync + Clone>(
+        &self,
+        operation: Operation,
+        request: &Request<T>,
+    ) -> Result<Call, Status> {
+        self.begin_with(operation, request.metadata(), request.get_ref().clone())
+    }
+
+    fn begin_with(
+        &self,
+        operation: Operation,
+        metadata: &MetadataMap,
+        request: impl Recorded,
+    ) -> Result<Call, Status> {
+        let call = {
+            let mut state = self.lock();
+            let count = state.counts.entry(operation).or_default();
+            let call = Call {
+                operation,
+                index: *count,
+                request: Arc::new(request),
+                metadata: metadata.clone(),
+            };
+            *count += 1;
+            state.calls.push(call.clone());
+            call
+        };
+        self.fault(&call, FaultStage::Call, 0)?;
+        Ok(call)
+    }
+
+    /// Runs the hook, if any, at one point of a call.
+    fn fault(&self, call: &Call, stage: FaultStage, item: usize) -> Result<(), Status> {
+        let hook = self.lock().hook.clone();
+        let injected = hook.and_then(|hook| {
+            hook(&Fault {
+                call: call.clone(),
+                stage,
+                item,
+            })
+        });
+        match injected {
+            Some(status) => Err(status),
+            None => Ok(()),
+        }
+    }
+
+    /// A stream of `items` that consults the [`FaultStage::Item`] hook before
+    /// each one and ends with the first injected error.
+    fn faulted_items<T: Send + 'static>(&self, call: Call, items: Vec<T>) -> BoxStream<T> {
+        let fake = self.clone();
+        let mut failed = false;
+        Box::pin(futures::stream::iter(
+            items.into_iter().enumerate().map_while(move |(i, item)| {
+                if failed {
+                    return None;
+                }
+                match fake.fault(&call, FaultStage::Item, i) {
+                    Ok(()) => Some(Ok(item)),
+                    Err(status) => {
+                        failed = true;
+                        Some(Err(status))
+                    }
+                }
+            }),
+        ))
     }
 
     /// The stored relationships, in insertion order.
@@ -275,6 +520,7 @@ impl PermissionsService for Service {
         &self,
         request: Request<proto::ReadRelationshipsRequest>,
     ) -> Result<Response<Self::ReadRelationshipsStream>, Status> {
+        let call = self.0.begin(Operation::ReadRelationships, &request)?;
         let request = request.into_inner();
         let filter = protoconv::filter_from_proto(required(
             request.relationship_filter.as_ref(),
@@ -295,23 +541,26 @@ impl PermissionsService for Service {
             .filter(|(_, r)| filter.matches(r))
             .filter(|(i, _)| *i >= start)
             .take(limit)
-            .map(|(i, r)| {
-                Ok(proto::ReadRelationshipsResponse {
-                    read_at: Some(read_at.clone()),
-                    relationship: Some(r.to_proto()),
-                    after_result_cursor: Some(proto::Cursor {
-                        token: (i + 1).to_string(),
-                    }),
-                })
+            .map(|(i, r)| proto::ReadRelationshipsResponse {
+                read_at: Some(read_at.clone()),
+                relationship: Some(r.to_proto()),
+                after_result_cursor: Some(proto::Cursor {
+                    token: (i + 1).to_string(),
+                }),
             })
             .collect();
-        Ok(state.respond(Box::pin(futures::stream::iter(items))))
+        let headers = state.headers.clone();
+        drop(state);
+        let mut response = Response::new(self.0.faulted_items(call, items));
+        *response.metadata_mut() = headers;
+        Ok(response)
     }
 
     async fn write_relationships(
         &self,
         request: Request<proto::WriteRelationshipsRequest>,
     ) -> Result<Response<proto::WriteRelationshipsResponse>, Status> {
+        self.0.begin(Operation::Write, &request)?;
         let request = request.into_inner();
         let mut state = self.0.lock();
         state.check_preconditions(&request.optional_preconditions)?;
@@ -361,6 +610,7 @@ impl PermissionsService for Service {
         &self,
         request: Request<proto::DeleteRelationshipsRequest>,
     ) -> Result<Response<proto::DeleteRelationshipsResponse>, Status> {
+        self.0.begin(Operation::DeleteRelationships, &request)?;
         let request = request.into_inner();
         let filter = protoconv::filter_from_proto(required(
             request.relationship_filter.as_ref(),
@@ -414,6 +664,7 @@ impl PermissionsService for Service {
         &self,
         request: Request<proto::CheckPermissionRequest>,
     ) -> Result<Response<proto::CheckPermissionResponse>, Status> {
+        self.0.begin(Operation::Check, &request)?;
         let request = request.into_inner();
         let state = self.0.lock();
         let permissionship = lookup_check(
@@ -433,6 +684,7 @@ impl PermissionsService for Service {
         &self,
         request: Request<proto::CheckBulkPermissionsRequest>,
     ) -> Result<Response<proto::CheckBulkPermissionsResponse>, Status> {
+        self.0.begin(Operation::CheckBulk, &request)?;
         let request = request.into_inner();
         let state = self.0.lock();
         let mut pairs = Vec::with_capacity(request.items.len());
@@ -466,39 +718,51 @@ impl PermissionsService for Service {
 
     async fn expand_permission_tree(
         &self,
-        _: Request<proto::ExpandPermissionTreeRequest>,
+        request: Request<proto::ExpandPermissionTreeRequest>,
     ) -> Result<Response<proto::ExpandPermissionTreeResponse>, Status> {
+        self.0.begin(Operation::ExpandPermissionTree, &request)?;
         unimplemented("ExpandPermissionTree")
     }
 
     async fn lookup_resources(
         &self,
-        _: Request<proto::LookupResourcesRequest>,
+        request: Request<proto::LookupResourcesRequest>,
     ) -> Result<Response<Self::LookupResourcesStream>, Status> {
+        self.0.begin(Operation::LookupResources, &request)?;
         unimplemented("LookupResources")
     }
 
     async fn lookup_subjects(
         &self,
-        _: Request<proto::LookupSubjectsRequest>,
+        request: Request<proto::LookupSubjectsRequest>,
     ) -> Result<Response<Self::LookupSubjectsStream>, Status> {
+        self.0.begin(Operation::LookupSubjects, &request)?;
         unimplemented("LookupSubjects")
     }
 
     /// One transaction, as SpiceDB does: a relationship that already exists
     /// (or repeats within the import) fails it with `ALREADY_EXISTS` and
-    /// nothing is added.
+    /// nothing is added. Each message is one batch for fault injection.
     async fn import_bulk_relationships(
         &self,
         request: Request<tonic::Streaming<proto::ImportBulkRelationshipsRequest>>,
     ) -> Result<Response<proto::ImportBulkRelationshipsResponse>, Status> {
+        let call = self.0.begin_with(
+            Operation::ImportRelationships,
+            request.metadata(),
+            proto::ImportBulkRelationshipsRequest::default(),
+        )?;
         let mut stream = request.into_inner();
         let mut batch = Vec::new();
+        let mut index = 0;
         while let Some(message) = stream.message().await? {
+            self.0.fault(&call, FaultStage::ImportBatch, index)?;
+            index += 1;
             for r in &message.relationships {
                 batch.push(protoconv::relationship_from_proto(r).map_err(Status::from)?);
             }
         }
+        self.0.fault(&call, FaultStage::ImportCommit, 0)?;
         let mut state = self.0.lock();
         let mut staged = State {
             relationships: state.relationships.clone(),
@@ -525,6 +789,7 @@ impl PermissionsService for Service {
         &self,
         request: Request<proto::ExportBulkRelationshipsRequest>,
     ) -> Result<Response<Self::ExportBulkRelationshipsStream>, Status> {
+        let call = self.0.begin(Operation::ExportRelationships, &request)?;
         let request = request.into_inner();
         let filter = request
             .optional_relationship_filter
@@ -546,16 +811,18 @@ impl PermissionsService for Service {
             .filter(|(_, r)| filter.as_ref().is_none_or(|f| f.matches(r)))
             .filter(|(i, _)| *i >= start)
             .take(limit)
-            .map(|(i, r)| {
-                Ok(proto::ExportBulkRelationshipsResponse {
-                    after_result_cursor: Some(proto::Cursor {
-                        token: (i + 1).to_string(),
-                    }),
-                    relationships: vec![r.to_proto()],
-                })
+            .map(|(i, r)| proto::ExportBulkRelationshipsResponse {
+                after_result_cursor: Some(proto::Cursor {
+                    token: (i + 1).to_string(),
+                }),
+                relationships: vec![r.to_proto()],
             })
             .collect();
-        Ok(state.respond(Box::pin(futures::stream::iter(items))))
+        let headers = state.headers.clone();
+        drop(state);
+        let mut response = Response::new(self.0.faulted_items(call, items));
+        *response.metadata_mut() = headers;
+        Ok(response)
     }
 }
 
@@ -576,8 +843,9 @@ impl SchemaService for Service {
     /// The schema last written, or `NOT_FOUND` as SpiceDB returns.
     async fn read_schema(
         &self,
-        _: Request<proto::ReadSchemaRequest>,
+        request: Request<proto::ReadSchemaRequest>,
     ) -> Result<Response<proto::ReadSchemaResponse>, Status> {
+        self.0.begin(Operation::ReadSchema, &request)?;
         let state = self.0.lock();
         let schema = state
             .schema
@@ -594,6 +862,7 @@ impl SchemaService for Service {
         &self,
         request: Request<proto::WriteSchemaRequest>,
     ) -> Result<Response<proto::WriteSchemaResponse>, Status> {
+        self.0.begin(Operation::WriteSchema, &request)?;
         let mut state = self.0.lock();
         state.schema = Some(request.into_inner().schema);
         state.revision += 1;
@@ -605,8 +874,9 @@ impl SchemaService for Service {
     /// The registered reflection at the current revision, or `NOT_FOUND`.
     async fn reflect_schema(
         &self,
-        _: Request<proto::ReflectSchemaRequest>,
+        request: Request<proto::ReflectSchemaRequest>,
     ) -> Result<Response<proto::ReflectSchemaResponse>, Status> {
+        self.0.begin(Operation::ReflectSchema, &request)?;
         let state = self.0.lock();
         let reflection = state
             .reflection
@@ -619,22 +889,25 @@ impl SchemaService for Service {
 
     async fn computable_permissions(
         &self,
-        _: Request<proto::ComputablePermissionsRequest>,
+        request: Request<proto::ComputablePermissionsRequest>,
     ) -> Result<Response<proto::ComputablePermissionsResponse>, Status> {
+        self.0.begin(Operation::ComputablePermissions, &request)?;
         unimplemented("ComputablePermissions")
     }
 
     async fn dependent_relations(
         &self,
-        _: Request<proto::DependentRelationsRequest>,
+        request: Request<proto::DependentRelationsRequest>,
     ) -> Result<Response<proto::DependentRelationsResponse>, Status> {
+        self.0.begin(Operation::DependentRelations, &request)?;
         unimplemented("DependentRelations")
     }
 
     async fn diff_schema(
         &self,
-        _: Request<proto::DiffSchemaRequest>,
+        request: Request<proto::DiffSchemaRequest>,
     ) -> Result<Response<proto::DiffSchemaResponse>, Status> {
+        self.0.begin(Operation::DiffSchema, &request)?;
         unimplemented("DiffSchema")
     }
 }

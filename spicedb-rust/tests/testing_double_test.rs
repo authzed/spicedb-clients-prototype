@@ -4,14 +4,15 @@
 use std::num::NonZeroU32;
 
 use futures::StreamExt;
-use spicedb::testing::InMemorySpiceDB;
+use spicedb::testing::{server_error, server_error_with_reason, FaultStage, InMemorySpiceDB};
+use spicedb::tonic::Code;
 use spicedb::{
     consistency, BulkCheckRequest, CallOptions, DeleteOptions, DeletePartial, DeleteRequest,
-    ExportRelationshipsOptions, ExportRelationshipsRequest, Filter, ImportRelationshipsRequest,
-    PermissionCheck, Permissionship, ReadRelationshipsOptions, ReadRelationshipsRequest,
-    ReadSchemaRequest, ReflectSchemaRequest, ReflectSchemaResult, Relationship, ResponseMetadata,
-    SchemaDefinition, SpiceDBError, Transaction, WriteRequest, WriteSchemaOptions,
-    WriteSchemaRequest,
+    ExportRelationshipsOptions, ExportRelationshipsRequest, Filter, ImportRelationshipsOptions,
+    ImportRelationshipsRequest, Operation, Paging, PermissionCheck, Permissionship,
+    ReadRelationshipsOptions, ReadRelationshipsRequest, ReadSchemaRequest, ReflectSchemaRequest,
+    ReflectSchemaResult, Relationship, ResponseMetadata, SchemaDefinition, SpiceDBError,
+    Transaction, WriteRequest, WriteSchemaOptions, WriteSchemaRequest,
 };
 
 fn rel(s: &str) -> Relationship {
@@ -333,4 +334,173 @@ async fn response_metadata_reaches_the_clients_capture() {
             .unwrap(),
         "v1.99"
     );
+}
+
+fn tuples(n: usize) -> ImportRelationshipsRequest {
+    ImportRelationshipsRequest::new(futures::stream::iter(
+        (0..n).map(|i| Ok(rel(&format!("doc:d{i}#viewer@user:x")))),
+    ))
+}
+
+#[tokio::test]
+async fn an_import_batch_fault_applies_nothing() {
+    let fake = InMemorySpiceDB::new();
+    let client = fake.client().unwrap();
+    // A restore test: the third batch fails with AlreadyExists.
+    fake.set_fault_hook(|f| match (f.call.operation(), f.stage, f.item) {
+        (Operation::ImportRelationships, FaultStage::ImportBatch, 2) => {
+            Some(server_error(Code::AlreadyExists, "duplicate relationship"))
+        }
+        _ => None,
+    });
+    let err = client
+        .import_relationships(tuples(10).with_options(
+            ImportRelationshipsOptions::new().with_batch_size(NonZeroU32::new(3).unwrap()),
+        ))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, SpiceDBError::AlreadyExists(_)), "{err:?}");
+    assert_eq!(err.server_message(), Some("duplicate relationship"));
+    assert!(fake.relationships().is_empty());
+
+    // The commit itself can fail.
+    fake.set_fault_hook(|f| match f.stage {
+        FaultStage::ImportCommit => Some(server_error_with_reason(
+            Code::Unavailable,
+            "lost",
+            "ERROR_REASON_UNSPECIFIED",
+        )),
+        _ => None,
+    });
+    let err = client.import_relationships(tuples(4)).await.unwrap_err();
+    assert_eq!(err.code(), Code::Unavailable);
+    assert_eq!(err.reason(), Some("ERROR_REASON_UNSPECIFIED"));
+    assert!(fake.relationships().is_empty());
+
+    fake.clear_fault_hook();
+    client.import_relationships(tuples(4)).await.unwrap();
+    assert_eq!(fake.relationships().len(), 4);
+}
+
+#[tokio::test]
+async fn an_export_fails_after_k_items() {
+    let fake = InMemorySpiceDB::new();
+    let client = fake.client().unwrap();
+    client.import_relationships(tuples(5)).await.unwrap();
+    fake.set_fault_hook(|f| match (f.call.operation(), f.stage, f.item) {
+        (Operation::ExportRelationships, FaultStage::Item, 3) => {
+            Some(server_error(Code::Unavailable, "stream reset"))
+        }
+        _ => None,
+    });
+    let mut got = 0;
+    let mut stream_err = None;
+    let mut stream =
+        Box::pin(client.export_relationships(ExportRelationshipsRequest::new(consistency::full())));
+    while let Some(item) = stream.next().await {
+        match item {
+            Ok(_) => got += 1,
+            Err(e) => {
+                stream_err = Some(e);
+                break;
+            }
+        }
+    }
+    assert_eq!(got, 3);
+    assert_eq!(stream_err.unwrap().code(), Code::Unavailable);
+    assert_eq!(
+        fake.calls_of(Operation::ExportRelationships).len(),
+        1,
+        "a stream that exposed data is never reopened"
+    );
+}
+
+#[tokio::test]
+async fn fail_next_affects_exactly_one_call() {
+    let fake = InMemorySpiceDB::new();
+    let client = fake.client().unwrap();
+    let check = || {
+        PermissionCheck::new(
+            "doc:d0".parse().unwrap(),
+            "view",
+            "user:x".parse().unwrap(),
+            consistency::full(),
+        )
+    };
+    fake.fail_next(
+        Operation::Check,
+        server_error(Code::PermissionDenied, "denied"),
+    );
+    let err = client.check(check()).await.unwrap_err();
+    assert!(matches!(err, SpiceDBError::PermissionDenied(_)), "{err:?}");
+    let _ = client.check(check()).await.unwrap();
+    assert_eq!(fake.calls_of(Operation::Check).len(), 2);
+
+    // An Unavailable fault is retried by the client, as SpiceDB's would be.
+    fake.fail_next(Operation::Check, server_error(Code::Unavailable, "down"));
+    let _ = client.check(check()).await.unwrap();
+    let checks = fake.calls_of(Operation::Check);
+    assert_eq!(checks.len(), 4);
+    assert_eq!(checks[3].index(), 3);
+
+    // A failed write applies nothing.
+    fake.fail_next(Operation::Write, server_error(Code::Unavailable, "down"));
+    let mut txn = Transaction::new();
+    txn.create(&rel("doc:d0#viewer@user:x"));
+    client
+        .write(WriteRequest::new(txn.clone()))
+        .await
+        .unwrap_err();
+    assert!(fake.relationships().is_empty());
+    client.write(WriteRequest::new(txn)).await.unwrap();
+    assert_eq!(fake.relationships().len(), 1);
+}
+
+#[tokio::test]
+async fn recorded_calls_expose_options() {
+    use spicedb::spicedb_proto::authzed::api::v1 as proto;
+    let fake = InMemorySpiceDB::new();
+    let client = fake.client().unwrap();
+    let mut metadata = spicedb::tonic::metadata::MetadataMap::new();
+    metadata.insert("x-request-id", "abc".parse().unwrap());
+    let options = ReadRelationshipsOptions::new()
+        .with_cursor("2")
+        .with_limit(5)
+        .with_paging(Paging::SingleRequest)
+        .with_call_options(CallOptions::new().with_request_metadata(metadata));
+    let _: Vec<_> = client
+        .read_relationships(
+            ReadRelationshipsRequest::new(Filter::new("doc"), consistency::full())
+                .with_options(options),
+        )
+        .collect()
+        .await;
+    let _: Vec<_> = client
+        .read_relationships(ReadRelationshipsRequest::new(
+            Filter::new("folder"),
+            consistency::full(),
+        ))
+        .collect()
+        .await;
+
+    let reads = fake.calls_of(Operation::ReadRelationships);
+    assert_eq!(reads.len(), 2);
+    assert_eq!((reads[0].index(), reads[1].index()), (0, 1));
+    let first = reads[0]
+        .request::<proto::ReadRelationshipsRequest>()
+        .unwrap();
+    assert_eq!(first.optional_cursor.as_ref().unwrap().token, "2");
+    assert_eq!(first.optional_limit, 5);
+    assert_eq!(reads[0].metadata().get("x-request-id").unwrap(), "abc");
+    let second = reads[1]
+        .request::<proto::ReadRelationshipsRequest>()
+        .unwrap();
+    assert_eq!(
+        second.relationship_filter.as_ref().unwrap().resource_type,
+        "folder"
+    );
+    assert!(reads[1]
+        .request::<proto::WriteRelationshipsRequest>()
+        .is_none());
+    assert_eq!(fake.calls().len(), 2);
 }

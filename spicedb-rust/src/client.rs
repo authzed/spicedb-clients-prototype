@@ -9,8 +9,9 @@ use std::time::Duration;
 
 use crate::consistency::Strategy;
 use crate::error::{self, SpiceDBError};
-use crate::options::{DefaultDeadline, RetryMode, RetryPolicy, StreamRetryMode};
+use crate::options::{DefaultDeadline, Operation, RetryMode, RetryPolicy, StreamRetryMode};
 use crate::types::*;
+use std::collections::BTreeMap;
 
 use futures::Stream;
 
@@ -34,6 +35,8 @@ pub struct SpiceDBClient {
     // `None` when retries are disabled.
     retry: Option<Arc<RetryPolicy>>,
     stream_retries: StreamRetryMode,
+    // Client-wide per-operation policies; a per-call policy still wins.
+    operation_retry: Arc<BTreeMap<Operation, Arc<RetryPolicy>>>,
 }
 
 /// Execution settings shared by both builders.
@@ -44,6 +47,7 @@ struct ExecSettings {
     retry_policy: RetryPolicy,
     retries: RetryMode,
     stream_retries: StreamRetryMode,
+    operation_retry: BTreeMap<Operation, RetryPolicy>,
 }
 
 impl Default for ExecSettings {
@@ -54,16 +58,31 @@ impl Default for ExecSettings {
             retry_policy: RetryPolicy::default(),
             retries: RetryMode::Enabled,
             stream_retries: StreamRetryMode::Enabled,
+            operation_retry: BTreeMap::new(),
         }
     }
 }
 
 impl ExecSettings {
-    fn into_client(self, proto: SpiceDBProtoClient) -> Result<SpiceDBClient, SpiceDBError> {
+    fn validate(&self) -> Result<(), SpiceDBError> {
         if self.default_timeout.is_zero() {
             return Err(invalid("default_timeout", "must be positive"));
         }
         self.retry_policy.validate()?;
+        for (operation, policy) in &self.operation_retry {
+            policy.validate()?;
+            if operation.never_replayable() && policy.max_retries > 0 {
+                return Err(invalid(
+                    "operation_retry_policy",
+                    &format!("{operation} cannot be retried: it is not idempotent on replay"),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn into_client(self, proto: SpiceDBProtoClient) -> Result<SpiceDBClient, SpiceDBError> {
+        self.validate()?;
         Ok(SpiceDBClient {
             proto,
             default_timeout: match self.default_deadline {
@@ -75,6 +94,12 @@ impl ExecSettings {
                 RetryMode::Disabled => None,
             },
             stream_retries: self.stream_retries,
+            operation_retry: Arc::new(
+                self.operation_retry
+                    .into_iter()
+                    .map(|(operation, policy)| (operation, Arc::new(policy)))
+                    .collect(),
+            ),
         })
     }
 }
@@ -117,6 +142,37 @@ macro_rules! exec_settings_methods {
             self.exec.stream_retries = mode;
             self
         }
+
+        /// Sets the retry policy for every call of one operation, for
+        /// example a client that never reopens watches while it keeps
+        /// retrying everything else:
+        ///
+        /// ```no_run
+        /// # async fn demo() -> Result<(), spicedb::SpiceDBError> {
+        /// use spicedb::{Operation, RetryPolicy, SpiceDBClient};
+        /// let client = SpiceDBClient::builder("localhost:50051", "key")
+        ///     .plaintext()
+        ///     .operation_retry_policy(Operation::Updates, RetryPolicy::new().with_max_retries(0))
+        ///     .build()
+        ///     .await?;
+        /// # Ok(()) }
+        /// ```
+        ///
+        /// Precedence is the per-call
+        /// [`CallOptions::with_retry_policy`](crate::CallOptions::with_retry_policy),
+        /// then this policy, then the client-wide policy and retry modes; like
+        /// a per-call policy it also governs stream establishment. For
+        /// [`Operation::Write`] it retries only writes that are idempotent on
+        /// replay ([`Transaction::is_idempotent`]); other writes are sent once,
+        /// without error. Operations that are never idempotent (deletes,
+        /// delete-all, imports, counter registration and unregistration)
+        /// reject a policy with retries when the client is built
+        /// (`InvalidArgument`); a zero-retry policy is allowed for any
+        /// operation. Setting an operation again replaces its policy.
+        pub fn operation_retry_policy(mut self, operation: Operation, policy: RetryPolicy) -> Self {
+            self.exec.operation_retry.insert(operation, policy);
+            self
+        }
     };
 }
 
@@ -144,10 +200,7 @@ impl SpiceDBClientBuilder {
     exec_settings_methods!();
 
     pub async fn build(self) -> Result<SpiceDBClient, SpiceDBError> {
-        if self.exec.default_timeout.is_zero() {
-            return Err(invalid("default_timeout", "must be positive"));
-        }
-        self.exec.retry_policy.validate()?;
+        self.exec.validate()?;
         let proto = SpiceDBProtoClient::new_with_options(
             &self.endpoint,
             &self.token,
@@ -316,13 +369,9 @@ impl SpiceDBClient {
         let preconditions = preconditions_to_proto(txn.preconditions())?;
         // An empty transaction is sent as is: SpiceDB accepts it, evaluates
         // any preconditions, and returns the current revision. Only a
-        // touch-only write without preconditions is idempotent on replay.
-        let touch_only = preconditions.is_empty()
-            && txn
-                .updates()
-                .iter()
-                .all(|(op, _)| *op == UpdateOperation::Touch);
-        let policy = mutation_policy(touch_only, "write")?;
+        // touch-only write without preconditions is idempotent on replay
+        // (Transaction::is_idempotent).
+        let policy = mutation_policy(txn.is_idempotent(), "write")?;
 
         let resp = mutation_call(
             || async {

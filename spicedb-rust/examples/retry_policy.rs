@@ -158,6 +158,58 @@ async fn main() {
     );
     println!("idempotent mutation: a touch-only write opted in and was attempted twice; a create refused the opt-in locally");
 
+    // ── 2c. A client-wide policy for one operation ───────────────────────
+    //
+    // `operation_retry_policy` applies to every call of one operation. For
+    // writes it retries only the idempotent ones (`Transaction::is_idempotent`)
+    // and sends the rest once, without error. Operations that are never
+    // idempotent (deletes, imports, ...) refuse a retrying policy when the
+    // client is built.
+    let per_operation = SpiceDBClient::builder(format!("{write_addr}"), "t")
+        .plaintext()
+        .operation_retry_policy(
+            spicedb::Operation::Write,
+            spicedb::RetryPolicy::new()
+                .with_max_retries(1)
+                .with_initial_backoff(std::time::Duration::from_millis(1)),
+        )
+        .build()
+        .await
+        .expect("connect to the stand-in");
+    assert!(txn.is_idempotent());
+    let before = write_counts.write();
+    per_operation
+        .write(spicedb::WriteRequest::new(txn.clone()))
+        .await
+        .expect_err("the stand-in always fails writes");
+    assert_eq!(
+        write_counts.write() - before,
+        2,
+        "the touch-only write is retried"
+    );
+    let mut create = Transaction::new();
+    create.create(&write_rel);
+    let err = per_operation
+        .write(spicedb::WriteRequest::new(create))
+        .await
+        .expect_err("the stand-in always fails writes");
+    assert!(matches!(err, SpiceDBError::Unavailable(_)), "{err:?}");
+    assert_eq!(
+        write_counts.write() - before,
+        3,
+        "the create is sent once, not rejected"
+    );
+    let refused = SpiceDBClient::builder(format!("{write_addr}"), "t")
+        .plaintext()
+        .operation_retry_policy(
+            spicedb::Operation::DeleteRelationships,
+            spicedb::RetryPolicy::new().with_max_retries(1),
+        )
+        .build()
+        .await;
+    assert!(matches!(refused, Err(SpiceDBError::InvalidArgument(_))));
+    println!("per-operation policy: touch-only writes retried, creates sent once, delete retries refused at build");
+
     // ── 3. RESOURCE_EXHAUSTED is not retryable, even on a read ───────────
     //
     // In SpiceDB this code means memory load-shed or a deterministic

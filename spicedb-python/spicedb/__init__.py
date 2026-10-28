@@ -11,6 +11,25 @@ imported from here.
 """
 
 from spicedb.token import ZedToken
+from spicedb.options import (
+    BulkItemErrors,
+    CallOptions,
+    DefaultDeadline,
+    DeletePartial,
+    ResponseMetadata,
+    RetryAttempt,
+    RetryPolicy,
+    Retries,
+    StreamRetries,
+)
+from spicedb.types import (
+    ExportedRelationship,
+    Precondition,
+    PreconditionOperation,
+    ReadRelationship,
+)
+from spicedb.errors import code_of
+
 from spicedb.options import Tracing, LookupPermissionshipFilter, LookupDebug, Wildcards, WatchContent, TransportSecurity, RemoteCredentials
 from spicedb.consistency import (
     Consistency,
@@ -214,3 +233,20 @@ __all__ += [
 ]
 
 __all__ += ["LookupPermissionshipFilter", "ZedToken", "Tracing", "LookupDebug", "Wildcards", "WatchContent", "TransportSecurity", "RemoteCredentials"]
+
+__all__ += [
+    "BulkItemErrors",
+    "CallOptions",
+    "DefaultDeadline",
+    "DeletePartial",
+    "ResponseMetadata",
+    "RetryAttempt",
+    "RetryPolicy",
+    "Retries",
+    "StreamRetries",
+    "ExportedRelationship",
+    "Precondition",
+    "PreconditionOperation",
+    "ReadRelationship",
+    "code_of",
+]

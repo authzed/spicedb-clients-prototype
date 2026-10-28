@@ -3,8 +3,11 @@
 from __future__ import annotations
 from spicedb.token import ZedToken, _token_string
 
+import json
+from typing import TYPE_CHECKING
+
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, replace
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from math import isfinite
@@ -14,6 +17,9 @@ from authzed.api.v1 import core_pb2, permission_service_pb2, schema_service_pb2
 from google.protobuf import struct_pb2, timestamp_pb2
 from google.protobuf.message import Message
 from spicedb.errors import InvalidArgumentError
+
+if TYPE_CHECKING:
+    from spicedb.errors import SpiceDBError
 
 JSONValue: TypeAlias = (
     None | bool | str | int | float | Sequence["JSONValue"] | Mapping[str, "JSONValue"]
@@ -100,6 +106,62 @@ def context_from_struct(context: struct_pb2.Struct) -> JSONObject:
     return _snapshot({k: convert(v) for k, v in context.fields.items()})
 
 
+def _format_expiration(value: datetime) -> str:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    value = value.astimezone(timezone.utc)
+    text = value.strftime("%Y-%m-%dT%H:%M:%S")
+    if value.microsecond:
+        text += f".{value.microsecond:06d}".rstrip("0")
+    return text + "Z"
+
+
+_EXPIRATION_PREFIX = "[expiration:"
+
+
+def _parse_tuple_suffix(suffix: str, text: str):
+    caveat = None
+    expiration = None
+    if suffix and (
+        not suffix.startswith(_EXPIRATION_PREFIX)
+        or suffix.startswith(_EXPIRATION_PREFIX + "{")
+    ):
+        body = suffix[1:]
+        end = min((i for i in (body.find(":"), body.find("]")) if i >= 0), default=-1)
+        if end <= 0:
+            raise InvalidArgumentError(f"relationship: invalid tuple caveat in {text!r}")
+        name = body[:end]
+        if body[end] == "]":
+            caveat = Caveat(name)
+            suffix = body[end + 1 :]
+        else:
+            rest = body[end + 1 :]
+            try:
+                context, consumed = json.JSONDecoder().raw_decode(rest)
+            except ValueError as e:
+                raise InvalidArgumentError(
+                    f"relationship: invalid tuple caveat context in {text!r}"
+                ) from e
+            if not isinstance(context, dict) or not rest[consumed:].startswith("]"):
+                raise InvalidArgumentError(f"relationship: invalid tuple caveat in {text!r}")
+            caveat = Caveat(name, context)
+            suffix = rest[consumed + 1 :]
+    if suffix:
+        if not suffix.startswith(_EXPIRATION_PREFIX) or not suffix.endswith("]"):
+            raise InvalidArgumentError(f"relationship: invalid tuple suffix {suffix!r}")
+        raw = suffix[len(_EXPIRATION_PREFIX) : -1]
+        try:
+            expiration = datetime.fromisoformat(raw)
+        except ValueError as e:
+            raise InvalidArgumentError(f"relationship: invalid tuple expiration {raw!r}") from e
+        if expiration.tzinfo is None or "T" not in raw.upper():
+            raise InvalidArgumentError(
+                f"relationship: tuple expiration {raw!r} must be RFC 3339 with a time zone"
+            )
+        expiration = expiration.astimezone(timezone.utc)
+    return caveat, expiration
+
+
 @dataclass(frozen=True)
 class ObjectRef:
     object_type: str
@@ -112,6 +174,10 @@ class ObjectRef:
 
     def __post_init__(self) -> None:
         _freeze(self)
+
+    def __str__(self) -> str:
+        """``type:id``, as in SpiceDB's tuple syntax."""
+        return f"{self.object_type}:{self.object_id}"
 
 
 @dataclass(frozen=True)
@@ -128,6 +194,10 @@ class SubjectRef:
         return core_pb2.SubjectReference(
             object=self.object._to_proto(), optional_relation=self.relation or ""
         )
+
+    def __str__(self) -> str:
+        """``type:id`` or ``type:id#relation``, as in SpiceDB's tuple syntax."""
+        return str(self.object) + (f"#{self.relation}" if self.relation else "")
 
 
 @dataclass(frozen=True)
@@ -191,21 +261,118 @@ class Relationship:
         )
 
     @classmethod
-    def from_tuple(
-        cls,
-        resource_and_relation: str,
-        subject: str,
-        *,
-        caveat: Caveat | None = None,
-        expiration: datetime | None = None,
-    ) -> Relationship:
+    def from_tuple(cls, text: str) -> Relationship:
+        """Parse SpiceDB's tuple syntax.
+
+        ``resource_type:resource_id#relation@subject_type:subject_id[#subject_relation]``
+        followed by an optional ``[caveat_name]`` or ``[caveat_name:{json}]``
+        and an optional ``[expiration:<RFC 3339>]``, in that order. A subject
+        relation of ``...`` means a direct subject. ``str(relationship)``
+        produces this form, so the two round-trip. Fractional seconds beyond
+        microseconds are truncated (Python's ``datetime`` resolution).
+        """
+        if not isinstance(text, str):
+            raise InvalidArgumentError("relationship: expected tuple string")
+        main, bracket, suffix = text.partition("[")
+        suffix = bracket + suffix
         try:
-            resource, relation = resource_and_relation.rsplit("#", 1)
+            left, right = main.split("@")
+            resource, relation = left.split("#")
+            subject, sep, subject_relation = right.partition("#")
+            if "#" in subject_relation:
+                raise ValueError()
+            rt, ri = resource.split(":", 1)
+            st, si = subject.split(":", 1)
+            if not all((rt, ri, relation, st, si)) or (sep and not subject_relation):
+                raise ValueError()
         except ValueError as e:
-            raise InvalidArgumentError("relationship: expected type:id#relation") from e
-        return cls.from_triple(
-            resource, relation, subject, caveat=caveat, expiration=expiration
+            raise InvalidArgumentError(
+                f"relationship: invalid tuple {text!r}; expected type:id#relation@type:id[#relation]"
+            ) from e
+        caveat, expiration = _parse_tuple_suffix(suffix, text)
+        return cls(
+            ObjectRef(rt, ri),
+            relation,
+            SubjectRef(
+                ObjectRef(st, si),
+                subject_relation if sep and subject_relation != "..." else None,
+            ),
+            caveat,
+            expiration,
         )
+
+    def __str__(self) -> str:
+        """SpiceDB tuple syntax, including caveat and expiration.
+
+        ``document:readme#viewer@user:alice[ip:{"cidr":"10.0.0.0/8"}][expiration:2030-01-01T00:00:00Z]``.
+        Caveat context keys are sorted; expiration is UTC RFC 3339.
+        :meth:`from_tuple` parses the result.
+        """
+        text = f"{self.resource}#{self.relation}@{self.subject}"
+        if self.caveat is not None:
+            text += "[" + self.caveat.name
+            if self.caveat.context:
+                text += ":" + json.dumps(
+                    _json(self.caveat.context, "caveat.context"),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            text += "]"
+        if self.expiration is not None:
+            text += f"[expiration:{_format_expiration(self.expiration)}]"
+        return text
+
+    def to_dict(self) -> dict[str, JSONValue]:
+        """A JSON-compatible diagnostic form for logs (not a wire format)."""
+        value: dict[str, JSONValue] = {
+            "resource": str(self.resource),
+            "relation": self.relation,
+            "subject": str(self.subject),
+        }
+        if self.caveat is not None:
+            value["caveat_name"] = self.caveat.name
+            if self.caveat.context is not None:
+                value["caveat_context"] = _json(self.caveat.context, "caveat.context")
+        if self.expiration is not None:
+            value["expiration"] = _format_expiration(self.expiration)
+        return value
+
+    @property
+    def resource_type(self) -> str:
+        """Short for ``resource.object_type``."""
+        return self.resource.object_type
+
+    @property
+    def resource_id(self) -> str:
+        """Short for ``resource.object_id``."""
+        return self.resource.object_id
+
+    @property
+    def subject_type(self) -> str:
+        """Short for ``subject.object.object_type``."""
+        return self.subject.object.object_type
+
+    @property
+    def subject_id(self) -> str:
+        """Short for ``subject.object.object_id``."""
+        return self.subject.object.object_id
+
+    @property
+    def subject_relation(self) -> str | None:
+        """Short for ``subject.relation`` (None for a direct subject)."""
+        return self.subject.relation
+
+    def with_resource(self, resource: ObjectRef) -> Relationship:
+        """A copy on a different resource; caveat and expiration are kept."""
+        return replace(self, resource=resource)
+
+    def with_relation(self, relation: str) -> Relationship:
+        """A copy with a different relation; caveat and expiration are kept."""
+        return replace(self, relation=relation)
+
+    def with_subject(self, subject: SubjectRef) -> Relationship:
+        """A copy with a different subject; caveat and expiration are kept."""
+        return replace(self, subject=subject)
 
     def to_filter(self) -> Filter:
         relation = (
@@ -306,6 +473,14 @@ class SubjectRelationFilter:
     def named(cls, name: str) -> SubjectRelationFilter:
         return cls(SubjectRelationMode.NAMED, name)
 
+    def __str__(self) -> str:
+        """``*`` (any), ``...`` (direct) or the relation name."""
+        if self.kind == SubjectRelationMode.DIRECT:
+            return "..."
+        if self.kind == SubjectRelationMode.NAMED:
+            return self.name or ""
+        return "*"
+
 
 @dataclass(frozen=True)
 class SubjectFilter:
@@ -359,6 +534,65 @@ class Filter:
             optional_subject_filter=self.subject._to_proto() if self.subject else None,
         )
 
+    def matches(self, relationship: Relationship) -> bool:
+        """Whether SpiceDB would select ``relationship`` with this filter.
+
+        Applies the server's semantics client-side: resource type, resource
+        ID or ID prefix, relation, subject type and ID, and the subject
+        relation's Any/Direct/Named distinction. Caveat and expiration are
+        not filterable. Test doubles use this instead of reimplementing it.
+        """
+        if not isinstance(relationship, Relationship):
+            raise InvalidArgumentError("filter.matches: expected Relationship")
+        resource = relationship.resource
+        if self.resource_type and self.resource_type != resource.object_type:
+            return False
+        if self.resource_id and self.resource_id != resource.object_id:
+            return False
+        if self.resource_id_prefix and not resource.object_id.startswith(self.resource_id_prefix):
+            return False
+        if self.relation and self.relation != relationship.relation:
+            return False
+        if self.subject is None:
+            return True
+        subject = relationship.subject
+        if self.subject.subject_type != subject.object.object_type:
+            return False
+        if self.subject.subject_id and self.subject.subject_id != subject.object.object_id:
+            return False
+        kind = self.subject.relation.kind
+        if kind == SubjectRelationMode.DIRECT:
+            return subject.relation is None
+        if kind == SubjectRelationMode.NAMED:
+            return subject.relation == self.subject.relation.name
+        return True
+
+    def __str__(self) -> str:
+        """A zed-like form with ``*`` for unset fields, e.g. ``document:*#viewer@user:alice``."""
+        resource_id = self.resource_id or "*"
+        if self.resource_id_prefix:
+            resource_id = f"{self.resource_id_prefix}%*"
+        text = f"{self.resource_type or '*'}:{resource_id}#{self.relation or '*'}@"
+        if self.subject is None:
+            return text + "*"
+        text += f"{self.subject.subject_type}:{self.subject.subject_id or '*'}"
+        if self.subject.relation.kind != SubjectRelationMode.ANY:
+            text += "#" + str(self.subject.relation)
+        return text
+
+    def to_dict(self) -> dict[str, JSONValue]:
+        """A JSON-compatible diagnostic form; unset fields are omitted."""
+        value: dict[str, JSONValue] = {"resource_type": self.resource_type}
+        for name in ("resource_id", "resource_id_prefix", "relation"):
+            if getattr(self, name) is not None:
+                value[name] = getattr(self, name)
+        if self.subject is not None:
+            value["subject_type"] = self.subject.subject_type
+            if self.subject.subject_id is not None:
+                value["subject_id"] = self.subject.subject_id
+            value["subject_relation"] = str(self.subject.relation)
+        return value
+
 
 @dataclass(frozen=True, kw_only=True)
 class SchemaFilter:
@@ -394,11 +628,16 @@ _UPDATE_OP_MAP = {
     core_pb2.RelationshipUpdate.OPERATION_DELETE: UpdateOperation.DELETE,
     core_pb2.RelationshipUpdate.OPERATION_UNSPECIFIED: UpdateOperation.UNSPECIFIED,
 }
+_UPDATE_OP_TO_PROTO = {
+    UpdateOperation.CREATE: core_pb2.RelationshipUpdate.OPERATION_CREATE,
+    UpdateOperation.TOUCH: core_pb2.RelationshipUpdate.OPERATION_TOUCH,
+    UpdateOperation.DELETE: core_pb2.RelationshipUpdate.OPERATION_DELETE,
+}
 
 
 @dataclass(frozen=True)
 class Update:
-    """A single relationship mutation observed via `SpiceDBClient.watch()`."""
+    """A single relationship mutation: observed via ``watch()``, or queued in a ``Transaction``."""
 
     operation: UpdateOperation
     relationship: Relationship
@@ -411,8 +650,68 @@ class Update:
             operation=op, relationship=Relationship._from_proto(u.relationship)
         )
 
+    def _to_proto(self) -> core_pb2.RelationshipUpdate:
+        operation = _UPDATE_OP_TO_PROTO.get(self.operation)
+        if operation is None:
+            raise InvalidArgumentError("update.operation: cannot send UNSPECIFIED")
+        return core_pb2.RelationshipUpdate(
+            operation=operation, relationship=self.relationship._to_proto()
+        )
+
     def __post_init__(self) -> None:
+        if not isinstance(self.operation, UpdateOperation):
+            raise InvalidArgumentError("update.operation: expected UpdateOperation")
+        if not isinstance(self.relationship, Relationship):
+            raise InvalidArgumentError("update.relationship: expected Relationship")
         _freeze(self)
+
+    def __str__(self) -> str:
+        """``OPERATION(relationship)``, e.g. ``TOUCH(document:a#viewer@user:b)``."""
+        return f"{self.operation.name}({self.relationship})"
+
+    def to_dict(self) -> dict[str, JSONValue]:
+        """A JSON-compatible diagnostic form for logs."""
+        return {"operation": self.operation.name, "relationship": self.relationship.to_dict()}
+
+
+class PreconditionOperation(Enum):
+    """Whether a write precondition requires a match or the absence of one."""
+
+    MUST_MATCH = "must_match"
+    MUST_NOT_MATCH = "must_not_match"
+
+
+_PRECONDITION_TO_PROTO = {
+    PreconditionOperation.MUST_MATCH: permission_service_pb2.Precondition.OPERATION_MUST_MATCH,
+    PreconditionOperation.MUST_NOT_MATCH: permission_service_pb2.Precondition.OPERATION_MUST_NOT_MATCH,
+}
+
+
+@dataclass(frozen=True)
+class Precondition:
+    """A write or delete precondition: a filter that must (not) match."""
+
+    operation: PreconditionOperation
+    filter: Filter
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.operation, PreconditionOperation):
+            raise InvalidArgumentError("precondition.operation: expected PreconditionOperation")
+        if not isinstance(self.filter, Filter):
+            raise InvalidArgumentError("precondition.filter: expected Filter")
+
+    def _to_proto(self) -> permission_service_pb2.Precondition:
+        return permission_service_pb2.Precondition(
+            operation=_PRECONDITION_TO_PROTO[self.operation], filter=self.filter._to_proto()
+        )
+
+    def __str__(self) -> str:
+        """``OPERATION(filter)``, e.g. ``MUST_MATCH(document:a#*@*)``."""
+        return f"{self.operation.name}({self.filter})"
+
+    def to_dict(self) -> dict[str, JSONValue]:
+        """A JSON-compatible diagnostic form for logs."""
+        return {"operation": self.operation.name, "filter": str(self.filter)}
 
 
 @dataclass(frozen=True)
@@ -442,66 +741,94 @@ class WatchEvent:
         _freeze(self)
 
 
-@dataclass
 class Transaction:
-    """A builder for batching relationship writes with preconditions."""
+    """A mutable builder batching relationship writes with preconditions.
 
-    _updates: list[core_pb2.RelationshipUpdate] = field(
-        default_factory=list, init=False
-    )
-    _preconditions: list[permission_service_pb2.Precondition] = field(
-        default_factory=list, init=False
-    )
+    ``len(txn)`` is the number of updates (so an empty transaction is
+    falsy); ``updates`` and ``preconditions`` are immutable snapshots.
+    ``str(txn)`` lists them readably and ``to_dict()`` gives a JSON-able form.
+    """
+
+    __slots__ = ("_update_list", "_precondition_list")
+
+    def __init__(self) -> None:
+        self._update_list: list[Update] = []
+        self._precondition_list: list[Precondition] = []
+
+    def _add(self, operation: UpdateOperation, rel: Relationship) -> Transaction:
+        update = Update(operation, rel)
+        update._to_proto()  # validate now, not at write time
+        self._update_list.append(update)
+        return self
 
     def create(self, rel: Relationship) -> Transaction:
         """Add a CREATE operation (fails if relationship already exists)."""
-        self._updates.append(
-            core_pb2.RelationshipUpdate(
-                operation=core_pb2.RelationshipUpdate.OPERATION_CREATE,
-                relationship=rel._to_proto(),
-            )
-        )
-        return self
+        return self._add(UpdateOperation.CREATE, rel)
 
     def touch(self, rel: Relationship) -> Transaction:
         """Add a TOUCH operation (create or update)."""
-        self._updates.append(
-            core_pb2.RelationshipUpdate(
-                operation=core_pb2.RelationshipUpdate.OPERATION_TOUCH,
-                relationship=rel._to_proto(),
-            )
-        )
-        return self
+        return self._add(UpdateOperation.TOUCH, rel)
 
     def delete(self, rel: Relationship) -> Transaction:
         """Add a DELETE operation."""
-        self._updates.append(
-            core_pb2.RelationshipUpdate(
-                operation=core_pb2.RelationshipUpdate.OPERATION_DELETE,
-                relationship=rel._to_proto(),
-            )
-        )
-        return self
+        return self._add(UpdateOperation.DELETE, rel)
 
     def must_not_match(self, f: Filter) -> Transaction:
         """Add a precondition that no relationships match the filter."""
-        self._preconditions.append(
-            permission_service_pb2.Precondition(
-                operation=permission_service_pb2.Precondition.OPERATION_MUST_NOT_MATCH,
-                filter=f._to_proto(),
-            )
-        )
+        precondition = Precondition(PreconditionOperation.MUST_NOT_MATCH, f)
+        precondition._to_proto()
+        self._precondition_list.append(precondition)
         return self
 
     def must_match(self, f: Filter) -> Transaction:
         """Add a precondition that at least one relationship matches the filter."""
-        self._preconditions.append(
-            permission_service_pb2.Precondition(
-                operation=permission_service_pb2.Precondition.OPERATION_MUST_MATCH,
-                filter=f._to_proto(),
-            )
-        )
+        precondition = Precondition(PreconditionOperation.MUST_MATCH, f)
+        precondition._to_proto()
+        self._precondition_list.append(precondition)
         return self
+
+    @property
+    def updates(self) -> tuple[Update, ...]:
+        """A snapshot of the queued updates, in order."""
+        return tuple(self._update_list)
+
+    @property
+    def preconditions(self) -> tuple[Precondition, ...]:
+        """A snapshot of the queued preconditions, in order."""
+        return tuple(self._precondition_list)
+
+    def __len__(self) -> int:
+        return len(self._update_list)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Transaction):
+            return NotImplemented
+        return (self._update_list, self._precondition_list) == (
+            other._update_list,
+            other._precondition_list,
+        )
+
+    __hash__ = None  # type: ignore[assignment]  # mutable builder
+
+    def __str__(self) -> str:
+        parts = [str(p) for p in self._precondition_list] + [str(u) for u in self._update_list]
+        return "[" + ", ".join(parts) + "]"
+
+    def __repr__(self) -> str:
+        return f"Transaction(preconditions={self.preconditions!r}, updates={self.updates!r})"
+
+    def to_dict(self) -> dict[str, JSONValue]:
+        """A JSON-compatible diagnostic form for logs."""
+        return {
+            "preconditions": [p.to_dict() for p in self._precondition_list],
+            "updates": [u.to_dict() for u in self._update_list],
+        }
+
+    def _update_protos(self) -> list[core_pb2.RelationshipUpdate]:
+        return [u._to_proto() for u in self._update_list]
+
+    def _precondition_protos(self) -> list[permission_service_pb2.Precondition]:
+        return [p._to_proto() for p in self._precondition_list]
 
 
 class TreeOperation(Enum):
@@ -1012,6 +1339,8 @@ class LookupResource:
     permissionship: Permissionship
     partial_caveat: PartialCaveatInfo | None = None
     looked_up_at: ZedToken = ZedToken("")
+    after_result_cursor: str | None = None
+    """Pass as ``lookup_resources(cursor=...)`` with the same request and page size to resume after this item."""
 
     def __post_init__(self) -> None:
         _freeze(self)
@@ -1030,6 +1359,10 @@ class CheckResult:
     checked_at: ZedToken
     debug_trace: DebugInformation | None = None
     expiration: datetime | None = None
+    error: SpiceDBError | None = None
+    """The per-item error under ``check_bulk(item_errors=BulkItemErrors.RETURN)``.
+
+    When set, ``permissionship`` is UNSPECIFIED and the result never grants."""
 
     @property
     def has_permission(self) -> bool:
@@ -1037,7 +1370,7 @@ class CheckResult:
         CONDITIONAL_PERMISSION result -- the server could not evaluate the
         caveat, so treating it as a grant would authorize on an unevaluated
         condition."""
-        return self.permissionship == Permissionship.HAS_PERMISSION
+        return self.error is None and self.permissionship == Permissionship.HAS_PERMISSION
 
     def __bool__(self) -> bool:
         """Truthiness mirrors has_permission, so `if result:` is safe.
@@ -1105,6 +1438,37 @@ class DeleteResult:
     deleted_count: int
     progress: DeleteProgress
     cursor: str | None = None
+
+    def __post_init__(self) -> None:
+        _freeze(self)
+
+
+@dataclass(frozen=True)
+class ReadRelationship:
+    """One ``read_relationships`` item with its paging state.
+
+    Resume after it with ``read_relationships(cursor=item.after_result_cursor)``
+    using the same filter, consistency and page size.
+    """
+
+    relationship: Relationship
+    after_result_cursor: str | None
+    read_at: ZedToken
+
+    def __post_init__(self) -> None:
+        _freeze(self)
+
+
+@dataclass(frozen=True)
+class ExportedRelationship:
+    """One ``export_relationships`` item with its after-result cursor.
+
+    Export responses carry no revision. Resume with
+    ``export_relationships(cursor=item.after_result_cursor)``.
+    """
+
+    relationship: Relationship
+    after_result_cursor: str | None
 
     def __post_init__(self) -> None:
         _freeze(self)

@@ -1,7 +1,7 @@
 """Unit tests for spicedb.types — no SpiceDB instance needed."""
 from spicedb import ZedToken
 
-from spicedb import PermissionCheck, Caveat, SubjectFilter, SubjectRelationFilter
+from spicedb import PermissionCheck, Caveat, SubjectFilter, SubjectRelationFilter, PreconditionOperation
 from datetime import datetime, timezone
 import pytest
 from authzed.api.v1 import core_pb2, permission_service_pb2
@@ -64,7 +64,7 @@ class TestRelationship:
         assert r.subject.relation == "member"
 
     def test_from_tuple(self):
-        r = Relationship.from_tuple("document:readme#viewer", "user:alice")
+        r = Relationship.from_tuple("document:readme#viewer@user:alice")
         assert r.resource.object_type == "document"
         assert r.resource.object_id == "readme"
         assert r.relation == "viewer"
@@ -102,7 +102,7 @@ class TestRelationship:
 
     def test_from_tuple_with_check_context(self):
         r = _check_context(
-            Relationship.from_tuple("document:readme#viewer", "user:alice"), {"now": 42}
+            Relationship.from_tuple("document:readme#viewer@user:alice"), {"now": 42}
         )
         assert r.context == {"now": 42}
 
@@ -213,43 +213,45 @@ class TestTransaction:
         r = Relationship.from_triple("document:readme", "viewer", "user:alice")
         txn = Transaction()
         txn.create(r)
-        assert len(txn._updates) == 1
-        assert txn._updates[0].operation == 1
+        assert len(txn) == 1
+        assert txn.updates[0].operation is UpdateOperation.CREATE
 
     def test_touch(self):
         r = Relationship.from_triple("document:readme", "viewer", "user:alice")
         txn = Transaction()
         txn.touch(r)
-        assert len(txn._updates) == 1
-        assert txn._updates[0].operation == 2
+        assert len(txn) == 1
+        assert txn.updates[0].operation is UpdateOperation.TOUCH
 
     def test_delete(self):
         r = Relationship.from_triple("document:readme", "viewer", "user:alice")
         txn = Transaction()
         txn.delete(r)
-        assert len(txn._updates) == 1
-        assert txn._updates[0].operation == 3
+        assert len(txn) == 1
+        assert txn.updates[0].operation is UpdateOperation.DELETE
 
     def test_chaining(self):
         r1 = Relationship.from_triple("document:readme", "viewer", "user:alice")
         r2 = Relationship.from_triple("document:readme", "editor", "user:bob")
         txn = Transaction()
         txn.touch(r1).touch(r2)
-        assert len(txn._updates) == 2
+        assert len(txn) == 2
 
     def test_preconditions(self):
         f = Filter(resource_type="document", resource_id="readme")
         txn = Transaction()
         txn.must_not_match(f)
-        assert len(txn._preconditions) == 1
-        assert txn._preconditions[0].operation == 1
+        assert len(txn.preconditions) == 1
+        assert txn.preconditions[0].operation is PreconditionOperation.MUST_NOT_MATCH
+        assert txn._precondition_protos()[0].operation == 1
 
     def test_must_match(self):
         f = Filter(resource_type="document", resource_id="readme")
         txn = Transaction()
         txn.must_match(f)
-        assert len(txn._preconditions) == 1
-        assert txn._preconditions[0].operation == 2
+        assert len(txn.preconditions) == 1
+        assert txn.preconditions[0].operation is PreconditionOperation.MUST_MATCH
+        assert txn._precondition_protos()[0].operation == 2
 
 
 class TestUpdate:

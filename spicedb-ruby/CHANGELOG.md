@@ -29,7 +29,7 @@
 - `Relationship.from_tuple`/`#to_s` cover SpiceDB's full syntax (`[caveat:{...}]`, `[expiration:...]`, `...`). New `resource_type`, `resource_id`, `subject_type`, `subject_id`, `subject_relation`, `with_resource`, `with_relation`, `with_subject`.
 - `require 'spicedb/testing'`: `SpiceDB::Testing::Store`, an in-memory double for `write`, `read_relationships`, `delete_relationships`, `check` and `check_bulk`.
 - `spicedb-proto` is the canonical binding: `bridge/authzed_bridge.rb` rewrites the `authzed` gem onto it, and loading an unbridged copy raises `SpiceDBProto::BindingConflictError`. See MIGRATION.md.
-- Dependency floors: `grpc >= 1.67`, `google-protobuf >= 3.25`, `googleapis-common-protos-types >= 1.11`.
+- Dependency floors: `grpc >= 1.73`, `google-protobuf >= 3.25`, `googleapis-common-protos-types >= 1.11`.
 - New `MIGRATION.md` (from the `authzed` gem), `AI_INTEGRATION_GUIDE.md`, and the `tooling_escape_hatches` example.
 
 ### Native tokens and named options

@@ -51,10 +51,17 @@ proto file.
 
 ### Dependencies
 
-Runtime floors are the lowest versions the specs pass on: `grpc >= 1.67`,
+Runtime floors are the lowest versions the specs pass on: `grpc >= 1.73`,
 `google-protobuf >= 3.25` (the serialized-descriptor generated format),
 `googleapis-common-protos-types >= 1.11`. `rspec` is a development dependency;
 the `authzed` gem is a Gemfile `:test` dependency only.
+
+The grpc floor is a security floor, not a feature floor: `loopback_endpoint?`
+treats any `unix:` target (case-insensitively) as local and relies on C-core to
+refuse an authority-bearing one. grpc 1.72 and earlier do not recognize
+`UNIX://host/...` as a unix target and hand it to the DNS resolver instead;
+1.73 refuses it ("the target uri is not valid"), which `spec/client_spec.rb`
+pins. (The previous `~> 1.67` floor admitted the older behavior.)
 
 ## Additional Code (for Claude)
 

@@ -23,7 +23,7 @@ Gem::Specification.new do |spec|
   spec.require_paths = ['lib']
 
   # Lowest versions that work; development tools stay development dependencies.
-  spec.add_dependency 'grpc', '>= 1.67', '< 2'
+  spec.add_dependency 'grpc', '>= 1.73', '< 2'
   spec.add_dependency 'spicedb-proto', '~> 0.1'
 
   spec.add_development_dependency 'rspec', '~> 3.13'

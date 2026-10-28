@@ -15,7 +15,7 @@ Gem::Specification.new do |spec|
 
   # Lowest versions this gem actually needs (root DESIGN.md, "Document the path
   # off the legacy libraries"); verified by running the specs against them.
-  spec.add_dependency "grpc", ">= 1.67", "< 2"
+  spec.add_dependency "grpc", ">= 1.73", "< 2"
   spec.add_dependency "google-protobuf", ">= 3.25", "< 5"
   # google/api and google/rpc bindings; this gem does not generate its own copy.
   spec.add_dependency "googleapis-common-protos-types", ">= 1.11", "< 2"

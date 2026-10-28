@@ -75,4 +75,4 @@
 
 - **Document migration and dependencies.**
   - `MIGRATION.md` covers moving from the `authzed` gem; `AI_INTEGRATION_GUIDE.md` is the concrete guide for coding agents, with every snippet executed against a live SpiceDB. No typed generator exists for Ruby, so spicedb-gen rules do not apply.
-  - The gemspecs declare the lowest working runtime versions (`grpc >= 1.67`, `google-protobuf >= 3.25`, `googleapis-common-protos-types >= 1.11`); rspec and rubocop are development dependencies, which consumers never install. Ruby has no mechanical API-compatibility gate; specs and review cover compatibility.
+  - The gemspecs declare the lowest working runtime versions (`grpc >= 1.73`, `google-protobuf >= 3.25`, `googleapis-common-protos-types >= 1.11`); rspec and rubocop are development dependencies, which consumers never install. Ruby has no mechanical API-compatibility gate; specs and review cover compatibility.

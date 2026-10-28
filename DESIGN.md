@@ -39,12 +39,14 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
   - Native↔protocol conversions for requests, results, relationships, filters,
     preconditions, consistency, updates and traces are exported in a secondary
     namespace, so tools that persist or print protocol-shaped data reuse them.
+  - Generate protocol bindings from the upstream schema; do not edit generated
+    protocol source by hand. The only hand-maintained files in a generated
+    package are legacy helpers that must share the generated types' package (see
+    "Be the single copy..."); each proto tier's DESIGN.md lists them by name.
 
 - **Support SpiceDB 1.30 and later natively.**
   - Behavior that only older servers need is reachable through the transport
     escape hatch, not first-class API.
-  - Generate protocol bindings from the upstream schema; do not edit generated
-    protocol source by hand.
 
 - **Be the single copy of the protocol bindings in any process.**
   - Protocol runtimes admit one definition per proto file and message name: Go's
@@ -142,6 +144,10 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     semantics: resource type, ID or ID prefix, relation, subject type and ID, and
     the `Any`/`Direct`/`Named` subject relation distinction. Test doubles use this
     rather than reimplementing filter semantics.
+  - Each client ships an in-memory test double for relationship writes (with
+    preconditions and create conflicts), filtered reads and deletes, and
+    registered check results. Its surface matches the real client's so one
+    caller-defined interface or protocol accepts both.
   - Languages whose constructors return errors provide panicking/asserting
     variants for compile-time constants and tests, such as Go `Must*`.
   - Relationship accessors offer short paths for the most common fields
@@ -199,16 +205,18 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     Ruby expose working explicit stream cancellation.
 
 - **Retry only when replay is safe.**
-  - Retry idempotent reads on `UNAVAILABLE` or `ABORTED`, up to three retries,
-    using full-jitter exponential backoff starting at 100 ms.
-  - Never automatically retry `RESOURCE_EXHAUSTED` or replay mutations,
-    including writes, deletes, imports, and counter registration.
+  - By default, retry idempotent reads on `UNAVAILABLE` or `ABORTED`, up to three
+    retries, using full-jitter exponential backoff starting at 100 ms. The default
+    never retries `RESOURCE_EXHAUSTED`.
+  - Never replay mutations, including writes, deletes, imports, and counter
+    registration, under any policy.
   - Stream establishment may retry only before any item is exposed. Never
     restart a partially consumed stream.
   - All retries share the original deadline and cancellation signal.
-  - The policy above is the default. A client-wide retry policy option sets max
-    attempts, retryable read codes, backoff, and an on-retry callback, and a named
-    mode disables retries entirely. Stream-establishment retry has its own named
+  - A client-wide retry policy option replaces the default: max attempts,
+    retryable read codes (a caller may opt into others, such as
+    `RESOURCE_EXHAUSTED`), backoff, and an on-retry callback. A named mode
+    disables retries entirely, for callers that apply their own policy. Stream-establishment retry has its own named
     setting, so long-lived streams like watch can opt out. No configuration can
     make a mutation replay.
 
@@ -236,8 +244,10 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
 
 - **Expose paging state on paged reads.**
   - Relationship reads, exports and resource lookups yield each item with its
-    after-result cursor and its response's read-at revision, and accept a
-    starting cursor. Cursors stay a type distinct from revision tokens.
+    after-result cursor and, where the response carries one, its read-at or
+    looked-up-at revision, and accept a starting cursor. Resuming requires
+    repeating the original request and page size. Cursors stay a type distinct
+    from revision tokens.
   - Every page of a paged read repeats the caller's consistency and one fixed
     page size. SpiceDB hashes request arguments, including consistency and
     limit, into each cursor and rejects a cursor sent with different arguments;
@@ -264,8 +274,9 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
   - Reject filters the protocol cannot represent; never silently widen them.
 
 - **Separate bounded deletion from deletion to completion.**
-  - Bounded deletion requires a positive total limit, issues one bounded request,
-    and returns revision, count, completion, and any server resume cursor.
+  - Bounded deletion issues one request and returns revision, count, completion,
+    and any server resume cursor. In the default partial mode it requires a
+    positive total limit.
   - A named all-or-nothing mode disallows partial deletion: the server rejects a
     delete that exceeds its limit instead of deleting part of it. In that mode
     the limit may be omitted to use the server's default.
@@ -366,7 +377,11 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
   - Generated output is formatted with the language's canonical formatter, and
     the output package or module name is configurable.
   - Generate fixtures from templates, then compile, type-check, and execute them.
-    Include positive and negative type tests.
+    Include positive and negative type tests. Each forbidden construct must fail
+    on its own: a check that only proves "something failed to compile" lets one
+    error mask a regression elsewhere.
+  - Generation fails, naming both sources, when schema names would produce
+    colliding identifiers. It never silently renames.
 
 - **Document the path off the legacy libraries.**
   - Each client with an official `authzed-*` predecessor ships `MIGRATION.md`

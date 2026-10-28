@@ -51,10 +51,40 @@ current native APIs.
     Explicit signatures retain static discoverability; avoid dynamic catch-all proxies.
   - Coverage checks detect native capabilities absent from generated facades.
 
+- **Generate every nameable schema position** (root DESIGN.md, "Generate every
+  schema position a caller can name, with exact constraints").
+  - Subject refs exist for direct objects, usersets on relations, usersets on
+    permissions, and wildcards, each with its caveat and expiration variants
+    (caveated-and-expiring variants are reached through the caveated variant).
+  - Writers admit exactly the schema's subjects: a wildcard-only relation admits
+    only the wildcard ref; an expiration-only relation admits only expiring refs.
+  - Every relation has an identity-only key builder (base subjects only) for
+    deletes and exact filters, and a check accessor.
+  - Validated by-name lookups for permissions, relations and relationships
+    (checking the subject is admitted), plus generated name lists.
+  - Each language documents one collision rule below. Any remaining collision
+    fails generation with both sources named.
+
+- **Compose with the native layer** (root DESIGN.md, "Make generated values
+  composable with the native layer in both directions").
+  - Typed permissions/refs/relationships expose their parts and a canonical
+    string; typed relationships convert to and from native ones (wrapping is not
+    schema-checked) and can carry a deferred construction error.
+  - Typed filters (type, resource, relation-scoped, subject-narrowed), relation
+    and permission name constants, typed bulk checks, and a typed transaction
+    builder that defers its first error and never shadows a native method.
+  - Output is formatted with the language's canonical formatter; the output
+    package/module name is a generator option.
+
 ## Verification
 
 Generate all four target fixtures from testdata/sample.zed, build/type-check,
-run negative type fixtures, and run live integration examples. Template changes
+run negative type fixtures, and run live integration examples. sample.zed
+includes the adoption cases (`organization`/`invitation`: a permission
+userset, wildcard-only and mixed wildcard relations, an expiring userset, and an
+expiration-only relation); every target's fixtures exercise them. Negative type
+fixtures prove each forbidden line fails independently, not merely that the
+file fails to compile. Template changes
 must also pass generator unit tests. Typed and untyped checks must return the
 same authorization state and context merge results. Tests cover cancellation
 and options forwarding rather than just generated text fragments.

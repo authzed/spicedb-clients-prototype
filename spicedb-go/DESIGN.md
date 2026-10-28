@@ -10,21 +10,21 @@
 - **Provide one extensible operation surface.**
   - Operations accept context, a native request, and trailing operation-specific functional options. Bulk checks take a slice; incremental checks and streams use Go iterators.
   - Behavioral choices use named enums: `CheckTracing`, `LookupDebug`, `WatchCheckpoints`, `RemotePlaintextCredentials`, and `rel.PreconditionOperation`. Unknown values fail with `ErrInvalidArgument` before transport use. Binary result facts remain booleans.
-  - Every supported non-deprecated RPC has a native wrapper; `API_COVERAGE.md` records coverage. Counter and materialize operations are experimental. Protocol access is secondary through `RawProto`, which shares authentication and ownership.
+  - Every supported non-deprecated RPC has a native wrapper; `API_COVERAGE.md` records coverage. Counter and materialize operations are experimental. Protocol access is secondary through `RawProto`, which shares authentication and ownership; `WithCallOptions`/`WithResponseMetadata` and `client/protoconv` cover transport data and protocol-shaped output without it.
 
 - **Make check results safe and diagnostic data complete.**
   - Only unconditional `HasPermission` grants. Conditional, denied and unknown states remain distinguishable. Results preserve missing context, native revision and singular expiration.
   - Singular and bulk tracing default to `TracingDisabled`; `WithCheckTracing(TracingEnabled)` enables complete native recursive traces. Lookup debug uses its own `WithLookupResourcesDebug(DebugEnabled)` option.
-  - Bulk requests use chunks of at most 1,000, validate common consistency and ordered echoed requests, and retain absolute failure indices and per-chunk revisions. Context merges by key with item values winning; invalid JSON fails with field information.
+  - Bulk requests use chunks of at most 1,000, validate common consistency and ordered echoed requests, and retain absolute failure indices and per-chunk revisions. `WithBulkItemErrors(ItemErrorsReturned)` returns per-item errors on `CheckResult.Err` (never a grant) instead of failing the call. Context merges by key with item values winning; invalid JSON fails with field information.
 
 - **Apply one operation budget and deterministic cancellation.**
-  - Unary defaults are 30 seconds; explicit positive timeouts cover attempts, backoff, chunks and pages. Caller deadlines win. Streams and imports have no default lifetime deadline.
-  - Idempotent reads retry only Unavailable and Aborted, at most three retries, with full-jitter exponential backoff starting at 100 milliseconds. Mutations are never replayed; streams never restart after exposing an item.
-  - Iterator exit, exhaustion, failure and cancellation release transport. Imports consume incrementally in 1,000-item batches and cancel active uploads on producer or conversion failures. Native context cancellation identity is preserved.
+  - Unary defaults are 30 seconds (`WithDefaultDeadline(DefaultDeadlineDisabled)` removes the default; the caller's context still applies); explicit positive timeouts cover attempts, backoff, chunks and pages. Caller deadlines win. Streams and imports have no default lifetime deadline.
+  - By default, idempotent reads retry only Unavailable and Aborted, at most three retries, with full-jitter exponential backoff starting at 100 milliseconds; `WithRetryPolicy`, `WithRetries(RetriesDisabled)` and `WithStreamRetries(StreamRetriesDisabled)` change that client-wide. Mutations are never replayed under any policy; streams never restart after exposing an item.
+  - Iterator exit, exhaustion, failure and cancellation release transport. Imports consume incrementally in 1,000-item batches (`WithImportRelationshipsBatchSize`; one call is one transaction), report the server's final status when it aborts the stream, and cancel active uploads on producer or conversion failures. Native context cancellation identity is preserved.
 
 - **Preserve exact filter scope and acknowledged deletion progress.**
   - Subject relation filters distinguish `AnyRelation`, `DirectRelation`, and `NamedRelation`. Exact relationship filters retain subject relation identity; unrepresentable constraints fail.
-  - `DeleteRelationships` requires a positive total limit and sends one request. `DeleteAllRelationshipsNonAtomic` uses an independent positive page size (default 1,000), one budget and per-page preconditions.
+  - `DeleteRelationships` sends one request; it requires a positive total limit unless `WithDeletePartial(PartialDisallowed)` makes it all-or-nothing, where zero means the server default. `WithDeleteAllProgress` reports each acknowledged batch. `DeleteAllRelationshipsNonAtomic` uses an independent positive page size (default 1,000), one budget and per-page preconditions.
   - Results preserve revision, count, completion and cursor. Unknown completion or zero-progress partial responses fail. `DeleteProgressError` retains acknowledged cumulative progress and its cause, including cancellation; lost responses are never counted or replayed.
 
 - **Make completion deletion explicitly non-atomic.**
@@ -33,8 +33,8 @@
   - Each nonempty server cursor becomes the next batch cursor. Empty or absent cursors retain the filter-based fallback; results and failure progress retain the last acknowledged cursor.
 
 - **Preserve native stream and schema data.**
-  - Reads, lookups and exports support limits and page sizes without confusing their meanings. Lookup subjects retains wildcard exclusions and conditional context; paging preserves revision.
-  - Watch accepts a native starting token and `WithUpdatesCheckpoints(CheckpointsIncluded)`; events retain update data, changes-through revision and checkpoint fact.
+  - Reads, lookups and exports support limits and page sizes without confusing their meanings. Lookup subjects retains wildcard exclusions and conditional context. Paging repeats the caller's consistency and page size on every page (SpiceDB hashes both into the cursor, which pins the revision); items carry `AfterResultCursor` (and `ReadAt` for reads) and resume via `With*Cursor` with the same request and page size.
+  - Watch accepts a native starting token, `WithUpdatesCheckpoints(CheckpointsIncluded)` and `WithUpdatesSchemaChanges(SchemaChangesIncluded)`; events retain update data, changes-through revision, checkpoint and schema-updated facts.
   - Schema reflection/diff, tagged permission trees, counters and materialize operations preserve structured native variants, revisions, safe unknown states and optional values. Materialize cursors retain all fields; download URLs are returned without fetching them.
 
 - **Expose secure, configurable constructors.**

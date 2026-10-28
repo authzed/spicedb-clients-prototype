@@ -302,6 +302,24 @@ let request_id = reads[0].metadata().get("x-request-id");
 ```
 
 Each RPC is one recorded call, so client retries and pages appear separately,
-and an injected `Unavailable` is retried by the client as SpiceDB's would be. For integration
+and an injected `Unavailable` is retried by the client as SpiceDB's would be.
+Every client method reaches the double: operations it does not model
+(lookups, expand, watch, schema introspection, counters, Materialize) are
+recorded, consult the fault hook, and otherwise fail with
+`tonic::Code::Unimplemented` through the real client.
+
+```rust
+use spicedb::testing::{cursor_after, SchemaRevision};
+// An import-batch fault sees that batch's relationships.
+fake.set_fault_hook(|f| (f.stage == FaultStage::ImportBatch && f.batch.len() > 100)
+    .then(|| server_error(tonic::Code::ResourceExhausted, "batch too large")));
+// Resume a read or export after its first 2 matching relationships; the
+// format (the decimal count) is stable for tests.
+let options = ReadRelationshipsOptions::new().with_cursor(cursor_after(2));
+// Emulate a server whose schema reads report no revision (empty ZedToken).
+fake.set_read_schema_revision(SchemaRevision::Omitted);
+```
+
+For integration
 tests, run `authzed/spicedb serve-testing` and assert both granted and denied
 cases.

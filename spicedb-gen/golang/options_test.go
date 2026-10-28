@@ -117,3 +117,13 @@ func TestRenameResolvesDefinitionCollisions(t *testing.T) {
 	vetOut, err := cmd.CombinedOutput()
 	require.NoError(t, err, string(vetOut))
 }
+
+func TestWithArticle(t *testing.T) {
+	for word, want := range map[string]string{
+		"user": "a user", "inviter": "an inviter", "organization": "an organization",
+		"document": "a document", "UserRef": "a UserRef", "OrganizationCanAdminRef": "an OrganizationCanAdminRef",
+		"unit": "a unit", "hour": "an hour", "admin": "an admin",
+	} {
+		assert.Equal(t, want, withArticle(word), word)
+	}
+}

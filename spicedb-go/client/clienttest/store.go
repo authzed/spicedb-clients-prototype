@@ -59,6 +59,9 @@ func NewStore(initial ...rel.Relationship) *Store {
 	return s
 }
 
+// noSchema is SpiceDB's message for reading a schema before any was written.
+const noSchema = "no schema has been defined; please call WriteSchema to start"
+
 // serverError builds the error the real client returns when SpiceDB answers
 // operation op with code and message.
 func serverError(op string, code client.ErrorCode, message string) *client.Error {
@@ -188,7 +191,7 @@ func (s *Store) Write(_ context.Context, request client.WriteRequest, opts ...cl
 		switch u.Operation {
 		case rel.UpdateOperationCreate:
 			if staged.index(u.Relationship) >= 0 {
-				err := serverError("write", client.CodeAlreadyExists, fmt.Sprintf("could not CREATE relationship `%s`, as it already existed", u.Relationship))
+				err := serverError("write", client.CodeAlreadyExists, fmt.Sprintf("could not CREATE relationship `%s`, as it already existed. If this is persistent, please switch to TOUCH operations or specify a precondition", u.Relationship))
 				err.Reason = "ERROR_REASON_ATTEMPT_TO_RECREATE_RELATIONSHIP"
 				err.ReasonDomain = "authzed.com"
 				return client.WriteResult{}, err
@@ -370,8 +373,11 @@ func (s *Store) DeleteRelationships(_ context.Context, request client.DeleteRequ
 		}
 	}
 	if allOrNothing && request.Limit > 0 && matches > int(request.Limit) {
-		return client.DeleteResult{}, serverError("delete relationships", client.CodeInvalidArgument,
+		err := serverError("delete relationships", client.CodeInvalidArgument,
 			fmt.Sprintf("found more than %d relationships to be deleted and partial deletion was not requested", request.Limit))
+		err.Reason = "ERROR_REASON_TOO_MANY_RELATIONSHIPS_FOR_TRANSACTIONAL_DELETE"
+		err.ReasonDomain = "authzed.com"
+		return client.DeleteResult{}, err
 	}
 	var kept []rel.Relationship
 	var deleted uint64
@@ -397,7 +403,7 @@ func (s *Store) ReadSchema(_ context.Context, _ client.ReadSchemaRequest, opts .
 	defer s.mu.Unlock()
 	s.respond(r)
 	if !s.hasSchema {
-		return client.ReadSchemaResult{}, serverError("read schema", client.CodeNotFound, "No schema has been defined; please call WriteSchema to start")
+		return client.ReadSchemaResult{}, serverError("read schema", client.CodeNotFound, noSchema)
 	}
 	return client.ReadSchemaResult{Schema: s.schema, Revision: s.token()}, nil
 }
@@ -417,7 +423,8 @@ func (s *Store) WriteSchema(_ context.Context, request client.WriteSchemaRequest
 }
 
 // ReflectSchema returns the result registered with SetReflectSchemaResult,
-// stamped with the current revision; without one it fails with NOT_FOUND.
+// stamped with the current revision. Without one it returns an empty
+// result, as SpiceDB does for an empty schema.
 func (s *Store) ReflectSchema(_ context.Context, request client.ReflectSchemaRequest, opts ...client.ReflectSchemaOption) (client.ReflectSchemaResult, error) {
 	r := client.ResolveOptions(opts...)
 	if r.Err != nil {
@@ -429,10 +436,10 @@ func (s *Store) ReflectSchema(_ context.Context, request client.ReflectSchemaReq
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.respond(r)
-	if s.reflect == nil {
-		return client.ReflectSchemaResult{}, serverError("reflect schema", client.CodeNotFound, "No schema has been defined; please call WriteSchema to start")
+	var result client.ReflectSchemaResult
+	if s.reflect != nil {
+		result = *s.reflect
 	}
-	result := *s.reflect
 	result.Revision = s.token()
 	return result, nil
 }

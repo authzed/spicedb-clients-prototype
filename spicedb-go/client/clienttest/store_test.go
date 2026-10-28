@@ -189,3 +189,22 @@ func TestStoreFillsResponseMetadata(t *testing.T) {
 	require.Equal(t, []string{"v1.99"}, header.Get("io.spicedb.respmeta.version"))
 	require.Equal(t, []string{"1"}, trailer.Get("t"))
 }
+
+func TestStoreMatchesServerEdgeCases(t *testing.T) {
+	ctx := context.Background()
+	s := clienttest.NewStore(rel.MustFromTuple("doc:a#viewer@user:x"), rel.MustFromTuple("doc:b#viewer@user:x"))
+
+	_, err := s.ReadSchema(ctx, client.ReadSchemaRequest{})
+	require.ErrorIs(t, err, client.ErrNotFound)
+	require.Equal(t, "spicedb: read schema: no schema has been defined; please call WriteSchema to start", err.Error())
+
+	reflected, err := s.ReflectSchema(ctx, client.ReflectSchemaRequest{Consistency: consistency.MinLatency()})
+	require.NoError(t, err, "reflecting an empty schema succeeds")
+	require.Empty(t, reflected.Definitions)
+
+	_, err = s.DeleteRelationships(ctx, client.DeleteRequest{Filter: rel.MustNewFilter("doc"), Limit: 1}, client.WithDeletePartial(client.PartialDisallowed))
+	var e *client.Error
+	require.ErrorAs(t, err, &e)
+	require.Equal(t, client.CodeInvalidArgument, e.Code)
+	require.Equal(t, "ERROR_REASON_TOO_MANY_RELATIONSHIPS_FOR_TRANSACTIONAL_DELETE", e.Reason)
+}

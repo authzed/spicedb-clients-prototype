@@ -723,10 +723,23 @@ func collectImplementors(subjects []schema.SubjectType, knownTypes map[string]bo
 	return result
 }
 
-// withArticle prefixes word with "a" or "an", chosen by its first letter, for
-// generated comments ("an inviter relationship", "a viewer relationship").
+// withArticle prefixes word with "a" or "an" for generated comments ("an
+// organization", "a document", "a user"). The choice follows the first
+// letter, except for common words whose first sound is not that letter's
+// (the same rule the TypeScript generator uses).
 func withArticle(word string) string {
-	if word != "" && strings.ContainsRune("aeiouAEIOU", rune(word[0])) {
+	lower := strings.ToLower(word)
+	for _, p := range []string{"uni", "use", "usa", "usu", "uti", "ure", "euro", "one", "once"} {
+		if strings.HasPrefix(lower, p) {
+			return "a " + word
+		}
+	}
+	for _, p := range []string{"hour", "honest", "honor", "heir"} {
+		if strings.HasPrefix(lower, p) {
+			return "an " + word
+		}
+	}
+	if lower != "" && strings.ContainsRune("aeiou", rune(lower[0])) {
 		return "an " + word
 	}
 	return "a " + word

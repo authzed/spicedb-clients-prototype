@@ -143,8 +143,10 @@ try {
 - `withSubject(filter, User(u))` matches direct relationships only; use
   `withSubjectAnyRelation` to include usersets such as `team:eng#member`.
 - **Do not retry a failed write blindly**; it may have committed. Only a
-  touch-only transaction without preconditions (and `writeSchema`) may opt in
-  per call with `{ retryPolicy }`; other mutations reject it.
+  touch-only transaction without preconditions (`txn.isIdempotent()`, and
+  `writeSchema`) may opt in per call with `{ retryPolicy }`; other mutations
+  reject it. A client-wide `operationRetryPolicies: { write: policy }` retries
+  only idempotent writes and leaves the others un-retried.
 
 ## Read relationships
 
@@ -182,6 +184,8 @@ const tool = createSpiceDBClient(endpoint, token, {
     retries: Retries.Disabled,                 // or retryPolicy: { ...DEFAULT_RETRY_POLICY, onRetry: e => log(e) }
     defaultDeadline: DefaultDeadline.Disabled, // the call's own timeoutMs/signal still apply
     streamRetries: StreamRetries.Disabled,     // e.g. a supervised watch
+    // Per operation, for every call (a call's own retryPolicy still wins):
+    operationRetryPolicies: { watch: { ...DEFAULT_RETRY_POLICY, maxRetries: 0 } },
 });
 const { schema } = await tool.readSchema({ onHeader: h => log(h.get("x-request-id")), onTrailer: t => log([...t.keys()]) });
 const wire = protoconv.relationshipToProto(relationshipFromTuple("document:readme#viewer@user:alice"));
@@ -224,5 +228,18 @@ Depend on a `Pick<SpiceDBClient, ...>` of the methods you use; both
 `checkBulk` and `close`. Its errors have the real client's classes, codes and
 message shape; it honors cursors, limits, the export filter and
 `onHeader`/`onTrailer` (see `setResponseMetadata`). Build expected errors with
-`SpiceDBError.fromCode(Code.FailedPrecondition, "...")`. For integration tests,
+`SpiceDBError.fromCode(Code.FailedPrecondition, "...")`, or
+`InMemorySpiceDB.serverError(code, message)` for one shaped like a server
+failure. It records every call (`db.calls`, `db.callsOf("write")`: operation,
+index, request, options) and injects faults: `db.failNext("check", err)` fails
+one call; `db.setFaultHook(f => ...)` is consulted at `FaultStage.Call`,
+`ImportBatch` (`f.item` is the batch index), `ImportCommit` and `Item` (each
+read or export item), and a failed write or import applies nothing.
+
+```ts
+db.setFaultHook(f => f.call.operation === "importRelationships" && f.stage === FaultStage.ImportBatch && f.item === 2
+    ? InMemorySpiceDB.serverError(Code.AlreadyExists, "duplicate relationship") : undefined);
+```
+
+For integration tests,
 run `authzed/spicedb serve-testing` and assert both granted and denied cases.

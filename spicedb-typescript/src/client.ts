@@ -12,6 +12,22 @@ import { type Relationship, type RelationshipFilter, type CheckRequest, type Che
 import { InvalidArgumentError, SpiceDBError, toSpiceDBError, toSpiceDBErrorFromStatus } from "./errors.js";
 import { Operation, withDeleteProgress } from "./operation.js";
 export type { SpiceDBProtoClient, TlsOptions };
+/** The name of a {@link SpiceDBClient} operation: each method other than `raw` and `close`. */
+export type OperationName =
+    | "check" | "checkBulk" | "write" | "readRelationships" | "deleteRelationships" | "deleteAllRelationshipsNonAtomic"
+    | "lookupResources" | "lookupSubjects" | "expandPermissionTree" | "importRelationships" | "exportRelationships"
+    | "readSchema" | "writeSchema" | "reflectSchema" | "computablePermissions" | "dependentRelations" | "diffSchema"
+    | "experimentalRegisterRelationshipCounter" | "experimentalCountRelationships" | "experimentalUnregisterRelationshipCounter"
+    | "watch" | "experimentalCountRelationshipsByFilter" | "experimentalWatchPermissionSets" | "experimentalLookupPermissionSets"
+    | "experimentalDownloadPermissionSets" | "experimentalRoaringLookupResources";
+/**
+ * Retry policies for every call of individual operations, keyed by operation
+ * name, for example `{ watch: { ...DEFAULT_RETRY_POLICY, maxRetries: 0 } }`.
+ * See {@link SpiceDBClientBehaviorOptions.operationRetryPolicies}.
+ */
+export type OperationRetryPolicies = { readonly [K in OperationName]?: RetryPolicy };
+/** Operations that are never idempotent on replay, so a per-operation policy with retries is rejected. */
+const NEVER_IDEMPOTENT: ReadonlySet<string> = new Set<OperationName>(["deleteRelationships", "deleteAllRelationshipsNonAtomic", "importRelationships", "experimentalRegisterRelationshipCounter", "experimentalUnregisterRelationshipCounter"]);
 /**
  * Client-wide operation behavior. These apply to every client, including one
  * built from a caller-owned transport with {@link SpiceDBClient.fromTransport}.
@@ -27,6 +43,22 @@ export interface SpiceDBClientBehaviorOptions {
     readonly defaultTimeoutMs?: number;
     /** `DefaultDeadline.Disabled` removes the default budget; a call's own `timeoutMs`/`signal` still apply. */
     readonly defaultDeadline?: DefaultDeadline;
+    /**
+     * Retry policies for every call of one operation, keyed by operation name,
+     * e.g. `{ watch: noRetries }` so watches are never reopened while every
+     * other operation keeps the client's policy. The most specific policy wins:
+     * a call's `CallOptions.retryPolicy`, then this, then the client-wide
+     * policy (`retryPolicy`, `retries`, `streamRetries`). Like a per-call
+     * policy, it also governs stream establishment. For `write` it applies only
+     * to transactions that are idempotent on replay
+     * ({@link Transaction.isIdempotent}); other writes are not retried. A
+     * policy with retries for an operation that is never idempotent
+     * (`deleteRelationships`, `deleteAllRelationshipsNonAtomic`,
+     * `importRelationships`, relationship-counter registration and
+     * unregistration) is rejected with `InvalidArgumentError` when the client
+     * is built; a zero-retry policy is allowed for any operation.
+     */
+    readonly operationRetryPolicies?: OperationRetryPolicies;
 }
 export interface SpiceDBClientOptions extends SpiceDBClientBehaviorOptions {
     readonly endpoint: string;
@@ -42,6 +74,7 @@ const CONNECTION_OPTIONS = ["endpoint", "token", "transportSecurity", "remoteCre
 export class SpiceDBClient {
     private readonly proto: SpiceDBProtoClient;
     private readonly retryPolicy: RetryPolicy;
+    private readonly operationRetryPolicies = new Map<OperationName, RetryPolicy>();
     private readonly streamRetries: boolean;
     private readonly defaultTimeoutMs: number | undefined;
     private readonly operations = new Set<Operation>();
@@ -58,6 +91,16 @@ export class SpiceDBClient {
             throw new InvalidArgumentError("retryPolicy cannot be combined with Retries.Disabled");
         this.retryPolicy = retries === Retries.Disabled ? Object.freeze({ ...DEFAULT_RETRY_POLICY, maxRetries: 0 }) : options.retryPolicy === undefined ? DEFAULT_RETRY_POLICY : validRetryPolicy(options.retryPolicy);
         this.streamRetries = mode(options.streamRetries, StreamRetries, StreamRetries.Enabled, "streamRetries") === StreamRetries.Enabled;
+        for (const [name, policy] of Object.entries(options.operationRetryPolicies ?? {})) {
+            if (policy === undefined)
+                continue;
+            if (typeof (SpiceDBClient.prototype as unknown as Record<string, unknown>)[name] !== "function" || name === "raw" || name === "close" || name === "constructor")
+                throw new InvalidArgumentError(`operationRetryPolicies: ${name} is not a client operation`);
+            const valid = validRetryPolicy(policy);
+            if (NEVER_IDEMPOTENT.has(name) && valid.maxRetries > 0)
+                throw new InvalidArgumentError(`operationRetryPolicies: ${name} cannot be retried: it is not idempotent on replay`);
+            this.operationRetryPolicies.set(name as OperationName, valid);
+        }
         const supplied = (options as { [SUPPLIED_TRANSPORT]?: Transport })[SUPPLIED_TRANSPORT];
         if (supplied !== undefined) {
             this.proto = new ProtoClient(supplied);
@@ -108,12 +151,13 @@ export class SpiceDBClient {
         policy.onRetry?.({ operation: name, attempt: attempt + 1, error: toSpiceDBError(mapped), delayMs });
         await op.sleep(delayMs);
     }
-    private operation(options?: CallOptions, streaming = false): Operation {
+    private operation(name: OperationName, options?: CallOptions, streaming = false): Operation {
         if (this.closed)
             throw new SpiceDBError("Client is closed");
-        // A per-call policy replaces the client's for this operation only.
+        // The most specific policy wins: the call's, then the operation's, then the client's.
         const callPolicy = options?.retryPolicy === undefined ? undefined : validRetryPolicy(options.retryPolicy);
-        const op = new Operation(options, streaming ? undefined : this.effectiveTimeoutMs(options?.timeoutMs), () => this.operations.delete(op), callPolicy ?? this.retryPolicy, callPolicy !== undefined);
+        const specific = callPolicy ?? this.operationRetryPolicies.get(name);
+        const op = new Operation(options, streaming ? undefined : this.effectiveTimeoutMs(options?.timeoutMs), () => this.operations.delete(op), specific ?? this.retryPolicy, specific !== undefined);
         this.operations.add(op);
         return op;
     }
@@ -133,8 +177,8 @@ export class SpiceDBClient {
             }
         }
     }
-    private async unary<T>(name: string, options: CallOptions | undefined, read: boolean, fn: (op: Operation) => Promise<T>): Promise<T> {
-        const op = this.operation(options);
+    private async unary<T>(name: OperationName, options: CallOptions | undefined, read: boolean, fn: (op: Operation) => Promise<T>): Promise<T> {
+        const op = this.operation(name, options);
         try {
             return await this.retry(op, () => fn(op), read, name);
         }
@@ -145,8 +189,8 @@ export class SpiceDBClient {
             op.dispose();
         }
     }
-    private stream<T>(name: string, options: CallOptions | undefined, factory: (op: Operation) => AsyncGenerator<T>, retry = true): AsyncIterableIterator<T> {
-        const op = this.operation(options, true);
+    private stream<T>(name: OperationName, options: CallOptions | undefined, factory: (op: Operation) => AsyncGenerator<T>, retry = true): AsyncIterableIterator<T> {
+        const op = this.operation(name, options, true);
         const self = this;
         const iterator = (async function* () {
             let yielded = false;
@@ -166,9 +210,9 @@ export class SpiceDBClient {
                         }
                     }
                     catch (error) {
-                        // A per-call policy governs establishment for this stream,
-                        // whatever the client-wide stream setting.
-                        await self.retryOrThrow(op, name, error, attempt, !yielded && (op.callRetry || (retry && self.streamRetries)));
+                        // A per-call or per-operation policy governs establishment
+                        // for this stream, whatever the client-wide stream setting.
+                        await self.retryOrThrow(op, name, error, attempt, !yielded && (op.specificRetry || (retry && self.streamRetries)));
                     }
                     finally {
                         if (current) {
@@ -200,7 +244,7 @@ export class SpiceDBClient {
         return this.unary("check", options, true, async (op) => checkResultFromProto(await this.proto.permissions.checkPermission(wire, op.callOptions())));
     }
     async checkBulk(requests: readonly CheckRequest[], options?: CheckOptions): Promise<readonly CheckResult[]> {
-        const op = this.operation(options);
+        const op = this.operation("checkBulk", options);
         try {
             op.check();
             const key = requests[0]?.consistency;
@@ -254,12 +298,13 @@ export class SpiceDBClient {
      * Writes a transaction atomically. An empty transaction is sent as is:
      * SpiceDB accepts it, evaluates its preconditions and returns the current
      * revision. Not retried unless the call opts in with `retryPolicy`, which
-     * only a touch-only transaction without preconditions may do.
+     * only an idempotent transaction ({@link Transaction.isIdempotent}) may
+     * do, or the client's `operationRetryPolicies.write` applies, which it
+     * does only to idempotent transactions.
      */
     async write(transaction: Transaction, options?: CallOptions): Promise<WriteResult> {
         const wire = create(WriteRelationshipsRequestSchema, transaction._build());
-        const touchOnly = wire.optionalPreconditions.length === 0 && wire.updates.every(u => u.operation === RelationshipUpdate_Operation.TOUCH);
-        const retry = mutationRetry(options?.retryPolicy, touchOnly, "write");
+        const retry = mutationRetry(options?.retryPolicy, this.operationRetryPolicies.get("write"), transaction.isIdempotent(), "write");
         return this.unary("write", options, retry, async (op) => immutableSnapshot({ revision: serverToken((await this.proto.permissions.writeRelationships(wire, op.callOptions())).writtenAt?.token) }));
     }
     /**
@@ -302,7 +347,7 @@ export class SpiceDBClient {
         });
     }
     async deleteRelationships(filter: RelationshipFilter, options: DeleteOptions): Promise<DeleteResult> {
-        mutationRetry(options?.retryPolicy, false, "deleteRelationships");
+        mutationRetry(options?.retryPolicy, undefined, false, "deleteRelationships");
         const wire = toProtoDeleteRelationshipsRequest(filter, options);
         return this.unary("deleteRelationships", options, false, async (op) => this.deleteResult(await this.proto.permissions.deleteRelationships(wire, op.callOptions())));
     }
@@ -310,9 +355,9 @@ export class SpiceDBClient {
         return immutableSnapshot({ revision: serverToken(resp.deletedAt?.token), deletedCount: previous + resp.relationshipsDeletedCount, cursor: resp.afterResultCursor?.token, progress: resp.deletionProgress === DeleteRelationshipsResponse_DeletionProgress.COMPLETE ? "complete" : resp.deletionProgress === DeleteRelationshipsResponse_DeletionProgress.PARTIAL ? "partial" : "unspecified" });
     }
     async deleteAllRelationshipsNonAtomic(filter: RelationshipFilter, options?: DeleteAllOptions): Promise<DeleteResult> {
-        mutationRetry(options?.retryPolicy, false, "deleteAllRelationshipsNonAtomic");
+        mutationRetry(options?.retryPolicy, undefined, false, "deleteAllRelationshipsNonAtomic");
         const wire = toProtoDeleteRelationshipsRequest(filter, { ...options, limit: positiveLimit(options?.pageSize ?? 1000, "pageSize") });
-        const op = this.operation(options);
+        const op = this.operation("deleteAllRelationshipsNonAtomic", options);
         let progress: DeleteResult | undefined;
         try {
             for (;;) {
@@ -396,9 +441,9 @@ export class SpiceDBClient {
      * reported, never the transport's end-of-stream from a failed send.
      */
     async importRelationships(relationships: Iterable<Relationship> | AsyncIterable<Relationship>, options?: ImportOptions): Promise<bigint> {
-        mutationRetry(options?.retryPolicy, false, "importRelationships");
+        mutationRetry(options?.retryPolicy, undefined, false, "importRelationships");
         const batchSize = positiveLimit(options?.batchSize ?? 1000, "batchSize");
-        const op = this.operation(options, true);
+        const op = this.operation("importRelationships", options, true);
         let input: Iterator<Relationship> | AsyncIterator<Relationship> | undefined;
         let producerClosed = false;
         const closeProducer = () => {
@@ -466,8 +511,8 @@ export class SpiceDBClient {
         });
     }
     async readSchema(options?: CallOptions): Promise<SchemaResult> { return this.unary("readSchema", options, true, async (op) => { const resp = await this.proto.schema.readSchema(create(ReadSchemaRequestSchema), op.callOptions()); return immutableSnapshot({ schema: resp.schemaText, revision: serverToken(resp.readAt?.token) }); }); }
-    /** Writes the schema. Not retried unless the call opts in with `retryPolicy` (a schema write is idempotent on replay). */
-    async writeSchema(schema: string, options?: CallOptions): Promise<ZedToken> { return this.unary("writeSchema", options, mutationRetry(options?.retryPolicy, true, "writeSchema"), async (op) => serverToken((await this.proto.schema.writeSchema(create(WriteSchemaRequestSchema, { schema }), op.callOptions())).writtenAt?.token)); }
+    /** Writes the schema. Not retried unless the call opts in with `retryPolicy` or the client sets `operationRetryPolicies.writeSchema` (a schema write is idempotent on replay). */
+    async writeSchema(schema: string, options?: CallOptions): Promise<ZedToken> { return this.unary("writeSchema", options, mutationRetry(options?.retryPolicy, this.operationRetryPolicies.get("writeSchema"), true, "writeSchema"), async (op) => serverToken((await this.proto.schema.writeSchema(create(WriteSchemaRequestSchema, { schema }), op.callOptions())).writtenAt?.token)); }
     async reflectSchema(request: ReflectSchemaRequest, options?: CallOptions): Promise<ReflectSchemaResult> {
         const wire = create(ReflectSchemaRequestSchema, { consistency: this.consistency(request.consistency), optionalFilters: request.filters?.map(f => create(ReflectionSchemaFilterSchema, { optionalDefinitionNameFilter: f.definitionName ?? "", optionalCaveatNameFilter: f.caveatName ?? "", optionalRelationNameFilter: f.relationName ?? "", optionalPermissionNameFilter: f.permissionName ?? "" })) });
         return this.unary("reflectSchema", options, true, async (op) => { const resp = await this.proto.schema.reflectSchema(wire, op.callOptions()); return immutableSnapshot({ definitions: resp.definitions.map(fromProtoSchemaDefinition), caveats: resp.caveats.map(fromProtoSchemaCaveat), revision: serverToken(resp.readAt?.token) }); });
@@ -486,7 +531,7 @@ export class SpiceDBClient {
     }
     /** @experimental */
     async experimentalRegisterRelationshipCounter(name: string, filter: RelationshipFilter, options?: CallOptions): Promise<void> {
-        mutationRetry(options?.retryPolicy, false, "experimentalRegisterRelationshipCounter");
+        mutationRetry(options?.retryPolicy, undefined, false, "experimentalRegisterRelationshipCounter");
         const wire = create(ExperimentalRegisterRelationshipCounterRequestSchema, { name, relationshipFilter: toProtoRelationshipFilter(filter) });
         await this.unary("experimentalRegisterRelationshipCounter", options, false, op => this.proto.experimental.experimentalRegisterRelationshipCounter(wire, op.callOptions()));
     }
@@ -495,7 +540,7 @@ export class SpiceDBClient {
         return this.unary("experimentalCountRelationships", options, true, async (op) => { const resp = await this.proto.experimental.experimentalCountRelationships(create(ExperimentalCountRelationshipsRequestSchema, { name }), op.callOptions()); return immutableSnapshot(resp.counterResult.case === "readCounterValue" ? { stillCalculating: false, count: resp.counterResult.value.relationshipCount, revision: serverToken(resp.counterResult.value.readAt?.token) } : { stillCalculating: true }); });
     }
     /** @experimental */
-    async experimentalUnregisterRelationshipCounter(name: string, options?: CallOptions): Promise<void> { mutationRetry(options?.retryPolicy, false, "experimentalUnregisterRelationshipCounter"); await this.unary("experimentalUnregisterRelationshipCounter", options, false, op => this.proto.experimental.experimentalUnregisterRelationshipCounter(create(ExperimentalUnregisterRelationshipCounterRequestSchema, { name }), op.callOptions())); }
+    async experimentalUnregisterRelationshipCounter(name: string, options?: CallOptions): Promise<void> { mutationRetry(options?.retryPolicy, undefined, false, "experimentalUnregisterRelationshipCounter"); await this.unary("experimentalUnregisterRelationshipCounter", options, false, op => this.proto.experimental.experimentalUnregisterRelationshipCounter(create(ExperimentalUnregisterRelationshipCounterRequestSchema, { name }), op.callOptions())); }
     watch(request?: WatchRequest, options?: CallOptions): AsyncIterableIterator<WatchEvent> {
         if (request?.objectTypes?.length && request.relationshipFilters?.length)
             throw new InvalidArgumentError("watch objectTypes and relationshipFilters cannot be combined");

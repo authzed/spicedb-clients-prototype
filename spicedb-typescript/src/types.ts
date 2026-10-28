@@ -832,6 +832,12 @@ export class Transaction {
     get preconditions(): readonly Precondition[] { return Object.freeze(this._preconditions.map(p => p.native)); }
     /** Transaction metadata, if set. */
     get metadata(): JSONObject | undefined { return this._metadata; }
+    /**
+     * Whether replaying the transaction is safe: it contains only touches and
+     * no preconditions. This is the rule the client uses to decide whether a
+     * write may be retried.
+     */
+    isIdempotent(): boolean { return this._preconditions.length === 0 && this._updates.every(u => u.native.operation === "touch"); }
     /** `[MUST_NOT_MATCH(organization:acme#admin@*), DELETE(...), TOUCH(...)]` */
     toString(): string { return `[${[...this._preconditions.map(p => preconditionToString(p.native)), ...this._updates.map(u => updateToString(u.native))].join(", ")}]`; }
     toJSON(): { updates: readonly RelationshipUpdate[]; preconditions: readonly Precondition[]; metadata?: JSONObject } {

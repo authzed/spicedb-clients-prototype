@@ -14,6 +14,62 @@ import {
     type SubjectRef, type WriteResult,
 } from "./types.js";
 
+/** The operations {@link InMemorySpiceDB} implements, named like the client's methods. */
+export type InMemoryOperation = "write" | "readRelationships" | "exportRelationships" | "importRelationships" | "deleteRelationships"
+    | "deleteAllRelationshipsNonAtomic" | "readSchema" | "writeSchema" | "reflectSchema" | "check" | "checkBulk";
+
+/** The arguments {@link InMemorySpiceDB} records for each operation: the call's request and its options as given. */
+export interface InMemoryCallArguments {
+    readonly write: { readonly request: Transaction; readonly options?: CallOptions };
+    readonly readRelationships: { readonly request: ReadRelationshipsRequest; readonly options?: CallOptions };
+    readonly exportRelationships: { readonly request: ExportRelationshipsRequest; readonly options?: CallOptions };
+    /** The request is the caller's relationship iterable, not a copy of its items. */
+    readonly importRelationships: { readonly request: Iterable<Relationship> | AsyncIterable<Relationship>; readonly options?: ImportOptions };
+    readonly deleteRelationships: { readonly request: RelationshipFilter; readonly options: DeleteOptions };
+    readonly deleteAllRelationshipsNonAtomic: { readonly request: RelationshipFilter; readonly options?: DeleteAllOptions };
+    readonly readSchema: { readonly request: undefined; readonly options?: CallOptions };
+    readonly writeSchema: { readonly request: string; readonly options?: CallOptions };
+    readonly reflectSchema: { readonly request: ReflectSchemaRequest; readonly options?: CallOptions };
+    readonly check: { readonly request: CheckRequest; readonly options?: CheckOptions };
+    readonly checkBulk: { readonly request: readonly CheckRequest[]; readonly options?: CheckOptions };
+}
+
+/**
+ * One call {@link InMemorySpiceDB} recorded, discriminated by `operation`:
+ * `index` counts calls of that operation from 0, and `request`/`options` are
+ * what the caller passed (options are a frozen shallow copy).
+ */
+export type RecordedCall<K extends InMemoryOperation = InMemoryOperation> = {
+    [P in K]: { readonly operation: P; readonly index: number } & InMemoryCallArguments[P];
+}[K];
+
+/** Where in an operation an {@link InMemorySpiceDB} fault hook is consulted. */
+export enum FaultStage {
+    /** Before the operation does anything; a stream fails before its first item. */
+    Call = "call",
+    /** Before import batch `Fault.item` (0-based) is taken; batches have the call's `batchSize` (default 1,000). */
+    ImportBatch = "importBatch",
+    /** After every import batch, before the import commits. */
+    ImportCommit = "importCommit",
+    /** Before a read or export yields item `Fault.item` (0-based). */
+    Item = "item",
+}
+
+/** A point at which {@link InMemorySpiceDB}'s fault hook is consulted. */
+export interface Fault {
+    readonly call: RecordedCall;
+    readonly stage: FaultStage;
+    /** The batch index for `FaultStage.ImportBatch`, the item index for `FaultStage.Item`; 0 otherwise. */
+    readonly item: number;
+}
+
+/**
+ * Consulted at every {@link Fault} point; returning an error makes the
+ * operation fail with it there (a stream throws it from iteration). Build
+ * errors with {@link InMemorySpiceDB.serverError} to match the real client's.
+ */
+export type FaultHook = (fault: Fault) => Error | undefined | void;
+
 /** Identifies a check whose result {@link InMemorySpiceDB.setCheckResult} registers. */
 export interface CheckRegistration {
     readonly resource: ObjectRef;
@@ -51,6 +107,14 @@ export interface CheckRegistration {
  * signals, and `onHeader`/`onTrailer` (called with the metadata registered by
  * {@link InMemorySpiceDB.setResponseMetadata}). Read cursors are positions in
  * the store's identity order.
+ *
+ * Every call is recorded ({@link InMemorySpiceDB.calls},
+ * {@link InMemorySpiceDB.callsOf}) with its request and options, so tests can
+ * assert on what was sent without a strict mock. Faults can be injected
+ * ({@link InMemorySpiceDB.setFaultHook}, {@link InMemorySpiceDB.failNext})
+ * before any operation, before each import batch, before an import commits,
+ * and before each read or export item; a failed write or import applies
+ * nothing.
  */
 export class InMemorySpiceDB {
     #relationships = new Map<string, Relationship>();
@@ -61,6 +125,19 @@ export class InMemorySpiceDB {
     #reflection?: Omit<ReflectSchemaResult, "revision">;
     #header?: HeadersInit;
     #trailer?: HeadersInit;
+    #calls: RecordedCall[] = [];
+    #counts = new Map<InMemoryOperation, number>();
+    #hook?: FaultHook;
+
+    /**
+     * Builds the error the real client raises when SpiceDB answers with `code`
+     * and `message`: the subclass for `code`, Connect's `[code]` prefix on
+     * `message`, the server message verbatim on `serverMessage`, and the
+     * `ConnectError` as `cause`. Use it in fault hooks.
+     */
+    static serverError(code: Code, message: string, options?: Omit<SpiceDBErrorOptions, "code" | "cause" | "serverMessage">): SpiceDBError {
+        return serverError(code, message, options);
+    }
 
     constructor(initial: Iterable<Relationship> = []) {
         for (const rel of initial)
@@ -80,6 +157,31 @@ export class InMemorySpiceDB {
         this.#reflection = immutableSnapshot({ definitions: result.definitions, caveats: result.caveats });
     }
 
+    /** Every recorded call, in order. */
+    get calls(): readonly RecordedCall[] { return Object.freeze([...this.#calls]); }
+
+    /** The recorded calls of one operation, in order. */
+    callsOf<K extends InMemoryOperation>(operation: K): readonly RecordedCall<K>[] {
+        return Object.freeze(this.#calls.filter(call => call.operation === operation) as unknown as RecordedCall<K>[]);
+    }
+
+    /**
+     * Installs `hook`, consulted at every {@link Fault} point; an error it
+     * returns fails the operation there. Pass `undefined` to remove it.
+     */
+    setFaultHook(hook: FaultHook | undefined): void { this.#hook = hook; }
+
+    /** Makes the next call of `operation` fail with `error` before doing anything; later calls succeed. Replaces any fault hook. */
+    failNext(operation: InMemoryOperation, error: Error): void {
+        let failed = false;
+        this.#hook = fault => {
+            if (failed || fault.stage !== FaultStage.Call || fault.call.operation !== operation)
+                return undefined;
+            failed = true;
+            return error;
+        };
+    }
+
     /** Sets the headers and trailers every operation reports to its `onHeader`/`onTrailer` callbacks. */
     setResponseMetadata(header?: HeadersInit, trailer?: HeadersInit): void {
         this.#header = header === undefined ? undefined : new Headers(header);
@@ -88,9 +190,10 @@ export class InMemorySpiceDB {
 
     /** Applies the transaction atomically; an empty transaction checks its preconditions and returns the current revision, as SpiceDB does. */
     async write(transaction: Transaction, options?: CallOptions): Promise<WriteResult> {
+        this.#start("write", transaction, options);
         if (!(transaction instanceof Transaction))
             throw new InvalidArgumentError("write requires a Transaction");
-        mutationRetry(options?.retryPolicy, transaction.preconditions.length === 0 && transaction.updates.every(u => u.operation === "touch"), "write");
+        mutationRetry(options?.retryPolicy, undefined, transaction.isIdempotent(), "write");
         this.#begin(options);
         const next = new Map(this.#relationships);
         this.#preconditions(next, transaction.preconditions);
@@ -111,17 +214,25 @@ export class InMemorySpiceDB {
 
     /** Yields matching relationships in identity order, honoring `cursor` and `limit`; each carries its `afterResultCursor`. */
     readRelationships(request: ReadRelationshipsRequest, options?: CallOptions): AsyncIterableIterator<ReadRelationship> {
+        const call = this.#record("readRelationships", request, options);
+        const fault = this.#faultAt(call, FaultStage.Call, 0);
+        if (fault !== undefined)
+            return failedStream(fault);
         requireConsistency(request.consistency);
         toProtoRelationshipFilter(request.filter);
         const limit = request.limit === undefined ? undefined : positiveLimit(request.limit, "limit");
         this.#begin(options);
         const readAt = new ZedToken(String(this.#revision));
         return streamOf(() => this.#page(rel => filterMatches(request.filter, rel), request.cursor, limit)
-            .map(([rel, afterResultCursor]) => immutableSnapshot({ ...rel, afterResultCursor, readAt }) as ReadRelationship));
+            .map(([rel, afterResultCursor]) => immutableSnapshot({ ...rel, afterResultCursor, readAt }) as ReadRelationship), index => this.#faultAt(call, FaultStage.Item, index));
     }
 
     /** Yields every relationship (or those matching `filter`) after `cursor`; each carries its `afterResultCursor`. */
     exportRelationships(request: ExportRelationshipsRequest, options?: CallOptions): AsyncIterableIterator<ExportedRelationship> {
+        const call = this.#record("exportRelationships", request, options);
+        const fault = this.#faultAt(call, FaultStage.Call, 0);
+        if (fault !== undefined)
+            return failedStream(fault);
         requireConsistency(request.consistency);
         if (request.filter !== undefined)
             toProtoRelationshipFilter(request.filter);
@@ -129,19 +240,23 @@ export class InMemorySpiceDB {
         this.#begin(options);
         const filter = request.filter;
         return streamOf(() => this.#page(rel => filter === undefined || filterMatches(filter, rel), request.cursor, undefined)
-            .map(([rel, afterResultCursor]) => immutableSnapshot({ ...rel, afterResultCursor }) as ExportedRelationship));
+            .map(([rel, afterResultCursor]) => immutableSnapshot({ ...rel, afterResultCursor }) as ExportedRelationship), index => this.#faultAt(call, FaultStage.Item, index));
     }
 
     /** Adds every relationship in one transaction, as SpiceDB does: if any already exists (or repeats), nothing is added (`AlreadyExistsError`). */
     async importRelationships(relationships: Iterable<Relationship> | AsyncIterable<Relationship>, options?: ImportOptions): Promise<bigint> {
-        mutationRetry(options?.retryPolicy, false, "importRelationships");
-        positiveLimit(options?.batchSize ?? 1000, "batchSize");
+        const call = this.#start("importRelationships", relationships, options);
+        mutationRetry(options?.retryPolicy, undefined, false, "importRelationships");
+        const batchSize = positiveLimit(options?.batchSize ?? 1000, "batchSize");
         this.#begin(options);
         const batch: Relationship[] = [];
         for await (const rel of relationships) {
             toProtoRelationship(rel);
+            if (batch.length % batchSize === 0)
+                this.#fault(call, FaultStage.ImportBatch, batch.length / batchSize);
             batch.push(snapshot(rel));
         }
+        this.#fault(call, FaultStage.ImportCommit, 0);
         const next = new Map(this.#relationships);
         for (const rel of batch) {
             const key = identity(rel);
@@ -155,7 +270,27 @@ export class InMemorySpiceDB {
     }
 
     async deleteRelationships(filter: RelationshipFilter, options: DeleteOptions): Promise<DeleteResult> {
-        mutationRetry(options?.retryPolicy, false, "deleteRelationships");
+        this.#start("deleteRelationships", filter, options);
+        mutationRetry(options?.retryPolicy, undefined, false, "deleteRelationships");
+        return this.#delete(filter, options);
+    }
+
+    async deleteAllRelationshipsNonAtomic(filter: RelationshipFilter, options?: DeleteAllOptions): Promise<DeleteResult> {
+        this.#start("deleteAllRelationshipsNonAtomic", filter, options);
+        mutationRetry(options?.retryPolicy, undefined, false, "deleteAllRelationshipsNonAtomic");
+        const pageSize = positiveLimit(options?.pageSize ?? 1000, "pageSize");
+        let total = 0n;
+        for (;;) {
+            const result = await this.#delete(filter, { ...options, retryPolicy: undefined, limit: pageSize });
+            total += result.deletedCount;
+            const progress: DeleteResult = immutableSnapshot({ ...result, deletedCount: total });
+            options?.onProgress?.(progress);
+            if (progress.progress === "complete")
+                return progress;
+        }
+    }
+
+    async #delete(filter: RelationshipFilter, options: DeleteOptions): Promise<DeleteResult> {
         toProtoRelationshipFilter(filter);
         const partial = mode(options?.partial, DeletePartial, DeletePartial.Allowed, "partial");
         const limit = partial === DeletePartial.Disallowed && options.limit === undefined ? undefined : positiveLimit(options.limit as number, "limit");
@@ -172,22 +307,9 @@ export class InMemorySpiceDB {
         return immutableSnapshot({ revision: this.#bump(), deletedCount: BigInt(deleted.length), progress: deleted.length < matches.length ? "partial" : "complete" });
     }
 
-    async deleteAllRelationshipsNonAtomic(filter: RelationshipFilter, options?: DeleteAllOptions): Promise<DeleteResult> {
-        mutationRetry(options?.retryPolicy, false, "deleteAllRelationshipsNonAtomic");
-        const pageSize = positiveLimit(options?.pageSize ?? 1000, "pageSize");
-        let total = 0n;
-        for (;;) {
-            const result = await this.deleteRelationships(filter, { ...options, retryPolicy: undefined, limit: pageSize });
-            total += result.deletedCount;
-            const progress: DeleteResult = immutableSnapshot({ ...result, deletedCount: total });
-            options?.onProgress?.(progress);
-            if (progress.progress === "complete")
-                return progress;
-        }
-    }
-
     /** The schema last written, or `NotFoundError` as SpiceDB reports before any schema exists. */
     async readSchema(options?: CallOptions): Promise<SchemaResult> {
+        this.#start("readSchema", undefined, options);
         this.#begin(options);
         if (this.#schema === undefined)
             throw serverError(Code.NotFound, "No schema has been defined; please call WriteSchema to start");
@@ -196,7 +318,8 @@ export class InMemorySpiceDB {
 
     /** Stores the schema text; it is not compiled or validated. */
     async writeSchema(schema: string, options?: CallOptions): Promise<ZedToken> {
-        mutationRetry(options?.retryPolicy, true, "writeSchema");
+        this.#start("writeSchema", schema, options);
+        mutationRetry(options?.retryPolicy, undefined, true, "writeSchema");
         this.#begin(options);
         this.#schema = schema;
         return this.#bump();
@@ -204,6 +327,7 @@ export class InMemorySpiceDB {
 
     /** The result registered with {@link InMemorySpiceDB.setReflectSchemaResult}, or `NotFoundError` without one. */
     async reflectSchema(request: ReflectSchemaRequest, options?: CallOptions): Promise<ReflectSchemaResult> {
+        this.#start("reflectSchema", request, options);
         requireConsistency(request.consistency);
         this.#begin(options);
         if (this.#reflection === undefined)
@@ -212,20 +336,18 @@ export class InMemorySpiceDB {
     }
 
     async check(request: CheckRequest, options?: CheckOptions): Promise<CheckResult> {
-        requireConsistency(request.consistency);
+        this.#start("check", request, options);
         this.#begin(options);
-        const registered = this.#checks.get(checkKey(request));
-        if (registered instanceof SpiceDBError)
-            throw registered;
-        return new CheckResult(registered ?? "noPermission", [], new ZedToken(String(this.#revision)));
+        return this.#check(request);
     }
 
     async checkBulk(requests: readonly CheckRequest[], options?: CheckOptions): Promise<readonly CheckResult[]> {
+        this.#start("checkBulk", requests, options);
         this.#begin(options);
         const results: CheckResult[] = [];
         for (const [index, request] of requests.entries()) {
             try {
-                results.push(await this.check(request));
+                results.push(this.#check(request));
             }
             catch (error) {
                 if (!(error instanceof SpiceDBError) || options?.itemErrors !== "returned")
@@ -239,6 +361,37 @@ export class InMemorySpiceDB {
 
     close(): void { this.#closed = true; }
 
+    #check(request: CheckRequest): CheckResult {
+        requireConsistency(request.consistency);
+        const registered = this.#checks.get(checkKey(request));
+        if (registered instanceof SpiceDBError)
+            throw registered;
+        return new CheckResult(registered ?? "noPermission", [], new ZedToken(String(this.#revision)));
+    }
+
+    /** Records a call. */
+    #record<K extends InMemoryOperation>(operation: K, request: InMemoryCallArguments[K]["request"], options: InMemoryCallArguments[K]["options"]): RecordedCall {
+        const index = this.#counts.get(operation) ?? 0;
+        this.#counts.set(operation, index + 1);
+        const call = Object.freeze({ operation, index, request, options: options === undefined ? undefined : Object.freeze({ ...options }) }) as unknown as RecordedCall;
+        this.#calls.push(call);
+        return call;
+    }
+    /** Records a call and throws any fault injected before it. */
+    #start<K extends InMemoryOperation>(operation: K, request: InMemoryCallArguments[K]["request"], options: InMemoryCallArguments[K]["options"]): RecordedCall {
+        const call = this.#record(operation, request, options);
+        this.#fault(call, FaultStage.Call, 0);
+        return call;
+    }
+    /** The error the fault hook injects at one point of a call, if any. */
+    #faultAt(call: RecordedCall, stage: FaultStage, item: number): Error | undefined {
+        return this.#hook?.(Object.freeze({ call, stage, item })) ?? undefined;
+    }
+    #fault(call: RecordedCall, stage: FaultStage, item: number): void {
+        const error = this.#faultAt(call, stage, item);
+        if (error !== undefined)
+            throw error;
+    }
     #begin(options?: CallOptions): void {
         if (this.#closed)
             throw new SpiceDBError("Client is closed");
@@ -292,8 +445,15 @@ function serverError(code: Code, message: string, options?: Omit<SpiceDBErrorOpt
     const raw = new ConnectError(message, code);
     return SpiceDBError.fromCode(code, raw.message, { ...options, cause: raw, serverMessage: message });
 }
-/** Snapshots the items now; a server error (such as an invalid cursor) surfaces from iteration, as the real client's does. */
-function streamOf<T>(items: () => T[]): AsyncIterableIterator<T> {
+/** A stream that fails with `error` when iterated, as a server failure does. */
+function failedStream<T>(error: Error): AsyncIterableIterator<T> {
+    return (async function* (): AsyncGenerator<T> { throw error; })();
+}
+/**
+ * Snapshots the items now; a server error (such as an invalid cursor) surfaces
+ * from iteration, as the real client's does. `fault` is consulted before each item.
+ */
+function streamOf<T>(items: () => T[], fault: (index: number) => Error | undefined): AsyncIterableIterator<T> {
     let snapshot: T[] | undefined;
     let failure: unknown;
     try {
@@ -305,7 +465,12 @@ function streamOf<T>(items: () => T[]): AsyncIterableIterator<T> {
     return (async function* () {
         if (snapshot === undefined)
             throw failure;
-        yield* snapshot;
+        for (const [index, item] of snapshot.entries()) {
+            const error = fault(index);
+            if (error !== undefined)
+                throw error;
+            yield item;
+        }
     })();
 }
 function snapshot(rel: Relationship): Relationship { return immutableSnapshot(nativeRelationshipFields(rel)); }

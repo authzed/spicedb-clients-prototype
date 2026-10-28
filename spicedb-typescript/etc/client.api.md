@@ -362,6 +362,26 @@ export class FailedPreconditionError extends SpiceDBError {
     constructor(message: string, options?: SpiceDBErrorOptions);
 }
 
+// @public
+export interface Fault {
+    // (undocumented)
+    readonly call: RecordedCall;
+    readonly item: number;
+    // (undocumented)
+    readonly stage: FaultStage;
+}
+
+// @public
+export type FaultHook = (fault: Fault) => Error | undefined | void;
+
+// @public
+export enum FaultStage {
+    Call = "call",
+    ImportBatch = "importBatch",
+    ImportCommit = "importCommit",
+    Item = "item"
+}
+
 // @public (undocumented)
 function filterFromProto(filter: RelationshipFilter_2): RelationshipFilter;
 
@@ -383,8 +403,71 @@ export interface ImportOptions extends CallOptions {
 }
 
 // @public
+export interface InMemoryCallArguments {
+    // (undocumented)
+    readonly check: {
+        readonly request: CheckRequest;
+        readonly options?: CheckOptions;
+    };
+    // (undocumented)
+    readonly checkBulk: {
+        readonly request: readonly CheckRequest[];
+        readonly options?: CheckOptions;
+    };
+    // (undocumented)
+    readonly deleteAllRelationshipsNonAtomic: {
+        readonly request: RelationshipFilter;
+        readonly options?: DeleteAllOptions;
+    };
+    // (undocumented)
+    readonly deleteRelationships: {
+        readonly request: RelationshipFilter;
+        readonly options: DeleteOptions;
+    };
+    // (undocumented)
+    readonly exportRelationships: {
+        readonly request: ExportRelationshipsRequest;
+        readonly options?: CallOptions;
+    };
+    readonly importRelationships: {
+        readonly request: Iterable<Relationship> | AsyncIterable<Relationship>;
+        readonly options?: ImportOptions;
+    };
+    // (undocumented)
+    readonly readRelationships: {
+        readonly request: ReadRelationshipsRequest;
+        readonly options?: CallOptions;
+    };
+    // (undocumented)
+    readonly readSchema: {
+        readonly request: undefined;
+        readonly options?: CallOptions;
+    };
+    // (undocumented)
+    readonly reflectSchema: {
+        readonly request: ReflectSchemaRequest;
+        readonly options?: CallOptions;
+    };
+    // (undocumented)
+    readonly write: {
+        readonly request: Transaction;
+        readonly options?: CallOptions;
+    };
+    // (undocumented)
+    readonly writeSchema: {
+        readonly request: string;
+        readonly options?: CallOptions;
+    };
+}
+
+// @public
+export type InMemoryOperation = "write" | "readRelationships" | "exportRelationships" | "importRelationships" | "deleteRelationships" | "deleteAllRelationshipsNonAtomic" | "readSchema" | "writeSchema" | "reflectSchema" | "check" | "checkBulk";
+
+// @public
 export class InMemorySpiceDB {
     constructor(initial?: Iterable<Relationship>);
+    get calls(): readonly RecordedCall[];
+    callsOf<K extends InMemoryOperation>(operation: K): readonly RecordedCall<K>[];
     // (undocumented)
     check(request: CheckRequest, options?: CheckOptions): Promise<CheckResult>;
     // (undocumented)
@@ -396,12 +479,15 @@ export class InMemorySpiceDB {
     // (undocumented)
     deleteRelationships(filter: RelationshipFilter, options: DeleteOptions): Promise<DeleteResult>;
     exportRelationships(request: ExportRelationshipsRequest, options?: CallOptions): AsyncIterableIterator<ExportedRelationship>;
+    failNext(operation: InMemoryOperation, error: Error): void;
     importRelationships(relationships: Iterable<Relationship> | AsyncIterable<Relationship>, options?: ImportOptions): Promise<bigint>;
     readRelationships(request: ReadRelationshipsRequest, options?: CallOptions): AsyncIterableIterator<ReadRelationship>;
     readSchema(options?: CallOptions): Promise<SchemaResult>;
     reflectSchema(request: ReflectSchemaRequest, options?: CallOptions): Promise<ReflectSchemaResult>;
     get relationships(): readonly Relationship[];
+    static serverError(code: Code, message: string, options?: Omit<SpiceDBErrorOptions, "code" | "cause" | "serverMessage">): SpiceDBError;
     setCheckResult(registration: CheckRegistration, result: Permissionship | SpiceDBError): void;
+    setFaultHook(hook: FaultHook | undefined): void;
     setReflectSchemaResult(result: Omit<ReflectSchemaResult, "revision">): void;
     setResponseMetadata(header?: HeadersInit, trailer?: HeadersInit): void;
     write(transaction: Transaction, options?: CallOptions): Promise<WriteResult>;
@@ -572,6 +658,14 @@ export class OperationAbortError extends DOMException {
     // (undocumented)
     readonly deleteProgress?: DeleteResult;
 }
+
+// @public
+export type OperationName = "check" | "checkBulk" | "write" | "readRelationships" | "deleteRelationships" | "deleteAllRelationshipsNonAtomic" | "lookupResources" | "lookupSubjects" | "expandPermissionTree" | "importRelationships" | "exportRelationships" | "readSchema" | "writeSchema" | "reflectSchema" | "computablePermissions" | "dependentRelations" | "diffSchema" | "experimentalRegisterRelationshipCounter" | "experimentalCountRelationships" | "experimentalUnregisterRelationshipCounter" | "watch" | "experimentalCountRelationshipsByFilter" | "experimentalWatchPermissionSets" | "experimentalLookupPermissionSets" | "experimentalDownloadPermissionSets" | "experimentalRoaringLookupResources";
+
+// @public
+export type OperationRetryPolicies = {
+    readonly [K in OperationName]?: RetryPolicy;
+};
 
 // @public
 export class OutOfRangeError extends SpiceDBError {
@@ -786,6 +880,14 @@ export interface ReadRelationshipsRequest {
 
 // @public (undocumented)
 function readRelationshipToProto(rel: ReadRelationship): ReadRelationshipsResponse;
+
+// @public
+export type RecordedCall<K extends InMemoryOperation = InMemoryOperation> = {
+    [P in K]: {
+        readonly operation: P;
+        readonly index: number;
+    } & InMemoryCallArguments[P];
+}[K];
 
 // @public (undocumented)
 export interface ReflectSchemaRequest {
@@ -1148,6 +1250,7 @@ export class SpiceDBClient {
 export interface SpiceDBClientBehaviorOptions {
     readonly defaultDeadline?: DefaultDeadline;
     readonly defaultTimeoutMs?: number;
+    readonly operationRetryPolicies?: OperationRetryPolicies;
     readonly retries?: Retries;
     readonly retryPolicy?: RetryPolicy;
     readonly streamRetries?: StreamRetries;
@@ -1282,6 +1385,7 @@ export class Transaction {
     create(rel: Relationship): this;
     // (undocumented)
     delete(rel: Relationship): this;
+    isIdempotent(): boolean;
     get length(): number;
     get metadata(): JSONObject | undefined;
     // (undocumented)

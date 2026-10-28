@@ -116,7 +116,16 @@ and its generated schema facade.
     attempt; `streamRetries: StreamRetries.Disabled` opens each server stream
     once. `CallOptions.retryPolicy` overrides the client's policy for one call,
     including stream establishment (so one stream can be exempted, and a
-    `watch`, opened once by default, can opt in). Mutations are never replayed
+    `watch`, opened once by default, can opt in). `operationRetryPolicies`
+    (keyed by `OperationName`, the client's method names) applies the same
+    override to every call of one operation; the most specific policy wins
+    (call, operation, client-wide), even over `Retries.Disabled` and
+    `StreamRetries.Disabled`. `Transaction.isIdempotent()` is the
+    retry-eligibility rule: a per-operation `write` policy retries only
+    idempotent transactions and sends the others once, and the
+    never-idempotent operations (deletes, delete-all, imports, counter
+    registration/unregistration) reject a per-operation policy with retries
+    when the client is built (a zero-retry policy is allowed). Mutations are never replayed
     automatically: only a touch-only `write` without preconditions and
     `writeSchema` may opt in per call, and every other mutation rejects a
     policy with retries (`InvalidArgumentError`, before any request). Consumed
@@ -269,7 +278,17 @@ Each root DESIGN.md requirement below names the TypeScript API that satisfies it
   Connect's `[code]` prefix and `serverMessage`; local validation does not),
   it rejects the same retry opt-ins, and it reports `setResponseMetadata`
   values to `onHeader`/`onTrailer`. Options are plain inspectable values, so no
-  option-resolving API is needed.
+  option-resolving API is needed. It records every call (`calls`,
+  `callsOf(operation)`; `RecordedCall` is discriminated by operation, so
+  `request` and `options` keep their types) and consults a fault hook
+  (`setFaultHook`, `failNext`) at `FaultStage.Call`, `ImportBatch` (by the
+  call's `batchSize`), `ImportCommit` and `Item`; `InMemorySpiceDB.serverError`
+  builds client-shaped errors. Composite operations (delete-all, bulk checks)
+  record one call.
+- **Exported option constraint.** Not applicable: `CallOptions` and its
+  per-operation extensions are plain interfaces, not generic option
+  constructors, so callers already write helpers over them (e.g.
+  `const noRetry = (): CallOptions => ({ retryPolicy: ... })`).
 - **Panicking constructors.** Not applicable: TypeScript constructors and
   factories (`relationship`, `relationshipFromTuple`, `new ZedToken`) already
   throw, and plain object literals need no constructor.

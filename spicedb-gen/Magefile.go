@@ -150,64 +150,146 @@ func GoIntegrationTest() error {
 }
 
 // JavaIntegrationTest builds the CLI, generates Java code from the sample schema,
-// verifies type safety, starts SpiceDB, runs Gradle tests, then stops SpiceDB.
+// verifies formatting and type safety, runs Gradle tests against SpiceDB.
+//
+// SPICEDB_ENDPOINT (host:port) points the live tests at an existing SpiceDB and
+// skips docker compose; unset, the compose service on localhost:50051 is used.
 func JavaIntegrationTest() error {
-	// 1. Build CLI
+	if err := generateJava(); err != nil {
+		return err
+	}
+	defer os.Remove(javaGenerated)
+
+	// 3. Verify generated code and tests compile, and that the generated file is
+	// already google-java-format clean (spotlessCheck never rewrites it).
+	fmt.Println("==> Compiling generated code and tests, checking google-java-format...")
+	if err := runInDir("testdata/java", "./gradlew", "compileTestJava", "spotlessCheck"); err != nil {
+		return fmt.Errorf("compilation or formatting check failed: %w", err)
+	}
+
+	// 4. Verify each negative type fixture line fails on its own.
+	fmt.Println("==> Verifying type errors are caught at compile time...")
+	if err := verifyJavaTypeErrors("testdata/java", "type_errors/com/authzed/spicedb/gen/test/TypeErrors.java"); err != nil {
+		return err
+	}
+	fmt.Println("    (every marked line failed to compile)")
+
+	endpoint := os.Getenv("SPICEDB_ENDPOINT")
+	if endpoint == "" {
+		endpoint = "localhost:50051"
+		// 5. Start SpiceDB via docker-compose
+		fmt.Println("==> Starting SpiceDB...")
+		if err := sh.RunV("docker", "compose", "-f", "docker-compose.test.yml", "up", "-d"); err != nil {
+			return fmt.Errorf("docker compose up failed: %w", err)
+		}
+		defer func() {
+			fmt.Println("==> Stopping SpiceDB...")
+			_ = sh.RunV("docker", "compose", "-f", "docker-compose.test.yml", "down")
+		}()
+	}
+
+	fmt.Println("==> Waiting for SpiceDB to be ready at " + endpoint + "...")
+	if err := waitForReady(endpoint, 30*time.Second); err != nil {
+		return err
+	}
+
+	// 6. Run Gradle tests (they read SPICEDB_ENDPOINT).
+	fmt.Println("==> Running Java integration tests...")
+	cmd := exec.Command("./gradlew", "test")
+	cmd.Dir = "testdata/java"
+	cmd.Env = append(os.Environ(), "SPICEDB_ENDPOINT="+endpoint)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("gradle test failed: %w", err)
+	}
+
+	fmt.Println("==> Java integration tests passed!")
+	return nil
+}
+
+const javaGenerated = "testdata/java/src/main/java/com/authzed/spicedb/gen/test/Permissions.java"
+
+// generateJava builds the CLI and generates Permissions.java from sample.zed.
+func generateJava() error {
 	fmt.Println("==> Building spicedb-gen...")
 	if err := Build(); err != nil {
 		return fmt.Errorf("build failed: %w", err)
 	}
-
-	// 2. Generate Permissions.java from sample.zed
 	fmt.Println("==> Generating Permissions.java from sample.zed...")
 	if err := sh.RunV(
 		"./spicedb-gen",
 		"--schema", "testdata/sample.zed",
 		"--lang", "java",
 		"--java.package=com.authzed.spicedb.gen.test",
-		"--out", "testdata/java/src/main/java/com/authzed/spicedb/gen/test/Permissions.java",
+		"--out", javaGenerated,
 	); err != nil {
 		return fmt.Errorf("code generation failed: %w", err)
 	}
-	defer os.Remove("testdata/java/src/main/java/com/authzed/spicedb/gen/test/Permissions.java")
+	return nil
+}
 
-	// 3. Verify generated code and tests compile
-	fmt.Println("==> Compiling generated code and tests...")
-	if err := runInDir("testdata/java", "./gradlew", "compileTestJava"); err != nil {
-		return fmt.Errorf("compilation failed: %w", err)
-	}
-
-	// 4. Verify type_errors do NOT compile (type safety check)
-	fmt.Println("==> Verifying type errors are caught at compile time...")
-	err := runInDir("testdata/java", "./gradlew", "compileTypeErrors")
-	if err == nil {
-		return fmt.Errorf("type errors compiled successfully but should have failed")
-	}
-	fmt.Println("    (expected compile failure confirmed)")
-
-	// 5. Start SpiceDB via docker-compose
-	fmt.Println("==> Starting SpiceDB...")
-	if err := sh.RunV("docker", "compose", "-f", "docker-compose.test.yml", "up", "-d"); err != nil {
-		return fmt.Errorf("docker compose up failed: %w", err)
-	}
-	defer func() {
-		fmt.Println("==> Stopping SpiceDB...")
-		_ = sh.RunV("docker", "compose", "-f", "docker-compose.test.yml", "down")
-	}()
-
-	// Wait for SpiceDB to be ready
-	fmt.Println("==> Waiting for SpiceDB to be ready...")
-	if err := waitForReady("localhost:50051", 30*time.Second); err != nil {
+// JavaTypeErrors generates the Java fixture and verifies the negative type
+// fixtures and formatting without starting SpiceDB.
+func JavaTypeErrors() error {
+	if err := generateJava(); err != nil {
 		return err
 	}
-
-	// 6. Run Gradle tests
-	fmt.Println("==> Running Java integration tests...")
-	if err := runInDir("testdata/java", "./gradlew", "test"); err != nil {
-		return fmt.Errorf("gradle test failed: %w", err)
+	defer os.Remove(javaGenerated)
+	if err := runInDir("testdata/java", "./gradlew", "spotlessCheck"); err != nil {
+		return fmt.Errorf("generated Java is not google-java-format clean: %w", err)
 	}
+	return verifyJavaTypeErrors("testdata/java", "type_errors/com/authzed/spicedb/gen/test/TypeErrors.java")
+}
 
-	fmt.Println("==> Java integration tests passed!")
+// verifyJavaTypeErrors compiles the Java negative fixtures with every error
+// reported (-Xmaxerrs) and requires: an error on each line of file marked
+// "// should not compile", no error on any unmarked line (the fixture itself
+// must otherwise compile, so an error cannot be blamed on the wrong line), and
+// no "cannot find symbol" on a marked line (that means the API was renamed or
+// removed, not that the schema constraint rejected the call).
+func verifyJavaTypeErrors(dir, file string) error {
+	src, err := os.ReadFile(filepath.Join(dir, file))
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command("./gradlew", "compileTypeErrors", "--console=plain", "--rerun-tasks")
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return fmt.Errorf("%s compiled successfully but should have failed", file)
+	}
+	errs := map[int][]string{}
+	for _, m := range regexp.MustCompile(regexp.QuoteMeta(filepath.Base(file))+`:(\d+): error: (.*)`).FindAllStringSubmatch(string(out), -1) {
+		n, _ := strconv.Atoi(m[1])
+		errs[n] = append(errs[n], m[2])
+	}
+	var problems []string
+	marked := map[int]bool{}
+	for i, line := range strings.Split(string(src), "\n") {
+		if !strings.Contains(line, "// should not compile") {
+			continue
+		}
+		marked[i+1] = true
+		switch {
+		case len(errs[i+1]) == 0:
+			problems = append(problems, fmt.Sprintf("%d compiled but should not have: %s", i+1, strings.TrimSpace(line)))
+		case strings.Contains(strings.Join(errs[i+1], " "), "cannot find symbol"):
+			problems = append(problems, fmt.Sprintf("%d fails only because a symbol is missing: %s", i+1, strings.TrimSpace(line)))
+		}
+	}
+	for n, msgs := range errs {
+		if !marked[n] {
+			problems = append(problems, fmt.Sprintf("%d has an unexpected error: %s", n, msgs[0]))
+		}
+	}
+	if len(marked) == 0 {
+		return fmt.Errorf("%s has no lines marked \"// should not compile\"", file)
+	}
+	if len(problems) > 0 {
+		return fmt.Errorf("java negative type fixtures:\n%s\ncompiler output:\n%s", strings.Join(problems, "\n"), out)
+	}
+	fmt.Printf("    %d marked lines each failed to compile\n", len(marked))
 	return nil
 }
 

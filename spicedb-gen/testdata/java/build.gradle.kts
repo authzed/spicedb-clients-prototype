@@ -1,5 +1,9 @@
 plugins {
     java
+    // Same plugin and google-java-format version as spicedb-java (root DESIGN.md: generated output
+    // is formatted with the language's canonical formatter). spotlessCheck verifies the generated
+    // Permissions.java is already google-java-format clean; nothing here rewrites it.
+    id("com.diffplug.spotless") version "8.10.3"
 }
 
 group = "com.authzed.spicedb.gen.test"
@@ -31,10 +35,18 @@ tasks.withType<JavaCompile> {
     options.compilerArgs.addAll(listOf("-Xlint:all", "-Xlint:-processing"))
 }
 
-// Task to attempt compilation of type error files (expected to FAIL)
+spotless {
+    java {
+        target("src/main/java/**/Permissions.java")
+        googleJavaFormat("1.22.0")
+    }
+}
+
+// Compiles the negative type fixtures (expected to FAIL). -Xmaxerrs makes javac report every
+// error, so the Magefile can require an error on each line marked "should not compile".
 tasks.register<JavaCompile>("compileTypeErrors") {
     source = fileTree("type_errors")
     classpath = sourceSets["main"].compileClasspath + sourceSets["main"].output
     destinationDirectory.set(layout.buildDirectory.dir("type-errors"))
-    options.compilerArgs.addAll(listOf("-Xlint:all", "-Xlint:-processing"))
+    options.compilerArgs.addAll(listOf("-Xlint:all", "-Xlint:-processing", "-Xmaxerrs", "100000"))
 }

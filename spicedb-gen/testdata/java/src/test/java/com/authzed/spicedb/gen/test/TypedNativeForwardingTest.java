@@ -128,7 +128,7 @@ class TypedNativeForwardingTest {
       Iterable<com.authzed.spicedb.Relationship> source = () -> { assertEquals(1, iterations.incrementAndGet()); return List.of(relationship, relationship).iterator(); };
       assertEquals(2, client.importRelationships(source, ImportOptions.builder().batchSize(1).timeout(TIMEOUT).build()));
       assertEquals(2, imported.size()); assertEquals(wireRelationship, imported.get(0).getRelationships(0));
-      try (var stream = client.exportRelationships(com.authzed.spicedb.Consistency.full(), Filter.of("document"), ExportOptions.builder().pageSize(5).limit(1).timeout(TIMEOUT).build())) { assertEquals(List.of(relationship), stream.toList()); }
+      try (var stream = client.exportRelationships(com.authzed.spicedb.Consistency.full(), Filter.of("document"), ExportOptions.builder().pageSize(5).limit(1).timeout(TIMEOUT).build())) { assertEquals(List.of(relationship), stream.map(com.authzed.spicedb.ExportedRelationship::relationship).toList()); }
       assertEquals(5, exported.get(0).getOptionalLimit());
       var count = client.experimentalCountRelationshipsByFilter(Filter.of("document").withRelation("viewer"), CallOptions.builder().timeout(TIMEOUT).build());
       assertEquals(7, count.relationshipCount()); assertEquals("count-revision", count.revision().value()); assertEquals("viewer", materialized.get(0).getRelationshipFilter().getOptionalRelation());

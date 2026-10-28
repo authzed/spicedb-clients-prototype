@@ -201,6 +201,14 @@ if endpoint:
             consistency=consistency.at_least(ZedToken(write.written_at.token)),
         )
     check(result.has_permission, f"live: authzed-py write is visible to spicedb-python check ({endpoint})")
+    # Leave the shared server as found: a later schema write that drops these
+    # definitions would otherwise be rejected.
+    legacy.DeleteRelationships(
+        legacy_v1.DeleteRelationshipsRequest(
+            relationship_filter=legacy_v1.RelationshipFilter(resource_type="bridgedoc")
+        )
+    )
+    legacy.WriteSchema(legacy_v1.WriteSchemaRequest(schema="definition bridgeuser {}"))
 else:
     print("live: SPICEDB_ENDPOINT unset; live coexistence check not run")
 

@@ -12,6 +12,68 @@
 
 ## Unreleased
 
+### One protocol copy, dependency floors and the path off authzed-py (P1, D1, D2)
+
+- spicedb-python-proto is now the single copy of the `authzed.api.*`
+  bindings in a process. It ships only namespace packages (no shared
+  `__init__.py`), adds `.pyi` stubs and `authzed/py.typed`, and ships
+  `authzed-py-bridge`, which rewrites an authzed-py checkout, sdist or wheel
+  to drop its own generated modules and require spicedb-python-proto. A test
+  installs the bridged authzed-py 1.25.0 next to this client in one
+  interpreter and proves one descriptor-pool copy, disjoint file ownership and
+  that both clients work (in-process and live SpiceDB). An unbridged
+  authzed-py beside this client remains unsupported (it overwrites the same
+  files).
+- **BREAKING (dependencies):** runtime floors are now the lowest versions that
+  pass the suite. `grpcio>=1.73.0` (was `>=1.71.0`): grpcio 1.71-1.72 accept an
+  authority-bearing `unix://host/...` target that the plaintext-credential
+  guard treats as loopback, resolving `UNIX` as a DNS host instead of
+  rejecting it. `protobuf>=7.36.2` (the proto tier said `>=7.36.1`, below the
+  bindings' gencode version, which fails at import). `protobuf` and
+  `googleapis-common-protos` are now declared directly. Before: `grpcio 1.71`
+  installed. After: upgrade to `grpcio>=1.73`.
+- spicedb-python-proto: `protovalidate` moved from a hard requirement to the
+  optional `validation` extra (it pulled in cel-python, google-re2 and
+  pendulum for a validator nothing here calls).
+- New `MIGRATION.md` (from authzed-py) and `AI_INTEGRATION_GUIDE.md`.
+
+### Generated typed client (adoption items G1, G2, T1-T9)
+
+- Generation no longer fails for a definition used as both a subject and a
+  resource. Usersets on permissions get subject refs
+  (`Organization(id).can_admin_subject`), with caveat and expiration variants
+  (e.g. `OrganizationCanAdminExpiring`); wildcard refs (`UserWildcard()`): a
+  `user:*`-only relation admits only the wildcard, `user | user:*` both.
+- Added: `r_key(subject)` / `RelationshipKey` for identity-only deletes,
+  `r_relation` check accessors, `filter()`, `type_filter()`, `r_filter()`,
+  `with_subject()`, `XRelations` / `XPermissions` constants and
+  `X_RELATION_NAMES` / `X_PERMISSION_NAMES`, `permission_by_name` /
+  `relation_by_name` / `relationship_by_name` (raising `NotInSchemaError` /
+  `SubjectNotAllowedError`), `Permission.resource_type` / `resource_id` /
+  `name` / `ref` / `str()`, `PermissionRef` accessors, `permission_check` and
+  `checks_for` for native `check_bulk`, `TypedRelationship.to_relationship` /
+  `from_relationship` (not schema-checked) / `from_error` / `str()`,
+  `TypedTransaction.build` / `len` / `str` / `error`, and
+  `TypedClient.write_txn` / `check_dynamic` / `from_channel`.
+- `--python.module=<name>` names the generated types module; output is
+  `ruff format`-clean. Identifier collisions fail generation naming both
+  sources. Negative type fixtures require a pyright error on every marked line.
+- **BREAKING:** `tc.write(TypedTransaction())` → `tc.write_txn(TypedTransaction())`;
+  `write` takes only a native `Transaction`.
+- **BREAKING:** static lookup refs are constants: `DocumentView` →
+  `DOCUMENT_VIEW` (the old name collided with permission-userset subject
+  classes).
+- **BREAKING:** `TypedClient.connect(max_retries=...)` → `retry_policy=` /
+  `stream_retries=`; generated clients forward every new native option.
+- **BREAKING:** `TypedTransaction` defers construction errors to `build()` /
+  `write_txn` and no longer exposes `_txn`; `must_match` / `must_not_match`
+  take `*filters`. Before: `TypedTransaction().touch(Document("").viewer(u))`
+  raised immediately. After: it raises from `build()` or `write_txn`.
+- **BREAKING:** `check` and `lookup` subject sets follow usersets to the
+  subjects that reach them (so `check(invitation.accept, User("alice"))`
+  type-checks), and `check` raises `SubjectNotAllowedError` at runtime for a
+  subject the schema cannot grant.
+
 ### Tooling-grade native client (adoption items N1-N17)
 
 - **Fix:** paged `lookup_resources` and `lookup_subjects` with a `limit` that

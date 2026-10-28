@@ -8,6 +8,10 @@ Clients are explicit about their concurrency model -- import the one you want::
 Everything else in this package (relationship types, filters, transactions,
 consistency constructors, the error hierarchy) is shared by both flavors and
 imported from here.
+
+Integrating with an AI coding agent, or choosing between the generated typed
+client and this native client? Read ``AI_INTEGRATION_GUIDE.md`` next to this
+package's ``DESIGN.md``. Moving from authzed-py? Read ``MIGRATION.md``.
 """
 
 from spicedb.token import ZedToken

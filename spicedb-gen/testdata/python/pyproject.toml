@@ -16,7 +16,9 @@ dev = [
 ]
 
 [tool.uv.sources]
-spicedb-python = { path = "../../../spicedb-python" }
+# Editable, so every run type-checks and tests the generated code against the
+# native client as it is on disk, not a wheel built on an earlier sync.
+spicedb-python = { path = "../../../spicedb-python", editable = true }
 
 [build-system]
 requires = ["hatchling"]

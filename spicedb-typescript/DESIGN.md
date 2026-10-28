@@ -284,7 +284,20 @@ Each root DESIGN.md requirement below names the TypeScript API that satisfies it
   (`setFaultHook`, `failNext`) at `FaultStage.Call`, `ImportBatch` (by the
   call's `batchSize`), `ImportCommit` and `Item`; `InMemorySpiceDB.serverError`
   builds client-shaped errors. Composite operations (delete-all, bulk checks)
-  record one call.
+  record one call. `SpiceDBClientInterface` lists the client's full public
+  method set (a compile-time test in `full-client-double.test.ts` keeps it
+  identical to `SpiceDBClient`'s), and both `SpiceDBClient` and
+  `InMemorySpiceDB` implement it. The double's remaining operations (lookups,
+  expand, schema introspection, `watch`, the experimental methods) are
+  recorded, consult the fault hook, apply the client's option checks, and fail
+  with `Code.Unimplemented` in the client's error shape (`[unimplemented]
+  <operation> is not implemented by InMemorySpiceDB`; streams fail from
+  iteration); `raw()` throws Unimplemented. An `ImportBatch` fault fires once
+  each batch is full (or the input ends) and carries it as `Fault.batch`.
+  `InMemorySpiceDB.cursorAfter(n)` builds the cursor the double puts on the
+  n-th matching item (the decimal count `n`, stable for tests), and
+  `setReadSchemaRevision(SchemaRevision.Omitted)` makes `readSchema` report an
+  empty revision, as some hosted deployments do.
 - **Exported option constraint.** Not applicable: `CallOptions` and its
   per-operation extensions are plain interfaces, not generic option
   constructors, so callers already write helpers over them (e.g.

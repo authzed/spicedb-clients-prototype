@@ -364,6 +364,7 @@ export class FailedPreconditionError extends SpiceDBError {
 
 // @public
 export interface Fault {
+    readonly batch?: readonly Relationship[];
     // (undocumented)
     readonly call: RecordedCall;
     readonly item: number;
@@ -415,6 +416,11 @@ export interface InMemoryCallArguments {
         readonly options?: CheckOptions;
     };
     // (undocumented)
+    readonly computablePermissions: {
+        readonly request: ComputablePermissionsRequest;
+        readonly options?: CallOptions;
+    };
+    // (undocumented)
     readonly deleteAllRelationshipsNonAtomic: {
         readonly request: RelationshipFilter;
         readonly options?: DeleteAllOptions;
@@ -425,6 +431,61 @@ export interface InMemoryCallArguments {
         readonly options: DeleteOptions;
     };
     // (undocumented)
+    readonly dependentRelations: {
+        readonly request: DependentRelationsRequest;
+        readonly options?: CallOptions;
+    };
+    // (undocumented)
+    readonly diffSchema: {
+        readonly request: DiffSchemaRequest;
+        readonly options?: CallOptions;
+    };
+    // (undocumented)
+    readonly expandPermissionTree: {
+        readonly request: ExpandPermissionTreeRequest;
+        readonly options?: CallOptions;
+    };
+    readonly experimentalCountRelationships: {
+        readonly request: string;
+        readonly options?: CallOptions;
+    };
+    // (undocumented)
+    readonly experimentalCountRelationshipsByFilter: {
+        readonly request: RelationshipFilter;
+        readonly options?: CallOptions;
+    };
+    // (undocumented)
+    readonly experimentalDownloadPermissionSets: {
+        readonly request: DownloadPermissionSetsRequest | undefined;
+        readonly options?: CallOptions;
+    };
+    // (undocumented)
+    readonly experimentalLookupPermissionSets: {
+        readonly request: LookupPermissionSetsRequest;
+        readonly options?: CallOptions;
+    };
+    readonly experimentalRegisterRelationshipCounter: {
+        readonly request: {
+            readonly name: string;
+            readonly filter: RelationshipFilter;
+        };
+        readonly options?: CallOptions;
+    };
+    // (undocumented)
+    readonly experimentalRoaringLookupResources: {
+        readonly request: RoaringLookupResourcesRequest;
+        readonly options?: CallOptions;
+    };
+    readonly experimentalUnregisterRelationshipCounter: {
+        readonly request: string;
+        readonly options?: CallOptions;
+    };
+    // (undocumented)
+    readonly experimentalWatchPermissionSets: {
+        readonly request: WatchPermissionSetsRequest | undefined;
+        readonly options?: CallOptions;
+    };
+    // (undocumented)
     readonly exportRelationships: {
         readonly request: ExportRelationshipsRequest;
         readonly options?: CallOptions;
@@ -432,6 +493,16 @@ export interface InMemoryCallArguments {
     readonly importRelationships: {
         readonly request: Iterable<Relationship> | AsyncIterable<Relationship>;
         readonly options?: ImportOptions;
+    };
+    // (undocumented)
+    readonly lookupResources: {
+        readonly request: LookupResourcesRequest;
+        readonly options?: CallOptions;
+    };
+    // (undocumented)
+    readonly lookupSubjects: {
+        readonly request: LookupSubjectsRequest;
+        readonly options?: CallOptions;
     };
     // (undocumented)
     readonly readRelationships: {
@@ -449,6 +520,11 @@ export interface InMemoryCallArguments {
         readonly options?: CallOptions;
     };
     // (undocumented)
+    readonly watch: {
+        readonly request: WatchRequest | undefined;
+        readonly options?: CallOptions;
+    };
+    // (undocumented)
     readonly write: {
         readonly request: Transaction;
         readonly options?: CallOptions;
@@ -461,10 +537,10 @@ export interface InMemoryCallArguments {
 }
 
 // @public
-export type InMemoryOperation = "write" | "readRelationships" | "exportRelationships" | "importRelationships" | "deleteRelationships" | "deleteAllRelationshipsNonAtomic" | "readSchema" | "writeSchema" | "reflectSchema" | "check" | "checkBulk";
+export type InMemoryOperation = "write" | "readRelationships" | "exportRelationships" | "importRelationships" | "deleteRelationships" | "deleteAllRelationshipsNonAtomic" | "readSchema" | "writeSchema" | "reflectSchema" | "check" | "checkBulk" | "lookupResources" | "lookupSubjects" | "expandPermissionTree" | "computablePermissions" | "dependentRelations" | "diffSchema" | "watch" | "experimentalRegisterRelationshipCounter" | "experimentalCountRelationships" | "experimentalUnregisterRelationshipCounter" | "experimentalCountRelationshipsByFilter" | "experimentalWatchPermissionSets" | "experimentalLookupPermissionSets" | "experimentalDownloadPermissionSets" | "experimentalRoaringLookupResources";
 
 // @public
-export class InMemorySpiceDB {
+export class InMemorySpiceDB implements SpiceDBClientInterface {
     constructor(initial?: Iterable<Relationship>);
     get calls(): readonly RecordedCall[];
     callsOf<K extends InMemoryOperation>(operation: K): readonly RecordedCall<K>[];
@@ -475,12 +551,42 @@ export class InMemorySpiceDB {
     // (undocumented)
     close(): void;
     // (undocumented)
+    computablePermissions(request: ComputablePermissionsRequest, options?: CallOptions): Promise<RelationsResult>;
+    static cursorAfter(n: number): string;
+    // (undocumented)
     deleteAllRelationshipsNonAtomic(filter: RelationshipFilter, options?: DeleteAllOptions): Promise<DeleteResult>;
     // (undocumented)
     deleteRelationships(filter: RelationshipFilter, options: DeleteOptions): Promise<DeleteResult>;
+    // (undocumented)
+    dependentRelations(request: DependentRelationsRequest, options?: CallOptions): Promise<RelationsResult>;
+    // (undocumented)
+    diffSchema(request: DiffSchemaRequest, options?: CallOptions): Promise<SchemaDiffResult>;
+    // (undocumented)
+    expandPermissionTree(request: ExpandPermissionTreeRequest, options?: CallOptions): Promise<ExpandResult>;
+    // (undocumented)
+    experimentalCountRelationships(name: string, options?: CallOptions): Promise<RelationshipCountResult>;
+    // (undocumented)
+    experimentalCountRelationshipsByFilter(filter: RelationshipFilter, options?: CallOptions): Promise<RelationshipCountResult>;
+    // (undocumented)
+    experimentalDownloadPermissionSets(request?: DownloadPermissionSetsRequest, options?: CallOptions): Promise<DownloadPermissionSetsResult>;
+    // (undocumented)
+    experimentalLookupPermissionSets(request: LookupPermissionSetsRequest, options?: CallOptions): AsyncIterableIterator<LookupPermissionSet>;
+    // (undocumented)
+    experimentalRegisterRelationshipCounter(name: string, filter: RelationshipFilter, options?: CallOptions): Promise<void>;
+    // (undocumented)
+    experimentalRoaringLookupResources(request: RoaringLookupResourcesRequest, options?: CallOptions): Promise<RoaringLookupResourcesResult>;
+    // (undocumented)
+    experimentalUnregisterRelationshipCounter(name: string, options?: CallOptions): Promise<void>;
+    // (undocumented)
+    experimentalWatchPermissionSets(request?: WatchPermissionSetsRequest, options?: CallOptions): AsyncIterableIterator<PermissionSetEvent>;
     exportRelationships(request: ExportRelationshipsRequest, options?: CallOptions): AsyncIterableIterator<ExportedRelationship>;
     failNext(operation: InMemoryOperation, error: Error): void;
     importRelationships(relationships: Iterable<Relationship> | AsyncIterable<Relationship>, options?: ImportOptions): Promise<bigint>;
+    // (undocumented)
+    lookupResources(request: LookupResourcesRequest, options?: CallOptions): AsyncIterableIterator<LookupResource>;
+    // (undocumented)
+    lookupSubjects(request: LookupSubjectsRequest, options?: CallOptions): AsyncIterableIterator<LookupSubject>;
+    raw(): SpiceDBProtoClient;
     readRelationships(request: ReadRelationshipsRequest, options?: CallOptions): AsyncIterableIterator<ReadRelationship>;
     readSchema(options?: CallOptions): Promise<SchemaResult>;
     reflectSchema(request: ReflectSchemaRequest, options?: CallOptions): Promise<ReflectSchemaResult>;
@@ -488,8 +594,11 @@ export class InMemorySpiceDB {
     static serverError(code: Code, message: string, options?: Omit<SpiceDBErrorOptions, "code" | "cause" | "serverMessage">): SpiceDBError;
     setCheckResult(registration: CheckRegistration, result: Permissionship | SpiceDBError): void;
     setFaultHook(hook: FaultHook | undefined): void;
+    setReadSchemaRevision(mode: SchemaRevision): void;
     setReflectSchemaResult(result: Omit<ReflectSchemaResult, "revision">): void;
     setResponseMetadata(header?: HeadersInit, trailer?: HeadersInit): void;
+    // (undocumented)
+    watch(request?: WatchRequest, options?: CallOptions): AsyncIterableIterator<WatchEvent>;
     write(transaction: Transaction, options?: CallOptions): Promise<WriteResult>;
     writeSchema(schema: string, options?: CallOptions): Promise<ZedToken>;
 }
@@ -1171,6 +1280,12 @@ export interface SchemaResult {
     readonly schema: string;
 }
 
+// @public
+export enum SchemaRevision {
+    Included = "included",
+    Omitted = "omitted"
+}
+
 // @public (undocumented)
 export interface SchemaTypeReference {
     // (undocumented)
@@ -1196,7 +1311,7 @@ export interface SchemaTypeReference {
 export function snapshot(revision: ZedToken): Consistency;
 
 // @public
-export class SpiceDBClient {
+export class SpiceDBClient implements SpiceDBClientInterface {
     constructor(options: SpiceDBClientOptions);
     // (undocumented)
     check(request: CheckRequest, options?: CheckOptions): Promise<CheckResult>;
@@ -1254,6 +1369,66 @@ export interface SpiceDBClientBehaviorOptions {
     readonly retries?: Retries;
     readonly retryPolicy?: RetryPolicy;
     readonly streamRetries?: StreamRetries;
+}
+
+// @public
+export interface SpiceDBClientInterface {
+    // (undocumented)
+    check(request: CheckRequest, options?: CheckOptions): Promise<CheckResult>;
+    // (undocumented)
+    checkBulk(requests: readonly CheckRequest[], options?: CheckOptions): Promise<readonly CheckResult[]>;
+    // (undocumented)
+    close(): void;
+    // (undocumented)
+    computablePermissions(request: ComputablePermissionsRequest, options?: CallOptions): Promise<RelationsResult>;
+    // (undocumented)
+    deleteAllRelationshipsNonAtomic(filter: RelationshipFilter, options?: DeleteAllOptions): Promise<DeleteResult>;
+    // (undocumented)
+    deleteRelationships(filter: RelationshipFilter, options: DeleteOptions): Promise<DeleteResult>;
+    // (undocumented)
+    dependentRelations(request: DependentRelationsRequest, options?: CallOptions): Promise<RelationsResult>;
+    // (undocumented)
+    diffSchema(request: DiffSchemaRequest, options?: CallOptions): Promise<SchemaDiffResult>;
+    // (undocumented)
+    expandPermissionTree(request: ExpandPermissionTreeRequest, options?: CallOptions): Promise<ExpandResult>;
+    // (undocumented)
+    experimentalCountRelationships(name: string, options?: CallOptions): Promise<RelationshipCountResult>;
+    // (undocumented)
+    experimentalCountRelationshipsByFilter(filter: RelationshipFilter, options?: CallOptions): Promise<RelationshipCountResult>;
+    // (undocumented)
+    experimentalDownloadPermissionSets(request?: DownloadPermissionSetsRequest, options?: CallOptions): Promise<DownloadPermissionSetsResult>;
+    // (undocumented)
+    experimentalLookupPermissionSets(request: LookupPermissionSetsRequest, options?: CallOptions): AsyncIterableIterator<LookupPermissionSet>;
+    // (undocumented)
+    experimentalRegisterRelationshipCounter(name: string, filter: RelationshipFilter, options?: CallOptions): Promise<void>;
+    // (undocumented)
+    experimentalRoaringLookupResources(request: RoaringLookupResourcesRequest, options?: CallOptions): Promise<RoaringLookupResourcesResult>;
+    // (undocumented)
+    experimentalUnregisterRelationshipCounter(name: string, options?: CallOptions): Promise<void>;
+    // (undocumented)
+    experimentalWatchPermissionSets(request?: WatchPermissionSetsRequest, options?: CallOptions): AsyncIterableIterator<PermissionSetEvent>;
+    // (undocumented)
+    exportRelationships(request: ExportRelationshipsRequest, options?: CallOptions): AsyncIterableIterator<ExportedRelationship>;
+    // (undocumented)
+    importRelationships(relationships: Iterable<Relationship> | AsyncIterable<Relationship>, options?: ImportOptions): Promise<bigint>;
+    // (undocumented)
+    lookupResources(request: LookupResourcesRequest, options?: CallOptions): AsyncIterableIterator<LookupResource>;
+    // (undocumented)
+    lookupSubjects(request: LookupSubjectsRequest, options?: CallOptions): AsyncIterableIterator<LookupSubject>;
+    // (undocumented)
+    raw(): SpiceDBProtoClient;
+    // (undocumented)
+    readRelationships(request: ReadRelationshipsRequest, options?: CallOptions): AsyncIterableIterator<ReadRelationship>;
+    // (undocumented)
+    readSchema(options?: CallOptions): Promise<SchemaResult>;
+    // (undocumented)
+    reflectSchema(request: ReflectSchemaRequest, options?: CallOptions): Promise<ReflectSchemaResult>;
+    // (undocumented)
+    watch(request?: WatchRequest, options?: CallOptions): AsyncIterableIterator<WatchEvent>;
+    // (undocumented)
+    write(transaction: Transaction, options?: CallOptions): Promise<WriteResult>;
+    // (undocumented)
+    writeSchema(schema: string, options?: CallOptions): Promise<ZedToken>;
 }
 
 // @public (undocumented)

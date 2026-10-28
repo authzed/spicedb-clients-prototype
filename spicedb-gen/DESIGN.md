@@ -87,3 +87,46 @@ and options forwarding rather than just generated text fragments.
   name, and output is gofmt-formatted.
 - Negative type fixtures mark each forbidden line `// should not compile`. The
   Magefile compiles with `-gcflags=-e` and requires an error on every marked line.
+
+## Python naming rules
+
+- Each definition `d` gets one frozen dataclass `D(id)` that is both its
+  resource ref and its direct subject ref (a definition may be both), plus
+  `D.type_filter()`, `DRelations.R`/`DPermissions.P` name constants and
+  `D_RELATION_NAMES`/`D_PERMISSION_NAMES` tuples (schema order). A userset
+  `d#r` is the class `DR(id)`; `d:*` is `DWildcard()`. Caveat and expiration
+  variants are `<Base><Caveat>[Expiring]`, built with `with_<caveat>(ctx)` and
+  `with_expiration(t)`; a caveated, expiring subject chains through its
+  caveated variant.
+- On `D`: permission `p` → property `p` (a narrowed `Permission`); relation
+  `r` → writer `r(subject)`, key `r_key(subject)` → `RelationshipKey`, check
+  property `r_relation`, filter `r_filter()`; plus `filter()`,
+  `permission_by_name`, `relation_by_name` and `relationship_by_name` (raising
+  `NotInSchemaError` / `SubjectNotAllowedError`). A userset `d#r` on a
+  relation gets the property `r` and the writer moves to `for_r`. A userset
+  `d#p` on a permission gets the property `p_subject`, so `p` stays the
+  permission accessor. Keywords and shadowed builtins gain a trailing `_`.
+- Module-level: `<D><R>Subject` (exact writer admission), `<D><R>KeySubject`
+  (base refs only), `<D><P>Subject` / `<D><R>RelationSubject` (check
+  admission, following usersets to the subjects that reach them, with caveated
+  variants for context; wildcards admit their concrete objects) and the
+  matching `...SubjectType` aliases for `lookup_subjects`. Static
+  `lookup_resources` refs are `D_P` (e.g. `DOCUMENT_VIEW`).
+- Composition: `Permission`/`PermissionRef` expose `resource_type`,
+  `resource_id`, `name`, `ref` and `str()`; `Permission.permission_check(s)`
+  and `checks_for(s, *perms)` build native `PermissionCheck`s (validated at
+  runtime) for the native `check_bulk`. `TypedRelationship` converts with
+  `to_relationship()`, `from_relationship()` (not schema-checked) and
+  `from_error()`; writers defer construction errors into it. `TypedTransaction`
+  defers the first error to `build()`/`TypedClient.write_txn`, which never
+  shadows the native `write`. `with_subject(filter, subject_or_class)` narrows
+  native filters. `TypedClient.check_dynamic` checks by-name permissions with
+  runtime subject validation.
+- Sync and aio clients render from one template. Any collision between
+  generated identifiers fails generation naming both sources; nothing is
+  silently renamed. `--python.module` names the types module (default
+  `permissions`); `sync.py`/`aio.py` import it relatively. Output is
+  `ruff format` clean at the default line length without running ruff.
+- Negative type fixtures mark each forbidden line `# should not type-check`.
+  The Magefile runs pyright with JSON output and requires an error on every
+  marked line and on no other line.

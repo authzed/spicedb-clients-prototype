@@ -2,89 +2,345 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import Any, ClassVar, TypeAlias
+from typing import Any, ClassVar, Final, Protocol, TypeAlias
 
-from spicedb import Transaction, Relationship, Filter, ObjectRef, SubjectRef, Caveat
+from spicedb import (
+    Caveat,
+    Filter,
+    InvalidArgumentError,
+    ObjectRef,
+    PermissionCheck,
+    Relationship,
+    SubjectFilter,
+    SubjectRef,
+    SubjectRelationFilter,
+    Transaction,
+)
+
+# --- Errors ---
+
+
+class NotInSchemaError(ValueError):
+    """A by-name lookup named a permission or relation the schema lacks."""
+
+
+class SubjectNotAllowedError(ValueError):
+    """The schema does not admit the subject in this position."""
 
 
 # --- Base value types ---
 
 
+class Subject(Protocol):
+    """A generated subject: an object, a userset or a wildcard, plus variants."""
+
+    _type: ClassVar[str]
+    _relation: ClassVar[str]
+
+    def _subject_ref(self) -> tuple[str, str, str]: ...
+
+    def _caveat_info(self) -> tuple[str, dict[str, Any]] | None: ...
+
+    def _expiration(self) -> datetime | None: ...
+
+
+def _object(object_type: str, object_id: str) -> ObjectRef:
+    if not object_id:
+        raise InvalidArgumentError(f"{object_type}: object id is required")
+    return ObjectRef(object_type, object_id)
+
+
+def _subject(subject: Subject) -> SubjectRef:
+    sub_type, sub_id, sub_rel = subject._subject_ref()
+    return SubjectRef(_object(sub_type, sub_id), sub_rel or None)
+
+
+def _subject_str(subject: Subject) -> str:
+    sub_type, sub_id, sub_rel = subject._subject_ref()
+    return f"{sub_type}:{sub_id}#{sub_rel}" if sub_rel else f"{sub_type}:{sub_id}"
+
+
+def _resource_filter(
+    resource_type: str, resource_id: str, relation: str | None
+) -> Filter:
+    return Filter(
+        resource_type,
+        resource_id=_object(resource_type, resource_id).object_id,
+        relation=relation,
+    )
+
+
 @dataclass(frozen=True)
 class Permission:
+    """A checkable permission, or relation, on one resource."""
+
     _resource_type: str
     _resource_id: str
     _permission: str
+    _admits: ClassVar[Any] = None
+
+    @property
+    def resource_type(self) -> str:
+        return self._resource_type
+
+    @property
+    def resource_id(self) -> str:
+        return self._resource_id
+
+    @property
+    def name(self) -> str:
+        return self._permission
+
+    @property
+    def ref(self) -> PermissionRef:
+        """This permission without its resource ID, for lookup_resources."""
+        return PermissionRef(self._resource_type, self._permission)
+
+    def __str__(self) -> str:
+        return f"{self._resource_type}:{self._resource_id}#{self._permission}"
+
+    def permission_check(self, subject: Subject) -> PermissionCheck:
+        """Convert to a native check of subject, e.g. for check_bulk.
+
+        Raises SubjectNotAllowedError when the schema cannot grant this
+        permission to subject. Subject-attached caveat context becomes check
+        context.
+        """
+        if self._admits is None or not isinstance(subject, self._admits):
+            raise SubjectNotAllowedError(f"{self} cannot be checked for {subject}")
+        caveat = subject._caveat_info()
+        return PermissionCheck(
+            resource=_object(self._resource_type, self._resource_id),
+            permission=self._permission,
+            subject=_subject(subject),
+            context=caveat[1] if caveat is not None else None,
+        )
 
 
 @dataclass(frozen=True)
 class PermissionRef:
+    """A permission on a resource type, without a resource ID."""
+
     _resource_type: str
     _permission: str
 
+    @property
+    def resource_type(self) -> str:
+        return self._resource_type
+
+    @property
+    def name(self) -> str:
+        return self._permission
+
+    def __str__(self) -> str:
+        return f"{self._resource_type}#{self._permission}"
+
+
+def checks_for(subject: Subject, *permissions: Permission) -> list[PermissionCheck]:
+    """Native checks of each permission for subject, in order, for check_bulk."""
+    return [p.permission_check(subject) for p in permissions]
+
+
+def with_subject(f: Filter, subject: Subject | type[Subject]) -> Filter:
+    """Narrow f to subject: its type, its ID (unless subject is a class) and
+    its exact subject relation (direct or named)."""
+    if isinstance(subject, type):
+        sub_type, sub_id, sub_rel = subject._type, None, subject._relation
+    else:
+        sub_type, sub_id, sub_rel = subject._subject_ref()
+    relation = (
+        SubjectRelationFilter.named(sub_rel)
+        if sub_rel
+        else SubjectRelationFilter.direct()
+    )
+    return replace(
+        f,
+        subject=SubjectFilter(sub_type, subject_id=sub_id, relation=relation),
+    )
+
 
 @dataclass(frozen=True)
-class TypedRelationship:
-    _resource_type: str
-    _resource_id: str
-    _relation: str
-    _subject_type: str
-    _subject_id: str
-    _subject_rel: str
-    _caveat_name: str | None
-    _caveat_ctx: dict[str, Any] | None
-    _expiration: datetime | None
+class _RelationshipValue:
+    _relationship: Relationship | None
+    _error: Exception | None = None
 
-    def _to_relationship(self) -> Relationship:
-        return Relationship(
-            resource=ObjectRef(self._resource_type, self._resource_id),
-            relation=self._relation,
-            subject=SubjectRef(ObjectRef(self._subject_type, self._subject_id), self._subject_rel or None),
-            caveat=Caveat(self._caveat_name, self._caveat_ctx) if self._caveat_name else None,
-            expiration=self._expiration,
+    @property
+    def error(self) -> Exception | None:
+        """The deferred construction error, if any."""
+        return self._error
+
+    def to_relationship(self) -> Relationship:
+        """The native relationship. Raises the deferred construction error."""
+        if self._error is not None:
+            raise self._error
+        assert self._relationship is not None
+        return self._relationship
+
+    def filter(self) -> Filter:
+        """The exact native filter for this relationship's identity."""
+        return self.to_relationship().to_filter()
+
+    def __str__(self) -> str:
+        if self._error is not None:
+            return f"<invalid relationship: {self._error}>"
+        assert self._relationship is not None
+        return str(self._relationship)
+
+
+@dataclass(frozen=True)
+class TypedRelationship(_RelationshipValue):
+    """A relationship built by a schema-checked writer, wrapped from a native
+    relationship, or a deferred construction error."""
+
+    @classmethod
+    def from_relationship(cls, relationship: Relationship) -> TypedRelationship:
+        """Wrap a native relationship, such as one read back from SpiceDB.
+
+        The relationship is NOT schema-checked; only its parts are validated.
+        """
+        r = relationship
+        try:
+            if not (
+                r.resource.object_type and r.relation and r.subject.object.object_type
+            ):
+                raise InvalidArgumentError(
+                    "relationship: type and relation are required"
+                )
+            _object(r.resource.object_type, r.resource.object_id)
+            _object(r.subject.object.object_type, r.subject.object.object_id)
+        except InvalidArgumentError as e:
+            return cls(None, e)
+        return cls(r)
+
+    @classmethod
+    def from_error(cls, error: Exception) -> TypedRelationship:
+        """A relationship carrying error, so helpers can defer construction
+        errors to TypedTransaction.build or a write like generated writers."""
+        return cls(None, error)
+
+
+@dataclass(frozen=True)
+class RelationshipKey(_RelationshipValue):
+    """A relationship identified by tuple identity alone, without caveat or
+    expiration, for deletes and exact filters on relations whose writers
+    require a caveat or an expiration."""
+
+
+def _relationship(
+    resource_type: str, resource_id: str, relation: str, subject: Subject
+) -> TypedRelationship:
+    try:
+        caveat = subject._caveat_info()
+        r = Relationship(
+            resource=_object(resource_type, resource_id),
+            relation=relation,
+            subject=_subject(subject),
+            caveat=Caveat(caveat[0], caveat[1]) if caveat is not None else None,
+            expiration=subject._expiration(),
         )
+    except (InvalidArgumentError, TypeError, ValueError) as e:
+        return TypedRelationship(None, e)
+    return TypedRelationship(r)
 
 
-@dataclass
+def _relationship_key(
+    resource_type: str, resource_id: str, relation: str, subject: Subject
+) -> RelationshipKey:
+    try:
+        r = Relationship(
+            resource=_object(resource_type, resource_id),
+            relation=relation,
+            subject=_subject(subject),
+        )
+    except (InvalidArgumentError, TypeError, ValueError) as e:
+        return RelationshipKey(None, e)
+    return RelationshipKey(r)
+
+
 class TypedTransaction:
-    """Type-safe transaction batching TypedRelationship operations and preconditions.
+    """One atomic write of typed relationships and native preconditions.
 
-    Use this when a single atomic write must mix create/touch/delete operations
-    or attach must_match / must_not_match preconditions. For the common
-    single-operation case, the variadic TypedClient.touch / create / delete
-    shortcuts remain available.
+    Builder methods return the transaction for chaining and record the first
+    construction error, which build() and TypedClient.write_txn raise before
+    any RPC; operations after an error are ignored.
     """
 
-    _txn: Transaction = field(default_factory=Transaction)
+    def __init__(self) -> None:
+        self._preconditions: list[tuple[str, Filter]] = []
+        self._updates: list[tuple[str, Relationship]] = []
+        self._error: Exception | None = None
 
-    def create(self, *rels: TypedRelationship) -> "TypedTransaction":
+    def _add(
+        self, operation: str, rels: tuple[_RelationshipValue, ...]
+    ) -> TypedTransaction:
         for r in rels:
-            self._txn.create(r._to_relationship())
+            if self._error is not None:
+                break
+            if r.error is not None:
+                self._error = r.error
+                break
+            self._updates.append((operation, r.to_relationship()))
         return self
 
-    def touch(self, *rels: TypedRelationship) -> "TypedTransaction":
-        for r in rels:
-            self._txn.touch(r._to_relationship())
+    def create(self, *rels: TypedRelationship) -> TypedTransaction:
+        """Insert each relationship, failing the write if one exists."""
+        return self._add("CREATE", rels)
+
+    def touch(self, *rels: TypedRelationship) -> TypedTransaction:
+        """Upsert each relationship."""
+        return self._add("TOUCH", rels)
+
+    def delete(self, *rels: TypedRelationship | RelationshipKey) -> TypedTransaction:
+        """Delete each relationship, identified by a TypedRelationship or a key."""
+        return self._add("DELETE", rels)
+
+    def must_match(self, *filters: Filter) -> TypedTransaction:
+        """Fail the write unless each filter matches a relationship."""
+        self._preconditions.extend(("MUST_MATCH", f) for f in filters)
         return self
 
-    def delete(self, *rels: TypedRelationship) -> "TypedTransaction":
-        for r in rels:
-            self._txn.delete(r._to_relationship())
+    def must_not_match(self, *filters: Filter) -> TypedTransaction:
+        """Fail the write if any filter matches a relationship."""
+        self._preconditions.extend(("MUST_NOT_MATCH", f) for f in filters)
         return self
 
-    def must_match(self, f: Filter) -> "TypedTransaction":
-        self._txn.must_match(f)
-        return self
+    @property
+    def error(self) -> Exception | None:
+        """The first construction error, if any."""
+        return self._error
 
-    def must_not_match(self, f: Filter) -> "TypedTransaction":
-        self._txn.must_not_match(f)
-        return self
+    def __len__(self) -> int:
+        """The number of updates added so far."""
+        return len(self._updates)
+
+    def __str__(self) -> str:
+        if self._error is not None:
+            return f"<invalid transaction: {self._error}>"
+        return str(self.build())
+
+    def build(self) -> Transaction:
+        """An independent native transaction. Raises the first construction error."""
+        if self._error is not None:
+            raise self._error
+        txn = Transaction()
+        for op, f in self._preconditions:
+            if op == "MUST_MATCH":
+                txn.must_match(f)
+            else:
+                txn.must_not_match(f)
+        for op, r in self._updates:
+            if op == "CREATE":
+                txn.create(r)
+            elif op == "TOUCH":
+                txn.touch(r)
+            else:
+                txn.delete(r)
+        return txn
 
 
 # --- Caveat contexts ---
-
 {{range $cav := .CaveatContexts}}
 
 @dataclass(frozen=True)
@@ -102,110 +358,203 @@ class {{$cav.ClassName}}:
         return d
 {{end}}
 
-# --- Subject ref dataclasses ---
+# --- Definitions: resources, and subjects referring to the object itself ---
+{{range $def := .Definitions}}{{$name := quote $def.Name}}
 
+@dataclass(frozen=True)
+class {{$def.ClassName}}:
+    """An object of definition {{$def.Name}}: a resource and a subject."""
+
+    id: str
+    _type: ClassVar[str] = {{$name}}
+    _relation: ClassVar[str] = ""
+
+    def _subject_ref(self) -> tuple[str, str, str]:
+        return {{$name}}, self.id, ""
+
+    def _caveat_info(self) -> tuple[str, dict[str, Any]] | None:
+        return None
+
+    def _expiration(self) -> datetime | None:
+        return None
+
+    def __str__(self) -> str:
+        return f"{{$def.Name}}:{self.id}"
+{{- range $wm := $def.WithMethods}}
+
+{{bracket 4 (printf "def %s" $wm.MethodName) (list "self" (printf "%s: %s" $wm.ParamName $wm.ParamType)) (printf " -> %s:" $wm.ReturnType)}}
+{{bracket 8 (printf "return %s" $wm.ReturnType) $wm.Args ""}}
+{{- end}}
+
+    @classmethod
+    def type_filter(cls) -> Filter:
+        """Matches every {{$def.Name}} relationship."""
+        return Filter({{$name}})
+
+    def filter(self) -> Filter:
+        """Matches every relationship on this {{$def.Name}}."""
+{{bracket 8 "return _resource_filter" (list $name "self.id" "None") ""}}
+{{- range $sr := $def.SubRefs}}
+
+    @property
+{{bracket 4 (printf "def %s" $sr.PropName) (list "self") (printf " -> %s:" $sr.ReturnType)}}
+{{bracket 8 (printf "return %s" $sr.ReturnType) (list "id=self.id") ""}}
+{{- end}}
+{{- range $p := $def.Permissions}}
+
+    @property
+{{bracket 4 (printf "def %s" $p.PropName) (list "self") (printf " -> %s:" $p.ClassName)}}
+{{bracket 8 (printf "return %s" $p.ClassName) (list $name "self.id" (quote $p.Name)) ""}}
+{{- end}}
+{{- range $r := $def.Relations}}
+{{- if $r.HasSubjects}}
+
+{{bracket 4 (printf "def %s" $r.WriterName) (list "self" (printf "subject: %s" $r.SubjectUnion)) " -> TypedRelationship:"}}
+{{bracket 8 "return _relationship" (list $name "self.id" (quote $r.Name) "subject") ""}}
+{{- end}}
+{{- if $r.HasKeySubject}}
+
+{{bracket 4 (printf "def %s" $r.KeyName) (list "self" (printf "subject: %s" $r.KeyUnion)) " -> RelationshipKey:"}}
+        """Identifies the {{$r.Name}} relationship by identity, for deletes."""
+{{bracket 8 "return _relationship_key" (list $name "self.id" (quote $r.Name) "subject") ""}}
+{{- end}}
+
+    @property
+{{bracket 4 (printf "def %s" $r.CheckName) (list "self") (printf " -> %s:" $r.CheckClass)}}
+        """Checks the {{$r.Name}} relation directly."""
+{{bracket 8 (printf "return %s" $r.CheckClass) (list $name "self.id" (quote $r.Name)) ""}}
+
+{{bracket 4 (printf "def %s" $r.FilterName) (list "self") " -> Filter:"}}
+        """Matches every {{$r.Name}} relationship on this {{$def.Name}}."""
+{{bracket 8 "return _resource_filter" (list $name "self.id" (quote $r.Name)) ""}}
+{{- end}}
+
+    def permission_by_name(self, name: str) -> Permission:
+        """The named permission. Raises NotInSchemaError for an unknown name."""
+{{- range $p := $def.Permissions}}
+        if name == {{quote $p.Name}}:
+            return self.{{$p.PropName}}
+{{- end}}
+{{bracket 8 "raise NotInSchemaError" (list (printf "f\"%s has no permission {name!r}\"" $def.Name)) ""}}
+
+    def relation_by_name(self, name: str) -> Permission:
+        """A check of the named relation. Raises NotInSchemaError for an
+        unknown name."""
+{{- range $r := $def.Relations}}
+        if name == {{quote $r.Name}}:
+            return self.{{$r.CheckName}}
+{{- end}}
+{{bracket 8 "raise NotInSchemaError" (list (printf "f\"%s has no relation {name!r}\"" $def.Name)) ""}}
+
+    def relationship_by_name(
+        self, relation: str, subject: Subject
+    ) -> TypedRelationship:
+        """A relationship on the named relation. Raises NotInSchemaError for
+        an unknown relation and SubjectNotAllowedError for a subject the
+        relation does not admit."""
+{{- range $r := $def.Relations}}
+        if relation == {{quote $r.Name}}:
+{{- if $r.HasSubjects}}
+{{bracket 12 "if isinstance" (list "subject" $r.SubjectUnion) ":"}}
+                return self.{{$r.WriterName}}(subject)
+{{- end}}
+{{bracket 12 "raise SubjectNotAllowedError" (list (printf "f\"%s#%s does not admit {subject}\"" $def.Name $r.Name)) ""}}
+{{- end}}
+{{bracket 8 "raise NotInSchemaError" (list (printf "f\"%s has no relation {relation!r}\"" $def.Name)) ""}}
+{{end}}
+
+# --- Subject refs: usersets, wildcards, and caveat or expiration variants ---
 {{range $srt := .SubjectRefs}}
+
 @dataclass(frozen=True)
 class {{$srt.ClassName}}:
+    """The subject {{$srt.Describe}}."""
+{{if not $srt.Wildcard}}
     id: str
+{{- end}}
 {{- if $srt.HasCaveat}}
     context: {{$srt.CaveatContext}}
 {{- end}}
-{{- if and $srt.HasExpiration (not $srt.HasCaveat)}}
+{{- if $srt.HasExpiration}}
     expiration: datetime
 {{- end}}
-    _type: ClassVar[str] = "{{$srt.DefinitionName}}"
-{{- if ne $srt.SubRelation ""}}
-    _relation: ClassVar[str] = "{{$srt.SubRelation}}"
-{{- end}}
-{{- if $srt.HasCaveat}}
-    _caveat: ClassVar[str] = "{{$srt.CaveatName}}"
-{{- end}}
+    _type: ClassVar[str] = {{quote $srt.DefinitionName}}
+    _relation: ClassVar[str] = {{quote $srt.SubRelation}}
 
     def _subject_ref(self) -> tuple[str, str, str]:
-        return "{{$srt.DefinitionName}}", self.id, "{{$srt.SubRelation}}"
+        return {{quote $srt.DefinitionName}}, {{if $srt.Wildcard}}"*"{{else}}self.id{{end}}, {{quote $srt.SubRelation}}
 
     def _caveat_info(self) -> tuple[str, dict[str, Any]] | None:
 {{- if $srt.HasCaveat}}
-        return "{{$srt.CaveatName}}", self.context._to_dict()
+        return {{quote $srt.CaveatName}}, self.context._to_dict()
 {{- else}}
         return None
 {{- end}}
 
     def _expiration(self) -> datetime | None:
-{{- if and $srt.HasExpiration (not $srt.HasCaveat) (eq $srt.SubRelation "")}}
+{{- if $srt.HasExpiration}}
         return self.expiration
 {{- else}}
         return None
 {{- end}}
-{{range $wm := $srt.WithMethods}}
-    def {{$wm.MethodName}}(self, {{if $wm.IsExpiration}}expiration: datetime{{else}}ctx: {{$wm.ParamType}}{{end}}) -> {{$wm.ReturnType}}:
-{{- if $wm.IsExpiration}}
-        return {{$wm.ReturnType}}(id=self.id, expiration=expiration)
-{{- else}}
-        return {{$wm.ReturnType}}(id=self.id, context=ctx)
+
+    def __str__(self) -> str:
+        return _subject_str(self)
+{{- range $wm := $srt.WithMethods}}
+
+{{bracket 4 (printf "def %s" $wm.MethodName) (list "self" (printf "%s: %s" $wm.ParamName $wm.ParamType)) (printf " -> %s:" $wm.ReturnType)}}
+{{bracket 8 (printf "return %s" $wm.ReturnType) $wm.Args ""}}
 {{- end}}
 {{end}}
-{{end}}
 
-
-# --- Per-permission narrowing subclasses ---
-
-{{range $p := .PerPermissionTypes -}}
-@dataclass(frozen=True)
-class {{$p.PermClassName}}(Permission): pass
-
-
-@dataclass(frozen=True)
-class {{$p.RefClassName}}(PermissionRef): pass
-
-
-{{end -}}
 # --- Sealed subject unions ---
-
 {{range $u := .SealedUnions}}
-{{$u.AliasName}}: TypeAlias = {{range $i, $m := $u.Members}}{{if $i}} | {{end}}{{$m}}{{end}}
-{{end}}
+{{alias $u.AliasName $u.Members}}
+{{- end}}
 
-# --- Resource refs ---
+# --- Checkable permissions and relations ---
+{{range $c := .Checkables}}
 
-{{range $def := .Definitions}}
 @dataclass(frozen=True)
-class {{$def.ClassName}}:
-    id: str
-    _type: ClassVar[str] = "{{$def.Name}}"
-{{range $p := $def.Permissions}}
+{{bracket 0 (printf "class %s" $c.ClassName) (list "Permission") ":"}}
+    """{{$c.Describe}} on one resource."""
+
+{{assign 4 "_admits: ClassVar[Any]" (or $c.SubjectUnion "None")}}
+{{- if $c.RefClassName}}
+
     @property
-    def {{$p.PropName}}(self) -> {{$p.ReturnType}}:
-        return {{$p.ReturnType}}(_resource_type="{{$def.Name}}", _resource_id=self.id, _permission="{{$p.PermissionName}}")
-{{end}}
-{{- range $sr := $def.SubRefs}}
-    @property
-    def {{$sr.PropName}}(self) -> {{$sr.ReturnType}}:
-        return {{$sr.ReturnType}}(id=self.id)
-{{end}}
-{{- range $r := $def.Relations}}
-    def {{$r.MethodName}}(self, subject: {{$r.SubjectUnion}}) -> TypedRelationship:
-        sub_type, sub_id, sub_rel = subject._subject_ref()
-        c_info = subject._caveat_info()
-        caveat_name = c_info[0] if c_info is not None else None
-        caveat_ctx = c_info[1] if c_info is not None else None
-        return TypedRelationship(
-            _resource_type="{{$def.Name}}",
-            _resource_id=self.id,
-            _relation="{{$r.RelationName}}",
-            _subject_type=sub_type,
-            _subject_id=sub_id,
-            _subject_rel=sub_rel,
-            _caveat_name=caveat_name,
-            _caveat_ctx=caveat_ctx,
-            _expiration=subject._expiration(),
-        )
-{{end}}
+{{bracket 4 "def ref" (list "self") (printf " -> %s:" $c.RefClassName)}}
+{{bracket 8 (printf "return %s" $c.RefClassName) (list "self._resource_type" "self._permission") ""}}
+
+
+@dataclass(frozen=True)
+{{bracket 0 (printf "class %s" $c.RefClassName) (list "PermissionRef") ":"}}
+    """{{$c.Describe}} on any resource, for lookup_resources."""
+{{- end}}
 {{end}}
 
-# --- Static permission ref constants ---
-
+# --- Static permission refs, for lookup_resources ---
 {{range $p := .StaticPermRefs}}
-{{$p.ConstName}}: {{$p.RefClassName}} = {{$p.RefClassName}}(_resource_type="{{$p.ResourceType}}", _permission="{{$p.Permission}}")
+{{assignCall (printf "%s: Final" $p.ConstName) $p.RefClassName (list (quote $p.ResourceType) (quote $p.Permission))}}
+{{- end}}
+
+# --- Relation and permission names ---
+{{range $def := .Definitions}}
+
+class {{$def.RelationsClass}}:
+    """Relation names on {{$def.Name}}."""
+{{range $r := $def.Relations}}
+{{assign 4 (printf "%s: Final" $r.ConstName) (quote $r.Name)}}
+{{- end}}
+
+
+class {{$def.PermissionsClass}}:
+    """Permission names on {{$def.Name}}."""
+{{range $p := $def.Permissions}}
+{{assign 4 (printf "%s: Final" $p.ConstName) (quote $p.Name)}}
+{{- end}}
+
+
+{{tuple (printf "%s: Final[tuple[str, ...]]" $def.RelationNames) $def.RelationNameList}}
+{{tuple (printf "%s: Final[tuple[str, ...]]" $def.PermissionNames) $def.PermissionNameList}}
 {{end}}

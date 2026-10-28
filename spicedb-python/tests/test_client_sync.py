@@ -208,7 +208,7 @@ def test_backoff_has_jitter(make_client):
     exact value. Without jitter every client in a fleet retries on the
     same schedule after a server restart (thundering herd)."""
     c = make_client(retry_policy=RetryPolicy(max_retries=1))
-    seen = {c._backoff_seconds(2) for _ in range(50)}
+    seen = {c._backoff_seconds(c._retry_policy, 2) for _ in range(50)}
     assert len(seen) > 1, "backoff should vary between calls"
     assert all((0 <= v <= 0.4 for v in seen))
 

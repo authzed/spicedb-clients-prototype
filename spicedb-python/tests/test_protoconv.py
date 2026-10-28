@@ -140,3 +140,75 @@ def test_lookup_read_expand_and_write_results():
     assert pc.write_schema_result_to_proto(ZedToken("s")).written_at.token == "s"
     assert pc.read_schema_result_to_proto(SchemaResult("definition u {}", ZedToken("r"))).schema_text == "definition u {}"
     assert isinstance(pc.relationship_to_proto(REL), core_pb2.Relationship)
+
+
+def _client_over(**stubs):
+    from unittest.mock import Mock
+
+    from spicedb import TransportSecurity
+    from spicedb.sync import SpiceDBClient
+
+    client = SpiceDBClient("localhost:1", token="t", transport_security=TransportSecurity.PLAINTEXT)
+    client._ensure_channel = Mock()
+    client._permissions = Mock(**stubs)
+    return client
+
+
+def test_check_bulk_round_trips_the_servers_response():
+    from unittest.mock import Mock
+
+    from google.rpc import error_details_pb2, status_pb2
+
+    from spicedb import BulkItemErrors, PermissionCheck
+
+    def server(request, **_kwargs):
+        response = psp.CheckBulkPermissionsResponse(checked_at=core_pb2.ZedToken(token="bulk-rev"))
+        for item in request.items:
+            pair = response.pairs.add(request=item)
+            if item.resource.object_id == "broken":
+                status = status_pb2.Status(code=9, message="permission view not found")
+                status.details.add().Pack(error_details_pb2.ErrorInfo(reason="ERROR_REASON_UNKNOWN_RELATION_OR_PERMISSION", domain="authzed.com"))
+                pair.error.CopyFrom(status)
+            else:
+                pair.item.permissionship = psp.CheckPermissionResponse.PERMISSIONSHIP_CONDITIONAL_PERMISSION
+                pair.item.partial_caveat_info.missing_required_context.append("cidr")
+        server.sent = response
+        return response
+
+    user = SubjectRef(ObjectRef("user", "u"))
+    requests = [
+        PermissionCheck(ObjectRef("document", "a"), "view", user),
+        PermissionCheck(ObjectRef("document", "broken"), "view", user),
+        PermissionCheck(ObjectRef("document", "c"), "view", user, context={"cidr": "10.0.0.0/8"}),
+    ]
+    client = _client_over(CheckBulkPermissions=Mock(side_effect=server))
+    results = client.check_bulk(requests, consistency=full(), context={"region": "us"}, item_errors=BulkItemErrors.RETURN)
+    assert pc.check_bulk_to_proto(requests, results, context={"region": "us"}) == server.sent
+    with pytest.raises(InvalidArgumentError):
+        pc.check_bulk_to_proto(requests[:1], results)
+    assert pc.check_request_to_proto(requests[2], context={"region": "us"}) == server.sent.pairs[2].request
+
+
+def test_lookup_subject_round_trips_the_servers_response():
+    from unittest.mock import Mock
+
+    # As SpiceDB sends it: the deprecated top-level fields mirror `subject`.
+    sent = psp.LookupSubjectsResponse(
+        looked_up_at=core_pb2.ZedToken(token="rev3"),
+        subject=psp.ResolvedSubject(subject_object_id="*", permissionship=psp.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION),
+        subject_object_id="*",
+        permissionship=psp.LOOKUP_PERMISSIONSHIP_HAS_PERMISSION,
+        excluded_subjects=[psp.ResolvedSubject(
+            subject_object_id="bob", permissionship=psp.LOOKUP_PERMISSIONSHIP_CONDITIONAL_PERMISSION,
+            partial_caveat_info=core_pb2.PartialCaveatInfo(missing_required_context=["k"]))],
+        excluded_subject_ids=["bob"],
+    )
+
+    class Call(list):
+        def cancel(self):
+            return True
+
+    client = _client_over(LookupSubjects=Mock(return_value=Call([sent])))
+    (subject,) = client.lookup_subjects(
+        resource=ObjectRef("document", "a"), permission="view", subject_type="user", consistency=full())
+    assert pc.lookup_subject_to_proto(subject) == sent

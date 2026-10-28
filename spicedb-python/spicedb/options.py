@@ -62,11 +62,27 @@ class StreamRetries(Enum):
     """Whether a streaming read is re-established after a retryable failure.
 
     Retries only ever happen before the stream exposes its first item. Watch
-    streams never retry. DISABLED leaves unary retry unchanged.
+    streams never retry unless one call opts in with
+    ``CallOptions(retry_policy=...)``, which governs that call's stream
+    establishment either way. DISABLED leaves unary retry unchanged.
     """
 
     ENABLED = "enabled"
     DISABLED = "disabled"
+
+
+class Paging(Enum):
+    """How ``read_relationships`` and ``lookup_resources`` fetch results.
+
+    AUTOMATIC (default) fetches page after page of ``page_size`` until the
+    results (or ``limit``) run out. SINGLE_REQUEST sends exactly one request,
+    as the raw API does: its limit is ``limit`` (unbounded without one),
+    ``page_size`` is ignored, and no follow-up page is requested. Each item
+    still carries its ``after_result_cursor``.
+    """
+
+    AUTOMATIC = "automatic"
+    SINGLE_REQUEST = "single_request"
 
 
 class BulkItemErrors(Enum):
@@ -112,13 +128,15 @@ _DEFAULT_RETRYABLE = frozenset({grpc.StatusCode.UNAVAILABLE, grpc.StatusCode.ABO
 
 @dataclass(frozen=True)
 class RetryPolicy:
-    """Client-wide retry policy for idempotent reads.
+    """Retry policy for idempotent reads, client-wide or for one call.
 
     The default retries UNAVAILABLE and ABORTED up to three times with
     full-jitter exponential backoff starting at 100 ms and capped at 5 s. Any
-    read code may be added, including RESOURCE_EXHAUSTED. Mutations (writes,
-    deletes, imports, schema writes, counter registration) are never retried
-    under any policy. Every retry shares the operation's deadline.
+    read code may be added, including RESOURCE_EXHAUSTED. Mutations are never
+    retried automatically; only a write whose transaction holds only touches
+    and no preconditions, and a schema write, may opt in for one call through
+    ``CallOptions(retry_policy=...)``. Every retry shares the operation's
+    deadline.
     """
 
     max_retries: int = 3
@@ -148,11 +166,11 @@ DEFAULT_RETRY_POLICY = RetryPolicy()
 _NO_RETRIES = RetryPolicy(max_retries=0)
 
 
-def _retry_policy(value: RetryPolicy | Retries) -> RetryPolicy:
+def _retry_policy(value: RetryPolicy | Retries, field: str = "retry_policy") -> RetryPolicy:
     if value is Retries.DISABLED:
         return _NO_RETRIES
     if not isinstance(value, RetryPolicy):
-        raise InvalidArgumentError(f"retry_policy: expected RetryPolicy or Retries.DISABLED, got {value!r}")
+        raise InvalidArgumentError(f"{field}: expected RetryPolicy or Retries.DISABLED, got {value!r}")
     return value
 
 
@@ -181,12 +199,23 @@ class CallOptions:
     that has a token (it may supply one on a ``from_channel`` client). ``wait_for_ready`` and
     ``compression`` are forwarded to grpc. Applies to every attempt, chunk
     and page of the operation.
+
+    ``retry_policy`` overrides the client's retry policy for this one call,
+    including stream establishment (before the first item): pass
+    ``Retries.DISABLED`` to exempt one stream, such as a supervised watch,
+    while the client retries everything else, or a ``RetryPolicy`` to retry
+    a stream the client would not. Mutations are not retried by default;
+    only ``write`` of a transaction holding only touches and no
+    preconditions, and ``write_schema``, are idempotent on replay and may opt
+    in. Every other mutation given a policy with retries raises
+    ``InvalidArgumentError`` before any request.
     """
 
     metadata: Sequence[tuple[str, str | bytes]] = ()
     wait_for_ready: bool | None = None
     compression: grpc.Compression | None = None
     response_metadata: ResponseMetadata | None = field(default=None, compare=False)
+    retry_policy: RetryPolicy | Retries | None = None
 
     def __post_init__(self) -> None:
         pairs = tuple(tuple(pair) for pair in self.metadata)
@@ -200,6 +229,8 @@ class CallOptions:
             raise InvalidArgumentError("call_options.compression: expected grpc.Compression")
         if self.response_metadata is not None and not isinstance(self.response_metadata, ResponseMetadata):
             raise InvalidArgumentError("call_options.response_metadata: expected ResponseMetadata")
+        if self.retry_policy is not None:
+            _retry_policy(self.retry_policy, "call_options.retry_policy")
 
 
 def _option(value, kind):

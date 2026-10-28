@@ -51,7 +51,8 @@ definition invitation {
 ```
 
 Naming: `Organization(id)` builds a ref. Permission `p` → property `p`.
-Relation `r` → writer `r(subject)`, key `r_key(subject)`, check property
+Relation `r` → writer `r(subject)`, key `r_key(subject)` (only where `r` admits
+caveated or expiring subjects; elsewhere the writer identifies the tuple), check property
 `r_relation`, filter `r_filter()`. A userset on a permission → property
 `p_subject` (e.g. `can_admin_subject`). `user:*` → `UserWildcard()`. Static
 refs for lookups are `ORGANIZATION_VIEW`; names are
@@ -160,7 +161,12 @@ except FailedPreconditionError:
 - Delete without inventing an expiration: `TypedTransaction().delete(Invitation(inv_id).inviter_key(User(u)))`.
 - Delete what you just read: `txn.delete(TypedRelationship.from_relationship(item.relationship))`.
 - **Do not retry a failed write blindly**; it may have committed. The client
-  never replays mutations.
+  never replays mutations unless one call opts in, which only a touch-only
+  write without preconditions and `write_schema` may do:
+  `c.write(txn, call_options=CallOptions(retry_policy=RetryPolicy()))`.
+- `with_subject(f, User(u))` pins the subject relation (direct only, never
+  `team:eng#member`); `with_subject_any_relation` matches any.
+- `txn.updates` / `txn.preconditions` show what a `TypedTransaction` will send.
 
 ## Read relationships
 
@@ -174,7 +180,8 @@ with tc.read_relationships(min_latency(), Organization(org_id).admin_filter()) a
 To resume, call again with `cursor=cursor` and the **same filter,
 consistency and `page_size`**. `lookup_resources` items carry
 `after_result_cursor` too; `export_relationships` items carry a cursor and no
-revision.
+revision. `paging=Paging.SINGLE_REQUEST` (reads and resource lookups) sends
+exactly one request, as the raw API does.
 
 ## Schema-agnostic code (native tier)
 
@@ -209,9 +216,12 @@ print(md.trailers)
 ```
 
 Every operation accepts `call_options=CallOptions(metadata=..., wait_for_ready=...,
-compression=..., response_metadata=...)`. Protocol-shaped output:
-`spicedb.protoconv` (`relationship_to_proto`, `check_result_to_proto`, ...)
-with `google.protobuf.json_format`.
+compression=..., response_metadata=..., retry_policy=...)`; `retry_policy`
+overrides the client's for that call, including stream establishment
+(`c.watch(call_options=CallOptions(retry_policy=Retries.DISABLED))`).
+Protocol-shaped output: `spicedb.protoconv` (`relationship_to_proto`,
+`check_result_to_proto`, `check_bulk_to_proto`, ...) with
+`google.protobuf.json_format`.
 
 ## Errors
 
@@ -248,9 +258,12 @@ assert isinstance(err, FailedPreconditionError)
 ```
 
 `InMemoryClient` (and `AsyncInMemoryClient`) implement `write`, `check`,
-`check_bulk`, `read_relationships`, `delete_relationships` and
-`delete_all_relationships_non_atomic` with the real clients' signatures,
-SpiceDB's precondition and create-conflict semantics, and its typed errors.
+`check_bulk`, `read_relationships`, `delete_relationships`,
+`delete_all_relationships_non_atomic`, `import_relationships`,
+`export_relationships`, `read_schema`, `write_schema` and `reflect_schema`
+(`set_reflect_schema_result`) with the real clients' signatures, SpiceDB's
+precondition and create-conflict semantics, and errors shaped like the real
+client's. `set_response_metadata` fills `CallOptions(response_metadata=...)`.
 Type your code against the methods you use, e.g.:
 
 ```python

@@ -177,6 +177,10 @@ with client.read_relationships(filter, consistency=full()) as stream:
 ```
 
 To resume, pass `cursor=` with the same filter, consistency and `page_size`.
+A raw `ReadRelationships`/`LookupResources` call without a limit is one
+unbounded request; this client pages by default. To reproduce the raw call
+(and its final cursor), pass `paging=Paging.SINGLE_REQUEST`: exactly one
+request, limited only by `limit=` where the method has one.
 `lookup_resources` takes `permissionship_filter=LookupPermissionshipFilter.HAS_PERMISSION_ONLY`
 to drop conditional results. `ImportBulkRelationships` (a request iterator) →
 `import_relationships(iterable, batch_size=1000)`: one call is one
@@ -195,6 +199,23 @@ authzed-py had no default deadline and no retries.
   stream establishment retries before the first item. If you have your own
   policy: `retry_policy=Retries.DISABLED` (or a `RetryPolicy(...)`) and
   `stream_retries=StreamRetries.DISABLED`.
+- Override the policy for one call with
+  `call_options=CallOptions(retry_policy=...)`: for example
+  `Retries.DISABLED` on one `watch` so a supervised watch is never reopened,
+  or a `RetryPolicy` on a touch-only `write` (no preconditions) or a
+  `write_schema` to retry those idempotent writes. Every other mutation
+  raises `InvalidArgumentError` for the opt-in before sending anything.
+- Writes are never replayed otherwise. An empty `Transaction` is sent like
+  authzed-py's empty `WriteRelationshipsRequest`: SpiceDB evaluates its
+  preconditions and returns the current revision.
+
+## Consistency on schema reads
+
+Every schema read that takes a consistency requires one explicitly
+(`reflect_schema`, `computable_permissions`, `dependent_relations`,
+`diff_schema`). Where your raw requests left consistency unset, pass
+`consistency=min_latency()`, which is what SpiceDB applies when it is absent.
+`read_schema` has no consistency parameter because `ReadSchemaRequest` has none.
 
 ## Errors
 

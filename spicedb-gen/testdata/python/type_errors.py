@@ -52,6 +52,8 @@ Organization("x").admin(UserWildcard())  # should not type-check
 # inviter admits only expiring users; its key admits only the base user.
 Invitation("x").inviter(User("alice"))  # should not type-check
 Invitation("x").inviter_key(User("alice").with_expiration(datetime.now()))  # should not type-check
+# Plain relations have no key: their writer already identifies the tuple.
+Document("x").editor_key(User("alice"))  # should not type-check
 # Keys delete; they never write.
 TypedTransaction().touch(Invitation("x").inviter_key(User("alice")))  # should not type-check
 

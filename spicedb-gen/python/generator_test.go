@@ -2,7 +2,9 @@ package python
 
 import (
 	"bytes"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -195,7 +197,7 @@ func TestCollisionsFailGeneration(t *testing.T) {
 		want []string
 	}{
 		"key accessor vs relation writer": {
-			zed:  "definition user {}\ndefinition doc {\n relation admin: user\n relation admin_key: user\n}",
+			zed:  "use expiration\ndefinition user {}\ndefinition doc {\n relation admin: user with expiration\n relation admin_key: user\n}",
 			want: []string{"DocAdminKeySubject", "key subjects of relation doc#admin", "subjects of relation doc#admin_key"},
 		},
 		"relation vs built-in member": {
@@ -219,6 +221,95 @@ func TestCollisionsFailGeneration(t *testing.T) {
 			}
 		})
 	}
+}
+
+// collidingSchema has a definition whose class would be the generated
+// Subject protocol, and a caveat calling a function outside SpiceDB's default
+// CEL environment.
+const collidingSchema = `
+caveat custom_fn(request map<any>) {
+	customLookup(request).allowed
+}
+
+definition subject {}
+
+definition resource {
+	relation viewer: subject | subject with custom_fn
+	permission view = viewer
+}`
+
+func TestCaveatCallingUndeclaredFunctionGenerates(t *testing.T) {
+	types := generate(t, parse(t, `
+caveat custom_fn(request map<any>, allowed list<string>) {
+	customLookup(request).name in allowed
+}
+definition user {}
+definition doc {
+	relation viewer: user with custom_fn
+}`), nil)["permissions.py"]
+	assert.Contains(t, types, "class CustomFnContext:")
+	assert.Contains(t, types, "    def with_custom_fn(self, ctx: CustomFnContext) -> UserCustomFn:\n")
+}
+
+func TestRenameResolvesDefinitionCollisions(t *testing.T) {
+	_, err := (&Generator{}).Generate(parse(t, collidingSchema), nil)
+	require.ErrorContains(t, err, "Subject")
+	require.ErrorContains(t, err, "--python.rename", "the collision error must say how to keep the schema")
+
+	files := generate(t, parse(t, collidingSchema), map[string]string{"rename": "subject=SubjectDef"})
+	types := files["permissions.py"]
+	assert.Contains(t, types, "\nclass SubjectDef:\n")
+	assert.Contains(t, types, `        return "subject", self.id, ""`, "the wire name stays the schema name")
+	assert.Contains(t, types, "    def with_custom_fn(self, ctx: CustomFnContext) -> SubjectDefCustomFn:\n")
+	assert.Contains(t, types, "SUBJECT_DEF_RELATION_NAMES")
+	assert.Contains(t, types, "ResourceViewerSubject: TypeAlias = SubjectDef | SubjectDefCustomFn\n")
+
+	for _, bad := range []string{"subject", "subject=lower", "subject=Has-Dash", "nope=Nope", "subject=A,subject=B"} {
+		_, err := (&Generator{}).Generate(parse(t, collidingSchema), map[string]string{"rename": bad})
+		assert.Error(t, err, bad)
+	}
+
+	if testing.Short() {
+		return
+	}
+	// The renamed output type-checks against the real native client.
+	if _, err := exec.LookPath("uv"); err != nil {
+		t.Skip("uv not installed")
+	}
+	dir, err := os.MkdirTemp("../testdata/python", "zz_rename_")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "__init__.py"), nil, 0o644))
+	for name, content := range files {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644))
+	}
+	use := "from .permissions import Resource, SubjectDef, CustomFnContext, with_subject\n" +
+		"rel = Resource(\"r\").viewer(SubjectDef(\"s\").with_custom_fn(CustomFnContext(request={\"a\": 1})))\n" +
+		"f = with_subject(Resource.type_filter(), SubjectDef(\"s\"))\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "use.py"), []byte(use), 0o644))
+	cmd := exec.Command("uv", "run", "pyright", filepath.Base(dir))
+	cmd.Dir = "../testdata/python"
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+}
+
+func TestKeysOnlyWhereARelationNeedsThem(t *testing.T) {
+	types := generate(t, testSchema(t), nil)["permissions.py"]
+	// inviter admits only expiring users, so its key is distinct from its writer.
+	assert.Contains(t, types, "    def inviter_key(")
+	assert.Contains(t, types, "    def viewer_key(", "viewer admits caveated users")
+	// Plain relations identify their tuples with the writer alone.
+	for _, absent := range []string{"def editor_key(", "def owner_key(", "def admin_key(", "def creator_key(", "DocumentEditorKeySubject"} {
+		assert.NotContains(t, types, absent)
+	}
+}
+
+func TestTypedTransactionExposesUpdatesAndAnyRelationFilter(t *testing.T) {
+	types := generate(t, testSchema(t), nil)["permissions.py"]
+	assert.Contains(t, types, "    def updates(self) -> tuple[Update, ...]:\n")
+	assert.Contains(t, types, "    def preconditions(self) -> tuple[Precondition, ...]:\n")
+	assert.Contains(t, types, "def with_subject_any_relation(f: Filter, subject: Subject | type[Subject]) -> Filter:\n")
+	assert.Contains(t, types, "It always constrains the subject relation")
 }
 
 func TestEmptySchema(t *testing.T) {
@@ -270,8 +361,14 @@ definition organization_workspace_project {
 definition holder {
 	relation grant: organization_workspace_project#administer_billing_settings with expiration
 }`)
-	for _, s := range []*schema.Schema{testSchema(t), long} {
-		for name, content := range generate(t, s, nil) {
+	single := parse(t, "definition user {}\ndefinition team {\n relation member: user\n}")
+	renamed := map[string]string{"rename": "subject=SubjectDef"}
+	for i, s := range []*schema.Schema{testSchema(t), long, single, parse(t, collidingSchema)} {
+		var opts map[string]string
+		if i == 3 {
+			opts = renamed
+		}
+		for name, content := range generate(t, s, opts) {
 			cmd := exec.Command(ruff, "format", "--isolated", "--diff", "--stdin-filename", name, "-")
 			cmd.Stdin = strings.NewReader(content)
 			var out bytes.Buffer

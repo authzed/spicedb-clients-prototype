@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"text/template"
 
 	"github.com/authzed/spicedb-clients/spicedb-gen/generator"
@@ -45,6 +46,30 @@ type TemplateData struct {
 	// ClientTypeImports lists the names, sorted and deduplicated, that
 	// sync.py/aio.py reference from the types module.
 	ClientTypeImports []string
+
+	// The typed overloads of check, lookup_resources and lookup_subjects, and
+	// each implementation's parameter types. Python requires at least two
+	// overloads, so a single overload is folded into the implementation's
+	// signature instead (and none leaves it untyped).
+	CheckOverloads           []CheckableData
+	LookupResourcesOverloads []CheckableData
+	LookupSubjectsOverloads  []CheckableData
+	CheckImpl                ImplTypes
+	LookupResourcesImpl      ImplTypes
+	LookupSubjectsImpl       ImplTypes
+	HasOverloads             bool
+}
+
+// ImplTypes are the permission and subject parameter types of an overloaded
+// method's implementation.
+type ImplTypes struct{ P, S string }
+
+// implTypes is Any/Any for zero or several overloads, else the one overload's types.
+func implTypes(overloads []CheckableData, p, s func(CheckableData) string) ImplTypes {
+	if len(overloads) != 1 {
+		return ImplTypes{"Any", "Any"}
+	}
+	return ImplTypes{p(overloads[0]), s(overloads[0])}
 }
 
 // CheckableData is a narrowed Permission subclass: one per permission and one
@@ -162,16 +187,81 @@ type clientFlavor struct {
 
 var pyIdentifier = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
+// pyClassName is what --python.rename accepts: a PascalCase class name stem.
+var pyClassName = regexp.MustCompile(`^[A-Z][A-Za-z0-9]*$`)
+
+// renameMu serializes Generate, which installs per-call definition renames
+// for defIdent.
+var (
+	renameMu   sync.Mutex
+	defRenames map[string]string
+)
+
+// defIdent is the Python class-name stem for a schema definition: its
+// PascalCase name, or the --python.rename override for it.
+func defIdent(name string) string {
+	if r, ok := defRenames[name]; ok {
+		return r
+	}
+	return toPascalCase(name)
+}
+
+// defConstStem is the UPPER_SNAKE stem of a definition's module constants
+// (DOCUMENT_RELATION_NAMES, DOCUMENT_VIEW): the schema name, or the renamed
+// class stem in upper snake case.
+func defConstStem(name string) string {
+	r, ok := defRenames[name]
+	if !ok {
+		return strings.ToUpper(name)
+	}
+	var b strings.Builder
+	for i, c := range r {
+		if i > 0 && c >= 'A' && c <= 'Z' {
+			b.WriteByte('_')
+		}
+		b.WriteRune(c)
+	}
+	return strings.ToUpper(b.String())
+}
+
+// parseRenames parses --python.rename=def=ClassName[,def=ClassName...].
+func parseRenames(v string) (map[string]string, error) {
+	out := map[string]string{}
+	for _, pair := range strings.Split(v, ",") {
+		def, ident, ok := strings.Cut(strings.TrimSpace(pair), "=")
+		if !ok || def == "" || !pyClassName.MatchString(ident) || pyHardKeywords[ident] {
+			return nil, fmt.Errorf("--python.rename entry %q must be <definition>=<ClassName> (PascalCase letters and digits)", pair)
+		}
+		if _, dup := out[def]; dup {
+			return nil, fmt.Errorf("--python.rename names definition %q more than once", def)
+		}
+		out[def] = ident
+	}
+	return out, nil
+}
+
 // Generate produces <module>.py (default permissions.py), sync.py and aio.py.
 // The types module holds the flavor-agnostic types; sync.py and aio.py each
 // define a TypedClient bound to spicedb.sync/aio.SpiceDBClient.
 //
 // Options (--python.<key>=<value>):
 //   - module: the types module's name (default "permissions").
+//   - rename: def=ClassName[,def=ClassName...] sets the class-name stem of
+//     definitions whose names would otherwise collide with generated
+//     identifiers (e.g. `definition subject` and the Subject protocol).
+//     Renames change Python identifiers only; the schema names sent to
+//     SpiceDB never change.
 func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]generator.GeneratedFile, error) {
 	module := DefaultModule
+	renames := map[string]string{}
 	for k, v := range opts {
 		switch k {
+		case "rename":
+			r, err := parseRenames(v)
+			if err != nil {
+				return nil, err
+			}
+			renames = r
 		case "module":
 			if !pyIdentifier.MatchString(v) || pyHardKeywords[v] || v == "sync" || v == "aio" {
 				return nil, fmt.Errorf("--python.module=%q must be a Python identifier other than a keyword, \"sync\" or \"aio\"", v)
@@ -181,6 +271,21 @@ func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]genera
 			return nil, fmt.Errorf("unknown Python option --python.%s", k)
 		}
 	}
+
+	known := map[string]bool{}
+	for _, def := range s.Definitions {
+		known[def.Name] = true
+	}
+	for def := range renames {
+		if !known[def] {
+			return nil, fmt.Errorf("--python.rename names %q, which is not a definition in the schema", def)
+		}
+	}
+
+	renameMu.Lock()
+	defer renameMu.Unlock()
+	defRenames = renames
+	defer func() { defRenames = nil }()
 
 	data, err := buildTemplateData(s)
 	if err != nil {
@@ -358,11 +463,11 @@ func baseOf(st schema.SubjectType) subjectBase {
 func (b subjectBase) className() string {
 	switch {
 	case b.wildcard:
-		return toPascalCase(b.definition) + "Wildcard"
+		return defIdent(b.definition) + "Wildcard"
 	case b.relation != "":
-		return toPascalCase(b.definition) + toPascalCase(b.relation)
+		return defIdent(b.definition) + toPascalCase(b.relation)
 	default:
-		return toPascalCase(b.definition)
+		return defIdent(b.definition)
 	}
 }
 
@@ -418,7 +523,9 @@ func (n *names) claim(scope, name, owner string) {
 		if scope != "" {
 			where = "class " + scope
 		}
-		n.err = fmt.Errorf("schema produces conflicting Python identifier %s in %s (from %s and from %s); rename one of them", name, where, prev, owner)
+		n.err = fmt.Errorf("schema produces conflicting Python identifier %s in %s (from %s and from %s); "+
+			"rename the schema element, or keep the schema and pass --python.rename=<definition>=<ClassName> "+
+			"to change a definition's Python identifiers", name, where, prev, owner)
 	}
 	n.owners[key] = owner
 }
@@ -468,10 +575,10 @@ func buildTemplateData(s *schema.Schema) (TemplateData, error) {
 	for _, fixed := range []string{
 		"NotInSchemaError", "SubjectNotAllowedError", "Subject", "Permission", "PermissionRef",
 		"TypedRelationship", "RelationshipKey", "TypedTransaction", "checks_for", "with_subject",
-		"annotations", "dataclass", "datetime", "replace", "json", "Any", "ClassVar", "Final",
-		"Protocol", "TypeAlias", "Caveat", "Filter", "InvalidArgumentError", "ObjectRef",
-		"PermissionCheck", "Relationship", "SubjectFilter", "SubjectRef", "SubjectRelationFilter",
-		"Transaction",
+		"with_subject_any_relation", "annotations", "dataclass", "datetime", "replace", "json", "Any",
+		"ClassVar", "Final", "Protocol", "TypeAlias", "Caveat", "Filter", "InvalidArgumentError",
+		"ObjectRef", "PermissionCheck", "Precondition", "Relationship", "SubjectFilter", "SubjectRef",
+		"SubjectRelationFilter", "Transaction", "Update",
 	} {
 		n.claim("", fixed, "generated support code")
 	}
@@ -567,7 +674,7 @@ func buildTemplateData(s *schema.Schema) (TemplateData, error) {
 
 	known := map[string]bool{}
 	for _, def := range s.Definitions {
-		known[toPascalCase(def.Name)] = true
+		known[defIdent(def.Name)] = true
 	}
 
 	var subjectRefs []SubjectRefData
@@ -724,8 +831,8 @@ func buildTemplateData(s *schema.Schema) (TemplateData, error) {
 	var checkables []CheckableData
 	var staticPermRefs []StaticPermRefData
 	for _, def := range s.Definitions {
-		pascal := toPascalCase(def.Name)
-		upper := strings.ToUpper(def.Name)
+		pascal := defIdent(def.Name)
+		upper := defConstStem(def.Name)
 		dd := DefinitionData{
 			ClassName:        pascal,
 			Name:             def.Name,
@@ -811,7 +918,19 @@ func buildTemplateData(s *schema.Schema) (TemplateData, error) {
 				rd.WriterName = "for_" + rel.Name
 			}
 			rd.SubjectUnion = addUnion(pascal+rp+"Subject", "subjects of relation "+def.Name+"#"+rel.Name, exactMembers(rel.AllowedSubjects))
-			rd.KeyUnion = addUnion(pascal+rp+"KeySubject", "key subjects of relation "+def.Name+"#"+rel.Name, keyMembers(rel.AllowedSubjects))
+			// A key is distinct from the writer only when some admitted
+			// subject carries a caveat or expiration; otherwise the writer's
+			// TypedRelationship already identifies the tuple for deletes and
+			// filters, and a key would duplicate it.
+			needsKey := false
+			for _, st := range rel.AllowedSubjects {
+				if st.CaveatName != "" || st.Expiration {
+					needsKey = true
+				}
+			}
+			if needsKey {
+				rd.KeyUnion = addUnion(pascal+rp+"KeySubject", "key subjects of relation "+def.Name+"#"+rel.Name, keyMembers(rel.AllowedSubjects))
+			}
 			rd.HasSubjects = rd.SubjectUnion != ""
 			rd.HasKeySubject = rd.KeyUnion != ""
 			if rd.HasSubjects {
@@ -848,6 +967,25 @@ func buildTemplateData(s *schema.Schema) (TemplateData, error) {
 		Checkables:     checkables,
 		StaticPermRefs: staticPermRefs,
 	}
+	for _, c := range checkables {
+		if c.SubjectUnion != "" {
+			data.CheckOverloads = append(data.CheckOverloads, c)
+			if c.RefClassName != "" {
+				data.LookupResourcesOverloads = append(data.LookupResourcesOverloads, c)
+			}
+		}
+		if c.LookupTypes != "" {
+			data.LookupSubjectsOverloads = append(data.LookupSubjectsOverloads, c)
+		}
+	}
+	className := func(c CheckableData) string { return c.ClassName }
+	refClassName := func(c CheckableData) string { return c.RefClassName }
+	subjectUnion := func(c CheckableData) string { return c.SubjectUnion }
+	lookupTypes := func(c CheckableData) string { return c.LookupTypes }
+	data.CheckImpl = implTypes(data.CheckOverloads, className, subjectUnion)
+	data.LookupResourcesImpl = implTypes(data.LookupResourcesOverloads, refClassName, subjectUnion)
+	data.LookupSubjectsImpl = implTypes(data.LookupSubjectsOverloads, className, lookupTypes)
+	data.HasOverloads = len(data.CheckOverloads) > 1 || len(data.LookupResourcesOverloads) > 1 || len(data.LookupSubjectsOverloads) > 1
 	data.ClientTypeImports = clientTypeImports(data)
 	return data, nil
 }

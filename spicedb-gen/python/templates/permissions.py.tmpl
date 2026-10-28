@@ -12,11 +12,13 @@ from spicedb import (
     InvalidArgumentError,
     ObjectRef,
     PermissionCheck,
+    Precondition,
     Relationship,
     SubjectFilter,
     SubjectRef,
     SubjectRelationFilter,
     Transaction,
+    Update,
 )
 
 # --- Errors ---
@@ -145,7 +147,13 @@ def checks_for(subject: Subject, *permissions: Permission) -> list[PermissionChe
 
 def with_subject(f: Filter, subject: Subject | type[Subject]) -> Filter:
     """Narrow f to subject: its type, its ID (unless subject is a class) and
-    its exact subject relation (direct or named)."""
+    its exact subject relation.
+
+    It always constrains the subject relation: a subject without one
+    (User("x")) matches only direct relationships, never usersets such as
+    team:eng#member. Use with_subject_any_relation to leave the subject
+    relation unconstrained.
+    """
     if isinstance(subject, type):
         sub_type, sub_id, sub_rel = subject._type, None, subject._relation
     else:
@@ -158,6 +166,21 @@ def with_subject(f: Filter, subject: Subject | type[Subject]) -> Filter:
     return replace(
         f,
         subject=SubjectFilter(sub_type, subject_id=sub_id, relation=relation),
+    )
+
+
+def with_subject_any_relation(f: Filter, subject: Subject | type[Subject]) -> Filter:
+    """Narrow f to subject's type and ID (unless subject is a class), matching
+    any subject relation, direct or userset."""
+    if isinstance(subject, type):
+        sub_type, sub_id = subject._type, None
+    else:
+        sub_type, sub_id, _ = subject._subject_ref()
+    return replace(
+        f,
+        subject=SubjectFilter(
+            sub_type, subject_id=sub_id, relation=SubjectRelationFilter.any()
+        ),
     )
 
 
@@ -310,6 +333,16 @@ class TypedTransaction:
     def error(self) -> Exception | None:
         """The first construction error, if any."""
         return self._error
+
+    @property
+    def updates(self) -> tuple[Update, ...]:
+        """The native updates added so far, in order; empty after an error."""
+        return () if self._error is not None else self.build().updates
+
+    @property
+    def preconditions(self) -> tuple[Precondition, ...]:
+        """The native preconditions added so far, in order; empty after an error."""
+        return () if self._error is not None else self.build().preconditions
 
     def __len__(self) -> int:
         """The number of updates added so far."""

@@ -9,7 +9,15 @@ import pytest
 
 from spicedb import (
     AlreadyExistsError,
+    CallOptions,
     CheckResult,
+    NotFoundError,
+    ReflectSchemaResult,
+    ResponseMetadata,
+    RetryPolicy,
+    SchemaDefinition,
+    TransportSecurity,
+    min_latency,
     DeletePartial,
     DeleteProgress,
     FailedPreconditionError,
@@ -38,6 +46,11 @@ SHARED = [
     "read_relationships",
     "delete_relationships",
     "delete_all_relationships_non_atomic",
+    "import_relationships",
+    "export_relationships",
+    "read_schema",
+    "write_schema",
+    "reflect_schema",
 ]
 
 
@@ -80,8 +93,10 @@ def test_write_semantics():
         "document:a#viewer@user:alice[expiration:2030-01-01T00:00:00Z]",
         "document:b#viewer@team:t#member",
     ]
-    with pytest.raises(InvalidArgumentError):
-        store.write(Transaction())
+    # An empty write is sent like SpiceDB's: preconditions only, current revision.
+    assert store.write(Transaction()).revision == ZedToken("1")
+    with pytest.raises(FailedPreconditionError):
+        store.write(Transaction().must_match(Filter("folder")))
 
 
 def test_read_and_delete_semantics():
@@ -139,3 +154,93 @@ async def test_async_double_shares_semantics():
 
     await store.delete_all_relationships_non_atomic(Filter("document"), on_progress=record)
     assert seen == [1] and store.relationships() == []
+
+
+def test_errors_have_the_real_clients_shape():
+    store = InMemoryClient([rel("org:acme#admin@user:alice")])
+    with pytest.raises(FailedPreconditionError) as caught:
+        store.write(Transaction().must_match(Filter("org", relation="owner")))
+    # A server failure: the server's text, verbatim, as for a real server error.
+    assert str(caught.value).startswith("unable to satisfy write precondition `")
+    assert caught.value.server_message == str(caught.value) == caught.value.details()
+
+    # Local validation runs the real clients' request builders: same class,
+    # same message, no server message.
+    def message(call):
+        with pytest.raises(InvalidArgumentError) as error:
+            call()
+        assert error.value.server_message is None
+        return str(error.value)
+
+    real = SyncClient("localhost:1", token="t", transport_security=TransportSecurity.PLAINTEXT)
+    check = PermissionCheck(ObjectRef("document", "a"), "view", SubjectRef(ObjectRef("user", "u")))
+    for call in (
+        lambda c: c.read_relationships(Filter("document"), consistency=full(), page_size=0),
+        lambda c: c.delete_relationships(Filter("document")),
+        lambda c: c.check(check, consistency=full(), context={"bad": object()}),
+        lambda c: c.write_schema("definition user {}", timeout=-1),
+    ):
+        assert message(lambda: call(store)) == message(lambda: call(real))
+
+    # Mutations that cannot replay refuse a per-call retry opt-in, as the real client does.
+    retry = CallOptions(retry_policy=RetryPolicy(max_retries=1))
+    for call in (
+        lambda c: c.write(Transaction().create(rel("document:x#viewer@user:u")), call_options=retry),
+        lambda c: c.delete_relationships(Filter("document"), limit=1, call_options=retry),
+        lambda c: c.import_relationships([rel("document:x#viewer@user:u")], call_options=retry),
+    ):
+        assert message(lambda: call(store)) == message(lambda: call(real))
+    store.write(Transaction().touch(rel("document:x#viewer@user:u")), call_options=retry)
+    store.write_schema("definition user {}", call_options=retry)
+
+
+def test_import_export_and_schema_operations():
+    store = InMemoryClient()
+    tuples = ["doc:a#viewer@user:x", "doc:b#viewer@user:x", "doc:c#viewer@user:x", "folder:f#viewer@user:x"]
+    assert store.import_relationships(rel(t) for t in tuples) == 4
+    with pytest.raises(AlreadyExistsError):
+        store.import_relationships([rel("doc:z#viewer@user:x"), rel("doc:a#viewer@user:x")])
+    assert len(store.relationships()) == 4, "a failed import adds nothing"
+
+    first = list(store.read_relationships(Filter("doc"), consistency=full()))
+    rest = [r.relationship.resource_id for r in store.read_relationships(
+        Filter("doc"), consistency=full(), cursor=first[1].after_result_cursor)]
+    assert rest == ["c"]
+    with pytest.raises(InvalidArgumentError) as caught:
+        list(store.read_relationships(Filter("doc"), consistency=full(), cursor="not-a-cursor"))
+    assert caught.value.server_message is not None, "a bad cursor is the server's rejection"
+
+    exported = [str(r.relationship) for r in store.export_relationships(Filter("folder"), consistency=full())]
+    assert exported == ["folder:f#viewer@user:x"]
+    everything = list(store.export_relationships(consistency=full()))
+    resumed = list(store.export_relationships(consistency=full(), cursor=everything[2].after_result_cursor))
+    assert [r.relationship for r in resumed] == [rel("folder:f#viewer@user:x")]
+
+    with pytest.raises(NotFoundError):
+        store.read_schema()
+    written = store.write_schema("definition user {}")
+    schema = store.read_schema()
+    assert schema.schema == "definition user {}" and schema.revision == written
+
+    with pytest.raises(NotFoundError):
+        store.reflect_schema(consistency=min_latency())
+    store.set_reflect_schema_result(ReflectSchemaResult([SchemaDefinition("user", "", [], [])], [], ZedToken("")))
+    reflected = store.reflect_schema(consistency=min_latency())
+    assert reflected.definitions[0].name == "user" and reflected.revision == written
+
+
+async def test_doubles_fill_response_metadata():
+    store = AsyncInMemoryClient()
+    store.set_response_metadata([("io.spicedb.respmeta.version", "v1.99")], [("t", "1")])
+    await store.write_schema("definition user {}")
+    captured = ResponseMetadata()
+    await store.read_schema(call_options=CallOptions(response_metadata=captured))
+    assert captured.headers == (("io.spicedb.respmeta.version", "v1.99"),)
+    assert captured.trailers == (("t", "1"),)
+
+    async def produce():
+        yield rel("doc:a#viewer@user:x")
+
+    assert await store.import_relationships(produce()) == 1
+    async with store.export_relationships(consistency=full()) as stream:
+        assert [r.relationship async for r in stream] == [rel("doc:a#viewer@user:x")]

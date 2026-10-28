@@ -25,6 +25,7 @@ from spicedb import (
     SubjectRef,
     SubjectRelationFilter,
     TransportSecurity,
+    UpdateOperation,
     full,
 )
 
@@ -45,12 +46,14 @@ from testdata.permissions import (
     Permission,
     RelationshipKey,
     SubjectNotAllowedError,
+    Team,
     TypedRelationship,
     TypedTransaction,
     User,
     UserWildcard,
     checks_for,
     with_subject,
+    with_subject_any_relation,
 )
 from testdata.sync import TypedClient as SyncTypedClient
 
@@ -117,6 +120,7 @@ def test_transaction_defers_first_error() -> None:
     )
     assert isinstance(txn.error, InvalidArgumentError)
     assert len(txn) == 0, "operations after the first error are ignored"
+    assert txn.updates == () and txn.preconditions == ()
     with pytest.raises(InvalidArgumentError):
         txn.build()
 
@@ -127,6 +131,8 @@ def test_transaction_defers_first_error() -> None:
         .touch(Organization("acme").admin(User("alice")))
     )
     assert len(ok) == 2
+    assert [u.operation for u in ok.updates] == [UpdateOperation.DELETE, UpdateOperation.TOUCH]
+    assert [str(p) for p in ok.preconditions] == ["MUST_NOT_MATCH(organization:acme#admin@*)"]
     assert str(ok) == (
         "[MUST_NOT_MATCH(organization:acme#admin@*), "
         "DELETE(organization:acme#member@user:alice), "
@@ -149,6 +155,16 @@ def test_typed_filters_and_name_constants() -> None:
     assert with_subject(Invitation.type_filter(), OrganizationCanAdmin) == Filter(
         "invitation",
         subject=SubjectFilter("organization", relation=SubjectRelationFilter.named("can_admin")),
+    )
+    # with_subject pins the subject relation; with_subject_any_relation does not.
+    any_rel = with_subject_any_relation(Document.type_filter(), Team("eng").member)
+    assert any_rel.matches(Relationship.from_tuple("document:d#viewer@team:eng#member"))
+    assert any_rel.matches(Relationship.from_tuple("document:d#viewer@team:eng"))
+    assert not with_subject(Document.type_filter(), Team("eng").member).matches(
+        Relationship.from_tuple("document:d#viewer@team:eng")
+    )
+    assert not with_subject(Document.type_filter(), User("x")).matches(
+        Relationship.from_tuple("document:d#viewer@user:x#self")
     )
     with pytest.raises(InvalidArgumentError):
         Organization("").filter()  # an empty ID must not widen to the whole type

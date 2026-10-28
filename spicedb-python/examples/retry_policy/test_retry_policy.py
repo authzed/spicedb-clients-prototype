@@ -22,7 +22,7 @@ from spicedb import ObjectRef, SubjectRef, PermissionCheck
 import grpc
 import pytest
 from authzed.api.v1 import permission_service_pb2, permission_service_pb2_grpc
-from spicedb import Relationship, full
+from spicedb import CallOptions, InvalidArgumentError, Relationship, RetryPolicy, full
 from spicedb.aio import SpiceDBClient
 from spicedb.errors import ResourceExhaustedError, UnavailableError
 from spicedb.types import Transaction
@@ -118,6 +118,37 @@ async def test_a_mutation_is_not_retried() -> None:
         assert servicer.write_attempts == 1, (
             f"a mutation must not be retried silently: WriteRelationships saw {servicer.write_attempts} attempts, so a lost response would leave the caller believing a committed write had failed"
         )
+    finally:
+        await server.stop(None)
+
+
+async def test_an_idempotent_write_may_opt_in_for_one_call() -> None:
+    """A touch-only write without preconditions replays safely, so one call
+    may ask for retries with ``CallOptions(retry_policy=...)``.
+
+    A CREATE, or any write guarded by a precondition, could change meaning on
+    replay, so the same opt-in is refused before any request is sent.
+    """
+    servicer = _CountingServer()
+    server, port = await _serve(servicer)
+    retry_twice = CallOptions(retry_policy=RetryPolicy(max_retries=2, initial_backoff=0.01))
+    try:
+        async with SpiceDBClient(
+            f"127.0.0.1:{port}", token="some-token", transport_security=TransportSecurity.PLAINTEXT
+        ) as client:
+            touch = Transaction().touch(
+                Relationship(ObjectRef("document", "readme"), "viewer", SubjectRef(ObjectRef("user", "alice")))
+            )
+            with pytest.raises(UnavailableError):
+                await client.write(touch, call_options=retry_twice)
+            assert servicer.write_attempts == 3, "one attempt plus the two retries this call opted into"
+
+            create = Transaction().create(
+                Relationship(ObjectRef("document", "readme"), "viewer", SubjectRef(ObjectRef("user", "alice")))
+            )
+            with pytest.raises(InvalidArgumentError):
+                await client.write(create, call_options=retry_twice)
+            assert servicer.write_attempts == 3, "a refused opt-in sends nothing"
     finally:
         await server.stop(None)
 

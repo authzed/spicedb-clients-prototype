@@ -13,16 +13,20 @@ server sends.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime
+from typing import Any
 
 from authzed.api.v1 import core_pb2, debug_pb2, permission_service_pb2, schema_service_pb2
 from google.protobuf import duration_pb2, struct_pb2, timestamp_pb2
+from google.rpc import error_details_pb2, status_pb2
 
 from spicedb._mapping import check_result as _check_result
 from spicedb._mapping import lookup_resource as _lookup_resource
 from spicedb._mapping import lookup_subject as _lookup_subject
 from spicedb.consistency import Consistency, ConsistencyMode
-from spicedb.errors import InvalidArgumentError
+from spicedb._requests import check_fields as _check_fields
+from spicedb.errors import InvalidArgumentError, SpiceDBError
 from spicedb.token import ZedToken, _token_string
 from spicedb.types import (
     CheckDebugTrace,
@@ -35,6 +39,7 @@ from spicedb.types import (
     LookupSubject,
     ObjectRef,
     Permissionship,
+    PermissionCheck,
     PermissionTree,
     Precondition,
     PreconditionOperation,
@@ -77,6 +82,8 @@ __all__ = [
     "context_from_proto",
     "check_result_to_proto",
     "check_result_from_proto",
+    "check_request_to_proto",
+    "check_bulk_to_proto",
     "debug_information_to_proto",
     "debug_information_from_proto",
     "lookup_resource_to_proto",
@@ -262,6 +269,78 @@ def check_result_from_proto(value: permission_service_pb2.CheckPermissionRespons
     return _check_result(value)
 
 
+def check_request_to_proto(
+    value: PermissionCheck, *, context: JSONObject | None = None
+) -> permission_service_pb2.CheckBulkPermissionsRequestItem:
+    """The bulk request item ``check_bulk([value], context=...)`` sends:
+    call-level ``context`` merged under the check's own, item keys winning."""
+    fields: dict[str, Any] = _check_fields(value, context)
+    return permission_service_pb2.CheckBulkPermissionsRequestItem(**fields)
+
+
+def _status_to_proto(error: BaseException) -> status_pb2.Status:
+    """The ``google.rpc.Status`` for a per-item error: the server's own when
+    the error came from one, else built from its code, message and reason."""
+    original = getattr(error, "status", None)
+    if isinstance(original, status_pb2.Status):
+        return status_pb2.Status.FromString(original.SerializeToString())
+    if not isinstance(error, SpiceDBError):
+        return status_pb2.Status(code=2, message=str(error))  # UNKNOWN
+    status = status_pb2.Status(code=error.code().value[0], message=error.details())
+    if error.reason:
+        status.details.add().Pack(
+            error_details_pb2.ErrorInfo(
+                reason=error.reason, domain=error.reason_domain, metadata=error.reason_metadata
+            )
+        )
+    return status
+
+
+def check_bulk_to_proto(
+    requests: Sequence[PermissionCheck],
+    results: Sequence[CheckResult],
+    *,
+    context: JSONObject | None = None,
+) -> permission_service_pb2.CheckBulkPermissionsResponse:
+    """The server's response for a bulk check: ``requests`` and the results
+    ``check_bulk(requests, context=...)`` returned for them, in order.
+
+    Each pair echoes its request item and carries either the result or, for a
+    result with ``error`` set (``item_errors=BulkItemErrors.RETURN``), that
+    error's status. The response's ``checked_at`` is the last result's
+    revision; ``check_bulk`` may span several requests, each with its own.
+    Raises ``InvalidArgumentError`` when the two sequences differ in length.
+    """
+    if len(requests) != len(results):
+        raise InvalidArgumentError(
+            f"check_bulk: {len(requests)} requests but {len(results)} results"
+        )
+    response = permission_service_pb2.CheckBulkPermissionsResponse()
+    for i, (request, result) in enumerate(zip(requests, results)):
+        pair = response.pairs.add()
+        try:
+            pair.request.CopyFrom(check_request_to_proto(request, context=context))
+        except InvalidArgumentError as error:
+            raise InvalidArgumentError(f"check_bulk item {i}: {error}") from error
+        if result.error is not None:
+            pair.error.CopyFrom(_status_to_proto(result.error))
+        else:
+            single = check_result_to_proto(result)
+            pair.item.CopyFrom(
+                permission_service_pb2.CheckBulkPermissionsResponseItem(
+                    permissionship=single.permissionship,
+                    partial_caveat_info=single.partial_caveat_info
+                    if single.HasField("partial_caveat_info")
+                    else None,
+                    debug_trace=single.debug_trace if single.HasField("debug_trace") else None,
+                )
+            )
+        token = zed_token_to_proto(result.checked_at)
+        if token is not None:
+            response.checked_at.CopyFrom(token)
+    return response
+
+
 def _trace_to_proto(value: CheckDebugTrace) -> debug_pb2.CheckDebugTrace:
     result = debug_pb2.CheckDebugTrace(
         resource=value.resource._to_proto(),
@@ -345,11 +424,20 @@ def _resolved(value: ResolvedSubject) -> permission_service_pb2.ResolvedSubject:
 
 
 def lookup_subject_to_proto(value: LookupSubject) -> permission_service_pb2.LookupSubjectsResponse:
-    """Includes wildcard exclusions."""
+    """Includes wildcard exclusions, and fills the deprecated top-level fields
+    (subject ID, excluded IDs, permissionship and partial caveat info) that
+    SpiceDB still sends, so the message matches the server's response."""
+    subject = _resolved(value.subject)
     return permission_service_pb2.LookupSubjectsResponse(
         looked_up_at=zed_token_to_proto(value.looked_up_at),
-        subject=_resolved(value.subject),
+        subject=subject,
         excluded_subjects=[_resolved(x) for x in value.excluded_subjects],
+        subject_object_id=subject.subject_object_id,
+        excluded_subject_ids=[x.subject_id for x in value.excluded_subjects],
+        permissionship=subject.permissionship,
+        partial_caveat_info=subject.partial_caveat_info
+        if subject.HasField("partial_caveat_info")
+        else None,
     )
 
 

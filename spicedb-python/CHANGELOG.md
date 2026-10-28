@@ -76,6 +76,39 @@
 
 ### Tooling-grade native client
 
+- `CallOptions(retry_policy=...)` overrides the client's retry policy for one
+  call, including stream establishment (exempt one `watch` with
+  `Retries.DISABLED` while the client retries everything else, or opt one
+  watch in). Touch-only writes without preconditions and `write_schema` may
+  opt in to retries per call; every other mutation raises
+  `InvalidArgumentError` for the opt-in before any request.
+- `paging=Paging.SINGLE_REQUEST` on `read_relationships` and
+  `lookup_resources` sends exactly one request, as the raw API does (limit:
+  `limit=` or unbounded; `page_size` ignored).
+- `spicedb.testing` doubles add `import_relationships`,
+  `export_relationships`, `read_schema`, `write_schema` and `reflect_schema`
+  (`set_reflect_schema_result`), honor read/export cursors, the export filter
+  and `CallOptions(response_metadata=...)` (`set_response_metadata`), apply
+  the per-call retry opt-in rules, run the real clients' request validation,
+  and send empty writes like SpiceDB. **Behavior change:** an empty
+  `Transaction` written to a double no longer raises; it checks preconditions
+  and returns the current revision.
+- `protoconv.check_bulk_to_proto` (whole response, per-item errors as
+  statuses) and `check_request_to_proto`; `lookup_subject_to_proto` fills the
+  deprecated top-level fields SpiceDB still sends.
+- Generated typed clients: `--python.rename=<definition>=<ClassName>`
+  (comma-separated) overrides a definition's class names without changing
+  wire names, and the collision error suggests it; caveats calling functions
+  outside the default CEL environment generate (expressions are opaque);
+  `TypedTransaction.updates` / `preconditions`; `with_subject_any_relation`;
+  `paging=` forwarded. **BREAKING:** `r_key(subject)` is generated only for
+  relations admitting caveated or expiring subjects; elsewhere use the
+  writer's `TypedRelationship` (e.g. `Document(d).editor(User(u))`) for deletes
+  and filters. **Fix:** a schema with exactly one typed overload for `check`,
+  `lookup_resources` or `lookup_subjects` failed pyright
+  (reportInconsistentOverload); a lone overload is now the implementation's
+  signature.
+
 - **Fix:** paged `lookup_resources` and `lookup_subjects` with a `limit` that
   is not a multiple of `page_size` failed on their last page ("the cursor
   provided does not have the same arguments as the original API call"): the

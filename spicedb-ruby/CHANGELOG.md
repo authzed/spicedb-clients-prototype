@@ -10,6 +10,15 @@
 
 ## Unreleased
 
+### Retest follow-ups (2026-10-28)
+
+- **Fix:** server error reasons (`reason`, `reason_domain`, `reason_metadata`) were silently empty unless the application had loaded `google/protobuf/well_known_types` itself: decoding the ErrorInfo detail needs `Any#unpack`, and its absence was swallowed. The library now loads it.
+- Every operation accepts a per-call `retry_policy:` that overrides the client's for that call, including stream establishment (exempt one call with `RetryPolicy.new(max_retries: 0)`; a per-call policy also lets one watch re-establish). A touch-only `write` without preconditions and `write_schema` may opt in to retries per call; deletes, imports, counter registration and other writes raise `InvalidArgumentError` for the opt-in before any request. A per-call policy also applies under `retries: Retries::DISABLED`.
+- `read_relationships` / `lookup_resources(paging: SpiceDB::Paging::SINGLE_REQUEST)` send exactly one request, as the raw API does.
+- `ProtoConv.check_bulk_to_proto`, `check_bulk_request_item_to_proto` and `status_to_proto`; `lookup_subject_to_proto` fills the deprecated fields SpiceDB still sends.
+- `SpiceDB::Testing::Store` adds `import_relationships`, `export_relationships`, `read_schema`, `write_schema`, `reflect_schema`, `set_reflect_schema_result` and `set_response_metadata`; honors cursors, limits and the export filter; and raises errors shaped like the client's (server message as `message` and `server_message`). Empty writes return the current revision, and an all-or-nothing delete over its limit is now `InvalidArgumentError`, as SpiceDB returns.
+- `write` raises `InvalidArgumentError` for a non-`Transaction` argument. Empty transactions are sent to SpiceDB (documented and tested).
+
 ### Adoption fixes (2026-10-28)
 
 - **Fix:** paged `read_relationships` and `lookup_resources` failed on their second page against a real SpiceDB ("the cursor provided does not have the same arguments as the original API call"): the pager switched later pages to an exact snapshot and shrank the last page's limit, and SpiceDB hashes both into the cursor. Every page now repeats the caller's consistency and `page_size:`; the cursor pins the revision and `limit:` is enforced client-side.

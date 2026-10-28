@@ -185,7 +185,7 @@ RSpec.describe 'adoption: native client behavior' do # rubocop:disable Metrics/B
       expect(read.map(&:to_s)).to eq(['document:readme#editor@user:alice'])
       expect(read.first).to be_a(SpiceDB::ReadRelationship)
       expect { store.delete_relationships(SpiceDB::Filter.new(resource_type: 'document'), limit: 1, partial: SpiceDB::DeletePartial::DISALLOWED) }
-        .to raise_error(SpiceDB::FailedPreconditionError)
+        .to raise_error(SpiceDB::InvalidArgumentError)
       expect(store.delete_relationships(SpiceDB::Filter.new(resource_type: 'document'), limit: 5).deleted_count).to eq(2)
 
       check = SpiceDB::PermissionCheck.new(resource: readme, permission: 'view', subject: alice)

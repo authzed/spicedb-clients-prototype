@@ -102,7 +102,12 @@ end
   or expiration (`from_tuple("invitation:#{id}#inviter@user:#{u}")`).
 - Delete what you just read: `txn.delete(item)` accepts a `ReadRelationship`.
 - **Do not retry a failed write blindly**; it may have committed. The client
-  never retries mutations.
+  never retries mutations by default. A touch-only write without
+  preconditions (and `write_schema`) is safe to replay, so one call may opt in:
+  `client.write(txn, retry_policy: SpiceDB::RetryPolicy.new)`. Any other
+  mutation raises `SpiceDB::InvalidArgumentError` for that opt-in.
+- An empty transaction is sent: SpiceDB checks its preconditions and returns
+  the current revision.
 
 ## Read relationships
 
@@ -114,6 +119,9 @@ admin_ids = client.read_relationships(admins, consistency: SpiceDB::Consistency.
 Each item also carries `item.cursor` and `item.read_at`. To resume, pass
 `cursor: item.cursor` with the **same filter, consistency and page size**.
 Results stream: iterate with a block or `each`; `break` releases the RPC.
+`paging: SpiceDB::Paging::SINGLE_REQUEST` (reads and resource lookups) sends
+exactly one request like the raw API: its limit is `limit:` (unbounded
+without one) and `page_size:` is ignored.
 
 ## Schema-agnostic and tooling code
 
@@ -138,8 +146,12 @@ tool.read_schema(call_options: SpiceDB::CallOptions.new(response_metadata: captu
 capture.trailer # e.g. io.spicedb.respmeta.* and x-request-id
 ```
 
-Every operation accepts `call_options:`. Protocol-shaped output:
-`SpiceDB::ProtoConv.relationship_to_proto(relationship).to_json`.
+Every operation accepts `call_options:` and a per-call `retry_policy:`
+that overrides the client's for that call, including stream establishment
+(`retry_policy: SpiceDB::RetryPolicy.new(max_retries: 0)` exempts one call).
+Protocol-shaped output: `SpiceDB::ProtoConv.relationship_to_proto(relationship).to_json`;
+`ProtoConv.check_bulk_to_proto(checks, results)` rebuilds a whole bulk-check
+response, per-item errors included.
 `import_relationships(rels, batch_size:)` is one transaction per call;
 `delete_all_relationships_non_atomic(filter, on_progress:)` reports each batch.
 
@@ -172,7 +184,11 @@ expected = SpiceDB::Error.from_code(GRPC::Core::StatusCodes::FAILED_PRECONDITION
 ```
 
 Inject the client into your code; `SpiceDB::Testing::Store` has the same
-`write`, `read_relationships`, `delete_relationships`, `check` and
-`check_bulk` parameters and results, applying preconditions, create conflicts
-and filter semantics (`Filter#matches?`). For integration tests, run
+`write`, `read_relationships`, `delete_relationships`, `import_relationships`,
+`export_relationships`, `read_schema`, `write_schema`, `reflect_schema`,
+`check` and `check_bulk` parameters and results, applying preconditions,
+create conflicts, cursors, limits and filter semantics (`Filter#matches?`).
+Its errors have the client's classes, codes and messages (the server's message
+for server failures). `set_reflect_schema_result` and `set_response_metadata`
+register what reflection and `call_options:` capture return. For integration tests, run
 `authzed/spicedb serve-testing` and assert both granted and denied cases.

@@ -7,9 +7,11 @@ module SpiceDB
   # secondary: ordinary callers never need protocol types.
   #
   # Native -> protocol: object, subject, relationship, filter, precondition,
-  # update, consistency, zed_token, check request, and the results
-  # check_result, lookup_resource, lookup_subject, expand_result,
-  # write_result and read_relationship.
+  # update, consistency, zed_token, check request, bulk check request item,
+  # error status, and the results check_result, check_bulk (a whole
+  # response), lookup_resource, lookup_subject (with the deprecated fields
+  # the server still sends), expand_result, write_result and
+  # read_relationship.
   # Protocol -> native: object, subject, relationship, filter, update,
   # zed_token, check_result (with its debug trace), lookup_resource,
   # lookup_subject, permission_tree and watch_event.
@@ -73,6 +75,51 @@ module SpiceDB
                                                    with_tracing: Tracing.validate(tracing) == Tracing::ENABLED)
     end
 
+    # A CheckBulkPermissionsRequestItem for +check+ (merging call-level +context+).
+    def check_bulk_request_item_to_proto(check, context: nil)
+      Authzed::Api::V1::CheckBulkPermissionsRequestItem.new(**converter.send(:check_request, check, context))
+    end
+
+    # The server's CheckBulkPermissionsResponse for +checks+ and the results
+    # check_bulk returned for them (same order, same call-level +context+):
+    # one pair per item carrying the item's result or, for a result with an
+    # +error+ (BulkItemErrors::RETURNED), its status. +checked_at+ is the
+    # last item's revision; check_bulk may span several requests, each with
+    # its own revision.
+    def check_bulk_to_proto(checks, results, context: nil)
+      checks = checks.to_a
+      results = results.to_a
+      raise InvalidArgumentError, "check_bulk: #{checks.length} checks but #{results.length} results" unless checks.length == results.length
+
+      response = Authzed::Api::V1::CheckBulkPermissionsResponse.new
+      checks.each_with_index do |check, index|
+        pair = Authzed::Api::V1::CheckBulkPermissionsPair.new(request: check_bulk_request_item_to_proto(check, context: context))
+        result = results[index]
+        if result.error
+          pair.error = status_to_proto(result.error)
+        else
+          single = check_result_to_proto(result)
+          pair.item = Authzed::Api::V1::CheckBulkPermissionsResponseItem.new(
+            permissionship: single.permissionship, partial_caveat_info: single.partial_caveat_info, debug_trace: single.debug_trace
+          )
+        end
+        response.checked_at = zed_token_to_proto(result.checked_at) if result.checked_at
+        response.pairs << pair
+      end
+      response
+    end
+
+    # A google.rpc.Status for a native error: its code, the server's message
+    # (the display message for a local error) and its ErrorInfo reason.
+    def status_to_proto(error)
+      details = []
+      unless error.reason.to_s.empty?
+        details << Google::Protobuf::Any.pack(Google::Rpc::ErrorInfo.new(reason: error.reason, domain: error.reason_domain.to_s,
+                                                                         metadata: error.reason_metadata.to_h))
+      end
+      Google::Rpc::Status.new(code: error.code, message: error.server_message || error.message, details: details)
+    end
+
     def check_result_from_proto(response) = converter.send(:check_result, response, ZedToken.from_proto(response.checked_at))
 
     def check_result_to_proto(result)
@@ -117,10 +164,17 @@ module SpiceDB
       )
     end
 
+    # Also fills the deprecated top-level fields (subject_object_id,
+    # excluded_subject_ids, permissionship, partial_caveat_info) SpiceDB still
+    # sends, so the message matches the server's wire response.
     def lookup_subject_to_proto(result)
+      subject = resolved_subject(result.subject)
       Authzed::Api::V1::LookupSubjectsResponse.new(
-        looked_up_at: zed_token_to_proto(result.looked_up_at), subject: resolved_subject(result.subject),
-        excluded_subjects: result.excluded_subjects.map { |subject| resolved_subject(subject) }
+        looked_up_at: zed_token_to_proto(result.looked_up_at), subject: subject,
+        excluded_subjects: result.excluded_subjects.map { |excluded| resolved_subject(excluded) },
+        subject_object_id: subject&.subject_object_id.to_s, permissionship: subject&.permissionship || :LOOKUP_PERMISSIONSHIP_UNSPECIFIED,
+        partial_caveat_info: subject&.partial_caveat_info,
+        excluded_subject_ids: result.excluded_subjects.map { |excluded| excluded.subject_id.to_s }
       )
     end
 

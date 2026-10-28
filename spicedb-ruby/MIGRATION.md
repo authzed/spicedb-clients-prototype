@@ -77,6 +77,20 @@ client = SpiceDB::Client.new_system_tls(t, key,
 ```
 
 A custom policy is `retry_policy: SpiceDB::RetryPolicy.new(max_retries:, retryable_codes:, initial_backoff:, on_retry:)`.
+Every operation also takes a per-call `retry_policy:` that overrides the
+client's for that call, including stream establishment: for example
+`RetryPolicy.new(max_retries: 0)` on one call, or a policy on a touch-only
+`write` (no preconditions) or a `write_schema` to retry those idempotent
+writes. Other mutations reject the opt-in. Watch never re-establishes its
+stream unless the call passes a policy.
+
+## Consistency on schema reads
+
+Every read takes an explicit `consistency:`, including `reflect_schema`,
+`computable_permissions`, `dependent_relations` and `diff_schema`. Where your
+raw requests left consistency unset, pass `SpiceDB::Consistency.min_latency`,
+which is what SpiceDB applies when it is absent. (`read_schema` has no
+consistency on the wire either.)
 
 ## Requests become native values
 
@@ -143,7 +157,12 @@ Preconditions are `txn.must_match(filter)` / `txn.must_not_match(filter)`.
 
 `read_relationships` and `lookup_resources` page for you and return a stream:
 iterate it (or call `to_a`). Read items carry `cursor` and `read_at`; resume
-with `cursor:` and the same filter, consistency and `page_size:`.
+with `cursor:` and the same filter, consistency and `page_size:`. Raw calls
+without a limit are one unbounded request; to reproduce one (and its final
+cursor), pass `paging: SpiceDB::Paging::SINGLE_REQUEST`.
+
+An empty `Transaction` is sent to SpiceDB like a raw empty write: its
+preconditions are checked and the current revision is returned.
 
 ## Errors
 
@@ -189,6 +208,9 @@ Data SpiceDB versions before 1.30 sent only in trailers is reachable this way;
 
 `require 'spicedb/testing'` and use `SpiceDB::Testing::Store`: an in-memory
 double with the client's `write`, `read_relationships`, `delete_relationships`,
-`check` and `check_bulk` signatures. Build expected errors with
+`import_relationships`, `export_relationships`, `read_schema`, `write_schema`,
+`reflect_schema`, `check` and `check_bulk` signatures, raising the errors the
+client would. Options are plain keyword arguments, so a test inspects them
+directly. Build expected errors with
 `SpiceDB::Error.from_code(GRPC::Core::StatusCodes::FAILED_PRECONDITION, 'msg')`
 instead of `GRPC::FailedPrecondition.new`.

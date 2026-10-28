@@ -212,6 +212,7 @@ fake.SetCheckError(new ObjectRef("organization", "acme"), "can_admin",
     SubjectRef.Direct(new ObjectRef("user", "alice")), SpiceDBException.Create(Grpc.Core.StatusCode.Unavailable, "down"));
 
 ISpiceDBRelationshipClient authz = fake; // production code takes the same interface; SpiceDBClient implements it
+ISpiceDBClient full = fake; // or the client's full surface; operations the double cannot run fail as Unimplemented
 
 // Failure paths without a fake server: fail one call, or fail at a defined point.
 fake.FailNext(SpiceDBOperation.Check, InMemorySpiceDBClient.ServerError(Grpc.Core.StatusCode.Unavailable, "down"));
@@ -220,12 +221,20 @@ fake.SetFaultHook(f => f is { Stage: FaultStage.ImportBatch, Item: 2 }
 // Assert on what was sent without a strict mock:
 var read = fake.CallsOf(SpiceDBOperation.ReadRelationships)[0];
 var cursor = read.OptionsAs<ReadOptions>()?.ResumeCursor; var filter = read.Argument<Filter>();
+// Import-batch faults see the batch; CursorAfter(n) is the cursor the double puts on item n.
+fake.SetFaultHook(f => f.Batch.Any(r => r.Resource.ObjectType == "banned")
+    ? InMemorySpiceDBClient.ServerError(Grpc.Core.StatusCode.InvalidArgument, "bad batch") : null);
+var resume = new ReadOptions { ResumeCursor = InMemorySpiceDBClient.CursorAfter(2) };
+fake.SetReadSchemaRevision(SchemaRevision.Omitted); // schema reads report no revision
 ```
 
 Inject `ISpiceDBRelationshipClient` (checks, bulk checks, writes, reads, bounded and
 complete deletes, imports, exports) and `ISpiceDBSchemaClient` (read, write and reflect
 schema) where code under test talks to SpiceDB; both `SpiceDBClient` and
-`InMemorySpiceDBClient` implement them with identical signatures. The double applies
+`InMemorySpiceDBClient` implement them with identical signatures. `ISpiceDBClient` extends
+both with the rest of the client (lookups, watch, introspection, experimental operations,
+`RawProto`, disposal); the double implements it too, failing operations it has no in-memory
+semantics for with `StatusCode.Unimplemented` after recording them. The double applies
 preconditions, CREATE conflicts, one-transaction imports and SpiceDB filter semantics
 (`Filter.Matches`), honors cursors, limits and response-metadata sinks
 (`SetResponseMetadata`), and throws the same exception types and messages as the real

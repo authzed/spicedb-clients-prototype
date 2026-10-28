@@ -1,4 +1,5 @@
 using System.Globalization;
+using Authzed.Api.SpiceDB.Proto;
 using System.Runtime.CompilerServices;
 using Google.Protobuf.WellKnownTypes;
 using Google.Rpc;
@@ -7,9 +8,9 @@ using Grpc.Core;
 namespace SpiceDB.Client.Testing;
 
 /// <summary>
-/// An in-memory test double for <see cref="SpiceDBClient"/>, implementing
-/// <see cref="ISpiceDBRelationshipClient"/> and <see cref="ISpiceDBSchemaClient"/> with the same
-/// signatures. It stores relationships and applies SpiceDB's write semantics: preconditions
+/// An in-memory test double for <see cref="SpiceDBClient"/>, implementing the client's full
+/// surface, <see cref="ISpiceDBClient"/> (and so <see cref="ISpiceDBRelationshipClient"/> and
+/// <see cref="ISpiceDBSchemaClient"/>), with the same signatures. It stores relationships and applies SpiceDB's write semantics: preconditions
 /// (<c>MustMatch</c>/<c>MustNotMatch</c>), CREATE conflicts (<see cref="AlreadyExistsException"/>),
 /// TOUCH upserts and idempotent DELETE, all atomically per write; an empty write checks its
 /// preconditions and returns the current revision, as SpiceDB does. Imports are one
@@ -20,6 +21,12 @@ namespace SpiceDB.Client.Testing;
 /// <see cref="SetReflectSchemaResult"/> (an empty result without one). Checks return results registered with
 /// <see cref="SetCheckResult"/> or <see cref="SetCheckError"/>, and
 /// <see cref="Permissionship.NoPermission"/> otherwise; it does not evaluate a schema.
+/// <see cref="CheckAnyAsync"/> and <see cref="CheckAllAsync"/> reduce a bulk check, as the client
+/// does, and <see cref="DisposeAsync"/> does nothing. Operations without in-memory semantics
+/// (lookups, watch, schema introspection and diff, expansion and the experimental operations)
+/// are recorded and consult the fault hook, then fail with <see cref="StatusCode.Unimplemented"/>
+/// in the real client's error shape; <see cref="RawProto"/> throws
+/// <see cref="InvalidOperationException"/>, as a client without a raw transport does.
 /// <para>
 /// Errors have the same types, codes and message shape as the real client's for the same
 /// failure: server failures carry the server's message in both <see cref="Exception.Message"/>
@@ -35,11 +42,14 @@ namespace SpiceDB.Client.Testing;
 /// options, so tests can assert on what was sent without a strict mock. Faults can be injected
 /// at defined points (<see cref="SetFaultHook"/>, <see cref="FailNext"/>): before any
 /// operation, before each import batch, before an import commits, and before each read or
-/// export item, so failure paths need no fake gRPC server. Build injected errors with
+/// export item (an import-batch fault carries the batch's relationships), so failure paths
+/// need no fake gRPC server. <see cref="CursorAfter"/> builds the resume cursors reads and
+/// exports return, and <see cref="SetReadSchemaRevision"/> emulates servers whose schema
+/// reads report no revision. Build injected errors with
 /// <see cref="ServerError"/> to match the real client's.
 /// </para>
 /// </summary>
-public sealed class InMemorySpiceDBClient : ISpiceDBRelationshipClient, ISpiceDBSchemaClient
+public sealed class InMemorySpiceDBClient : ISpiceDBClient
 {
     private const string NoSchema = "no schema has been defined; please call WriteSchema to start";
     private readonly object _lock = new();
@@ -53,6 +63,7 @@ public sealed class InMemorySpiceDBClient : ISpiceDBRelationshipClient, ISpiceDB
     private readonly List<RecordedCall> _calls = [];
     private readonly Dictionary<SpiceDBOperation, int> _counts = [];
     private Func<Fault, Exception?>? _hook;
+    private bool _omitSchemaRevision;
 
     /// <summary>Every recorded call, in order.</summary>
     public IReadOnlyList<RecordedCall> Calls { get { lock (_lock) return _calls.ToArray(); } }
@@ -93,6 +104,26 @@ public sealed class InMemorySpiceDBClient : ISpiceDBRelationshipClient, ISpiceDB
         var status = new Google.Rpc.Status { Code = (int)code, Message = message };
         status.Details.Add(Any.Pack(new ErrorInfo { Reason = reason, Domain = "authzed.com" }));
         return SpiceDBException.FromRpcException(status.ToRpcException());
+    }
+
+    /// <summary>
+    /// The resume cursor that continues a read or export after its first <paramref name="n"/>
+    /// matching relationships (in insertion order): the cursor this double puts on item
+    /// <paramref name="n"/> (counting from 1). The format, the invariant decimal
+    /// <paramref name="n"/>, is stable for tests.
+    /// </summary>
+    public static string CursorAfter(int n) =>
+        n >= 0 ? n.ToString(CultureInfo.InvariantCulture) : throw new InvalidArgumentException("n must not be negative.");
+
+    /// <summary>
+    /// Selects whether <see cref="ReadSchemaAsync"/> reports a revision. With
+    /// <see cref="SchemaRevision.Omitted"/> its <see cref="SchemaResult.Revision"/> is empty, as
+    /// some hosted SpiceDB deployments return, so code that falls back to another revision
+    /// source can be tested. The default is <see cref="SchemaRevision.Included"/>.
+    /// </summary>
+    public void SetReadSchemaRevision(SchemaRevision mode)
+    {
+        lock (_lock) _omitSchemaRevision = mode == SchemaRevision.Omitted;
     }
 
     /// <summary>A snapshot of the stored relationships, in insertion order.</summary>
@@ -291,9 +322,10 @@ public sealed class InMemorySpiceDBClient : ISpiceDBRelationshipClient, ISpiceDB
         await foreach (var relationship in Native.Required(relationships, nameof(relationships)).WithCancellation(cancellationToken))
         {
             Native.Required(relationship, nameof(relationship)).ToProto();
-            if (batch.Count % batchSize == 0) Inject(call, FaultStage.ImportBatch, batch.Count / batchSize);
             batch.Add(relationship);
+            if (batch.Count % batchSize == 0) InjectBatch(call, batch, batchSize);
         }
+        if (batch.Count % batchSize != 0) InjectBatch(call, batch, batchSize);
         Inject(call, FaultStage.ImportCommit);
         lock (_lock)
         {
@@ -340,7 +372,7 @@ public sealed class InMemorySpiceDBClient : ISpiceDBRelationshipClient, ISpiceDB
         {
             Respond(options?.Transport);
             if (_schema is null) throw ServerError(StatusCode.NotFound, NoSchema);
-            return Task.FromResult(new SchemaResult(_schema, Token()));
+            return Task.FromResult(new SchemaResult(_schema, _omitSchemaRevision ? new ZedToken("") : Token()));
         }
     }
 
@@ -372,6 +404,98 @@ public sealed class InMemorySpiceDBClient : ISpiceDBRelationshipClient, ISpiceDB
         }
     }
 
+    /// <summary>Reduces a bulk check (recorded as <see cref="SpiceDBOperation.CheckBulk"/>), as the client does: true when any result has permission.</summary>
+    public async Task<bool> CheckAnyAsync(IReadOnlyList<PermissionCheck> requests, CheckOptions? options = null, CancellationToken cancellationToken = default) =>
+        (await CheckBulkAsync(requests, options, cancellationToken)).Any(r => r.HasPermission);
+
+    /// <summary>Reduces a bulk check (recorded as <see cref="SpiceDBOperation.CheckBulk"/>), as the client does: true when there are results and all have permission.</summary>
+    public async Task<bool> CheckAllAsync(IReadOnlyList<PermissionCheck> requests, CheckOptions? options = null, CancellationToken cancellationToken = default)
+    {
+        var results = await CheckBulkAsync(requests, options, cancellationToken);
+        return results.Count > 0 && results.All(r => r.HasPermission);
+    }
+
+    /// <summary>Throws <see cref="InvalidOperationException"/>, as a client without a raw transport does; the double has no protocol client.</summary>
+    public SpiceDBProtoClient RawProto() => throw new InvalidOperationException("The in-memory client has no raw transport.");
+
+    /// <summary>Does nothing; the double holds no transport.</summary>
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+    // The remaining operations have no in-memory semantics. Each is recorded and consults the
+    // fault hook, then fails with Unimplemented in the real client's error shape.
+
+    public IAsyncEnumerable<LookupResource> LookupResourcesAsync(Consistency consistency, string resourceType, string permission, SubjectRef subject, LookupOptions? options = null, CancellationToken cancellationToken = default) =>
+        UnimplementedStream<LookupResource>(SpiceDBOperation.LookupResources, options, options?.RetryPolicy, cancellationToken, consistency, resourceType, permission, subject);
+
+    public IAsyncEnumerable<LookupSubject> LookupSubjectsAsync(Consistency consistency, ObjectRef resource, string permission, string subjectType, LookupOptions? options = null, CancellationToken cancellationToken = default) =>
+        UnimplementedStream<LookupSubject>(SpiceDBOperation.LookupSubjects, options, options?.RetryPolicy, cancellationToken, consistency, resource, permission, subjectType);
+
+    public IAsyncEnumerable<WatchEvent> UpdatesAsync(IReadOnlyList<string> objectTypes, ZedToken? startRevision, WatchOptions? options = null, CancellationToken cancellationToken = default) =>
+        UnimplementedStream<WatchEvent>(SpiceDBOperation.Updates, options, options?.RetryPolicy, cancellationToken, objectTypes, startRevision);
+
+    public Task<ComputablePermissionsResult> ComputablePermissionsAsync(Consistency consistency, string definitionName, string relationName, CallOptions? options = null, CancellationToken cancellationToken = default) =>
+        Unimplemented<ComputablePermissionsResult>(SpiceDBOperation.ComputablePermissions, options, options?.RetryPolicy, cancellationToken, () => options?.Validate(computable: true), consistency, definitionName, relationName);
+
+    public Task<DependentRelationsResult> DependentRelationsAsync(Consistency consistency, string definitionName, string permissionName, CallOptions? options = null, CancellationToken cancellationToken = default) =>
+        Unimplemented<DependentRelationsResult>(SpiceDBOperation.DependentRelations, options, options?.RetryPolicy, cancellationToken, () => options?.Validate(), consistency, definitionName, permissionName);
+
+    public Task<DiffSchemaResult> DiffSchemaAsync(Consistency consistency, string comparisonSchema, CallOptions? options = null, CancellationToken cancellationToken = default) =>
+        Unimplemented<DiffSchemaResult>(SpiceDBOperation.DiffSchema, options, options?.RetryPolicy, cancellationToken, () => options?.Validate(), consistency, comparisonSchema);
+
+    public Task<ExpandResult> ExpandPermissionTreeAsync(Consistency consistency, ObjectRef resource, string permission, CallOptions? options = null, CancellationToken cancellationToken = default) =>
+        Unimplemented<ExpandResult>(SpiceDBOperation.ExpandPermissionTree, options, options?.RetryPolicy, cancellationToken, () => options?.Validate(), consistency, resource, permission);
+
+    public Task ExperimentalRegisterRelationshipCounterAsync(string name, Filter filter, CallOptions? options = null, CancellationToken cancellationToken = default) =>
+        Unimplemented<object?>(SpiceDBOperation.ExperimentalRegisterRelationshipCounter, options, options?.RetryPolicy, cancellationToken, () => options?.Validate(), name, filter);
+
+    public Task<CountResult> ExperimentalCountRelationshipsAsync(string name, CallOptions? options = null, CancellationToken cancellationToken = default) =>
+        Unimplemented<CountResult>(SpiceDBOperation.ExperimentalCountRelationships, options, options?.RetryPolicy, cancellationToken, () => options?.Validate(), name);
+
+    public Task ExperimentalUnregisterRelationshipCounterAsync(string name, CallOptions? options = null, CancellationToken cancellationToken = default) =>
+        Unimplemented<object?>(SpiceDBOperation.ExperimentalUnregisterRelationshipCounter, options, options?.RetryPolicy, cancellationToken, () => options?.Validate(), name);
+
+    public Task<RoaringLookupResourcesResult> ExperimentalRoaringLookupResourcesAsync(Consistency consistency, string resourceType, string permission, SubjectRef subject, LookupOptions? options = null, CancellationToken cancellationToken = default) =>
+        Unimplemented<RoaringLookupResourcesResult>(SpiceDBOperation.ExperimentalRoaringLookupResources, options, options?.RetryPolicy, cancellationToken, null, consistency, resourceType, permission, subject);
+
+    public Task<CountResult> ExperimentalCountRelationshipsByFilterAsync(Filter filter, CallOptions? options = null, CancellationToken cancellationToken = default) =>
+        Unimplemented<CountResult>(SpiceDBOperation.ExperimentalCountRelationshipsByFilter, options, options?.RetryPolicy, cancellationToken, () => options?.Validate(), filter);
+
+    public IAsyncEnumerable<PermissionSetEvent> ExperimentalWatchPermissionSetsAsync(ZedToken? startRevision, CallOptions? options = null, CancellationToken cancellationToken = default) =>
+        UnimplementedStream<PermissionSetEvent>(SpiceDBOperation.ExperimentalWatchPermissionSets, options, options?.RetryPolicy, cancellationToken, startRevision);
+
+    public IAsyncEnumerable<LookupPermissionSet> ExperimentalLookupPermissionSetsAsync(int limit, ZedToken? atRevision, PermissionSetLookupOptions? options = null, CancellationToken cancellationToken = default) =>
+        UnimplementedStream<LookupPermissionSet>(SpiceDBOperation.ExperimentalLookupPermissionSets, options, options?.RetryPolicy, cancellationToken, limit, atRevision);
+
+    public Task<DownloadPermissionSetsResult> ExperimentalDownloadPermissionSetsAsync(ZedToken? atRevision, CallOptions? options = null, CancellationToken cancellationToken = default) =>
+        Unimplemented<DownloadPermissionSetsResult>(SpiceDBOperation.ExperimentalDownloadPermissionSets, options, options?.RetryPolicy, cancellationToken, () => options?.Validate(), atRevision);
+
+    /// <summary>
+    /// Records the call, runs the fault hook and validates the options, then fails as SpiceDB
+    /// does for an operation it does not implement. Every failure surfaces from the returned
+    /// task, as from the client's async methods.
+    /// </summary>
+    private async Task<T> Unimplemented<T>(SpiceDBOperation operation, object? options, RetryPolicy? retry, CancellationToken cancellationToken, Action? validate, params object?[] arguments)
+    {
+        Begin(operation, options, retry, cancellationToken, arguments);
+        validate?.Invoke();
+        await Task.Yield();
+        throw NotImplementedHere(operation);
+    }
+
+    /// <summary>The stream form of <see cref="Unimplemented{T}"/>: fails on the first move, before any item.</summary>
+    private async IAsyncEnumerable<T> UnimplementedStream<T>(SpiceDBOperation operation, object? options, RetryPolicy? retry, [EnumeratorCancellation] CancellationToken cancellationToken, params object?[] arguments)
+    {
+        Begin(operation, options, retry, cancellationToken, arguments);
+        await Task.Yield();
+        throw NotImplementedHere(operation);
+#pragma warning disable CS0162 // The unreachable yield makes this an async iterator.
+        yield break;
+#pragma warning restore CS0162
+    }
+
+    private static SpiceDBException NotImplementedHere(SpiceDBOperation operation) =>
+        ServerError(StatusCode.Unimplemented, $"{operation} is not implemented by InMemorySpiceDBClient");
+
     /// <summary>Records a call and runs the <see cref="FaultStage.Call"/> hook, then validates the per-call retry policy.</summary>
     private RecordedCall Begin(SpiceDBOperation operation, object? options, RetryPolicy? retry, CancellationToken cancellationToken, params object?[] arguments)
     {
@@ -390,11 +514,19 @@ public sealed class InMemorySpiceDBClient : ISpiceDBRelationshipClient, ISpiceDB
     }
 
     /// <summary>Runs the fault hook, if any, at one point of a call, throwing what it returns.</summary>
-    private void Inject(RecordedCall call, FaultStage stage, int item = 0)
+    private void Inject(RecordedCall call, FaultStage stage, int item = 0, IReadOnlyList<Relationship>? batch = null)
     {
         Func<Fault, Exception?>? hook;
         lock (_lock) hook = _hook;
-        if (hook?.Invoke(new Fault(call, stage, item)) is { } error) throw error;
+        if (hook?.Invoke(new Fault(call, stage, item) { Batch = batch ?? [] }) is { } error) throw error;
+    }
+
+    /// <summary>Runs the <see cref="FaultStage.ImportBatch"/> hook for the batch ending the relationships buffered so far, with its contents.</summary>
+    private void InjectBatch(RecordedCall call, List<Relationship> buffered, int batchSize)
+    {
+        var index = (buffered.Count - 1) / batchSize;
+        var start = index * batchSize;
+        Inject(call, FaultStage.ImportBatch, index, buffered.GetRange(start, buffered.Count - start).AsReadOnly());
     }
 
     private static int Positive(int value, string field) => value > 0 ? value : throw new InvalidArgumentException($"{field} must be positive.");
@@ -468,7 +600,7 @@ public enum FaultStage
 {
     /// <summary>Before the operation does anything, including before a stream yields its first item.</summary>
     Call,
-    /// <summary>Before import batch <see cref="Fault.Item"/> (0-based) is sent. Batches have the call's <see cref="ImportOptions.BatchSize"/> (default 1,000).</summary>
+    /// <summary>Before import batch <see cref="Fault.Item"/> (0-based) is sent, once it is full or the input ends; <see cref="Fault.Batch"/> holds its relationships. Batches have the call's <see cref="ImportOptions.BatchSize"/> (default 1,000).</summary>
     ImportBatch,
     /// <summary>After every batch, before the import commits.</summary>
     ImportCommit,
@@ -480,4 +612,17 @@ public enum FaultStage
 /// <param name="Call">The call in progress.</param>
 /// <param name="Stage">Where in the call.</param>
 /// <param name="Item">The batch index for <see cref="FaultStage.ImportBatch"/> and the item index for <see cref="FaultStage.Item"/>; 0 otherwise.</param>
-public sealed record Fault(RecordedCall Call, FaultStage Stage, int Item);
+public sealed record Fault(RecordedCall Call, FaultStage Stage, int Item)
+{
+    /// <summary>The relationships in the batch at <see cref="FaultStage.ImportBatch"/>, in input order; empty at other stages.</summary>
+    public IReadOnlyList<Relationship> Batch { get; init; } = [];
+}
+
+/// <summary>Whether <see cref="InMemorySpiceDBClient.ReadSchemaAsync"/> reports a revision; see <see cref="InMemorySpiceDBClient.SetReadSchemaRevision"/>.</summary>
+public enum SchemaRevision
+{
+    /// <summary>Reports the double's current revision. The default.</summary>
+    Included,
+    /// <summary>Reports an empty revision, as some hosted SpiceDB deployments do.</summary>
+    Omitted,
+}

@@ -278,6 +278,24 @@
     fails exactly one call, and `InMemorySpiceDBClient.ServerError(code, message, reason)`
     builds the real client's exception for a server failure. A failed write or import
     applies nothing.
+  - `ISpiceDBClient` (composing `ISpiceDBRelationshipClient`, `ISpiceDBSchemaClient` and
+    `IAsyncDisposable`) is the client's full public method set; a reflection test fails if
+    it and `SpiceDBClient`'s public instance methods diverge in name, return type,
+    parameters or defaults. `SpiceDBClient` and `InMemorySpiceDBClient` both implement it.
+    In the double, `CheckAnyAsync`/`CheckAllAsync` reduce a bulk check (recorded as
+    `CheckBulk`) and `DisposeAsync` does nothing; `RawProto()` throws
+    `InvalidOperationException` as a client without a raw transport does. Every other
+    operation (lookups, watch, schema introspection and diff, expansion, experimental
+    operations) is recorded, consults the fault hook, validates its options, and fails with
+    a `SpiceDBException` of code `Unimplemented` whose message and server message are
+    "`<operation>` is not implemented by InMemorySpiceDBClient"; streams fail on the first
+    move.
+  - An import-batch fault fires once each batch is full or the input ends, and
+    `Fault.Batch` holds that batch's relationships (empty at other stages).
+    `InMemorySpiceDBClient.CursorAfter(n)` returns the resume cursor the double puts on item
+    n (1-based) of a read or export, which resumes after the first n matches; its format, the
+    invariant decimal n, is stable for tests. `SetReadSchemaRevision(SchemaRevision.Omitted)`
+    makes `ReadSchemaAsync` report an empty revision, as some hosted deployments do.
   - Options are plain init-only objects, so a test double or wrapper reads them directly;
     no resolver is needed.
   - Watch rejects nonempty object types combined with relationship filters because SpiceDB

@@ -37,6 +37,8 @@ import (
 
 	"google.golang.org/grpc/metadata"
 
+	proto "github.com/authzed/spicedb-clients/proto-clients/spicedb-go-proto"
+
 	"github.com/authzed/spicedb-clients/spicedb-go/client"
 	"github.com/authzed/spicedb-clients/spicedb-go/consistency"
 	"github.com/authzed/spicedb-clients/spicedb-go/rel"
@@ -57,7 +59,11 @@ type Store struct {
 	calls     []Call
 	counts    map[string]int
 	hook      func(Fault) error
+	// omitSchemaRevision makes ReadSchema return no revision.
+	omitSchemaRevision bool
 }
+
+var _ client.Interface = (*Store)(nil)
 
 // NewStore returns a Store holding the given relationships.
 func NewStore(initial ...rel.Relationship) *Store {
@@ -153,6 +159,25 @@ const (
 	OpReflectSchema       = "reflect schema"
 	OpCheck               = "check"
 	OpCheckBulk           = "check bulk"
+	OpCheckIter           = "check iter"
+	OpDeleteAll           = "delete all relationships"
+	OpUpdates             = "watch"
+
+	// Operations the Store records and fails as Unimplemented.
+	OpExpandPermissionTree          = "expand permission tree"
+	OpLookupResources               = "lookup resources"
+	OpLookupSubjects                = "lookup subjects"
+	OpComputablePermissions         = "computable permissions"
+	OpDependentRelations            = "dependent relations"
+	OpDiffSchema                    = "diff schema"
+	OpRegisterRelationshipCounter   = "register relationship counter"
+	OpCountRelationships            = "count relationships"
+	OpUnregisterRelationshipCounter = "unregister relationship counter"
+	OpRoaringLookupResources        = "roaring lookup resources"
+	OpCountRelationshipsByFilter    = "count relationships by filter"
+	OpWatchPermissionSets           = "watch permission sets"
+	OpLookupPermissionSets          = "lookup permission sets"
+	OpDownloadPermissionSets        = "download permission sets"
 )
 
 // Call is one recorded operation.
@@ -191,7 +216,32 @@ type Fault struct {
 	// Item is the batch index for StageImportBatch and the item index for
 	// StageItem; 0 otherwise.
 	Item int
+	// Batch holds the relationships in the batch at StageImportBatch.
+	Batch []rel.Relationship
 }
+
+// SchemaRevision selects whether ReadSchema reports a revision.
+type SchemaRevision uint8
+
+const (
+	// RevisionIncluded reports the store's revision. This is the default.
+	RevisionIncluded SchemaRevision = iota
+	// RevisionOmitted reports none, as some hosted SpiceDB deployments do,
+	// so code that falls back to another revision source can be tested.
+	RevisionOmitted
+)
+
+// SetReadSchemaRevision selects whether ReadSchema reports a revision.
+func (s *Store) SetReadSchemaRevision(mode SchemaRevision) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.omitSchemaRevision = mode == RevisionOmitted
+}
+
+// CursorAfter returns a cursor that resumes a read or export after the first n
+// matching relationships (in insertion order), the same cursor the Store puts
+// on the n-th item. The format, the decimal count n, is stable for tests.
+func CursorAfter(n int) string { return strconv.Itoa(n) }
 
 // SetFaultHook installs hook, which runs at every Fault point; a non-nil
 // error is returned (or yielded) by the operation at that point, and a failed
@@ -249,13 +299,17 @@ func (s *Store) begin(operation string, request any, r client.ResolvedOptions) (
 
 // fault runs the hook, if any, at one point of a call.
 func (s *Store) fault(call Call, stage Stage, item int) error {
+	return s.faultBatch(call, stage, item, nil)
+}
+
+func (s *Store) faultBatch(call Call, stage Stage, item int, batch []rel.Relationship) error {
 	s.mu.Lock()
 	hook := s.hook
 	s.mu.Unlock()
 	if hook == nil {
 		return nil
 	}
-	return hook(Fault{Call: call, Stage: stage, Item: item})
+	return hook(Fault{Call: call, Stage: stage, Item: item, Batch: append([]rel.Relationship(nil), batch...)})
 }
 
 // Relationships returns a snapshot of every stored relationship.
@@ -477,12 +531,13 @@ func (s *Store) ImportRelationships(_ context.Context, request client.ImportRela
 		if err := rr.Validate(); err != nil {
 			return client.ImportRelationshipsResult{}, invalid("relationship: %s", err)
 		}
-		if len(batch)%batchSize == 0 {
-			if err := s.fault(call, StageImportBatch, len(batch)/batchSize); err != nil {
-				return client.ImportRelationshipsResult{}, err
-			}
-		}
 		batch = append(batch, rr)
+	}
+	for start := 0; start < len(batch); start += batchSize {
+		end := min(start+batchSize, len(batch))
+		if err := s.faultBatch(call, StageImportBatch, start/batchSize, batch[start:end]); err != nil {
+			return client.ImportRelationshipsResult{}, err
+		}
 	}
 	if err := s.fault(call, StageImportCommit, 0); err != nil {
 		return client.ImportRelationshipsResult{}, err
@@ -574,7 +629,11 @@ func (s *Store) ReadSchema(_ context.Context, request client.ReadSchemaRequest, 
 	if !s.hasSchema {
 		return client.ReadSchemaResult{}, serverError("read schema", client.CodeNotFound, noSchema)
 	}
-	return client.ReadSchemaResult{Schema: s.schema, Revision: s.token()}, nil
+	result := client.ReadSchemaResult{Schema: s.schema, Revision: s.token()}
+	if s.omitSchemaRevision {
+		result.Revision = consistency.ZedToken{}
+	}
+	return result, nil
 }
 
 // WriteSchema stores the schema text. It is not compiled or validated.
@@ -661,4 +720,170 @@ func (s *Store) check(request client.PermissionCheck) client.CheckResult {
 	}
 	result.CheckedAt = s.token()
 	return result
+}
+
+// CheckIter checks each request with the registered results, in input order.
+func (s *Store) CheckIter(_ context.Context, requests iter.Seq[client.PermissionCheck], opts ...client.CheckOption) iter.Seq2[client.CheckResult, error] {
+	r := client.ResolveOptions(opts...)
+	call, callErr := s.begin(OpCheckIter, requests, r)
+	return func(yield func(client.CheckResult, error) bool) {
+		if callErr != nil || r.Err != nil {
+			yield(client.CheckResult{}, cmpErr(callErr, r.Err))
+			return
+		}
+		i := 0
+		for req := range requests {
+			if err := s.fault(call, StageItem, i); err != nil {
+				yield(client.CheckResult{}, err)
+				return
+			}
+			s.mu.Lock()
+			result := s.check(req)
+			s.mu.Unlock()
+			if !yield(result, nil) {
+				return
+			}
+			i++
+		}
+	}
+}
+
+// DeleteAllRelationshipsNonAtomic deletes every relationship matching the
+// filter in one step, checking preconditions first, and reports progress once.
+func (s *Store) DeleteAllRelationshipsNonAtomic(_ context.Context, request client.DeleteAllRequest, opts ...client.DeleteAllOption) (client.DeleteResult, error) {
+	r := client.ResolveOptions(opts...)
+	if r.Err != nil {
+		return client.DeleteResult{}, r.Err
+	}
+	if _, ferr := s.begin(OpDeleteAll, request, r); ferr != nil {
+		return client.DeleteResult{}, ferr
+	}
+	if err := request.Filter.Validate(); err != nil {
+		return client.DeleteResult{}, invalid("filter: %s", err)
+	}
+	s.mu.Lock()
+	for _, p := range r.Preconditions {
+		matched := s.matchesAny(p.Filter)
+		if (p.Operation == rel.PreconditionMustMatch && !matched) || (p.Operation == rel.PreconditionMustNotMatch && matched) {
+			s.mu.Unlock()
+			return client.DeleteResult{}, serverError(OpDeleteRelationships, client.CodeFailedPrecondition,
+				fmt.Sprintf("unable to satisfy write precondition `%s`", p))
+		}
+	}
+	var kept []rel.Relationship
+	var deleted uint64
+	for _, rr := range s.rels {
+		if request.Filter.Matches(rr) {
+			deleted++
+			continue
+		}
+		kept = append(kept, rr)
+	}
+	s.rels = kept
+	s.revision++
+	result := client.DeleteResult{Revision: s.token(), DeletedCount: deleted, Complete: true}
+	s.mu.Unlock()
+	if r.DeleteProgress != nil {
+		r.DeleteProgress(result)
+	}
+	return result, nil
+}
+
+// Close does nothing; the Store holds no transport.
+func (s *Store) Close() error { return nil }
+
+// RawProto returns nil; the Store has no protocol client.
+func (s *Store) RawProto() *proto.Client { return nil }
+
+func cmpErr(errs ...error) error {
+	for _, err := range errs {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// unimplemented records the call, consults the fault hook, and otherwise
+// fails with Unimplemented in the real client's error shape.
+func unimplemented[T any](s *Store, op string, request any, r client.ResolvedOptions) (T, error) {
+	var zero T
+	if _, err := s.begin(op, request, r); err != nil {
+		return zero, err
+	}
+	if r.Err != nil {
+		return zero, r.Err
+	}
+	return zero, serverError(op, client.CodeUnimplemented, "not implemented by clienttest.Store")
+}
+
+func unimplementedStream[T any](s *Store, op string, request any, r client.ResolvedOptions) iter.Seq2[T, error] {
+	_, err := unimplemented[T](s, op, request, r)
+	return func(yield func(T, error) bool) {
+		var zero T
+		yield(zero, err)
+	}
+}
+
+// The remaining operations have no in-memory semantics. They are recorded,
+// consult the fault hook, and fail with Unimplemented.
+
+func (s *Store) ExpandPermissionTree(_ context.Context, request client.ExpandPermissionTreeRequest, opts ...client.ExpandPermissionTreeOption) (client.ExpandPermissionTreeResult, error) {
+	return unimplemented[client.ExpandPermissionTreeResult](s, OpExpandPermissionTree, request, client.ResolveOptions(opts...))
+}
+
+func (s *Store) LookupResources(_ context.Context, request client.LookupResourcesRequest, opts ...client.LookupResourcesOption) iter.Seq2[client.LookupResource, error] {
+	return unimplementedStream[client.LookupResource](s, OpLookupResources, request, client.ResolveOptions(opts...))
+}
+
+func (s *Store) LookupSubjects(_ context.Context, request client.LookupSubjectsRequest, opts ...client.LookupSubjectsOption) iter.Seq2[client.LookupSubject, error] {
+	return unimplementedStream[client.LookupSubject](s, OpLookupSubjects, request, client.ResolveOptions(opts...))
+}
+
+func (s *Store) ComputablePermissions(_ context.Context, request client.ComputablePermissionsRequest, opts ...client.ComputablePermissionsOption) (client.ComputablePermissionsResult, error) {
+	return unimplemented[client.ComputablePermissionsResult](s, OpComputablePermissions, request, client.ResolveOptions(opts...))
+}
+
+func (s *Store) DependentRelations(_ context.Context, request client.DependentRelationsRequest, opts ...client.DependentRelationsOption) (client.DependentRelationsResult, error) {
+	return unimplemented[client.DependentRelationsResult](s, OpDependentRelations, request, client.ResolveOptions(opts...))
+}
+
+func (s *Store) DiffSchema(_ context.Context, request client.DiffSchemaRequest, opts ...client.DiffSchemaOption) (client.DiffSchemaResult, error) {
+	return unimplemented[client.DiffSchemaResult](s, OpDiffSchema, request, client.ResolveOptions(opts...))
+}
+
+func (s *Store) RegisterRelationshipCounter(_ context.Context, request client.RegisterRelationshipCounterRequest, opts ...client.RegisterRelationshipCounterOption) (client.RegisterRelationshipCounterResult, error) {
+	return unimplemented[client.RegisterRelationshipCounterResult](s, OpRegisterRelationshipCounter, request, client.ResolveOptions(opts...))
+}
+
+func (s *Store) CountRelationships(_ context.Context, request client.CountRelationshipsRequest, opts ...client.CountRelationshipsOption) (client.CountRelationshipsResult, error) {
+	return unimplemented[client.CountRelationshipsResult](s, OpCountRelationships, request, client.ResolveOptions(opts...))
+}
+
+func (s *Store) UnregisterRelationshipCounter(_ context.Context, request client.UnregisterRelationshipCounterRequest, opts ...client.UnregisterRelationshipCounterOption) (client.UnregisterRelationshipCounterResult, error) {
+	return unimplemented[client.UnregisterRelationshipCounterResult](s, OpUnregisterRelationshipCounter, request, client.ResolveOptions(opts...))
+}
+
+func (s *Store) RoaringLookupResources(_ context.Context, request client.RoaringLookupResourcesRequest, opts ...client.RoaringLookupResourcesOption) (client.RoaringLookupResourcesResult, error) {
+	return unimplemented[client.RoaringLookupResourcesResult](s, OpRoaringLookupResources, request, client.ResolveOptions(opts...))
+}
+
+func (s *Store) CountRelationshipsByFilter(_ context.Context, request client.CountRelationshipsByFilterRequest, opts ...client.CountRelationshipsByFilterOption) (client.CountRelationshipsByFilterResult, error) {
+	return unimplemented[client.CountRelationshipsByFilterResult](s, OpCountRelationshipsByFilter, request, client.ResolveOptions(opts...))
+}
+
+func (s *Store) WatchPermissionSets(_ context.Context, request client.WatchPermissionSetsRequest, opts ...client.WatchPermissionSetsOption) iter.Seq2[client.PermissionSetEvent, error] {
+	return unimplementedStream[client.PermissionSetEvent](s, OpWatchPermissionSets, request, client.ResolveOptions(opts...))
+}
+
+func (s *Store) LookupPermissionSets(_ context.Context, request client.LookupPermissionSetsRequest, opts ...client.LookupPermissionSetsOption) iter.Seq2[client.LookupPermissionSet, error] {
+	return unimplementedStream[client.LookupPermissionSet](s, OpLookupPermissionSets, request, client.ResolveOptions(opts...))
+}
+
+func (s *Store) DownloadPermissionSets(_ context.Context, request client.DownloadPermissionSetsRequest, opts ...client.DownloadPermissionSetsOption) (client.DownloadPermissionSetsResult, error) {
+	return unimplemented[client.DownloadPermissionSetsResult](s, OpDownloadPermissionSets, request, client.ResolveOptions(opts...))
+}
+
+func (s *Store) Updates(_ context.Context, request client.UpdatesRequest, opts ...client.UpdatesOption) iter.Seq2[client.WatchEvent, error] {
+	return unimplementedStream[client.WatchEvent](s, OpUpdates, request, client.ResolveOptions(opts...))
 }

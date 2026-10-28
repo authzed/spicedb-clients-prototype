@@ -161,8 +161,15 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
     the same failure. It records every call with its request and resolved
     options, and accepts fault injection at defined points (before any call,
     before each import batch, before an import commits, before each read or
-    export item), so failure paths and option assertions need neither a fake
-    transport nor a strict mock. Its surface matches the real client's so one
+    export item; an import-batch fault sees the batch's relationships), so
+    failure paths and option assertions need neither a fake transport nor a
+    strict mock. Its resume cursors have a documented format or constructor,
+    and it can emulate servers whose schema reads report no revision.
+  - Each client exports an interface (or protocol) with the full client's
+    method set, kept in sync with the client by a test, and the double
+    implements all of it: operations without in-memory semantics are recorded,
+    consult the fault hook, and fail as unimplemented in the client's error
+    shape. Its surface matches the real client's so one
     interface or protocol accepts both: caller-defined where the language is
     structurally typed (Go, TypeScript, Python protocols), library-provided and
     implemented by both where it is nominally typed (C#, Java).

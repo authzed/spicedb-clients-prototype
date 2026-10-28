@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- `client.Interface` mirrors `*client.Client`'s method set; `clienttest.Store`
+  implements all of it (unsupported operations are recorded and fail with
+  `CodeUnimplemented`; `CheckIter`, `DeleteAllRelationshipsNonAtomic` and
+  `Close` work in memory). `Fault.Batch` carries import batch contents,
+  `clienttest.CursorAfter(n)` builds resume cursors, and
+  `SetReadSchemaRevision(RevisionOmitted)` emulates schema reads without a
+  revision.
+
 - `WithOperationRetryPolicy[O]` sets a client-wide retry policy for one
   operation (e.g. never reopen `Updates`), between per-call and client-wide
   policies in precedence. `OperationOption` is exported for generic helpers.

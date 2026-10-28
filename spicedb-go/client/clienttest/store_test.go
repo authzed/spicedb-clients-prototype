@@ -295,3 +295,105 @@ func TestStoreRecordsCalls(t *testing.T) {
 	require.EqualValues(t, 5, reads[0].Options.Limit)
 	require.Equal(t, "folder", reads[1].Request.(client.ReadRelationshipsRequest).Filter.ResourceType())
 }
+
+// Both the real client and the Store satisfy the full client interface.
+var (
+	_ client.Interface = (*client.Client)(nil)
+	_ client.Interface = (*clienttest.Store)(nil)
+)
+
+func TestStoreCoversTheWholeClient(t *testing.T) {
+	ctx := context.Background()
+	s := clienttest.NewStore(rel.MustFromTuple("doc:a#viewer@user:x"), rel.MustFromTuple("doc:b#viewer@user:x"))
+
+	// Operations without in-memory semantics fail like the server would.
+	_, err := s.ExpandPermissionTree(ctx, client.ExpandPermissionTreeRequest{})
+	require.ErrorIs(t, err, client.ErrUnimplemented)
+	require.Equal(t, "spicedb: expand permission tree: not implemented by clienttest.Store", err.Error())
+	for _, err := range s.Updates(ctx, client.UpdatesRequest{}) {
+		require.ErrorIs(t, err, client.ErrUnimplemented)
+	}
+	require.Len(t, s.CallsOf(clienttest.OpUpdates), 1, "unimplemented calls are still recorded")
+
+	// CheckIter uses the registered results.
+	var results []client.CheckResult
+	for r, err := range s.CheckIter(ctx, func(yield func(client.PermissionCheck) bool) {
+		yield(client.PermissionCheck{Resource: rel.MustNewObject("doc", "a"), Permission: "view",
+			Subject: rel.MustNewSubject(rel.MustNewObject("user", "x"), ""), Consistency: consistency.Full()})
+	}) {
+		require.NoError(t, err)
+		results = append(results, r)
+	}
+	require.Len(t, results, 1)
+
+	// DeleteAll removes every match and reports progress.
+	var progress []client.DeleteResult
+	deleted, err := s.DeleteAllRelationshipsNonAtomic(ctx, client.DeleteAllRequest{Filter: rel.MustNewFilter("doc")},
+		client.WithDeleteAllProgress(func(r client.DeleteResult) { progress = append(progress, r) }))
+	require.NoError(t, err)
+	require.EqualValues(t, 2, deleted.DeletedCount)
+	require.True(t, deleted.Complete)
+	require.Len(t, progress, 1)
+	require.Empty(t, s.Relationships())
+
+	require.NoError(t, s.Close())
+	require.Nil(t, s.RawProto())
+}
+
+func TestStoreReadSchemaWithoutRevision(t *testing.T) {
+	ctx := context.Background()
+	s := clienttest.NewStore()
+	_, err := s.WriteSchema(ctx, client.WriteSchemaRequest{Schema: "definition user {}"})
+	require.NoError(t, err)
+	withRevision, err := s.ReadSchema(ctx, client.ReadSchemaRequest{})
+	require.NoError(t, err)
+	require.NotEmpty(t, withRevision.Revision.String())
+
+	s.SetReadSchemaRevision(clienttest.RevisionOmitted)
+	omitted, err := s.ReadSchema(ctx, client.ReadSchemaRequest{})
+	require.NoError(t, err)
+	require.Empty(t, omitted.Revision.String())
+	require.Equal(t, "definition user {}", omitted.Schema)
+}
+
+func TestStoreFaultSeesImportBatchContents(t *testing.T) {
+	s := clienttest.NewStore()
+	var batches [][]string
+	s.SetFaultHook(func(f clienttest.Fault) error {
+		if f.Stage != clienttest.StageImportBatch {
+			return nil
+		}
+		var ids []string
+		for _, r := range f.Batch {
+			ids = append(ids, r.ResourceID())
+			if r.ResourceID() == "d4" {
+				return clienttest.ServerError(clienttest.OpImportRelationships, client.CodeAlreadyExists, "duplicate d4")
+			}
+		}
+		batches = append(batches, ids)
+		return nil
+	})
+	_, err := s.ImportRelationships(context.Background(), client.ImportRelationshipsRequest{Relationships: tuples(7)}, client.WithImportRelationshipsBatchSize(3))
+	require.ErrorIs(t, err, client.ErrAlreadyExists)
+	require.Equal(t, [][]string{{"d0", "d1", "d2"}}, batches, "the hook saw the first batch, then failed on the one holding d4")
+	require.Empty(t, s.Relationships())
+}
+
+func TestCursorAfterResumesLikeAStoreCursor(t *testing.T) {
+	ctx := context.Background()
+	s := clienttest.NewStore()
+	_, err := s.ImportRelationships(ctx, client.ImportRelationshipsRequest{Relationships: tuples(5)})
+	require.NoError(t, err)
+	var cursors []string
+	for r, err := range s.ExportRelationships(ctx, client.ExportRelationshipsRequest{Consistency: consistency.Full()}) {
+		require.NoError(t, err)
+		cursors = append(cursors, r.AfterResultCursor)
+	}
+	require.Equal(t, cursors[1], clienttest.CursorAfter(2), "CursorAfter(n) is the cursor on the n-th item")
+	var rest []string
+	for r, err := range s.ExportRelationships(ctx, client.ExportRelationshipsRequest{Consistency: consistency.Full()}, client.WithExportRelationshipsCursor(clienttest.CursorAfter(3))) {
+		require.NoError(t, err)
+		rest = append(rest, r.ResourceID())
+	}
+	require.Equal(t, []string{"d3", "d4"}, rest)
+}

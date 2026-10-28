@@ -26,6 +26,8 @@ import {
     type JSONObject,
     type JSONValue,
     type WriteResult,
+    type RelationshipUpdate,
+    type Precondition,
 } from "@spicedb/client";
 
 export interface LookupResourcesOptions
@@ -83,7 +85,7 @@ function subjectRef(subject: AnySubject): SubjectRef {
 
 /** The request fields of a lookup/read options object, without the CallOptions that go to the call itself. */
 function requestFields<T extends CallOptions>(options: T | undefined): Omit<T, keyof CallOptions> {
-    const { signal, timeoutMs, headers, onHeader, onTrailer, ...request } = options ?? ({} as T);
+    const { signal, timeoutMs, headers, onHeader, onTrailer, retryPolicy, ...request } = options ?? ({} as T);
     return request;
 }
 
@@ -306,9 +308,19 @@ function resourceFilter(type: string, id: string, relation?: string): Relationsh
     return { resourceType: type, resourceId: id, ...(relation === undefined ? {} : { relation }) };
 }
 
-/** Narrows `filter` to a subject: an exact subject ref, a definition factory (any ID) or a userset sentinel. */
+/**
+ * Narrows `filter` to a subject: an exact subject ref, a definition factory
+ * (any ID) or a userset sentinel. It always constrains the subject relation: a
+ * subject without one (`User("x")` or `User`) matches only direct
+ * relationships, never usersets such as `team:eng#member`. Use
+ * `withSubjectAnyRelation` to leave the subject relation unconstrained.
+ */
 export function withSubject(filter: RelationshipFilter, subject: AnySubject | SubjectType): RelationshipFilter {
-    if (typeof subject === "function") return { ...filter, subject: { subjectType: subject("")._type } };
+    if (typeof subject === "function")
+        return {
+            ...filter,
+            subject: { subjectType: subject("")._type, relation: { kind: SubjectRelationKind.Direct } },
+        };
     if (!("_ref" in subject))
         return {
             ...filter,
@@ -328,6 +340,19 @@ export function withSubject(filter: RelationshipFilter, subject: AnySubject | Su
                     : { kind: SubjectRelationKind.Named, relation: subject._relation },
         },
     };
+}
+
+/**
+ * Narrows `filter` to a subject's type and ID (any ID for a definition factory
+ * or userset sentinel) and matches any subject relation, direct or userset.
+ */
+export function withSubjectAnyRelation(
+    filter: RelationshipFilter,
+    subject: AnySubject | SubjectType,
+): RelationshipFilter {
+    if (typeof subject === "function") return { ...filter, subject: { subjectType: subject("")._type } };
+    if (!("_ref" in subject)) return { ...filter, subject: { subjectType: subject._type } };
+    return { ...filter, subject: { subjectType: subject._type, subjectId: subject._id } };
 }
 
 function permissionByName<T extends string, P extends string>(
@@ -401,6 +426,24 @@ export class TypedTransaction {
     /** The number of updates (preconditions excluded). */
     get length(): number {
         return this.#updates.length;
+    }
+    /** The first deferred construction error, if any. */
+    get error(): Error | undefined {
+        return this.#updates.find((u) => u.value.error !== undefined)?.value.error;
+    }
+    /** The native updates added so far, in order; empty when `error` is set. */
+    get updates(): readonly RelationshipUpdate[] {
+        if (this.error !== undefined) return Object.freeze([]);
+        return Object.freeze(
+            this.#updates.map((u) => Object.freeze({ operation: u.operation, relationship: u.value.relationship() })),
+        );
+    }
+    /** The preconditions added so far, in order; empty when `error` is set. */
+    get preconditions(): readonly Precondition[] {
+        if (this.error !== undefined) return Object.freeze([]);
+        return Object.freeze(
+            this.#preconditions.map((p) => Object.freeze({ operation: p.operation, filter: p.filter })),
+        );
     }
     /** The native transaction; throws the first deferred construction error. */
     build(): Transaction {
@@ -643,7 +686,7 @@ function makeUserRef(id: string): UserRef {
     return Object.freeze(ref);
 }
 
-/** A `user` resource or subject. */
+/** Refers to a user resource or subject. */
 export function User(id: string): UserRef {
     return makeUserRef(id);
 }
@@ -674,7 +717,6 @@ const TeamAllowed: Readonly<Record<string, readonly string[]>> = Object.freeze({
     member: ["UserRef", "TeamMemberRef"],
 });
 export type TeamMemberSubject = UserRef | TeamMemberRef;
-export type TeamMemberKeySubject = UserRef | TeamMemberRef;
 export type TeamMemberRelationCheckSubject = UserRef | TeamMemberRef;
 
 export interface TeamRef extends AnySubject {
@@ -682,7 +724,6 @@ export interface TeamRef extends AnySubject {
     readonly _type: "team";
     member(): TeamMemberRef;
     member(subject: TeamMemberSubject): TypedRelationship;
-    memberKey(subject: TeamMemberKeySubject): RelationshipKey;
     readonly memberRelation: Permission<"team", "member">;
     memberFilter(): RelationshipFilter;
     /** The exact resource filter (`team:id`). */
@@ -705,7 +746,6 @@ function makeTeamRef(id: string): TeamRef {
             subject === undefined
                 ? makeTeamMemberRef(id)
                 : relationshipOf("team", id, "member", subject)) as TeamRef["member"],
-        memberKey: (subject: TeamMemberKeySubject) => keyOf("team", id, "member", subject),
         memberRelation: new Permission("team", id, "member"),
         memberFilter: () => resourceFilter("team", id, "member"),
         filter: () => resourceFilter("team", id),
@@ -718,7 +758,7 @@ function makeTeamRef(id: string): TeamRef {
     return Object.freeze(ref);
 }
 
-/** A `team` resource or subject. */
+/** Refers to a team resource or subject. */
 export function Team(id: string): TeamRef {
     return makeTeamRef(id);
 }
@@ -755,10 +795,8 @@ export type DocumentViewerSubject = UserRef | UserIpRangeRef | UserTimeWindowRef
 export type DocumentViewerKeySubject = UserRef | TeamMemberRef;
 export type DocumentViewerRelationCheckSubject = UserRef | UserIpRangeRef | UserTimeWindowRef | TeamMemberRef;
 export type DocumentEditorSubject = UserRef;
-export type DocumentEditorKeySubject = UserRef;
 export type DocumentEditorRelationCheckSubject = UserRef;
 export type DocumentOwnerSubject = UserRef;
-export type DocumentOwnerKeySubject = UserRef;
 export type DocumentOwnerRelationCheckSubject = UserRef;
 export type DocumentViewCheckSubject = UserRef | UserIpRangeRef | UserTimeWindowRef | TeamMemberRef;
 export type DocumentEditCheckSubject = UserRef;
@@ -775,11 +813,9 @@ export interface DocumentRef extends AnySubject {
     readonly viewerRelation: Permission<"document", "viewer">;
     viewerFilter(): RelationshipFilter;
     editor(subject: DocumentEditorSubject): TypedRelationship;
-    editorKey(subject: DocumentEditorKeySubject): RelationshipKey;
     readonly editorRelation: Permission<"document", "editor">;
     editorFilter(): RelationshipFilter;
     owner(subject: DocumentOwnerSubject): TypedRelationship;
-    ownerKey(subject: DocumentOwnerKeySubject): RelationshipKey;
     readonly ownerRelation: Permission<"document", "owner">;
     ownerFilter(): RelationshipFilter;
     /** The exact resource filter (`document:id`). */
@@ -806,11 +842,9 @@ function makeDocumentRef(id: string): DocumentRef {
         viewerRelation: new Permission("document", id, "viewer"),
         viewerFilter: () => resourceFilter("document", id, "viewer"),
         editor: (subject: DocumentEditorSubject) => relationshipOf("document", id, "editor", subject),
-        editorKey: (subject: DocumentEditorKeySubject) => keyOf("document", id, "editor", subject),
         editorRelation: new Permission("document", id, "editor"),
         editorFilter: () => resourceFilter("document", id, "editor"),
         owner: (subject: DocumentOwnerSubject) => relationshipOf("document", id, "owner", subject),
-        ownerKey: (subject: DocumentOwnerKeySubject) => keyOf("document", id, "owner", subject),
         ownerRelation: new Permission("document", id, "owner"),
         ownerFilter: () => resourceFilter("document", id, "owner"),
         filter: () => resourceFilter("document", id),
@@ -824,7 +858,7 @@ function makeDocumentRef(id: string): DocumentRef {
     return Object.freeze(ref);
 }
 
-/** A `document` resource or subject. */
+/** Refers to a document resource or subject. */
 export function Document(id: string): DocumentRef {
     return makeDocumentRef(id);
 }
@@ -867,16 +901,12 @@ const OrganizationAllowed: Readonly<Record<string, readonly string[]>> = Object.
     guest: ["UserRef", "UserWildcardRef"],
 });
 export type OrganizationAdminSubject = UserRef;
-export type OrganizationAdminKeySubject = UserRef;
 export type OrganizationAdminRelationCheckSubject = UserRef;
 export type OrganizationMemberSubject = UserRef;
-export type OrganizationMemberKeySubject = UserRef;
 export type OrganizationMemberRelationCheckSubject = UserRef;
 export type OrganizationCreatorSubject = UserWildcardRef;
-export type OrganizationCreatorKeySubject = UserWildcardRef;
 export type OrganizationCreatorRelationCheckSubject = UserRef;
 export type OrganizationGuestSubject = UserRef | UserWildcardRef;
-export type OrganizationGuestKeySubject = UserRef | UserWildcardRef;
 export type OrganizationGuestRelationCheckSubject = UserRef;
 export type OrganizationCanAdminCheckSubject = UserRef;
 export type OrganizationViewCheckSubject = UserRef;
@@ -887,19 +917,15 @@ export interface OrganizationRef extends AnySubject {
     readonly canAdmin: Permission<"organization", "can_admin">;
     readonly view: Permission<"organization", "view">;
     admin(subject: OrganizationAdminSubject): TypedRelationship;
-    adminKey(subject: OrganizationAdminKeySubject): RelationshipKey;
     readonly adminRelation: Permission<"organization", "admin">;
     adminFilter(): RelationshipFilter;
     member(subject: OrganizationMemberSubject): TypedRelationship;
-    memberKey(subject: OrganizationMemberKeySubject): RelationshipKey;
     readonly memberRelation: Permission<"organization", "member">;
     memberFilter(): RelationshipFilter;
     creator(subject: OrganizationCreatorSubject): TypedRelationship;
-    creatorKey(subject: OrganizationCreatorKeySubject): RelationshipKey;
     readonly creatorRelation: Permission<"organization", "creator">;
     creatorFilter(): RelationshipFilter;
     guest(subject: OrganizationGuestSubject): TypedRelationship;
-    guestKey(subject: OrganizationGuestKeySubject): RelationshipKey;
     readonly guestRelation: Permission<"organization", "guest">;
     guestFilter(): RelationshipFilter;
     canAdminSubject(): OrganizationCanAdminRef;
@@ -922,19 +948,15 @@ function makeOrganizationRef(id: string): OrganizationRef {
         canAdmin: new Permission("organization", id, "can_admin"),
         view: new Permission("organization", id, "view"),
         admin: (subject: OrganizationAdminSubject) => relationshipOf("organization", id, "admin", subject),
-        adminKey: (subject: OrganizationAdminKeySubject) => keyOf("organization", id, "admin", subject),
         adminRelation: new Permission("organization", id, "admin"),
         adminFilter: () => resourceFilter("organization", id, "admin"),
         member: (subject: OrganizationMemberSubject) => relationshipOf("organization", id, "member", subject),
-        memberKey: (subject: OrganizationMemberKeySubject) => keyOf("organization", id, "member", subject),
         memberRelation: new Permission("organization", id, "member"),
         memberFilter: () => resourceFilter("organization", id, "member"),
         creator: (subject: OrganizationCreatorSubject) => relationshipOf("organization", id, "creator", subject),
-        creatorKey: (subject: OrganizationCreatorKeySubject) => keyOf("organization", id, "creator", subject),
         creatorRelation: new Permission("organization", id, "creator"),
         creatorFilter: () => resourceFilter("organization", id, "creator"),
         guest: (subject: OrganizationGuestSubject) => relationshipOf("organization", id, "guest", subject),
-        guestKey: (subject: OrganizationGuestKeySubject) => keyOf("organization", id, "guest", subject),
         guestRelation: new Permission("organization", id, "guest"),
         guestFilter: () => resourceFilter("organization", id, "guest"),
         canAdminSubject: () => makeOrganizationCanAdminRef(id),
@@ -950,7 +972,7 @@ function makeOrganizationRef(id: string): OrganizationRef {
     return Object.freeze(ref);
 }
 
-/** A `organization` resource or subject. */
+/** Refers to an organization resource or subject. */
 export function Organization(id: string): OrganizationRef {
     return makeOrganizationRef(id);
 }
@@ -991,10 +1013,8 @@ const InvitationAllowed: Readonly<Record<string, readonly string[]>> = Object.fr
     inviter: ["UserExpiringRef"],
 });
 export type InvitationOrgSubject = OrganizationRef;
-export type InvitationOrgKeySubject = OrganizationRef;
 export type InvitationOrgRelationCheckSubject = OrganizationRef;
 export type InvitationGrantSubject = OrganizationCanAdminRef;
-export type InvitationGrantKeySubject = OrganizationCanAdminRef;
 export type InvitationGrantRelationCheckSubject = OrganizationCanAdminRef | UserRef;
 export type InvitationTimedGrantSubject = OrganizationCanAdminExpiringRef;
 export type InvitationTimedGrantKeySubject = OrganizationCanAdminRef;
@@ -1009,11 +1029,9 @@ export interface InvitationRef extends AnySubject {
     readonly _type: "invitation";
     readonly accept: Permission<"invitation", "accept">;
     org(subject: InvitationOrgSubject): TypedRelationship;
-    orgKey(subject: InvitationOrgKeySubject): RelationshipKey;
     readonly orgRelation: Permission<"invitation", "org">;
     orgFilter(): RelationshipFilter;
     grant(subject: InvitationGrantSubject): TypedRelationship;
-    grantKey(subject: InvitationGrantKeySubject): RelationshipKey;
     readonly grantRelation: Permission<"invitation", "grant">;
     grantFilter(): RelationshipFilter;
     timedGrant(subject: InvitationTimedGrantSubject): TypedRelationship;
@@ -1042,11 +1060,9 @@ function makeInvitationRef(id: string): InvitationRef {
         _id: id,
         accept: new Permission("invitation", id, "accept"),
         org: (subject: InvitationOrgSubject) => relationshipOf("invitation", id, "org", subject),
-        orgKey: (subject: InvitationOrgKeySubject) => keyOf("invitation", id, "org", subject),
         orgRelation: new Permission("invitation", id, "org"),
         orgFilter: () => resourceFilter("invitation", id, "org"),
         grant: (subject: InvitationGrantSubject) => relationshipOf("invitation", id, "grant", subject),
-        grantKey: (subject: InvitationGrantKeySubject) => keyOf("invitation", id, "grant", subject),
         grantRelation: new Permission("invitation", id, "grant"),
         grantFilter: () => resourceFilter("invitation", id, "grant"),
         timedGrant: (subject: InvitationTimedGrantSubject) => relationshipOf("invitation", id, "timed_grant", subject),
@@ -1068,7 +1084,7 @@ function makeInvitationRef(id: string): InvitationRef {
     return Object.freeze(ref);
 }
 
-/** A `invitation` resource or subject. */
+/** Refers to an invitation resource or subject. */
 export function Invitation(id: string): InvitationRef {
     return makeInvitationRef(id);
 }

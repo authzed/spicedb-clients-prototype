@@ -10,7 +10,8 @@ export interface JSONObject {
 }
 export { ZedToken } from "./token.js";
 import { ZedToken, serverToken } from "./token.js";
-import type { Tracing, LookupDebug, LookupPermissionshipFilter, Wildcards, WatchContent, BulkItemErrors } from "./modes.js";
+import type { Tracing, LookupDebug, LookupPermissionshipFilter, Wildcards, WatchContent, BulkItemErrors, Paging } from "./modes.js";
+import type { RetryPolicy } from "./retry.js";
 import { DeletePartial } from "./modes.js";
 import type { SpiceDBError } from "./errors.js";
 export interface ObjectRef {
@@ -78,6 +79,20 @@ export interface CallOptions {
     readonly onHeader?: (headers: Headers) => void;
     /** Called with each RPC's response trailers. */
     readonly onTrailer?: (trailers: Headers) => void;
+    /**
+     * Overrides the client's retry policy for this call only, including
+     * opening a server stream before its first item: a policy with
+     * `maxRetries: 0` exempts one stream while the client retries everything
+     * else, and a policy on `watch` (which is otherwise opened once) opts that
+     * one stream in.
+     *
+     * Mutations are never retried by default. Two are idempotent on replay and
+     * may opt in here: a `write` whose transaction contains only touches and no
+     * preconditions, and `writeSchema`. Any other mutation (creates, deletes,
+     * preconditioned writes, imports, counter registration, delete-all) given a
+     * policy with retries fails with `InvalidArgumentError` before any request.
+     */
+    readonly retryPolicy?: RetryPolicy;
 }
 export interface CheckOptions extends CallOptions {
     readonly context?: JSONObject;
@@ -149,6 +164,8 @@ export interface ReadRelationshipsRequest {
     readonly cursor?: string;
     /** Total relationships to yield, enforced client-side. */
     readonly limit?: number;
+    /** `Paging.SingleRequest` sends exactly one request, as the raw API does. Defaults to `Paging.Automatic`. */
+    readonly paging?: Paging;
 }
 /**
  * A relationship yielded by `readRelationships`: the relationship's own
@@ -180,6 +197,8 @@ export interface LookupResourcesRequest {
     readonly pageSize?: number;
     readonly debug?: LookupDebug;
     readonly cursor?: string;
+    /** `Paging.SingleRequest` sends exactly one request, as the raw API does. Defaults to `Paging.Automatic`. */
+    readonly paging?: Paging;
 }
 export interface LookupSubjectsRequest {
     readonly resource: ObjectRef;

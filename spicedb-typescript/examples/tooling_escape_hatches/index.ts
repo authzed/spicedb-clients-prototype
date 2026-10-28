@@ -6,10 +6,13 @@
  *   - a client over a caller-owned Connect transport (`fromTransport`),
  *   - per-call headers and response header/trailer capture,
  *   - paged reads and lookups that cross several pages, with per-item cursors,
- *     read-at revisions and resume,
+ *     read-at revisions and resume, and a single-request mode like the raw API,
+ *   - empty writes sent to the server, and per-call retry opt-in for
+ *     idempotent writes,
  *   - imports that report the server's ALREADY_EXISTS on a duplicate, with a
  *     configurable batch size,
- *   - bulk checks that return per-item errors alongside other results,
+ *   - bulk checks that return per-item errors alongside other results, and
+ *     their whole wire response rebuilt by protoconv,
  *   - all-or-nothing deletes and delete-all progress,
  *   - watch schema-change events,
  *   - SpiceDB's full tuple syntax, round-tripped through the server, and
@@ -21,7 +24,7 @@ import { createGrpcTransport } from "@connectrpc/connect-node";
 import {
     SpiceDBClient, createSpiceDBClient, TransportSecurity, Transaction, relationship, relationshipFromTuple, relationshipToString,
     full, atLeast, Code, errorCode, toConnectError, AlreadyExistsError, InvalidArgumentError, BulkItemErrors, DeletePartial, WatchContent,
-    DefaultDeadline, Retries, protoconv, type DeleteResult,
+    DefaultDeadline, Retries, Paging, FailedPreconditionError, DEFAULT_RETRY_POLICY, protoconv, type DeleteResult,
 } from "../../src/index.js";
 
 function assert(condition: boolean, message: string): void {
@@ -135,6 +138,31 @@ for (const consistency of [full(), atLeast(revision)]) {
 }
 console.log("paging: reads and lookups crossed pages with full and at-least consistency");
 
+// --- Single-request mode: exactly one request, as the raw API sends it ---
+const pagerFilter = { resourceType: "document", subject: { subjectType: "user", subjectId: "pager" } };
+const single = [];
+for await (const item of client.readRelationships({ filter: pagerFilter, consistency: full(), paging: Paging.SingleRequest, limit: 3, pageSize: 1 }))
+    single.push(item);
+assert(single.length === 3 && single.every(i => i.afterResultCursor), `single request with limit 3 (page size ignored) got ${single.length}`);
+let unbounded = 0;
+for await (const _ of client.lookupResources({ resourceType: "document", permission: "view", subject: { object: { objectType: "user", objectId: "pager" } }, consistency: full(), paging: Paging.SingleRequest }))
+    unbounded++;
+assert(unbounded === 7, `an unbounded single-request lookup returns everything: ${unbounded}`);
+console.log("single-request paging: limit 3 ->", single.length, "items; unbounded lookup ->", unbounded);
+
+// --- Empty writes reach SpiceDB, which checks their preconditions ---
+const emptyWrite = await client.write(new Transaction().mustMatch(pagerFilter));
+assert(emptyWrite.revision.toString() !== "", "an empty write returns the current revision");
+const emptyFailed = await client.write(new Transaction().mustNotMatch(pagerFilter)).catch(e => e);
+assert(emptyFailed instanceof FailedPreconditionError, `an empty write still evaluates preconditions, got ${emptyFailed}`);
+console.log("empty write: revision", emptyWrite.revision.toString());
+
+// --- Per-call retry opt-in: only idempotent writes may ---
+await client.write(new Transaction().touch(relationship("document:paged-0", "viewer", "user:pager")), { retryPolicy: DEFAULT_RETRY_POLICY });
+const refused = await client.write(new Transaction().create(relationship("document:retry", "viewer", "user:pager")), { retryPolicy: DEFAULT_RETRY_POLICY }).catch(e => e);
+assert(refused instanceof InvalidArgumentError, `a create refuses the retry opt-in, got ${refused}`);
+console.log("retry opt-in: touch-only write accepted, create refused");
+
 // --- Import: batch size and the server's status on a duplicate ---
 const imported = Array.from({ length: 25 }, (_, i) => relationship(`document:import-${i}`, "viewer", "user:importer"));
 assert(await client.importRelationships(imported, { batchSize: 10 }) === 25n, "import in batches of 10");
@@ -154,6 +182,9 @@ assert(bulk[0].hasPermission() && bulk[2].hasPermission(), "other items still de
 assert(bulk[1].error !== undefined && !bulk[1].hasPermission() && bulk[1].error.inputIndex === 1, "errored item carries its error and never grants");
 console.log("checkBulk: item 1 failed with", bulk[1].error?.name, "while items 0 and 2 granted");
 assert(protoconv.checkRequestToProto(check("document")).resource?.objectId === "paged-0", "protoconv builds the request the client sends");
+const bulkWire = protoconv.checkBulkToProto([check("document"), check("nosuchtype"), check("document")], bulk);
+assert(bulkWire.pairs.length === 3 && bulkWire.pairs[1].response.case === "error" && bulkWire.pairs[0].response.case === "item", "protoconv rebuilds the bulk response");
+assert(bulkWire.pairs[1].response.case === "error" && bulkWire.pairs[1].response.value.message === bulk[1].error?.serverMessage, "item errors keep the server message once");
 
 // --- All-or-nothing delete and delete-all progress ---
 const tooMany = await client.deleteRelationships({ resourceType: "document", subject: { subjectType: "user", subjectId: "importer" } }, { partial: DeletePartial.Disallowed, limit: 5 }).catch(e => e);

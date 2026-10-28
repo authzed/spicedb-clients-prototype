@@ -1,0 +1,16 @@
+// A schema whose names collide with generated identifiers: `definition
+// subject` produces SubjectRef, which the generated module imports from the
+// native client. It is generated with --typescript.rename=subject=SubjectDef.
+// Its caveat calls a function outside SpiceDB's default CEL environment;
+// caveat expressions are opaque to generation.
+
+caveat custom_fn(request map<any>) {
+    customLookup(request).allowed
+}
+
+definition subject {}
+
+definition resource {
+    relation viewer: subject | subject with custom_fn
+    permission view = viewer
+}

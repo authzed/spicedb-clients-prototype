@@ -156,9 +156,10 @@ func TestOutputIsNormalized(t *testing.T) {
 
 func TestCollisionsFailGeneration(t *testing.T) {
 	for name, src := range map[string]string{
-		"relation key builder vs relation": `definition user {}
+		"relation key builder vs relation": `use expiration
+definition user {}
 definition doc {
-	relation viewer: user
+	relation viewer: user with expiration
 	relation viewer_key: user
 }`,
 		"relation vs built-in member": `definition user {}

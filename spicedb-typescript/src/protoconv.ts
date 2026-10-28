@@ -26,11 +26,14 @@ import {
     type ExpandPermissionTreeResponse, ExpandPermissionTreeResponseSchema,
     type PermissionRelationshipTree, PermissionRelationshipTreeSchema, AlgebraicSubjectSetSchema, DirectSubjectSetSchema,
     type ReadRelationshipsResponse, ReadRelationshipsResponseSchema,
+    type CheckBulkPermissionsRequestItem, CheckBulkPermissionsRequestItemSchema,
+    type CheckBulkPermissionsResponse, CheckBulkPermissionsResponseSchema, CheckBulkPermissionsPairSchema, CheckBulkPermissionsResponseItemSchema,
     type WriteRelationshipsResponse, WriteRelationshipsResponseSchema,
     CursorSchema,
 } from "@spicedb/proto";
 import { Consistency } from "./consistency.js";
-import { InvalidArgumentError } from "./errors.js";
+import { InvalidArgumentError, type SpiceDBError } from "./errors.js";
+import type { Any } from "@bufbuild/protobuf/wkt";
 import { SubjectRelationKind } from "./modes.js";
 import { ZedToken, serverToken, tokenString } from "./token.js";
 import {
@@ -107,6 +110,40 @@ export function checkRequestToProto(request: CheckRequest, defaultContext?: Chec
     return create(CheckPermissionRequestSchema, { resource: objectToProto(request.resource), permission: request.permission, subject: protoSubject(request.subject), consistency: consistencyToProto(request.consistency), context: mergeCheckContext(defaultContext, request.context) });
 }
 export function checkResultFromProto(response: CheckPermissionResponse): CheckResult { return checkResultFromProtoTypes(response); }
+/** The bulk request item `checkBulk` sends for `request` (with optional call-level context merged under the request's). */
+export function checkBulkRequestItemToProto(request: CheckRequest, defaultContext?: CheckRequest["context"]): CheckBulkPermissionsRequestItem {
+    return create(CheckBulkPermissionsRequestItemSchema, { resource: objectToProto(request.resource), permission: request.permission, subject: protoSubject(request.subject), context: mergeCheckContext(defaultContext, request.context) });
+}
+/** The `google.rpc.Status` an item error carries: the server's own status when it came from one, else its code and message. */
+function itemErrorStatus(error: SpiceDBError) {
+    const cause = error.cause as { details?: unknown } | undefined;
+    const details = cause !== null && typeof cause === "object" && Array.isArray(cause.details) ? cause.details as Any[] : [];
+    return { code: error.code, message: error.serverMessage ?? error.message, details };
+}
+/**
+ * The server's `CheckBulkPermissionsResponse` for `requests` and the results
+ * `checkBulk` returned for them (same order, same `defaultContext` as the
+ * call's `context` option): one pair per item, carrying either the item's
+ * result or, for a result with `error` set (`BulkItemErrors.Returned`), its
+ * status. `checkedAt` is the last item's revision; `checkBulk` may span several
+ * requests, each with its own revision.
+ */
+export function checkBulkToProto(requests: readonly CheckRequest[], results: readonly CheckResult[], defaultContext?: CheckRequest["context"]): CheckBulkPermissionsResponse {
+    if (requests.length !== results.length)
+        throw new InvalidArgumentError(`check bulk: ${requests.length} requests but ${results.length} results`);
+    const response = create(CheckBulkPermissionsResponseSchema);
+    requests.forEach((request, i) => {
+        const result = results[i];
+        const single = result.error === undefined ? checkResultToProto(result) : undefined;
+        response.pairs.push(create(CheckBulkPermissionsPairSchema, {
+            request: checkBulkRequestItemToProto(request, defaultContext),
+            response: result.error !== undefined ? { case: "error", value: itemErrorStatus(result.error) }
+                : { case: "item", value: create(CheckBulkPermissionsResponseItemSchema, { permissionship: single!.permissionship, partialCaveatInfo: single!.partialCaveatInfo, debugTrace: single!.debugTrace }) },
+        }));
+        response.checkedAt = zedTokenToProto(result.checkedAt);
+    });
+    return response;
+}
 const checkPermissionships: readonly Permissionship[] = ["unspecified", "noPermission", "hasPermission", "conditionalPermission"];
 function checkPermissionshipToProto(p: Permissionship): number { return Math.max(0, checkPermissionships.indexOf(p)); }
 /** The `CheckPermissionResponse` (debug trace included) that `result` came from. */
@@ -161,8 +198,18 @@ function resolvedSubjectToProto(subject: ResolvedSubject) {
     });
 }
 export function lookupSubjectFromProto(response: LookupSubjectsResponse): LookupSubject { return immutableSnapshot(fromProtoLookupSubject(response)); }
+/**
+ * The server's `LookupSubjectsResponse` for `subject`, including the deprecated
+ * top-level fields (subject ID, excluded subject IDs, permissionship and
+ * partial caveat info) that SpiceDB still sends alongside `subject`.
+ */
 export function lookupSubjectToProto(subject: LookupSubject): LookupSubjectsResponse {
-    return create(LookupSubjectsResponseSchema, { lookedUpAt: zedTokenToProto(subject.lookedUpAt), subject: resolvedSubjectToProto(subject.subject), excludedSubjects: subject.excludedSubjects.map(resolvedSubjectToProto) });
+    const resolved = resolvedSubjectToProto(subject.subject);
+    return create(LookupSubjectsResponseSchema, {
+        lookedUpAt: zedTokenToProto(subject.lookedUpAt), subject: resolved, excludedSubjects: subject.excludedSubjects.map(resolvedSubjectToProto),
+        subjectObjectId: resolved.subjectObjectId, permissionship: resolved.permissionship, partialCaveatInfo: resolved.partialCaveatInfo,
+        excludedSubjectIds: subject.excludedSubjects.map(e => e.subjectId),
+    });
 }
 const treeOperations = ["unspecified", "union", "intersection", "exclusion"] as const;
 function treeToProto(tree: PermissionTree): PermissionRelationshipTree {

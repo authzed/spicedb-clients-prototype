@@ -26,6 +26,8 @@ import {
     type JSONObject,
     type JSONValue,
     type WriteResult,
+    type RelationshipUpdate,
+    type Precondition,
 } from "{{.ClientModule}}";
 
 export interface LookupResourcesOptions
@@ -77,7 +79,7 @@ function subjectRef(subject: AnySubject): SubjectRef {
 
 /** The request fields of a lookup/read options object, without the CallOptions that go to the call itself. */
 function requestFields<T extends CallOptions>(options: T | undefined): Omit<T, keyof CallOptions> {
-    const { signal, timeoutMs, headers, onHeader, onTrailer, ...request } = options ?? ({} as T);
+    const { signal, timeoutMs, headers, onHeader, onTrailer, retryPolicy, ...request } = options ?? ({} as T);
     return request;
 }
 
@@ -284,9 +286,16 @@ function resourceFilter(type: string, id: string, relation?: string): Relationsh
     return { resourceType: type, resourceId: id, ...(relation === undefined ? {} : { relation }) };
 }
 
-/** Narrows `filter` to a subject: an exact subject ref, a definition factory (any ID) or a userset sentinel. */
+/**
+ * Narrows `filter` to a subject: an exact subject ref, a definition factory
+ * (any ID) or a userset sentinel. It always constrains the subject relation: a
+ * subject without one (`User("x")` or `User`) matches only direct
+ * relationships, never usersets such as `team:eng#member`. Use
+ * `withSubjectAnyRelation` to leave the subject relation unconstrained.
+ */
 export function withSubject(filter: RelationshipFilter, subject: AnySubject | SubjectType): RelationshipFilter {
-    if (typeof subject === "function") return { ...filter, subject: { subjectType: subject("")._type } };
+    if (typeof subject === "function")
+        return { ...filter, subject: { subjectType: subject("")._type, relation: { kind: SubjectRelationKind.Direct } } };
     if (!("_ref" in subject))
         return { ...filter, subject: { subjectType: subject._type, relation: { kind: SubjectRelationKind.Named, relation: subject._relation } } };
     return {
@@ -300,6 +309,16 @@ export function withSubject(filter: RelationshipFilter, subject: AnySubject | Su
                     : { kind: SubjectRelationKind.Named, relation: subject._relation },
         },
     };
+}
+
+/**
+ * Narrows `filter` to a subject's type and ID (any ID for a definition factory
+ * or userset sentinel) and matches any subject relation, direct or userset.
+ */
+export function withSubjectAnyRelation(filter: RelationshipFilter, subject: AnySubject | SubjectType): RelationshipFilter {
+    if (typeof subject === "function") return { ...filter, subject: { subjectType: subject("")._type } };
+    if (!("_ref" in subject)) return { ...filter, subject: { subjectType: subject._type } };
+    return { ...filter, subject: { subjectType: subject._type, subjectId: subject._id } };
 }
 
 function permissionByName<T extends string, P extends string>(type: T, id: string, known: readonly P[], name: string, what: string): Permission<T, P> {
@@ -351,6 +370,20 @@ export class TypedTransaction {
     /** The number of updates (preconditions excluded). */
     get length(): number {
         return this.#updates.length;
+    }
+    /** The first deferred construction error, if any. */
+    get error(): Error | undefined {
+        return this.#updates.find((u) => u.value.error !== undefined)?.value.error;
+    }
+    /** The native updates added so far, in order; empty when `error` is set. */
+    get updates(): readonly RelationshipUpdate[] {
+        if (this.error !== undefined) return Object.freeze([]);
+        return Object.freeze(this.#updates.map((u) => Object.freeze({ operation: u.operation, relationship: u.value.relationship() })));
+    }
+    /** The preconditions added so far, in order; empty when `error` is set. */
+    get preconditions(): readonly Precondition[] {
+        if (this.error !== undefined) return Object.freeze([]);
+        return Object.freeze(this.#preconditions.map((p) => Object.freeze({ operation: p.operation, filter: p.filter })));
     }
     /** The native transaction; throws the first deferred construction error. */
     build(): Transaction {
@@ -583,7 +616,7 @@ function {{$def.Maker}}(id: string): {{$def.RefType}} {
     return Object.freeze(ref);
 }
 
-/** A `{{$def.Name}}` resource or subject. */
+/** Refers to {{a $def.Name}} resource or subject. */
 export function {{$def.PascalName}}(id: string): {{$def.RefType}} {
     return {{$def.Maker}}(id);
 }

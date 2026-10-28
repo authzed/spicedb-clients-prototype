@@ -22,7 +22,7 @@ import * as http2 from "node:http2";
 import { Code, ConnectError } from "@connectrpc/connect";
 import { connectNodeAdapter } from "@connectrpc/connect-node";
 import { PermissionsService } from "@spicedb/proto";
-import { createSpiceDBClient, full, relationship, ResourceExhaustedError, Transaction, UnavailableError, } from "../../src/index.js";
+import { createSpiceDBClient, full, InvalidArgumentError, relationship, ResourceExhaustedError, Transaction, UnavailableError, } from "../../src/index.js";
 const DOC = {
     permission: "view",
     resource: {
@@ -152,6 +152,32 @@ async function main(): Promise<void> {
             assert(caught instanceof ResourceExhaustedError, `expected ResourceExhaustedError: got ${String(caught)}`);
             assert(counts.check === 1, `RESOURCE_EXHAUSTED must not be retried: saw ${counts.check} attempts, which turns a load-shedding SpiceDB into a client-driven retry storm`);
             console.log(`RESOURCE_EXHAUSTED: attempted exactly ${counts.check} time -- no retry storm`);
+        }
+        finally {
+            client.close();
+            await new Promise<void>((resolve) => server.close(() => resolve()));
+        }
+    }
+    // ── 4. An idempotent write may opt in, for one call ───────────────────
+    //
+    // A touch-only transaction without preconditions converges to the same
+    // state however often it is replayed, so the caller may opt that one call
+    // into retries. A create (or a preconditioned write, a delete, an import)
+    // is refused before any request: replaying it is not safe.
+    {
+        const counts: Counts = { check: 0, write: 0 };
+        const server = countingServer(counts, 0, Code.Unavailable);
+        const port = await listen(server);
+        const client = createSpiceDBClient(`localhost:${port}`, "t", { transportSecurity: TransportSecurity.Plaintext });
+        const retryTwice = { maxRetries: 2, retryableCodes: [Code.Unavailable], initialBackoffMs: 1 };
+        try {
+            const touched = await client.write(new Transaction().touch(relationship("document:readme", "viewer", "user:alice")), { retryPolicy: retryTwice }).catch((e: unknown) => e);
+            assert(touched instanceof UnavailableError, `expected the stand-in's failure after the retries: got ${String(touched)}`);
+            assert(counts.write === 3, `an opted-in touch-only write is attempted 1 + 2 times: saw ${counts.write}`);
+            const created = await client.write(new Transaction().create(relationship("document:readme", "viewer", "user:alice")), { retryPolicy: retryTwice }).catch((e: unknown) => e);
+            assert(created instanceof InvalidArgumentError, `a create must refuse the retry opt-in: got ${String(created)}`);
+            assert(counts.write === 3, `the refused create must send nothing: saw ${counts.write} attempts`);
+            console.log(`opt-in: touch-only write attempted ${counts.write} times; a create refused the opt-in before any request`);
         }
         finally {
             client.close();

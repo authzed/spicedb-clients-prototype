@@ -110,8 +110,12 @@ const { revision } = await client.write(new Transaction()
     .touch(relationship("document:readme", "viewer", "user:alice")));
 ```
 
-`write` returns `WriteResult`; take `revision` explicitly. Writes are never
-retried: a failed write may have committed. `deleteRelationships(filter, { limit })`
+`write` returns `WriteResult`; take `revision` explicitly. An empty transaction
+is sent as authzed-node sends it (SpiceDB checks its preconditions and returns
+the current revision). Writes are not retried by default: a failed write may
+have committed. A touch-only transaction without preconditions, and
+`writeSchema`, are idempotent on replay and may opt in for one call with
+`{ retryPolicy }`; every other mutation rejects that opt-in. `deleteRelationships(filter, { limit })`
 needs a positive limit (or `partial: DeletePartial.Disallowed` for the server's
 all-or-nothing behavior); deleting everything in batches is
 `deleteAllRelationshipsNonAtomic(filter)`.
@@ -136,6 +140,28 @@ for await (const rel of client.readRelationships({ filter: { resourceType: "docu
 To resume, pass `cursor: rel.afterResultCursor` with the same filter,
 consistency and `pageSize`. `lookupResources`, `lookupSubjects`,
 `exportRelationships` and `watch` work the same way.
+
+A raw `readRelationships`/`lookupResources` call without a limit is one
+unbounded request; this client pages by default. To reproduce the raw call
+(and its final cursor), pass `paging: Paging.SingleRequest`: exactly one
+request, with `limit` (or unbounded) as its limit and `pageSize` ignored.
+
+## Consistency on schema reads
+
+Every read that takes a consistency requires one, including `reflectSchema`,
+`computablePermissions`, `dependentRelations` and `diffSchema`. Where your raw
+requests left consistency unset, pass `minLatency()`, which is what SpiceDB
+applies when it is absent.
+
+## Retries for tools with their own policy
+
+Disable or replace the client's policy client-wide (`retries:
+Retries.Disabled`, `retryPolicy`), and override it for one call with
+`{ retryPolicy }` in that call's options: for example
+`{ ...DEFAULT_RETRY_POLICY, maxRetries: 0 }` on one read stream to never reopen
+it, a policy on one `watch` (opened once by default) to reopen it before its
+first event, or a policy on a touch-only `write` or a `writeSchema` to retry
+those idempotent writes. Other mutations reject the opt-in.
 
 ## Errors
 

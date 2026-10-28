@@ -14,9 +14,11 @@ export interface RetryEvent {
 }
 
 /**
- * Retry policy for idempotent reads, including stream establishment.
- * Mutations (writes, deletes, imports, counter registration) are never
- * retried under any policy.
+ * Retry policy for idempotent reads, including stream establishment. A
+ * client-wide policy never replays a mutation; a per-call policy
+ * (`CallOptions.retryPolicy`) may opt in only the two mutations that are
+ * idempotent on replay: touch-only writes without preconditions and
+ * `writeSchema`.
  */
 export interface RetryPolicy {
     /** Retries after the first attempt. Zero means a single attempt. */
@@ -65,4 +67,17 @@ export function retryable(policy: RetryPolicy, error: unknown): boolean {
 export function backoffMs(policy: RetryPolicy, retry: number): number {
     const bound = policy.initialBackoffMs * 2 ** retry;
     return Math.random() * (policy.maxBackoffMs === undefined ? bound : Math.min(bound, policy.maxBackoffMs));
+}
+
+/**
+ * @internal Whether a mutation's call opted into retries. Only mutations that
+ * are idempotent on replay may; any other mutation given a policy with retries
+ * is rejected before any request.
+ */
+export function mutationRetry(policy: RetryPolicy | undefined, idempotent: boolean, operation: string): boolean {
+    if (policy === undefined || validRetryPolicy(policy).maxRetries === 0)
+        return false;
+    if (!idempotent)
+        throw new InvalidArgumentError(`${operation} cannot be retried: only touch-only writes without preconditions and schema writes are idempotent on replay`);
+    return true;
 }

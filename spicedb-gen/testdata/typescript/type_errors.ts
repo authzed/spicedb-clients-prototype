@@ -65,6 +65,8 @@ Invitation("x").timedGrant(Organization("acme").canAdminSubject());
 Invitation("x").inviter(User("alice"));
 // @ts-expect-error a key is identity-only and rejects an expiring subject
 Invitation("x").inviterKey(User("alice").withExpiration(new Date()));
+// @ts-expect-error a relation admitting only plain subjects has no key builder; its writer identifies the tuple
+Organization("x").adminKey(User("alice"));
 // @ts-expect-error writes cannot touch a key, only a full typed relationship
 new TypedTransaction().touch(Invitation("x").inviterKey(User("alice")));
 // @ts-expect-error the typed transaction does not shadow the native write

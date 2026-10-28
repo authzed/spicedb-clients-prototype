@@ -70,8 +70,51 @@ export interface SpiceDBClientOptions extends SpiceDBClientBehaviorOptions {
 }
 const SUPPLIED_TRANSPORT = Symbol("suppliedTransport");
 const CONNECTION_OPTIONS = ["endpoint", "token", "transportSecurity", "remoteCredentials", "tls", "headers"] as const;
+/**
+ * The public method set of {@link SpiceDBClient}. Depend on it (or a `Pick`
+ * of it) where tests substitute `InMemorySpiceDB`, which also implements it.
+ * A test keeps it identical to the client's public methods.
+ */
+export interface SpiceDBClientInterface {
+    raw(): SpiceDBProtoClient;
+    close(): void;
+    check(request: CheckRequest, options?: CheckOptions): Promise<CheckResult>;
+    checkBulk(requests: readonly CheckRequest[], options?: CheckOptions): Promise<readonly CheckResult[]>;
+    write(transaction: Transaction, options?: CallOptions): Promise<WriteResult>;
+    readRelationships(request: ReadRelationshipsRequest, options?: CallOptions): AsyncIterableIterator<ReadRelationship>;
+    deleteRelationships(filter: RelationshipFilter, options: DeleteOptions): Promise<DeleteResult>;
+    deleteAllRelationshipsNonAtomic(filter: RelationshipFilter, options?: DeleteAllOptions): Promise<DeleteResult>;
+    lookupResources(request: LookupResourcesRequest, options?: CallOptions): AsyncIterableIterator<LookupResource>;
+    lookupSubjects(request: LookupSubjectsRequest, options?: CallOptions): AsyncIterableIterator<LookupSubject>;
+    expandPermissionTree(request: ExpandPermissionTreeRequest, options?: CallOptions): Promise<ExpandResult>;
+    importRelationships(relationships: Iterable<Relationship> | AsyncIterable<Relationship>, options?: ImportOptions): Promise<bigint>;
+    exportRelationships(request: ExportRelationshipsRequest, options?: CallOptions): AsyncIterableIterator<ExportedRelationship>;
+    readSchema(options?: CallOptions): Promise<SchemaResult>;
+    writeSchema(schema: string, options?: CallOptions): Promise<ZedToken>;
+    reflectSchema(request: ReflectSchemaRequest, options?: CallOptions): Promise<ReflectSchemaResult>;
+    computablePermissions(request: ComputablePermissionsRequest, options?: CallOptions): Promise<RelationsResult>;
+    dependentRelations(request: DependentRelationsRequest, options?: CallOptions): Promise<RelationsResult>;
+    diffSchema(request: DiffSchemaRequest, options?: CallOptions): Promise<SchemaDiffResult>;
+    watch(request?: WatchRequest, options?: CallOptions): AsyncIterableIterator<WatchEvent>;
+    /** @experimental */
+    experimentalRegisterRelationshipCounter(name: string, filter: RelationshipFilter, options?: CallOptions): Promise<void>;
+    /** @experimental */
+    experimentalCountRelationships(name: string, options?: CallOptions): Promise<RelationshipCountResult>;
+    /** @experimental */
+    experimentalUnregisterRelationshipCounter(name: string, options?: CallOptions): Promise<void>;
+    /** @experimental */
+    experimentalCountRelationshipsByFilter(filter: RelationshipFilter, options?: CallOptions): Promise<RelationshipCountResult>;
+    /** @experimental */
+    experimentalWatchPermissionSets(request?: WatchPermissionSetsRequest, options?: CallOptions): AsyncIterableIterator<PermissionSetEvent>;
+    /** @experimental */
+    experimentalLookupPermissionSets(request: LookupPermissionSetsRequest, options?: CallOptions): AsyncIterableIterator<LookupPermissionSet>;
+    /** @experimental */
+    experimentalDownloadPermissionSets(request?: DownloadPermissionSetsRequest, options?: CallOptions): Promise<DownloadPermissionSetsResult>;
+    /** @experimental */
+    experimentalRoaringLookupResources(request: RoaringLookupResourcesRequest, options?: CallOptions): Promise<RoaringLookupResourcesResult>;
+}
 /** Reusable authenticated client. Unary calls share a total operation budget; streams have no default lifetime limit. */
-export class SpiceDBClient {
+export class SpiceDBClient implements SpiceDBClientInterface {
     private readonly proto: SpiceDBProtoClient;
     private readonly retryPolicy: RetryPolicy;
     private readonly operationRetryPolicies = new Map<OperationName, RetryPolicy>();
@@ -131,8 +174,7 @@ export class SpiceDBClient {
         return new SpiceDBClient({ ...options, [SUPPLIED_TRANSPORT]: transport } as unknown as SpiceDBClientOptions);
     }
     /** Secondary authenticated protocol accessor; shares ownership and bypasses idiomatic retry, errors and deadlines. */
-    raw(): SpiceDBProtoClient { return this.proto; }
-    close(): void {
+    raw(): SpiceDBProtoClient { return this.proto; }    close(): void {
         if (this.closed)
             return;
         this.closed = true;

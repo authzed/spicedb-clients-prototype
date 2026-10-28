@@ -220,12 +220,16 @@ db.setCheckResult({ resource: { objectType: "organization", objectId: "acme" }, 
 const authz: Pick<SpiceDBClient, "write" | "check" | "readRelationships"> = db; // or a real client
 ```
 
-Depend on a `Pick<SpiceDBClient, ...>` of the methods you use; both
-`SpiceDBClient` and `InMemorySpiceDB` satisfy it for `write`,
+Depend on `SpiceDBClientInterface` (the client's full method set) or a
+`Pick<SpiceDBClient, ...>` of the methods you use; both `SpiceDBClient` and
+`InMemorySpiceDB` implement it. The double works in memory for `write`,
 `readRelationships`, `deleteRelationships`, `deleteAllRelationshipsNonAtomic`,
 `importRelationships`, `exportRelationships`, `readSchema`, `writeSchema`,
 `reflectSchema` (register its result with `setReflectSchemaResult`), `check`,
-`checkBulk` and `close`. Its errors have the real client's classes, codes and
+`checkBulk` and `close`; its other methods are recorded and fail with
+`Code.Unimplemented`. `InMemorySpiceDB.cursorAfter(n)` builds a resume cursor
+after n matching items, and `db.setReadSchemaRevision(SchemaRevision.Omitted)`
+emulates servers whose schema reads report no revision. Its errors have the real client's classes, codes and
 message shape; it honors cursors, limits, the export filter and
 `onHeader`/`onTrailer` (see `setResponseMetadata`). Build expected errors with
 `SpiceDBError.fromCode(Code.FailedPrecondition, "...")`, or
@@ -233,7 +237,7 @@ message shape; it honors cursors, limits, the export filter and
 failure. It records every call (`db.calls`, `db.callsOf("write")`: operation,
 index, request, options) and injects faults: `db.failNext("check", err)` fails
 one call; `db.setFaultHook(f => ...)` is consulted at `FaultStage.Call`,
-`ImportBatch` (`f.item` is the batch index), `ImportCommit` and `Item` (each
+`ImportBatch` (`f.item` is the batch index, `f.batch` its relationships), `ImportCommit` and `Item` (each
 read or export item), and a failed write or import applies nothing.
 
 ```ts

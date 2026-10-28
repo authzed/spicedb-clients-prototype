@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Full-client test double
+
+- `SpiceDBClientInterface` lists `SpiceDBClient`'s full public method set; the
+  client and `InMemorySpiceDB` both implement it. The double's operations
+  without in-memory semantics (lookups, expand, schema introspection, `watch`,
+  the experimental methods) are recorded (new `InMemoryOperation` names),
+  consult the fault hook, and fail with `Code.Unimplemented`; `raw()` throws.
+- `Fault.batch` carries an import batch's relationships at
+  `FaultStage.ImportBatch`, which now fires once each batch is full (or the
+  input ends) rather than before its first item.
+- `InMemorySpiceDB.cursorAfter(n)` builds the resume cursor the double puts on
+  the n-th matching item (the decimal count, stable for tests).
+- `setReadSchemaRevision(SchemaRevision.Omitted)` makes the double's
+  `readSchema` report an empty revision.
+
 ### Tooling and typed-client follow-ups
 
 - `operationRetryPolicies` (client option, keyed by `OperationName`) sets the

@@ -65,7 +65,24 @@ public sealed record LookupResource
     /// call — a property of the call, not of the individual resource.
     /// </summary>
     public ZedToken LookedUpAt { get; init; }
+
+    /// <summary>
+    /// Resumes the lookup after this item through <see cref="LookupOptions.ResumeCursor"/>,
+    /// repeating the request and page size. Distinct from revision tokens.
+    /// </summary>
+    public string? AfterResultCursor { get; init; }
 }
+
+/// <summary>A relationship yielded by <see cref="SpiceDBClient.ReadRelationshipsAsync"/>, with its paging state.</summary>
+/// <param name="Relationship">The relationship.</param>
+/// <param name="AfterResultCursor">Resumes the read after this item through <see cref="ReadOptions.ResumeCursor"/>.</param>
+/// <param name="ReadAt">The revision of the response that carried this item.</param>
+public sealed record ReadRelationship(Relationship Relationship, string? AfterResultCursor, ZedToken ReadAt);
+
+/// <summary>A relationship yielded by <see cref="SpiceDBClient.ExportRelationshipsAsync"/>, with its paging state. Export responses carry no revision.</summary>
+/// <param name="Relationship">The relationship.</param>
+/// <param name="AfterResultCursor">Resumes the export after the response that carried this item, through <see cref="ExportOptions.ResumeCursor"/>. Every item in one response shares it.</param>
+public sealed record ExportedRelationship(Relationship Relationship, string? AfterResultCursor);
 
 /// <summary>
 /// A subject resolved by <see cref="SpiceDBClient.LookupSubjectsAsync"/> —

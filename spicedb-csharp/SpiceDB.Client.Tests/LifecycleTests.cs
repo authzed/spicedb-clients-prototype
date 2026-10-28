@@ -66,7 +66,7 @@ public class LifecycleTests
     public async Task EarlyBreakReleasesActualServerStream()
     {
         await using var host = await Start();
-        await foreach (var item in host.Client.ReadRelationshipsAsync(Consistency.Full(), new Filter("document"))) { Assert.Equal("one", item.Resource.ObjectId); break; }
+        await foreach (var item in host.Client.ReadRelationshipsAsync(Consistency.Full(), new Filter("document"))) { Assert.Equal("one", item.Relationship.Resource.ObjectId); break; }
         await host.Service.Stopped.Task.WaitAsync(TimeSpan.FromSeconds(5));
     }
     [Theory]

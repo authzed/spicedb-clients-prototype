@@ -8,7 +8,8 @@ This is a buf-generated C# proto client for SpiceDB.
 2. Only add code specified in the DESIGN.md manifest — nothing extra
 3. Don't touch files under `gen/` — those are produced by buf generate
 4. Mark deprecated proto methods with `[Obsolete("...")]` attributes
-5. Run `dotnet test` after making changes
+5. Run `dotnet test tests/SpiceDB.Proto.Tests.csproj` (or `mage test`) after making changes
+6. After `buf generate`, run `mage bridge` to regenerate the Authzed.Net bridge forwards
 
 ## Prerequisites
 
@@ -19,7 +20,10 @@ generated C# files in `gen/`.
 
 - `gen/` — buf-generated code (DO NOT MODIFY)
 - `Client.cs` — SpiceDBProtoClient class, constructors, the loopback guard, IDisposable
-- `ClientTest.cs` — xUnit tests (construction, disposal, channel ownership)
-- `InsecureHostGuardTest.cs` — xUnit tests for the insecure-transport credentials guard
+- `tests/` — `SpiceDB.Proto.Tests.csproj`: `ClientTest.cs` (construction, disposal, channel
+  ownership), `InsecureHostGuardTest.cs` (insecure-transport credentials guard),
+  `AuthzedNetBridgeTest.cs` (legacy bridge, both assemblies in one process)
+- `bridge/` — `generator/` writes `Authzed.Net/TypeForwards.g.cs` (DO NOT EDIT BY HAND);
+  `Authzed.Net/` is the legacy-package bridge assembly
 - `TransitiveProtoStubs.cs` — metadata-only stubs for transitive proto dependencies
 - `SpiceDB.Proto.csproj` — `net10.0` project file

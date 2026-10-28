@@ -7,25 +7,29 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <!-- tests/ and bridge/ are separate projects; keep their sources out of this assembly. -->
   <ItemGroup>
-    <PackageReference Include="Google.Protobuf" Version="3.36.*" />
-    <PackageReference Include="Google.Api.CommonProtos" Version="2.17.*" />
-    <PackageReference Include="Grpc.Net.Client" Version="2.84.*" />
-    <PackageReference Include="Grpc.Core.Api" Version="2.84.*" />
-    <PackageReference Include="Grpc.Tools" Version="2.84.*">
-      <PrivateAssets>all</PrivateAssets>
-      <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
-    </PackageReference>
+    <Compile Remove="tests/**;bridge/**" />
+    <None Remove="tests/**;bridge/**" />
   </ItemGroup>
 
-<!-- Test dependencies -->
+  <!--
+    Dependency floors (root DESIGN.md, "Document the path off the legacy libraries"): exact
+    lowest versions, not floating wildcards, so consumers inherit the minimum this assembly
+    needs rather than whatever was newest at restore time. A NuGet version is a minimum, so
+    consumers may still resolve newer ones. Grpc.Net.Client 2.80.0 and Google.Protobuf 3.34.1
+    match the legacy Authzed.Net 1.6.0 package, so adopting the bridge raises nothing.
+    Test frameworks live in tests/, never here.
+  -->
   <ItemGroup>
-    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.10.*" />
-    <PackageReference Include="xunit" Version="2.9.*" />
-    <PackageReference Include="xunit.runner.visualstudio" Version="4.0.*">
-      <PrivateAssets>all</PrivateAssets>
-      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
-    </PackageReference>
+    <PackageReference Include="Google.Protobuf" Version="3.34.1" />
+    <PackageReference Include="Google.Api.CommonProtos" Version="2.17.0" />
+    <PackageReference Include="Grpc.Net.Client" Version="2.80.0" />
+    <PackageReference Include="Grpc.Core.Api" Version="2.80.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="SpiceDB.Proto.Tests" />
   </ItemGroup>
 
 </Project>

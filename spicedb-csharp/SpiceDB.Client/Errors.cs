@@ -40,17 +40,98 @@ public class SpiceDBException : Exception
     /// </summary>
     public IReadOnlyDictionary<string, string> ReasonMetadata { get; }
 
+    /// <summary>
+    /// The gRPC status code this error corresponds to. Server errors report the server's code;
+    /// locally raised errors report their category's code (<see cref="InvalidArgumentException"/>
+    /// is <see cref="StatusCode.InvalidArgument"/>, a local total-deadline expiry is
+    /// <see cref="StatusCode.DeadlineExceeded"/>), so code that inspects
+    /// <c>RpcException.StatusCode</c> can inspect this the same way.
+    /// </summary>
+    public StatusCode StatusCode { get; }
+
+    /// <summary>
+    /// The server's status message exactly as sent. Null for errors raised locally by this
+    /// client. Forward this, not <see cref="Exception.Message"/>, when relaying a server error
+    /// to another party. <see cref="Create"/> sets it so test doubles look like the server.
+    /// </summary>
+    public string? ServerMessage { get; internal set; }
+
     public SpiceDBException() : this(null, null) { }
     public SpiceDBException(string message) : this(message, null) { }
 
-    public SpiceDBException(string? message, Exception? innerException) : base(message, innerException)
+    public SpiceDBException(string? message, Exception? innerException)
+        : this((innerException as RpcException)?.StatusCode ?? StatusCode.Unknown, message, innerException) { }
+
+    /// <summary>Builds an error with an explicit status code, for subclasses.</summary>
+    protected SpiceDBException(StatusCode statusCode, string? message, Exception? innerException) : base(message, innerException)
     {
+        StatusCode = statusCode;
         var info = ErrorInfoOf(innerException);
         Reason = info?.Reason ?? string.Empty;
         ReasonDomain = info?.Domain ?? string.Empty;
         ReasonMetadata = info is null
             ? new System.Collections.ObjectModel.ReadOnlyDictionary<string, string>(new Dictionary<string, string>())
             : new System.Collections.ObjectModel.ReadOnlyDictionary<string, string>(new Dictionary<string, string>(info.Metadata));
+    }
+
+    /// <summary>
+    /// This error as a gRPC <see cref="Grpc.Core.Status"/>. A server error returns the
+    /// server's own status; any other error returns a status built from
+    /// <see cref="StatusCode"/> and <see cref="ServerMessage"/> (or the message).
+    /// </summary>
+    public Grpc.Core.Status Status => InnerException is RpcException rpc && rpc.StatusCode == StatusCode
+        ? rpc.Status
+        : new Grpc.Core.Status(StatusCode, ServerMessage ?? Message);
+
+    /// <summary>
+    /// The response trailers of the server error, including <c>grpc-status-details-bin</c>, or
+    /// an empty collection for errors raised locally.
+    /// </summary>
+    public Metadata Trailers => InnerException is RpcException rpc && rpc.StatusCode == StatusCode ? rpc.Trailers : Metadata.Empty;
+
+    /// <summary>
+    /// Returns an <see cref="RpcException"/> carrying this error's status and trailers (and so
+    /// its <c>ErrorInfo</c> detail), for code that forwards errors over gRPC or expects one.
+    /// </summary>
+    public RpcException ToRpcException() => new(Status, Trailers, Message);
+
+    /// <summary>
+    /// Builds the typed error for <paramref name="statusCode"/>, exactly as the client would
+    /// map a server status with that code and message: the subclass matching the code (for
+    /// example <see cref="NotFoundException"/>), with <see cref="ServerMessage"/> set. Intended
+    /// for test doubles, so their errors satisfy every predicate real ones do.
+    /// </summary>
+    public static SpiceDBException Create(StatusCode statusCode, string message) =>
+        ErrorMapper.ToSpiceDBException(new RpcException(new Grpc.Core.Status(statusCode, Native.Required(message, nameof(message)))));
+
+    /// <summary>
+    /// Maps a raw <see cref="RpcException"/> (for example one thrown by a fake or by the raw
+    /// protocol client) to the typed error the native client would have thrown, preserving it
+    /// as <see cref="Exception.InnerException"/>.
+    /// </summary>
+    public static SpiceDBException FromRpcException(RpcException exception) => ErrorMapper.ToSpiceDBException(exception);
+
+    /// <summary>
+    /// Classifies any exception as a gRPC status code: a <see cref="SpiceDBException"/> reports
+    /// <see cref="StatusCode"/>, a raw <see cref="RpcException"/> reports its own code, an
+    /// <see cref="OperationCanceledException"/> is <see cref="StatusCode.Cancelled"/>, and a
+    /// <see cref="TimeoutException"/> is <see cref="StatusCode.DeadlineExceeded"/>. Other
+    /// exceptions are classified by their inner exception chain, else
+    /// <see cref="StatusCode.Unknown"/>.
+    /// </summary>
+    public static StatusCode CodeOf(Exception? exception)
+    {
+        for (var e = exception; e is not null; e = e.InnerException)
+        {
+            switch (e)
+            {
+                case SpiceDBException s: return s.StatusCode;
+                case RpcException r: return r.StatusCode;
+                case OperationCanceledException: return StatusCode.Cancelled;
+                case TimeoutException: return StatusCode.DeadlineExceeded;
+            }
+        }
+        return StatusCode.Unknown;
     }
 
     /// <summary>
@@ -74,71 +155,71 @@ public class SpiceDBException : Exception
 /// <summary>The caller does not have permission to execute the operation.</summary>
 public sealed class PermissionDeniedException : SpiceDBException
 {
-    public PermissionDeniedException(string message) : base(message) { }
-    public PermissionDeniedException(string message, Exception innerException) : base(message, innerException) { }
+    public PermissionDeniedException(string message) : base(StatusCode.PermissionDenied, message, null) { }
+    public PermissionDeniedException(string message, Exception innerException) : base(StatusCode.PermissionDenied, message, innerException) { }
 }
 
 /// <summary>The requested resource was not found.</summary>
 public sealed class NotFoundException : SpiceDBException
 {
-    public NotFoundException(string message) : base(message) { }
-    public NotFoundException(string message, Exception innerException) : base(message, innerException) { }
+    public NotFoundException(string message) : base(StatusCode.NotFound, message, null) { }
+    public NotFoundException(string message, Exception innerException) : base(StatusCode.NotFound, message, innerException) { }
 }
 
 /// <summary>The resource already exists.</summary>
 public sealed class AlreadyExistsException : SpiceDBException
 {
-    public AlreadyExistsException(string message) : base(message) { }
-    public AlreadyExistsException(string message, Exception innerException) : base(message, innerException) { }
+    public AlreadyExistsException(string message) : base(StatusCode.AlreadyExists, message, null) { }
+    public AlreadyExistsException(string message, Exception innerException) : base(StatusCode.AlreadyExists, message, innerException) { }
 }
 
 /// <summary>The request contained an invalid argument.</summary>
 public sealed class InvalidArgumentException : SpiceDBException
 {
-    public InvalidArgumentException(string message) : base(message) { }
-    public InvalidArgumentException(string message, Exception innerException) : base(message, innerException) { }
+    public InvalidArgumentException(string message) : base(StatusCode.InvalidArgument, message, null) { }
+    public InvalidArgumentException(string message, Exception innerException) : base(StatusCode.InvalidArgument, message, innerException) { }
 }
 
 /// <summary>A precondition for the operation was not met.</summary>
 public sealed class FailedPreconditionException : SpiceDBException
 {
-    public FailedPreconditionException(string message) : base(message) { }
-    public FailedPreconditionException(string message, Exception innerException) : base(message, innerException) { }
+    public FailedPreconditionException(string message) : base(StatusCode.FailedPrecondition, message, null) { }
+    public FailedPreconditionException(string message, Exception innerException) : base(StatusCode.FailedPrecondition, message, innerException) { }
 }
 
 /// <summary>The service is currently unavailable.</summary>
 public sealed class UnavailableException : SpiceDBException
 {
-    public UnavailableException(string message) : base(message) { }
-    public UnavailableException(string message, Exception innerException) : base(message, innerException) { }
+    public UnavailableException(string message) : base(StatusCode.Unavailable, message, null) { }
+    public UnavailableException(string message, Exception innerException) : base(StatusCode.Unavailable, message, innerException) { }
 }
 
 /// <summary>The operation was cancelled.</summary>
 public sealed class CancelledException : SpiceDBException
 {
-    public CancelledException(string message) : base(message) { }
-    public CancelledException(string message, Exception innerException) : base(message, innerException) { }
+    public CancelledException(string message) : base(StatusCode.Cancelled, message, null) { }
+    public CancelledException(string message, Exception innerException) : base(StatusCode.Cancelled, message, innerException) { }
 }
 
 /// <summary>The server's resources have been exhausted (e.g. rate limited).</summary>
 public sealed class ResourceExhaustedException : SpiceDBException
 {
-    public ResourceExhaustedException(string message) : base(message) { }
-    public ResourceExhaustedException(string message, Exception innerException) : base(message, innerException) { }
+    public ResourceExhaustedException(string message) : base(StatusCode.ResourceExhausted, message, null) { }
+    public ResourceExhaustedException(string message, Exception innerException) : base(StatusCode.ResourceExhausted, message, innerException) { }
 }
 
 /// <summary>The operation exceeded its deadline.</summary>
 public sealed class DeadlineExceededException : SpiceDBException
 {
-    public DeadlineExceededException(string message) : base(message) { }
-    public DeadlineExceededException(string message, Exception innerException) : base(message, innerException) { }
+    public DeadlineExceededException(string message) : base(StatusCode.DeadlineExceeded, message, null) { }
+    public DeadlineExceededException(string message, Exception innerException) : base(StatusCode.DeadlineExceeded, message, innerException) { }
 }
 
 /// <summary>The operation was aborted, typically due to a concurrency conflict.</summary>
 public sealed class AbortedException : SpiceDBException
 {
-    public AbortedException(string message) : base(message) { }
-    public AbortedException(string message, Exception innerException) : base(message, innerException) { }
+    public AbortedException(string message) : base(StatusCode.Aborted, message, null) { }
+    public AbortedException(string message, Exception innerException) : base(StatusCode.Aborted, message, innerException) { }
 }
 
 /// <summary>
@@ -152,8 +233,8 @@ public sealed class AbortedException : SpiceDBException
 /// </summary>
 public sealed class UnauthenticatedException : SpiceDBException
 {
-    public UnauthenticatedException(string message) : base(message) { }
-    public UnauthenticatedException(string message, Exception innerException) : base(message, innerException) { }
+    public UnauthenticatedException(string message) : base(StatusCode.Unauthenticated, message, null) { }
+    public UnauthenticatedException(string message, Exception innerException) : base(StatusCode.Unauthenticated, message, innerException) { }
 }
 
 /// <summary>
@@ -165,8 +246,8 @@ public sealed class UnauthenticatedException : SpiceDBException
 /// </summary>
 public sealed class OutOfRangeException : SpiceDBException
 {
-    public OutOfRangeException(string message) : base(message) { }
-    public OutOfRangeException(string message, Exception innerException) : base(message, innerException) { }
+    public OutOfRangeException(string message) : base(StatusCode.OutOfRange, message, null) { }
+    public OutOfRangeException(string message, Exception innerException) : base(StatusCode.OutOfRange, message, innerException) { }
 }
 
 /// <summary>
@@ -200,7 +281,7 @@ internal static class ErrorMapper
         ArgumentNullException.ThrowIfNull(rpcException);
 
         var message = rpcException.Status.Detail ?? rpcException.Message;
-        return rpcException.StatusCode switch
+        SpiceDBException mapped = rpcException.StatusCode switch
         {
             StatusCode.PermissionDenied => new PermissionDeniedException(message, rpcException),
             StatusCode.NotFound => new NotFoundException(message, rpcException),
@@ -216,6 +297,8 @@ internal static class ErrorMapper
             StatusCode.OutOfRange => new OutOfRangeException(message, rpcException),
             _ => new SpiceDBException(message, rpcException),
         };
+        mapped.ServerMessage = rpcException.Status.Detail;
+        return mapped;
     }
 
     /// <summary>

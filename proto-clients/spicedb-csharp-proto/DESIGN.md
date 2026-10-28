@@ -54,7 +54,8 @@ Create a `Client.cs` file in the package root with:
    exists, fully configured, so there is no endpoint or insecure flag left to guard.
 
 4. **`bool _ownsChannel` field** — true only when this client created the channel itself
-   (constructor 2), false when one was handed to it (constructor 3).
+   (constructor 2), false when one was handed to it (constructors 3 and 9). `_channel` is
+   null for constructor 9.
 
 5. **Internal constructor: `SpiceDBProtoClient(string endpoint, string token, bool insecure,
    bool allowInsecureRemoteCredentials, HttpMessageHandler? httpHandler)`** (`Client.cs:94`)
@@ -80,6 +81,29 @@ Create a `Client.cs` file in the package root with:
    that do not exist on nuget.org. Hand-written, but not to be edited except when buf's
    output starts or stops referencing such a dependency.
 
+9. **Constructor: `SpiceDBProtoClient(CallInvoker callInvoker)`** — the existing-connection
+   constructor behind `SpiceDBClient.CreateFromCallInvoker` (root DESIGN.md, "Keep protocol
+   access secondary and ownership explicit"). Builds every service client on the caller's
+   invoker, adds no credentials (the invoker carries its own), and owns nothing.
+
+10. **`InternalsVisibleTo("SpiceDB.Proto.Tests")`** in `SpiceDB.Proto.csproj`, so the
+   separate test project can reach the internal constructor and `IsLoopbackEndpoint`.
+
+11. **`bridge/`** — the legacy-library bridge (root DESIGN.md, "Be the single copy of the
+   protocol bindings in any process"). The official legacy package `Authzed.Net` defines
+   the same generated type names in its own assembly. `bridge/generator` (a console app,
+   run by `mage bridge`) reflects over this assembly and writes
+   `bridge/Authzed.Net/TypeForwards.g.cs`: one `[assembly: TypeForwardedTo]` per exported
+   top-level type in `Authzed.Api.V1` and `Authzed.Api.Materialize.V0` (nested types
+   follow their declaring type). `bridge/Authzed.Net/Authzed.Net.csproj` compiles that file
+   into an assembly named `Authzed.Net`, version 2.0.0, to be published as the next major
+   of the legacy package, so legacy source and binaries bind to this tier's types. Never
+   edit `TypeForwards.g.cs` by hand; regenerate after `buf generate`. Authzed.Net's
+   `V0`/`V1Alpha1` namespaces are not generated upstream any more and are not bridged.
+
+There are no hand-maintained files inside `gen/`: the C# legacy library has no helpers
+bound to the generated types, so the root rule's legacy-helper exception lists nothing here.
+
 8. **`IDisposable`** — disposes the underlying `GrpcChannel` **only when `_ownsChannel`**.
    A caller-supplied channel is left open: it belongs to whoever built it, and the
    idiomatic .NET pattern is one DI-registered singleton `GrpcChannel` shared across the
@@ -88,7 +112,20 @@ Create a `Client.cs` file in the package root with:
 
 ### Tests
 
-Two xUnit test files, both required.
+The tests live in `tests/SpiceDB.Proto.Tests.csproj`, never in `SpiceDB.Proto.csproj`, so
+the library package depends on no test framework (root DESIGN.md, dependency floors).
+`SpiceDB.Proto.csproj` excludes `tests/**` and `bridge/**` from compilation and declares
+exact minimum package versions (no floating wildcards). `spicedb-csharp/SpiceDB.Client.sln`
+includes the test project, so the C# unit job runs it; `mage test` runs it directly.
+
+`AuthzedNetBridgeTest.cs` loads the bridge `Authzed.Net` and this assembly in one process
+and proves: every exported generated type is forwarded here; assembly-qualified legacy
+names (`Authzed.Api.V1.X, Authzed.Net`, as compiled legacy binaries record them) resolve to
+this tier's types; every type the real `Authzed.Net` 1.6.0 package ships in the shared
+namespaces (downloaded with `PackageDownload`, inspected with `MetadataLoadContext`, never
+loaded) is forwarded; and the checked-in `TypeForwards.g.cs` matches the generator.
+
+Two further xUnit test files are required.
 
 `ClientTest.cs`:
 
@@ -130,6 +167,8 @@ Any methods or fields marked deprecated in the proto definitions must carry
 - No business logic — only plumbing (connection, auth)
 - Generated files under `gen/` are never modified
 - Project targets `net10.0` (`SpiceDB.Proto.csproj`)
+- Package references are exact floors (currently Grpc 2.80.0, Google.Protobuf 3.34.1,
+  Google.Api.CommonProtos 2.17.0, matching the legacy Authzed.Net 1.6.0)
 
 ## Prototype reset transport contract (2026-10-26)
 

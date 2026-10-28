@@ -86,4 +86,17 @@ public class ClientTest
         await Assert.ThrowsAsync<ObjectDisposedException>(
             async () => await client.Schema.ReadSchemaAsync(new Authzed.Api.V1.ReadSchemaRequest()));
     }
+
+    [Fact]
+    public void CallInvokerConstructor_BorrowsTheInvokerAndOwnsNothing()
+    {
+        using var channel = GrpcChannel.ForAddress("http://localhost:50051");
+        var client = new SpiceDBProtoClient(channel.CreateCallInvoker());
+        Assert.NotNull(client.Permissions);
+        Assert.NotNull(client.MaterializePermissionSets);
+        client.Dispose();
+        // The caller's channel is untouched and still builds working stubs.
+        Assert.NotNull(new PermissionsService.PermissionsServiceClient(channel));
+        Assert.Throws<ArgumentNullException>(() => new SpiceDBProtoClient((Grpc.Core.CallInvoker)null!));
+    }
 }

@@ -9,6 +9,8 @@ public sealed record ObjectRef
     public string ObjectId { get; }
     public ObjectRef(string objectType, string objectId)
     { ObjectType = Native.Required(objectType, nameof(objectType)); ObjectId = Native.Required(objectId, nameof(objectId)); }
+    /// <summary>Formats the object as <c>type:id</c>.</summary>
+    public override string ToString() => $"{ObjectType}:{ObjectId}";
     internal Authzed.Api.V1.ObjectReference ToProto() => new() { ObjectType = ObjectType, ObjectId = ObjectId };
     internal static ObjectRef FromProto(Authzed.Api.V1.ObjectReference value) => new(value.ObjectType, value.ObjectId);
 }
@@ -24,6 +26,8 @@ public sealed record SubjectRef
     }
     public static SubjectRef Direct(ObjectRef value) => new(value);
     public static SubjectRef Named(ObjectRef value, string relation) => new(value, Native.Required(relation, nameof(relation)));
+    /// <summary>Formats the subject as <c>type:id</c> or <c>type:id#relation</c>.</summary>
+    public override string ToString() => Relation is null ? Object.ToString() : $"{Object}#{Relation}";
     internal Authzed.Api.V1.SubjectReference ToProto() => new() { Object = Object.ToProto(), OptionalRelation = Relation ?? "" };
     internal static SubjectRef FromProto(Authzed.Api.V1.SubjectReference value) => new(ObjectRef.FromProto(value.Object), value.OptionalRelation is "" or "..." ? null : value.OptionalRelation);
 }

@@ -9,19 +9,25 @@
     <Description>Idiomatic C# client for SpiceDB</Description>
   </PropertyGroup>
 
+  <!--
+    Dependency floors: exact lowest working versions (a NuGet version is a minimum), matching
+    the proto tier and the legacy Authzed.Net 1.6.0 package so adopting this client raises
+    nothing a migrating application already has. Test and build tooling stays in the test
+    and example projects; this package depends on runtime libraries only.
+  -->
   <ItemGroup>
-    <PackageReference Include="Grpc.Net.Client" Version="2.84.0" />
-    <PackageReference Include="Google.Protobuf" Version="3.36.2" />
-    <PackageReference Include="Grpc.Core.Api" Version="2.84.0" />
+    <PackageReference Include="Grpc.Net.Client" Version="2.80.0" />
+    <PackageReference Include="Google.Protobuf" Version="3.34.1" />
+    <PackageReference Include="Grpc.Core.Api" Version="2.80.0" />
     <!-- google.rpc.Status/ErrorInfo and Status.GetDetail<T>(). Referenced
          explicitly rather than relied on transitively, because Errors.cs reads
          SpiceDB's ErrorInfo detail directly. -->
-    <PackageReference Include="Google.Api.CommonProtos" Version="2.17.*" />
+    <PackageReference Include="Google.Api.CommonProtos" Version="2.17.0" />
     <!-- The RpcException <-> Google.Rpc.Status bridge: GetRpcStatus() and
          ToRpcException(). gRPC's own implementation of the
          grpc-status-details-bin trailer, used instead of reading and writing
          that trailer by hand. -->
-    <PackageReference Include="Grpc.StatusProto" Version="2.84.*" />
+    <PackageReference Include="Grpc.StatusProto" Version="2.80.0" />
   </ItemGroup>
 
   <!-- Reference the proto-generated client project -->

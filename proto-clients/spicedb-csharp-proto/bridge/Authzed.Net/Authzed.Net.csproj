@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The legacy-library bridge: an assembly named Authzed.Net whose Authzed.Api.V1 and
+    Authzed.Api.Materialize.V0 types are [TypeForwardedTo] SpiceDB.Proto. Published as the
+    next Authzed.Net major version, it lets existing Authzed.Net consumers (source and
+    compiled binaries) and SpiceDB.Client share one set of generated protocol types in one
+    process. TypeForwards.g.cs is written by ../generator; never edit it by hand.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>Authzed.Net</AssemblyName>
+    <RootNamespace>Authzed.Net</RootNamespace>
+    <Version>2.0.0</Version>
+    <Nullable>enable</Nullable>
+    <Description>Authzed.Net compatibility bridge: forwards the generated authzed.api types to SpiceDB.Proto.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../SpiceDB.Proto.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -131,7 +131,7 @@ type's own string conversion.
 | Language | Typed generator | Native client | Concrete guide |
 |---|---|---|---|
 | Go | `spicedb-gen --lang go --go.package=<pkg>` | `github.com/authzed/spicedb-clients/spicedb-go` | [spicedb-go/AI_INTEGRATION_GUIDE.md](spicedb-go/AI_INTEGRATION_GUIDE.md) |
-| Python | `spicedb-gen --lang python` | `spicedb-python` (`import spicedb`) | not yet |
+| Python | `spicedb-gen --lang python --python.module=<name>` | `spicedb-python` (`import spicedb`) | [spicedb-python/AI_INTEGRATION_GUIDE.md](spicedb-python/AI_INTEGRATION_GUIDE.md) |
 | TypeScript | `spicedb-gen --lang typescript` (`--typescript.format=prettier`) | `@spicedb/client` | [spicedb-typescript/AI_INTEGRATION_GUIDE.md](spicedb-typescript/AI_INTEGRATION_GUIDE.md) |
 | Java | `spicedb-gen --lang java --java.package=<pkg>` | `com.authzed.spicedb.*` (`spicedb-java`) | [spicedb-java/AI_INTEGRATION_GUIDE.md](spicedb-java/AI_INTEGRATION_GUIDE.md) |
 | C# | — | `SpiceDB.Client` | [spicedb-csharp/AI_INTEGRATION_GUIDE.md](spicedb-csharp/AI_INTEGRATION_GUIDE.md) |

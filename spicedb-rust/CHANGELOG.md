@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- `testing::InMemorySpiceDB` serves every service the client calls, so every
+  `SpiceDBClient` method reaches it: operations it does not model (lookups,
+  expand, watch, schema introspection, counters, Materialize) are recorded,
+  consult the fault hook and otherwise fail with `UNIMPLEMENTED` through the
+  real client (watch, counters and Materialize were previously unrecorded and
+  bypassed the hook). A test calls every client method against it. Import-batch
+  faults carry the batch's relationships (`Fault::batch`).
+  `testing::cursor_after(n)` builds the double's resume cursor after `n`
+  matching relationships, whose format is now stable for tests: read and
+  export cursors count matching relationships rather than stored positions.
+  `set_read_schema_revision(SchemaRevision::Omitted)` emulates servers whose
+  schema reads report no revision.
 - Builder setting `operation_retry_policy(Operation, RetryPolicy)` sets a
   client-wide retry policy for every call of one operation (e.g. never reopen
   `updates`), between the per-call and client-wide policies in precedence and

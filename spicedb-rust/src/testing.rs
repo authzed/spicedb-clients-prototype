@@ -16,8 +16,21 @@
 //! evaluates no schema: permission checks return results registered with
 //! [`InMemorySpiceDB::set_check_result`] (default `NoPermission`), and
 //! `reflect_schema` returns the result registered with
-//! [`InMemorySpiceDB::set_reflect_schema_result`]. RPCs it does not model
-//! return `UNIMPLEMENTED`.
+//! [`InMemorySpiceDB::set_reflect_schema_result`]. `delete_all_relationships_non_atomic`
+//! and `check_bulk` work through the RPCs it models.
+//!
+//! It serves every service the client calls (permissions, schema, watch,
+//! experimental and Materialize), so every [`SpiceDBClient`] method reaches
+//! it: RPCs it does not model (lookups, expand, watch, schema
+//! introspection, counters, Materialize) are recorded, consult the fault hook,
+//! and otherwise return `UNIMPLEMENTED`, which the client maps to
+//! [`SpiceDBError`] as it maps SpiceDB's own status. A test that calls every
+//! client method keeps the two in step, so no separate trait is needed: the
+//! double's surface is the client.
+//!
+//! Read and export cursors resume after a count of matching relationships;
+//! [`cursor_after`] builds one. [`InMemorySpiceDB::set_read_schema_revision`]
+//! emulates servers whose schema reads report no revision.
 //!
 //! Because the double is a server behind a real client, every option is
 //! honored exactly as the client sends it (cursors, limits, page sizes,
@@ -71,11 +84,25 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use futures::Stream;
+use spicedb_proto::authzed::api::materialize::v0 as materialize;
+use spicedb_proto::authzed::api::materialize::v0::relationships_service_server::{
+    RelationshipsService, RelationshipsServiceServer,
+};
+use spicedb_proto::authzed::api::materialize::v0::roaring_lookup_resources_service_server::{
+    RoaringLookupResourcesService, RoaringLookupResourcesServiceServer,
+};
+use spicedb_proto::authzed::api::materialize::v0::watch_permission_sets_service_server::{
+    WatchPermissionSetsService, WatchPermissionSetsServiceServer,
+};
 use spicedb_proto::authzed::api::v1 as proto;
+use spicedb_proto::authzed::api::v1::experimental_service_server::{
+    ExperimentalService, ExperimentalServiceServer,
+};
 use spicedb_proto::authzed::api::v1::permissions_service_server::{
     PermissionsService, PermissionsServiceServer,
 };
 use spicedb_proto::authzed::api::v1::schema_service_server::{SchemaService, SchemaServiceServer};
+use spicedb_proto::authzed::api::v1::watch_service_server::{WatchService, WatchServiceServer};
 use tonic::metadata::MetadataMap;
 use tonic::transport::{Channel, Endpoint, Server};
 use tonic::{Code, Request, Response, Status};
@@ -100,6 +127,7 @@ struct State {
     calls: Vec<Call>,
     counts: HashMap<Operation, usize>,
     hook: Option<FaultHook>,
+    schema_revision: SchemaRevision,
 }
 
 type FaultHook = Arc<dyn Fn(&Fault) -> Option<Status> + Send + Sync>;
@@ -180,6 +208,51 @@ pub struct Fault {
     /// The batch index for [`FaultStage::ImportBatch`], the item index for
     /// [`FaultStage::Item`], 0 otherwise.
     pub item: usize,
+    /// The relationships in the batch at [`FaultStage::ImportBatch`]; empty
+    /// otherwise.
+    pub batch: Vec<Relationship>,
+}
+
+/// Whether `read_schema` reports a revision
+/// ([`InMemorySpiceDB::set_read_schema_revision`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum SchemaRevision {
+    /// Report the store's current revision. The default.
+    #[default]
+    Included,
+    /// Report none, as some SpiceDB deployments do, so code that falls back
+    /// to another revision source can be tested. The client then returns an
+    /// empty [`ZedToken`] as
+    /// [`ReadSchemaResult::revision`](crate::ReadSchemaResult::revision).
+    Omitted,
+}
+
+/// The cursor that resumes a read or export after its first `n` matching
+/// relationships (in insertion order): the same cursor the double puts on
+/// item `n` (1-based) as `after_result_cursor`. Pass it to the options'
+/// `with_cursor`. The format, the decimal count `n`, is stable for tests.
+///
+/// ```
+/// # #[tokio::main(flavor = "current_thread")]
+/// # async fn main() -> Result<(), spicedb::SpiceDBError> {
+/// use futures::TryStreamExt;
+/// use spicedb::testing::{cursor_after, InMemorySpiceDB};
+/// use spicedb::{consistency, Filter, ReadRelationshipsOptions, ReadRelationshipsRequest, Relationship};
+/// let rels: Vec<Relationship> = (0..3)
+///     .map(|i| format!("doc:d{i}#viewer@user:x").parse().unwrap())
+///     .collect();
+/// let fake = InMemorySpiceDB::with_relationships(rels.clone());
+/// let request = ReadRelationshipsRequest::new(Filter::new("doc"), consistency::full())
+///     .with_options(ReadRelationshipsOptions::new().with_cursor(cursor_after(2)));
+/// let read: Vec<_> = fake.client()?.read_relationships(request).try_collect().await?;
+/// assert_eq!(read.len(), 1);
+/// assert_eq!(read[0].relationship, rels[2]);
+/// assert_eq!(read[0].after_result_cursor.as_deref(), Some(cursor_after(3).as_str()));
+/// # Ok(()) }
+/// ```
+pub fn cursor_after(n: usize) -> String {
+    n.to_string()
 }
 
 /// A status shaped like SpiceDB's, for fault hooks. The client maps it as it
@@ -384,12 +457,23 @@ impl InMemorySpiceDB {
 
     /// Runs the hook, if any, at one point of a call.
     fn fault(&self, call: &Call, stage: FaultStage, item: usize) -> Result<(), Status> {
+        self.fault_batch(call, stage, item, Vec::new())
+    }
+
+    fn fault_batch(
+        &self,
+        call: &Call,
+        stage: FaultStage,
+        item: usize,
+        batch: Vec<Relationship>,
+    ) -> Result<(), Status> {
         let hook = self.lock().hook.clone();
         let injected = hook.and_then(|hook| {
             hook(&Fault {
                 call: call.clone(),
                 stage,
                 item,
+                batch,
             })
         });
         match injected {
@@ -454,6 +538,12 @@ impl InMemorySpiceDB {
         self.lock().reflection = Some(result);
     }
 
+    /// Selects whether `read_schema` reports a revision (by default it
+    /// reports the store's current one).
+    pub fn set_read_schema_revision(&self, mode: SchemaRevision) {
+        self.lock().schema_revision = mode;
+    }
+
     /// The schema text last written with `write_schema`.
     pub fn schema(&self) -> Option<String> {
         self.lock().schema.clone()
@@ -470,15 +560,30 @@ impl InMemorySpiceDB {
     pub fn channel(&self) -> Channel {
         let service = PermissionsServiceServer::new(Service(self.clone()));
         let schema = SchemaServiceServer::new(Service(self.clone()));
+        let watch = WatchServiceServer::new(Service(self.clone()));
+        let experimental = ExperimentalServiceServer::new(Service(self.clone()));
+        let counts = RelationshipsServiceServer::new(Service(self.clone()));
+        let roaring = RoaringLookupResourcesServiceServer::new(Service(self.clone()));
+        let sets = WatchPermissionSetsServiceServer::new(Service(self.clone()));
         Endpoint::from_static("http://in-memory.spicedb").connect_with_connector_lazy(
             tower::service_fn(move |_: tonic::codegen::http::Uri| {
                 let (client_io, server_io) = tokio::io::duplex(64 * 1024);
                 let service = service.clone();
                 let schema = schema.clone();
+                let watch = watch.clone();
+                let experimental = experimental.clone();
+                let counts = counts.clone();
+                let roaring = roaring.clone();
+                let sets = sets.clone();
                 tokio::spawn(async move {
                     let _ = Server::builder()
                         .add_service(service)
                         .add_service(schema)
+                        .add_service(watch)
+                        .add_service(experimental)
+                        .add_service(counts)
+                        .add_service(roaring)
+                        .add_service(sets)
                         .serve_with_incoming(futures::stream::iter([Ok::<_, std::io::Error>(
                             server_io,
                         )]))
@@ -499,10 +604,29 @@ struct Service(InMemorySpiceDB);
 
 type BoxStream<T> = Pin<Box<dyn Stream<Item = Result<T, Status>> + Send>>;
 
+/// For RPCs no client method sends (deprecated experimental RPCs): not
+/// recorded, since no [`Operation`] names them.
+/// Fails an RPC the double does not model with `UNIMPLEMENTED`, as SpiceDB
+/// fails an RPC it does not serve.
 fn unimplemented<T>(rpc: &str) -> Result<T, Status> {
     Err(Status::unimplemented(format!(
         "{rpc} is not modeled by spicedb::testing::InMemorySpiceDB"
     )))
+}
+
+impl Service {
+    /// Records an RPC the double does not model, runs the
+    /// [`FaultStage::Call`] hook, and otherwise fails it with
+    /// `UNIMPLEMENTED`.
+    fn unmodeled<T: Any + Debug + Send + Sync + Clone, R>(
+        &self,
+        operation: Operation,
+        request: &Request<T>,
+        rpc: &str,
+    ) -> Result<R, Status> {
+        self.0.begin(operation, request)?;
+        unimplemented(rpc)
+    }
 }
 
 fn required<'a, T>(value: Option<&'a T>, field: &str) -> Result<&'a T, Status> {
@@ -537,15 +661,15 @@ impl PermissionsService for Service {
         let items: Vec<_> = state
             .relationships
             .iter()
+            .filter(|r| filter.matches(r))
             .enumerate()
-            .filter(|(_, r)| filter.matches(r))
-            .filter(|(i, _)| *i >= start)
+            .skip(start)
             .take(limit)
             .map(|(i, r)| proto::ReadRelationshipsResponse {
                 read_at: Some(read_at.clone()),
                 relationship: Some(r.to_proto()),
                 after_result_cursor: Some(proto::Cursor {
-                    token: (i + 1).to_string(),
+                    token: cursor_after(i + 1),
                 }),
             })
             .collect();
@@ -756,11 +880,15 @@ impl PermissionsService for Service {
         let mut batch = Vec::new();
         let mut index = 0;
         while let Some(message) = stream.message().await? {
-            self.0.fault(&call, FaultStage::ImportBatch, index)?;
+            let received = message
+                .relationships
+                .iter()
+                .map(|r| protoconv::relationship_from_proto(r).map_err(Status::from))
+                .collect::<Result<Vec<_>, _>>()?;
+            self.0
+                .fault_batch(&call, FaultStage::ImportBatch, index, received.clone())?;
             index += 1;
-            for r in &message.relationships {
-                batch.push(protoconv::relationship_from_proto(r).map_err(Status::from)?);
-            }
+            batch.extend(received);
         }
         self.0.fault(&call, FaultStage::ImportCommit, 0)?;
         let mut state = self.0.lock();
@@ -807,13 +935,13 @@ impl PermissionsService for Service {
         let items: Vec<_> = state
             .relationships
             .iter()
+            .filter(|r| filter.as_ref().is_none_or(|f| f.matches(r)))
             .enumerate()
-            .filter(|(_, r)| filter.as_ref().is_none_or(|f| f.matches(r)))
-            .filter(|(i, _)| *i >= start)
+            .skip(start)
             .take(limit)
             .map(|(i, r)| proto::ExportBulkRelationshipsResponse {
                 after_result_cursor: Some(proto::Cursor {
-                    token: (i + 1).to_string(),
+                    token: cursor_after(i + 1),
                 }),
                 relationships: vec![r.to_proto()],
             })
@@ -851,9 +979,13 @@ impl SchemaService for Service {
             .schema
             .clone()
             .ok_or_else(|| Status::not_found(NO_SCHEMA))?;
+        let read_at = match state.schema_revision {
+            SchemaRevision::Omitted => None,
+            _ => Some(state.token()),
+        };
         Ok(state.respond(proto::ReadSchemaResponse {
             schema_text: schema,
-            read_at: Some(state.token()),
+            read_at,
         }))
     }
 
@@ -912,6 +1044,174 @@ impl SchemaService for Service {
     }
 }
 
+#[tonic::async_trait]
+impl WatchService for Service {
+    type WatchStream = BoxStream<proto::WatchResponse>;
+
+    async fn watch(
+        &self,
+        request: Request<proto::WatchRequest>,
+    ) -> Result<Response<Self::WatchStream>, Status> {
+        self.unmodeled(Operation::Updates, &request, "Watch")
+    }
+}
+
+/// The relationship counter RPCs are recorded; the deprecated experimental
+/// RPCs, which no client method sends, are not.
+#[tonic::async_trait]
+impl ExperimentalService for Service {
+    type BulkExportRelationshipsStream = BoxStream<proto::BulkExportRelationshipsResponse>;
+
+    async fn bulk_import_relationships(
+        &self,
+        _: Request<tonic::Streaming<proto::BulkImportRelationshipsRequest>>,
+    ) -> Result<Response<proto::BulkImportRelationshipsResponse>, Status> {
+        unimplemented("BulkImportRelationships")
+    }
+
+    async fn bulk_export_relationships(
+        &self,
+        _: Request<proto::BulkExportRelationshipsRequest>,
+    ) -> Result<Response<Self::BulkExportRelationshipsStream>, Status> {
+        unimplemented("BulkExportRelationships")
+    }
+
+    async fn bulk_check_permission(
+        &self,
+        _: Request<proto::BulkCheckPermissionRequest>,
+    ) -> Result<Response<proto::BulkCheckPermissionResponse>, Status> {
+        unimplemented("BulkCheckPermission")
+    }
+
+    async fn experimental_reflect_schema(
+        &self,
+        _: Request<proto::ExperimentalReflectSchemaRequest>,
+    ) -> Result<Response<proto::ExperimentalReflectSchemaResponse>, Status> {
+        unimplemented("ExperimentalReflectSchema")
+    }
+
+    async fn experimental_computable_permissions(
+        &self,
+        _: Request<proto::ExperimentalComputablePermissionsRequest>,
+    ) -> Result<Response<proto::ExperimentalComputablePermissionsResponse>, Status> {
+        unimplemented("ExperimentalComputablePermissions")
+    }
+
+    async fn experimental_dependent_relations(
+        &self,
+        _: Request<proto::ExperimentalDependentRelationsRequest>,
+    ) -> Result<Response<proto::ExperimentalDependentRelationsResponse>, Status> {
+        unimplemented("ExperimentalDependentRelations")
+    }
+
+    async fn experimental_diff_schema(
+        &self,
+        _: Request<proto::ExperimentalDiffSchemaRequest>,
+    ) -> Result<Response<proto::ExperimentalDiffSchemaResponse>, Status> {
+        unimplemented("ExperimentalDiffSchema")
+    }
+
+    async fn experimental_register_relationship_counter(
+        &self,
+        request: Request<proto::ExperimentalRegisterRelationshipCounterRequest>,
+    ) -> Result<Response<proto::ExperimentalRegisterRelationshipCounterResponse>, Status> {
+        self.unmodeled(
+            Operation::ExperimentalRegisterRelationshipCounter,
+            &request,
+            "ExperimentalRegisterRelationshipCounter",
+        )
+    }
+
+    async fn experimental_count_relationships(
+        &self,
+        request: Request<proto::ExperimentalCountRelationshipsRequest>,
+    ) -> Result<Response<proto::ExperimentalCountRelationshipsResponse>, Status> {
+        self.unmodeled(
+            Operation::ExperimentalCountRelationships,
+            &request,
+            "ExperimentalCountRelationships",
+        )
+    }
+
+    async fn experimental_unregister_relationship_counter(
+        &self,
+        request: Request<proto::ExperimentalUnregisterRelationshipCounterRequest>,
+    ) -> Result<Response<proto::ExperimentalUnregisterRelationshipCounterResponse>, Status> {
+        self.unmodeled(
+            Operation::ExperimentalUnregisterRelationshipCounter,
+            &request,
+            "ExperimentalUnregisterRelationshipCounter",
+        )
+    }
+}
+
+#[tonic::async_trait]
+impl RelationshipsService for Service {
+    async fn experimental_count_relationships_by_filter(
+        &self,
+        request: Request<materialize::ExperimentalCountRelationshipsByFilterRequest>,
+    ) -> Result<Response<materialize::ExperimentalCountRelationshipsByFilterResponse>, Status> {
+        self.unmodeled(
+            Operation::ExperimentalCountRelationshipsByFilter,
+            &request,
+            "ExperimentalCountRelationshipsByFilter",
+        )
+    }
+}
+
+#[tonic::async_trait]
+impl RoaringLookupResourcesService for Service {
+    async fn experimental_roaring_lookup_resources(
+        &self,
+        request: Request<materialize::ExperimentalRoaringLookupResourcesRequest>,
+    ) -> Result<Response<materialize::ExperimentalRoaringLookupResourcesResponse>, Status> {
+        self.unmodeled(
+            Operation::ExperimentalRoaringLookupResources,
+            &request,
+            "ExperimentalRoaringLookupResources",
+        )
+    }
+}
+
+#[tonic::async_trait]
+impl WatchPermissionSetsService for Service {
+    type WatchPermissionSetsStream = BoxStream<materialize::WatchPermissionSetsResponse>;
+    type LookupPermissionSetsStream = BoxStream<materialize::LookupPermissionSetsResponse>;
+
+    async fn watch_permission_sets(
+        &self,
+        request: Request<materialize::WatchPermissionSetsRequest>,
+    ) -> Result<Response<Self::WatchPermissionSetsStream>, Status> {
+        self.unmodeled(
+            Operation::WatchPermissionSets,
+            &request,
+            "WatchPermissionSets",
+        )
+    }
+
+    async fn lookup_permission_sets(
+        &self,
+        request: Request<materialize::LookupPermissionSetsRequest>,
+    ) -> Result<Response<Self::LookupPermissionSetsStream>, Status> {
+        self.unmodeled(
+            Operation::LookupPermissionSets,
+            &request,
+            "LookupPermissionSets",
+        )
+    }
+
+    async fn download_permission_sets(
+        &self,
+        request: Request<materialize::DownloadPermissionSetsRequest>,
+    ) -> Result<Response<materialize::DownloadPermissionSetsResponse>, Status> {
+        self.unmodeled(
+            Operation::DownloadPermissionSets,
+            &request,
+            "DownloadPermissionSets",
+        )
+    }
+}
+
 fn lookup_check(
     state: &State,
     resource: &Option<proto::ObjectReference>,
@@ -935,3 +1235,7 @@ fn lookup_check(
         _ => P::Unspecified,
     } as i32)
 }
+
+#[cfg(test)]
+#[path = "testing_surface_tests.rs"]
+mod surface_tests;

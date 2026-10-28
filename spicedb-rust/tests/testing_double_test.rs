@@ -4,7 +4,10 @@
 use std::num::NonZeroU32;
 
 use futures::StreamExt;
-use spicedb::testing::{server_error, server_error_with_reason, FaultStage, InMemorySpiceDB};
+use spicedb::testing::{
+    cursor_after, server_error, server_error_with_reason, FaultStage, InMemorySpiceDB,
+    SchemaRevision,
+};
 use spicedb::tonic::Code;
 use spicedb::{
     consistency, BulkCheckRequest, CallOptions, DeleteOptions, DeletePartial, DeleteRequest,
@@ -503,4 +506,101 @@ async fn recorded_calls_expose_options() {
         .request::<proto::WriteRelationshipsRequest>()
         .is_none());
     assert_eq!(fake.calls().len(), 2);
+}
+
+#[tokio::test]
+async fn an_import_batch_fault_sees_the_batch() {
+    let fake = InMemorySpiceDB::new();
+    let client = fake.client().unwrap();
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let record = seen.clone();
+    fake.set_fault_hook(move |f| {
+        if f.stage == FaultStage::ImportBatch {
+            record.lock().unwrap().push(f.batch.clone());
+        } else {
+            assert!(f.batch.is_empty(), "{:?} carries no batch", f.stage);
+        }
+        None
+    });
+    client
+        .import_relationships(tuples(5).with_options(
+            ImportRelationshipsOptions::new().with_batch_size(NonZeroU32::new(2).unwrap()),
+        ))
+        .await
+        .unwrap();
+    let all: Vec<_> = (0..5)
+        .map(|i| rel(&format!("doc:d{i}#viewer@user:x")))
+        .collect();
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![all[0..2].to_vec(), all[2..4].to_vec(), all[4..].to_vec()]
+    );
+}
+
+#[tokio::test]
+async fn cursor_after_matches_the_doubles_cursors() {
+    // Matching relationships interleave with others, so the cursor counts
+    // matches, not stored positions.
+    let fake = InMemorySpiceDB::with_relationships([
+        rel("document:a#viewer@user:x"),
+        rel("folder:f#viewer@user:x"),
+        rel("document:b#viewer@user:x"),
+        rel("folder:g#viewer@user:x"),
+        rel("document:c#viewer@user:x"),
+    ]);
+    let client = fake.client().unwrap();
+    let request = ReadRelationshipsRequest::new(Filter::new("document"), consistency::full());
+    let items: Vec<_> = client
+        .read_relationships(request.clone())
+        .map(|r| r.unwrap())
+        .collect()
+        .await;
+    assert_eq!(items.len(), 3);
+    for (i, item) in items.iter().enumerate() {
+        assert_eq!(item.after_result_cursor, Some(cursor_after(i + 1)));
+    }
+    let resumed: Vec<_> = client
+        .read_relationships(
+            request.with_options(ReadRelationshipsOptions::new().with_cursor(cursor_after(1))),
+        )
+        .map(|r| r.unwrap().relationship.resource_id().to_string())
+        .collect()
+        .await;
+    assert_eq!(resumed, vec!["b", "c"]);
+
+    let exported: Vec<_> = client
+        .export_relationships(
+            ExportRelationshipsRequest::new(consistency::full()).with_options(
+                ExportRelationshipsOptions::new()
+                    .with_filter(Filter::new("folder"))
+                    .with_cursor(cursor_after(1)),
+            ),
+        )
+        .map(|r| r.unwrap())
+        .collect()
+        .await;
+    assert_eq!(exported.len(), 1);
+    assert_eq!(exported[0].relationship, rel("folder:g#viewer@user:x"));
+    assert_eq!(exported[0].after_result_cursor, Some(cursor_after(2)));
+}
+
+#[tokio::test]
+async fn schema_reads_can_omit_the_revision() {
+    let fake = InMemorySpiceDB::new();
+    let client = fake.client().unwrap();
+    client
+        .write_schema(WriteSchemaRequest::new("definition user {}"))
+        .await
+        .unwrap();
+    let read = client.read_schema(ReadSchemaRequest::new()).await.unwrap();
+    assert!(!read.revision.as_ref().is_empty());
+
+    fake.set_read_schema_revision(SchemaRevision::Omitted);
+    let read = client.read_schema(ReadSchemaRequest::new()).await.unwrap();
+    assert_eq!(read.schema_text, "definition user {}");
+    assert!(read.revision.as_ref().is_empty());
+
+    fake.set_read_schema_revision(SchemaRevision::Included);
+    let read = client.read_schema(ReadSchemaRequest::new()).await.unwrap();
+    assert!(!read.revision.as_ref().is_empty());
 }

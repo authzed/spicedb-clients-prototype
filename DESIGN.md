@@ -383,6 +383,18 @@ Each language's `DESIGN.md` specifies its native API and implementation details.
   - Generation fails, naming both sources, when schema names would produce
     colliding identifiers. It never silently renames.
 
+- **Guide AI coding agents to the right tier and safe integration.**
+  - The root `AI_INTEGRATION_GUIDE.md` is the language-neutral decision guide:
+    typed by default for a known schema, idiomatic for schema-agnostic code,
+    raw only through the escape hatch, never a second protocol copy. It also
+    states the integration rules (fail-closed checks, deliberate consistency,
+    atomic writes, no blind write retries, paging resumption, test doubles).
+  - Each client ships `AI_INTEGRATION_GUIDE.md` in its package directory,
+    following that structure with concrete, current code for its language,
+    and its package-level documentation points to it. Snippets are checked to
+    compile against the current API (generated snippets against the sample
+    schema fixture). Update the guide with any change to the APIs it shows.
+
 - **Document the path off the legacy libraries.**
   - Each client with an official `authzed-*` predecessor ships `MIGRATION.md`
     with before/after snippets for every observable behavior change: request

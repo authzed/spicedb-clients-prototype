@@ -5,6 +5,11 @@
 
 Monorepo of idiomatic SpiceDB client libraries for Go, Python, TypeScript, C#, Java, Ruby, and Rust — plus [`spicedb-gen`](spicedb-gen/), a type-safe code generator that produces compile-time-checked wrappers from a `.zed` schema.
 
+> 🤖 **AI coding agents:** before integrating a client, read
+> [AI_INTEGRATION_GUIDE.md](AI_INTEGRATION_GUIDE.md). It covers which tier to use
+> (typed, idiomatic or raw), plus consistency, fail-closed checks, writes and
+> testing. It links each language's concrete guide.
+
 ## Getting Started
 
 Pick your language. Languages where `spicedb-gen` supports typed wrappers (**Go**, **TypeScript**, **Java**, **Python**) use the **typed client** examples — invalid permission checks, wrong subject types, and typos in resource names become compile-time errors. The remaining languages (**C#**, **Ruby**, **Rust**) use the **idiomatic client** directly.

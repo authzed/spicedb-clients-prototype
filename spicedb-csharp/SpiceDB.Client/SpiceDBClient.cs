@@ -15,7 +15,7 @@ namespace SpiceDB.Client;
 /// Integrating with an AI coding agent? Start with spicedb-csharp/AI_INTEGRATION_GUIDE.md: tier
 /// choice, fail-closed checks, atomic writes, paging, tooling options, errors and test doubles.
 /// </summary>
-public sealed partial class SpiceDBClient : IAsyncDisposable, ISpiceDBRelationshipClient
+public sealed partial class SpiceDBClient : IAsyncDisposable, ISpiceDBRelationshipClient, ISpiceDBSchemaClient
 {
     public static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(30);
     private readonly SpiceDBProtoClient? _protoClient;
@@ -97,12 +97,30 @@ public sealed partial class SpiceDBClient : IAsyncDisposable, ISpiceDBRelationsh
     }
     private static TimeSpan JitteredDelay(TimeSpan cap) => TimeSpan.FromMilliseconds(Random.Shared.NextDouble() * cap.TotalMilliseconds);
     private static TimeSpan ValidTimeout(TimeSpan value) => value <= TimeSpan.Zero || value.TotalMilliseconds > uint.MaxValue - 1 ? throw new InvalidArgumentException("Timeout must be positive and supported by the runtime timer.") : value;
-    private Budget Begin(TimeSpan? timeout, CancellationToken token, bool unary = true, TransportOptions? transport = null, [CallerMemberName] string operation = "")
+    /// <summary>
+    /// Starts an operation's budget. A per-call <paramref name="retry"/> policy replaces the
+    /// client's for this call, including stream establishment.
+    /// </summary>
+    private Budget Begin(TimeSpan? timeout, CancellationToken token, bool unary = true, TransportOptions? transport = null, RetryPolicy? retry = null, [CallerMemberName] string operation = "")
     {
         token.ThrowIfCancellationRequested();
         ObjectDisposedException.ThrowIf(_disposed != 0, this);
-        return new(timeout is { } t ? ValidTimeout(t) : unary ? _defaultTimeout : null, token, _lifetime.Token, transport, _retryPolicy, _streamRetries, operation);
+        var policy = retry is null ? _retryPolicy : retry.Validated();
+        return new(timeout is { } t ? ValidTimeout(t) : unary ? _defaultTimeout : null, token, _lifetime.Token, transport, policy, retry is not null || _streamRetries, operation);
     }
+    /// <summary>
+    /// Whether a mutation may retry under its per-call <paramref name="policy"/>: only when the
+    /// caller opted in and the mutation is idempotent on replay. A non-idempotent mutation given
+    /// a policy with retries is rejected before any request.
+    /// </summary>
+    internal static bool MutationRetry(RetryPolicy? policy, bool idempotent, string operation)
+    {
+        if (policy is null || policy.MaxRetries == 0) return false;
+        return idempotent ? true : throw new InvalidArgumentException($"{operation} cannot be retried: only touch-only writes without preconditions and schema writes are idempotent on replay.");
+    }
+    /// <summary>Whether replaying <paramref name="transaction"/> is idempotent: only touches and no preconditions.</summary>
+    internal static bool IsTouchOnly(Transaction transaction) =>
+        transaction.Preconditions.Count == 0 && transaction.Updates.All(u => u.Operation == UpdateOperation.Touch);
     private sealed class Budget : IDisposable
     {
         private readonly long _start = Stopwatch.GetTimestamp();
@@ -232,7 +250,7 @@ public sealed partial class SpiceDBClient : IAsyncDisposable, ISpiceDBRelationsh
 
     public async Task<CheckResult> CheckAsync(PermissionCheck request, CheckOptions? options = null, CancellationToken cancellationToken = default)
     {
-        using var budget = Begin(options?.Timeout, cancellationToken, transport: options?.Transport);
+        using var budget = Begin(options?.Timeout, cancellationToken, transport: options?.Transport, retry: options?.RetryPolicy);
         if (request is null) throw new InvalidArgumentException("Request is required.");
         var wire = new CheckPermissionRequest
         {
@@ -248,7 +266,7 @@ public sealed partial class SpiceDBClient : IAsyncDisposable, ISpiceDBRelationsh
     }
     public async Task<IReadOnlyList<CheckResult>> CheckBulkAsync(IReadOnlyList<PermissionCheck> requests, CheckOptions? options = null, CancellationToken cancellationToken = default)
     {
-        using var budget = Begin(options?.Timeout, cancellationToken, transport: options?.Transport);
+        using var budget = Begin(options?.Timeout, cancellationToken, transport: options?.Transport, retry: options?.RetryPolicy);
         if (requests is null) throw new InvalidArgumentException("Requests are required.");
         var items = requests.ToArray();
         if (items.Any(x => x is null)) throw new InvalidArgumentException("Requests must not contain null.");
@@ -287,11 +305,14 @@ public sealed partial class SpiceDBClient : IAsyncDisposable, ISpiceDBRelationsh
 
     public async Task<WriteResult> WriteAsync(Transaction transaction, WriteOptions? options = null, CancellationToken cancellationToken = default)
     {
-        using var budget = Begin(options?.Timeout, cancellationToken, transport: options?.Transport);
+        using var budget = Begin(options?.Timeout, cancellationToken, transport: options?.Transport, retry: options?.RetryPolicy);
         if (transaction is null) throw new InvalidArgumentException("Transaction is required.");
+        var retry = MutationRetry(options?.RetryPolicy, IsTouchOnly(transaction), "Write");
+        // An empty transaction is sent as is: SpiceDB accepts it, evaluates any preconditions
+        // and returns the current revision.
         var request = new WriteRelationshipsRequest { OptionalTransactionMetadata = Native.Struct(options?.Metadata) };
         request.Updates.AddRange(transaction.V1Updates); request.OptionalPreconditions.AddRange(transaction.V1Preconditions);
-        var response = await Unary(budget, o => _permissions.WriteRelationshipsAsync(request, o.Headers, o.Deadline, o.CancellationToken), false);
+        var response = await Unary(budget, o => _permissions.WriteRelationshipsAsync(request, o.Headers, o.Deadline, o.CancellationToken), retry);
         return new(new ZedToken(response.WrittenAt?.Token ?? ""));
     }
     private static int Positive(int value, string field) => value > 0 ? value : throw new InvalidArgumentException($"{field} must be positive.");
@@ -306,7 +327,8 @@ public sealed partial class SpiceDBClient : IAsyncDisposable, ISpiceDBRelationsh
         bool inFlight = false;
         try
         {
-            using var budget = Begin(options?.Timeout, cancellationToken, transport: options?.Transport);
+            using var budget = Begin(options?.Timeout, cancellationToken, transport: options?.Transport, retry: options?.RetryPolicy);
+            MutationRetry(options?.RetryPolicy, false, "DeleteRelationships");
             var partial = options?.Partial != PartialDeletion.Disallowed;
             if (limit is { } l) Positive(l, nameof(limit));
             else if (partial) throw new InvalidArgumentException("limit is required unless Partial is PartialDeletion.Disallowed.");
@@ -349,7 +371,8 @@ public sealed partial class SpiceDBClient : IAsyncDisposable, ISpiceDBRelationsh
         ulong count = 0; ZedToken? token = null; string? cursor = options?.ResumeCursor; bool inFlight = false;
         try
         {
-            using var budget = Begin(options?.Timeout, cancellationToken, transport: options?.Transport);
+            using var budget = Begin(options?.Timeout, cancellationToken, transport: options?.Transport, retry: options?.RetryPolicy);
+            MutationRetry(options?.RetryPolicy, false, "DeleteAllRelationshipsNonAtomic");
             int size = Positive(options?.PageSize ?? 1000, "PageSize");
             Native.Required(filter, nameof(filter)).ToProto();
             foreach (var precondition in (options?.MustMatch ?? []).Concat(options?.MustNotMatch ?? [])) precondition.ToProto();
@@ -382,12 +405,16 @@ public sealed partial class SpiceDBClient : IAsyncDisposable, ISpiceDBRelationsh
     // first page's revision. A total Limit is therefore enforced here, never by shrinking the
     // last page's limit.
     private static Cursor? StartCursor(string? cursor) => string.IsNullOrEmpty(cursor) ? null : new() { Token = cursor };
+    // The OptionalLimit every request of a paged read sends: the fixed page size, or in
+    // single-request mode the total limit alone (0, unbounded, without one).
+    private static uint PageRequestLimit(bool singleRequest, int pageSize, int? limit) => singleRequest ? (uint)(limit ?? 0) : (uint)pageSize;
 
     public async IAsyncEnumerable<ReadRelationship> ReadRelationshipsAsync(Consistency consistency, Filter filter, ReadOptions? options = null, [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        using var budget = Begin(options?.Timeout, cancellationToken, false, transport: options?.Transport);
+        using var budget = Begin(options?.Timeout, cancellationToken, false, transport: options?.Transport, retry: options?.RetryPolicy);
         int size = Positive(options?.PageSize ?? 512, "PageSize"), remaining = Positive(options?.Limit ?? int.MaxValue, "Limit");
-        var request = new ReadRelationshipsRequest { Consistency = Native.Required(consistency, nameof(consistency)).ToProto(), RelationshipFilter = Native.Required(filter, nameof(filter)).ToProto(), OptionalLimit = (uint)size, OptionalCursor = StartCursor(options?.ResumeCursor) };
+        var single = options?.Paging == Paging.SingleRequest;
+        var request = new ReadRelationshipsRequest { Consistency = Native.Required(consistency, nameof(consistency)).ToProto(), RelationshipFilter = Native.Required(filter, nameof(filter)).ToProto(), OptionalLimit = PageRequestLimit(single, size, options?.Limit), OptionalCursor = StartCursor(options?.ResumeCursor) };
         while (true)
         {
             int count = 0;
@@ -397,15 +424,16 @@ public sealed partial class SpiceDBClient : IAsyncDisposable, ISpiceDBRelationsh
                 yield return new(Relationship.FromProto(response.Relationship), response.AfterResultCursor?.Token, new(response.ReadAt?.Token ?? ""));
                 if (remaining == 0) yield break;
             }
-            if (count < size || request.OptionalCursor is null) yield break;
+            if (single || count < size || request.OptionalCursor is null) yield break;
         }
     }
     public async IAsyncEnumerable<LookupResource> LookupResourcesAsync(Consistency consistency, string resourceType, string permission, SubjectRef subject, LookupOptions? options = null, [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        using var budget = Begin(options?.Timeout, cancellationToken, false, transport: options?.Transport);
+        using var budget = Begin(options?.Timeout, cancellationToken, false, transport: options?.Transport, retry: options?.RetryPolicy);
         if (options?.SubjectRelation is not null) throw new InvalidArgumentException("LookupResources uses the supplied SubjectRef relation.");
         int size = Positive(options?.PageSize ?? 512, "PageSize"), remaining = Positive(options?.Limit ?? int.MaxValue, "Limit");
-        var request = new LookupResourcesRequest { Consistency = Native.Required(consistency, nameof(consistency)).ToProto(), ResourceObjectType = Native.Required(resourceType, nameof(resourceType)), Permission = Native.Required(permission, nameof(permission)), Subject = Native.Required(subject, nameof(subject)).ToProto(), Context = Native.Struct(options?.Context), WithDebug = options?.Debug == LookupDebug.Enabled, OptionalLimit = (uint)size, OptionalCursor = StartCursor(options?.ResumeCursor) };
+        var single = options?.Paging == Paging.SingleRequest;
+        var request = new LookupResourcesRequest { Consistency = Native.Required(consistency, nameof(consistency)).ToProto(), ResourceObjectType = Native.Required(resourceType, nameof(resourceType)), Permission = Native.Required(permission, nameof(permission)), Subject = Native.Required(subject, nameof(subject)).ToProto(), Context = Native.Struct(options?.Context), WithDebug = options?.Debug == LookupDebug.Enabled, OptionalLimit = PageRequestLimit(single, size, options?.Limit), OptionalCursor = StartCursor(options?.ResumeCursor) };
         while (true)
         {
             int count = 0;
@@ -417,14 +445,14 @@ public sealed partial class SpiceDBClient : IAsyncDisposable, ISpiceDBRelationsh
                 yield return new() { ResourceID = response.ResourceObjectId, Permissionship = ToPermissionship(response.Permissionship), PartialCaveat = ToPartialCaveatInfo(response.PartialCaveatInfo), LookedUpAt = new(response.LookedUpAt?.Token ?? ""), AfterResultCursor = response.AfterResultCursor?.Token };
                 if (remaining == 0) yield break;
             }
-            if (count < size || request.OptionalCursor is null) yield break;
+            if (single || count < size || request.OptionalCursor is null) yield break;
         }
     }
     public async IAsyncEnumerable<LookupSubject> LookupSubjectsAsync(Consistency consistency, ObjectRef resource, string permission, string subjectType, LookupOptions? options = null, [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        using var budget = Begin(options?.Timeout, cancellationToken, false, transport: options?.Transport);
+        using var budget = Begin(options?.Timeout, cancellationToken, false, transport: options?.Transport, retry: options?.RetryPolicy);
         if (options is not null && options.PermissionshipFilter != LookupPermissionshipFilter.All) throw new InvalidArgumentException("LookupSubjects does not support PermissionshipFilter.");
-        if (options?.Debug == LookupDebug.Enabled || options?.PageSize is not null) throw new InvalidArgumentException("LookupSubjects does not support Debug or PageSize; upstream concrete pagination is unimplemented.");
+        if (options?.Debug == LookupDebug.Enabled || options?.PageSize is not null || options?.Paging is Paging.SingleRequest) throw new InvalidArgumentException("LookupSubjects does not support Debug, PageSize or Paging; upstream concrete pagination is unimplemented.");
         int remaining = Positive(options?.Limit ?? int.MaxValue, "Limit");
         var request = new LookupSubjectsRequest { Consistency = Native.Required(consistency, nameof(consistency)).ToProto(), Resource = Native.Required(resource, nameof(resource)).ToProto(), Permission = Native.Required(permission, nameof(permission)), SubjectObjectType = Native.Required(subjectType, nameof(subjectType)), OptionalSubjectRelation = options?.SubjectRelation ?? "", Context = Native.Struct(options?.Context) };
         await foreach (var response in Stream(budget, o => _permissions.LookupSubjects(request, o.Headers, o.Deadline, o.CancellationToken)))
@@ -435,8 +463,9 @@ public sealed partial class SpiceDBClient : IAsyncDisposable, ISpiceDBRelationsh
     }
     public async Task<ulong> ImportRelationshipsAsync(IAsyncEnumerable<Relationship> relationships, ImportOptions? options = null, CancellationToken cancellationToken = default)
     {
-        using var budget = Begin(options?.Timeout, cancellationToken, false, transport: options?.Transport);
+        using var budget = Begin(options?.Timeout, cancellationToken, false, transport: options?.Transport, retry: options?.RetryPolicy);
         int size = Positive(options?.BatchSize ?? 1000, "BatchSize");
+        MutationRetry(options?.RetryPolicy, false, "ImportRelationships");
         try
         {
             // When the server aborts the stream (for example ALREADY_EXISTS for a duplicate), a
@@ -489,7 +518,7 @@ public sealed partial class SpiceDBClient : IAsyncDisposable, ISpiceDBRelationsh
     }
     public async IAsyncEnumerable<ExportedRelationship> ExportRelationshipsAsync(Consistency consistency, Filter filter, ExportOptions? options = null, [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        using var budget = Begin(options?.Timeout, cancellationToken, false, transport: options?.Transport);
+        using var budget = Begin(options?.Timeout, cancellationToken, false, transport: options?.Transport, retry: options?.RetryPolicy);
         int size = Positive(options?.PageSize ?? 512, "PageSize"), remaining = Positive(options?.Limit ?? int.MaxValue, "Limit");
         var request = new ExportBulkRelationshipsRequest { Consistency = Native.Required(consistency, nameof(consistency)).ToProto(), OptionalRelationshipFilter = Native.Required(filter, nameof(filter)).ToProto(), OptionalLimit = (uint)size, OptionalCursor = StartCursor(options?.ResumeCursor) };
         while (true)
@@ -509,7 +538,7 @@ public sealed partial class SpiceDBClient : IAsyncDisposable, ISpiceDBRelationsh
     }
     public async IAsyncEnumerable<WatchEvent> UpdatesAsync(IReadOnlyList<string> objectTypes, ZedToken? startRevision, WatchOptions? options = null, [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        using var budget = Begin(options?.Timeout, cancellationToken, false, transport: options?.Transport);
+        using var budget = Begin(options?.Timeout, cancellationToken, false, transport: options?.Transport, retry: options?.RetryPolicy);
         var request = new WatchRequest { OptionalStartCursor = startRevision is { } token ? new() { Token = token.Value } : null };
         request.OptionalObjectTypes.AddRange(Native.Required(objectTypes, nameof(objectTypes)).ToArray());
         if (request.OptionalObjectTypes.Count > 0 && (options?.RelationshipFilters.Count ?? 0) > 0)
@@ -525,7 +554,7 @@ public sealed partial class SpiceDBClient : IAsyncDisposable, ISpiceDBRelationsh
     public async Task<SchemaResult> ReadSchemaAsync(
         CallOptions? options = null, CancellationToken cancellationToken = default)
     {
-        using var budget = Begin(options?.Timeout, cancellationToken, transport: options?.Transport);
+        using var budget = Begin(options?.Timeout, cancellationToken, transport: options?.Transport, retry: options?.RetryPolicy);
         options?.Validate();
         var resp = await Unary(budget, o => _schema.ReadSchemaAsync(new ReadSchemaRequest(), o.Headers, o.Deadline, o.CancellationToken));
 
@@ -536,12 +565,14 @@ public sealed partial class SpiceDBClient : IAsyncDisposable, ISpiceDBRelationsh
         string schema,
         CallOptions? options = null, CancellationToken cancellationToken = default)
     {
-        using var budget = Begin(options?.Timeout, cancellationToken, transport: options?.Transport);
+        using var budget = Begin(options?.Timeout, cancellationToken, transport: options?.Transport, retry: options?.RetryPolicy);
         options?.Validate();
         if (string.IsNullOrEmpty(schema))
             throw new InvalidArgumentException("Schema must not be empty.");
+        // Writing the same schema again is idempotent, so a caller may opt this call into retries.
+        var retry = MutationRetry(options?.RetryPolicy, true, "WriteSchema");
 
-        var resp = await Unary(budget, o => _schema.WriteSchemaAsync(new WriteSchemaRequest { Schema = schema }, o.Headers, o.Deadline, o.CancellationToken), false);
+        var resp = await Unary(budget, o => _schema.WriteSchemaAsync(new WriteSchemaRequest { Schema = schema }, o.Headers, o.Deadline, o.CancellationToken), retry);
 
         return new(resp.WrittenAt?.Token ?? "");
     }
@@ -550,7 +581,7 @@ public sealed partial class SpiceDBClient : IAsyncDisposable, ISpiceDBRelationsh
         Consistency consistency,
         CallOptions? options = null, CancellationToken cancellationToken = default)
     {
-        using var budget = Begin(options?.Timeout, cancellationToken, transport: options?.Transport);
+        using var budget = Begin(options?.Timeout, cancellationToken, transport: options?.Transport, retry: options?.RetryPolicy);
         options?.Validate(reflect: true);
         if (consistency is null) throw new InvalidArgumentException("Consistency is required.");
 
@@ -608,7 +639,7 @@ public sealed partial class SpiceDBClient : IAsyncDisposable, ISpiceDBRelationsh
         string relationName,
         CallOptions? options = null, CancellationToken cancellationToken = default)
     {
-        using var budget = Begin(options?.Timeout, cancellationToken, transport: options?.Transport);
+        using var budget = Begin(options?.Timeout, cancellationToken, transport: options?.Transport, retry: options?.RetryPolicy);
         options?.Validate(computable: true);
         if (consistency is null) throw new InvalidArgumentException("Consistency is required.");
 
@@ -636,7 +667,7 @@ public sealed partial class SpiceDBClient : IAsyncDisposable, ISpiceDBRelationsh
         string permissionName,
         CallOptions? options = null, CancellationToken cancellationToken = default)
     {
-        using var budget = Begin(options?.Timeout, cancellationToken, transport: options?.Transport);
+        using var budget = Begin(options?.Timeout, cancellationToken, transport: options?.Transport, retry: options?.RetryPolicy);
         options?.Validate();
         if (consistency is null) throw new InvalidArgumentException("Consistency is required.");
 
@@ -662,7 +693,7 @@ public sealed partial class SpiceDBClient : IAsyncDisposable, ISpiceDBRelationsh
         string comparisonSchema,
         CallOptions? options = null, CancellationToken cancellationToken = default)
     {
-        using var budget = Begin(options?.Timeout, cancellationToken, transport: options?.Transport);
+        using var budget = Begin(options?.Timeout, cancellationToken, transport: options?.Transport, retry: options?.RetryPolicy);
         options?.Validate();
         if (consistency is null) throw new InvalidArgumentException("Consistency is required.");
 
@@ -686,7 +717,7 @@ public sealed partial class SpiceDBClient : IAsyncDisposable, ISpiceDBRelationsh
         string permission,
         CallOptions? options = null, CancellationToken cancellationToken = default)
     {
-        using var budget = Begin(options?.Timeout, cancellationToken, transport: options?.Transport);
+        using var budget = Begin(options?.Timeout, cancellationToken, transport: options?.Transport, retry: options?.RetryPolicy);
         options?.Validate();
         if (consistency is null) throw new InvalidArgumentException("Consistency is required.");
 
@@ -709,11 +740,12 @@ public sealed partial class SpiceDBClient : IAsyncDisposable, ISpiceDBRelationsh
         Filter filter,
         CallOptions? options = null, CancellationToken cancellationToken = default)
     {
-        using var budget = Begin(options?.Timeout, cancellationToken, transport: options?.Transport);
+        using var budget = Begin(options?.Timeout, cancellationToken, transport: options?.Transport, retry: options?.RetryPolicy);
         options?.Validate();
         if (string.IsNullOrEmpty(name))
             throw new InvalidArgumentException("Name must not be empty.");
         Native.Required(filter, nameof(filter));
+        MutationRetry(options?.RetryPolicy, false, "ExperimentalRegisterRelationshipCounter");
 
         await Unary(budget, o => _experimental.ExperimentalRegisterRelationshipCounterAsync(new ExperimentalRegisterRelationshipCounterRequest
         {
@@ -726,7 +758,7 @@ public sealed partial class SpiceDBClient : IAsyncDisposable, ISpiceDBRelationsh
         string name,
         CallOptions? options = null, CancellationToken cancellationToken = default)
     {
-        using var budget = Begin(options?.Timeout, cancellationToken, transport: options?.Transport);
+        using var budget = Begin(options?.Timeout, cancellationToken, transport: options?.Transport, retry: options?.RetryPolicy);
         options?.Validate();
         if (string.IsNullOrEmpty(name))
             throw new InvalidArgumentException("Name must not be empty.");
@@ -748,10 +780,11 @@ public sealed partial class SpiceDBClient : IAsyncDisposable, ISpiceDBRelationsh
         string name,
         CallOptions? options = null, CancellationToken cancellationToken = default)
     {
-        using var budget = Begin(options?.Timeout, cancellationToken, transport: options?.Transport);
+        using var budget = Begin(options?.Timeout, cancellationToken, transport: options?.Transport, retry: options?.RetryPolicy);
         options?.Validate();
         if (string.IsNullOrEmpty(name))
             throw new InvalidArgumentException("Name must not be empty.");
+        MutationRetry(options?.RetryPolicy, false, "ExperimentalUnregisterRelationshipCounter");
 
         await Unary(budget, o => _experimental.ExperimentalUnregisterRelationshipCounterAsync(new ExperimentalUnregisterRelationshipCounterRequest { Name = name }, o.Headers, o.Deadline, o.CancellationToken), false);
     }
@@ -767,10 +800,10 @@ public sealed partial class SpiceDBClient : IAsyncDisposable, ISpiceDBRelationsh
         SubjectRef subject,
         LookupOptions? options = null, CancellationToken cancellationToken = default)
     {
-        using var budget = Begin(options?.Timeout, cancellationToken, transport: options?.Transport);
+        using var budget = Begin(options?.Timeout, cancellationToken, transport: options?.Transport, retry: options?.RetryPolicy);
         if (consistency is null) throw new InvalidArgumentException("Consistency is required.");
 
-        if (options is not null && (options.Debug == LookupDebug.Enabled || options.Context is not null || options.PageSize is not null || options.Limit is not null || options.SubjectRelation is not null))
+        if (options is not null && (options.Debug == LookupDebug.Enabled || options.Context is not null || options.PageSize is not null || options.Limit is not null || options.SubjectRelation is not null || options.Paging != Paging.Automatic))
             throw new InvalidArgumentException("Roaring lookup supports Timeout only; context, debug, limits and subject relation options are unsupported. Put a subject relation on SubjectRef.");
         var resp = await Unary(budget, o => _materialize.ExperimentalRoaringLookupResourcesAsync(new MaterializeV0.ExperimentalRoaringLookupResourcesRequest
         {

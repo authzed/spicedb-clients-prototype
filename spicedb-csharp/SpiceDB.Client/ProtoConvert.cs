@@ -78,6 +78,21 @@ public static class ProtoConvert
     public static PermissionCheck FromProto(V1.CheckPermissionRequest value) => new(
         FromProto(Native.Required(value, nameof(value)).Resource), value.Permission, FromProto(value.Subject),
         FromProto(value.Consistency ?? throw new InvalidArgumentException("Consistency is required.")), Native.FromStruct(value.Context));
+    /// <summary>
+    /// A permission check as the bulk request item <see cref="SpiceDBClient.CheckBulkAsync"/>
+    /// sends for it, with <paramref name="options"/>' context merged under the check's own.
+    /// </summary>
+    public static V1.CheckBulkPermissionsRequestItem ToCheckBulkRequestItem(PermissionCheck value, CheckOptions? options = null)
+    {
+        Native.Required(value, nameof(value));
+        return new()
+        {
+            Resource = value.Resource.ToProto(),
+            Permission = value.Permission,
+            Subject = value.Subject.ToProto(),
+            Context = SpiceDBClient.MergeCheckContext(options?.Context, value.Context),
+        };
+    }
     public static V1.WriteRelationshipsRequest ToProto(Transaction value, WriteOptions? options = null)
     {
         Native.Required(value, nameof(value));
@@ -104,6 +119,41 @@ public static class ProtoConvert
         SpiceDBClient.ToCheckPermissionship(Native.Required(value, nameof(value)).Permissionship),
         value.PartialCaveatInfo?.MissingRequiredContext ?? Enumerable.Empty<string>(), FromProto(value.CheckedAt),
         DebugInformation.FromProto(value.DebugTrace), value.OptionalExpiresAt?.ToDateTimeOffset());
+    /// <summary>
+    /// Rebuilds the server's bulk-check response from the requests and the results
+    /// <see cref="SpiceDBClient.CheckBulkAsync"/> returned for them, in the same order: one pair
+    /// per item carrying its request item and either its result or, for a result with
+    /// <see cref="CheckResult.Error"/> set (<see cref="BulkItemErrors.Returned"/>), its status
+    /// (the server's own status, details included, when it sent one). Pass the call's
+    /// <paramref name="options"/> so request items carry the same merged context. The response's
+    /// checked-at is the last item's revision; a call over 1,000 items spans several requests,
+    /// each with its own revision.
+    /// </summary>
+    public static V1.CheckBulkPermissionsResponse ToCheckBulkResponse(IReadOnlyList<PermissionCheck> requests, IReadOnlyList<CheckResult> results, CheckOptions? options = null)
+    {
+        Native.Required(requests, nameof(requests)); Native.Required(results, nameof(results));
+        if (requests.Count != results.Count)
+            throw new InvalidArgumentException($"check bulk: {requests.Count} requests but {results.Count} results.");
+        var response = new V1.CheckBulkPermissionsResponse();
+        for (var i = 0; i < requests.Count; i++)
+        {
+            var result = Native.Required(results[i], nameof(results));
+            var pair = new V1.CheckBulkPermissionsPair { Request = ToCheckBulkRequestItem(requests[i], options) };
+            if (result.Error is { } error) pair.Error = ToRpcStatus(error);
+            else
+            {
+                var single = ToProto(result);
+                pair.Item = new() { Permissionship = single.Permissionship, PartialCaveatInfo = single.PartialCaveatInfo, DebugTrace = single.DebugTrace };
+            }
+            if (!string.IsNullOrEmpty(result.CheckedAt.Value)) response.CheckedAt = ToProto(result.CheckedAt);
+            response.Pairs.Add(pair);
+        }
+        return response;
+    }
+    private static Google.Rpc.Status ToRpcStatus(SpiceDBException error) =>
+        error.InnerException is Grpc.Core.RpcException rpc && rpc.StatusCode == error.StatusCode && Grpc.Core.RpcExceptionExtensions.GetRpcStatus(rpc) is { } full
+            ? full
+            : new Google.Rpc.Status { Code = (int)error.StatusCode, Message = error.ServerMessage ?? error.Message };
     public static V1.DebugInformation ToProto(DebugInformation value) => new()
     {
         SchemaUsed = Native.Required(value, nameof(value)).SchemaUsed,
@@ -146,11 +196,23 @@ public static class ProtoConvert
             AfterResultCursor = string.IsNullOrEmpty(value.AfterResultCursor) ? null : new() { Token = value.AfterResultCursor },
         };
     }
+    /// <summary>
+    /// A looked-up subject as the server's response, including wildcard exclusions. It also
+    /// fills the deprecated top-level fields (subject ID, excluded subject IDs, permissionship
+    /// and partial caveat info) that SpiceDB still sends, so it matches the server's wire shape.
+    /// </summary>
     public static V1.LookupSubjectsResponse ToProto(LookupSubject value)
     {
         Native.Required(value, nameof(value));
-        var response = new V1.LookupSubjectsResponse { LookedUpAt = ToProto(value.LookedUpAt), Subject = ToProto(value.Subject) };
+        var subject = ToProto(value.Subject);
+        var response = new V1.LookupSubjectsResponse { LookedUpAt = ToProto(value.LookedUpAt), Subject = subject };
         response.ExcludedSubjects.AddRange(value.ExcludedSubjects.Select(ToProto));
+#pragma warning disable CS0612 // deprecated fields SpiceDB still populates
+        response.SubjectObjectId = subject.SubjectObjectId;
+        response.Permissionship = subject.Permissionship;
+        response.PartialCaveatInfo = subject.PartialCaveatInfo?.Clone();
+        response.ExcludedSubjectIds.AddRange(value.ExcludedSubjects.Select(e => e.SubjectID));
+#pragma warning restore CS0612
         return response;
     }
     public static LookupSubject FromProto(V1.LookupSubjectsResponse value) => SpiceDBClient.ToLookupSubject(Native.Required(value, nameof(value)));

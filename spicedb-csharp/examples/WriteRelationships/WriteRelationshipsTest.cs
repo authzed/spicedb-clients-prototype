@@ -57,6 +57,21 @@ public class WriteRelationshipsTest
         Assert.NotEmpty(revision.Value);
     }
 
+    // An empty write is sent like the raw API's: SpiceDB evaluates its preconditions and returns
+    // the current revision, so it doubles as a guarded "assert and get a revision" call.
+    [Fact]
+    public async Task WriteRelationships_EmptyWriteChecksPreconditionsAndReturnsARevision()
+    {
+        await using var client = SpiceDBClient.CreatePlaintext(SpiceDBTestServer.Endpoint, SpiceDBTestServer.Token);
+        await client.WriteSchemaAsync(Schema, null, default);
+
+        Assert.NotEmpty((await client.WriteAsync(new Transaction(), null, default)).Revision.Value);
+
+        var guarded = new Transaction();
+        guarded.MustMatch(new Filter("document").WithResourceId("never-written"));
+        await Assert.ThrowsAsync<FailedPreconditionException>(() => client.WriteAsync(guarded, null, default));
+    }
+
     // A failed precondition arrives with SpiceDB's structured explanation attached, not just a
     // message: the typed exception carries the authzed.api.v1.ErrorReason name and the metadata
     // naming which precondition did not hold, so recovery can be written against data rather than

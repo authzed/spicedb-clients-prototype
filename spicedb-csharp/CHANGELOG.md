@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+### Tooling and test-double follow-ups
+
+- Every options type (`CheckOptions`, `LookupOptions`, `ReadOptions`, `ExportOptions`,
+  `ImportOptions`, `WatchOptions`, `WriteOptions`, `DeleteOptions`, `DeleteAllOptions`,
+  `CallOptions`, `PermissionSetLookupOptions`) gains `RetryPolicy`, overriding the client's
+  policy for one call, stream establishment included. `RetryPolicy.None` exempts one call
+  (for example a supervised watch) while the client retries everything else. Touch-only
+  writes without preconditions and `WriteSchemaAsync` may opt in to retries per call; other
+  mutations throw `InvalidArgumentException` before any request.
+- `ReadOptions.Paging` / `LookupOptions.Paging = Paging.SingleRequest` send exactly one
+  request, as the raw API does (limit = `Limit` or unbounded, no follow-up page).
+- Empty `Transaction`s are sent to SpiceDB (which checks their preconditions and returns
+  the current revision); a test now pins this. The in-memory double no longer advances its
+  revision for them.
+- `ProtoConvert.ToCheckBulkResponse(requests, results, options)` and
+  `ToCheckBulkRequestItem`; `ProtoConvert.ToProto(LookupSubject)` fills the deprecated fields
+  SpiceDB still sends, so live responses round-trip exactly.
+- **BREAKING:** `ISpiceDBRelationshipClient` adds `ImportRelationshipsAsync` and
+  `ExportRelationshipsAsync`; the new `ISpiceDBSchemaClient` covers `ReadSchemaAsync`,
+  `WriteSchemaAsync` and `ReflectSchemaAsync`. `InMemorySpiceDBClient` implements both,
+  honors cursors, limits and response-metadata sinks (`SetResponseMetadata`), and returns a
+  registered reflection (`SetReflectSchemaResult`).
+- **Fix:** `InMemorySpiceDBClient` errors now match the real client's for the same failure.
+  An all-or-nothing delete over its limit is `InvalidArgumentException` (it was
+  `FailedPreconditionException`; SpiceDB returns `INVALID_ARGUMENT`), CREATE conflicts and
+  import duplicates use SpiceDB's message, the missing-schema message matches SpiceDB's, and
+  precondition, conflict and transactional-delete errors carry SpiceDB's `ErrorInfo` reason.
+- Bulk item and deletion-progress failures already are the server's typed exception (no
+  wrapper), so `Status` reports the server's message once; tests now pin this.
+
 ### Adoption fixes (tooling, test doubles, legacy coexistence)
 
 - **Fix:** paged `ReadRelationshipsAsync`, `LookupResourcesAsync` and

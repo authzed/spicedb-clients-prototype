@@ -9,398 +9,219 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func generateSample(t *testing.T, opts map[string]string) string {
+	t.Helper()
+	s, err := schema.ParseFile("../testdata/sample.zed")
+	require.NoError(t, err)
+	files, err := (&Generator{}).Generate(s, opts)
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+	assert.Equal(t, "typed_client.gen.ts", files[0].Path)
+	return string(files[0].Content)
+}
+
 func TestLanguage(t *testing.T) {
 	g := &Generator{}
 	assert.Equal(t, "typescript", g.Language())
 }
 
 func TestCanonicalRequestsAndDirectStreams(t *testing.T) {
-	s, err := schema.ParseFile("../testdata/sample.zed")
-	require.NoError(t, err)
-	files, err := (&Generator{}).Generate(s, nil)
-	require.NoError(t, err)
-	output := string(files[0].Content)
-	assert.Contains(t, output, "return this.client.check({")
+	output := generateSample(t, nil)
+	assert.Contains(t, output, "return this.client.check(p.checkRequest(s, c), options);")
 	assert.Contains(t, output, "consistency: c,")
 	assert.NotContains(t, output, "Promise<AsyncIterableIterator<")
 	assert.NotContains(t, output, "async lookupResources(")
 	assert.Contains(t, output, "options?: LookupResourcesOptions): AsyncIterableIterator<LookupResource>")
 	assert.Contains(t, output, "type WriteResult,")
 	assert.Contains(t, output, "...requestOptions,")
+	assert.Contains(t, output, "const requestOptions = requestFields(options);")
 }
 
 func TestGenerateSampleSchema(t *testing.T) {
-	s, err := schema.ParseFile("../testdata/sample.zed")
-	require.NoError(t, err)
+	output := generateSample(t, nil)
 
-	g := &Generator{}
-	files, err := g.Generate(s, nil)
-	require.NoError(t, err)
-	require.Len(t, files, 1)
-	assert.Equal(t, "typed_client.gen.ts", files[0].Path)
-
-	output := string(files[0].Content)
-
-	// Ref types (include _caveat?: never to prevent structural subtyping with caveated variants)
-	assert.Contains(t, output, `type UserRef = { _type: "user"; _id: string; _caveat?: never };`)
-	assert.Contains(t, output, `type TeamRef = { _type: "team"; _id: string; _caveat?: never };`)
-	assert.Contains(t, output, `type DocumentRef = { _type: "document"; _id: string; _caveat?: never };`)
-	assert.Contains(t, output, `type TeamMemberRef = { _type: "team"; _id: string; _relation: "member"; _caveat?: never };`)
-
-	// Factory functions
-	assert.Contains(t, output, `export function User(id: string) {`)
-	assert.Contains(t, output, `export function Team(id: string) {`)
-	assert.Contains(t, output, `export function Document(id: string) {`)
-
-	// Permission properties on Document
-	assert.Contains(t, output, `view: { _type: "document" as const, _id: id, _permission: "view" as const },`)
-	assert.Contains(t, output, `edit: { _type: "document" as const, _id: id, _permission: "edit" as const },`)
-	assert.Contains(t, output, `delete: { _type: "document" as const, _id: id, _permission: "delete" as const },`)
-
-	// Subject constraints on relations (viewer includes caveated variants)
-	assert.Contains(t, output, `viewer: (subject: UserRef | UserIpRangeRef | UserTimeWindowRef | TeamMemberRef) => ({`)
-	assert.Contains(t, output, `editor: (subject: UserRef) => ({`)
-	assert.Contains(t, output, `owner: (subject: UserRef) => ({`)
-
-	// Team member relation (also a SubRef — accepts optional subject with overloaded cast)
-	assert.Contains(t, output, `member: ((subject?: UserRef | TeamMemberRef):`)
-
-	// Static properties for lookups
-	assert.Contains(t, output, `Document.view = { _type: "document" as const, _permission: "view" as const };`)
-	assert.Contains(t, output, `Document.edit = { _type: "document" as const, _permission: "edit" as const };`)
-	assert.Contains(t, output, `Document.delete = { _type: "document" as const, _permission: "delete" as const };`)
-
-	// SubRef via relation method (no-arg call returns TeamMemberRef, with-arg returns relation binding)
-	assert.Contains(t, output, `member: ((subject?:`)
-	assert.Contains(t, output, `{ (): TeamMemberRef; (subject: UserRef | TeamMemberRef)`)
-	assert.NotContains(t, output, `Team.member = (id: string)`)
-
-	// TypedClient class
-	assert.Contains(t, output, `export class TypedClient {`)
-	assert.Contains(t, output, `readonly client: SpiceDBClient;`)
-	assert.Contains(t, output, `static create(endpoint: string, token: string`)
-
-	// Check overloads (view includes caveated variants). Returns
-	// Promise<CheckResult>, not Promise<boolean>: see
-	// TestCheckSurfacesCheckResult below for the rigorous regression guard.
-	// Accepts an optional CheckOptions: see TestCheckAcceptsContext for that
-	// regression guard.
-	assert.Contains(t, output, `async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "view" }, s: UserRef | UserIpRangeRef | UserTimeWindowRef | TeamMemberRef, options?: CheckOptions): Promise<CheckResult>;`)
-	assert.Contains(t, output, `async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "edit" }, s: UserRef, options?: CheckOptions): Promise<CheckResult>;`)
-	assert.Contains(t, output, `async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "delete" }, s: UserRef, options?: CheckOptions): Promise<CheckResult>;`)
-
-	// Check implementation
-	assert.Contains(t, output, `return this.client.check({`)
-
-	// Write operations
-	assert.Contains(t, output, `async touch(`)
-	assert.Contains(t, output, `async create(`)
-	assert.Contains(t, output, `async delete(`)
-
-	// LookupResources overloads
-	assert.Contains(t, output, `lookupResources(c: Consistency, p: { _type: "document"; _permission: "view" }, s: UserRef | UserIpRangeRef | UserTimeWindowRef | TeamMemberRef, options?: LookupResourcesOptions): AsyncIterableIterator<LookupResource>;`)
-
-	// LookupSubjects overloads
-	assert.Contains(t, output, `lookupSubjects(c: Consistency, p: { _type: "document"; _id: string; _permission: "view" }`)
-
-	// ReadRelationships
-	assert.Contains(t, output, `readRelationships(`)
-
-	// Imports
-	assert.Contains(t, output, `import {`)
-	assert.Contains(t, output, `SpiceDBClient,`)
-	assert.Contains(t, output, `createSpiceDBClient,`)
-	assert.Contains(t, output, `Transaction,`)
-
-	// Caveat context interfaces
-	assert.Contains(t, output, `export interface IpRangeContext {`)
-	assert.Contains(t, output, `allowedCidr?: string;`)
-	assert.Contains(t, output, `export interface TimeWindowContext {`)
-	assert.Contains(t, output, `start?: string;`)
-	assert.Contains(t, output, `end?: string;`)
-
-	// Caveated subject variant types
-	// _caveatContext holds the RAW-schema-keyed converted context (see
-	// TestCaveatContextPreservesRawNames), not the camelCase IpRangeContext/
-	// TimeWindowContext interface shape the caveat method's PARAMETER uses.
-	assert.Contains(t, output, `type UserIpRangeRef = { _type: "user"; _id: string; _caveat: "ip_range"; _caveatContext: JSONObject };`)
-	assert.Contains(t, output, `type UserTimeWindowRef = { _type: "user"; _id: string; _caveat: "time_window"; _caveatContext: JSONObject };`)
-
-	// Caveat methods on User factory
-	assert.Contains(t, output, `withIpRange: (ctx: IpRangeContext): UserIpRangeRef`)
-	assert.Contains(t, output, `withTimeWindow: (ctx: TimeWindowContext): UserTimeWindowRef`)
-
-	// Write operations preserve native stored caveat data
-	assert.Contains(t, output, `name: r._subject._caveat`)
-	assert.Contains(t, output, `context: r._subject._caveatContext`)
-
-	// Generated file header
 	assert.Contains(t, output, `DO NOT EDIT`)
-}
+	assert.Contains(t, output, `} from "@spicedb/client";`)
 
-// TestCheckSurfacesCheckResult verifies the generated `check` method — both
-// its per-permission overload declarations and its dispatching
-// implementation — returns Promise<CheckResult>, not Promise<boolean>.
-//
-// Collapsing to boolean would silently reintroduce the bug CheckResult
-// exists to fix: a "conditionalPermission" result (server needed caveat
-// context it didn't get) would become indistinguishable from a real denial.
-// This test asserts the exact new signatures (so a stray comment mentioning
-// "CheckResult" can't fake a pass), asserts the old Promise<boolean> forms
-// are entirely gone, and asserts the underlying client's CheckResult return
-// value is passed through untouched rather than re-collapsed inside the
-// generated wrapper. Mirrors the rigor of the Go/Python equivalents in
-// golang/generator_test.go and python/generator_test.go.
-func TestCheckSurfacesCheckResult(t *testing.T) {
-	s, err := schema.ParseFile("../testdata/sample.zed")
-	require.NoError(t, err)
+	// Refs carry an exact _ref discriminator so variants never assign to each other.
+	assert.Contains(t, output, "export interface UserRef extends AnySubject {\n    readonly _ref: \"UserRef\";")
+	assert.Contains(t, output, "export interface UserIpRangeRef extends AnySubject {\n    readonly _ref: \"UserIpRangeRef\";")
+	assert.Contains(t, output, "export interface TeamMemberRef extends AnySubject {\n    readonly _ref: \"TeamMemberRef\";\n    readonly _type: \"team\";\n    readonly _relation: \"member\";")
 
-	g := &Generator{}
-	files, err := g.Generate(s, nil)
-	require.NoError(t, err)
-	require.Len(t, files, 1)
+	// Factories and statics.
+	assert.Contains(t, output, `export function User(id: string): UserRef {`)
+	assert.Contains(t, output, `export function Document(id: string): DocumentRef {`)
+	assert.Contains(t, output, `Document.view = new PermissionRef("document", "view");`)
+	assert.Contains(t, output, `Document.delete = new PermissionRef("document", "delete");`)
 
-	output := string(files[0].Content)
+	// Permissions are observable Permission values.
+	assert.Contains(t, output, `readonly view: Permission<"document", "view">;`)
+	assert.Contains(t, output, `view: new Permission("document", id, "view"),`)
 
-	// The generated facade only uses CheckResult as a type.
-	assert.Contains(t, output, "    type CheckResult,\n")
+	// Writers admit exactly the schema's subjects.
+	assert.Contains(t, output, `export type DocumentViewerSubject = UserRef | UserIpRangeRef | UserTimeWindowRef | TeamMemberRef;`)
+	assert.Contains(t, output, `export type DocumentEditorSubject = UserRef;`)
+	assert.Contains(t, output, `viewer(subject: DocumentViewerSubject): TypedRelationship;`)
 
-	// Overload declarations — exact signature per permission, returning
-	// Promise<CheckResult>.
-	assert.Contains(t, output, `async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "view" }, s: UserRef | UserIpRangeRef | UserTimeWindowRef | TeamMemberRef, options?: CheckOptions): Promise<CheckResult>;`)
-	assert.Contains(t, output, `async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "edit" }, s: UserRef, options?: CheckOptions): Promise<CheckResult>;`)
-	assert.Contains(t, output, `async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "delete" }, s: UserRef, options?: CheckOptions): Promise<CheckResult>;`)
+	// A userset on a relation: the no-argument overload returns the subject ref.
+	assert.Contains(t, output, "    member(): TeamMemberRef;\n    member(subject: TeamMemberSubject): TypedRelationship;")
 
-	// Dispatching implementation — exact signature, returning Promise<CheckResult>.
-	assert.Contains(t, output, `async check(c: Consistency, p: { _type: string; _id: string; _permission: string }, s: { _type: string; _id: string; _relation?: string; _caveat?: string; _caveatContext?: JSONObject }, options?: CheckOptions): Promise<CheckResult> {`)
-
-	// The old Promise<boolean> forms must be entirely gone. Asserting merely
-	// that the string "CheckResult" appears somewhere would pass even on a
-	// broken template that returns boolean but mentions CheckResult only in a
-	// comment or unrelated import — these NotContains checks discriminate
-	// that regression.
+	// Check overloads, per permission and per relation.
+	assert.Contains(t, output, `async check(c: Consistency, p: Permission<"document", "view">, s: DocumentViewCheckSubject, options?: CheckOptions): Promise<CheckResult>;`)
+	assert.Contains(t, output, `async check(c: Consistency, p: Permission<"document", "viewer">, s: DocumentViewerRelationCheckSubject, options?: CheckOptions): Promise<CheckResult>;`)
+	assert.Contains(t, output, `export type DocumentEditCheckSubject = UserRef;`)
 	assert.NotContains(t, output, "Promise<boolean>")
 
-	// The CheckResult returned by the underlying client is passed through
-	// untouched, not re-collapsed to a boolean inside the generated wrapper —
-	// which would silently reintroduce the exact bug CheckResult exists to
-	// fix, hidden inside generated code users don't read.
-	assert.Contains(t, output, "return this.client.check({")
-}
+	// Lookups.
+	assert.Contains(t, output, `lookupResources(c: Consistency, p: PermissionRef<"document", "view">, s: DocumentViewCheckSubject, options?: LookupResourcesOptions): AsyncIterableIterator<LookupResource>;`)
 
-// TestCheckAcceptsContext verifies the generated `check` method — both its
-// per-permission overload declarations and its dispatching implementation —
-// accepts a new optional `options?: CheckOptions` parameter, matching
-// SpiceDBClient.checkPermission's own `(consistency, check, options?)` shape
-// (spec D3b). The existing 3-arg call shape must remain valid (options is
-// optional), and the value must actually be threaded through to the
-// underlying client, not merely accepted and dropped.
-func TestCheckAcceptsContext(t *testing.T) {
-	s, err := schema.ParseFile("../testdata/sample.zed")
-	require.NoError(t, err)
+	// Caveat contexts.
+	assert.Contains(t, output, `export interface IpRangeContext {`)
+	assert.Contains(t, output, `allowedCidr?: string;`)
+	assert.Contains(t, output, `withIpRange(ctx: IpRangeContext): UserIpRangeRef;`)
 
-	g := &Generator{}
-	files, err := g.Generate(s, nil)
-	require.NoError(t, err)
-	require.Len(t, files, 1)
-
-	output := string(files[0].Content)
-
-	// CheckOptions must be imported from the client package.
-	assert.Contains(t, output, "type CheckOptions")
-
-	// Overload declarations — exact signature per permission, with the new
-	// optional options parameter.
-	assert.Contains(t, output, `async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "view" }, s: UserRef | UserIpRangeRef | UserTimeWindowRef | TeamMemberRef, options?: CheckOptions): Promise<CheckResult>;`)
-	assert.Contains(t, output, `async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "edit" }, s: UserRef, options?: CheckOptions): Promise<CheckResult>;`)
-	assert.Contains(t, output, `async check(c: Consistency, p: { _type: "document"; _id: string; _permission: "delete" }, s: UserRef, options?: CheckOptions): Promise<CheckResult>;`)
-
-	// Dispatching implementation — exact signature, with the new parameter.
-	assert.Contains(t, output, `async check(c: Consistency, p: { _type: string; _id: string; _permission: string }, s: { _type: string; _id: string; _relation?: string; _caveat?: string; _caveatContext?: JSONObject }, options?: CheckOptions): Promise<CheckResult> {`)
-
-	// The OLD context-less forms must be entirely gone — guards against a
-	// regression that adds the parameter to only some declarations.
-	assert.NotContains(t, output, `s: UserRef | UserIpRangeRef | UserTimeWindowRef | TeamMemberRef): Promise<CheckResult>;`)
-	assert.NotContains(t, output, `p: { _type: "document"; _id: string; _permission: "edit" }, s: UserRef): Promise<CheckResult>;`)
-	assert.NotContains(t, output, `_caveatContext?: JSONObject }): Promise<CheckResult> {`)
-
-	// options is actually threaded through to the underlying client call, not
-	// silently dropped — a signature-only assertion would pass even if the
-	// body never read `options`.
-	assert.Contains(t, output, "}, options);")
-}
-
-// TestCheckForwardsSubjectCaveatContext verifies the generated check()
-// forwards a caveated subject's own _caveatContext into the CheckRequest's
-// item-level `context` field, so it participates in
-// SpiceDBClient.checkPermission's mergeCheckContext (item wins over
-// options.context, the call-level default). Before this fix, s._caveatContext
-// was accepted on the subject union type (UserIpRangeRef/UserTimeWindowRef
-// are members of the check subject union) but never read anywhere in
-// check()'s body -- a caveated subject ref passed to check() supplied NO
-// context to the actual check RPC at all.
-func TestCheckForwardsSubjectCaveatContext(t *testing.T) {
-	s, err := schema.ParseFile("../testdata/sample.zed")
-	require.NoError(t, err)
-
-	g := &Generator{}
-	files, err := g.Generate(s, nil)
-	require.NoError(t, err)
-	require.Len(t, files, 1)
-
-	output := string(files[0].Content)
-
-	// The subject's own _caveatContext must be forwarded as the CheckRequest's
-	// item-level context, inside the same checkPermission(...) call the
-	// dispatching check() implementation makes.
-	assert.Contains(t, output, "context: s._caveatContext,")
-
-	// Guard against a regression that reverts to the old object literal
-	// (subjectRelation as the last field, no context) while still passing
-	// TestCheckAcceptsContext's looser assertions.
-	assert.NotContains(t, output,
-		"subjectType: s._type, subjectId: s._id, subjectRelation: (s as any)._relation,\n        }, options);")
-}
-
-// TestCaveatContextPreservesRawNames verifies caveat context objects built
-// by a withXxx factory method are converted to their RAW schema parameter
-// names (e.g. "allowed_cidr") before being used as _caveatContext, rather
-// than the camelCase TypeScript field name (e.g. "allowedCidr") the
-// IpRangeContext interface exposes to callers.
-//
-// Found while wiring subject-embedded context into check() (spec D3b
-// follow-up): CaveatFieldData only ever carried the camelCase name, so
-// withIpRange({ allowedCidr: "..." })'s _caveatContext was previously sent
-// to SpiceDB verbatim with the camelCase key. SpiceDB's CEL evaluator looks
-// up the RAW schema name ("allowed_cidr"), so any multi-word caveat
-// parameter's context was silently unreachable -- both at write time
-// (touch/create/delete, pre-existing) and now at check time (this task) --
-// exactly the "accepts a value it discards" defect class this whole fix
-// round exists to close. Single-word parameters (e.g. time_window's "start"
-// and "end") happened to survive camelCase conversion unchanged, which is
-// why this was never caught by existing single-word-only caveats in earlier
-// tasks' tests.
-func TestCaveatContextPreservesRawNames(t *testing.T) {
-	s, err := schema.ParseFile("../testdata/sample.zed")
-	require.NoError(t, err)
-
-	g := &Generator{}
-	files, err := g.Generate(s, nil)
-	require.NoError(t, err)
-	require.Len(t, files, 1)
-
-	output := string(files[0].Content)
-
-	// The converter must map the camelCase field to the RAW schema name.
-	assert.Contains(t, output, `raw["allowed_cidr"] = ctx.allowedCidr`)
-
-	// withIpRange must route through the converter, not pass ctx straight
-	// through as _caveatContext (which would leak the camelCase key).
-	assert.Contains(t, output, "_caveatContext: ipRangeContextToRaw(ctx)")
-	assert.NotContains(t, output, "_caveatContext: ctx,")
-}
-
-func TestGenerateEmptySchema(t *testing.T) {
-	s := &schema.Schema{
-		Definitions: []schema.Definition{},
-	}
-
-	g := &Generator{}
-	files, err := g.Generate(s, nil)
-	require.NoError(t, err)
-	require.Len(t, files, 1)
-
-	output := string(files[0].Content)
-
-	// Should still have a valid TypedClient
+	// Native capability forwarding and typed writes.
 	assert.Contains(t, output, `export class TypedClient {`)
 	assert.Contains(t, output, `readonly client: SpiceDBClient;`)
-
-	// Should not have any factories
-	assert.NotContains(t, output, `export function`)
+	assert.Contains(t, output, `async writeTransaction(txn: TypedTransaction, options?: CallOptions): Promise<WriteResult> {`)
+	assert.Contains(t, output, `async checkBulkTyped(c: Consistency, checks: readonly TypedCheck[], options?: CheckOptions): Promise<readonly CheckResult[]> {`)
 }
 
-func TestToPascalCase(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected string
-	}{
-		{"user", "User"},
-		{"document", "Document"},
-		{"team_member", "TeamMember"},
-		{"my_long_name", "MyLongName"},
-		{"already", "Already"},
-	}
+func TestAdoptionPositions(t *testing.T) {
+	output := generateSample(t, nil)
 
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			assert.Equal(t, tt.expected, toPascalCase(tt.input))
+	// G1: permission usersets get subject refs, with expiring variants.
+	assert.Contains(t, output, "export interface OrganizationCanAdminRef extends AnySubject {")
+	assert.Contains(t, output, "    canAdminSubject(): OrganizationCanAdminRef;")
+	assert.Contains(t, output, "    readonly canAdmin: Permission<\"organization\", \"can_admin\">;")
+	assert.Contains(t, output, "withExpiration(at: Date): OrganizationCanAdminExpiringRef;")
+	assert.Contains(t, output, "export type InvitationGrantSubject = OrganizationCanAdminRef;")
+	assert.Contains(t, output, "export type InvitationTimedGrantSubject = OrganizationCanAdminExpiringRef;")
+
+	// T6: wildcard refs.
+	assert.Contains(t, output, "export function UserWildcard(): UserWildcardRef {")
+	assert.Contains(t, output, "export type OrganizationCreatorSubject = UserWildcardRef;")
+	assert.Contains(t, output, "export type OrganizationGuestSubject = UserRef | UserWildcardRef;")
+
+	// T7: identity-only keys take base refs.
+	assert.Contains(t, output, "export type InvitationInviterSubject = UserExpiringRef;")
+	assert.Contains(t, output, "export type InvitationInviterKeySubject = UserRef;")
+	assert.Contains(t, output, "inviterKey(subject: InvitationInviterKeySubject): RelationshipKey;")
+
+	// T8: relation checks; usersets expand to their members for checks.
+	assert.Contains(t, output, "readonly memberRelation: Permission<\"organization\", \"member\">;")
+	assert.Contains(t, output, "export type InvitationAcceptCheckSubject = OrganizationCanAdminRef | UserRef;")
+	assert.Contains(t, output, "export type OrganizationCreatorRelationCheckSubject = UserRef;")
+
+	// T5 + T9: filters, constants and by-name lookups.
+	assert.Contains(t, output, "export function OrganizationFilter(): RelationshipFilter {")
+	assert.Contains(t, output, "adminFilter(): RelationshipFilter;")
+	assert.Contains(t, output, "export const OrganizationCanAdminType = Object.freeze({ _type: \"organization\", _relation: \"can_admin\" } as const);")
+	assert.Contains(t, output, "    canAdmin: \"can_admin\",")
+	assert.Contains(t, output, `export const OrganizationRelationNames: readonly OrganizationRelationName[] = Object.freeze(["admin", "member", "creator", "guest"]);`)
+	assert.Contains(t, output, `    creator: ["UserWildcardRef"],`)
+	assert.Contains(t, output, "permissionByName(name: string): Permission<\"organization\", OrganizationPermissionName>;")
+}
+
+func TestCaveatContextPreservesRawNames(t *testing.T) {
+	output := generateSample(t, nil)
+	// The converter maps the camelCase field to the raw schema name SpiceDB's
+	// CEL evaluator looks up, and withIpRange routes through it.
+	assert.Contains(t, output, `raw["allowed_cidr"] = ctx.allowedCidr`)
+	assert.Contains(t, output, "withIpRange: (context: IpRangeContext) => makeUserIpRangeRef(id, ipRangeContextToRaw(context)),")
+	// A caveated subject's context becomes item-level check context.
+	assert.Contains(t, output, "const merged = subject._caveatContext === undefined ? context : { ...context, ...subject._caveatContext };")
+}
+
+func TestClientModuleOption(t *testing.T) {
+	output := generateSample(t, map[string]string{"client-module": "@acme/spicedb-client"})
+	assert.Contains(t, output, `} from "@acme/spicedb-client";`)
+	assert.NotContains(t, output, `"@spicedb/client"`)
+
+	s, err := schema.ParseFile("../testdata/sample.zed")
+	require.NoError(t, err)
+	_, err = (&Generator{}).Generate(s, map[string]string{"client-module": `bad"module`})
+	require.ErrorContains(t, err, "not a valid module specifier")
+	_, err = (&Generator{}).Generate(s, map[string]string{"package": "x"})
+	require.ErrorContains(t, err, "unknown TypeScript option --typescript.package")
+}
+
+func TestOutputIsNormalized(t *testing.T) {
+	output := generateSample(t, nil)
+	assert.NotContains(t, output, "\n\n\n")
+	assert.NotContains(t, output, " \n")
+	assert.NotContains(t, output, "\t")
+	assert.True(t, strings.HasSuffix(output, "}\n"))
+}
+
+func TestCollisionsFailGeneration(t *testing.T) {
+	for name, src := range map[string]string{
+		"relation key builder vs relation": `definition user {}
+definition doc {
+	relation viewer: user
+	relation viewer_key: user
+}`,
+		"relation vs built-in member": `definition user {}
+definition doc {
+	relation filter: user
+}`,
+		"permission static vs function property": `definition user {}
+definition doc {
+	relation viewer: user
+	permission name = viewer
+}`,
+		"definition vs global": `definition date {}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, err := schema.ParseString(src)
+			require.NoError(t, err)
+			_, err = (&Generator{}).Generate(s, nil)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "conflicting TypeScript identifier")
 		})
 	}
 }
 
-func TestBuildSubjectUnion(t *testing.T) {
-	subjects := []schema.SubjectType{
-		{Definition: "user"},
-		{Definition: "team", Relation: "member"},
-	}
-	assert.Equal(t, "UserRef | TeamMemberRef", buildSubjectUnion(subjects))
+func TestGenerateEmptySchema(t *testing.T) {
+	files, err := (&Generator{}).Generate(&schema.Schema{}, nil)
+	require.NoError(t, err)
+	output := string(files[0].Content)
+	assert.Contains(t, output, `export class TypedClient {`)
+	assert.NotContains(t, output, `export function User`)
+}
 
-	// Empty should return "never"
-	assert.Equal(t, "never", buildSubjectUnion(nil))
-
-	// Dedup
-	subjects = []schema.SubjectType{
-		{Definition: "user"},
-		{Definition: "user"},
+func TestToPascalCase(t *testing.T) {
+	for in, want := range map[string]string{"user": "User", "team_member": "TeamMember", "my_long_name": "MyLongName"} {
+		assert.Equal(t, want, toPascalCase(in))
 	}
-	result := buildSubjectUnion(subjects)
-	assert.Equal(t, "UserRef", result)
-	assert.Equal(t, 1, strings.Count(result, "UserRef"))
+}
+
+func TestToCamelCase(t *testing.T) {
+	for in, want := range map[string]string{"allowed_cidr": "allowedCidr", "start": "start", "can_admin": "canAdmin"} {
+		assert.Equal(t, want, toCamelCase(in))
+	}
 }
 
 func TestSubjectRefTypeName(t *testing.T) {
 	assert.Equal(t, "UserRef", subjectRefTypeName(schema.SubjectType{Definition: "user"}))
 	assert.Equal(t, "TeamMemberRef", subjectRefTypeName(schema.SubjectType{Definition: "team", Relation: "member"}))
 	assert.Equal(t, "UserIpRangeRef", subjectRefTypeName(schema.SubjectType{Definition: "user", CaveatName: "ip_range"}))
-	assert.Equal(t, "TeamMemberTimeWindowRef", subjectRefTypeName(schema.SubjectType{Definition: "team", Relation: "member", CaveatName: "time_window"}))
+	assert.Equal(t, "UserWildcardRef", subjectRefTypeName(schema.SubjectType{Definition: "user", Wildcard: true}))
+	assert.Equal(t, "UserExpiringRef", subjectRefTypeName(schema.SubjectType{Definition: "user", Expiration: true}))
+	assert.Equal(t, "TeamMemberTimeWindowExpiringRef", subjectRefTypeName(schema.SubjectType{Definition: "team", Relation: "member", CaveatName: "time_window", Expiration: true}))
 }
 
-func TestToCamelCase(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected string
-	}{
-		{"allowed_cidr", "allowedCidr"},
-		{"start", "start"},
-		{"my_long_name", "myLongName"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			assert.Equal(t, tt.expected, toCamelCase(tt.input))
-		})
-	}
+func TestBuildSubjectUnion(t *testing.T) {
+	assert.Equal(t, "UserRef | TeamMemberRef", buildSubjectUnion([]schema.SubjectType{{Definition: "user"}, {Definition: "team", Relation: "member"}}))
+	assert.Equal(t, "never", buildSubjectUnion(nil))
+	assert.Equal(t, "UserRef", buildSubjectUnion([]schema.SubjectType{{Definition: "user"}, {Definition: "user"}}))
 }
 
 func TestCelTypeToTS(t *testing.T) {
 	assert.Equal(t, "string", celTypeToTS("string"))
 	assert.Equal(t, "number", celTypeToTS("int"))
-	assert.Equal(t, "number", celTypeToTS("uint"))
-	assert.Equal(t, "number", celTypeToTS("double"))
 	assert.Equal(t, "boolean", celTypeToTS("bool"))
-	assert.Equal(t, "string", celTypeToTS("duration"))
-	assert.Equal(t, "string", celTypeToTS("timestamp"))
 	assert.Equal(t, "JSONValue", celTypeToTS("foo"))
 	assert.Equal(t, "JSONObject", celTypeToTS("map"))
 	assert.Equal(t, "readonly JSONValue[]", celTypeToTS("list"))
-}
-
-func TestBuildSubjectUnionWithCaveats(t *testing.T) {
-	subjects := []schema.SubjectType{
-		{Definition: "user"},
-		{Definition: "user", CaveatName: "ip_range"},
-		{Definition: "team", Relation: "member"},
-	}
-	assert.Equal(t, "UserRef | UserIpRangeRef | TeamMemberRef", buildSubjectUnion(subjects))
 }

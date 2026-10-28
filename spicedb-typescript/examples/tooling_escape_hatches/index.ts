@@ -165,5 +165,8 @@ const exact = await client.deleteRelationships({ resourceType: "document", resou
 assert(exact.deletedCount === 1n && exact.progress === "complete", "all-or-nothing delete with the server's default limit");
 console.log("delete: progress", progress.map(p => p.deletedCount).join(" -> "));
 
+// Leave no caveated or expiring relationships behind: later examples share
+// this SpiceDB and write schemas without the caveat.
+await client.deleteAllRelationshipsNonAtomic({ resourceType: "document" });
 client.close();
 console.log("tooling_escape_hatches: OK");

@@ -31,7 +31,9 @@ func Test() error {
 }
 
 // TypeScriptIntegrationTest builds the CLI, generates TypeScript code from the
-// sample schema, type-checks it, starts SpiceDB, runs vitest, then stops SpiceDB.
+// sample schema, type-checks it (including the negative fixtures), starts
+// SpiceDB, runs vitest, then stops SpiceDB. With SPICEDB_ENDPOINT set it uses
+// that server instead of starting one.
 func TypeScriptIntegrationTest() error {
 	// 1. Build CLI
 	fmt.Println("==> Building spicedb-gen...")
@@ -39,53 +41,113 @@ func TypeScriptIntegrationTest() error {
 		return fmt.Errorf("build failed: %w", err)
 	}
 
-	// 2. Generate permissions.ts from sample.zed
-	fmt.Println("==> Generating permissions.ts from sample.zed...")
-	if err := sh.RunV(
-		"./spicedb-gen",
-		"--schema", "testdata/sample.zed",
-		"--lang", "typescript",
-		"--out", "testdata/typescript/permissions.ts",
-	); err != nil {
-		return fmt.Errorf("code generation failed: %w", err)
-	}
-	defer os.Remove("testdata/typescript/permissions.ts")
-
-	// 3. pnpm install in testdata/typescript/
+	// 2. pnpm install in testdata/typescript/ (the fixture project provides
+	// the Prettier that formats the generated output).
 	fmt.Println("==> Installing dependencies...")
 	if err := runInDir("testdata/typescript", "pnpm", "install", "--frozen-lockfile=false"); err != nil {
 		return fmt.Errorf("pnpm install failed: %w", err)
 	}
 
-	// 4. tsc --noEmit (type-checking including type_errors.ts)
+	// 3. Generate permissions.ts from sample.zed inside the fixture project,
+	// formatted with its Prettier, and check the formatting.
+	fmt.Println("==> Generating permissions.ts from sample.zed...")
+	if err := runInDir("testdata/typescript", "../../spicedb-gen",
+		"--schema", "../sample.zed",
+		"--lang", "typescript",
+		"--typescript.format=prettier",
+		"--out", "permissions.ts",
+	); err != nil {
+		return fmt.Errorf("code generation failed: %w", err)
+	}
+	if err := runInDir("testdata/typescript", "pnpm", "exec", "prettier", "--check", "permissions.ts"); err != nil {
+		return fmt.Errorf("generated TypeScript is not Prettier-formatted: %w", err)
+	}
+
+	// 4. tsc --noEmit (type-checking including type_errors.ts). Every
+	// forbidden line in type_errors.ts carries its own @ts-expect-error, and
+	// tsc reports an unused directive as an error, so each line must fail on
+	// its own; verifyTypeScriptTypeErrors keeps each directive on one line.
 	fmt.Println("==> Type-checking...")
+	if err := verifyTypeScriptTypeErrors("testdata/typescript/type_errors.ts"); err != nil {
+		return err
+	}
 	if err := runInDir("testdata/typescript", "pnpm", "run", "typecheck"); err != nil {
 		return fmt.Errorf("type-check failed: %w", err)
 	}
 
-	// 5. Start SpiceDB via docker-compose
-	fmt.Println("==> Starting SpiceDB...")
-	if err := sh.RunV("docker", "compose", "-f", "docker-compose.test.yml", "up", "-d"); err != nil {
-		return fmt.Errorf("docker compose up failed: %w", err)
+	endpoint := os.Getenv("SPICEDB_ENDPOINT")
+	if endpoint == "" {
+		// 5. Start SpiceDB via docker-compose
+		fmt.Println("==> Starting SpiceDB...")
+		if err := sh.RunV("docker", "compose", "-f", "docker-compose.test.yml", "up", "-d"); err != nil {
+			return fmt.Errorf("docker compose up failed: %w", err)
+		}
+		defer func() {
+			fmt.Println("==> Stopping SpiceDB...")
+			_ = sh.RunV("docker", "compose", "-f", "docker-compose.test.yml", "down")
+		}()
+		endpoint = "localhost:50051"
 	}
-	defer func() {
-		fmt.Println("==> Stopping SpiceDB...")
-		_ = sh.RunV("docker", "compose", "-f", "docker-compose.test.yml", "down")
-	}()
 
 	// Wait for SpiceDB to be ready
 	fmt.Println("==> Waiting for SpiceDB to be ready...")
-	if err := waitForReady("localhost:50051", 30*time.Second); err != nil {
+	if err := waitForReady(endpoint, 30*time.Second); err != nil {
 		return err
 	}
 
 	// 6. pnpm run test (vitest)
 	fmt.Println("==> Running vitest...")
-	if err := runInDir("testdata/typescript", "pnpm", "run", "test"); err != nil {
+	cmd := exec.Command("pnpm", "run", "test")
+	cmd.Dir = "testdata/typescript"
+	cmd.Env = append(os.Environ(), "SPICEDB_ENDPOINT="+endpoint)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("vitest failed: %w", err)
 	}
 
 	fmt.Println("==> TypeScript integration tests passed!")
+	return nil
+}
+
+// TypeScriptTypeErrors verifies the TypeScript negative type fixtures against
+// the checked-in generated code, without starting SpiceDB.
+func TypeScriptTypeErrors() error {
+	if err := verifyTypeScriptTypeErrors("testdata/typescript/type_errors.ts"); err != nil {
+		return err
+	}
+	return runInDir("testdata/typescript", "pnpm", "run", "typecheck")
+}
+
+// verifyTypeScriptTypeErrors checks that every @ts-expect-error in file
+// governs exactly one single-line statement. tsc then proves each of those
+// lines fails on its own: an expect-error directive with no error on its
+// line is itself a compile error (TS2578). A statement spanning several lines
+// could hide a passing line behind a failing one, so it is rejected here.
+func verifyTypeScriptTypeErrors(file string) error {
+	src, err := os.ReadFile(file)
+	if err != nil {
+		return err
+	}
+	lines := strings.Split(string(src), "\n")
+	count := 0
+	for i, line := range lines {
+		if !strings.Contains(line, "@ts-expect-error") {
+			continue
+		}
+		count++
+		if i+1 >= len(lines) {
+			return fmt.Errorf("%s:%d: @ts-expect-error at end of file", file, i+1)
+		}
+		next := strings.TrimSpace(lines[i+1])
+		if next == "" || strings.HasPrefix(next, "//") || !strings.HasSuffix(next, ";") {
+			return fmt.Errorf("%s:%d: @ts-expect-error must precede a single-line statement ending in ';', got %q", file, i+2, next)
+		}
+	}
+	if count == 0 {
+		return fmt.Errorf("%s has no @ts-expect-error lines", file)
+	}
+	fmt.Printf("==> %s: %d forbidden lines, each with its own @ts-expect-error\n", file, count)
 	return nil
 }
 

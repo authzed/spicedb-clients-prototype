@@ -3,6 +3,9 @@ package typescript
 import (
 	"bytes"
 	"embed"
+	"fmt"
+	"os/exec"
+	"regexp"
 	"sort"
 	"strings"
 	"text/template"
@@ -26,44 +29,19 @@ func (g *Generator) Language() string {
 	return "typescript"
 }
 
+// DefaultClientModule is the module the generated file imports the native
+// client from when --typescript.client-module is not set.
+const DefaultClientModule = "@spicedb/client"
+
 // TemplateData holds all pre-computed data needed by the template.
 type TemplateData struct {
-	Definitions         []DefinitionData
-	CaveatContexts      []CaveatContextData
-	CaveatedSubjectTypes []CaveatedSubjectTypeData
-}
-
-// DefinitionData holds pre-computed data for a single definition.
-type DefinitionData struct {
-	Name       string // original name, e.g. "document"
-	PascalName string // PascalCase name, e.g. "Document"
-	Relations  []RelationData
-	Permissions []PermissionData
-	// SubRefTypes lists the (relation, ref type name) pairs for this definition
-	// when it is referenced as type#relation by other definitions.
-	SubRefTypes []SubRefTypeData
-	// CaveatMethods lists withCaveat methods on the factory function.
-	CaveatMethods []CaveatMethodData
-}
-
-// RelationData holds pre-computed data for a single relation.
-type RelationData struct {
-	Name         string // original name
-	SubjectUnion string // e.g. "UserRef | TeamMemberRef"
-	IsSubRef     bool   // true if this relation is referenced as type#relation elsewhere
-	SubRefTypeName string // e.g. "TeamMemberRef" — only set if IsSubRef is true
-}
-
-// PermissionData holds pre-computed data for a single permission.
-type PermissionData struct {
-	Name         string // original name
-	SubjectUnion string // e.g. "UserRef | TeamMemberRef"
-}
-
-// SubRefTypeData represents a sub-ref type like TeamMemberRef.
-type SubRefTypeData struct {
-	Relation    string // e.g. "member"
-	RefTypeName string // e.g. "TeamMemberRef"
+	ClientModule   string
+	CaveatContexts []CaveatContextData
+	RefTypes       []RefTypeData // standalone subject refs (usersets, wildcards, variants)
+	Definitions    []DefinitionData
+	CheckOverloads []OverloadData
+	Lookups        []OverloadData
+	UsersetTypes   []UsersetTypeData
 }
 
 // CaveatContextData represents a caveat context interface.
@@ -84,49 +62,144 @@ type CaveatFieldData struct {
 	TSType string // TypeScript type, e.g. "string"
 }
 
-// CaveatedSubjectTypeData represents a caveated subject variant type.
-type CaveatedSubjectTypeData struct {
-	TypeName      string // e.g. "UserIpRangeRef"
+// RefTypeData describes one subject ref type: a base (direct object, userset
+// or wildcard) or one of its caveated/expiring variants.
+type RefTypeData struct {
+	TypeName      string // e.g. "UserRef", "UserIpRangeRef", "TeamMemberRef", "UserWildcardRef"
+	Maker         string // e.g. "makeUserIpRangeRef"
 	Definition    string // e.g. "user"
-	CaveatName    string // e.g. "ip_range"
-	ContextType   string // e.g. "IpRangeContext"
-	HasRelation   bool   // true if this is a caveated sub-ref (type#relation with caveat)
-	Relation      string // e.g. "member" — only set if HasRelation
+	Relation      string // userset relation or permission, e.g. "member"
+	Wildcard      bool
+	Caveat        string
+	ContextType   string
+	Expiration    bool
+	IsDefinition  bool // the direct base ref of a definition; merged into the definition's ref
+	WithMethods   []WithMethodData
+	TupleRelation string // "#member" or ""
 }
 
-// CaveatMethodData represents a withCaveat method on a factory function.
-type CaveatMethodData struct {
-	MethodName        string // e.g. "withIpRange"
-	ContextType       string // e.g. "IpRangeContext"
-	ReturnType        string // e.g. "UserIpRangeRef"
-	CaveatName        string // e.g. "ip_range"
-	ConverterFuncName string // e.g. "ipRangeContextToRaw"
+// WithMethodData is a with* method converting a ref to a caveated or expiring variant.
+type WithMethodData struct {
+	MethodName   string // e.g. "withIpRange", "withExpiration"
+	ContextType  string // e.g. "IpRangeContext"
+	Converter    string // e.g. "ipRangeContextToRaw"
+	ReturnType   string
+	ReturnMaker  string
+	IsExpiration bool
+	CarryContext bool
 }
 
-// Generate produces generated TypeScript files from the parsed schema.
-// opts contains language-specific options (currently unused).
+// DefinitionData holds pre-computed data for a single definition.
+type DefinitionData struct {
+	Name            string // original name, e.g. "document"
+	PascalName      string // e.g. "Document"
+	RefType         string // e.g. "DocumentRef"
+	Maker           string // e.g. "makeDocumentRef"
+	WithMethods     []WithMethodData
+	Permissions     []PermissionData
+	Relations       []RelationData
+	PermSubRefs     []SubRefData
+	WildcardType    string
+	WildcardMaker   string
+	RelationNames   []NameData
+	PermissionNames []NameData
+}
+
+// NameData pairs a schema name with its camelCase key.
+type NameData struct {
+	Name  string
+	Camel string
+}
+
+// PermissionData describes a permission accessor.
+type PermissionData struct {
+	Name         string
+	Prop         string // camelCase property, e.g. "canAdmin"
+	CheckSubject string // union type name, e.g. "DocumentViewCheckSubject"
+	CheckUnion   string
+}
+
+// RelationData describes the members generated for one relation.
+type RelationData struct {
+	Name          string
+	Prop          string // writer, e.g. "viewer"
+	SubjectType   string // e.g. "DocumentViewerSubject"
+	SubjectUnion  string
+	KeyMethod     string // e.g. "viewerKey"
+	KeyType       string // e.g. "DocumentViewerKeySubject"
+	KeyUnion      string
+	CheckProp     string // e.g. "viewerRelation"
+	CheckSubject  string
+	CheckUnion    string
+	FilterMethod  string // e.g. "viewerFilter"
+	SubRefType    string // set when d#r is a subject: the no-argument overload returns it
+	SubRefMaker   string
+	AllowedRefs   []string
+	HasSubjects   bool
+	HasKeySubject bool
+}
+
+// SubRefData is a permission-userset accessor, e.g. canAdminSubject().
+type SubRefData struct {
+	Method     string
+	ReturnType string
+	Maker      string
+}
+
+// OverloadData is one check or lookup overload.
+type OverloadData struct {
+	ResourceType string
+	Name         string
+	SubjectUnion string
+}
+
+// UsersetTypeData is a sentinel naming a userset subject type for filters,
+// e.g. OrganizationCanAdminType.
+type UsersetTypeData struct {
+	VarName    string
+	Definition string
+	Relation   string
+}
+
+var clientModuleRe = regexp.MustCompile(`^[A-Za-z0-9@._/~-]+$`)
+
+// Generate produces the generated TypeScript module from the parsed schema.
+// Language options:
+//   - "client-module" (--typescript.client-module): the module specifier the
+//     generated file imports the native client from (default @spicedb/client).
+//   - "format" (--typescript.format): "none" (default) emits the generator's
+//     own normalized layout; "prettier" pipes the output through the Prettier
+//     installed in the current directory's project (`npx --no-install
+//     prettier`), honoring that project's Prettier configuration.
 func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]generator.GeneratedFile, error) {
-	data := buildTemplateData(s)
-
-	funcMap := template.FuncMap{
-		"hasPermissions": func(d DefinitionData) bool {
-			return len(d.Permissions) > 0
-		},
-		"hasRelations": func(d DefinitionData) bool {
-			return len(d.Relations) > 0
-		},
-		"hasSubRefTypes": func(d DefinitionData) bool {
-			return len(d.SubRefTypes) > 0
-		},
-		"hasRelationsOrPermissions": func(d DefinitionData) bool {
-			return len(d.Relations) > 0 || len(d.Permissions) > 0
-		},
-		"hasCaveatMethods": func(d DefinitionData) bool {
-			return len(d.CaveatMethods) > 0
-		},
+	module := DefaultClientModule
+	format := "none"
+	for k, v := range opts {
+		switch k {
+		case "client-module":
+			if !clientModuleRe.MatchString(v) {
+				return nil, fmt.Errorf("--typescript.client-module=%q is not a valid module specifier", v)
+			}
+			module = v
+		case "format":
+			if v != "none" && v != "prettier" {
+				return nil, fmt.Errorf("--typescript.format=%q: must be none or prettier", v)
+			}
+			format = v
+		default:
+			return nil, fmt.Errorf("unknown TypeScript option --typescript.%s", k)
+		}
 	}
 
-	tmpl, err := template.New("typed_client.ts.tmpl").Funcs(funcMap).ParseFS(templateFS, "templates/*.tmpl")
+	data, err := buildTemplateData(s)
+	if err != nil {
+		return nil, err
+	}
+	data.ClientModule = module
+
+	tmpl, err := template.New("typed_client.ts.tmpl").Funcs(template.FuncMap{
+		"quoteList": quoteList,
+	}).ParseFS(templateFS, "templates/*.tmpl")
 	if err != nil {
 		return nil, err
 	}
@@ -136,58 +209,211 @@ func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]genera
 		return nil, err
 	}
 
+	content := normalizeBlankLines(buf.Bytes())
+	if format == "prettier" {
+		if content, err = runPrettier(content); err != nil {
+			return nil, err
+		}
+	}
 	return []generator.GeneratedFile{
 		{
 			Path:    "typed_client.gen.ts",
-			Content: buf.Bytes(),
+			Content: content,
 		},
 	}, nil
 }
 
+// runPrettier formats TypeScript source with the project's own Prettier, so
+// generated output matches the formatter configuration the project checks.
+func runPrettier(src []byte) ([]byte, error) {
+	cmd := exec.Command("npx", "--no-install", "prettier", "--stdin-filepath", "typed_client.gen.ts")
+	cmd.Stdin = bytes.NewReader(src)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("--typescript.format=prettier: running Prettier failed (install prettier in the project that receives the output): %w: %s", err, stderr.String())
+	}
+	return out, nil
+}
+
+// normalizeBlankLines collapses runs of blank lines and trailing spaces left
+// by template control flow, so output is stable and formatter-friendly.
+func normalizeBlankLines(b []byte) []byte {
+	lines := strings.Split(string(b), "\n")
+	var out []string
+	blank := false
+	for _, l := range lines {
+		l = strings.TrimRight(l, " \t")
+		if l == "" {
+			if blank {
+				continue
+			}
+			blank = true
+		} else {
+			blank = false
+		}
+		out = append(out, l)
+	}
+	return []byte(strings.TrimRight(strings.Join(out, "\n"), "\n") + "\n")
+}
+
+func quoteList(items []string) string {
+	q := make([]string, len(items))
+	for i, s := range items {
+		q[i] = fmt.Sprintf("%q", s)
+	}
+	return strings.Join(q, ", ")
+}
+
+// subjectBase identifies a subject position independent of caveat and
+// expiration: a direct object, a userset (object#relation, where relation may
+// be a relation or a permission) or a wildcard (type:*).
+type subjectBase struct {
+	definition string
+	relation   string
+	wildcard   bool
+}
+
+func baseOf(st schema.SubjectType) subjectBase {
+	return subjectBase{st.Definition, st.Relation, st.Wildcard}
+}
+
+func (b subjectBase) prefix() string {
+	switch {
+	case b.wildcard:
+		return toPascalCase(b.definition) + "Wildcard"
+	case b.relation != "":
+		return toPascalCase(b.definition) + toPascalCase(b.relation)
+	default:
+		return toPascalCase(b.definition)
+	}
+}
+
+func (b subjectBase) refType() string { return b.prefix() + "Ref" }
+
+// variantTypeName names a subject variant <Prefix><Caveat>[Expiring]Ref.
+func variantTypeName(b subjectBase, caveat string, expiration bool) string {
+	name := b.prefix() + toPascalCase(caveat)
+	if expiration {
+		name += "Expiring"
+	}
+	return name + "Ref"
+}
+
+// subjectRefTypeName returns the TypeScript ref type name for a subject type.
+func subjectRefTypeName(st schema.SubjectType) string {
+	return variantTypeName(baseOf(st), st.CaveatName, st.Expiration)
+}
+
+func describe(b subjectBase, caveat string, expiration bool) string {
+	s := b.definition
+	switch {
+	case b.wildcard:
+		s += ":*"
+	case b.relation != "":
+		s += "#" + b.relation
+	}
+	if caveat != "" {
+		s += " with " + caveat
+	}
+	if expiration {
+		s += " with expiration"
+	}
+	return s
+}
+
+type variantKey struct {
+	base       subjectBase
+	caveat     string
+	expiration bool
+}
+
+// names detects collisions among generated identifiers. Module-level names
+// share one scope; each definition ref has its own member scope.
+type names struct {
+	owners map[string]string
+	err    error
+}
+
+func (n *names) claim(scope, name, owner string) {
+	key := scope + "." + name
+	if prev, ok := n.owners[key]; ok && prev != owner && n.err == nil {
+		where := "module scope"
+		if scope != "" {
+			where = scope
+		}
+		n.err = fmt.Errorf("schema produces conflicting TypeScript identifier %s in %s (from %s and %s); rename one of them", name, where, prev, owner)
+	}
+	n.owners[key] = owner
+}
+
+// reservedModuleNames are identifiers the generated module declares or uses
+// as globals; a schema-derived name equal to one would shadow it.
+var reservedModuleNames = []string{
+	"Permission", "PermissionRef", "TypedRelationship", "RelationshipKey", "TypedTransaction", "TypedClient", "TypedCheck",
+	"NotInSchemaError", "SubjectNotAllowedError", "AnySubject", "SubjectType", "fromRelationship", "errRelationship",
+	"checksFor", "withSubject", "LookupResourcesOptions", "LookupSubjectsOptions", "ReadRelationshipsOptions",
+	"Consistency", "Object", "Array", "String", "Number", "Boolean", "Date", "Error", "JSON", "Map", "Set", "Symbol",
+	"Promise", "Function", "RegExp", "BigInt", "Math", "Reflect", "Proxy", "Intl", "Record", "Readonly", "Partial",
+}
+
+// reservedRefMembers are members every definition ref declares.
+var reservedRefMembers = []string{"_ref", "_type", "_id", "filter", "permissionByName", "relationByName", "relationshipByName", "toString", "toJSON", "constructor"}
+
+// reservedStatics are properties a function object already has, which
+// permission statics such as Document.view must not overwrite.
+var reservedStatics = []string{"name", "length", "prototype", "caller", "arguments", "apply", "call", "bind", "toString"}
+
 // buildTemplateData pre-computes all data needed by the template.
-func buildTemplateData(s *schema.Schema) TemplateData {
-	// First pass: collect all (definition, relation) pairs referenced as subjects.
-	type subRef struct {
-		definition string
-		relation   string
+func buildTemplateData(s *schema.Schema) (TemplateData, error) {
+	defs := map[string]schema.Definition{}
+	for _, def := range s.Definitions {
+		defs[def.Name] = def
 	}
-	subRefs := map[subRef]bool{}
 
-	// Collect all caveated subject references: (definition, caveatName) pairs.
-	type caveatRef struct {
-		definition string
-		relation   string // may be empty
-		caveatName string
-	}
-	caveatRefs := map[caveatRef]bool{}
-
+	// Every subject variant a relation admits, plus every subject position a
+	// permission can reach. Permission-reachable usersets need refs too: a
+	// relation may admit org#can_admin even though can_admin is a permission.
+	variants := map[variantKey]bool{}
+	bases := map[subjectBase]bool{}
 	for _, def := range s.Definitions {
 		for _, rel := range def.Relations {
 			for _, st := range rel.AllowedSubjects {
-				if st.Relation != "" {
-					subRefs[subRef{st.Definition, st.Relation}] = true
-				}
-				if st.CaveatName != "" {
-					caveatRefs[caveatRef{st.Definition, st.Relation, st.CaveatName}] = true
-				}
+				variants[variantKey{baseOf(st), st.CaveatName, st.Expiration}] = true
+				bases[baseOf(st)] = true
 			}
 		}
 		for _, perm := range def.Permissions {
 			for _, st := range perm.ReachableSubjects {
-				if st.Relation != "" {
-					subRefs[subRef{st.Definition, st.Relation}] = true
-				}
+				bases[baseOf(st)] = true
 				if st.CaveatName != "" {
-					caveatRefs[caveatRef{st.Definition, st.Relation, st.CaveatName}] = true
+					variants[variantKey{baseOf(st), st.CaveatName, false}] = true
 				}
 			}
 		}
 	}
+	for b := range bases {
+		variants[variantKey{base: b}] = true
+	}
+	// A caveated, expiring subject is built as base.withCaveat(ctx).withExpiration(at),
+	// so its caveated variant must exist as the intermediate step.
+	for v := range variants {
+		if v.caveat != "" && v.expiration {
+			variants[variantKey{v.base, v.caveat, false}] = true
+		}
+	}
 
-	// Build caveat context interfaces.
 	usedCaveats := map[string]bool{}
-	for cr := range caveatRefs {
-		usedCaveats[cr.caveatName] = true
+	for v := range variants {
+		if v.caveat != "" {
+			usedCaveats[v.caveat] = true
+		}
+	}
+
+	n := &names{owners: map[string]string{}}
+	for _, r := range reservedModuleNames {
+		n.claim("", r, "generated support code")
 	}
 
 	var caveatContexts []CaveatContextData
@@ -200,6 +426,7 @@ func buildTemplateData(s *schema.Schema) TemplateData {
 			CaveatName:        c.Name,
 			ConverterFuncName: toCamelCase(c.Name) + "ContextToRaw",
 		}
+		n.claim("", cc.InterfaceName, "context for caveat "+c.Name)
 		for _, p := range c.Params {
 			cc.Fields = append(cc.Fields, CaveatFieldData{
 				Name:    toCamelCase(p.Name),
@@ -210,134 +437,327 @@ func buildTemplateData(s *schema.Schema) TemplateData {
 		caveatContexts = append(caveatContexts, cc)
 	}
 
-	// Build caveated subject variant types.
-	var caveatedTypes []CaveatedSubjectTypeData
-	seenCaveated := map[string]bool{}
-	for cr := range caveatRefs {
-		st := schema.SubjectType{Definition: cr.definition, Relation: cr.relation, CaveatName: cr.caveatName}
-		typeName := caveatedSubjectTypeName(st)
-		if seenCaveated[typeName] {
-			continue
-		}
-		seenCaveated[typeName] = true
-		caveatedTypes = append(caveatedTypes, CaveatedSubjectTypeData{
-			TypeName:    typeName,
-			Definition:  cr.definition,
-			CaveatName:  cr.caveatName,
-			ContextType: toPascalCase(cr.caveatName) + "Context",
-			HasRelation: cr.relation != "",
-			Relation:    cr.relation,
-		})
-	}
-
-	// Sort caveated types for deterministic output.
-	sort.Slice(caveatedTypes, func(i, j int) bool {
-		return caveatedTypes[i].TypeName < caveatedTypes[j].TypeName
-	})
-
-	// Build caveat methods per definition: for definitions used as subjects with caveats.
-	// Map definition name -> list of caveat methods.
-	defCaveatMethods := map[string][]CaveatMethodData{}
-	for cr := range caveatRefs {
-		if cr.relation != "" {
-			continue // caveat methods only on the base definition factory, not sub-refs
-		}
-		st := schema.SubjectType{Definition: cr.definition, CaveatName: cr.caveatName}
-		methodName := "with" + toPascalCase(cr.caveatName)
-		returnType := caveatedSubjectTypeName(st)
-		defCaveatMethods[cr.definition] = append(defCaveatMethods[cr.definition], CaveatMethodData{
-			MethodName:        methodName,
-			ContextType:       toPascalCase(cr.caveatName) + "Context",
-			ReturnType:        returnType,
-			CaveatName:        cr.caveatName,
-			ConverterFuncName: toCamelCase(cr.caveatName) + "ContextToRaw",
-		})
-	}
-
-	// Sort caveat methods for deterministic output.
-	for k := range defCaveatMethods {
-		sort.Slice(defCaveatMethods[k], func(i, j int) bool {
-			return defCaveatMethods[k][i].MethodName < defCaveatMethods[k][j].MethodName
-		})
-	}
-
-	data := TemplateData{
-		Definitions:          make([]DefinitionData, 0, len(s.Definitions)),
-		CaveatContexts:       caveatContexts,
-		CaveatedSubjectTypes: caveatedTypes,
-	}
-
+	// Subject ref types, in schema order: for each definition, its direct
+	// base, then usersets on its relations and permissions, then wildcard,
+	// each followed by its variants.
+	var orderedBases []subjectBase
 	for _, def := range s.Definitions {
+		candidates := []subjectBase{{definition: def.Name}}
+		for _, rel := range def.Relations {
+			candidates = append(candidates, subjectBase{definition: def.Name, relation: rel.Name})
+		}
+		for _, perm := range def.Permissions {
+			candidates = append(candidates, subjectBase{definition: def.Name, relation: perm.Name})
+		}
+		candidates = append(candidates, subjectBase{definition: def.Name, wildcard: true})
+		for _, b := range candidates {
+			if bases[b] {
+				orderedBases = append(orderedBases, b)
+			}
+		}
+	}
+
+	knownTypes := map[string]bool{}
+	var refTypes []RefTypeData
+	definitionWiths := map[string][]WithMethodData{}
+	for _, b := range orderedBases {
+		var caveats []string
+		var hasExpiration bool
+		combined := map[string]bool{}
+		for v := range variants {
+			if v.base != b {
+				continue
+			}
+			if v.caveat != "" && !contains(caveats, v.caveat) {
+				caveats = append(caveats, v.caveat)
+			}
+			if v.caveat == "" && v.expiration {
+				hasExpiration = true
+			}
+			if v.caveat != "" && v.expiration {
+				combined[v.caveat] = true
+			}
+		}
+		sort.Strings(caveats)
+
+		emit := func(caveat string, expiration bool, withs []WithMethodData) {
+			typeName := variantTypeName(b, caveat, expiration)
+			isDef := b == subjectBase{definition: b.definition} && caveat == "" && !expiration
+			n.claim("", typeName, "subject "+describe(b, caveat, expiration))
+			knownTypes[typeName] = true
+			if isDef {
+				definitionWiths[b.definition] = withs
+				return
+			}
+			rt := RefTypeData{
+				TypeName:     typeName,
+				Maker:        "make" + typeName,
+				Definition:   b.definition,
+				Relation:     b.relation,
+				Wildcard:     b.wildcard,
+				Caveat:       caveat,
+				Expiration:   expiration,
+				WithMethods:  withs,
+				IsDefinition: false,
+			}
+			if b.relation != "" {
+				rt.TupleRelation = "#" + b.relation
+			}
+			if caveat != "" {
+				rt.ContextType = toPascalCase(caveat) + "Context"
+			}
+			refTypes = append(refTypes, rt)
+		}
+
+		var baseWiths []WithMethodData
+		for _, c := range caveats {
+			t := variantTypeName(b, c, false)
+			baseWiths = append(baseWiths, WithMethodData{
+				MethodName:  "with" + toPascalCase(c),
+				ContextType: toPascalCase(c) + "Context",
+				Converter:   toCamelCase(c) + "ContextToRaw",
+				ReturnType:  t,
+				ReturnMaker: "make" + t,
+			})
+		}
+		if hasExpiration {
+			t := variantTypeName(b, "", true)
+			baseWiths = append(baseWiths, WithMethodData{MethodName: "withExpiration", ReturnType: t, ReturnMaker: "make" + t, IsExpiration: true})
+		}
+		emit("", false, baseWiths)
+		for _, c := range caveats {
+			var withs []WithMethodData
+			if combined[c] {
+				t := variantTypeName(b, c, true)
+				withs = append(withs, WithMethodData{MethodName: "withExpiration", ReturnType: t, ReturnMaker: "make" + t, IsExpiration: true, CarryContext: true})
+			}
+			emit(c, false, withs)
+		}
+		if hasExpiration {
+			emit("", true, nil)
+		}
+		for _, c := range caveats {
+			if combined[c] {
+				emit(c, true, nil)
+			}
+		}
+	}
+
+	// checkSubjects returns the refs a check may name as its subject: each
+	// reachable subject without expiration (a check has none), a wildcard
+	// as its concrete base type (SpiceDB does not check a wildcard
+	// subject, but type:* grants every concrete one), and usersets
+	// expanded to the subjects that can be their members.
+	var checkSubjects func(subjects []schema.SubjectType, seen map[subjectBase]bool) []string
+	checkSubjects = func(subjects []schema.SubjectType, seen map[subjectBase]bool) []string {
+		var out []string
+		for _, st := range subjects {
+			b := baseOf(st)
+			if st.Wildcard {
+				// type:* grants every concrete subject of the type.
+				b = subjectBase{definition: st.Definition}
+			}
+			name := variantTypeName(b, st.CaveatName, false)
+			if knownTypes[name] {
+				out = append(out, name)
+			}
+			if st.Relation != "" && !seen[baseOf(st)] {
+				seen[baseOf(st)] = true
+				target := defs[st.Definition]
+				for _, r := range target.Relations {
+					if r.Name == st.Relation {
+						out = append(out, checkSubjects(r.AllowedSubjects, seen)...)
+					}
+				}
+				for _, p := range target.Permissions {
+					if p.Name == st.Relation {
+						out = append(out, checkSubjects(p.ReachableSubjects, seen)...)
+					}
+				}
+			}
+		}
+		return out
+	}
+
+	var definitions []DefinitionData
+	var checks, lookups []OverloadData
+	var usersets []UsersetTypeData
+	for _, def := range s.Definitions {
+		pascal := toPascalCase(def.Name)
+		refType := pascal + "Ref"
+		scope := refType
 		dd := DefinitionData{
-			Name:          def.Name,
-			PascalName:    toPascalCase(def.Name),
-			CaveatMethods: defCaveatMethods[def.Name],
+			Name:        def.Name,
+			PascalName:  pascal,
+			RefType:     refType,
+			Maker:       "make" + refType,
+			WithMethods: definitionWiths[def.Name],
 		}
-
-		// Collect sub-ref types for this definition.
-		for _, rel := range def.Relations {
-			if subRefs[subRef{def.Name, rel.Name}] {
-				dd.SubRefTypes = append(dd.SubRefTypes, SubRefTypeData{
-					Relation:    rel.Name,
-					RefTypeName: toPascalCase(def.Name) + toPascalCase(rel.Name) + "Ref",
-				})
-			}
+		if !knownTypes[refType] {
+			n.claim("", refType, "definition "+def.Name)
 		}
-
-		for _, rel := range def.Relations {
-			rd := RelationData{
-				Name:         rel.Name,
-				SubjectUnion: buildSubjectUnion(rel.AllowedSubjects),
-			}
-			if subRefs[subRef{def.Name, rel.Name}] {
-				rd.IsSubRef = true
-				rd.SubRefTypeName = toPascalCase(def.Name) + toPascalCase(rel.Name) + "Ref"
-			}
-			dd.Relations = append(dd.Relations, rd)
+		for _, suffix := range []string{"", "Filter", "Relations", "Permissions", "RelationNames", "PermissionNames", "RelationName", "PermissionName"} {
+			n.claim("", pascal+suffix, "generated "+suffix+" for definition "+def.Name)
+		}
+		for _, m := range reservedRefMembers {
+			n.claim(scope, m, "built-in member "+m)
+		}
+		for _, w := range dd.WithMethods {
+			n.claim(scope, w.MethodName, "subject variant method "+w.MethodName)
+		}
+		if bases[subjectBase{definition: def.Name, wildcard: true}] {
+			dd.WildcardType = subjectBase{definition: def.Name, wildcard: true}.refType()
+			dd.WildcardMaker = "make" + dd.WildcardType
+			n.claim("", pascal+"Wildcard", "wildcard constructor for definition "+def.Name)
 		}
 
 		for _, perm := range def.Permissions {
-			dd.Permissions = append(dd.Permissions, PermissionData{
-				Name:         perm.Name,
-				SubjectUnion: buildSubjectUnion(perm.ReachableSubjects),
-			})
+			b := subjectBase{definition: def.Name, relation: perm.Name}
+			if bases[b] {
+				sr := SubRefData{Method: toCamelCase(perm.Name) + "Subject", ReturnType: b.refType(), Maker: "make" + b.refType()}
+				n.claim(scope, sr.Method, "subject accessor for permission userset "+def.Name+"#"+perm.Name)
+				dd.PermSubRefs = append(dd.PermSubRefs, sr)
+				usersets = append(usersets, UsersetTypeData{VarName: b.prefix() + "Type", Definition: def.Name, Relation: perm.Name})
+			}
 		}
 
-		data.Definitions = append(data.Definitions, dd)
+		for _, rel := range def.Relations {
+			camel := toCamelCase(rel.Name)
+			rp := toPascalCase(rel.Name)
+			rd := RelationData{
+				Name:         rel.Name,
+				Prop:         camel,
+				SubjectType:  pascal + rp + "Subject",
+				KeyMethod:    camel + "Key",
+				KeyType:      pascal + rp + "KeySubject",
+				CheckProp:    camel + "Relation",
+				CheckSubject: pascal + rp + "RelationCheckSubject",
+				FilterMethod: camel + "Filter",
+			}
+			if b := (subjectBase{definition: def.Name, relation: rel.Name}); bases[b] {
+				rd.SubRefType = b.refType()
+				rd.SubRefMaker = "make" + b.refType()
+				usersets = append(usersets, UsersetTypeData{VarName: b.prefix() + "Type", Definition: def.Name, Relation: rel.Name})
+			}
+			implementors := collectImplementors(rel.AllowedSubjects, knownTypes, true)
+			rd.AllowedRefs = implementors
+			var keys []string
+			for _, st := range rel.AllowedSubjects {
+				if t := baseOf(st).refType(); knownTypes[t] && !contains(keys, t) {
+					keys = append(keys, t)
+				}
+			}
+			if len(implementors) > 0 {
+				rd.HasSubjects = true
+				rd.SubjectUnion = strings.Join(implementors, " | ")
+				n.claim("", rd.SubjectType, "subjects of relation "+def.Name+"#"+rel.Name)
+			}
+			if len(keys) > 0 {
+				rd.HasKeySubject = true
+				rd.KeyUnion = strings.Join(keys, " | ")
+				n.claim("", rd.KeyType, "key subjects of relation "+def.Name+"#"+rel.Name)
+			}
+			rd.CheckUnion = unionOrNever(dedupe(checkSubjects(rel.AllowedSubjects, map[subjectBase]bool{})))
+			n.claim("", rd.CheckSubject, "check subjects of relation "+def.Name+"#"+rel.Name)
+			owner := "relation " + rel.Name
+			n.claim(scope, rd.Prop, owner)
+			n.claim(scope, rd.KeyMethod, "key for "+owner)
+			n.claim(scope, rd.CheckProp, "check accessor for "+owner)
+			n.claim(scope, rd.FilterMethod, "filter for "+owner)
+			checks = append(checks, OverloadData{ResourceType: def.Name, Name: rel.Name, SubjectUnion: rd.CheckSubject})
+			dd.Relations = append(dd.Relations, rd)
+			dd.RelationNames = append(dd.RelationNames, NameData{Name: rel.Name, Camel: camel})
+		}
+
+		for _, perm := range def.Permissions {
+			camel := toCamelCase(perm.Name)
+			pd := PermissionData{
+				Name:         perm.Name,
+				Prop:         camel,
+				CheckSubject: pascal + toPascalCase(perm.Name) + "CheckSubject",
+				CheckUnion:   unionOrNever(dedupe(checkSubjects(perm.ReachableSubjects, map[subjectBase]bool{}))),
+			}
+			n.claim(scope, pd.Prop, "permission "+perm.Name)
+			n.claim("", pd.CheckSubject, "check subjects of permission "+def.Name+"#"+perm.Name)
+			if contains(reservedStatics, camel) {
+				n.claim("", pascal+"."+camel, "built-in function property "+camel)
+				n.claim("", pascal+"."+camel, "lookup static for permission "+def.Name+"#"+perm.Name)
+			}
+			checks = append(checks, OverloadData{ResourceType: def.Name, Name: perm.Name, SubjectUnion: pd.CheckSubject})
+			lookups = append(lookups, OverloadData{ResourceType: def.Name, Name: perm.Name, SubjectUnion: pd.CheckSubject})
+			dd.Permissions = append(dd.Permissions, pd)
+			dd.PermissionNames = append(dd.PermissionNames, NameData{Name: perm.Name, Camel: camel})
+		}
+		definitions = append(definitions, dd)
+	}
+	for _, u := range usersets {
+		n.claim("", u.VarName, "userset type sentinel for "+u.Definition+"#"+u.Relation)
+	}
+	if n.err != nil {
+		return TemplateData{}, n.err
 	}
 
-	return data
+	return TemplateData{
+		CaveatContexts: caveatContexts,
+		RefTypes:       refTypes,
+		Definitions:    definitions,
+		CheckOverloads: checks,
+		Lookups:        lookups,
+		UsersetTypes:   usersets,
+	}, nil
+}
+
+func unionOrNever(items []string) string {
+	if len(items) == 0 {
+		return "never"
+	}
+	return strings.Join(items, " | ")
+}
+
+func dedupe(items []string) []string {
+	var out []string
+	for _, s := range items {
+		if !contains(out, s) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func contains(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
+// collectImplementors returns the ref types for the given subject types, in
+// schema order, deduplicated.
+func collectImplementors(subjects []schema.SubjectType, knownTypes map[string]bool, exact bool) []string {
+	var result []string
+	for _, st := range subjects {
+		name := subjectRefTypeName(st)
+		if !exact {
+			name = variantTypeName(baseOf(st), st.CaveatName, false)
+		}
+		if knownTypes[name] && !contains(result, name) {
+			result = append(result, name)
+		}
+	}
+	return result
 }
 
 // buildSubjectUnion builds a TypeScript union type string from a list of subject types.
 func buildSubjectUnion(subjects []schema.SubjectType) string {
-	if len(subjects) == 0 {
-		return "never"
-	}
-
-	seen := map[string]bool{}
 	var parts []string
 	for _, st := range subjects {
-		name := subjectRefTypeName(st)
-		if seen[name] {
-			continue
+		if name := subjectRefTypeName(st); !contains(parts, name) {
+			parts = append(parts, name)
 		}
-		seen[name] = true
-		parts = append(parts, name)
 	}
-	return strings.Join(parts, " | ")
-}
-
-// subjectRefTypeName returns the TypeScript ref type name for a subject type.
-// For caveated subjects, it returns the caveated variant type name.
-func subjectRefTypeName(st schema.SubjectType) string {
-	if st.CaveatName != "" {
-		return caveatedSubjectTypeName(st)
-	}
-	if st.Relation != "" {
-		return toPascalCase(st.Definition) + toPascalCase(st.Relation) + "Ref"
-	}
-	return toPascalCase(st.Definition) + "Ref"
+	return unionOrNever(parts)
 }
 
 // toPascalCase converts a snake_case or lowercase string to PascalCase.
@@ -356,20 +776,11 @@ func toPascalCase(s string) string {
 
 // toCamelCase converts a snake_case string to camelCase.
 func toCamelCase(s string) string {
-	parts := strings.Split(s, "_")
-	var result strings.Builder
-	for i, p := range parts {
-		if len(p) == 0 {
-			continue
-		}
-		if i == 0 {
-			result.WriteString(p)
-		} else {
-			result.WriteString(strings.ToUpper(p[:1]))
-			result.WriteString(p[1:])
-		}
+	pascal := toPascalCase(s)
+	if pascal == "" {
+		return ""
 	}
-	return result.String()
+	return strings.ToLower(pascal[:1]) + pascal[1:]
 }
 
 // celTypeToTS converts a CEL type name to a TypeScript type.
@@ -392,13 +803,4 @@ func celTypeToTS(celType string) string {
 	default:
 		return "JSONValue"
 	}
-}
-
-// caveatedSubjectTypeName returns the TypeScript type name for a caveated subject type.
-func caveatedSubjectTypeName(st schema.SubjectType) string {
-	base := toPascalCase(st.Definition)
-	if st.Relation != "" {
-		base += toPascalCase(st.Relation)
-	}
-	return base + toPascalCase(st.CaveatName) + "Ref"
 }

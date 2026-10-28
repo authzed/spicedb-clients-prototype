@@ -10,7 +10,8 @@ Concrete Python for the rules in the repository-wide
 | `spicedb` | `import spicedb` / `from spicedb import ...` | values, filters, `Transaction`, consistency, `ZedToken`, options, results |
 | `spicedb.sync` / `spicedb.aio` | `from spicedb.sync import SpiceDBClient` | native client, blocking or asyncio (same names and arguments) |
 | `spicedb.errors` | `from spicedb.errors import FailedPreconditionError` | typed errors (`SpiceDBError` is a `grpc.RpcError`) |
-| `spicedb.testing` | `from spicedb.testing import InMemoryClient` | in-memory test doubles (`InMemoryClient`, `AsyncInMemoryClient`; `Call`, `Fault`, `FaultStage`) |
+| `spicedb.testing` | `from spicedb.testing import InMemoryClient` | in-memory test doubles (`InMemoryClient`, `AsyncInMemoryClient`; `Call`, `Fault`, `FaultStage`, `SchemaRevision`, `cursor_after`) |
+| `spicedb.protocols` | `from spicedb.protocols import ClientProtocol` | full client surface (`ClientProtocol`, `AsyncClientProtocol`) satisfied by the clients and the doubles |
 | `spicedb.protoconv` | `from spicedb import protoconv` | protocol conversions (tools only) |
 
 Do **not** install the legacy `authzed` package (authzed-py) beside this
@@ -283,12 +284,20 @@ last_read = fake.calls_of(Operation.READ_RELATIONSHIPS)[-1]
 print(last_read.request, last_read.options["cursor"])
 ```
 
-`FaultStage` is `CALL`, `IMPORT_BATCH`, `IMPORT_COMMIT` or `ITEM` (before each
-read or export item).
-Type your code against the methods you use, e.g.:
+`FaultStage` is `CALL`, `IMPORT_BATCH` (`f.batch` holds that batch's
+relationships), `IMPORT_COMMIT` or `ITEM` (before each read or export item).
+`cursor_after(n)` builds the double's resume cursor after `n` items, and
+`fake.set_read_schema_revision(SchemaRevision.OMITTED)` makes `read_schema`
+report no revision. The doubles implement every client method; the ones
+without in-memory semantics (lookups, expand, watch, ...) are recorded and
+raise `UNIMPLEMENTED`, so script them with the fault hook.
+
+Type your code against `spicedb.protocols.ClientProtocol` (or
+`AsyncClientProtocol`), which both the real client and the double satisfy, or
+against just the methods you use:
 
 ```python
-def grant(c: SpiceDBClient | InMemoryClient, org_id: str, user_id: str) -> None:
+def grant(c: ClientProtocol, org_id: str, user_id: str) -> None:
     txn = TypedTransaction().touch(Organization(org_id).member(User(user_id))).build()
     c.write(txn)
 ```

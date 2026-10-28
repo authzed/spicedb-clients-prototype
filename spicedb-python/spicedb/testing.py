@@ -1,13 +1,17 @@
 """In-memory test doubles for the native clients.
 
 :class:`InMemoryClient` stands in for :class:`spicedb.sync.SpiceDBClient` and
-:class:`AsyncInMemoryClient` for :class:`spicedb.aio.SpiceDBClient`. Their
-``write``, ``check``, ``check_bulk``, ``read_relationships``,
+:class:`AsyncInMemoryClient` for :class:`spicedb.aio.SpiceDBClient`. Each
+implements its client's whole public surface with the same signatures, so
+it satisfies :class:`spicedb.protocols.ClientProtocol` (or
+:class:`spicedb.protocols.AsyncClientProtocol`), as the real client does, and
+code written against that protocol (or a smaller one of your own) accepts
+either. ``write``, ``check``, ``check_bulk``, ``read_relationships``,
 ``delete_relationships``, ``delete_all_relationships_non_atomic``,
 ``import_relationships``, ``export_relationships``, ``read_schema``,
-``write_schema`` and ``reflect_schema`` methods have the same signatures as
-the real clients', so code written against a ``Protocol`` naming those
-methods accepts either.
+``write_schema``, ``reflect_schema`` and ``close`` work in memory; every
+other operation is recorded, consults the fault hook, and then raises a
+``SpiceDBError`` with code UNIMPLEMENTED (a stream raises it on iteration).
 
 They apply SpiceDB's relationship semantics -- filter matching
 (:meth:`spicedb.Filter.matches`), write preconditions, CREATE conflicts
@@ -46,7 +50,13 @@ before any call, before each import batch, before an import commits and
 before each read or export item, so failure paths need no fake gRPC server.
 Build injected errors with :meth:`spicedb.SpiceDBError.from_code`, which
 produces exactly what the real client raises for that server failure. A
-failed write or import applies nothing.
+failed write or import applies nothing. An import-batch fault carries that
+batch's relationships (:attr:`Fault.batch`).
+
+Read and export cursors are the decimal count of matching relationships
+already yielded; :func:`cursor_after` builds one, and the format is stable
+for tests. :meth:`InMemoryClient.set_read_schema_revision` makes
+``read_schema`` report no revision, as some servers do.
 """
 
 from __future__ import annotations
@@ -57,7 +67,7 @@ import threading
 from collections.abc import AsyncIterable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from types import MappingProxyType
-from typing import Any
+from typing import Any, NoReturn
 
 import grpc
 
@@ -67,31 +77,64 @@ from spicedb._client_base import mutation_retry_policy, response_target, write_i
 from spicedb._streams import AsyncStream, Stream
 from spicedb.consistency import Consistency
 from spicedb.errors import InvalidArgumentError, SpiceDBError
-from spicedb.options import BulkItemErrors, CallOptions, DeletePartial, Operation, Paging, Tracing, _option
+from spicedb.options import (
+    BulkItemErrors,
+    CallOptions,
+    DeletePartial,
+    LookupDebug,
+    LookupPermissionshipFilter,
+    Operation,
+    Paging,
+    Tracing,
+    WatchContent,
+    Wildcards,
+    _option,
+)
+from spicedb.raw import RawGrpc
 from spicedb.token import ZedToken
 from spicedb.types import (
     CheckResult,
+    CountResult,
     DeleteProgress,
     DeleteResult,
+    ExpandResult,
     ExportedRelationship,
     Filter,
     JSONObject,
+    LookupResource,
+    LookupSubject,
     ObjectRef,
     PermissionCheck,
+    PermissionSetCursor,
+    PermissionSetDownload,
+    PermissionSetEvent,
+    PermissionSetLookup,
     Permissionship,
     PreconditionOperation,
     ReadRelationship,
     ReflectSchemaResult,
     Relationship,
+    RelationsResult,
+    RoaringLookupResourcesResult,
+    SchemaDiffResult,
     SchemaFilter,
     SchemaResult,
     SubjectRef,
     Transaction,
     UpdateOperation,
+    WatchEvent,
     WriteResult,
 )
 
-__all__ = ["InMemoryClient", "AsyncInMemoryClient", "Call", "Fault", "FaultStage"]
+__all__ = [
+    "InMemoryClient",
+    "AsyncInMemoryClient",
+    "Call",
+    "Fault",
+    "FaultStage",
+    "SchemaRevision",
+    "cursor_after",
+]
 
 # SpiceDB's default for a delete request without an explicit limit.
 SERVER_DEFAULT_DELETE_LIMIT = 1000
@@ -111,7 +154,10 @@ class Call:
     """The operation's subject: the transaction for ``write``, the check (or
     list of checks), the filter for reads, exports and deletes, the list of
     relationships for an import, the schema text for ``write_schema``; None
-    for ``read_schema`` and ``reflect_schema``."""
+    for ``read_schema`` and ``reflect_schema``. For an operation without
+    in-memory semantics it is the positional argument (``(name, filter)`` for
+    ``experimental_register_relationship_counter``), or None when every
+    argument is keyword-only."""
     options: Mapping[str, Any]
     """Every keyword argument as passed, defaults included (``consistency``,
     ``cursor``, ``timeout``, ``call_options`` and so on), read-only."""
@@ -139,6 +185,32 @@ class Fault:
     stage: FaultStage
     item: int = 0
     """The batch index for IMPORT_BATCH, the item index for ITEM, else 0."""
+    batch: tuple[Relationship, ...] = ()
+    """The relationships in the batch at IMPORT_BATCH; empty otherwise."""
+
+
+class SchemaRevision(enum.Enum):
+    """Whether ``read_schema`` reports a revision."""
+
+    INCLUDED = "included"
+    """Report the double's current revision. This is the default."""
+    OMITTED = "omitted"
+    """Report an empty ``ZedToken("")``, as servers that send no revision with
+    a schema read do, so code that falls back to another revision source can
+    be tested."""
+
+
+def cursor_after(n: int) -> str:
+    """The cursor that resumes a double's ``read_relationships`` or
+    ``export_relationships`` after the first ``n`` matching relationships (in
+    insertion order): the same cursor the double puts on the ``n``-th item.
+
+    The format, the decimal count ``n``, is stable for tests. It is not a
+    SpiceDB cursor; never send it to a real server.
+    """
+    if isinstance(n, bool) or not isinstance(n, int) or n < 0:
+        raise InvalidArgumentError("n: expected non-negative integer")
+    return str(n)
 
 
 FaultHook = Callable[[Fault], "BaseException | None"]
@@ -184,6 +256,7 @@ class _Store:
         self.calls: list[Call] = []
         self.counts: dict[Operation, int] = {}
         self.hook: FaultHook | None = None
+        self.schema_revision = SchemaRevision.INCLUDED
         for relationship in relationships:
             if not isinstance(relationship, Relationship):
                 raise InvalidArgumentError("relationships: expected Relationship values")
@@ -201,13 +274,15 @@ class _Store:
             self.calls.append(call)
         return call, self.fault(call, FaultStage.CALL)
 
-    def fault(self, call: Call, stage: FaultStage, item: int = 0) -> BaseException | None:
+    def fault(
+        self, call: Call, stage: FaultStage, item: int = 0, batch: tuple[Relationship, ...] = ()
+    ) -> BaseException | None:
         """The hook's error for one point of a call, or None."""
         with self.lock:
             hook = self.hook
         if hook is None:
             return None
-        error = hook(Fault(call, stage, item))
+        error = hook(Fault(call, stage, item, batch))
         if error is not None and not isinstance(error, BaseException):
             raise InvalidArgumentError(f"fault hook: expected an exception or None, got {error!r}")
         return error
@@ -332,6 +407,21 @@ class _Store:
         return replace(result, checked_at=token)
 
 
+def _unimplemented_error(operation: str) -> SpiceDBError:
+    """What the doubles raise for an operation they have no semantics for."""
+    return SpiceDBError.from_code(
+        grpc.StatusCode.UNIMPLEMENTED, f"{operation}: not implemented by the spicedb.testing in-memory double"
+    )
+
+
+def _async_stream(source: Stream[Any]) -> AsyncStream[Any]:
+    async def factory(_owner):
+        for item in source:
+            yield item
+
+    return AsyncStream(factory)
+
+
 def _delete_args(limit, partial):
     allow_partial = _option(partial, DeletePartial) == "allowed"
     if allow_partial or limit is not None:
@@ -382,6 +472,15 @@ class InMemoryClient:
         with self._store.lock:
             self._store.headers = tuple(tuple(pair) for pair in headers)  # type: ignore[misc]
             self._store.trailers = tuple(tuple(pair) for pair in trailers)  # type: ignore[misc]
+
+    def set_read_schema_revision(self, mode: SchemaRevision) -> None:
+        """Select whether ``read_schema`` reports a revision
+        (:attr:`SchemaRevision.INCLUDED`, the default) or ``ZedToken("")``
+        (:attr:`SchemaRevision.OMITTED`)."""
+        if not isinstance(mode, SchemaRevision):
+            raise InvalidArgumentError(f"mode: expected SchemaRevision, got {mode!r}")
+        with self._store.lock:
+            self._store.schema_revision = mode
 
     def set_fault_hook(self, hook: Callable[[Fault], BaseException | None] | None) -> None:
         """Install ``hook``, consulted at every :class:`Fault` point.
@@ -595,14 +694,15 @@ class InMemoryClient:
         Budget(timeout)
         _positive(batch_size, "batch_size")
         mutation_retry_policy(call_options, False, "import relationships")
-        for i, relationship in enumerate(batch):
+        for relationship in batch:
             if not isinstance(relationship, Relationship):
                 raise InvalidArgumentError("relationships: expected Relationship values")
             relationship._to_proto()
-            if i % batch_size == 0:
-                error = self._store.fault(call, FaultStage.IMPORT_BATCH, i // batch_size)
-                if error is not None:
-                    raise error
+        for start in range(0, len(batch), batch_size):
+            contents = tuple(batch[start:start + batch_size])
+            error = self._store.fault(call, FaultStage.IMPORT_BATCH, start // batch_size, contents)
+            if error is not None:
+                raise error
         error = self._store.fault(call, FaultStage.IMPORT_COMMIT)
         if error is not None:
             raise error
@@ -691,7 +791,11 @@ class InMemoryClient:
     def read_schema(
         self, *, timeout: float | None = None, call_options: CallOptions | None = None
     ) -> SchemaResult:
-        """Return the schema last written, or raise ``NotFoundError`` as SpiceDB does."""
+        """Return the schema last written, or raise ``NotFoundError`` as SpiceDB does.
+
+        The revision is the current one, or ``ZedToken("")`` after
+        ``set_read_schema_revision(SchemaRevision.OMITTED)``.
+        """
         self._store.begin_or_raise(Operation.READ_SCHEMA, None, {"timeout": timeout, "call_options": call_options})
         Budget(timeout)
         _call_options(call_options)
@@ -699,6 +803,8 @@ class InMemoryClient:
         with self._store.lock:
             if self._store.schema is None:
                 raise SpiceDBError.from_code(grpc.StatusCode.NOT_FOUND, _NO_SCHEMA)
+            if self._store.schema_revision is SchemaRevision.OMITTED:
+                return SchemaResult(self._store.schema, ZedToken(""))
             return SchemaResult(self._store.schema, self._store.token())
 
     def write_schema(
@@ -738,6 +844,255 @@ class InMemoryClient:
                 raise SpiceDBError.from_code(grpc.StatusCode.NOT_FOUND, _NO_SCHEMA)
             return replace(self._store.reflection, revision=self._store.token())
 
+    def close(self) -> None:
+        """Do nothing; the double holds no transport and stays usable."""
+
+    def __enter__(self) -> InMemoryClient:
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self.close()
+
+    def raw_grpc(self) -> RawGrpc:
+        """Raise an UNIMPLEMENTED ``SpiceDBError``: the double has no channel."""
+        raise _unimplemented_error("raw_grpc")
+
+    def _unimplemented(self, operation: Operation, request: Any, options: dict[str, Any]) -> NoReturn:
+        """Record the call, consult the fault hook, validate the shared
+        options, then fail as unimplemented."""
+        self._store.begin_or_raise(operation, request, options)
+        Budget(options["timeout"])
+        _call_options(options["call_options"])
+        raise _unimplemented_error(operation.value)
+
+    def _unimplemented_stream(self, operation: Operation, request: Any, options: dict[str, Any]) -> Stream[Any]:
+        """Like :meth:`_unimplemented`, failing when the stream is iterated."""
+        _, call_error = self._store.begin(operation, request, options)
+        Budget(options["timeout"])
+        _call_options(options["call_options"])
+
+        def factory(_owner):
+            if call_error is not None:
+                raise call_error
+            raise _unimplemented_error(operation.value)
+            yield  # pragma: no cover - makes this a generator
+
+        return Stream(factory)
+
+    # The remaining operations have no in-memory semantics. Each is recorded
+    # (its positional arguments as the request, every keyword argument in
+    # options), consults the fault hook, and fails with UNIMPLEMENTED.
+
+    def expand_permission_tree(
+        self,
+        *,
+        resource: ObjectRef,
+        permission: str,
+        consistency: Consistency,
+        timeout: float | None = None,
+        call_options: CallOptions | None = None,
+    ) -> ExpandResult:
+        """Not implemented: recorded, then raises UNIMPLEMENTED."""
+        self._unimplemented(Operation.EXPAND_PERMISSION_TREE, None, {
+            "resource": resource, "permission": permission, "consistency": consistency,
+            "timeout": timeout, "call_options": call_options,
+        })
+
+    def computable_permissions(
+        self,
+        *,
+        definition_name: str,
+        relation_name: str,
+        consistency: Consistency,
+        definition_name_filter: str | None = None,
+        timeout: float | None = None,
+        call_options: CallOptions | None = None,
+    ) -> RelationsResult:
+        """Not implemented: recorded, then raises UNIMPLEMENTED."""
+        self._unimplemented(Operation.COMPUTABLE_PERMISSIONS, None, {
+            "definition_name": definition_name, "relation_name": relation_name, "consistency": consistency,
+            "definition_name_filter": definition_name_filter, "timeout": timeout, "call_options": call_options,
+        })
+
+    def dependent_relations(
+        self,
+        *,
+        definition_name: str,
+        permission_name: str,
+        consistency: Consistency,
+        timeout: float | None = None,
+        call_options: CallOptions | None = None,
+    ) -> RelationsResult:
+        """Not implemented: recorded, then raises UNIMPLEMENTED."""
+        self._unimplemented(Operation.DEPENDENT_RELATIONS, None, {
+            "definition_name": definition_name, "permission_name": permission_name, "consistency": consistency,
+            "timeout": timeout, "call_options": call_options,
+        })
+
+    def diff_schema(
+        self,
+        comparison_schema: str,
+        *,
+        consistency: Consistency,
+        timeout: float | None = None,
+        call_options: CallOptions | None = None,
+    ) -> SchemaDiffResult:
+        """Not implemented: recorded, then raises UNIMPLEMENTED."""
+        self._unimplemented(Operation.DIFF_SCHEMA, comparison_schema, {
+            "consistency": consistency, "timeout": timeout, "call_options": call_options,
+        })
+
+    def experimental_register_relationship_counter(
+        self, name: str, filter: Filter, *, timeout: float | None = None, call_options: CallOptions | None = None
+    ) -> None:
+        """Not implemented: recorded (request ``(name, filter)``), then raises UNIMPLEMENTED."""
+        self._unimplemented(Operation.EXPERIMENTAL_REGISTER_RELATIONSHIP_COUNTER, (name, filter), {
+            "timeout": timeout, "call_options": call_options,
+        })
+
+    def experimental_unregister_relationship_counter(
+        self, name: str, *, timeout: float | None = None, call_options: CallOptions | None = None
+    ) -> None:
+        """Not implemented: recorded, then raises UNIMPLEMENTED."""
+        self._unimplemented(Operation.EXPERIMENTAL_UNREGISTER_RELATIONSHIP_COUNTER, name, {
+            "timeout": timeout, "call_options": call_options,
+        })
+
+    def experimental_count_relationships(
+        self, name: str, *, timeout: float | None = None, call_options: CallOptions | None = None
+    ) -> CountResult:
+        """Not implemented: recorded, then raises UNIMPLEMENTED."""
+        self._unimplemented(Operation.EXPERIMENTAL_COUNT_RELATIONSHIPS, name, {
+            "timeout": timeout, "call_options": call_options,
+        })
+
+    def experimental_count_relationships_by_filter(
+        self, filter: Filter, *, timeout: float | None = None, call_options: CallOptions | None = None
+    ) -> CountResult:
+        """Not implemented: recorded, then raises UNIMPLEMENTED."""
+        self._unimplemented(Operation.EXPERIMENTAL_COUNT_RELATIONSHIPS_BY_FILTER, filter, {
+            "timeout": timeout, "call_options": call_options,
+        })
+
+    def experimental_roaring_lookup_resources(
+        self,
+        *,
+        resource_type: str,
+        permission: str,
+        subject: SubjectRef,
+        consistency: Consistency,
+        timeout: float | None = None,
+        call_options: CallOptions | None = None,
+    ) -> RoaringLookupResourcesResult:
+        """Not implemented: recorded, then raises UNIMPLEMENTED."""
+        self._unimplemented(Operation.EXPERIMENTAL_ROARING_LOOKUP_RESOURCES, None, {
+            "resource_type": resource_type, "permission": permission, "subject": subject,
+            "consistency": consistency, "timeout": timeout, "call_options": call_options,
+        })
+
+    def lookup_resources(
+        self,
+        *,
+        resource_type: str,
+        permission: str,
+        subject: SubjectRef,
+        consistency: Consistency,
+        context: JSONObject | None = None,
+        permissionship_filter: LookupPermissionshipFilter = LookupPermissionshipFilter.ALL,
+        limit: int | None = None,
+        page_size: int = 1000,
+        debug: LookupDebug = LookupDebug.DISABLED,
+        cursor: str | None = None,
+        paging: Paging = Paging.AUTOMATIC,
+        timeout: float | None = None,
+        call_options: CallOptions | None = None,
+    ) -> Stream[LookupResource]:
+        """Not implemented: recorded; iterating raises UNIMPLEMENTED."""
+        return self._unimplemented_stream(Operation.LOOKUP_RESOURCES, None, {
+            "resource_type": resource_type, "permission": permission, "subject": subject,
+            "consistency": consistency, "context": context, "permissionship_filter": permissionship_filter,
+            "limit": limit, "page_size": page_size, "debug": debug, "cursor": cursor, "paging": paging,
+            "timeout": timeout, "call_options": call_options,
+        })
+
+    def lookup_subjects(
+        self,
+        *,
+        resource: ObjectRef,
+        permission: str,
+        subject_type: str,
+        consistency: Consistency,
+        subject_relation: str | None = None,
+        context: JSONObject | None = None,
+        page_size: int | None = None,
+        limit: int | None = None,
+        wildcards: Wildcards = Wildcards.DEFAULT,
+        timeout: float | None = None,
+        call_options: CallOptions | None = None,
+    ) -> Stream[LookupSubject]:
+        """Not implemented: recorded; iterating raises UNIMPLEMENTED."""
+        return self._unimplemented_stream(Operation.LOOKUP_SUBJECTS, None, {
+            "resource": resource, "permission": permission, "subject_type": subject_type,
+            "consistency": consistency, "subject_relation": subject_relation, "context": context,
+            "page_size": page_size, "limit": limit, "wildcards": wildcards,
+            "timeout": timeout, "call_options": call_options,
+        })
+
+    def watch(
+        self,
+        object_types: Sequence[str] = (),
+        *,
+        start_revision: ZedToken | None = None,
+        content: Sequence[WatchContent] = (WatchContent.RELATIONSHIPS,),
+        filters: Sequence[Filter] = (),
+        timeout: float | None = None,
+        call_options: CallOptions | None = None,
+    ) -> Stream[WatchEvent]:
+        """Not implemented: recorded; iterating raises UNIMPLEMENTED."""
+        return self._unimplemented_stream(Operation.WATCH, object_types, {
+            "start_revision": start_revision, "content": content, "filters": filters,
+            "timeout": timeout, "call_options": call_options,
+        })
+
+    def watch_permission_sets(
+        self,
+        *,
+        start_revision: ZedToken | None = None,
+        timeout: float | None = None,
+        call_options: CallOptions | None = None,
+    ) -> Stream[PermissionSetEvent]:
+        """Not implemented: recorded; iterating raises UNIMPLEMENTED."""
+        return self._unimplemented_stream(Operation.WATCH_PERMISSION_SETS, None, {
+            "start_revision": start_revision, "timeout": timeout, "call_options": call_options,
+        })
+
+    def lookup_permission_sets(
+        self,
+        *,
+        limit: int = 1000,
+        at_revision: ZedToken | None = None,
+        cursor: PermissionSetCursor | None = None,
+        timeout: float | None = None,
+        call_options: CallOptions | None = None,
+    ) -> Stream[PermissionSetLookup]:
+        """Not implemented: recorded; iterating raises UNIMPLEMENTED."""
+        return self._unimplemented_stream(Operation.LOOKUP_PERMISSION_SETS, None, {
+            "limit": limit, "at_revision": at_revision, "cursor": cursor,
+            "timeout": timeout, "call_options": call_options,
+        })
+
+    def download_permission_sets(
+        self,
+        *,
+        at_revision: ZedToken | None = None,
+        timeout: float | None = None,
+        call_options: CallOptions | None = None,
+    ) -> PermissionSetDownload:
+        """Not implemented: recorded, then raises UNIMPLEMENTED."""
+        self._unimplemented(Operation.DOWNLOAD_PERMISSION_SETS, None, {
+            "at_revision": at_revision, "timeout": timeout, "call_options": call_options,
+        })
+
 
 class AsyncInMemoryClient:
     """In-memory stand-in for :class:`spicedb.aio.SpiceDBClient`."""
@@ -771,6 +1126,10 @@ class AsyncInMemoryClient:
         """Set the headers and trailers every operation reports to a
         ``CallOptions(response_metadata=...)`` target."""
         self._sync.set_response_metadata(headers, trailers)
+
+    def set_read_schema_revision(self, mode: SchemaRevision) -> None:
+        """See :meth:`InMemoryClient.set_read_schema_revision`."""
+        self._sync.set_read_schema_revision(mode)
 
     def set_fault_hook(self, hook: Callable[[Fault], BaseException | None] | None) -> None:
         """See :meth:`InMemoryClient.set_fault_hook`."""
@@ -843,16 +1202,10 @@ class AsyncInMemoryClient:
         call_options: CallOptions | None = None,
     ) -> AsyncStream[ReadRelationship]:
         """Yield matching relationships (a snapshot) in insertion order."""
-        source = self._sync.read_relationships(
+        return _async_stream(self._sync.read_relationships(
             filter, consistency=consistency, page_size=page_size, cursor=cursor,
             paging=paging, timeout=timeout, call_options=call_options,
-        )
-
-        async def factory(_owner):
-            for item in source:
-                yield item
-
-        return AsyncStream(factory)
+        ))
 
     def export_relationships(
         self,
@@ -865,16 +1218,10 @@ class AsyncInMemoryClient:
         call_options: CallOptions | None = None,
     ) -> AsyncStream[ExportedRelationship]:
         """Yield every relationship (or those matching ``filter``)."""
-        source = self._sync.export_relationships(
+        return _async_stream(self._sync.export_relationships(
             filter, consistency=consistency, page_size=page_size, cursor=cursor,
             timeout=timeout, call_options=call_options,
-        )
-
-        async def factory(_owner):
-            for item in source:
-                yield item
-
-        return AsyncStream(factory)
+        ))
 
     async def import_relationships(
         self,
@@ -965,4 +1312,224 @@ class AsyncInMemoryClient:
         """Return the registered reflection, stamped with the current revision."""
         return self._sync.reflect_schema(
             consistency=consistency, filters=filters, timeout=timeout, call_options=call_options
+        )
+
+    async def close(self) -> None:
+        """Do nothing; the double holds no transport and stays usable."""
+
+    async def __aenter__(self) -> AsyncInMemoryClient:
+        return self
+
+    async def __aexit__(self, exc_type, exc_value, traceback) -> None:
+        await self.close()
+
+    async def raw_grpc(self) -> RawGrpc:
+        """Raise an UNIMPLEMENTED ``SpiceDBError``: the double has no channel."""
+        return self._sync.raw_grpc()
+
+    # The remaining operations have no in-memory semantics; see
+    # InMemoryClient: each is recorded, consults the fault hook, and fails
+    # with UNIMPLEMENTED (streams on iteration).
+
+    async def expand_permission_tree(
+        self,
+        *,
+        resource: ObjectRef,
+        permission: str,
+        consistency: Consistency,
+        timeout: float | None = None,
+        call_options: CallOptions | None = None,
+    ) -> ExpandResult:
+        """Not implemented: recorded, then raises UNIMPLEMENTED."""
+        return self._sync.expand_permission_tree(
+            resource=resource, permission=permission, consistency=consistency,
+            timeout=timeout, call_options=call_options,
+        )
+
+    async def computable_permissions(
+        self,
+        *,
+        definition_name: str,
+        relation_name: str,
+        consistency: Consistency,
+        definition_name_filter: str | None = None,
+        timeout: float | None = None,
+        call_options: CallOptions | None = None,
+    ) -> RelationsResult:
+        """Not implemented: recorded, then raises UNIMPLEMENTED."""
+        return self._sync.computable_permissions(
+            definition_name=definition_name, relation_name=relation_name, consistency=consistency,
+            definition_name_filter=definition_name_filter, timeout=timeout, call_options=call_options,
+        )
+
+    async def dependent_relations(
+        self,
+        *,
+        definition_name: str,
+        permission_name: str,
+        consistency: Consistency,
+        timeout: float | None = None,
+        call_options: CallOptions | None = None,
+    ) -> RelationsResult:
+        """Not implemented: recorded, then raises UNIMPLEMENTED."""
+        return self._sync.dependent_relations(
+            definition_name=definition_name, permission_name=permission_name, consistency=consistency,
+            timeout=timeout, call_options=call_options,
+        )
+
+    async def diff_schema(
+        self,
+        comparison_schema: str,
+        *,
+        consistency: Consistency,
+        timeout: float | None = None,
+        call_options: CallOptions | None = None,
+    ) -> SchemaDiffResult:
+        """Not implemented: recorded, then raises UNIMPLEMENTED."""
+        return self._sync.diff_schema(
+            comparison_schema, consistency=consistency, timeout=timeout, call_options=call_options
+        )
+
+    async def experimental_register_relationship_counter(
+        self, name: str, filter: Filter, *, timeout: float | None = None, call_options: CallOptions | None = None
+    ) -> None:
+        """Not implemented: recorded (request ``(name, filter)``), then raises UNIMPLEMENTED."""
+        self._sync.experimental_register_relationship_counter(
+            name, filter, timeout=timeout, call_options=call_options
+        )
+
+    async def experimental_unregister_relationship_counter(
+        self, name: str, *, timeout: float | None = None, call_options: CallOptions | None = None
+    ) -> None:
+        """Not implemented: recorded, then raises UNIMPLEMENTED."""
+        self._sync.experimental_unregister_relationship_counter(name, timeout=timeout, call_options=call_options)
+
+    async def experimental_count_relationships(
+        self, name: str, *, timeout: float | None = None, call_options: CallOptions | None = None
+    ) -> CountResult:
+        """Not implemented: recorded, then raises UNIMPLEMENTED."""
+        return self._sync.experimental_count_relationships(name, timeout=timeout, call_options=call_options)
+
+    async def experimental_count_relationships_by_filter(
+        self, filter: Filter, *, timeout: float | None = None, call_options: CallOptions | None = None
+    ) -> CountResult:
+        """Not implemented: recorded, then raises UNIMPLEMENTED."""
+        return self._sync.experimental_count_relationships_by_filter(
+            filter, timeout=timeout, call_options=call_options
+        )
+
+    async def experimental_roaring_lookup_resources(
+        self,
+        *,
+        resource_type: str,
+        permission: str,
+        subject: SubjectRef,
+        consistency: Consistency,
+        timeout: float | None = None,
+        call_options: CallOptions | None = None,
+    ) -> RoaringLookupResourcesResult:
+        """Not implemented: recorded, then raises UNIMPLEMENTED."""
+        return self._sync.experimental_roaring_lookup_resources(
+            resource_type=resource_type, permission=permission, subject=subject,
+            consistency=consistency, timeout=timeout, call_options=call_options,
+        )
+
+    def lookup_resources(
+        self,
+        *,
+        resource_type: str,
+        permission: str,
+        subject: SubjectRef,
+        consistency: Consistency,
+        context: JSONObject | None = None,
+        permissionship_filter: LookupPermissionshipFilter = LookupPermissionshipFilter.ALL,
+        limit: int | None = None,
+        page_size: int = 1000,
+        debug: LookupDebug = LookupDebug.DISABLED,
+        cursor: str | None = None,
+        paging: Paging = Paging.AUTOMATIC,
+        timeout: float | None = None,
+        call_options: CallOptions | None = None,
+    ) -> AsyncStream[LookupResource]:
+        """Not implemented: recorded; iterating raises UNIMPLEMENTED."""
+        return _async_stream(self._sync.lookup_resources(
+            resource_type=resource_type, permission=permission, subject=subject, consistency=consistency,
+            context=context, permissionship_filter=permissionship_filter, limit=limit, page_size=page_size,
+            debug=debug, cursor=cursor, paging=paging, timeout=timeout, call_options=call_options,
+        ))
+
+    def lookup_subjects(
+        self,
+        *,
+        resource: ObjectRef,
+        permission: str,
+        subject_type: str,
+        consistency: Consistency,
+        subject_relation: str | None = None,
+        context: JSONObject | None = None,
+        page_size: int | None = None,
+        limit: int | None = None,
+        wildcards: Wildcards = Wildcards.DEFAULT,
+        timeout: float | None = None,
+        call_options: CallOptions | None = None,
+    ) -> AsyncStream[LookupSubject]:
+        """Not implemented: recorded; iterating raises UNIMPLEMENTED."""
+        return _async_stream(self._sync.lookup_subjects(
+            resource=resource, permission=permission, subject_type=subject_type, consistency=consistency,
+            subject_relation=subject_relation, context=context, page_size=page_size, limit=limit,
+            wildcards=wildcards, timeout=timeout, call_options=call_options,
+        ))
+
+    def watch(
+        self,
+        object_types: Sequence[str] = (),
+        *,
+        start_revision: ZedToken | None = None,
+        content: Sequence[WatchContent] = (WatchContent.RELATIONSHIPS,),
+        filters: Sequence[Filter] = (),
+        timeout: float | None = None,
+        call_options: CallOptions | None = None,
+    ) -> AsyncStream[WatchEvent]:
+        """Not implemented: recorded; iterating raises UNIMPLEMENTED."""
+        return _async_stream(self._sync.watch(
+            object_types, start_revision=start_revision, content=content, filters=filters,
+            timeout=timeout, call_options=call_options,
+        ))
+
+    def watch_permission_sets(
+        self,
+        *,
+        start_revision: ZedToken | None = None,
+        timeout: float | None = None,
+        call_options: CallOptions | None = None,
+    ) -> AsyncStream[PermissionSetEvent]:
+        """Not implemented: recorded; iterating raises UNIMPLEMENTED."""
+        return _async_stream(self._sync.watch_permission_sets(
+            start_revision=start_revision, timeout=timeout, call_options=call_options
+        ))
+
+    def lookup_permission_sets(
+        self,
+        *,
+        limit: int = 1000,
+        at_revision: ZedToken | None = None,
+        cursor: PermissionSetCursor | None = None,
+        timeout: float | None = None,
+        call_options: CallOptions | None = None,
+    ) -> AsyncStream[PermissionSetLookup]:
+        """Not implemented: recorded; iterating raises UNIMPLEMENTED."""
+        return _async_stream(self._sync.lookup_permission_sets(
+            limit=limit, at_revision=at_revision, cursor=cursor, timeout=timeout, call_options=call_options
+        ))
+
+    async def download_permission_sets(
+        self,
+        *,
+        at_revision: ZedToken | None = None,
+        timeout: float | None = None,
+        call_options: CallOptions | None = None,
+    ) -> PermissionSetDownload:
+        """Not implemented: recorded, then raises UNIMPLEMENTED."""
+        return self._sync.download_permission_sets(
+            at_revision=at_revision, timeout=timeout, call_options=call_options
         )

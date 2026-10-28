@@ -10,7 +10,8 @@
 - A client can wrap a caller-owned channel, and any call can capture the
   server's response headers and trailers.
 - The in-memory double records calls and injects faults (a failed import
-  batch, for one) shaped like the real client's errors.
+  batch, for one) shaped like the real client's errors. It satisfies the same
+  full-client protocol as the real client, so one function accepts both.
 """
 
 import asyncio
@@ -43,7 +44,8 @@ from spicedb import (
 )
 from spicedb import sync
 from spicedb.aio import SpiceDBClient
-from spicedb.testing import AsyncInMemoryClient, FaultStage
+from spicedb.protocols import AsyncClientProtocol
+from spicedb.testing import AsyncInMemoryClient, FaultStage, cursor_after
 
 pytestmark = pytest.mark.integration
 
@@ -215,3 +217,31 @@ async def test_failure_paths_with_the_in_memory_double(client: SpiceDBClient):
     with pytest.raises(AlreadyExistsError) as real:
         await client.import_relationships(_docs("dup-", 1))
     print("double and real client agree:", type(real.value).__name__)
+
+
+async def _restore(target: AsyncClientProtocol, rels: list[Relationship]) -> int:
+    """A restore step typed against the full client protocol."""
+    return await target.import_relationships(rels, batch_size=2)
+
+
+async def test_one_protocol_accepts_the_client_and_the_double(client: SpiceDBClient):
+    double = AsyncInMemoryClient()
+    # The fault hook sees each import batch's relationships, so a test can
+    # fail exactly the batch holding one bad relationship.
+    double.set_fault_hook(
+        lambda fault: SpiceDBError.from_code(grpc.StatusCode.ALREADY_EXISTS, "duplicate proto-3")
+        if fault.stage is FaultStage.IMPORT_BATCH and any(r.resource_id == "proto-3" for r in fault.batch)
+        else None
+    )
+    with pytest.raises(AlreadyExistsError):
+        await _restore(double, _docs("proto-", 5))
+    double.set_fault_hook(None)
+    assert await _restore(double, _docs("proto-", 5)) == 5
+
+    # cursor_after(n) builds the double's resume cursor after n items.
+    resumed = [item.relationship.resource_id
+               async for item in double.export_relationships(consistency=full(), cursor=cursor_after(3))]
+    assert resumed == ["proto-3", "proto-4"]
+
+    # The same function runs against the real client.
+    assert await _restore(client, _docs("proto-", 5)) == 5

@@ -38,7 +38,15 @@ from spicedb import (
 from spicedb.aio import SpiceDBClient as AioClient
 from spicedb.sync import SpiceDBClient as SyncClient
 from spicedb import Operation, UnavailableError
-from spicedb.testing import AsyncInMemoryClient, Call, Fault, FaultStage, InMemoryClient
+from spicedb.testing import (
+    AsyncInMemoryClient,
+    Call,
+    Fault,
+    FaultStage,
+    InMemoryClient,
+    SchemaRevision,
+    cursor_after,
+)
 
 SHARED = [
     "write",
@@ -393,3 +401,136 @@ async def test_async_double_records_and_injects():
     imports = client.calls_of(Operation.IMPORT_RELATIONSHIPS)
     assert [(c.index, c.options["batch_size"], len(c.request)) for c in imports] == [(0, 2, 4), (1, 2, 4)]
     assert client.calls() == client._sync.calls()
+
+
+def test_double_covers_the_whole_client():
+    client = InMemoryClient(_tuples(2))
+
+    # Operations without in-memory semantics fail like a server lacking them.
+    with pytest.raises(SpiceDBError) as raised:
+        client.expand_permission_tree(resource=ObjectRef("document", "d0"), permission="view", consistency=full())
+    assert raised.value.code() is grpc.StatusCode.UNIMPLEMENTED
+    assert str(raised.value) == "expand_permission_tree: not implemented by the spicedb.testing in-memory double"
+    assert raised.value.server_message == str(raised.value)
+    expand = client.calls_of(Operation.EXPAND_PERMISSION_TREE)
+    assert len(expand) == 1 and expand[0].request is None
+    assert expand[0].options["resource"] == ObjectRef("document", "d0")
+
+    # Streams record the call and fail on iteration.
+    stream = client.watch(["document"])
+    assert client.calls_of(Operation.WATCH)[0].request == ["document"]
+    with pytest.raises(SpiceDBError) as raised:
+        list(stream)
+    assert raised.value.code() is grpc.StatusCode.UNIMPLEMENTED
+
+    # They consult the fault hook first, so a test can still script them.
+    client.fail_next(Operation.DIFF_SCHEMA, _unavailable("down"))
+    with pytest.raises(UnavailableError):
+        client.diff_schema("definition user {}", consistency=full())
+    client.fail_next(Operation.LOOKUP_RESOURCES, _unavailable("down"))
+    with pytest.raises(UnavailableError):
+        list(client.lookup_resources(
+            resource_type="document", permission="view",
+            subject=SubjectRef(ObjectRef("user", "x")), consistency=full(),
+        ))
+    with pytest.raises(SpiceDBError) as raised:
+        client.experimental_register_relationship_counter("docs", Filter("document"))
+    assert raised.value.code() is grpc.StatusCode.UNIMPLEMENTED
+    assert client.calls_of(Operation.EXPERIMENTAL_REGISTER_RELATIONSHIP_COUNTER)[0].request == (
+        "docs", Filter("document"),
+    )
+    with pytest.raises(InvalidArgumentError):
+        client.experimental_count_relationships("docs", call_options="nope")  # type: ignore[arg-type]
+
+    # The double has no channel; close and the context manager work in memory.
+    with pytest.raises(SpiceDBError) as raised:
+        client.raw_grpc()
+    assert raised.value.code() is grpc.StatusCode.UNIMPLEMENTED
+    with client as entered:
+        assert entered is client
+    client.close()
+    assert len(client.relationships()) == 2, "the double stays usable after close"
+
+
+async def test_async_double_covers_the_whole_client():
+    client = AsyncInMemoryClient()
+    with pytest.raises(SpiceDBError) as raised:
+        await client.download_permission_sets()
+    assert raised.value.code() is grpc.StatusCode.UNIMPLEMENTED
+    with pytest.raises(SpiceDBError) as raised:
+        [x async for x in client.lookup_subjects(
+            resource=ObjectRef("document", "d0"), permission="view", subject_type="user", consistency=full(),
+        )]
+    assert raised.value.code() is grpc.StatusCode.UNIMPLEMENTED
+    with pytest.raises(SpiceDBError):
+        await client.raw_grpc()
+    async with client as entered:
+        assert entered is client
+    await client.close()
+    assert [c.operation for c in client.calls()] == [Operation.DOWNLOAD_PERMISSION_SETS, Operation.LOOKUP_SUBJECTS]
+
+
+def test_read_schema_without_revision():
+    client = InMemoryClient()
+    client.write_schema("definition user {}")
+    assert str(client.read_schema().revision) != ""
+
+    client.set_read_schema_revision(SchemaRevision.OMITTED)
+    omitted = client.read_schema()
+    assert omitted.revision == ZedToken("")
+    assert omitted.schema == "definition user {}"
+
+    client.set_read_schema_revision(SchemaRevision.INCLUDED)
+    assert str(client.read_schema().revision) != ""
+    with pytest.raises(InvalidArgumentError):
+        client.set_read_schema_revision("omitted")  # type: ignore[arg-type]
+
+
+async def test_async_read_schema_without_revision():
+    client = AsyncInMemoryClient()
+    await client.write_schema("definition user {}")
+    client.set_read_schema_revision(SchemaRevision.OMITTED)
+    assert (await client.read_schema()).revision == ZedToken("")
+
+
+def test_fault_sees_import_batch_contents():
+    client = InMemoryClient()
+    batches: list[list[str]] = []
+
+    def hook(fault: Fault):
+        if fault.stage is not FaultStage.IMPORT_BATCH:
+            assert fault.batch == ()
+            return None
+        ids = [r.resource_id for r in fault.batch]
+        if "d4" in ids:
+            return SpiceDBError.from_code(grpc.StatusCode.ALREADY_EXISTS, "duplicate d4")
+        batches.append(ids)
+        return None
+
+    client.set_fault_hook(hook)
+    with pytest.raises(AlreadyExistsError):
+        client.import_relationships(_tuples(7), batch_size=3)
+    assert batches == [["d0", "d1", "d2"]], "the hook saw the first batch, then failed on the one holding d4"
+    assert client.relationships() == []
+
+    batches.clear()
+    client.set_fault_hook(lambda f: batches.append([r.resource_id for r in f.batch]) if f.batch else None)
+    assert client.import_relationships(_tuples(7), batch_size=3) == 7
+    assert batches == [["d0", "d1", "d2"], ["d3", "d4", "d5"], ["d6"]]
+
+
+def test_cursor_after_resumes_like_a_double_cursor():
+    client = InMemoryClient()
+    client.import_relationships(_tuples(5))
+    cursors = [item.after_result_cursor for item in client.export_relationships(consistency=full())]
+    assert cursors[1] == cursor_after(2), "cursor_after(n) is the cursor on the n-th item"
+    rest = [item.relationship.resource_id
+            for item in client.export_relationships(consistency=full(), cursor=cursor_after(3))]
+    assert rest == ["d3", "d4"]
+    reads = [item.relationship.resource_id
+             for item in client.read_relationships(Filter("document"), consistency=full(), cursor=cursor_after(4))]
+    assert reads == ["d4"]
+    assert cursor_after(0) == "0"
+    for bad in (-1, True, "2"):
+        with pytest.raises(InvalidArgumentError):
+            cursor_after(bad)  # type: ignore[arg-type]

@@ -46,7 +46,7 @@ public class StreamingEstablishmentRetryTests
 
         var got = new List<Relationship>();
         await foreach (var r in client.ReadRelationshipsAsync(Consistency.Full(), new Filter("document"), null, default))
-            got.Add(r);
+            got.Add(r.Relationship);
 
         got.Select(r => r.Resource.ObjectId).Should().Equal("doc1");
         script.CallCount.Should().Be(2); // one failed open + one successful open
@@ -73,7 +73,7 @@ public class StreamingEstablishmentRetryTests
         var act = async () =>
         {
             await foreach (var r in client.ReadRelationshipsAsync(Consistency.Full(), new Filter("document"), null, default))
-                got.Add(r);
+                got.Add(r.Relationship);
         };
 
         await act.Should().ThrowAsync<UnavailableException>();
@@ -273,7 +273,7 @@ public class StreamingEstablishmentRetryTests
 
         var got = new List<Relationship>();
         await foreach (var r in client.ExportRelationshipsAsync(Consistency.Full(), new Filter("document"), null, default))
-            got.Add(r);
+            got.Add(r.Relationship);
 
         got.Select(r => r.Resource.ObjectId).Should().Equal("doc1");
         script.CallCount.Should().Be(2);
@@ -306,7 +306,7 @@ public class StreamingEstablishmentRetryTests
         var act = async () =>
         {
             await foreach (var r in client.ExportRelationshipsAsync(Consistency.Full(), new Filter("document"), null, default))
-                got.Add(r);
+                got.Add(r.Relationship);
         };
 
         await act.Should().ThrowAsync<UnavailableException>();

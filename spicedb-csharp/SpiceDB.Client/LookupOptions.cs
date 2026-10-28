@@ -8,6 +8,9 @@ public sealed class LookupOptions
     private IReadOnlyDictionary<string, object?>? _context;
     public IReadOnlyDictionary<string, object?>? Context { get => _context; init => _context = Native.Context(value); }
     public TimeSpan? Timeout { get; init; }
+    public TransportOptions? Transport { get; init; }
+    /// <summary>LookupResources only: resumes after the item whose <see cref="LookupResource.AfterResultCursor"/> this is. Repeat the request and page size.</summary>
+    public string? ResumeCursor { get; init; }
     private LookupPermissionshipFilter _permissionshipFilter;
     public LookupPermissionshipFilter PermissionshipFilter { get => _permissionshipFilter; init => _permissionshipFilter = BehaviorOptions.Defined(value, nameof(PermissionshipFilter)); }
     private LookupDebug _debug;

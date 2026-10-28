@@ -128,7 +128,7 @@ public class BulkOperationsTest
         var exported = new List<Relationship>();
         await foreach (var rel in client.ExportRelationshipsAsync(Full(), filter, null, default))
         {
-            exported.Add(rel);
+            exported.Add(rel.Relationship);
         }
 
         var exportedSubjectIDs = exported.Select(r => r.Subject.Object.ObjectId).ToHashSet();

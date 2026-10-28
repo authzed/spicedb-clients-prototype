@@ -45,6 +45,7 @@ public sealed record DownloadPermissionSetsResult
 public sealed class PermissionSetLookupOptions
 {
     public TimeSpan? Timeout { get; init; }
+    public TransportOptions? Transport { get; init; }
     public PermissionSetCursor? ResumeCursor { get; init; }
 }
 public sealed partial class SpiceDBClient
@@ -52,18 +53,18 @@ public sealed partial class SpiceDBClient
     /// <summary>Experimental materialize count by relationship filter.</summary>
     public async Task<CountResult> ExperimentalCountRelationshipsByFilterAsync(Filter filter, CallOptions? options = null, CancellationToken cancellationToken = default)
     {
-        using var budget = Begin(options?.Timeout, cancellationToken);
+        using var budget = Begin(options?.Timeout, cancellationToken, transport: options?.Transport);
         options?.Validate();
-        var response = await Unary(budget, (d, c) => RawProto().MaterializeRelationships.ExperimentalCountRelationshipsByFilterAsync(new() { RelationshipFilter = filter.ToProto() }, deadline: d, cancellationToken: c));
+        var response = await Unary(budget, o => RawProto().MaterializeRelationships.ExperimentalCountRelationshipsByFilterAsync(new() { RelationshipFilter = filter.ToProto() }, o.Headers, o.Deadline, o.CancellationToken));
         return new() { RelationshipCount = response.RelationshipCount, Revision = new(response.ReadAt?.Token ?? "") };
     }
     /// <summary>Experimental materialized permission-set watch. Dispose the enumerator to release the call.</summary>
     public async IAsyncEnumerable<PermissionSetEvent> ExperimentalWatchPermissionSetsAsync(ZedToken? startRevision, CallOptions? options = null, [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        using var budget = Begin(options?.Timeout, cancellationToken, false);
+        using var budget = Begin(options?.Timeout, cancellationToken, false, transport: options?.Transport);
         options?.Validate();
         var request = new M.WatchPermissionSetsRequest { OptionalStartingAfter = startRevision is { } token ? new() { Token = token.Value } : null };
-        await foreach (var response in Stream(budget, (d, c) => RawProto().MaterializePermissionSets.WatchPermissionSets(request, deadline: d, cancellationToken: c)))
+        await foreach (var response in Stream(budget, o => RawProto().MaterializePermissionSets.WatchPermissionSets(request, o.Headers, o.Deadline, o.CancellationToken)))
             yield return response.ResponseCase switch
             {
                 M.WatchPermissionSetsResponse.ResponseOneofCase.Change => new PermissionSetEvent.Change(MapSetChange(response.Change)),
@@ -76,18 +77,18 @@ public sealed partial class SpiceDBClient
     /// <summary>Experimental explicit single-page lookup. Retain the last cursor to request the next page.</summary>
     public async IAsyncEnumerable<LookupPermissionSet> ExperimentalLookupPermissionSetsAsync(int limit, ZedToken? atRevision, PermissionSetLookupOptions? options = null, [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        using var budget = Begin(options?.Timeout, cancellationToken, false);
+        using var budget = Begin(options?.Timeout, cancellationToken, false, transport: options?.Transport);
         var request = new M.LookupPermissionSetsRequest { Limit = (uint)Positive(limit, nameof(limit)), OptionalAtRevision = atRevision is { } token ? new() { Token = token.Value } : null, OptionalStartingAfterCursor = options?.ResumeCursor?.ToProto() };
-        await foreach (var response in Stream(budget, (d, c) => RawProto().MaterializePermissionSets.LookupPermissionSets(request, deadline: d, cancellationToken: c)))
+        await foreach (var response in Stream(budget, o => RawProto().MaterializePermissionSets.LookupPermissionSets(request, o.Headers, o.Deadline, o.CancellationToken)))
             yield return new(response.Change is null ? null : MapSetChange(response.Change), PermissionSetCursor.FromProto(response.Cursor));
     }
     /// <summary>Experimental download metadata; returned URLs are not fetched automatically.</summary>
     public async Task<DownloadPermissionSetsResult> ExperimentalDownloadPermissionSetsAsync(ZedToken? atRevision, CallOptions? options = null, CancellationToken cancellationToken = default)
     {
-        using var budget = Begin(options?.Timeout, cancellationToken);
+        using var budget = Begin(options?.Timeout, cancellationToken, transport: options?.Transport);
         options?.Validate();
         var request = new M.DownloadPermissionSetsRequest { OptionalAtRevision = atRevision is { } token ? new() { Token = token.Value } : null };
-        var response = await Unary(budget, (d, c) => RawProto().MaterializePermissionSets.DownloadPermissionSetsAsync(request, deadline: d, cancellationToken: c));
+        var response = await Unary(budget, o => RawProto().MaterializePermissionSets.DownloadPermissionSetsAsync(request, o.Headers, o.Deadline, o.CancellationToken));
         return new(response.Files.Select(x => new PermissionSetFile(x.Name, x.Url)), response.Timestamp?.ToDateTimeOffset(), new(response.AtRevision?.Token ?? ""));
     }
     internal static PermissionSetChange MapSetChange(M.PermissionSetChange value) => new(new(value.AtRevision?.Token ?? ""),

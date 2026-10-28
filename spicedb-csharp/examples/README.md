@@ -75,8 +75,8 @@ executed by CI and must be able to fail".
 |-----------|-------------|
 | `CheckPermission/` | Singular permission checks, conditional results, request context and populated debug tracing |
 | `WriteRelationships/` | Writing relationships with transactions |
-| `ReadRelationships/` | Reading relationships with async enumerables |
-| `LookupResources/` | Resource lookup |
+| `ReadRelationships/` | Reading relationships with async enumerables, across several pages, resuming from an item's cursor |
+| `LookupResources/` | Resource lookup, paged with a limit and resumed from a cursor |
 | `LookupSubjects/` | Subject lookup |
 | `CallDeadlines/` | `ClientOptions.DefaultTimeout`, per-operation `Timeout`, and confirming bulk import isn't bounded by the unary default |
 | `ErrorMapping/` | Recovering from `OUT_OF_RANGE` (stale ZedToken) and `UNAUTHENTICATED` without parsing a message |
@@ -91,3 +91,4 @@ executed by CI and must be able to fail".
 | `ExpandPermissionTree/` | Expanding a permission into its native `PermissionTree` of subjects |
 | `RawEscapeHatch/` | The `RawProto()` escape hatch: driving the generated service client on this client's own connection to send raw transaction metadata and call `CheckPermission` with explicit protocol deadlines |
 | `RoaringLookupResources/` | Native bitmap lookup with cardinality, revision and raw authenticated service access |
+| `ToolingEscapeHatches/` | Tooling without `RawProto()`: a client over a caller-owned `CallInvoker`, response metadata, import abort status, all-or-nothing and progress-reporting deletes, full tuple syntax, watch schema changes, gRPC status interop, `ProtoConvert` |

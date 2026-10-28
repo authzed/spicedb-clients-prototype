@@ -73,7 +73,7 @@ public class TransactionTests
 
         txn.Preconditions.Should().HaveCount(1);
         txn.Preconditions[0].Operation.Should().Be(
-            Authzed.Api.V1.Precondition.Types.Operation.MustNotMatch);
+            PreconditionOperation.MustNotMatch);
         txn.Preconditions[0].Filter.ResourceType.Should().Be("document");
     }
 
@@ -86,7 +86,7 @@ public class TransactionTests
 
         txn.Preconditions.Should().HaveCount(1);
         txn.Preconditions[0].Operation.Should().Be(
-            Authzed.Api.V1.Precondition.Types.Operation.MustMatch);
+            PreconditionOperation.MustMatch);
     }
 
     [Fact]

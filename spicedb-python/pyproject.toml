@@ -3,9 +3,20 @@ name = "spicedb-python"
 version = "0.1.0"
 description = "Idiomatic Python client for SpiceDB"
 requires-python = ">=3.11"
+# Runtime floors are the lowest versions the test suite passes against
+# (verified on Python 3.11 with exactly these versions installed); see
+# CHANGELOG.md and ../proto-clients/spicedb-python-proto/pyproject.toml.
+# - grpcio 1.73.0: older transports do not reject authority-bearing unix
+#   targets, which the plaintext-credential guard relies on.
+# - protobuf 7.36.2: the generated bindings' gencode version.
+# - googleapis-common-protos: google.rpc status/error details (errors.py).
+# Test tooling lives only in the `dev` extra (CI runs `uv sync --extra dev`),
+# never in the requirements consumers inherit.
 dependencies = [
     "spicedb-python-proto",
-    "grpcio>=1.71.0",
+    "grpcio>=1.73.0",
+    "protobuf>=7.36.2",
+    "googleapis-common-protos>=1.56.1",
 ]
 
 [project.optional-dependencies]

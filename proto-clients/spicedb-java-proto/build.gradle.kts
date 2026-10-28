@@ -52,8 +52,9 @@ dependencies {
     // com.google.rpc.Status appears in generated message signatures; com.google.api
     // annotations are referenced by descriptors. Same artifact authzed-java uses.
     api("com.google.api.grpc:proto-google-common-protos:2.65.0")
-    api("io.grpc:grpc-netty-shaded")
-    api("javax.annotation:javax.annotation-api:1.3.2")
+    // The default transport behind ManagedChannelBuilder.forTarget. No netty type appears in
+    // this module's API, so consumers get it at run time without compiling against it.
+    runtimeOnly("io.grpc:grpc-netty-shaded")
 
     // Descriptor-only imports of authzed/api's .proto files: generated classes
     // reference them only to build their file descriptors, never in signatures.

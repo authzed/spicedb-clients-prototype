@@ -96,8 +96,10 @@ class InMemorySpiceDBTest {
     }
 
     var allOrNothing = DeleteOptions.builder().partialDeletion(PartialDeletion.DISALLOWED).build();
+    // SpiceDB rejects an over-limit all-or-nothing delete with INVALID_ARGUMENT (verified live in
+    // the ToolingEscapeHatchesTest example).
     assertThrows(
-        FailedPreconditionException.class,
+        InvalidArgumentException.class,
         () -> db.deleteRelationships(Filter.of("document"), 1, allOrNothing));
     var partial = db.deleteRelationships(Filter.of("document"), 1);
     assertEquals(1, partial.deletedCount());

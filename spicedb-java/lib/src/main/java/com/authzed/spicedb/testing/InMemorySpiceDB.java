@@ -225,7 +225,7 @@ public final class InMemorySpiceDB implements PermissionsApi {
     var matches = matching(filter);
     if (options.partialDeletion() == PartialDeletion.DISALLOWED && matches.size() > limit)
       throw ErrorMapper.newError(
-          Status.Code.FAILED_PRECONDITION,
+          Status.Code.INVALID_ARGUMENT,
           "found more than "
               + limit
               + " relationships to be deleted and partial deletion was not requested");

@@ -2,6 +2,91 @@
 
 ## Unreleased
 
+### Adoption changes (2026-10-28)
+
+- **BREAKING:** the protocol classes are `com.authzed.api.v1.*` /
+  `com.authzed.api.materialize.v0.*` (the proto tier now compiles its own buf
+  output instead of depending on BSR SDKs). Only `rawChannel()` users see this:
+  replace `import build.buf.gen.authzed.api.v1.PermissionsServiceGrpc;` with
+  `import com.authzed.api.v1.PermissionsServiceGrpc;`. These are the same class
+  names authzed-java ships; `spicedb-java-proto`'s `bridgeAuthzedJava` task
+  repackages authzed-java onto them so both can share one JVM (see MIGRATION.md).
+- **BREAKING:** `readRelationships` yields `ReadRelationship` (`relationship()`,
+  `afterResultCursor()`, `readAt()`) and `exportRelationships` yields
+  `ExportedRelationship` (`relationship()`, `afterResultCursor()`).
+  Before: `client.readRelationships(c, f).map(Relationship::relation)`;
+  after: `client.readRelationships(c, f).map(r -> r.relationship().relation())`.
+  `LookupResult.LookupResource` gains a fifth component, `afterResultCursor`.
+  Resume with `ReadOptions/ExportOptions/LookupOptions.builder().cursor(...)`,
+  repeating the request and page size.
+- Paged reads and lookups repeat the caller's consistency and one fixed page
+  size on every page, and enforce `limit` client-side. (The Java pager already
+  did; this is now pinned by unit tests and a live multi-page example. The Go
+  client had failed on page two.)
+- `SpiceDBException` interoperates with gRPC status both ways: `code()`,
+  `status()`, `toStatusRuntimeException()`, and `Status.fromThrowable(e)` agree
+  for server errors, local validation errors and errors built by callers (a
+  status cause is attached when none exists). The client's own
+  `CancellationException`s carry a `CANCELLED` status cause.
+  `ErrorMapper.codeOf(Throwable)` classifies anything, including raw
+  `StatusRuntimeException`; `ErrorMapper.newError(code, message)` builds the
+  typed error for test doubles; `serverMessage()` is the server's message
+  verbatim (bulk item errors keep the `check item N:` prefix only in
+  `getMessage()`).
+- `SpiceDBClient.fromChannel(Channel[, ClientOptions])` wraps a caller-owned
+  channel; `close()` never shuts it down; TLS and remote-plaintext options are
+  rejected there.
+- `ClientOptions`: `retryPolicy(RetryPolicy)` (max retries, retryable read codes
+  including opt-in `RESOURCE_EXHAUSTED`, backoff, `onRetry` callback),
+  `retries(Retries.DISABLED)`, `streamRetries(StreamRetries.DISABLED)`, and
+  `defaultDeadline(DefaultDeadline.DISABLED)`. Mutations never retry.
+- Every options class has `.transport(TransportOptions)`: adjust gRPC
+  `CallOptions` per call and capture headers/trailers in `ResponseMetadata`.
+- `CheckOptions.bulkItemErrors(BulkItemErrors.RETURNED)` returns per-item errors
+  on `CheckResult.error()` (new sixth component; the five-argument constructor
+  remains) instead of failing the call. An errored item never grants.
+- `WatchOptions.schemaChanges(WatchSchemaChanges.INCLUDED)` and
+  `WatchEvent.schemaUpdated()` (new fourth component; the three-argument
+  constructor remains).
+- `DeleteOptions.partialDeletion(PartialDeletion.DISALLOWED)` for all-or-nothing
+  deletes, plus `deleteRelationships(Filter, DeleteOptions)` without a limit (the
+  server default). `DeleteAllOptions.onProgress(Consumer<DeleteResult>)` reports
+  each acknowledged batch cumulatively.
+- `ImportOptions.batchSize` (relationships per message) is documented with "one
+  call is one stream and one transaction"; an aborted import reports the
+  server's status (for example `AlreadyExistsException`), now covered by tests.
+- `com.authzed.spicedb.protoconv.ProtoConv` exports native↔protocol conversions
+  for relationships, filters, preconditions, updates, transactions, consistency,
+  tokens, contexts, check results with traces, lookups, reads, writes and
+  expand trees. `Consistency.kind()`/`token()`/`toString()` are new.
+- `Relationship.fromTuple`/`toString` implement SpiceDB's full tuple syntax,
+  including `[caveat:{...}]` and `[expiration:...]`, matching SpiceDB's
+  formatter. New `withResource`, `withRelation`, `withSubject`, and short
+  accessors `resourceType()`, `resourceId()`, `subjectType()`, `subjectId()`,
+  `subjectRelation()`. `ObjectRef`/`SubjectRef.toString()` print `type:id[#rel]`.
+- `Filter.matches(Relationship)` applies server filter semantics client-side.
+  `Filter`, `Transaction`, `Transaction.Mutation` and `Transaction.Precondition`
+  have readable `toString()` and structured `toJson()`; `Relationship.toJson()`;
+  `Transaction.size()`.
+- New `PermissionsApi` interface (write, read, delete, check, bulk check),
+  implemented by `SpiceDBClient` and by the new in-memory test double
+  `com.authzed.spicedb.testing.InMemorySpiceDB`.
+- Dependencies: the proto tier no longer requires the BSR repository or
+  `javax.annotation-api`; `grpc-netty-shaded` is `runtimeOnly` there (lib keeps
+  it as an implementation dependency). Floors: protobuf-java 4.36.2 (the gencode
+  version), gRPC 1.84.0 (the BOM).
+- New `AI_INTEGRATION_GUIDE.md` and `MIGRATION.md` (from authzed-java).
+- Generated typed clients (spicedb-gen): permission-userset subjects
+  (`organization.canAdminSubject()`), wildcard refs (`UserWildcard()`),
+  identity-only keys (`invitation.inviterKey(user)`), relation checks
+  (`memberRelation()`), typed `Txn` + `TypedClient.writeTxn`, typed
+  `checkBulk(Consistency, List<TypedCheck>)`, native round trips
+  (`TypedRelationship.toRelationship/fromRelationship/ofError`), typed filters
+  and name constants, validated by-name lookups, observable `Permission`, and
+  google-java-format output. **BREAKING:** `Permission` gained a fourth record
+  component (`subjectType`); `TypedRelationship` is a final class rather than a
+  record (accessors kept); type sentinels (`UserType`) are no longer writable.
+
 ### Changed
 
 - Behavioral options use enums: replace `.tracing(true)` with

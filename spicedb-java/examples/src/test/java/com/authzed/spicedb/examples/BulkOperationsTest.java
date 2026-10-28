@@ -189,9 +189,7 @@ class BulkOperationsTest extends SpiceDBIntegrationTest {
     Filter exportFilter = Filter.of("document").withResourceIdPrefix("bulkdoc");
     List<Relationship> exported;
     try (var stream =
-        client
-            .exportRelationships(full(), exportFilter)
-            .map(com.authzed.spicedb.ExportedRelationship::relationship)) {
+        client.exportRelationships(full(), exportFilter).map(ExportedRelationship::relationship)) {
       exported = stream.toList();
     }
 

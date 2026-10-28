@@ -224,7 +224,7 @@ func LookupSubjectToProto(s client.LookupSubject) *v1.LookupSubjectsResponse {
 	}
 	for _, e := range s.ExcludedSubjects {
 		p.ExcludedSubjects = append(p.ExcludedSubjects, resolvedSubject(e))
-		p.ExcludedSubjectIds = append(p.ExcludedSubjectIds, e.SubjectID)
+		p.ExcludedSubjectIds = append(p.ExcludedSubjectIds, e.SubjectID) //nolint:staticcheck // deprecated, but SpiceDB still sends it; filled for wire fidelity
 	}
 	return p
 }

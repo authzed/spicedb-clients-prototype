@@ -133,7 +133,7 @@ type's own string conversion.
 | Go | `spicedb-gen --lang go --go.package=<pkg>` | `github.com/authzed/spicedb-clients/spicedb-go` | [spicedb-go/AI_INTEGRATION_GUIDE.md](spicedb-go/AI_INTEGRATION_GUIDE.md) |
 | Python | `spicedb-gen --lang python` | `spicedb-python` (`import spicedb`) | not yet |
 | TypeScript | `spicedb-gen --lang typescript` (`--typescript.format=prettier`) | `@spicedb/client` | [spicedb-typescript/AI_INTEGRATION_GUIDE.md](spicedb-typescript/AI_INTEGRATION_GUIDE.md) |
-| Java | `spicedb-gen --lang java` | `com.authzed` (`spicedb-java`) | not yet |
+| Java | `spicedb-gen --lang java --java.package=<pkg>` | `com.authzed.spicedb.*` (`spicedb-java`) | [spicedb-java/AI_INTEGRATION_GUIDE.md](spicedb-java/AI_INTEGRATION_GUIDE.md) |
 | C# | — | `SpiceDB.Client` | [spicedb-csharp/AI_INTEGRATION_GUIDE.md](spicedb-csharp/AI_INTEGRATION_GUIDE.md) |
 | Ruby | — | `spicedb` gem | not yet |
 | Rust | — | `spicedb` crate | not yet |

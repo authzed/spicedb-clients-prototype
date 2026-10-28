@@ -186,6 +186,40 @@ public class ToolingEscapeHatchesTest
         Assert.Equal(3, import.OptionsAs<ImportOptions>()!.BatchSize);
     }
 
+    [Fact]
+    public async Task TestDoubleCoversTheFullClientSurface()
+    {
+        // Code that takes the full client interface accepts the double too; operations it has
+        // no in-memory semantics for are recorded and fail as Unimplemented.
+        var store = new SpiceDB.Client.Testing.InMemorySpiceDBClient();
+        ISpiceDBClient client = store;
+        var error = await Assert.ThrowsAsync<SpiceDBException>(() => client.ExpandPermissionTreeAsync(Consistency.Full(), new ObjectRef("document", "r0"), "view"));
+        Assert.Equal(StatusCode.Unimplemented, error.StatusCode);
+
+        // Import-batch faults see the batch, to fail on its contents.
+        store.SetFaultHook(f => f.Batch.Any(r => r.Resource.ObjectId == "r4")
+            ? SpiceDB.Client.Testing.InMemorySpiceDBClient.ServerError(StatusCode.InvalidArgument, "bad relationship") : null);
+        static async IAsyncEnumerable<Relationship> Backup(int n)
+        {
+            for (var i = 0; i < n; i++) { await Task.Yield(); yield return Relationship.FromTuple($"document:r{i}#viewer@user:hal"); }
+        }
+        await Assert.ThrowsAsync<InvalidArgumentException>(() => client.ImportRelationshipsAsync(Backup(6), new ImportOptions { BatchSize = 2 }));
+        store.SetFaultHook(null);
+        await client.ImportRelationshipsAsync(Backup(4));
+
+        // CursorAfter(n) is the cursor the double puts on item n, so a resumed read is easy to set up.
+        var resumed = new List<string>();
+        await foreach (var r in client.ReadRelationshipsAsync(Consistency.Full(), new Filter("document"),
+            new ReadOptions { ResumeCursor = SpiceDB.Client.Testing.InMemorySpiceDBClient.CursorAfter(2) }))
+            resumed.Add(r.Relationship.Resource.ObjectId);
+        Assert.Equal(["r2", "r3"], resumed);
+
+        // Schema reads can report no revision, as some hosted deployments do.
+        await client.WriteSchemaAsync("definition user {}");
+        store.SetReadSchemaRevision(SpiceDB.Client.Testing.SchemaRevision.Omitted);
+        Assert.Equal("", (await client.ReadSchemaAsync()).Revision.Value);
+    }
+
     private sealed class Recorder(List<DeleteResult> sink) : IProgress<DeleteResult>
     {
         public void Report(DeleteResult value) => sink.Add(value);

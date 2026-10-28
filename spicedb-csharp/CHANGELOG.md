@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Full-surface client interface for the test double
+
+- `ISpiceDBClient` is the client's full public method set (it extends
+  `ISpiceDBRelationshipClient`, `ISpiceDBSchemaClient` and `IAsyncDisposable`), kept in sync
+  with `SpiceDBClient` by a test. `SpiceDBClient` and `InMemorySpiceDBClient` implement it.
+- `InMemorySpiceDBClient` implements every client method: `CheckAnyAsync` and
+  `CheckAllAsync` work in memory, `DisposeAsync` does nothing and `RawProto()` throws
+  `InvalidOperationException`; lookups, watch, schema introspection and diff, expansion and
+  the experimental operations are recorded, consult the fault hook and fail with
+  `StatusCode.Unimplemented` in the real client's error shape.
+- Import-batch faults carry the batch's relationships (`Fault.Batch`) and now fire once the
+  batch is full (or the input ends) rather than before its first relationship.
+- `InMemorySpiceDBClient.CursorAfter(n)` builds the resume cursor the double returns on item
+  n; the format is stable for tests.
+- `InMemorySpiceDBClient.SetReadSchemaRevision(SchemaRevision.Omitted)` makes schema reads
+  report no revision, to test code that falls back to another revision source.
+
 ### Per-operation retries and a fault-injecting test double
 
 - `ClientOptions.OperationRetryPolicies` sets the retry policy for every call of one

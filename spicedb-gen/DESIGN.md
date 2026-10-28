@@ -142,7 +142,9 @@ and options forwarding rather than just generated text fragments.
   as `TeamMemberType` for `withSubject`.
 - On `DRef` (members are camelCase): permission `p` → property `p:
   Permission<"d", "p">`; relation `r` → writer `r(subject)`, key `rKey(subject)`
-  (base refs only), check property `rRelation`, filter `rFilter()`. A userset
+  (base refs only; generated only when `r` admits a caveated or expiring
+  subject, since otherwise the writer's `TypedRelationship` already identifies
+  the tuple), check property `rRelation`, filter `rFilter()`. A userset
   `d#r` on a relation adds the no-argument overload `r(): DRRef` (TypeScript
   overloads by arity, so the writer keeps its name). A userset `d#p` on a
   permission gets `pSubject()`, so `p` stays the permission. Every ref also has
@@ -162,12 +164,24 @@ and options forwarding rather than just generated text fragments.
   a writable relationship), `TypedTransaction` (written by
   `TypedClient.writeTransaction`, so it never shadows native `write`),
   `TypedCheck`/`checksFor` with `TypedClient.checkBulkTyped`, `fromRelationship`,
-  `errRelationship`, `withSubject`, `NotInSchemaError`, `SubjectNotAllowedError`.
+  `errRelationship`, `withSubject`, `withSubjectAnyRelation`, `NotInSchemaError`,
+  `SubjectNotAllowedError`. `TypedTransaction` exposes `updates`,
+  `preconditions` (native values; empty after an error) and `error`.
+  `withSubject` always constrains the subject relation (direct for a subject
+  or factory without one); `withSubjectAnyRelation` leaves it unconstrained.
 - Any collision between generated identifiers fails generation with both sources
   named, including schema names that would shadow a global or support name
   (`Date`, `Permission`), a built-in ref member (`filter`, `toString`), or a
-  function property for a permission static (`name`, `length`). Nothing is
-  silently renamed.
+  function property for a permission static (`name`, `length`), and names the
+  module imports from the native client (`definition subject` would produce
+  `SubjectRef`). Nothing is silently renamed:
+  `--typescript.rename=<definition>=<Name>` (comma-separated for several;
+  `Name` is PascalCase) overrides a definition's identifier stem without
+  changing the schema names sent to SpiceDB, e.g.
+  `--typescript.rename=subject=SubjectDef`, and the collision error suggests it.
+  Unknown definitions and invalid names fail generation. The integration test
+  generates `testdata/typescript/rename.zed` this way into `renamed.ts`,
+  type-checks it and runs `rename.test.ts`.
 - Options: `--typescript.client-module=<specifier>` sets the module the output
   imports the native client from (default `@spicedb/client`).
   `--typescript.format=prettier` formats the output with the Prettier installed in

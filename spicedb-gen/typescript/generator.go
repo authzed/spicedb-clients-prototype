@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"text/template"
 
 	"github.com/authzed/spicedb-clients/spicedb-gen/generator"
@@ -163,6 +164,40 @@ type UsersetTypeData struct {
 
 var clientModuleRe = regexp.MustCompile(`^[A-Za-z0-9@._/~-]+$`)
 
+// renameRe accepts the identifier stems --typescript.rename may set:
+// PascalCase like every generated definition stem, so no stem can be a
+// reserved word.
+var renameRe = regexp.MustCompile(`^[A-Z][A-Za-z0-9_]*$`)
+
+// renameMu serializes Generate, which installs per-call definition renames
+// for defIdent.
+var (
+	renameMu   sync.Mutex
+	defRenames map[string]string
+)
+
+// defIdent is the TypeScript identifier stem for a schema definition: its
+// PascalCase name, or the --typescript.rename override for it.
+func defIdent(name string) string {
+	if r, ok := defRenames[name]; ok {
+		return r
+	}
+	return toPascalCase(name)
+}
+
+// parseRenames parses --typescript.rename=def=Name[,def=Name...].
+func parseRenames(v string) (map[string]string, error) {
+	out := map[string]string{}
+	for _, pair := range strings.Split(v, ",") {
+		def, ident, ok := strings.Cut(strings.TrimSpace(pair), "=")
+		if !ok || def == "" || !renameRe.MatchString(ident) {
+			return nil, fmt.Errorf("--typescript.rename entry %q must be <definition>=<PascalCaseName>", pair)
+		}
+		out[def] = ident
+	}
+	return out, nil
+}
+
 // Generate produces the generated TypeScript module from the parsed schema.
 // Language options:
 //   - "client-module" (--typescript.client-module): the module specifier the
@@ -171,9 +206,14 @@ var clientModuleRe = regexp.MustCompile(`^[A-Za-z0-9@._/~-]+$`)
 //     own normalized layout; "prettier" pipes the output through the Prettier
 //     installed in the current directory's project (`npx --no-install
 //     prettier`), honoring that project's Prettier configuration.
+//   - "rename" (--typescript.rename=def=Name,...): the identifier stem for
+//     definitions whose names would otherwise collide with generated
+//     identifiers. Renames change TypeScript identifiers only; the schema
+//     names sent to SpiceDB never change.
 func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]generator.GeneratedFile, error) {
 	module := DefaultClientModule
 	format := "none"
+	renames := map[string]string{}
 	for k, v := range opts {
 		switch k {
 		case "client-module":
@@ -186,10 +226,30 @@ func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]genera
 				return nil, fmt.Errorf("--typescript.format=%q: must be none or prettier", v)
 			}
 			format = v
+		case "rename":
+			r, err := parseRenames(v)
+			if err != nil {
+				return nil, err
+			}
+			renames = r
 		default:
 			return nil, fmt.Errorf("unknown TypeScript option --typescript.%s", k)
 		}
 	}
+	known := map[string]bool{}
+	for _, def := range s.Definitions {
+		known[def.Name] = true
+	}
+	for def := range renames {
+		if !known[def] {
+			return nil, fmt.Errorf("--typescript.rename names %q, which is not a definition in the schema", def)
+		}
+	}
+
+	renameMu.Lock()
+	defer renameMu.Unlock()
+	defRenames = renames
+	defer func() { defRenames = nil }()
 
 	data, err := buildTemplateData(s)
 	if err != nil {
@@ -199,6 +259,7 @@ func (g *Generator) Generate(s *schema.Schema, opts map[string]string) ([]genera
 
 	tmpl, err := template.New("typed_client.ts.tmpl").Funcs(template.FuncMap{
 		"quoteList": quoteList,
+		"a":         withArticle,
 	}).ParseFS(templateFS, "templates/*.tmpl")
 	if err != nil {
 		return nil, err
@@ -282,11 +343,11 @@ func baseOf(st schema.SubjectType) subjectBase {
 func (b subjectBase) prefix() string {
 	switch {
 	case b.wildcard:
-		return toPascalCase(b.definition) + "Wildcard"
+		return defIdent(b.definition) + "Wildcard"
 	case b.relation != "":
-		return toPascalCase(b.definition) + toPascalCase(b.relation)
+		return defIdent(b.definition) + toPascalCase(b.relation)
 	default:
-		return toPascalCase(b.definition)
+		return defIdent(b.definition)
 	}
 }
 
@@ -343,17 +404,24 @@ func (n *names) claim(scope, name, owner string) {
 		if scope != "" {
 			where = scope
 		}
-		n.err = fmt.Errorf("schema produces conflicting TypeScript identifier %s in %s (from %s and %s); rename one of them", name, where, prev, owner)
+		n.err = fmt.Errorf("schema produces conflicting TypeScript identifier %s in %s (from %s and %s); "+
+			"rename the schema element, or keep the schema and pass --typescript.rename=<definition>=<Name> to change a definition's TypeScript identifiers", name, where, prev, owner)
 	}
 	n.owners[key] = owner
 }
 
-// reservedModuleNames are identifiers the generated module declares or uses
-// as globals; a schema-derived name equal to one would shadow it.
+// reservedModuleNames are identifiers the generated module declares, imports
+// from the native client, or uses as globals; a schema-derived name equal to
+// one would shadow it or conflict with its import (definition subject's
+// SubjectRef, for example).
 var reservedModuleNames = []string{
 	"Permission", "PermissionRef", "TypedRelationship", "RelationshipKey", "TypedTransaction", "TypedClient", "TypedCheck",
 	"NotInSchemaError", "SubjectNotAllowedError", "AnySubject", "SubjectType", "fromRelationship", "errRelationship",
-	"checksFor", "withSubject", "LookupResourcesOptions", "LookupSubjectsOptions", "ReadRelationshipsOptions",
+	"checksFor", "withSubject", "withSubjectAnyRelation", "LookupResourcesOptions", "LookupSubjectsOptions", "ReadRelationshipsOptions",
+	"SpiceDBClient", "createSpiceDBClient", "Transaction", "InvalidArgumentError", "SubjectRelationKind", "relationshipToFilter",
+	"relationshipToString", "CheckResult", "CheckRequest", "Relationship", "RelationshipFilter", "SubjectRef", "LookupResource",
+	"LookupSubject", "ReadRelationship", "CheckOptions", "CallOptions", "LookupResourcesRequest", "LookupSubjectsRequest",
+	"ReadRelationshipsRequest", "SpiceDBClientOptions", "JSONObject", "JSONValue", "WriteResult", "RelationshipUpdate", "Precondition",
 	"Consistency", "Object", "Array", "String", "Number", "Boolean", "Date", "Error", "JSON", "Map", "Set", "Symbol",
 	"Promise", "Function", "RegExp", "BigInt", "Math", "Reflect", "Proxy", "Intl", "Record", "Readonly", "Partial",
 }
@@ -583,7 +651,7 @@ func buildTemplateData(s *schema.Schema) (TemplateData, error) {
 	var checks, lookups []OverloadData
 	var usersets []UsersetTypeData
 	for _, def := range s.Definitions {
-		pascal := toPascalCase(def.Name)
+		pascal := defIdent(def.Name)
 		refType := pascal + "Ref"
 		scope := refType
 		dd := DefinitionData{
@@ -641,9 +709,18 @@ func buildTemplateData(s *schema.Schema) (TemplateData, error) {
 			}
 			implementors := collectImplementors(rel.AllowedSubjects, knownTypes, true)
 			rd.AllowedRefs = implementors
+			// A key is distinct from the writer only when some admitted
+			// subject carries a caveat or expiration; otherwise the writer's
+			// TypedRelationship (and its key()) already identifies the tuple.
+			needsKey := false
+			for _, st := range rel.AllowedSubjects {
+				if st.CaveatName != "" || st.Expiration {
+					needsKey = true
+				}
+			}
 			var keys []string
 			for _, st := range rel.AllowedSubjects {
-				if t := baseOf(st).refType(); knownTypes[t] && !contains(keys, t) {
+				if t := baseOf(st).refType(); needsKey && knownTypes[t] && !contains(keys, t) {
 					keys = append(keys, t)
 				}
 			}
@@ -661,7 +738,9 @@ func buildTemplateData(s *schema.Schema) (TemplateData, error) {
 			n.claim("", rd.CheckSubject, "check subjects of relation "+def.Name+"#"+rel.Name)
 			owner := "relation " + rel.Name
 			n.claim(scope, rd.Prop, owner)
-			n.claim(scope, rd.KeyMethod, "key for "+owner)
+			if rd.HasKeySubject {
+				n.claim(scope, rd.KeyMethod, "key for "+owner)
+			}
 			n.claim(scope, rd.CheckProp, "check accessor for "+owner)
 			n.claim(scope, rd.FilterMethod, "filter for "+owner)
 			checks = append(checks, OverloadData{ResourceType: def.Name, Name: rel.Name, SubjectUnion: rd.CheckSubject})
@@ -758,6 +837,27 @@ func buildSubjectUnion(subjects []schema.SubjectType) string {
 		}
 	}
 	return unionOrNever(parts)
+}
+
+// withArticle prefixes word with "a" or "an" for generated comments ("an
+// organization", "a document", "a user"). The choice follows the first
+// letter, except for common words whose first sound is not that letter's.
+func withArticle(word string) string {
+	lower := strings.ToLower(word)
+	for _, p := range []string{"uni", "use", "usa", "usu", "uti", "ure", "euro", "one", "once"} {
+		if strings.HasPrefix(lower, p) {
+			return "a " + word
+		}
+	}
+	for _, p := range []string{"hour", "honest", "honor", "heir"} {
+		if strings.HasPrefix(lower, p) {
+			return "an " + word
+		}
+	}
+	if lower != "" && strings.ContainsRune("aeiou", rune(lower[0])) {
+		return "an " + word
+	}
+	return "a " + word
 }
 
 // toPascalCase converts a snake_case or lowercase string to PascalCase.

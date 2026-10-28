@@ -9,7 +9,8 @@ import { full, relationship, BulkItemErrors, FailedPreconditionError, InvalidArg
 import {
     TypedClient, TypedTransaction, Organization, Invitation, Document, User, Team, UserWildcard, OrganizationFilter, InvitationFilter,
     OrganizationRelations, OrganizationPermissions, OrganizationRelationNames, OrganizationPermissionNames, OrganizationCanAdminType,
-    NotInSchemaError, SubjectNotAllowedError, fromRelationship, errRelationship, withSubject, checksFor, Permission, PermissionRef,
+    NotInSchemaError, SubjectNotAllowedError, fromRelationship, errRelationship, withSubject, withSubjectAnyRelation, checksFor, Permission, PermissionRef,
+    DocumentFilter,
 } from "./permissions";
 
 describe("typed values without a server", () => {
@@ -49,6 +50,13 @@ describe("typed values without a server", () => {
             .delete(Organization("acme").member(User("alice")))
             .touch(Organization("acme").admin(User("alice")));
         expect(ok.length).toBe(2);
+        expect(ok.error).toBeUndefined();
+        expect(ok.updates.map(u => u.operation)).toEqual(["delete", "touch"]);
+        expect(ok.updates[1].relationship).toEqual(relationship("organization:acme", "admin", "user:alice"));
+        expect(ok.preconditions).toEqual([{ operation: "mustNotMatch", filter: Organization("acme").adminFilter() }]);
+        expect(bad.error).toBeInstanceOf(InvalidArgumentError);
+        expect(bad.updates).toEqual([]);
+        expect(bad.preconditions).toEqual([]);
         expect(ok.build().toString()).toBe("[MUST_NOT_MATCH(organization:acme#admin@*), DELETE(organization:acme#member@user:alice), TOUCH(organization:acme#admin@user:alice)]");
     });
 
@@ -58,7 +66,16 @@ describe("typed values without a server", () => {
         expect(filterToString(Organization("acme").adminFilter())).toBe("organization:acme#admin@*");
         expect(filterToString(withSubject(Organization("acme").adminFilter(), User("alice")))).toBe("organization:acme#admin@user:alice#...");
         expect(filterToString(withSubject(InvitationFilter(), OrganizationCanAdminType))).toBe("invitation:*#*@organization:*#can_admin");
-        expect(filterToString(withSubject(DocumentFilterOf("readme"), User))).toBe("document:readme#*@user:*");
+        expect(filterToString(withSubject(DocumentFilterOf("readme"), User))).toBe("document:readme#*@user:*#...");
+        // withSubject always pins the subject relation; withSubjectAnyRelation does not.
+        const anyRelation = withSubjectAnyRelation(DocumentFilter(), Team("eng").member());
+        expect(filterToString(anyRelation)).toBe("document:*#*@team:eng");
+        expect(filterMatches(anyRelation, relationship("document:d", "viewer", "team:eng#member"))).toBe(true);
+        expect(filterMatches(anyRelation, relationship("document:d", "viewer", "team:eng"))).toBe(true);
+        expect(filterMatches(withSubject(DocumentFilter(), Team("eng").member()), relationship("document:d", "viewer", "team:eng"))).toBe(false);
+        expect(filterMatches(withSubject(DocumentFilter(), User("x")), relationship("document:d", "viewer", "user:x#self"))).toBe(false);
+        expect(filterMatches(withSubject(DocumentFilter(), User), relationship("document:d", "viewer", "user:x#self"))).toBe(false);
+        expect(filterMatches(withSubjectAnyRelation(DocumentFilter(), User), relationship("document:d", "viewer", "user:x#self"))).toBe(true);
         expect(OrganizationRelations.admin).toBe("admin");
         expect(OrganizationPermissions.canAdmin).toBe("can_admin");
         expect(() => Organization("").filter()).toThrow(InvalidArgumentError);

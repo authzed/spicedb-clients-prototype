@@ -50,11 +50,15 @@ definition invitation {
 
 Naming (members are camelCase): `Organization(id)` builds a ref. Permission
 `p` → property `p` (a `Permission`). Relation `r` → writer `r(subject)`, key
-`rKey(subject)`, check property `rRelation`, filter `rFilter()`. A userset on a
-permission → `pSubject()` (e.g. `canAdminSubject()`); a userset on a relation →
-`r()` with no argument. `user:*` → `UserWildcard()`. `Organization.view` is the
-type-level permission for lookups. Collisions fail generation; nothing is
-renamed silently.
+`rKey(subject)` (only where `r` admits caveated or expiring subjects; elsewhere
+delete the writer's relationship), check property `rRelation`, filter
+`rFilter()`. A userset on a permission → `pSubject()` (e.g.
+`canAdminSubject()`); a userset on a relation → `r()` with no argument.
+`user:*` → `UserWildcard()`. `Organization.view` is the type-level permission
+for lookups. Collisions fail generation; nothing is renamed silently. To keep a
+production schema whose names collide (such as `definition subject`), pass
+`--typescript.rename=subject=SubjectDef`; the names sent to SpiceDB stay the
+schema's.
 
 ## Connect once
 
@@ -135,7 +139,12 @@ try {
 - `touch` upserts; `create` fails with `AlreadyExistsError` if present.
 - Delete without inventing an expiration: `.delete(Invitation(id).inviterKey(User(u)))`.
 - Delete what you just read: `.delete(fromRelationship(rel))`.
-- **Do not retry a failed write blindly**; it may have committed.
+- Inspect before writing: `txn.updates`, `txn.preconditions`, `txn.error`.
+- `withSubject(filter, User(u))` matches direct relationships only; use
+  `withSubjectAnyRelation` to include usersets such as `team:eng#member`.
+- **Do not retry a failed write blindly**; it may have committed. Only a
+  touch-only transaction without preconditions (and `writeSchema`) may opt in
+  per call with `{ retryPolicy }`; other mutations reject it.
 
 ## Read relationships
 
@@ -176,6 +185,10 @@ const tool = createSpiceDBClient(endpoint, token, {
 });
 const { schema } = await tool.readSchema({ onHeader: h => log(h.get("x-request-id")), onTrailer: t => log([...t.keys()]) });
 const wire = protoconv.relationshipToProto(relationshipFromTuple("document:readme#viewer@user:alice"));
+// One request, as the raw API sends it (limit or unbounded; no follow-up page).
+for await (const rel of tool.readRelationships({ filter: { resourceType: "document" }, consistency: minLatency(), paging: Paging.SingleRequest })) log(rel);
+// Per-call retry policy: retry this idempotent touch-only write, or exempt one stream.
+await tool.write(new Transaction().touch(relationshipFromTuple("document:readme#viewer@user:bob")), { retryPolicy: DEFAULT_RETRY_POLICY });
 ```
 
 ## Errors
@@ -206,6 +219,10 @@ const authz: Pick<SpiceDBClient, "write" | "check" | "readRelationships"> = db; 
 Depend on a `Pick<SpiceDBClient, ...>` of the methods you use; both
 `SpiceDBClient` and `InMemorySpiceDB` satisfy it for `write`,
 `readRelationships`, `deleteRelationships`, `deleteAllRelationshipsNonAtomic`,
-`check`, `checkBulk` and `close`. Build expected errors with
+`importRelationships`, `exportRelationships`, `readSchema`, `writeSchema`,
+`reflectSchema` (register its result with `setReflectSchemaResult`), `check`,
+`checkBulk` and `close`. Its errors have the real client's classes, codes and
+message shape; it honors cursors, limits, the export filter and
+`onHeader`/`onTrailer` (see `setResponseMetadata`). Build expected errors with
 `SpiceDBError.fromCode(Code.FailedPrecondition, "...")`. For integration tests,
 run `authzed/spicedb serve-testing` and assert both granted and denied cases.

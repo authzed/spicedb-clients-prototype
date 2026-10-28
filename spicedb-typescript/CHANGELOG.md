@@ -2,6 +2,49 @@
 
 ## Unreleased
 
+### Tooling and typed-client follow-ups
+
+- `CallOptions.retryPolicy` overrides the retry policy for one call, including
+  stream establishment (exempt one stream while retrying everything else, or
+  opt one `watch` into reopening). A touch-only `write` without preconditions
+  and `writeSchema` may opt in to retries per call; every other mutation
+  (creates, deletes, preconditioned writes, imports, counter registration,
+  delete-all) rejects the opt-in with `InvalidArgumentError` before any
+  request.
+- `paging: Paging.SingleRequest` on `readRelationships` and `lookupResources`
+  sends exactly one request, as the raw API does (limit = `limit` or
+  unbounded; `pageSize` ignored; no follow-up page).
+- `protoconv.checkBulkToProto` rebuilds a whole bulk-check response (per-item
+  errors as statuses, `checkedAt`) and `protoconv.checkBulkRequestItemToProto`
+  converts one item; `protoconv.lookupSubjectToProto` now also fills the
+  deprecated top-level fields SpiceDB still sends.
+- `InMemorySpiceDB` adds `importRelationships`, `exportRelationships`,
+  `readSchema`, `writeSchema`, `reflectSchema` (`setReflectSchemaResult`) and
+  `setResponseMetadata` (reported to `onHeader`/`onTrailer`); honors read and
+  export cursors, limits and the export filter (read items now carry
+  `afterResultCursor`); rejects the same retry opt-ins as the client; and
+  returns errors shaped like the real client's (server failures carry
+  Connect's `[code]` prefix, `serverMessage` and a `ConnectError` cause; local
+  validation does not). Precondition failures now read
+  ``unable to satisfy write precondition `MUST_MATCH(...)` ``.
+- Empty writes were already sent to SpiceDB (which checks their preconditions
+  and returns the current revision); this is now documented and tested, in the
+  client and the test double.
+- Bulk item errors and errors carrying `deleteProgress` report the server's
+  status once through `toConnectError`/`errorCode` (tested).
+- Generated typed clients: `--typescript.rename=<definition>=<Name>` overrides
+  a definition's identifiers (the collision error suggests it); names the
+  module imports from the native client (`definition subject` → `SubjectRef`)
+  now fail generation as collisions instead of producing uncompilable output;
+  caveats calling custom CEL functions generate; `TypedTransaction` exposes
+  `updates`, `preconditions` and `error`; `withSubjectAnyRelation`.
+  **BREAKING (generated):** `withSubject(filter, User)` (a definition factory)
+  now pins the direct subject relation like every other `withSubject` call;
+  use `withSubjectAnyRelation` for the old behavior. `rKey(subject)` builders
+  are generated only for relations admitting caveated or expiring subjects;
+  elsewhere delete the writer's relationship (`r(subject)`) or use its
+  `.key()`. Generated comments use the right article.
+
 ### Adoption changes (2026-10-28)
 
 - **Fix:** paged `lookupResources` (and `experimentalLookupPermissionSets`)

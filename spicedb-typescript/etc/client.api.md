@@ -4,6 +4,8 @@
 
 ```ts
 
+import { CheckBulkPermissionsRequestItem } from '@spicedb/proto';
+import { CheckBulkPermissionsResponse } from '@spicedb/proto';
 import { CheckPermissionRequest } from '@spicedb/proto';
 import { CheckPermissionResponse } from '@spicedb/proto';
 import { Code } from '@connectrpc/connect';
@@ -53,6 +55,7 @@ export interface CallOptions {
     readonly headers?: HeadersInit;
     readonly onHeader?: (headers: Headers) => void;
     readonly onTrailer?: (trailers: Headers) => void;
+    readonly retryPolicy?: RetryPolicy;
     // (undocumented)
     readonly signal?: AbortSignal;
     // (undocumented)
@@ -85,6 +88,12 @@ export interface CaveatEvaluation {
     // (undocumented)
     readonly result: "unspecified" | "unevaluated" | "false" | "true" | "missingContext";
 }
+
+// @public
+function checkBulkRequestItemToProto(request: CheckRequest, defaultContext?: CheckRequest["context"]): CheckBulkPermissionsRequestItem;
+
+// @public
+function checkBulkToProto(requests: readonly CheckRequest[], results: readonly CheckResult[], defaultContext?: CheckRequest["context"]): CheckBulkPermissionsResponse;
 
 // @public (undocumented)
 export interface CheckDebugTrace {
@@ -386,12 +395,17 @@ export class InMemorySpiceDB {
     deleteAllRelationshipsNonAtomic(filter: RelationshipFilter, options?: DeleteAllOptions): Promise<DeleteResult>;
     // (undocumented)
     deleteRelationships(filter: RelationshipFilter, options: DeleteOptions): Promise<DeleteResult>;
-    // (undocumented)
+    exportRelationships(request: ExportRelationshipsRequest, options?: CallOptions): AsyncIterableIterator<ExportedRelationship>;
+    importRelationships(relationships: Iterable<Relationship> | AsyncIterable<Relationship>, options?: ImportOptions): Promise<bigint>;
     readRelationships(request: ReadRelationshipsRequest, options?: CallOptions): AsyncIterableIterator<ReadRelationship>;
+    readSchema(options?: CallOptions): Promise<SchemaResult>;
+    reflectSchema(request: ReflectSchemaRequest, options?: CallOptions): Promise<ReflectSchemaResult>;
     get relationships(): readonly Relationship[];
     setCheckResult(registration: CheckRegistration, result: Permissionship | SpiceDBError): void;
-    // (undocumented)
+    setReflectSchemaResult(result: Omit<ReflectSchemaResult, "revision">): void;
+    setResponseMetadata(header?: HeadersInit, trailer?: HeadersInit): void;
     write(transaction: Transaction, options?: CallOptions): Promise<WriteResult>;
+    writeSchema(schema: string, options?: CallOptions): Promise<ZedToken>;
 }
 
 // @public
@@ -474,6 +488,7 @@ export interface LookupResourcesRequest {
     readonly limit?: number;
     // (undocumented)
     readonly pageSize?: number;
+    readonly paging?: Paging;
     // (undocumented)
     readonly permission: string;
     readonly permissionshipFilter?: LookupPermissionshipFilter;
@@ -521,7 +536,7 @@ export interface LookupSubjectsRequest {
     readonly wildcards?: Wildcards;
 }
 
-// @public (undocumented)
+// @public
 function lookupSubjectToProto(subject: LookupSubject): LookupSubjectsResponse;
 
 // @public (undocumented)
@@ -561,6 +576,14 @@ export class OperationAbortError extends DOMException {
 // @public
 export class OutOfRangeError extends SpiceDBError {
     constructor(message: string, options?: SpiceDBErrorOptions);
+}
+
+// @public
+export enum Paging {
+    // (undocumented)
+    Automatic = "automatic",
+    // (undocumented)
+    SingleRequest = "singleRequest"
 }
 
 // @public (undocumented)
@@ -722,6 +745,8 @@ declare namespace protoconv {
         zedTokenFromProto,
         checkRequestToProto,
         checkResultFromProto,
+        checkBulkRequestItemToProto,
+        checkBulkToProto,
         checkResultToProto,
         debugInformationToProto,
         debugInformationFromProto,
@@ -756,6 +781,7 @@ export interface ReadRelationshipsRequest {
     readonly filter: RelationshipFilter;
     readonly limit?: number;
     readonly pageSize?: number;
+    readonly paging?: Paging;
 }
 
 // @public (undocumented)
@@ -1114,9 +1140,7 @@ export class SpiceDBClient {
     reflectSchema(request: ReflectSchemaRequest, options?: CallOptions): Promise<ReflectSchemaResult>;
     // (undocumented)
     watch(request?: WatchRequest, options?: CallOptions): AsyncIterableIterator<WatchEvent>;
-    // (undocumented)
     write(transaction: Transaction, options?: CallOptions): Promise<WriteResult>;
-    // (undocumented)
     writeSchema(schema: string, options?: CallOptions): Promise<ZedToken>;
 }
 

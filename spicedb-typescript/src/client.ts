@@ -1,8 +1,8 @@
 import { serverToken, tokenString } from "./token.js";
-import { Tracing, LookupDebug, LookupPermissionshipFilter, Wildcards, WatchContent, TransportSecurity, RemoteCredentials, Retries, StreamRetries, DefaultDeadline, BulkItemErrors, mode } from "./modes.js";
+import { Tracing, LookupDebug, LookupPermissionshipFilter, Wildcards, WatchContent, TransportSecurity, RemoteCredentials, Retries, StreamRetries, DefaultDeadline, BulkItemErrors, Paging, mode } from "./modes.js";
 import type { Transport } from "@connectrpc/connect";
 import { SpiceDBProtoClient as ProtoClient } from "@spicedb/proto";
-import { DEFAULT_RETRY_POLICY, validRetryPolicy, retryable, backoffMs, type RetryPolicy } from "./retry.js";
+import { DEFAULT_RETRY_POLICY, validRetryPolicy, retryable, backoffMs, mutationRetry, type RetryPolicy } from "./retry.js";
 import { create, clone, equals, type JsonObject } from "@bufbuild/protobuf";
 import { createSpiceDBClient as createProtoClient, type SpiceDBProtoClient, type TlsOptions, CheckBulkPermissionsRequestItemSchema, CheckBulkPermissionsRequestSchema, CheckPermissionRequestSchema, ReadRelationshipsRequestSchema, WriteRelationshipsRequestSchema, LookupResourcesRequestSchema, LookupSubjectsRequestSchema, ExpandPermissionTreeRequestSchema, ExportBulkRelationshipsRequestSchema, ImportBulkRelationshipsRequestSchema, ReadSchemaRequestSchema, WriteSchemaRequestSchema, ReflectSchemaRequestSchema, ReflectionSchemaFilterSchema, ComputablePermissionsRequestSchema, DependentRelationsRequestSchema, DiffSchemaRequestSchema, ExperimentalRegisterRelationshipCounterRequestSchema, ExperimentalCountRelationshipsRequestSchema, ExperimentalUnregisterRelationshipCounterRequestSchema, WatchRequestSchema, WatchKind, LookupSubjectsRequest_WildcardOption, ZedTokenSchema, CursorSchema, RelationshipUpdate_Operation, DeleteRelationshipsResponse_DeletionProgress, DeleteRelationshipsRequestSchema, } from "@spicedb/proto";
 import { ExperimentalCountRelationshipsByFilterRequestSchema, MaterializePermissionSetsProtocol as PermissionSets } from "@spicedb/proto";
@@ -101,16 +101,19 @@ export class SpiceDBClient {
     /** Waits out a retry's backoff after reporting it, or throws the mapped error when the policy does not retry it. */
     private async retryOrThrow(op: Operation, name: string, error: unknown, attempt: number, allowed: boolean): Promise<void> {
         const mapped = op.map(error);
-        if (!allowed || attempt >= this.retryPolicy.maxRetries || !retryable(this.retryPolicy, error))
+        const policy = op.retryPolicy;
+        if (!allowed || attempt >= policy.maxRetries || !retryable(policy, error))
             throw mapped;
-        const delayMs = backoffMs(this.retryPolicy, attempt);
-        this.retryPolicy.onRetry?.({ operation: name, attempt: attempt + 1, error: toSpiceDBError(mapped), delayMs });
+        const delayMs = backoffMs(policy, attempt);
+        policy.onRetry?.({ operation: name, attempt: attempt + 1, error: toSpiceDBError(mapped), delayMs });
         await op.sleep(delayMs);
     }
     private operation(options?: CallOptions, streaming = false): Operation {
         if (this.closed)
             throw new SpiceDBError("Client is closed");
-        const op = new Operation(options, streaming ? undefined : this.effectiveTimeoutMs(options?.timeoutMs), () => this.operations.delete(op));
+        // A per-call policy replaces the client's for this operation only.
+        const callPolicy = options?.retryPolicy === undefined ? undefined : validRetryPolicy(options.retryPolicy);
+        const op = new Operation(options, streaming ? undefined : this.effectiveTimeoutMs(options?.timeoutMs), () => this.operations.delete(op), callPolicy ?? this.retryPolicy, callPolicy !== undefined);
         this.operations.add(op);
         return op;
     }
@@ -163,7 +166,9 @@ export class SpiceDBClient {
                         }
                     }
                     catch (error) {
-                        await self.retryOrThrow(op, name, error, attempt, retry && self.streamRetries && !yielded);
+                        // A per-call policy governs establishment for this stream,
+                        // whatever the client-wide stream setting.
+                        await self.retryOrThrow(op, name, error, attempt, !yielded && (op.callRetry || (retry && self.streamRetries)));
                     }
                     finally {
                         if (current) {
@@ -245,9 +250,17 @@ export class SpiceDBClient {
             op.dispose();
         }
     }
+    /**
+     * Writes a transaction atomically. An empty transaction is sent as is:
+     * SpiceDB accepts it, evaluates its preconditions and returns the current
+     * revision. Not retried unless the call opts in with `retryPolicy`, which
+     * only a touch-only transaction without preconditions may do.
+     */
     async write(transaction: Transaction, options?: CallOptions): Promise<WriteResult> {
         const wire = create(WriteRelationshipsRequestSchema, transaction._build());
-        return this.unary("write", options, false, async (op) => immutableSnapshot({ revision: serverToken((await this.proto.permissions.writeRelationships(wire, op.callOptions())).writtenAt?.token) }));
+        const touchOnly = wire.optionalPreconditions.length === 0 && wire.updates.every(u => u.operation === RelationshipUpdate_Operation.TOUCH);
+        const retry = mutationRetry(options?.retryPolicy, touchOnly, "write");
+        return this.unary("write", options, retry, async (op) => immutableSnapshot({ revision: serverToken((await this.proto.permissions.writeRelationships(wire, op.callOptions())).writtenAt?.token) }));
     }
     /**
      * Streams matching relationships, fetching pages automatically. Every page
@@ -257,8 +270,10 @@ export class SpiceDBClient {
      * `afterResultCursor` and the `readAt` revision of its page.
      */
     readRelationships(request: ReadRelationshipsRequest, options?: CallOptions): AsyncIterableIterator<ReadRelationship> {
-        const size = positiveLimit(request.pageSize ?? 1000, "pageSize");
+        const single = mode(request.paging, Paging, Paging.Automatic, "paging") === Paging.SingleRequest;
         const limit = request.limit === undefined ? undefined : positiveLimit(request.limit, "limit");
+        // Single-request mode sends the total limit (0: unbounded) and ignores pageSize.
+        const size = single ? limit ?? 0 : positiveLimit(request.pageSize ?? 1000, "pageSize");
         const wire = create(ReadRelationshipsRequestSchema, { consistency: this.consistency(request.consistency), relationshipFilter: toProtoRelationshipFilter(request.filter), optionalLimit: size, optionalCursor: request.cursor === undefined ? undefined : create(CursorSchema, { token: request.cursor }) });
         const self = this;
         return this.stream("readRelationships", options, async function* (op) {
@@ -278,7 +293,7 @@ export class SpiceDBClient {
                             return;
                     }
                 }
-                if (count < size || !cursor)
+                if (single || count < size || !cursor)
                     return;
                 if (cursor === wire.optionalCursor?.token)
                     throw new SpiceDBError("Read cursor did not advance");
@@ -287,6 +302,7 @@ export class SpiceDBClient {
         });
     }
     async deleteRelationships(filter: RelationshipFilter, options: DeleteOptions): Promise<DeleteResult> {
+        mutationRetry(options?.retryPolicy, false, "deleteRelationships");
         const wire = toProtoDeleteRelationshipsRequest(filter, options);
         return this.unary("deleteRelationships", options, false, async (op) => this.deleteResult(await this.proto.permissions.deleteRelationships(wire, op.callOptions())));
     }
@@ -294,6 +310,7 @@ export class SpiceDBClient {
         return immutableSnapshot({ revision: serverToken(resp.deletedAt?.token), deletedCount: previous + resp.relationshipsDeletedCount, cursor: resp.afterResultCursor?.token, progress: resp.deletionProgress === DeleteRelationshipsResponse_DeletionProgress.COMPLETE ? "complete" : resp.deletionProgress === DeleteRelationshipsResponse_DeletionProgress.PARTIAL ? "partial" : "unspecified" });
     }
     async deleteAllRelationshipsNonAtomic(filter: RelationshipFilter, options?: DeleteAllOptions): Promise<DeleteResult> {
+        mutationRetry(options?.retryPolicy, false, "deleteAllRelationshipsNonAtomic");
         const wire = toProtoDeleteRelationshipsRequest(filter, { ...options, limit: positiveLimit(options?.pageSize ?? 1000, "pageSize") });
         const op = this.operation(options);
         let progress: DeleteResult | undefined;
@@ -320,9 +337,11 @@ export class SpiceDBClient {
     }
     lookupResources(request: LookupResourcesRequest, options?: CallOptions): AsyncIterableIterator<LookupResource> {
         const filter = mode(request.permissionshipFilter, LookupPermissionshipFilter, LookupPermissionshipFilter.All, "permissionshipFilter");
-        const size = positiveLimit(request.pageSize ?? 1000, "pageSize");
+        const single = mode(request.paging, Paging, Paging.Automatic, "paging") === Paging.SingleRequest;
         if (request.limit !== undefined)
             positiveLimit(request.limit, "limit");
+        // Single-request mode sends the total limit (0: unbounded) and ignores pageSize.
+        const size = single ? request.limit ?? 0 : positiveLimit(request.pageSize ?? 1000, "pageSize");
         const wire = create(LookupResourcesRequestSchema, { resourceObjectType: request.resourceType, permission: request.permission, subject: protoSubject(request.subject), consistency: this.consistency(request.consistency), context: request.context === undefined ? undefined : jsonSnapshot(request.context) as JsonObject, optionalLimit: size, withDebug: mode(request.debug, LookupDebug, LookupDebug.Disabled, "debug") === LookupDebug.Enabled, optionalCursor: request.cursor === undefined ? undefined : create(CursorSchema, { token: request.cursor }) });
         const self = this;
         const limit = request.limit;
@@ -344,7 +363,7 @@ export class SpiceDBClient {
                     if (limit !== undefined && total >= limit)
                         return;
                 }
-                if (count < wire.optionalLimit || !cursor)
+                if (single || count < wire.optionalLimit || !cursor)
                     return;
                 if (cursor === wire.optionalCursor?.token)
                     throw new SpiceDBError("Lookup cursor did not advance");
@@ -377,6 +396,7 @@ export class SpiceDBClient {
      * reported, never the transport's end-of-stream from a failed send.
      */
     async importRelationships(relationships: Iterable<Relationship> | AsyncIterable<Relationship>, options?: ImportOptions): Promise<bigint> {
+        mutationRetry(options?.retryPolicy, false, "importRelationships");
         const batchSize = positiveLimit(options?.batchSize ?? 1000, "batchSize");
         const op = this.operation(options, true);
         let input: Iterator<Relationship> | AsyncIterator<Relationship> | undefined;
@@ -446,7 +466,8 @@ export class SpiceDBClient {
         });
     }
     async readSchema(options?: CallOptions): Promise<SchemaResult> { return this.unary("readSchema", options, true, async (op) => { const resp = await this.proto.schema.readSchema(create(ReadSchemaRequestSchema), op.callOptions()); return immutableSnapshot({ schema: resp.schemaText, revision: serverToken(resp.readAt?.token) }); }); }
-    async writeSchema(schema: string, options?: CallOptions): Promise<ZedToken> { return this.unary("writeSchema", options, false, async (op) => serverToken((await this.proto.schema.writeSchema(create(WriteSchemaRequestSchema, { schema }), op.callOptions())).writtenAt?.token)); }
+    /** Writes the schema. Not retried unless the call opts in with `retryPolicy` (a schema write is idempotent on replay). */
+    async writeSchema(schema: string, options?: CallOptions): Promise<ZedToken> { return this.unary("writeSchema", options, mutationRetry(options?.retryPolicy, true, "writeSchema"), async (op) => serverToken((await this.proto.schema.writeSchema(create(WriteSchemaRequestSchema, { schema }), op.callOptions())).writtenAt?.token)); }
     async reflectSchema(request: ReflectSchemaRequest, options?: CallOptions): Promise<ReflectSchemaResult> {
         const wire = create(ReflectSchemaRequestSchema, { consistency: this.consistency(request.consistency), optionalFilters: request.filters?.map(f => create(ReflectionSchemaFilterSchema, { optionalDefinitionNameFilter: f.definitionName ?? "", optionalCaveatNameFilter: f.caveatName ?? "", optionalRelationNameFilter: f.relationName ?? "", optionalPermissionNameFilter: f.permissionName ?? "" })) });
         return this.unary("reflectSchema", options, true, async (op) => { const resp = await this.proto.schema.reflectSchema(wire, op.callOptions()); return immutableSnapshot({ definitions: resp.definitions.map(fromProtoSchemaDefinition), caveats: resp.caveats.map(fromProtoSchemaCaveat), revision: serverToken(resp.readAt?.token) }); });
@@ -465,6 +486,7 @@ export class SpiceDBClient {
     }
     /** @experimental */
     async experimentalRegisterRelationshipCounter(name: string, filter: RelationshipFilter, options?: CallOptions): Promise<void> {
+        mutationRetry(options?.retryPolicy, false, "experimentalRegisterRelationshipCounter");
         const wire = create(ExperimentalRegisterRelationshipCounterRequestSchema, { name, relationshipFilter: toProtoRelationshipFilter(filter) });
         await this.unary("experimentalRegisterRelationshipCounter", options, false, op => this.proto.experimental.experimentalRegisterRelationshipCounter(wire, op.callOptions()));
     }
@@ -473,7 +495,7 @@ export class SpiceDBClient {
         return this.unary("experimentalCountRelationships", options, true, async (op) => { const resp = await this.proto.experimental.experimentalCountRelationships(create(ExperimentalCountRelationshipsRequestSchema, { name }), op.callOptions()); return immutableSnapshot(resp.counterResult.case === "readCounterValue" ? { stillCalculating: false, count: resp.counterResult.value.relationshipCount, revision: serverToken(resp.counterResult.value.readAt?.token) } : { stillCalculating: true }); });
     }
     /** @experimental */
-    async experimentalUnregisterRelationshipCounter(name: string, options?: CallOptions): Promise<void> { await this.unary("experimentalUnregisterRelationshipCounter", options, false, op => this.proto.experimental.experimentalUnregisterRelationshipCounter(create(ExperimentalUnregisterRelationshipCounterRequestSchema, { name }), op.callOptions())); }
+    async experimentalUnregisterRelationshipCounter(name: string, options?: CallOptions): Promise<void> { mutationRetry(options?.retryPolicy, false, "experimentalUnregisterRelationshipCounter"); await this.unary("experimentalUnregisterRelationshipCounter", options, false, op => this.proto.experimental.experimentalUnregisterRelationshipCounter(create(ExperimentalUnregisterRelationshipCounterRequestSchema, { name }), op.callOptions())); }
     watch(request?: WatchRequest, options?: CallOptions): AsyncIterableIterator<WatchEvent> {
         if (request?.objectTypes?.length && request.relationshipFilters?.length)
             throw new InvalidArgumentError("watch objectTypes and relationshipFilters cannot be combined");

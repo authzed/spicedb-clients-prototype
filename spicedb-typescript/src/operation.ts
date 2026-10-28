@@ -1,5 +1,6 @@
 import { DeadlineExceededError, InvalidArgumentError, toSpiceDBError } from "./errors.js";
 import type { CallOptions, DeleteResult } from "./types.js";
+import type { RetryPolicy } from "./retry.js";
 /** Caller cancellation stays a native DOMException and preserves signal.reason as cause. */
 export class OperationAbortError extends DOMException {
     readonly cause: unknown;
@@ -16,7 +17,13 @@ export class Operation {
     private failure?: Error;
     private disposed = false;
     private readonly transport?: Pick<CallOptions, "headers" | "onHeader" | "onTrailer">;
-    constructor(options: CallOptions | undefined, defaultTimeout: number | undefined, private readonly onDispose: () => void) {
+    /** The retry policy for this operation: the call's own, or the client's. */
+    readonly retryPolicy: RetryPolicy;
+    /** Whether the policy came from the call, which also governs stream establishment. */
+    readonly callRetry: boolean;
+    constructor(options: CallOptions | undefined, defaultTimeout: number | undefined, private readonly onDispose: () => void, retryPolicy: RetryPolicy, callRetry: boolean) {
+        this.retryPolicy = retryPolicy;
+        this.callRetry = callRetry;
         this.transport = options === undefined ? undefined : { headers: options.headers === undefined ? undefined : new Headers(options.headers), onHeader: options.onHeader, onTrailer: options.onTrailer };
         const timeout = options?.timeoutMs ?? defaultTimeout;
         if (timeout !== undefined && (!Number.isFinite(timeout) || timeout <= 0))

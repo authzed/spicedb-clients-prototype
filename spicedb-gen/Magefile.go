@@ -63,6 +63,19 @@ func TypeScriptIntegrationTest() error {
 	if err := runInDir("testdata/typescript", "pnpm", "exec", "prettier", "--check", "permissions.ts"); err != nil {
 		return fmt.Errorf("generated TypeScript is not Prettier-formatted: %w", err)
 	}
+	// A schema whose definition names collide with generated identifiers
+	// (definition subject) and whose caveat calls a custom CEL function,
+	// generated with --typescript.rename; the type-check below compiles it and
+	// rename.test.ts exercises it.
+	if err := runInDir("testdata/typescript", "../../spicedb-gen",
+		"--schema", "rename.zed",
+		"--lang", "typescript",
+		"--typescript.format=prettier",
+		"--typescript.rename=subject=SubjectDef",
+		"--out", "renamed.ts",
+	); err != nil {
+		return fmt.Errorf("code generation with --typescript.rename failed: %w", err)
+	}
 
 	// 4. tsc --noEmit (type-checking including type_errors.ts). Every
 	// forbidden line in type_errors.ts carries its own @ts-expect-error, and

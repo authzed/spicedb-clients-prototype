@@ -114,8 +114,13 @@ and its generated schema facade.
     onRetry? }` replaces it (callers may opt into other read codes such as
     ResourceExhausted); `retries: Retries.Disabled` makes every operation one
     attempt; `streamRetries: StreamRetries.Disabled` opens each server stream
-    once. Mutations are never replayed under any policy, and consumed streams
-    never restart.
+    once. `CallOptions.retryPolicy` overrides the client's policy for one call,
+    including stream establishment (so one stream can be exempted, and a
+    `watch`, opened once by default, can opt in). Mutations are never replayed
+    automatically: only a touch-only `write` without preconditions and
+    `writeSchema` may opt in per call, and every other mutation rejects a
+    policy with retries (`InvalidArgumentError`, before any request). Consumed
+    streams never restart.
   - `defaultDeadline: DefaultDeadline.Disabled` removes the 30 s default budget
     (combining it with `defaultTimeoutMs` is rejected); a call's own
     `timeoutMs`/`signal` still apply. No zero or negative magic values.
@@ -138,7 +143,10 @@ and its generated schema facade.
     `ExportedRelationship` (plus its batch's `afterResultCursor`; exports carry no
     read-at), and `LookupResource` carries `afterResultCursor` and `lookedUpAt`.
     Resume by passing a cursor as the request's `cursor` with the same request and
-    page size. Returned data is immutable.
+    page size. Returned data is immutable. `paging: Paging.SingleRequest` on
+    `readRelationships`/`lookupResources` sends exactly one request like the
+    raw API: its limit is `limit` (or unbounded), `pageSize` is ignored, and no
+    follow-up page is fetched.
 
 - **Keep filtering and deletion scope exact.**
   - Subject relation selectors distinguish Any, Direct and Named via a
@@ -180,6 +188,11 @@ and its generated schema facade.
     transport and remote-credential enums. Return native `ZedToken`/check results.
   - Collection writes and directly returned async iterators retain ownership and
     cancellation behavior. Generated caveat contexts use native JSON types.
+  - `TypedTransaction` exposes `updates`, `preconditions` and `error`;
+    `withSubject` always constrains the subject relation and
+    `withSubjectAnyRelation` does not. `--typescript.rename` keeps schemas
+    whose names collide with generated identifiers (see
+    `spicedb-gen/DESIGN.md`).
 
 - **Verify the public contract and real transport behavior.**
   - Run build/unit checks, example typechecking and API extraction; regenerate
@@ -210,7 +223,16 @@ Each root DESIGN.md requirement below names the TypeScript API that satisfies it
   `*ToProto`/`*FromProto` for objects, subjects, relationships, filters,
   preconditions, updates, consistency, tokens, check requests, check results
   with debug traces, lookups (resources and subjects), expand results, read
-  items and write results.
+  items and write results. Response conversions reproduce the server's wire
+  shape: `checkBulkToProto(requests, results, defaultContext?)` rebuilds a whole
+  bulk-check response (per-item errors as statuses, `checkedAt`) with
+  `checkBulkRequestItemToProto` for its items, and `lookupSubjectToProto`
+  fills the deprecated top-level fields SpiceDB still sends.
+- **Server acceptance rules.** `write` sends empty transactions (SpiceDB
+  checks their preconditions and returns the current revision). `watch`
+  rejects `objectTypes` combined with `relationshipFilters` because SpiceDB
+  does. Every read that takes a consistency requires one, schema reads
+  included; `minLatency()` matches the raw API's default.
 - **1.30+ floor.** Pre-1.30 trailer data is reachable through `onTrailer` only.
 - **Error status interop, constructor, verbatim message.** Every `SpiceDBError`
   has `code` (Connect's `Code`, matching `ConnectError.code`), including local
@@ -221,6 +243,10 @@ Each root DESIGN.md requirement below names the TypeScript API that satisfies it
   abort/timeout `DOMException`s, and `SpiceDBError.from(err)` maps any of them to
   the native subclass. `SpiceDBError.fromCode(code, message)` builds the same
   subclass a server error with that code produces, for test doubles.
+  Wrapper errors are the inner error itself: a bulk item error (prefixed
+  `check item N:`) and an error carrying `deleteProgress` keep the server's
+  code and `serverMessage`, so `toConnectError(err).rawMessage` and
+  `errorCode(err)` report the server's status once, without the prefixes.
   `serverMessage` holds the server's status message verbatim; `message` keeps
   Connect's `[code]` prefix and any operation context. `SpiceDBError` cannot
   subclass `ConnectError`: Connect's `Symbol.hasInstance` accepts only its own
@@ -230,11 +256,20 @@ Each root DESIGN.md requirement below names the TypeScript API that satisfies it
 - **Filter matching.** `filterMatches(filter, relationship)` applies server
   semantics, including Any/Direct/Named subject relations.
 - **In-memory test double.** `InMemorySpiceDB` implements `write` (atomic, with
-  preconditions and CREATE conflicts), `readRelationships`, `deleteRelationships`
-  (bounded and all-or-nothing), `deleteAllRelationshipsNonAtomic`, `check`,
-  `checkBulk` (including `BulkItemErrors.Returned`) and `close` with the
-  client's signatures, so `Pick<SpiceDBClient, ...>` accepts both. Checks return
-  results or errors registered with `setCheckResult`; unregistered checks deny.
+  preconditions and CREATE conflicts; empty writes return the revision),
+  `readRelationships` (cursors and limits), `deleteRelationships` (bounded and
+  all-or-nothing), `deleteAllRelationshipsNonAtomic`, `importRelationships`
+  (one transaction; duplicates fail), `exportRelationships` (filter and
+  cursor), `readSchema`, `writeSchema`, `reflectSchema` (result registered with
+  `setReflectSchemaResult`), `check`, `checkBulk` (including
+  `BulkItemErrors.Returned`) and `close` with the client's signatures, so
+  `Pick<SpiceDBClient, ...>` accepts both. Checks return results or errors
+  registered with `setCheckResult`; unregistered checks deny. Its errors have
+  the real client's classes, codes and message shape (server failures carry
+  Connect's `[code]` prefix and `serverMessage`; local validation does not),
+  it rejects the same retry opt-ins, and it reports `setResponseMetadata`
+  values to `onHeader`/`onTrailer`. Options are plain inspectable values, so no
+  option-resolving API is needed.
 - **Panicking constructors.** Not applicable: TypeScript constructors and
   factories (`relationship`, `relationshipFromTuple`, `new ZedToken`) already
   throw, and plain object literals need no constructor.

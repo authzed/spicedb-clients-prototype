@@ -12,6 +12,26 @@
 
 ## Unreleased
 
+### Full-client protocols and test doubles
+
+- `spicedb.protocols.ClientProtocol` and `AsyncClientProtocol` list every
+  public method of the sync and aio clients (a test keeps them identical).
+  The real clients and `spicedb.testing.InMemoryClient` /
+  `AsyncInMemoryClient` satisfy them: the doubles now implement every
+  operation. `close` and the context manager work in memory; operations
+  without in-memory semantics (expand, lookups, watch, schema diff and
+  relations, counters, materialize) are recorded, consult the fault hook and
+  raise a `SpiceDBError` with code `UNIMPLEMENTED`; `raw_grpc()` raises the
+  same.
+- `Fault.batch` carries an import batch's relationships at
+  `FaultStage.IMPORT_BATCH`. Every relationship is now validated before the
+  first batch fault.
+- `spicedb.testing.cursor_after(n)` builds the doubles' resume cursor after
+  `n` matching items; the format (the decimal count) is stable for tests.
+- `set_read_schema_revision(SchemaRevision.OMITTED)` makes the doubles'
+  `read_schema` report `ZedToken("")`, emulating servers whose schema reads
+  carry no revision.
+
 ### One protocol copy, dependency floors and the path off authzed-py
 
 - spicedb-python-proto is now the single copy of the `authzed.api.*`

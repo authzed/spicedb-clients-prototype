@@ -21,7 +21,8 @@ from spicedb import (
 )
 from spicedb.sync import SpiceDBClient, Stream
 from spicedb.aio import SpiceDBClient as AioClient, AsyncStream
-from spicedb.testing import Call, FaultStage, InMemoryClient
+from spicedb.testing import AsyncInMemoryClient, Call, FaultStage, InMemoryClient, SchemaRevision, cursor_after
+from spicedb.protocols import AsyncClientProtocol, ClientProtocol
 from spicedb import Operation, UnavailableError
 
 resource = ObjectRef("document", "one")
@@ -139,3 +140,19 @@ def adoption_option_types(client: SpiceDBClient, aio: AioClient) -> None:
     client.read_relationships(Filter("document"), consistency=full(), cursor=cursor)
     client.import_relationships([relationship], batch_size=10)
     aio.lookup_resources(resource_type="document", permission="view", subject=subject, consistency=full(), cursor="c")
+
+
+def full_surface_protocol_types(client: SpiceDBClient, aio: AioClient) -> None:
+    # The real clients and the doubles satisfy their flavor's full protocol...
+    sync_impls: list[ClientProtocol] = [client, InMemoryClient()]
+    aio_impls: list[AsyncClientProtocol] = [aio, AsyncInMemoryClient()]
+    assert sync_impls and aio_impls
+    # ...and not the other flavor's.
+    wrong_sync: ClientProtocol = AsyncInMemoryClient()  # type: ignore[assignment]
+    wrong_aio: AsyncClientProtocol = InMemoryClient()  # type: ignore[assignment]
+    assert wrong_sync and wrong_aio
+    fake = InMemoryClient()
+    fake.set_read_schema_revision(SchemaRevision.OMITTED)
+    fake.set_read_schema_revision("omitted")  # type: ignore[arg-type]
+    resume: str = cursor_after(3)
+    fake.read_relationships(Filter("document"), consistency=full(), cursor=resume)
